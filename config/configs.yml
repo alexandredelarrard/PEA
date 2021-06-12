@@ -1,0 +1,9 @@
+resources:
+    base_path : C:\Users\de larrard alexandre\Documents\repos_github\PEA\
+
+urls:
+    reuters: https://www.reuters.com
+    yahoo: https://fr.finance.yahoo.com
+
+Internal_data:
+    reuters : data/data_for_crawling/reuters_mapping.csv

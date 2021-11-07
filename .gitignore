@@ -130,3 +130,7 @@ dmypy.json
 
 # vs code 
 .vscode 
+
+# data 
+data/extracted_data/ 
+data/results/

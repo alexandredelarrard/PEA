@@ -1,6 +1,7 @@
 import time
 import re
 from typing import List
+import numpy as np
 
 def timeit(method):
     def timed(*args, **kw):
@@ -40,3 +41,13 @@ def smart_column_parser(col_names: List) -> List:
         new_var = new_var.upper()  # all variables should be upper case
         new_list.append(new_var)
     return new_list
+
+
+def weight_history(df, date_name, k=4):
+    """
+    weight decay to train on most up to date data with an exponential decay
+    k=4 means that we have a weight of 4 for recent data, 1 for 1 year later and 0.25 2 years later
+    k=2 means that we have a weight of 2 for recent data, 1 for 1 year later and 0.5 2 years later
+    """
+    return k*np.exp((df[date_name] - df[date_name].max()).dt.days/(1075/k))
+    

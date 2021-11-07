@@ -1,0 +1,8 @@
+resources:
+    base_path : C:\Users\de larrard alexandre\Documents\repos_github\PEA\
+    data: data/crypto
+
+cryptos_desc:
+    Cryptos: ["BTC", "ETH", "LTC", "NEO", "BNB", "XRP", "LINK", "EOS"]
+    URL_BASE: https://www.cryptodatadownload.com/cdd/Binance_
+    URL_END: USDT_1h.csv

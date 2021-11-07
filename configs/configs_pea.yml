@@ -1,0 +1,10 @@
+resources:
+    base_path : C:\Users\de larrard alexandre\Documents\repos_github\PEA\
+    data: data/crypto
+
+urls:
+  reuters: https://www.reuters.com
+
+data:
+  banks: ["BNPP.PA", "CAGR.PA", "SOGN.PA"]
+  insur: ["SCOR.PA", "AXAF.PA"]

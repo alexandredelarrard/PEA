@@ -1,5 +1,3 @@
-from sklearn import cluster
-from sklearn.metrics.pairwise import distance_metrics
 import umap.umap_ as umap
 import re
 import hdbscan
@@ -7,7 +5,6 @@ from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn import preprocessing
 from sklearn.neighbors import NearestNeighbors
 import scipy.cluster.hierarchy as sch
-import scipy.spatial.distance as ssd
 from sklearn.cluster import AgglomerativeClustering
 import pandas as pd 
 from typing import List
@@ -123,8 +120,8 @@ class TopicClustering(object):
             words_importance= pd.DataFrame([vectorizer.get_feature_names(), idf]).T.sort_values(1, ascending=0)
 
             # remove most occuring words and least occuring words
-            threshold_too_many = np.percentile(words_importance[1], 1)
-            threshold_too_few = np.percentile(words_importance[1], 95)
+            threshold_too_many = np.percentile(words_importance[1], 2.5)
+            threshold_too_few = np.percentile(words_importance[1], 97.5)
             to_remove = words_importance.loc[(words_importance[1] <= threshold_too_many)|(words_importance[1] >= threshold_too_few), 0].tolist()  
 
             filtered_text = text.apply(lambda x : " ".join([word for word in x.split() if word not in to_remove]))

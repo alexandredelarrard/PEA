@@ -1,9 +1,9 @@
 from tqdm import tqdm
 import logging
 import pandas as pd
-from modelling.text_analysis.topic_extraction.Analysis import AnalysisTopicExtraction
-from modelling.text_analysis.topic_extraction.CleanText import TextCleaner
-from modelling.text_analysis.topic_extraction.ClusterTopics import TopicClustering
+from modelling.topic_extraction.Analysis import AnalysisTopicExtraction
+from modelling.topic_extraction.CleanText import TextCleaner
+from modelling.topic_extraction.ClusterTopics import TopicClustering
 
 class TopicExtraction(TopicClustering, TextCleaner, AnalysisTopicExtraction):
 
@@ -53,7 +53,7 @@ class TopicExtraction(TopicClustering, TextCleaner, AnalysisTopicExtraction):
                       "n_words_cluster" : 10, # number of top words to display in excel results / tree = N/2
                       "n_top_text_cluster" : 2, # number of articles to represent per final cluster 
                       "distance_to_median" : 10, # proportion to force to cluster amongst -1 based on average distance to centroid
-                      "tf_idf_pre_filtering" : True,
+                      "tf_idf_pre_filtering" : False,
                       "verbose" : 0}
 
         for key in params.keys():

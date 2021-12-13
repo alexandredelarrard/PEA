@@ -3,19 +3,10 @@ import random
 import requests
 import pandas as pd
 import time
-import multiprocessing
-from datetime import datetime
 from queue import Queue
 from threading import Thread
-from pathlib import Path as pl
-from datetime import datetime
-import glob
 
-from selenium.webdriver.common.by import By
 from selenium import webdriver
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from lxml.html import fromstring
 
@@ -38,7 +29,6 @@ class Crawling(object):
         print(f"NUMBER OF DRIVERS {self.cores}")
         
         os.environ["DIR_PATH"] = r"C:\Users\de larrard alexandre\Documents\repos_github\PAP\logs"
-
         self.queues = {"drivers": Queue(), "urls" :  Queue(), "results": Queue(), "base_path" : base_path}
 
         

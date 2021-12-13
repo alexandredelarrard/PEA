@@ -4,7 +4,3 @@ resources:
 
 urls:
   reuters: https://www.reuters.com
-
-data:
-  banks: ["BNPP.PA", "CAGR.PA", "SOGN.PA"]
-  insur: ["SCOR.PA", "AXAF.PA"]

@@ -25,12 +25,16 @@ def get_pricing_infos(driver):
 
 def get_news(driver, current_url):
 
+    # TODO: scrowl down 2/4/10 times until stabilized ...
+
     def extract_item_news(driver, news_driver, news_infos):
 
         if len(news_driver) == 1:
-            for scrol in range(100, 2900, 250):
+            for scrol in range(100, 5500, 250):
                 driver.execute_script(f"window.scrollTo(0,{scrol})")
                 time.sleep(0.2)
+            
+            time.sleep(1.5)
 
             news_items = news_driver[0].find_elements_by_xpath("//div[@class='item']")
             for news in news_items:
@@ -51,6 +55,7 @@ def get_news(driver, current_url):
     
     # old news 
     driver.get(current_url + "/news")
+    time.sleep(1.5)
     news_driver = driver.find_elements_by_xpath("//div[@id='__next']/div/div[4]/div/div/div/div/div[2]")
     news_infos = extract_item_news(driver, news_driver, news_infos)
 
@@ -63,6 +68,7 @@ def get_events(driver, current_url):
     events_infos = []
 
     driver.get(current_url + "/events")
+    time.sleep(3.5)
     events_driver = driver.find_elements_by_xpath("//div[@class='container']/section")
 
     for i, section in enumerate(events_driver):
@@ -96,14 +102,21 @@ def get_people(driver, current_url):
     people_infos = []
 
     driver.get(current_url + "/people")
-    people_driver = driver.find_element_by_tag_name("tbody")
-    people = people_driver.find_elements_by_tag_name("tr")
+    time.sleep(2.5)
 
-    for member in people:
-        rows = member.find_elements_by_tag_name("td")
-        if len(rows) == 4:
-            people_infos.append({"NAME" : rows[0].text, "AGE" : rows[1].text, "POSITION" : rows[2].text,
-                                "APPOINTED" : rows[3].text})
+    try:
+        people_driver = driver.find_element_by_tag_name("tbody")
+        people = people_driver.find_elements_by_tag_name("tr")
+
+        for member in people:
+            rows = member.find_elements_by_tag_name("td")
+            if len(rows) == 4:
+                people_infos.append({"NAME" : rows[0].text, "AGE" : rows[1].text, "POSITION" : rows[2].text,
+                                    "APPOINTED" : rows[3].text})
+
+    except Exception:
+        people_infos = {}
+        pass 
 
     return people_infos
 
@@ -113,6 +126,7 @@ def get_key_metrics(driver, current_url):
     kpi_infos = {}
 
     driver.get(current_url + "/key-metrics")
+    time.sleep(1.5)
     kpi_driver = driver.find_elements_by_xpath("//div[@id='__next']/div/div[4]/div/div/div/div/div")
 
     for sub_driver in kpi_driver[:8]:
@@ -140,6 +154,7 @@ def get_financials(driver, current_url):
                      "income-statement-quarterly", "balance-sheet-quarterly", "cash-flow-quarterly"]:
 
         driver.get(f"{current_url}/financials/{analysis}")
+        time.sleep(0.3)
         financials_infos[analysis] = {}
 
         column_driver = driver.find_element_by_tag_name("thead")
@@ -160,6 +175,33 @@ def get_financials(driver, current_url):
     return financials_infos
 
 
+def get_profile(driver, current_url):
+
+    profile_infos = {}
+
+    driver.get(current_url + "/profile")
+    time.sleep(2.5)
+    profile_driver = driver.find_elements_by_xpath("//div[@class='container']/div/div/table")
+
+    # main metrics 
+    if len(profile_driver) >= 1:
+        for row in profile_driver[0].find_elements_by_tag_name("tr"):
+            text =row.text.split("\n")
+            profile_infos[text[0].upper()] = text[1]
+
+    # desc
+    desc_driver = driver.find_elements_by_xpath("//div[@class='Profile-about-1d-H-']/p")
+    if len(desc_driver) >= 1:
+        profile_infos["PRESENTATION"] = desc_driver[0].text
+
+    # analyst ratings 
+    ratings_driver = driver.find_elements_by_xpath("//div[@class='container section']/div")
+    if len(ratings_driver) >= 1:
+        profile_infos["RATING"] = ratings_driver[0].text
+    
+    return {"PROFILE" : profile_infos}
+
+
 def save_to_disk(company, results, save_path):
 
     today = datetime.today().strftime("%Y-%m-%d")
@@ -178,6 +220,7 @@ def save_to_disk(company, results, save_path):
     for key in results["financials_infos"].keys():
         pd.DataFrame(results["financials_infos"][key]).to_csv(final_path / pl(f"{key.upper()}.csv"))
 
+    pd.DataFrame(results["profile_infos"]).to_csv(final_path / pl("PROFILE.csv"))
     pd.DataFrame(results["people_infos"]).to_csv(final_path / pl("PEOPLE.csv"), index=False)
     pd.DataFrame(results["dividendes_infos"]).to_csv(final_path / pl("DIVIDENDS.csv"), index=False)
     pd.DataFrame(results["events_infos"]).to_csv(final_path / pl("EVENTS.csv"), index=False)
@@ -199,8 +242,6 @@ def validate_cookis(driver):
         except Exception:
             pass
     
-        time.sleep(1)
-    
 
 def extract_infos(driver, sub_loc):
 
@@ -208,31 +249,31 @@ def extract_infos(driver, sub_loc):
     company  = current_url.split("/")[-1]
 
     validate_cookis(driver)
+    time.sleep(1)
 
+    # get profile infos
+    profile_infos_dict = get_profile(driver, current_url)
+
+    # pricing infos
     pricing_infos_dict = get_pricing_infos(driver)
-    time.sleep(0.5)
 
     # extract news :
     news_infos = get_news(driver, current_url)
-    time.sleep(0.5)
 
     # events 
     dividendes_infos, events_infos = get_events(driver, current_url)
-    time.sleep(0.5)
 
     # people 
     people_infos = get_people(driver, current_url)
-    time.sleep(0.5)
 
     # key metrics 
     kpi_infos = get_key_metrics(driver, current_url)
-    time.sleep(0.5)
 
     # financials 
     financials_infos = get_financials(driver, current_url)
-    time.sleep(0.5)
 
-    save_to_disk(company,  {"pricing_infos" : pricing_infos_dict, 
+    save_to_disk(company, {"profile_infos": profile_infos_dict, 
+                       "pricing_infos" : pricing_infos_dict, 
                        "news_infos": news_infos,
                        "dividendes_infos": dividendes_infos,
                        "events_infos" : events_infos,

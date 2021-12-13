@@ -314,10 +314,7 @@ class TextCleaner(object):
         data["TARGET"] = data[target]
 
         # clean_final_comments
-        data["_TEXT_COMMENT"] = data["TARGET"].swifter.set_dask_scheduler(scheduler="processes").apply(lambda x: self.split_sentences(x))
-        # data = data.explode("_TEXT_COMMENT")
-        # data["_TEXT_COMMENT"] = data["_TEXT_COMMENT"].apply(lambda x : str(x))
-        data = data.loc[~data["_TEXT_COMMENT"].isin([" "])]
+        data = data.loc[~data["TARGET"].isin([" "])]
 
         # index ref through the code
         data["ID_TEXT"] = data.index

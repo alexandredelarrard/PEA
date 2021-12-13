@@ -2,6 +2,7 @@ import time
 import re
 from typing import List
 import numpy as np
+import os
 
 def timeit(method):
     def timed(*args, **kw):
@@ -51,3 +52,7 @@ def weight_history(df, date_name, k=4):
     """
     return k*np.exp((df[date_name] - df[date_name].max()).dt.days/(1075/k))
     
+
+def check_save_path(save_path):
+    if not os.path.exists(save_path):
+        os.mkdir(save_path)

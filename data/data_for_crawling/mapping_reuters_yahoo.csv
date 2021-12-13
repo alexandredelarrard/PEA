@@ -1,239 +1,1311 @@
-NAME;REUTERS_CODE;YAHOO_CODE
-ACCOR;ACCP.PA;AC.PA
-AEROPORT DE PARIS;ADP.PA;ADP.PA
-A.S.T. GROUPE;ASTP.PA;ASP.PA
-AB SCIENCE;ABS.PA;AB.PA
-ABC ARBITRAGE;BITI.PA;ABCA.PA
-ABIVAX;ABVX.PA;ABVX.PA
-ACTEOS;DTNC.PA;EOS.PA
-ACTIA GROUP;MRSP.PA;ATI.PA
-ADL PARTNER;ALDP.PA;ALP.PA
-ADOCIA;ADOC.PA;ADOC.PA
-AIR FRANCE -KLM;AIRF.PA;AF.PA
-Air Liquide S.A;AIRP.PA;AI.PA
-AIRBUS SE;AIR.PA;AIR.PA
-AKKA TECHNOLOGIES;AKA.PA;AKA.PA
-AKWEL;AKW.PA;AKW.PA
-ALBIOMA;ABIO.PA;ABIO.PA
-ALPES (COMPAGNIE);CDAF.PA;CDA.PA
-ALSTOM;ALSO.PA;ALO.PA
-ALTEN;LTEN.PA;ATE.PA
-ALTUR INVEST.;ALTUR.PA;ALTUR.PA
-AMPLITUDE SURGICAL;AMPLI.PA;AMPLI.PA
-AMUNDI;AMUN.PA;AMUN.PA
-ArcelorMittal;MT.AS;MT.AS
-ARKEMA;AKE.PA;AKE.PA
-ASSYSTEM;ASY.PA;ASY.PA
-ATARI;ATAR.PA;ATA.PA
-ATEME;ATEME.PA;ATEME.PA
-Atos SE;ATOS.PA;ATO.PA
-AUBEY;AUBT.PA;AUB.PA
-AUREA;AUER.PA;AURE.PA
-AURES TECHNOLOGIES;AURS.PA;AURS.PA
-Axa;AXAF.PA;CS.PA
-AXWAY SOFTWARE;AXW.PA;AXW.PA
-BASTIDE LE CONFORT;BATD.PA;BLC.PA
-BENETEAU;CHBE.PA;BEN.PA
-BIC;BICP.PA;BB.PA
-BIGBEN INTERACTIVE;BGBN.PA;BIG.PA
-BIOMERIEUX;BIOX.PA;BIM.PA
-BNP;BNPP.PA;BNP.PA
-BOIRON;BOIR.PA;BOI.PA
-BOLLORE;BOLL.PA;BOL.PA
-BONDUELLE;BOND.PA;BON.PA
-BOURSE DIRECT;BDRP.PA;BSD.PA
-Bouygues;BOUY.PA;EN.PA
-BUREAU VERITAS;BVI.PA;BVI.PA
-CAFOM;CAFO.PA;CAFO.PA
-CAPELLI;CAPLI.PA;CAPLI.PA
-Capgemini;CAPP.PA;CAP.PA
-Carrefour;CARR.PA;CAR.PA
-CASINO GUICHARD;CASP.PA;CO.PA
-CAST;YAS.PA;CAS.PA
-CATANA GROUP;CATGR.PA;CATF.PA
-CATERING INTL SCES;CTRG.PA;CTRG.PA
-CBO TERRITORIA;CBOT.PA;CBOT.PA
-CEGEDIM;CGDM.PA;CGM.PA
-CGG;GEPH.PA;CGG.PA
-CHARGEURS;CRIP.PA;CRI.PA
-CIBOX INTER A CTIV;CIBP.PA;CIB.PA
-CLARANOVA;AVQ.PA;CLA.PA
-CNIM CONSTR.FRF 10;CNIM.PA;COM.PA
-CNP ASSURANCES;CNPP.PA;CNP.PA
-COFACE;COFA.PA;COFA.PA
-Compagnie de Saint-Gobain S.A.;SGOB.PA;SGO.PA
-Credit Agricole S.A.;CAGR.PA;ACA.PA
-Danone;DANO.PA;BN.PA
-DASSAULT AVIATION;AVMD.PA;AM.PA
-Dassault Systemes SA;DAST.PA;DSY.PA
-DBV TECHNOLOGIES;DBV.PA;DBV.PA
-DERICHEBOURG;DBG.PA;DBG.PA
-DIAGNOSTIC MEDICAL;DMSP.PA;DGM.PA
-EDENRED;EDEN.PA;EDEN.PA
-EDF;EDF.PA;EDF.PA
-EGIDE;EGID.PA;GID.PA
-EIFFAGE;FOUG.PA;FGR.PA
-EKINOPS;EKI.PA;EKI.PA
-ELIOR GROUP;ELIOR.PA;ELIOR.PA
-ELIS;ELIS.PA;ELIS.PA
-Engie;ENGIE.PA;ENGI.PA
-EOS IMAGING;EOSI.PA;
-ERAMET;ERMT.PA;ERA.PA
-ERYTECH PHARMA;ERYP.PA;ERYP.PA
-ESI GROUP;ESIG.PA;ESI.PA
-EssilorLuxottica;ESLX.PA;EL.PA
-ESSO;ESSF.PA;ES.PA
-EURAZEO;EURA.PA;RF.PA
-EUROFINS SCIENTIFIC;EUFI.PA;ERF.PA
-EUROPACORP;ECP.PA;ECP.PA
-EUROPCAR;EUCAR.PA;EUCAR.PA
-EUTELSAT COMMUNIC.;ETL.PA;ETL.PA
-EXEL INDUSTRIES;EXEP.PA;EXE.PA
-FAURECIA;EPED.PA;EO.PA
-FDJ;FDJ.PA;FDJ.PA
-FERMENTALG;FALG.PA;FALG.PA
-PEUGEOT;PEUP.PA;PEUG.PA
-FIGEAC AERO;FGA.PA;FGA.PA
-FONC. PARIS NORD;FPN.PA;FPN.PA
-GECINA;GFCP.PA;GFC.PA
-GENERIX;GENX.PA;GENX.PA
-GENFIT;GNFT.PA;GNFT.PA
-GENOMIC VISION;GVI.PA;GV.PA
-GENSIGHT BIOLOGICS;SIGHT.PA;SIGHT.PA
-GETLINK;GETP.PA;GET.PA
-GROUPE CRIT;CITT.PA;CEN.PA
-GROUPE FNAC;FNAC.PA;FNAC.PA
-GROUPE GORGE;GOEG.PA;GOE.PA
-GROUPE SFPI;SFPI.PA;SFPI.PA
-GTT;GTT.PA;GTT.PA
-GUERBET;GRBT.PA;GBT.PA
-GUILLEMOT;GTCN.PA;GUI.PA
-HAULOTTE GROUP;PYHE.PA;PIG.PA
-Hermes International;HRMS.PA;RMS.PA
-HF;HFCO.PA;ALHF.PA
-HIGH CO;HIGH.PA;HCO.PA
-HIPAY GROUP;HIPAY.PA;ALHYP.PA
-HOPSCOTCH GROUPE;HOP.PA;HOP.PA
-ID LOGISTICS GROUP;ADLA.PA;ADL.PA
-ILIAD;ILD.PA;ILD.PA
-IMERYS;IMTP.PA;NK.PA
-INFOTEL;ETOP.PA;INF.PA
-INNATE PHARMA;IPH.PA;IPH.PA
-INNELEC MULTIMEDIA;INN.PA;ALINN.PA
-INTERPARFUMS;IPAR.PA;ITP.PA
-INVENTIVA PROM;IVAA.PA;IVA.PA
-IPSEN;IPN.PA;IPN.PA
-IPSOS;ISOS.PA;IPS.PA
-ITESOFT;ITFT.PA;ITE.PA
-JACQUET METAL SCE;JCQ.PA;JCQ.PA
-JC DECAUX;JCDX.PA;DEC.PA
-KAUFMAN ET BROAD;KOF.PA;KOF.PA
-Kering;PRTP.PA;KER.PA
-KEYRUS;KEYR.PA;ALKEY.PA
-KORIAN;KORI.PA;KORI.PA
-LACROIX SA;LACP.PA;LACR.PA
-LAGARDERE S.C.A.;LAGA.PA;MMB.PA
-LECTRA;LECS.PA;LSS.PA
-Legrand SA;LEGD.PA;LR.PA
-LINEDATA SERVICES;LDSV.PA;LIN.PA
-LISI;GFII.PA;FII.PA
-L'Oreal;OREP.PA;OR.PA
-Lvmh Moet Hennessy Vuitton SE;LVMH.PA;MC.PA
-MAISONS DU MONDE;MDM.PA;MDM.PA
-MANITOU BF;MANP.PA;MTU.PA
-MAUNA KEA TECH;MKEA.PA;MKEA.PA
-MAUREL ET PROM;MAUP.PA;MAU.PA
-MBWS;MBWS.PA;MBWS.PA
-MCPHY ENERGY;MCPHY.PA;MCPHY.PA
-MEDINCELL REG;MEDCL.PA;MEDCL.PA
-MEMSCAP REGPT;MEMS.PA;MEMS.PA
-MERSEN;CBLP.PA;MRN.PA
-METABOLIC EXPLORER;METEX.PA;METEX.PA
-METROPOLE TV;MMTP.PA;MMT.PA
-Michelin (CGDE)-B;MICP.PA;ML.PA
-MICROPOLE;MIPO.PA;MUN.PA
-NANOBIOTIX;NANOB.PA;NANO.PA
-NATIXIS;CNAT.PA;KN.PA
-NAVYA;NAVYA.PA;NAVYA.PA
-NEOEN;NEOEN.PA;NEOEN.PA
-NETGEM;ETGM.PA;ALNTG.PA
-NEURONES;NRO.PA;NRO.PA
-NEXANS;NEXS.PA;NEX.PA
-NEXITY;NEXI.PA;NXI.PA
-NICOX;NCOX.PA;COX.PA
-Orange.;ORAN.PA;ORA.PA
-ORAPI;ORPF.PA;ORAP.PA
-OREGE;OREGE.PA;OREGE.PA
-ORPEA;ORP.PA;ORP.PA
-OSE IMMUNO;OSE.PA;OSE.PA
-PARROT;PARRO.PA;PARRO.PA
-PASSAT;PASS.PA;PSAT.PA
-Pernod Ricard;PERP.PA;RI.PA
-PHARMAGEST INTER.;PHAI.PA;PHA.PA
-PIERRE VACANCES;PVAC.PA;VAC.PA
-PLASTIC OMNIUM;PLOF.PA;POM.PA
-PLASTIVALOIRE;PLVP.PA;PVL.PA
-POXEL;POXEL.PA;POXEL.PA
-PROLOGUE;PRSW.PA;PROL.PA
-PSB INDUSTRIES;PSBP.PA;PSB.PA
-Publicis Groupe SA;PUBP.PA;PUB.PA
-LUMIBIRD;LBIRD.PA;LBIRD.PA
-REMY COINTREAU;RCOP.PA;RCO.PA
-Renault S.A.;RENA.PA;RNO.PA
-REXEL;RXL.PA;RXL.PA
-ROBERTET;ROBF.PA;RBT.PA
-ROTHSCHILD & CO;ROTH.PA;ROTH.PA
-RUBIS;RUBF.PA;RUI.PA
-S.E.B.;SEB.PA;SK.PA
-Safran SA;SAF.PA;SAF.PA
-SAINT GOBAIN;SGOB.PA;SGO.PA
-Sanofi;SASY.PA;SAN.PA
-SARTORIUS BIOTECH;STDM.PA;DIM.PA
-Schneider Electric SE;SCHN.PA;SU.PA
-SCOR SE;SCOR.PA;SCR.PA
-SECHE ENVIRONNEM.;CCHE.PA;SCHP.PA
-SERGEFERRARI GROUP;SEFER.PA;SEFER.PA
-SHOWROOMPRIVE;SRPG.PA;SRP.PA
-SIGNAUX GIROD;GIRO.PA;ALGIR.PA
-SMTPC;SMTPC.PA;SMTPC.PA
-SOCIETE GENERALE;SOGN.PA;GLE.PA
-SODEXO;EXHO.PA;SW.PA
-SOGECLAIR;SCLR.PA;SOG.PA
-SOITEC;SOIT.PA;SOI.PA
-solvay;SOLB.BR;SOLB.BR
-SOPRA STERIA GROUP;SOPR.PA;SOP.PA
-SPIE;SPIE.PA;SPIE.PA
-SQLI;SQLI.PA;SQI.PA
-ST DUPONT;DPTP.PA;DPT.PA
-ST MICROELECTRONICS;STM.PA;STM.PA
-STELLANTIS;STLA.PA;STLA.PA
-SOLUTION 30;ALS30.PA;S30.PA
-SUEZ;SEVI.PA;SEV.PA
-SWORD GROUP;SWOR.PA;SWP.PA
-SYNERGIE;SDGI.PA;SGD.PA
-TARKETT;TKTT.PA;TKTT.PA
-TELEPERFORMANCE;TEPRF.PA;TEP.PA
-TESSI;TESI.PA;TES.PA
-THALES;TCFP.PA;HO.PA
-TIVOLY;TIVO.PA;ALTIV.PA
-TOTAL;TOTF.PA;TTE.PA
-TOUAX;TETR.PA;TOUP.PA
-TRANSGENE;TRNG.PA;TNG.PA
-TRIGANO;TRI.PA;TRI.PA
-UBISOFT;UBIP.PA;UBI.PA
-UNIBAIL;URW.AS;URW.AS
-UNION TECH.INFOR.;UTIN.PA;FPG.PA
-VALEO;VLOF.PA;FR.PA
-VALLOUREC;VLLP.PA;VK.PA
-VALNEVA;VLS.PA;VLA.PA
-VEOLIA;VIE.PA;VIE.PA
-VICAT;VCTP.PA;VCT.PA
-VILMORIN & CIE;VILM.PA;RIN.PA
-VINCI;SGEF.PA;DG.PA
-VIRBAC;VIRB.PA;VIRP.PA
-VIVENDI;VIV.PA;VIV.PA
-VOLTALIA;VLTSA.PA;VLTSA.PA
-VRANKEN-POMMERY;VRKP.PA;VRAP.PA
-WENDEL;MWDP.PA;MF.PA
-WORLDLINE;WLN.PA;WLN.PA
-XILAM ANIMATION;XIL.PA;XIL.PA
+NAME;SECTOR;SUB INDUSTRY;REUTERS_CODE;YAHOO_CODE;Country
+3I GROUP PLC.;Financial Services;;III.L;III.L;GB
+3M;Industrials;Industrial Conglomerates;MMM.N;MMM;US
+A. O. Smith;Industrials;Building Products;AOS.N;AOS;US
+A.P.MOLLER-MAERSK B;Industrial Goods and Services;;MAERSKB.CO;MAERSK-B.CO;DK
+A.S.T. GROUPE;;;ASTP.PA;ASP.PA;FR
+A2A;Utilities;;A2.MI;A2A.MI;IT
+AAK;Food, Beverage and Tobacco;;AAK.ST;AAK.ST;SE
+AALBERTS;Industrial Goods and Services;;AALB.AS;AALB.AS;NL
+AB SCIENCE;;;ABS.PA;AB.PA;FR
+ABB;Industrial Goods and Services;;ABBN.S;ABBN.SW;CHF
+Abbott Laboratories;Health Care;Health Care Equipment;ABT.N;ABT;US
+AbbVie;Health Care;Pharmaceuticals;ABBV.N;ABBV;US
+ABC ARBITRAGE;;;BITI.PA;ABCA.PA;FR
+Abiomed;Health Care;Health Care Equipment;ABMD.N;ABMD;US
+ABIVAX;;;ABVX.PA;ABVX.PA;FR
+ABRDN;Financial Services;;ABDN.L;ABDN.L;GB
+Accenture;Information Technology;IT Consulting & Other Services;ACN.N;ACN;US
+ACCIONA S.A.;Construction and Materials;;ANA.MC;ANA.MC;ES
+ACCOR;;;ACCP.PA;AC.PA;FR
+ACKERMANS & VAN HAAREN;Financial Services;;ACKB.BR;ACKB.BR;BE
+ACTEOS;;;DTNC.PA;EOS.PA;FR
+ACTIA GROUP;;;MRSP.PA;ATI.PA;FR
+Activision Blizzard;Communication Services;Interactive Home Entertainment;ATVI.N;ATVI;US
+ADDLIFE;Health Care;;ALIFB.ST;ALIF-B.ST;SE
+ADDTECH B;Industrial Goods and Services;;ADDTB.ST;ADDT-B.ST;SE
+ADECCO;Industrial Goods and Services;;ADEN.S;ADEN.SW;CHF
+ADIDAS;Consumer Products and Services;;ADSGN.DE;ADS.DE;DE
+ADM;Consumer Staples;Agricultural Products;ADM.N;ADM;US
+ADMIRAL GRP;Insurance;;ADML.L;ADM.L;GB
+Adobe;Information Technology;Application Software;ADBE.N;ADBE;US
+ADOCIA;;;ADOC.PA;ADOC.PA;FR
+Advance Auto Parts;Consumer Discretionary;Automotive Retail;AAP.N;AAP;US
+Advanced Micro Devices;Information Technology;Semiconductors;AMD.N;AMD;US
+ADYEN;Industrial Goods and Services;;ADYEN.AS;ADYEN.AS;NL
+AEDIFICA;Real Estate;;AOO.BR;AED.BR;BE
+AEGON;Insurance;;AEGN.AS;AGN.AS;NL
+AENA SME;Industrial Goods and Services;;AENA.MC;AENA.MC;ES
+AEROPORT DE PARIS;;;ADP.PA;ADP.PA;FR
+AES Corp;Utilities;Independent Power Producers & Energy Traders;AES.N;AES;US
+Aflac;Financials;Life & Health Insurance;AFL.N;AFL;US
+AFRY;Construction and Materials;;AFRY.ST;AFRY.ST;SE
+Afterpay;Information Technology;;APT.AX;APT.AX;AUS
+AGEAS;Insurance;;AGES.BR;AGS.BR;BE
+Agilent Technologies;Health Care;Health Care Equipment;A.N;A;US
+AHOLD DELHAIZE;Personal Care, Drug and Grocery Stores;;AD.AS;AD.AS;NL
+AIA GROUP LTD;Financials;;1299.HK;1299.HK;CH
+AIR FRANCE -KLM;;;AIRF.PA;AF.PA;FR
+Air Liquide S.A;;;AIRP.PA;AI.PA;FR
+Air Products & Chemicals;Materials;Industrial Gases;APD.N;APD;US
+AIRBUS SE;;;AIR.PA;AIR.PA;FR
+Akamai Technologies;Information Technology;Internet Services & Infrastructure;AKAM.N;AKAM;US
+AKER BP;Energy;;AKER.OL;AKER.OL;NO
+AKKA TECHNOLOGIES;;;AKA.PA;AKA.PA;FR
+AKWEL;;;AKW.PA;AKW.PA;FR
+AKZO NOBEL;Chemicals;;AKZO.AS;AKZA.AS;NL
+Alaska Air Group;Industrials;Airlines;ALK.N;ALK;US
+Albemarle Corporation;Materials;Specialty Chemicals;ALB.N;ALB;US
+ALBIOMA;;;ABIO.PA;ABIO.PA;FR
+ALCON;Health Care;;ALCC.S;ALC.SW;CHF
+Alexandria Real Estate Equities;Real Estate;Office REITs;ARE.N;ARE;US
+ALFA LAVAL;Industrial Goods and Services;;ALFA.ST;ALFA.ST;SE
+ALIBABA GROUP HOLDING LTD;Consumer Discretionary;;9988.HK;9988.HK;CH
+Align Technology;Health Care;Health Care Supplies;ALGN.N;ALGN;US
+Allegion;Industrials;Building Products;ALLE.N;ALLE;US
+Alliant Energy;Utilities;Electric Utilities;LNT.N;LNT;US
+ALLIANZ;Insurance;;ALVG.DE;ALV.DE;DE
+ALLREAL HLDG;Real Estate;;ALLN.S;ALLN.SW;CHF
+Allstate Corp;Financials;Property & Casualty Insurance;ALL.N;ALL;US
+ALPES (COMPAGNIE);;;CDAF.PA;CDA.PA;FR
+Alphabetÿ(Class A);Communication Services;Interactive Media & Services;GOOGL.N;GOOGL;US
+Alphabetÿ(Class C);Communication Services;Interactive Media & Services;GOOG.N;GOOG;US
+ALSTOM;;;ALSO.PA;ALO.PA;FR
+ALSTRIA OFFICE REIT;Real Estate;;AOXG.DE;AOX.DE;DE
+ALTEN;;;LTEN.PA;ATE.PA;FR
+Altria Group;Consumer Staples;Tobacco;MO.N;MO;US
+ALTUR INVEST.;;;ALTUR.PA;ALTUR.PA;FR
+AMADEUS IT GROUP;Technology;;AMA.MC;AMS.MC;ES
+Amazon;Consumer Discretionary;Internet & Direct Marketing Retail;AMZN.N;AMZN;US
+AMBU 'B';Health Care;;AMBUB.CO;AMBU-B.CO;DK
+Amcor;Materials;Paper Packaging;AMCR.N;AMCR;US
+Amcor;Materials;;AMC.AX;AMC.AX;AUS
+Ameren Corp;Utilities;Multi-Utilities;AEE.N;AEE;US
+American Airlines Group;Industrials;Airlines;AAL.N;AAL;US
+American Electric Power;Utilities;Electric Utilities;AEP.N;AEP;US
+American Express;Financials;Consumer Finance;AXP.N;AXP;US
+American International Group;Financials;Property & Casualty Insurance;AIG.N;AIG;US
+American Tower;Real Estate;Specialized REITs;AMT.N;AMT;US
+American Water Works;Utilities;Water Utilities;AWK.N;AWK;US
+Ameriprise Financial;Financials;Asset Management & Custody Banks;AMP.N;AMP;US
+AmerisourceBergen;Health Care;Health Care Distributors;ABC.N;ABC;US
+Ametek;Industrials;Electrical Components & Equipment;AME.N;AME;US
+Amgen;Health Care;Biotechnology;AMGN.N;AMGN;US
+Amphenol;Information Technology;Electronic Components;APH.N;APH;US
+AMPLITUDE SURGICAL;;;AMPLI.PA;AMPLI.PA;FR
+AMS AG;Technology;;AMS.S;AMS.SW;CHF
+AMUNDI;;;AMUN.PA;AMUN.PA;FR
+Analog Devices;Information Technology;Semiconductors;ADI.N;ADI;US
+ANDRITZ;Industrial Goods and Services;;ANDR.VI;ANDR.VI;AT
+ANGLO AMERICAN;Basic Resources;;AAL.L;AAL.L;GB
+ANHEUSER-BUSCH INBEV;Food, Beverage and Tobacco;;ABI.BR;ABI.BR;BE
+Ansys;Information Technology;Application Software;ANSS.N;ANSS;US
+ANTA SPORTS PRODUCTS LTD;Consumer Discretionary;;2020.HK;2020.HK;CH
+Anthem;Health Care;Managed Health Care;ANTM.N;ANTM;US
+ANTOFAGASTA;Basic Resources;;ANTO.L;ANTO.L;GB
+ANZ Banking Group;Financials;;ANZ.AX;ANZ.AX;AUS
+Aon;Financials;Insurance Brokers;AON.N;AON;US
+APA Corporation;Energy;Oil & Gas Exploration & Production;APA.N;APA;US
+APA Group;Utilities;;APA.AX;APA.AX;AUS
+Apple;Information Technology;Technology Hardware, Storage & Peripherals;AAPL.N;AAPL;US
+Applied Materials;Information Technology;Semiconductor Equipment;AMAT.N;AMAT;US
+Aptiv;Consumer Discretionary;Auto Parts & Equipment;APTV.N;APTV;US
+ARCADIS;Construction and Materials;;ARDS.AS;ARCAD.AS;NL
+ARCELORMITTAL;Basic Resources;;MT.AS;MT.AS;LU
+ARGENX;Health Care;;ARGX.BR;ARGX.BR;BE
+Arista Networks;Information Technology;Communications Equipment;ANET.N;ANET;US
+Aristocrat Leisure;Consumer Discretionary;;ALL.AX;ALL.AX;AUS
+ARKEMA;;;AKE.PA;AKE.PA;FR
+Arthur J. Gallagher & Co.;Financials;Insurance Brokers;AJG.N;AJG;US
+ASHMORE GRP;Financial Services;;ASHM.L;ASHM.L;GB
+ASHTEAD GRP;Industrial Goods and Services;;AHT.L;AHT.L;GB
+ASM INTERNATIONAL;Technology;;ASMI.AS;ASM.AS;NL
+ASML HLDG;Technology;;ASML.AS;ASML.AS;NL
+ASR NEDERLAND NV;Insurance;;ASRNL.AS;ASRNL.AS;NL
+ASSA ABLOY;Construction and Materials;;ASSAB.ST;ASSA-B.ST;SE
+ASSICURAZIONI GENERALI;Insurance;;GASI.MI;G.MI;IT
+ASSOCIATED BRITISH FOODS;Food, Beverage and Tobacco;;ABF.L;ABF.L;GB
+ASSURA;Real Estate;;AGRP.L;AGR.L;GB
+Assurant;Financials;Multi-line Insurance;AIZ.N;AIZ;US
+ASSYSTEM;;;ASY.PA;ASY.PA;FR
+ASTRAZENECA;Health Care;;AZN.L;AZN.L;GB
+ASX;Financials;;ASX.AX;ASX.AX;AUS
+AT&T;Communication Services;Integrated Telecommunication Services;T.N;T;US
+ATARI;;;ATAR.PA;ATA.PA;FR
+ATEME;;;ATEME.PA;ATEME.PA;FR
+ATLANTIA;Industrial Goods and Services;;ATL.MI;ATL.MI;IT
+ATLAS COPCO A;Industrial Goods and Services;;ATCOA.ST;ATCO-A.ST;SE
+Atmos Energy;Utilities;Gas Utilities;ATO.N;ATO;US
+Atos SE;;;ATOS.PA;ATO.PA;FR
+AUBEY;;;AUBT.PA;AUB.PA;FR
+AUREA;;;AUER.PA;AURE.PA;FR
+AURES TECHNOLOGIES;;;AURS.PA;AURS.PA;FR
+AUTO TRADER GROUP;Technology;;AUTOA.L;AUTO.L;GB
+AUTO1 GROUP;Retail;;AG1G.DE;AG1.DE;DE
+Autodesk;Information Technology;Application Software;ADSK.N;ADSK;US
+Automatic Data Processing;Information Technology;Data Processing & Outsourced Services;ADP.N;ADP;US
+AutoZone;Consumer Discretionary;Specialty Stores;AZO.N;AZO;US
+AvalonBay Communities;Real Estate;Residential REITs;AVB.N;AVB;US
+AVANZA BANK HLDG;Banks;;AVANZ.ST;AZA.ST;SE
+AVAST PLC;Technology;;AVST.L;AVST.L;GB
+Avery Dennison;Materials;Paper Packaging;AVY.N;AVY;US
+AVEVA GRP;Technology;;AVV.L;AVV.L;GB
+AVIVA;Insurance;;AV.L;AV.L;GB
+Axa;;;AXAF.PA;CS.PA;FR
+AXWAY SOFTWARE;;;AXW.PA;AXW.PA;FR
+B&M EUROPEAN VALUE RETAIL;Retail;;BMEB.L;BME.L;GB
+BACHEM HOLDING;Health Care;;BANB.S;BANB.SW;CHF
+BAE SYSTEMS;Industrial Goods and Services;;BAES.L;BAES.L;GB
+Baker Hughes;Energy;Oil & Gas Equipment & Services;BKR.N;BKR;US
+BAKKAFROST;Food, Beverage and Tobacco;;BAKKA.OL;BAKKA.OL;NO
+Ball Corp;Materials;Metal & Glass Containers;BLL.N;BLL;US
+BALOISE;Insurance;;BALN.S;BALN.SW;CHF
+BANCO BPM;Banks;;BAMI.MI;BAMI.MI;IT
+Bank of America;Financials;Diversified Banks;BAC.N;BAC;US
+BANK OF CHINA LTD H;Financials;;3988.HK;3988.HK;CH
+BANK OF IRELAND GROUP;Banks;;BIRG.I;BIRG.IR;IE
+BANKINTER;Banks;;BKT.MC;BKT.MC;ES
+BARCLAYS;Banks;;BARC.L;BARC.L;GB
+BARRATT DEVELOPMENTS;Consumer Products and Services;;BDEV.L;BDEV.L;GB
+BARRY CALLEBAUT;Food, Beverage and Tobacco;;BARN.S;BARN.SW;CHF
+BASF;Chemicals;;BASFN.DE;BAS.DE;DE
+BASTIDE LE CONFORT;;;BATD.PA;BLC.PA;FR
+Bath & Body Works;Consumer Discretionary;Specialty Stores;BBWI.N;BBWI;US
+BAWAG GROUP AG;Banks;;BAWG.VI;BG.VI;AT
+Baxter International;Health Care;Health Care Equipment;BAX.N;BAX;US
+BAYER;Health Care;;BAYGN.DE;BAYN.DE;DE
+BCO BILBAO VIZCAYA ARGENTARIA;Banks;;BBVA.MC;BBVA.MC;ES
+BCO SABADELL;Banks;;SABE.MC;SAB.MC;ES
+BCO SANTANDER;Banks;;SAN.MC;SAN.MC;ES
+BECHTLE;Technology;;BC8G.DE;BC8.DE;DE
+Becton Dickinson;Health Care;Health Care Equipment;BDX.N;BDX;US
+BEIERSDORF;Personal Care, Drug and Grocery Stores;;BEIG.DE;BEI.DE;DE
+BEIJER REF AB;Industrial Goods and Services;;BEIAB.ST;BEIA-B.ST;SE
+BELIMO HOLDING;Construction and Materials;;BEAN.S;BEAN.SW;CHF
+BELLWAY;Consumer Products and Services;;BWY.L;BWY.L;GB
+BENETEAU;;;CHBE.PA;BEN.PA;FR
+BERKELEY GRP HLDG;Consumer Products and Services;;BKY.L;BKY.L;GB
+Berkshire Hathaway;Financials;Multi-Sector Holdings;BRKA.N;BRK-B;US
+Best Buy;Consumer Discretionary;Computer & Electronics Retail;BBY.N;BBY;US
+BHP;Materials;;BHP.AX;BHP.AX;AUS
+BHP GROUP PLC.;Basic Resources;;BHPB.L;BHP;GB
+BIC;;;BICP.PA;BB.PA;FR
+BIG YELLOW GROUP;Real Estate;;BYG.L;BYG.L;GB
+BIGBEN INTERACTIVE;;;BGBN.PA;BIG.PA;FR
+BILLERUDKORSNAS;Basic Resources;;BILL.ST;BILL.ST;SE
+Biogen;Health Care;Biotechnology;BIIB.N;BIIB;US
+BIOMERIEUX;;;BIOX.PA;BIM.PA;FR
+Bio-Rad Laboratories;Health Care;Life Sciences Tools & Services;BIO.N;BIO;US
+Bio-Techne;Health Care;Life Sciences Tools & Services;TECH.N;TECH;US
+BlackRock;Financials;Asset Management & Custody Banks;BLK.N;BLK;US
+BlueScope;Materials;;BSL.AX;BSL.AX;AUS
+BMW;Automobiles and Parts;;BMWG.DE;BMW.DE;DE
+BNP;;;BNPP.PA;BNP.PA;FR
+BNY Mellon;Financials;Asset Management & Custody Banks;BK.N;BK;US
+Boeing;Industrials;Aerospace & Defense;BA.N;BA;US
+BOIRON;;;BOIR.PA;BOI.PA;FR
+BOLIDEN;Basic Resources;;BOL.ST;BOL.ST;SE
+BOLLORE;;;BOLL.PA;BOL.PA;FR
+BONDUELLE;;;BOND.PA;BON.PA;FR
+Booking Holdings;Consumer Discretionary;Internet & Direct Marketing Retail;BKNG.N;BKNG;US
+BorgWarner;Consumer Discretionary;Auto Parts & Equipment;BWA.N;BWA;US
+Boston Properties;Real Estate;Office REITs;BXP.N;BXP;US
+Boston Scientific;Health Care;Health Care Equipment;BSX.N;BSX;US
+BOURSE DIRECT;;;BDRP.PA;BSD.PA;FR
+Bouygues;;;BOUY.PA;EN.PA;FR
+BP;Energy;;BP.L;BP.L;GB
+Brambles;Industrials;;BXB.AX;BXB.AX;AUS
+BRENNTAG;Chemicals;;BNRGN.DE;BNR.DE;DE
+BRIDGEPOINT GROUP;Financial Services;;BPTB.L;BPT.L;GB
+Bristol Myers Squibb;Health Care;Health Care Distributors;BMY.N;BMY;US
+BRITISH AMERICAN TOBACCO;Food, Beverage and Tobacco;;BATS.L;BATS.L;GB
+BRITVIC;Food, Beverage and Tobacco;;BVIC.L;BVIC.L;GB
+Broadcom;Information Technology;Semiconductors;AVGO.N;AVGO;US
+Broadridge Financial Solutions;Information Technology;Data Processing & Outsourced Services;BR.N;BR;US
+Brown & Brown;Financials;Insurance Brokers;BRO.N;BRO;US
+Brown?Forman;Consumer Staples;Distillers & Vintners;BFA.N;BF-B;US
+BT GRP;Telecommunications;;BT.L;BT-A.L;GB
+BUCHER INDUSTRIES;Industrial Goods and Services;;BUCN.S;BUCN.SW;CHF
+BUNZL;Industrial Goods and Services;;BNZL.L;BNZL.L;GB
+BURBERRY;Consumer Products and Services;;BRBY.L;BRBY.L;GB
+BUREAU VERITAS;;;BVI.PA;BVI.PA;FR
+BYD LTD H;Consumer Discretionary;;1211.HK;1211.HK;CH
+C. H. Robinson;Industrials;Air Freight & Logistics;CHRW.N;CHRW;US
+Cadence Design Systems;Information Technology;Application Software;CDNS.N;CDNS;US
+Caesars Entertainment;Consumer Discretionary;Casinos & Gaming;CZR.N;CZR;US
+CAFOM;;;CAFO.PA;CAFO.PA;FR
+CAIXABANK;Banks;;CABK.MC;CABK.MC;ES
+Campbell Soup;Consumer Staples;Packaged Foods & Meats;CPB.N;CPB;US
+CAPELLI;;;CAPLI.PA;CAPLI.PA;FR
+Capgemini;;;CAPP.PA;CAP.PA;FR
+Capital One;Financials;Consumer Finance;COF.N;COF;US
+Cardinal Health;Health Care;Health Care Distributors;CAH.N;CAH;US
+CARL ZEISS MEDITEC;Health Care;;AFXG.DE;AFX.DE;DE
+CARLSBERG B;Food, Beverage and Tobacco;;CARLB.CO;CARL-B.CO;DK
+CarMax;Consumer Discretionary;Specialty Stores;KMX.N;KMX;US
+CARNIVAL;Travel and Leisure;;CCL.L;CCL.L;GB
+Carnival Corporation;Consumer Discretionary;Hotels, Resorts & Cruise Lines;CCL.N;CCL;US
+Carrefour;;;CARR.PA;CA.PA;FR
+Carrier Global;Industrials;Building Products;CARR.N;CARR;US
+CASINO GUICHARD;;;CASP.PA;CO.PA;FR
+CAST;;;YAS.PA;CAS.PA;FR
+CASTELLUM;Real Estate;;CAST.ST;CAST.ST;SE
+Catalent;Health Care;Pharmaceuticals;CTLT.N;CTLT;US
+CATANA GROUP;;;CATGR.PA;CATG.PA;FR
+CATERING INTL SCES;;;CTRG.PA;CTRG.PA;FR
+Caterpillar;Industrials;Construction Machinery & Heavy Trucks;CAT.N;CAT;US
+CBO TERRITORIA;;;CBOT.PA;CBOT.PA;FR
+Cboe Global Markets;Financials;Financial Exchanges & Data;CBOE.N;CBOE;US
+CBRE;Real Estate;Real Estate Services;CBRE.N;CBRE;US
+CD PROJECT SA;Consumer Products and Services;;CDR.WA;CDR.WA;PL
+CDW;Information Technology;Technology Distributors;CDW.N;CDW;US
+CEGEDIM;;;CGDM.PA;CGM.PA;FR
+Celanese;Materials;Specialty Chemicals;CE.N;CE;US
+CELLNEX TELECOM;Telecommunications;;CLNX.MC;CLNX.MC;ES
+CELLTRION INC;Health Care;;068270.KS;068270.KS;KS
+Centene;Health Care;Managed Health Care;CNC.N;CNC;US
+CenterPoint Energy;Utilities;Multi-Utilities;CNP.N;CNP;US
+CENTRICA;Utilities;;CNA.L;CNA.L;GB
+Ceridian;Information Technology;Application Software;CDAY.N;CDAY;US
+Cerner;Health Care;Health Care Technology;CERN.N;CERN;US
+CF Industries;Materials;Fertilizers & Agricultural Chemicals;CF.N;CF;US
+CGG;;;GEPH.PA;CGG.PA;FR
+CHARGEURS;;;CRIP.PA;CRI.PA;FR
+Charles River Laboratories;Health Care;Life Sciences Tools & Services;CRL.N;CRL;US
+Charles Schwab;Financials;Investment Banking & Brokerage;SCHW.N;SCHW;US
+Charter Communications;Communication Services;Cable & Satellite;CHTR.N;CHTR;US
+Chevron;Energy;Integrated Oil & Gas;CVX.N;CVX;US
+CHINA CONSTRUCTION BANK CORP H;Financials;;0939.HK;0939.HK;CH
+CHINA MERCHANTS BANK LTD H;Financials;;600036.SS;600036.SS;CH
+Chipotle Mexican Grill;Consumer Discretionary;Restaurants;CMG.N;CMG;US
+CHR HANSEN HLDG;Health Care;;CHRH.CO;CHR.CO;DK
+Chubb;Financials;Property & Casualty Insurance;CB.N;CB;US
+CHUNGHWA TELECOM LTD;Communication;;2412.TW;2412.TW;TW
+Church & Dwight;Consumer Staples;Household Products;CHD.N;CHD;US
+CIBOX INTER A CTIV;;;CIBP.PA;CIB.PA;FR
+CIE FINANCIERE RICHEMONT;Consumer Products and Services;;CFR.S;CFRHF;CHF
+Cigna;Health Care;Managed Health Care;CI.N;CI;US
+Cincinnati Financial;Financials;Property & Casualty Insurance;CINF.N;CINF;US
+Cintas Corporation;Industrials;Diversified Support Services;CTAS.N;CTAS;US
+Cisco Systems;Information Technology;Communications Equipment;CSCO.N;CSCO;US
+Citigroup;Financials;Diversified Banks;C.N;C;US
+Citizens Financial Group;Financials;Regional Banks;CFG.N;CFG;US
+Citrix Systems;Information Technology;Application Software;CTXS.N;CTXS;US
+CK HUTCHISON HOLDINGS LTD;Industrials;;0001.HK;0001.HK;CH
+CLARANOVA;;;AVQ.PA;CLA.PA;FR
+CLARIANT;Chemicals;;CLN.S;CLN.SW;CHF
+Clorox;Consumer Staples;Household Products;CLX.N;CLX;US
+CLOSE BROTHERS GRP;Banks;;CBRO.L;CBG.L;GB
+CLP HOLDINGS LTD;Utilities;;0002.HK;0002.HK;CH
+CME Group;Financials;Financial Exchanges & Data;CME.N;CME;US
+CMS Energy;Utilities;Multi-Utilities;CMS.N;CMS;US
+CNH Industrial NV;Industrial Goods and Services;;CNHI.MI;CNHI.MI;IT
+CNIM CONSTR.FRF 10;;;CNIM.PA;COM.PA;FR
+CNP ASSURANCES;;;CNPP.PA;CNP.PA;FR
+Coca-Cola;Consumer Staples;Soft Drinks;KO.N;KO;US
+Cochlear;Health Care;;COH.AX;COH.AX;AUS
+COFACE;;;COFA.PA;COFA.PA;FR
+COFINIMMO;Real Estate;;COFB.BR;COFB.BR;BE
+Cognizant Technology Solutions;Information Technology;IT Consulting & Other Services;CTSH.N;CTSH;US
+Coles Group;Consumer Staples;;COL.AX;COL.AX;AUS
+Colgate-Palmolive;Consumer Staples;Household Products;CL.N;CL;US
+COLOPLAST B;Health Care;;COLOB.CO;COLO-B.CO;DK
+Comcast;Communication Services;Cable & Satellite;CMCSA.N;CMCSA;US
+Comerica;Financials;Diversified Banks;CMA.N;CMA;US
+COMMERZBANK;Banks;;CBKG.DE;CBK.DE;DE
+Commonwealth Bank;Financials;;CBA.AX;CBA.AX;AUS
+Compagnie de Saint-Gobain S.A.;;;SGOB.PA;SGO.PA;FR
+COMPASS GRP;Consumer Products and Services;;CPG.L;CPG.L;GB
+Conagra Brands;Consumer Staples;Packaged Foods & Meats;CAG.N;CAG;US
+ConocoPhillips;Energy;Oil & Gas Exploration & Production;COP.N;COP;US
+Consolidated Edison;Utilities;Electric Utilities;ED.N;ED;US
+Constellation Brands;Consumer Staples;Distillers & Vintners;STZ.N;STZ;US
+CONTINENTAL;Automobiles and Parts;;CONG.DE;CON.DE;DE
+CONVATEC PLC;Health Care;;CTEC.L;CTEC.L;GB
+Copart;Industrials;Diversified Support Services;CPRT.N;CPRT;US
+CORBION;Food, Beverage and Tobacco;;CORB.AS;CRBN.AS;NL
+Corning;Information Technology;Electronic Components;GLW.N;GLW;US
+Corteva;Materials;Fertilizers & Agricultural Chemicals;CTVA.N;CTVA;US
+Costco;Consumer Staples;Hypermarkets & Super Centers;COST.N;COST;US
+Coterra;Energy;Oil & Gas Exploration & Production;CTRA.N;CTRA;US
+COUNTRYSIDE PROPERTIES PLC;Consumer Products and Services;;CSPC.L;CSP.L;GB
+COVESTRO;Chemicals;;1COV.DE;1COV.DE;DE
+Credit Agricole S.A.;;;CAGR.PA;ACA.PA;FR
+CREDIT SUISSE GRP;Financial Services;;CSGN.S;CSGN.SW;CHF
+CRH;Construction and Materials;;CRH.I;CRG.IR;IE
+CRODA INTERNATIONAL;Chemicals;;CRDA.L;CRDA.L;GB
+Crown Castle;Real Estate;Specialized REITs;CCI.N;CCI;US
+CSL;Health Care;;CSL.AX;CSL.AX;AUS
+CSX;Industrials;Railroads;CSX.N;CSX;US
+CTBC FINANCIAL HOLDING LTD;Financials;;2891.TW;2891.TW;TW
+CTS EVENTIM;Media;;EVDG.DE;EVD.DE;DE
+Cummins;Industrials;Industrial Machinery;CMI.N;CMI;US
+CVS Health;Health Care;Health Care Services;CVS.N;CVS;US
+D. R. Horton;Consumer Discretionary;Homebuilding;DHI.N;DHI;US
+DAIMLER;Automobiles and Parts;;DAIGN.DE;DAI.DE;DE
+Danaher;Health Care;Health Care Equipment;DHR.N;DHR;US
+Danone;;;DANO.PA;BN.PA;FR
+DANSKE BANK;Banks;;DANSKE.CO;DANSKE.CO;DK
+Darden Restaurants;Consumer Discretionary;Restaurants;DRI.N;DRI;US
+DARKTRACE;Technology;;DARK.L;DARK.L;GB
+Dassault Systemes SA;;;DAST.PA;DSY.PA;FR
+DaVita;Health Care;Health Care Facilities;DVA.N;DVA;US
+DBV TECHNOLOGIES;;;DBV.PA;DBV.PA;FR
+DCC;Industrial Goods and Services;;DCC.L;DCC.L;GB
+DECHRA PHARMACEUTICALS;Health Care;;DPH.L;DPH.L;GB
+Deere & Co.;Industrials;Agricultural & Farm Machinery;DE.N;DE;US
+DELIVEROO A;Technology;;ROO.L;ROO.L;GB
+DELIVERY HERO;Consumer Products and Services;;DHER.DE;DHER.DE;DE
+Delta Air Lines;Industrials;Airlines;DAL.N;DAL;US
+DELTA ELECTRONICS INC;Information Technology;;2308.TW;2308.TW;TW
+DEMANT;Health Care;;DEMANT.CO;DEMANT.CO;DK
+Dentsply Sirona;Health Care;Health Care Supplies;XRAY.N;XRAY;US
+DERICHEBOURG;;;DBG.PA;DBG.PA;FR
+DERWENT LONDON;Real Estate;;DLN.L;DLN.L;GB
+DEUTSCHE BANK;Banks;;DBKGN.DE;DBK.DE;DE
+DEUTSCHE BOERSE;Financial Services;;DB1GN.DE;DB1.DE;DE
+DEUTSCHE POST;Industrial Goods and Services;;DPWGN.DE;DPW.DE;DE
+DEUTSCHE TELEKOM;Telecommunications;;DTEGN.DE;DTE.DE;DE
+Devon Energy;Energy;Oil & Gas Exploration & Production;DVN.N;DVN;US
+DexCom;Health Care;Health Care Equipment;DXCM.N;DXCM;US
+Dexus;Real Estate;;DXS.AX;DXS.AX;AUS
+DIAGEO;Food, Beverage and Tobacco;;DGE.L;DGE.L;GB
+DIAGNOSTIC MEDICAL;;;DMSP.PA;DGM.PA;FR
+Diamondback Energy;Energy;Oil & Gas Exploration & Production;FANG.N;FANG;US
+DIASORIN;Health Care;;DIAS.MI;DIA.MI;IT
+Digital Realty Trust;Real Estate;Specialized REITs;DLR.N;DLR;US
+DINO POLSKA SA;Personal Care, Drug and Grocery Stores;;DNP.WA;DNP.WA;PL
+DIPLOMA;Industrial Goods and Services;;DPLM.L;DPLM.L;GB
+DIRECT LINE INSURANCE GROUP;Insurance;;DLGD.L;DLG.L;GB
+Discover Financial Services;Financials;Consumer Finance;DFS.N;DFS;US
+Discoveryÿ(Series A);Communication Services;Broadcasting;DISCA.N;DISCA;US
+Discoveryÿ(Series C);Communication Services;Broadcasting;DISCK.N;DISCK;US
+Dish Network;Communication Services;Cable & Satellite;DISH.N;DISH;US
+DNB BANK;Banks;;DNB.OL;DNB.OL;NO
+Dollar General;Consumer Discretionary;General Merchandise Stores;DG.N;DG;US
+Dollar Tree;Consumer Discretionary;General Merchandise Stores;DLTR.N;DLTR;US
+DOMETIC GROUP AB;Consumer Products and Services;;DOMETIC.ST;DOM.ST;SE
+Dominion Energy;Utilities;Electric Utilities;D.N;D;US
+Domino's Pizza;Consumer Discretionary;Restaurants;DPZ.N;DPZ;US
+Dover Corporation;Industrials;Industrial Machinery;DOV.N;DOV;US
+Dow;Materials;Commodity Chemicals;DOW.N;DOW;US
+DR MARTENS;Consumer Products and Services;;DOCS.L;DOCS.L;GB
+DS SMITH;Industrial Goods and Services;;SMDS.L;SMDS.L;GB
+DSV;Industrial Goods and Services;;DSV.CO;DSV.CO;DK
+DTE Energy;Utilities;Multi-Utilities;DTE.N;DTE;US
+DUFRY GRP;Retail;;DUFN.S;DUFN.SW;CHF
+Duke Energy;Utilities;Electric Utilities;DUK.N;DUK;US
+Duke Realty Corp;Real Estate;Industrial REITs;DRE.N;DRE;US
+DuPont;Materials;Specialty Chemicals;DD.N;DD;US
+DXC Technology;Information Technology;IT Consulting & Other Services;DXC.N;DXC;US
+E.ON;Utilities;;EONGN.DE;EOAN.DE;DE
+Eastman Chemical;Materials;Diversified Chemicals;EMN.N;EMN;US
+Eaton Corporation;Industrials;Electrical Components & Equipment;ETN.N;ETN;US
+eBay;Consumer Discretionary;Internet & Direct Marketing Retail;EBAY.N;EBAY;US
+Ecolab;Materials;Specialty Chemicals;ECL.N;ECL;US
+EDENRED;;;EDEN.PA;EDEN.PA;FR
+EDF;;;EDF.PA;EDF.PA;FR
+Edison International;Utilities;Electric Utilities;EIX.N;EIX;US
+EDP ENERGIAS DE PORTUGAL;Utilities;;EDP.LS;EDP.LS;PT
+EDP RENOVAVEIS;Utilities;;EDPR.LS;EDPR.LS;PT
+Edwards Lifesciences;Health Care;Health Care Equipment;EW.N;EW;US
+EGIDE;;;EGID.PA;GID.PA;FR
+EIFFAGE;;;FOUG.PA;FGR.PA;FR
+EKINOPS;;;EKI.PA;EKI.PA;FR
+ELECTROCOMPONENTS;Industrial Goods and Services;;ECM.L;ECM.L;GB
+ELECTROLUX B;Consumer Products and Services;;ELUXB.ST;ELUX-B.ST;SE
+Electronic Arts;Communication Services;Interactive Home Entertainment;EA.N;EA;US
+ELEKTA B;Health Care;;EKTAB.ST;EKTA-B.ST;SE
+Eli Lilly;Health Care;Pharmaceuticals;LLY.N;LLY;US
+ELIA GROUP;Utilities;;ELI.BR;ELI.BR;BE
+ELIOR GROUP;;;ELIOR.PA;ELIOR.PA;FR
+ELIS;;;ELIS.PA;ELIS.PA;FR
+ELISA CORPORATION;Telecommunications;;ELISA.HE;ELISA.HE;FI
+Emerson Electric;Industrials;Electrical Components & Equipment;EMR.N;EMR;US
+ENAGAS;Energy;;ENAG.MC;ENG.MC;ES
+ENEL;Utilities;;ENEI.MI;ENEL.MI;IT
+Engie;;;ENGIE.PA;ENGI.PA;FR
+ENI;Energy;;ENI.MI;ENI.MI;IT
+Enphase Energy;Information Technology;Electronic Components;ENPH.N;ENPH;US
+ENTAIN;Travel and Leisure;;ENT.L;ENT.L;GB
+Entergy;Utilities;Electric Utilities;ETR.N;ETR;US
+ENTRA;Real Estate;;ENTRA.OL;ENTRA.OL;NO
+EOG Resources;Energy;Oil & Gas Exploration & Production;EOG.N;EOG;US
+EPIROC A;Industrial Goods and Services;;EPIRA.ST;EPI-A.ST;SE
+EQT;Financial Services;;EQTAB.ST;EQT.ST;SE
+Equifax;Industrials;Research & Consulting Services;EFX.N;EFX;US
+Equinix;Real Estate;Specialized REITs;EQIX.N;EQIX;US
+EQUINOR;Energy;;EQNR.OL;EQNR.OL;NO
+Equity Residential;Real Estate;Residential REITs;EQR.N;EQR;US
+ERAMET;;;ERMT.PA;ERA.PA;FR
+ERICSSON LM B;Telecommunications;;ERICB.ST;ERIC-B.ST;SE
+ERSTE GROUP BANK;Banks;;ERST.VI;EBS.VI;AT
+ERYTECH PHARMA;;;ERYP.PA;ERYP.PA;FR
+ESI GROUP;;;ESIG.PA;ESI.PA;FR
+Essex Property Trust;Real Estate;Residential REITs;ESS.N;ESS;US
+EssilorLuxottica;;;ESLX.PA;EL.PA;FR
+Essity B;Personal Care, Drug and Grocery Stores;;ESSITYA.ST;ESSITY-A.ST;SE
+ESSO;;;ESSF.PA;ES.PA;FR
+Est‚e Lauder Companies;Consumer Staples;Personal Products;EL.N;EL;US
+ETS COLRUYT;Personal Care, Drug and Grocery Stores;;COLR.BR;COLR.BR;BE
+Etsy;Consumer Discretionary;Internet & Direct Marketing Retail;ETSY.N;ETSY;US
+EURAZEO;;;EURA.PA;RF.PA;FR
+EUROFINS SCIENTIFIC;;;EUFI.PA;ERF.PA;FR
+EUROPCAR;;;EUCAR.PA;EUCAR.PA;FR
+EUTELSAT COMMUNIC.;;;ETL.PA;ETL.PA;FR
+Everest Re;Financials;Reinsurance;RE.N;RE;US
+Evergy;Utilities;Electric Utilities;EVRG.N;EVRG;US
+Eversource Energy;Utilities;Multi-Utilities;ES.N;ES;US
+EVOLUTION;Travel and Leisure;;EVOG.ST;EVO.ST;SE
+EVONIK INDUSTRIES;Chemicals;;EVKN.DE;EVK.DE;DE
+EVOTEC;Health Care;;EVTG.DE;EVT.DE;DE
+EVRAZ;Basic Resources;;EVRE.L;EVR.L;GB
+EXEL INDUSTRIES;;;EXEP.PA;EXE.PA;FR
+Exelon;Utilities;Multi-Utilities;EXC.N;EXC;US
+EXOR NV;Financial Services;;EXOR.MI;EXO.MI;IT
+Expedia Group;Consumer Discretionary;Internet & Direct Marketing Retail;EXPE.N;EXPE;US
+Expeditors;Industrials;Air Freight & Logistics;EXPD.N;EXPD;US
+EXPERIAN;Industrial Goods and Services;;EXPN.L;EXPN.L;GB
+Extra Space Storage;Real Estate;Specialized REITs;EXR.N;EXR;US
+ExxonMobil;Energy;Integrated Oil & Gas;XOM.N;XOM;US
+F5 Networks;Information Technology;Communications Equipment;FFIV.N;FFIV;US
+FABEGE;Real Estate;;FABG.ST;FABG.ST;SE
+Fastenal;Industrials;Building Products;FAST.N;FAST;US
+FASTIGHETS BALDER B;Real Estate;;BALDB.ST;BALD-B.ST;SE
+FAURECIA;;;EPED.PA;EO.PA;FR
+FDJ;;;FDJ.PA;FDJ.PA;FR
+Federal Realty Investment Trust;Real Estate;Retail REITs;FRT.N;FRT;US
+FedEx;Industrials;Air Freight & Logistics;FDX.N;FDX;US
+FERGUSON PLC;Industrial Goods and Services;;FERG.L;FERG.L;GB
+FERMENTALG;;;FALG.PA;FALG.PA;FR
+FERRARI;Automobiles and Parts;;RACE.MI;RACE.MI;IT
+FERROVIAL;Construction and Materials;;FER.MC;FER.MC;ES
+Fidelity National Information Services;Information Technology;Data Processing & Outsourced Services;FIS.N;FIS;US
+Fifth Third Bancorp;Financials;Regional Banks;FITB.N;FITB;US
+FIGEAC AERO;;;FGA.PA;FGA.PA;FR
+FINECOBANK;Banks;;FBK.MI;FBK.MI;IT
+First Republic Bank;Financials;Regional Banks;FRC.N;FRC;US
+FirstEnergy;Utilities;Electric Utilities;FE.N;FE;US
+Fiserv;Information Technology;Data Processing & Outsourced Services;FISV.N;FISV;US
+Fisher & Paykel Healthcare;Health Care;;FPH.AX;FPH.AX;AUS
+Fleetcor;Information Technology;Data Processing & Outsourced Services;FLT.N;FLT;US
+FLUGHAFEN ZURICH;Industrial Goods and Services;;FHZN.S;FHZN.SW;CHF
+FLUIDRA;Construction and Materials;;FLUI.MC;FDR.MC;ES
+FMC Corporation;Materials;Fertilizers & Agricultural Chemicals;FMC.N;FMC;US
+FONC. PARIS NORD;;;FPN.PA;FPN.PA;FR
+Ford;Consumer Discretionary;Automobile Manufacturers;F.N;F;US
+FORMOSA PLASTICS CORP;Materials;;1301.TW;1301.TW;TW
+Fortescue Metals Group;Materials;;FMG.AX;FMG.AX;AUS
+Fortinet;Information Technology;Systems Software;FTNT.N;FTNT;US
+Fortive;Industrials;Industrial Machinery;FTV.N;FTV;US
+FORTUM;Utilities;;FORTUM.HE;FORTUM.HE;FI
+Fortune Brands Home & Security;Industrials;Building Products;FBHS.N;FBHS;US
+Fox Corporationÿ(Class A);Communication Services;Movies & Entertainment;FOXA.N;FOXA;US
+Fox Corporationÿ(Class B);Communication Services;Movies & Entertainment;FOX.N;FOX;US
+Franklin Resources;Financials;Asset Management & Custody Banks;BEN.N;BEN;US
+FREENET;Telecommunications;;FNTGN.DE;FNTN.DE;DE
+Freeport-McMoRan;Materials;Copper;FCX.N;FCX;US
+FRESENIUS;Health Care;;FREG.DE;FRE.DE;DE
+FRESENIUS MEDICAL CARE;Health Care;;FREG.DE;FRE.DE;DE
+FUTURE;Media;;FUTR.L;FUTR.L;GB
+GALAPAGOS;Health Care;;GLPG.AS;GLPG.AS;NL
+GALENICA SANTE AG;Personal Care, Drug and Grocery Stores;;GALE.S;GALE.SW;CHF
+GALP ENERGIA;Energy;;GALP.LS;GALP.LS;PT
+GAMES WORKSHOP;Consumer Products and Services;;GAW.L;GAW.L;GB
+Gap;Consumer Discretionary;Apparel Retail;GPS.N;GPS;US
+Garmin;Consumer Discretionary;Consumer Electronics;GRMN.N;GRMN;US
+Gartner;Information Technology;IT Consulting & Other Services;IT.N;IT;US
+GEA GRP;Industrial Goods and Services;;G1AG.DE;G1A.DE;DE
+GEBERIT;Construction and Materials;;GEBN.S;GEBN.SW;CHF
+GECINA;;;GFCP.PA;GFC.PA;FR
+GEELY AUTOMOBILE HOLDINGS LTD;Consumer Discretionary;;0175.HK;0175.HK;CH
+Generac Holdings;Industrials;Electrical Components & Equipment;GNRC.N;GNRC;US
+General Dynamics;Industrials;Aerospace & Defense;GD.N;GD;US
+General Electric;Industrials;Industrial Conglomerates;GE.N;GE;US
+General Mills;Consumer Staples;Packaged Foods & Meats;GIS.N;GIS;US
+General Motors;Consumer Discretionary;Automobile Manufacturers;GM.N;GM;US
+GENERIX;;;GENX.PA;GENX.PA;FR
+GENFIT;;;GNFT.PA;GNFT.PA;FR
+GENMAB;Health Care;;GMAB.CO;GMAB.CO;DK
+GENOMIC VISION;;;GVI.PA;GV.PA;FR
+GENSIGHT BIOLOGICS;;;SIGHT.PA;SIGHT.PA;FR
+Genuine Parts;Consumer Discretionary;Specialty Stores;GPC.N;GPC;US
+GENUS;Health Care;;GNS.L;GNS.L;GB
+GEORG FISCHER;Industrial Goods and Services;;FIN.S;FI.SW;CHF
+GERRESHEIMER;Health Care;;GXIG.DE;GXI.DE;DE
+GETINGE B;Health Care;;GETIB.ST;GETI-B.ST;SE
+GETLINK;;;GETP.PA;GET.PA;FR
+Gilead Sciences;Health Care;Biotechnology;GILD.N;GILD;US
+GIVAUDAN;Chemicals;;GIVN.S;GIVN.SW;CHF
+GLANBIA;Food, Beverage and Tobacco;;GL9.I;GL9.IR;IE
+GLAXOSMITHKLINE;Health Care;;GSK.L;GSK.L;GB
+GLENCORE PLC;Basic Resources;;GLEN.L;GLEN.L;GB
+Global Payments;Information Technology;Data Processing & Outsourced Services;GPN.N;GPN;US
+Globe Life;Financials;Life & Health Insurance;GL.N;GL;US
+GN STORE NORD;Health Care;;GN.CO;GN.CO;DK
+Goldman Sachs;Financials;Investment Banking & Brokerage;GS.N;GS;US
+Goodman Group;Real Estate;;GMG.AX;GMG.AX;AUS
+GRAFTON GRP;Industrial Goods and Services;;GFTU_U.L;GFTU.L;GB
+GRAND CITY PROPERTIES;Real Estate;;GYC.DE;GYC.DE;DE
+GREGGS;Personal Care, Drug and Grocery Stores;;GRG.L;GRG.L;GB
+GRIFOLS;Health Care;;GRLS.MC;GRF.MC;ES
+GROUPE CRIT;;;CITT.PA;CEN.PA;FR
+GROUPE FNAC;;;FNAC.PA;FNAC.PA;FR
+GROUPE GORGE;;;GOEG.PA;GOE.PA;FR
+GROUPE SFPI;;;SFPI.PA;SFPI.PA;FR
+GRP BRUXELLES LAMBERT;Financial Services;;GBLB.BR;GBLB.BR;BE
+GTT;;;GTT.PA;GTT.PA;FR
+GUERBET;;;GRBT.PA;GBT.PA;FR
+GUILLEMOT;;;GTCN.PA;GUI.PA;FR
+Halliburton;Energy;Oil & Gas Equipment & Services;HAL.N;HAL;US
+HALMA;Industrial Goods and Services;;HLMA.L;HLMA.L;GB
+Hanesbrands;Consumer Discretionary;Apparel, Accessories & Luxury Goods;HBI.N;HBI;US
+HANG SENG BANK LTD;Financials;;0011.HK;0011.HK;CH
+HANNOVER RUECK;Insurance;;HNRGN.DE;HNR1.DE;DE
+HARGREAVES LANSDOWN;Financial Services;;HRGV.L;HL.L;GB
+Hasbro;Consumer Discretionary;Leisure Products;HAS.N;HAS;US
+HAULOTTE GROUP;;;PYHE.PA;PIG.PA;FR
+HAYS;Industrial Goods and Services;;HAYS.L;HAS.L;GB
+HCA Healthcare;Health Care;Health Care Facilities;HCA.N;HCA;US
+Healthpeak Properties;Real Estate;Health Care REITs;PEAK.N;PEAK;US
+HEIDELBERGCEMENT;Construction and Materials;;HEIG.DE;HEI.DE;DE
+HEINEKEN;Food, Beverage and Tobacco;;HEIN.AS;HEIA.AS;NL
+HEINEKEN HLDG;Food, Beverage and Tobacco;;HEIN.AS;HEIA.AS;NL
+HELLOFRESH AG;Personal Care, Drug and Grocery Stores;;DHER.DE;DHER.DE;DE
+HELVETIA HLDG;Insurance;;HELN.S;HELN.SW;CHF
+HENKEL PREF;Consumer Products and Services;;HNKG.DE;HEN3.DE;DE
+HENNES & MAURITZ B;Retail;;HMB.ST;HM-B.ST;SE
+Henry Schein;Health Care;Health Care Distributors;HSIC.N;HSIC;US
+HERA;Utilities;;HRA.MI;HER.MI;IT
+Hermes International;;;HRMS.PA;RMS.PA;FR
+Hess Corporation;Energy;Integrated Oil & Gas;HES.N;HES;US
+Hewlett Packard Enterprise;Information Technology;Technology Hardware, Storage & Peripherals;HPE.N;HPE;US
+HEXAGON B;Technology;;HEXAB.ST;HEXA-B.ST;SE
+HEXPOL 'B';Basic Resources;;HPOLB.ST;HPOL-B.ST;SE
+HIGH CO;;;HIGH.PA;HCO.PA;FR
+HIKMA PHARMACEUTICALS;Health Care;;HIK.L;HIK.L;GB
+Hilton Worldwide;Consumer Discretionary;Hotels, Resorts & Cruise Lines;HLT.N;HLT;US
+HISCOX;Insurance;;HSX.L;HSX.L;GB
+Holcim;Construction and Materials;;HOLN.S;HOLN.SW;CHF
+HOLMEN B;Basic Resources;;HOLMB.ST;HOLM-B.ST;SE
+Hologic;Health Care;Health Care Equipment;HOLX.N;HOLX;US
+Home Depot;Consumer Discretionary;Home Improvement Retail;HD.N;HD;US
+HOMESERVE;Insurance;;HSV.L;HSV.L;GB
+HON HAI PRECISION INDUSTRY LTD;Information Technology;;2317.TW;2317.TW;TW
+Honeywell;Industrials;Industrial Conglomerates;HON.N;HON;US
+HONG KONG AND CHINA GAS LTD;Utilities;;0003.HK;0003.HK;CH
+HONG KONG EXCHANGES AND CLEARING L;Financials;;0388.HK;0388.HK;CH
+HOPSCOTCH GROUPE;;;HOP.PA;HOP.PA;FR
+Hormel;Consumer Staples;Packaged Foods & Meats;HRL.N;HRL;US
+Host Hotels & Resorts;Real Estate;Hotel & Resort REITs;HST.N;HST;US
+HOWDEN JOINERY GRP;Retail;;HWDN.L;HWDN.L;GB
+Howmet Aerospace;Industrials;Aerospace & Defense;HWM.N;HWM;US
+HP;Information Technology;Technology Hardware, Storage & Peripherals;HPQ.N;HPQ;US
+HSBC;Banks;;HSBA.L;HSBA.L;GB
+HUHTAMAKI;Industrial Goods and Services;;HUH1V.HE;HUH1V.HE;FI
+Humana;Health Care;Managed Health Care;HUM.N;HUM;US
+Huntington Bancshares;Financials;Regional Banks;HBAN.N;HBAN;US
+Huntington Ingalls Industries;Industrials;Aerospace & Defense;HII.N;HII;US
+HUSQVARNA B;Consumer Products and Services;;HUSQB.ST;HUSQ-B.ST;SE
+HYUNDAI MOBIS LTD;Consumer Discretionary;;012330.KS;012330.KS;KS
+HYUNDAI MOTOR;Consumer Discretionary;;005380.KS;005380.KS;KS
+HYUNDAI MOTOR S2 PREF;Consumer Discretionary;;005380.KS;005380.KS;KS
+IAG;Travel and Leisure;;ICAG.L;IAG.L;GB
+IBERDROLA;Utilities;;IBE.MC;IBE.MC;ES
+IBM;Information Technology;IT Consulting & Other Services;IBM.N;IBM;US
+ICA GRUPPEN;Personal Care, Drug and Grocery Stores;;ICAA.ST;ICA.ST;SE
+IDEX Corporation;Industrials;Industrial Machinery;IEX.N;IEX;US
+Idexx Laboratories;Health Care;Health Care Equipment;IDXX.N;IDXX;US
+IHS Markit;Industrials;Research & Consulting Services;INFO.N;INFO;US
+Illinois Tool Works;Industrials;Industrial Machinery;ITW.N;ITW;US
+Illumina;Health Care;Life Sciences Tools & Services;ILMN.N;ILMN;US
+IMCD;Chemicals;;IMCD.AS;IMCD.AS;NL
+IMERYS;;;IMTP.PA;NK.PA;FR
+IMI;Industrial Goods and Services;;IMI.L;IMI.L;GB
+IMPERIAL BRANDS;Food, Beverage and Tobacco;;IMB.L;IMB.L;GB
+INCHCAPE;Industrial Goods and Services;;INCH.L;INCH.L;GB
+Incyte;Health Care;Biotechnology;INCY.N;INCY;US
+Industria de Diseno Textil SA;Retail;;ITX.MC;ITX.MC;ES
+INDUSTRIAL AND COMMERCIAL BANK OF;Financials;;1398.HK;1398.HK;CH
+INDUTRADE;Industrial Goods and Services;;INDT.ST;INDT.ST;SE
+INFINEON TECHNOLOGIES;Technology;;IFXGN.DE;IFX.DE;DE
+INFORMA;Media;;INF.L;INF.L;GB
+ING GRP;Banks;;INGA.AS;INGA.AS;NL
+Ingersoll Rand;Industrials;Industrial Machinery;IR.N;IR;US
+INMOBILIARIA COLONIAL SOCIMI;Real Estate;;COL.MC;COL.MC;ES
+INNATE PHARMA;;;IPH.PA;IPH.PA;FR
+INPOST;Industrial Goods and Services;;INPST.AS;INPST.AS;NL
+Insurance Australia Group;Financials;;IAG.AX;IAG.AX;AUS
+Intel;Information Technology;Semiconductors;INTC.N;INTC;US
+Intercontinental Exchange;Financials;Financial Exchanges & Data;ICE.N;ICE;US
+INTERCONTINENTAL HOTELS GRP;Travel and Leisure;;IHG.L;IHG.L;GB
+INTERMEDIATE CAPITAL GRP;Financial Services;;ICP.L;ICP.L;GB
+International Flavors & Fragrances;Materials;Specialty Chemicals;IFF.N;IFF;US
+International Paper;Materials;Paper Packaging;IP.N;IP;US
+INTERPARFUMS;;;IPAR.PA;ITP.PA;FR
+Interpublic Group;Communication Services;Advertising;IPG.N;IPG;US
+INTERPUMP GRP;Industrial Goods and Services;;ITPG.MI;IP.MI;IT
+INTERTEK GRP;Industrial Goods and Services;;ITRK.L;ITRK.L;GB
+INTESA SANPAOLO;Banks;;ISP.MI;ISP.MI;IT
+Intuit;Information Technology;Application Software;INTU.N;INTU;US
+Intuitive Surgical;Health Care;Health Care Equipment;ISRG.N;ISRG;US
+INVENTIVA PROM;;;IVAA.PA;IVA.PA;FR
+Invesco;Financials;Asset Management & Custody Banks;IVZ.N;IVZ;US
+INVESTOR B;Financial Services;;INVEB.ST;INVE-B.ST;SE
+INWIT;Telecommunications;;INWT.MI;INW.MI;IT
+IPG Photonics;Information Technology;Electronic Manufacturing Services;IPGP.N;IPGP;US
+IPSEN;;;IPN.PA;IPN.PA;FR
+IPSOS;;;ISOS.PA;IPS.PA;FR
+IQVIA;Health Care;Life Sciences Tools & Services;IQV.N;IQV;US
+Iron Mountain;Real Estate;Specialized REITs;IRM.N;IRM;US
+ISS AS;Industrial Goods and Services;;ISS.CO;ISS.CO;DK
+ITALGAS;Utilities;;IG.MI;IG.MI;IT
+ITESOFT;;;ITFT.PA;ITE.PA;FR
+ITV;Media;;ITV.L;ITV.L;GB
+IWG PLC;Industrial Goods and Services;;IWG.L;IWG.L;GB
+J. B. Hunt;Industrials;Trucking;JBHT.N;JBHT;US
+Jack Henry & Associates;Information Technology;Data Processing & Outsourced Services;JKHY.N;JKHY;US
+Jacobs Engineering Group;Industrials;Construction & Engineering;J.N;J;US
+JACQUET METAL SCE;;;JCQ.PA;JCQ.PA;FR
+James Hardie;Materials;;JHX.AX;JHX.AX;AUS
+JC DECAUX;;;JCDX.PA;DEC.PA;FR
+JD SPORTS FASHION;Retail;;JD.L;JD.L;GB
+JD.COM CLASS A INC;Consumer Discretionary;;9618.HK;9618.HK;CH
+JDE PEET S;Food, Beverage and Tobacco;;JDEP.AS;JDEP.AS;NL
+JERONIMO MARTINS;Personal Care, Drug and Grocery Stores;;JMT.LS;JMT.LS;PT
+JM Smucker;Consumer Staples;Packaged Foods & Meats;SJM.N;SJM;US
+Johnson & Johnson;Health Care;Pharmaceuticals;JNJ.N;JNJ;US
+Johnson Controls;Industrials;Building Products;JCI.N;JCI;US
+JOHNSON MATTHEY;Chemicals;;JMAT.L;JMAT.L;GB
+JPMorgan Chase;Financials;Diversified Banks;JPM.N;JPM;US
+JULIUS BAER GRP;Financial Services;;BAER.S;BAER.SW;CHF
+Juniper Networks;Information Technology;Communications Equipment;JNPR.N;JNPR;US
+JUST EAT TAKEAWAY.COM NV;Technology;;TKWY.AS;TKWY.AS;NL
+KAKAO CORP;Communication;;035720.KS;035720.KS;KS
+Kansas City Southern;Industrials;Railroads;KSU.N;KSU;US
+KAUFMAN ET BROAD;;;KOF.PA;KOF.PA;FR
+KB FINANCIAL GROUP INC;Financials;;105560.KS;105560.KS;KS
+KBC GRP;Banks;;KBC.BR;KBC.BR;BE
+Kellogg's;Consumer Staples;Packaged Foods & Meats;K.N;K;US
+Kering;;;PRTP.PA;KER.PA;FR
+KERRY GRP;Food, Beverage and Tobacco;;KYGA.I;KRZ.IR;IE
+KESKO;Personal Care, Drug and Grocery Stores;;KESKOB.HE;KESKOB.HE;FI
+KeyCorp;Financials;Regional Banks;KEY.N;KEY;US
+Keysight Technologies;Information Technology;Electronic Equipment & Instruments;KEYS.N;KEYS;US
+KGHM;Basic Resources;;KGH.WA;KGH.WA;PL
+KIA CORPORATION CORP;Consumer Discretionary;;000270.KS;000270.KS;KS
+Kimberly-Clark;Consumer Staples;Household Products;KMB.N;KMB;US
+Kimco Realty;Real Estate;Retail REITs;KIM.N;KIM;US
+Kinder Morgan;Energy;Oil & Gas Storage & Transportation;KMI.N;KMI;US
+KINDRED GROUP;Travel and Leisure;;KINDSDB.ST;KIND-SDB.ST;SE
+KINGFISHER;Retail;;KGF.L;KGF.L;GB
+KINGSPAN GRP;Construction and Materials;;KSP.I;KRX.IR;IE
+KINNEVIK B;Financial Services;;KINVB.ST;KINV-B.ST;SE
+KION GROUP;Industrial Goods and Services;;KGX.DE;KGX.DE;DE
+KLA Corporation;Information Technology;Semiconductor Equipment;KLAC.N;KLAC;US
+KOJAMO OYJ;Real Estate;;KOJAMO.HE;KOJAMO.HE;FI
+KONE B;Industrial Goods and Services;;KNEBV.HE;KNEBV.HE;FI
+KONINKLIJKE DSM;Food, Beverage and Tobacco;;DSMN.AS;DSM.AS;NL
+KORIAN;;;KORI.PA;KORI.PA;FR
+KPN;Telecommunications;;KPN.AS;KPN.AS;NL
+Kraft Heinz;Consumer Staples;Packaged Foods & Meats;KHC.N;KHC;US
+Kroger;Consumer Staples;Food Retail;KR.N;KR;US
+KUEHNE + NAGEL;Industrial Goods and Services;;KNIN.S;KNIN.SW;CHF
+L3Harris Technologies;Industrials;Aerospace & Defense;LHX.N;LHX;US
+LabCorp;Health Care;Health Care Services;LH.N;LH;US
+LAGARDERE S.C.A.;;;LAGA.PA;MMB.PA;FR
+Lam Research;Information Technology;Semiconductor Equipment;LRCX.N;LRCX;US
+Lamb Weston;Consumer Staples;Packaged Foods & Meats;LW.N;LW;US
+LAND SECURITIES;Real Estate;;LAND.L;LAND.L;GB
+LANXESS;Chemicals;;LXSG.DE;LXS.DE;DE
+Las Vegas Sands;Consumer Discretionary;Casinos & Gaming;LVS.N;LVS;US
+LATOUR INVESTMENT B;Financial Services;;LATOB.ST;LATO-B.ST;SE
+LECTRA;;;LECS.PA;LSS.PA;FR
+LEG IMMOBILIEN;Real Estate;;LEGN.DE;LEG.DE;DE
+LEGAL & GENERAL GRP;Insurance;;LGEN.L;LGEN.L;GB
+Leggett & Platt;Consumer Discretionary;Home Furnishings;LEG.N;LEG;US
+Legrand SA;;;LEGD.PA;LR.PA;FR
+Leidos;Industrials;Diversified Support Services;LDOS.N;LDOS;US
+Lennar;Consumer Discretionary;Homebuilding;LEN.N;LEN;US
+LEONARDO;Industrial Goods and Services;;LDOF.MI;LDO.MI;IT
+LG CHEM LTD;Materials;;051910.KS;051910.KS;KS
+LG CHEM PREFERRED STOCK LTD;Materials;;051910.KS;051910.KS;KS
+LI NING LTD;Consumer Discretionary;;2331.HK;2331.HK;CH
+Lincoln National;Financials;Multi-line Insurance;LNC.N;LNC;US
+Linde;Materials;Industrial Gases;LIN.N;LIN;US
+LINDE;Chemicals;;LINI.DE;LIN.DE;DE
+LINDT & SPRUENGLI REG;Food, Beverage and Tobacco;;LISN.S;LISN.SW;CHF
+LINEDATA SERVICES;;;LDSV.PA;LIN.PA;FR
+LINK REAL ESTATE INVESTMENT TRUST;Real Estate;;0823.HK;0823.HK;CH
+LISI;;;GFII.PA;FII.PA;FR
+Live Nation Entertainment;Communication Services;Movies & Entertainment;LYV.N;LYV;US
+LKQ Corporation;Consumer Discretionary;Distributors;LKQ.N;LKQ;US
+LLOYDS BANKING GRP;Banks;;LLOY.L;LLOY.L;GB
+Lockheed Martin;Industrials;Aerospace & Defense;LMT.N;LMT;US
+Loews Corporation;Financials;Multi-line Insurance;L.N;L;US
+LOGITECH INTERNATIONAL;Technology;;LOGN.S;LOGN.SW;CHF
+LONDONMETRIC PROPERTY PLC;Real Estate;;LMPL.L;LMP.L;GB
+LONZA;Health Care;;LONN.S;LONN.SW;CHF
+L'Oreal;;;OREP.PA;OR.PA;FR
+Lowe's;Consumer Discretionary;Home Improvement Retail;LOW.N;LOW;US
+LPP;Consumer Products and Services;;LPPP.WA;LPP.WA;PL
+LUFTHANSA;Travel and Leisure;;LHAG.DE;LHA.DE;DE
+Lumen Technologies;Communication Services;Alternative Carriers;LUMN.N;LUMN;US
+LUMIBIRD;;;LBIRD.PA;LBIRD.PA;FR
+LUNDBERGFORETAGEN B;Financial Services;;LUNDB.ST;LUND-B.ST;SE
+LUNDIN ENERGY;Energy;;LUNE.ST;LUNE.ST;SE
+Lvmh Moet Hennessy Vuitton SE;;;LVMH.PA;MC.PA;FR
+LyondellBasell;Materials;Specialty Chemicals;LYB.N;LYB;US
+M&T Bank;Financials;Regional Banks;MTB.N;MTB;US
+Macquarie Group;Financials;;MQG.AX;MQG.AX;AUS
+MAISONS DU MONDE;;;MDM.PA;MDM.PA;FR
+MAN GRP;Financial Services;;EMG.L;EMG.L;GB
+MANITOU BF;;;MANP.PA;MTU.PA;FR
+Marathon Oil;Energy;Oil & Gas Exploration & Production;MRO.N;MRO;US
+Marathon Petroleum;Energy;Oil & Gas Refining & Marketing;MPC.N;MPC;US
+MarketAxess;Financials;Financial Exchanges & Data;MKTX.N;MKTX;US
+MARKS & SPENCER GRP;Retail;;MKS.L;MKS.L;GB
+Marriott International;Consumer Discretionary;Hotels, Resorts & Cruise Lines;MAR.N;MAR;US
+Marsh & McLennan;Financials;Insurance Brokers;MMC.N;MMC;US
+Martin Marietta Materials;Materials;Construction Materials;MLM.N;MLM;US
+Masco;Industrials;Building Products;MAS.N;MAS;US
+Mastercard;Information Technology;Data Processing & Outsourced Services;MA.N;MA;US
+Match Group;Communication Services;Interactive Media & Services;MTCH.N;MTCH;US
+MAUNA KEA TECH;;;MKEA.PA;MKEA.PA;FR
+MAUREL ET PROM;;;MAUP.PA;MAU.PA;FR
+MBWS;;;MBWS.PA;MBWS.PA;FR
+McCormick & Company;Consumer Staples;Packaged Foods & Meats;MKC.N;MKC;US
+McDonald's;Consumer Discretionary;Restaurants;MCD.N;MCD;US
+McKesson Corporation;Health Care;Health Care Distributors;MCK.N;MCK;US
+MCPHY ENERGY;;;MCPHY.PA;MCPHY.PA;FR
+MEDIATEK INC;Information Technology;;2454.TW;2454.TW;TW
+MEDINCELL REG;;;MEDCL.PA;MEDCL.PA;FR
+MEDIOBANCA;Financial Services;;MDBI.MI;MB.MI;IT
+Medtronic;Health Care;Health Care Equipment;MDT.N;MDT;US
+MEGGITT;Industrial Goods and Services;;MGGT.L;MGGT.L;GB
+MEITUAN;Consumer Discretionary;;3690.HK;3690.HK;CH
+MELROSE INDUSTRIES;Industrial Goods and Services;;MRON.L;MRO.L;GB
+MEMSCAP REGPT;;;MEMS.PA;MEMS.PA;FR
+Merck;Health Care;Pharmaceuticals;MRK.N;MRK;US
+MERCK;Health Care;;MRCG.DE;MRK.DE;DE
+MERLIN PROPERTIES SOCIMI;Real Estate;;MRL.MC;MRL.MC;ES
+MERSEN;;;CBLP.PA;MRN.PA;FR
+Meta Platforms;Communication Services;Interactive Media & Services;FB.N;FB;US
+METABOLIC EXPLORER;;;METEX.PA;METEX.PA;FR
+MetLife;Financials;Life & Health Insurance;MET.N;MET;US
+METROPOLE TV;;;MMTP.PA;MMT.PA;FR
+METSO OUTOTEC;Industrial Goods and Services;;MOCORP.HE;MOCORP.HE;FI
+Mettler Toledo;Health Care;Life Sciences Tools & Services;MTD.N;MTD;US
+MGM Resorts International;Consumer Discretionary;Casinos & Gaming;MGM.N;MGM;US
+Michelin (CGDE)-B;;;MICP.PA;ML.PA;FR
+Microchip Technology;Information Technology;Semiconductors;MCHP.N;MCHP;US
+Micron Technology;Information Technology;Semiconductors;MU.N;MU;US
+MICROPOLE;;;MIPO.PA;MUN.PA;FR
+Microsoft;Information Technology;Systems Software;MSFT.N;MSFT;US
+Mid-America Apartments;Real Estate;Residential REITs;MAA.N;MAA;US
+MILLICOM INTL.CELU. SDR;Telecommunications;;TIGOSDB.ST;TIGO-SDB.ST;SE
+Mineral Resources;Materials;;MIN.AX;MIN.AX;AUS
+Mirvac;Real Estate;;MGR.AX;MGR.AX;AUS
+Moderna;Health Care;Biotechnology;MRNA.N;MRNA;US
+Mohawk Industries;Consumer Discretionary;Home Furnishings;MHK.N;MHK;US
+Molson Coors;Consumer Staples;Brewers;TAP.N;TAP;US
+MONCLER;Consumer Products and Services;;MONC.MI;MONC.MI;IT
+Mondelez International;Consumer Staples;Packaged Foods & Meats;MDLZ.N;MDLZ;US
+MONDI;Industrial Goods and Services;;MNDI.L;MNDI.L;GB
+Monolithic Power Systems;Information Technology;Semiconductors;MPWR.N;MPWR;US
+Monster Beverage;Consumer Staples;Soft Drinks;MNST.N;MNST;US
+Moody's;Financials;Financial Exchanges & Data;MCO.N;MCO;US
+Morgan Stanley;Financials;Investment Banking & Brokerage;MS.N;MS;US
+Motorola Solutions;Information Technology;Communications Equipment;MSI.N;MSI;US
+MOWI;Food, Beverage and Tobacco;;MOWI.OL;MOWI.OL;NO
+MSCI;Financials;Financial Exchanges & Data;MSCI.N;MSCI;US
+MTU AERO ENGINES;Industrial Goods and Services;;MTXGN.DE;MTX.DE;DE
+MUENCHENER RUECK;Insurance;;MUVGN.DE;MUV2.DE;DE
+NAN YA PLASTICS CORP;Materials;;1303.TW;1303.TW;TW
+NANOBIOTIX;;;NANOB.PA;NANO.PA;FR
+Nasdaq;Financials;Financial Exchanges & Data;NDAQ.N;NDAQ;US
+National Australia Bank;Financials;;NAB.AX;NAB.AX;AUS
+NATIONAL GRID;Utilities;;NG.L;NG.L;GB
+Naturgy Energy Group;Utilities;;NTGY.MC;NTGY.MC;ES
+NATWEST GROUP;Banks;;NWG.L;NWG.L;GB
+NAVER CORP;Communication;;035420.KS;035420.KS;KS
+NAVYA;;;NAVYA.PA;NAVYA.PA;FR
+NEOEN;;;NEOEN.PA;NEOEN.PA;FR
+NESTE;Energy;;NESTE.HE;NESTE.HE;FI
+NESTLE;Food, Beverage and Tobacco;;NESN.S;NESN.SW;CHF
+NetApp;Information Technology;Technology Hardware, Storage & Peripherals;NTAP.N;NTAP;US
+NETCOMPANY GROUP AS;Technology;;NETCG.CO;NETC.CO;DK
+NETEASE INC;Communication;;9999.HK;9999.HK;CH
+Netflix;Communication Services;Movies & Entertainment;NFLX.N;NFLX;US
+NEURONES;;;NRO.PA;NRO.PA;FR
+NEW WH SMITH;Retail;;SMWH.L;SMWH.L;GB
+Newcrest Mining;Materials;;NCM.AX;NCM.AX;AUS
+Newell Brands;Consumer Discretionary;Housewares & Specialties;NWL.N;NWL;US
+Newmont;Materials;Gold;NEM.N;NEM;US
+News Corpÿ(Class A);Communication Services;Publishing;NWSA.N;NWSA;US
+News Corpÿ(Class B);Communication Services;Publishing;NWS.N;NWS;US
+NEXANS;;;NEXS.PA;NEX.PA;FR
+NEXI SPA;Industrial Goods and Services;;NEXII.MI;NEXI.MI;IT
+NEXITY;;;NEXI.PA;NXI.PA;FR
+NEXT;Retail;;NXT.L;NXT.L;GB
+NextEra Energy;Utilities;Multi-Utilities;NEE.N;NEE;US
+NIBE INDUSTRIER B;Construction and Materials;;NIBEB.ST;NIBE-B.ST;SE
+NICOX;;;NCOX.PA;COX.PA;FR
+Nielsen Holdings;Industrials;Research & Consulting Services;NLSN.N;NLSN;US
+Nike;Consumer Discretionary;Apparel, Accessories & Luxury Goods;NKE.N;NKE;US
+NiSource;Utilities;Multi-Utilities;NI.N;NI;US
+NN GROUP;Insurance;;NN.AS;NN.AS;NL
+NOKIA;Telecommunications;;NOKIA.HE;NOKIA.HE;FI
+NOKIAN RENKAAT;Automobiles and Parts;;TYRES.HE;TYRES.HE;FI
+NORDEA BANK;Banks;;NDAFI.HE;NDA-FI.HE;FI
+NORDIC ENTERTAINMENT GROUP B;Media;;NENTB.ST;NENT-B.ST;SE
+NORDIC SEMICONDUCTOR;Technology;;NOD.OL;NOD.OL;NO
+Norfolk Southern;Industrials;Railroads;NSC.N;NSC;US
+NORSK HYDRO;Basic Resources;;NHY.OL;NHY.OL;NO
+Northern Star Resources;Materials;;NST.AX;NST.AX;AUS
+Northern Trust;Financials;Asset Management & Custody Banks;NTRS.N;NTRS;US
+Northrop Grumman;Industrials;Aerospace & Defense;NOC.N;NOC;US
+NortonLifeLock;Information Technology;Application Software;NLOK.N;NLOK;US
+Norwegian Cruise Line Holdings;Consumer Discretionary;Hotels, Resorts & Cruise Lines;NCLH.N;NCLH;US
+NOVARTIS;Health Care;;NOVN.S;NOVN.SW;CHF
+NOVO NORDISK B;Health Care;;NOVOB.CO;NOVO-B.CO;DK
+NOVOZYMES;Health Care;;NZYMB.CO;NZYM-B.CO;DK
+NRG Energy;Utilities;Independent Power Producers & Energy Traders;NRG.N;NRG;US
+Nucor;Materials;Steel;NUE.N;NUE;US
+Nvidia;Information Technology;Semiconductors;NVDA.N;NVDA;US
+NVR;Consumer Discretionary;Homebuilding;NVR.N;NVR;US
+NXP;Information Technology;Semiconductors;NXPI.N;NXPI;US
+OCADO;Personal Care, Drug and Grocery Stores;;OCDO.L;OCDO.L;GB
+Occidental Petroleum;Energy;Oil & Gas Exploration & Production;OXY.N;OXY;US
+Old Dominion Freight Line;Industrials;Trucking;ODFL.N;ODFL;US
+Omnicom Group;Communication Services;Advertising;OMC.N;OMC;US
+OMV;Energy;;OMVV.VI;OMV.VI;AT
+Oneok;Energy;Oil & Gas Storage & Transportation;OKE.N;OKE;US
+Oracle;Information Technology;Application Software;ORCL.N;ORCL;US
+Orange.;;;ORAN.PA;ORA.PA;FR
+ORAPI;;;ORPF.PA;ORAP.PA;FR
+OREGE;;;OREGE.PA;OREGE.PA;FR
+O'Reilly Automotive;Consumer Discretionary;Specialty Stores;ORLY.N;ORLY;US
+ORION B;Health Care;;ORNBV.HE;ORNBV.HE;FI
+ORKLA;Food, Beverage and Tobacco;;ORK.OL;ORK.OL;NO
+ORPEA;;;ORP.PA;ORP.PA;FR
+ORSTED;Utilities;;ORSTED.CO;ORSTED.CO;DK
+OSE IMMUNO;;;OSE.PA;OSE.PA;FR
+Otis Worldwide;Industrials;Industrial Machinery;OTIS.N;OTIS;US
+Paccar;Industrials;Construction Machinery & Heavy Trucks;PCAR.N;PCAR;US
+Packaging Corporation of America;Materials;Paper Packaging;PKG.N;PKG;US
+PANDORA;Consumer Products and Services;;PNDORA.CO;PNDORA.CO;DK
+Parker-Hannifin;Industrials;Industrial Machinery;PH.N;PH;US
+PARROT;;;PARRO.PA;PARRO.PA;FR
+PARTNERS GRP HLDG;Financial Services;;PGHN.S;PGHN.SW;CHF
+PASSAT;;;PASS.PA;PSAT.PA;FR
+Paychex;Information Technology;Data Processing & Outsourced Services;PAYX.N;PAYX;US
+Paycom;Information Technology;Application Software;PAYC.N;PAYC;US
+PayPal;Information Technology;Data Processing & Outsourced Services;PYPL.N;PYPL;US
+PEARSON;Media;;PSON.L;PSON.L;GB
+Penn National Gaming;Consumer Discretionary;Casinos & Gaming;PENN.N;PENN;US
+PENNON GRP;Utilities;;PNN.L;PNN.L;GB
+Pentair;Industrials;Industrial Machinery;PNR.N;PNR;US
+People's United Financial;Financials;Thrifts & Mortgage Finance;PBCT.N;PBCT;US
+PepsiCo;Consumer Staples;Soft Drinks;PEP.N;PEP;US
+PerkinElmer;Health Care;Health Care Equipment;PKI.N;PKI;US
+Pernod Ricard;;;PERP.PA;RI.PA;FR
+PERSIMMON;Consumer Products and Services;;PSN.L;PSN.L;GB
+Pfizer;Health Care;Pharmaceuticals;PFE.N;PFE;US
+PHARMAGEST INTER.;;;PHAI.PA;PHA.PA;FR
+Philip Morris International;Consumer Staples;Tobacco;PM.N;PM;US
+PHILIPS;Health Care;;PHG.AS;PHIA.AS;NL
+Phillips 66;Energy;Oil & Gas Refining & Marketing;PSX.N;PSX;US
+PIERRE VACANCES;;;PVAC.PA;VAC.PA;FR
+PING AN INSURANCE (GROUP) CO OF CH;Financials;;2318.HK;2318.HK;CH
+Pinnacle West Capital;Utilities;Multi-Utilities;PNW.N;PNW;US
+Pioneer Natural Resources;Energy;Oil & Gas Exploration & Production;PXD.N;PXD;US
+PKO BANK;Banks;;PKO.WA;PKO.WA;PL
+PLASTIC OMNIUM;;;PLOF.PA;POM.PA;FR
+PLASTIVALOIRE;;;PLVP.PA;PVL.PA;FR
+PNC Financial Services;Financials;Regional Banks;PNC.N;PNC;US
+POLYMETAL INTERNATIONAL;Basic Resources;;POLYP.L;POLY.L;GB
+Pool Corporation;Consumer Discretionary;Distributors;POOL.N;POOL;US
+PORSCHE PREF;Automobiles and Parts;;PSHG_P.DE;PAH3.DE;DE
+POSCO;Materials;;005490.KS;005490.KS;KS
+POSTE ITALIANE;Insurance;;PST.MI;PST.MI;IT
+POXEL;;;POXEL.PA;POXEL.PA;FR
+PPG Industries;Materials;Specialty Chemicals;PPG.N;PPG;US
+PPL;Utilities;Electric Utilities;PPL.N;PPL;US
+PRIMARY HEALTH PROPS.;Real Estate;;PHP.L;PHP.L;GB
+Principal Financial Group;Financials;Life & Health Insurance;PFG.N;PFG;US
+Procter & Gamble;Consumer Staples;Personal Products;PG.N;PG;US
+Progressive Corporation;Financials;Property & Casualty Insurance;PGR.N;PGR;US
+Prologis;Real Estate;Industrial REITs;PLD.N;PLD;US
+PROLOGUE;;;PRSW.PA;PROL.PA;FR
+PROSIEBENSAT.1 MEDIA;Media;;PSMGN.DE;PSM.DE;DE
+Prosus;Technology;;PRX.AS;PRX.AS;NL
+PROXIMUS;Telecommunications;;PROX.BR;PROX.BR;BE
+PRUDENTIAL;Insurance;;PRU.L;PRU.L;GB
+Prudential Financial;Financials;Life & Health Insurance;PRU.N;PRU;US
+PRYSMIAN;Industrial Goods and Services;;PRY.MI;PRY.MI;IT
+PSP SWISS PROPERTY;Real Estate;;PSPN.S;PSPN.SW;CHF
+PTC;Information Technology;Application Software;PTC.N;PTC;US
+Public Service Enterprise Group;Utilities;Electric Utilities;PEG.N;PEG;US
+Public Storage;Real Estate;Specialized REITs;PSA.N;PSA;US
+Publicis Groupe SA;;;PUBP.PA;PUB.PA;FR
+PulteGroup;Consumer Discretionary;Homebuilding;PHM.N;PHM;US
+PUMA;Consumer Products and Services;;PUMG.DE;PUM.DE;DE
+PVH;Consumer Discretionary;Apparel, Accessories & Luxury Goods;PVH.N;PVH;US
+PZU GROUP;Insurance;;PZU.WA;PZU.WA;PL
+QBE Insurance;Financials;;QBE.AX;QBE.AX;AUS
+QIAGEN;Health Care;;QIA.DE;QIA.DE;DE
+Qorvo;Information Technology;Semiconductors;QRVO.N;QRVO;US
+QT GROUP;Technology;;QTCOM.HE;QTCOM.HE;FI
+Qualcomm;Information Technology;Semiconductors;QCOM.N;QCOM;US
+Quanta Services;Industrials;Construction & Engineering;PWR.N;PWR;US
+Quest Diagnostics;Health Care;Health Care Services;DGX.N;DGX;US
+QUILTER;Financial Services;;QLT.L;QLT.L;GB
+RAIFFEISEN BANK INTERNATIONAL;Banks;;RBIV.VI;RBI.VI;AT
+Ralph Lauren Corporation;Consumer Discretionary;Apparel, Accessories & Luxury Goods;RL.N;RL;US
+Ramsay Health Care;Health Care;;RHC.AX;RHC.AX;AUS
+RANDSTAD;Industrial Goods and Services;;RAND.AS;RAND.AS;NL
+RATIONAL;Industrial Goods and Services;;RAAG.DE;RAA.DE;DE
+Raymond James Financial;Financials;Investment Banking & Brokerage;RJF.N;RJF;US
+Raytheon Technologies;Industrials;Aerospace & Defense;RTX.N;RTX;US
+REA Group;Communication Services;;REA.AX;REA.AX;AUS
+Realty Income Corporation;Real Estate;Retail REITs;O.N;O;US
+RECORDATI;Health Care;;RECI.MI;REC.MI;IT
+RED ELECTRICA CORPORATION;Utilities;;REE.MC;REE.MC;ES
+Reece Group;Industrials;;REH.AX;REH.AX;AUS
+Regency Centers;Real Estate;Retail REITs;REG.N;REG;US
+Regeneron Pharmaceuticals;Health Care;Biotechnology;REGN.N;REGN;US
+Regions Financial Corporation;Financials;Regional Banks;RF.N;RF;US
+RELX PLC;Media;;REL.L;REL.L;GB
+REMY COINTREAU;;;RCOP.PA;RCO.PA;FR
+Renault S.A.;;;RENA.PA;RNO.PA;FR
+RENTOKIL INITIAL;Industrial Goods and Services;;RTO.L;RTO.L;GB
+REPLY;Technology;;REY.MI;REY.MI;IT
+REPSOL;Energy;;REP.MC;REP.MC;ES
+Republic Services;Industrials;Environmental & Facilities Services;RSG.N;RSG;US
+ResMed;Health Care;Health Care Equipment;RMD.N;RMD;US
+ResMed;Health Care;;RMD.AX;RMD.AX;AUS
+REXEL;;;RXL.PA;RXL.PA;FR
+RHEINMETALL;Industrial Goods and Services;;RHMG.DE;RHM.DE;DE
+RIGHTMOVE GRP;Real Estate;;RMV.L;RMV.L;GB
+RIO TINTO;Basic Resources;;RIO.L;RIO.L;GB
+Rio Tinto;Materials;;RIO.AX;RIO.AX;AUS
+Robert Half International;Industrials;Human Resource & Employment Services;RHI.N;RHI;US
+ROBERTET;;;ROBF.PA;RBT.PA;FR
+ROCHE HLDG P;Health Care;;ROG.S;ROG.SW;CHF
+Rockwell Automation;Industrials;Electrical Components & Equipment;ROK.N;ROK;US
+ROCKWOOL B;Construction and Materials;;ROCKB.CO;ROCK-B.CO;DK
+Rollins;Industrials;Environmental & Facilities Services;ROL.N;ROL;US
+ROLLS ROYCE HLDG;Industrial Goods and Services;;RR.L;RR.L;GB
+Roper Technologies;Industrials;Industrial Conglomerates;ROP.N;ROP;US
+Ross Stores;Consumer Discretionary;Apparel Retail;ROST.N;ROST;US
+ROTHSCHILD & CO;;;ROTH.PA;ROTH.PA;FR
+ROTORK;Industrial Goods and Services;;ROR.L;ROR.L;GB
+Royal Caribbean Group;Consumer Discretionary;Hotels, Resorts & Cruise Lines;RCL.N;RCL;US
+ROYAL DUTCH SHELL A;Energy;;RDSA.L;RDSA.L;GB
+ROYAL MAIL;Industrial Goods and Services;;RMG.L;RMG.L;GB
+ROYAL UNIBREW;Food, Beverage and Tobacco;;RBREW.CO;RBREW.CO;DK
+RUBIS;;;RUBF.PA;RUI.PA;FR
+RWE;Utilities;;RWEG.DE;RWE.DE;DE
+RYANAIR;Travel and Leisure;;RYA.I;RY4C.IR;IE
+S&P Global;Financials;Financial Exchanges & Data;SPGI.N;SPGI;US
+S.E.B.;;;SEBF.PA;SK.PA;FR
+S4 CAP. ORD SHS;Media;;SFOR.L;SFOR.L;GB
+Safran SA;;;SAF.PA;SAF.PA;FR
+SAGE GRP;Technology;;SGE.L;SGE.L;GB
+SAINSBURY (J);Personal Care, Drug and Grocery Stores;;SBRY.L;SBRY.L;GB
+SAINT GOBAIN;;;SGOB.PA;SGO.PA;FR
+Salesforce;Information Technology;Application Software;CRM.N;CRM;US
+SALMAR;Food, Beverage and Tobacco;;SALM.OL;SALM.OL;NO
+SAMHALLSBYGGNADSBOL AGET NORD;Real Estate;;SBBB.ST;SBB-B.ST;SE
+SAMPO;Insurance;;SAMPO.HE;SAMPO.HE;FI
+SAMSUNG ELECTRONICS LTD;Information Technology;;005930.KS;005930.KS;KS
+SAMSUNG ELECTRONICS NON VOTING PRE;Information Technology;;005930.KS;005930.KS;KS
+SAMSUNG SDI LTD;Information Technology;;006400.KS;006400.KS;KS
+SANDVIK;Industrial Goods and Services;;SAND.ST;SAND.ST;SE
+Sanofi;;;SASY.PA;SAN.PA;FR
+Santos;Energy;;STO.AX;STO.AX;AUS
+SAP;Technology;;SAPG.DE;SAP.DE;DE
+SARTORIUS BIOTECH;;;STDM.PA;DIM.PA;FR
+SARTORIUS PREF.;Health Care;;SATG.DE;SRT.DE;DE
+SBA Communications;Real Estate;Specialized REITs;SBAC.N;SBAC;US
+Scentre Group;Real Estate;;SCG.AX;SCG.AX;AUS
+SCHINDLER P;Industrial Goods and Services;;SCHN.S;SCHN.SW;CHF
+Schlumberger;Energy;Oil & Gas Equipment & Services;SLB.N;SLB;US
+Schneider Electric SE;;;SCHN.PA;SU.PA;FR
+SCHRODERS;Financial Services;;SDR.L;SDR.L;GB
+SCOR SE;;;SCOR.PA;SCR.PA;FR
+SCOTTISH & SOUTHERN ENERGY;Utilities;;SSE.L;SSE.L;GB
+SCOUT24;Technology;;G24N.DE;G24.DE;DE
+Seagate Technology;Information Technology;Technology Hardware, Storage & Peripherals;STX.N;STX;US
+Sealed Air;Materials;Paper Packaging;SEE.N;SEE;US
+SECHE ENVIRONNEM.;;;CCHE.PA;SCHP.PA;FR
+SECURITAS B;Industrial Goods and Services;;SECUB.ST;SECU-B.ST;SE
+Seek;Communication Services;;SEK.AX;SEK.AX;AUS
+SEGRO;Real Estate;;SGRO.L;SGRO.L;GB
+Sempra Energy;Utilities;Multi-Utilities;SRE.N;SRE;US
+SERGEFERRARI GROUP;;;SEFER.PA;SEFER.PA;FR
+ServiceNow;Information Technology;Systems Software;NOW.N;NOW;US
+SEVERN TRENT;Utilities;;SVT.L;SVT.L;GB
+SGS;Industrial Goods and Services;;SGSN.S;SGSN.SW;CHF
+Sherwin-Williams;Materials;Specialty Chemicals;SHW.N;SHW;US
+SHINHAN FINANCIAL GROUP LTD;Financials;;055550.KS;055550.KS;KS
+SHOWROOMPRIVE;;;SRPG.PA;SRP.PA;FR
+SIEGFRIED 'R';Health Care;;SFZN.S;SFZN.SW;CHF
+SIEMENS;Industrial Goods and Services;;SIEGN.DE;SIE.DE;DE
+SIEMENS ENERGY;Energy;;SIEGN.DE;ENR.DE;DE
+SIEMENS GAMESA;Energy;;SGREN.MC;SGRE.MC;ES
+SIEMENS HEALTHINEERS;Health Care;;SHLG.DE;SHL.DE;DE
+SIG COMBIBLOC GROUP AG;Industrial Goods and Services;;SIGNC.S;SIGN.SW;CHF
+SIGNIFY;Construction and Materials;;LIGHT.AS;LIGHT.AS;NL
+SIKA;Construction and Materials;;SIKA.S;SIKA.SW;CHF
+SIMCORP;Technology;;SIM.CO;SIM.CO;DK
+Simon Property Group;Real Estate;Retail REITs;SPG.N;SPG;US
+SINCH;Technology;;SINCH.ST;SINCH.ST;SE
+SK HYNIX INC;Information Technology;;000660.KS;000660.KS;KS
+SKANDINAVISKA ENSKILDA BK A;Banks;;SEBA.ST;SEB-A.ST;SE
+SKANSKA B;Construction and Materials;;SKAB.ST;SKA-B.ST;SE
+SKF B;Basic Resources;;SKFB.ST;SKF-B.ST;SE
+Skyworks Solutions;Information Technology;Semiconductors;SWKS.N;SWKS;US
+SMITH & NEPHEW;Health Care;;SN.L;SN.L;GB
+SMITHS GRP;Industrial Goods and Services;;SMIN.L;SMIN.L;GB
+SMTPC;;;SMTPC.PA;SMTPC.PA;FR
+SMURFIT KAPPA GRP;Industrial Goods and Services;;SKG.I;SK3.IR;IE
+SNAM RETE GAS;Energy;;SRG.MI;SRG.MI;IT
+Snap-on;Industrials;Industrial Machinery;SNA.N;SNA;US
+SOCIETE GENERALE;;;SOGN.PA;GLE.PA;FR
+SODEXO;;;EXHO.PA;SW.PA;FR
+SOFINA;Financial Services;;SOF.BR;SOF.BR;BE
+SOFTCAT;Technology;;SCTS.L;SCT.L;GB
+SOGECLAIR;;;SCLR.PA;SOG.PA;FR
+SOITEC;;;SOIT.PA;SOI.PA;FR
+SOLUTION 30;;;S30.PA;S30.PA;FR
+SOLVAY;Chemicals;;SOLB.BR;SOLB.BR;BE
+Sonic Healthcare;Health Care;;SHL.AX;SHL.AX;AUS
+SONOVA;Health Care;;SOON.S;SOON.SW;CHF
+SOPRA STERIA GROUP;;;SOPR.PA;SOP.PA;FR
+South32;Materials;;S32.AX;S32.AX;AUS
+Southern Company;Utilities;Electric Utilities;SO.N;SO;US
+Southwest Airlines;Industrials;Airlines;LUV.N;LUV;US
+SPECTRIS;Industrial Goods and Services;;SXS.L;SXS.L;GB
+SPIE;;;SPIE.PA;SPIE.PA;FR
+SPIRAX-SARCO;Industrial Goods and Services;;SPX.L;SPX.L;GB
+SQLI;;;SQLI.PA;SQI.PA;FR
+ST DUPONT;;;DPTP.PA;DPT.PA;FR
+ST MICROELECTRONICS;;;STM.PA;STM.PA;FR
+ST.JAMES'S PLACE CAPITAL;Financial Services;;SJP.L;STJ.L;GB
+STANDARD CHARTERED;Banks;;STAN.L;STAN.L;GB
+Stanley Black & Decker;Industrials;Industrial Machinery;SWK.N;SWK;US
+Starbucks;Consumer Discretionary;Restaurants;SBUX.N;SBUX;US
+State Street Corporation;Financials;Asset Management & Custody Banks;STT.N;STT;US
+STELLANTIS;;;STLA.PA;STLA.PA;FR
+Steris;Health Care;Health Care Equipment;STE.N;STE;US
+STMICROELECTRONICS;Technology;;STM.PA;STM.PA;FR
+Stockland;Real Estate;;SGP.AX;SGP.AX;AUS
+STORA ENSO R;Basic Resources;;STERV.HE;STERV.HE;FI
+STOREBRAND;Insurance;;STB.OL;STB.OL;NO
+STRAUMANN;Health Care;;STMN.S;STMN.SW;CHF
+Stryker Corporation;Health Care;Health Care Equipment;SYK.N;SYK;US
+SUEZ;;;SEVI.PA;SEV.PA;FR
+SUN HUNG KAI PROPERTIES LTD;Real Estate;;0016.HK;0016.HK;CH
+Suncorp Group;Financials;;SUN.AX;SUN.AX;AUS
+SVB Financial;Financials;Regional Banks;SIVB.N;SIVB;US
+SVENSKA CELLULOSA B;Basic Resources;;SCAB.ST;SCA-B.ST;SE
+SVENSKA HANDELSBANKEN A;Banks;;SHBA.ST;SHB-A.ST;SE
+SWATCH BEARER;Consumer Products and Services;;UHR.S;UHR.SW;CHF
+SWECO 'B';Construction and Materials;;SWECB.ST;SWEC-B.ST;SE
+SWEDBANK;Banks;;SWEDA.ST;SWED-A.ST;SE
+SWEDISH MATCH;Food, Beverage and Tobacco;;SWMA.ST;SWMA.ST;SE
+SWEDISH ORPHAN BIOVITRUM;Health Care;;SOBIV.ST;SOBI.ST;SE
+SWISS LIFE HLDG;Insurance;;SLHN.S;SLHN.SW;CHF
+SWISS PRIME SITE;Real Estate;;SPSN.S;SPSN.SW;CHF
+SWISS REINSURANCE COMPANY;Insurance;;SRENH.S;SREN.SW;CHF
+SWISSCOM;Telecommunications;;SCMN.S;SCMN.SW;CHF
+SWORD GROUP;;;SWOR.PA;SWP.PA;FR
+Sydney Airport Holdings;Industrials;;SYD.AX;SYD.AX;AUS
+SYMRISE;Chemicals;;SY1G.DE;SY1.DE;DE
+Synchrony Financial;Financials;Consumer Finance;SYF.N;SYF;US
+SYNERGIE;;;SDGI.PA;SDG.PA;FR
+Synopsys;Information Technology;Application Software;SNPS.N;SNPS;US
+Sysco;Consumer Staples;Food Distributors;SYY.N;SYY;US
+T. Rowe Price;Financials;Asset Management & Custody Banks;TROW.N;TROW;US
+Tabcorp;Consumer Discretionary;;TAH.AX;TAH.AX;AUS
+TAG IMMOBILIEN AG;Real Estate;;TEGG.DE;TEG.DE;DE
+TAIWAN SEMICONDUCTOR MANUFACTURING;Information Technology;;2330.TW;2330.TW;TW
+Take-Two Interactive;Communication Services;Interactive Home Entertainment;TTWO.N;TTWO;US
+Tapestry;Consumer Discretionary;Apparel, Accessories & Luxury Goods;TPR.N;TPR;US
+Target;Consumer Discretionary;General Merchandise Stores;TGT.N;TGT;US
+TARKETT;;;TKTT.PA;TKTT.PA;FR
+TATE & LYLE;Food, Beverage and Tobacco;;TATE.L;TATE.L;GB
+TAYLOR WIMPEY;Consumer Products and Services;;TW.L;TW.L;GB
+TE Connectivity;Information Technology;Electronic Manufacturing Services;TEL.N;TEL;US
+TEAMVIEWER AG;Technology;;TMV.DE;TMV.DE;DE
+TECAN;Health Care;;TECN.S;TECN.SW;CHF
+TECHTRONIC INDUSTRIES LTD;Industrials;;0669.HK;0669.HK;CH
+TELE2 B;Telecommunications;;TEL2B.ST;TEL2-B.ST;SE
+TELECOM ITALIA;Telecommunications;;TLIT.MI;TIT.MI;IT
+Teledyne Technologies;Industrials;Aerospace & Defense;TDY.N;TDY;US
+Teleflex;Health Care;Health Care Equipment;TFX.N;TFX;US
+TELEFONICA;Telecommunications;;TEF.MC;TEF.MC;ES
+TELENOR;Telecommunications;;TEL.OL;TEL.OL;NO
+TELEPERFORMANCE;;;TEPRF.PA;TEP.PA;FR
+TELIA COMPANY;Telecommunications;;TELIA.ST;TELIA.ST;SE
+Telstra;Telecommunications Services;;TLS.AX;TLS.AX;AUS
+TEMENOS;Technology;;TEMN.S;TEMN.SW;CHF
+TENARIS;Energy;;TENR.MI;TEN.MI;IT
+TENCENT HOLDINGS LTD;Communication;;0700.HK;0700.HK;CH
+Teradyne;Information Technology;Semiconductor Equipment;TER.N;TER;US
+TERNA;Utilities;;TRN.MI;TRN.MI;IT
+TESCO;Personal Care, Drug and Grocery Stores;;TSCO.L;TSCO.L;GB
+Tesla;Consumer Discretionary;Automobile Manufacturers;TSLA.N;TSLA;US
+TESSI;;;TESI.PA;TES.PA;FR
+Texas Instruments;Information Technology;Semiconductors;TXN.N;TXN;US
+Textron;Industrials;Aerospace & Defense;TXT.N;TXT;US
+THALES;;;TCFP.PA;HO.PA;FR
+The Cooper Companies;Health Care;Health Care Supplies;COO.N;COO;US
+The Hartford;Financials;Property & Casualty Insurance;HIG.N;HIG;US
+The Hershey Company;Consumer Staples;Packaged Foods & Meats;HSY.N;HSY;US
+The Mosaic Company;Materials;Fertilizers & Agricultural Chemicals;MOS.N;MOS;US
+The Travelers Companies;Financials;Property & Casualty Insurance;TRV.N;TRV;US
+The Walt Disney Company;Communication Services;Movies & Entertainment;DIS.N;DIS;US
+Thermo Fisher Scientific;Health Care;Life Sciences Tools & Services;TMO.N;TMO;US
+THG;Personal Care, Drug and Grocery Stores;;THG.L;THG.L;GB
+THULE GROUP;Consumer Products and Services;;THULE.ST;THULE.ST;SE
+THYSSENKRUPP;Industrial Goods and Services;;TKAG.DE;TKA.DE;DE
+TJX Companies;Consumer Discretionary;Apparel Retail;TJX.N;TJX;US
+T-Mobile US;Communication Services;Wireless Telecommunication Services;TMUS.N;TMUS;US
+TOMRA SYSTEMS;Industrial Goods and Services;;TOM.OL;TOM.OL;NO
+TOTAL;;;TTEF.PA;TTE.PA;FR
+TOUAX;;;TETR.PA;TOUP.PA;FR
+TPG Telecom;Communication Services;;TPG.AX;TPG.AX;AUS
+Tractor Supply Company;Consumer Discretionary;Specialty Stores;TSCO.N;TSCO;US
+Trane Technologies;Industrials;Building Products;TT.N;TT;US
+TransDigm Group;Industrials;Aerospace & Defense;TDG.N;TDG;US
+TRANSGENE;;;TRNG.PA;TNG.PA;FR
+Transurban;Industrials;;TCL.AX;TCL.AX;AUS
+TRAVIS PERKINS;Retail;;TPK.L;TPK.L;GB
+TRELLEBORG B;Industrial Goods and Services;;TRELB.ST;TREL-B.ST;SE
+TRIGANO;;;TRIA.PA;TRI.PA;FR
+Trimble;Information Technology;Electronic Equipment & Instruments;TRMB.N;TRMB;US
+TRITAX BIG BOX REIT;Real Estate;;BBOXT.L;BBOX.L;GB
+Truist Financial;Financials;Regional Banks;TFC.N;TFC;US
+TRYG;Insurance;;TRYG.CO;TRYG.CO;DK
+TUI;Travel and Leisure;;TUIT.L;TUI.L;GB
+Twitter;Communication Services;Interactive Media & Services;TWTR.N;TWTR;US
+Tyler Technologies;Information Technology;Application Software;TYL.N;TYL;US
+Tyson Foods;Consumer Staples;Packaged Foods & Meats;TSN.N;TSN;US
+U.S. Bancorp;Financials;Diversified Banks;USB.N;USB;US
+UBISOFT;;;UBIP.PA;UBI.PA;FR
+UBS GROUP;Financial Services;;UBSG.S;UBSG.SW;CHF
+UCB;Health Care;;UCB.BR;UCB.BR;BE
+UDR;Real Estate;Residential REITs;UDR.N;UDR;US
+Ulta Beauty;Consumer Discretionary;Specialty Stores;ULTA.N;ULTA;US
+UMG;Media;;UMG.AS;UMG.AS;NL
+UMICORE;Chemicals;;UMI.BR;UMI.BR;BE
+Under Armourÿ(Class A);Consumer Discretionary;Apparel, Accessories & Luxury Goods;UAA.N;UAA;US
+Under Armourÿ(Class C);Consumer Discretionary;Apparel, Accessories & Luxury Goods;UA.N;UA;US
+UNICREDIT;Banks;;CRDI.MI;UCG.MI;IT
+UNILEVER PLC;Personal Care, Drug and Grocery Stores;;ULVR.L;ULVR.L;GB
+Union Pacific;Industrials;Railroads;UNP.N;UNP;US
+UNION TECH.INFOR.;;;UTIN.PA;FPG.PA;FR
+UNIPER;Utilities;;UN01.DE;UN01.DE;DE
+UNITE GROUP PLC;Real Estate;;UTG.L;UTG.L;GB
+United Airlines;Industrials;Airlines;UAL.N;UAL;US
+UNITED INTERNET;Technology;;UTDI.DE;UTDI.DE;DE
+UNITED MICRO ELECTRONICS CORP;Information Technology;;UMC.N;UMC;US
+United Parcel Service;Industrials;Air Freight & Logistics;UPS.N;UPS;US
+United Rentals;Industrials;Trading Companies & Distributors;URI.N;URI;US
+UNITED UTILITIES GRP;Utilities;;UU.L;UU.L;GB
+UnitedHealth Group;Health Care;Managed Health Care;UNH.N;UNH;US
+Universal Health Services;Health Care;Health Care Facilities;UHS.N;UHS;US
+UPM KYMMENE;Basic Resources;;UPM.HE;UPM.HE;FI
+VALEO;;;VLOF.PA;FR.PA;FR
+Valero Energy;Energy;Oil & Gas Refining & Marketing;VLO.N;VLO;US
+VALLOUREC;;;VLLP.PA;VK.PA;FR
+Valmet;Industrial Goods and Services;;VALMT.HE;VALMT.HE;FI
+VALNEVA;;;VLS.PA;VLA.PA;FR
+VAT GROUP AG;Industrial Goods and Services;;VACN.S;VACN.SW;CHF
+Ventas;Real Estate;Health Care REITs;VTR.N;VTR;US
+VEOLIA;;;VIE.PA;VIE.PA;FR
+VERBUND;Utilities;;VERB.VI;VER.VI;AT
+Verisign;Information Technology;Internet Services & Infrastructure;VRSN.N;VRSN;US
+Verisk Analytics;Industrials;Research & Consulting Services;VRSK.N;VRSK;US
+Verizon Communications;Communication Services;Integrated Telecommunication Services;VZ.N;VZ;US
+Vertex Pharmaceuticals;Health Care;Biotechnology;VRTX.N;VRTX;US
+VESTAS WIND SYSTEMS;Energy;;VWS.CO;VWS.CO;DK
+VF Corporation;Consumer Discretionary;Apparel, Accessories & Luxury Goods;VFC.N;VFC;US
+ViacomCBS;Communication Services;Movies & Entertainment;VIAC.N;VIAC;US
+Viatris;Health Care;Pharmaceuticals;VTRS.N;VTRS;US
+VICAT;;;VCTP.PA;VCT.PA;FR
+VICTREX;Chemicals;;VCTX.L;VCT.L;GB
+VIFOR PHARMA;Health Care;;VIFN.S;VIFN.SW;CHF
+VILMORIN & CIE;;;VILM.PA;RIN.PA;FR
+VINCI;;;SGEF.PA;DG.PA;FR
+VIRBAC;;;VIRB.PA;VIRP.PA;FR
+Virgin Money UK;Banks;;VMUK.L;VMUK.L;GB
+Visa;Information Technology;Data Processing & Outsourced Services;V.N;V;US
+VISTRY GROUP;Consumer Products and Services;;VTYV.L;VTY.L;GB
+VITROLIFE;Health Care;;VITR.ST;VITR.ST;SE
+VIVENDI;;;VIV.PA;VIV.PA;FR
+VODAFONE GRP;Telecommunications;;VOD.L;VOD.L;GB
+VOESTALPINE;Basic Resources;;VOES.VI;VOE.VI;AT
+VOLKSWAGEN PREF;Automobiles and Parts;;VOWG.DE;VOW3.DE;DE
+VOLTALIA;;;VLTSA.PA;VLTSA.PA;FR
+VOLVO B;Industrial Goods and Services;;VOLVB.ST;VOLV-B.ST;SE
+Vonovia SE;Real Estate;;VNAN.DE;VNA.DE;DE
+VOPAK;Industrial Goods and Services;;VOPA.AS;VPK.AS;NL
+Vornado Realty Trust;Real Estate;Office REITs;VNO.N;VNO;US
+VRANKEN-POMMERY;;;VRKP.PA;VRAP.PA;FR
+Vulcan Materials;Materials;Construction Materials;VMC.N;VMC;US
+W. R. Berkley Corporation;Financials;Property & Casualty Insurance;WRB.N;WRB;US
+W. W. Grainger;Industrials;Industrial Machinery;GWW.N;GWW;US
+Wabtec;Industrials;Construction Machinery & Heavy Trucks;WAB.N;WAB;US
+Walgreens Boots Alliance;Consumer Staples;Drug Retail;WBA.N;WBA;US
+WALLENSTAM B;Real Estate;;WALLB.ST;WALL-B.ST;SE
+Walmart;Consumer Staples;Hypermarkets & Super Centers;WMT.N;WMT;US
+WARTSILA;Industrial Goods and Services;;WRT1V.HE;WRT1V.HE;FI
+Waste Management;Industrials;Environmental & Facilities Services;WM.N;WM;US
+Waters Corporation;Health Care;Health Care Distributors;WAT.N;WAT;US
+WDP;Real Estate;;WDPP.BR;WDP.BR;BE
+WEC Energy Group;Utilities;Electric Utilities;WEC.N;WEC;US
+WEIR GRP;Industrial Goods and Services;;WEIR.L;WEIR.L;GB
+Wells Fargo;Financials;Diversified Banks;WFC.N;WFC;US
+Welltower;Real Estate;Health Care REITs;WELL.N;WELL;US
+WENDEL;;;MWDP.PA;MF.PA;FR
+Wesfarmers;Consumer Discretionary;;WES.AX;WES.AX;AUS
+West Pharmaceutical Services;Health Care;Health Care Supplies;WST.N;WST;US
+Western Digital;Information Technology;Technology Hardware, Storage & Peripherals;WDC.N;WDC;US
+Western Union;Information Technology;Data Processing & Outsourced Services;WU.N;WU;US
+Westpac;Financials;;WBC.AX;WBC.AX;AUS
+WestRock;Materials;Paper Packaging;WRK.N;WRK;US
+Weyerhaeuser;Real Estate;Specialized REITs;WY.N;WY;US
+Whirlpool Corporation;Consumer Discretionary;Household Appliances;WHR.N;WHR;US
+WHITBREAD;Travel and Leisure;;WTB.L;WTB.L;GB
+WIENERBERGER;Construction and Materials;;WBSV.VI;WIE.VI;AT
+WIHLBORGS FASTIGHETER;Real Estate;;WIHL.ST;WIHL.ST;SE
+Williams Companies;Energy;Oil & Gas Storage & Transportation;WMB.N;WMB;US
+Willis Towers Watson;Financials;Insurance Brokers;WLTW.N;WLTW;US
+WIZZAIR;Travel and Leisure;;WIZZ.L;WIZZ.L;GB
+WOLTERS KLUWER;Media;;WLSNC.AS;WKL.AS;NL
+Woodside Petroleum;Energy;;WPL.AX;WPL.AX;AUS
+Woolworths;Consumer Staples;;WOW.AX;WOW.AX;AUS
+WORLDLINE;;;WLN.PA;WLN.PA;FR
+WPP;Media;;WPP.L;WPP.L;GB
+WUXI BIOLOGICS CAYMAN INC;Health Care;;2269.HK;2269.HK;CH
+Wynn Resorts;Consumer Discretionary;Casinos & Gaming;WYNN.N;WYNN;US
+Xcel Energy;Utilities;Multi-Utilities;XEL.N;XEL;US
+Xero;Information Technology;;XRO.AX;XRO.AX;AUS
+XIAOMI CORP;Information Technology;;1810.HK;1810.HK;CH
+XILAM ANIMATION;;;XIL.PA;XIL.PA;FR
+Xilinx;Information Technology;Semiconductors;XLNX.N;XLNX;US
+Xylem;Industrials;Industrial Machinery;XYL.N;XYL;US
+YARA;Chemicals;;YAR.OL;YAR.OL;NO
+Yum! Brands;Consumer Discretionary;Restaurants;YUM.N;YUM;US
+ZALANDO;Retail;;ZALG.DE;ZAL.DE;DE
+Zebra Technologies;Information Technology;Electronic Equipment & Instruments;ZBRA.N;ZBRA;US
+Zimmer Biomet;Health Care;Health Care Equipment;ZBH.N;ZBH;US
+Zions Bancorp;Financials;Regional Banks;ZION.N;ZION;US
+Zoetis;Health Care;Pharmaceuticals;ZTS.N;ZTS;US
+ZOOPLUS;Retail;;ZO1G.DE;ZO1.DE;DE
+ZUR ROSE GROUP;Personal Care, Drug and Grocery Stores;;ROSEG.S;ROSE.SW;CHF
+ZURICH INSURANCE GROUP;Insurance;;ZURN.S;ZURN.SW;CHF

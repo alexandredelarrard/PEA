@@ -21,6 +21,8 @@ class Crawling(object):
         self.current_proxy_index = 0
         self.proxies = self.get_proxies()
 
+        self.missed_urls = []
+
         if self.use_proxy:
             self.cores = cores 
         else:
@@ -31,7 +33,6 @@ class Crawling(object):
         os.environ["DIR_PATH"] = r"C:\Users\de larrard alexandre\Documents\repos_github\PAP\logs"
         self.queues = {"drivers": Queue(), "urls" :  Queue(), "results": Queue(), "base_path" : base_path}
 
-        
     def get_proxies(self):
 
         url = 'https://sslproxies.org/'
@@ -105,11 +106,12 @@ class Crawling(object):
         return driver
     
     
-    def initialize_driver_chrome(self, proxy=True, prefs=False):
+    def initialize_driver_chrome(self, proxy=True, prefs=True):
         """
         Initialize the web driver with chrome driver as principal driver chromedriver.exe, headless means no open web page. But seems slower than firefox driver  
         parameters are here to not load images and keep the default css --> make page loading faster
         """
+
         if len(self.proxies)>0:
             PROXY =  self.proxies[self.current_proxy_index]["ID"]
         else:
@@ -123,8 +125,8 @@ class Crawling(object):
                     'disk-cache-size': 8000,
                      "profile.default_content_setting_values.notifications":2,
                      "profile.managed_default_content_settings.stylesheets":2,
-                     "profile.managed_default_content_settings.cookies":2,
-                     "profile.managed_default_content_settings.javascript":2,
+                    #  "profile.managed_default_content_settings.cookies":2,
+                    #  "profile.managed_default_content_settings.javascript":2,
                      "profile.managed_default_content_settings.plugins":2,
                      "profile.managed_default_content_settings.popups":2,
                      "profile.managed_default_content_settings.geolocation":2,
@@ -132,11 +134,11 @@ class Crawling(object):
                     }
             
             options.add_experimental_option("prefs", prefs)
-            options.add_argument("--headless") # Runs Chrome in headless mode.
-            options.add_argument("--incognito")
+            # options.add_argument("--headless") # Runs Chrome in headless mode.
+            # options.add_argument("--incognito")
             options.add_argument('--no-sandbox') # Bypass OS security model
             options.add_argument('--disable-gpu')  # applicable to windows os only
-            options.add_argument('start-maximized') 
+            # options.add_argument('start-maximized') 
 
         options.add_argument('disable-infobars')
         options.add_argument("--disable-extensions")
@@ -220,6 +222,7 @@ class Crawling(object):
     def queue_calls(self, function, queues, sub_loc):
         
         queue_url = queues["urls"]
+        missed_urls = []
         
         #### extract all articles
         while True:
@@ -231,13 +234,20 @@ class Crawling(object):
                 time.sleep(1)    
                 
                 driver, information = function(driver, sub_loc)
-                time.sleep(1)
+
+                if information == "ERROR":
+                    missed_urls.append(url)
 
                 queues["drivers"].put(driver)
                 queue_url.task_done()
                 print(f"CRAWLED URL {url}")
             
             except Exception as e:
-                print(url)
-                driver = self.restart_driver(driver)
+                print(url, e)
+                # driver = self.restart_driver(driver)
+                
+                missed_urls.append(url)
+                queue_url.task_done()
                 queues["drivers"].put(driver)
+
+            self.missed_urls = missed_urls

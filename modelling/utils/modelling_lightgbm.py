@@ -5,7 +5,7 @@ import shap
 import numpy as np
 
 from sklearn import metrics
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, KFold
 
 from utils.general_functions import timeit
 
@@ -63,8 +63,8 @@ class TrainModel(object):
 
         if final:
             # evaluate results with plot importance
-            test_data["PREDICTION_" + self.target_name].hist()
-            test_data[self.target_name].hist()
+            test_data["PREDICTION_" + self.target_name].hist(alpha = 0.7)
+            test_data[self.target_name].hist(alpha = 0.7)
             plt.show()
 
             valid_x = test_data[self.feature_name]
@@ -146,9 +146,10 @@ class TrainModel(object):
                 )
 
                 model = lgb.train(self.params["parameters"],
-                                    train_data, 
-                                    valid_sets=val_data, 
-                                    verbose_eval=self.params["parameters"]["verbose_eval"])
+                                   train_set=train_data, 
+                                    valid_sets=[train_data, val_data],
+                                    valid_names=["data_train", "data_valid"],
+                                    verbose_eval=100)
 
             else:
                 if "early_stopping_round" in self.params["parameters"]:
@@ -173,6 +174,7 @@ class TrainModel(object):
                           train_data[self.target_name], 
                           sample_weight= sample_weight,
                           init_score= init_bias,
+                          verbose=-1,
                           categorical_feature = self.params["categorical_features"])
 
             return model
@@ -206,14 +208,21 @@ class TrainModel(object):
         else:
             data = data.reset_index(drop=True)
 
-        kf = StratifiedKFold(
-                n_splits=self.params["n_splits"],
-                random_state=self.params["seed"],
-                shuffle=True
-            )
+        if self.params["parameters"]["objective"] == "binary":
+            kf = StratifiedKFold(
+                    n_splits=self.params["n_splits"],
+                    random_state=self.params["seed"],
+                    shuffle=True
+                )
+        else:
+            kf = KFold(
+                    n_splits=self.params["n_splits"],
+                    random_state=self.params["seed"],
+                    shuffle=True
+                )
 
         total_test = pd.DataFrame()
-        for train_index, val_index in kf.split(data[self.feature_name], data[self.target_name]):
+        for train_index, val_index in kf.split(data.index, data.index):
 
             train_data = data.loc[train_index]
             test_data = data.loc[val_index]

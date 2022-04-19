@@ -5,6 +5,10 @@ from datetime import datetime
 from pathlib import Path as pl
 import logging
 
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+
 def get_pricing_infos(driver):
 
     pricing_infos = {}
@@ -27,14 +31,15 @@ def get_news(driver, current_url):
 
     # TODO: scrowl down 2/4/10 times until stabilized ...
 
-    def extract_item_news(driver, news_driver, news_infos):
+    def extract_item_news(driver, news_driver, news_infos, index):
 
         if len(news_driver) == 1:
-            for scrol in range(100, 5500, 250):
-                driver.execute_script(f"window.scrollTo(0,{scrol})")
-                time.sleep(0.2)
-            
-            time.sleep(1.5)
+
+            if index ==1:
+                for scrol in range(100, 7500, 250):
+                    driver.execute_script(f"window.scrollTo(0,{scrol})")
+                    time.sleep(0.1)
+                time.sleep(1.5)
 
             news_items = news_driver[0].find_elements_by_xpath("//div[@class='item']")
             for news in news_items:
@@ -50,14 +55,15 @@ def get_news(driver, current_url):
 
     #key developments 
     driver.get(current_url + "/key-developments")
+    time.sleep(2)
     news_driver = driver.find_elements_by_xpath("//div[@id='__next']/div/div[4]/div/div/div/section/div/div[2]")
-    news_infos = extract_item_news(driver, news_driver, news_infos)
+    news_infos = extract_item_news(driver, news_driver, news_infos, 0)
     
     # old news 
     driver.get(current_url + "/news")
-    time.sleep(1.5)
+    time.sleep(2)
     news_driver = driver.find_elements_by_xpath("//div[@id='__next']/div/div[4]/div/div/div/div/div[2]")
-    news_infos = extract_item_news(driver, news_driver, news_infos)
+    news_infos = extract_item_news(driver, news_driver, news_infos, 1)
 
     return news_infos
 
@@ -68,7 +74,9 @@ def get_events(driver, current_url):
     events_infos = []
 
     driver.get(current_url + "/events")
-    time.sleep(3.5)
+    time.sleep(2)
+    WebDriverWait(driver, 15).until(EC.visibility_of_element_located((By.CLASS_NAME, 'container')))
+
     events_driver = driver.find_elements_by_xpath("//div[@class='container']/section")
 
     for i, section in enumerate(events_driver):
@@ -102,7 +110,8 @@ def get_people(driver, current_url):
     people_infos = []
 
     driver.get(current_url + "/people")
-    time.sleep(2.5)
+    time.sleep(2)
+    WebDriverWait(driver, 30).until(EC.visibility_of_element_located((By.CLASS_NAME, 'table-container')))
 
     try:
         people_driver = driver.find_element_by_tag_name("tbody")
@@ -126,7 +135,7 @@ def get_key_metrics(driver, current_url):
     kpi_infos = {}
 
     driver.get(current_url + "/key-metrics")
-    time.sleep(1.5)
+    time.sleep(3)
     kpi_driver = driver.find_elements_by_xpath("//div[@id='__next']/div/div[4]/div/div/div/div/div")
 
     for sub_driver in kpi_driver[:8]:
@@ -154,7 +163,9 @@ def get_financials(driver, current_url):
                      "income-statement-quarterly", "balance-sheet-quarterly", "cash-flow-quarterly"]:
 
         driver.get(f"{current_url}/financials/{analysis}")
-        time.sleep(0.3)
+        time.sleep(1)
+        WebDriverWait(driver, 30).until(EC.visibility_of_element_located((By.CLASS_NAME, 'tables-container')))
+
         financials_infos[analysis] = {}
 
         column_driver = driver.find_element_by_tag_name("thead")
@@ -171,16 +182,23 @@ def get_financials(driver, current_url):
             if len(extract) == len(columns):
                 for i in range(len(columns)):
                     financials_infos[analysis][columns[i]][subcat] = extract[i].text
+
+        # get currency 
+        if analysis == "income-statement-annual":
+            section = driver.find_elements_by_xpath("//section[@class='section']/div/span")
+            if len(section)>0:
+                currency = section[0].text
+            else:
+                currency = ""
     
-    return financials_infos
+    return financials_infos, currency
 
 
 def get_profile(driver, current_url):
 
     profile_infos = {}
 
-    driver.get(current_url + "/profile")
-    time.sleep(2.5)
+    WebDriverWait(driver, 20).until(EC.visibility_of_element_located((By.CLASS_NAME, 'Profile-about-1d-H-')))
     profile_driver = driver.find_elements_by_xpath("//div[@class='container']/div/div/table")
 
     # main metrics 
@@ -193,6 +211,11 @@ def get_profile(driver, current_url):
     desc_driver = driver.find_elements_by_xpath("//div[@class='Profile-about-1d-H-']/p")
     if len(desc_driver) >= 1:
         profile_infos["PRESENTATION"] = desc_driver[0].text
+
+    # company name
+    desc_driver = driver.find_elements_by_xpath("//div[@class='Profile-about-1d-H-']/h3")
+    if len(desc_driver) >= 1:
+        profile_infos["COMPANY_NAME"] = desc_driver[0].text
 
     # analyst ratings 
     ratings_driver = driver.find_elements_by_xpath("//div[@class='container section']/div")
@@ -232,8 +255,8 @@ def save_to_disk(company, results, save_path):
 
 def validate_cookis(driver):
 
-    cookie = driver.find_elements_by_xpath("//div[@id='onetrust-consent-sdk']")
-
+    cookie = driver.find_elements_by_xpath("//div[@class='ot-btn-container']")
+    
     if len(cookie) == 1:
         try:
             cookie = cookie[0]
@@ -245,41 +268,77 @@ def validate_cookis(driver):
 
 def extract_infos(driver, sub_loc):
 
+    redo_finance = False
     current_url = driver.current_url
     company  = current_url.split("/")[-1]
 
-    validate_cookis(driver)
-    time.sleep(1)
-
     # get profile infos
+    time.sleep(1.5)
+    validate_cookis(driver)
     profile_infos_dict = get_profile(driver, current_url)
 
     # pricing infos
+    time.sleep(1.5)
+    validate_cookis(driver)
     pricing_infos_dict = get_pricing_infos(driver)
 
     # extract news :
+    time.sleep(1.5)
+    validate_cookis(driver)
     news_infos = get_news(driver, current_url)
 
     # events 
-    dividendes_infos, events_infos = get_events(driver, current_url)
+    try:
+        dividendes_infos, events_infos = get_events(driver, current_url)
+    except Exception:
+        print(f"no event for {company}")
+        dividendes_infos = []
+        events_infos = []
+        pass
 
     # people 
-    people_infos = get_people(driver, current_url)
+    try:
+        people_infos = get_people(driver, current_url)
+    except Exception:
+        print(f"no people for {company}")
+        people_infos = [{"NAME" :  "", "AGE" : "", "POSITION" : "",
+                                    "APPOINTED" : ""}]
+        pass
+
+    # financials 
+    try:
+        financials_infos, currency = get_financials(driver, current_url)
+        if currency != "":
+            profile_infos_dict["PROFILE"]["CURRENCY"] = currency
+    except Exception:
+        time.sleep(15)
+        redo_finance = True
+        pass
 
     # key metrics 
     kpi_infos = get_key_metrics(driver, current_url)
 
-    # financials 
-    financials_infos = get_financials(driver, current_url)
+    if redo_finance:
+        try:
+            financials_infos, currency = get_financials(driver, current_url)
+            if currency != "":
+                profile_infos_dict["PROFILE"]["CURRENCY"] = currency
+        except Exception:
+            print(f"no finance info for {company}")
+            financials_infos = []
+            pass
 
-    save_to_disk(company, {"profile_infos": profile_infos_dict, 
-                       "pricing_infos" : pricing_infos_dict, 
-                       "news_infos": news_infos,
-                       "dividendes_infos": dividendes_infos,
-                       "events_infos" : events_infos,
-                       "people_infos" : people_infos,
-                       "kpi_infos" : kpi_infos,
-                       "financials_infos" : financials_infos}, 
-                       sub_loc)
+    if len(financials_infos) > 0:
+        save_to_disk(company, {"profile_infos": profile_infos_dict, 
+                        "pricing_infos" : pricing_infos_dict, 
+                        "news_infos": news_infos,
+                        "dividendes_infos": dividendes_infos,
+                        "events_infos" : events_infos,
+                        "people_infos" : people_infos,
+                        "kpi_infos" : kpi_infos,
+                        "financials_infos" : financials_infos}, 
+                        sub_loc)
+    else:
+        return driver, "ERROR"
 
     return driver, "Done"

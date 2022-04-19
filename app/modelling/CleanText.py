@@ -1,34 +1,21 @@
+from hashlib import new
 import pandas as pd
 import numpy as np
 import re
 from typing import List
 import contractions
-import logging
 import tqdm
 import swifter 
+import gc
 import spacy
-
-nlp = spacy.load("en_core_web_lg")
-
 import nltk
 from nltk.corpus import stopwords
+import pkg_resources
+from symspellpy import SymSpell, Verbosity
+
 nltk.download('stopwords')
 nltk.download('punkt')
 nltk.download('wordnet')
-
-import pkg_resources
-from symspellpy import SymSpell, Verbosity
-sym_spell = SymSpell(max_dictionary_edit_distance=3, prefix_length=7)
-dictionary_path = pkg_resources.resource_filename(
-    "symspellpy", "frequency_dictionary_en_82_765.txt")
-if sym_spell.word_count:
-    pass
-else:
-    sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1)
-
-from nltk.tokenize import sent_tokenize, word_tokenize
-from nltk.stem import PorterStemmer
-
 
 class TextCleaner(object):
     """Input text cleaning 
@@ -45,7 +32,7 @@ class TextCleaner(object):
     - lower case 
     - remove numbers
     - replace industry specific words 
-    - check miss spellings for words longer than 5 caracter (english only)
+    - check miss spellings for words longer than 3 caracter (english only) -> save it into file for further industry replacement
     - replace contraction words (english only)
     - keep noun to noun chunks
     - keep final comments of at least 6 caracters
@@ -55,17 +42,23 @@ class TextCleaner(object):
     """
 
     def __init__(self, stop_word_list = [], language="english", 
-                is_sp_removed=True, remove_words=[], industry_words=pd.DataFrame([])):
+                is_sp_removed=True, remove_words=[], industry=pd.DataFrame([])):
 
         self.language= language
         self.stop_word_list = stop_word_list
         self.is_sp_removed = is_sp_removed
         self.remove_words = remove_words
+        self.nlp = spacy.load("en_core_web_lg")
         self.list_tuples_replace = []
-        self.porter = PorterStemmer()
 
-        if industry_words.shape[0] > 0:
-            self.list_tuples_replace = list(industry_words.to_records(index=False))
+        self.sym_spell = SymSpell(max_dictionary_edit_distance=3, prefix_length=7)
+        self.dictionary_path = pkg_resources.resource_filename(
+            "symspellpy", "frequency_dictionary_en_82_765.txt")
+
+        if industry.shape[0] > 0:
+            if industry.shape[1] == 2:
+                industry.columns = ["FROM", "TO"]
+                self.list_tuples_replace = list(industry.to_records(index=False))
 
         self.check_language()
         self.get_stop_words()
@@ -78,11 +71,13 @@ class TextCleaner(object):
         if len(self.stop_word_list) == 0:
             self.stop_word_list = stopwords.words(self.language)
 
+        if len(self.remove_words) > 0 and isinstance(self.remove_words, list):
+            self.remove_words = [self.replace_nnp(x) for x in self.remove_words]
+
         # remove important stop words from removelist
         self.stop_word_list = self.remove_words + \
                                 list(set(self.stop_word_list) - \
-                                set(["more", "not", "no", "off", "down"])) + \
-                                ["none", "na", "nan", "cr"]
+                                set(["not", "no", "off", "down", "more"]))
 
 
     def check_language(self):
@@ -90,8 +85,31 @@ class TextCleaner(object):
         Check input language is in ["english"] 
         """
         list_languages = ["english"]
-        if self.language not in list_languages:
-            logging.error(f"[Language] Please ensure stopwords are in {list_languages}")
+        # if self.language not in list_languages:
+        #     logging.error(f"[Language] Please ensure stopwords are in {list_languages}")
+
+
+    def enshape_df(self, text):
+        """Ensure text has proper df shape otherwise change it
+
+        Args:
+            text ([Depends]): [input text to analyse]
+
+        Returns:
+            [Array]: [rightly shaped text]
+        """
+
+        if isinstance(text, pd.Series):
+            return np.array(text.tolist())
+
+        elif isinstance(text, list):
+            return np.array(text)
+
+        elif isinstance(text, np.array):
+            return text
+
+        else:
+            raise Exception("Please provide a pd.Serie object or an np.array")
 
 
     def exclude_impossible_answers(self, text, nbr_caracters=4):
@@ -148,6 +166,8 @@ class TextCleaner(object):
         x = re.sub("[^\w\s_]", " ", x)
 
         #replace 
+        x =  str(x).replace(" a c ", " consultant ")
+        x =  str(x).replace(" l d ", " learning developments ")
         x =  str(x).replace(" e g ", " example ")
 
         # remove extra spaces
@@ -173,7 +193,7 @@ class TextCleaner(object):
         if len(x) <= 50:
             return x 
 
-        chunks =  list(nlp(str(x)).noun_chunks)
+        chunks =  list(self.nlp(str(x)).noun_chunks)
 
         if len(chunks) == 0:
             return x
@@ -217,12 +237,12 @@ class TextCleaner(object):
 
     def f_stopw(self, w_list : List[str], list_stop_words : List[str]) -> List[str]:
         """
-        filtering out stop words & words shorter than 2 letters
+        filtering out stop words
         """
-        return [word for word in w_list if word not in list_stop_words and len(word) > 2]
+        return [word for word in w_list if word not in list_stop_words]
 
 
-    def f_typo(self, w_list : List[str]) -> List[str]:
+    def f_typo(self, w_list : List[str], to_fix : List[str]) -> List[str]:
         """
         rewrite miss spelled words and remove one letter ones 
         :param w_list: word list to be processed
@@ -231,26 +251,26 @@ class TextCleaner(object):
 
         w_list_fixed = []
         for word in w_list:
-            suggestions = sym_spell.lookup(word, 
+            suggestions = self.sym_spell.lookup(word, 
                                         Verbosity.CLOSEST, 
                                         max_edit_distance=3, 
                                         include_unknown=False)
             if suggestions:
-                if len(suggestions[0].term) > 3 and len(word)> 3:
-                    # if  suggestions[0].term != word:
-                    #     print(word, suggestions[0].term)
-                    w_list_fixed.append(suggestions[0].term)
+                if len(suggestions[0].term) > 2 and len(word)> 2:
+                    if suggestions[0].term != word:
+                        to_fix.append({"ORIGIN" : word,"TRANSLATION": suggestions[0].term})
+                    w_list_fixed.append(word) 
                 else:
                     if len(word)>1:
                         w_list_fixed.append(word)
             else:
-                pass
+                w_list_fixed.append(word)
 
-        return w_list_fixed
+        return w_list_fixed, to_fix
 
         
     # filtering out punctuations and numbers
-    def f_number(self, w_list : List[str]) -> List[str]:
+    def f_punct(self, w_list : List[str]) -> List[str]:
         """
         :param w_list: word list to be processed
         :return: w_list with punct and number filter out
@@ -258,19 +278,11 @@ class TextCleaner(object):
         return [word for word in w_list if word.isalpha()]
 
 
-    def stemSentence(self, sentence):
-        token_words=word_tokenize(sentence)
-        stem_sentence=[]
-        for word in token_words:
-            stem_sentence.append(self.porter.stem(word))
-            stem_sentence.append(" ")
-        return "".join(stem_sentence)
-
-
     def preprocess_word(self, new_text : np.array, list_stop_words : List[str]) -> np.array:
-        cut_tt = []
 
-        logging.info(f"Cleaning stop words / punctuation / miss spelling for {self.language}")
+        cut_tt = []
+        to_fix = []
+
         for txt in tqdm.tqdm(new_text):
             w_list = nltk.word_tokenize(txt)
 
@@ -281,61 +293,70 @@ class TextCleaner(object):
             w_list = self.f_stopw(w_list, list_stop_words)
 
             #clean miss spelled words / remove unknown
-            w_list = self.f_number(w_list)
+            w_list = self.f_punct(w_list)
 
             #clean miss spelled words / remove unknown
-            # w_list = self.f_typo(w_list)
+            w_list, to_fix = self.f_typo(w_list, to_fix)
 
             cut_tt.append(" ".join(w_list))
 
         new_text = np.array(cut_tt)
 
-        return new_text
+        return new_text, to_fix
 
 
-    def split_sentences(self, x): 
-        sentences = sent_tokenize(x)
-        if len(sentences) <= 3:
-            return x 
-        else: 
-            length_sentences = [len(u) for u in sentences]
-            threshold = np.percentile(length_sentences, 75)
-            index_centences =  length_sentences >= threshold
-            return ". ".join((np.array(sentences)[index_centences]))
-
-
-    def clean_text(self, data, target) -> pd.DataFrame:
+    def clean_text(self, data : pd.DataFrame, target : str, function_progress = "") -> pd.DataFrame:
         """
         Clean text for class terms in a vectorized way
         """
 
+        if self.sym_spell.word_count:
+            pass
+        else:
+            self.sym_spell.load_dictionary(self.dictionary_path, term_index=0, count_index=1)
+
         # chunk into sentences 
-        logging.info(f"Split text into sentences")
-        data["TARGET"] = data[target]
+        df = data.copy()
+
+        # REMOVE NON USEFUL COMMENTS
+        df = df.loc[~df[target].isnull()]
+        df = df.loc[df[target].apply(lambda x : len(str(x))) > 10]
+
+        data["TARGET"] = df[target]
+        df["_TEXT_COMMENT"] = data["TARGET"].swifter.set_dask_scheduler(scheduler="processes").apply(lambda x: list(self.nlp(str(x)).sents))
+        df = df.explode("_TEXT_COMMENT")
+        function_progress(f"Split Comments into sentences {data.shape[0]} to {df.shape[0]}", 5)
+        df["_TEXT_COMMENT"] = df["_TEXT_COMMENT"].apply(lambda x : str(x))
+        df = df.loc[~df["_TEXT_COMMENT"].isin([" "])]
 
         # clean_final_comments
-        data = data.loc[~data["TARGET"].isin([" "])]
-
-        # index ref through the code
-        data["ID_TEXT"] = data.index
-        data = data.reset_index(drop=True) 
-        data["INDEX"] = data.index
+        df["INDEX"] = df.index
 
         # it will be used as a separator 
-        logging.info(f"Normalize text")
         vfunc = np.vectorize(self.replace_nnp)
-        new_text = vfunc(data["TARGET"].tolist())
+        new_text = vfunc(df["_TEXT_COMMENT"].tolist())
 
         # remove stop words 
         if self.is_sp_removed:
-            data["CLEAN_TEXT"] = self.preprocess_word(new_text, self.stop_word_list)
-
-        # data["LENGTH_TEXT"] = data["CLEAN_TEXT"].apply(lambda x: len(x))
-        # long_text = int(np.percentile(data["LENGTH_TEXT"], 90))
-        # data["CLEAN_TEXT"] = data["CLEAN_TEXT"].apply(lambda x : x[:min(len(x), long_text)])
-
-        # chunk size
-        # logging.info(f"Split text into noun chunks and rejoin")
-        # df["CLEAN_TEXT"] = df["CLEAN_TEXT"].swifter.set_dask_scheduler(scheduler="processes").apply(lambda x: self.get_chunk(x))
+            df["CLEAN_TEXT"], to_fix = self.preprocess_word(new_text, self.stop_word_list)
+        function_progress(f"Spelling check and remove non necessary words", 10)
         
-        return data
+        # chunk size
+        df["CLEAN_TEXT"] = df["CLEAN_TEXT"].swifter.set_dask_scheduler(scheduler="processes").apply(lambda x: self.get_chunk(x))
+        
+        #keep only more than 4 caracters comments
+        function_progress(f"Focus on import sentence part (chunking)", 15)
+
+        # keep comments between 5 - 300 caracters
+        l = df["CLEAN_TEXT"].apply(lambda x : len(str(x)))
+
+        # clean it all 
+        del new_text 
+        del self.sym_spell
+        del self.nlp
+        del self.stop_word_list
+        gc.collect()
+
+        self.to_fix = pd.DataFrame(to_fix)
+
+        return df.loc[l.between(10, 350)]

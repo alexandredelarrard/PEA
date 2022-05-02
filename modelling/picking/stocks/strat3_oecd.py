@@ -1,4 +1,5 @@
 # https://data.oecd.org/price/inflation-cpi.htm
+# https://data.oecd.org/interest/long-term-interest-rates.htm#indicator-chart
 
 from re import A
 import pandas as pd 
@@ -9,23 +10,41 @@ from pathlib import Path as pl
 from data_prep.sbf120.stock import stock_processing
 from data_prep.sbf120.main_data_prep import read_files
 
-def load_oecd_data(base_path):
+def load_macroeconomy_data(base_path):
 
-    inflation = pd.read_csv(base_path / pl("data/external/inflation_history_oecd.csv"), sep=";")
-    rates = pd.read_csv(base_path / pl("data/external/interest_rates_oecd.csv"), sep=";")
+    macro_data = {}
 
-    inflation = inflation[["LOCATION", "TIME", "Value"]]
-    rates = rates[["LOCATION", "TIME", "Value"]]
+    macro_data["INFLATION"] = pd.read_csv(base_path / pl("data/external/inflation_rates_since_1980.csv"), sep=",")
+    macro_data["LT_RATES"] = pd.read_csv(base_path / pl("data/external/long_term_rates_since_1980.csv"), sep=",")
+    macro_data["ST_RATES"] = pd.read_csv(base_path / pl("data/external/short_term_rates_since_1980.csv"), sep=",")
+    macro_data["PPI_RATES"] = pd.read_csv(base_path / pl("data/external/producer_price_index_since_1980.csv"), sep=",")
+    macro_data["UNEMPLOYMENT_RATES"] = pd.read_csv(base_path / pl("data/external/unemployment_rate_since_1980.csv"), sep=",")
     
-    rates["TIME"] = pd.to_datetime(rates["TIME"]).dt.to_period("M")
-    inflation["TIME"] = pd.to_datetime(inflation["TIME"]).dt.to_period("M")
+    #commodities 
+    macro_data["GOLD"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/gold.csv"), sep=",")
+    macro_data["SILVER"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/silver.csv"), sep=",")
+    macro_data["s&p500"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/s&p500.csv"), sep=",")
+    macro_data["WHEAT"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/wheat.csv"), sep=",")
+    macro_data["BRENT"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/brent.csv"), sep=",")
+    macro_data["GAS"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/gas.csv"), sep=",")
+    macro_data["SUGAR"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/sugar.csv"), sep=",")
+    macro_data["COPPER"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/copper.csv"), sep=",")
+    macro_data["COFFEE"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/coffee.csv"), sep=",")
+    macro_data["CACAO"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/cacao.csv"), sep=",")
+    macro_data["COTTON"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/cotton.csv"), sep=",")
+    macro_data["VIX"] = pd.read_csv(base_path / pl("data/extracted_data/commodities/vix.csv"), sep=",")
 
-    return inflation, rates
+    for indic in macro_data.keys():
+        if len(set(["INDICATOR", "SUBJECT", "FREQUENCY", "Flag Codes", "MEASURE"]).intersection(macro_data[indic].columns)) == 5: 
+            macro_data[indic] = macro_data[indic].drop(["INDICATOR", "SUBJECT", "FREQUENCY", "Flag Codes", "MEASURE"], axis=1)
+            macro_data[indic]["TIME"] = pd.to_datetime(macro_data[indic]["TIME"], format="%Y-%m").dt.to_period("M")
+
+    return macro_data
 
 
 def leverage_oecd_data(base_path, data, df):
 
-    inflation, rates = load_oecd_data(base_path)
+    macro_data = load_macroeconomy_data(base_path)
 
     mapping_location = {"IT": "ITA", "GB": "GBR", "DE": "DEU", 
                         "BE": "BEL", "CH" : "CHN", 
@@ -40,6 +59,8 @@ def leverage_oecd_data(base_path, data, df):
 
     file_path = base_path / pl("data/extracted_data")
     results_analysis = {}
+    inflation = macro_data["INFLATION"]
+    rates= macro_data["LT_RATES"]
 
     for company in tqdm.tqdm(data["REUTERS_CODE"].unique()):
 

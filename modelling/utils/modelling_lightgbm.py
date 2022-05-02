@@ -149,7 +149,7 @@ class TrainModel(object):
                                    train_set=train_data, 
                                     valid_sets=[train_data, val_data],
                                     valid_names=["data_train", "data_valid"],
-                                    verbose_eval=100)
+                                    verbose_eval=1000)
 
             else:
                 if "early_stopping_round" in self.params["parameters"]:
@@ -233,7 +233,8 @@ class TrainModel(object):
             # concatenate all test_errors
             total_test = pd.concat([total_test, x_val], axis=0).reset_index(drop=True)
 
-        self.evaluate_model(model, total_test, final=True)
+        self.evaluate_model(model, total_test, final=False)
+        print("TRAIN full model")
         model = self.train_on_set(data, init_score=init_score)
         self.total_test= total_test
         

@@ -5,6 +5,86 @@ resources:
 urls:
   reuters: https://www.reuters.com
 
+
+stock_modelling_to_sector:
+  TARGET: "TARGET_STOCK_+5D_SECTOR_MARKET"
+  WEIGHT: WEIGHT
+  FEATURES:
+    # - WEEK_DAY 
+    # - MONTH_DAY 
+    - WEEK
+    - COUNTRY
+    - SECTOR
+    - STOCK_DISTANCE_TO_MARKET_SECTOR_1W_MEAN
+    - STOCK_DISTANCE_TO_MARKET_SECTOR_2W_MEAN
+    - STOCK_DISTANCE_TO_MARKET_SECTOR_4W_MEAN
+    - STOCK_DISTANCE_TO_MARKET_SECTOR_8W_MEAN
+    - STOCK_DELTA_1Y_TREND_SECTOR_MARKET
+    - VIX_0D_TO_2W_MEAN
+    - SECTOR_STOCK_1W_STD_RATIO
+    - SECTOR_STOCK_2W_STD_RATIO
+    - DISTANCE_VOLUME_0D_TO_2W_MEAN
+    - DISTANCE_VOLUME_0D_TO_4W_MEAN
+    - DISTANCE_VOLUME_0D_TO_8W_MEAN
+  categorical_features:
+    # - WEEK_DAY 
+    - WEEK
+    - SECTOR
+    - COUNTRY
+  seed: 5432
+  n_splits: 5
+  parameters:
+    objective: "regression"
+    eval_metric: "mape"
+    metric: 'mape'
+    max_depth: 7
+    min_data_in_leaf: 65
+    colsample_bytree: 0.75
+    subsample: 0.75
+    learning_rate: 0.1
+    num_iteration: 5000
+    lambda_l1 : 2
+    n_jobs: 7
+    verbose_eval: 1000
+    verbose : -1
+    early_stopping_round: 40
+
+  
+sector_modelling_to_market:
+  TARGET: "TARGET_SECTOR_+5D_TO_MARKET"
+  WEIGHT: WEIGHT
+  FEATURES:
+    - WEEK_DAY 
+    - MONTH_DAY 
+    - WEEK
+    - COUNTRY
+    - SECTOR
+    - VALUE_INFLATION
+    - VALUE_LT_RATES
+  categorical_features:
+    - WEEK_DAY 
+    - WEEK
+    - SECTOR
+    - COUNTRY
+  seed: 5432
+  n_splits: 5
+  parameters:
+    objective: "regression"
+    eval_metric: "mape"
+    metric: 'mape'
+    max_depth: 7
+    min_data_in_leaf: 65
+    colsample_bytree: 0.75
+    subsample: 0.75
+    learning_rate: 0.1
+    num_iteration: 5000
+    lambda_l1 : 2
+    n_jobs: 7
+    verbose_eval: 1000
+    verbose : -1
+    early_stopping_round: 40
+
+
 regression_model:
   TARGET: "_P/E_+1Q_Y"
   FEATURES:

@@ -165,6 +165,8 @@ def add_pe_infos(new_results, data, analysis_dict, df_currency, agg_stock, max_q
     new_results["LATEST_DATE_FINANCIALS"] = data.columns[1].strftime("%Y-%m")
     new_results["LATEST_Q_EQUAL_LAST_Y"] = data.columns[1] == max_quarter
 
+    #_P/E_+1Q_Y- 0 est le P/E actuel en date d'aujourd'hui
+
     return new_results
 
 

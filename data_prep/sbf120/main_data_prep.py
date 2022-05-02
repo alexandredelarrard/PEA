@@ -12,7 +12,7 @@ from data_prep.sbf120.profile import profile_analysis
 from data_prep.sbf120.people import people_analysis
 
 
-def read_files(params):
+def read_files(params, specific=None):
 
     inputs = {}
 
@@ -21,12 +21,22 @@ def read_files(params):
     liste_files_date_company = os.listdir(params["base_path"] / pl(params["company"]) / finance_date)
 
     for file in liste_files_date_company: 
-        f = file.replace(".csv", "")
-        try:
-            inputs[f] = pd.read_csv(params["base_path"] / pl(params["company"]) / pl(finance_date) / file)
-        except Exception as e: 
-            # print(f"ERROR LOAD DATA : {params['company']} / {f} / {e}")
-            pass
+
+        if specific: 
+            if specific in file:
+                f = file.replace(".csv", "")
+                try:
+                    inputs[f] = pd.read_csv(params["base_path"] / pl(params["company"]) / pl(finance_date) / file)
+                except Exception as e: 
+                    # print(f"ERROR LOAD DATA : {params['company']} / {f} / {e}")
+                    pass
+        else:
+            f = file.replace(".csv", "")
+            try:
+                inputs[f] = pd.read_csv(params["base_path"] / pl(params["company"]) / pl(finance_date) / file)
+            except Exception as e: 
+                # print(f"ERROR LOAD DATA : {params['company']} / {f} / {e}")
+                pass
 
     return inputs
 
@@ -39,6 +49,8 @@ def post_processing(results):
 
     second_drop = results.T.loc[(results.T['_TOTAL_REVENUE_1'] < 5)].index
     results = results.drop(second_drop, axis=1)
+
+    # drop those without stock infos 
 
     print(f"Dropped MVS : {len(to_drop)}")
     print(f"Dropped Less 10M CA : {len(second_drop)}")

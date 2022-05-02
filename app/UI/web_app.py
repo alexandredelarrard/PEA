@@ -94,7 +94,7 @@ def display_results(st, results, widget_ui):
     add_graph_bilan(results, company)
 
     st.header("P/E")
-    pe = ['PROFILE_FORWARD_P_E', "P/E_PREDICTION", 
+    pe = ['PROFILE_FORWARD_P_E', "P/E_PREDICTION", "_P/E_+1Q_Y-0",
         '_P/E_Y-0', '_P/E_Y-1', '_P/E_Y-2', '_P/E_Y-3']
     st.line_chart(sub_df[pe].T.clip(0, 85), 1500, 750)
 

@@ -1,0 +1,11 @@
+version: "2"
+services:
+    topic_extraction:
+        container_name: cryptos
+        build: 
+            context: .
+            dockerfile: dockerfile
+        ports:
+            - "8501:8501"
+        restart: always
+    

@@ -1,0 +1,11 @@
+krakenex
+matplotlib
+numpy
+pandas
+pyyaml
+scikit-learn
+scipy
+streamlit>=1.1
+tqdm
+python-dotenv
+python-kraken-sdk

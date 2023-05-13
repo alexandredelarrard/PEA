@@ -1,0 +1,28 @@
+#Use the python container image
+FROM python:3.7.10
+
+# Creating Working 
+WORKDIR /app
+
+# Copying the crontab file 
+COPY cron /etc/cron.d/crontab
+
+# Copy the current directory contents into the container at /app
+COPY . /app
+
+RUN apt-get update && apt-get -y install cron nano
+
+# install packages
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
+
+RUN chmod 0644 /etc/cron.d/crontab
+RUN crontab /etc/cron.d/crontab
+
+# Create the log file to be able to run tail
+RUN touch /var/log/cron.log
+
+# RUN echo "* * * * * python /app/main.py > /proc/1/fd/1 2>/proc/1/fd/2" >> editcron && \
+#         crontab editcron
+
+CMD cron && tail -f /var/log/cron.log

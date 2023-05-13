@@ -1,0 +1,2 @@
+*/10 * * * * cd ../app && /usr/local/bin/python3.7 main.py 
+#&> /var/log/cron.log

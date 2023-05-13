@@ -1,6 +1,6 @@
 import warnings
-import pandas as pd
 import streamlit as st
+import logging
 
 from data_prep.data_preparation_crypto import PrepareCrytpo 
 from strategy.strategie_1 import MainStrategy 
@@ -12,32 +12,33 @@ st.set_page_config(layout="wide")
 
 def main():
 
-    lags = [7, 15, 30, 45]
-
     #### initiate app
-    app = App(st=st, lags=lags)
+    data_prep = PrepareCrytpo()
+    app = App(st=st, configs=data_prep.configs)
     inputs = app.get_sidebar_inputs()
 
-    if not app.state.done_once:
+    logging.info("starting app")
+    prepared = data_prep.load_prepared()
+    
+    if app.state.done_once == False:
 
-        data_prep = PrepareCrytpo(configs = app.configs, lags=lags)
-        datas = data_prep.load_share_price_data()
+        logging.info("Starting run once")
 
-        # data preparation 
-        app.state.prepared = data_prep.aggregate_crypto_price(datas)
-        app.state.done_once=True
-        
+        app.state.prepared = prepared
         # kraken portfolio
-        kraken = OrderKraken(configs = app.configs)
-        app.state.df_init = kraken.get_current_portolio() 
-        app.state.trades = kraken.get_past_trades(app.state.prepared)
-        app.state.pnl_over_time = kraken.pnl_over_time(app.state.trades, app.state.prepared)
+        kraken = OrderKraken(configs = app.configs, paths=data_prep.path_dirs)
+        app.state.df_init = kraken.load_df_init() 
+        app.state.trades = kraken.load_trades()
+        app.state.pnl_over_time = kraken.load_pnl()
+
+        app.prepare_display_portfolio(app.state.df_init, app.state.pnl_over_time)
+
+        app.state.done_once=True
 
     if app.state.submitted:
 
-        tab1, tab2, tab3 = st.tabs(["Coin", "Portfolio", "Trading"])
+        tab1, tab2, tab3 = app.st.tabs(["COIN_Backtest", "PNL_Backtest", "Portfolio"])
 
-        kraken = OrderKraken(configs = app.configs)
         strat = MainStrategy(configs=app.configs, 
                             start_date=inputs["start_date"], 
                             end_date=inputs["end_date"], 
@@ -52,15 +53,17 @@ def main():
             else:
                 inputs["init_file"] = None
             prepared_currency, pnl_currency = strat.main_strategie_1(app.state.prepared, currency = inputs["currency"])
-            pnl_currency = strat.strategy_1_lags_comparison(app.state.prepared, currency = inputs["currency"], lags=lags)
+            pnl_currency = strat.strategy_1_lags_comparison(app.state.prepared, currency = inputs["currency"])
             app.display_backtest(inputs, pnl_currency, prepared_currency)
 
         with tab2:
-            app.display_portfolio(app.state.df_init, app.state.trades, app.state.pnl_over_time)
-
-        with tab3:
             pnl_prepared, moves_prepared = strat.main_strategy_1_anaysis_currencies(app.state.prepared)
             app.display_market(pnl_prepared, moves_prepared)
+
+        with tab3:
+            app.display_portfolio(app.state.trades)
+
+        logging.info("Finished tables creation")
 
 if __name__ == "__main__":
     main()

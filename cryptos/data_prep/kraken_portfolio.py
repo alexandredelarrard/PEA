@@ -1,16 +1,19 @@
 
 from kraken.spot import User, Market, Trade, Funding, Staking
 import pandas as pd 
+import pickle
+import glob
 from datetime import datetime
 import os
 
 class OrderKraken(object):
 
-    def __init__(self, configs):
+    def __init__(self, configs, paths):
         self.key = os.environ["API_KRAKEN"]
         self.secret = os.environ["API_PRIVATE_KRAKEN"]
         self.configs = configs
-        self.currencies = self.configs["cryptos_desc"]["Cryptos"]
+        self.path_dirs=paths
+        self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
         self.mapping_kraken = {"XETH" : "ETH",
                                 "XXBT" : "BTC",
                                 "XXLM" : "XLM",
@@ -109,6 +112,46 @@ class OrderKraken(object):
             
             pnl_prepared = pnl_prepared.drop(["time", "amount", f"CLOSE_{currency}", "fee", "cost/gain"], axis=1)
 
-        pnl_prepared["PNL_PORTFOLIO"] = pnl_prepared.sum(axis=1)
+        pnl_prepared["PNL_PORTFOLIO"] = pnl_prepared.sum(axis=1, numeric_only=True)
 
         return pnl_prepared
+    
+    #### SAVERS / LOADERS
+    def save_trades(self, trades):
+        utcnow = datetime.today().strftime("%Y-%m-%d_%H-%S")
+        pickle.dump(trades, open("/".join([self.path_dirs["PORTFOLIO"], f"trades_{utcnow}.pkl"]), 'wb'))
+
+    def save_pnl(self, pnl):
+        utcnow = datetime.today().strftime("%Y-%m-%d_%H-%S")
+        pickle.dump(pnl, open("/".join([self.path_dirs["PORTFOLIO"], f"pnl_{utcnow}.pkl"]), 'wb'))
+
+    def save_df_init(self, df_init):
+        utcnow = datetime.today().strftime("%Y-%m-%d_%H-%S")
+        pickle.dump(df_init, open("/".join([self.path_dirs["PORTFOLIO"], f"df_init_{utcnow}.pkl"]), 'wb'))
+
+    def load_trades(self):
+        list_of_files = glob.glob(self.path_dirs["PORTFOLIO"]+"/trades_*") 
+        if len(list_of_files)>0:
+            latest_file = max(list_of_files, key=os.path.getctime)
+            return pickle.load(open(latest_file, 'rb'))
+        else:
+            return None
+        
+    def load_pnl(self):
+
+        list_of_files = glob.glob(self.path_dirs["PORTFOLIO"]+"/pnl_*") 
+        if len(list_of_files)>0:
+            latest_file = max(list_of_files, key=os.path.getctime)
+            return pickle.load(open(latest_file, 'rb'))
+        else:
+            return None
+    
+    def load_df_init(self):
+
+        list_of_files = glob.glob(self.path_dirs["PORTFOLIO"]+"/df_init_*") 
+        if len(list_of_files)>0:
+            latest_file = max(list_of_files, key=os.path.getctime)
+            return pickle.load(open(latest_file, 'rb'))
+        else:
+            return None
+        

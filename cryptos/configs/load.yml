@@ -1,0 +1,9 @@
+resources:
+    base_path : C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA
+    data: data/crypto
+
+cryptos_desc:
+    Cryptos: ["BTC", "ETH", "XRP", "ADA", "DOGE", "SOL", "ICP", "SAND", "TRX", "XLM", "STX"] # 
+    URL_BASE: https://www.cryptodatadownload.com/cdd/
+    URL_END: USDT_1h.csv
+    LAGS : [7, 15, 30, 45, "MEAN_LAGS"]

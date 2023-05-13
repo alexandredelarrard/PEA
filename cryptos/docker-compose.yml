@@ -1,11 +1,23 @@
 version: "2"
 services:
-    topic_extraction:
-        container_name: cryptos
+    app:
+        container_name: cryptos_app
         build: 
-            context: .
-            dockerfile: dockerfile
+            dockerfile: dockerfile_app
+        volumes:
+            - .:/app/
+            - shared-volume:/app/data
         ports:
             - "8501:8501"
         restart: always
-    
+    mycron:
+        container_name: cryptos_cron
+        build: 
+            dockerfile: dockerfile_main
+        volumes:
+            - .:/app/
+            - shared-volume:/app/data
+        restart: always
+
+volumes:
+  shared-volume: 

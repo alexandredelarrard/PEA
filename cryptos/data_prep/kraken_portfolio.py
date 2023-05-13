@@ -9,8 +9,10 @@ import os
 class OrderKraken(object):
 
     def __init__(self, configs, paths):
+
         self.key = os.environ["API_KRAKEN"]
         self.secret = os.environ["API_PRIVATE_KRAKEN"]
+
         self.configs = configs
         self.path_dirs=paths
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
@@ -25,11 +27,13 @@ class OrderKraken(object):
                                 "SOL" : "SOL",
                                 "TRX" : "TRX",
                                 "SAND" : "SAND"}
+        
+        self.auth_trade = Trade(key=self.key, secret=self.secret)
+        self.user = User(key=self.key, secret=self.secret)
 
     def get_current_portolio(self):
 
-        user = User(key=self.key, secret=self.secret)
-        infos = pd.DataFrame.from_dict({"BALANCE" : user.get_account_balance()}).T 
+        infos = pd.DataFrame.from_dict({"BALANCE" : self.user.get_account_balance()}).T 
         infos.rename(columns = self.mapping_kraken, inplace=True)
         
         remaining_currencies = [x for x in self.currencies if x not in infos.columns]
@@ -38,11 +42,13 @@ class OrderKraken(object):
 
         return infos
     
+    def cancel_orders(self, seconds=90):
+        nbr_orders = self.auth_trade.cancel_all_orders_after_x(timeout=seconds)
+        return nbr_orders
 
     def get_past_trades(self, prepared):
 
-        user = User(key=self.key, secret=self.secret)
-        trades  = user.get_ledgers_info()
+        trades  = self.user.get_ledgers_info()
         df_trades = pd.DataFrame.from_dict(trades["ledger"]).T
 
         df_trades["time"] = pd.to_datetime(df_trades["time"], unit='s')
@@ -75,24 +81,7 @@ class OrderKraken(object):
             receive.loc[condition, "CURRENT_VALUE"] = if_sold_price.round(3)
 
         return receive.drop(["refid"], axis=1)
-
-
-    def get_spreads(self):
-
-        market = Market()
-        infos = {}
-
-        for currency in self.currencies:
-            infos[currency] = market.get_recent_spreads(pair=f"{currency}USD")
-
-
-    def extract_history_data(self):
-
-        market = Market()
-        a = market.get_recent_trades("XBTEUR", interval=60, since="1548111600")
-        a = pd.DataFrame(a['XXBTZEUR'], columns=['unix', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'tradecount'])
-        a["unix"] = pd.to_datetime(a["unix"], unit='s')
-
+        
 
     def pnl_over_time(self, receive, prepared):
 
@@ -129,6 +118,10 @@ class OrderKraken(object):
         utcnow = datetime.today().strftime("%Y-%m-%d_%H-%S")
         pickle.dump(df_init, open("/".join([self.path_dirs["PORTFOLIO"], f"df_init_{utcnow}.pkl"]), 'wb'))
 
+    def save_orders(self, orders):
+        utcnow = datetime.today().strftime("%Y-%m-%d_%H-%S")
+        pickle.dump(orders, open("/".join([self.path_dirs["ORDERS"], f"orders_{utcnow}.pkl"]), 'wb'))
+
     def load_trades(self):
         list_of_files = glob.glob(self.path_dirs["PORTFOLIO"]+"/trades_*") 
         if len(list_of_files)>0:
@@ -155,3 +148,15 @@ class OrderKraken(object):
         else:
             return None
         
+    def load_orders(self):
+
+        list_of_files = glob.glob(self.path_dirs["ORDERS"]+"/orders_*") 
+        if len(list_of_files)>0:
+            df_orders = pd.DataFrame()
+            for file in list_of_files: 
+                df = pickle.load(open(file, 'rb'))
+                df_orders = pd.concat([df_orders, df], axis=0)
+            return df_orders
+        else:
+            return None
+    

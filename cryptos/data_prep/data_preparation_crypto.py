@@ -52,6 +52,10 @@ class PrepareCrytpo(object):
         if not os.path.isdir(self.path_dirs["PORTFOLIO"]):
             os.mkdir(self.path_dirs["PORTFOLIO"])
 
+        self.path_dirs["ORDERS"] = "/".join([self.path_dirs["BASE"], "orders"])
+        if not os.path.isdir(self.path_dirs["ORDERS"]):
+            os.mkdir(self.path_dirs["ORDERS"])
+
     def load_share_price_data(self):
 
         # urls = self.configs["cryptos_desc"]

@@ -22,17 +22,16 @@ def main():
     # kraken portfolio
     kraken = OrderKraken(configs=data_prep.configs, paths=data_prep.path_dirs)
     df_init = kraken.get_current_portolio() 
-    df_init["CASH"] = 500
 
     # strategy deduce buy / sell per currency
     strat = MainStrategy(configs=data_prep.configs, 
-                        start_date=datetime.utcnow() - timedelta(hours=100),
+                        start_date=datetime.utcnow() - timedelta(hours=2),
                         end_date=datetime.utcnow(), 
-                        lag="15", 
+                        lag="MEAN_LAGS", 
                         fees_buy=0.015, 
                         fees_sell=0.026)
     df_init =  strat.allocate_cash(df_init)
-    pnl_prepared, moves_prepared = strat.main_strategy_1_anaysis_currencies(prepared, df_init)
+    _, moves_prepared = strat.main_strategy_1_anaysis_currencies(prepared, df_init)
 
     # pass orders if more than 0
     if moves_prepared.shape[0]>0:
@@ -42,9 +41,11 @@ def main():
 
         if len(futur_orders)>0:
             passed_orders = trading.pass_orders(orders=futur_orders)
-            time.sleep(trading.expire_time_order + 2)
-            orders_infos = trading.get_orders_info(list_id_orders=passed_orders)
-        
+
+            if len(passed_orders)>0:
+                time.sleep(30)
+                orders_infos = trading.get_orders_info(list_id_orders=passed_orders)
+            
     # save trades and portfolio positions
     trades = kraken.get_past_trades(prepared)
     pnl_over_time = kraken.pnl_over_time(trades, prepared)

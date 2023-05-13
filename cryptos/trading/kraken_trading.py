@@ -3,6 +3,7 @@ from kraken.spot import User, Market, Trade, Funding, Staking
 import pandas as pd 
 import logging
 import os
+from datetime import datetime
 import time
 from utils.general_functions import smart_column_parser
 
@@ -14,7 +15,7 @@ class TradingKraken(object):
         self.secret = os.environ["API_PRIVATE_KRAKEN"]
 
         self.configs = configs
-        self.expire_time_order = 100
+        # self.expire_time_order = 120
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
 
         self.trade_min_vol = {"BTC" : 0.0001,
@@ -90,7 +91,7 @@ class TradingKraken(object):
 
     def validate_orders(self, df_init, moves_prepared):
 
-        orders = []
+        orders = {}
         for index, row in moves_prepared.iterrows():
 
             # get pair 
@@ -112,12 +113,13 @@ class TradingKraken(object):
                                 "side" : side,
                                 "price" : price,
                                 "volume" : volume,
-                                "expiretm": self.expire_time_order, # expire au bout de ~2min
+                                # "expiretm": self.expire_time_order, # expire au bout de ~2min
                                 "oflags" : ["post", "fcib"],
                                 "validate" : True}
                 
+                cash = price*volume*1.015
                 order = self.auth_trade.create_order(**orders[index])
-                logging.info(f"[TRADING][VALIDATE] order {order['descr']} validated")
+                logging.info(f"[TRADING][VALIDATE] order {order['descr']} validated | {cash:.2f} EUR")
                 orders[index]["validate"] = False
 
             else:
@@ -138,18 +140,15 @@ class TradingKraken(object):
 
     def pass_orders(self, orders):
 
-        logging.info(f"[TRADING][ORDERS] Nbr new orders to send {len(orders)}")
-
         passed_orders = []
-        for order in orders: 
+        for k, order in orders.items(): 
             order = self.auth_trade.create_order(**order)
             
             if len(order["error"]) > 0:
                 logging.error(f"[TRADING][ORDER] Passed order failed {order}")
             else:
                 logging.info(f"[TRADING][PASSED] order {order['result']}")
-
-            passed_orders.append(order['result']['txid'])
+                passed_orders.append(order['result']['txid'])
         
         return passed_orders
     
@@ -164,8 +163,7 @@ class TradingKraken(object):
                 orders_status[k] = {'refid' : order['refid'],
                                     "status" : order['status'],
                                     "reason" : order["reason"],
-                                    "opentm" : order['opentm'],
-                                    'closetm' : order['closetm'],
+                                    "opentm" : datetime.fromtimestamp(order['opentm']),
                                     'pair' : order['descr']['pair'],
                                     'vol_exec' : order['vol_exec'],
                                     'price_order' : order['descr']['price'],

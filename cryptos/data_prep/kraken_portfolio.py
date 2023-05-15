@@ -119,8 +119,9 @@ class OrderKraken(object):
         pickle.dump(df_init, open("/".join([self.path_dirs["PORTFOLIO"], f"df_init_{utcnow}.pkl"]), 'wb'))
 
     def save_orders(self, orders):
-        utcnow = datetime.today().strftime("%Y-%m-%d_%H-%S")
-        pickle.dump(orders, open("/".join([self.path_dirs["ORDERS"], f"orders_{utcnow}.pkl"]), 'wb'))
+        if orders.shape[0]>0:
+            utcnow = datetime.today().strftime("%Y-%m-%d_%H-%S")
+            pickle.dump(orders, open("/".join([self.path_dirs["ORDERS"], f"orders_{utcnow}.pkl"]), 'wb'))
 
     def load_trades(self):
         list_of_files = glob.glob(self.path_dirs["PORTFOLIO"]+"/trades_*") 

@@ -1,6 +1,6 @@
 import pandas as pd 
+import numpy as np
 from datetime import datetime
-import logging
 import logging.config as log_config
 import os
 import shutil
@@ -9,6 +9,7 @@ import ssl
 import tqdm
 import pickle
 import yfinance as yf 
+pd.options.mode.chained_assignment = None 
 
 from utils.general_functions import smart_column_parser
 from utils.config import Config
@@ -115,12 +116,13 @@ class PrepareCrytpo(object):
 
         # create currency target 
         agg = full[["DATE", f"CLOSE_{currency}"]]
+        agg.loc[agg[f"CLOSE_{currency}"] <=0, f"CLOSE_{currency}"] = np.nan
         agg = agg.loc[~agg[f"CLOSE_{currency}"].isnull()]
 
         # rolling mean distance to 7d, 15d, 30d, 45d
         liste_targets = []
         for avg_mean in self.lags:
-            if avg_mean != "MEAN_LAGS":
+            if avg_mean not in ["MEAN_LAGS", "MIX_MATCH"]:
                 agg[f"CLOSE_{currency}_ROLLING_MEAN_{avg_mean}D"] = rolling_mean(agg, f"CLOSE_{currency}", len(self.hours)*avg_mean, "mean")
                 agg[f"CLOSE_{currency}_ROLLING_STD_{avg_mean}D"] = rolling_mean(agg, f"CLOSE_{currency}", len(self.hours)*avg_mean, "std")
 
@@ -130,6 +132,8 @@ class PrepareCrytpo(object):
 
         agg[f"TARGET_{currency}_NORMALIZED_MEAN_LAGS"] = agg[liste_targets].mean(axis=1)
         liste_targets.append(f"TARGET_{currency}_NORMALIZED_MEAN_LAGS")
+        agg[f"TARGET_{currency}_NORMALIZED_MIX_MATCH"] = agg[f"TARGET_{currency}_NORMALIZED_7"]
+        liste_targets.append(f"TARGET_{currency}_NORMALIZED_MIX_MATCH")
 
         #tradecount normalized to mean of past 30 days 
         # agg[f"TRADECOUNT_{currency}"] = np.where(agg[f"TRADECOUNT_{currency}"]==0, np.nan, agg[f"TRADECOUNT_{currency}"])
@@ -221,7 +225,3 @@ class PrepareCrytpo(object):
                     shutil.rmtree(file_path)
             except Exception as e:
                 print('Failed to delete %s. Reason: %s' % (file_path, e))
-
-
-if __name__ == "__main__":
-    data_prep = PrepareCrytpo()

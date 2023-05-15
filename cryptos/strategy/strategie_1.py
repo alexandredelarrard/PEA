@@ -1,16 +1,14 @@
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import tqdm
-import random
 from scipy.stats import truncnorm, uniform, norm
 
 
 class MainStrategy(object):
 
-    def __init__(self, configs, start_date, end_date=None, lag=15, fees_buy=0.015, fees_sell=0.026):
+    def __init__(self, configs, start_date, end_date=None):
 
         self.configs = configs
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
@@ -20,71 +18,147 @@ class MainStrategy(object):
         self.end_date = end_date
         if self.end_date !=None:
             self.end_date = pd.to_datetime(end_date , format = "%Y-%m-%d")
+        else:
+            self.end_date = datetime.today()
 
-        self.lag = lag
-        self.fees_buy = fees_buy
-        self.fees_sell = fees_sell
+        self.fees_buy = 0.015
+        self.fees_sell = 0.015
+        self.back_step_months= 3
 
     def deduce_threshold(self, prepared, target):
         # Fit a normal distribution to the data:
         mu, std = norm.fit(prepared.loc[~prepared[target].isnull(), target][:3000])
         return mu - 1.95*std, mu + 1.95*std
 
-    def main_strategie_1(self, 
-                         prepared, 
+    def execute_strategie_1(self, 
+                         sub_prepared, 
                          currency = "BTC",
                          df_init=None):
         
-        seuil_down, seuil_up = self.deduce_threshold(prepared, f"TARGET_{currency}_NORMALIZED_{self.lag}")
-        
         if isinstance(df_init, pd.DataFrame):
-            prepared["CASH"] = float(df_init[f"CASH_{currency}"].values[0])
-            prepared["CURRENCY"] = float(df_init[currency].values[0])
+            sub_prepared["CASH"] = df_init.loc["CASH_TO_ALLOCATE", currency]
+            sub_prepared["CURRENCY"] = df_init.loc["BALANCE", currency]
         else:
-            prepared["CASH"] = 100
-            prepared["CURRENCY"] = 0
+            sub_prepared["CASH"] = 100
+            sub_prepared["CURRENCY"] = 0
 
-        if self.end_date == None:
-            self.end_date = datetime.today()
+        sub_prepared["REAL_BUY_SELL"] = 0
+        sub_prepared["AMOUNT"] = 0
 
-        prepared = prepared.loc[prepared["DATE"].between(self.start_date, self.end_date)]
+        for i in sub_prepared.index:
+
+            lag_i = sub_prepared.loc[i, "LAG"]
+
+            if lag_i != "MIX_MATCH":
+                tentative_buy_sell = np.where(sub_prepared.loc[i, f"TARGET_{currency}_NORMALIZED_{lag_i}"] > sub_prepared.loc[i, f"SEUIL_UP_{lag_i}"], -1,
+                                    np.where(sub_prepared.loc[i, f"TARGET_{currency}_NORMALIZED_{lag_i}"] < sub_prepared.loc[i, f"SEUIL_DOWN_{lag_i}"], 1, 0))
+            else: 
+                tentative_buy_sell= 0
+                for lag_i_ in list(set(self.lags) - set(["MIX_MATCH"])):
+                    tentative_buy_sell += np.where(sub_prepared.loc[i, f"TARGET_{currency}_NORMALIZED_{lag_i_}"] > sub_prepared.loc[i, f"SEUIL_UP_{lag_i_}"], -1,
+                                    np.where(sub_prepared.loc[i, f"TARGET_{currency}_NORMALIZED_{lag_i_}"] < sub_prepared.loc[i, f"SEUIL_DOWN_{lag_i_}"], 1, 0))
+                tentative_buy_sell = np.where(tentative_buy_sell>=1, 1, 
+                                     np.where(tentative_buy_sell<=-1, -1, 0)) 
+
+            if ((tentative_buy_sell==-1)&(sub_prepared.loc[i, "CURRENCY"]>0)):
+                sub_prepared.loc[i:, "AMOUNT"] = (1-self.fees_sell)*sub_prepared.loc[i, f"CLOSE_{currency}"]*sub_prepared.loc[i, "CURRENCY"]
+                sub_prepared.loc[i:, "CASH"] +=  sub_prepared.loc[i:, "AMOUNT"]
+                sub_prepared.loc[i:, "CURRENCY"] = 0
+                sub_prepared.loc[i, "REAL_BUY_SELL"] = -1
+                
+            if ((tentative_buy_sell==1)&(sub_prepared.loc[i, "CASH"]>0)):
+                sub_prepared.loc[i:, "CURRENCY"] += ((1-self.fees_buy)*sub_prepared.loc[i, "CASH"])/sub_prepared.loc[i, f"CLOSE_{currency}"]
+                sub_prepared.loc[i:, "AMOUNT"] = -1*sub_prepared.loc[i, "CASH"]
+                sub_prepared.loc[i:, "CASH"] = 0
+                sub_prepared.loc[i, "REAL_BUY_SELL"] = 1
+            
+        sub_prepared["PNL"] = sub_prepared["CASH"] + sub_prepared["CURRENCY"]*sub_prepared[f"CLOSE_{currency}"]
+        pnl = sub_prepared[["DATE", "PNL"]].groupby("DATE").mean().reset_index()
+
+        return sub_prepared, pnl
+    
+
+    def main_strategy_1(self, prepared, currency = "BTC",
+                        df_init=None, lag=None):
+        
+        for l in self.lags:
+            prepared[f"SEUIL_DOWN_{l}"], prepared[f"SEUIL_UP_{l}"] = self.deduce_threshold(prepared, f"TARGET_{currency}_NORMALIZED_{l}")
+        
+        keep_cols = ["DATE", f"CLOSE_{currency}"] + [f'TARGET_{currency}_NORMALIZED_{x}' for x in self.lags] \
+                    + [f'SEUIL_UP_{x}' for x in self.lags] + [f'SEUIL_DOWN_{x}' for x in self.lags]
+        date_condition = prepared["DATE"].between(self.start_date, self.end_date)
+        
+        final_prepared = prepared.loc[date_condition][keep_cols].reset_index(drop=True)
+        final_prepared["LAG"] = lag
+
+        final_prepared = final_prepared.sort_values("DATE", ascending= True)
         prepared = prepared.sort_values("DATE", ascending= True)
 
-        prepared[f"BUY_HOLD_SELL_{currency}"] = np.where(prepared[f"TARGET_{currency}_NORMALIZED_{self.lag}"] > seuil_up, -1,
-                                    np.where(prepared[f"TARGET_{currency}_NORMALIZED_{self.lag}"] < seuil_down, 1, 0))
-        prepared["REAL_BUY_SELL"] = 0
-        prepared["AMOUNT"] = 0
+        # if lag == None:
 
-        for i in prepared.index:
-            
-            if ((prepared.loc[i, f"BUY_HOLD_SELL_{currency}"]==-1)&(prepared.loc[i, "CURRENCY"]>0)):
-                prepared.loc[i:, "AMOUNT"] = (1-self.fees_sell)*prepared.loc[i, f"CLOSE_{currency}"]*prepared.loc[i, "CURRENCY"]
-                prepared.loc[i:, "CASH"] +=  prepared.loc[i:, "AMOUNT"]
-                prepared.loc[i:, "CURRENCY"] = 0
-                prepared.loc[i, "REAL_BUY_SELL"] = -1
-                
-            if ((prepared.loc[i, f"BUY_HOLD_SELL_{currency}"]==1)&(prepared.loc[i, "CASH"]>0)):
-                prepared.loc[i:, "CURRENCY"] += ((1-self.fees_buy)*prepared.loc[i, "CASH"])/prepared.loc[i, f"CLOSE_{currency}"]
-                prepared.loc[i:, "AMOUNT"] = -1*prepared.loc[i, "CASH"]
-                prepared.loc[i:, "CASH"] = 0
-                prepared.loc[i, "REAL_BUY_SELL"] = 1
-            
-        prepared["PNL"] = prepared["CASH"] + prepared["CURRENCY"]*prepared[f"CLOSE_{currency}"]
-        pnl = prepared[["DATE", "PNL"]].groupby("DATE").mean().reset_index()
+        #     date_range = pd.date_range(start=self.start_date, end=self.end_date, 
+        #                                freq=f"{self.futur_step_days}D")
+        #     for test_date in date_range:
 
-        return prepared, pnl
+        #         start_date_test = test_date - timedelta(days=self.back_step_days)
+        #         end_date_test = test_date
+
+        #         sub_prepared = prepared.loc[prepared["DATE"].between(start_date_test, end_date_test)].reset_index(drop=True)
+        #         pnls = self._lags_comparison(sub_prepared[keep_cols], currency)
+
+        #         if pnls.loc[~pnls["PNL_7"].isnull()].shape[0]>0:
+        #             best_lag = pnls.iloc[-1:, 1:].idxmax(axis=1).values[0].replace("PNL_","")
+        #         else:
+        #             best_lag = "MEAN_LAGS"
+
+        #         condition_final = final_prepared["DATE"].between(test_date, 
+        #                                                     test_date + timedelta(days=self.futur_step_days))
+        #         final_prepared.loc[condition_final, "LAG"] = best_lag
+        
+        return self.execute_strategie_1(final_prepared, 
+                                        currency=currency, 
+                                        df_init=df_init)
 
 
-    def main_strategy_1_anaysis_currencies(self, 
-                                            prepared,
-                                            df_init=None,
-                                            deduce_moves=True):
+    def _lags_comparison(self, prepared, currency = "BTC"):
+        
+        for i, lag in enumerate(self.lags):
+            prepared["LAG"] = lag
+            _, pnl = self.execute_strategie_1(prepared, currency=currency, df_init=None)
+            pnl.rename(columns={"PNL": f"PNL_{lag}"}, inplace=True)
+
+            if i == 0:
+                result = pnl
+            else: 
+                result = result.merge(pnl, on="DATE", how="left", validate="1:1")
+
+        return result 
+    
+
+    def strategy_1_lags_comparison(self, prepared, currency="BTC", df_init=None):
+
+        for i, lag in enumerate(self.lags):
+
+            _, pnl = self.main_strategy_1(prepared, currency = currency,
+                        df_init=df_init, lag=lag)
+            pnl.rename(columns={"PNL": f"PNL_{lag}"}, inplace=True)
+
+            if i == 0:
+                result = pnl
+            else: 
+                result = result.merge(pnl, on="DATE", how="left", validate="1:1")
+
+        return result 
+
+
+    def main_strategy_1_anaysis_currencies(self, prepared, df_init=None,
+                                            lag="15", deduce_moves=True):
         
         moves_prepared = None
         dict_moves = {}
 
         for i, currency in enumerate(self.currencies):
-            dict_moves[currency], dict_pnl = self.main_strategie_1(prepared, currency = currency, df_init=df_init)
+            dict_moves[currency], dict_pnl = self.main_strategy_1(prepared, currency = currency, df_init=df_init, lag=lag)
             dict_pnl.rename(columns={"PNL" : f"PNL_{currency}"}, inplace= True)
 
             if i == 0:
@@ -112,89 +186,36 @@ class MainStrategy(object):
 
         return pnl_prepared, moves_prepared
     
-    def strategy_1_lags_comparison(self, 
-                                   prepared, 
-                                   currency = "BTC"):
+
+    def allocate_cash(self, prepared, df_init, lag="7"):
+
+        cash_start_value = float(df_init.loc["BALANCE", "CASH"])
         
-        init_lag = self.lag
-
-        for i, lag in enumerate(self.lags):
-            self.lag = lag 
-            _, pnl = self.main_strategie_1(prepared, currency = currency)
-            pnl.rename(columns={"PNL": f"PNL_{lag}"}, inplace=True)
-
-            if i == 0:
-                result = pnl
-            else: 
-                result = result.merge(pnl, on="DATE", how="left", validate="1:1")
+        # get the PNL for each currency of the past 3 months
+        tampon_start = self.start_date
+        self.start_date = tampon_start - timedelta(days=int(self.back_step_months*30.5))
+        pnl_prepared, _ = self.main_strategy_1_anaysis_currencies(prepared, lag=lag, deduce_moves=False)
         
-        self.lag = init_lag
+        # deduce proportion of portfolio in theory needed 
+        # idea is that next 3 months will be the same (or close)
+        pnls = (pnl_prepared.iloc[-1, 1:-1] - 100)/(pnl_prepared.iloc[-1, -1] - 100*len(self.currencies))
+        gain_cash = 1 + (pnls - pnls.mean())*4
+        gain_cash = gain_cash/gain_cash.sum()
 
-        return result 
-        
-
-    def cash_available(self, prepared, df_init):
-        
-        vect_cash = []
-        date_range = pd.date_range(prepared["DATE"].min(), prepared["DATE"].max())
-
-        # simulate over 3 months random in 2 years
-        start_index = random.randint(1, len(date_range) - 101)
-        self.start_date = pd.to_datetime(date_range[start_index], format="%Y-%m-%d")
-        self.end_date = pd.to_datetime(date_range[start_index + 100], format="%Y-%m-%d")
-
-        # initialization
+        # get price_value_ each coin 
+        prices = prepared.iloc[0]
+        df_init.loc["BALANCE"] = df_init.loc["BALANCE"].astype(float)
+        df_init.loc["COIN_VALUE"] = 0
+        df_init.loc["TARGET_PERCENTAGE"] = 0
         for currency in self.currencies:
-            vect_cash.append(1/len(self.currencies))
-            df_init[f"CASH_{currency}"] = 1/len(self.currencies)
-            df_init[currency] = 0
+            df_init.loc["COIN_VALUE", currency] = df_init.loc["BALANCE", currency]*prices[f"CLOSE_{currency}"]
+            df_init.loc["TARGET_PERCENTAGE", currency] = gain_cash[f"PNL_{currency}"]
+        df_init.loc["ACTUAL_PERCENTAGE"] = df_init.loc["COIN_VALUE"]/df_init.loc["COIN_VALUE"].sum()
 
-        pnl,_= self.main_strategy_1_anaysis_currencies(prepared, df_init=df_init, deduce_moves=False)
-        sharp = (pnl.iloc[-1, -1] -1)/pnl["PNL_PORTFOLIO"].std()
+        tampon_percentage = np.where(df_init.loc["ACTUAL_PERCENTAGE"]>df_init.loc["TARGET_PERCENTAGE"], 0, df_init.loc["TARGET_PERCENTAGE"])
+        tampon_percentage = tampon_percentage/tampon_percentage.sum()
+        df_init.loc["CASH_TO_ALLOCATE"] = tampon_percentage*cash_start_value
+        df_init.loc["CASH_TO_ALLOCATE"] = (df_init.loc["CASH_TO_ALLOCATE"].astype(float) - 0.4).round(0)
+        self.start_date = tampon_start
 
-        sharps = []
-        all_vects=[vect_cash]
-        pnls = [pnl.iloc[-1, -1]]
-
-        for i in tqdm.tqdm(range(100)):
-
-            # random new value 
-            new_vect = truncnorm.rvs(a=0.04, b=0.25, loc=vect_cash, scale=0.07, size=len(vect_cash))
-            new_vect = new_vect/sum(new_vect)
-            rand = uniform.rvs(size=1)[0]
-
-            for i, currency in enumerate(self.currencies):
-                df_init[f"CASH_{currency}"] = new_vect[i]
-
-            pnl,_= self.main_strategy_1_anaysis_currencies(prepared, df_init=df_init, deduce_moves=False)
-            new_sharp = (pnl.iloc[-1, -1] - 1)/pnl["PNL_PORTFOLIO"].std()
-
-            ratio = new_sharp / sharp
-
-            if ratio > rand:
-                vect_cash= new_vect
-                sharp = new_sharp
-                pnls.append(pnl.iloc[-1, -1]) 
-            else:
-                pnls.append(pnls[-1])
-
-            sharps.append(new_sharp)
-            all_vects.append(vect_cash)
-
-        return pnls[-1], sharps[-1], all_vects[-1], self.start_date, self.end_date
-
-
-    def portfolio_currency_balance(self, prepared, df_init):
-        # MH strategy to find out best sharp ratio 
-
-        
-        results = {"PNL":{}, "SHARP":{}, "CASH" : {}, "START" : {}, "END" : {}}
-
-        for i in range(10):
-            results["PNL"][i], results["SHARP"][i], results["CASH"][i], results["START"][i], results["END"][i] = self.cash_available(prepared, df_init)
-
-    def allocate_cash(self, df_init):
-        cash_start_value = float(df_init["CASH"].values[0])
-        for currency in self.currencies:
-            df_init[f"CASH_{currency}"] = max(0, int((1/len(self.currencies))*cash_start_value) - 1)
         return df_init

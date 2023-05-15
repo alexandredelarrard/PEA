@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 import numpy as np
 import matplotlib.pyplot as plt
 import altair as alt
@@ -25,28 +25,28 @@ class MainApp(object):
         if "prepared" not in self.state:
             self.state.prepared = None
 
-        if "prepared" not in self.state:
+        if "pnl_over_time" not in self.state:
             self.state.pnl_over_time= None 
 
-        if "prepared" not in self.state:
+        if "trades" not in self.state:
             self.state.trades= None 
 
-        if "prepared" not in self.state:
+        if "df_init" not in self.state:
             self.state.df_init= None 
 
-        if "prepared" not in self.state:
+        if "fig1" not in self.state:
             self.state.fig1 = None
 
-        if "prepared" not in self.state:
+        if "chart1" not in self.state:
             self.state.chart1 = None
 
-        if "prepared" not in self.state:
+        if "chart2" not in self.state:
             self.state.chart2 = None
 
-        if "prepared" not in self.state:
+        if "total_portfolio" not in self.state:
             self.state.total_portfolio = None
 
-        if "prepared" not in self.state:
+        if "done_once" not in self.state:
             self.state.done_once = False
 
     def get_sidebar_inputs(self):
@@ -69,15 +69,9 @@ class MainApp(object):
 
         inputs["currency"] = form.selectbox('Select crypto', np.sort(self.currencies))
         inputs["start_date"] = form.date_input("When to start the backtest ?", date(2023,3,1))
-        inputs["end_date"] = form.date_input("When to end the backtest ?", date.today())
+        inputs["end_date"] = form.date_input("When to end the backtest ?", date.today() + timedelta(days=1))
         
         inputs["lag"] = form.selectbox('Select lags target', self.lags)
-        # inputs["fees_buy"] = form.slider("Select transaction fees in % for buy", 0, 15, 1.4)
-        inputs["fees_buy"] = 1.5/100
-
-        # inputs["fees_sell"] = form.slider("Select transaction fees in % for sell", 0, 15, 2.6)
-        inputs["fees_sell"] = 2.6/100
-
         inputs["button"] = form.form_submit_button("Run Analysis", on_click=lambda: self.state.update(submitted=True))
 
         return inputs

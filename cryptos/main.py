@@ -10,6 +10,8 @@ from trading.kraken_trading import TradingKraken
 
 def main():
 
+    prefered_lag = "MIX_MATCH"
+
     # load data
     data_prep = PrepareCrytpo()
 
@@ -25,26 +27,25 @@ def main():
 
     # strategy deduce buy / sell per currency
     strat = MainStrategy(configs=data_prep.configs, 
-                        start_date=datetime.utcnow() - timedelta(hours=2),
-                        end_date=datetime.utcnow(), 
-                        lag="MEAN_LAGS", 
-                        fees_buy=0.015, 
-                        fees_sell=0.026)
-    df_init =  strat.allocate_cash(df_init)
-    _, moves_prepared = strat.main_strategy_1_anaysis_currencies(prepared, df_init)
+                        start_date=datetime.utcnow() - timedelta(hours=1),
+                        end_date=datetime.utcnow())
+    df_init =  strat.allocate_cash(prepared, df_init, lag=prefered_lag)
+    _, moves_prepared = strat.main_strategy_1_anaysis_currencies(prepared, df_init, lag=prefered_lag)
 
     # pass orders if more than 0
+    orders_infos=pd.DataFrame()
     if moves_prepared.shape[0]>0:
         trading = TradingKraken(configs=data_prep.configs)
         trading.cancel_orders()
         futur_orders = trading.validate_orders(df_init, moves_prepared)
 
         if len(futur_orders)>0:
-            passed_orders = trading.pass_orders(orders=futur_orders)
+            logging.info(futur_orders)
+            # passed_orders = trading.pass_orders(orders=futur_orders)
 
-            if len(passed_orders)>0:
-                time.sleep(30)
-                orders_infos = trading.get_orders_info(list_id_orders=passed_orders)
+            # if len(passed_orders)>0:
+            #     time.sleep(30)
+            #     orders_infos = trading.get_orders_info(list_id_orders=passed_orders)
             
     # save trades and portfolio positions
     trades = kraken.get_past_trades(prepared)
@@ -61,5 +62,5 @@ def main():
 
     logging.info("Finished data / strategy execution")
 
-# if __name__ == "__main__":
-#     main()
+if __name__ == "__main__":
+    main()

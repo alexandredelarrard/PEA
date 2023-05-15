@@ -61,7 +61,7 @@ class TradingKraken(object):
         
         elif side == "sell":
             ticker_price = float(ticker["a"][0])
-            price = round(max(ticker_price, 0.99*row).round(4), 4)
+            price = round(max(ticker_price, 0.995*row), 4)
             delta = (price - ticker_price)*100 / ticker_price
 
         else:
@@ -102,7 +102,7 @@ class TradingKraken(object):
             price, tick_price, comment_price = self.deduce_price(row["PRICE"], side, pair)
             
             ## deduce volume 
-            nbr_coins = float(df_init[row["CURRENCY"]].values[0])
+            nbr_coins = float(df_init.loc["BALANCE", row["CURRENCY"]])
             volume = self.deduce_volume(row["AMOUNT"], side, price, nbr_coins)
 
             # all but price / volume 
@@ -113,6 +113,9 @@ class TradingKraken(object):
                                 "side" : side,
                                 "price" : price,
                                 "volume" : volume,
+                                "close_ordertype": "stop-loss-limit",
+                                "close_price" : price*0.93, # perte 7 sur position
+                                "close_price2" : price*0.91,
                                 # "expiretm": self.expire_time_order, # expire au bout de ~2min
                                 "oflags" : ["post", "fcib"],
                                 "validate" : True}
@@ -144,11 +147,11 @@ class TradingKraken(object):
         for k, order in orders.items(): 
             order = self.auth_trade.create_order(**order)
             
-            if len(order["error"]) > 0:
+            if "error" in order.keys() > 0:
                 logging.error(f"[TRADING][ORDER] Passed order failed {order}")
             else:
-                logging.info(f"[TRADING][PASSED] order {order['result']}")
-                passed_orders.append(order['result']['txid'])
+                logging.info(f"[TRADING][PASSED] order {order['descr']}")
+                passed_orders +=order['txid']
         
         return passed_orders
     
@@ -172,6 +175,9 @@ class TradingKraken(object):
                                     'fee' : order['fee'],
                                     'limitprice' : order['limitprice'],
                                     'descr' : order['descr']['order']}
+                
+                if "closetm" in order.keys():
+                    orders_status[k]["closetm"] = datetime.fromtimestamp(order['closetm'])
                 
             orders_status = pd.DataFrame(orders_status).T
             orders_status.columns = smart_column_parser(orders_status.columns)

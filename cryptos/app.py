@@ -41,23 +41,29 @@ def main():
 
         strat = MainStrategy(configs=app.configs, 
                             start_date=inputs["start_date"], 
-                            end_date=inputs["end_date"], 
-                            lag=inputs["lag"], 
-                            fees_buy=inputs["fees_buy"], 
-                            fees_sell=inputs["fees_sell"])
+                            end_date=inputs["end_date"])
 
         # display results / analysis
         with tab1:
             if inputs["init_file"]:
                 inputs["init_file"] = app.state.df_init
+                df_init = strat.allocate_cash(app.state.prepared, inputs["init_file"])
             else:
                 inputs["init_file"] = None
-            prepared_currency, pnl_currency = strat.main_strategie_1(app.state.prepared, currency = inputs["currency"])
-            pnl_currency = strat.strategy_1_lags_comparison(app.state.prepared, currency = inputs["currency"])
+
+            prepared_currency, pnl_currency = strat.main_strategy_1(app.state.prepared, currency=inputs["currency"], 
+                                                                    lag=inputs["lag"], df_init=inputs["init_file"])
+            
+            sub_prepare = app.state.prepared.loc[app.state.prepared["DATE"].between(strat.start_date, strat.end_date)]
+            pnl_currency = strat.strategy_1_lags_comparison(sub_prepare, currency = inputs["currency"], 
+                                                            df_init=inputs["init_file"])
+            
             app.display_backtest(inputs, pnl_currency, prepared_currency)
 
         with tab2:
-            pnl_prepared, moves_prepared = strat.main_strategy_1_anaysis_currencies(app.state.prepared)
+            pnl_prepared, moves_prepared = strat.main_strategy_1_anaysis_currencies(app.state.prepared, 
+                                                                                    lag=inputs["lag"],
+                                                                                    df_init=inputs["init_file"])
             app.display_market(pnl_prepared, moves_prepared)
 
         with tab3:

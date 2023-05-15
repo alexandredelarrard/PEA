@@ -18,17 +18,31 @@ class TradingKraken(object):
         # self.expire_time_order = 120
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
 
-        self.trade_min_vol = {"BTC" : 0.0001,
-                            "ETH" : 0.01,
-                            "ADA" : 15,
-                            "XRP" : 15,
-                            "XLM" : 60,
-                            "STX" : 20,
-                            "SOL" : 0.25,
-                            "ICP" : 1,
-                            "DOGE" : 60,
-                            "TRX" : 100,
-                            "SAND" : 8.5}
+        self.trade_min_vol = {  "BTC" : 0.0001,
+                                "ETH" : 0.01,
+                                "ADA" : 15,
+                                "XRP" : 15,
+                                "XLM" : 60,
+                                "STX" : 20,
+                                "SOL" : 0.25,
+                                "ICP" : 1,
+                                "DOGE": 60,
+                                "TRX" : 100,
+                                "SAND": 8.5
+                            }
+        self.price_decimals = { 
+                                "ICP" : 3,
+                                "SAND": 4,  
+                                "DOGE": 7,
+                                "ADA" : 6,
+                                "BTC" : 4,
+                                "ETH" : 4,
+                                "XRP" : 5,
+                                "XLM" : 6,
+                                "STX" : 4,
+                                "SOL" : 4,
+                                "TRX" : 6
+                            }
 
         self.auth_trade = Trade(key=self.key, secret=self.secret)
         self.auth_user = User(key=self.key, secret=self.secret) 
@@ -49,19 +63,19 @@ class TradingKraken(object):
             logging.warning(f"{row} not in {self.currencies}")
             return "None"
         
-    def deduce_price(self, row, side, pair):
+    def deduce_price(self, row, side, pair, decimals):
 
         ticker = Market().get_ticker(pair=pair)
         ticker = ticker[next(iter(ticker))]
 
         if side == "buy":
             ticker_price = float(ticker["b"][0])
-            price = round(min(ticker_price, row*1.005), 4)
+            price = round(min(ticker_price, row*0.995), decimals)
             delta = (ticker_price - price)*100 / ticker_price # si price << ticjer price then ok 
         
         elif side == "sell":
             ticker_price = float(ticker["a"][0])
-            price = round(max(ticker_price, 0.995*row), 4)
+            price = round(max(ticker_price, row*1.005), decimals)
             delta = (price - ticker_price)*100 / ticker_price
 
         else:
@@ -94,19 +108,24 @@ class TradingKraken(object):
         orders = {}
         for index, row in moves_prepared.iterrows():
 
+            currency = row["CURRENCY"]
+
             # get pair 
-            pair = self.deduce_pair(row["CURRENCY"])
+            pair = self.deduce_pair(currency)
             side = self.deduce_side(row["REAL_BUY_SELL"])
 
             ### check if price match or not 
-            price, tick_price, comment_price = self.deduce_price(row["PRICE"], side, pair)
+            price, tick_price, comment_price = self.deduce_price(row["PRICE"], 
+                                                                 side, 
+                                                                 pair, 
+                                                                 self.price_decimals[currency])
             
             ## deduce volume 
-            nbr_coins = float(df_init.loc["BALANCE", row["CURRENCY"]])
+            nbr_coins = float(df_init.loc["BALANCE", currency])
             volume = self.deduce_volume(row["AMOUNT"], side, price, nbr_coins)
 
             # all but price / volume 
-            min_volume = self.trade_min_vol[row["CURRENCY"]]
+            min_volume = self.trade_min_vol[currency]
             if comment_price == "PASS" and volume >= min_volume:
                 orders[index] = {"ordertype" : "limit",
                                 "pair" : pair,
@@ -114,14 +133,19 @@ class TradingKraken(object):
                                 "price" : price,
                                 "volume" : volume,
                                 "close_ordertype": "stop-loss-limit",
-                                "close_price" : price*0.93, # perte 7 sur position
-                                "close_price2" : price*0.91,
+                                "close_price" : round(price*0.93, self.price_decimals[currency]), # perte max 7% sur position
+                                "close_price2" : round(price*0.91, self.price_decimals[currency]),
                                 # "expiretm": self.expire_time_order, # expire au bout de ~2min
                                 "oflags" : ["post", "fcib"],
                                 "validate" : True}
                 
                 cash = price*volume*1.015
-                order = self.auth_trade.create_order(**orders[index])
+
+                try:
+                    order = self.auth_trade.create_order(**orders[index])
+                except Exception as e:
+                    logging.error(f"[TRADING] {e}")
+
                 logging.info(f"[TRADING][VALIDATE] order {order['descr']} validated | {cash:.2f} EUR")
                 orders[index]["validate"] = False
 

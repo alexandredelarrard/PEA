@@ -116,6 +116,8 @@ class PrepareCrytpo(object):
 
         # create currency target 
         agg = full[["DATE", f"CLOSE_{currency}"]]
+        
+        # remove mvs 
         agg.loc[agg[f"CLOSE_{currency}"] <=0, f"CLOSE_{currency}"] = np.nan
         agg = agg.loc[~agg[f"CLOSE_{currency}"].isnull()]
 
@@ -199,10 +201,9 @@ class PrepareCrytpo(object):
             latest_file = max(list_of_files, key=os.path.getctime)
             ti_c = os.path.getctime(latest_file)
             nbr_days = (datetime.today() - datetime.fromtimestamp(ti_c)).days
-            return pickle.load(open(latest_file, 'rb')), nbr_days + 1
+            return pickle.load(open(latest_file, 'rb')), nbr_days + 20
         else:
             return None, None
-
 
     def load_prepared(self):
         list_of_files = glob.glob(self.path_dirs["INTERMEDIATE"]+"/*")
@@ -212,7 +213,6 @@ class PrepareCrytpo(object):
             return pickle.load(open(latest_file, 'rb'))
         else:
             return None
-
 
     def remove_files_from_dir(self, folder):
 

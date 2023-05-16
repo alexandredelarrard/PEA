@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 import numpy as np
 import matplotlib.pyplot as plt
 import altair as alt
@@ -49,6 +49,12 @@ class MainApp(object):
         if "done_once" not in self.state:
             self.state.done_once = False
 
+        if "orders" not in self.state:
+            self.state.orders = None
+
+        if "portfolio" not in self.state:
+            self.state.portfolio = None
+
     def get_sidebar_inputs(self):
 
         inputs = {"currency" : None,
@@ -68,7 +74,7 @@ class MainApp(object):
         inputs["init_file"] = form.checkbox('Use Kraken current position')
 
         inputs["currency"] = form.selectbox('Select crypto', np.sort(self.currencies))
-        inputs["start_date"] = form.date_input("When to start the backtest ?", date(2023,3,1))
+        inputs["start_date"] = form.date_input("When to start the backtest ?", date.today() - timedelta(days=40))
         inputs["end_date"] = form.date_input("When to end the backtest ?", date.today() + timedelta(days=1))
         
         inputs["lag"] = form.selectbox('Select lags target', self.lags)
@@ -77,9 +83,22 @@ class MainApp(object):
         return inputs
 
 
-    def display_backtest(self, inputs, pnl_currency, prepared_currency):
-        
-        fig, ax = plt.subplots(figsize=(20,10)) 
+    def display_backtest(self, inputs, pnl_currency, prepared_currency, trades):
+
+        trades = trades.copy()
+        real_trade = pd.concat([trades[["TIME_BUY", "ASSET"]], trades.loc[~trades["TIME_SOLD"].isnull()][["TIME_SOLD", "ASSET"]]], axis=0)
+        real_trade["KRAKEN_BUY_SELL"] = np.where(real_trade["TIME_BUY"].isnull(), -2, 2)
+        for col in["TIME_BUY", "TIME_SOLD"]:
+            real_trade[col] = pd.to_datetime(real_trade[col], format="%Y-%m-%d %H:%M%S")
+
+        real_trade["DATE"] = np.where(real_trade["TIME_BUY"].isnull(), real_trade["TIME_SOLD"], real_trade["TIME_BUY"])
+        real_trade["DATE"] = real_trade["DATE"].dt.round("H")
+        real_trade = real_trade.loc[real_trade["ASSET"] == inputs['currency']][["DATE", "KRAKEN_BUY_SELL"]].drop_duplicates()
+        real_trade = prepared_currency[["DATE"]].merge(real_trade, on="DATE", how="left", validate="1:1")
+        real_trade["KRAKEN_BUY_SELL"].fillna(0, inplace=True)
+
+        fig, ax = plt.subplots(figsize=(20,10))
+        real_trade[["DATE", "KRAKEN_BUY_SELL"]].set_index("DATE").plot(ax = ax, color="red", style="--")
         prepared_currency[["DATE", f"REAL_BUY_SELL"]].set_index(["DATE"]).plot(ax = ax)
         prepared_currency[["DATE", f"TARGET_{inputs['currency']}_NORMALIZED_{inputs['lag']}"]].set_index(["DATE"]).plot(ax = ax)
         prepared_currency[["DATE", f"CLOSE_{inputs['currency']}"]].set_index(["DATE"]).plot(ax = ax, secondary_y =True)
@@ -87,47 +106,29 @@ class MainApp(object):
 
         max_date = self.state.prepared["DATE"].max()
         value = self.state.prepared.loc[self.state.prepared["DATE"] == max_date, f"CLOSE_{inputs['currency']}"].values[0]
-        self.st.header(f"SPOT PRICE {inputs['currency']} || {max_date} || {value:.2f}")
+        self.st.header(f"SPOT PRICE {inputs['currency']} || {max_date} || {value:.3f}")
         self.st.line_chart(self.state.prepared[["DATE", f"CLOSE_{inputs['currency']}"]].set_index("DATE"))
 
         self.st.header(f"PNL for currency : {inputs['currency']}")
         self.st.line_chart(pnl_currency.set_index("DATE"))
 
     
-    def prepare_display_portfolio(self, df_init, pnl_over_time):
+    def prepare_display_portfolio(self, df_init, pnl_over_time, trades):
 
-        df_init = df_init[self.currencies + ["CASH"]]
-        df_init = df_init.astype(float)
         labels = list(df_init.columns)
-
-        get_price = self.state.prepared.iloc[0:3]
-
-        for currency in self.currencies:
-            df_init[currency] = df_init[currency]*get_price["CLOSE_" + currency].bfill()[0]
-
-        self.state.total_portfolio = df_init.iloc[0].sum().round(2)
+        self.state.total_portfolio = df_init.loc["COIN_VALUE"].sum().round(2)
         
         self.state.fig1, ax1 = plt.subplots()
-        ax1.pie(df_init.iloc[0], labels=labels, autopct='%1.1f%%',
+        ax1.pie(df_init.loc["COIN_VALUE"], labels=labels, autopct='%1.1f%%',
                 shadow=True, startangle=90)
         ax1.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
 
         # chart 1 
-        pnl_over_time = pnl_over_time.loc[pnl_over_time["DATE"] > "2022-12-01"]
-        split_pnl = pd.DataFrame(columns=["DATE", "PNL", "CURRENCY"])
-
-        for currency in self.currencies:
-            sub_pnl = pnl_over_time[["DATE", f"PNL_{currency}"]]
-            sub_pnl["CURRENCY"] = currency 
-            sub_pnl.rename(columns={f"PNL_{currency}": "PNL"}, inplace=True)
-            split_pnl =pd.concat([split_pnl, sub_pnl], axis=0)
-
-        self.state.chart1 = alt.Chart(split_pnl).mark_line(point=alt.OverlayMarkDef(color="red")).encode(
-            x='DATE',
-            y=alt.Y('PNL', scale=alt.Scale(domain=[split_pnl["PNL"].min()*0.95, 
-                                                    split_pnl["PNL"].max()*1.05])),
-            color="CURRENCY"
-        ).interactive()
+        trades = trades.copy()
+        trades["TIME_SOLD"]= trades["TIME_SOLD"].fillna(datetime.now()).dt.round("D").dt.strftime("%Y-%m-%d")
+        trades["TOTAL_EARNED"] = trades["EARNED_MARGIN"].fillna(0) + trades["TO_EARN_MARGIN"] - trades["FEE_SELL"].fillna(0) - trades["FEE_BUY"].fillna(0)
+        self.state.chart1 = pd.pivot_table(index="TIME_SOLD", columns="ASSET", values="TOTAL_EARNED", aggfunc=sum, data=trades)
+        self.state.chart1 = self.state.chart1.fillna(0)
 
         # chart 2 
         self.state.chart2 = alt.Chart(pnl_over_time).mark_line(point=alt.OverlayMarkDef(color="red")).encode(
@@ -137,38 +138,42 @@ class MainApp(object):
         ).interactive()
 
 
-    def display_portfolio(self, trades):
+    def display_portfolio(self, portfolio, trades, orders):
 
-        def color_survived(val):
-            return ['color: green']*len(val) if val.MARGIN_EUR >0 else ['color: red']*len(val)
+        def color_trades(val):
+            return ['color: green']*len(val) if val.NET_MARGIN_PERCENT > 0 else ['color: red']*len(val)
+
+        def color_orders(val):
+            return ['color: green']*len(val) if val.SIDE == "buy" else ['color: red']*len(val)
 
         col1, col2= self.st.columns([4,2])
         
         # display historical trades (+/- value sur positions ouvertes)
-        col1.header(f"Trades history")
-        col1.dataframe(trades.style.apply(color_survived, axis=1), use_container_width=True)
+        if isinstance(portfolio, pd.DataFrame):
+            if portfolio.shape[0]>0:
+                col1.header(f"Trades history")
+                col1.dataframe(portfolio.style.apply(color_trades, axis=1), use_container_width=True)
 
         # composition of portfolio on latest date
         col2.header(f"Portfolio composition = {self.state.total_portfolio:.2f}")
         col2.pyplot(self.state.fig1)
-        
+
+        # orders 
+        if isinstance(orders, pd.DataFrame):
+            if orders.shape[0]>0:
+                col1.header("Orders history")
+                self.st.dataframe(orders.style.apply(color_orders, axis=1), use_container_width=True)
+                
         # display split PNL over time 
-        self.st.header("Split Portfolio PNL evolution")
-        self.st.altair_chart(self.state.chart1, theme="streamlit", use_container_width=True)
+        self.st.header("Trades")
+        self.st.bar_chart(self.state.chart1, use_container_width=True)
 
         # display global PNL
         self.st.header("Overall Portfolio PNL evolution")
         self.st.altair_chart(self.state.chart2, theme="streamlit", use_container_width=True)
 
         
-    def display_market(self,  pnl_prepared, moves_prepared):
-
-        # col1, col2 = self.st.columns([4,2])
-
-        # dates to buy or sell per crypto (still in df init) 
-        # moves_prepared = moves_prepared.loc[moves_prepared["REAL_BUY_SELL"] !=0]
-        # moves_prepared = moves_prepared[["DATE", "REAL_BUY_SELL", "CURRENCY"]]
-        # col1.dataframe(moves_prepared, use_container_width=True)
+    def display_market(self,  pnl_prepared):
 
         # split PNL
         self.st.header("Split Portfolio PNL evolution")

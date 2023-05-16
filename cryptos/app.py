@@ -19,19 +19,20 @@ def main():
 
     logging.info("starting app")
     prepared = data_prep.load_prepared()
+
+    kraken = OrderKraken(configs = app.configs, paths=data_prep.path_dirs)
     
     if app.state.done_once == False:
 
         logging.info("Starting run once")
-
         app.state.prepared = prepared
+        
         # kraken portfolio
-        kraken = OrderKraken(configs = app.configs, paths=data_prep.path_dirs)
         app.state.df_init = kraken.load_df_init() 
         app.state.trades = kraken.load_trades()
+        app.state.portfolio = kraken.load_global_portfolio()
         app.state.pnl_over_time = kraken.load_pnl()
-
-        app.prepare_display_portfolio(app.state.df_init, app.state.pnl_over_time)
+        app.prepare_display_portfolio(app.state.df_init, app.state.pnl_over_time, app.state.trades)
 
         app.state.done_once=True
 
@@ -47,7 +48,7 @@ def main():
         with tab1:
             if inputs["init_file"]:
                 inputs["init_file"] = app.state.df_init
-                df_init = strat.allocate_cash(app.state.prepared, inputs["init_file"])
+                inputs["init_file"] = strat.allocate_cash(app.state.prepared, inputs["init_file"])
             else:
                 inputs["init_file"] = None
 
@@ -58,16 +59,16 @@ def main():
             pnl_currency = strat.strategy_1_lags_comparison(sub_prepare, currency = inputs["currency"], 
                                                             df_init=inputs["init_file"])
             
-            app.display_backtest(inputs, pnl_currency, prepared_currency)
+            app.display_backtest(inputs, pnl_currency, prepared_currency, app.state.trades)
 
         with tab2:
             pnl_prepared, moves_prepared = strat.main_strategy_1_anaysis_currencies(app.state.prepared, 
                                                                                     lag=inputs["lag"],
                                                                                     df_init=inputs["init_file"])
-            app.display_market(pnl_prepared, moves_prepared)
+            app.display_market(pnl_prepared)
 
         with tab3:
-            app.display_portfolio(app.state.trades)
+            app.display_portfolio(app.state.portfolio, app.state.trades, kraken.get_open_orders())
 
         logging.info("Finished tables creation")
 

@@ -1,6 +1,6 @@
 matplotlib
 numpy
-pandas
+pandas==1.3.1
 pyyaml
 scikit-learn
 scipy
@@ -10,3 +10,4 @@ python-dotenv
 python-kraken-sdk
 python-box==7.0.1
 yfinance==0.1.63
+statsmodels

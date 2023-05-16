@@ -23,12 +23,13 @@ class MainStrategy(object):
 
         self.fees_buy = 0.015
         self.fees_sell = 0.015
-        self.back_step_months= 3
+        self.back_step_months= 2
 
     def deduce_threshold(self, prepared, target):
         # Fit a normal distribution to the data:
-        mu, std = norm.fit(prepared.loc[~prepared[target].isnull(), target][:3000])
-        return mu - 1.95*std, mu + 1.95*std
+        condition = prepared["DATE"].between(self.end_date - timedelta(days=120), self.end_date)
+        mu, std = norm.fit(prepared.loc[(~prepared[target].isnull())&(condition), target])
+        return mu - 1.9*std, mu + 1.9*std
 
     def execute_strategie_1(self, 
                          sub_prepared, 
@@ -187,21 +188,23 @@ class MainStrategy(object):
         return pnl_prepared, moves_prepared
     
 
-    def allocate_cash(self, prepared, df_init, lag="7"):
+    def allocate_cash(self, prepared, df_init, lag):
 
         cash_start_value = float(df_init.loc["BALANCE", "CASH"])
         
-        # get the PNL for each currency of the past 3 months
+        # get the PNL for each currency of the past 2 months
         tampon_start = self.start_date
         self.start_date = tampon_start - timedelta(days=int(self.back_step_months*30.5))
         pnl_prepared, _ = self.main_strategy_1_anaysis_currencies(prepared, lag=lag, deduce_moves=False)
         
         # deduce proportion of portfolio in theory needed 
         # idea is that next 3 months will be the same (or close)
-        pnls = (pnl_prepared.iloc[-1, 1:-1] - 100)/(pnl_prepared.iloc[-1, -1] - 100*len(self.currencies))
+        pnls = (pnl_prepared.iloc[-2, 1:-1] - 100)/(pnl_prepared.iloc[-2, -1] - 100*len(self.currencies))
         gain_cash = 1 + (pnls - pnls.mean())*4
         gain_cash = gain_cash/gain_cash.sum()
-
+        gain_cash = gain_cash.clip(0, 2*(1/len(self.currencies))) # verrou surete
+        gain_cash = gain_cash/gain_cash.sum()
+        
         # get price_value_ each coin 
         prices = prepared.iloc[0]
         df_init.loc["BALANCE"] = df_init.loc["BALANCE"].astype(float)
@@ -211,11 +214,17 @@ class MainStrategy(object):
             df_init.loc["COIN_VALUE", currency] = df_init.loc["BALANCE", currency]*prices[f"CLOSE_{currency}"]
             df_init.loc["TARGET_PERCENTAGE", currency] = gain_cash[f"PNL_{currency}"]
         df_init.loc["ACTUAL_PERCENTAGE"] = df_init.loc["COIN_VALUE"]/df_init.loc["COIN_VALUE"].sum()
-
+        
         tampon_percentage = np.where(df_init.loc["ACTUAL_PERCENTAGE"]>df_init.loc["TARGET_PERCENTAGE"], 0, df_init.loc["TARGET_PERCENTAGE"])
         tampon_percentage = tampon_percentage/tampon_percentage.sum()
         df_init.loc["CASH_TO_ALLOCATE"] = tampon_percentage*cash_start_value
         df_init.loc["CASH_TO_ALLOCATE"] = (df_init.loc["CASH_TO_ALLOCATE"].astype(float) - 0.4).round(0)
         self.start_date = tampon_start
+
+        assert df_init.loc["CASH_TO_ALLOCATE"].sum() <= cash_start_value
+        assert abs(df_init.loc["ACTUAL_PERCENTAGE"].sum() - 1)< 0.001
+        assert abs(df_init.loc["TARGET_PERCENTAGE"].sum() - 1)< 0.001
+
+        df_init.loc["COIN_VALUE", "CASH"] = df_init.loc["BALANCE", "CASH"] # useful for app shape
 
         return df_init

@@ -72,69 +72,69 @@ def main():
     
     return liste_results, data_prep, prepared
 
-if __name__ == "__main__":
-    liste_results, data_prep, prepared = main()
+# if __name__ == "__main__":
+#     liste_results, data_prep, prepared = main()
 
-    df = pd.DataFrame(liste_results, columns=["CURRENCY", "DATE_START", "DATE_END", "STD_BF", "MIN_BF", "MAX_BF", "SKEW_BF", "DELTA_BF", "STD", "MIN", "MAX", "SKEW", "DELTA", "PNL_5", "PNL_7", "PNL_10", "PNL_15", "PNL_MEAN_LAGS", "PNL_MIX_MATCH"])
-    df = df.loc[~df["DELTA"].isnull()]
-    df = df.loc[~df["DELTA_BF"].isnull()]
+#     df = pd.DataFrame(liste_results, columns=["CURRENCY", "DATE_START", "DATE_END", "STD_BF", "MIN_BF", "MAX_BF", "SKEW_BF", "DELTA_BF", "STD", "MIN", "MAX", "SKEW", "DELTA", "PNL_5", "PNL_7", "PNL_10", "PNL_15", "PNL_MEAN_LAGS", "PNL_MIX_MATCH"])
+#     df = df.loc[~df["DELTA"].isnull()]
+#     df = df.loc[~df["DELTA_BF"].isnull()]
 
-    df["DELTA_BF"] = df["DELTA_BF"].clip(-3, 3)
-    df["STD_BF"] = df["STD_BF"].clip(0, 0.5)
-    df["MAX_BF"] = df["MAX_BF"].clip(1, 3)
-    df["MIN_BF"] = df["MAX_BF"].clip(0.3, 1)
-    df["SKEW_BF"] = df["SKEW_BF"].clip(-20, 20)
+#     df["DELTA_BF"] = df["DELTA_BF"].clip(-3, 3)
+#     df["STD_BF"] = df["STD_BF"].clip(0, 0.5)
+#     df["MAX_BF"] = df["MAX_BF"].clip(1, 3)
+#     df["MIN_BF"] = df["MAX_BF"].clip(0.3, 1)
+#     df["SKEW_BF"] = df["SKEW_BF"].clip(-20, 20)
 
-    df["DELTA"] = df["DELTA"].clip(-3, 3)
-    df["STD"] = df["STD"].clip(0, 0.5)
-    df["MAX"] = df["MAX"].clip(1, 3)
-    df["MIN"] = df["MAX"].clip(0.3, 1)
-    df["SKEW"] = df["SKEW"].clip(-20, 20)
+#     df["DELTA"] = df["DELTA"].clip(-3, 3)
+#     df["STD"] = df["STD"].clip(0, 0.5)
+#     df["MAX"] = df["MAX"].clip(1, 3)
+#     df["MIN"] = df["MAX"].clip(0.3, 1)
+#     df["SKEW"] = df["SKEW"].clip(-20, 20)
 
-    kmeans = KMeans(n_clusters=3)
-    scaler=StandardScaler().fit(df[["STD_BF", "SKEW_BF", "DELTA_BF"]])
-    X= scaler.transform(df[["STD_BF", "SKEW_BF", "DELTA_BF"]])
+#     kmeans = KMeans(n_clusters=3)
+#     scaler=StandardScaler().fit(df[["STD_BF", "SKEW_BF", "DELTA_BF"]])
+#     X= scaler.transform(df[["STD_BF", "SKEW_BF", "DELTA_BF"]])
 
-    kmeans.fit(X)
-    k_means_labels = kmeans.labels_
-    k_means_cluster_centers = kmeans.cluster_centers_
-    df["CLUSTER_BF"] = k_means_labels
+#     kmeans.fit(X)
+#     k_means_labels = kmeans.labels_
+#     k_means_cluster_centers = kmeans.cluster_centers_
+#     df["CLUSTER_BF"] = k_means_labels
 
-    XX = scaler.transform(df[["STD", "SKEW", "DELTA"]])
-    df["CLUSTER_AF"] = kmeans.predict(XX)
+#     XX = scaler.transform(df[["STD", "SKEW", "DELTA"]])
+#     df["CLUSTER_AF"] = kmeans.predict(XX)
 
-    fig, ax = plt.subplots(figsize=(20,10)) 
-    colors = ["#4EACC5", "#FF9C34", "#4E9A06", "pink", "red"]
+#     fig, ax = plt.subplots(figsize=(20,10)) 
+#     colors = ["#4EACC5", "#FF9C34", "#4E9A06", "pink", "red"]
     
-    # KMeans
-    # ax = fig.add_subplot(1,1,1)
-    for k, col in zip(range(3), colors):
-        my_members = k_means_labels == k
-        cluster_center = k_means_cluster_centers[k]
-        ax.plot(X[my_members, 2], X[my_members, 0], "w", markerfacecolor=col, marker=".")
-        ax.plot(
-            cluster_center[2],
-            cluster_center[0],
-            "o",
-            markerfacecolor=col,
-            markeredgecolor="k",
-            markersize=6,
-        )
-    ax.set_title("KMeans")
+#     # KMeans
+#     # ax = fig.add_subplot(1,1,1)
+#     for k, col in zip(range(3), colors):
+#         my_members = k_means_labels == k
+#         cluster_center = k_means_cluster_centers[k]
+#         ax.plot(X[my_members, 2], X[my_members, 0], "w", markerfacecolor=col, marker=".")
+#         ax.plot(
+#             cluster_center[2],
+#             cluster_center[0],
+#             "o",
+#             markerfacecolor=col,
+#             markeredgecolor="k",
+#             markersize=6,
+#         )
+#     ax.set_title("KMeans")
     
-    # df = df.loc[df["DATE_END"] <= "2023-05-15"]
+#     # df = df.loc[df["DATE_END"] <= "2023-05-15"]
 
-#     for currency in data_prep.currencies:
-#         btc = df.loc[df["CURRENCY"] == currency]
-#         print(btc.mean())
+# #     for currency in data_prep.currencies:
+# #         btc = df.loc[df["CURRENCY"] == currency]
+# #         print(btc.mean())
 
-#     prep = prepared
+# #     prep = prepared
     
-#     for cur in data_prep.currencies:
-#         prep = prepared.copy()
-#         prep["DATE"] = prep["DATE"].dt.round("D")
-#         prep = prep[["DATE", f"CLOSE_{cur}"]].groupby("DATE").mean().reset_index()
-#         fig, ax = plt.subplots(figsize=(20,10)) 
-#         df.loc[df["DATE_START"]>="2021-12-01"].loc[df["CURRENCY"] == cur].set_index("DATE_END")[["PNL_7", "PNL_15", "PNL_30", "PNL_45", "PNL_MEAN_LAGS", "PNL_MIX_MATCH"]].plot(title=cur, ax=ax)
-#         prep.loc[prep["DATE"].between("2022-02-01",df["DATE_END"].max())].set_index("DATE").plot(ax=ax, secondary_y=True, color='r')
-#         plt.show()
+# #     for cur in data_prep.currencies:
+# #         prep = prepared.copy()
+# #         prep["DATE"] = prep["DATE"].dt.round("D")
+# #         prep = prep[["DATE", f"CLOSE_{cur}"]].groupby("DATE").mean().reset_index()
+# #         fig, ax = plt.subplots(figsize=(20,10)) 
+# #         df.loc[df["DATE_START"]>="2021-12-01"].loc[df["CURRENCY"] == cur].set_index("DATE_END")[["PNL_7", "PNL_15", "PNL_30", "PNL_45", "PNL_MEAN_LAGS", "PNL_MIX_MATCH"]].plot(title=cur, ax=ax)
+# #         prep.loc[prep["DATE"].between("2022-02-01",df["DATE_END"].max())].set_index("DATE").plot(ax=ax, secondary_y=True, color='r')
+# #         plt.show()

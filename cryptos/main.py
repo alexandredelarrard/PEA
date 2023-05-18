@@ -7,11 +7,11 @@ from strategy.strategie_1 import MainStrategy
 from data_prep.kraken_portfolio import OrderKraken 
 from trading.kraken_trading import TradingKraken
 
-from utils.general_cleaning import smart_column_parser
 
 def main():
 
-    prefered_lag = "MIX_MATCH"
+    lag = "15"
+    variable = "TARGET"
 
     # load data
     data_prep = PrepareCrytpo()
@@ -20,19 +20,23 @@ def main():
     datas = data_prep.load_share_price_data()
 
     # data preparation 
-    prepared = data_prep.aggregate_crypto_price(datas)
+    dict_prepared = data_prep.aggregate_crypto_price(datas)
     
     # kraken portfolio
     kraken = OrderKraken(configs=data_prep.configs, paths=data_prep.path_dirs)
     df_init = kraken.get_current_portolio() 
+    current_price = kraken.get_latest_price()
 
     # strategy deduce buy / sell per currency
     strat = MainStrategy(configs=data_prep.configs, 
                         start_date=datetime.utcnow() - timedelta(minutes=30),
                         end_date=datetime.utcnow())
-    df_init =  strat.allocate_cash(prepared, df_init, lag=prefered_lag)
     
-    _, moves_prepared = strat.main_strategy_1_anaysis_currencies(prepared, df_init, lag=prefered_lag)
+    df_init =  strat.allocate_cash(dict_prepared, df_init, current_price, 
+                                   lag=lag, variable=variable)
+    
+    _, moves_prepared = strat.main_strategy_1_anaysis_currencies(dict_prepared, df_init, lag=lag,
+                                                                 variable=variable)
 
     # pass orders if more than 0
     orders_infos=pd.DataFrame()
@@ -40,7 +44,7 @@ def main():
         trading = TradingKraken(configs=data_prep.configs)
         trading.cancel_orders()
         
-        if trading.validate_trading_conditions(prepared, df_init):
+        if trading.validate_trading_conditions(dict_prepared, df_init):
             futur_orders = trading.validate_orders(df_init, moves_prepared)
 
             if len(futur_orders)>0:
@@ -62,9 +66,9 @@ def main():
     kraken.save_trades(trades)
     kraken.save_global_portfolio(overall)
     kraken.save_pnl(pnl_over_time)
-    data_prep.save_prep(datas, prepared)
+    data_prep.save_prep(datas, dict_prepared)
 
     logging.info("Finished data / strategy execution")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

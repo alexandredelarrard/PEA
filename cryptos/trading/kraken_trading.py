@@ -103,11 +103,11 @@ class TradingKraken(object):
         return volume
     
 
-    def validate_trading_conditions(self, prepared, df_init):
+    def validate_trading_conditions(self, dict_prepared, df_init):
 
         # ensure latest date is accessible
         now = datetime.utcnow()
-        time_diff_to_latest = (now - prepared["DATE"].max()).total_seconds()/60
+        time_diff_to_latest = (now - dict_prepared["BTC"]["DATE"].max()).total_seconds()/60
 
         if time_diff_to_latest > 15:
             logging.warning("[NOT TRADING] latest data more than 15 minutes ago")

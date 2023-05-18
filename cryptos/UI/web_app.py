@@ -12,6 +12,7 @@ class MainApp(object):
         self.st = st
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
         self.lags = self.configs.load["cryptos_desc"]["LAGS"]
+        self.variables = self.configs.load["cryptos_desc"]["VARS"]
 
         self.init_state()
 
@@ -22,8 +23,8 @@ class MainApp(object):
         if "submitted" not in self.state:
             self.state.submitted = False
 
-        if "prepared" not in self.state:
-            self.state.prepared = None
+        if "dict_prepared" not in self.state:
+            self.state.dict_prepared = None
 
         if "pnl_over_time" not in self.state:
             self.state.pnl_over_time= None 
@@ -77,6 +78,7 @@ class MainApp(object):
         inputs["start_date"] = form.date_input("When to start the backtest ?", date.today() - timedelta(days=40))
         inputs["end_date"] = form.date_input("When to end the backtest ?", date.today() + timedelta(days=1))
         
+        inputs["variable"] = form.selectbox('Select variable to use', self.variables)
         inputs["lag"] = form.selectbox('Select lags target', self.lags)
         inputs["button"] = form.form_submit_button("Run Analysis", on_click=lambda: self.state.update(submitted=True))
 
@@ -85,9 +87,15 @@ class MainApp(object):
 
     def display_backtest(self, inputs, pnl_currency, prepared_currency, trades):
 
+        if inputs["variable"] == "TARGET":
+            variable_to_use = f"TARGET_{inputs['currency']}_NORMALIZED"
+
+        elif inputs["variable"] == "DELTA_MARKET":
+            variable_to_use = f"DIFF_{inputs['currency']}_TO_MARKET"
+
         trades = trades.copy()
         real_trade = pd.concat([trades[["TIME_BUY", "ASSET"]], trades.loc[~trades["TIME_SOLD"].isnull()][["TIME_SOLD", "ASSET"]]], axis=0)
-        real_trade["KRAKEN_BUY_SELL"] = np.where(real_trade["TIME_BUY"].isnull(), -2, 2)
+        real_trade["KRAKEN_BUY_SELL"] = np.where(real_trade["TIME_BUY"].isnull(), -1.2, 1.2)
         for col in["TIME_BUY", "TIME_SOLD"]:
             real_trade[col] = pd.to_datetime(real_trade[col], format="%Y-%m-%d %H:%M%S")
 
@@ -100,14 +108,15 @@ class MainApp(object):
         fig, ax = plt.subplots(figsize=(20,10))
         real_trade[["DATE", "KRAKEN_BUY_SELL"]].set_index("DATE").plot(ax = ax, color="red", style="--")
         prepared_currency[["DATE", f"REAL_BUY_SELL"]].set_index(["DATE"]).plot(ax = ax)
-        prepared_currency[["DATE", f"TARGET_{inputs['currency']}_NORMALIZED_{inputs['lag']}"]].set_index(["DATE"]).plot(ax = ax)
+        prepared_currency[["DATE", f"{variable_to_use}_{inputs['lag']}"]].set_index(["DATE"]).plot(ax = ax)
         prepared_currency[["DATE", f"CLOSE_{inputs['currency']}"]].set_index(["DATE"]).plot(ax = ax, secondary_y =True)
         self.st.pyplot(fig)
 
-        max_date = self.state.prepared["DATE"].max()
-        value = self.state.prepared.loc[self.state.prepared["DATE"] == max_date, f"CLOSE_{inputs['currency']}"].values[0]
+        prepared = self.state.dict_prepared[inputs['currency']]
+        max_date = prepared["DATE"].max()
+        value = prepared.loc[prepared["DATE"] == max_date, f"CLOSE_{inputs['currency']}"].values[0]
         self.st.header(f"SPOT PRICE {inputs['currency']} || {max_date} || {value:.3f}")
-        self.st.line_chart(self.state.prepared[["DATE", f"CLOSE_{inputs['currency']}"]].set_index("DATE"))
+        self.st.line_chart(prepared[["DATE", f"CLOSE_{inputs['currency']}"]].set_index("DATE"))
 
         self.st.header(f"PNL for currency : {inputs['currency']}")
         self.st.line_chart(pnl_currency.set_index("DATE"))

@@ -5,7 +5,6 @@ __pycache__/
 
 # C extensions
 *.so
-./cryptos/data
 
 # Distribution / packaging
 .Python
@@ -117,6 +116,6 @@ venv.bak/
 # vs code 
 .vscode 
 
-# data 
-extracted_data
-results
+#data folder
+*.pkl
+data/

@@ -3,7 +3,7 @@ import streamlit as st
 import logging
 
 from data_prep.data_preparation_crypto import PrepareCrytpo 
-from strategy.strategie_1 import MainStrategy 
+from strategy.strategie_1 import Strategy1 
 from data_prep.kraken_portfolio import OrderKraken 
 from UI.web_app import MainApp as App
 
@@ -18,14 +18,14 @@ def main():
     inputs = app.get_sidebar_inputs()
 
     logging.info("starting app")
-    prepared = data_prep.load_prepared()
+    dict_prepared = data_prep.load_prepared()
 
     kraken = OrderKraken(configs = app.configs, paths=data_prep.path_dirs)
     
     if app.state.done_once == False:
 
         logging.info("Starting run once")
-        app.state.prepared = prepared
+        app.state.dict_prepared = dict_prepared
         
         # kraken portfolio
         app.state.df_init = kraken.load_df_init() 
@@ -39,32 +39,38 @@ def main():
     if app.state.submitted:
 
         tab1, tab2, tab3 = app.st.tabs(["COIN_Backtest", "PNL_Backtest", "Portfolio"])
+        prepared = app.state.dict_prepared[inputs["currency"]].copy()
 
-        strat = MainStrategy(configs=app.configs, 
+        strat = Strategy1(configs=app.configs, 
                             start_date=inputs["start_date"], 
                             end_date=inputs["end_date"])
+        
+        args = {"lag" : inputs["lag"],
+                "variable" : inputs["variable"],
+                "currency" : inputs["currency"]}
 
         # display results / analysis
         with tab1:
             if inputs["init_file"]:
                 inputs["init_file"] = app.state.df_init
-                inputs["init_file"] = strat.allocate_cash(app.state.prepared, inputs["init_file"])
             else:
                 inputs["init_file"] = None
 
-            prepared_currency, pnl_currency = strat.main_strategy_1(app.state.prepared, currency=inputs["currency"], 
-                                                                    lag=inputs["lag"], df_init=inputs["init_file"])
+            prepared_currency, pnl_currency = strat.main_strategy_1(prepared, 
+                                                                    df_init=inputs["init_file"],
+                                                                    args=args)
             
-            sub_prepare = app.state.prepared.loc[app.state.prepared["DATE"].between(strat.start_date, strat.end_date)]
-            pnl_currency = strat.strategy_1_lags_comparison(sub_prepare, currency = inputs["currency"], 
-                                                            df_init=inputs["init_file"])
+            sub_prepare = prepared.loc[prepared["DATE"].between(strat.start_date, strat.end_date)]
+            pnl_currency = strat.strategy_1_lags_comparison(sub_prepare,
+                                                            df_init=inputs["init_file"],
+                                                            args=args)
             
             app.display_backtest(inputs, pnl_currency, prepared_currency, app.state.trades)
 
         with tab2:
-            pnl_prepared, moves_prepared = strat.main_strategy_1_anaysis_currencies(app.state.prepared, 
-                                                                                    lag=inputs["lag"],
-                                                                                    df_init=inputs["init_file"])
+            pnl_prepared, moves_prepared = strat.main_strategy_1_analysis_currencies(app.state.dict_prepared, 
+                                                                                    df_init=inputs["init_file"],
+                                                                                    args=args)
             app.display_market(pnl_prepared)
 
         with tab3:

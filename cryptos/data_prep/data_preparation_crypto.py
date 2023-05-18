@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import logging.config as log_config
+import logging
 import os
 import shutil
 import glob
@@ -64,15 +65,13 @@ class PrepareCrytpo(object):
         history, nbr_days = self.load_datas()
 
         if nbr_days:
-            print(f"History leveraged with nbr _days = {nbr_days}")
+            logging.info(f"History leveraged with nbr _days = {nbr_days}")
             period=f"{nbr_days}d"
         else:
             period="2y"
 
         datas = {}
         for currency in tqdm.tqdm(self.currencies):
-            # url = urls["URL_BASE"] + "Binance_" + currency + urls["URL_END"]
-            # datas[currency] = pd.read_csv(url, delimiter=",", skiprows=[0]) 
 
             pair = f"{currency}-EUR"
             if currency == "STX":
@@ -101,85 +100,111 @@ class PrepareCrytpo(object):
         df = df.sort_values(["DATE"], ascending= 0)
         df = df.drop_duplicates("DATE")
 
-        # df["RANGE"] = df["HIGH"] - df["LOW"]
         df.rename(columns={"CLOSE" : f"CLOSE_{currency}",
-                            # "RANGE" : f"RANGE_{currency}",
                             # "TRADECOUNT" : f"TRADECOUNT_{currency}",
                             }, inplace=True)
         return df
     
-    
+    def rolling_mean(self, df, feature, nbr_values, type="mean"):
+            return eval(f"df[feature].rolling(int(nbr_values), min_periods=1, center=False).{type}()")
+
+    def normalize_target(self, df, feature, nbr_days=360):
+        df[f"{feature}_ROLLING_MEAN"] = self.rolling_mean(df, feature, len(self.hours)*nbr_days, "mean")
+        df[f"{feature}_ROLLING_STD"] = self.rolling_mean(df, feature, len(self.hours)*nbr_days, "std")
+        
+        return (df[feature] - df[f"{feature}_ROLLING_MEAN"]) / df[f"{feature}_ROLLING_STD"]
+
     def prepare_currency_daily(self, full, currency="BTC"):
 
-        def rolling_mean(df, feature, nbr_values, type="mean"):
-            return eval(f"df[feature].rolling(nbr_values, min_periods=1, center=True).{type}()")
-
         # create currency target 
-        agg = full[["DATE", f"CLOSE_{currency}"]]
+        agg = full[["DATE", f"CLOSE_{currency}", f"VOLUME_{currency}"]]
+        agg["DATE"] = agg["DATE"].dt.round("H")
+        agg = agg.drop_duplicates("DATE")
+
+        if currency == "XRP":
+            agg.loc[agg["DATE"] == "2021-12-14 21:00:00"] = np.nan
         
         # remove mvs 
-        agg.loc[agg[f"CLOSE_{currency}"] <=0, f"CLOSE_{currency}"] = np.nan
+        agg.loc[agg[f"CLOSE_{currency}"] <= 0, f"CLOSE_{currency}"] = np.nan
         agg = agg.loc[~agg[f"CLOSE_{currency}"].isnull()]
+        agg = agg.sort_values("DATE", ascending=True)
 
-        # rolling mean distance to 7d, 15d, 30d, 45d
+        # normalization over past year
+        agg[f"CLOSE_{currency}_NORMALIZED"] = self.normalize_target(agg, f"CLOSE_{currency}", nbr_days=360)
+        
+        # volume -> sum last 4 hours 
+        agg[f"VOLUME_{currency}"] = self.rolling_mean(agg, f"VOLUME_{currency}", 4, "sum")
+        agg[f"VOLUME_{currency}_NORMALIZED"] = self.normalize_target(agg, f"VOLUME_{currency}", nbr_days=360)
+        
+        # rolling mean distance to X.d
         liste_targets = []
         for avg_mean in self.lags:
-            if avg_mean not in ["MEAN_LAGS", "MIX_MATCH"]:
-                agg[f"CLOSE_{currency}_ROLLING_MEAN_{avg_mean}D"] = rolling_mean(agg, f"CLOSE_{currency}", len(self.hours)*avg_mean, "mean")
-                agg[f"CLOSE_{currency}_ROLLING_STD_{avg_mean}D"] = rolling_mean(agg, f"CLOSE_{currency}", len(self.hours)*avg_mean, "std")
+            if avg_mean not in ["MEAN_LAGS"]:
+                # close moments
+                agg[f"CLOSE_{currency}_ROLLING_MEAN_{avg_mean}D"] = self.rolling_mean(agg, f"CLOSE_{currency}_NORMALIZED", len(self.hours)*avg_mean, "mean")
+                agg[f"CLOSE_{currency}_ROLLING_STD_{avg_mean}D"] = self.rolling_mean(agg, f"CLOSE_{currency}_NORMALIZED", len(self.hours)*avg_mean, "std")
 
-                # create target normalized to be able to compare 
-                agg[f"TARGET_{currency}_NORMALIZED_{avg_mean}"] = (agg[f"CLOSE_{currency}"] - agg[f"CLOSE_{currency}_ROLLING_MEAN_{avg_mean}D"].shift(-1)) / agg[f"CLOSE_{currency}_ROLLING_STD_{avg_mean}D"].shift(-1)
+                # volume moments
+                agg[f"VOLUME_{currency}_ROLLING_MEAN_{avg_mean}D"] = self.rolling_mean(agg, f"VOLUME_{currency}_NORMALIZED", len(self.hours)*avg_mean, "mean")
+                agg[f"VOLUME_{currency}_ROLLING_STD_{avg_mean}D"] = self.rolling_mean(agg, f"VOLUME_{currency}_NORMALIZED", len(self.hours)*avg_mean, "std")
+
+                # distance to past averages for close
+                agg[f"TARGET_{currency}_NORMALIZED_{avg_mean}"] = (agg[f"CLOSE_{currency}_NORMALIZED"] - agg[f"CLOSE_{currency}_ROLLING_MEAN_{avg_mean}D"])
                 liste_targets.append(f"TARGET_{currency}_NORMALIZED_{avg_mean}")
 
+                # distance to past averages for volume
+                agg[f"VOLUME_{currency}_NORMALIZED_{avg_mean}"] = (agg[f"VOLUME_{currency}_NORMALIZED"] - agg[f"VOLUME_{currency}_ROLLING_MEAN_{avg_mean}D"])
+                
         agg[f"TARGET_{currency}_NORMALIZED_MEAN_LAGS"] = agg[liste_targets].mean(axis=1)
-        liste_targets.append(f"TARGET_{currency}_NORMALIZED_MEAN_LAGS")
-        agg[f"TARGET_{currency}_NORMALIZED_MIX_MATCH"] = agg[f"TARGET_{currency}_NORMALIZED_7"]
-        liste_targets.append(f"TARGET_{currency}_NORMALIZED_MIX_MATCH")
 
-        #tradecount normalized to mean of past 30 days 
-        # agg[f"TRADECOUNT_{currency}"] = np.where(agg[f"TRADECOUNT_{currency}"]==0, np.nan, agg[f"TRADECOUNT_{currency}"])
-        # agg[f"TRADECOUNT_{currency}_ROLLING_MEAN"] = rolling_mean(agg, f"TRADECOUNT_{currency}", len(self.hours)*avg_mean, "mean")
-        # agg[f"TRADECOUNT_{currency}_NORMALIZED"] = (agg[f"TRADECOUNT_{currency}"] - agg[f"TRADECOUNT_{currency}_ROLLING_MEAN"].shift(-1)) / agg[f"TRADECOUNT_{currency}_ROLLING_MEAN"].shift(-1)
+        agg = agg.sort_values("DATE", ascending=False)
 
-        return agg[["DATE", f"CLOSE_{currency}"] +
-                    liste_targets]
+        return agg
     
 
-    def distance_to_market(self, full, currency):
+    def distance_to_market(self, dict_full, currency):
 
+        for k, col in {"BTC" : "CLOSE_BTC_NORMALIZED", 
+                       "ETH" : "CLOSE_ETH_NORMALIZED"}.items():
+            if  col not in dict_full[currency].columns:
+                 dict_full[currency] =  dict_full[currency].merge(dict_full[k][["DATE", col]], on="DATE", how="left", validate="1:1")
+
+        dict_full[currency]["MARKET_NORMALIZED"] = dict_full[currency][["CLOSE_BTC_NORMALIZED", "CLOSE_ETH_NORMALIZED"]].mean(axis=1)
+        dict_full[currency] = dict_full[currency].sort_values("DATE", ascending=True)
+
+        to_drop = []
         for avg_mean in self.lags:
-            full[f"MARKET_NORMALIZED_{avg_mean}"] = 0
-            full["TRADECOUNT"] = 0
-            for i, currency in enumerate(self.currencies):
-                full[f"MARKET_NORMALIZED_{avg_mean}"] += full[f"TARGET_{currency}_NORMALIZED_{avg_mean}"]*full[f"TRADECOUNT_{currency}"]
-                full["TRADECOUNT"] += full[f"TRADECOUNT_{currency}"]
+            if avg_mean not in ["MEAN_LAGS"]:
+                dict_full[currency][f"MARKET_ROLLING_MEAN_{avg_mean}D"] = self.rolling_mean(dict_full[currency], "MARKET_NORMALIZED", len(self.hours)*avg_mean, "mean")
+                dict_full[currency][f"MARKET_ROLLING_STD_{avg_mean}D"] = self.rolling_mean(dict_full[currency], "MARKET_NORMALIZED", len(self.hours)*avg_mean, "std")
+                
+                dict_full[currency][f"MARKET_{currency}_NORMALIZED_{avg_mean}"] = dict_full[currency]["MARKET_NORMALIZED"] - dict_full[currency][f"MARKET_ROLLING_MEAN_{avg_mean}D"]
+                dict_full[currency][f"DIFF_{currency}_TO_MARKET_{avg_mean}"] = dict_full[currency][f"CLOSE_{currency}_NORMALIZED"] - dict_full[currency][f"MARKET_ROLLING_MEAN_{avg_mean}D"]
+                
+                to_drop.append(f"MARKET_ROLLING_MEAN_{avg_mean}D")
 
-            full[f"MARKET_NORMALIZED_{avg_mean}"] = full[f"MARKET_NORMALIZED_{avg_mean}"]/(full["TRADECOUNT"])
-        
-            for i, currency in enumerate(self.currencies):
-                full[f"DIFF_{currency}_TO_MARKET_{avg_mean}"] = full[f"TARGET_{currency}_NORMALIZED_{avg_mean}"] - full[f"MARKET_NORMALIZED_{avg_mean}"]
-       
-        return full
+        dict_full[currency][f"DIFF_{currency}_TO_MARKET_MEAN_LAGS"] = dict_full[currency][[f"DIFF_{currency}_TO_MARKET_{x}" for x in self.lags if x != "MEAN_LAGS"]].mean(axis=1)
+        dict_full[currency] = dict_full[currency].sort_values("DATE", ascending=False)
+
+        return dict_full[currency].drop(to_drop, axis=1)
 
 
     def aggregate_crypto_price(self, datas):
 
-        for i, currency in enumerate(self.currencies):
+        dict_full = {}
+
+        for currency in self.currencies:
             df = self.pre_clean_cols(datas, currency)
             
-            # data prep
-            df = self.prepare_currency_daily(df, currency)
+            # data prep target
+            dict_full[currency] = self.prepare_currency_daily(df, currency)
 
-            if i == 0: 
-                full = df
-            else:
-                full = pd.merge(full, df, on="DATE", how="left", validate="1:1")
+        for currency in self.currencies:
 
-        # add distances to others 
-        # full = self.distance_to_market(full, currency)
+            # add distances to others 
+            dict_full[currency] = self.distance_to_market(dict_full, currency)
         
-        return full
+        return dict_full
 
 
     def save_prep(self, datas, prepared):

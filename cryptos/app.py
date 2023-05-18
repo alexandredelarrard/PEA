@@ -60,17 +60,16 @@ def main():
                                                                     df_init=inputs["init_file"],
                                                                     args=args)
             
-            sub_prepare = prepared.loc[prepared["DATE"].between(strat.start_date, strat.end_date)]
-            pnl_currency = strat.strategy_1_lags_comparison(sub_prepare,
+            pnl_currency = strat.strategy_1_lags_comparison(prepared,
                                                             df_init=inputs["init_file"],
                                                             args=args)
             
             app.display_backtest(inputs, pnl_currency, prepared_currency, app.state.trades)
 
         with tab2:
-            pnl_prepared, moves_prepared = strat.main_strategy_1_analysis_currencies(app.state.dict_prepared, 
-                                                                                    df_init=inputs["init_file"],
-                                                                                    args=args)
+            pnl_prepared, _ = strat.main_strategy_1_analysis_currencies(app.state.dict_prepared, 
+                                                                    df_init=inputs["init_file"],
+                                                                    args=args)
             app.display_market(pnl_prepared)
 
         with tab3:

@@ -144,8 +144,9 @@ class OrderKraken(object):
                          "amount_COIN_SOLD", "fee_CASH", "fee_SOLD", "EARNED_MARGIN", "TO_EARN_MARGIN", "NET_MARGIN_PERCENT"]]
         
         bought.rename(columns={"time" : "time_buy", "asset_COIN" : "asset", "amount_CASH" : "amount_eur", 
-                               "amount_COIN" : "volume_coin", "COIN_PRICE" : "price_buy", "COIN_PRICE_SELL" : "price_sell",  "CURRENT_COIN_PRICE" : "current_price",
-                         "amount_COIN_SOLD" : "volume_coin_sell", "fee_CASH" : "fee_buy", "fee_SOLD" : "fee_sell"}, inplace=True)
+                               "amount_COIN" : "volume_coin", "COIN_PRICE" : "price_buy", "COIN_PRICE_SELL" : "price_sell",  
+                               "CURRENT_COIN_PRICE" : "current_price",
+                                "amount_COIN_SOLD" : "volume_coin_sell", "fee_CASH" : "fee_buy", "fee_SOLD" : "fee_sell"}, inplace=True)
         bought.columns = smart_column_parser(bought.columns)
         bought["TOTAL_FEE"] = bought["FEE_BUY"] + bought["FEE_SELL"]
 

@@ -3,15 +3,15 @@ import logging
 from datetime import datetime, timedelta
 
 from data_prep.data_preparation_crypto import PrepareCrytpo 
-from strategy.strategie_1 import MainStrategy 
+from strategy.strategie_1 import Strategy1 
 from data_prep.kraken_portfolio import OrderKraken 
 from trading.kraken_trading import TradingKraken
 
 
 def main():
 
-    lag = "15"
-    variable = "TARGET"
+    args = {"lag" : "15",
+            "variable" : "TARGET"}
 
     # load data
     data_prep = PrepareCrytpo()
@@ -28,15 +28,17 @@ def main():
     current_price = kraken.get_latest_price()
 
     # strategy deduce buy / sell per currency
-    strat = MainStrategy(configs=data_prep.configs, 
+    strat = Strategy1(configs=data_prep.configs, 
                         start_date=datetime.utcnow() - timedelta(minutes=30),
                         end_date=datetime.utcnow())
     
-    df_init =  strat.allocate_cash(dict_prepared, df_init, current_price, 
-                                   lag=lag, variable=variable)
+    df_init =  strat.allocate_cash(dict_prepared, df_init, 
+                                   current_price, 
+                                   args=args)
     
-    _, moves_prepared = strat.main_strategy_1_anaysis_currencies(dict_prepared, df_init, lag=lag,
-                                                                 variable=variable)
+    _, moves_prepared = strat.main_strategy_1_analysis_currencies(dict_prepared, 
+                                                                 df_init, 
+                                                                 args=args)
 
     # pass orders if more than 0
     orders_infos=pd.DataFrame()
@@ -70,5 +72,5 @@ def main():
 
     logging.info("Finished data / strategy execution")
 
-# if __name__ == "__main__":
-#     main()
+if __name__ == "__main__":
+    main()

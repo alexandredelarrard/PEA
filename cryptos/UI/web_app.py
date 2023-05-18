@@ -88,10 +88,10 @@ class MainApp(object):
     def display_backtest(self, inputs, pnl_currency, prepared_currency, trades):
 
         if inputs["variable"] == "TARGET":
-            variable_to_use = f"TARGET_{inputs['currency']}_NORMALIZED"
+            variable_to_use = "TARGET_NORMALIZED"
 
         elif inputs["variable"] == "DELTA_MARKET":
-            variable_to_use = f"DIFF_{inputs['currency']}_TO_MARKET"
+            variable_to_use = "DIFF_TO_MARKET"
 
         trades = trades.copy()
         real_trade = pd.concat([trades[["TIME_BUY", "ASSET"]], trades.loc[~trades["TIME_SOLD"].isnull()][["TIME_SOLD", "ASSET"]]], axis=0)
@@ -105,18 +105,20 @@ class MainApp(object):
         real_trade = prepared_currency[["DATE"]].merge(real_trade, on="DATE", how="left", validate="1:1")
         real_trade["KRAKEN_BUY_SELL"].fillna(0, inplace=True)
 
+        seuil_up, seuil_down = prepared_currency[f"SEUIL_UP_{inputs['lag']}"].mean(), prepared_currency[f"SEUIL_DOWN_{inputs['lag']}"].mean()
+        self.st.header(f"BUY/SELL {inputs['currency']} || max= {seuil_up:.3f} / min = {seuil_down:.3f}")
         fig, ax = plt.subplots(figsize=(20,10))
         real_trade[["DATE", "KRAKEN_BUY_SELL"]].set_index("DATE").plot(ax = ax, color="red", style="--")
-        prepared_currency[["DATE", f"REAL_BUY_SELL"]].set_index(["DATE"]).plot(ax = ax)
+        prepared_currency[["DATE", "REAL_BUY_SELL"]].set_index(["DATE"]).plot(ax = ax)
         prepared_currency[["DATE", f"{variable_to_use}_{inputs['lag']}"]].set_index(["DATE"]).plot(ax = ax)
-        prepared_currency[["DATE", f"CLOSE_{inputs['currency']}"]].set_index(["DATE"]).plot(ax = ax, secondary_y =True)
+        prepared_currency[["DATE", "CLOSE"]].set_index(["DATE"]).plot(ax = ax, secondary_y =True)
         self.st.pyplot(fig)
 
         prepared = self.state.dict_prepared[inputs['currency']]
         max_date = prepared["DATE"].max()
-        value = prepared.loc[prepared["DATE"] == max_date, f"CLOSE_{inputs['currency']}"].values[0]
+        value = prepared.loc[prepared["DATE"] == max_date, "CLOSE"].values[0]
         self.st.header(f"SPOT PRICE {inputs['currency']} || {max_date} || {value:.3f}")
-        self.st.line_chart(prepared[["DATE", f"CLOSE_{inputs['currency']}"]].set_index("DATE"))
+        self.st.line_chart(prepared[["DATE", "CLOSE"]].set_index("DATE"))
 
         self.st.header(f"PNL for currency : {inputs['currency']}")
         self.st.line_chart(pnl_currency.set_index("DATE"))

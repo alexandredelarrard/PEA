@@ -53,9 +53,9 @@ class MainStrategy(object):
         if deduce_moves:
             # aggregate all biy / hold / sell positions
             for i, currency in enumerate(self.currencies):
-                dict_moves[currency] = dict_moves[currency][["DATE", "REAL_BUY_SELL", "AMOUNT", f"CLOSE_{currency}"]]
+                dict_moves[currency] = dict_moves[currency][["DATE", "REAL_BUY_SELL", "AMOUNT", "CLOSE"]]
                 dict_moves[currency]["CURRENCY"] = currency
-                dict_moves[currency].rename(columns={f"CLOSE_{currency}" : "PRICE"}, inplace=True)
+                dict_moves[currency].rename(columns={"CLOSE" : "PRICE"}, inplace=True)
 
                 if i == 0:
                     moves_prepared = dict_moves[currency]
@@ -75,7 +75,7 @@ class MainStrategy(object):
         # get the PNL for each currency of the past 2 months
         tampon_start = self.start_date
         self.start_date = tampon_start - timedelta(days=int(self.back_step_months*30.5))
-        pnl_prepared, _ = self.main_strategy_1_anaysis_currencies(dict_prepared,
+        pnl_prepared, _ = self.main_strategy_1_analysis_currencies(dict_prepared,
                                                                   df_init=None,
                                                                   deduce_moves=False,
                                                                   args=args)

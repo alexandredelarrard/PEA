@@ -12,6 +12,7 @@ class Strategy2(MainStrategy):
 
         MainStrategy.__init__(self, configs, start_date, end_date)
 
+        self.targets = [0.125,0.25, 0.5, 1, 2, 3, 4]
         self.picked_strategie = self.main_strategy_2
 
         # TODO / TEST
@@ -36,7 +37,34 @@ class Strategy2(MainStrategy):
         # - put / call futurs baught same time -> price on vol 
         # - diff to market index -> buy the lower one, sell the higher one 
 
-    def main_strategy_2(self, prepared, currency = "BTC",
-                        df_init=None, lag=None, variable="TARGET"):
+    def data_prep(self, prepared, currency="BTC"):
+
+        prepared = prepared.sort_values("DATE", ascending = False)
+
+        for day_future in self.targets:
+            hours = day_future*24
+            prepared[f"TARGET_PLUS_{hours}"] = prepared["CLOSE_NORMALIZED"].shift(hours)
+
+            #date infos 
+            prepared["HOUR"] = prepared["DATE"].dt.hour + hours 
+            prepared["WEEK_DAY"] = prepared["DATE"].dt.dayofweek
+            prepared["DAY"] = prepared["DATE"].dt.day
+            prepared["MONTH"] = prepared["DATE"].dt.month
+
+        return prepared
+
+    def main_strategy_2(self, prepared):
         
         return pd.DataFrame(), pd.DataFrame()
+    
+    def training(self):
+        return 0
+    
+    def predicting(self):
+        return 0
+    
+    def load_model(self):
+        return 0
+    
+    def save_model(self):
+        return 0

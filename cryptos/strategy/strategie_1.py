@@ -20,9 +20,9 @@ class Strategy1(MainStrategy):
 
     def deduce_threshold(self, prepared, target):
         # Fit a normal distribution to the data:
-        condition = prepared["DATE"].between(self.end_date - timedelta(days=200), self.end_date)
+        condition = prepared["DATE"].between(self.end_date - timedelta(days=300), self.end_date)
         mu, std = norm.fit(prepared.loc[(~prepared[target].isnull())&(condition), target])
-        return mu - 1.95*std, mu + 1.95*std
+        return -3*std, 1.5*std
 
     def execute_strategie_1(self, 
                          sub_prepared, 
@@ -48,18 +48,18 @@ class Strategy1(MainStrategy):
                                     np.where(sub_prepared.loc[i, f"{variable_to_use}_{lag_i}"] < sub_prepared.loc[i, f"SEUIL_DOWN_{lag_i}"], 1, 0))
 
             if ((tentative_buy_sell==-1)&(sub_prepared.loc[i, "CURRENCY"]>0)):
-                sub_prepared.loc[i:, "AMOUNT"] = (1-self.fees_sell)*sub_prepared.loc[i, f"CLOSE_{currency}"]*sub_prepared.loc[i, "CURRENCY"]
+                sub_prepared.loc[i:, "AMOUNT"] = (1-self.fees_sell)*sub_prepared.loc[i, "CLOSE"]*sub_prepared.loc[i, "CURRENCY"]
                 sub_prepared.loc[i:, "CASH"] +=  sub_prepared.loc[i:, "AMOUNT"]
                 sub_prepared.loc[i:, "CURRENCY"] = 0
                 sub_prepared.loc[i, "REAL_BUY_SELL"] = -1
                 
             if ((tentative_buy_sell==1)&(sub_prepared.loc[i, "CASH"]>0)):
-                sub_prepared.loc[i:, "CURRENCY"] += ((1-self.fees_buy)*sub_prepared.loc[i, "CASH"])/sub_prepared.loc[i, f"CLOSE_{currency}"]
+                sub_prepared.loc[i:, "CURRENCY"] += ((1-self.fees_buy)*sub_prepared.loc[i, "CASH"])/sub_prepared.loc[i, "CLOSE"]
                 sub_prepared.loc[i:, "AMOUNT"] = -1*sub_prepared.loc[i, "CASH"]
                 sub_prepared.loc[i:, "CASH"] = 0
                 sub_prepared.loc[i, "REAL_BUY_SELL"] = 1
             
-        sub_prepared["PNL"] = sub_prepared["CASH"] + sub_prepared["CURRENCY"]*sub_prepared[f"CLOSE_{currency}"]
+        sub_prepared["PNL"] = sub_prepared["CASH"] + sub_prepared["CURRENCY"]*sub_prepared["CLOSE"]
         pnl = sub_prepared[["DATE", "PNL"]].groupby("DATE").mean().reset_index()
 
         return sub_prepared, pnl
@@ -75,10 +75,10 @@ class Strategy1(MainStrategy):
         prepared = prepared.copy()
 
         if variable == "TARGET":
-            variable_to_use = f"TARGET_{currency}_NORMALIZED"
+            variable_to_use = "TARGET_NORMALIZED"
             
         elif variable == "DELTA_MARKET":
-            variable_to_use = f"DIFF_{currency}_TO_MARKET"
+            variable_to_use = "DIFF_TO_MARKET"
         
         for l in self.lags:
             prepared[f"SEUIL_DOWN_{l}"], prepared[f"SEUIL_UP_{l}"] = self.deduce_threshold(prepared, f"{variable_to_use}_{l}")
@@ -102,7 +102,7 @@ class Strategy1(MainStrategy):
 
             args["lag"] = lag
 
-            _, pnl = self.main_strategy_1(prepared,
+            moves, pnl = self.main_strategy_1(prepared,
                                         df_init=df_init, 
                                         args=args)
             pnl.rename(columns={"PNL": f"PNL_{lag}"}, inplace=True)

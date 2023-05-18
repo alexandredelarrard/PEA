@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from data_prep.data_preparation_crypto import PrepareCrytpo 
 from strategy.strategie_1 import Strategy1 
+from strategy.strategie_2 import Strategy2
 from data_prep.kraken_portfolio import OrderKraken 
 from trading.kraken_trading import TradingKraken
 
@@ -28,7 +29,7 @@ def main():
     current_price = kraken.get_latest_price()
 
     # strategy deduce buy / sell per currency
-    strat = Strategy1(configs=data_prep.configs, 
+    strat = Strategy2(configs=data_prep.configs, 
                         start_date=datetime.utcnow() - timedelta(minutes=30),
                         end_date=datetime.utcnow())
     
@@ -72,5 +73,5 @@ def main():
 
     logging.info("Finished data / strategy execution")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

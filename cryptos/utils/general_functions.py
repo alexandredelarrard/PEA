@@ -65,3 +65,6 @@ def weight_history(df, date_name, k=4):
 def check_save_path(save_path):
     if not os.path.exists(save_path):
         os.mkdir(save_path)
+
+def function_weight():
+    return lambda x: 1 - 1 / (1 + np.exp(-1.5 * (x / 365 - 3)))

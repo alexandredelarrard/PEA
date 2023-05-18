@@ -22,7 +22,7 @@ class Strategy1(MainStrategy):
         # Fit a normal distribution to the data:
         condition = prepared["DATE"].between(self.end_date - timedelta(days=300), self.end_date)
         mu, std = norm.fit(prepared.loc[(~prepared[target].isnull())&(condition), target])
-        return -3*std, 1.5*std
+        return -3*std, 0
 
     def execute_strategie_1(self, 
                          sub_prepared, 

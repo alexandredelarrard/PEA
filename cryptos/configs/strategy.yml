@@ -1,0 +1,51 @@
+# MODEL META UB - LGBM - PDV
+strategy_2:
+    TARGET : BINARY_TARGET_PLUS_0.25
+    WEIGHT : WEIGHT
+    FEATURES:
+        - CLOSE_NORMALIZED
+        - TARGET_NORMALIZED_0.125 # target distance
+        - TARGET_NORMALIZED_0.25
+        - TARGET_NORMALIZED_0.5
+        - TARGET_NORMALIZED_1
+        - TARGET_NORMALIZED_7
+        - TARGET_NORMALIZED_15
+        - TARGET_NORMALIZED_25
+        # - TARGET_NORMALIZED_MEAN_LAGS
+        # - VOLUME_NORMALIZED
+        # - VOLUME_NORMALIZED_0.125 # volume distance
+        # - VOLUME_NORMALIZED_0.5
+        # - VOLUME_NORMALIZED_1
+        # - VOLUME_NORMALIZED_7
+        # - VOLUME_NORMALIZED_15
+        # - VOLUME_NORMALIZED_25
+        # - DIFF_TO_MARKET_0.5 # market distance
+        # - DIFF_TO_MARKET_1
+        # - DIFF_TO_MARKET_7
+        # - DIFF_TO_MARKET_25
+        # - CLOSE_ROLLING_STD_1D # target std past X days
+        # - CLOSE_ROLLING_STD_7D
+        # - CLOSE_ROLLING_STD_15D
+        # - CLOSE_ROLLING_STD_25D
+        - DAY
+        - WEEK_DAY
+        - HOUR
+        - MONTH
+    categorical_features:
+        - DAY
+        - WEEK_DAY
+        - MONTH
+    seed: 5432
+    n_splits: 5
+    parameters:
+        objective: binary
+        metric: binary_logloss
+        max_depth: 5
+        min_data_in_leaf: 10
+        colsample_bytree: 0.75
+        subsample: 0.75
+        learning_rate: 0.005
+        num_iteration: 500
+        lambda_l1 : 0
+        n_jobs: -1
+        verbose : 100

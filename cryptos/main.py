@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timedelta
 
 from data_prep.data_preparation_crypto import PrepareCrytpo 
+from strategy.strategie_0 import Strategy0
 from strategy.strategie_1 import Strategy1 
 from strategy.strategie_2 import Strategy2
 from data_prep.kraken_portfolio import OrderKraken 
@@ -11,11 +12,11 @@ from trading.kraken_trading import TradingKraken
 
 def main():
 
-    args = {"lag" : "15",
-            "variable" : "TARGET"}
+    args = {"lag" : "1"}
 
     # load data
     data_prep = PrepareCrytpo()
+    # self.configs = data_prep.configs
 
     logging.info("Starting data / strategy execution")
     datas = data_prep.load_share_price_data()
@@ -33,11 +34,16 @@ def main():
                         start_date=datetime.utcnow() - timedelta(minutes=30),
                         end_date=datetime.utcnow())
     
+    results = {}
+    for curr in data_prep.currencies:
+        a, b = strat.main_strategy(dict_prepared, currency=curr)
+        results[curr] = strat.final_metric
+    
     df_init =  strat.allocate_cash(dict_prepared, df_init, 
                                    current_price, 
                                    args=args)
     
-    _, moves_prepared = strat.main_strategy_1_analysis_currencies(dict_prepared, 
+    _, moves_prepared = strat.main_strategy_analysis_currencies(dict_prepared, 
                                                                  df_init, 
                                                                  args=args)
 
@@ -73,5 +79,5 @@ def main():
 
     logging.info("Finished data / strategy execution")
 
-# if __name__ == "__main__":
-#     main()
+if __name__ == "__main__":
+    main()

@@ -1,22 +1,26 @@
 
 import pandas as pd
+import numpy as np
 import logging
+import warnings
 
 from strategy.main_strategie import MainStrategy
 from modelling.modelling_lightgbm import TrainModel
+
 from utils.general_functions import function_weight
+
+warnings.filterwarnings("ignore")
 
 class Strategy2(MainStrategy):
 
-    def __init__(self, configs, start_date, end_date =None):
+    def __init__(self, configs, start_date, end_date =None, dict_prepared={}):
 
         MainStrategy.__init__(self, configs, start_date, end_date)
 
-        self.targets = [0.125, 0.25, 0.5, 1, 2, 3, 4]
-        self.picked_strategie = self.main_strategy_2
         self.configs = self.configs.strategie["strategy_2"]
         self.configs_lgbm = self.configs["parameters"]
         self.target = self.configs["TARGET"]
+        self.final_metric = None
 
         # - probabilité de hausse next 0.25, 0.5, 1, 2, 3, 4, 5, 10, 15 jours (modelling) -> not BTC / ETH becasue is market 
         #   - diff to mean 0.25, 0.5, etc. 
@@ -41,35 +45,30 @@ class Strategy2(MainStrategy):
 
     def data_prep(self, prepared):
 
-        prepared = prepared.sort_values("DATE", ascending = False)
+        prepared["HOUR"] = prepared["DATE"].dt.hour
+        prepared["WEEK_DAY"] = prepared["DATE"].dt.dayofweek
+        prepared["DAY_OF_YEAR"] = prepared["DATE"].dt.dayofyear
+        prepared["DAY"] = prepared["DATE"].dt.day
+        prepared["MONTH"] = prepared["DATE"].dt.month
 
-        for day_future in self.targets:
-
-            hours = int(day_future*24)
-            prepared[f"TARGET_PLUS_{day_future}"] = prepared["CLOSE_NORMALIZED"].shift(hours)
-            prepared[f"BINARY_TARGET_PLUS_{day_future}"] = 1*(prepared[f"TARGET_PLUS_{day_future}"] > prepared["CLOSE_NORMALIZED"])
-
-            #date infos 
-            prepared["HOUR"] = prepared["DATE"].dt.hour + hours 
-            prepared["WEEK_DAY"] = prepared["DATE"].dt.dayofweek
-            prepared["DAY"] = prepared["DATE"].dt.day
-            prepared["MONTH"] = prepared["DATE"].dt.month
-
-            for col in self.configs["categorical_features"]:
-                prepared[col] = prepared[col].astype("category")
+        for col in self.configs["categorical_features"]:
+            prepared[col] = prepared[col].astype("category")
 
         return prepared
 
 
-    def main_strategy_2(self, prepared):
+    def main_strategy(self, dict_prepared, currency, df_init=None):
 
-        prepared = dict_prepared["ETH"]
+        prepared = dict_prepared[currency]
         prepared = self.data_prep(prepared)
         prepared = prepared.loc[~prepared[self.target].isnull()]
 
+        # import seaborn as sns 
+        # sns.regplot(x="CLOSE_TREND_45", y="DELTA_FUTUR_TARGET_1", data=prepared)
+
         results, model = self.cross_validation(prepared)
 
-        return pd.DataFrame(), pd.DataFrame()
+        return results, model
     
     
     def add_weights_for_training(self, df):
@@ -100,15 +99,19 @@ class Strategy2(MainStrategy):
 
         self.tm = TrainModel(data=prepared, configs=self.configs)
         folds = self.tm.time_series_fold(start = prepared["DATE"].min(), 
-                                        end = prepared["DATE"].max())
+                                        end = prepared["DATE"].max(),
+                                        k_folds = self.configs["n_splits"],
+                                        min_days = 360 + 100,
+                                        proportion = 0.20)
         
         total_test, models = pd.DataFrame(), {}
 
         for k, tuple_time in folds.items():
 
-            condition_train = prepared["DATE"].between(tuple_time[0], tuple_time[1])
-            train_ts = prepared.loc[prepared["DATE"] < tuple_time[0]]
-            test_ts = prepared.loc[condition_train]
+            logging.info(f"[fold {k}] START TEST DATE = {tuple_time[0]}")
+            # condition_train = prepared["DATE"].between(tuple_time[0], tuple_time[1])
+            train_ts = prepared.loc[prepared["DATE"] <= tuple_time[0]]
+            test_ts = prepared.loc[prepared["DATE"] > tuple_time[0]]
 
             x_val, models[k] = self.training(train_ts, test_ts)
             x_val["FOLD"] = k
@@ -117,7 +120,13 @@ class Strategy2(MainStrategy):
             total_test = pd.concat([total_test, x_val], axis=0).reset_index(drop=True)
 
         logging.info("TRAIN full model")
+        prepared = self.add_weights_for_training(prepared)
         model = self.tm.train_on_set(prepared)
+
+        self.final_metric = np.mean(self.tm.metric)
+      
+        # calculate overall aux
+        logging.info(f"FINAL AUC IS {self.final_metric}")
 
         return total_test, model
     

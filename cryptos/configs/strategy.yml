@@ -1,51 +1,48 @@
 # MODEL META UB - LGBM - PDV
 strategy_2:
-    TARGET : BINARY_TARGET_PLUS_0.25
+    TARGET : BINARY_FUTUR_TARGET_1
     WEIGHT : WEIGHT
     FEATURES:
-        - CLOSE_NORMALIZED
-        - TARGET_NORMALIZED_0.125 # target distance
-        - TARGET_NORMALIZED_0.25
-        - TARGET_NORMALIZED_0.5
+        # - TARGET_NORMALIZED_0.5
         - TARGET_NORMALIZED_1
         - TARGET_NORMALIZED_7
         - TARGET_NORMALIZED_15
-        - TARGET_NORMALIZED_25
-        # - TARGET_NORMALIZED_MEAN_LAGS
-        # - VOLUME_NORMALIZED
-        # - VOLUME_NORMALIZED_0.125 # volume distance
-        # - VOLUME_NORMALIZED_0.5
-        # - VOLUME_NORMALIZED_1
-        # - VOLUME_NORMALIZED_7
-        # - VOLUME_NORMALIZED_15
-        # - VOLUME_NORMALIZED_25
-        # - DIFF_TO_MARKET_0.5 # market distance
-        # - DIFF_TO_MARKET_1
-        # - DIFF_TO_MARKET_7
-        # - DIFF_TO_MARKET_25
-        # - CLOSE_ROLLING_STD_1D # target std past X days
-        # - CLOSE_ROLLING_STD_7D
-        # - CLOSE_ROLLING_STD_15D
-        # - CLOSE_ROLLING_STD_25D
-        - DAY
+        - CLOSE_TREND_0.5
+        - CLOSE_TREND_1
+        - CLOSE_TREND_2
+        - CLOSE_TREND_7
+        - VOLUME_NORMALIZED_1
+        - VOLUME_NORMALIZED_7
+        - VOLUME_NORMALIZED_45
+        - DIFF_TO_MARKET_0.5 # market distance
+        - DIFF_TO_MARKET_1
+        - DIFF_TO_MARKET_7
+        - DIFF_TO_MARKET_15
+        - CLOSE_ROLLING_STD_1D # target std past X days
+        - CLOSE_ROLLING_STD_2D
+        - CLOSE_ROLLING_STD_7D
+        - CLOSE_ROLLING_STD_45D
+        # - DAY
         - WEEK_DAY
-        - HOUR
-        - MONTH
+        # - HOUR
+        # - MONTH
     categorical_features:
-        - DAY
+        # - DAY
         - WEEK_DAY
-        - MONTH
+        # - MONTH
     seed: 5432
-    n_splits: 5
+    n_splits: 10
     parameters:
         objective: binary
         metric: binary_logloss
         max_depth: 5
-        min_data_in_leaf: 10
-        colsample_bytree: 0.75
-        subsample: 0.75
-        learning_rate: 0.005
+        min_data_in_leaf : 8
+        min_child_leaf : 8
+        colsample_bytree: 0.8
+        subsample: 0.8
+        learning_rate: 0.0009
         num_iteration: 500
-        lambda_l1 : 0
+        lambda_l1 : 0.5
         n_jobs: -1
-        verbose : 100
+        verbose : -1
+        early_stopping_round: 100

@@ -52,6 +52,7 @@ class TrainModel(object):
         self.feature_name = [x.upper() for x in configs["FEATURES"]]
         self.params = configs
         self.weight = None
+        self.metric = []
 
         if "WEIGHT" in configs.keys():
             self.weight = configs["WEIGHT"]
@@ -84,9 +85,10 @@ class TrainModel(object):
                     test_data["BIAS_" + error] = test_data[self.target_name] - test_data[error]
                     test_data["ERROR_" + error] = evaluation_metric(test_data[self.target_name],
                                                                     test_data[error])
-
+                    mape =  np.mean(test_data["ERROR_" + error].loc[test_data[self.target_name]>0])
+                    self.metric.append(mape)
                     logging.info("MAPE {2} : {0:.2f} +/- {1:.2f} % || ABS_BIAS {3:.3f} || BIAS {4:.3f}".format(
-                                np.mean(test_data["ERROR_" + error].loc[test_data[self.target_name]>0]),
+                                mape,
                                 np.std(test_data["ERROR_" + error].loc[test_data[self.target_name]>0]),
                                 error,
                                 test_data["ABS_BIAS_" + error].mean(),
@@ -96,8 +98,10 @@ class TrainModel(object):
             logging.info("_" * 60)
             for error in ["PREDICTION_" + self.target_name]:
                 if error in test_data.columns:
+                    auc = evaluation_auc(test_data[self.target_name], test_data[error])
+                    self.metric.append(auc)
                     logging.info("AUC {1} : {0:.4f} %".format(
-                          evaluation_auc(test_data[self.target_name], test_data[error]),
+                          auc,
                           error
                       )) 
             logging.info("_" * 60)
@@ -130,26 +134,28 @@ class TrainModel(object):
 
                 # model training and prediction of val
                 # have an idea of the error rate and use early stopping round
-                train_data = lgb.Dataset(
+                train_data_lgb = lgb.Dataset(
                     train_data[self.feature_name], 
                     label=train_data[self.target_name], 
                     weight=train_weight,
                     init_score=train_init_bias,
-                    categorical_feature=self.params["categorical_features"]
+                    categorical_feature=self.params["categorical_features"],
+                    free_raw_data=False
                 )
 
-                val_data = lgb.Dataset(
+                val_data_lgb = lgb.Dataset(
                     test_data[self.feature_name], 
                     label=test_data[self.target_name], 
                     init_score=test_init_bias,
-                    categorical_feature=self.params["categorical_features"]
+                    categorical_feature=self.params["categorical_features"],
+                    free_raw_data=False
                 )
 
                 model = lgb.train(self.params["parameters"],
-                                   train_set=train_data, 
-                                    valid_sets=[train_data, val_data],
-                                    valid_names=["data_train", "data_valid"],
-                                    verbose_eval=100)
+                                train_set=train_data_lgb, 
+                                valid_sets=[train_data_lgb, val_data_lgb],
+                                valid_names=["data_train", "data_valid"],
+                                verbose_eval=100)
 
             else:
                 if "early_stopping_round" in self.params["parameters"]:
@@ -205,19 +211,18 @@ class TrainModel(object):
         start = pd.to_datetime(start, format="%Y-%m-%d")
         end = pd.to_datetime(end, format="%Y-%m-%d")
 
-        nbr_days_predict = proportion*(end - start).days
+        nbr_days_predict = int(proportion*(end - start).days)
         start_date = start + timedelta(days=min_days)
         end_date = end - timedelta(days=nbr_days_predict)
 
-        for k in range(k_folds):
-            random_date = self.random_date(start_date, end_date)
+        total_nbr_days = (end_date - start_date).days
+        steps = (total_nbr_days-1)//k_folds
+
+        for k in range(1, k_folds+1):
+            random_date = start_date + timedelta(days= k*steps)
             folds[k] = (random_date, random_date + timedelta(days=nbr_days_predict))
 
         return folds 
-    
-
-    def random_date(self, start, end):
-        return start + timedelta(days= randint(0, int((end - start).days)))
     
 
     def modelling_cross_validation(self, data=None, init_score=None):

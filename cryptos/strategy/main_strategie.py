@@ -9,8 +9,10 @@ class MainStrategy(object):
     def __init__(self, configs, start_date, end_date=None):
 
         self.configs = configs
+        self.hours = range(24)
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
         self.lags = self.configs.load["cryptos_desc"]["LAGS"]
+        self.targets = self.configs.load["cryptos_desc"]["TARGETS"]
 
         self.start_date =  pd.to_datetime(start_date, format = "%Y-%m-%d")
         self.end_date = end_date
@@ -23,10 +25,7 @@ class MainStrategy(object):
         self.fees_sell = 0.0015
         self.back_step_months = 4
 
-        self.picked_strategie = None
-
-
-    def main_strategy_1_analysis_currencies(self, 
+    def main_strategy_analysis_currencies(self, 
                                            dict_prepared, 
                                            df_init=None,
                                            deduce_moves=True, 
@@ -37,9 +36,10 @@ class MainStrategy(object):
 
         for i, currency in enumerate(self.currencies):
             args["currency"] = currency
-            dict_moves[currency], dict_pnl = self.picked_strategie(dict_prepared[currency], 
-                                                                    df_init=df_init, 
-                                                                    args=args)
+            prepared = dict_prepared[currency].copy()
+            dict_moves[currency], dict_pnl = self.main_strategy(prepared, 
+                                                                df_init=df_init, 
+                                                                args=args)
             dict_pnl.rename(columns={"PNL" : f"PNL_{currency}"}, inplace= True)
 
             if i == 0:
@@ -48,6 +48,8 @@ class MainStrategy(object):
                 pnl_prepared = pnl_prepared.merge(dict_pnl, on="DATE", how="left", validate= "1:1")
 
         coins = [x for x in pnl_prepared.columns if "PNL_" in x]
+        for coin in coins: 
+            pnl_prepared[coin] = pnl_prepared[coin].bfill()
         pnl_prepared["PNL_PORTFOLIO"] = pnl_prepared[coins].sum(axis=1, numeric_only=True)
 
         if deduce_moves:
@@ -67,6 +69,23 @@ class MainStrategy(object):
 
         return pnl_prepared, moves_prepared
 
+    def strategy_lags_comparison(self, prepared, df_init=None, args={}):
+
+        for i, lag in enumerate(self.lags):
+
+            args["lag"] = lag
+
+            moves, pnl = self.main_strategy(prepared,
+                                                df_init=df_init, 
+                                                args=args)
+            pnl.rename(columns={"PNL": f"PNL_{lag}"}, inplace=True)
+
+            if i == 0:
+                result = pnl
+            else: 
+                result = result.merge(pnl, on="DATE", how="left", validate="1:1")
+
+        return result 
 
     def allocate_cash(self, dict_prepared, df_init, current_price, args):
 
@@ -75,7 +94,7 @@ class MainStrategy(object):
         # get the PNL for each currency of the past 2 months
         tampon_start = self.start_date
         self.start_date = tampon_start - timedelta(days=int(self.back_step_months*30.5))
-        pnl_prepared, _ = self.main_strategy_1_analysis_currencies(dict_prepared,
+        pnl_prepared, _ = self.main_strategy_analysis_currencies(dict_prepared,
                                                                   df_init=None,
                                                                   deduce_moves=False,
                                                                   args=args)

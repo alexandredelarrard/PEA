@@ -18,7 +18,6 @@ def main():
 
     # load data
     data_prep = PrepareCrytpo()
-    # self.configs = data_prep.configs
 
     logging.info("Starting data / strategy execution")
     datas = data_prep.main_load_data()
@@ -33,16 +32,18 @@ def main():
 
     # strategy deduce buy / sell per currency
     strat = Strategy2(configs=data_prep.configs, 
-                        start_date=datetime.utcnow() - timedelta(minutes=30),
-                        end_date=datetime.utcnow())
+                    path_dirs=data_prep.path_dirs,
+                    start_date=datetime.utcnow() - timedelta(minutes=30),
+                    end_date=datetime.utcnow())
     
     results = {}
-    # for curr in data_prep.currencies:
-    curr = "BTC"
-    a, b = strat.main_strategy(dict_prepared, currency=curr)
-    results[curr] = strat.final_metric
-
+    for curr in data_prep.currencies:
+        a, b, test_ts = strat.main_strategy(dict_prepared, currency=curr)
+        results[curr] = strat.final_metric
     
+    for curr in data_prep.currencies:
+        logging.info(results[curr])
+
     df_init =  strat.allocate_cash(dict_prepared, df_init, 
                                    current_price, 
                                    args=args)

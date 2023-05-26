@@ -6,9 +6,10 @@ from datetime import datetime, timedelta
 
 class MainStrategy(object):
 
-    def __init__(self, configs, start_date, end_date=None):
+    def __init__(self, configs, start_date, end_date=None, path_dirs=""):
 
         self.configs = configs
+        self.path_dirs = path_dirs
         self.hours = range(24)
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
         self.lags = self.configs.load["cryptos_desc"]["LAGS"]

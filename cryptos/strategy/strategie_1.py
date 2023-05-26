@@ -7,10 +7,9 @@ from strategy.main_strategie import MainStrategy
 
 class Strategy1(MainStrategy):
 
-    def __init__(self, configs, start_date, end_date =None, dict_prepared={}):
+    def __init__(self, configs, start_date, end_date =None, path_dirs="", dict_prepared={}):
 
-        MainStrategy.__init__(self, configs, start_date, end_date)
-
+        MainStrategy.__init__(self, configs, start_date, end_date, path_dirs)
         self.seuils = 1.8
 
     def execute_strategie(self, 

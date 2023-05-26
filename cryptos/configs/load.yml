@@ -6,6 +6,6 @@ cryptos_desc:
     Cryptos: ["BTC", "ETH", "XRP", "ADA", "DOGE", "SOL", "ICP", "SAND", "TRX", "XLM", "STX"]
     URL_BASE: https://www.cryptodatadownload.com/cdd/
     URL_END: USDT_1h.csv
-    LAGS : ["0.25", "0.5", "1", "2", "7", "15", "30", "45"] #, 35, "MEAN_LAGS"
+    LAGS : ["0.5", "1", "2", "4", "7", "15", "30", "45", "60", "90"] #, 35, "MEAN_LAGS"
     STRATEGIES : ["Strategy0", "Strategy1", "Strategy2"]
     TARGETS : [0.5, 1, 2, 3, 7]

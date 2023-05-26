@@ -8,9 +8,9 @@ from strategy.main_strategie import MainStrategy
 
 class Strategy0(MainStrategy):
 
-    def __init__(self, configs, start_date, end_date =None, dict_prepared={}):
+    def __init__(self, configs, start_date, end_date =None, path_dirs="", dict_prepared={}):
 
-        MainStrategy.__init__(self, configs, start_date, end_date)
+        MainStrategy.__init__(self, configs, start_date, end_date, path_dirs)
 
         self.parameters = {'BTC': {'LAG': '0.5', 'TARGET': 1, 'PERCENTAGE': -0.8}, 
                            'ETH': {'LAG': '0.5', 'TARGET': 1.0, 'PERCENTAGE': -0.7}, 

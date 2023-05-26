@@ -190,6 +190,7 @@ class PrepareCrytpo(LoadCrytpo):
         for other in ["S&P", "GOLD", "BRENT"]:
             for avg_mean in [7, 30, 90]:
                 dict_full[currency][f"{other}_NORMALIZED_{avg_mean}"] = dict_full[currency][f"{other}_NORMALIZED_{avg_mean}"].bfill()
+                dict_full[currency][f"DIFF_{other}_NORMALIZED_{avg_mean}"] = dict_full[currency][f"TARGET_NORMALIZED_{avg_mean}"] - dict_full[currency][f"{other}_NORMALIZED_{avg_mean}"]
 
         return dict_full[currency]
     
@@ -236,7 +237,7 @@ class PrepareCrytpo(LoadCrytpo):
 
         for currency in self.currencies:
             dict_full[currency] = self.distance_to_market(dict_full, currency)
-            dict_full[currency] = self.distance_to_others(datas, dict_full, currency)
+            dict_full[currency] = self.distance_to_others(datas, dict_full, currency) 
             dict_full[currency] = self.data_prep_strats(dict_full[currency])
 
             if prepared[currency].shape[0] > 0:

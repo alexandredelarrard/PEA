@@ -65,6 +65,12 @@ class LoadCrytpo(object):
         if not os.path.isdir(self.path_dirs["ORDERS"]):
             os.mkdir(self.path_dirs["ORDERS"])
 
+        self.path_dirs["PLOTS"] = "/".join([self.path_dirs["BASE"], "plots"])
+        if not os.path.isdir(self.path_dirs["PLOTS"]):
+            os.mkdir(self.path_dirs["PLOTS"])
+        if not os.path.isdir(self.path_dirs["PLOTS"] + "/shap"):
+            os.mkdir(self.path_dirs["PLOTS"] + "/shap")
+
 
     def download_history_kraken(self):
 
@@ -153,10 +159,10 @@ class LoadCrytpo(object):
             else:
                 datas[currency] = pd.concat([history_data, data], axis=0)
 
-            # other currencies
-            datas["S&P"] = self.load_other_daily(pair="ES=F")
-            datas["BRENT"] = self.load_other_daily(pair="BZ=F")
-            datas["GOLD"] = self.load_other_daily(pair="GC=F")
+        # other currencies
+        datas["S&P"] = self.load_other_daily(pair="ES=F")
+        datas["BRENT"] = self.load_other_daily(pair="BZ=F")
+        datas["GOLD"] = self.load_other_daily(pair="GC=F")
 
         return datas
 

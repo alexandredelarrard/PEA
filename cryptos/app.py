@@ -46,10 +46,6 @@ def main():
         Strategy = eval(inputs["strategie"])
         strat = Strategy(configs=app.configs, start_date=inputs['start_date'], end_date=inputs['end_date'], dict_prepared=dict_prepared)
 
-        if inputs["strategie"] == "Strategy0":
-        #     best = strat.deduce_parameters(app.state.dict_prepared)
-            st.write(f"Returned lag/futur/seuil = {strat.parameters}")
-
         args = {"lag" : inputs["lag"],
                 "currency" : inputs["currency"]}
         

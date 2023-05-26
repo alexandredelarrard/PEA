@@ -60,6 +60,7 @@ class Strategy2(MainStrategy):
     def main_strategy(self, dict_prepared, currency, df_init=None):
 
         prepared = dict_prepared[currency]
+        prepared = prepared.loc[prepared["DATE"].dt.year >= 2018]
         prepared = self.data_prep(prepared)
         prepared = prepared.loc[~prepared[self.target].isnull()]
 
@@ -109,9 +110,9 @@ class Strategy2(MainStrategy):
         for k, tuple_time in folds.items():
 
             logging.info(f"[fold {k}] START TEST DATE = {tuple_time[0]}")
-            # condition_train = prepared["DATE"].between(tuple_time[0], tuple_time[1])
+            condition_train = prepared["DATE"].between(tuple_time[0], tuple_time[1])
             train_ts = prepared.loc[prepared["DATE"] <= tuple_time[0]]
-            test_ts = prepared.loc[prepared["DATE"] > tuple_time[0]]
+            test_ts = prepared.loc[condition_train]
 
             x_val, models[k] = self.training(train_ts, test_ts)
             x_val["FOLD"] = k

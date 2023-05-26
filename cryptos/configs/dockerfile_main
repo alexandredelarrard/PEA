@@ -5,7 +5,7 @@ FROM python:3.7.10
 WORKDIR /app
 
 # Copying the crontab file 
-COPY cron /etc/cron.d/crontab
+COPY configs/cron /etc/cron.d/crontab
 
 # Copy the current directory contents into the container at /app
 COPY . /app

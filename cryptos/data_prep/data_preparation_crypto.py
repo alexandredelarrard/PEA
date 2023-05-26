@@ -170,6 +170,30 @@ class PrepareCrytpo(LoadCrytpo):
         return dict_full[currency]
     
 
+    def distance_to_others(self, datas, dict_full, currency):
+
+        logging.info(f"[{currency}] OTHERS DIST")
+
+        # merge others to data 
+        for other in ["GOLD", "S&P", "BRENT"]:
+            datas[other] = datas[other][["DATE", "CLOSE"]]
+            datas[other] = datas[other].sort_values(["DATE"], ascending= 0)
+
+            for avg_mean in [7, 30, 90]:
+                rollings = self.rolling_window(datas[other]["CLOSE"], float(avg_mean))
+                datas[other][f"CLOSE_MEAN_{avg_mean}D"] = np.mean(rollings, axis=1)
+
+                datas[other][f"{other}_NORMALIZED_{avg_mean}"] = (datas[other]["CLOSE"] - datas[other][f"CLOSE_MEAN_{avg_mean}D"].shift(-1))*10 / datas[other][f"CLOSE_MEAN_{avg_mean}D"].shift(-1)
+        
+            dict_full[currency] = dict_full[currency].merge(datas[other].drop("CLOSE", axis=1), on="DATE", how="left", validate="1:1") 
+
+        for other in ["S&P", "GOLD", "BRENT"]:
+            for avg_mean in [7, 30, 90]:
+                dict_full[currency][f"{other}_NORMALIZED_{avg_mean}"] = dict_full[currency][f"{other}_NORMALIZED_{avg_mean}"].bfill()
+
+        return dict_full[currency]
+    
+
     def data_prep_strats(self, prepared):
 
         prepared = prepared.sort_values("DATE", ascending = False)
@@ -212,11 +236,8 @@ class PrepareCrytpo(LoadCrytpo):
 
         for currency in self.currencies:
             dict_full[currency] = self.distance_to_market(dict_full, currency)
+            dict_full[currency] = self.distance_to_others(datas, dict_full, currency)
             dict_full[currency] = self.data_prep_strats(dict_full[currency])
-
-            # TODO add distance to S&P
-            # TODO add distance to gold
-            # TODO distance to VIX ?
 
             if prepared[currency].shape[0] > 0:
                 dict_full[currency] = pd.concat([prepared[currency], dict_full[currency]], axis=0)

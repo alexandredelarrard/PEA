@@ -107,6 +107,18 @@ class LoadCrytpo(object):
 
         return intra_day_data
     
+    
+    def load_other_daily(self, pair):
+
+        # "ES=F" = s&p ;  "BZ=F" : "brent"
+        hist = yf.download(pair, period="7y", interval="1d")
+        hist = hist.reset_index()
+        hist.rename(columns={"index" : "Date", "Datetime" : "Date"}, inplace=True)
+        hist["Date"] = pd.to_datetime(hist["Date"], format="%Y-%m-%d")
+        hist.columns = smart_column_parser(hist.columns)
+
+        return hist
+
 
     def load_ohlctv(self, currency):
 
@@ -140,6 +152,11 @@ class LoadCrytpo(object):
                 datas[currency] = pd.concat([history[currency], data], axis=0)
             else:
                 datas[currency] = pd.concat([history_data, data], axis=0)
+
+            # other currencies
+            datas["S&P"] = self.load_other_daily(pair="ES=F")
+            datas["BRENT"] = self.load_other_daily(pair="BZ=F")
+            datas["GOLD"] = self.load_other_daily(pair="GC=F")
 
         return datas
 

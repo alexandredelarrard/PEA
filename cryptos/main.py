@@ -32,14 +32,16 @@ def main():
     current_price = kraken.get_latest_price()
 
     # strategy deduce buy / sell per currency
-    strat = Strategy0(configs=data_prep.configs, 
+    strat = Strategy2(configs=data_prep.configs, 
                         start_date=datetime.utcnow() - timedelta(minutes=30),
                         end_date=datetime.utcnow())
     
-    # results = {}
+    results = {}
     # for curr in data_prep.currencies:
-    #     a, b = strat.main_strategy(dict_prepared, currency=curr)
-    #     results[curr] = strat.final_metric
+    curr = "BTC"
+    a, b = strat.main_strategy(dict_prepared, currency=curr)
+    results[curr] = strat.final_metric
+
     
     df_init =  strat.allocate_cash(dict_prepared, df_init, 
                                    current_price, 

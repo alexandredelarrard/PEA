@@ -3,7 +3,7 @@ services:
     app:
         container_name: cryptos_app
         build: 
-            dockerfile: dockerfile_app
+            dockerfile: configs/dockerfile_app
         volumes:
             - .:/app/
             - shared-volume:/app/data
@@ -13,7 +13,7 @@ services:
     mycron:
         container_name: cryptos_cron
         build: 
-            dockerfile: dockerfile_main
+            dockerfile: configs/dockerfile_main
         volumes:
             - .:/app/
             - shared-volume:/app/data

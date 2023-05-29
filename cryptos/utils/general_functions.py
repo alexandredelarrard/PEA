@@ -67,4 +67,4 @@ def check_save_path(save_path):
         os.mkdir(save_path)
 
 def function_weight():
-    return lambda x: 1 - 1 / (1 + np.exp(-1.5 * (x / 365 - 3)))
+    return lambda x: 1 - 1 / (1 + np.exp(-1 * (x / (365) - 5)))

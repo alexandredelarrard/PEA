@@ -7,7 +7,7 @@ strategy_2:
         - TARGET_NORMALIZED_1
         - TARGET_NORMALIZED_7
         - TARGET_NORMALIZED_15
-        - TARGET_NORMALIZED_30
+        # - TARGET_NORMALIZED_30
         # - TARGET_NORMALIZED_45
         # - TARGET_NORMALIZED_90
         # - CLOSE_TREND_0.5
@@ -20,15 +20,15 @@ strategy_2:
         - VOLUME_NORMALIZED_7
         - VOLUME_NORMALIZED_30
         # - VOLUME_NORMALIZED_90
-        - DIFF_TO_MARKET_0.5 # market distance
-        - DIFF_TO_MARKET_1
+        # - DIFF_TO_MARKET_0.5 # market distance
+        # - DIFF_TO_MARKET_1
         - DIFF_TO_MARKET_7
-        # - DIFF_TO_MARKET_30
+        - DIFF_TO_MARKET_30
         # - DIFF_TO_MARKET_90
         - CLOSE_ROLLING_STD_0.5D
         - CLOSE_ROLLING_STD_1D # target std past X days
         - CLOSE_ROLLING_STD_7D
-        - CLOSE_ROLLING_STD_30D
+        # - CLOSE_ROLLING_STD_30D
         # - CLOSE_ROLLING_STD_45D
         # - DIFF_GOLD_NORMALIZED_7
         # - DIFF_GOLD_NORMALIZED_30
@@ -40,7 +40,7 @@ strategy_2:
         # - DIFF_BRENT_NORMALIZED_30
         # - DIFF_BRENT_NORMALIZED_90
         # - ALL_THRESHOLD
-        - THRESHOLD_0.5
+        # - THRESHOLD_1
         # - THRESHOLD_7
         # - THRESHOLD_15
         # - THRESHOLD_30
@@ -59,14 +59,14 @@ strategy_2:
     parameters:
         objective: binary
         metric: binary_logloss
-        max_depth: 6
-        min_child_samples : 75
-        colsample_bytree: 0.7
-        subsample: 0.9
-        learning_rate: 0.003
-        num_iteration: 2000
-        reg_alpha : 1
-        reg_lambda: 0.5
+        max_depth: 5
+        min_child_samples : 40
+        colsample_bytree: 0.75
+        subsample: 0.75
+        learning_rate: 0.007
+        num_iteration: 1500
+        reg_alpha : 0
+        reg_lambda: 0
         n_jobs: -1
         verbose : -1
         early_stopping_round: 100

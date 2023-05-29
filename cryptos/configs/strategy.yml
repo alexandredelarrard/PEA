@@ -1,42 +1,45 @@
 # MODEL META UB - LGBM - PDV
 strategy_2:
-    TARGET : NEG_BINARY_FUTUR_TARGET_1
+    TARGET : POS_BINARY_FUTUR_TARGET_2
     WEIGHT : WEIGHT
     FEATURES:
         # - TARGET_NORMALIZED_0.5
         - TARGET_NORMALIZED_1
+        - TARGET_NORMALIZED_2
         - TARGET_NORMALIZED_7
         - TARGET_NORMALIZED_15
-        # - TARGET_NORMALIZED_30
+        - TARGET_NORMALIZED_30
         - TARGET_NORMALIZED_45
-        # - TARGET_NORMALIZED_90
+        - TARGET_NORMALIZED_90
         # - CLOSE_TREND_0.5
-        # - CLOSE_TREND_1
-        - CLOSE_TREND_2
         - CLOSE_TREND_7
-        # - CLOSE_TREND_45
-        - CLOSE_TREND_90
-        - VOLUME_NORMALIZED_1
-        - VOLUME_NORMALIZED_7
-        - VOLUME_NORMALIZED_30
-        # - VOLUME_NORMALIZED_45
+        - CLOSE_TREND_15
+        - CLOSE_TREND_30
+        - CLOSE_TREND_45
+        # - CLOSE_TREND_90
+        # - VOLUME_NORMALIZED_1
+        # - VOLUME_NORMALIZED_7
+        # - VOLUME_NORMALIZED_30
+        # - VOLUME_NORMALIZED_90
         # - DIFF_TO_MARKET_0.5 # market distance
         - DIFF_TO_MARKET_1
         - DIFF_TO_MARKET_7
-        # - DIFF_TO_MARKET_15
+        - DIFF_TO_MARKET_30
+        # - DIFF_TO_MARKET_90
+        # - CLOSE_ROLLING_STD_0.5D
         - CLOSE_ROLLING_STD_1D # target std past X days
         - CLOSE_ROLLING_STD_7D
         - CLOSE_ROLLING_STD_30D
-        - CLOSE_ROLLING_STD_45D
+        # - CLOSE_ROLLING_STD_45D
         # - DIFF_GOLD_NORMALIZED_7
-        - DIFF_GOLD_NORMALIZED_30
-        - DIFF_GOLD_NORMALIZED_90
-        # - DIFF_S&P_NORMALIZED_7
+        # - DIFF_GOLD_NORMALIZED_30
+        # - DIFF_GOLD_NORMALIZED_90
+        - DIFF_S&P_NORMALIZED_7
         - DIFF_S&P_NORMALIZED_30
-        - DIFF_S&P_NORMALIZED_90
+        # - DIFF_S&P_NORMALIZED_90
         # - DIFF_BRENT_NORMALIZED_7
-        - DIFF_BRENT_NORMALIZED_30
-        - DIFF_BRENT_NORMALIZED_90
+        # - DIFF_BRENT_NORMALIZED_30
+        # - DIFF_BRENT_NORMALIZED_90
         # - DAY_OF_YEAR
         - WEEK_DAY
         # - HOUR
@@ -47,17 +50,18 @@ strategy_2:
         # - HOUR
         # - MONTH
     seed: 5432
-    n_splits: 5
+    n_splits: 1
     parameters:
         objective: binary
         metric: binary_logloss
         max_depth: 6
-        min_data_in_leaf : 90
+        min_child_samples : 30
         colsample_bytree: 0.75
-        subsample: 0.75
-        learning_rate: 0.0015
-        num_iteration: 2500
-        lambda_l1 : 2
+        subsample: 0.8
+        learning_rate: 0.007
+        num_iteration: 900
+        reg_alpha : 3
+        reg_lambda: 0
         n_jobs: -1
         verbose : -1
         early_stopping_round: 100

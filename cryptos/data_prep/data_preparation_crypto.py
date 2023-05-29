@@ -37,7 +37,7 @@ class PrepareCrytpo(LoadCrytpo):
     def pre_clean_cols(self, df):
 
         df["DATE"] = pd.to_datetime(df["DATE"], format="%Y-%m-%d %H:%M:%S")
-        df = df.sort_values(["DATE"], ascending= 0)
+        df = df.sort_values(["DATE"], ascending = False)
         df = df.drop_duplicates("DATE")
 
         return df
@@ -85,15 +85,6 @@ class PrepareCrytpo(LoadCrytpo):
         agg["DATE"] = agg["DATE"].dt.round("H")
         agg = agg.drop_duplicates("DATE")
 
-        if currency == "XRP":
-            agg.loc[agg["DATE"] == "2021-12-14 21:00:00"] = np.nan
-
-        if currency == "XLM":
-            agg.loc[agg["DATE"] == "2021-09-09 00:00:00"] = np.nan
-
-        if currency == "TRX":
-            agg.loc[agg["DATE"] == "2021-06-14 08:00:00"] = np.nan
-        
         # remove mvs 
         agg.loc[agg["CLOSE"] <= 0, "CLOSE"] = np.nan
         agg = agg.loc[~agg["CLOSE"].isnull()]
@@ -118,7 +109,7 @@ class PrepareCrytpo(LoadCrytpo):
                 # trend deduction
                 X = range(rollings.shape[1])
                 kwargs = {"X" : np.vstack([X, np.ones(len(X))]).T}
-                params = np.apply_along_axis(self.trend_fit, 1, rollings, **kwargs)
+                params = np.apply_along_axis(self.trend_fit, 1, np.fliplr(rollings), **kwargs)
                 agg[f"CLOSE_TREND_{avg_mean}"] = params[:,0]*len(self.hours)*self.obs_per_hour # trend per day
 
                 # volume moments
@@ -224,9 +215,9 @@ class PrepareCrytpo(LoadCrytpo):
                 max_date = prepared[currency]["DATE"].max()
                 lags = [float(x) for x in self.lags]
                 min_date = max_date - timedelta(days= 2*(1+int(np.max(lags))))
-                df = df.loc[df["DATE"].between(min_date, max_date)]
+                df = df.loc[df["DATE"] >= min_date]
 
-                logging.info(f"[DATA PREP] Already prepared up to {max_date} will onlu redo last {np.max(lags)} days")
+                logging.info(f"[DATA PREP] Already prepared up to {max_date} will only redo last {np.max(lags)} days")
             else:
                 prepared[currency] = pd.DataFrame()
 
@@ -243,6 +234,7 @@ class PrepareCrytpo(LoadCrytpo):
             if prepared[currency].shape[0] > 0:
                 dict_full[currency] = pd.concat([prepared[currency], dict_full[currency]], axis=0)
                 dict_full[currency] = dict_full[currency].drop_duplicates("DATE")
+                dict_full[currency] = dict_full[currency].sort_values("DATE", ascending=False)
 
             for lag in self.lags:
                 dict_full[currency] = self.deduce_threshold(dict_full[currency], f"TARGET_NORMALIZED_{lag}", lag=lag)

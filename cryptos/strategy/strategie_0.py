@@ -8,7 +8,7 @@ from strategy.main_strategie import MainStrategy
 
 class Strategy0(MainStrategy):
 
-    def __init__(self, configs, start_date, end_date =None, path_dirs="", dict_prepared={}):
+    def __init__(self, configs, start_date, end_date =None, path_dirs=""):
 
         MainStrategy.__init__(self, configs, start_date, end_date, path_dirs)
 
@@ -22,53 +22,18 @@ class Strategy0(MainStrategy):
                            'SAND': {'LAG': '1', 'TARGET': 1.0, 'PERCENTAGE': -0.9}, 
                            'TRX': {'LAG': '0.5', 'TARGET': 1.0, 'PERCENTAGE': -0.7}, 
                            'XLM': {'LAG': '1', 'TARGET': 1.0, 'PERCENTAGE': -1}, 
-                           'STX': {'LAG': '0.5', 'TARGET': 1.0, 'PERCENTAGE': -0.7}}
-        # self.parameters = self.deduce_parameters(dict_prepared)
+                           'STX': {'LAG': '0.5', 'TARGET': 1.0, 'PERCENTAGE': -0.7},
+                           'DOT': {'LAG': '0.5', 'TARGET': 1.0, 'PERCENTAGE': -0.7},
+                           'DAI': {'LAG': '1', 'TARGET': 1.0, 'PERCENTAGE': -0.8},
+                           'LTC': {'LAG': '1', 'TARGET': 1.0, 'PERCENTAGE': -0.8},
+                           'LINK': {'LAG': '1', 'TARGET': 1.0, 'PERCENTAGE': -0.8}}
 
-    def execute_strategie(self, 
-                         sub_prepared, 
-                         currency = "BTC",
-                         variable_to_use = None,
-                         df_init=None):
-
-        if isinstance(df_init, pd.DataFrame):
-            sub_prepared["CASH"] = df_init.loc["CASH_TO_ALLOCATE", currency]
-            sub_prepared["CURRENCY"] = df_init.loc["BALANCE", currency]
-        else:
-            sub_prepared["CASH"] = 100
-            sub_prepared["CURRENCY"] = 0
-
-        sub_prepared["REAL_BUY_SELL"] = 0
-        sub_prepared["AMOUNT"] = 0
-        sub_prepared["TO_SELL"] = 0
-
-        if sub_prepared.shape[0]>0:
-            max_index = max(sub_prepared.index)
-            for i in sub_prepared.index:
-
-                lag_i = sub_prepared.loc[i, "LAG"]
-
-                futur = int(self.parameters[currency]["TARGET"]*24)
-                seuil = self.parameters[currency]["PERCENTAGE"]
-                tentative_buy_sell = np.where(sub_prepared.loc[min(max_index, i + futur), "REAL_BUY_SELL"] == 1, -1,
-                                    np.where(sub_prepared.loc[i, f"{variable_to_use}_{lag_i}"] < seuil, 1, 0)) # perte de 8%
-
-                if ((tentative_buy_sell==-1)&(sub_prepared.loc[i, "CURRENCY"]>0)):
-                    sub_prepared.loc[i:, "AMOUNT"] = (1-self.fees_sell)*sub_prepared.loc[i, "CLOSE"]*sub_prepared.loc[i, "CURRENCY"]
-                    sub_prepared.loc[i:, "CASH"] +=  sub_prepared.loc[i:, "AMOUNT"]
-                    sub_prepared.loc[i:, "CURRENCY"] = 0
-                    sub_prepared.loc[i, "REAL_BUY_SELL"] = -1
-                    
-                if ((tentative_buy_sell==1)&(sub_prepared.loc[i, "CASH"]>0)):
-                    sub_prepared.loc[i:, "CURRENCY"] += ((1-self.fees_buy)*sub_prepared.loc[i, "CASH"])/sub_prepared.loc[i, "CLOSE"]
-                    sub_prepared.loc[i:, "AMOUNT"] = -1*sub_prepared.loc[i, "CASH"]
-                    sub_prepared.loc[i:, "CASH"] = 0
-                    sub_prepared.loc[i, "REAL_BUY_SELL"] = 1
-
-        sub_prepared["PNL"] = sub_prepared["CASH"] + sub_prepared["CURRENCY"]*sub_prepared["CLOSE"]
-        pnl = sub_prepared[["DATE", "PNL"]].groupby("DATE").mean().reset_index()
-
-        return sub_prepared, pnl
+    def condition(self, sub_prepared, i, lag_i, variable_to_use, args):
+        futur = int(self.parameters[args["currency"]]["TARGET"]*24)
+        seuil = self.parameters[args["currency"]]["PERCENTAGE"]
+        tentative_buy_sell = np.where(sub_prepared.loc[min(args["max_index"], i + futur), "REAL_BUY_SELL"] == 1, -1,
+                            np.where(sub_prepared.loc[i, f"{variable_to_use}_{lag_i}"] < seuil, 1, 0)) # perte de 8%
+        return tentative_buy_sell
     
 
     def main_strategy(self, prepared,
@@ -76,8 +41,7 @@ class Strategy0(MainStrategy):
                         args = {}):
         
         currency = args["currency"]
-        lag = self.parameters[currency]["LAG"]
-        # lag= args["lag"]
+        lag = args["lag"] #self.parameters[currency]["LAG"]
         prepared = prepared.copy()
         variable_to_use = "TARGET_NORMALIZED"
         
@@ -95,29 +59,3 @@ class Strategy0(MainStrategy):
                                         currency=currency, 
                                         variable_to_use=variable_to_use,
                                         df_init=df_init)
-
-    def deduce_parameters(self, dict_prepared):
-
-        dict_all = {}
-        columns = ["PERCENTAGE", "LAG", "TARGET", "NUMBER_OBS", "MEDIAN_FUTUR", "GAINS"]
-
-        for currency in self.currencies:
-            prepared = dict_prepared[currency]
-            shape_0 = prepared.shape[0]
-            results = []
-
-            for lag in [0.5, 1, 2]:
-                for target in [0.5, 1, 2]:
-                    for percentage in range(-15, -6):
-                        sub = prepared.loc[prepared[f"TARGET_NORMALIZED_{lag}"] < percentage/10]
-                        nbr = sub.shape[0]/shape_0
-                        avg = sub[f"DELTA_FUTUR_TARGET_{target}"].median()
-                        results.append([percentage, lag, target, nbr, avg, avg*nbr])
-
-            results = pd.DataFrame(results, columns=columns)
-            best_results = results.loc[results["GAINS"] == results["GAINS"].max()]
-
-            dict_all[currency] = {"LAG" : best_results["LAG"].values[0], 
-                                 "TARGET" : best_results["TARGET"].values[0],
-                                 "PERCENTAGE" : best_results["PERCENTAGE"].values[0]/10}
-        return dict_all

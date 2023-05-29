@@ -59,6 +59,9 @@ class TrainModel(object):
         if "weight" in configs.keys():
             self.weight = configs["weight"]
 
+        if "monotonic_constraint" in self.params["parameters"]:
+            assert len(self.params["parameters"]["monotonic_constraint"]) == len(configs["FEATURES"])
+
 
     def evaluate_model(self, model, test_data, final=False):
         """

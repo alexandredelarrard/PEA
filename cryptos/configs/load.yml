@@ -3,9 +3,10 @@ resources:
     data: data/crypto
 
 cryptos_desc:
-    Cryptos: ["BTC", "ETH", "XRP", "ADA", "DOGE", "SOL", "TRX", "XLM", "DOT", "LTC", "DAI", "LINK"] # "STX", "ICP", "SAND", 
+    Cryptos: ["BTC", "ETH", "XRP", "ADA", "DOGE", "SOL", "TRX", "XLM", "DOT", "LTC", "DAI", "LINK", "ICP", "SAND"] # "STX", 
     URL_BASE: https://www.cryptodatadownload.com/cdd/
     URL_END: USDT_1h.csv
     LAGS : ["0.5", "1", "2", "4", "7", "15", "30", "45", "60", "90"]
     STRATEGIES : ["Strategy0", "Strategy1", "Strategy2"]
     TARGETS : [0.5, 1, 2, 3, 7]
+    

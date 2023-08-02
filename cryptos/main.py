@@ -13,20 +13,6 @@ from trading.kraken_trading import TradingKraken
 
 warnings.filterwarnings("ignore", message=".*The 'nopython' keyword.*")
 
-def prepare_data(data_prep):
-
-    logging.info("Starting data / strategy execution")
-    datas = data_prep.main_load_data()
-
-    # data preparation 
-    dict_prepared = data_prep.main_prep_crypto_price(datas)
-
-    # save datas
-    data_prep.save_datas(datas)
-    data_prep.save_prepared(dict_prepared)
-
-    return dict_prepared
-
 
 def training(data_prep, dict_prepared):
 
@@ -79,60 +65,17 @@ def main(data_prep, dict_prepared):
     df_init = kraken.get_current_portolio() 
     current_price = kraken.get_latest_price()
 
-    df_init =  strat.allocate_cash(dict_prepared, df_init, 
-                                   current_price, 
-                                   args=args)
-    
-    _, moves_prepared = strat.main_strategy_analysis_currencies(dict_prepared, 
-                                                                 df_init=None, 
-                                                                 args=args)
-
-    # pass orders if more than 0
-    orders_infos=pd.DataFrame()
-    if moves_prepared.shape[0]>0:
-        trading = TradingKraken(configs=data_prep.configs)
-        trading.cancel_orders()
-        
-        if trading.validate_trading_conditions(dict_prepared, df_init):
-            futur_orders = trading.validate_orders(df_init, moves_prepared)
-
-            if len(futur_orders)>0:
-                logging.info(f"[TRADING][ORDERS TO SEND] {futur_orders}")
-                # passed_orders = trading.pass_orders(orders=futur_orders)
-
-                # if len(passed_orders)>0:
-                #     orders_infos = trading.get_orders_info(list_id_orders=passed_orders)
-                
-    # save trades and portfolio positions
-    trades, overall = kraken.get_past_trades()
-    pnl_over_time = kraken.pnl_over_time(trades)
-
-    # save all after clearing infos first in portfolio
-    data_prep.remove_files_from_dir(kraken.path_dirs["PORTFOLIO"])
-    
-    kraken.save_orders(orders_infos) 
-    kraken.save_df_init(df_init)
-    kraken.save_trades(trades)
-    kraken.save_global_portfolio(overall)
-    kraken.save_pnl(pnl_over_time)
-
-    logging.info("Finished data / strategy execution")
 
 if __name__ == "__main__":
     data_prep = PrepareCrytpo()
-    dict_prepared = prepare_data(data_prep)
-    final, dict = training(data_prep, dict_prepared)    
-    # main(data_prep, dict_prepared)
 
-    # NEG = 0.8143231579259071
-    # POS = 0.8144980723086368
+    logging.info("Starting data / strategy execution")
+    datas = data_prep.main_load_data()
 
-    # np.mean(list(final["NEG_BINARY_FUTUR_TARGET_2"].values()))
-    # np.mean(list(final["POS_BINARY_FUTUR_TARGET_2"].values()))
+    # data preparation 
+    dict_prepared = data_prep.main_prep_crypto_price(datas)
 
-    # import matplotlib.pyplot as plt
-    # for curr in data_prep.currencies:
-    #     fig, ax = plt.subplots(figsize=(20,10))
-    #     dict[curr][-4000:][["DATE", "CLOSE"]].set_index(["DATE"]).plot(ax = ax, title = curr)
-    #     dict[curr][-4000:][["DATE", "POS_BINARY_FUTUR_TARGET_2"]].set_index(["DATE"]).plot(ax = ax, style="--", secondary_y =True)
-
+    # # save datas
+    # data_prep.save_datas(datas)
+    # data_prep.save_prepared(dict_prepared)
+    # final, dict = training(data_prep, dict_prepared)    

@@ -34,6 +34,7 @@ def _read(filename: str, loader: Type[yaml.FullLoader]) -> Box:
             try:
                 config_dict = yaml.load(f, Loader=loader)
             except yaml.YAMLError as exc:
+                print(exc)
                 logging.info(exc)
         return Box(config_dict)
     else:

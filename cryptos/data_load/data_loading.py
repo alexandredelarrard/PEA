@@ -29,7 +29,7 @@ class LoadCrytpo(object):
         load_dotenv("./configs/.env")
         
         # init with app variables 
-        self.granularity = 60
+        self.granularity = 15
         self.configs = self.config_init("./configs/main.yml") 
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
 
@@ -45,9 +45,13 @@ class LoadCrytpo(object):
         self.path_dirs = {}
         self.path_dirs["BASE"] = "./data"
 
-        self.path_dirs["HISTORY"] = "/".join([self.path_dirs["BASE"], "Kraken_OHLCVT"])
+        self.path_dirs["HISTORY"] = "/".join([self.path_dirs["BASE"], "currencies", "Kraken_OHLCVT"])
         if not os.path.isdir(self.path_dirs["HISTORY"]):
             os.mkdir(self.path_dirs["HISTORY"])
+
+        self.path_dirs["HISTORY_QUARTER"] = "/".join([self.path_dirs["BASE"], "currencies", "Kraken_OHLCVT_Q"])
+        if not os.path.isdir(self.path_dirs["HISTORY_QUARTER"]):
+            os.mkdir(self.path_dirs["HISTORY_QUARTER"])
 
         self.path_dirs["CURRENCY"] = "/".join([self.path_dirs["BASE"], "currencies"])
         if not os.path.isdir(self.path_dirs["CURRENCY"]):
@@ -102,6 +106,8 @@ class LoadCrytpo(object):
 
     def load_share_price_data(self, currency, period):
 
+        logging.info(f"Days to extract with yahoo = {period}")
+
         pair = f"{currency}-EUR"
         if currency == "STX":
             pair = "STX4847-EUR"
@@ -140,28 +146,60 @@ class LoadCrytpo(object):
         intra_day_data["DATE"] = pd.to_datetime(intra_day_data["DATE"], unit='s')
 
         return intra_day_data
+    
+    def load_datas(self):
 
+        list_of_files = glob.glob(self.path_dirs["CURRENCY"]+"/*.pkl") 
+        if len(list_of_files)>0:
+            latest_file = max(list_of_files, key=os.path.getctime)
+            ti_c = os.path.getctime(latest_file)
+            nbr_days = (datetime.today() - datetime.fromtimestamp(ti_c)).days
+            return pickle.load(open(latest_file, 'rb')), nbr_days + 60
+        else:
+            return None, None
+        
+    def load_history_data(self, currency, root_path="HISTORY"):
+
+        if currency == "BTC":
+            currency = "XBT"
+        
+        if currency == "DOGE":
+            currency = "XDG"
+
+        list_of_files = glob.glob(self.path_dirs[root_path]+f"/{currency}EUR_{self.granularity}*.csv") 
+        if len(list_of_files)>0:
+            latest_file = max(list_of_files, key=os.path.getctime)
+            df = pd.read_csv(latest_file, header=None)
+            df.columns = ["DATE", "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME", "TRADECOUNT"]
+            df["DATE"] = pd.to_datetime(df["DATE"], unit='s')
+            date_max = df["DATE"].max()
+            return df, date_max
+        else:
+            return None, None
+        
+    def concatenate_histories(self, currency):
+        
+        history_data, max_date = self.load_history_data(currency, root_path="HISTORY")
+        history_data_q, max_date = self.load_history_data(currency, root_path="HISTORY_QUARTER")
+
+        history = pd.concat([history_data, history_data_q], axis=0)
+        history = history.drop_duplicates("DATE")
+        history = history.sort_values("DATE", ascending=1)
+
+        period = str((datetime.today() - max_date).days + 1) + "d"
+
+        return history, period
 
     def main_load_data(self):
 
-        history, nbr_days = self.load_datas()
         datas= {}
 
         for currency in self.currencies:
 
-            if nbr_days and currency in list(history.keys()):
-                logging.info(f"History leveraged with nbr_days = {nbr_days}")
-                period=f"{nbr_days}d"
-            else:
-                history_data, max_date = self.load_history_data(currency)
-                period = str((datetime.today() - max_date).days + 1) + "d"
-
+            history_data, period = self.concatenate_histories(currency)
             data = self.load_share_price_data(currency, period)
 
-            if nbr_days and currency in list(history.keys()):
-                datas[currency] = pd.concat([history[currency], data], axis=0)
-            else:
-                datas[currency] = pd.concat([history_data, data], axis=0)
+            datas[currency] = pd.concat([history_data, data], axis=0)
 
         # other currencies
         datas["S&P"] = self.load_other_daily(pair="ES=F")
@@ -178,35 +216,6 @@ class LoadCrytpo(object):
         # save currencies 
         self.remove_files_from_dir(self.path_dirs["CURRENCY"])
         pickle.dump(datas, open("/".join([self.path_dirs["CURRENCY"], f"cryptos_{utcnow}.pkl".replace(":", "_")]), 'wb'))
-
-    def load_datas(self):
-        list_of_files = glob.glob(self.path_dirs["CURRENCY"]+"/*") 
-        if len(list_of_files)>0:
-            latest_file = max(list_of_files, key=os.path.getctime)
-            ti_c = os.path.getctime(latest_file)
-            nbr_days = (datetime.today() - datetime.fromtimestamp(ti_c)).days
-            return pickle.load(open(latest_file, 'rb')), nbr_days + 60
-        else:
-            return None, None
-        
-    def load_history_data(self, currency):
-
-        if currency == "BTC":
-            currency = "XBT"
-        
-        if currency == "DOGE":
-            currency = "XDG"
-
-        list_of_files = glob.glob(self.path_dirs["HISTORY"]+f"/{currency}EUR_{self.granularity}*.csv") 
-        if len(list_of_files)>0:
-            latest_file = max(list_of_files, key=os.path.getctime)
-            df = pd.read_csv(latest_file, header=None)
-            df.columns = ["DATE", "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME", "TRADECOUNT"]
-            df["DATE"] = pd.to_datetime(df["DATE"], unit='s')
-            date_max = df["DATE"].max()
-            return df, date_max
-        else:
-            return None, None
 
     def remove_files_from_dir(self, folder):
 

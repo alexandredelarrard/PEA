@@ -59,6 +59,9 @@ class TrainModel(object):
         if "weight" in configs.keys():
             self.weight = configs["weight"]
 
+        if "monotonic_constraint" in self.params["parameters"]:
+            assert len(self.params["parameters"]["monotonic_constraint"]) == len(configs["FEATURES"])
+
 
     def evaluate_model(self, model, test_data, final=False):
         """
@@ -204,23 +207,22 @@ class TrainModel(object):
         return test_data
     
     
-    def time_series_fold(self, start, end, proportion=0.2, k_folds=5, min_days=360):
+    def time_series_fold(self, start, end, k_folds=5, total_test_days=220, test_days=60):
 
         folds = {}
 
         start = pd.to_datetime(start, format="%Y-%m-%d")
         end = pd.to_datetime(end, format="%Y-%m-%d")
 
-        nbr_days_predict = int(proportion*(end - start).days)
-        start_date = start + timedelta(days=min_days)
-        end_date = end - timedelta(days=nbr_days_predict)
+        start_date = end - timedelta(days=total_test_days-1)
+        end_date = end - timedelta(days=1)
 
         total_nbr_days = (end_date - start_date).days
         steps = (total_nbr_days-1)//k_folds
 
-        for k in range(1, k_folds+1):
+        for k in range(k_folds):
             random_date = start_date + timedelta(days= k*steps)
-            folds[k] = (random_date, random_date + timedelta(days=nbr_days_predict))
+            folds[k] = (random_date, random_date + timedelta(days=test_days))
 
         return folds 
     

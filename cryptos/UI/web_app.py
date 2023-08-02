@@ -85,7 +85,7 @@ class MainApp(object):
         return inputs
 
 
-    def display_backtest(self, inputs, pnl_currency, prepared_currency, trades):
+    def display_backtest(self,dict_prepared,  inputs, pnl_currency, prepared_currency, trades):
 
         variable_to_use = "TARGET_NORMALIZED"
 
@@ -112,7 +112,7 @@ class MainApp(object):
         # prepared_currency[["DATE", "CLOSE"]].set_index(["DATE"]).plot(ax = ax, color = "gray", style="--", secondary_y =True)
         self.st.pyplot(fig)
 
-        prepared = self.state.dict_prepared[inputs['currency']]
+        prepared = dict_prepared[inputs['currency']]
         max_date = prepared["DATE"].max()
         value = prepared.loc[prepared["DATE"] == max_date, "CLOSE"].values[0]
         self.st.header(f"SPOT PRICE {inputs['currency']} || {max_date} || {value:.3f}")
@@ -142,8 +142,8 @@ class MainApp(object):
         # chart 2 
         self.state.chart2 = alt.Chart(pnl_over_time).mark_line(point=alt.OverlayMarkDef(color="red")).encode(
             x='DATE',
-            y=alt.Y('PNL_PORTFOLIO', scale=alt.Scale(domain=[pnl_over_time["PNL_PORTFOLIO"].min()*0.95, 
-                                                            pnl_over_time["PNL_PORTFOLIO"].max()*1.05]))
+            y=alt.Y('PNL_PORTFOLIO', scale=alt.Scale(domain=[pnl_over_time["PNL_PORTFOLIO"].min()*0.9, 
+                                                            pnl_over_time["PNL_PORTFOLIO"].max()*1.1]))
         ).interactive()
 
 
@@ -203,11 +203,17 @@ class MainApp(object):
         self.st.altair_chart(chart, theme="streamlit", use_container_width=True)
 
         # overall PNL
+        a = pnl_prepared[["DATE", "PNL_PORTFOLIO"]]
+        a["HUE"] = "STRATEGY"
+        b = pnl_prepared[["DATE", "PNL_PORTFOLIO_BASELINE"]].rename(columns={"PNL_PORTFOLIO_BASELINE": "PNL_PORTFOLIO"})
+        b["HUE"] = "BASELINE"
+        c = pd.concat([a, b], axis=0)
+
         self.st.header("Overall Portfolio PNL evolution")
-        chart = alt.Chart(pnl_prepared).mark_line(point=alt.OverlayMarkDef(color="red")).encode(
+        chart = alt.Chart(c).mark_line(point=alt.OverlayMarkDef(color="red")).encode(
             x='DATE',
-            y=alt.Y('PNL_PORTFOLIO', scale=alt.Scale(domain=[pnl_prepared["PNL_PORTFOLIO"].min()*0.95, 
-                                                            pnl_prepared["PNL_PORTFOLIO"].max()*1.05]))
+            y=alt.Y("PNL_PORTFOLIO", scale=alt.Scale(domain=[c["PNL_PORTFOLIO"].min()*0.9, 
+                                                            c["PNL_PORTFOLIO"].max()*1.1])),
+            color="HUE"
         ).interactive()
         self.st.altair_chart(chart, theme="streamlit", use_container_width=True)
-

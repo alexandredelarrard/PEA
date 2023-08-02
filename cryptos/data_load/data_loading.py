@@ -65,6 +65,16 @@ class LoadCrytpo(object):
         if not os.path.isdir(self.path_dirs["ORDERS"]):
             os.mkdir(self.path_dirs["ORDERS"])
 
+        self.path_dirs["MODELS"] = "/".join([self.path_dirs["BASE"], "models"])
+        if not os.path.isdir(self.path_dirs["MODELS"]):
+            os.mkdir(self.path_dirs["MODELS"])
+
+        self.path_dirs["PLOTS"] = "/".join([self.path_dirs["BASE"], "plots"])
+        if not os.path.isdir(self.path_dirs["PLOTS"]):
+            os.mkdir(self.path_dirs["PLOTS"])
+        if not os.path.isdir(self.path_dirs["PLOTS"] + "/shap"):
+            os.mkdir(self.path_dirs["PLOTS"] + "/shap")
+
 
     def download_history_kraken(self):
 
@@ -153,10 +163,10 @@ class LoadCrytpo(object):
             else:
                 datas[currency] = pd.concat([history_data, data], axis=0)
 
-            # other currencies
-            datas["S&P"] = self.load_other_daily(pair="ES=F")
-            datas["BRENT"] = self.load_other_daily(pair="BZ=F")
-            datas["GOLD"] = self.load_other_daily(pair="GC=F")
+        # other currencies
+        datas["S&P"] = self.load_other_daily(pair="ES=F")
+        datas["BRENT"] = self.load_other_daily(pair="BZ=F")
+        datas["GOLD"] = self.load_other_daily(pair="GC=F")
 
         return datas
 
@@ -169,14 +179,13 @@ class LoadCrytpo(object):
         self.remove_files_from_dir(self.path_dirs["CURRENCY"])
         pickle.dump(datas, open("/".join([self.path_dirs["CURRENCY"], f"cryptos_{utcnow}.pkl".replace(":", "_")]), 'wb'))
 
-
     def load_datas(self):
         list_of_files = glob.glob(self.path_dirs["CURRENCY"]+"/*") 
         if len(list_of_files)>0:
             latest_file = max(list_of_files, key=os.path.getctime)
             ti_c = os.path.getctime(latest_file)
             nbr_days = (datetime.today() - datetime.fromtimestamp(ti_c)).days
-            return pickle.load(open(latest_file, 'rb')), nbr_days + 15
+            return pickle.load(open(latest_file, 'rb')), nbr_days + 60
         else:
             return None, None
         

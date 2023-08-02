@@ -53,7 +53,7 @@ def main_extract_stock(data, sub_loc, split_size = 25):
 
     print(f"NO STOCK FOUND FOR {missing_ticks}")
 
-    return missing_ticks
+    return stocks, missing_ticks
         
 
 def extract_stocks(stocks, to_extract, splits = 5):

@@ -25,8 +25,8 @@ if __name__ == "__main__" :
     data = data.loc[data["Country"] == "FR"]
 
     # extract latest data SBF120
-    # missing_ticks = main_extract_stock(data, sub_loc=sub_loc, split_size = 50)
-    missing_ticks_pe = main_extract_stock_pe(data)
+    missing_ticks = main_extract_stock(data, sub_loc=sub_loc, split_size = 50)
+    # missing_ticks_pe = main_extract_stock_pe(data)
 
     # 
   

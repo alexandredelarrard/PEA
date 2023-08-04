@@ -202,27 +202,23 @@ class TrainModel(object):
         test_data["ERROR_MODEL"] = evaluation_metric(test_data[self.target_name],
                                                     test_data["PREDICTION_" + self.target_name])
 
-        self.evaluate_model(model, test_data)
+        # self.evaluate_model(model, test_data)
 
         return test_data
     
     
-    def time_series_fold(self, start, end, k_folds=5, total_test_days=220, test_days=60):
+    def time_series_fold(self, start, end, k_folds=5, total_test_days=90):
 
         folds = {}
 
         start = pd.to_datetime(start, format="%Y-%m-%d")
         end = pd.to_datetime(end, format="%Y-%m-%d")
 
-        start_date = end - timedelta(days=total_test_days-1)
-        end_date = end - timedelta(days=1)
-
-        total_nbr_days = (end_date - start_date).days
-        steps = (total_nbr_days-1)//k_folds
+        end_date = end - timedelta(days=total_test_days*k_folds)
 
         for k in range(k_folds):
-            random_date = start_date + timedelta(days= k*steps)
-            folds[k] = (random_date, random_date + timedelta(days=test_days))
+            random_date = end_date + timedelta(days= k*total_test_days)
+            folds[k] = (random_date, random_date + timedelta(days=total_test_days))
 
         return folds 
     
@@ -263,6 +259,7 @@ class TrainModel(object):
             total_test = pd.concat([total_test, x_val], axis=0).reset_index(drop=True)
 
         self.evaluate_model(model, total_test, final=False)
+
         logging.info("TRAIN full model")
         model = self.train_on_set(data, init_score=init_score)
         self.total_test= total_test

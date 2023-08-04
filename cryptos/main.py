@@ -5,11 +5,9 @@ from datetime import datetime, timedelta
 import warnings
 
 from data_prep.data_preparation_crypto import PrepareCrytpo 
-from strategy.strategie_0 import Strategy0
-from strategy.strategie_1 import Strategy1 
 from strategy.strategie_2 import Strategy2
 from data_prep.kraken_portfolio import OrderKraken 
-from trading.kraken_trading import TradingKraken
+from modelling.training_strategy2 import TrainingStrat2
 
 warnings.filterwarnings("ignore", message=".*The 'nopython' keyword.*")
 
@@ -76,6 +74,10 @@ if __name__ == "__main__":
     dict_prepared = data_prep.main_prep_crypto_price(datas)
 
     # # save datas
-    # data_prep.save_datas(datas)
-    # data_prep.save_prepared(dict_prepared)
-    # final, dict = training(data_prep, dict_prepared)    
+    data_prep.save_prepared(dict_prepared)
+
+    # training models
+    training_step = TrainingStrat2(configs=data_prep.configs, 
+                                    path_dirs=data_prep.path_dirs)  
+    
+    training_step.main_training(dict_prepared["BTC"], args={"currency" : "BTC", "oof_days" : 120})

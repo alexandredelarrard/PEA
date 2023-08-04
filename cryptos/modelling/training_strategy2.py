@@ -10,45 +10,63 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 from modelling.modelling_lightgbm import TrainModel
+from data_load.data_loading import LoadCrytpo
 
 from utils.general_functions import function_weight
 
 warnings.filterwarnings("ignore")
 
-class TrainingStrat2(object):
+class TrainingStrat2(LoadCrytpo):
 
-    def __init__(self, configs, path_dirs="", up=0.1, down=-0.1):
+    def __init__(self, configs, path_dirs=""):
 
+        LoadCrytpo.__init__(self)
+
+        self.since_year = 2017
         self.path_dirs = path_dirs
-        self.configs = configs
+
+        self.configs = self.configs.strategie["strategy_2"]
         self.configs_lgbm = configs["parameters"]
         self.target = configs["TARGET"]
         self.final_metric = None
-        self.obs_per_hour = 1
-        self.conditional_filter_up=up
-        self.conditional_filter_down=down
+        self.obs_per_hour = 60//self.granularity
 
-        if "NEG" in self.target and "monotone_constraints" in self.configs["parameters"]:
-            self.configs["parameters"]["monotone_constraints"]  = list(-1*np.array(self.configs["parameters"]["monotone_constraints"]))
+
+    def data_prep(self, prepared):
+
+        #filter year
+        prepared = prepared.loc[prepared["DATE"].dt.year >= self.since_year]
+
+        # prepared date features 
+        prepared["HOUR"] = prepared["DATE"].dt.hour
+        prepared["WEEK_DAY"] = prepared["DATE"].dt.dayofweek
+        prepared["DAY_OF_YEAR"] = prepared["DATE"].dt.dayofyear
+        prepared["DAY"] = prepared["DATE"].dt.day
+        prepared["MONTH"] = prepared["DATE"].dt.month
+
+        for col in self.configs["categorical_features"]:
+            prepared[col] = prepared[col].astype("category")
+        
+        prepared = prepared.sort_values("DATE", ascending = False)
+
+        # filter target 
+        prepared = prepared.loc[~prepared[self.target].isnull()]
+
+        return prepared
 
 
     def main_training(self, prepared, args={}):
 
         currency = args["currency"]
-        self.target_lag = args["lag"]
+        oof_start_data = datetime.today() - timedelta(days=args["oof_days"])
 
-        if "POS" in self.target:
-            prepared = prepared.loc[prepared["TARGET_NORMALIZED_2"] < self.conditional_filter_down]
-        if "NEG" in self.target:
-            prepared = prepared.loc[prepared["TARGET_NORMALIZED_2"] > self.conditional_filter_up]
-
-        results, model, test_ts = self.cross_validation(prepared)
+        prepared = self.data_prep(prepared)
+        results, model, test_ts = self.cross_validation(prepared.loc[prepared["DATE"] < oof_start_data])
 
         if model:
             self.shap_values(model, test_ts, currency)
-
-        oof_start_data = datetime.today() - timedelta(days=180)
-        logging.info(f"TRAIN full model test start date = {oof_start_data}")
+        
+        logging.info(f"TRAIN full model until OOF date = {oof_start_data}")
         prepared = self.add_weights_for_training(prepared)
         model = self.tm.train_on_set(prepared.loc[prepared["DATE"] < oof_start_data])
 
@@ -60,9 +78,6 @@ class TrainingStrat2(object):
         # create weight on time
         df["DIFF"] = (df["DATE"].max() - df["DATE"]).dt.days
         df["WEIGHT"] = function_weight()(df["DIFF"])
-
-        if df[self.target].nunique() == 2:
-            df["WEIGHT"] = np.where(df[self.target] == 0, df["WEIGHT"], 3*df["WEIGHT"])
 
         return df
             
@@ -87,14 +102,13 @@ class TrainingStrat2(object):
         folds = self.tm.time_series_fold(start = prepared["DATE"].min(), 
                                         end = prepared["DATE"].max(),
                                         k_folds = self.configs["n_splits"],
-                                        total_test_days = 360,
-                                        test_days = 360)
+                                        total_test_days = 90)
         total_test, models = pd.DataFrame(), {}
 
         for k, tuple_time in folds.items():
 
             logging.info(f"[fold {k}] START TEST DATE = {tuple_time[0]}")
-            condition_train = prepared["DATE"].between(tuple_time[0], prepared["DATE"].max()) # tuple_time[1]
+            condition_train = prepared["DATE"].between(tuple_time[0], tuple_time[1])
             train_ts = prepared.loc[prepared["DATE"] < tuple_time[0]]
             test_ts = prepared.loc[condition_train]
 

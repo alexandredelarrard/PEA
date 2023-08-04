@@ -1,67 +1,77 @@
 # MODEL META UB - LGBM - PDV
 strategy_2:
-    TARGET : POS_BINARY_FUTUR_TARGET_2
+    TARGET : DELTA_TARGET_1
     WEIGHT : WEIGHT
     FEATURES:
-        # - TARGET_NORMALIZED_0.5
-        - TARGET_NORMALIZED_1
-        - TARGET_NORMALIZED_2
-        - TARGET_NORMALIZED_7
-        - TARGET_NORMALIZED_15
-        - TARGET_NORMALIZED_30
-        - TARGET_NORMALIZED_45
-        - TARGET_NORMALIZED_90
-        # - CLOSE_TREND_0.5
-        - CLOSE_TREND_7
-        - CLOSE_TREND_15
-        - CLOSE_TREND_30
-        - CLOSE_TREND_45
-        # - CLOSE_TREND_90
-        # - VOLUME_NORMALIZED_1
-        # - VOLUME_NORMALIZED_7
-        # - VOLUME_NORMALIZED_30
-        # - VOLUME_NORMALIZED_90
-        # - DIFF_TO_MARKET_0.5 # market distance
-        - DIFF_TO_MARKET_1
-        - DIFF_TO_MARKET_7
-        - DIFF_TO_MARKET_30
-        # - DIFF_TO_MARKET_90
-        # - CLOSE_ROLLING_STD_0.5D
-        - CLOSE_ROLLING_STD_1D # target std past X days
-        - CLOSE_ROLLING_STD_7D
-        - CLOSE_ROLLING_STD_30D
-        # - CLOSE_ROLLING_STD_45D
-        # - DIFF_GOLD_NORMALIZED_7
-        # - DIFF_GOLD_NORMALIZED_30
-        # - DIFF_GOLD_NORMALIZED_90
-        - DIFF_S&P_NORMALIZED_7
-        - DIFF_S&P_NORMALIZED_30
-        # - DIFF_S&P_NORMALIZED_90
-        # - DIFF_BRENT_NORMALIZED_7
-        # - DIFF_BRENT_NORMALIZED_30
-        # - DIFF_BRENT_NORMALIZED_90
-        # - DAY_OF_YEAR
+        - DELTA_CLOSE_MEAN_1
+        - DELTA_CLOSE_MEAN_5
+        - DELTA_CLOSE_MEAN_9
+        - DELTA_CLOSE_MEAN_13
+        - DELTA_CLOSE_MEAN_17
+        - DELTA_CLOSE_MEAN_21
+        - DELTA_CLOSE_MEAN_25
+        - DELTA_CLOSE_MEAN_57
+        - DELTA_CLOSE_MEAN_121
+        - DELTA_CLOSE_MEAN_189
+        - DELTA_CLOSE_2
+        - DELTA_CLOSE_3
+        - DELTA_CLOSE_4
+        - DELTA_CLOSE_5
+        - DELTA_CLOSE_6
+        - DELTA_CLOSE_7
+        - DELTA_CLOSE_8
+        - DELTA_CLOSE_9
+        - DELTA_CLOSE_10
+        - DELTA_CLOSE_11
+        - DELTA_CLOSE_12
+        - DELTA_CLOSE_13
+        - DELTA_CLOSE_14
+        - DELTA_CLOSE_15
+        - DELTA_CLOSE_16
+        - DELTA_CLOSE_17
+        - DELTA_CLOSE_18
+        - DELTA_CLOSE_19
+        - DELTA_CLOSE_20
+        - DELTA_CLOSE_21
+        - DELTA_CLOSE_22
+        - DELTA_CLOSE_23
+        - DELTA_CLOSE_24
+        - STD_CLOSE_5
+        - STD_CLOSE_9
+        - STD_CLOSE_13
+        - STD_CLOSE_17
+        - STD_CLOSE_25
+        - STD_CLOSE_57
+        - STD_CLOSE_121
+        - STD_CLOSE_189
+        - DELTA_VOLUME_MEAN_1
+        - DELTA_VOLUME_MEAN_5
+        - DELTA_VOLUME_MEAN_9
+        - DELTA_VOLUME_MEAN_13
+        - DELTA_VOLUME_MEAN_17
+        - DELTA_VOLUME_MEAN_21
+        - DELTA_VOLUME_MEAN_25
+        - DELTA_VOLUME_MEAN_57
+        - DELTA_VOLUME_MEAN_121
+        - DELTA_VOLUME_MEAN_189
+        - DAY_OF_YEAR
         - WEEK_DAY
-        # - HOUR
+        - HOUR
         # - MONTH
     categorical_features:
-        # - DAY_OF_YEAR
-        - WEEK_DAY
-        # - HOUR
-        # - MONTH
     seed: 5432
     n_splits: 1
     parameters:
-        objective: binary
-        metric: binary_logloss
+        objective: regression
+        metric: mape
         max_depth: 6
-        min_child_samples : 30
+        min_child_samples : 50
         colsample_bytree: 0.75
-        subsample: 0.8
-        learning_rate: 0.007
-        num_iteration: 900
-        reg_alpha : 3
-        reg_lambda: 0
+        subsample: 0.75
+        learning_rate: 0.01
+        num_iteration: 1000
+        reg_alpha : 0
+        reg_lambda: 1
         n_jobs: -1
         verbose : -1
         early_stopping_round: 100

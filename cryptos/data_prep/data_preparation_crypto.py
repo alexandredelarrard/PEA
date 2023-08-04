@@ -11,6 +11,7 @@ from datetime import timedelta, datetime
 import math
 import scipy.ndimage as ndi
 from scipy.stats import truncnorm, uniform, norm
+from tqdm import tqdm
 
 from data_load.data_loading import LoadCrytpo
 
@@ -28,11 +29,12 @@ class PrepareCrytpo(LoadCrytpo):
         LoadCrytpo.__init__(self)
 
         self.hours = range(24)
-        self.obs_per_hour = 60//self.granularity #1
+        self.obs_per_hour = 60//self.granularity #4 tous les quart d'heure
+        self.target_depth = 4
         
         # init with app variables 
         self.targets = self.configs.load["cryptos_desc"]["TARGETS"]
-        self.lags = range(1,97)
+        self.lags = range(1, 24*2*self.obs_per_hour)
         self.market_makers_currencies = ["BTC", "ETH", "ADA", "XRP"]
 
         self.normalization_days = 200
@@ -73,24 +75,19 @@ class PrepareCrytpo(LoadCrytpo):
     def trend_fit(self, y, X):
         return np.linalg.lstsq(X, np.log(y), rcond=None)[0]
     
-    def pre_clean_cols(self, df):
+    def prepare_currency_daily(self, df):
 
         df["DATE"] = pd.to_datetime(df["DATE"], format="%Y-%m-%d %H:%M:%S")
         df = df.sort_values(["DATE"], ascending = False)
         df = df.drop_duplicates("DATE")
-
-        return df
-
-    def prepare_currency_daily(self, df, currency="BTC"):
-
-        logging.info(f"[{currency}] CLOSE DIST")
 
         # create currency target 
         agg = df[["DATE", "CLOSE", "VOLUME"]]
 
         #round the earliest value date to the closest 15 minutes 
         agg.iloc[0,0] = agg.iloc[0,0] + timedelta(minutes=self.granularity//2)
-        agg.iloc[0,0] = agg.iloc[0,0] - timedelta(minutes=agg.iloc[0,0].minute % self.granularity)
+        agg.iloc[0,0] = agg.iloc[0,0] - timedelta(minutes=agg.iloc[0,0].minute % self.granularity, 
+                                                seconds=agg.iloc[0,0].second %60)
 
         agg = agg.drop_duplicates("DATE")
 
@@ -98,75 +95,62 @@ class PrepareCrytpo(LoadCrytpo):
         agg.loc[agg["CLOSE"] <= 0, "CLOSE"] = np.nan
         agg = agg.loc[~agg["CLOSE"].isnull()]
 
-        # normalization over past year
-        # agg["CLOSE_NORMALIZED"] = agg["CLOSE"] # (agg["CLOSE"] - agg["CLOSE"].mean())/ agg["CLOSE"].std() #self.normalize_target(agg, "CLOSE", nbr_days=min(agg.shape[0], self.normalization_days)) #
-        
-        # volume -> sum last 4 hours 
-        # agg["VOLUME"] = np.sum(self.rolling_window(agg["VOLUME"], 6*self.obs_per_hour), axis=1)
-        # agg["VOLUME_NORMALIZED"] = agg["VOLUME"]#(agg["VOLUME"] - agg["VOLUME"].mean())/ agg["VOLUME"].std() #self.normalize_target(agg, "VOLUME", nbr_days=min(agg.shape[0], self.normalization_days)) #
-        
+        for i in range(1, self.target_depth+1):
+            agg[f"TARGET_CLOSE_{i}"] = agg["CLOSE"].shift(i)
+
         # rolling mean distance to X.d
         for lag in self.lags:
-            agg[f"CLOSE_TO_{lag}_{self.granularity}"] = (agg["CLOSE"] - agg["CLOSE"].shif(lag))/agg["CLOSE"].shif(lag)
-            agg[f"VOLUME_TO_{lag}_{self.granularity}"] = (agg["VOLUME"] - agg["VOLUME"].shif(lag))/agg["VOLUME"].shif(lag)
+            agg[f"CLOSE_{lag}"] = agg["CLOSE"].shift(-lag)
+            agg[f"VOLUME_{lag}"] = agg["VOLUME"].shift(-lag)
 
-        # close moments
-        for days in [1, 2, 3, 7]:
-            rollings = self.rolling_window(agg["CLOSE"], days*24*self.obs_per_hour)
-            agg[f"CLOSE_ROLLING_MEAN_{days}D"] = np.mean(rollings, axis=1)
-            agg[f"CLOSE_ROLLING_STD_{days}D"] = np.std(rollings, axis=1) 
-
-            # volume moments
-            rollings = self.rolling_window(agg["VOLUME_NORMALIZED"], days*24*self.obs_per_hour)
-            agg[f"VOLUME_ROLLING_MEAN_{days}D"] = np.mean(rollings, axis=1)
-            agg[f"VOLUME_ROLLING_STD_{days}D"] = np.std(rollings, axis=1) 
-
-            # trend deduction
-            # X = range(rollings.shape[1])
-            # kwargs = {"X" : np.vstack([X, np.ones(len(X))]).T}
-            # params = np.apply_along_axis(self.trend_fit, 1, np.fliplr(rollings), **kwargs)
-            # agg[f"CLOSE_TREND_{lag}"] = params[:,0]*len(self.hours)*self.obs_per_hour # trend per day
-
-       
-            # distance to past averages for close
-            # agg[f"TARGET_NORMALIZED_{lag}"] = (agg["CLOSE_NORMALIZED"] - agg[f"CLOSE_ROLLING_MEAN_{lag}D"].shift(-1))*10 / agg[f"CLOSE_ROLLING_MEAN_{lag}D"].shift(-1)
-            # liste_targets.append(f"TARGET_NORMALIZED_{lag}")
-
-            # distance to past averages for volume
-            # agg[f"VOLUME_NORMALIZED_{lag}"] = (agg["VOLUME_NORMALIZED"] - agg[f"VOLUME_ROLLING_MEAN_{lag}D"].shift(-1))*10 / agg[f"VOLUME_ROLLING_MEAN_{lag}D"].shift(-1)
-            
-        # agg["TARGET_NORMALIZED_MEAN_LAGS"] = agg[liste_targets].mean(axis=1)
+        agg = agg.loc[~agg[f"CLOSE_{lag}"].isnull()]
 
         return agg
     
+    def prepare_features(self, df):
+
+        for means in tqdm(list(range(1, max(self.lags) + 1, 4))):
+            df[f"MEAN_CLOSE_{means}"] = df[[f"CLOSE_{x}" for x in range(1, means+1)]].mean(axis=1)
+            df[f"STD_CLOSE_{means}"] = df[[f"CLOSE_{x}" for x in range(1, means+1)]].std(axis=1)
+            df[f"MEAN_VOLUME_{means}"] = df[[f"VOLUME_{x}" for x in range(1, means+1)]].mean(axis=1)
+            df[f"STD_VOLUME_{means}"] = df[[f"VOLUME_{x}" for x in range(1, means+1)]].std(axis=1)
+    
+            #delta calculations : 
+            df[f"DELTA_CLOSE_MEAN_{means}"] = (df["CLOSE"] - df[f"MEAN_CLOSE_{means}"]) / (df[f"MEAN_CLOSE_{means}"])
+            df[f"DELTA_VOLUME_MEAN_{means}"] = (df["CLOSE"] - df[f"MEAN_VOLUME_{means}"]) / (df[f"MEAN_VOLUME_{means}"])
+
+        for lag in range(2, 25):
+            df[f"DELTA_CLOSE_{lag}"] =(df["CLOSE"] - df[f"CLOSE_{lag}"]) / (df[f"CLOSE_{lag}"])
+
+        return df 
+    
+    def prepare_target(self, df):
+
+        for i in range(1, self.target_depth+1):
+            df[f"DELTA_TARGET_{i}"] =  (df[f"TARGET_CLOSE_{i}"]- df["CLOSE"]) /  df["CLOSE"]
+        
+        return df
 
     def distance_to_market(self, dict_full, currency):
 
         logging.info(f"[{currency}] MARKET DIST")
 
-        for avg_mean in self.lags:
+        for lag in self.lags:
 
             # average % increase decrease per lag
             for curr in self.market_makers_currencies:
-                df_to_merge = dict_full[curr][["DATE", f"TARGET_NORMALIZED_{avg_mean}"]]
-                df_to_merge = df_to_merge.rename(columns={f"TARGET_NORMALIZED_{avg_mean}" : f"TARGET_{curr}"})
+                df_to_merge = dict_full[curr][["DATE", f"CLOSE_TO_{lag}_{self.granularity}"]]
+                df_to_merge = df_to_merge.rename(columns={f"CLOSE_TO_{lag}_{self.granularity}" : f"TARGET_{curr}"})
                 dict_full[currency] = dict_full[currency].merge(df_to_merge, on="DATE", how="left", validate="1:1")
             
-            cols= [f"TARGET_{x}" for x in self.market_makers_currencies]
-            dict_full[currency][f"MARKET_NORMALIZED_{avg_mean}"] = dict_full[currency][cols].mean(axis=1)
+            cols= [f"CLOSE_TO_{x}_{self.granularity}" for x in self.market_makers_currencies]
+            dict_full[currency][f"MARKET_TO_{lag}_{self.granularity}"] = dict_full[currency][cols].mean(axis=1)
             dict_full[currency] = dict_full[currency].drop(cols, axis=1)
-
-            rollings = self.rolling_window(dict_full[currency][f"MARKET_NORMALIZED_{avg_mean}"], len(self.hours)*float(avg_mean)*self.obs_per_hour)
-            dict_full[currency][f"MARKET_ROLLING_MEAN_{avg_mean}D"] = np.mean(rollings, axis=1)
-            dict_full[currency][f"MARKET_ROLLING_STD_{avg_mean}D"] = np.std(rollings, axis=1) 
             
             # defined as p.p up or down to market % variation average
-            dict_full[currency][f"DIFF_TO_MARKET_{avg_mean}"] = (dict_full[currency][f"TARGET_NORMALIZED_{avg_mean}"] - dict_full[currency][f"MARKET_ROLLING_MEAN_{avg_mean}D"])*10
-
-        dict_full[currency]["DIFF_TO_MARKET_MEAN_LAGS"] = dict_full[currency][[f"DIFF_TO_MARKET_{x}" for x in self.lags if x != "MEAN_LAGS"]].mean(axis=1)
+            dict_full[currency][f"CLOSE_TO_MARKET_{lag}_{self.granularity}"] = (dict_full[currency][f"CLOSE_TO_{lag}_{self.granularity}"] - dict_full[currency][f"MARKET_TO_{lag}_{self.granularity}"])*10
+        
         dict_full[currency] = dict_full[currency].sort_values("DATE", ascending=False)
-
-        dict_full[currency] = dict_full[currency].loc[~dict_full[currency]["CLOSE_NORMALIZED"].isnull()]
 
         return dict_full[currency]
     
@@ -194,20 +178,6 @@ class PrepareCrytpo(LoadCrytpo):
                 dict_full[currency][f"DIFF_{other}_NORMALIZED_{avg_mean}"] = dict_full[currency][f"TARGET_NORMALIZED_{avg_mean}"] - dict_full[currency][f"{other}_NORMALIZED_{avg_mean}"]
 
         return dict_full[currency]
-    
-
-    def data_prep_strats(self, prepared):
-
-        prepared = prepared.sort_values("DATE", ascending = False)
-
-        for day_future in self.targets:
-
-            hours = int(day_future*len(self.hours)*self.obs_per_hour)
-            prepared[f"FUTUR_TARGET_{day_future}"] = prepared["CLOSE_NORMALIZED"].rolling(window=hours, center=True).mean().shift(hours)
-            prepared[f"BINARY_FUTUR_TARGET_{day_future}"] = 1*(prepared[f"FUTUR_TARGET_{day_future}"] > prepared["CLOSE_NORMALIZED"])
-            prepared[f"DELTA_FUTUR_TARGET_{day_future}"] = (prepared[f"FUTUR_TARGET_{day_future}"] - prepared["CLOSE_NORMALIZED"]) *10 / prepared["CLOSE_NORMALIZED"]
-
-        return prepared
 
 
     def main_prep_crypto_price(self, datas):
@@ -225,31 +195,30 @@ class PrepareCrytpo(LoadCrytpo):
                     prepared[currency] = dict_prepared[currency]
                     max_date = prepared[currency]["DATE"].max()
                     lags = [float(x) for x in self.lags]
-                    min_date = max_date - timedelta(days= 2*(1+int(np.max(lags))))
+                    min_date = max_date - timedelta(days = (np.max(lags)//self.obs_per_hour)//24)
                     df = df.loc[df["DATE"] >= min_date]
 
                     logging.info(f"[DATA PREP] Already prepared up to {max_date} will only redo last {np.max(lags)} days")
             else:
                 prepared[currency] = pd.DataFrame()
 
-            df = self.pre_clean_cols(df)
-            
             # data prep target
-            dict_full[currency] = self.prepare_currency_daily(df, currency)
+            logging.info(f"[{currency}] CLOSE DIST")
+            df = self.prepare_currency_daily(df)
+            df = self.prepare_features(df)
+            df = self.prepare_target(df)
+            
+            dict_full[currency] = df
 
         for currency in self.currencies:
-            dict_full[currency] = self.distance_to_market(dict_full, currency)
-            dict_full[currency] = self.distance_to_others(datas, dict_full, currency) 
-            dict_full[currency] = self.data_prep_strats(dict_full[currency])
+            # dict_full[currency] = self.distance_to_market(dict_full, currency)
+            # dict_full[currency] = self.distance_to_others(datas, dict_full, currency) 
 
             if prepared[currency].shape[0] > 0:
                 dict_full[currency] = pd.concat([prepared[currency], dict_full[currency]], axis=0)
                 dict_full[currency] = dict_full[currency].drop_duplicates("DATE")
                 dict_full[currency] = dict_full[currency].sort_values("DATE", ascending=False)
 
-            for lag in self.lags:
-                dict_full[currency] = self.deduce_threshold(dict_full[currency], f"TARGET_NORMALIZED_{lag}", lag=lag)
-                
         return dict_full
 
 

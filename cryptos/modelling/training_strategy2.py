@@ -18,16 +18,16 @@ warnings.filterwarnings("ignore")
 
 class TrainingStrat2(LoadCrytpo):
 
-    def __init__(self, configs, path_dirs=""):
+    def __init__(self, path_dirs="", since=2017):
 
         LoadCrytpo.__init__(self)
 
-        self.since_year = 2017
+        self.since_year = since
         self.path_dirs = path_dirs
 
         self.configs = self.configs.strategie["strategy_2"]
-        self.configs_lgbm = configs["parameters"]
-        self.target = configs["TARGET"]
+        self.configs_lgbm = self.configs["parameters"]
+        self.target = self.configs["TARGET"]
         self.final_metric = None
         self.obs_per_hour = 60//self.granularity
 
@@ -44,8 +44,9 @@ class TrainingStrat2(LoadCrytpo):
         prepared["DAY"] = prepared["DATE"].dt.day
         prepared["MONTH"] = prepared["DATE"].dt.month
 
-        for col in self.configs["categorical_features"]:
-            prepared[col] = prepared[col].astype("category")
+        if self.configs["categorical_features"]:
+            for col in self.configs["categorical_features"]:
+                prepared[col] = prepared[col].astype("category")
         
         prepared = prepared.sort_values("DATE", ascending = False)
 
@@ -58,19 +59,21 @@ class TrainingStrat2(LoadCrytpo):
     def main_training(self, prepared, args={}):
 
         currency = args["currency"]
-        oof_start_data = datetime.today() - timedelta(days=args["oof_days"])
+        self.oof_start_data = datetime.today() - timedelta(days=args["oof_days"])
 
         prepared = self.data_prep(prepared)
-        results, model, test_ts = self.cross_validation(prepared.loc[prepared["DATE"] < oof_start_data])
+        results, model, test_ts = self.cross_validation(prepared.loc[prepared["DATE"] < self.oof_start_data])
 
-        if model:
-            self.shap_values(model, test_ts, currency)
+        # if model:
+        #     self.shap_values(model, test_ts, currency)
         
-        logging.info(f"TRAIN full model until OOF date = {oof_start_data}")
-        prepared = self.add_weights_for_training(prepared)
-        model = self.tm.train_on_set(prepared.loc[prepared["DATE"] < oof_start_data])
+        # logging.info(f"TRAIN full model until OOF date = {self.oof_start_data}")
+        # prepared = self.add_weights_for_training(prepared)
+        # model = self.tm.train_on_set(prepared.loc[prepared["DATE"] < self.oof_start_data])
 
-        self.save_model(model, currency, oof_start_data)
+        # self.save_model(model, currency, self.oof_start_data)
+
+        return results, model
 
     
     def add_weights_for_training(self, df):
@@ -95,14 +98,20 @@ class TrainingStrat2(LoadCrytpo):
 
         return x_val, model
     
+    def predicting(self, model, data):
 
+        data["PREDICTION_" + self.target] = model.predict_proba(data[self.configs["FEATURES"]],
+                                                categorical_feature=self.configs["categorical_features"])[:,1]
+    
+        return data
+    
     def cross_validation(self, prepared):
 
         self.tm = TrainModel(data=prepared, configs=self.configs)
         folds = self.tm.time_series_fold(start = prepared["DATE"].min(), 
                                         end = prepared["DATE"].max(),
                                         k_folds = self.configs["n_splits"],
-                                        total_test_days = 90)
+                                        total_test_days = self.configs["total_test_days"])
         total_test, models = pd.DataFrame(), {}
 
         for k, tuple_time in folds.items():

@@ -77,7 +77,16 @@ if __name__ == "__main__":
     data_prep.save_prepared(dict_prepared)
 
     # training models
-    training_step = TrainingStrat2(configs=data_prep.configs, 
-                                    path_dirs=data_prep.path_dirs)  
+    training_step = TrainingStrat2(path_dirs=data_prep.path_dirs, since=2017)  
     
-    training_step.main_training(dict_prepared["BTC"], args={"currency" : "BTC", "oof_days" : 120})
+    currency = "ETH"
+    dict_prepared[currency]["BINARY_TARGET_2"] = 1*(dict_prepared[currency]["DELTA_TARGET_2"] > 0.01)
+    results, model = training_step.main_training(dict_prepared[currency], args={"currency" : currency, "oof_days" : 90})
+
+    results.loc[0.3<results["PREDICTION_BINARY_TARGET_2"], "BINARY_TARGET_2"].mean()
+    # 0.32597402597402597
+
+    a = training_step.predicting(model, dict_prepared[currency].loc[dict_prepared[currency]["DATE"] >= training_step.oof_start_data])
+    a["answer"] = np.where(a["PREDICTION_BINARY_TARGET_2"] > 0.6, 20, 15)
+    a = a.sort_values("DATE", ascending= 1)
+    a.set_index("DATE")[["CLOSE", "answer"]].plot()

@@ -11,7 +11,6 @@ from modelling.training_strategy2 import TrainingStrat2
 
 warnings.filterwarnings("ignore", message=".*The 'nopython' keyword.*")
 
-
 def training(data_prep, dict_prepared):
 
     args = {"lag" : "2"}
@@ -66,6 +65,7 @@ def main(data_prep, dict_prepared):
 
 if __name__ == "__main__":
     data_prep = PrepareCrytpo()
+    analysis = False
 
     logging.info("Starting data / strategy execution")
     datas = data_prep.main_load_data()
@@ -77,16 +77,8 @@ if __name__ == "__main__":
     data_prep.save_prepared(dict_prepared)
 
     # training models
-    training_step = TrainingStrat2(path_dirs=data_prep.path_dirs, since=2017)  
+    training_step = TrainingStrat2(path_dirs=data_prep.path_dirs, since=2017, oof_start_data=90)  
+    training_step.train_all_currencies(dict_prepared)
     
-    currency = "ETH"
-    dict_prepared[currency]["BINARY_TARGET_2"] = 1*(dict_prepared[currency]["DELTA_TARGET_2"] > 0.01)
-    results, model = training_step.main_training(dict_prepared[currency], args={"currency" : currency, "oof_days" : 90})
-
-    results.loc[0.3<results["PREDICTION_BINARY_TARGET_2"], "BINARY_TARGET_2"].mean()
+    # results.loc[0.3<results["PREDICTION_BINARY_TARGET_2"], "BINARY_TARGET_2"].mean()
     # 0.32597402597402597
-
-    a = training_step.predicting(model, dict_prepared[currency].loc[dict_prepared[currency]["DATE"] >= training_step.oof_start_data])
-    a["answer"] = np.where(a["PREDICTION_BINARY_TARGET_2"] > 0.6, 20, 15)
-    a = a.sort_values("DATE", ascending= 1)
-    a.set_index("DATE")[["CLOSE", "answer"]].plot()

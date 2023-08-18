@@ -11,7 +11,6 @@ class MainApp(object):
         self.configs = configs
         self.st = st
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
-        self.lags = self.configs.load["cryptos_desc"]["LAGS"]
         self.strategies = self.configs.load["cryptos_desc"]["STRATEGIES"]
 
         self.init_state()
@@ -59,7 +58,6 @@ class MainApp(object):
     def get_sidebar_inputs(self):
 
         inputs = {"currency" : None,
-                "lags" : None,
                 "start_date" : None,
                 "end_date" : None,
                 'fees' : None,
@@ -79,15 +77,12 @@ class MainApp(object):
         inputs["end_date"] = form.date_input("When to end the backtest ?", date.today() + timedelta(days=1))
         
         inputs["strategie"] = form.selectbox('Select strategie to use', self.strategies)
-        inputs["lag"] = form.selectbox('Select lags target', self.lags)
         inputs["button"] = form.form_submit_button("Run Analysis", on_click=lambda: self.state.update(submitted=True))
 
         return inputs
 
 
-    def display_backtest(self,dict_prepared,  inputs, pnl_currency, prepared_currency, trades):
-
-        variable_to_use = "TARGET_NORMALIZED"
+    def display_backtest(self, dict_prepared, inputs, pnl_currency, prepared_currency, trades):
 
         trades = trades.copy()
         real_trade = pd.concat([trades[["TIME_BUY", "ASSET"]], trades.loc[~trades["TIME_SOLD"].isnull()][["TIME_SOLD", "ASSET"]]], axis=0)
@@ -101,15 +96,13 @@ class MainApp(object):
         real_trade = prepared_currency[["DATE"]].merge(real_trade, on="DATE", how="left", validate="1:1")
         real_trade["KRAKEN_BUY_SELL"].fillna(0, inplace=True)
 
-        # seuil_up, seuil_down = prepared_currency[f"SEUIL_UP_{inputs['lag']}"].mean(), prepared_currency[f"SEUIL_DOWN_{inputs['lag']}"].mean()
         self.st.header(f"BUY/SELL {inputs['currency']}")
         
         fig, ax = plt.subplots(figsize=(20,10))
         real_trade[["DATE", "KRAKEN_BUY_SELL"]].set_index("DATE").plot(ax = ax, color="red", style="--")
         prepared_currency[["DATE", "REAL_BUY_SELL"]].set_index(["DATE"]).plot(ax = ax)
-        prepared_currency[["DATE", f"{variable_to_use}_{inputs['lag']}"]].set_index(["DATE"]).plot(ax = ax)
-        prepared_currency[["DATE", "CLOSE_NORMALIZED"]].set_index(["DATE"]).plot(ax = ax, color = "green", style="--", secondary_y =True)
-        # prepared_currency[["DATE", "CLOSE"]].set_index(["DATE"]).plot(ax = ax, color = "gray", style="--", secondary_y =True)
+        prepared_currency[["DATE", "PREDICTION_BNARY_TARGET_UP"]].set_index(["DATE"]).plot(ax = ax)
+        prepared_currency[["DATE", "CLOSE"]].set_index(["DATE"]).plot(ax = ax, color = "green", style="--", secondary_y =True)
         self.st.pyplot(fig)
 
         prepared = dict_prepared[inputs['currency']]

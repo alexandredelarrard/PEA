@@ -30,10 +30,9 @@ class PrepareCrytpo(LoadCrytpo):
 
         self.hours = range(24)
         self.obs_per_hour = 60//self.granularity #4 tous les quart d'heure
-        self.target_depth = 4
+        self.target_depth = 8
         
         # init with app variables 
-        self.targets = self.configs.load["cryptos_desc"]["TARGETS"]
         self.lags = range(1, 24*2*self.obs_per_hour)
         self.market_makers_currencies = ["BTC", "ETH", "ADA", "XRP"]
 
@@ -222,9 +221,14 @@ class PrepareCrytpo(LoadCrytpo):
         return dict_full
 
 
-    def save_prepared(self, dict_prepared):
+    def save_prepared(self, dict_prepared, last_x_months=None):
 
         utcnow = dict_prepared["BTC"]["DATE"].max()
+
+        if last_x_months:
+            pivot_date = datetime.today() - timedelta(days=last_x_months*30)
+            for currency in self.currencies:
+                dict_prepared[currency] = dict_prepared[currency].loc[dict_prepared[currency]["DATE"]>=pivot_date]
 
         # save prepared data 
         self.remove_files_from_dir(self.path_dirs["INTERMEDIATE"])

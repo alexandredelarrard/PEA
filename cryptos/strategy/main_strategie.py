@@ -13,8 +13,6 @@ class MainStrategy(object):
         self.hours = range(24)
 
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
-        self.lags = self.configs.load["cryptos_desc"]["LAGS"]
-        self.targets = self.configs.load["cryptos_desc"]["TARGETS"]
 
         self.start_date =  pd.to_datetime(start_date, format = "%Y-%m-%d")
         self.end_date = end_date
@@ -72,8 +70,7 @@ class MainStrategy(object):
                 market.loc[i:, "CURRENCY"] += ((1-self.fees_buy)*market.loc[i, "CASH"])/market.loc[i, "CLOSE"]
                 market.loc[i:, "CASH"] = 0
 
-            lag_i = sub_prepared.loc[i, "LAG"]
-            tentative_buy_sell = self.condition(sub_prepared, i, lag_i, variable_to_use, args={"currency" : currency, "max_index" : max_index})
+            tentative_buy_sell = self.condition(sub_prepared, i, variable_to_use, args={"currency" : currency, "max_index" : max_index})
 
             if ((tentative_buy_sell==-1)&(sub_prepared.loc[i, "CURRENCY"]>0)):
                 sub_prepared.loc[i:, "AMOUNT"] = (1-self.fees_sell)*sub_prepared.loc[i, "CLOSE"]*sub_prepared.loc[i, "CURRENCY"]
@@ -146,24 +143,6 @@ class MainStrategy(object):
 
         return pnl_prepared, moves_prepared
 
-    def strategy_lags_comparison(self, prepared, df_init=None, args={}):
-
-        for i, lag in enumerate(self.lags):
-
-            args["lag"] = lag
-            _, pnl = self.main_strategy(prepared,
-                                                df_init=df_init, 
-                                                args=args)
-            pnl.rename(columns={"PNL": f"PNL_{lag}"}, inplace=True)
-
-            if i == 0:
-                result = pnl
-            else: 
-                if "PNL_BASELINE" in result.columns:
-                    del result["PNL_BASELINE"]
-                result = result.merge(pnl, on="DATE", how="left", validate="1:1")
-
-        return result 
 
     def allocate_cash(self, dict_prepared, df_init, current_price, args):
 

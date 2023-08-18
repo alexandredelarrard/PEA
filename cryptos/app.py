@@ -26,6 +26,7 @@ def main():
     if app.state.done_once == False:
         
         logging.info("Starting run once")
+
         # kraken portfolio
         app.state.df_init = kraken.load_df_init() 
         app.state.trades = kraken.load_trades()
@@ -45,24 +46,19 @@ def main():
                          end_date=inputs['end_date'], 
                          path_dirs=data_prep.path_dirs)
 
-        args = {"lag" : inputs["lag"],
-                "currency" : inputs["currency"]}
+        args = {"currency" : inputs["currency"]}
         
         if inputs["init_file"]:
                 inputs["init_file"] = app.state.df_init
         else:
             inputs["init_file"] = None
 
-         # display results / analysis
+        # display results / analysis
         with tab1:
             prepared = dict_prepared[inputs["currency"]].copy()
             prepared_currency, pnl_currency = strat.main_strategy(prepared, 
                                                                 df_init=inputs["init_file"],
                                                                 args=args)
-            if inputs["strategie"] != "Strategy2":
-                pnl_currency = strat.strategy_lags_comparison(prepared,
-                                                            df_init=inputs["init_file"],
-                                                            args=args)
             app.display_backtest(dict_prepared, inputs, pnl_currency, prepared_currency, app.state.trades)
         
         with tab2:

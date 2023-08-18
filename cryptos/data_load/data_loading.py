@@ -45,11 +45,11 @@ class LoadCrytpo(object):
         self.path_dirs = {}
         self.path_dirs["BASE"] = "./data"
 
-        self.path_dirs["HISTORY"] = "/".join([self.path_dirs["BASE"], "currencies", "Kraken_OHLCVT"])
+        self.path_dirs["HISTORY"] = "/".join([self.path_dirs["BASE"], "history", "Kraken_OHLCVT"])
         if not os.path.isdir(self.path_dirs["HISTORY"]):
             os.mkdir(self.path_dirs["HISTORY"])
 
-        self.path_dirs["HISTORY_QUARTER"] = "/".join([self.path_dirs["BASE"], "currencies", "Kraken_OHLCVT_Q"])
+        self.path_dirs["HISTORY_QUARTER"] = "/".join([self.path_dirs["BASE"], "history", "Kraken_OHLCVT_Q"])
         if not os.path.isdir(self.path_dirs["HISTORY_QUARTER"]):
             os.mkdir(self.path_dirs["HISTORY_QUARTER"])
 
@@ -186,7 +186,10 @@ class LoadCrytpo(object):
         history = history.drop_duplicates("DATE")
         history = history.sort_values("DATE", ascending=1)
 
-        period = str((datetime.today() - max_date).days + 1) + "d"
+        if max_date:
+            period = str((datetime.today() - max_date).days + 1) + "d"
+        else:
+            logging.error(f"No max date -> should check you have the quarter data available for {currency}")
 
         return history, period
 

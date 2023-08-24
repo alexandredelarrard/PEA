@@ -21,7 +21,6 @@ def main():
 
     logging.info("starting app")
     kraken = OrderKraken(configs = app.configs, paths=data_prep.path_dirs)
-    dict_prepared = data_prep.load_prepared()
     
     if app.state.done_once == False:
         
@@ -32,43 +31,47 @@ def main():
         app.state.trades = kraken.load_trades()
         app.state.portfolio = kraken.load_global_portfolio()
         app.state.pnl_over_time = kraken.load_pnl()
-        app.prepare_display_portfolio(app.state.df_init, app.state.pnl_over_time, app.state.trades)
+        dict_prepared = data_prep.load_prepared(last_x_months=18)
+        # app.prepare_display_portfolio(app.state.df_init, app.state.pnl_over_time, app.state.trades)
 
+        # display results / analysis
+        logging.info(f"start date {inputs['start_date']} & end date {inputs['end_date']}")
+        # app.state.pnl_prepared = pnl_prepared
+        # app.state.moves = moves
         app.state.done_once=True
+        app.state.dict_prepared = dict_prepared
+
+        logging.info("finished run once")
 
     if app.state.submitted:
 
-        tab1, tab2, tab3 = app.st.tabs(["COIN_Backtest", "PNL_Backtest", "Portfolio"])
-
-        Strategy = eval(inputs["strategie"])
-        strat = Strategy(configs=app.configs, 
-                         start_date=inputs['start_date'], 
-                         end_date=inputs['end_date'], 
-                         path_dirs=data_prep.path_dirs)
-
-        args = {"currency" : inputs["currency"]}
+        tab1, tab2 = app.st.tabs(["COIN_Backtest", "FULL_Backtest"]) 
         
         if inputs["init_file"]:
                 inputs["init_file"] = app.state.df_init
         else:
             inputs["init_file"] = None
 
-        # display results / analysis
-        with tab1:
-            prepared = dict_prepared[inputs["currency"]].copy()
-            prepared_currency, pnl_currency = strat.main_strategy(prepared, 
-                                                                df_init=inputs["init_file"],
-                                                                args=args)
-            app.display_backtest(dict_prepared, inputs, pnl_currency, prepared_currency, app.state.trades)
+        Strategy = eval(inputs["strategie"])
+        strat = Strategy(configs=app.configs, 
+                         start_date=inputs['start_date'], 
+                         end_date=inputs['end_date'], 
+                         path_dirs=data_prep.path_dirs)
+        pnl_prepared, moves = strat.main_strategy_analysis_currencies(app.state.dict_prepared.copy(), 
+                                                                        df_init=inputs["init_file"])
         
+        with tab1:
+            app.display_market(pnl_prepared)    
+    
         with tab2:
-            pnl_prepared, _ = strat.main_strategy_analysis_currencies(dict_prepared.copy(), 
-                                                                    df_init=inputs["init_file"],
-                                                                    args=args)
-            app.display_market(pnl_prepared)
+            currency = inputs['currency']
+            pnl_currency = pnl_prepared[["DATE", f"PNL_{currency}", f"PNL_BASELINE_{currency}"]]
+            prepared_currency = moves.loc[moves["CURRENCY"] == currency][["DATE", "PRICE", "REAL_BUY_SELL", "PREDICTION_BNARY_TARGET_UP", "PREDICTION_BNARY_TARGET_DOWN"]].rename(columns={"PRICE" : "CLOSE"})
+            prepared_currency["PREDICTION_BNARY_TARGET_DOWN"] = -1*prepared_currency["PREDICTION_BNARY_TARGET_DOWN"]
+            app.display_backtest(app.state.dict_prepared, inputs, pnl_currency, prepared_currency, app.state.trades)
 
-        with tab3:
-            app.display_portfolio(app.state.portfolio, kraken.get_open_orders())
+        # with tab3:
+        #     app.display_portfolio(app.state.portfolio, kraken.get_open_orders())
 
         logging.info("Finished tables creation")
 

@@ -9,8 +9,8 @@ from strategy.strategie_2 import Strategy2
 from data_prep.kraken_portfolio import OrderKraken 
 from trading.kraken_trading import TradingKraken
 
-
 warnings.filterwarnings("ignore", message=".*The 'nopython' keyword.*")
+
 
 def prepare_data(data_prep):
 

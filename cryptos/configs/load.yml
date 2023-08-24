@@ -2,8 +2,9 @@ resources:
     base_path : ./
     data: data/crypto
     log_path : ./logs
+    driver_path : C:/Users/de larrard alexandre/OneDrive - The Boston Consulting Group, Inc/Documents/repos_github/PEA/chromedriver.exe
 
 cryptos_desc:
-    Cryptos: ["BTC", "ETH", "XRP", "ADA", "DOGE", "SOL", "TRX", "XLM", "DOT", "LTC", "DAI", "LINK", "ICP", "SAND"] # "STX", 
+    Cryptos: ["BTC", "ETH", "XRP", "ADA", "DOGE", "SOL", "TRX", "XLM", "DOT", "LTC", "DAI", "LINK",  "SAND"] # "STX", "ICP",
     URL_BASE: https://www.cryptodatadownload.com/cdd/
     STRATEGIES : ["Strategy2"]

@@ -93,6 +93,11 @@ class MainStrategy(object):
         pnl_market = market[["DATE", "PNL_BASELINE"]].groupby("DATE").mean().reset_index()
         pnl = pnl.merge(pnl_market, on="DATE", how="left", validate="1:1")
 
+        sub_prepared = sub_prepared[["DATE", "CLOSE", "REAL_BUY_SELL", "AMOUNT", "BUY_PRICE", 
+                                     "CASH", "PREDICTION_BNARY_TARGET_DOWN", 
+                                     "PREDICTION_BNARY_TARGET_UP", "DELTA_CLOSE_MEAN_25", 
+                                     "PNL"]]
+
         return sub_prepared, pnl
     
 
@@ -129,7 +134,7 @@ class MainStrategy(object):
         if deduce_moves:
             # aggregate all biy / hold / sell positions
             for i, currency in enumerate(self.currencies):
-                dict_moves[currency] = dict_moves[currency][["DATE", "REAL_BUY_SELL", "AMOUNT", "CLOSE"]]
+                dict_moves[currency] = dict_moves[currency][["DATE", "REAL_BUY_SELL", "AMOUNT", "CLOSE", "PREDICTION_BNARY_TARGET_UP", "PREDICTION_BNARY_TARGET_DOWN"]]
                 dict_moves[currency]["CURRENCY"] = currency
                 dict_moves[currency].rename(columns={"CLOSE" : "PRICE"}, inplace=True)
 
@@ -138,8 +143,8 @@ class MainStrategy(object):
                 else:
                     moves_prepared = pd.concat([moves_prepared, dict_moves[currency]], axis=0)
         
-            moves_prepared = moves_prepared.loc[moves_prepared["REAL_BUY_SELL"] !=0]
-            moves_prepared = moves_prepared[["DATE", "REAL_BUY_SELL", "CURRENCY", "AMOUNT", "PRICE"]]
+            # moves_prepared = moves_prepared.loc[moves_prepared["REAL_BUY_SELL"] !=0]
+            moves_prepared = moves_prepared[["DATE", "REAL_BUY_SELL", "CURRENCY", "AMOUNT", "PRICE", "PREDICTION_BNARY_TARGET_UP", "PREDICTION_BNARY_TARGET_DOWN"]]
 
         return pnl_prepared, moves_prepared
 

@@ -60,12 +60,13 @@ class Strategy2(MainStrategy):
 
     def condition(self, sub_prepared, i, variable_to_use, args={}):
        
-        take_profit = (sub_prepared.loc[i, "BUY_PRICE"] >0)&((sub_prepared.loc[i, "CLOSE"] - sub_prepared.loc[i, "BUY_PRICE"])/sub_prepared.loc[i, "BUY_PRICE"] >= 0.02)
-        stop_loss = (sub_prepared.loc[i, "BUY_PRICE"] >0)&((sub_prepared.loc[i, "CLOSE"] - sub_prepared.loc[i, "BUY_PRICE"])/sub_prepared.loc[i, "BUY_PRICE"] < -0.04)
-        sell = sub_prepared.loc[i, f"PREDICTION_{variable_to_use}_DOWN"] >= self.trehshold[args["currency"]]["DOWN"]
+        take_profit = (sub_prepared.loc[i, "BUY_PRICE"] >0)&((sub_prepared.loc[i, "CLOSE"] - sub_prepared.loc[i, "BUY_PRICE"])/sub_prepared.loc[i, "BUY_PRICE"] >= 0.06)
+        stop_loss = (sub_prepared.loc[i, "BUY_PRICE"] >0)&((sub_prepared.loc[i, "CLOSE"] - sub_prepared.loc[i, "BUY_PRICE"])/sub_prepared.loc[i, "BUY_PRICE"] < -0.03)
+        sell = (sub_prepared.loc[i, f"PREDICTION_{variable_to_use}_DOWN"] >= 0.2)&(sub_prepared.loc[i, "DELTA_CLOSE_MEAN_25"] > 0.04)&(sub_prepared.loc[i, f"PREDICTION_{variable_to_use}_UP"] < 0.02) #self.trehshold[args["currency"]]["DOWN"]
         
-        a = np.where(sub_prepared.loc[min(args["max_index"], i), f"PREDICTION_{variable_to_use}_UP"] >=  self.trehshold[args["currency"]]["UP"], 1,
-            np.where(sell|take_profit|stop_loss, -1, 0))
+        a = np.where((sub_prepared.loc[i, f"PREDICTION_{variable_to_use}_UP"] >= 0.2)&(sub_prepared.loc[i, "DELTA_CLOSE_MEAN_25"] < -0.04)&(sub_prepared.loc[i, f"PREDICTION_{variable_to_use}_DOWN"] < 0.02), #self.trehshold[args["currency"]]["UP"], 
+                     1,
+            np.where(sell|take_profit|stop_loss, -1, 0))#min(args["max_index"], i)
         
         return a 
 
@@ -100,10 +101,6 @@ class Strategy2(MainStrategy):
         
         return prepared
     
-    def postprocess(self, prepared, target):
-        prepared[f"PREDICTION_{target}"] = np.where((prepared[f"TARGET_NORMALIZED_{self.past_lags}"] < self.conditional_filter_down)&("POS" in target), prepared[f"PREDICTION_{target}"],
-                                            np.where((prepared[f"TARGET_NORMALIZED_{self.past_lags}"] > self.conditional_filter_up)&("NEG" in target), prepared[f"PREDICTION_{target}"], 0))
-        return prepared
 
     def load_model(self, currency, target):
 

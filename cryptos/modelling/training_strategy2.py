@@ -32,7 +32,6 @@ class TrainingStrat2(LoadCrytpo):
         self.obs_per_hour = 60//self.granularity
         self.oof_days = oof_start_data
 
-
     def data_prep(self, prepared):
 
         #filter year
@@ -85,10 +84,11 @@ class TrainingStrat2(LoadCrytpo):
             # predict if go down
             self.configs["TARGET"] = self.target + "_DOWN"
             for delta in [1, 2, 3, 4, 5, 6, 7, 8]:
-                quantile = dict_prepared[currency][f"DELTA_TARGET_{delta}"].quantile(0.035)
-                dict_prepared[currency][f"BINARY_TARGET_{delta}"] = 1*(dict_prepared[currency][f"DELTA_TARGET_{delta}"] < quantile)*(dict_prepared[currency]["DELTA_CLOSE_MEAN_25"]>0)
+                decreasing_futur = dict_prepared[currency][f"DELTA_TARGET_{delta}"] < dict_prepared[currency][f"DELTA_TARGET_{delta}"].quantile(0.08)
+                increasing_past = dict_prepared[currency]["DELTA_CLOSE_MEAN_25"] > dict_prepared[currency]["DELTA_CLOSE_MEAN_25"].quantile(0.95)
+                dict_prepared[currency][f"BINARY_TARGET_{delta}"] = 1*(decreasing_futur)*(increasing_past)
             
-            dict_prepared[currency][self.configs["TARGET"]] =  1*(dict_prepared[currency][[f"BINARY_TARGET_{x}" for x in [1, 2, 3, 4, 5, 6, 7, 8]]].sum(axis=1) >= 8)
+            dict_prepared[currency][self.configs["TARGET"]] =  1*(dict_prepared[currency][[f"BINARY_TARGET_{x}" for x in [1, 2, 3, 4, 5, 6, 7, 8]]].sum(axis=1) >= 6)
             
             results, model = self.main_training(dict_prepared[currency], args={"currency" : currency, "oof_days" : self.oof_days})
             self.analyse_model(dict_prepared[currency], model, target=self.configs["TARGET"])
@@ -97,10 +97,12 @@ class TrainingStrat2(LoadCrytpo):
             print(f"TRAINING {currency} UP")
             self.configs["TARGET"] = self.target + "_UP"
             for delta in [1, 2, 3, 4, 5, 6, 7, 8]:
-                quantile = dict_prepared[currency][f"DELTA_TARGET_{delta}"].quantile(0.965)
-                dict_prepared[currency][f"BINARY_TARGET_{delta}"] = 1*(dict_prepared[currency][f"DELTA_TARGET_{delta}"] > quantile)*(dict_prepared[currency]["DELTA_CLOSE_MEAN_25"]<0)
+                increasing_furur = dict_prepared[currency][f"DELTA_TARGET_{delta}"] > dict_prepared[currency][f"DELTA_TARGET_{delta}"].quantile(0.96)
+                decreasing_past = dict_prepared[currency]["DELTA_CLOSE_MEAN_25"] < dict_prepared[currency]["DELTA_CLOSE_MEAN_25"].quantile(0.03)
+                dict_prepared[currency][f"BINARY_TARGET_{delta}"] = 1*(decreasing_past)*increasing_furur
             
-            dict_prepared[currency][self.configs["TARGET"]] =  1*(dict_prepared[currency][[f"BINARY_TARGET_{x}" for x in [1, 2, 3, 4, 5, 6, 7, 8]]].sum(axis=1) >= 8)
+            dict_prepared[currency][self.configs["TARGET"]] =  1*(dict_prepared[currency][[f"BINARY_TARGET_{x}" for x in [1, 2, 3, 4, 5, 6, 7, 8]]].sum(axis=1) >= 6)
+            
             results, model = self.main_training(dict_prepared[currency], args={"currency" : currency, "oof_days" : self.oof_days})
             self.analyse_model(dict_prepared[currency], model, target=self.configs["TARGET"])
 
@@ -177,8 +179,8 @@ class TrainingStrat2(LoadCrytpo):
         a = a.sort_values("DATE", ascending= 1)
 
         ### add confidence_interval
-        plt.figure(figsize=(12, 8))
-        ax1 = a.set_index("DATE")[["CLOSE"]].plot(grid=True, title = f"TRAINING {target}")
+        plt.figure(figsize=(20, 13))
+        ax1 = a.set_index("DATE")[["CLOSE"]].plot(grid=True, title = f"TRAINING {target}", figsize=(20, 13))
         ax2 = ax1.twinx() 
         ax2.plot(a["DATE"], a["PREDICTION_" + target], linestyle="-", color="red", alpha=0.5)
         plt.setp(ax1.xaxis.get_ticklabels(), rotation=78)

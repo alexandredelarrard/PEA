@@ -39,6 +39,12 @@ class MainApp(object):
 
         if "chart1" not in self.state:
             self.state.chart1 = None
+        
+        if "moves" not in self.state:
+            self.state.moves = None
+        
+        if "pnl_prepared" not in self.state:
+            self.state.pnl_prepared = None
 
         if "chart2" not in self.state:
             self.state.chart2 = None
@@ -54,6 +60,9 @@ class MainApp(object):
 
         if "portfolio" not in self.state:
             self.state.portfolio = None
+
+        if "dict_prepared" not in self.state:
+            self.state.dict_prepared = None
 
     def get_sidebar_inputs(self):
 
@@ -73,7 +82,7 @@ class MainApp(object):
         inputs["init_file"] = form.checkbox('Use Kraken current position')
 
         inputs["currency"] = form.selectbox('Select crypto', np.sort(self.currencies))
-        inputs["start_date"] = form.date_input("When to start the backtest ?", date.today() - timedelta(days=366))
+        inputs["start_date"] = form.date_input("When to start the backtest ?", date.today() - timedelta(days=120))
         inputs["end_date"] = form.date_input("When to end the backtest ?", date.today() + timedelta(days=1))
         
         inputs["strategie"] = form.selectbox('Select strategie to use', self.strategies)
@@ -99,10 +108,10 @@ class MainApp(object):
         self.st.header(f"BUY/SELL {inputs['currency']}")
         
         fig, ax = plt.subplots(figsize=(20,10))
-        real_trade[["DATE", "KRAKEN_BUY_SELL"]].set_index("DATE").plot(ax = ax, color="red", style="--")
-        prepared_currency[["DATE", "REAL_BUY_SELL"]].set_index(["DATE"]).plot(ax = ax)
-        prepared_currency[["DATE", "PREDICTION_BNARY_TARGET_UP"]].set_index(["DATE"]).plot(ax = ax)
-        prepared_currency[["DATE", "CLOSE"]].set_index(["DATE"]).plot(ax = ax, color = "green", style="--", secondary_y =True)
+        real_trade[["DATE", "KRAKEN_BUY_SELL"]].set_index("DATE").plot(ax = ax, color="blue", style="--")
+        prepared_currency[["DATE", "REAL_BUY_SELL"]].set_index(["DATE"]).plot(ax = ax, color='green')
+        prepared_currency[["DATE", "PREDICTION_BNARY_TARGET_UP", "PREDICTION_BNARY_TARGET_DOWN"]].set_index(["DATE"]).plot(ax = ax, color="red")
+        prepared_currency[["DATE", "CLOSE"]].set_index(["DATE"]).plot(ax = ax, color = "gray", style="--", secondary_y =True)
         self.st.pyplot(fig)
 
         prepared = dict_prepared[inputs['currency']]

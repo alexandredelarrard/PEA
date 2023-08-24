@@ -2,6 +2,7 @@ import os
 import random
 import requests
 import pandas as pd
+from datetime import datetime
 import time
 from queue import Queue
 from threading import Thread
@@ -22,6 +23,7 @@ class Crawling(LoadCrytpo):
         self.use_proxy = proxy
         
         self.current_proxy_index = 0
+        self.saving_size = 50
         self.proxies = self.get_proxies()
 
         self.missed_urls = []
@@ -33,8 +35,8 @@ class Crawling(LoadCrytpo):
 
         print(f"NUMBER OF DRIVERS {self.cores}")
         
-        os.environ["DIR_PATH"] = self.configs.resources["log_path"]
-        self.queues = {"drivers": Queue(), "urls" :  Queue(), "results": Queue(), "base_path" : self.configs.resources["base_path"]}
+        os.environ["DIR_PATH"] = self.configs.load["resources"]["log_path"]
+        self.queues = {"drivers": Queue(), "urls" :  Queue(), "results": Queue(), "base_path" : self.configs.load["resources"]["base_path"]}
 
     def get_proxies(self):
 
@@ -107,7 +109,6 @@ class Crawling(LoadCrytpo):
 
         return driver
     
-    
     def initialize_driver_chrome(self, proxy=True, prefs=True):
         """
         Initialize the web driver with chrome driver as principal driver chromedriver.exe, headless means no open web page. But seems slower than firefox driver  
@@ -127,8 +128,8 @@ class Crawling(LoadCrytpo):
                     'disk-cache-size': 8000,
                      "profile.default_content_setting_values.notifications":2,
                      "profile.managed_default_content_settings.stylesheets":2,
-                    #  "profile.managed_default_content_settings.cookies":2,
-                    #  "profile.managed_default_content_settings.javascript":2,
+                     "profile.managed_default_content_settings.cookies":2,
+                     "profile.managed_default_content_settings.javascript":2,
                      "profile.managed_default_content_settings.plugins":2,
                      "profile.managed_default_content_settings.popups":2,
                      "profile.managed_default_content_settings.geolocation":2,
@@ -137,7 +138,7 @@ class Crawling(LoadCrytpo):
             
             options.add_experimental_option("prefs", prefs)
             # options.add_argument("--headless") # Runs Chrome in headless mode.
-            # options.add_argument("--incognito")
+            options.add_argument("--incognito")
             options.add_argument('--no-sandbox') # Bypass OS security model
             options.add_argument('--disable-gpu')  # applicable to windows os only
             # options.add_argument('start-maximized') 
@@ -150,9 +151,10 @@ class Crawling(LoadCrytpo):
             options.add_argument('--proxy-server=%s' % PROXY)
             self.current_proxy_index = (self.current_proxy_index +1)%len(self.proxies)
 
-        service_args =["--verbose", "--log-path={0}".format(os.environ["DIR_PATH"] + "/chrome.log")]
+        # service_args =["--verbose", "--log-path={0}".format(self.configs.load["resources"]["log_path"])]
 
-        driver = webdriver.Chrome(chrome_options=options, service_args=service_args)
+        driver = webdriver.Chrome(executable_path=self.configs.load["resources"]["driver_path"], 
+                                  chrome_options=options)
         driver.delete_all_cookies()
         driver.set_page_load_timeout(300) 
 
@@ -198,7 +200,7 @@ class Crawling(LoadCrytpo):
             driver.close()
     
     def start_threads_and_queues(self, function, sub_loc=""):
-        for i in range(self.cores):
+        for _ in range(self.cores):
             t = Thread(target= self.queue_calls, args=(function, self.queues, sub_loc, ))
             t.daemon = True
             t.start()
@@ -206,14 +208,25 @@ class Crawling(LoadCrytpo):
     def get_url(self, driver, url):
 
         try:
-            time.sleep(random.uniform(3,5))
+            time.sleep(random.uniform(0.5,1.5))
             driver.get(url)
 
         except Exception:
             pass
         
         return driver
+    
+    def saving_queue_result(self, queues, sub_loc):
 
+        results = []
+        while queues["results"].qsize() > 0:
+            results.append(queues["results"].get())
+
+        # saving 
+        hour = datetime.today().strftime("%Y-%m-%d %H-%M")
+        if not os.path.isdir(sub_loc):
+            os.mkdir(sub_loc)
+        pd.DataFrame(results).to_csv(sub_loc + f"/{hour}.csv", index=False, sep=",")
 
     def queue_calls(self, function, queues, sub_loc):
         
@@ -223,26 +236,31 @@ class Crawling(LoadCrytpo):
         #### extract all articles
         while True:
             driver = queues["drivers"].get()
-            url = queue_url.get()
+            item = queue_url.get()
 
             try:
-                driver = self.get_url(driver, url)
+                driver = self.get_url(driver, item["url"])
                 time.sleep(1)    
                 
-                driver, information = function(driver, sub_loc)
-
-                if information == "ERROR":
-                    missed_urls.append(url)
+                try:
+                    item["result"] = function(driver)
+                    queues["results"].put(item)
+                except Exception as e:
+                    missed_urls.append(item["url"])
+                    pass
 
                 queues["drivers"].put(driver)
                 queue_url.task_done()
-                print(f"CRAWLED URL {url}")
+                print(f"CRAWLED URL {item['url']}")
+
+                if queues["results"].qsize() >= self.saving_size:
+                    self.saving_queue_result(queues, sub_loc)
             
             except Exception as e:
-                print(url, e)
-                # driver = self.restart_driver(driver)
+                print(item['url'], e)
+                driver = self.restart_driver(driver)
                 
-                missed_urls.append(url)
+                missed_urls.append(item['url'])
                 queue_url.task_done()
                 queues["drivers"].put(driver)
 

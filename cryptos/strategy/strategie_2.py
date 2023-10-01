@@ -21,8 +21,21 @@ class Strategy2(MainStrategy):
         self.configs = self.configs.strategie["strategy_2"]
         self.configs_lgbm = self.configs["parameters"]
         self.target = self.configs["TARGET"]
-        self.final_metric = []
         self.since_year = 2017
+        self.trehshold = {"BTC" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "ETH" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "XRP" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "ADA" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "DOGE" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "SOL" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "TRX" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "XLM" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "DOT" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "LTC" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "DAI" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "LINK" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "ICP" : {"UP" : 0.1, "DOWN" : 0.05},
+                          "SAND" : {"UP" : 0.1, "DOWN" : 0.05}}
 
 
     def data_prep(self, prepared):
@@ -42,20 +55,18 @@ class Strategy2(MainStrategy):
         
         prepared = prepared.sort_values("DATE", ascending = False)
 
-        # filter target 
-        prepared = prepared.loc[~prepared[self.target].isnull()]
-
         return prepared
     
 
-    def condition(self, sub_prepared, i, lag_i, variable_to_use, args={}):
+    def condition(self, sub_prepared, i, variable_to_use, args={}):
        
-        take_profit = (sub_prepared.loc[i, "BUY_PRICE"] >0)&((sub_prepared.loc[i, "CLOSE"] - sub_prepared.loc[i, "BUY_PRICE"])/sub_prepared.loc[i, "BUY_PRICE"] >= 0.05)
-        stop_loss = (sub_prepared.loc[i, "BUY_PRICE"] >0)&((sub_prepared.loc[i, "CLOSE"] - sub_prepared.loc[i, "BUY_PRICE"])/sub_prepared.loc[i, "BUY_PRICE"] < -0.04)
-        sell = sub_prepared.loc[i, f"PREDICTION_NEG_{variable_to_use}_{lag_i}"] >= sub_prepared.loc[i, f"SEUIL_PREDICTION_NEG_{variable_to_use}_{lag_i}"]
+        take_profit = (sub_prepared.loc[i, "BUY_PRICE"] >0)&((sub_prepared.loc[i, "CLOSE"] - sub_prepared.loc[i, "BUY_PRICE"])/sub_prepared.loc[i, "BUY_PRICE"] >= 0.06)
+        stop_loss = (sub_prepared.loc[i, "BUY_PRICE"] >0)&((sub_prepared.loc[i, "CLOSE"] - sub_prepared.loc[i, "BUY_PRICE"])/sub_prepared.loc[i, "BUY_PRICE"] < -0.03)
+        sell = (sub_prepared.loc[i, f"PREDICTION_{variable_to_use}_DOWN"] >= 0.2)&(sub_prepared.loc[i, "DELTA_CLOSE_MEAN_25"] > 0.04)&(sub_prepared.loc[i, f"PREDICTION_{variable_to_use}_UP"] < 0.02) #self.trehshold[args["currency"]]["DOWN"]
         
-        a = np.where(sub_prepared.loc[min(args["max_index"], i), f"PREDICTION_POS_{variable_to_use}_{lag_i}"] >= sub_prepared.loc[min(args["max_index"], i), f"SEUIL_PREDICTION_POS_{variable_to_use}_{lag_i}"], 1,
-            np.where(sell|take_profit|stop_loss, -1, 0))
+        a = np.where((sub_prepared.loc[i, f"PREDICTION_{variable_to_use}_UP"] >= 0.2)&(sub_prepared.loc[i, "DELTA_CLOSE_MEAN_25"] < -0.04)&(sub_prepared.loc[i, f"PREDICTION_{variable_to_use}_DOWN"] < 0.02), #self.trehshold[args["currency"]]["UP"], 
+                     1,
+            np.where(sell|take_profit|stop_loss, -1, 0))#min(args["max_index"], i)
         
         return a 
 
@@ -63,30 +74,21 @@ class Strategy2(MainStrategy):
     def main_strategy(self, prepared, df_init=None, args={}):
 
         currency = args["currency"]
-        self.target_lag = args["lag"]
-        
         prepared = self.data_prep(prepared)
 
         date_condition = prepared["DATE"].between(self.start_date, self.end_date)
         final_prepared = prepared.loc[date_condition].reset_index(drop=True)
-        final_prepared["LAG"] = self.target_lag
 
-        seuils={}
-        for target in [f"POS_BINARY_FUTUR_TARGET_{self.target_lag}",
-                        f"NEG_BINARY_FUTUR_TARGET_{self.target_lag}"]:
+        for target in ["BNARY_TARGET_DOWN",
+                       "BNARY_TARGET_UP"]:
             model, _ = self.load_model(currency, target)
             final_prepared = self.predicting(model, final_prepared, target)
-            seuils = self.define_thresholds(final_prepared, target, seuils)
-            # final_prepared = self.postprocess(final_prepared, target)
-        
-        for k, v in seuils.items():
-            final_prepared[k] = v
 
         final_prepared = final_prepared.sort_values("DATE", ascending= True)
 
         return self.execute_strategie(final_prepared, 
                                     currency=currency, 
-                                    variable_to_use="BINARY_FUTUR_TARGET",
+                                    variable_to_use="BNARY_TARGET",
                                     df_init=df_init)
    
 
@@ -94,29 +96,17 @@ class Strategy2(MainStrategy):
 
         prepared[f"PREDICTION_{target}"] = model.predict_proba(
             prepared[model.feature_name_],
-            categorical_features=list(self.configs["categorical_features"])
+            categorical_feature=list(self.configs["categorical_features"])
         )[:, 1]
         
         return prepared
     
-    def postprocess(self, prepared, target):
-        prepared[f"PREDICTION_{target}"] = np.where((prepared[f"TARGET_NORMALIZED_{self.past_lags}"] < self.conditional_filter_down)&("POS" in target), prepared[f"PREDICTION_{target}"],
-                                            np.where((prepared[f"TARGET_NORMALIZED_{self.past_lags}"] > self.conditional_filter_up)&("NEG" in target), prepared[f"PREDICTION_{target}"], 0))
-        return prepared
-
-    def define_thresholds(self, prepared, target, seuils):
-        target = f"PREDICTION_{target}"
-        if "POS" in target:
-            qt  = 0.95
-        else:
-            qt = 0.95
-        seuils[f"SEUIL_{target}"] = np.quantile(prepared.loc[~prepared[target].isnull(), target], qt) # achat
-        return seuils
 
     def load_model(self, currency, target):
 
-        if target not in [f"POS_BINARY_FUTUR_TARGET_{self.target_lag}" , f"NEG_BINARY_FUTUR_TARGET_{self.target_lag}"]:
-            logging.warning(f"model need to be either POS_BINARY_FUTUR_TARGET_{self.target_lag} or NEG_BINARY_FUTUR_TARGET_{self.target_lag}")
+        if target not in ["BNARY_TARGET_DOWN",
+                          "BNARY_TARGET_UP"]:
+            logging.warning(f"model need to be either {currency}_BNARY_TARGET_DOWN or {currency}_BNARY_TARGET_UP")
 
         liste_files = glob.glob("/".join([self.path_dirs["MODELS"], f"{currency}_{target}_*.pickle.dat"]))
         if len(liste_files)>0:

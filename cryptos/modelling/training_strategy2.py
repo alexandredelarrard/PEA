@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 
 class TrainingStrat2(LoadCrytpo):
 
-    def __init__(self, path_dirs="", since=2017):
+    def __init__(self, path_dirs="", since=2017, oof_start_data=90):
 
         LoadCrytpo.__init__(self)
 
@@ -30,7 +30,7 @@ class TrainingStrat2(LoadCrytpo):
         self.target = self.configs["TARGET"]
         self.final_metric = None
         self.obs_per_hour = 60//self.granularity
-
+        self.oof_days = oof_start_data
 
     def data_prep(self, prepared):
 
@@ -51,7 +51,7 @@ class TrainingStrat2(LoadCrytpo):
         prepared = prepared.sort_values("DATE", ascending = False)
 
         # filter target 
-        prepared = prepared.loc[~prepared[self.target].isnull()]
+        prepared = prepared.loc[~prepared[self.configs["TARGET"]].isnull()]
 
         return prepared
 
@@ -71,11 +71,42 @@ class TrainingStrat2(LoadCrytpo):
         prepared = self.add_weights_for_training(prepared)
         model = self.tm.train_on_set(prepared.loc[prepared["DATE"] < self.oof_start_data])
 
-        # self.save_model(model, currency, self.oof_start_data)
+        self.save_model(model, currency, self.oof_start_data)
 
         return results, model
-
     
+
+    def train_all_currencies(self, dict_prepared):
+
+        for currency in self.currencies:
+            print(f"TRAINING {currency} DOWN")
+
+            # predict if go down
+            self.configs["TARGET"] = self.target + "_DOWN"
+            for delta in [1, 2, 3, 4, 5, 6, 7, 8]:
+                decreasing_futur = dict_prepared[currency][f"DELTA_TARGET_{delta}"] < dict_prepared[currency][f"DELTA_TARGET_{delta}"].quantile(0.08)
+                increasing_past = dict_prepared[currency]["DELTA_CLOSE_MEAN_25"] > dict_prepared[currency]["DELTA_CLOSE_MEAN_25"].quantile(0.95)
+                dict_prepared[currency][f"BINARY_TARGET_{delta}"] = 1*(decreasing_futur)*(increasing_past)
+            
+            dict_prepared[currency][self.configs["TARGET"]] =  1*(dict_prepared[currency][[f"BINARY_TARGET_{x}" for x in [1, 2, 3, 4, 5, 6, 7, 8]]].sum(axis=1) >= 6)
+            
+            results, model = self.main_training(dict_prepared[currency], args={"currency" : currency, "oof_days" : self.oof_days})
+            self.analyse_model(dict_prepared[currency], model, target=self.configs["TARGET"])
+
+            # predict if go up
+            print(f"TRAINING {currency} UP")
+            self.configs["TARGET"] = self.target + "_UP"
+            for delta in [1, 2, 3, 4, 5, 6, 7, 8]:
+                increasing_furur = dict_prepared[currency][f"DELTA_TARGET_{delta}"] > dict_prepared[currency][f"DELTA_TARGET_{delta}"].quantile(0.96)
+                decreasing_past = dict_prepared[currency]["DELTA_CLOSE_MEAN_25"] < dict_prepared[currency]["DELTA_CLOSE_MEAN_25"].quantile(0.03)
+                dict_prepared[currency][f"BINARY_TARGET_{delta}"] = 1*(decreasing_past)*increasing_furur
+            
+            dict_prepared[currency][self.configs["TARGET"]] =  1*(dict_prepared[currency][[f"BINARY_TARGET_{x}" for x in [1, 2, 3, 4, 5, 6, 7, 8]]].sum(axis=1) >= 6)
+            
+            results, model = self.main_training(dict_prepared[currency], args={"currency" : currency, "oof_days" : self.oof_days})
+            self.analyse_model(dict_prepared[currency], model, target=self.configs["TARGET"])
+
+
     def add_weights_for_training(self, df):
 
         # create weight on time
@@ -100,7 +131,7 @@ class TrainingStrat2(LoadCrytpo):
     
     def predicting(self, model, data):
 
-        data["PREDICTION_" + self.target] = model.predict_proba(data[self.configs["FEATURES"]],
+        data["PREDICTION_" + self.configs["TARGET"]] = model.predict_proba(data[self.configs["FEATURES"]],
                                                 categorical_feature=self.configs["categorical_features"])[:,1]
     
         return data
@@ -121,7 +152,7 @@ class TrainingStrat2(LoadCrytpo):
             train_ts = prepared.loc[prepared["DATE"] < tuple_time[0]]
             test_ts = prepared.loc[condition_train]
 
-            logging.info(test_ts[self.target].mean())
+            logging.info(test_ts[self.configs["TARGET"]].mean())
 
             if test_ts.shape[0]>0 and train_ts.shape[0]>0:
                 x_val, models[k] = self.training(train_ts, test_ts)
@@ -139,6 +170,21 @@ class TrainingStrat2(LoadCrytpo):
         else:
             logging.info(f"NOT ENOUGH TRAINING DATA SHAPE = {prepared.shape[0] // 365*len(self.hours)*self.obs_per_hour}")
             return None, None, None
+        
+    def analyse_model(self, df, model, target):
+
+        predicting = df.loc[df["DATE"] >= self.oof_start_data]
+        a = self.data_prep(predicting)
+        a = self.predicting(model, a)
+        a = a.sort_values("DATE", ascending= 1)
+
+        ### add confidence_interval
+        plt.figure(figsize=(20, 13))
+        ax1 = a.set_index("DATE")[["CLOSE"]].plot(grid=True, title = f"TRAINING {target}", figsize=(20, 13))
+        ax2 = ax1.twinx() 
+        ax2.plot(a["DATE"], a["PREDICTION_" + target], linestyle="-", color="red", alpha=0.5)
+        plt.setp(ax1.xaxis.get_ticklabels(), rotation=78)
+        plt.show()
 
     def shap_values(self, train_model, test_ts, currency):
 
@@ -162,7 +208,7 @@ class TrainingStrat2(LoadCrytpo):
     def save_model(self, model, currency, oof_start_data):
 
         oof_start_data = oof_start_data.strftime("%Y-%m-%d")
-        file_name = f"{currency}_{self.target}_{oof_start_data}.pickle.dat"
+        file_name = f"{currency}_{self.configs['TARGET']}_{oof_start_data}.pickle.dat"
         lgb_path_dump = Path("/".join([self.path_dirs["MODELS"], file_name]))
 
         pickle.dump([model, self.configs], open(str(lgb_path_dump.absolute()), "wb"))

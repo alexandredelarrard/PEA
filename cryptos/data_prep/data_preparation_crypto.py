@@ -30,10 +30,9 @@ class PrepareCrytpo(LoadCrytpo):
 
         self.hours = range(24)
         self.obs_per_hour = 60//self.granularity #4 tous les quart d'heure
-        self.target_depth = 4
+        self.target_depth = 8
         
         # init with app variables 
-        self.targets = self.configs.load["cryptos_desc"]["TARGETS"]
         self.lags = range(1, 24*2*self.obs_per_hour)
         self.market_makers_currencies = ["BTC", "ETH", "ADA", "XRP"]
 
@@ -207,6 +206,11 @@ class PrepareCrytpo(LoadCrytpo):
             df = self.prepare_currency_daily(df)
             df = self.prepare_features(df)
             df = self.prepare_target(df)
+
+            # dropp all close / volume 
+            closes = [f"CLOSE_{x}" for x in self.lags]
+            vols = [f"VOLUME_{x}" for x in self.lags]
+            df = df.drop(closes + vols, axis=1)
             
             dict_full[currency] = df
 
@@ -222,17 +226,27 @@ class PrepareCrytpo(LoadCrytpo):
         return dict_full
 
 
-    def save_prepared(self, dict_prepared):
+    def save_prepared(self, dict_prepared, last_x_months=None):
 
         utcnow = dict_prepared["BTC"]["DATE"].max()
 
         # save prepared data 
         self.remove_files_from_dir(self.path_dirs["INTERMEDIATE"])
-        pickle.dump(dict_prepared, open("/".join([self.path_dirs["INTERMEDIATE"], f"prepared_{utcnow}.pkl".replace(":", "_")]), 'wb'))
+        pickle.dump(dict_prepared, open("/".join([self.path_dirs["INTERMEDIATE"], f"prepared_{utcnow}_all.pkl".replace(":", "_")]), 'wb'))
+
+        if last_x_months:
+            pivot_date = datetime.today() - timedelta(days=last_x_months*30)
+            for currency in self.currencies:
+                dict_prepared[currency] = dict_prepared[currency].loc[dict_prepared[currency]["DATE"]>=pivot_date]
+            pickle.dump(dict_prepared, open("/".join([self.path_dirs["INTERMEDIATE"], f"prepared_{utcnow}_{last_x_months}_months.pkl".replace(":", "_")]), 'wb'))
 
 
-    def load_prepared(self):
-        list_of_files = glob.glob(self.path_dirs["INTERMEDIATE"]+"/*")
+    def load_prepared(self, last_x_months=None):
+
+        if last_x_months:
+            list_of_files = glob.glob(self.path_dirs["INTERMEDIATE"]+"/*_months.pkl")
+        else:
+            list_of_files = glob.glob(self.path_dirs["INTERMEDIATE"]+"/*_all.pkl")
 
         if len(list_of_files)>0:
             latest_file = max(list_of_files, key=os.path.getctime)

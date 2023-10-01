@@ -11,7 +11,6 @@ class MainApp(object):
         self.configs = configs
         self.st = st
         self.currencies = self.configs.load["cryptos_desc"]["Cryptos"]
-        self.lags = self.configs.load["cryptos_desc"]["LAGS"]
         self.strategies = self.configs.load["cryptos_desc"]["STRATEGIES"]
 
         self.init_state()
@@ -40,6 +39,12 @@ class MainApp(object):
 
         if "chart1" not in self.state:
             self.state.chart1 = None
+        
+        if "moves" not in self.state:
+            self.state.moves = None
+        
+        if "pnl_prepared" not in self.state:
+            self.state.pnl_prepared = None
 
         if "chart2" not in self.state:
             self.state.chart2 = None
@@ -56,10 +61,12 @@ class MainApp(object):
         if "portfolio" not in self.state:
             self.state.portfolio = None
 
+        if "dict_prepared" not in self.state:
+            self.state.dict_prepared = None
+
     def get_sidebar_inputs(self):
 
         inputs = {"currency" : None,
-                "lags" : None,
                 "start_date" : None,
                 "end_date" : None,
                 'fees' : None,
@@ -75,19 +82,16 @@ class MainApp(object):
         inputs["init_file"] = form.checkbox('Use Kraken current position')
 
         inputs["currency"] = form.selectbox('Select crypto', np.sort(self.currencies))
-        inputs["start_date"] = form.date_input("When to start the backtest ?", date.today() - timedelta(days=366))
+        inputs["start_date"] = form.date_input("When to start the backtest ?", date.today() - timedelta(days=120))
         inputs["end_date"] = form.date_input("When to end the backtest ?", date.today() + timedelta(days=1))
         
         inputs["strategie"] = form.selectbox('Select strategie to use', self.strategies)
-        inputs["lag"] = form.selectbox('Select lags target', self.lags)
         inputs["button"] = form.form_submit_button("Run Analysis", on_click=lambda: self.state.update(submitted=True))
 
         return inputs
 
 
-    def display_backtest(self,dict_prepared,  inputs, pnl_currency, prepared_currency, trades):
-
-        variable_to_use = "TARGET_NORMALIZED"
+    def display_backtest(self, dict_prepared, inputs, pnl_currency, prepared_currency, trades):
 
         trades = trades.copy()
         real_trade = pd.concat([trades[["TIME_BUY", "ASSET"]], trades.loc[~trades["TIME_SOLD"].isnull()][["TIME_SOLD", "ASSET"]]], axis=0)
@@ -101,15 +105,13 @@ class MainApp(object):
         real_trade = prepared_currency[["DATE"]].merge(real_trade, on="DATE", how="left", validate="1:1")
         real_trade["KRAKEN_BUY_SELL"].fillna(0, inplace=True)
 
-        # seuil_up, seuil_down = prepared_currency[f"SEUIL_UP_{inputs['lag']}"].mean(), prepared_currency[f"SEUIL_DOWN_{inputs['lag']}"].mean()
         self.st.header(f"BUY/SELL {inputs['currency']}")
         
         fig, ax = plt.subplots(figsize=(20,10))
-        real_trade[["DATE", "KRAKEN_BUY_SELL"]].set_index("DATE").plot(ax = ax, color="red", style="--")
-        prepared_currency[["DATE", "REAL_BUY_SELL"]].set_index(["DATE"]).plot(ax = ax)
-        prepared_currency[["DATE", f"{variable_to_use}_{inputs['lag']}"]].set_index(["DATE"]).plot(ax = ax)
-        prepared_currency[["DATE", "CLOSE_NORMALIZED"]].set_index(["DATE"]).plot(ax = ax, color = "green", style="--", secondary_y =True)
-        # prepared_currency[["DATE", "CLOSE"]].set_index(["DATE"]).plot(ax = ax, color = "gray", style="--", secondary_y =True)
+        real_trade[["DATE", "KRAKEN_BUY_SELL"]].set_index("DATE").plot(ax = ax, color="blue", style="--")
+        prepared_currency[["DATE", "REAL_BUY_SELL"]].set_index(["DATE"]).plot(ax = ax, color='green')
+        prepared_currency[["DATE", "PREDICTION_BNARY_TARGET_UP", "PREDICTION_BNARY_TARGET_DOWN"]].set_index(["DATE"]).plot(ax = ax, color="red")
+        prepared_currency[["DATE", "CLOSE"]].set_index(["DATE"]).plot(ax = ax, color = "gray", style="--", secondary_y =True)
         self.st.pyplot(fig)
 
         prepared = dict_prepared[inputs['currency']]

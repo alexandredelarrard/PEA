@@ -1,6 +1,6 @@
 # MODEL META UB - LGBM - PDV
 strategy_2:
-    TARGET : BINARY_TARGET_2
+    TARGET : BNARY_TARGET
     WEIGHT : WEIGHT
     FEATURES:
         - DELTA_CLOSE_MEAN_1
@@ -10,8 +10,16 @@ strategy_2:
         - DELTA_CLOSE_MEAN_17
         - DELTA_CLOSE_MEAN_21
         - DELTA_CLOSE_MEAN_25
+        - DELTA_CLOSE_MEAN_41
+        - DELTA_CLOSE_MEAN_49
         - DELTA_CLOSE_MEAN_57
+        - DELTA_CLOSE_MEAN_77
+        - DELTA_CLOSE_MEAN_105
         - DELTA_CLOSE_MEAN_121
+        - DELTA_CLOSE_MEAN_133
+        - DELTA_CLOSE_MEAN_149
+        - DELTA_CLOSE_MEAN_165
+        - DELTA_CLOSE_MEAN_177
         - DELTA_CLOSE_MEAN_189
         - DELTA_CLOSE_2
         - DELTA_CLOSE_3
@@ -19,29 +27,20 @@ strategy_2:
         - DELTA_CLOSE_5
         - DELTA_CLOSE_6
         - DELTA_CLOSE_7
-        - DELTA_CLOSE_8
-        - DELTA_CLOSE_9
         - DELTA_CLOSE_10
-        - DELTA_CLOSE_11
-        - DELTA_CLOSE_12
         - DELTA_CLOSE_13
-        - DELTA_CLOSE_14
-        - DELTA_CLOSE_15
         - DELTA_CLOSE_16
-        - DELTA_CLOSE_17
-        - DELTA_CLOSE_18
         - DELTA_CLOSE_19
         - DELTA_CLOSE_20
         - DELTA_CLOSE_21
         - DELTA_CLOSE_22
         - DELTA_CLOSE_23
         - DELTA_CLOSE_24
-        - STD_CLOSE_5
-        - STD_CLOSE_9
         - STD_CLOSE_13
         - STD_CLOSE_17
         - STD_CLOSE_25
         - STD_CLOSE_57
+        - STD_CLOSE_97
         - STD_CLOSE_121
         - STD_CLOSE_189
         - DELTA_VOLUME_MEAN_1
@@ -53,6 +52,10 @@ strategy_2:
         - DELTA_VOLUME_MEAN_25
         - DELTA_VOLUME_MEAN_57
         - DELTA_VOLUME_MEAN_121
+        - DELTA_VOLUME_MEAN_133
+        - DELTA_VOLUME_MEAN_149
+        - DELTA_VOLUME_MEAN_165
+        - DELTA_VOLUME_MEAN_177
         - DELTA_VOLUME_MEAN_189
         # - DAY_OF_YEAR
         # - WEEK_DAY
@@ -72,9 +75,9 @@ strategy_2:
         colsample_bytree: 0.7
         subsample: 0.9
         learning_rate: 0.005
-        num_iteration: 2000
-        reg_alpha : 1
-        reg_lambda: 2
-        n_jobs: 4
+        num_iteration: 1400
+        reg_alpha : 0
+        reg_lambda: 1
+        n_jobs: -1
         verbose : -1
         early_stopping_round: 200

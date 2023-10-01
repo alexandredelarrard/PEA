@@ -41,6 +41,10 @@ mapping_sectors = {'Hotels & Restaurants' : "consumers",
                     'Financials': "financials"
                 }
 
+porteuf = ['AIRBUS SE', 'Air Liquide S.A', 'Capgemini', 'COFACE', 'Credit Agricole S.A.', 'Kering', "L'Oreal",
+            'Lvmh Moet Hennessy Vuitton SE', 'MAUREL ET PROM',  'Schneider Electric SE',  'STELLANTIS',
+            'TOTAL', 'Sanofi', 'Pernod Ricard']
+
 def load_configs(config_yml):
     config_path = "./configs"
     config_yaml = open(pl(config_path) / pl(config_yml), encoding="utf-8")
@@ -73,19 +77,22 @@ def load_stocks(stocks, data, since="2022-08-01"):
 
     for company, inputs in stocks.items():
 
-        inputs = stock_processing(inputs)
-        inputs["YAHOO_CODE"] = company 
-        inputs  = inputs.merge(data.loc[data["YAHOO_CODE"] == company], on="YAHOO_CODE", how="left", validate="m:1")
+        try:
+            inputs = stock_processing(inputs)
+            inputs["YAHOO_CODE"] = company 
+            inputs  = inputs.merge(data.loc[data["YAHOO_CODE"] == company], on="YAHOO_CODE", how="left", validate="m:1")
 
-        inputs = inputs.loc[inputs["DATE"] >= since]
-        inputs["CLOSE"] = inputs["CLOSE"] / np.mean(inputs["CLOSE"].values[0:5])
-        inputs["VOLUME"] = inputs["VOLUME"] / np.mean(inputs["VOLUME"].values[0:5])
+            inputs = inputs.loc[inputs["DATE"] >= since]
+            inputs["CLOSE"] = inputs["CLOSE"] / np.mean(inputs["CLOSE"].values[0:5])
+            inputs["VOLUME"] = inputs["VOLUME"] / np.mean(inputs["VOLUME"].values[0:5])
 
-        data.loc[data["YAHOO_CODE"] == company, "GAIN_DIV"] = inputs["CLOSE"].median()*data.loc[data["YAHOO_CODE"] == company, "DIV"].values[0]*((today - since).days / 365)/100
-        data.loc[data["YAHOO_CODE"] == company, "GAIN"] = inputs["CLOSE"].values[-1]
-        data.loc[data["YAHOO_CODE"] == company, "STD_CLOSE"] = inputs["CLOSE"].std()
+            data.loc[data["YAHOO_CODE"] == company, "GAIN_DIV"] = inputs["CLOSE"].median()*data.loc[data["YAHOO_CODE"] == company, "DIV"].values[0]*((today - since).days / 365)/100
+            data.loc[data["YAHOO_CODE"] == company, "GAIN"] = inputs["CLOSE"].values[-1]
+            data.loc[data["YAHOO_CODE"] == company, "STD_CLOSE"] = inputs["CLOSE"].std()
 
-        all_stocks = pd.concat([all_stocks, inputs], axis=0)
+            all_stocks = pd.concat([all_stocks, inputs], axis=0)
+        except Exception as e:
+            print(e)
 
     data["SHARP"] = ((data["GAIN"] + data["GAIN_DIV"]) -1) / (data["STD_CLOSE"])
     data["AGG_SECTOR"] = data["SECTOR"].map(mapping_sectors)
@@ -113,6 +120,26 @@ def sector_comparison(sub_stocks):
         agg_stock_sector["AGG_SECTOR"] = sectors
        
         agg_200 = pd.concat([agg_200, agg_stock_sector], axis=0)
+
+    return agg_200
+
+
+def portfolio_comparison(sub_stocks):
+
+    sub_stocks["PORTFOLIO"] = np.where(sub_stocks["NAME"].isin(porteuf), 1,0)
+
+    #cac agg 
+    agg_200 = sub_stocks[["DATE", "CLOSE", "VOLUME"]].groupby("DATE").mean().reset_index()
+    agg_200.columns = ["DATE", "CLOSE", "VOLUME"]
+    agg_200["AGG_SECTOR"] = "CAC_200"
+
+    # aggregate_sector 
+    stock_sector = sub_stocks.loc[sub_stocks["PORTFOLIO"] == 1]
+    agg_stock_sector = stock_sector[["DATE", "CLOSE", "VOLUME"]].groupby("DATE").mean().reset_index()
+    agg_stock_sector.columns = ["DATE", "CLOSE", "VOLUME"]
+    agg_stock_sector["AGG_SECTOR"] = "PORTFOLIO"
+    
+    agg_200 = pd.concat([agg_200, agg_stock_sector], axis=0)
 
     return agg_200
 
@@ -158,7 +185,7 @@ if __name__ == "__main__":
     stocks_extract, missing_ticks = main_extract_stock(data, sub_loc=sub_loc, split_size = 100)
 
     # concatenate all stocks
-    stocks, data = load_stocks(stocks_extract, data, since="2022-08-01")
+    stocks, data = load_stocks(stocks_extract, data, since="2023-01-01")
 
     # sector comparison
     agg_sectors = sector_comparison(stocks)
@@ -168,12 +195,17 @@ if __name__ == "__main__":
                  width=1300, height=800)
     fig.show()
 
-    # sub_sector = comp_per_sector_comparison(sub_stocks, sector="Industrials")
-    #analyse sector increase / decrease
-    # fig = px.line(sub_sector, x="DATE", y="CLOSE", color='SECTOR',
-    #              width=1300, height=800)
-    # fig.show()
+    # analyse sector increase / decrease
+    sub_sector = comp_per_sector_comparison(stocks, sector="Industrials")
+    fig = px.line(sub_sector, x="DATE", y="CLOSE", color='SECTOR',
+                 width=1300, height=800)
+    fig.show()
 
+    # porteuf 
+    agg_sectors = portfolio_comparison(stocks)
+    fig = px.line(agg_sectors, x="DATE", y="CLOSE", color='AGG_SECTOR',
+                 width=1300, height=800)
+    fig.show()
 
 
 

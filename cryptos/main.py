@@ -77,14 +77,16 @@ if __name__ == "__main__":
     data_prep.save_prepared(dict_prepared)
 
     # training models
+    kpi = {}
     training_step = TrainingStrat2(path_dirs=data_prep.path_dirs, since=2017)  
     
-    currency = "ETH"
-    dict_prepared[currency]["BINARY_TARGET_2"] = 1*(dict_prepared[currency]["DELTA_TARGET_2"] > 0.01)
-    results, model = training_step.main_training(dict_prepared[currency], args={"currency" : currency, "oof_days" : 90})
+    for currency in data_prep.currencies:
+        dict_prepared[currency]["BINARY_TARGET_2"] = 1*(dict_prepared[currency]["DELTA_TARGET_2"] > dict_prepared[currency]["DELTA_TARGET_2"].quantile(0.95))
+        results, model = training_step.main_training(dict_prepared[currency], args={"currency" : currency, "oof_days" : 180})
 
-    results.loc[0.3<results["PREDICTION_BINARY_TARGET_2"], "BINARY_TARGET_2"].mean()
-    # 0.32597402597402597
+        a = results.loc[0.6<results["PREDICTION_BINARY_TARGET_2"]][["BINARY_TARGET_2", "DELTA_TARGET_2"]]
+        kpi[currency] = {"mean" : a["DELTA_TARGET_2"].mean(), "count" : a.shape[0], "count_positives" : sum(a["DELTA_TARGET_2"]>0.001), "count_neg" : sum(-0.001>a["DELTA_TARGET_2"])}
+    # 0.32597402597402597 
 
     a = training_step.predicting(model, dict_prepared[currency].loc[dict_prepared[currency]["DATE"] >= training_step.oof_start_data])
     a["answer"] = np.where(a["PREDICTION_BINARY_TARGET_2"] > 0.6, 20, 15)

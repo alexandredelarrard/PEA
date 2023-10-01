@@ -67,9 +67,9 @@ class TrainingStrat2(LoadCrytpo):
         # if model:
         #     self.shap_values(model, test_ts, currency)
         
-        # logging.info(f"TRAIN full model until OOF date = {self.oof_start_data}")
-        # prepared = self.add_weights_for_training(prepared)
-        # model = self.tm.train_on_set(prepared.loc[prepared["DATE"] < self.oof_start_data])
+        logging.info(f"TRAIN full model until OOF date = {self.oof_start_data}")
+        prepared = self.add_weights_for_training(prepared)
+        model = self.tm.train_on_set(prepared.loc[prepared["DATE"] < self.oof_start_data])
 
         # self.save_model(model, currency, self.oof_start_data)
 

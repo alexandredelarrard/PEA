@@ -81,6 +81,12 @@ class StepModelling(Step):
 
     def build_panels(self):
         """One modeling panel per horizon, restricted to the configured features."""
+
+        start_date = None
+        if self._config.get("train", None):
+            start_date = self._config.get("train").start_date
+            end_date = self._config.get("train").end_date
+       
         available = feature_columns_from_cube(self.cube, self.label_column)
         self.feature_cols = self._select_features(available)
 
@@ -88,10 +94,18 @@ class StepModelling(Step):
         for h in self.horizons:
             panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
                                     feature_cols=self.feature_cols)
+
+            if start_date:
+                panel = panel.loc[panel["date"] >= start_date]
+
+            if end_date:
+                panel = panel.loc[panel["date"] <= end_date]
+
             if not panel.empty:
                 self.panels[h] = panel
         self._log.info("Built %s horizon panels, %s features",
                        len(self.panels), len(self.feature_cols))
+
         for h, panel in self.panels.items():
             self._log.info("  h=%s: %s rows, %s tickers, %s days",
                            h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
@@ -138,6 +152,7 @@ class StepModelling(Step):
             self.cv_results[h] = fold_results
             if last_fold is not None:
                 self.last_cv_folds[h] = last_fold
+
             mean_ic = np.nanmean([r["mean_ic"] for r in fold_results]) if fold_results else np.nan
             mean_ir = np.nanmean([r["ic_ir"] for r in fold_results]) if fold_results else np.nan
             self.horizon_ic[h] = {"mean_ic": mean_ic, "ic_ir": mean_ir}
@@ -191,6 +206,7 @@ class StepModelling(Step):
     def blend_and_generate_signal(self):
         """Standardize each horizon's scores per day, IR-weight, blend, rank."""
         weights = self._horizon_weights()
+        self.horizon_weights = weights
         self._log.info("Blend weights: %s", {h: round(w, 3) for h, w in weights.items()})
 
         blended = None
@@ -269,3 +285,34 @@ class StepModelling(Step):
             sig.insert(0, "date", self.signal_date)
             sig.to_parquet(self._context.paths["CUBE_SIGNAL_PATH"], index=False)
             self._log.info("Saved blended signal to %s", self._context.paths["CUBE_SIGNAL_PATH"])
+
+        if out.save_models:
+            self._save_trained_models()
+
+    def _save_trained_models(self) -> None:
+        """Persist final per-horizon rankers + metadata for backtest inference."""
+        if not getattr(self, "models", None):
+            self._log.warning("No trained models to save")
+            return
+
+        panel_dates = pd.concat([p["date"] for p in self.panels.values()])
+        meta = {
+            "label_column": self.label_column,
+            "feature_cols": self.feature_cols,
+            "primary_horizon": int(self.primary_horizon),
+            "horizon_weights": {str(h): float(w) for h, w in self.horizon_weights.items()},
+            "horizon_ic": {
+                str(h): {k: float(v) if np.isfinite(v) else None for k, v in stats.items()}
+                for h, stats in self.horizon_ic.items()
+            },
+            "panel_date_min": str(panel_dates.min().date()),
+            "panel_date_max": str(panel_dates.max().date()),
+        }
+        models_dir = self._context.paths["MODELS_DIR"]
+        ml.save_models(models_dir, self.models, meta)
+        paths = [ml.model_pickle_path(models_dir, h) for h in self.models]
+        self._log.info(
+            "Saved %d horizon pickles to %s: %s",
+            len(self.models), models_dir,
+            ", ".join(p.name for p in paths),
+        )

@@ -1,17 +1,22 @@
 model:
   label_column: y
+  save_models: true
   cv:
     n_splits: 5
     embargo: null          # defaults to primary_horizon when null
   lightgbm:
-    learning_rate: 0.005
-    max_depth: 6
+    learning_rate: 0.003
+    max_depth: 5
     subsample: 0.8
     colsample_bytree: 0.8
-    min_child_samples: 20
+    min_child_samples: 50
     lambda_l1: 2.0
-    lambda_l2: 2.0
-    num_boost_round: 1000
+    lambda_l2: 5.0
+    num_boost_round: 1500
+
+train:
+  start_date: 2019-01-01
+  end_date: 2025-06-30
 
 # Feature allow-list: the model trains ONLY on the uncommented entries below.
 # Comment a line out to drop that feature; a name not present in the cube is
@@ -31,23 +36,23 @@ inputs:
     - gap_21
     - range_21
     - peer_mom_63
-    - macd
+    # - macd
     - macd_hist
     - rsi_14
     - atr_14
 
     # ---- Risk exposures (rolling betas) ----
-    - beta_market
-    - beta_market_simple
-    - beta_sector
-    - beta_momentum
-    - beta_size
-    - beta_value
-    - beta_quality
-    - beta_resvol
-    - beta_d_yield_10y
-    - beta_d_yield_curve
-    - beta_d_vix
+    # - beta_market
+    # - beta_market_simple
+    # - beta_sector
+    # - beta_momentum
+    # - beta_size
+    # - beta_value
+    # - beta_quality
+    # - beta_resvol
+    # - beta_d_yield_10y
+    # - beta_d_yield_curve
+    # - beta_d_vix
 
     # ---- Peer-relative fundamentals: valuation ----
     - f_earnings_yield_vs_peers

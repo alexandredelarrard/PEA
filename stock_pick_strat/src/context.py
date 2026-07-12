@@ -79,6 +79,7 @@ def define_global_paths(config: DictConfig):
     global_paths["CUBE_CV_RESULTS_PATH"] = global_paths["OUTPUT_DIR"] / "cube_cv_results.parquet"
     global_paths["CUBE_PANEL_PATH"] = global_paths["OUTPUT_DIR"] / "cube_panel.parquet"
     global_paths["SHAP_OUTPUT_DIR"] = global_paths["OUTPUT_DIR"] / "shap"
+    global_paths["MODELS_DIR"] = global_paths["OUTPUT_DIR"] / "models"
 
     for _, path in global_paths.items():
         if "https" not in str(path):

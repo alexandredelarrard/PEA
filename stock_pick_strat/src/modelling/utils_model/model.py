@@ -14,6 +14,10 @@ Includes:
 
 from __future__ import annotations
 
+import pickle
+from datetime import datetime, timezone
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
@@ -76,15 +80,21 @@ def _graded_labels(panel: pd.DataFrame, label_name: str) -> np.ndarray:
 
 
 def _build_datasets(
+    params: dict,
     panel: pd.DataFrame,
     feats: list,
     label_name: str,
 ) -> tuple:
 
     x = panel[feats].to_numpy(dtype="float32")
-    y = _graded_labels(panel, label_name)
-    groups = _group_sizes(panel)
-    return lgb.Dataset(x, label=y, group=groups, feature_name=feats)
+    if params["objective"] == "lambdarank":
+        y = _graded_labels(panel, label_name)
+        groups = _group_sizes(panel)
+        return lgb.Dataset(x, label=y, group=groups, feature_name=feats)
+    else:
+        y = panel[label_name].to_numpy(dtype="float32")
+        return lgb.Dataset(x, label=y, feature_name=feats)
+    
 
 
 def train_ranker(
@@ -99,8 +109,8 @@ def train_ranker(
     """Fit a LightGBM lambdarank model. Labels are bucketed into graded relevance
     levels. When valid_panel is provided, early stopping is applied."""
     default = dict(
-        objective="lambdarank",
-        metric="ndcg",
+        objective="regression", #"lambdarank",
+        metric="rmse", #"ndcg",
         learning_rate=0.03,
         max_depth=5,
         subsample=0.8,
@@ -113,12 +123,12 @@ def train_ranker(
     if params:
         default.update(params)
 
-    train_set = _build_datasets(panel, feats, label_name)
+    train_set = _build_datasets(default, panel, feats, label_name)
     valid_sets = []
     callbacks = []
 
     if valid_panel is not None and not valid_panel.empty:
-        valid_set = _build_datasets(valid_panel, feats, label_name)
+        valid_set = _build_datasets(default, valid_panel, feats, label_name)
         valid_sets = [valid_set]
         callbacks.append(lgb.early_stopping(stopping_rounds=early_stopping_rounds))
 
@@ -203,3 +213,57 @@ def cross_validate(
         preds = predict(booster, test, feats)
         results.append(daily_ic(test, preds, label_name))
     return results
+
+
+# --------------------------------------------------------------------------- #
+# 5. Persist / reload trained rankers (one pickle per horizon)                #
+# --------------------------------------------------------------------------- #
+def model_pickle_path(models_dir: Path, horizon: int) -> Path:
+    return Path(models_dir) / f"ranker_h{int(horizon)}.pkl"
+
+
+def save_models(models_dir: Path, models: dict[int, lgb.Booster], meta: dict) -> None:
+    """Pickle one self-contained file per horizon for ``pickle.load`` + predict."""
+    models_dir = Path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    shared = {
+        **meta,
+        "horizons": sorted(int(h) for h in models),
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for h, booster in models.items():
+        payload = {**shared, "horizon": int(h), "model": booster}
+        with model_pickle_path(models_dir, h).open("wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_model(path: Path) -> dict:
+    """Load a single horizon pickle (``model``, ``feature_cols``, ``horizon``, ...)."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Model pickle not found: {path}")
+    with path.open("rb") as f:
+        return pickle.load(f)
+
+
+def load_models(models_dir: Path) -> tuple[dict[int, lgb.Booster], dict]:
+    """Load every ``ranker_h*.pkl`` in ``models_dir``."""
+    models_dir = Path(models_dir)
+    if not models_dir.exists():
+        raise FileNotFoundError(f"Models directory not found: {models_dir}")
+
+    paths = sorted(models_dir.glob("ranker_h*.pkl"))
+    if not paths:
+        raise FileNotFoundError(f"No ranker_h*.pkl files in {models_dir}")
+
+    models: dict[int, lgb.Booster] = {}
+    meta: dict | None = None
+    for path in paths:
+        bundle = load_model(path)
+        h = int(bundle["horizon"])
+        models[h] = bundle["model"]
+        if meta is None:
+            meta = {k: v for k, v in bundle.items() if k != "model"}
+    meta = meta or {}
+    meta["horizons"] = sorted(models)
+    return models, meta

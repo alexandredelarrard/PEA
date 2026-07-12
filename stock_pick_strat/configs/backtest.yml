@@ -1,0 +1,26 @@
+backtest:
+  # Backtest window START is NOT set here — it is read from the models' metadata
+  # (train.end_date from modellling.yml). This guarantees the backtest begins
+  # exactly where training ended, with no overlap.
+  end: null              # null = last available cube date
+
+  starting_capital: 1_000_000
+
+  # ---- strategy sleeves (simple: market beta + dollar-neutral alpha L/S) ----
+  market_weight: 0.20
+  alpha_weight: 0.80
+  long_quantile: 0.10
+  short_quantile: 0.10
+  rank_weight: false
+
+  # ---- transaction costs (bps of notional traded per rebalance) ----
+  fee_bps: 1.0
+  spread_bps: 5.0
+
+  # ---- misc ----
+  blend: ir              # ir = reuse train-window IC_IR weights from metadata; equal = simple avg
+  rebalance_freq: 1
+  risk_free_rate: 0.0
+
+  # NOTE: horizons are NOT listed here — they come from build_cube.targets.horizons
+  # (the single source of truth), and the backtest only loads whichever models exist.

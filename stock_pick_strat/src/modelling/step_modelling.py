@@ -1,4 +1,5 @@
 import numpy as np
+import json
 import pandas as pd
 from omegaconf import DictConfig
 
@@ -37,6 +38,7 @@ class StepModelling(Step):
         self.cross_validate_all_horizons()
         self.save_shap_explanations()
         self.train_final_models()
+        self.save_models()
         self.blend_and_generate_signal()
         self.log_feature_importance()
         self.save_outputs()
@@ -286,33 +288,22 @@ class StepModelling(Step):
             sig.to_parquet(self._context.paths["CUBE_SIGNAL_PATH"], index=False)
             self._log.info("Saved blended signal to %s", self._context.paths["CUBE_SIGNAL_PATH"])
 
-        if out.save_models:
-            self._save_trained_models()
-
-    def _save_trained_models(self) -> None:
-        """Persist final per-horizon rankers + metadata for backtest inference."""
-        if not getattr(self, "models", None):
-            self._log.warning("No trained models to save")
-            return
-
-        panel_dates = pd.concat([p["date"] for p in self.panels.values()])
-        meta = {
-            "label_column": self.label_column,
-            "feature_cols": self.feature_cols,
-            "primary_horizon": int(self.primary_horizon),
-            "horizon_weights": {str(h): float(w) for h, w in self.horizon_weights.items()},
-            "horizon_ic": {
-                str(h): {k: float(v) if np.isfinite(v) else None for k, v in stats.items()}
-                for h, stats in self.horizon_ic.items()
-            },
-            "panel_date_min": str(panel_dates.min().date()),
-            "panel_date_max": str(panel_dates.max().date()),
-        }
+    def save_models(self):
+        """Persist each horizon's booster + metadata for the backtest step."""
         models_dir = self._context.paths["MODELS_DIR"]
-        ml.save_models(models_dir, self.models, meta)
-        paths = [ml.model_pickle_path(models_dir, h) for h in self.models]
-        self._log.info(
-            "Saved %d horizon pickles to %s: %s",
-            len(self.models), models_dir,
-            ", ".join(p.name for p in paths),
-        )
+        for h, model in self.models.items():
+            model.save_model(str(models_dir / f"model_h{h}.txt"))
+
+        meta = {
+            "horizons": [int(h) for h in self.models],
+            "feature_cols": list(self.feature_cols),
+            "label_column": self.label_column,
+            "train_start": str(self.train_start.date()),
+            "train_end": str(self.train_end.date()),
+            # blend weights for the backtest (IC_IR per horizon, floored at 0)
+            "train_ic_ir": {int(h): (float(self.horizon_ic[h]["ic_ir"])
+                                     if np.isfinite(self.horizon_ic[h]["ic_ir"]) else 0.0)
+                            for h in self.models},
+        }
+        (models_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
+        self._log.info("Saved %d models + metadata.json to %s", len(self.models), models_dir)

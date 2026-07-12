@@ -1,14 +1,171 @@
+"""
+step_backtest.py
+----------------
+Out-of-sample backtest that LOADS the per-horizon models saved by StepModelling
+(it does NOT retrain). The models were trained on [train.start_date,
+train.end_date] with a tail embargo, so they never saw returns from the backtest
+window; the backtest therefore begins exactly at train.end_date.
+
+Reads:
+  * models + metadata from OUTPUT_DIR/models      (saved by StepModelling)
+  * train.end_date from modellling.yml            (= backtest start)
+  * horizons from build_cube.targets.horizons
+
+Strategy (simple): market_weight * SPY  +  alpha_weight * (top-q long / bottom-q
+short, dollar-neutral). Costs charged on turnover. Signal formed at close t,
+P&L realized on t->t+1. simulate_portfolio / compute_metrics are pure & tested.
+"""
+
+from __future__ import annotations
+
+import json
+
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import lightgbm as lgb
+
 from omegaconf import DictConfig
 
 from src.utils.step import Step
 from src.context import Context
+from src.data_aggregate.utils import data_utils as du
+from src.data_aggregate.utils.cube import panel_from_cube
+from src.modelling.utils_model import model as ml
+from src.post_processing.utils.metrics import compute_metrics
+from src.post_processing.utils.plot_analysis import plot_equity
+from src.post_processing.utils.strategies import simulate_portfolio
 
 
-class StepModelling(Step):
+# =========================================================================== #
+# STEP                                                                        #
+# =========================================================================== #
+class StepBacktest(Step):
+
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
+        self._cfg = config.backtest
+        self._cube_cfg = config.build_cube
 
     def run(self):
-        pass
+        self.load_models()
+        self.load_cube_and_returns()
+        self.predict_and_blend()
+        self.simulate()
+        self.report()
+
+    # ------------------------------------------------------------------ #
+    def load_models(self):
+        """Load per-horizon boosters + metadata saved by StepModelling."""
+        models_dir = self._context.paths["MODELS_DIR"]
+        meta_path = models_dir / "metadata.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"No models at {models_dir}. Run StepModelling first.")
+
+        meta = json.loads(meta_path.read_text())
+
+        self.feature_cols = meta["feature_cols"]
+        self.label_column = meta["label_column"]
+        self.train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
+        # backtest begins where training ended
+        self.backtest_start = pd.Timestamp(meta["train_end"])
+        # horizons come from build_cube config (the single source of truth)
+        self.horizons = list(self._cube_cfg.targets.horizons)
+
+        self.models = {}
+        for h in self.horizons:
+            p = models_dir / f"model_h{h}.txt"
+            if p.exists():
+                self.models[h] = lgb.Booster(model_file=str(p))
+        if not self.models:
+            raise FileNotFoundError(f"No model_h*.txt files found in {models_dir}.")
+        self._log.info("Loaded %d models (horizons %s); backtest starts %s",
+                       len(self.models), list(self.models.keys()),
+                       self.backtest_start.date())
+
+    def load_cube_and_returns(self):
+        self.cube = pd.read_parquet(self._context.paths["CUBE_PATH"])
+        self.end = (pd.Timestamp(self._cfg.end) if self._cfg.get("end")
+                    else pd.Timestamp(self.cube["date"].max()))
+
+        prices_long = pd.read_parquet(self._context.paths["PRICES_PATH"])
+        raw = du.prices_long_to_multiindex(prices_long)
+        close = du.extract_field(raw, "Close")
+        mkt = self._cube_cfg.market_ticker
+        rets = du.daily_returns(close)
+        self.spy_ret = rets[mkt]
+        drop = [mkt] + list(self._config.data_extract.get("other_tickers", []))
+        self.stock_ret = rets.drop(columns=drop, errors="ignore")
+        self._log.info("Backtest window %s -> %s", self.backtest_start.date(), self.end.date())
+
+    def _blend_weights(self) -> dict:
+        if self._cfg.get("blend", "ir") == "equal" or not self.train_ic:
+            return {h: 1.0 / len(self.models) for h in self.models}
+        irs = {h: max(0.0, self.train_ic.get(h, 0.0)) for h in self.models}
+        tot = sum(irs.values())
+        return ({h: irs[h] / tot for h in self.models} if tot > 0
+                else {h: 1.0 / len(self.models) for h in self.models})
+
+    def predict_and_blend(self):
+        weights = self._blend_weights()
+        self._log.info("Blend weights: %s", {h: round(w, 3) for h, w in weights.items()})
+        blended = None
+        for h, model in self.models.items():
+            panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
+                                    feature_cols=self.feature_cols)
+            panel = panel[(panel["date"] >= self.backtest_start) & (panel["date"] <= self.end)]
+            if panel.empty:
+                continue
+            df = panel[["date", "ticker"]].copy()
+            df["z"] = pd.Series(ml.predict(model, panel, self.feature_cols).to_numpy(),
+                                index=panel.index)
+            df["z"] = df.groupby("date")["z"].transform(
+                lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
+            df = df.rename(columns={"z": f"z_{h}"})
+            blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
+
+        zc = [f"z_{h}" for h in self.models if f"z_{h}" in blended.columns]
+        w = np.array([weights[int(c.split('_')[1])] for c in zc])
+        z = blended[zc].to_numpy()
+        mask = ~np.isnan(z)
+        wsum = np.where(mask, w, 0).sum(axis=1)
+        blended["combined"] = np.where(wsum > 0,
+                                       np.nansum(np.where(mask, z * w, 0), axis=1) / np.where(wsum > 0, wsum, 1),
+                                       np.nan)
+        blended["signal"] = blended.groupby("date")["combined"].rank(pct=True)
+        self.signal = blended.pivot(index="date", columns="ticker", values="signal")
+        self.signal.index = pd.to_datetime(self.signal.index)
+        self._log.info("Signal matrix: %s days x %s tickers", *self.signal.shape)
+
+    def simulate(self):
+        c = self._cfg
+        self.daily = simulate_portfolio(
+            self.signal, self.stock_ret, self.spy_ret,
+            starting_capital=float(c.starting_capital),
+            market_weight=c.market_weight, alpha_weight=c.alpha_weight,
+            long_q=c.long_quantile, short_q=c.short_quantile,
+            rank_weight=c.get("rank_weight", False),
+            fee_bps=c.fee_bps, spread_bps=c.spread_bps,
+            rebalance_freq=c.get("rebalance_freq", 1))
+        self.metrics = compute_metrics(self.daily, rf_annual=c.get("risk_free_rate", 0.0))
+
+    def report(self):
+        m = self.metrics
+        self._log.info("=== Backtest results ===")
+        self._log.info("Strategy: total %.1f%%  ann %.1f%%  vol %.1f%%  Sharpe %.2f  maxDD %.1f%%",
+                       m["total_return"]*100, m["ann_return"]*100, m["ann_vol"]*100,
+                       m["sharpe"], m["max_drawdown"]*100)
+        self._log.info("SPY:      total %.1f%%  ann %.1f%%  Sharpe %.2f  maxDD %.1f%%",
+                       m["spy_total_return"]*100, m["spy_ann_return"]*100,
+                       m["spy_sharpe"], m["spy_max_drawdown"]*100)
+        self._log.info("Avg daily turnover %.3f  avg daily cost %.4f%%",
+                       m["avg_daily_turnover"], m["avg_daily_cost"]*100)
+
+        out_dir = self._context.paths["OUTPUT_DIR"] / "backtest"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.daily.to_parquet(out_dir / "backtest_daily.parquet")
+        pd.DataFrame([m]).to_csv(out_dir / "backtest_metrics.csv", index=False)
+        plot_equity(self.daily, m, out_dir / "portfolio_vs_spy.png")
+        self._log.info("Saved backtest outputs to %s", out_dir)

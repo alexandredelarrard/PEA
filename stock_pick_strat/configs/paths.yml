@@ -1,0 +1,4 @@
+local:
+  paths:
+    root: ./stock_pick_strat
+    data_store: data

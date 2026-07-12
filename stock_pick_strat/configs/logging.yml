@@ -1,0 +1,54 @@
+logging:
+    version: 1
+    disable_existing_loggers: False
+
+    formatters:
+        console:
+            format: '%(asctime)s - %(name)s - %(levelname)s - %(filename)s - %(message)s'
+            datefmt: '%Y-%m-%d %H:%M:%S'
+        file:
+            format: '%(asctime)s - %(levelname)s - %(message)s'
+            datefmt: '%Y-%m-%d %H:%M:%S'
+        network:
+            format: 'SampleProject - %(levelname)s - %(message)s'
+
+    handlers:
+        console:
+            class: src.utils.logging_handler.ColorHandler
+            level: DEBUG
+            formatter: console
+            stream: ext://sys.stdout
+            colors:
+                debug: magenta
+                info : cyan
+                warning: yellow
+                error : red
+                critical : red
+
+        file_handler:
+            class: src.utils.logging_handler.MakeFileHandler
+            level: DEBUG
+            formatter: file
+            filename: ./.log/output.log
+            encoding: utf-8
+
+#   loggers:
+#       development:
+#           level: DEBUG
+#           handlers: [console]
+#           propagate: no
+
+#       staging:
+#           level: INFO
+#           handlers: [console, file_handler]
+#           propagate: no
+
+#       production:
+#           level: WARNING
+#           handlers: [file_handler]
+#           propagate: no
+
+    root:
+        level: INFO
+        handlers: [console, file_handler]
+        propagate: yes

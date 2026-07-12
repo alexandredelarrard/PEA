@@ -1,4 +1,0 @@
-name: "default"
-load: !include load.yml
-logging: !include logging.yml
-strategie: !include strategy.yml

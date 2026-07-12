@@ -1,0 +1,44 @@
+build_cube:
+  market_ticker: SPY
+
+  peers:
+    top_k: 20
+    weighting: corr          # corr | equal
+    min_obs: 120
+
+  betas:
+    window: 63
+    min_obs: 40
+    shrink_weight: 0.7
+
+  targets:
+    horizons: [5, 10, 20, 40, 60]
+    primary_horizon: 20
+    label: rank              # rank | zscore | epsilon
+    min_names: 20
+
+  features:
+    standardize_method: rank # rank | zscore
+
+  model:
+    label_column: y
+    cv:
+      n_splits: 5
+      embargo: null          # defaults to primary_horizon when null
+    lightgbm:
+      learning_rate: 0.005
+      max_depth: 6
+      subsample: 0.8
+      colsample_bytree: 0.8
+      min_child_samples: 10
+      lambda_l1: 2.0
+      lambda_l2: 2.0
+      num_boost_round: 1000
+
+  output:
+    save_cube: true
+    save_panel: false
+    save_signal: true
+    save_cv_results: true
+    save_predictions: true
+    save_shap: true

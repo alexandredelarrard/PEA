@@ -1,6 +1,0 @@
-resources:
-  base_path : ./
-  data: data/crypto
-
-urls:
-  reuters: https://www.reuters.com

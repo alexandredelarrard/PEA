@@ -1,0 +1,31 @@
+[project]
+name = "stock-pick-strat"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Your Name",email = "you@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "streamlit (>=1.35)",
+    "yfinance (>=0.2.40)",
+    "pandas (>=2.2)",
+    "numpy (>=1.26)",
+    "plotly (>=5.22)",
+    "fredapi (>=0.5.2)",
+    "requests (>=2.32)",
+    "lxml (>=5.2)",
+    "python-dotenv (>=1.0)",
+    "pyarrow (>=16.1)",
+    "tqdm (>=4.66)",
+    "scipy (>=1.11)",
+    "lightgbm (>=4.0)",
+    "omegaconf (>=2.3)",
+    "matplotlib (>=3.8)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

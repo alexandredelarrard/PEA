@@ -1,0 +1,16 @@
+streamlit>=1.35
+yfinance>=0.2.40
+pandas>=2.2
+numpy>=1.26
+plotly>=5.22
+fredapi>=0.5.2
+requests>=2.32
+lxml>=5.2
+python-dotenv>=1.0
+pyarrow>=16.1
+tqdm>=4.66
+scipy>=1.11
+lightgbm>=4.0
+omegaconf>=2.3
+shap>=0.44
+matplotlib>=3.8

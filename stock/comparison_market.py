@@ -44,6 +44,14 @@ mapping_sectors = {'Hotels & Restaurants' : "consumers",
 porteuf = ['AIRBUS SE', 'Air Liquide S.A', 'Capgemini', 'COFACE', 'Credit Agricole S.A.', 'Kering', "L'Oreal",
             'Lvmh Moet Hennessy Vuitton SE', 'MAUREL ET PROM',  'Schneider Electric SE',  'STELLANTIS',
             'TOTAL', 'Sanofi', 'Pernod Ricard']
+cac40= ['STELLANTIS', 'BNP', 'TOTAL', 'Sanofi', 'Credit Agricole S.A.',
+       'FDJ', 'Axa','VINCI', 'Danone', 'SODEXO', 'Legrand SA', 'Air Liquide S.A',
+       'Schneider Electric SE', 'Pernod Ricard', 'EssilorLuxottica', 'Lvmh Moet Hennessy Vuitton SE',
+       'DERICHEBOURG', "L'Oreal", 'AIRBUS SE',
+       'Publicis Groupe SA', 'Hermes International', 'ACCOR', 'REMY COINTREAU', 'SOCIETE GENERALE',
+       'INTERPARFUMS', 'Bouygues', 'BOLLORE', 'Dassault Systemes SA', 'TELEPERFORMANCE', 'EUROFINS SCIENTIFIC',
+       'Kering', 'Engie', 'LAGARDERE S.C.A.', 'JC DECAUX', 'ALSTOM', 'WORLDLINE', 'VALEO',
+       'UBISOFT', 'Capgemini', 'SCOR SE', 'VIVENDI', 'Carrefour']
 
 def load_configs(config_yml):
     config_path = "./configs"
@@ -127,9 +135,11 @@ def sector_comparison(sub_stocks):
 def portfolio_comparison(sub_stocks):
 
     sub_stocks["PORTFOLIO"] = np.where(sub_stocks["NAME"].isin(porteuf), 1,0)
+    sub_stocks["CAC"] = np.where(sub_stocks["NAME"].isin(cac40), 1,0)
 
     #cac agg 
-    agg_200 = sub_stocks[["DATE", "CLOSE", "VOLUME"]].groupby("DATE").mean().reset_index()
+    stock_sector = sub_stocks.loc[sub_stocks["CAC"] == 1]
+    agg_200 = stock_sector[["DATE", "CLOSE", "VOLUME"]].groupby("DATE").mean().reset_index()
     agg_200.columns = ["DATE", "CLOSE", "VOLUME"]
     agg_200["AGG_SECTOR"] = "CAC_200"
 
@@ -185,7 +195,7 @@ if __name__ == "__main__":
     stocks_extract, missing_ticks = main_extract_stock(data, sub_loc=sub_loc, split_size = 100)
 
     # concatenate all stocks
-    stocks, data = load_stocks(stocks_extract, data, since="2023-01-01")
+    stocks, data = load_stocks(stocks_extract, data, since="2000-01-01")
 
     # sector comparison
     agg_sectors = sector_comparison(stocks)

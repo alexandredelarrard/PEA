@@ -1,0 +1,4 @@
+local:
+  paths:
+    root: C:\Users\alarr\Documents\repos\PEA\stock_pick_strat
+    data_store: data_store

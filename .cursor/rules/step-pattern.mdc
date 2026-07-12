@@ -1,0 +1,58 @@
+---
+globs:
+  - "src/*/step_*.py"
+alwaysApply: false
+description: "Step class pattern for orchestrator classes in each src subfolder"
+---
+
+# Step class pattern
+
+Every `step_*.py` is the main orchestrator for its folder. It must follow this structure exactly.
+
+## Required imports (always at the top)
+```python
+from omegaconf import DictConfig
+
+from src.context import Context
+from src.utils.step import Step
+from src.{folder}.{helper_module} import {helper_function}
+# ... other helpers from the SAME folder only
+```
+
+## Class structure
+```python
+class Step{FolderName}(Step):
+
+    def __init__(self, context: Context, config: DictConfig):
+        super().__init__(context=context, config=config)
+
+    def run(self):
+        # 1. Read what you need from self._config.<section>
+        # 2. Call helpers from the same folder — one logical step per line
+        # 3. Keep run() readable as a high-level summary of the process
+        pass
+```
+
+## Rules
+- `run()` is the ONLY public method — all logic lives in helpers imported from the same folder
+- Use `self._context` for logging (`self._context.logger.info(...)`) and paths
+- Use `self._config.<section>.<key>` for config access — never hardcode values
+- Never call functions from another `src/` subfolder — use `src/utils/` for shared logic
+- Class name: `Step` + PascalCase folder name (e.g., `StepExtractAllData`, `StepModelling`)
+- File name: `step_<snake_case_description>.py`
+
+## Config access pattern
+```python
+# Good — via OmegaConf
+tickers = self._config.data_extract.tickers
+output_path = self._config.paths.data_dir
+
+# Bad — hardcoded
+output_path = "data/prices.parquet"
+```
+
+## Logging pattern
+```python
+self._context.logger.info(f"Fetching {len(tickers)} tickers")
+self._context.logger.error(f"Failed to fetch {ticker}: {e}")
+```

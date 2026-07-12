@@ -1,0 +1,34 @@
+---
+alwaysApply: true
+description: "Core conventions for stock_pick_strat — applies to every file"
+---
+
+# Core conventions
+
+Project: `stock_pick_strat` — Python quant stock-picking pipeline.
+Stack: Python, OmegaConf (`DictConfig`), pandas, pytest.
+Configs: `configs/*.yaml`, always loaded via OmegaConf — never hardcode config values inline.
+
+## Architecture pattern
+Every `src/` subfolder owns exactly one `step_*.py` (the orchestrator).
+All step classes inherit from `Step` (`src.utils.step`) to get `self._context` and `self._config`.
+The `run()` method is the only public entry point — it calls helpers from the same folder.
+
+## Naming — check constants first
+Before naming any column, DataFrame key, file path, or constant: **check `src/constants/*.py` first**.
+Never hardcode strings that are already declared there. If a name doesn't exist yet, add it to constants before using it.
+
+## Project layout
+```
+configs/   data/   src/   tests/ (or test/)   app/ 
+```
+
+## Commands
+- Run a specific test: `pytest tests/path/to/test_file.py`
+- Run a specific function: `pytest tests/path/to/test_file.py::test_function_name`
+
+## Anti-patterns
+- Never import from a sibling `src/` folder directly — cross-folder logic goes in `src/utils/`
+- Never use `print()` for logging — use `self._log`
+- Never store raw data outside `data/`
+- Never access `os.environ` directly — use the context object

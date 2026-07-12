@@ -1,0 +1,104 @@
+---
+globs:
+  - "tests/**/*.py"
+  - "test/**/*.py"
+  - "tests/fixture/**/*.py"
+alwaysApply: false
+description: "Testing conventions — real data samples, sanity checks, and validation workflow"
+---
+
+# Testing conventions
+
+## Critical workflow — follow this for every new feature
+
+### 1. Use real data, small sample
+Tests run on **real data** (not mocked), but capped to keep them fast:
+```python
+df = load_real_data(context)
+df = df.head(100)  # or .sample(100, random_state=42) for non-time-series
+```
+Never mock DataFrames with `pd.DataFrame({"col": [1, 2, 3]})` for feature tests — real data
+catches edge cases (NaNs, delisted tickers, weekends, corporate actions) that mocks won't.
+
+### 2. Validate calculations — sanity checks are mandatory
+For every new feature test, add explicit sanity checks beyond `assert` statements:
+```python
+def test_momentum_feature():
+    df = load_prices(context).head(100)
+    result = compute_momentum(df, window=20)
+
+    # Structural check
+    assert "momentum_20d" in result.columns
+    assert result["momentum_20d"].isna().sum() < len(result) * 0.1
+
+    # Sanity check — does the value make economic sense?
+    recent_winner = result.nlargest(5, "momentum_20d")
+    recent_loser = result.nsmallest(5, "momentum_20d")
+    assert (recent_winner["momentum_20d"] > 0).all(), "Top momentum stocks should have positive returns"
+    assert (recent_loser["momentum_20d"] < 0).all(), "Bottom momentum stocks should have negative returns"
+
+    # Print conclusion — see rule 3
+    print("\n=== SANITY CHECK: momentum_20d ===")
+    print(f"Range: [{result['momentum_20d'].min():.4f}, {result['momentum_20d'].max():.4f}]")
+    print(f"Top 5 tickers: {recent_winner.index.tolist()}")
+    print(f"✓ Positive values for winners, negative for losers — calculation is correct")
+```
+
+### 3. Print sanity check conclusion BEFORE declaring done
+At the end of each test, print a brief conclusion stating:
+- What was checked
+- Why the result is valid (the economic or logical reasoning)
+- Any edge cases confirmed
+
+```python
+    print("\n✓ SANITY CHECKS PASSED:")
+    print("  - NaN rate < 10%: expected for 20d window on 100-row sample")
+    print("  - Winners have positive momentum: confirms correct return calculation direction")
+    print("  - Distribution is approximately normal: consistent with return distributions")
+    print("  → Feature is correct and ready for use.")
+```
+
+Do NOT say "tests pass" without this printed conclusion. The conclusion is part of the definition of done.
+
+### 4. Show only the new test results
+When running tests and reporting results, show **only the output for the newly written test(s)**,
+not the full pytest summary of all existing tests. Reference the specific command used.
+
+```bash
+# Run only the new test
+pytest tests/data_aggregation/test_momentum.py::test_momentum_feature -v -s
+```
+
+The `-s` flag is important — it shows the `print()` sanity check output.
+
+## File and fixture conventions
+- **Location:** `tests/` mirrors `src/` structure: `tests/data_extraction/test_fetch_prices.py`
+- **Fixtures:** shared real-data loaders go in `tests/fixture/` and are declared in `conftest.py`
+- **Fixture pattern:** fixtures load data once per session to avoid repeated I/O
+
+```python
+# tests/fixture/conftest.py
+import pytest
+from src.context import Context
+
+@pytest.fixture(scope="session")
+def context():
+    return Context(env="test")
+
+@pytest.fixture(scope="session")
+def sample_prices(context):
+    from src.data_extraction.fetch_prices import load_prices
+    return load_prices(context).head(100)
+```
+
+## Test naming
+- `test_<what_is_being_tested>.py` — file name
+- `test_<feature>_<condition>` — function name
+- Example: `test_momentum_with_missing_tickers`, `test_fundamentals_all_sp500_present`
+
+## What to test
+- Output shape and dtypes
+- NaN rate within expected bounds
+- Value range makes economic sense (prices > 0, returns bounded, ratios non-negative where expected)
+- Idempotency: running the function twice gives the same result
+- Edge cases: all-NaN column, single ticker, dates at market open/close boundaries

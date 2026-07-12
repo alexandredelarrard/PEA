@@ -1,0 +1,57 @@
+---
+globs:
+  - "src/data_extraction/**/*.py"
+  - "src/data_aggregation/**/*.py"
+alwaysApply: false
+description: "Data extraction and feature engineering conventions"
+---
+
+# Data layer conventions
+
+## data_extraction/ — fetching raw data
+
+Each function in this folder fetches ONE data source. Functions receive `context` (and optionally `config` or `tickers`) as arguments.
+
+```python
+def fetch_price_history(context: Context, tickers: list[str]) -> None:
+    # Fetch, validate, save to data/ via context paths
+    # Return None — side effect is saving to disk
+    pass
+```
+
+- **Output:** always save to `data/` using paths from `self._config` or `context`
+- **Column names:** check `src/constants/*.py` — use declared constants, never raw strings
+- **Errors:** catch provider-level errors per ticker, log with `context.logger.warning()`, continue
+- **Never** return large DataFrames from extraction functions — save to disk, return `None` or a small summary
+
+## data_aggregation/ — feature engineering
+
+Functions here load from `data/`, transform, and save enriched datasets back to `data/`.
+
+```python
+def compute_momentum_features(context: Context, config: DictConfig) -> pd.DataFrame:
+    # Load → transform → validate → save
+    pass
+```
+
+- **Load / save paths** via config keys, never hardcoded
+- **New feature names:** declare in `src/constants/*.py` before using as a column name
+- **Validate** output shape and dtypes before saving — log a summary (`df.shape`, key stats)
+- **Avoid** wide transformations without a sanity check (e.g., confirm no NaN explosion after a join)
+
+## DataFrame conventions
+- Index: `DatetimeIndex` for time series data, or a clearly named column (`date`, `ticker`)
+- Date column name: check `src/constants/*.py` — use the declared constant
+- Dtypes: cast explicitly after load — don't trust inferred dtypes from parquet/csv
+- Parquet preferred over CSV for intermediate files
+
+## Config section for data paths
+```yaml
+# configs/data.yaml (example)
+paths:
+  data_dir: data/
+  prices: data/prices.parquet
+  fundamentals: data/fundamentals.parquet
+```
+
+Access via `self._config.paths.prices` — never build paths with string concatenation.

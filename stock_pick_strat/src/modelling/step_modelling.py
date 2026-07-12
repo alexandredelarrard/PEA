@@ -49,24 +49,55 @@ class StepModelling(Step):
         self.cube = pd.read_parquet(cube_path)
         self.horizons = sorted(self.cube["target_horizon"].unique())
         self.primary_horizon = self._cfg.targets.primary_horizon
-        self.label_column = self._cfg.model.label_column
+        self.label_column = self._config.model.label_column
         self._log.info("Loaded cube (%s rows), horizons=%s", len(self.cube), self.horizons)
 
+    def _select_features(self, available: list[str]) -> list[str]:
+        """Restrict training to the config allow-list (`inputs.columns` in
+        modellling.yml). Commented-out YAML entries are simply not parsed, so
+        only the uncommented names are used. Falls back to ALL cube features
+        when no list is configured."""
+        cfg_inputs = self._config.get("inputs", None)
+        wanted = list(cfg_inputs.columns) if (cfg_inputs and cfg_inputs.get("columns")) else None
+        if not wanted:
+            self._log.warning("inputs.columns not configured -> training on ALL %d "
+                              "cube features", len(available))
+            return available
+
+        avail = set(available)
+        selected = [c for c in wanted if c in avail]
+        missing = [c for c in wanted if c not in avail]
+        excluded = [c for c in available if c not in set(wanted)]
+        if missing:
+            self._log.warning("Configured features not in cube (skipped): %s", missing)
+        if excluded:
+            self._log.info("Cube features excluded by allow-list (%d): %s",
+                           len(excluded), excluded)
+        if not selected:
+            raise ValueError("No configured features are present in the cube; "
+                             "check inputs.columns in modellling.yml")
+        self._log.info("Training on %d configured features", len(selected))
+        return selected
+
     def build_panels(self):
-        """One modeling panel per horizon."""
+        """One modeling panel per horizon, restricted to the configured features."""
+        available = feature_columns_from_cube(self.cube, self.label_column)
+        self.feature_cols = self._select_features(available)
+
         self.panels = {}
         for h in self.horizons:
-            panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column)
+            panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
+                                    feature_cols=self.feature_cols)
             if not panel.empty:
                 self.panels[h] = panel
-        self.feature_cols = feature_columns_from_cube(
-            self.panels[self.primary_horizon], self.label_column
-        )
         self._log.info("Built %s horizon panels, %s features",
                        len(self.panels), len(self.feature_cols))
+        for h, panel in self.panels.items():
+            self._log.info("  h=%s: %s rows, %s tickers, %s days",
+                           h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
 
     def _train_kwargs(self) -> dict:
-        c = self._cfg.model.lightgbm
+        c = self._config.model.lightgbm
         return {
             "params": {
                 "learning_rate": c.learning_rate, "max_depth": c.max_depth,
@@ -80,7 +111,7 @@ class StepModelling(Step):
 
     def cross_validate_all_horizons(self):
         """Purged walk-forward CV per horizon; collect IC to weight the blend."""
-        cfg = self._cfg.model
+        cfg = self._config.model
         self.cv_results = {}
         self.horizon_ic = {}
         self.last_cv_folds = {}

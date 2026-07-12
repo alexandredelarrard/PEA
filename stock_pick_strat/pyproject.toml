@@ -11,7 +11,7 @@ dependencies = [
     "streamlit (>=1.35)",
     "yfinance (>=0.2.40)",
     "pandas (>=2.2)",
-    "numpy (>=1.26)",
+    "numpy (>=1.26, <2.5)",
     "plotly (>=5.22)",
     "fredapi (>=0.5.2)",
     "requests (>=2.32)",
@@ -25,6 +25,8 @@ dependencies = [
     "matplotlib (>=3.8)"
 ]
 
+[tool.poetry]
+package-mode = false
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

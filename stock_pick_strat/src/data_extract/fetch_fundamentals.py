@@ -4,10 +4,12 @@ Fetch fundamental data per ticker.
 THREE sources, in order of how much history they give you:
 
 1. SEC EDGAR `companyfacts` (PRIMARY, free, no key) -> genuine ~10-year
-   point-in-time history. This is the one that lets you make size / value /
-   quality risk-neutral over a real backtest, because every value comes with
-   the FILING DATE (`filed`), so we key each row on the date the number
-   actually became public -- no look-ahead. Built by
+   point-in-time history at QUARTERLY cadence. This is the one that lets you
+   make size / value / quality risk-neutral over a real backtest, because every
+   value comes with the FILING DATE (`filed`), so we key each row on the date
+   the number actually became public -- no look-ahead. Flow items are stored as
+   trailing-twelve-month (TTM) sums of discrete quarters (Q1-Q3 from the 10-Qs,
+   Q4 derived as FY - Q1 - Q2 - Q3), refreshed every quarter. Built by
    `build_fundamentals_history_sec()`.
 
 2. SimFin bulk CSV (free tier, ~10y) -> alternative if you prefer a single
@@ -20,8 +22,9 @@ THREE sources, in order of how much history they give you:
 Output schema (same `fundamentals_history.parquet` the cube reads):
     ticker, as_of (= filing date), fiscal_end,
     totalRevenue, netIncome, grossMargins, operatingMargins, profitMargins,
-    returnOnEquity, debtToEquity, ebitda, freeCashflow,
-    revenueGrowth, earningsGrowth, sharesOutstanding, stockholdersEquity
+    returnOnEquity, debtToEquity, ebitda, freeCashflow, researchAndDevelopment,
+    revenueGrowth, earningsGrowth, sharesOutstanding, stockholdersEquity,
+    revenue_q, netIncome_q, ebitda_q, freeCashflow_q  (discrete single-quarter)
 
 IMPORTANT for size / value: SEC gives shares and equity, not market cap
 (market cap needs price). We store `sharesOutstanding`; compute
@@ -62,6 +65,8 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                           "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment",
               "PaymentsToAcquireProductiveAssets"],
+    "researchAndDevelopment": ["ResearchAndDevelopmentExpense",
+                               "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
 }
 STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
     "stockholdersEquity": ["StockholdersEquity",
@@ -76,6 +81,8 @@ SHARES_TAGS = {  # tried under dei first, then us-gaap
 }
 
 ANNUAL_MIN_DAYS, ANNUAL_MAX_DAYS = 340, 380   # accept a fiscal year as ~365d
+QUARTER_MIN_DAYS, QUARTER_MAX_DAYS = 80, 100   # accept a fiscal quarter as ~13 weeks
+TTM_QUARTERS = 4                               # trailing-twelve-months = 4 quarters
 
 
 def _today_iso() -> str:
@@ -220,6 +227,70 @@ def _annual_flow(df: pd.DataFrame) -> pd.DataFrame:
     return d[["end", "filed", "val"]].sort_values("end").reset_index(drop=True)
 
 
+def _quarterly_flow(df: pd.DataFrame) -> pd.DataFrame:
+    """Discrete quarterly flow observations [end, filed, val].
+
+    XBRL flow facts come in two shapes and this handles both:
+      * DISCRETE "three-months-ended" (~90d) facts -> used directly (typical for
+        income-statement items, giving Q1-Q3).
+      * YEAR-TO-DATE cumulative facts (3M/6M/9M/FY, all sharing the fiscal-year
+        `start`) -> typical for CASH-FLOW items; de-cumulated into quarters by
+        differencing consecutive period ends within the fiscal year.
+    Any fiscal-year end still missing a quarter (pure-discrete filers that never
+    file a Q4 10-Q) gets Q4 DERIVED as FY - (Q1 + Q2 + Q3).
+
+    `filed` on each quarter is the filing that made it computable (the later of
+    the cumulatives involved), so nothing is stamped before it is public.
+    """
+    if df.empty:
+        return df
+    d = df.dropna(subset=["end", "start", "filed", "val"]).copy()
+    d["dur"] = (d["end"] - d["start"]).dt.days
+    d = d[(d["dur"] >= 45) & (d["dur"] <= ANNUAL_MAX_DAYS)]
+    if d.empty:
+        return pd.DataFrame(columns=["end", "filed", "val"])
+    # earliest filing that disclosed each (start, end) period
+    d = d.sort_values("filed").drop_duplicates(subset=["start", "end"], keep="first")
+
+    # De-cumulate within each fiscal-year `start`: discrete = value - previous
+    # cumulative (by end); the first (shortest) period is already discrete.
+    d = d.sort_values(["start", "end"])
+    grp = d.groupby("start", sort=False)
+    disc = d["val"].astype(float) - grp["val"].shift(1)
+    is_first = grp.cumcount() == 0
+    disc = disc.where(~is_first, d["val"])
+    implied = (d["end"] - grp["end"].shift(1)).dt.days
+    implied = implied.where(~is_first, d["dur"])
+
+    q = d.assign(val=disc, implied=implied)
+    q = q[(q["implied"] >= 75) & (q["implied"] <= 100)]     # keep quarter-length only
+    q = (q.sort_values("filed").drop_duplicates(subset=["end"], keep="first")
+           [["end", "filed", "val"]])
+
+    # Derive Q4 for any fiscal-year end not already covered above.
+    a = d[(d["dur"] >= ANNUAL_MIN_DAYS) & (d["dur"] <= ANNUAL_MAX_DAYS)]
+    a = (a.sort_values("filed").drop_duplicates(subset=["end"], keep="first")
+           [["end", "filed", "val"]])
+    q_ends = set(q["end"])
+    derived = []
+    for _, r in a.iterrows():
+        fye = r["end"]
+        if fye in q_ends:
+            continue
+        prior = q[(q["end"] > fye - pd.Timedelta(days=340))
+                  & (q["end"] <= fye - pd.Timedelta(days=20))]
+        if len(prior) == 3:
+            derived.append({
+                "end": fye,
+                "filed": max(r["filed"], prior["filed"].max()),
+                "val": r["val"] - prior["val"].sum(),
+            })
+    if derived:
+        q = pd.concat([q, pd.DataFrame(derived)], ignore_index=True)
+    return (q.sort_values("end").drop_duplicates(subset=["end"], keep="first")
+              .reset_index(drop=True))
+
+
 def _instant_stock(df: pd.DataFrame) -> pd.DataFrame:
     """Point-in-time balance items: first disclosure per period end."""
     if df.empty:
@@ -233,14 +304,41 @@ def _series_on_ends(concept_df: pd.DataFrame, name: str) -> pd.DataFrame:
     return concept_df.rename(columns={"val": name, "filed": f"{name}_filed"})
 
 
+def _merge_shares_asof(base: pd.DataFrame, shares: pd.DataFrame) -> pd.DataFrame:
+    """Attach the most recent sharesOutstanding as of each fiscal-year `end`
+    (backward as-of merge). Cover-page share counts are dated near the filing,
+    not at fiscal-year end, so an exact `end` join misses almost everything."""
+    if shares is None or shares.empty:
+        base["sharesOutstanding"] = pd.NA
+        base["sharesOutstanding_filed"] = pd.NaT
+        return base
+    s = shares.rename(columns={"val": "sharesOutstanding",
+                               "filed": "sharesOutstanding_filed"})
+    s = s[["end", "sharesOutstanding", "sharesOutstanding_filed"]].sort_values("end")
+    left = base.sort_values("end")
+    merged = pd.merge_asof(left, s, on="end", direction="backward")
+    # restore original row order
+    return merged.sort_values("end").reset_index(drop=True)
+
+
 # --------------------------------------------------------------------------- #
-# Build one ticker's annual history from its companyfacts                     #
+# Build one ticker's QUARTERLY history (TTM levels) from its companyfacts      #
 # --------------------------------------------------------------------------- #
 def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
+    """One row per FISCAL QUARTER, keyed on the filing date (`as_of`).
+
+    Flow items (revenue, income, cash flows, R&D) are stored as
+    TRAILING-TWELVE-MONTH (TTM) sums of the four most recent discrete quarters,
+    which is the correct, seasonality-free level for valuation and margins and
+    still refreshes every quarter. Balance-sheet items and shares are the
+    point-in-time value at each quarter end. Growth is year-over-year (TTM vs 4
+    quarters earlier). `as_of` is the latest filing date among the merged
+    concepts, so a value is only visible once fully public (no look-ahead).
+    """
     gaap = facts.get("facts", {}).get("us-gaap", {})
     dei = facts.get("facts", {}).get("dei", {})
 
-    flows = {k: _annual_flow(_extract_concept(gaap, tags)) for k, tags in FLOW_TAGS.items()}
+    flows = {k: _quarterly_flow(_extract_concept(gaap, tags)) for k, tags in FLOW_TAGS.items()}
     stocks = {k: _instant_stock(_extract_concept(gaap, tags)) for k, tags in STOCK_TAGS.items()}
     shares = _instant_stock(_extract_concept(dei, SHARES_TAGS["sharesOutstanding"])
                             if any(t in dei for t in SHARES_TAGS["sharesOutstanding"])
@@ -250,7 +348,7 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
     if rev is None or rev.empty:
         return pd.DataFrame()
 
-    # Base frame on fiscal-year ends from revenue; merge others by nearest end.
+    # Base frame on the quarterly revenue ends; merge every other concept by end.
     base = _series_on_ends(rev, "totalRevenue")
 
     def merge_flow(base, key):
@@ -262,7 +360,7 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
         return base.merge(_series_on_ends(s, key), on="end", how="left")
 
     for key in ["netIncome", "grossProfit", "costOfRevenue", "operatingIncome",
-                "depAmort", "operatingCashFlow", "capex"]:
+                "depAmort", "operatingCashFlow", "capex", "researchAndDevelopment"]:
         base = merge_flow(base, key)
 
     def merge_stock(base, key, src):
@@ -274,52 +372,79 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
 
     for key in ["stockholdersEquity", "totalLiabilities", "longTermDebt", "cash"]:
         base = merge_stock(base, key, stocks.get(key))
-    base = merge_stock(base, "sharesOutstanding", shares)
+
+    # sharesOutstanding is a dei COVER-PAGE fact whose `end` is the cover date,
+    # which almost never equals a period `end` -> an exact merge drops it for
+    # ~95% of filers. Attach instead the most recent shares count as of each
+    # quarter end (backward as-of merge), which keeps it point-in-time.
+    base = _merge_shares_asof(base, shares)
 
     base = base.sort_values("end").reset_index(drop=True)
 
     # as_of = latest filing date among the merged concepts (ensures all public).
     filed_cols = [c for c in base.columns if c.endswith("_filed")]
     base["as_of"] = base[filed_cols].max(axis=1)
-    base = base.dropna(subset=["as_of"])
+    base = base.dropna(subset=["as_of"]).sort_values("end").reset_index(drop=True)
 
-    # ---- derived fields ----
+    # ---- discrete quarterly numerics ----
     def col(name):
         return pd.to_numeric(base.get(name), errors="coerce")
 
-    rev_v = col("totalRevenue")
-    ni = col("netIncome")
-    gp = col("grossProfit")
-    cor = col("costOfRevenue")
-    oi = col("operatingIncome")
-    da = col("depAmort")
-    ocf = col("operatingCashFlow")
-    capex = col("capex")
-    eq = col("stockholdersEquity")
+    def ttm(s):
+        # trailing 12 months = sum of the 4 most recent quarters
+        return s.rolling(TTM_QUARTERS, min_periods=TTM_QUARTERS).sum()
+
+    # discrete SINGLE-QUARTER values (before rolling) -> "latest quarter" features
+    rev_q = col("totalRevenue")
+    ni_q = col("netIncome")
+    oi_q = col("operatingIncome")
+    da_q = col("depAmort")
+    ocf_q = col("operatingCashFlow")
+    capex_q = col("capex")
+    ebitda_q = oi_q + da_q.fillna(0)
+    fcf_q = ocf_q - capex_q.fillna(0)
+
+    rev_ttm = ttm(rev_q)
+    ni_ttm = ttm(ni_q)
+    gp_ttm = ttm(col("grossProfit"))
+    cor_ttm = ttm(col("costOfRevenue"))
+    oi_ttm = ttm(oi_q)
+    da_ttm = ttm(da_q)
+    ocf_ttm = ttm(ocf_q)
+    capex_ttm = ttm(capex_q)
+    rnd_ttm = ttm(col("researchAndDevelopment"))
+    eq = col("stockholdersEquity")          # instant (point-in-time), not summed
     liab = col("totalLiabilities")
     ltd = col("longTermDebt")
 
-    gross_profit = gp.where(gp.notna(), rev_v - cor)
+    gross_profit_ttm = gp_ttm.where(gp_ttm.notna(), rev_ttm - cor_ttm)
     out = pd.DataFrame({
         "ticker": ticker,
         "as_of": base["as_of"].dt.date.astype(str),
         "fiscal_end": base["end"].dt.date.astype(str),
-        "totalRevenue": rev_v,
-        "netIncome": ni,
-        "grossMargins": (gross_profit / rev_v).where(rev_v > 0),
-        "operatingMargins": (oi / rev_v).where(rev_v > 0),
-        "profitMargins": (ni / rev_v).where(rev_v > 0),
-        "returnOnEquity": (ni / eq).where(eq > 0),
+        "totalRevenue": rev_ttm,
+        "netIncome": ni_ttm,
+        "grossMargins": (gross_profit_ttm / rev_ttm).where(rev_ttm > 0),
+        "operatingMargins": (oi_ttm / rev_ttm).where(rev_ttm > 0),
+        "profitMargins": (ni_ttm / rev_ttm).where(rev_ttm > 0),
+        "returnOnEquity": (ni_ttm / eq).where(eq > 0),
         "debtToEquity": (ltd.where(ltd.notna(), liab) / eq).where(eq > 0),
-        "ebitda": oi + da.fillna(0),
-        "freeCashflow": ocf - capex.fillna(0),
+        "ebitda": oi_ttm + da_ttm.fillna(0),
+        "freeCashflow": ocf_ttm - capex_ttm.fillna(0),
+        "researchAndDevelopment": rnd_ttm,
         "stockholdersEquity": eq,
         "sharesOutstanding": col("sharesOutstanding"),
+        # discrete single-quarter values -> "latest quarter" momentum features
+        "revenue_q": rev_q,
+        "netIncome_q": ni_q,
+        "ebitda_q": ebitda_q,
+        "freeCashflow_q": fcf_q,
     })
 
-    # YoY growth on the fiscal series (chronological).
-    out["revenueGrowth"] = rev_v.pct_change()
-    out["earningsGrowth"] = ni.pct_change()
+    # Year-over-year growth on the TTM series (4 quarters back), so it is a true
+    # annual comparison free of seasonality even at quarterly cadence.
+    out["revenueGrowth"] = rev_ttm.pct_change(TTM_QUARTERS)
+    out["earningsGrowth"] = ni_ttm.pct_change(TTM_QUARTERS)
 
     return out.reset_index(drop=True)
 
@@ -399,7 +524,28 @@ def build_fundamentals_history_sec(context: Context,
 SNAPSHOT_FIELDS = ["marketCap", "trailingPE", "forwardPE", "sector", "industry", "shortName"]
 
 
+def _snapshot_up_to_date(context: Context, tickers: list[str]) -> pd.DataFrame | None:
+    """Return the cached snapshot if it was already pulled today for the full
+    requested universe, else None."""
+    path = context.paths["FUNDAMENTALS_SNAPSHOT_PATH"]
+    if not path.exists():
+        return None
+    existing = pd.read_parquet(path)
+    if existing.empty or "as_of" not in existing.columns:
+        return None
+    if not (existing["as_of"] == _today_iso()).all():
+        return None
+    if not set(tickers).issubset(set(existing["ticker"].unique())):
+        return None
+    return existing
+
+
 def fetch_snapshot(context: Context, tickers: list[str], pause: float = 0.3) -> pd.DataFrame:
+    cached = _snapshot_up_to_date(context, tickers)
+    if cached is not None:
+        print(f"Snapshot already pulled today for {len(cached)} tickers — skipping")
+        return cached
+
     as_of = _today_iso()
     rows = []
     for tkr in tqdm(tickers, desc="Fetching current snapshot"):

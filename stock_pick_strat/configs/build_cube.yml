@@ -16,24 +16,17 @@ build_cube:
     primary_horizon: 20
     label: rank              # rank | zscore | epsilon
     min_names: 20
+    neutralize_momentum: true  # orthogonalize target vs 12-1 momentum characteristic
 
   features:
     standardize_method: rank # rank | zscore
 
-  model:
-    label_column: y
-    cv:
-      n_splits: 5
-      embargo: null          # defaults to primary_horizon when null
-    lightgbm:
-      learning_rate: 0.005
-      max_depth: 6
-      subsample: 0.8
-      colsample_bytree: 0.8
-      min_child_samples: 10
-      lambda_l1: 2.0
-      lambda_l2: 2.0
-      num_boost_round: 1000
+  intrinsic:                 # two-stage DCF for the intrinsic-value features
+    discount_rate: 0.10      # equity discount rate r
+    terminal_growth: 0.025   # perpetuity growth g_term (must be < r)
+    years: 5                 # explicit high-growth stage length
+    growth_cap: 0.15         # winsorize the firm's own growth used in the DCF
+    growth_floor: -0.10
 
   output:
     save_cube: true

@@ -1,0 +1,177 @@
+"""Shared test fixtures for the data_aggregate suite.
+
+Two flavours of fixture live here, matching the project testing conventions:
+
+* synthetic, known-truth data -> used ONLY to verify the mathematical
+  correctness of the beta estimator (you cannot check that a regression
+  recovers a loading without knowing the true loading).
+* real-data, small-sample -> used for every economic / sanity check, so the
+  tests see the real NaNs, delistings and late IPOs that the estimator has to
+  survive (this is exactly what surfaced the sector-NaN truncation bug).
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+# Make `import src...` work no matter where pytest is invoked from.
+ROOT = Path(__file__).resolve().parents[1]  # .../stock_pick_strat
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+DATA = ROOT / "data"
+
+MARKET = "SPY"
+OTHER_TICKERS = ["SPY", "^VIX"]
+SUBSET_SIZE = 100  # keep the real-data pipeline fast but keep a real cross-section
+
+
+# --------------------------------------------------------------------------- #
+# Real data (small sample)                                                     #
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="session")
+def real_frames():
+    """Wide close / returns matrices from the real price parquet, subset for
+    speed but guaranteed to contain AMD (the ticker under investigation)."""
+    from src.data_aggregate.utils import data_utils as du
+
+    if not (DATA / "prices.parquet").exists():
+        pytest.skip("data/prices.parquet not available")
+
+    prices = pd.read_parquet(DATA / "prices.parquet")
+    raw = du.prices_long_to_multiindex(prices)
+    close = du.extract_field(raw, "Close")
+    close = close.loc[close[MARKET].notna()]
+    returns = du.daily_returns(close)
+
+    stock_close = close.drop(columns=[c for c in OTHER_TICKERS if c in close.columns])
+    stock_ret = returns.drop(columns=[c for c in OTHER_TICKERS if c in returns.columns])
+
+    cols = list(stock_ret.columns)
+    keep = (["AMD"] if "AMD" in cols else []) + [c for c in cols if c != "AMD"][:SUBSET_SIZE]
+    return {
+        "mkt_ret": returns[MARKET],
+        "stock_close": stock_close[keep],
+        "stock_ret": stock_ret[keep],
+    }
+
+
+@pytest.fixture(scope="session")
+def real_pipeline(real_frames):
+    """End-to-end real-data aggregate pieces computed once: peers, sector
+    returns, factor panel, rolling betas and multi-horizon targets."""
+    from src.data_aggregate.utils.betas import estimate_all_betas
+    from src.data_aggregate.utils.targets import build_targets
+    from src.data_aggregate.utils.factors import (
+        build_style_factor_returns,
+        build_macro_factor_changes,
+        assemble_factor_panel,
+    )
+    from src.modelling.utils_model.sector_peers import (
+        build_peer_dict,
+        compute_sector_returns,
+    )
+
+    stock_close = real_frames["stock_close"]
+    stock_ret = real_frames["stock_ret"]
+    mkt_ret = real_frames["mkt_ret"]
+
+    fundamentals = (
+        pd.read_parquet(DATA / "fundamentals_history.parquet")
+        if (DATA / "fundamentals_history.parquet").exists() else None
+    )
+    macro = (
+        pd.read_parquet(DATA / "macro.parquet")
+        if (DATA / "macro.parquet").exists() else None
+    )
+
+    peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
+    sector_ret = compute_sector_returns(stock_ret, peers)
+
+    style = build_style_factor_returns(stock_close, stock_ret, fundamentals, 63)
+    if macro is not None:
+        macro_chg = build_macro_factor_changes(macro, stock_close.index)
+    else:
+        macro_chg = pd.DataFrame(index=stock_close.index)
+    macro_cols = list(macro_chg.columns)
+    factor_panel = assemble_factor_panel(mkt_ret, style, macro_chg)
+
+    betas = estimate_all_betas(
+        stock_ret, factor_panel, sector_ret,
+        window=63, min_obs=40, ridge=5.0, step=5,
+    )
+
+    horizons = (5, 20, 60)
+    labels_rank = build_targets(
+        stock_close, stock_ret, peers, betas, factor_panel, macro_cols,
+        horizons=horizons, label="rank", min_names=20,
+    )
+
+    return {
+        "peers": peers,
+        "sector_ret": sector_ret,
+        "factor_panel": factor_panel,
+        "macro_cols": macro_cols,
+        "betas": betas,
+        "labels_rank": labels_rank,
+        "horizons": horizons,
+        "stock_close": stock_close,
+        "stock_ret": stock_ret,
+    }
+
+
+@pytest.fixture(scope="session")
+def fundamental_panel(real_frames):
+    """Peer-relative fundamental feature panel on the real (canonical) history,
+    plus the inputs needed to sanity-check it against the target."""
+    from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
+    from src.modelling.utils_model.sector_peers import build_peer_dict
+
+    fpath = DATA / "fundamentals_history.parquet"
+    if not fpath.exists():
+        pytest.skip("fundamentals_history.parquet not available")
+
+    fundamentals = pd.read_parquet(fpath)
+    stock_close = real_frames["stock_close"]
+    stock_ret = real_frames["stock_ret"]
+    peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
+    panel = build_fundamental_feature_panel(
+        fundamentals, peers, stock_close.index, stock_close=stock_close,
+    )
+    return {"panel": panel, "fundamentals": fundamentals,
+            "peers": peers, "stock_close": stock_close}
+
+
+# --------------------------------------------------------------------------- #
+# Synthetic data (known truth) for estimator-correctness tests                 #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def synthetic_factor_model():
+    """Return (y, shared, sector, true_betas) with KNOWN loadings so we can
+    assert the estimator recovers them."""
+    rng = np.random.default_rng(42)
+    n = 500
+    dates = pd.bdate_range("2018-01-01", periods=n)
+
+    market = pd.Series(rng.normal(0.0004, 0.010, n), index=dates, name="market")
+    momentum = pd.Series(rng.normal(0.0, 0.006, n), index=dates, name="momentum")
+    value = pd.Series(rng.normal(0.0, 0.006, n), index=dates, name="value")
+    sector = pd.Series(rng.normal(0.0003, 0.009, n), index=dates, name="sector")
+
+    shared = pd.concat([market, momentum, value], axis=1)
+
+    true_betas = {"market": 1.20, "momentum": 0.50, "value": -0.30, "sector": 0.40}
+    idiosyncratic = rng.normal(0.0, 0.004, n)
+    y = (
+        true_betas["market"] * market
+        + true_betas["momentum"] * momentum
+        + true_betas["value"] * value
+        + true_betas["sector"] * sector
+        + idiosyncratic
+    )
+    y = pd.Series(y, index=dates, name="STOCK")
+    return y, shared, sector, true_betas

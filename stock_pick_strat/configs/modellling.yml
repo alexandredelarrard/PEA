@@ -1,0 +1,166 @@
+model:
+  label_column: y
+  cv:
+    n_splits: 5
+    embargo: null          # defaults to primary_horizon when null
+  lightgbm:
+    learning_rate: 0.005
+    max_depth: 6
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_samples: 20
+    lambda_l1: 2.0
+    lambda_l2: 2.0
+    num_boost_round: 1000
+
+# Feature allow-list: the model trains ONLY on the uncommented entries below.
+# Comment a line out to drop that feature; a name not present in the cube is
+# skipped with a warning. If this whole list is empty/removed, the model falls
+# back to every feature in the cube.
+inputs:
+  columns:
+    # ---- Price / technical (point-in-time; MACD/RSI/ATR lagged 1 day) ----
+    - mom_12_1
+    - rev_5
+    - rev_21
+    - vol_21
+    - vol_63
+    - ma_ratio_50
+    - ma_ratio_200
+    - high_prox_252
+    - gap_21
+    - range_21
+    - peer_mom_63
+    - macd
+    - macd_hist
+    - rsi_14
+    - atr_14
+
+    # ---- Risk exposures (rolling betas) ----
+    - beta_market
+    - beta_market_simple
+    - beta_sector
+    - beta_momentum
+    - beta_size
+    - beta_value
+    - beta_quality
+    - beta_resvol
+    - beta_d_yield_10y
+    - beta_d_yield_curve
+    - beta_d_vix
+
+    # ---- Peer-relative fundamentals: valuation ----
+    - f_earnings_yield_vs_peers
+    - f_earnings_yield_xs
+    - f_sales_yield_vs_peers
+    - f_sales_yield_xs
+    - f_book_yield_vs_peers
+    - f_book_yield_xs
+    - f_fcf_yield_vs_peers
+    - f_fcf_yield_xs
+    - f_ebitda_to_ev_vs_peers
+    - f_ebitda_to_ev_xs
+    - f_intrinsic_yield_vs_peers
+    - f_intrinsic_yield_xs
+
+    # ---- Peer-relative fundamentals: profitability / quality ----
+    - f_grossMargins_vs_peers
+    - f_grossMargins_xs
+    - f_operatingMargins_vs_peers
+    - f_operatingMargins_xs
+    - f_profitMargins_vs_peers
+    - f_profitMargins_xs
+    - f_returnOnEquity_vs_peers
+    - f_returnOnEquity_xs
+    - f_debtToEquity_vs_peers
+    - f_debtToEquity_xs
+    - f_fcf_margin_vs_peers
+    - f_fcf_margin_xs
+    - f_accruals_vs_peers
+    - f_accruals_xs
+    - f_rd_intensity_vs_peers
+    - f_rd_intensity_xs
+
+    # ---- Peer-relative fundamentals: growth / trend / dilution ----
+    - f_revenueGrowth_vs_peers
+    - f_revenueGrowth_xs
+    - f_earningsGrowth_vs_peers
+    - f_earningsGrowth_xs
+    - f_fcf_growth_vs_peers
+    - f_fcf_growth_xs
+    - f_gross_margin_chg_vs_peers
+    - f_gross_margin_chg_xs
+    - f_shares_growth_vs_peers
+    - f_shares_growth_xs
+
+    # ---- Latest-quarter momentum (discrete single quarter, not TTM) ----
+    - f_q_rev_growth_vs_peers
+    - f_q_rev_growth_xs
+    - f_rev_growth_accel_vs_peers
+    - f_rev_growth_accel_xs
+    - f_q_earnings_growth_vs_peers
+    - f_q_earnings_growth_xs
+    - f_q_margin_vs_ttm_vs_peers
+    - f_q_margin_vs_ttm_xs
+
+    # ---- Earnings expectations (historical forward EPS vs actual; ~96% cover) ----
+    # forward E/P + expected EPS growth carry standalone signal (IC ~ +0.02) and
+    # capture "what the market prices in for the future" / unrealistic optimism.
+    - f_fwd_eps_yield_vs_peers
+    - f_fwd_eps_yield_xs
+    - f_eps_expectation_growth_vs_peers
+    - f_eps_expectation_growth_xs
+    # Realized beat/miss: weak at the 20d residual horizon (more of a short-window
+    # PEAD signal) -- left off by default; toggle on for short-horizon models.
+    # - f_eps_surprise_last_vs_peers
+    # - f_eps_surprise_last_xs
+    # - f_eps_surprise_4q_avg_vs_peers
+    # - f_eps_surprise_4q_avg_xs
+
+    # ---- Analyst estimates: leak-free but NO accrued history yet, so they are
+    #      ~all-NaN historically. Uncomment once you have collected estimate
+    #      snapshots over time (see fetch_analyst_estimates). ----
+    # - f_est_fwd_earnings_yield_vs_peers
+    # - f_est_fwd_earnings_yield_xs
+    # - f_est_eps_growth_vs_peers
+    # - f_est_eps_growth_xs
+    # - f_est_rev_growth_vs_peers
+    # - f_est_rev_growth_xs
+    # - f_est_target_upside_vs_peers
+    # - f_est_target_upside_xs
+    # - f_est_revision_ratio_vs_peers
+    # - f_est_revision_ratio_xs
+    # - f_est_eps_trend_3m_vs_peers
+    # - f_est_eps_trend_3m_xs
+    # - f_est_rec_score_vs_peers
+    # - f_est_rec_score_xs
+    # - f_est_vs_intrinsic_vs_peers
+    # - f_est_vs_intrinsic_xs
+
+    # ---- Governance / ownership / workforce (yfinance snapshot): founder-led,
+    #      family-owned, insider & institutional ownership, net insider buying,
+    #      CEO age, revenue/employee. Leak-free (point-in-time from as_of) but,
+    #      like analyst estimates, snapshot-only with NO accrued history yet ->
+    #      ~all-NaN historically. Uncomment once fetch_management has run over
+    #      time; useful NOW for the live cross-sectional ranking. ----
+    # - f_insider_ownership_vs_peers
+    # - f_insider_ownership_xs
+    # - f_institutional_ownership_vs_peers
+    # - f_institutional_ownership_xs
+    # - f_founder_led_vs_peers
+    # - f_founder_led_xs
+    # - f_family_owned_vs_peers
+    # - f_family_owned_xs
+    # - f_net_insider_buying_vs_peers
+    # - f_net_insider_buying_xs
+    # - f_ceo_age_vs_peers
+    # - f_ceo_age_xs
+
+    # ---- Workforce (FMP historical employee counts, from 10-K/10-Q filings):
+    #      genuinely historical & point-in-time, so backtestable. Require running
+    #      fetch_employees (needs a free FMP_API_KEY). If not fetched, the columns
+    #      are simply absent from the cube and skipped -- safe to leave enabled. ----
+    - f_revenue_per_employee_vs_peers
+    - f_revenue_per_employee_xs
+    - f_employee_growth_vs_peers
+    - f_employee_growth_xs

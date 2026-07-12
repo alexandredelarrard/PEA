@@ -9,6 +9,14 @@ from src.data_extract.fetch_news import fetch_news
 from src.data_extract.fetch_sec_filings import fetch_sec_filings
 from src.data_extract.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.fetch_analyst_estimates import fetch_analyst_estimates
+from src.data_extract.fetch_management import fetch_management
+from src.data_extract.fetch_employees import fetch_employees
+from src.data_extract.fetch_fmp_history import (
+    fetch_analyst_grades,
+    fetch_analyst_actions,
+    fetch_exec_comp,
+    fetch_estimates,
+)
 
 class StepExtractAllData(Step):
 
@@ -23,7 +31,15 @@ class StepExtractAllData(Step):
         fetch_price_history(self._context, tickers=tickers)
         fetch_fundamentals(self._context, tickers=tickers)
         fetch_macro(self._context)
-        # fetch_news(self._context, tickers=tickers)
-        # fetch_earnings_surprises(self._context, tickers=tickers)
-        fetch_analyst_estimates(self._context, tickers=tickers)
+        fetch_earnings_surprises(self._context, tickers=tickers)
+        fetch_employees(self._context, tickers=tickers)
+        fetch_analyst_grades(self._context, tickers=tickers)
+        fetch_analyst_actions(self._context, tickers=tickers)
+        fetch_exec_comp(self._context, tickers=tickers)
+        fetch_estimates(self._context, tickers=tickers)
         fetch_sec_filings(self._context)
+
+        # no historical version yet
+        # fetch_news(self._context, tickers=tickers)
+        # fetch_analyst_estimates(self._context, tickers=tickers)
+        # fetch_management(self._context, tickers=tickers)

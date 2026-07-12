@@ -74,9 +74,17 @@ def compute_sector_returns(
         cols = [p for p in peers if p in stock_returns.columns]
         if not cols:
             continue
-        w = np.array([peers[p] for p in cols], dtype="float64")
+        # NaN-tolerant weighted mean: renormalize weights over the peers that
+        # actually have data on each date. A plain matrix product (`@`) would
+        # propagate a single missing peer into a NaN for the WHOLE date, which
+        # (via the dropna in beta estimation) silently truncates a stock's whole
+        # history to the short window where every peer happens to be listed.
+        w = pd.Series({p: float(peers[p]) for p in cols}, dtype="float64")
         w = w / w.sum()
-        sector[ticker] = stock_returns[cols].to_numpy() @ w
+        mat = stock_returns[cols]
+        weighted = mat.mul(w, axis=1).sum(axis=1, min_count=1)
+        denom = mat.notna().mul(w, axis=1).sum(axis=1)
+        sector[ticker] = weighted.div(denom.where(denom > 0))
     return sector
 
 

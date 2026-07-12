@@ -73,6 +73,16 @@ def _xs_z(df: pd.DataFrame, clip: float = 4.0) -> pd.DataFrame:
     return z.clip(-clip, clip)
 
 
+def momentum_characteristic(stock_close: pd.DataFrame) -> pd.DataFrame:
+    """12-1 price momentum characteristic (skip the most recent month).
+
+    Single source of truth: feeds the momentum style factor, the `mom_12_1`
+    model feature, AND the target's momentum neutralization. Point-in-time
+    (uses only past prices), so it never leaks future information.
+    """
+    return stock_close.shift(21) / stock_close.shift(252) - 1.0
+
+
 def daily_market_cap(fundamentals_history: pd.DataFrame, close: pd.DataFrame) -> pd.DataFrame:
     """
     Historical daily market cap = point-in-time shares outstanding (from SEC,
@@ -108,7 +118,7 @@ def build_characteristics(
     chars: dict[str, pd.DataFrame] = {}
 
     # Momentum 12-1 (skip most recent month).
-    chars["momentum"] = stock_close.shift(21) / stock_close.shift(252) - 1.0
+    chars["momentum"] = momentum_characteristic(stock_close)
 
     # Residual/low volatility: negative trailing vol (low vol = long side).
     chars["resvol"] = -stock_ret.rolling(resvol_window).std()

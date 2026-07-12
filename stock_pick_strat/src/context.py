@@ -40,6 +40,19 @@ def define_global_paths(config: DictConfig):
     global_paths["ANALYST_ESTIMATES_PATH"] = global_paths["DATA_STORE"] / "analyst_estimates.parquet"
     global_paths["ANALYST_ESTIMATES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "analyst_estimates_history.parquet"
 
+    # Management / ownership (yfinance snapshot; accrues history over time)
+    global_paths["MANAGEMENT_PATH"] = global_paths["DATA_STORE"] / "management.parquet"
+    global_paths["MANAGEMENT_HISTORY_PATH"] = global_paths["DATA_STORE"] / "management_history.parquet"
+
+    # Employee counts (FMP historical-employee-count; genuinely historical, from filings)
+    global_paths["EMPLOYEES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "employees_history.parquet"
+
+    # FMP historical endpoints (one call = full ticker history; see fetch_fmp_history)
+    global_paths["ANALYST_GRADES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "analyst_grades_history.parquet"
+    global_paths["ANALYST_ACTIONS_HISTORY_PATH"] = global_paths["DATA_STORE"] / "analyst_actions_history.parquet"
+    global_paths["EXEC_COMP_HISTORY_PATH"] = global_paths["DATA_STORE"] / "exec_compensation_history.parquet"
+    global_paths["FMP_ESTIMATES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "fmp_estimates_history.parquet"
+
     # Earnings surprises & PEAD
     global_paths["EARNINGS_SURPRISES_PATH"] = global_paths["DATA_STORE"] / "earnings_surprises.parquet"
     global_paths["PEAD_RESULTS_PATH"] = global_paths["DATA_STORE"] / "pead_results.parquet"

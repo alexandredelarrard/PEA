@@ -2,7 +2,7 @@ data_mode: remote
 seed: 4325
 
 data_extract:
-  years_history: 10
+  years_history: 12
   benchmark_ticker: SPY
   other_tickers: ["SPY", "^VIX"]
   sec:

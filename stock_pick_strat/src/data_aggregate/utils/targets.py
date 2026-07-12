@@ -22,6 +22,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.factors import momentum_characteristic
+
 
 def forward_return(prices: pd.DataFrame, horizon: int) -> pd.DataFrame:
     return prices.shift(-horizon) / prices - 1.0
@@ -50,9 +52,13 @@ def forward_sector_return(stock_returns, peer_dict, horizon):
         cols = [p for p in peers if p in fwd_cum.columns]
         if not cols:
             continue
-        w = np.array([peers[p] for p in cols], dtype="float64")
+        # NaN-tolerant weighted mean (see compute_sector_returns): a raw matrix
+        # product would drop the whole date if any single peer is missing.
+        w = pd.Series({p: float(peers[p]) for p in cols}, dtype="float64")
         w = w / w.sum()
-        sector_fwd[ticker] = fwd_cum[cols].to_numpy() @ w
+        weighted = fwd_cum[cols].mul(w, axis=1).sum(axis=1, min_count=1)
+        denom = fwd_cum[cols].notna().mul(w, axis=1).sum(axis=1)
+        sector_fwd[ticker] = weighted.div(denom.where(denom > 0))
     return sector_fwd
 
 
@@ -112,6 +118,42 @@ def cross_sectional_zscore(eps: pd.DataFrame, min_names: int = 20) -> pd.DataFra
     return z
 
 
+def cross_sectional_neutralize(
+    values: pd.DataFrame,
+    factor: pd.DataFrame,
+) -> pd.DataFrame:
+    """Per-day residual of `values` regressed cross-sectionally on `factor`
+    (single regressor, with intercept). Makes each row (date) orthogonal to
+    `factor`, so a target built on the residual no longer tilts toward that
+    characteristic.
+
+    The factor is z-scored and clipped per day so a handful of extreme names
+    (e.g. a stock up 500%) cannot dominate the slope. NaN-safe: a name is
+    neutralized only where BOTH the value and the factor are present; names
+    whose factor is missing (e.g. < 252 days of history) are left untouched so
+    they still enter the cross-sectional ranking.
+    """
+    f = factor.reindex_like(values)
+    mu = f.mean(axis=1)
+    sd = f.std(axis=1).replace(0.0, np.nan)
+    z = f.sub(mu, axis=0).div(sd, axis=0).clip(-4.0, 4.0)
+
+    mask = values.notna() & z.notna()
+    v = values.where(mask)
+    x = z.where(mask)
+
+    vc = v.sub(v.mean(axis=1), axis=0)
+    xc = x.sub(x.mean(axis=1), axis=0)
+    denom = (xc * xc).sum(axis=1).replace(0.0, np.nan)
+    beta = ((vc * xc).sum(axis=1) / denom).fillna(0.0)
+    resid = vc.sub(xc.mul(beta, axis=0))
+
+    # Keep un-neutralizable names (factor NaN) as their demeaned value so they
+    # still rank; ranking is invariant to the per-day demeaning.
+    values_demeaned = values.sub(values.mean(axis=1), axis=0)
+    return resid.where(mask, values_demeaned)
+
+
 def build_targets(
     close: pd.DataFrame,
     stock_returns: pd.DataFrame,
@@ -122,17 +164,29 @@ def build_targets(
     horizons=(5, 10, 20, 60),
     label: str = "rank",
     min_names: int = 20,
+    neutralize_momentum: bool = True,
 ) -> dict:
     """
     NOTE signature change vs the old (close, market_close, ...): market is now
     inside factor_panel, and we pass macro_cols so forward macro factors are
     treated as cumulative CHANGES not compounded returns. Update
     step_build_cube.build_targets accordingly.
+
+    `neutralize_momentum`: after computing the multi-factor residual epsilon,
+    cross-sectionally orthogonalize it against the 12-1 momentum characteristic
+    each day. Subtracting beta*factor only strips the market-wide momentum move
+    and leaves each stock's idiosyncratic momentum, so without this the target
+    still tilts toward past winners (corr with beta_momentum ~ +0.6). This makes
+    the target orthogonal to momentum by construction.
     """
+    mom_char = momentum_characteristic(close) if neutralize_momentum else None
+
     out = {}
     for h in horizons:
         eps = compute_epsilon(close, stock_returns, peer_dict, betas,
                               factor_panel, macro_cols, h)
+        if neutralize_momentum:
+            eps = cross_sectional_neutralize(eps, mom_char)
         if label == "rank":
             out[h] = cross_sectional_rank(eps, min_names)
         elif label == "zscore":

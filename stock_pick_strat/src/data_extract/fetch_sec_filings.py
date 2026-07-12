@@ -28,7 +28,9 @@ Run (index only, recommended default):
 Run with bulk text download for a filtered subset — edit `main()` below or
 call `download_filings_bulk()` directly from a notebook/script.
 """
+import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +40,30 @@ from src.data_extract.sec_utils import sec_get, load_cik_mapping
 from src.context import Context
 
 FORM_TYPES = ["10-K", "10-Q", "8-K"]
+
+
+def _today_iso() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _index_meta_path(context: Context) -> Path:
+    return context.paths["SEC_FILINGS_INDEX_PATH"].with_name("sec_filings_index_meta.json")
+
+
+def _index_is_up_to_date(context: Context, cik_mapping: pd.DataFrame) -> bool:
+    """True when the filing index was already rebuilt today for the full universe.
+    Filings are event-driven, so a once-per-day re-index is enough."""
+    path = _index_meta_path(context)
+    if not path.exists() or not context.paths["SEC_FILINGS_INDEX_PATH"].exists():
+        return False
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return (
+        meta.get("last_built") == _today_iso()
+        and meta.get("universe_size", 0) >= len(cik_mapping)
+    )
 
 
 def build_filing_index(context: Context, cik_mapping: pd.DataFrame) -> pd.DataFrame:
@@ -132,8 +158,23 @@ def download_filings_bulk(index_df: pd.DataFrame, form_filter: list[str] | None 
 
 def fetch_sec_filings(context: Context):
     cik_mapping = load_cik_mapping(context)
+
+    if _index_is_up_to_date(context, cik_mapping):
+        print(f"SEC filing index already built today for {_today_iso()} — skipping "
+              f"{context.paths['SEC_FILINGS_INDEX_PATH']}")
+        return
+
     index_df = build_filing_index(context, cik_mapping)
     index_df.to_parquet(context.paths["SEC_FILINGS_INDEX_PATH"], index=False)
+    _index_meta_path(context).write_text(
+        json.dumps({
+            "last_built": _today_iso(),
+            "row_count": len(index_df),
+            "ticker_count": int(index_df["ticker"].nunique()),
+            "universe_size": len(cik_mapping),
+        }, indent=2),
+        encoding="utf-8",
+    )
     print(f"Saved index of {len(index_df):,} filings "
           f"({index_df['ticker'].nunique()} tickers) to {context.paths["SEC_FILINGS_INDEX_PATH"]}")
 

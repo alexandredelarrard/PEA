@@ -32,21 +32,21 @@ logging:
             filename: ./.log/output.log
             encoding: utf-8
 
-#   loggers:
-#       development:
-#           level: DEBUG
-#           handlers: [console]
-#           propagate: no
+    loggers:
+      development:
+          level: DEBUG
+          handlers: [console]
+          propagate: no
 
-#       staging:
-#           level: INFO
-#           handlers: [console, file_handler]
-#           propagate: no
+      staging:
+          level: INFO
+          handlers: [console, file_handler]
+          propagate: no
 
-#       production:
-#           level: WARNING
-#           handlers: [file_handler]
-#           propagate: no
+      production:
+          level: WARNING
+          handlers: [file_handler]
+          propagate: no
 
     root:
         level: INFO

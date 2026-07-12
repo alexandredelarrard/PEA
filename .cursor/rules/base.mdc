@@ -8,6 +8,7 @@ description: "Core conventions for stock_pick_strat — applies to every file"
 Project: `stock_pick_strat` — Python quant stock-picking pipeline.
 Stack: Python, OmegaConf (`DictConfig`), pandas, pytest.
 Configs: `configs/*.yaml`, always loaded via OmegaConf — never hardcode config values inline.
+OS: run in windows powershell script to run commands 
 
 ## Architecture pattern
 Every `src/` subfolder owns exactly one `step_*.py` (the orchestrator).
@@ -26,6 +27,7 @@ configs/   data/   src/   tests/ (or test/)   app/
 ## Commands
 - Run a specific test: `pytest tests/path/to/test_file.py`
 - Run a specific function: `pytest tests/path/to/test_file.py::test_function_name`
+- Start with `conda run -n trading ` when starting a run in terminal
 
 ## Anti-patterns
 - Never import from a sibling `src/` folder directly — cross-folder logic goes in `src/utils/`

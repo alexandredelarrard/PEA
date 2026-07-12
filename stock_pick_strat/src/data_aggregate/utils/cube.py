@@ -66,12 +66,25 @@ def panel_from_cube(
     cube: pd.DataFrame,
     horizon: int,
     label_name: str = "y",
+    feature_cols: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Extract a modelling panel for one horizon from the saved cube."""
+    """Extract a modelling panel for one horizon from the saved cube.
+
+    When `feature_cols` is given, only those columns are kept as model inputs.
+    Rows are dropped ONLY when the label is missing -- NOT when individual
+    features are NaN. LightGBM handles missing values natively; requiring all
+    selected features to be present (dropna on the full feature list) collapses
+    a ~500-name universe to ~88 names because fundamentals have uneven coverage.
+    """
     panel = cube[cube["target_horizon"] == horizon].copy()
     panel = panel.rename(columns={"target": label_name})
-    feature_cols = [c for c in panel.columns if c not in CUBE_META_COLS]
-    panel = panel.dropna(subset=feature_cols + [label_name])
+    if feature_cols is None:
+        feature_cols = [c for c in panel.columns if c not in CUBE_META_COLS]
+    else:
+        feature_cols = [c for c in feature_cols if c in panel.columns]
+    keep = ["date", "ticker", label_name] + feature_cols
+    panel = panel[[c for c in keep if c in panel.columns]]
+    panel = panel.dropna(subset=[label_name])
     return panel.sort_values(["date", "ticker"]).reset_index(drop=True)
 
 

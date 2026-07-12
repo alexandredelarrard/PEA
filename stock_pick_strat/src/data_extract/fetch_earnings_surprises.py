@@ -1,82 +1,136 @@
 """
-Historical earnings surprises (actual vs. estimated EPS) per ticker.
+Historical earnings surprises = the market's FORWARD EPS expectation vs what the
+company actually delivered, per quarter, going back years.
 
-Unlike analyst estimate HISTORY (see fetch_analyst_estimates.py), this one
-is genuinely available for free: yfinance's `get_earnings_dates()` returns
-past reported quarters with EPS estimate, actual, and surprise % — often
-covering close to the full 10-year window for large, long-listed S&P 500
-names (smaller/newer listings will have less). No paid data needed here.
+This is the free, genuinely-historical answer to "what did the market think about
+future earnings, in the past?". `yfinance.get_earnings_dates()` returns, for each
+past earnings date, the consensus **EPS Estimate**, the **Reported EPS**, and the
+**Surprise(%)** -- often close to the full `years_history` window for large,
+long-listed S&P 500 names. It also returns the NEXT (not-yet-reported) date with
+its estimate and a NaN actual: that row is the live forward EPS.
+
+    earnings_date | eps_estimate | eps_actual | surprise_pct
+    2026-08-04    | 1.61         | NaN        | NaN            <- forward (upcoming)
+    2026-05-05    | 1.29         | 1.37       | 5.82           <- reported (beat)
+    ...
+
+INCREMENTAL: the history parquet is keyed on (ticker, earnings_date). On each run
+we only fetch tickers that are (a) missing entirely, or (b) stale -- their most
+recent known earnings date is older than `refetch_window_days` (a new quarter has
+likely been reported since). Up-to-date tickers are skipped, and a stale ticker
+is re-pulled with a small limit just to append the newest quarters and fill in
+the actual for a row that was previously a forward estimate.
 
 Run:
-    python -m data.fetch_earnings_surprises
+    python -m src.data_extract.fetch_earnings_surprises
 """
+from __future__ import annotations
+
 import time
+
+import numpy as np
 import pandas as pd
 import yfinance as yf
 from tqdm import tqdm
 
 from src.context import Context
 
-# yfinance limits results per call; ~4 earnings/year * years + buffer
-def fetch_earnings_surprises(context: Context, tickers: list[str], pause: float = 0.3) -> pd.DataFrame:
-    frames = []
-    for tkr in tqdm(tickers, desc="Fetching earnings surprise history"):
+_RENAME = {
+    "EPS Estimate": "eps_estimate",
+    "Reported EPS": "eps_actual",
+    "Surprise(%)": "surprise_pct",
+}
+_COLUMNS = ["ticker", "earnings_date", "eps_estimate", "eps_actual", "surprise_pct"]
+
+# a stale ticker (no new row within this many days) is re-pulled with this limit
+_RECENT_LIMIT = 8
+
+
+def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
+    """One ticker's earnings-date table normalized to `_COLUMNS`; None if empty."""
+    raw = yf.Ticker(ticker).get_earnings_dates(limit=limit)
+    if raw is None or raw.empty:
+        return None
+
+    df = raw.reset_index()
+    date_col = "Earnings Date" if "Earnings Date" in df.columns else df.columns[0]
+    df = df.rename(columns={date_col: "earnings_date", **_RENAME})
+    for c in ("eps_estimate", "eps_actual", "surprise_pct"):
+        if c not in df.columns:
+            df[c] = np.nan
+    df["ticker"] = ticker
+    df["earnings_date"] = (
+        pd.to_datetime(df["earnings_date"], utc=True).dt.tz_localize(None).dt.normalize()
+    )
+    return df[_COLUMNS]
+
+
+def _plan_fetch(tickers: list[str], existing: pd.DataFrame | None,
+                full_limit: int, refetch_window_days: int) -> list[tuple[str, int]]:
+    """(ticker, limit) list: full pull for unseen tickers, small pull for stale
+    ones, nothing for up-to-date tickers."""
+    last_seen: dict[str, pd.Timestamp] = {}
+    if existing is not None and not existing.empty:
+        reported = existing.dropna(subset=["eps_actual"])
+        if not reported.empty:
+            last_seen = reported.groupby("ticker")["earnings_date"].max().to_dict()
+
+    today = pd.Timestamp.today().normalize()
+    plan = []
+    for t in tickers:
+        last = last_seen.get(t)
+        if last is None:
+            plan.append((t, full_limit))
+        elif (today - last).days > refetch_window_days:
+            plan.append((t, _RECENT_LIMIT))
+        # else: already current -> skip
+    return plan
+
+
+def fetch_earnings_surprises(
+    context: Context,
+    tickers: list[str],
+    pause: float = 0.3,
+    refetch_window_days: int = 80,
+) -> pd.DataFrame:
+    """Build/refresh the incremental earnings-surprise history and save it to
+    EARNINGS_SURPRISES_PATH. Returns the full merged history."""
+    log = context.log
+    path = context.paths["EARNINGS_SURPRISES_PATH"]
+    existing = pd.read_parquet(path) if path.exists() else None
+    if existing is not None and not existing.empty:
+        existing["earnings_date"] = pd.to_datetime(existing["earnings_date"]).dt.normalize()
+
+    full_limit = int(context.config.data_extract.years_history) * 4 + 4
+    plan = _plan_fetch(tickers, existing, full_limit, refetch_window_days)
+    log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)",
+             len(plan), len(tickers), len(tickers) - len(plan))
+
+    new_frames = []
+    for tkr, limit in tqdm(plan, desc="Fetching earnings-surprise history"):
         try:
-            df = yf.Ticker(tkr).get_earnings_dates(limit=context.config.data_extract.years_history * 4)
-        except Exception as e:
-            print(f"{tkr}: failed ({e})")
+            df = _download_one(tkr, limit)
+        except Exception as e:  # noqa: BLE001 - network/parse issues are per-ticker
+            log.warning("%s: earnings history failed (%s)", tkr, e)
             continue
-
-        if df is None or df.empty:
-            continue
-
-        df = df.reset_index().rename(columns={
-            "Earnings Date": "earnings_date",
-            "EPS Estimate": "eps_estimate",
-            "Reported EPS": "eps_actual",
-            "Surprise(%)": "surprise_pct",
-        })
-        df["ticker"] = tkr
-        frames.append(df)
+        if df is not None:
+            new_frames.append(df)
         time.sleep(pause)
 
-    if not frames:
-        raise RuntimeError("No earnings surprise data downloaded.")
+    parts = [df for df in (existing, *new_frames) if df is not None and not df.empty]
+    if not parts:
+        log.warning("No earnings-surprise data available (nothing fetched, no cache).")
+        return existing if existing is not None else pd.DataFrame(columns=_COLUMNS)
 
-    out = pd.concat(frames, ignore_index=True)
-    out["earnings_date"] = pd.to_datetime(out["earnings_date"], utc=True).dt.tz_localize(None)
-    out = out.dropna(subset=["eps_actual"])  # keep only reported (not future/scheduled) quarters
-    return out
+    out = pd.concat(parts, ignore_index=True)[_COLUMNS]
+    # keep="last" so a freshly fetched row (actual now filled) beats the old
+    # forward-estimate row for the same (ticker, earnings_date).
+    out = (out.sort_values(["ticker", "earnings_date"])
+              .drop_duplicates(subset=["ticker", "earnings_date"], keep="last")
+              .reset_index(drop=True))
 
-
-def fetch_earnings_surprises(context: Context, tickers: list[str], pause: float = 0.3) -> pd.DataFrame:
-    frames = []
-    for tkr in tqdm(tickers, desc="Fetching earnings surprise history"):
-        try:
-            df = yf.Ticker(tkr).get_earnings_dates(limit=context.config.data_extract.years_history * 4)
-        except Exception as e:
-            print(f"{tkr}: failed ({e})")
-            continue
-
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    df = df.reset_index().rename(columns={
-        "Earnings Date": "earnings_date",
-        "EPS Estimate": "eps_estimate",
-        "Reported EPS": "eps_actual",
-        "Surprise(%)": "surprise_pct",
-    })
-    df["ticker"] = tkr
-    frames.append(df)
-    time.sleep(pause)
-
-    if not frames:
-        raise RuntimeError("No earnings surprise data downloaded.")
-
-    out = pd.concat(frames, ignore_index=True)
-    out["earnings_date"] = pd.to_datetime(out["earnings_date"], utc=True).dt.tz_localize(None)
-    out = out.dropna(subset=["eps_actual"])  # keep only reported (not future/scheduled) quarters
-    out.to_parquet(context.paths["EARNINGS_SURPRISES_PATH"], index=False)
-    print(f"Saved {len(out)} earnings surprise rows to {context.paths["EARNINGS_SURPRISES_PATH"]}")
+    out.to_parquet(path, index=False)
+    reported = int(out["eps_actual"].notna().sum())
+    log.info("Saved %d earnings rows (%d reported, %d forward) for %d tickers to %s",
+             len(out), reported, len(out) - reported, out["ticker"].nunique(), path)
     return out

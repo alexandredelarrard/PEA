@@ -70,7 +70,12 @@ def _history_start(years_history: int) -> pd.Timestamp:
 
 
 def _is_up_to_date(max_date: pd.Timestamp, today: pd.Timestamp) -> bool:
-    return max_date >= today - pd.Timedelta(days=1)
+    # The freshest bar we could reasonably have is the previous *business* day
+    # (today's close may not be published yet by yfinance). Using a business-day
+    # offset stops weekends/Mondays from re-downloading Friday-anchored data:
+    #   Sun/Sat/Mon -> Fri, Wed -> Tue, etc.
+    last_expected = today - pd.tseries.offsets.BDay(1)
+    return max_date >= last_expected
 
 
 def _tickers_needing_download(
@@ -78,11 +83,27 @@ def _tickers_needing_download(
     tickers: list[str],
     years_history: int,
 ) -> dict[str, tuple[pd.Timestamp, pd.Timestamp] | None]:
-    """Return per-ticker (start, end) download windows; None means up to date."""
+    """Return per-ticker (start, end) download windows; None means up to date.
+
+    Backfill logic: `required_start` (today - N years) frequently lands on a
+    weekend/holiday, and young tickers (recent IPOs) simply have no data that
+    far back -- so a per-ticker `min_date <= required_start` test would force a
+    perpetual full re-download. Instead we decide whether the *whole file*
+    reaches back to the window (its global min is within a business-day grace of
+    the cutoff). If it does, a ticker's own earlier-than-cutoff gap is just its
+    IPO age and we don't re-pull. A real backward backfill (e.g. after raising
+    `years_history`) is triggered only when the file itself doesn't reach back.
+    """
     today = pd.Timestamp.today().normalize()
     required_start = _history_start(years_history)
-    plans: dict[str, tuple[pd.Timestamp, pd.Timestamp] | None] = {}
+    # First plausible bar on/after the cutoff, plus grace for a holiday-adjacent
+    # weekend right at the boundary.
+    backfill_floor = required_start + pd.tseries.offsets.BDay(3)
 
+    global_min = None if existing is None or existing.empty else existing["date"].min()
+    history_reaches_back = global_min is not None and global_min <= backfill_floor
+
+    plans: dict[str, tuple[pd.Timestamp, pd.Timestamp] | None] = {}
     for tkr in tickers:
         if existing is None or tkr not in existing["ticker"].values:
             plans[tkr] = (required_start, today)
@@ -92,15 +113,17 @@ def _tickers_needing_download(
         max_date = ticker_data.max()
         min_date = ticker_data.min()
 
-        if _is_up_to_date(max_date, today) and min_date <= required_start:
-            plans[tkr] = None
-            continue
+        # Only backfill earlier bars when the dataset as a whole is short of the
+        # window (not merely because this ticker is younger than the window).
+        need_backfill = (not history_reaches_back) and (min_date > backfill_floor)
 
-        start = required_start if min_date > required_start else max_date + pd.Timedelta(days=1)
-        if start > today:
-            plans[tkr] = None
+        if need_backfill:
+            plans[tkr] = (required_start, today)
+        elif not _is_up_to_date(max_date, today):
+            start = max_date + pd.Timedelta(days=1)
+            plans[tkr] = (start, today) if start <= today else None
         else:
-            plans[tkr] = (start, today)
+            plans[tkr] = None
 
     return plans
 

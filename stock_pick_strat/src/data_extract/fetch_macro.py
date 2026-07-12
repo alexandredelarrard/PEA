@@ -35,6 +35,21 @@ SERIES = {
 }
 
 
+def _macro_is_up_to_date(context: Context) -> bool:
+    """True when the cached macro file already covers the last business day
+    (the daily yield/VIX series set the max date). Skips redundant re-pulls
+    on weekends / same-day re-runs."""
+    path = context.paths["MACRO_PATH"]
+    if not path.exists():
+        return False
+    existing = pd.read_parquet(path, columns=["date"])
+    if existing.empty:
+        return False
+    max_date = pd.to_datetime(existing["date"]).max()
+    last_expected = pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(1)
+    return max_date >= last_expected
+
+
 def fetch_macro(context: Context):
     if not os.getenv("FRED_API_KEY"):
         raise RuntimeError(
@@ -42,6 +57,10 @@ def fetch_macro(context: Context):
             "https://fred.stlouisfed.org/docs/api/api_key.html and add it "
             "to your .env file."
         )
+
+    if _macro_is_up_to_date(context):
+        print(f"Macro data already up to date — skipping {context.paths['MACRO_PATH']}")
+        return
 
     fred = Fred(api_key=os.getenv("FRED_API_KEY"))
     start = pd.Timestamp.today() - pd.DateOffset(years=context.config.data_extract.years_history + 1)

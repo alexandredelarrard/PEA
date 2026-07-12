@@ -96,11 +96,8 @@ def train_ranker(
     valid_panel: pd.DataFrame | None = None,
     early_stopping_rounds: int = EARLY_STOPPING_ROUNDS,
 ):
-    """
-    Fit a LightGBM lambdarank model. Labels are bucketed into graded relevance
-    levels. When valid_panel is provided, early stopping is applied.
-    """
-
+    """Fit a LightGBM lambdarank model. Labels are bucketed into graded relevance
+    levels. When valid_panel is provided, early stopping is applied."""
     default = dict(
         objective="lambdarank",
         metric="ndcg",

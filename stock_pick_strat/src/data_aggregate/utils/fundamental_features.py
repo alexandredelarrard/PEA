@@ -24,8 +24,12 @@ every day with the price, not only when a new filing lands:
     sales_yield     = totalRevenue     / marketCap      (S/P, inverse P/S)
     book_yield      = stockholdersEquity/ marketCap      (B/P, inverse P/B)
     fcf_yield       = freeCashflow     / marketCap      (FCF/P)
-    ebitda_to_ev    = ebitda           / enterpriseValue (inverse EV/EBITDA),
-                      EV = marketCap + totalDebt, totalDebt = debtToEquity*equity
+    ebitda_to_ev    = ebitda / enterpriseValue (inverse EV/EBITDA), where
+                      EV = marketCap + total debt + stock-based comp - cash.
+                      SBC is added like debt ("future debt disguised as stock":
+                      the equity claim serial diluters keep handing employees);
+                      real debt columns are used, with debtToEquity*equity as a
+                      fallback for histories that lack them.
 
 Profitability / moat:
     grossMargins, operatingMargins, profitMargins, returnOnEquity  (raw ratios)
@@ -143,6 +147,23 @@ def _combine_debt(long_debt: pd.DataFrame, short_debt: pd.DataFrame,
     if have_short:
         return short_debt
     return fallback if fallback is not None else pd.DataFrame()
+
+
+def _enterprise_value(mcap: pd.DataFrame, debt: pd.DataFrame,
+                      sbc: pd.DataFrame, cash: pd.DataFrame) -> pd.DataFrame:
+    """EV = market cap + total debt + stock-based comp - cash, restricted to the
+    tickers that have a market cap.
+
+    Stock-based comp is added like debt: it is the equity claim the firm keeps
+    handing employees -- "future debt disguised as stock" -- so a serial diluter
+    has a larger true EV (and a lower EBITDA/EV yield) than its market cap alone
+    suggests. NaN-tolerant: a missing component contributes 0."""
+    ev = mcap.copy()
+    for part, sign in ((debt, 1.0), (sbc, 1.0), (cash, -1.0)):
+        if part is not None and not part.empty:
+            aligned = part.reindex(columns=mcap.columns).fillna(0.0)
+            ev = ev + sign * aligned
+    return ev
 
 
 def _self_history_z(field_df: pd.DataFrame, window: int = _HIST_WINDOW,
@@ -266,6 +287,11 @@ def _derived_fields(
     ebitda = daily("ebitda")
     d2e = daily("debtToEquity")
     rnd = daily("researchAndDevelopment")
+    # balance-sheet levels reused by BOTH the EV valuation and the distress block
+    cash = daily("cash")
+    long_debt = daily("longTermDebt")
+    short_debt = daily("shortTermDebt")
+    sbc = daily("stockBasedComp")
 
     # ---- Valuation yields (need a daily market cap) ----
     mcap = daily_market_cap(fund_hist, close) if close is not None else pd.DataFrame()
@@ -274,12 +300,16 @@ def _derived_fields(
         F["sales_yield"] = _ratio(revenue, mcap, positive_den=True)
         F["book_yield"] = _ratio(equity, mcap, positive_den=True)
         F["fcf_yield"] = _ratio(fcf, mcap, positive_den=True)
-        if not ebitda.empty and not d2e.empty and not equity.empty:
-            # Reconstruct total debt from debtToEquity * equity (cash not stored,
-            # so EV omits net cash -> EV ~ marketCap + gross debt).
-            debt = d2e.clip(lower=0.0) * equity.where(equity > 0)
-            cols = mcap.columns.intersection(debt.columns)
-            ev = mcap[cols].add(debt[cols].fillna(0.0), fill_value=0.0)
+        if not ebitda.empty:
+            # Enterprise value from the real balance sheet:
+            #   EV = marketCap + total debt + stock-based comp - cash
+            # SBC is added as future dilution ("debt disguised as stock"). Prefer
+            # the real debt columns; older histories without them fall back to the
+            # debtToEquity * equity approximation.
+            debt = _combine_debt(long_debt, short_debt, fallback=pd.DataFrame())
+            if debt.empty and not d2e.empty and not equity.empty:
+                debt = d2e.clip(lower=0.0) * equity.where(equity > 0)
+            ev = _enterprise_value(mcap, debt, sbc, cash)
             F["ebitda_to_ev"] = _ratio(ebitda, ev, positive_den=True)
 
     # ---- Profitability / moat (raw ratios straight from the history) ----
@@ -368,9 +398,6 @@ def _derived_fields(
     # ---- DISTRESS / SOLVENCY (can the firm service and roll its debt?) ----
     # debtToEquity is a book ratio that says nothing about debt-SERVICING ability;
     # these are the leverage / coverage / liquidity ratios credit desks watch.
-    cash = daily("cash")
-    long_debt = daily("longTermDebt")
-    short_debt = daily("shortTermDebt")
     total_debt = _combine_debt(long_debt, short_debt, daily("totalLiabilities"))
     if not total_debt.empty and not ebitda.empty:
         cols = total_debt.columns.intersection(cash.columns) if not cash.empty else total_debt.columns
@@ -426,7 +453,7 @@ def _derived_fields(
 
     # ---- STOCK-BASED COMPENSATION ("employee shares given") ----
     # shares_growth is NET of buybacks and can be masked; SBC is the GROSS give-away.
-    sbc = daily("stockBasedComp")
+    # (sbc daily frame is hoisted above; it also feeds the EV calc.)
     sbc_intensity = _ratio(sbc, revenue, positive_den=True)
     if not sbc_intensity.empty and sbc_intensity.notna().any().any():
         F["sbc_intensity"] = sbc_intensity

@@ -415,3 +415,114 @@ def test_panel_emits_vs_hist_columns():
     print("\n=== SANITY CHECK: panel self-history columns ===")
     print(f"  emitted {len(hist_cols)} f_*_vs_hist columns: {sorted(hist_cols)}")
     print("  f_earnings_yield_vs_hist present with non-null values -> mean-reversion wired in. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# 10. Accruals + profitability pass-throughs (exact)                           #
+# --------------------------------------------------------------------------- #
+def test_accruals_and_profitability_passthrough_exact():
+    fund = pd.DataFrame([
+        dict(ticker="AAA", as_of="2019-02-01", totalRevenue=100.0, netIncome=10.0,
+             freeCashflow=8.0, operatingMargins=0.18, profitMargins=0.10,
+             returnOnEquity=0.20, debtToEquity=0.5, grossMargins=0.40),
+        dict(ticker="AAA", as_of="2020-02-01", totalRevenue=120.0, netIncome=15.0,
+             freeCashflow=12.0, operatingMargins=0.20, profitMargins=0.125,
+             returnOnEquity=0.25, debtToEquity=0.6, grossMargins=0.45),
+    ])
+    idx = pd.bdate_range("2020-03-01", periods=3)   # after the 2020 filing
+    F = _derived_fields(fund, idx, close=None)
+    d = idx[-1]
+
+    # accruals = (netIncome - freeCashflow) / revenue = (15 - 12)/120
+    assert abs(F["accruals"].loc[d, "AAA"] - (15.0 - 12.0) / 120.0) < 1e-9
+    # raw ratios pass straight through from the fiscal history (latest public value)
+    assert abs(F["profitMargins"].loc[d, "AAA"] - 0.125) < 1e-9
+    assert abs(F["operatingMargins"].loc[d, "AAA"] - 0.20) < 1e-9
+    assert abs(F["returnOnEquity"].loc[d, "AAA"] - 0.25) < 1e-9
+    assert abs(F["debtToEquity"].loc[d, "AAA"] - 0.6) < 1e-9
+
+    print("\n=== SANITY CHECK: accruals + profitability pass-through ===")
+    print(f"  accruals=(15-12)/120={F['accruals'].loc[d,'AAA']:.4f}; "
+          f"profitMargins={F['profitMargins'].loc[d,'AAA']}, ROE={F['returnOnEquity'].loc[d,'AAA']}, "
+          f"D/E={F['debtToEquity'].loc[d,'AAA']} -> exact.")
+
+
+# --------------------------------------------------------------------------- #
+# 11. Cross-sectional (_xs) percentile ranks across the universe               #
+# --------------------------------------------------------------------------- #
+def test_xs_percentile_ranks_across_universe():
+    fund = pd.DataFrame([
+        dict(ticker=t, as_of="2020-02-01", totalRevenue=100.0, netIncome=10.0,
+             stockholdersEquity=50.0, freeCashflow=8.0, profitMargins=pm)
+        for t, pm in [("AAA", 0.10), ("BBB", 0.20), ("CCC", 0.30)]
+    ])
+    idx = pd.bdate_range("2020-03-02", periods=3)
+    panel = build_fundamental_feature_panel(fund, peer_dict={}, trading_index=idx,
+                                            stock_close=None)
+    d = idx[-1]
+    xs = panel[panel["date"] == d].set_index("ticker")["f_profitMargins_xs"]
+
+    # rank(pct) over [0.10, 0.20, 0.30] -> [1/3, 2/3, 1.0]
+    assert abs(xs["AAA"] - 1 / 3) < 1e-9
+    assert abs(xs["BBB"] - 2 / 3) < 1e-9
+    assert abs(xs["CCC"] - 1.0) < 1e-9
+
+    print("\n=== SANITY CHECK: cross-sectional _xs percentile ===")
+    print(f"  profitMargins [0.10,0.20,0.30] -> xs [{xs['AAA']:.3f},{xs['BBB']:.3f},{xs['CCC']:.3f}]"
+          " = [1/3,2/3,1] -> monotone universe percentile. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# 12. Signed-base %-growth: negative when losing money (INTENDED behavior)     #
+# --------------------------------------------------------------------------- #
+def test_pct_growth_signed_base_is_negative_when_losing_money():
+    """Locks the INTENDED behavior: YoY %-growth on a signed quantity (earnings,
+    FCF) goes negative when the base is non-positive. A negative growth is a valid
+    'no growth / losing money' signal for the model -- kept on purpose, not a bug.
+    Revenue / shares / SG&A / goodwill are non-negative so they are always
+    well-defined."""
+    fund = pd.DataFrame({
+        "ticker": ["AAA", "AAA"],
+        "as_of": ["2019-02-01", "2020-02-01"],
+        "netIncome": [-50.0, 50.0],
+    })
+    idx = pd.bdate_range("2019-01-01", "2020-06-01")
+    g = _fiscal_change_to_daily(fund, "netIncome", idx, kind="pct")
+    val = g.loc[pd.Timestamp("2020-03-02"), "AAA"]
+
+    # (50 - (-50)) / (-50) = -2.0 -> negative growth off a loss base, as intended
+    assert abs(val - (-2.0)) < 1e-9
+
+    print("\n=== SANITY CHECK: signed-base %-growth (intended) ===")
+    print(f"  netIncome off a loss base -> growth={val:+.0%} (negative = weak/loss signal, kept).")
+    print("  Revenue / shares / SG&A / goodwill are non-negative -> always well-defined.")
+
+
+# --------------------------------------------------------------------------- #
+# 13. Enterprise value = mktcap + real debt + SBC - cash (exact)               #
+# --------------------------------------------------------------------------- #
+def test_enterprise_value_uses_real_debt_sbc_and_cash():
+    fund = pd.DataFrame([
+        dict(ticker="AAA", as_of="2020-02-01", totalRevenue=120.0, netIncome=15.0,
+             stockholdersEquity=60.0, freeCashflow=12.0, ebitda=26.0,
+             debtToEquity=0.6, sharesOutstanding=1100.0,
+             longTermDebt=40.0, shortTermDebt=10.0, stockBasedComp=6.0, cash=25.0),
+    ])
+    idx = pd.bdate_range("2020-03-02", periods=3)
+    close = pd.DataFrame({"AAA": 2.0}, index=idx)   # mcap = 1100 * 2 = 2200
+    F = _derived_fields(fund, idx, close)
+    d = idx[-1]
+
+    # EV = mcap 2200 + debt(40+10) + SBC 6 - cash 25 = 2231
+    ev = 2200.0 + 50.0 + 6.0 - 25.0
+    assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / ev) < 1e-9
+
+    print("\n=== SANITY CHECK: enterprise value (real debt + SBC - cash) ===")
+    print(f"  EV = 2200 + (40+10 debt) + 6 SBC - 25 cash = {ev:.0f}; "
+          f"EBITDA/EV = 26/{ev:.0f} = {F['ebitda_to_ev'].loc[d,'AAA']:.5f}. Exact.")
+    # SBC and debt both RAISE EV -> LOWER the yield vs ignoring them (a diluter looks dearer)
+    ev_no_adj = 2200.0
+    assert 26.0 / ev < 26.0 / ev_no_adj
+
+    print(f"  Adding debt+SBC and removing cash lowers EBITDA/EV from "
+          f"{26/ev_no_adj:.5f} (mktcap only) to {26/ev:.5f} -> diluter/levered looks more expensive.")

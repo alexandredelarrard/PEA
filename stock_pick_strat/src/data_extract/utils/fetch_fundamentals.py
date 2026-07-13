@@ -22,9 +22,19 @@ THREE sources, in order of how much history they give you:
 Output schema (same `fundamentals_history.parquet` the cube reads):
     ticker, as_of (= filing date), fiscal_end,
     totalRevenue, netIncome, grossMargins, operatingMargins, profitMargins,
-    returnOnEquity, debtToEquity, ebitda, freeCashflow, researchAndDevelopment,
-    revenueGrowth, earningsGrowth, sharesOutstanding, stockholdersEquity,
+    returnOnEquity, debtToEquity, ebitda, freeCashflow, operatingCashFlow,
+    researchAndDevelopment, revenueGrowth, earningsGrowth, sharesOutstanding,
+    stockholdersEquity,
+    cash, longTermDebt, shortTermDebt, totalLiabilities, currentAssets,
+    currentLiabilities, goodwill, totalAssets           (raw balance-sheet levels),
+    sellingGeneralAdmin, stockBasedComp, acquisitions, interestExpense  (TTM flows),
     revenue_q, netIncome_q, ebitda_q, freeCashflow_q  (discrete single-quarter)
+
+The raw levels / extra TTM flows above feed the refined feature families in
+fundamental_features.py: distress (net-debt/EBITDA, interest coverage, current
+ratio, cash/debt), S&M efficiency (SG&A intensity + operating leverage), M&A
+(acquisition intensity, goodwill growth) and stock-based-comp (SBC intensity,
+SBC/OCF). All are TTM/point-in-time, keyed on the SEC filing date.
 
 IMPORTANT for size / value: SEC gives shares and equity, not market cap
 (market cap needs price). We store `sharesOutstanding`; compute
@@ -67,6 +77,16 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
               "PaymentsToAcquireProductiveAssets"],
     "researchAndDevelopment": ["ResearchAndDevelopmentExpense",
                                "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
+    # ---- added for refined features (S&M efficiency, M&A, SBC, distress) ----
+    "sellingGeneralAdmin": ["SellingGeneralAndAdministrativeExpense",
+                            "GeneralAndAdministrativeExpense",
+                            "SellingAndMarketingExpense"],
+    "stockBasedComp": ["ShareBasedCompensation",
+                       "AllocatedShareBasedCompensationExpense"],
+    "acquisitions": ["PaymentsToAcquireBusinessesNetOfCashAcquired",
+                     "PaymentsToAcquireBusinessesAndInterestInAffiliates"],
+    "interestExpense": ["InterestExpense", "InterestAndDebtExpense",
+                        "InterestExpenseNonoperating"],
 }
 STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
     "stockholdersEquity": ["StockholdersEquity",
@@ -74,6 +94,12 @@ STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
     "totalLiabilities": ["Liabilities"],
     "longTermDebt": ["LongTermDebtNoncurrent", "LongTermDebt"],
     "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments"],
+    # ---- added for refined features (distress / liquidity, M&A footprint) ----
+    "shortTermDebt": ["DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings"],
+    "currentAssets": ["AssetsCurrent"],
+    "currentLiabilities": ["LiabilitiesCurrent"],
+    "goodwill": ["Goodwill"],
+    "totalAssets": ["Assets"],
 }
 SHARES_TAGS = {  # tried under dei first, then us-gaap
     "sharesOutstanding": ["EntityCommonStockSharesOutstanding",
@@ -360,7 +386,8 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
         return base.merge(_series_on_ends(s, key), on="end", how="left")
 
     for key in ["netIncome", "grossProfit", "costOfRevenue", "operatingIncome",
-                "depAmort", "operatingCashFlow", "capex", "researchAndDevelopment"]:
+                "depAmort", "operatingCashFlow", "capex", "researchAndDevelopment",
+                "sellingGeneralAdmin", "stockBasedComp", "acquisitions", "interestExpense"]:
         base = merge_flow(base, key)
 
     def merge_stock(base, key, src):
@@ -370,7 +397,9 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
             return base
         return base.merge(_series_on_ends(src, key), on="end", how="left")
 
-    for key in ["stockholdersEquity", "totalLiabilities", "longTermDebt", "cash"]:
+    for key in ["stockholdersEquity", "totalLiabilities", "longTermDebt", "cash",
+                "shortTermDebt", "currentAssets", "currentLiabilities",
+                "goodwill", "totalAssets"]:
         base = merge_stock(base, key, stocks.get(key))
 
     # sharesOutstanding is a dei COVER-PAGE fact whose `end` is the cover date,
@@ -413,9 +442,20 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
     ocf_ttm = ttm(ocf_q)
     capex_ttm = ttm(capex_q)
     rnd_ttm = ttm(col("researchAndDevelopment"))
+    sga_ttm = ttm(col("sellingGeneralAdmin"))
+    sbc_ttm = ttm(col("stockBasedComp"))
+    acq_ttm = ttm(col("acquisitions"))
+    int_ttm = ttm(col("interestExpense"))
     eq = col("stockholdersEquity")          # instant (point-in-time), not summed
     liab = col("totalLiabilities")
     ltd = col("longTermDebt")
+    # instant balance-sheet levels carried raw for the distress / M&A features
+    cash = col("cash")
+    std_debt = col("shortTermDebt")
+    cur_a = col("currentAssets")
+    cur_l = col("currentLiabilities")
+    goodwill = col("goodwill")
+    assets = col("totalAssets")
 
     gross_profit_ttm = gp_ttm.where(gp_ttm.notna(), rev_ttm - cor_ttm)
     out = pd.DataFrame({
@@ -431,9 +471,25 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
         "debtToEquity": (ltd.where(ltd.notna(), liab) / eq).where(eq > 0),
         "ebitda": oi_ttm + da_ttm.fillna(0),
         "freeCashflow": ocf_ttm - capex_ttm.fillna(0),
+        "operatingCashFlow": ocf_ttm,
         "researchAndDevelopment": rnd_ttm,
         "stockholdersEquity": eq,
         "sharesOutstanding": col("sharesOutstanding"),
+        # ---- raw levels / TTM flows for the refined features ----
+        # (distress: cash + debt + current items + interest; S&M: SG&A;
+        #  M&A: acquisitions + goodwill + assets; SBC: stockBasedComp)
+        "cash": cash,
+        "longTermDebt": ltd,
+        "shortTermDebt": std_debt,
+        "totalLiabilities": liab,
+        "currentAssets": cur_a,
+        "currentLiabilities": cur_l,
+        "goodwill": goodwill,
+        "totalAssets": assets,
+        "sellingGeneralAdmin": sga_ttm,
+        "stockBasedComp": sbc_ttm,
+        "acquisitions": acq_ttm,
+        "interestExpense": int_ttm,
         # discrete single-quarter values -> "latest quarter" momentum features
         "revenue_q": rev_q,
         "netIncome_q": ni_q,

@@ -19,6 +19,7 @@ from src.data_aggregate.utils.fundamental_features import (
     _ratio,
     _fiscal_change_to_daily,
     _peer_relative,
+    _self_history_z,
     _derived_fields,
     build_fundamental_feature_panel,
 )
@@ -284,3 +285,133 @@ def test_yearly_ttm_features_computed_correctly():
     print(f"  y_earnings_growth 2020={F['y_earnings_growth'].loc[after_2020,'AAA']:.2%} (expected +50%)")
     print(f"  y_margin_vs_ttm 2020={F['y_margin_vs_ttm'].loc[after_2020,'AAA']:.4f} (expected +0.025)")
     print("  All NaN before second filing, correct values after -> strictly point-in-time. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# 8. Valuation MEAN-REVERSION (self-history z-score)                           #
+# --------------------------------------------------------------------------- #
+def test_self_history_z_mean_reversion():
+    """`_self_history_z` z-scores each ticker vs its OWN trailing window: NaN
+    until min_periods, negative when the yield sits BELOW its own norm
+    (expensive), positive when ABOVE (cheap). Strictly trailing -> no leak."""
+    idx = pd.bdate_range("2020-01-01", periods=300)
+    # yield: long plateau at 0.05, then a dip to 0.02 (expensive vs own past),
+    # then a jump to 0.08 (cheap vs own past).
+    vals = np.concatenate([np.full(200, 0.05), np.full(50, 0.02), np.full(50, 0.08)])
+    yld = pd.DataFrame({"AAA": vals}, index=idx)
+
+    z = _self_history_z(yld, window=120, min_periods=60)
+
+    # insufficient history -> NaN
+    assert z["AAA"].iloc[:59].isna().all(), "z must be NaN before min_periods"
+    # into the 0.02 regime: current < own trailing mean -> negative z
+    z_dip = z["AAA"].iloc[220]
+    assert np.isfinite(z_dip) and z_dip < 0, f"expected negative z in the dip, got {z_dip}"
+    # into the 0.08 regime: current > own trailing mean -> positive z
+    z_jump = z["AAA"].iloc[-1]
+    assert np.isfinite(z_jump) and z_jump > 0, f"expected positive z in the jump, got {z_jump}"
+    # winsorized
+    assert z["AAA"].abs().max() <= 8.0 + 1e-9
+
+    print("\n=== SANITY CHECK: valuation mean-reversion (self-history z) ===")
+    print(f"  yield below own norm -> z={z_dip:+.2f} (<0);  above own norm -> z={z_jump:+.2f} (>0)")
+    print("  NaN before min_periods, trailing-only window -> point-in-time. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# 9. Distress / solvency + S&M + M&A + SBC derived fields                      #
+# --------------------------------------------------------------------------- #
+def _synth_fundamentals_rich():
+    """Two annual filings for AAA carrying every raw level the refined features
+    need. Hand-computable so the ratios can be checked exactly."""
+    rows = [
+        dict(ticker="AAA", as_of="2019-02-01",
+             totalRevenue=100.0, netIncome=10.0, ebitda=25.0,
+             cash=20.0, longTermDebt=40.0, shortTermDebt=10.0,
+             totalLiabilities=80.0, currentAssets=60.0, currentLiabilities=30.0,
+             interestExpense=5.0, goodwill=15.0, totalAssets=200.0,
+             sellingGeneralAdmin=20.0, stockBasedComp=4.0, acquisitions=6.0,
+             operatingCashFlow=18.0, profitMargins=0.10),
+        dict(ticker="AAA", as_of="2020-02-03",
+             totalRevenue=120.0, netIncome=15.0, ebitda=30.0,
+             cash=25.0, longTermDebt=50.0, shortTermDebt=10.0,
+             totalLiabilities=90.0, currentAssets=66.0, currentLiabilities=33.0,
+             interestExpense=6.0, goodwill=30.0, totalAssets=240.0,
+             sellingGeneralAdmin=22.0, stockBasedComp=6.0, acquisitions=12.0,
+             operatingCashFlow=24.0, profitMargins=0.125),
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_distress_sga_ma_sbc_features_exact():
+    fund = _synth_fundamentals_rich()
+    idx = pd.bdate_range("2019-01-01", "2020-06-01")
+    F = _derived_fields(fund, idx, close=None)   # no close -> valuation skipped, rest built
+
+    d = pd.Timestamp("2020-03-02")   # after the 2020-02-03 filing (uses y2 values)
+
+    # ---- distress / solvency ----
+    # net debt = (ltd 50 + std 10) - cash 25 = 35 ; / ebitda 30 = 1.1667
+    assert abs(F["net_debt_to_ebitda"].loc[d, "AAA"] - 35.0 / 30.0) < 1e-9
+    assert abs(F["interest_coverage"].loc[d, "AAA"] - 30.0 / 6.0) < 1e-9   # ebitda/interest
+    assert abs(F["current_ratio"].loc[d, "AAA"] - 66.0 / 33.0) < 1e-9       # 2.0
+    assert abs(F["cash_to_debt"].loc[d, "AAA"] - 25.0 / 60.0) < 1e-9
+
+    # ---- S&M efficiency ----
+    assert abs(F["sga_intensity"].loc[d, "AAA"] - 22.0 / 120.0) < 1e-9
+    assert abs(F["sga_growth"].loc[d, "AAA"] - (22.0 / 20.0 - 1.0)) < 1e-9   # +10%
+    # operating leverage = rev growth (20%) - SG&A growth (10%) = +10%
+    assert abs(F["operating_leverage"].loc[d, "AAA"] - 0.10) < 1e-9
+
+    # ---- M&A ----
+    assert abs(F["acquisition_intensity"].loc[d, "AAA"] - 12.0 / 240.0) < 1e-9   # acq/assets
+    assert abs(F["goodwill_growth"].loc[d, "AAA"] - (30.0 / 15.0 - 1.0)) < 1e-9  # +100%
+
+    # ---- SBC ----
+    assert abs(F["sbc_intensity"].loc[d, "AAA"] - 6.0 / 120.0) < 1e-9
+    assert abs(F["sbc_to_ocf"].loc[d, "AAA"] - 6.0 / 24.0) < 1e-9
+
+    # ---- point-in-time: growth features NaN before the second filing ----
+    before = pd.Timestamp("2019-06-03")
+    assert np.isnan(F["goodwill_growth"].loc[before, "AAA"]), "goodwill_growth leaked"
+    assert np.isnan(F["operating_leverage"].loc[before, "AAA"]), "operating_leverage leaked"
+    # level ratios use the y1 filing before y2 is public (still no look-ahead)
+    assert abs(F["net_debt_to_ebitda"].loc[before, "AAA"] - (40.0 + 10.0 - 20.0) / 25.0) < 1e-9
+
+    print("\n=== SANITY CHECK: distress / S&M / M&A / SBC ===")
+    print(f"  net_debt/EBITDA={F['net_debt_to_ebitda'].loc[d,'AAA']:.3f}  "
+          f"interest_cov={F['interest_coverage'].loc[d,'AAA']:.1f}x  "
+          f"current={F['current_ratio'].loc[d,'AAA']:.1f}  "
+          f"cash/debt={F['cash_to_debt'].loc[d,'AAA']:.3f}")
+    print(f"  sga_intensity={F['sga_intensity'].loc[d,'AAA']:.3f}  "
+          f"op_leverage={F['operating_leverage'].loc[d,'AAA']:+.2%}  "
+          f"acq_intensity={F['acquisition_intensity'].loc[d,'AAA']:.3f}  "
+          f"goodwill_growth={F['goodwill_growth'].loc[d,'AAA']:+.0%}")
+    print(f"  sbc_intensity={F['sbc_intensity'].loc[d,'AAA']:.3f}  "
+          f"sbc/OCF={F['sbc_to_ocf'].loc[d,'AAA']:.2f}")
+    print("  All ratios match hand calc; growth NaN before 2nd filing -> point-in-time. Validated.")
+
+
+def test_panel_emits_vs_hist_columns():
+    """End-to-end: the fundamental panel gains `f_<yield>_vs_hist` mean-reversion
+    columns (built with a small window so a short synthetic history suffices)."""
+    fund = _synth_fundamentals()   # has revenue/netIncome/equity/fcf/ebitda/shares
+    idx = pd.bdate_range("2019-01-01", "2020-06-01")
+    n = len(idx)
+    # varying prices so the valuation yields move day-to-day (else std=0 -> no z)
+    close = pd.DataFrame({"AAA": np.linspace(1.5, 3.0, n),
+                          "BBB": np.linspace(2.5, 3.5, n)}, index=idx)
+    peers = {"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}}
+
+    panel = build_fundamental_feature_panel(
+        fund, peers, idx, stock_close=close,
+        hist_window=60, hist_min_periods=20,
+    )
+
+    hist_cols = [c for c in panel.columns if c.endswith("_vs_hist")]
+    assert "f_earnings_yield_vs_hist" in panel.columns, f"no vs_hist columns: {list(panel.columns)}"
+    assert panel["f_earnings_yield_vs_hist"].notna().any(), "vs_hist column is entirely NaN"
+
+    print("\n=== SANITY CHECK: panel self-history columns ===")
+    print(f"  emitted {len(hist_cols)} f_*_vs_hist columns: {sorted(hist_cols)}")
+    print("  f_earnings_yield_vs_hist present with non-null values -> mean-reversion wired in. Validated.")

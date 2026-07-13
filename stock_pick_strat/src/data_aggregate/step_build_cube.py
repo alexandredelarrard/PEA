@@ -224,9 +224,12 @@ class StepBuildCube(Step):
         that date, so a feature on day d reflects the most recent quarter whose
         10-Q/10-K was already public on d -- never a not-yet-filed quarter.
         """
+        hist = self._cfg.get("hist", {})
         fund_panel = build_fundamental_feature_panel(
             self.fundamentals, self.peers, self.stock_close.index,
             stock_close=self.stock_close, intrinsic_cfg=self._intrinsic_cfg(),
+            hist_window=int(hist.get("window", 1260)),
+            hist_min_periods=int(hist.get("min_periods", 252)),
         )
         if fund_panel.empty:
             self._log.warning("No fundamental features built (missing fundamentals).")

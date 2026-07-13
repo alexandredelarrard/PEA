@@ -53,6 +53,30 @@ Yearly-TTM momentum (current TTM vs TTM one year ago, less noisy than single qua
 Intrinsic value (two-stage DCF on TTM free cash flow, see intrinsic.py):
     intrinsic_yield   DCF equity value / market cap  ( >1 => below intrinsic )
 
+Distress / solvency (debt-SERVICING ability, which debtToEquity ignores):
+    net_debt_to_ebitda (total debt - cash) / EBITDA   (leverage; HIGH = worse)
+    interest_coverage  EBITDA / interest expense       (HIGH = safer)
+    current_ratio      current assets / current liabs  (near-term liquidity)
+    cash_to_debt       cash / total debt               (liquidity cushion)
+
+Marketing & sales efficiency:
+    sga_intensity      SG&A / revenue                  (selling-cost discipline)
+    sga_growth         YoY SG&A growth
+    operating_leverage revenue growth - SG&A growth    (>0 = scaling profitably)
+
+M&A footprint (organic vs inorganic growth; goodwill-impairment risk):
+    acquisition_intensity acquisition spend / total assets
+    goodwill_growth       YoY goodwill growth
+
+Stock-based compensation ("employee shares given"; gross, unlike net dilution):
+    sbc_intensity      stock-based comp / revenue
+    sbc_to_ocf         stock-based comp / operating cash flow (cash-flow quality)
+
+Valuation mean-reversion (self-history, emitted as `f_<yield>_vs_hist`):
+    every valuation yield above ALSO gets a z-score versus the firm's OWN
+    trailing history -> "cheap vs its own past" (e.g. PE below its 5y average),
+    an axis orthogonal to the cross-sectional "cheap vs peers" signals.
+
 Capital allocation / dilution ("stock given to employees" proxy):
     shares_growth   = YoY change in sharesOutstanding. Positive => issuing /
                       diluting (heavy SBC), negative => buying back.
@@ -77,6 +101,17 @@ from src.data_aggregate.utils.factors import fundamentals_to_daily, daily_market
 from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
 
 
+# Valuation yields that also get a self-history (mean-reversion) z-score, i.e.
+# "cheap vs its OWN past" in addition to "cheap vs peers". High = cheaper than
+# the firm's own norm -> classic valuation mean-reversion signal.
+_MEAN_REVERSION_FIELDS = (
+    "earnings_yield", "sales_yield", "book_yield",
+    "fcf_yield", "ebitda_to_ev", "intrinsic_yield",
+)
+_HIST_WINDOW = 1260      # ~5 trading years of daily observations
+_HIST_MIN_PERIODS = 252  # require >= 1y of history before emitting a z-score
+
+
 # --------------------------------------------------------------------------- #
 # Helpers                                                                      #
 # --------------------------------------------------------------------------- #
@@ -92,6 +127,40 @@ def _ratio(num: pd.DataFrame, den: pd.DataFrame, positive_den: bool = False) -> 
     d = d.where(d > 0) if positive_den else d.where(d != 0)
     out = num[cols] / d
     return out.replace([np.inf, -np.inf], np.nan)
+
+
+def _combine_debt(long_debt: pd.DataFrame, short_debt: pd.DataFrame,
+                  fallback: pd.DataFrame) -> pd.DataFrame:
+    """Total interest-bearing debt = long-term + short-term, NaN-tolerant
+    (a firm with only one of the two keeps that one). Falls back to total
+    liabilities when neither debt tag is present, so leverage is still defined."""
+    have_long = long_debt is not None and not long_debt.empty
+    have_short = short_debt is not None and not short_debt.empty
+    if have_long and have_short:
+        return long_debt.add(short_debt, fill_value=0.0)
+    if have_long:
+        return long_debt
+    if have_short:
+        return short_debt
+    return fallback if fallback is not None else pd.DataFrame()
+
+
+def _self_history_z(field_df: pd.DataFrame, window: int = _HIST_WINDOW,
+                    min_periods: int = _HIST_MIN_PERIODS, clip: float = 8.0) -> pd.DataFrame:
+    """Time-series z-score of each ticker versus its OWN trailing `window`:
+
+        z(t) = (x(t) - trailing_mean(t)) / trailing_std(t)
+
+    The rolling window is trailing (right-edge = today), so it uses only
+    current-and-past values -- strictly point-in-time, no look-ahead. On a
+    valuation YIELD, a high z means the firm is currently cheaper than its own
+    historical norm (mean-reversion long side). Winsorized to +-`clip`."""
+    if field_df is None or field_df.empty:
+        return pd.DataFrame()
+    mean = field_df.rolling(window, min_periods=min_periods).mean()
+    std = field_df.rolling(window, min_periods=min_periods).std()
+    z = (field_df - mean) / std.where(std > 0)
+    return z.clip(-clip, clip).replace([np.inf, -np.inf], np.nan)
 
 
 def _infer_yoy_periods(fund_hist: pd.DataFrame) -> int:
@@ -296,6 +365,78 @@ def _derived_fields(
     if y_margin_chg.notna().any().any():
         F["y_margin_vs_ttm"] = y_margin_chg
 
+    # ---- DISTRESS / SOLVENCY (can the firm service and roll its debt?) ----
+    # debtToEquity is a book ratio that says nothing about debt-SERVICING ability;
+    # these are the leverage / coverage / liquidity ratios credit desks watch.
+    cash = daily("cash")
+    long_debt = daily("longTermDebt")
+    short_debt = daily("shortTermDebt")
+    total_debt = _combine_debt(long_debt, short_debt, daily("totalLiabilities"))
+    if not total_debt.empty and not ebitda.empty:
+        cols = total_debt.columns.intersection(cash.columns) if not cash.empty else total_debt.columns
+        net_debt = (total_debt[cols].sub(cash[cols], fill_value=0.0)
+                    if not cash.empty else total_debt)
+        # HIGH net-debt/EBITDA = more leveraged = worse (only meaningful for EBITDA>0)
+        nd_ebitda = _ratio(net_debt, ebitda, positive_den=True)
+        if not nd_ebitda.empty and nd_ebitda.notna().any().any():
+            F["net_debt_to_ebitda"] = nd_ebitda
+    interest = daily("interestExpense")
+    if not ebitda.empty and not interest.empty:
+        # HIGH coverage = safer. Interest is an expense (take abs to be sign-safe).
+        cov = _ratio(ebitda, interest.abs(), positive_den=True)
+        if not cov.empty and cov.notna().any().any():
+            F["interest_coverage"] = cov
+    cur_a, cur_l = daily("currentAssets"), daily("currentLiabilities")
+    current_ratio = _ratio(cur_a, cur_l, positive_den=True)
+    if not current_ratio.empty and current_ratio.notna().any().any():
+        F["current_ratio"] = current_ratio
+    if not cash.empty and not total_debt.empty:
+        cash_to_debt = _ratio(cash, total_debt, positive_den=True)
+        if not cash_to_debt.empty and cash_to_debt.notna().any().any():
+            F["cash_to_debt"] = cash_to_debt
+
+    # ---- MARKETING & SALES efficiency (operating leverage) ----
+    sga = daily("sellingGeneralAdmin")
+    sga_intensity = _ratio(sga, revenue, positive_den=True)
+    if not sga_intensity.empty and sga_intensity.notna().any().any():
+        F["sga_intensity"] = sga_intensity
+    sga_growth = _fiscal_change_to_daily(fund_hist, "sellingGeneralAdmin", idx,
+                                         kind="pct", periods=yoy_periods)
+    rev_growth = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
+                                         kind="pct", periods=yoy_periods)
+    if sga_growth.notna().any().any():
+        F["sga_growth"] = sga_growth
+        # operating leverage = sales growing FASTER than selling cost (scalable);
+        # negative = growth is being "bought" with rising SG&A (margin risk ahead).
+        if rev_growth.notna().any().any():
+            cols = rev_growth.columns.intersection(sga_growth.columns)
+            F["operating_leverage"] = rev_growth[cols] - sga_growth[cols]
+
+    # ---- M&A footprint (organic vs inorganic growth; impairment risk) ----
+    acq = daily("acquisitions")
+    assets = daily("totalAssets")
+    acq_den = assets if not assets.empty else revenue
+    acq_intensity = _ratio(acq.abs() if not acq.empty else acq, acq_den, positive_den=True)
+    if not acq_intensity.empty and acq_intensity.notna().any().any():
+        F["acquisition_intensity"] = acq_intensity
+    goodwill_growth = _fiscal_change_to_daily(fund_hist, "goodwill", idx,
+                                              kind="pct", periods=yoy_periods)
+    if goodwill_growth.notna().any().any():
+        F["goodwill_growth"] = goodwill_growth
+
+    # ---- STOCK-BASED COMPENSATION ("employee shares given") ----
+    # shares_growth is NET of buybacks and can be masked; SBC is the GROSS give-away.
+    sbc = daily("stockBasedComp")
+    sbc_intensity = _ratio(sbc, revenue, positive_den=True)
+    if not sbc_intensity.empty and sbc_intensity.notna().any().any():
+        F["sbc_intensity"] = sbc_intensity
+    ocf = daily("operatingCashFlow")
+    if not sbc.empty and not ocf.empty:
+        # how much of reported operating cash flow is really non-cash comp
+        sbc_to_ocf = _ratio(sbc, ocf, positive_den=True)
+        if not sbc_to_ocf.empty and sbc_to_ocf.notna().any().any():
+            F["sbc_to_ocf"] = sbc_to_ocf
+
     # ---- INTRINSIC VALUE (two-stage DCF on TTM FCF) vs price ----
     if close is not None:
         iv = intrinsic_value_daily(fund_hist, close, idx, **intrinsic_cfg)
@@ -355,14 +496,21 @@ def build_fundamental_feature_panel(
     trading_index: pd.DatetimeIndex,
     stock_close: pd.DataFrame | None = None,
     intrinsic_cfg: dict | None = None,
+    hist_window: int = _HIST_WINDOW,
+    hist_min_periods: int = _HIST_MIN_PERIODS,
 ) -> pd.DataFrame:
     """
-    Long-format panel: ['date','ticker', f_<char>_vs_peers, f_<char>_xs, ...].
+    Long-format panel: ['date','ticker', f_<char>_vs_peers, f_<char>_xs,
+    f_<yield>_vs_hist, ...].
 
-    Two complementary views per characteristic:
+    Three complementary views:
       * f_<char>_vs_peers : firm minus its direct competitors (peer basket),
                             standardized -> the firm-specific edge.
       * f_<char>_xs       : cross-sectional percentile across the whole universe.
+      * f_<yield>_vs_hist : each valuation yield versus the firm's OWN trailing
+                            history (a z-score over `hist_window` days) -> the
+                            time-series valuation mean-reversion signal ("cheap
+                            vs its own past", e.g. PE below its 5y average).
 
     `stock_close` is required for the valuation features (daily market cap);
     without it valuation is skipped but every other feature is still built.
@@ -374,7 +522,39 @@ def build_fundamental_feature_panel(
     yoy_periods = _infer_yoy_periods(fundamentals_history)
     fields = _derived_fields(fundamentals_history, trading_index, stock_close,
                              yoy_periods=yoy_periods, intrinsic_cfg=intrinsic_cfg)
-    return build_peer_relative_panel(fields, peer_dict)
+    peer_panel = build_peer_relative_panel(fields, peer_dict)
+
+    # Self-history (mean-reversion) z-scores on the valuation yields only.
+    hist_fields = {
+        name: _self_history_z(fields[name], window=hist_window, min_periods=hist_min_periods)
+        for name in _MEAN_REVERSION_FIELDS
+        if name in fields and fields[name] is not None and not fields[name].empty
+    }
+    hist_panel = build_self_history_panel(hist_fields)
+
+    if hist_panel.empty or list(hist_panel.columns) == ["date", "ticker"]:
+        return peer_panel
+    if peer_panel.empty or list(peer_panel.columns) == ["date", "ticker"]:
+        return hist_panel
+    return peer_panel.merge(hist_panel, on=["date", "ticker"], how="outer")
+
+
+def build_self_history_panel(fields: dict) -> pd.DataFrame:
+    """Stack already-z-scored self-history frames into long `f_<name>_vs_hist`
+    columns. The input frames are the OUTPUT of `_self_history_z` (final signal),
+    so they are NOT re-standardized cross-sectionally the way peer features are."""
+    if not fields:
+        return pd.DataFrame(columns=["date", "ticker"])
+    long_frames = []
+    for name, zdf in fields.items():
+        if zdf is None or zdf.empty:
+            continue
+        s = zdf.stack()
+        s.index.set_names(["date", "ticker"], inplace=True)
+        long_frames.append(s.rename(f"f_{name}_vs_hist"))
+    if not long_frames:
+        return pd.DataFrame(columns=["date", "ticker"])
+    return pd.concat(long_frames, axis=1).reset_index()
 
 
 def build_peer_relative_panel(fields: dict, peer_dict: dict) -> pd.DataFrame:

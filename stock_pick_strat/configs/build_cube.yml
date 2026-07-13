@@ -23,6 +23,11 @@ build_cube:
     growth_cap: 0.15         # winsorize the firm's own growth used in the DCF
     growth_floor: -0.10
 
+  hist:                      # self-history (valuation mean-reversion) window for
+                             # the f_<yield>_vs_hist features ("cheap vs own past")
+    window: 1260             # ~5 trading years of trailing daily observations
+    min_periods: 252         # need >= 1y of history before emitting a z-score
+
   output:
     save_cube: true
     save_panel: false

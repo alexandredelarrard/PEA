@@ -232,3 +232,55 @@ def test_headline_feature_signs_make_sense(fundamental_panel, real_pipeline):
         print(f"  {f:<32} IC={mic:+.4f}  expected sign={want:+d}")
         assert np.sign(mic) == want, f"{f} IC={mic:+.4f} has the wrong sign"
     print("  -> value (cheap) predicts up, dilution predicts down. Economically sound.")
+
+
+# --------------------------------------------------------------------------- #
+# 7. Yearly-TTM momentum features: math + point-in-time                        #
+# --------------------------------------------------------------------------- #
+def test_yearly_ttm_features_computed_correctly():
+    """y_rev_growth, y_rev_growth_accel, y_earnings_growth, y_margin_vs_ttm are
+    computed correctly from level columns and are strictly point-in-time."""
+    fund = pd.DataFrame({
+        "ticker":       ["AAA", "AAA", "AAA"],
+        "as_of":        ["2019-02-01", "2020-02-01", "2021-02-01"],
+        "totalRevenue": [100.0, 120.0, 132.0],
+        "netIncome":    [10.0, 15.0, 18.0],
+        "profitMargins":[0.10, 0.125, 0.136],
+    })
+    idx = pd.bdate_range("2019-01-01", "2021-06-01")
+
+    F = _derived_fields(fund, idx, close=None)
+
+    # ---- y_rev_growth ----
+    assert "y_rev_growth" in F, "y_rev_growth missing from _derived_fields"
+    before_2020 = pd.Timestamp("2020-01-15")
+    assert np.isnan(F["y_rev_growth"].loc[before_2020, "AAA"]), \
+        "y_rev_growth must be NaN before the second filing"
+    after_2020 = pd.Timestamp("2020-03-02")  # Monday, in bdate_range
+    assert abs(F["y_rev_growth"].loc[after_2020, "AAA"] - 0.20) < 1e-9, \
+        f"expected +20% revenue growth, got {F['y_rev_growth'].loc[after_2020,'AAA']}"
+
+    # ---- y_rev_growth_accel: change in YoY from period 2->3 ----
+    assert "y_rev_growth_accel" in F, "y_rev_growth_accel missing"
+    after_2021 = pd.Timestamp("2021-03-01")
+    # 2020 YoY = 20%, 2021 YoY = 132/120-1 = 10% -> accel = 10% - 20% = -10%
+    assert abs(F["y_rev_growth_accel"].loc[after_2021, "AAA"] - (-0.10)) < 1e-9, \
+        f"expected accel=-10%, got {F['y_rev_growth_accel'].loc[after_2021,'AAA']}"
+
+    # ---- y_earnings_growth ----
+    assert "y_earnings_growth" in F, "y_earnings_growth missing"
+    assert abs(F["y_earnings_growth"].loc[after_2020, "AAA"] - 0.50) < 1e-9, \
+        f"expected +50% earnings growth, got {F['y_earnings_growth'].loc[after_2020,'AAA']}"
+
+    # ---- y_margin_vs_ttm: YoY diff in profitMargins ----
+    assert "y_margin_vs_ttm" in F, "y_margin_vs_ttm missing"
+    expected_margin_chg = round(0.125 - 0.10, 9)
+    assert abs(F["y_margin_vs_ttm"].loc[after_2020, "AAA"] - expected_margin_chg) < 1e-9, \
+        f"expected margin chg={expected_margin_chg}, got {F['y_margin_vs_ttm'].loc[after_2020,'AAA']}"
+
+    print("\n=== SANITY CHECK: yearly-TTM momentum features ===")
+    print(f"  y_rev_growth    2020={F['y_rev_growth'].loc[after_2020,'AAA']:.2%} (expected +20%)")
+    print(f"  y_rev_growth_accel 2021={F['y_rev_growth_accel'].loc[after_2021,'AAA']:.2%} (expected -10%)")
+    print(f"  y_earnings_growth 2020={F['y_earnings_growth'].loc[after_2020,'AAA']:.2%} (expected +50%)")
+    print(f"  y_margin_vs_ttm 2020={F['y_margin_vs_ttm'].loc[after_2020,'AAA']:.4f} (expected +0.025)")
+    print("  All NaN before second filing, correct values after -> strictly point-in-time. Validated.")

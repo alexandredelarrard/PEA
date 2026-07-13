@@ -111,6 +111,18 @@ inputs:
     - f_q_margin_vs_ttm_vs_peers
     - f_q_margin_vs_ttm_xs
 
+    # ---- Yearly-TTM momentum (TTM vs TTM one year ago; less noisy, longer horizon) ----
+    # Computed fresh from level columns (totalRevenue, netIncome, profitMargins) so
+    # backtestable from the full fundamentals history. Complements q_* features.
+    - f_y_rev_growth_vs_peers
+    - f_y_rev_growth_xs
+    - f_y_rev_growth_accel_vs_peers
+    - f_y_rev_growth_accel_xs
+    - f_y_earnings_growth_vs_peers
+    - f_y_earnings_growth_xs
+    - f_y_margin_vs_ttm_vs_peers
+    - f_y_margin_vs_ttm_xs
+
     # ---- Earnings expectations (historical forward EPS vs actual; ~96% cover) ----
     # forward E/P + expected EPS growth carry standalone signal (IC ~ +0.02) and
     # capture "what the market prices in for the future" / unrealistic optimism.
@@ -124,6 +136,14 @@ inputs:
     # - f_eps_surprise_last_xs
     # - f_eps_surprise_4q_avg_vs_peers
     # - f_eps_surprise_4q_avg_xs
+
+    # ---- Workforce (EDGAR historical employee counts, from 10-K filings):
+    #      genuinely historical & point-in-time, so backtestable. Columns absent
+    #      from cube if fetch_employees_edgar has not run -- safe to leave enabled. ----
+    - f_revenue_per_employee_vs_peers
+    - f_revenue_per_employee_xs
+    - f_employee_growth_vs_peers
+    - f_employee_growth_xs
 
     # ---- Analyst estimates: leak-free but NO accrued history yet, so they are
     #      ~all-NaN historically. Uncomment once you have collected estimate
@@ -145,30 +165,25 @@ inputs:
     # - f_est_vs_intrinsic_vs_peers
     # - f_est_vs_intrinsic_xs
 
-    # ---- Governance / ownership / workforce (yfinance snapshot): founder-led,
-    #      family-owned, insider & institutional ownership, net insider buying,
-    #      CEO age, revenue/employee. Leak-free (point-in-time from as_of) but,
-    #      like analyst estimates, snapshot-only with NO accrued history yet ->
-    #      ~all-NaN historically. Uncomment once fetch_management has run over
-    #      time; useful NOW for the live cross-sectional ranking. ----
+    # ---- Governance / ownership (snapshot-only: no free historical archive yet).
+    #      Leak-free (point-in-time from as_of) but ~all-NaN historically until the
+    #      snapshot archive builds up. Useful NOW for live cross-sectional ranking. ----
     # - f_insider_ownership_vs_peers
     # - f_insider_ownership_xs
     # - f_institutional_ownership_vs_peers
     # - f_institutional_ownership_xs
     # - f_founder_led_vs_peers
     # - f_founder_led_xs
+    # - f_founder_ceo_vs_peers
+    # - f_founder_ceo_xs
     # - f_family_owned_vs_peers
     # - f_family_owned_xs
     # - f_net_insider_buying_vs_peers
     # - f_net_insider_buying_xs
     # - f_ceo_age_vs_peers
     # - f_ceo_age_xs
+    # - f_n_officers_vs_peers
+    # - f_n_officers_xs
+    # - f_avg_officer_age_vs_peers
+    # - f_avg_officer_age_xs
 
-    # ---- Workforce (FMP historical employee counts, from 10-K/10-Q filings):
-    #      genuinely historical & point-in-time, so backtestable. Require running
-    #      fetch_employees (needs a free FMP_API_KEY). If not fetched, the columns
-    #      are simply absent from the cube and skipped -- safe to leave enabled. ----
-    # - f_revenue_per_employee_vs_peers
-    # - f_revenue_per_employee_xs
-    # - f_employee_growth_vs_peers
-    # - f_employee_growth_xs

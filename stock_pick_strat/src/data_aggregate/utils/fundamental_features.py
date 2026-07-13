@@ -44,6 +44,12 @@ Latest-quarter momentum (discrete single quarter, what TTM smooths away):
     q_earnings_growth latest-quarter net-income YoY
     q_margin_vs_ttm   latest-quarter profit margin minus the TTM margin (inflection)
 
+Yearly-TTM momentum (current TTM vs TTM one year ago, less noisy than single quarter):
+    y_rev_growth      TTM revenue YoY growth (computed fresh from totalRevenue)
+    y_rev_growth_accel change in TTM revenue YoY (trend acceleration over a year)
+    y_earnings_growth TTM net-income YoY growth
+    y_margin_vs_ttm   YoY change in TTM profit margin (margin expansion/contraction)
+
 Intrinsic value (two-stage DCF on TTM free cash flow, see intrinsic.py):
     intrinsic_yield   DCF equity value / market cap  ( >1 => below intrinsic )
 
@@ -265,6 +271,30 @@ def _derived_fields(
     if not q_margin.empty and "profitMargins" in F:
         cols = q_margin.columns.intersection(F["profitMargins"].columns)
         F["q_margin_vs_ttm"] = q_margin[cols] - F["profitMargins"][cols]
+
+    # ---- YEARLY-TTM momentum (current TTM vs TTM one year ago) ----
+    # Complements the single-quarter features: captures multi-quarter trend rather
+    # than the most-recent quarter jolt, which is less noisy and works at longer
+    # horizons. Uses the fiscal history of level columns so seasonality is removed
+    # by construction (same quarter each year -> yoy_periods filings back).
+    y_rev_growth = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
+                                           kind="pct", periods=yoy_periods)
+    if y_rev_growth.notna().any().any():
+        F["y_rev_growth"] = y_rev_growth
+        F["y_rev_growth_accel"] = _fiscal_apply_to_daily(
+            fund_hist, "totalRevenue", idx,
+            lambda s, n=yoy_periods: s.pct_change(n).diff(1))
+
+    y_earnings_growth = _fiscal_change_to_daily(fund_hist, "netIncome", idx,
+                                                kind="pct", periods=yoy_periods)
+    if y_earnings_growth.notna().any().any():
+        F["y_earnings_growth"] = y_earnings_growth
+
+    # YoY change in TTM profit margin (margin expansion / contraction trend)
+    y_margin_chg = _fiscal_change_to_daily(fund_hist, "profitMargins", idx,
+                                           kind="diff", periods=yoy_periods)
+    if y_margin_chg.notna().any().any():
+        F["y_margin_vs_ttm"] = y_margin_chg
 
     # ---- INTRINSIC VALUE (two-stage DCF on TTM FCF) vs price ----
     if close is not None:

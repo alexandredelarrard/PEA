@@ -20,8 +20,9 @@ def _synth_mgmt():
     return pd.DataFrame([{
         "ticker": "AAA", "as_of": "2020-03-02",
         "heldPercentInsiders": 0.30, "heldPercentInstitutions": 0.60,
-        "founder_present": 1, "family_owned": 1,
+        "founder_present": 1, "founder_ceo": 1, "family_owned": 1,
         "net_insider_buying": 0.02, "ceo_age": 45.0,
+        "n_officers": 8, "avg_officer_age": 52.0,
     }])
 
 
@@ -40,14 +41,20 @@ def test_management_fields_point_in_time():
     assert abs(F["insider_ownership"].loc[after, "AAA"] - 0.30) < 1e-9
     assert abs(F["institutional_ownership"].loc[after, "AAA"] - 0.60) < 1e-9
     assert F["founder_led"].loc[after, "AAA"] == 1
+    assert F["founder_ceo"].loc[after, "AAA"] == 1
     assert F["family_owned"].loc[after, "AAA"] == 1
     assert abs(F["ceo_age"].loc[after, "AAA"] - 45.0) < 1e-9
+    assert F["n_officers"].loc[after, "AAA"] == 8
+    assert abs(F["avg_officer_age"].loc[after, "AAA"] - 52.0) < 1e-9
 
     print("\n=== SANITY CHECK: management fields point-in-time ===")
     print(f"  insider={F['insider_ownership'].loc[after,'AAA']:.2f}  "
           f"instit={F['institutional_ownership'].loc[after,'AAA']:.2f}  "
           f"founder_led={int(F['founder_led'].loc[after,'AAA'])}  "
-          f"family={int(F['family_owned'].loc[after,'AAA'])}")
+          f"founder_ceo={int(F['founder_ceo'].loc[after,'AAA'])}  "
+          f"family={int(F['family_owned'].loc[after,'AAA'])}  "
+          f"n_officers={int(F['n_officers'].loc[after,'AAA'])}  "
+          f"avg_officer_age={F['avg_officer_age'].loc[after,'AAA']:.1f}")
     print("  All fields NaN before the 2020-03-02 as_of -> strictly leak-free. Validated.")
 
 

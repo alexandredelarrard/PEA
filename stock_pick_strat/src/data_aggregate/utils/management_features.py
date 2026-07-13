@@ -8,9 +8,12 @@ management snapshot archive (fetch_management). These capture well-documented
     insider_ownership       insider % held  (skin in the game)
     institutional_ownership institution % held  (smart-money backing / crowding)
     founder_led             founder among the officers (founder-premium literature)
+    founder_ceo             CEO who is also the founder (stronger signal than founder_present)
     family_owned            family-controlled proxy (long-horizon outperformance)
     net_insider_buying      net insider buys over 6m  (insider-trading signal)
     ceo_age                 CEO age  (younger/founder dynamism, weak prior)
+    n_officers              number of named executive officers (lean vs bloated management)
+    avg_officer_age         average age of named officers (management team freshness)
 
 (revenue_per_employee lives in employee_features.py -- it now uses the FMP
 historical headcount series rather than this current-only snapshot.)
@@ -36,9 +39,12 @@ def _management_fields(mgmt_hist: pd.DataFrame, idx: pd.DatetimeIndex) -> dict:
         ("heldPercentInsiders", "insider_ownership"),
         ("heldPercentInstitutions", "institutional_ownership"),
         ("founder_present", "founder_led"),
+        ("founder_ceo", "founder_ceo"),
         ("family_owned", "family_owned"),
         ("net_insider_buying", "net_insider_buying"),
         ("ceo_age", "ceo_age"),
+        ("n_officers", "n_officers"),
+        ("avg_officer_age", "avg_officer_age"),
     ]:
         f = fundamentals_to_daily(mgmt_hist, src, idx)
         if not f.empty and f.notna().any().any():

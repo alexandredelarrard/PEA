@@ -255,6 +255,20 @@ def commodity_factor_returns(
     return pd.DataFrame(out, index=close.index)
 
 
+def currency_factor_returns(
+    close: pd.DataFrame,
+    tickers: dict | None = None,
+) -> pd.DataFrame:
+    """
+    Daily RETURNS of currency proxies, taken from the price panel (they flow
+    through the normal price pipeline as `other_tickers`).
+    """
+    out = {}
+    for name, col in tickers.items():
+        if col in close.columns:
+            out[name] = close[col].pct_change()
+    return pd.DataFrame(out, index=close.index)
+
 def filter_daily_factors(
     panel: pd.DataFrame,
     max_zero_frac: float = 0.30,
@@ -288,6 +302,7 @@ def assemble_factor_panel(
     market_ret: pd.Series,
     style_factors: pd.DataFrame,      # size, value, momentum, quality, resvol (returns)
     commodity_returns: pd.DataFrame,  # oil, gold (returns)
+    currency_returns: pd.DataFrame,  # USD/EUR (returns)
     macro_changes: pd.DataFrame,      # d_yield_10y, d_vix, d_breakeven_10y (changes)
 ) -> tuple[pd.DataFrame, list[str]]:
     """
@@ -298,7 +313,7 @@ def assemble_factor_panel(
     are returns and are compounded forward -- so commodity is NOT in macro_cols.
     """
     panel = pd.concat(
-        [market_ret.rename("market"), style_factors, commodity_returns, macro_changes],
+        [market_ret.rename("market"), style_factors, commodity_returns, currency_returns, macro_changes],
         axis=1,
     )
     panel, dropped = filter_daily_factors(panel)

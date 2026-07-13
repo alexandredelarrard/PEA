@@ -17,7 +17,8 @@ from src.data_aggregate.utils.factors import (
     build_style_factor_returns,
     macro_change_factors,
     assemble_factor_panel,
-    commodity_factor_returns
+    commodity_factor_returns,
+    currency_factor_returns
 )
 from src.data_aggregate.utils.cube import build_cube_dataframe
 from src.data_peers.step_deduce_peers import StepDeducePeers
@@ -148,9 +149,11 @@ class StepBuildCube(Step):
         self.macro_cols = list(macro_chg.columns)
 
         #retreive commo info
-        commodity_returns = commodity_factor_returns(self.close, tickers={"oil": "CL=F", "gold": "GC=F"})
 
-        self.factor_panel, self.macro_cols = assemble_factor_panel(self.mkt_ret, style, commodity_returns,macro_chg)
+        commodity_returns = commodity_factor_returns(self.close, tickers={"oil": "CL=F", "gold": "GC=F"})
+        currency_returns = currency_factor_returns(self.close, tickers={"USD/EUR": "USDEUR=X"})
+
+        self.factor_panel, self.macro_cols = assemble_factor_panel(self.mkt_ret, style, commodity_returns, currency_returns, macro_chg)
         self._log.info(
             "Factor panel: %s factors (%s style/market, %s macro)",
             self.factor_panel.shape[1],

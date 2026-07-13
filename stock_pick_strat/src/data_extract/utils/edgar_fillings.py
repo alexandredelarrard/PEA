@@ -42,12 +42,22 @@ def _rows_from_recent(block: dict, cik: str, company: str, forms: set,
 
 
 def list_filings(cik: str, forms: list[str], years: int,
-                 company_name: str = "") -> pd.DataFrame:
-    """All filings of `forms` in the last `years` years for one CIK, across the
-    recent page AND older archive pages."""
+                 company_name: str = "", since: pd.Timestamp | str | None = None) -> pd.DataFrame:
+    """All filings of `forms` for one CIK, across the recent page AND older
+    archive pages.
+
+    Window: the last `years` years by default. When `since` is given (a date
+    already fully parsed, `D`), only filings STRICTLY AFTER it are returned --
+    this is the incremental path, so a re-run fetches just D..today instead of
+    re-listing the whole history. Older archive pages entirely before the cutoff
+    are skipped without being downloaded.
+    """
     cik = str(cik).zfill(10)
     forms_set = set(forms)
     cutoff = pd.Timestamp.today() - pd.DateOffset(years=years)
+    if since is not None:
+        # strictly after the last date already parsed
+        cutoff = max(cutoff, pd.Timestamp(since).normalize() + pd.Timedelta(days=1))
 
     data = sec_get(f"https://data.sec.gov/submissions/CIK{cik}.json").json()
     company = company_name or data.get("name", "")

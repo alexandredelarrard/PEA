@@ -114,7 +114,7 @@ class StepModelling(Step):
 
     def _train_kwargs(self) -> dict:
         c = self._config.model.lightgbm
-        return {
+        kw = {
             "params": {
                 "learning_rate": c.learning_rate, "max_depth": c.max_depth,
                 "subsample": c.subsample, "colsample_bytree": c.colsample_bytree,
@@ -124,6 +124,10 @@ class StepModelling(Step):
             "num_boost_round": c.num_boost_round,
             "early_stopping_rounds": ml.EARLY_STOPPING_ROUNDS,
         }
+        wd = self._config.model.get("weight_decay")
+        if wd and wd.get("enabled", False):
+            kw["half_life_years"] = float(wd.half_life_years)
+        return kw
 
     def cross_validate_all_horizons(self):
         """Purged walk-forward CV per horizon; collect IC to weight the blend."""
@@ -132,6 +136,9 @@ class StepModelling(Step):
         self.horizon_ic = {}
         self.last_cv_folds = {}
         train_kw = self._train_kwargs()
+        if train_kw.get("half_life_years"):
+            self._log.info("Time-decay sample weights enabled (half_life=%.1f years)",
+                           train_kw["half_life_years"])
 
         for h, panel in self.panels.items():
             embargo = (cfg.cv.embargo or h)      # embargo must be >= horizon
@@ -200,7 +207,7 @@ class StepModelling(Step):
         train_kw = self._train_kwargs()
         self.models = {}
         for h, panel in self.panels.items():
-            sub_tr, sub_val = ml.temporal_valid_split(panel)
+            sub_tr, sub_val = ml.temporal_valid_split(panel, train_frac=0.9)
             self.models[h] = ml.train_ranker(sub_tr, self.feature_cols,
                                              self.label_column, valid_panel=sub_val, **train_kw)
         self._log.info("Trained %s per-horizon final models", len(self.models))

@@ -15,8 +15,9 @@ from src.data_aggregate.utils.management_features import build_management_featur
 from src.data_aggregate.utils.employee_features import build_employee_feature_panel
 from src.data_aggregate.utils.factors import (
     build_style_factor_returns,
-    build_macro_factor_changes,
+    macro_change_factors,
     assemble_factor_panel,
+    commodity_factor_returns
 )
 from src.data_aggregate.utils.cube import build_cube_dataframe
 from src.data_peers.step_deduce_peers import StepDeducePeers
@@ -141,12 +142,15 @@ class StepBuildCube(Step):
         )
 
         if self.macro is not None:
-            macro_chg = build_macro_factor_changes(self.macro, self.stock_close.index)
+            macro_chg = macro_change_factors(self.macro, self.stock_close.index)
         else:
             macro_chg = pd.DataFrame(index=self.stock_close.index)
         self.macro_cols = list(macro_chg.columns)
 
-        self.factor_panel = assemble_factor_panel(self.mkt_ret, style, macro_chg)
+        #retreive commo info
+        commodity_returns = commodity_factor_returns(self.close, tickers={"oil": "CL=F", "gold": "GC=F"})
+
+        self.factor_panel, self.macro_cols = assemble_factor_panel(self.mkt_ret, style, commodity_returns,macro_chg)
         self._log.info(
             "Factor panel: %s factors (%s style/market, %s macro)",
             self.factor_panel.shape[1],

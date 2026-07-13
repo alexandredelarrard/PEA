@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.macro_factors import filter_daily_factors
+from src.data_aggregate.utils.factors import filter_daily_factors
 
 
 def estimate_betas_for_stock(

@@ -29,15 +29,15 @@ class StepExtractAllData(Step):
         tickers = tickers + self._config.data_extract.other_tickers
         
         fetch_price_history(self._context, tickers=tickers)
-        fetch_fundamentals(self._context, tickers=tickers)
-        fetch_macro(self._context)
-        fetch_earnings_surprises(self._context, tickers=tickers)
-        fetch_employees(self._context, tickers=tickers)
-        fetch_analyst_grades(self._context, tickers=tickers)
-        fetch_analyst_actions(self._context, tickers=tickers)
-        fetch_exec_comp(self._context, tickers=tickers)
-        fetch_estimates(self._context, tickers=tickers)
-        fetch_sec_filings(self._context)
+        # fetch_fundamentals(self._context, tickers=tickers)
+        # fetch_macro(self._context)
+        # fetch_earnings_surprises(self._context, tickers=tickers)
+        # fetch_employees(self._context, tickers=tickers)
+        # fetch_analyst_grades(self._context, tickers=tickers)
+        # fetch_analyst_actions(self._context, tickers=tickers)
+        # fetch_exec_comp(self._context, tickers=tickers)
+        # fetch_estimates(self._context, tickers=tickers)
+        # fetch_sec_filings(self._context)
 
         # no historical version yet
         # fetch_news(self._context, tickers=tickers)

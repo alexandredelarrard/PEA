@@ -204,31 +204,25 @@ def build_style_factor_returns(
     return pd.DataFrame(cols)
 
 
-# --------------------------------------------------------------------------- #
-# Macro factor changes                                                         #
-# --------------------------------------------------------------------------- #
-DEFAULT_MACRO_LEVELS = {
+# FRED level -> daily-change factor name. ONLY daily-moving series belong here.
+# NOTE: cpi_yoy_pct (monthly) and fed_balance_sheet (weekly) are deliberately
+# EXCLUDED -- their daily change is ~always zero. Inflation risk is captured by
+# the daily breakeven instead.
+DAILY_MACRO_LEVELS = {
     "yield_10y": "d_yield_10y",
     "yield_curve_10y2y": "d_yield_curve",
     "vix": "d_vix",
-    # "cpi_yoy_pct": "d_cpi_yoy",
-    # "fed_balance_sheet": "d_fed_balance_sheet",
-    # "ig_credit_spread": "d_ig_spread",
-    # "hy_credit_spread": "d_hy_spread",
+    "breakeven_10y": "d_breakeven_10y",   # FRED T10YIE (add to fetch_macro)
 }
 
 
-def build_macro_factor_changes(
+def macro_change_factors(
     macro_df: pd.DataFrame,
     trading_index: pd.DatetimeIndex,
     level_to_change: dict | None = None,
 ) -> pd.DataFrame:
-    """
-    Reindex macro levels onto trading days (ffill) and first-difference them.
-    Weekly/monthly series (fed balance sheet, CPI) are ffilled then differenced,
-    so the change lands on the day new info arrives -- point-in-time.
-    """
-    mapping = level_to_change or DEFAULT_MACRO_LEVELS
+    """Daily first-differences of the daily-moving macro levels only."""
+    mapping = level_to_change or DAILY_MACRO_LEVELS
     m = macro_df.copy()
     if "date" in m.columns:
         m["date"] = pd.to_datetime(m["date"])
@@ -243,20 +237,70 @@ def build_macro_factor_changes(
     return pd.DataFrame(out, index=trading_index)
 
 
-# --------------------------------------------------------------------------- #
-# Assemble the shared factor panel (everything except sector, which is per-stock)
-# --------------------------------------------------------------------------- #
-def assemble_factor_panel(
-    market_ret: pd.Series,
-    style_factors: pd.DataFrame,
-    macro_changes: pd.DataFrame,
+def commodity_factor_returns(
+    close: pd.DataFrame,
+    tickers: dict | None = None,
 ) -> pd.DataFrame:
     """
-    Shared regressors (same series for every stock): market + style + macro.
-    Sector is per-stock and injected in the beta regression separately.
+    Daily RETURNS of commodity proxies, taken from the price panel (they flow
+    through the normal price pipeline as `other_tickers`).
+
+    tickers maps factor name -> price column, e.g.
+        {"oil": "CL=F", "gold": "GC=F"}   or   {"oil": "USO", "gold": "GLD"}
+    """
+    out = {}
+    for name, col in tickers.items():
+        if col in close.columns:
+            out[name] = close[col].pct_change()
+    return pd.DataFrame(out, index=close.index)
+
+
+def filter_daily_factors(
+    panel: pd.DataFrame,
+    max_zero_frac: float = 0.30,
+    max_nan_frac: float = 0.50,
+    verbose: bool = True,
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Keep only columns that genuinely move at daily frequency. A return/change
+    column that is exactly zero on > max_zero_frac of days (a stale low-frequency
+    series resampled to daily) cannot support a beta and is dropped. This is the
+    principled replacement for the hardcoded try/except drop.
+
+    Returns (clean_panel, dropped_columns).
+    """
+    keep, dropped = [], []
+    for c in panel.columns:
+        s = panel[c]
+        nan_frac = float(s.isna().mean())
+        nonnan = s.dropna()
+        zero_frac = float((nonnan.abs() < 1e-12).mean()) if len(nonnan) else 1.0
+        if nan_frac > max_nan_frac or zero_frac > max_zero_frac:
+            dropped.append(c)
+        else:
+            keep.append(c)
+    if verbose and dropped:
+        print(f"[filter_daily_factors] dropped non-daily-moving factors: {dropped}")
+    return panel[keep], dropped
+
+
+def assemble_factor_panel(
+    market_ret: pd.Series,
+    style_factors: pd.DataFrame,      # size, value, momentum, quality, resvol (returns)
+    commodity_returns: pd.DataFrame,  # oil, gold (returns)
+    macro_changes: pd.DataFrame,      # d_yield_10y, d_vix, d_breakeven_10y (changes)
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Assemble the shared factor panel and return (panel, macro_cols).
+
+    macro_cols = the CHANGE columns (yields/vix/breakeven), which targets.py
+    forward-accumulates via cumulative sum. Market, style, and COMMODITY columns
+    are returns and are compounded forward -- so commodity is NOT in macro_cols.
     """
     panel = pd.concat(
-        [market_ret.rename("market"), style_factors, macro_changes],
+        [market_ret.rename("market"), style_factors, commodity_returns, macro_changes],
         axis=1,
     )
-    return panel
+    panel, dropped = filter_daily_factors(panel)
+    macro_cols = [c for c in macro_changes.columns if c in panel.columns]
+    return panel, macro_cols

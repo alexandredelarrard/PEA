@@ -25,6 +25,28 @@ import lightgbm as lgb
 from scipy.stats import spearmanr
 
 EARLY_STOPPING_ROUNDS = 40
+CALENDAR_DAYS_PER_YEAR = 365.25
+
+
+def time_decay_weights(
+    dates: pd.Series,
+    half_life_years: float,
+    reference: pd.Timestamp | None = None,
+) -> np.ndarray:
+    """Exponential sample weights by age: w = 0.5 ** (age / half_life).
+
+    ``reference`` defaults to the latest date in ``dates`` (weight = 1.0 there).
+    Age is in calendar days; a 2-year half-life gives weight 0.5 for rows exactly
+    two years before ``reference``.
+    """
+    if half_life_years <= 0:
+        raise ValueError("half_life_years must be positive")
+    dt = pd.to_datetime(dates).dt.normalize()
+    ref = pd.Timestamp(reference).normalize() if reference is not None else dt.max()
+    half_life_days = half_life_years * CALENDAR_DAYS_PER_YEAR
+    age = (ref - dt).dt.days.to_numpy(dtype=np.float64)
+    age = np.clip(age, 0.0, None)
+    return np.power(0.5, age / half_life_days).astype(np.float32)
 
 # --------------------------------------------------------------------------- #
 # 1. Assemble the modeling panel                                              #
@@ -84,16 +106,18 @@ def _build_datasets(
     panel: pd.DataFrame,
     feats: list,
     label_name: str,
-) -> tuple:
-
+    weights: np.ndarray | None = None,
+) -> lgb.Dataset:
     x = panel[feats].to_numpy(dtype="float32")
+    kw: dict = {"feature_name": feats}
+    if weights is not None:
+        kw["weight"] = weights
     if params["objective"] == "lambdarank":
         y = _graded_labels(panel, label_name)
         groups = _group_sizes(panel)
-        return lgb.Dataset(x, label=y, group=groups, feature_name=feats)
-    else:
-        y = panel[label_name].to_numpy(dtype="float32")
-        return lgb.Dataset(x, label=y, feature_name=feats)
+        return lgb.Dataset(x, label=y, group=groups, **kw)
+    y = panel[label_name].to_numpy(dtype="float32")
+    return lgb.Dataset(x, label=y, **kw)
 
 
 def train_ranker(
@@ -104,9 +128,11 @@ def train_ranker(
     num_boost_round: int = 400,
     valid_panel: pd.DataFrame | None = None,
     early_stopping_rounds: int = EARLY_STOPPING_ROUNDS,
+    half_life_years: float | None = None,
 ):
-    """Fit a LightGBM lambdarank model. Labels are bucketed into graded relevance
-    levels. When valid_panel is provided, early stopping is applied."""
+    """Fit a LightGBM model. When ``half_life_years`` is set, training rows are
+    weighted with exponential time decay (most recent = 1.0); validation is
+    unweighted so early stopping reflects recent out-of-sample fit."""
     default = dict(
         objective="regression", #"lambdarank",
         metric="rmse", #"ndcg",
@@ -123,7 +149,9 @@ def train_ranker(
     if params:
         default.update(params)
 
-    train_set = _build_datasets(default, panel, feats, label_name)
+    train_w = (time_decay_weights(panel["date"], half_life_years)
+               if half_life_years is not None else None)
+    train_set = _build_datasets(default, panel, feats, label_name, train_w)
     valid_sets = []
     callbacks = []
 
@@ -157,7 +185,7 @@ def feature_importance(booster, feats: list) -> dict[str, float]:
 
 def temporal_valid_split(
     panel: pd.DataFrame,
-    train_frac: float = 0.8,
+    train_frac: float = 0.9,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Hold out the last portion of dates for validation (early stopping)."""
     dates = np.sort(panel["date"].unique())

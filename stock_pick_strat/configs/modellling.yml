@@ -1,6 +1,9 @@
 model:
   label_column: y
   save_models: true
+  weight_decay:
+    enabled: true
+    half_life_years: 2
   cv:
     n_splits: 5
     embargo: null          # defaults to primary_horizon when null
@@ -16,7 +19,7 @@ model:
 
 train:
   start_date: 2015-01-01
-  end_date: 2024-06-30
+  end_date: 2026-01-01
 
 # Feature allow-list: the model trains ONLY on the uncommented entries below.
 # Comment a line out to drop that feature; a name not present in the cube is
@@ -165,7 +168,7 @@ inputs:
     #      genuinely historical & point-in-time, so backtestable. Require running
     #      fetch_employees (needs a free FMP_API_KEY). If not fetched, the columns
     #      are simply absent from the cube and skipped -- safe to leave enabled. ----
-    - f_revenue_per_employee_vs_peers
-    - f_revenue_per_employee_xs
-    - f_employee_growth_vs_peers
-    - f_employee_growth_xs
+    # - f_revenue_per_employee_vs_peers
+    # - f_revenue_per_employee_xs
+    # - f_employee_growth_vs_peers
+    # - f_employee_growth_xs

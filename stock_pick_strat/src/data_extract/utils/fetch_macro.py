@@ -18,7 +18,6 @@ from src.context import Context
 SERIES = {
     # Risk-free rate
     "DGS3MO": "yield_3m",
-    "TB3MS": "tbill_3m_secondary",  # alt monthly 3m series, useful if DGS3MO has gaps
     # Yield curve
     "DGS2": "yield_2y",
     "DGS10": "yield_10y",
@@ -72,8 +71,6 @@ def fetch_macro(context: Context):
     macro = pd.DataFrame(frames)
     macro.index.name = "date"
     macro = macro.reset_index()
-
-    macro["cpi_yoy_pct"] = macro["cpi"].pct_change(periods=12) * 100
 
     macro.to_parquet(context.paths["MACRO_PATH"], index=False)
     print(f"Saved {len(macro)} rows of macro data to {context.paths["MACRO_PATH"]}")

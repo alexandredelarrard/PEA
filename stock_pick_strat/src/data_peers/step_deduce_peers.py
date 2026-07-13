@@ -28,7 +28,7 @@ class StepDeducePeers(Step):
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
-        self._cfg = config.build_cube
+        self._cfg = config.peers
 
     def run(self):
         peers_path = self._context.paths["SECTOR_PEERS_PATH"]
@@ -51,20 +51,20 @@ class StepDeducePeers(Step):
         self.prices_long = pd.read_parquet(path)
 
     def normalize_prices(self):
-        cfg = self._cfg
+        mkt = self._config.build_cube.market_ticker
+
         raw = du.prices_long_to_multiindex(self.prices_long)
         self.close = du.extract_field(raw, "Close")
-        trading_days = self.close[cfg.market_ticker].notna()
+        trading_days = self.close[mkt].notna()
         self.close = self.close.loc[trading_days]
         self.returns = du.daily_returns(self.close)
-        self.stock_ret = self.returns.drop(columns=[cfg.market_ticker])
+        self.stock_ret = self.returns.drop(columns=[mkt])
         self._log.info("Normalized prices: %s dates, %s stocks",
                        self.close.shape[0], self.stock_ret.shape[1])
 
     def _embedding_similarity(self):
         """Fetch descriptions -> OpenAI embeddings (cached) -> cosine similarity.
         Returns None on any failure so the caller falls back to correlation-only."""
-        pcfg = self._cfg.peers
         tickers = list(self.stock_ret.columns)
         try:
             descriptions = fetch_business_descriptions(tickers)
@@ -74,7 +74,7 @@ class StepDeducePeers(Step):
             cache_path = self._context.paths["DATA_STORE"] / "ticker_embeddings.parquet"
             emb = get_openai_embeddings(
                 descriptions,
-                model=pcfg.get("embedding_model", "text-embedding-3-small"),
+                model=self._cfg.get("embedding_model", "text-embedding-3-small"),
                 cache_path=cache_path,
             )
             if emb.empty:
@@ -86,24 +86,23 @@ class StepDeducePeers(Step):
             return None
 
     def build_peers(self):
-        pcfg = self._cfg.peers
-        use_emb = pcfg.get("use_embeddings", False)
+        use_emb = self._cfg.get("use_embeddings", False)
 
         embed_sim = self._embedding_similarity() if use_emb else None
 
         if embed_sim is not None:
             self.peers = build_peer_dict_hybrid(
                 self.stock_ret, embed_sim,
-                top_k=pcfg.top_k, weighting=pcfg.weighting, min_obs=pcfg.min_obs,
-                w_corr=pcfg.get("w_corr", 0.5), w_embed=pcfg.get("w_embed", 0.5),
+                top_k=self._cfg.top_k, weighting=self._cfg.weighting, min_obs=self._cfg.min_obs,
+                w_corr=self._cfg.get("w_corr", 0.5), w_embed=self._cfg.get("w_embed", 0.5),
             )
             self._log.info("Built HYBRID (corr + embedding) peer baskets "
                            "(w_corr=%.2f w_embed=%.2f)",
-                           pcfg.get("w_corr", 0.5), pcfg.get("w_embed", 0.5))
+                           self._cfg.get("w_corr", 0.5), self._cfg.get("w_embed", 0.5))
         else:
             self.peers = build_peer_dict(
-                self.stock_ret, top_k=pcfg.top_k,
-                weighting=pcfg.weighting, min_obs=pcfg.min_obs)
+                self.stock_ret, top_k=self._cfg.top_k,
+                weighting=self._cfg.weighting, min_obs=self._cfg.min_obs)
             self._log.info("Built CORRELATION-ONLY peer baskets")
 
         n = sum(1 for p in self.peers.values() if p)

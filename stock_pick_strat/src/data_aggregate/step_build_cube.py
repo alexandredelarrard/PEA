@@ -19,8 +19,8 @@ from src.data_aggregate.utils.factors import (
     assemble_factor_panel,
 )
 from src.data_aggregate.utils.cube import build_cube_dataframe
-from src.data_aggregate.step_deduce_peers import StepDeducePeers
-from src.modelling.utils_model.sector_peers import compute_sector_returns
+from src.data_peers.step_deduce_peers import StepDeducePeers
+from src.data_peers.utils.sector_peers import compute_sector_returns
 
 
 class StepBuildCube(Step):

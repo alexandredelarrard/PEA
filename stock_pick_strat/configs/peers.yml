@@ -1,9 +1,9 @@
 # build_cube.yml -> replace the existing `peers:` block with this
 peers:
-  top_k: 20
+  top_k: 8
   weighting: corr            # corr | equal  (weights the COMBINED similarity)
   min_obs: 120
   use_embeddings: true       # false -> correlation-only (old behaviour)
   embedding_model: text-embedding-3-small   # or text-embedding-3-large (richer, pricier)
-  w_corr: 0.4               # blend weight on return correlation
-  w_embed: 0.6               # blend weight on business-text cosine similarity
+  w_corr: 0               # blend weight on return correlation
+  w_embed: 1              # blend weight on business-text cosine similarity

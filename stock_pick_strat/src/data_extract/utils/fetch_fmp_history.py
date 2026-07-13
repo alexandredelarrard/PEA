@@ -32,7 +32,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.fmp_client import fetch_incremental
+from src.data_extract.utils.fmp_client import fetch_incremental
 
 
 def _to_dt(s: pd.Series) -> pd.Series:

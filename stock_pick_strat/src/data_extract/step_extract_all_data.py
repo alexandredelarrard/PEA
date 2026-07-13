@@ -2,16 +2,16 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.utils.step import Step
-from src.data_extract.fetch_prices import fetch_price_history, get_sp500_tickers
-from src.data_extract.fetch_fundamentals import fetch_fundamentals
-from src.data_extract.fetch_macro import fetch_macro
-from src.data_extract.fetch_news import fetch_news
-from src.data_extract.fetch_sec_filings import fetch_sec_filings
-from src.data_extract.fetch_earnings_surprises import fetch_earnings_surprises
-from src.data_extract.fetch_analyst_estimates import fetch_analyst_estimates
-from src.data_extract.fetch_management import fetch_management
-from src.data_extract.fetch_employees import fetch_employees
-from src.data_extract.fetch_fmp_history import (
+from src.data_extract.utils.fetch_prices import fetch_price_history, get_sp500_tickers
+from src.data_extract.utils.fetch_fundamentals import fetch_fundamentals
+from src.data_extract.utils.fetch_macro import fetch_macro
+from src.data_extract.utils.fetch_news import fetch_news
+from src.data_extract.utils.fetch_sec_filings import fetch_sec_filings
+from src.data_extract.utils.fetch_earnings_surprises import fetch_earnings_surprises
+from src.data_extract.utils.fetch_analyst_estimates import fetch_analyst_estimates
+from src.data_extract.utils.fetch_management import fetch_management
+from src.data_extract.utils.fetch_employees import fetch_employees
+from src.data_extract.utils.fetch_fmp_history import (
     fetch_analyst_grades,
     fetch_analyst_actions,
     fetch_exec_comp,

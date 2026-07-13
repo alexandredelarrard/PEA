@@ -16,8 +16,6 @@ from fredapi import Fred
 from src.context import Context
 
 SERIES = {
-    "CPIAUCSL": "cpi",
-    "WALCL": "fed_balance_sheet",
     # Risk-free rate
     "DGS3MO": "yield_3m",
     "TB3MS": "tbill_3m_secondary",  # alt monthly 3m series, useful if DGS3MO has gaps
@@ -32,6 +30,7 @@ SERIES = {
     # Credit spreads (bonus: useful risk-sentiment overlay)
     "BAMLC0A0CM": "ig_credit_spread",
     "BAMLH0A0HYM2": "hy_credit_spread",
+    "T10YIE": "breakeven_10y",
 }
 
 

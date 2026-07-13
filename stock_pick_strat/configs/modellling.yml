@@ -21,6 +21,12 @@ model:
     num_boost_round: 3000      # cap only; early stopping ends well before this
     early_stopping_rounds: 100 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
 
+  diagnostics:                 # per-run, per-horizon model-diagnosis artifacts
+    enabled: true
+    top_n_features: 15         # top features rendered as individual PDPs + SHAP bar
+    shap_sample: 2000          # rows sampled for SHAP / partial dependence (speed)
+    pdp_grid: 30               # partial-dependence grid resolution
+
 train:
   start_date: 2015-01-01
   end_date: 2025-01-01

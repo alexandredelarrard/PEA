@@ -1,13 +1,14 @@
 import numpy as np
 import json
 import pandas as pd
+from datetime import datetime
 from omegaconf import DictConfig
 
 from src.utils.step import Step
 from src.context import Context
 from src.data_aggregate.utils.cube import panel_from_cube, feature_columns_from_cube
 from src.modelling.utils_model import model as ml
-from src.modelling.utils_model import shap_analysis
+from src.modelling.utils_model import diagnostics
 
 
 class StepModelling(Step):
@@ -36,11 +37,11 @@ class StepModelling(Step):
         self.load_cube()
         self.build_panels()
         self.cross_validate_all_horizons()
-        self.save_shap_explanations()
         self.train_final_models()
         self.save_models()
         self.blend_and_generate_signal()
         self.log_feature_importance()
+        self.save_diagnostics()
         self.save_outputs()
 
     # ------------------------------------------------------------------ #
@@ -143,6 +144,7 @@ class StepModelling(Step):
         self.cv_results = {}
         self.horizon_ic = {}
         self.last_cv_folds = {}
+        self.oos_predictions = {}   # concatenated out-of-sample preds -> IC-over-time
         train_kw = self._train_kwargs()
         if train_kw.get("half_life_years"):
             self._log.info("Time-decay sample weights enabled (half_life=%.1f years)",
@@ -152,6 +154,7 @@ class StepModelling(Step):
             embargo = (cfg.cv.embargo or h)      # embargo must be >= horizon
             fold_results = []
             last_fold = None
+            oos_frames = []
             for train_days, test_days in ml.purged_wf_splits(
                 panel["date"], cfg.cv.n_splits, embargo
             ):
@@ -167,41 +170,53 @@ class StepModelling(Step):
                 # is inflated ~sqrt(horizon) and long horizons look artificially strong
                 fold_results.append(ml.daily_ic(test, preds, self.label_column, horizon=h))
                 last_fold = {"model": booster, "test_panel": test}
+                # keep this fold's OOS predictions for the concatenated IC-over-time curve
+                oos_frames.append(pd.DataFrame({
+                    "date": test["date"].to_numpy(),
+                    "ticker": test["ticker"].to_numpy(),
+                    "pred": preds.to_numpy(),
+                    self.label_column: test[self.label_column].to_numpy(),
+                }))
 
             self.cv_results[h] = fold_results
             if last_fold is not None:
                 self.last_cv_folds[h] = last_fold
+            if oos_frames:
+                self.oos_predictions[h] = pd.concat(oos_frames, ignore_index=True)
 
             mean_ic = np.nanmean([r["mean_ic"] for r in fold_results]) if fold_results else np.nan
             mean_ir = np.nanmean([r["ic_ir"] for r in fold_results]) if fold_results else np.nan
             self.horizon_ic[h] = {"mean_ic": mean_ic, "ic_ir": mean_ir}
             self._log.info("horizon %s: CV mean_IC=%+.4f  IC_IR=%+.2f", h, mean_ic, mean_ir)
 
-    def save_shap_explanations(self):
-        """SHAP + dependence plots for the last CV fold of the primary horizon."""
-        if not getattr(self._cfg.output, "save_shap", False) or not self._context.save:
+    def save_diagnostics(self):
+        """Per-run, per-horizon diagnosis folder under
+        <OUTPUT_DIR>/diagnostics/<run_stamp>/h<H>/: top-N individual partial-
+        dependence plots, SHAP importance (SHAP only), an Excel importance table,
+        and the out-of-sample IC-over-time curve (CV folds concatenated). See
+        utils_model/diagnostics.py. Optional deps (shap / xlsx engine) degrade
+        gracefully so this never fails the pipeline."""
+        if not self._context.save:
             return
-
-        fold = self.last_cv_folds.get(self.primary_horizon)
-        if fold is None:
-            self._log.warning("No CV fold available for SHAP analysis")
+        diag = self._config.model.get("diagnostics", {}) or {}
+        if not diag.get("enabled", True):
             return
+        top_n = int(diag.get("top_n_features", 15))
+        shap_sample = int(diag.get("shap_sample", 2000))
+        pdp_grid = int(diag.get("pdp_grid", 30))
 
-        out_dir = self._context.paths["SHAP_OUTPUT_DIR"]
+        run_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        run_dir = self._context.paths["OUTPUT_DIR"] / "diagnostics" / run_stamp
         try:
-            imp = shap_analysis.save_shap_analysis(
-                fold["model"],
-                fold["test_panel"],
-                self.feature_cols,
-                out_dir,
-                horizon=self.primary_horizon,
+            diagnostics.save_run_diagnostics(
+                run_dir, self.models, self.panels, self.feature_cols,
+                getattr(self, "oos_predictions", {}),
+                label_name=self.label_column, top_n=top_n,
+                shap_sample=shap_sample, pdp_grid=pdp_grid, logger=self._log,
             )
-            self._log.info(
-                "Saved SHAP analysis to %s (top feature: %s)",
-                out_dir, imp.index[0],
-            )
+            self._log.info("Saved per-horizon model diagnostics to %s", run_dir)
         except Exception as e:
-            self._log.warning("SHAP analysis failed: %s", e)
+            self._log.warning("Diagnostics generation failed: %s", e)
 
     def _horizon_weights(self) -> dict:
         """IR-weight horizons; floor negatives at 0, fall back to equal if all <=0."""

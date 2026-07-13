@@ -1,11 +1,6 @@
 build_cube:
   market_ticker: SPY
 
-  peers:
-    top_k: 20
-    weighting: corr          # corr | equal
-    min_obs: 120
-
   betas:
     window: 63
     min_obs: 40

@@ -117,12 +117,20 @@ class StepModelling(Step):
         kw = {
             "params": {
                 "learning_rate": c.learning_rate, "max_depth": c.max_depth,
-                "subsample": c.subsample, "colsample_bytree": c.colsample_bytree,
+                "num_leaves": c.get("num_leaves", 31),
+                # subsample (=bagging_fraction) only takes effect when bagging_freq>0
+                "subsample": c.subsample, "bagging_freq": c.get("bagging_freq", 0),
+                "colsample_bytree": c.colsample_bytree,
                 "min_child_samples": c.min_child_samples,
                 "lambda_l1": c.lambda_l1, "lambda_l2": c.lambda_l2,
+                # deterministic training keyed on the pipeline's global seed so a
+                # rerun reproduces results bit-for-bit (see model.train_ranker)
+                "seed": int(self._config.get("seed", ml.DEFAULT_SEED)),
+                "deterministic": True,
+                "force_row_wise": True,
             },
             "num_boost_round": c.num_boost_round,
-            "early_stopping_rounds": ml.EARLY_STOPPING_ROUNDS,
+            "early_stopping_rounds": int(c.get("early_stopping_rounds", ml.EARLY_STOPPING_ROUNDS)),
         }
         wd = self._config.model.get("weight_decay")
         if wd and wd.get("enabled", False):
@@ -155,7 +163,9 @@ class StepModelling(Step):
                 booster = ml.train_ranker(sub_tr, self.feature_cols,
                                           self.label_column, valid_panel=sub_val, **train_kw)
                 preds = ml.predict(booster, test, self.feature_cols)
-                fold_results.append(ml.daily_ic(test, preds, self.label_column))
+                # annualize the IC IR by the horizon (overlapping labels), else it
+                # is inflated ~sqrt(horizon) and long horizons look artificially strong
+                fold_results.append(ml.daily_ic(test, preds, self.label_column, horizon=h))
                 last_fold = {"model": booster, "test_panel": test}
 
             self.cv_results[h] = fold_results

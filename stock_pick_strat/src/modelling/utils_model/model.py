@@ -26,6 +26,7 @@ from scipy.stats import spearmanr
 
 EARLY_STOPPING_ROUNDS = 40
 CALENDAR_DAYS_PER_YEAR = 365.25
+DEFAULT_SEED = 42  # any fixed value works; overridden by the pipeline's global seed
 
 
 def time_decay_weights(
@@ -145,6 +146,15 @@ def train_ranker(
         lambda_l2=5.0,
         verbosity=-1,
         n_jobs=-2,
+        # --- reproducibility: identical results on every rerun ---
+        # multithreaded LightGBM sums gradients in a nondeterministic order;
+        # deterministic + force_row_wise make it bit-for-bit reproducible even
+        # across thread counts, and `seed` fixes every internal RNG (bagging /
+        # feature_fraction / data sampling). Without these a rerun drifts and
+        # early stopping flips between num_boost_round and ~1 round.
+        seed=DEFAULT_SEED,
+        deterministic=True,
+        force_row_wise=True,
     )
     if params:
         default.update(params)
@@ -202,7 +212,19 @@ def temporal_valid_split(
 # --------------------------------------------------------------------------- #
 # 4. Evaluation: Information Coefficient                                       #
 # --------------------------------------------------------------------------- #
-def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y") -> dict:
+def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y",
+             horizon: int = 1, trading_days_per_year: int = 252) -> dict:
+    """Daily cross-sectional IC (Spearman) and its annualized information ratio.
+
+    The IC is measured EVERY trading day, but the label is an `horizon`-day
+    forward return, so consecutive daily ICs overlap and are ~horizon-day
+    autocorrelated. Annualizing the IR with sqrt(252) therefore assumes 252
+    INDEPENDENT observations per year and overstates it by ~sqrt(horizon) (which
+    is why the 60-day horizon showed the largest IR). We instead annualize by the
+    number of independent horizon-length windows per year, 252/horizon, i.e.
+        ic_ir = mean(IC)/std(IC) * sqrt(252 / horizon).
+    With horizon=1 this reduces to the classic sqrt(252) daily IR.
+    """
     df = panel[["date", label_name]].copy()
     df["pred"] = preds.to_numpy()
     ics = []
@@ -212,10 +234,12 @@ def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y") -> di
             if np.isfinite(ic):
                 ics.append(ic)
     ics = np.array(ics)
+    periods_per_year = trading_days_per_year / max(1, int(horizon))
     return {
         "mean_ic": float(ics.mean()) if len(ics) else np.nan,
         "ic_std": float(ics.std()) if len(ics) else np.nan,
-        "ic_ir": float(ics.mean() / ics.std() * np.sqrt(252)) if ics.std() > 0 else np.nan,
+        "ic_ir": (float(ics.mean() / ics.std() * np.sqrt(periods_per_year))
+                  if ics.std() > 0 else np.nan),
         "n_days": int(len(ics)),
     }
 
@@ -226,6 +250,7 @@ def cross_validate(
     label_name: str = "y",
     n_splits: int = 5,
     embargo: int = 20,
+    horizon: int = 1,
     **train_kw,
 ):
     results = []
@@ -239,7 +264,7 @@ def cross_validate(
             sub_train, feats, label_name, valid_panel=sub_valid, **train_kw,
         )
         preds = predict(booster, test, feats)
-        results.append(daily_ic(test, preds, label_name))
+        results.append(daily_ic(test, preds, label_name, horizon=horizon))
     return results
 
 

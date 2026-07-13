@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.sec_utils import sec_get, load_cik_mapping
-from src.data_extract.utils.edgar_filings import list_filings
+from src.data_extract.utils.edgar_fillings import list_filings
 from src.data_extract.utils.edgar_extract import html_to_text, extract_employee_count
 
 _DATA_COLUMNS = ["ticker", "as_of", "period", "employees", "form_type"]

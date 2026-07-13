@@ -23,8 +23,8 @@ model:
 
   diagnostics:                 # per-run, per-horizon model-diagnosis artifacts
     enabled: true
-    top_n_features: 15         # top features rendered as individual PDPs + SHAP bar
-    shap_sample: 2000          # rows sampled for SHAP / partial dependence (speed)
+    top_n_features: 50         # top features rendered as individual PDPs + SHAP bar
+    shap_sample: 8000          # rows sampled for SHAP / partial dependence (speed)
     pdp_grid: 30               # partial-dependence grid resolution
 
 train:

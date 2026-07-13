@@ -1,5 +1,7 @@
 model:
   label_column: y
+  target_type: rank            # which stored cube target to train on: rank | zscore
+                               # (must be present in build_cube.targets.labels)
   save_models: true
   weight_decay:
     enabled: true

@@ -1,26 +1,26 @@
 backtest:
-  # Backtest window START is NOT set here — it is read from the models' metadata
-  # (train.end_date from modellling.yml). This guarantees the backtest begins
-  # exactly where training ended, with no overlap.
-  end: null              # null = last available cube date
-
-  starting_capital: 10_000
-
-  # ---- strategy sleeves (simple: market beta + dollar-neutral alpha L/S) ----
-  market_weight: 0
-  alpha_weight: 1
-  long_quantile: 0.1
-  short_quantile: 0.1
-  rank_weight: false
-
-  # ---- transaction costs (bps of notional traded per rebalance) ----
-  fee_bps: .5
+  # window
+  end: null                    # null -> cube max date
+  starting_capital: 1000000
+ 
+  # --- construction (optimizer) ---
+  market_weight: 0.5           # deliberate SPY beta sleeve (total portfolio beta = this)
+  target_ann_vol: 0.08         # alpha-sleeve ex-ante volatility target
+  beta_neutral: true           # enforce beta'w = 0 (market-neutral alpha sleeve)
+  pos_cap: 0.03                # max |weight| per name
+  gross_cap: 3.0               # max sum|w| (leverage safety)
+ 
+  # --- turnover control (the cost fix) ---
+  step: 0.35                   # partial trade toward target; lower = slower = cheaper
+  no_trade_band: 0.0           # optional: skip per-name trades smaller than this
+  rebalance_freq: 1            # recompute target every N days
+ 
+  # --- risk-model windows ---
+  beta_window: 63
+  vol_window: 63
+ 
+  # --- costs / blend ---
+  fee_bps: 1.0
   spread_bps: 5.0
-
-  # ---- misc ----
-  blend: ir              # ir = reuse train-window IC_IR weights from metadata; equal = simple avg
-  rebalance_freq: 1
-  risk_free_rate: .03
-
-  # NOTE: horizons are NOT listed here — they come from build_cube.targets.horizons
-  # (the single source of truth), and the backtest only loads whichever models exist.
+  blend: ir                    # ir | equal  (multi-horizon combine)
+  risk_free_rate: 0.0

@@ -1,32 +1,23 @@
 """
-step_backtest.py
-----------------
-Out-of-sample backtest that LOADS the per-horizon models saved by StepModelling
-(it does NOT retrain). The models were trained on [train.start_date,
-train.end_date] with a tail embargo, so they never saw returns from the backtest
-window; the backtest therefore begins exactly at train.end_date.
+step_backtest.py  (optimizer construction)
+------------------------------------------
+Same load/predict/report as before, but `simulate()` now uses
+simulate_portfolio_opt: a dollar+beta-neutral, inverse-variance, vol-targeted
+alpha sleeve traded with a turnover-aware partial step, plus a deliberate SPY
+market sleeve. Replaces the top/bottom-decile equal-weight book.
 
-Reads:
-  * models + metadata from OUTPUT_DIR/models      (saved by StepModelling)
-  * train.end_date from modellling.yml            (= backtest start)
-  * horizons from build_cube.targets.horizons
-
-Strategy (simple): market_weight * SPY  +  alpha_weight * (top-q long / bottom-q
-short, dollar-neutral). Costs charged on turnover. Signal formed at close t,
-P&L realized on t->t+1. simulate_portfolio / compute_metrics are pure & tested.
+KEY CHANGE in predict_and_blend: the signal fed to construction is now the
+IR-weighted combined Z-SCORE (magnitude preserved), NOT the percentile rank --
+the optimizer uses magnitude, and z-scores make the mean-variance tilt meaningful.
 """
-
 from __future__ import annotations
 
 import json
-
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import lightgbm as lgb
-
 from omegaconf import DictConfig
 
 from src.utils.step import Step
@@ -36,12 +27,9 @@ from src.data_aggregate.utils.cube import panel_from_cube
 from src.modelling.utils_model import model as ml
 from src.post_processing.utils.metrics import compute_metrics
 from src.post_processing.utils.plot_analysis import plot_equity
-from src.post_processing.utils.strategies import simulate_portfolio
+from src.post_processing.utils.strategies_opt import simulate_portfolio_opt
 
 
-# =========================================================================== #
-# STEP                                                                        #
-# =========================================================================== #
 class StepBacktest(Step):
 
     def __init__(self, context: Context, config: DictConfig):
@@ -56,24 +44,17 @@ class StepBacktest(Step):
         self.simulate()
         self.report()
 
-    # ------------------------------------------------------------------ #
     def load_models(self):
-        """Load per-horizon boosters + metadata saved by StepModelling."""
         models_dir = self._context.paths["MODELS_DIR"]
         meta_path = models_dir / "metadata.json"
         if not meta_path.exists():
             raise FileNotFoundError(f"No models at {models_dir}. Run StepModelling first.")
-
         meta = json.loads(meta_path.read_text())
-
         self.feature_cols = meta["feature_cols"]
         self.label_column = meta["label_column"]
         self.train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
-        # backtest begins where training ended
         self.backtest_start = pd.Timestamp(meta["train_end"])
-        # horizons come from build_cube config (the single source of truth)
         self.horizons = list(self._cube_cfg.targets.horizons)
-
         self.models = {}
         for h in self.horizons:
             p = models_dir / f"model_h{h}.txt"
@@ -82,14 +63,12 @@ class StepBacktest(Step):
         if not self.models:
             raise FileNotFoundError(f"No model_h*.txt files found in {models_dir}.")
         self._log.info("Loaded %d models (horizons %s); backtest starts %s",
-                       len(self.models), list(self.models.keys()),
-                       self.backtest_start.date())
+                       len(self.models), list(self.models.keys()), self.backtest_start.date())
 
     def load_cube_and_returns(self):
         self.cube = pd.read_parquet(self._context.paths["CUBE_PATH"])
         self.end = (pd.Timestamp(self._cfg.end) if self._cfg.get("end")
                     else pd.Timestamp(self.cube["date"].max()))
-
         prices_long = pd.read_parquet(self._context.paths["PRICES_PATH"])
         raw = du.prices_long_to_multiindex(prices_long)
         close = du.extract_field(raw, "Close")
@@ -131,22 +110,29 @@ class StepBacktest(Step):
         z = blended[zc].to_numpy()
         mask = ~np.isnan(z)
         wsum = np.where(mask, w, 0).sum(axis=1)
-        blended["combined"] = np.where(wsum > 0,
-                                       np.nansum(np.where(mask, z * w, 0), axis=1) / np.where(wsum > 0, wsum, 1),
-                                       np.nan)
-        blended["signal"] = blended.groupby("date")["combined"].rank(pct=True)
-        self.signal = blended.pivot(index="date", columns="ticker", values="signal")
+        # IR-weighted combined z-score; KEEP magnitude (no percentile rank) for the optimizer
+        blended["combined"] = np.where(
+            wsum > 0,
+            np.nansum(np.where(mask, z * w, 0), axis=1) / np.where(wsum > 0, wsum, 1),
+            np.nan)
+        self.signal = blended.pivot(index="date", columns="ticker", values="combined")
         self.signal.index = pd.to_datetime(self.signal.index)
-        self._log.info("Signal matrix: %s days x %s tickers", *self.signal.shape)
+        self._log.info("Signal (combined z) matrix: %s days x %s tickers", *self.signal.shape)
 
     def simulate(self):
         c = self._cfg
-        self.daily = simulate_portfolio(
+        self.daily = simulate_portfolio_opt(
             self.signal, self.stock_ret, self.spy_ret,
             starting_capital=float(c.starting_capital),
-            market_weight=c.market_weight, alpha_weight=c.alpha_weight,
-            long_q=c.long_quantile, short_q=c.short_quantile,
-            rank_weight=c.get("rank_weight", False),
+            market_weight=c.get("market_weight", 0.5),
+            target_ann_vol=c.get("target_ann_vol", 0.08),
+            beta_neutral=c.get("beta_neutral", True),
+            pos_cap=c.get("pos_cap", 0.03),
+            gross_cap=c.get("gross_cap", 3.0),
+            step=c.get("step", 0.35),
+            no_trade_band=c.get("no_trade_band", 0.0),
+            beta_window=c.get("beta_window", 63),
+            vol_window=c.get("vol_window", 63),
             fee_bps=c.fee_bps, spread_bps=c.spread_bps,
             rebalance_freq=c.get("rebalance_freq", 1))
         self.metrics = compute_metrics(self.daily, rf_annual=c.get("risk_free_rate", 0.0))
@@ -162,7 +148,6 @@ class StepBacktest(Step):
                        m["spy_sharpe"], m["spy_max_drawdown"]*100)
         self._log.info("Avg daily turnover %.3f  avg daily cost %.4f%%",
                        m["avg_daily_turnover"], m["avg_daily_cost"]*100)
-
         out_dir = self._context.paths["OUTPUT_DIR"] / "backtest"
         out_dir.mkdir(parents=True, exist_ok=True)
         self.daily.to_parquet(out_dir / "backtest_daily.parquet")

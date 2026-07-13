@@ -16,6 +16,7 @@ What lives where on EDGAR (why we parse what we parse):
 
 Everything is dated by the FILING date upstream (point-in-time / leak-free).
 """
+
 from __future__ import annotations
 
 import html

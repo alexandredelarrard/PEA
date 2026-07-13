@@ -4,7 +4,7 @@ backtest:
   starting_capital: 1000000
  
   # --- construction (optimizer) ---
-  market_weight: 0.0            # deliberate SPY beta sleeve (total portfolio beta = this)
+  market_weight: 0.5           # deliberate SPY beta sleeve (total portfolio beta = this)
   target_ann_vol: 0.08         # alpha-sleeve ex-ante volatility target
   beta_neutral: true           # enforce beta'w = 0 (market-neutral alpha sleeve)
   pos_cap: 0.05                # max |weight| per name

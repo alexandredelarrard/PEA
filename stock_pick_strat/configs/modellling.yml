@@ -8,7 +8,7 @@ model:
     n_splits: 5
     embargo: null          # defaults to primary_horizon when null
   lightgbm:
-    learning_rate: 0.02        # was 0.001 -> far too low: 1800 rounds barely trained,
+    learning_rate: 0.004        # was 0.001 -> far too low: 1800 rounds barely trained,
                                # so early stopping flipped between the cap and ~1 round
     max_depth: 5
     num_leaves: 31             # <= 2^max_depth; explicit so depth/leaves stay consistent
@@ -16,7 +16,7 @@ model:
     bagging_freq: 1            # apply row bagging every iteration (activates subsample)
     colsample_bytree: 0.8
     min_child_samples: 30
-    lambda_l1: 2.0
+    lambda_l1: 3.0
     lambda_l2: 5.0
     num_boost_round: 3000      # cap only; early stopping ends well before this
     early_stopping_rounds: 100 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
@@ -33,19 +33,19 @@ inputs:
   columns:
     # ---- Price / technical (point-in-time; MACD/RSI/ATR lagged 1 day) ----
     - mom_12_1
-    - rev_5
+    # - rev_5
     - rev_21
-    - vol_21
+    # - vol_21
     - vol_63
     - ma_ratio_50
-    - ma_ratio_200
-    - high_prox_252
-    - gap_21
-    - range_21
-    - peer_mom_63
+    # - ma_ratio_200
+    # - high_prox_252
+    # - gap_21
+    # - range_21
+    # - peer_mom_63
     # - macd
-    - macd_hist
-    - rsi_14
+    # - macd_hist
+    # - rsi_14
     - atr_14
 
     # ---- Risk exposures (rolling betas) ----
@@ -62,16 +62,16 @@ inputs:
     # - beta_d_vix
 
     # ---- Peer-relative fundamentals: valuation ----
-    - f_earnings_yield_vs_peers
-    - f_earnings_yield_xs
+    # - f_earnings_yield_vs_peers
+    # - f_earnings_yield_xs
     - f_sales_yield_vs_peers
     - f_sales_yield_xs
     - f_book_yield_vs_peers
     - f_book_yield_xs
-    - f_fcf_yield_vs_peers
+    # - f_fcf_yield_vs_peers
     - f_fcf_yield_xs
-    - f_ebitda_to_ev_vs_peers
-    - f_ebitda_to_ev_xs
+    # - f_ebitda_to_ev_vs_peers
+    # - f_ebitda_to_ev_xs
     - f_intrinsic_yield_vs_peers
     - f_intrinsic_yield_xs
 
@@ -80,16 +80,16 @@ inputs:
     - f_grossMargins_xs
     - f_operatingMargins_vs_peers
     - f_operatingMargins_xs
-    - f_profitMargins_vs_peers
+    # - f_profitMargins_vs_peers
     - f_profitMargins_xs
     - f_returnOnEquity_vs_peers
     - f_returnOnEquity_xs
     - f_debtToEquity_vs_peers
     - f_debtToEquity_xs
-    - f_fcf_margin_vs_peers
+    # - f_fcf_margin_vs_peers
     - f_fcf_margin_xs
     - f_accruals_vs_peers
-    - f_accruals_xs
+    # - f_accruals_xs
     - f_rd_intensity_vs_peers
     - f_rd_intensity_xs
 
@@ -99,7 +99,7 @@ inputs:
     - f_earningsGrowth_vs_peers
     - f_earningsGrowth_xs
     - f_fcf_growth_vs_peers
-    - f_fcf_growth_xs
+    # - f_fcf_growth_xs
     - f_gross_margin_chg_vs_peers
     - f_gross_margin_chg_xs
     - f_shares_growth_vs_peers
@@ -110,7 +110,7 @@ inputs:
     - f_q_rev_growth_xs
     - f_rev_growth_accel_vs_peers
     - f_rev_growth_accel_xs
-    - f_q_earnings_growth_vs_peers
+    # - f_q_earnings_growth_vs_peers
     - f_q_earnings_growth_xs
     - f_q_margin_vs_ttm_vs_peers
     - f_q_margin_vs_ttm_xs
@@ -121,9 +121,9 @@ inputs:
     - f_y_rev_growth_vs_peers
     - f_y_rev_growth_xs
     - f_y_rev_growth_accel_vs_peers
-    - f_y_rev_growth_accel_xs
+    # - f_y_rev_growth_accel_xs
     - f_y_earnings_growth_vs_peers
-    - f_y_earnings_growth_xs
+    # - f_y_earnings_growth_xs
     - f_y_margin_vs_ttm_vs_peers
     - f_y_margin_vs_ttm_xs
 
@@ -131,10 +131,10 @@ inputs:
     #      trailing ~5y (z-score). "cheap vs its own past" (e.g. PE below its 5y
     #      average) -- an axis orthogonal to the cross-sectional "cheap vs peers".
     #      HIGH = cheaper than its own norm. ----
-    - f_earnings_yield_vs_hist
+    # - f_earnings_yield_vs_hist
     - f_sales_yield_vs_hist
     - f_book_yield_vs_hist
-    - f_fcf_yield_vs_hist
+    # - f_fcf_yield_vs_hist
     - f_ebitda_to_ev_vs_hist
     - f_intrinsic_yield_vs_hist
 
@@ -176,7 +176,7 @@ inputs:
     # ---- Earnings expectations (historical forward EPS vs actual; ~96% cover) ----
     # forward E/P + expected EPS growth carry standalone signal (IC ~ +0.02) and
     # capture "what the market prices in for the future" / unrealistic optimism.
-    - f_fwd_eps_yield_vs_peers
+    # - f_fwd_eps_yield_vs_peers
     - f_fwd_eps_yield_xs
     - f_eps_expectation_growth_vs_peers
     - f_eps_expectation_growth_xs
@@ -186,48 +186,48 @@ inputs:
     #      from cube if fetch_employees_edgar has not run -- safe to leave enabled. ----
     - f_revenue_per_employee_vs_peers
     - f_revenue_per_employee_xs
-    - f_employee_growth_vs_peers
+    # - f_employee_growth_vs_peers
     - f_employee_growth_xs
 
     # ---- Analyst estimates: leak-free but NO accrued history yet, so they are
     #      ~all-NaN historically. Uncomment once you have collected estimate
     #      snapshots over time (see fetch_analyst_estimates). ----
-    # - f_est_fwd_earnings_yield_vs_peers
-    # - f_est_fwd_earnings_yield_xs
-    # - f_est_eps_growth_vs_peers
-    # - f_est_eps_growth_xs
-    # - f_est_rev_growth_vs_peers
-    # - f_est_rev_growth_xs
-    # - f_est_target_upside_vs_peers
-    # - f_est_target_upside_xs
-    # - f_est_revision_ratio_vs_peers
-    # - f_est_revision_ratio_xs
-    # - f_est_eps_trend_3m_vs_peers
-    # - f_est_eps_trend_3m_xs
-    # - f_est_rec_score_vs_peers
-    # - f_est_rec_score_xs
-    # - f_est_vs_intrinsic_vs_peers
-    # - f_est_vs_intrinsic_xs
+    - f_est_fwd_earnings_yield_vs_peers
+    - f_est_fwd_earnings_yield_xs
+    - f_est_eps_growth_vs_peers
+    - f_est_eps_growth_xs
+    - f_est_rev_growth_vs_peers
+    - f_est_rev_growth_xs
+    - f_est_target_upside_vs_peers
+    - f_est_target_upside_xs
+    - f_est_revision_ratio_vs_peers
+    - f_est_revision_ratio_xs
+    - f_est_eps_trend_3m_vs_peers
+    - f_est_eps_trend_3m_xs
+    - f_est_rec_score_vs_peers
+    - f_est_rec_score_xs
+    - f_est_vs_intrinsic_vs_peers
+    - f_est_vs_intrinsic_xs
 
     # ---- Governance / ownership (snapshot-only: no free historical archive yet).
     #      Leak-free (point-in-time from as_of) but ~all-NaN historically until the
     #      snapshot archive builds up. Useful NOW for live cross-sectional ranking. ----
-    # - f_insider_ownership_vs_peers
-    # - f_insider_ownership_xs
-    # - f_institutional_ownership_vs_peers
-    # - f_institutional_ownership_xs
+    - f_insider_ownership_vs_peers
+    - f_insider_ownership_xs
+    - f_institutional_ownership_vs_peers
+    - f_institutional_ownership_xs
     # - f_founder_led_vs_peers
-    # - f_founder_led_xs
+    - f_founder_led_xs
     # - f_founder_ceo_vs_peers
-    # - f_founder_ceo_xs
-    # - f_family_owned_vs_peers
-    # - f_family_owned_xs
-    # - f_net_insider_buying_vs_peers
-    # - f_net_insider_buying_xs
-    # - f_ceo_age_vs_peers
-    # - f_ceo_age_xs
-    # - f_n_officers_vs_peers
-    # - f_n_officers_xs
-    # - f_avg_officer_age_vs_peers
-    # - f_avg_officer_age_xs
+    - f_founder_ceo_xs
+    - f_family_owned_vs_peers
+    - f_family_owned_xs
+    - f_net_insider_buying_vs_peers
+    - f_net_insider_buying_xs
+    - f_ceo_age_vs_peers
+    - f_ceo_age_xs
+    - f_n_officers_vs_peers
+    - f_n_officers_xs
+    - f_avg_officer_age_vs_peers
+    - f_avg_officer_age_xs
 

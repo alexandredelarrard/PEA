@@ -105,8 +105,29 @@ _SECTION_ANCHORS = (
 )
 # name = 2-4 capitalized tokens (allowing middle initials like "D."), then age 30-99.
 # Greedy on purpose -- we then TRIM leading title/role words that got glued on.
+# The name->age separator allows a comma ("Reed Hastings, 63, ...") so prose-style
+# officer blurbs are parsed, not just whitespace-delimited "Name Age" tables.
 _OFF_RE = re.compile(
-    r"([A-Z][A-Za-z.'\-]+(?:\s+(?:[A-Z]\.?|[A-Z][A-Za-z.'\-]+)){1,3})\s+([3-9]\d)\b")
+    r"([A-Z][A-Za-z.'\-]+(?:\s+(?:[A-Z]\.?|[A-Z][A-Za-z.'\-]+)){1,3})[,\s]+([3-9]\d)\b")
+
+# Founder detection. Real 10-Ks say "founded" / "co-founded" in a bio sentence far
+# more often than the noun "Founder" in the position line, so match the whole
+# family; `founded`/`founding` alone are also matched but the passive company-history
+# form ("the Company was founded in 18xx") is stripped first so it doesn't count a
+# non-founder CEO as a founder (see _is_founder).
+_FOUNDER_RE = re.compile(
+    r"\b(?:co[-\s]?found(?:ed|er|ers|ing)|founders?|found(?:ed|ing))\b", re.I)
+_COMPANY_FOUNDED_RE = re.compile(r"\b(?:was|were|been)\s+found(?:ed|ing)\b", re.I)
+
+
+def _is_founder(bio: str) -> bool:
+    """True when the officer's blurb says THEY founded/co-founded the firm.
+    A passive 'the Company was founded in 18xx' is removed first, so it only
+    counts when some active founder mention (co-founded / founder / founded)
+    remains after that."""
+    if not bio or not _FOUNDER_RE.search(bio):
+        return False
+    return bool(_FOUNDER_RE.search(_COMPANY_FOUNDED_RE.sub(" ", bio)))
 
 # Role / header words that must never start a person's name. In run-together
 # text ("...Chief Executive Officer Luca Maestri 60...") the greedy name capture
@@ -170,11 +191,15 @@ def extract_executive_officers(text: str) -> dict:
 
     officers = []
     for i, r in enumerate(recs):
-        end = recs[i + 1]["name_start"] if i + 1 < len(recs) else min(len(scope), r["age_end"] + 100)
-        title = re.sub(r"\s+", " ", scope[r["age_end"]:end]).strip(" ,.;-")[:80]
-        if not title:
+        end = recs[i + 1]["name_start"] if i + 1 < len(recs) else min(len(scope), r["age_end"] + 400)
+        blurb = re.sub(r"\s+", " ", scope[r["age_end"]:end]).strip(" ,.;-")
+        if not blurb:
             continue
-        officers.append({"name": r["name"], "age": r["age"], "title": title})
+        # `title` = the position line (first ~80 chars, used for display); `bio` =
+        # the fuller blurb, where founder status usually lives ("... co-founded the
+        # Company in ...") and which the CEO-role search below also scans.
+        officers.append({"name": r["name"], "age": r["age"],
+                         "title": blurb[:80], "bio": blurb[:400]})
 
     if not officers:
         return out
@@ -183,15 +208,19 @@ def extract_executive_officers(text: str) -> dict:
     out["officers"] = officers
     out["n_officers"] = len(officers)
     out["avg_officer_age"] = round(sum(ages) / len(ages), 1)
-    out["founder_present"] = int(any("founder" in o["title"].lower() for o in officers))
+    out["founder_present"] = int(any(_is_founder(o["bio"]) for o in officers))
 
+    # CEO = first officer whose blurb states the CEO role. Scan the blurb (not just
+    # the 80-char title) so a bio that leads with other text isn't missed; cap the
+    # window so a "former Chief Executive Officer of X" further down a bio doesn't
+    # hijack the match.
     ceo = next((o for o in officers
-                if "chief executive" in o["title"].lower()
-                or re.search(r"\bceo\b", o["title"], re.I)), None)
+                if "chief executive" in o["bio"][:220].lower()
+                or re.search(r"\bceo\b", o["bio"][:220], re.I)), None)
     if ceo:
         out["ceo_name"] = ceo["name"]
         out["ceo_age"] = ceo["age"]
-        out["founder_ceo"] = int("founder" in ceo["title"].lower())
+        out["founder_ceo"] = int(_is_founder(ceo["bio"]))
     return out
 
 

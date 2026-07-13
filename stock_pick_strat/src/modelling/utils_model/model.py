@@ -94,7 +94,6 @@ def _build_datasets(
     else:
         y = panel[label_name].to_numpy(dtype="float32")
         return lgb.Dataset(x, label=y, feature_name=feats)
-    
 
 
 def train_ranker(
@@ -119,6 +118,7 @@ def train_ranker(
         lambda_l1=0.0,
         lambda_l2=5.0,
         verbosity=-1,
+        n_jobs=-2,
     )
     if params:
         default.update(params)

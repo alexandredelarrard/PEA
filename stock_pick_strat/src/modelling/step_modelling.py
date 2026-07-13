@@ -298,8 +298,8 @@ class StepModelling(Step):
             "horizons": [int(h) for h in self.models],
             "feature_cols": list(self.feature_cols),
             "label_column": self.label_column,
-            "train_start": str(self.train_start.date()),
-            "train_end": str(self.train_end.date()),
+            "train_start": self._config.train.start_date,
+            "train_end": self._config.train.end_date,
             # blend weights for the backtest (IC_IR per horizon, floored at 0)
             "train_ic_ir": {int(h): (float(self.horizon_ic[h]["ic_ir"])
                                      if np.isfinite(self.horizon_ic[h]["ic_ir"]) else 0.0)

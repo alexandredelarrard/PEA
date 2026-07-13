@@ -139,6 +139,8 @@ class StepBacktest(Step):
 
     def report(self):
         m = self.metrics
+        c = self._cfg
+
         self._log.info("=== Backtest results ===")
         self._log.info("Strategy: total %.1f%%  ann %.1f%%  vol %.1f%%  Sharpe %.2f  maxDD %.1f%%",
                        m["total_return"]*100, m["ann_return"]*100, m["ann_vol"]*100,

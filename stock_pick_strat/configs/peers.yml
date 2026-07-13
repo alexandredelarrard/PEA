@@ -1,6 +1,6 @@
 # build_cube.yml -> replace the existing `peers:` block with this
 peers:
-  top_k: 8
+  top_k: 7
   weighting: corr            # corr | equal  (weights the COMBINED similarity)
   min_obs: 120
   use_embeddings: true       # false -> correlation-only (old behaviour)

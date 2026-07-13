@@ -5,7 +5,7 @@ backtest:
  
   # --- construction (optimizer) ---
   market_weight: 0.5           # deliberate SPY beta sleeve (total portfolio beta = this)
-  target_ann_vol: 0.08         # alpha-sleeve ex-ante volatility target
+  target_ann_vol: 0.08          # alpha-sleeve ex-ante volatility target
   beta_neutral: true           # enforce beta'w = 0 (market-neutral alpha sleeve)
   pos_cap: 0.05                # max |weight| per name
   gross_cap: 3.0               # max sum|w| (leverage safety)
@@ -23,4 +23,4 @@ backtest:
   fee_bps: 1.0
   spread_bps: 5.0
   blend: ir                    # ir | equal  (multi-horizon combine)
-  risk_free_rate: 0.0
+  risk_free_rate: 0.03

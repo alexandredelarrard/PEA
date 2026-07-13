@@ -84,6 +84,21 @@ def optimize_day(alpha: np.ndarray, beta: np.ndarray, var: np.ndarray,
     return w
 
 
+def enforce_pos_cap(w: np.ndarray, beta: np.ndarray, beta_neutral: bool,
+                    pos_cap: float | None) -> np.ndarray:
+    """Clip |w| to `pos_cap` and restore neutrality, applied to the FINAL
+    (vol-targeted) weights. The cap inside `optimize_day` is a PRE-scale shape
+    limit; vol targeting then rescales the book, so without this a name can end
+    up above pos_cap. This makes pos_cap the true max |weight| per name on the
+    traded book. When the book is diversified enough that no name reaches the cap
+    (the usual case for a large universe) this is a no-op."""
+    if pos_cap is None:
+        return w
+    n = len(w)
+    X = np.column_stack([np.ones(n), beta]) if beta_neutral else np.ones((n, 1))
+    return _neutralize(np.clip(w, -pos_cap, pos_cap), X, np.ones(n))
+
+
 def vol_target_scale(w: np.ndarray, var: np.ndarray, target_ann_vol: float,
                      gross_cap: float = 3.0) -> np.ndarray:
     """Scale weights so the sleeve's ex-ante annualized idiosyncratic vol equals
@@ -163,6 +178,9 @@ def simulate_portfolio_opt(
                 v = var_df.loc[t, common].to_numpy(float)
                 w_star = optimize_day(a, b, v, beta_neutral, pos_cap)
                 w_star = vol_target_scale(w_star, v, target_ann_vol, gross_cap)
+                # enforce pos_cap on the FINAL weights (vol targeting rescales the
+                # pre-scale cap applied inside optimize_day)
+                w_star = enforce_pos_cap(w_star, b, beta_neutral, pos_cap)
                 target_alpha = pd.Series(0.0, index=tickers)
                 target_alpha[common] = w_star
 
@@ -180,12 +198,19 @@ def simulate_portfolio_opt(
         cost = turnover * cost_rate
         r_stocks = stock_ret.loc[t1, tickers].fillna(0.0)
         r_spy = spy_ret.loc[t1] if np.isfinite(spy_ret.loc[t1]) else 0.0
-        gross = float((w[tickers] * r_stocks).sum() + w["SPY"] * r_spy)
+        # split the P&L into its two sleeves so each param's effect is observable
+        alpha_ret = float((w[tickers] * r_stocks).sum())
+        mkt_ret = float(w["SPY"] * r_spy)
+        gross = alpha_ret + mkt_ret
         net = gross - cost
         V *= (1.0 + net)
         spy_V *= (1.0 + r_spy)
         rows.append({"date": t1, "gross_ret": gross, "cost": cost, "net_ret": net,
-                     "turnover": turnover, "portfolio_value": V, "spy_value": spy_V})
+                     "turnover": turnover, "portfolio_value": V, "spy_value": spy_V,
+                     # sleeve diagnostics (make the construction params visible)
+                     "alpha_ret": alpha_ret, "mkt_ret": mkt_ret,
+                     "alpha_gross": float(w[tickers].abs().sum()),
+                     "alpha_max_w": float(w[tickers].abs().max())})
         prev_w = w
 
     return pd.DataFrame(rows).set_index("date")

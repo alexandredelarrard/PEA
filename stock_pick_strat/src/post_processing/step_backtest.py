@@ -148,6 +148,32 @@ class StepBacktest(Step):
                        m["spy_sharpe"], m["spy_max_drawdown"]*100)
         self._log.info("Avg daily turnover %.3f  avg daily cost %.4f%%",
                        m["avg_daily_turnover"], m["avg_daily_cost"]*100)
+
+        # --- per-sleeve diagnostics: show whether each construction param bites ---
+        d = self.daily
+        if {"alpha_ret", "mkt_ret", "alpha_gross", "alpha_max_w"}.issubset(d.columns):
+            ann = np.sqrt(252.0)
+            alpha_vol = float(d["alpha_ret"].std() * ann)
+            mkt_vol = float(d["mkt_ret"].std() * ann)
+            avg_gross = float(d["alpha_gross"].mean())
+            avg_maxw = float(d["alpha_max_w"].mean())
+            gross_cap = float(c.get("gross_cap", 3.0))
+            pos_cap = float(c.get("pos_cap", 0.05))
+            self._log.info(
+                "Alpha sleeve: realized vol %.1f%% (target %.1f%%)  avg gross %.2f/%.1f  "
+                "avg max|w| %.3f/%.3f", alpha_vol*100,
+                float(c.get("target_ann_vol", 0.08))*100, avg_gross, gross_cap, avg_maxw, pos_cap)
+            self._log.info(
+                "Market sleeve: weight %.2f -> realized vol %.1f%%  (dominates total risk "
+                "when the alpha sleeve is smaller)", float(c.get("market_weight", 0.5)), mkt_vol*100)
+            # flag knobs that are configured so loosely they never activate
+            if avg_gross < 0.8 * gross_cap:
+                self._log.info("  note: gross_cap (%.1f) never binds (avg gross %.2f) -> "
+                               "it is a slack safety rail, not an active knob here", gross_cap, avg_gross)
+            if avg_maxw < 0.8 * pos_cap:
+                self._log.info("  note: pos_cap (%.3f) never binds (avg max|w| %.3f) -> "
+                               "slack safety rail; tighten it to shape concentration", pos_cap, avg_maxw)
+
         out_dir = self._context.paths["OUTPUT_DIR"] / "backtest"
         out_dir.mkdir(parents=True, exist_ok=True)
         self.daily.to_parquet(out_dir / "backtest_daily.parquet")

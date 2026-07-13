@@ -6,7 +6,7 @@ from src.utils.step import Step
 from src.context import Context
 from src.data_aggregate.utils import data_utils as du
 from src.data_aggregate.utils.betas import estimate_all_betas
-from src.data_aggregate.utils.targets import build_targets
+from src.data_aggregate.utils.targets import build_targets_multi
 from src.data_aggregate.utils.features import build_feature_panel
 from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
 from src.data_aggregate.utils.analyst_features import build_analyst_feature_panel
@@ -189,7 +189,10 @@ class StepBuildCube(Step):
 
     def build_targets(self):
         cfg = self._cfg.targets
-        self.labels = build_targets(
+        # store EVERY configured target version (e.g. rank AND zscore) in the cube
+        # so the modelling step can pick one via model.target_type without a rebuild
+        label_types = list(cfg.get("labels", [cfg.get("label", "rank")]))
+        self.labels = build_targets_multi(
             close=self.stock_close,
             stock_returns=self.stock_ret,
             peer_dict=self.peers,
@@ -197,13 +200,14 @@ class StepBuildCube(Step):
             factor_panel=self.factor_panel,
             macro_cols=self.macro_cols,
             horizons=tuple(cfg.horizons),
-            label=cfg.label,
+            labels=tuple(label_types),
             min_names=cfg.min_names,
             neutralize_momentum=cfg.get("neutralize_momentum", True),
         )
-        non_null = sum(int(df.notna().sum().sum()) for df in self.labels.values())
-        self._log.info("Built factor-neutral targets for horizons %s (non-null=%s)",
-                       list(cfg.horizons), non_null)
+        non_null = sum(int(df.notna().sum().sum())
+                       for per in self.labels.values() for df in per.values())
+        self._log.info("Built factor-neutral targets %s for horizons %s (non-null=%s)",
+                       label_types, list(cfg.horizons), non_null)
 
     def build_features(self):
         cfg = self._cfg.features

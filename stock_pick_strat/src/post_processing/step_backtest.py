@@ -52,6 +52,9 @@ class StepBacktest(Step):
         meta = json.loads(meta_path.read_text())
         self.feature_cols = meta["feature_cols"]
         self.label_column = meta["label_column"]
+        # match the target the model was trained on (rank/zscore); config fallback
+        self.target_type = meta.get("target_type",
+                                    self._config.model.get("target_type", "rank"))
         self.train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
         self.backtest_start = pd.Timestamp(meta["train_end"])
         self.horizons = list(self._cube_cfg.targets.horizons)
@@ -93,7 +96,8 @@ class StepBacktest(Step):
         blended = None
         for h, model in self.models.items():
             panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
-                                    feature_cols=self.feature_cols)
+                                    feature_cols=self.feature_cols,
+                                    target_type=self.target_type)
             panel = panel[(panel["date"] >= self.backtest_start) & (panel["date"] <= self.end)]
             if panel.empty:
                 continue

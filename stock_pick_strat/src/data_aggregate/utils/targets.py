@@ -118,6 +118,21 @@ def cross_sectional_zscore(eps: pd.DataFrame, min_names: int = 20) -> pd.DataFra
     return z
 
 
+def _apply_label(eps: pd.DataFrame, label: str, min_names: int) -> pd.DataFrame:
+    """Turn the raw factor-neutral residual into a modelling target.
+      rank    -> cross-sectional percentile in [0,1] (robust, scale-free)
+      zscore  -> cross-sectional z-score (mean 0, std 1 per day; keeps magnitude)
+      epsilon -> the raw residual itself
+    """
+    if label == "rank":
+        return cross_sectional_rank(eps, min_names)
+    if label == "zscore":
+        return cross_sectional_zscore(eps, min_names)
+    if label == "epsilon":
+        return eps
+    raise ValueError("label must be 'rank', 'zscore', or 'epsilon'")
+
+
 def cross_sectional_neutralize(
     values: pd.DataFrame,
     factor: pd.DataFrame,
@@ -187,12 +202,35 @@ def build_targets(
                               factor_panel, macro_cols, h)
         if neutralize_momentum:
             eps = cross_sectional_neutralize(eps, mom_char)
-        if label == "rank":
-            out[h] = cross_sectional_rank(eps, min_names)
-        elif label == "zscore":
-            out[h] = cross_sectional_zscore(eps, min_names)
-        elif label == "epsilon":
-            out[h] = eps
-        else:
-            raise ValueError("label must be 'rank', 'zscore', or 'epsilon'")
+        out[h] = _apply_label(eps, label, min_names)
+    return out
+
+
+def build_targets_multi(
+    close: pd.DataFrame,
+    stock_returns: pd.DataFrame,
+    peer_dict: dict,
+    betas: dict,
+    factor_panel: pd.DataFrame,
+    macro_cols: list,
+    horizons=(5, 10, 20, 60),
+    labels=("rank", "zscore"),
+    min_names: int = 20,
+    neutralize_momentum: bool = True,
+) -> dict:
+    """Like `build_targets`, but computes the (expensive) factor-neutral residual
+    ONCE per horizon and emits SEVERAL target versions from it, so the cube can
+    store e.g. both the rank and the z-score target and the modelling step can
+    pick which one to train on without a cube rebuild.
+
+    Returns {horizon: {label: DataFrame(date x ticker)}}.
+    """
+    mom_char = momentum_characteristic(close) if neutralize_momentum else None
+    out: dict[int, dict[str, pd.DataFrame]] = {}
+    for h in horizons:
+        eps = compute_epsilon(close, stock_returns, peer_dict, betas,
+                              factor_panel, macro_cols, h)
+        if neutralize_momentum:
+            eps = cross_sectional_neutralize(eps, mom_char)
+        out[h] = {lab: _apply_label(eps, lab, min_names) for lab in labels}
     return out

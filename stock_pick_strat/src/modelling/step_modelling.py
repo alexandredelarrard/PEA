@@ -53,7 +53,9 @@ class StepModelling(Step):
         self.horizons = sorted(self.cube["target_horizon"].unique())
         self.primary_horizon = self._cfg.targets.primary_horizon
         self.label_column = self._config.model.label_column
-        self._log.info("Loaded cube (%s rows), horizons=%s", len(self.cube), self.horizons)
+        self.target_type = self._config.model.get("target_type", "rank")
+        self._log.info("Loaded cube (%s rows), horizons=%s, target_type=%s",
+                       len(self.cube), self.horizons, self.target_type)
 
     def _select_features(self, available: list[str]) -> list[str]:
         """Restrict training to the config allow-list (`inputs.columns` in
@@ -96,7 +98,8 @@ class StepModelling(Step):
         self.panels = {}
         for h in self.horizons:
             panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
-                                    feature_cols=self.feature_cols)
+                                    feature_cols=self.feature_cols,
+                                    target_type=self.target_type)
 
             if start_date:
                 panel = panel.loc[panel["date"] >= start_date]
@@ -330,6 +333,7 @@ class StepModelling(Step):
             "horizons": [int(h) for h in self.models],
             "feature_cols": list(self.feature_cols),
             "label_column": self.label_column,
+            "target_type": self.target_type,
             "train_start": self._config.train.start_date,
             "train_end": self._config.train.end_date,
             # blend weights for the backtest (IC_IR per horizon, floored at 0)

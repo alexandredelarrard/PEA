@@ -2,7 +2,12 @@ model:
   label_column: y
   target_type: zscore            # which stored cube target to train on: rank | zscore
                                # (must be present in build_cube.targets.labels)
-  type: elasticnet               # model family: lightgbm | elasticnet | ridge (linear baseline)
+  type: elasticnet             # single-model fallback used only when `ensemble` is unset
+  ensemble: [elasticnet, lightgbm]   # train BOTH families and AVERAGE their per-day
+                               # standardized predictions (linear bias + tree variance
+                               # decorrelate -> the ensemble usually beats either alone).
+                               # Use a single-entry list (or remove and rely on `type`)
+                               # to train just one family.
   eval_metric: ic              # lightgbm early-stopping metric: ic | rmse
                                # (ic = mean daily cross-sectional IC -> aligns stopping
                                #  with the ranking objective; RMSE stops after ~1 round
@@ -66,6 +71,12 @@ inputs:
     # - rsi_14
     - atr_14
 
+    # ---- Higher-moment / lottery / idiosyncratic-risk anomalies (price-only) ----
+    - max_21
+    - ret_skew_126
+    - downside_vol_63
+    - idio_vol_63
+
     # ---- Risk exposures (rolling betas) ----
     # - beta_market
     # - beta_market_simple
@@ -122,6 +133,19 @@ inputs:
     - f_fcf_positive
     - f_negative_equity
     - f_hyper_growth
+
+    # ---- Thematic COMPOSITE signals (built in build_cube.composites): denoised,
+    #      low-collinearity per-theme scores. ADDITIVE -- the raw features above
+    #      are still trained on; these are extra, more-stable inputs. ----
+    - comp_value
+    - comp_quality
+    - comp_growth
+    - comp_distress
+    - comp_capital_allocation
+    - comp_expectations
+    - comp_management
+    - comp_workforce
+    - comp_technical
 
     # ---- Peer-relative fundamentals: growth / trend / dilution ----
     - f_revenueGrowth_vs_peers

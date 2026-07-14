@@ -17,6 +17,8 @@ Signal families included:
   * gap        : average overnight gap (open vs prior close)
   * range      : average intraday range proxy (|close-open|/open)
   * peer_mom   : stock cum return minus its sector cum return (residual mom)
+  * lottery    : MAX (extreme recent daily return) + return skewness (overpaid upside)
+  * downside   : downside semi-deviation + idiosyncratic vol (low-vol anomaly)
   * technicals : MACD line + histogram, RSI(14), ATR(14) -- see below
 
 Technical indicators (MACD / RSI / ATR) are computed on the price series and
@@ -125,6 +127,22 @@ def compute_raw_features(
     stock_cum = _safe(close / close.shift(63) - 1.0)
     sector_cum = _safe((1.0 + sector_returns).rolling(63).apply(np.prod, raw=True) - 1.0)
     feats["peer_mom_63"] = _safe(stock_cum - sector_cum)
+
+    # ---- Higher-moment / lottery / idiosyncratic-risk anomalies (price-only) ----
+    # All point-in-time (trailing windows) and orthogonal-ish to the fundamentals.
+    # MAX effect (Bali, Cakici, Whitelaw 2011): stocks with an extreme recent max
+    # daily return underperform (lottery demand -> overpriced).
+    feats["max_21"] = _safe(ret.rolling(21).max())
+    # Return skewness (Boyer-Mitton-Vorkink): high positive skew underperforms
+    # (investors overpay for lottery-like upside).
+    feats["ret_skew_126"] = _safe(ret.rolling(126).skew())
+    # Downside semi-deviation: std of only the negative daily returns (63d).
+    neg = ret.where(ret < 0)
+    feats["downside_vol_63"] = _safe(neg.rolling(63, min_periods=20).std())
+    # Idiosyncratic volatility: vol of the market-relative return (stock minus the
+    # equal-weight universe move) over 63d -> the low-idio-vol anomaly.
+    mkt = ret.mean(axis=1)
+    feats["idio_vol_63"] = _safe(ret.sub(mkt, axis=0).rolling(63).std())
 
     # ---- Technical indicators, LAGGED one day (exclude t -> no leakage) ----
     macd_norm, macd_hist = _macd(close)

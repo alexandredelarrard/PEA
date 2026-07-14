@@ -57,24 +57,30 @@ class StepBacktest(Step):
         self.target_type = meta.get("target_type",
                                     self._config.model.get("target_type", "rank"))
         self.train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
-        self.model_type = meta.get("model_type", "lightgbm")
+        # ensemble members trained per horizon (back-compat with single model_type)
+        self.model_types = list(meta.get("model_types")
+                                or [meta.get("model_type", "lightgbm")])
         self.backtest_start = pd.Timestamp(meta["train_end"])
         self.horizons = list(self._cube_cfg.targets.horizons)
         self.models = {}
         for h in self.horizons:
-            if self.model_type == "lightgbm":
-                p = models_dir / f"model_h{h}.txt"
-                if p.exists():
-                    self.models[h] = lgb.Booster(model_file=str(p))
-            else:                                   # pickled linear baseline
-                p = models_dir / f"model_h{h}.pkl"
-                if p.exists():
-                    with p.open("rb") as f:
-                        self.models[h] = pickle.load(f)
+            members = {}
+            for kind in self.model_types:
+                if kind == "lightgbm":
+                    p = models_dir / f"model_h{h}_{kind}.txt"
+                    if p.exists():
+                        members[kind] = lgb.Booster(model_file=str(p))
+                else:                               # pickled linear baseline
+                    p = models_dir / f"model_h{h}_{kind}.pkl"
+                    if p.exists():
+                        with p.open("rb") as f:
+                            members[kind] = pickle.load(f)
+            if members:
+                self.models[h] = members            # {kind: model} per horizon
         if not self.models:
             raise FileNotFoundError(f"No saved models found in {models_dir}.")
-        self._log.info("Loaded %d models (horizons %s); backtest starts %s",
-                       len(self.models), list(self.models.keys()), self.backtest_start.date())
+        self._log.info("Loaded ensemble %s for horizons %s; backtest starts %s",
+                       self.model_types, list(self.models.keys()), self.backtest_start.date())
 
     def load_cube_and_returns(self):
         self.cube = pd.read_parquet(self._context.paths["CUBE_PATH"])
@@ -102,7 +108,7 @@ class StepBacktest(Step):
         weights = self._blend_weights()
         self._log.info("Blend weights: %s", {h: round(w, 3) for h, w in weights.items()})
         blended = None
-        for h, model in self.models.items():
+        for h, models in self.models.items():
             panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
                                     feature_cols=self.feature_cols,
                                     target_type=self.target_type)
@@ -110,8 +116,8 @@ class StepBacktest(Step):
             if panel.empty:
                 continue
             df = panel[["date", "ticker"]].copy()
-            df["z"] = pd.Series(ml.predict(model, panel, self.feature_cols).to_numpy(),
-                                index=panel.index)
+            # ensemble = per-day-standardized average of the trained families
+            df["z"] = ml.ensemble_predict(models, panel, self.feature_cols).to_numpy()
             df["z"] = df.groupby("date")["z"].transform(
                 lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
             df = df.rename(columns={"z": f"z_{h}"})

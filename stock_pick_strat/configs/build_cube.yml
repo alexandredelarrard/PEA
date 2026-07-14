@@ -29,6 +29,33 @@ build_cube:
     window: 1260             # ~5 trading years of trailing daily observations
     min_periods: 252         # need >= 1y of history before emitting a z-score
 
+  composites:                # thematic COMPOSITE signals (comp_<theme>). ADDITIVE:
+                             # raw features are KEPT; composites are extra columns
+                             # (no information lost). A '-' prefix inverts a member
+                             # so every member reads "higher = long side" before the
+                             # NaN-tolerant average. Members absent from the cube are
+                             # skipped. See utils/composites.py.
+    enabled: true
+    method: zscore           # zscore | rank (per-day cross-sectional standardization)
+    groups:
+      value: [f_sales_yield_xs, f_book_yield_xs, f_fcf_yield_xs, f_ebitda_to_ev_xs,
+              f_intrinsic_yield_xs, f_sales_yield_vs_hist, f_book_yield_vs_hist,
+              f_ebitda_to_ev_vs_hist, f_intrinsic_yield_vs_hist]
+      quality: [f_grossMargins_xs, f_operatingMargins_xs, f_profitMargins_xs,
+                f_returnOnEquity_xs, f_gross_profitability_xs, f_fcf_margin_xs,
+                "-f_accruals_vs_peers", f_rd_intensity_xs]
+      growth: [f_revenueGrowth_xs, f_earningsGrowth_xs, f_y_rev_growth_xs,
+               f_y_earnings_growth_xs, f_operating_leverage_xs, f_gross_margin_chg_xs]
+      distress: ["-f_net_debt_to_ebitda_xs", f_interest_coverage_xs, f_current_ratio_xs,
+                 f_cash_to_debt_xs, "-f_debtToEquity_xs"]
+      capital_allocation: ["-f_sbc_intensity_xs", "-f_sbc_to_ocf_xs", "-f_shares_growth_xs",
+                           "-f_acquisition_intensity_xs", "-f_goodwill_growth_xs"]
+      expectations: [f_fwd_eps_yield_xs, f_eps_expectation_growth_xs]
+      management: [f_founder_ceo_xs, f_net_insider_buying_xs, "-f_ceo_age_xs"]
+      workforce: [f_revenue_per_employee_xs, f_employee_growth_xs]
+      technical: [mom_12_1, ma_ratio_50, "-vol_63", "-max_21", "-ret_skew_126",
+                  "-idio_vol_63", "-downside_vol_63"]
+
   output:
     save_cube: true
     save_panel: false

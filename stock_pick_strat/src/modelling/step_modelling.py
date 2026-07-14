@@ -57,9 +57,13 @@ class StepModelling(Step):
         self.primary_horizon = self._cfg.targets.primary_horizon
         self.label_column = self._config.model.label_column
         self.target_type = self._config.model.get("target_type", "rank")
-        self.model_type = self._config.model.get("type", "lightgbm")
-        self._log.info("Loaded cube (%s rows), horizons=%s, target_type=%s, model_type=%s",
-                       len(self.cube), self.horizons, self.target_type, self.model_type)
+        # ensemble: train EVERY listed model family and average their per-day
+        # standardized predictions. `model.ensemble` (list) wins; else fall back to
+        # the single `model.type`.
+        ens = self._config.model.get("ensemble", None)
+        self.model_types = list(ens) if ens else [self._config.model.get("type", "lightgbm")]
+        self._log.info("Loaded cube (%s rows), horizons=%s, target_type=%s, models=%s",
+                       len(self.cube), self.horizons, self.target_type, self.model_types)
 
     def _select_features(self, available: list[str]) -> list[str]:
         """Restrict training to the config allow-list (`inputs.columns` in
@@ -161,10 +165,9 @@ class StepModelling(Step):
             # early-stop on cross-sectional IC (ranking metric) rather than RMSE
             "eval_metric": self._config.model.get("eval_metric", "ic"),
         }
-        if self.model_type == "lightgbm":
-            monotone = self._monotone_constraints()
-            if monotone is not None:
-                kw["params"]["monotone_constraints"] = monotone
+        monotone = self._monotone_constraints()   # only consumed by the LightGBM member
+        if monotone is not None:
+            kw["params"]["monotone_constraints"] = monotone
         wd = self._config.model.get("weight_decay")
         if wd and wd.get("enabled", False):
             kw["half_life_years"] = float(wd.half_life_years)
@@ -174,36 +177,36 @@ class StepModelling(Step):
         wd = self._config.model.get("weight_decay")
         return float(wd.half_life_years) if (wd and wd.get("enabled", False)) else None
 
-    def _fit(self, train: pd.DataFrame, valid: pd.DataFrame | None):
-        """Fit one model on `train`, dispatching on model.type. LightGBM uses the
-        purged validation fold for IC early stopping; the linear baselines are
-        closed-form and ignore it."""
-        if self.model_type in ("ridge", "elasticnet"):
+    def _fit_one(self, kind: str, train: pd.DataFrame, valid: pd.DataFrame | None):
+        """Fit ONE model family. LightGBM uses the purged validation fold for IC
+        early stopping; the linear baselines are closed-form and ignore it."""
+        if kind in ("ridge", "elasticnet"):
             lc = self._config.model.get("linear", {}) or {}
             return baselines.train_linear(
-                train, self.feature_cols, self.label_column, kind=self.model_type,
+                train, self.feature_cols, self.label_column, kind=kind,
                 alpha=float(lc.get("alpha", 1e-3)), l1_ratio=float(lc.get("l1_ratio", 0.5)),
                 max_iter=int(lc.get("max_iter", 1000)), tol=float(lc.get("tol", 1e-6)),
                 half_life_years=self._half_life())
         return ml.train_ranker(train, self.feature_cols, self.label_column,
                                valid_panel=valid, **self._train_kwargs())
 
+    def _fit_models(self, train: pd.DataFrame, valid: pd.DataFrame | None) -> dict:
+        """Fit every configured family -> {kind: model}. Averaged at predict time."""
+        return {kind: self._fit_one(kind, train, valid) for kind in self.model_types}
+
     def cross_validate_all_horizons(self):
         """Purged walk-forward CV per horizon; collect IC to weight the blend."""
         cfg = self._config.model
         self.cv_results = {}
         self.horizon_ic = {}
-        self.last_cv_folds = {}
-        self.oos_predictions = {}   # concatenated out-of-sample preds -> IC-over-time
-        train_kw = self._train_kwargs()
-        if train_kw.get("half_life_years"):
+        self.oos_predictions = {}   # concatenated out-of-sample ENSEMBLE preds -> IC-over-time
+        if self._half_life():
             self._log.info("Time-decay sample weights enabled (half_life=%.1f years)",
-                           train_kw["half_life_years"])
+                           self._half_life())
 
         for h, panel in self.panels.items():
             embargo = (cfg.cv.embargo or h)      # embargo must be >= horizon
             fold_results = []
-            last_fold = None
             oos_frames = []
             for train_days, test_days in ml.purged_wf_splits(
                 panel["date"], cfg.cv.n_splits, embargo
@@ -213,13 +216,12 @@ class StepModelling(Step):
                 if train.empty or test.empty:
                     continue
                 sub_tr, sub_val = ml.temporal_valid_split(train)
-                booster = self._fit(sub_tr, sub_val)
-                preds = ml.predict(booster, test, self.feature_cols)
+                models = self._fit_models(sub_tr, sub_val)
+                # IC of the ENSEMBLE (per-day-standardized average of the members)
+                preds = ml.ensemble_predict(models, test, self.feature_cols)
                 # annualize the IC IR by the horizon (overlapping labels), else it
                 # is inflated ~sqrt(horizon) and long horizons look artificially strong
                 fold_results.append(ml.daily_ic(test, preds, self.label_column, horizon=h))
-                last_fold = {"model": booster, "test_panel": test}
-                # keep this fold's OOS predictions for the concatenated IC-over-time curve
                 oos_frames.append(pd.DataFrame({
                     "date": test["date"].to_numpy(),
                     "ticker": test["ticker"].to_numpy(),
@@ -228,8 +230,6 @@ class StepModelling(Step):
                 }))
 
             self.cv_results[h] = fold_results
-            if last_fold is not None:
-                self.last_cv_folds[h] = last_fold
             if oos_frames:
                 self.oos_predictions[h] = pd.concat(oos_frames, ignore_index=True)
 
@@ -247,9 +247,11 @@ class StepModelling(Step):
         gracefully so this never fails the pipeline."""
         if not self._context.save:
             return
-        if self.model_type != "lightgbm":
-            # SHAP / gain / PDP are tree-specific; skip for the linear baselines
-            self._log.info("Model diagnostics skipped for model_type=%s", self.model_type)
+        # SHAP / gain / PDP are tree-specific -> run them on the LightGBM MEMBER of
+        # each horizon's ensemble; the IC-over-time curve uses the ENSEMBLE OOS preds.
+        tree_models = {h: m["lightgbm"] for h, m in self.models.items() if "lightgbm" in m}
+        if not tree_models:
+            self._log.info("No LightGBM member in the ensemble -> tree diagnostics skipped")
             return
         diag = self._config.model.get("diagnostics", {}) or {}
         if not diag.get("enabled", True):
@@ -262,7 +264,7 @@ class StepModelling(Step):
         run_dir = self._context.paths["OUTPUT_DIR"] / "diagnostics" / run_stamp
         try:
             diagnostics.save_run_diagnostics(
-                run_dir, self.models, self.panels, self.feature_cols,
+                run_dir, tree_models, self.panels, self.feature_cols,
                 getattr(self, "oos_predictions", {}),
                 label_name=self.label_column, top_n=top_n,
                 shap_sample=shap_sample, pdp_grid=pdp_grid, logger=self._log,
@@ -281,13 +283,13 @@ class StepModelling(Step):
         return {h: irs.get(h, 0.0) / total for h in self.panels}
 
     def train_final_models(self):
-        """Fit one model per horizon on the full panel."""
+        """Fit the full ensemble ({kind: model}) per horizon on the full panel."""
         self.models = {}
         for h, panel in self.panels.items():
             sub_tr, sub_val = ml.temporal_valid_split(panel, train_frac=0.9)
-            self.models[h] = self._fit(sub_tr, sub_val)
-        self._log.info("Trained %s per-horizon final %s models",
-                       len(self.models), self.model_type)
+            self.models[h] = self._fit_models(sub_tr, sub_val)
+        self._log.info("Trained final models for %s horizons x %s (%s)",
+                       len(self.models), len(self.model_types), self.model_types)
 
     def blend_and_generate_signal(self):
         """Standardize each horizon's scores per day, IR-weight, blend, rank."""
@@ -296,9 +298,10 @@ class StepModelling(Step):
         self._log.info("Blend weights: %s", {h: round(w, 3) for h, w in weights.items()})
 
         blended = None
-        for h, model in self.models.items():
+        for h, models in self.models.items():
             panel = self.panels[h]
-            scores = ml.predict(model, panel, self.feature_cols).to_numpy()
+            # ensemble = per-day-standardized average of the trained families
+            scores = ml.ensemble_predict(models, panel, self.feature_cols).to_numpy()
             df = panel[["date", "ticker"]].copy()
             df["score"] = scores
             # cross-sectional z-score per day so horizons are comparable
@@ -333,13 +336,19 @@ class StepModelling(Step):
         """Aggregate gain importance across horizon models -> which features matter."""
         try:
             imp = {}
-            for h, model in self.models.items():
-                # LightGBM gain vs |coef| for the linear baselines
-                gains = (ml.feature_importance(model, self.feature_cols)
-                         if isinstance(model, lgb.Booster)
-                         else baselines.linear_importance(model))
-                for f, g in gains.items():
-                    imp[f] = imp.get(f, 0.0) + g
+            for h, models in self.models.items():
+                for model in models.values():
+                    # LightGBM gain vs |coef| for the linear baselines; normalize
+                    # each member to sum 1 first so the two scales are comparable.
+                    gains = (ml.feature_importance(model, self.feature_cols)
+                             if isinstance(model, lgb.Booster)
+                             else baselines.linear_importance(model))
+                    s = pd.Series(gains, dtype=float)
+                    tot = s.sum()
+                    if tot > 0:
+                        s = s / tot
+                    for f, g in s.items():
+                        imp[f] = imp.get(f, 0.0) + float(g)
             imp_s = pd.Series(imp).sort_values(ascending=False)
             imp_s = imp_s / imp_s.sum()
             self.feature_importance = imp_s
@@ -378,19 +387,20 @@ class StepModelling(Step):
     def save_models(self):
         """Persist each horizon's booster + metadata for the backtest step."""
         models_dir = self._context.paths["MODELS_DIR"]
-        for h, model in self.models.items():
-            if isinstance(model, lgb.Booster):
-                model.save_model(str(models_dir / f"model_h{h}.txt"))
-            else:                                   # linear baseline -> pickle
-                with (models_dir / f"model_h{h}.pkl").open("wb") as f:
-                    pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
+        for h, models in self.models.items():
+            for kind, model in models.items():
+                if isinstance(model, lgb.Booster):
+                    model.save_model(str(models_dir / f"model_h{h}_{kind}.txt"))
+                else:                               # linear baseline -> pickle
+                    with (models_dir / f"model_h{h}_{kind}.pkl").open("wb") as f:
+                        pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
 
         meta = {
             "horizons": [int(h) for h in self.models],
             "feature_cols": list(self.feature_cols),
             "label_column": self.label_column,
             "target_type": self.target_type,
-            "model_type": self.model_type,
+            "model_types": list(self.model_types),
             "train_start": self._config.train.start_date,
             "train_end": self._config.train.end_date,
             # blend weights for the backtest (IC_IR per horizon, floored at 0)

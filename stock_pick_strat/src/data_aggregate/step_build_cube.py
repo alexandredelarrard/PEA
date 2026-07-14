@@ -13,6 +13,7 @@ from src.data_aggregate.utils.analyst_features import build_analyst_feature_pane
 from src.data_aggregate.utils.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.management_features import build_management_feature_panel
 from src.data_aggregate.utils.employee_features import build_employee_feature_panel
+from src.data_aggregate.utils.composites import build_composites as build_composite_signals
 from src.data_aggregate.utils.factors import (
     build_style_factor_returns,
     macro_change_factors,
@@ -45,6 +46,7 @@ class StepBuildCube(Step):
         self.build_analyst_features()
         self.build_management_features()
         self.build_employee_features()
+        self.build_composite_signals()
         self.aggregate_cube()
         self.save_cube()
 
@@ -327,6 +329,26 @@ class StepBuildCube(Step):
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s workforce features (row coverage %.1f%%)",
                        added, 100 * cov)
+
+    def build_composite_signals(self):
+        """Append thematic COMPOSITE columns (comp_<theme>) to the feature panel:
+        each theme averages its (sign-oriented, re-standardized) member features.
+        ADDITIVE -- raw features are kept, so no information is lost. Configured
+        under build_cube.composites in build_cube.yml."""
+        cfg = self._cfg.get("composites", {}) or {}
+        if not cfg.get("enabled", False):
+            return
+        groups = OmegaConf.to_container(cfg.get("groups", {}), resolve=True) or {}
+        if not groups:
+            self._log.warning("composites.enabled but no groups configured.")
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = build_composite_signals(
+            self.feature_panel, groups, method=cfg.get("method", "zscore"),
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        self._log.info("Built %s composite signals: %s", added,
+                       [f"comp_{t}" for t in groups])
 
     def aggregate_cube(self):
         self.cube = build_cube_dataframe(

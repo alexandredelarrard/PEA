@@ -68,6 +68,18 @@ inputs:
     - comp_workforce
     - comp_technical
 
+  # ---- Company-regime state flags (RAW 0/1, NOT peer-relative). The composites
+    #      above rank names WITHIN a regime but cannot express the regime itself;
+    #      these let the model CONDITION on it, so loss-makers, cash-burners,
+    #      negative-equity firms and too-young/no-revenue hyper-growth names are
+    #      not scored as if they were mature profitable firms. NaN base -> NaN flag
+    #      (never a false 0); LightGBM splits on them natively, the linear member
+    #      imputes NaN->neutral. Directions are set in inputs.monotonic below. ----
+    - f_profitable
+    - f_fcf_positive
+    - f_negative_equity
+    - f_hyper_growth
+
   #   # ---- Price / technical (point-in-time; MACD/RSI/ATR lagged 1 day) ----
   #   - mom_12_1
   #   - rev_21
@@ -288,9 +300,27 @@ inputs:
   #   - f_avg_officer_age_vs_peers
   #   - f_avg_officer_age_xs
 
-  # monotonic:
-  #   enabled: true
-  #   features:
-  #     - f_employee_growth_xs: 1    # +1: higher headcount growth -> higher score
-  #     - f_sga_growth_xs: -1         # -1: higher SG&A growth -> lower score
-  #     - f_fwd_eps_yield_xs: 1       # +1: cheaper on forward EPS -> higher score
+  # Monotone constraints (LightGBM member only; the linear baseline ignores them).
+  # Every comp_<theme> is sign-oriented in build_cube.composites so that HIGHER =
+  # long side (members are '-'-inverted where needed). So each composite must map
+  # MONOTONICALLY UP to the forward-return target -> direction +1 for all nine.
+  # (If a composite ever showed a robustly negative CV IC, flip it to -1 here.)
+  monotonic:
+    enabled: true
+    features:
+      - comp_value: 1                 # cheaper -> higher expected return
+      - comp_quality: 1               # more profitable / higher-quality -> higher
+      - comp_growth: 1                # faster (oriented) growth -> higher
+      - comp_distress: 1              # safer / less distressed -> higher
+      - comp_capital_allocation: 1    # less dilution / better allocation -> higher
+      - comp_expectations: 1          # richer forward expectations -> higher
+      - comp_management: 1            # founder-led / insider buying -> higher
+      - comp_workforce: 1             # more productive workforce -> higher
+      - comp_technical: 1             # positive momentum / low risk -> higher
+      # Regime flags: only the economically-unambiguous signs are constrained.
+      - f_profitable: 1               # profitable firms -> higher (profitability premium)
+      - f_fcf_positive: 1             # cash-generative firms -> higher
+      - f_negative_equity: -1         # negative book equity = distress -> lower
+      # f_hyper_growth intentionally UNCONSTRAINED: its forward-return sign is not
+      # robust (growth premium vs speculative over-valuation), so it is a free
+      # split variable for the tree rather than a forced monotone prior.

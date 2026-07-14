@@ -199,6 +199,7 @@ class StepModelling(Step):
         cfg = self._config.model
         self.cv_results = {}
         self.horizon_ic = {}
+        self.member_ic = {}         # {h: {member_name: {mean_ic, ic_ir}}}  per-model CV IC
         self.oos_predictions = {}   # concatenated out-of-sample ENSEMBLE preds -> IC-over-time
         if self._half_life():
             self._log.info("Time-decay sample weights enabled (half_life=%.1f years)",
@@ -207,6 +208,7 @@ class StepModelling(Step):
         for h, panel in self.panels.items():
             embargo = (cfg.cv.embargo or h)      # embargo must be >= horizon
             fold_results = []
+            member_folds: dict[str, list] = {}   # member_name -> [per-fold daily_ic dicts]
             oos_frames = []
             for train_days, test_days in ml.purged_wf_splits(
                 panel["date"], cfg.cv.n_splits, embargo
@@ -217,11 +219,16 @@ class StepModelling(Step):
                     continue
                 sub_tr, sub_val = ml.temporal_valid_split(train)
                 models = self._fit_models(sub_tr, sub_val)
-                # IC of the ENSEMBLE (per-day-standardized average of the members)
-                preds = ml.ensemble_predict(models, test, self.feature_cols)
+                # ENSEMBLE preds + each member's per-day-standardized preds
+                preds, members = ml.ensemble_predict(
+                    models, test, self.feature_cols, return_members=True)
                 # annualize the IC IR by the horizon (overlapping labels), else it
                 # is inflated ~sqrt(horizon) and long horizons look artificially strong
                 fold_results.append(ml.daily_ic(test, preds, self.label_column, horizon=h))
+                # per-member IC on the SAME test fold -> compare ensemble vs each model
+                for name, mpred in members.items():
+                    member_folds.setdefault(name, []).append(
+                        ml.daily_ic(test, mpred, self.label_column, horizon=h))
                 oos_frames.append(pd.DataFrame({
                     "date": test["date"].to_numpy(),
                     "ticker": test["ticker"].to_numpy(),
@@ -236,7 +243,17 @@ class StepModelling(Step):
             mean_ic = np.nanmean([r["mean_ic"] for r in fold_results]) if fold_results else np.nan
             mean_ir = np.nanmean([r["ic_ir"] for r in fold_results]) if fold_results else np.nan
             self.horizon_ic[h] = {"mean_ic": mean_ic, "ic_ir": mean_ir}
-            self._log.info("horizon %s: CV mean_IC=%+.4f  IC_IR=%+.2f", h, mean_ic, mean_ir)
+            self._log.info("horizon %s: [ENSEMBLE] CV mean_IC=%+.4f  IC_IR=%+.2f",
+                           h, mean_ic, mean_ir)
+
+            # per-model IC / IC_IR so it is clear which member carries the ensemble
+            self.member_ic[h] = {}
+            for name, folds in member_folds.items():
+                m_ic = np.nanmean([r["mean_ic"] for r in folds]) if folds else np.nan
+                m_ir = np.nanmean([r["ic_ir"] for r in folds]) if folds else np.nan
+                self.member_ic[h][name] = {"mean_ic": m_ic, "ic_ir": m_ir}
+                self._log.info("horizon %s:   [%-10s] CV mean_IC=%+.4f  IC_IR=%+.2f",
+                               h, name, m_ic, m_ir)
 
     def save_diagnostics(self):
         """Per-run, per-horizon diagnosis folder under
@@ -300,15 +317,23 @@ class StepModelling(Step):
         blended = None
         for h, models in self.models.items():
             panel = self.panels[h]
-            # ensemble = per-day-standardized average of the trained families
-            scores = ml.ensemble_predict(models, panel, self.feature_cols).to_numpy()
+            # ensemble = per-day-standardized average of the trained families;
+            # also keep each member's standardized prediction for transparency
+            scores, members = ml.ensemble_predict(
+                models, panel, self.feature_cols, return_members=True)
             df = panel[["date", "ticker"]].copy()
-            df["score"] = scores
+            df["score"] = scores.to_numpy()
             # cross-sectional z-score per day so horizons are comparable
             df["z"] = df.groupby("date")["score"].transform(
                 lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan)
             )
-            df = df[["date", "ticker", "z"]].rename(columns={"z": f"z_{h}"})
+            # per-model predictions (already per-day standardized in ensemble_predict)
+            member_cols = []
+            for name, mz in members.items():
+                col = f"pred_{name}_h{h}"
+                df[col] = mz.to_numpy()
+                member_cols.append(col)
+            df = df[["date", "ticker", "z"] + member_cols].rename(columns={"z": f"z_{h}"})
             blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
 
         zcols = [f"z_{h}" for h in self.models]

@@ -1,11 +1,11 @@
 model:
   label_column: y
-  target_type: rank            # which stored cube target to train on: rank | zscore
+  target_type: zscore            # which stored cube target to train on: rank | zscore
                                # (must be present in build_cube.targets.labels)
   save_models: true
   weight_decay:
     enabled: true
-    half_life_years: 2
+    half_life_years: 3
   cv:
     n_splits: 5
     embargo: null          # defaults to primary_horizon when null
@@ -16,20 +16,20 @@ model:
     subsample: 0.8             # row bagging fraction -- ONLY active with bagging_freq>0
     bagging_freq: 1            # apply row bagging every iteration (activates subsample)
     colsample_bytree: 0.8
-    min_child_samples: 20
+    min_child_samples: 40
     lambda_l1: 3.0
     lambda_l2: 5.0
     num_boost_round: 3000      # cap only; early stopping ends well before this
-    early_stopping_rounds: 100 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
+    early_stopping_rounds: 60 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
 
   diagnostics:                 # per-run, per-horizon model-diagnosis artifacts
     enabled: true
     top_n_features: 50         # top features rendered as individual PDPs + SHAP bar
-    shap_sample: 15000          # rows sampled for SHAP / partial dependence (speed)
+    shap_sample: 11000          # rows sampled for SHAP / partial dependence (speed)
     pdp_grid: 30               # partial-dependence grid resolution
 
 train:
-  start_date: 2015-01-01
+  start_date: 2014-01-01
   end_date: 2025-01-01
 
 # Feature allow-list: the model trains ONLY on the uncommented entries below.
@@ -113,14 +113,14 @@ inputs:
     - f_shares_growth_xs
 
     # ---- Latest-quarter momentum (discrete single quarter, not TTM) ----
-    - f_q_rev_growth_vs_peers
-    - f_q_rev_growth_xs
-    - f_rev_growth_accel_vs_peers
-    - f_rev_growth_accel_xs
+    # - f_q_rev_growth_vs_peers
+    # - f_q_rev_growth_xs
+    # - f_rev_growth_accel_vs_peers
+    # - f_rev_growth_accel_xs
     # - f_q_earnings_growth_vs_peers
-    - f_q_earnings_growth_xs
-    - f_q_margin_vs_ttm_vs_peers
-    - f_q_margin_vs_ttm_xs
+    # - f_q_earnings_growth_xs
+    # - f_q_margin_vs_ttm_vs_peers
+    # - f_q_margin_vs_ttm_xs
 
     # ---- Yearly-TTM momentum (TTM vs TTM one year ago; less noisy, longer horizon) ----
     # Computed fresh from level columns (totalRevenue, netIncome, profitMargins) so
@@ -128,9 +128,9 @@ inputs:
     - f_y_rev_growth_vs_peers
     - f_y_rev_growth_xs
     - f_y_rev_growth_accel_vs_peers
-    # - f_y_rev_growth_accel_xs
+    - f_y_rev_growth_accel_xs
     - f_y_earnings_growth_vs_peers
-    # - f_y_earnings_growth_xs
+    - f_y_earnings_growth_xs
     - f_y_margin_vs_ttm_vs_peers
     - f_y_margin_vs_ttm_xs
 

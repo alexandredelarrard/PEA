@@ -13,7 +13,7 @@ backtest:
   # --- turnover control (the cost fix) ---
   step: 0.4                   # partial trade toward target; lower = slower = cheaper
   no_trade_band: 0.0           # optional: skip per-name trades smaller than this
-  rebalance_freq: 1            # recompute target every N days
+  rebalance_freq: 21            # recompute target every N days
  
   # --- risk-model windows ---
   beta_window: 63

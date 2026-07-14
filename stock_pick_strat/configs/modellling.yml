@@ -2,13 +2,13 @@ model:
   label_column: y
   target_type: zscore            # which stored cube target to train on: rank | zscore
                                # (must be present in build_cube.targets.labels)
-  type: lightgbm               # model family: lightgbm | elasticnet | ridge (linear baseline)
+  type: elasticnet               # model family: lightgbm | elasticnet | ridge (linear baseline)
   eval_metric: ic              # lightgbm early-stopping metric: ic | rmse
                                # (ic = mean daily cross-sectional IC -> aligns stopping
                                #  with the ranking objective; RMSE stops after ~1 round
                                #  on this near-noise target)
   linear:                      # linear-baseline hyperparameters (type: elasticnet | ridge)
-    alpha: 0.001               # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
+    alpha: 0.005              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
     l1_ratio: 0.5              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
                                # correlated features 0.3-0.7 selects while sharing weight.
     max_iter: 1000             # coordinate-descent iterations (elasticnet)
@@ -120,7 +120,7 @@ inputs:
     # - f_fcf_growth_xs
     - f_gross_margin_chg_vs_peers
     - f_gross_margin_chg_xs
-    - f_shares_growth_vs_peers
+    # - f_shares_growth_vs_peers
     - f_shares_growth_xs
 
     # ---- Latest-quarter momentum (discrete single quarter, not TTM) ----
@@ -136,14 +136,14 @@ inputs:
     # ---- Yearly-TTM momentum (TTM vs TTM one year ago; less noisy, longer horizon) ----
     # Computed fresh from level columns (totalRevenue, netIncome, profitMargins) so
     # backtestable from the full fundamentals history. Complements q_* features.
-    - f_y_rev_growth_vs_peers
+    # - f_y_rev_growth_vs_peers
     - f_y_rev_growth_xs
     - f_y_rev_growth_accel_vs_peers
     - f_y_rev_growth_accel_xs
     - f_y_earnings_growth_vs_peers
     - f_y_earnings_growth_xs
-    - f_y_margin_vs_ttm_vs_peers
-    - f_y_margin_vs_ttm_xs
+    # - f_y_margin_vs_ttm_vs_peers
+    # - f_y_margin_vs_ttm_xs -> wrong trend (weirds)
 
     # ---- Valuation MEAN-REVERSION (self-history): each yield vs the firm's OWN
     #      trailing ~5y (z-score). "cheap vs its own past" (e.g. PE below its 5y
@@ -186,7 +186,7 @@ inputs:
 
     # ---- Stock-based compensation ("employee shares given"): SBC/revenue and
     #      SBC/operating-cash-flow. GROSS give-away, unlike net shares_growth. ----
-    - f_sbc_intensity_vs_peers
+    # - f_sbc_intensity_vs_peers
     - f_sbc_intensity_xs
     - f_sbc_to_ocf_vs_peers
     - f_sbc_to_ocf_xs
@@ -249,3 +249,9 @@ inputs:
     - f_avg_officer_age_vs_peers
     - f_avg_officer_age_xs
 
+  monotonic:
+    enabled: true
+    features:
+      - f_employee_growth_xs: 1    # +1: higher headcount growth -> higher score
+      - f_sga_growth_xs: -1         # -1: higher SG&A growth -> lower score
+      - f_fwd_eps_yield_xs: 1       # +1: cheaper on forward EPS -> higher score

@@ -7,8 +7,8 @@ build_cube:
     shrink_weight: 0.7
 
   targets:
-    horizons: [5, 10, 20, 40, 60]
-    primary_horizon: 20
+    horizons: [30, 60, 90]
+    primary_horizon: 60
     labels: [rank, zscore]   # target versions STORED in the cube (rank | zscore | epsilon);
                              # the model picks one via model.target_type in modellling.yml
     min_names: 20

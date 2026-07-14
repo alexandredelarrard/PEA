@@ -120,6 +120,25 @@ class StepModelling(Step):
             self._log.info("  h=%s: %s rows, %s tickers, %s days",
                            h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
 
+    def _monotone_constraints(self) -> list[int] | None:
+        """Build LightGBM monotone_constraints from inputs.monotonic in config."""
+        inputs = self._config.get("inputs")
+        mono = inputs.get("monotonic") if inputs else None
+        if not mono or not mono.get("enabled", False):
+            return None
+
+        feature_map = ml.parse_monotone_feature_map(mono.get("features"))
+        if not feature_map:
+            self._log.warning("inputs.monotonic.enabled but no features configured")
+            return None
+
+        constraints = ml.build_monotone_constraints(self.feature_cols, feature_map)
+        missing = [f for f in feature_map if f not in self.feature_cols]
+        if missing:
+            self._log.warning("Monotone features not in training set (skipped): %s",
+                              missing)
+        return constraints
+
     def _train_kwargs(self) -> dict:
         c = self._config.model.lightgbm
         kw = {
@@ -142,6 +161,10 @@ class StepModelling(Step):
             # early-stop on cross-sectional IC (ranking metric) rather than RMSE
             "eval_metric": self._config.model.get("eval_metric", "ic"),
         }
+        if self.model_type == "lightgbm":
+            monotone = self._monotone_constraints()
+            if monotone is not None:
+                kw["params"]["monotone_constraints"] = monotone
         wd = self._config.model.get("weight_decay")
         if wd and wd.get("enabled", False):
             kw["half_life_years"] = float(wd.half_life_years)

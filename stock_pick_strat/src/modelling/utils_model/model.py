@@ -22,9 +22,11 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 
+from omegaconf import ListConfig, OmegaConf
 from scipy.stats import spearmanr
 
 EARLY_STOPPING_ROUNDS = 40
+VALID_MONOTONE_DIRECTIONS = frozenset({-1, 0, 1})
 CALENDAR_DAYS_PER_YEAR = 365.25
 DEFAULT_SEED = 42  # any fixed value works; overridden by the pipeline's global seed
 
@@ -67,6 +69,51 @@ def make_panel(feature_panel: pd.DataFrame, label_df: pd.DataFrame,
 
 def feature_columns(panel: pd.DataFrame, label_name: str = "y") -> list:
     return [c for c in panel.columns if c not in ("date", "ticker", label_name)]
+
+
+def parse_monotone_feature_map(features_cfg: dict | ListConfig | None) -> dict[str, int]:
+    """Parse ``inputs.monotonic.features`` from modellling.yml.
+
+    Accepts either a mapping ``{feature: direction}`` or a list of single-key
+    mappings ``[{feature: direction}, ...]``. Directions must be -1 (decreasing),
+    0 (free), or +1 (increasing).
+    """
+    if features_cfg is None:
+        return {}
+    out: dict[str, int] = {}
+    if OmegaConf.is_dict(features_cfg):
+        for name, direction in features_cfg.items():
+            d = int(direction)
+            if d not in VALID_MONOTONE_DIRECTIONS:
+                raise ValueError(f"Invalid monotone direction {d} for {name}")
+            out[str(name)] = d
+        return out
+
+    for item in features_cfg:
+        if not OmegaConf.is_dict(item):
+            raise ValueError(
+                "inputs.monotonic.features must be a mapping or a list of "
+                "single-key mappings like `- f_sales_yield_xs: 1`"
+            )
+        if len(item) != 1:
+            raise ValueError(
+                "Each monotone list entry must contain exactly one feature "
+                f"and direction, got {dict(item)}"
+            )
+        name, direction = next(iter(item.items()))
+        d = int(direction)
+        if d not in VALID_MONOTONE_DIRECTIONS:
+            raise ValueError(f"Invalid monotone direction {d} for {name}")
+        out[str(name)] = d
+    return out
+
+
+def build_monotone_constraints(
+    feats: list[str],
+    feature_map: dict[str, int],
+) -> list[int]:
+    """LightGBM ``monotone_constraints`` vector aligned to ``feats`` order."""
+    return [int(feature_map.get(f, 0)) for f in feats]
 
 
 # --------------------------------------------------------------------------- #

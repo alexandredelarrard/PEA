@@ -1,13 +1,16 @@
 import numpy as np
 import json
+import pickle
 import pandas as pd
 from datetime import datetime
 from omegaconf import DictConfig
+import lightgbm as lgb
 
 from src.utils.step import Step
 from src.context import Context
 from src.data_aggregate.utils.cube import panel_from_cube, feature_columns_from_cube
 from src.modelling.utils_model import model as ml
+from src.modelling.utils_model import baselines
 from src.modelling.utils_model import diagnostics
 
 
@@ -54,8 +57,9 @@ class StepModelling(Step):
         self.primary_horizon = self._cfg.targets.primary_horizon
         self.label_column = self._config.model.label_column
         self.target_type = self._config.model.get("target_type", "rank")
-        self._log.info("Loaded cube (%s rows), horizons=%s, target_type=%s",
-                       len(self.cube), self.horizons, self.target_type)
+        self.model_type = self._config.model.get("type", "lightgbm")
+        self._log.info("Loaded cube (%s rows), horizons=%s, target_type=%s, model_type=%s",
+                       len(self.cube), self.horizons, self.target_type, self.model_type)
 
     def _select_features(self, available: list[str]) -> list[str]:
         """Restrict training to the config allow-list (`inputs.columns` in
@@ -135,11 +139,31 @@ class StepModelling(Step):
             },
             "num_boost_round": c.num_boost_round,
             "early_stopping_rounds": int(c.get("early_stopping_rounds", ml.EARLY_STOPPING_ROUNDS)),
+            # early-stop on cross-sectional IC (ranking metric) rather than RMSE
+            "eval_metric": self._config.model.get("eval_metric", "ic"),
         }
         wd = self._config.model.get("weight_decay")
         if wd and wd.get("enabled", False):
             kw["half_life_years"] = float(wd.half_life_years)
         return kw
+
+    def _half_life(self) -> float | None:
+        wd = self._config.model.get("weight_decay")
+        return float(wd.half_life_years) if (wd and wd.get("enabled", False)) else None
+
+    def _fit(self, train: pd.DataFrame, valid: pd.DataFrame | None):
+        """Fit one model on `train`, dispatching on model.type. LightGBM uses the
+        purged validation fold for IC early stopping; the linear baselines are
+        closed-form and ignore it."""
+        if self.model_type in ("ridge", "elasticnet"):
+            lc = self._config.model.get("linear", {}) or {}
+            return baselines.train_linear(
+                train, self.feature_cols, self.label_column, kind=self.model_type,
+                alpha=float(lc.get("alpha", 1e-3)), l1_ratio=float(lc.get("l1_ratio", 0.5)),
+                max_iter=int(lc.get("max_iter", 1000)), tol=float(lc.get("tol", 1e-6)),
+                half_life_years=self._half_life())
+        return ml.train_ranker(train, self.feature_cols, self.label_column,
+                               valid_panel=valid, **self._train_kwargs())
 
     def cross_validate_all_horizons(self):
         """Purged walk-forward CV per horizon; collect IC to weight the blend."""
@@ -166,8 +190,7 @@ class StepModelling(Step):
                 if train.empty or test.empty:
                     continue
                 sub_tr, sub_val = ml.temporal_valid_split(train)
-                booster = ml.train_ranker(sub_tr, self.feature_cols,
-                                          self.label_column, valid_panel=sub_val, **train_kw)
+                booster = self._fit(sub_tr, sub_val)
                 preds = ml.predict(booster, test, self.feature_cols)
                 # annualize the IC IR by the horizon (overlapping labels), else it
                 # is inflated ~sqrt(horizon) and long horizons look artificially strong
@@ -201,6 +224,10 @@ class StepModelling(Step):
         gracefully so this never fails the pipeline."""
         if not self._context.save:
             return
+        if self.model_type != "lightgbm":
+            # SHAP / gain / PDP are tree-specific; skip for the linear baselines
+            self._log.info("Model diagnostics skipped for model_type=%s", self.model_type)
+            return
         diag = self._config.model.get("diagnostics", {}) or {}
         if not diag.get("enabled", True):
             return
@@ -232,13 +259,12 @@ class StepModelling(Step):
 
     def train_final_models(self):
         """Fit one model per horizon on the full panel."""
-        train_kw = self._train_kwargs()
         self.models = {}
         for h, panel in self.panels.items():
             sub_tr, sub_val = ml.temporal_valid_split(panel, train_frac=0.9)
-            self.models[h] = ml.train_ranker(sub_tr, self.feature_cols,
-                                             self.label_column, valid_panel=sub_val, **train_kw)
-        self._log.info("Trained %s per-horizon final models", len(self.models))
+            self.models[h] = self._fit(sub_tr, sub_val)
+        self._log.info("Trained %s per-horizon final %s models",
+                       len(self.models), self.model_type)
 
     def blend_and_generate_signal(self):
         """Standardize each horizon's scores per day, IR-weight, blend, rank."""
@@ -285,7 +311,10 @@ class StepModelling(Step):
         try:
             imp = {}
             for h, model in self.models.items():
-                gains = ml.feature_importance(model, self.feature_cols)  # {feat: gain}
+                # LightGBM gain vs |coef| for the linear baselines
+                gains = (ml.feature_importance(model, self.feature_cols)
+                         if isinstance(model, lgb.Booster)
+                         else baselines.linear_importance(model))
                 for f, g in gains.items():
                     imp[f] = imp.get(f, 0.0) + g
             imp_s = pd.Series(imp).sort_values(ascending=False)
@@ -327,13 +356,18 @@ class StepModelling(Step):
         """Persist each horizon's booster + metadata for the backtest step."""
         models_dir = self._context.paths["MODELS_DIR"]
         for h, model in self.models.items():
-            model.save_model(str(models_dir / f"model_h{h}.txt"))
+            if isinstance(model, lgb.Booster):
+                model.save_model(str(models_dir / f"model_h{h}.txt"))
+            else:                                   # linear baseline -> pickle
+                with (models_dir / f"model_h{h}.pkl").open("wb") as f:
+                    pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
 
         meta = {
             "horizons": [int(h) for h in self.models],
             "feature_cols": list(self.feature_cols),
             "label_column": self.label_column,
             "target_type": self.target_type,
+            "model_type": self.model_type,
             "train_start": self._config.train.start_date,
             "train_end": self._config.train.end_date,
             # blend weights for the backtest (IC_IR per horizon, floored at 0)

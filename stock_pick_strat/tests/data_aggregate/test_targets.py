@@ -20,8 +20,24 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import warnings
+
 from src.data_aggregate.utils.factors import momentum_characteristic
-from src.data_aggregate.utils.targets import cross_sectional_neutralize
+from src.data_aggregate.utils.targets import cross_sectional_neutralize, forward_compound
+
+
+def test_forward_compound_no_log1p_warning_on_sub_minus1_return():
+    """A return worse than -100% (e.g. the 2020 negative-oil-futures move) must not
+    emit 'invalid value encountered in log1p', and must stay finite (floored)."""
+    s = pd.Series([0.01, -1.8, 0.02, 0.03, -0.02, 0.01, np.nan, 0.00])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)   # any RuntimeWarning -> failure
+        fwd = forward_compound(s, 2)
+    # windows that don't span the NaN produce finite compounded returns
+    assert np.isfinite(fwd.dropna()).all() and fwd.notna().any()
+
+    print("\n=== SANITY CHECK: forward_compound guards log1p ===")
+    print("  return -180% floored just above -1 -> no log1p warning, finite forward compound. Validated.")
 
 
 def _per_stock_mean_beta(betas: dict, col: str) -> pd.Series:

@@ -223,7 +223,7 @@ class StepModelling(Step):
                 models = self._fit_models(sub_tr, sub_val)
                 # ENSEMBLE preds + each member's per-day-standardized preds
                 preds, members = ml.ensemble_predict(
-                    models, test, self.feature_cols, return_members=True)
+                    models, test, self.feature_cols)
                 # annualize the IC IR by the horizon (overlapping labels), else it
                 # is inflated ~sqrt(horizon) and long horizons look artificially strong
                 fold_results.append(ml.daily_ic(test, preds, self.label_column, horizon=h))

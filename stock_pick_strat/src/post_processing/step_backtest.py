@@ -117,7 +117,8 @@ class StepBacktest(Step):
                 continue
             df = panel[["date", "ticker"]].copy()
             # ensemble = per-day-standardized average of the trained families
-            df["z"] = ml.ensemble_predict(models, panel, self.feature_cols).to_numpy()
+            scores, zs = ml.ensemble_predict(models, panel, self.feature_cols)
+            df["z"] = scores.to_numpy()
             df["z"] = df.groupby("date")["z"].transform(
                 lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
             df = df.rename(columns={"z": f"z_{h}"})

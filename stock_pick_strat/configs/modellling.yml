@@ -111,6 +111,18 @@ inputs:
     - f_rd_intensity_vs_peers
     - f_rd_intensity_xs
 
+    # ---- Company-regime handling (profitable vs loss-making / hyper-growth) ----
+    # gross_profitability (Novy-Marx: gross profit / assets) stays valid for
+    # loss-makers, where earnings yields are masked to NaN. The 0/1 state flags
+    # are RAW (not peer-relative) so the model conditions on the regime instead
+    # of averaging a feature whose meaning flips across profitability.
+    - f_gross_profitability_vs_peers
+    - f_gross_profitability_xs
+    - f_profitable
+    - f_fcf_positive
+    - f_negative_equity
+    - f_hyper_growth
+
     # ---- Peer-relative fundamentals: growth / trend / dilution ----
     - f_revenueGrowth_vs_peers
     - f_revenueGrowth_xs

@@ -44,8 +44,20 @@ class LinearModel:
 
 
 def _standardize(X: np.ndarray):
-    mean = np.nanmean(X, axis=0)
-    std = np.nanstd(X, axis=0)
+    """Column-standardize, tolerant of ALL-NaN columns (a feature with no
+    coverage in a fold) -- computed without np.nanmean/np.nanstd so it never
+    emits 'Mean of empty slice' / 'Degrees of freedom <= 0' RuntimeWarnings.
+    An all-NaN or constant column gets mean 0, std 1 -> becomes all zeros after
+    NaN-imputation, i.e. contributes nothing (correct)."""
+    X = np.asarray(X, dtype=float)
+    finite = np.isfinite(X)
+    n = finite.sum(axis=0)
+    safe_n = np.where(n > 0, n, 1)
+    filled = np.where(finite, X, 0.0)
+    mean = filled.sum(axis=0) / safe_n
+    mean = np.where(n > 0, mean, 0.0)
+    var = np.where(finite, (X - mean) ** 2, 0.0).sum(axis=0) / safe_n
+    std = np.sqrt(var)
     std = np.where(np.isfinite(std) & (std > 0), std, 1.0)
     Xs = np.nan_to_num((X - mean) / std, nan=0.0)
     return Xs, mean, std

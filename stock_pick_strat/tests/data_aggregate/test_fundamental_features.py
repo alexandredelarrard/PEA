@@ -22,7 +22,74 @@ from src.data_aggregate.utils.fundamental_features import (
     _self_history_z,
     _derived_fields,
     build_fundamental_feature_panel,
+    build_state_panel,
 )
+
+
+# --------------------------------------------------------------------------- #
+# Company-regime handling: mask undefined earnings metrics, keep robust ones,  #
+# add state flags                                                              #
+# --------------------------------------------------------------------------- #
+def _synth_mixed_regime():
+    """Two firms filed same day: AAA profitable, ZZZ a loss-making hyper-grower
+    with negative equity -> exercises every regime branch."""
+    rows = [
+        dict(ticker="AAA", as_of="2020-02-01", totalRevenue=100.0, netIncome=10.0,
+             stockholdersEquity=50.0, freeCashflow=8.0, ebitda=20.0, totalAssets=200.0,
+             grossMargins=0.40, revenueGrowth=0.05, sharesOutstanding=1000.0),
+        dict(ticker="ZZZ", as_of="2020-02-01", totalRevenue=80.0, netIncome=-30.0,
+             stockholdersEquity=-10.0, freeCashflow=-25.0, ebitda=-15.0, totalAssets=120.0,
+             grossMargins=0.55, revenueGrowth=0.60, sharesOutstanding=2000.0),
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_regime_masks_earnings_metrics_but_keeps_robust_ones():
+    fund = _synth_mixed_regime()
+    idx = pd.bdate_range("2020-03-02", periods=3)
+    close = pd.DataFrame({"AAA": 2.0, "ZZZ": 1.0}, index=idx)
+    F = _derived_fields(fund, idx, close)
+    d = idx[-1]
+
+    # profitable AAA -> earnings/fcf/ebitda yields defined
+    assert np.isfinite(F["earnings_yield"].loc[d, "AAA"])
+    assert np.isfinite(F["fcf_yield"].loc[d, "AAA"])
+    # loss-making ZZZ -> those are masked to NaN (a negative E/P is not "cheap")
+    assert np.isnan(F["earnings_yield"].loc[d, "ZZZ"])
+    assert np.isnan(F["fcf_yield"].loc[d, "ZZZ"])
+    assert np.isnan(F["ebitda_to_ev"].loc[d, "ZZZ"])      # EBITDA<0
+    assert np.isnan(F["book_yield"].loc[d, "ZZZ"])         # equity<0
+    # but regime-ROBUST metrics stay valid for BOTH firms
+    assert np.isfinite(F["sales_yield"].loc[d, "ZZZ"])     # revenue always +
+    # gross_profitability = grossMargins*revenue/assets = 0.55*80/120
+    assert abs(F["gross_profitability"].loc[d, "ZZZ"] - 0.55 * 80.0 / 120.0) < 1e-9
+    assert abs(F["gross_profitability"].loc[d, "AAA"] - 0.40 * 100.0 / 200.0) < 1e-9
+
+    print("\n=== SANITY CHECK: regime masking ===")
+    print("  loss-maker ZZZ: earnings/fcf/ebitda/book yields -> NaN (undefined/non-monotone);")
+    print(f"  robust metrics kept: sales_yield={F['sales_yield'].loc[d,'ZZZ']:.4f}, "
+          f"gross_profitability={F['gross_profitability'].loc[d,'ZZZ']:.4f}. Validated.")
+
+
+def test_regime_state_flags_exact_and_raw():
+    fund = _synth_mixed_regime()
+    idx = pd.bdate_range("2020-03-02", periods=3)
+    F = _derived_fields(fund, idx, close=None)
+    d = idx[-1]
+
+    assert F["profitable"].loc[d, "AAA"] == 1.0 and F["profitable"].loc[d, "ZZZ"] == 0.0
+    assert F["fcf_positive"].loc[d, "AAA"] == 1.0 and F["fcf_positive"].loc[d, "ZZZ"] == 0.0
+    assert F["negative_equity"].loc[d, "AAA"] == 0.0 and F["negative_equity"].loc[d, "ZZZ"] == 1.0
+    assert F["hyper_growth"].loc[d, "AAA"] == 0.0 and F["hyper_growth"].loc[d, "ZZZ"] == 1.0  # 0.60 > 0.25
+
+    # flags enter the panel RAW as `f_<flag>` (not peer-standardized _vs_peers/_xs)
+    state = build_state_panel({k: F[k] for k in
+                               ("profitable", "fcf_positive", "negative_equity", "hyper_growth")})
+    assert {"f_profitable", "f_fcf_positive", "f_negative_equity", "f_hyper_growth"}.issubset(state.columns)
+    assert not any(c.endswith(("_vs_peers", "_xs")) for c in state.columns)
+
+    print("\n=== SANITY CHECK: regime state flags ===")
+    print("  AAA=[profitable=1,fcf+=1,negEq=0,hyper=0]  ZZZ=[0,0,1,1]; emitted raw as f_<flag>. Validated.")
 
 
 # --------------------------------------------------------------------------- #

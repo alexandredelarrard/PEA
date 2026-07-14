@@ -121,6 +121,37 @@ def _build_datasets(
     return lgb.Dataset(x, label=y, **kw)
 
 
+def _ic_eval_factory(val_dates: np.ndarray, val_label: np.ndarray, min_names: int = 5):
+    """Build a LightGBM custom eval that returns the mean DAILY cross-sectional
+    IC (Spearman) on the validation set. Early-stopping on this — instead of
+    RMSE — aligns the stopping rule with what the strategy actually cares about
+    (cross-sectional ranking), so a near-noise target does not stop after a
+    couple of RMSE-flat rounds. Label ranks are precomputed once; each round only
+    ranks the predictions per day."""
+    dates = np.asarray(val_dates)
+    y = np.asarray(val_label, dtype=float)
+    if len(dates) == 0:
+        groups, y_ranks = [], []
+    else:
+        _, inv = np.unique(dates, return_inverse=True)
+        groups = [np.where(inv == g)[0] for g in range(int(inv.max()) + 1)]
+        y_ranks = [pd.Series(y[idx]).rank().to_numpy() for idx in groups]
+
+    def _feval(preds, _data):
+        preds = np.asarray(preds, dtype=float)
+        ics = []
+        for idx, yr in zip(groups, y_ranks):
+            if len(idx) > min_names:
+                pr = pd.Series(preds[idx]).rank().to_numpy()
+                if pr.std() > 0 and yr.std() > 0:
+                    ic = float(np.corrcoef(pr, yr)[0, 1])
+                    if np.isfinite(ic):
+                        ics.append(ic)
+        return "daily_ic", (float(np.mean(ics)) if ics else 0.0), True  # higher = better
+
+    return _feval
+
+
 def train_ranker(
     panel: pd.DataFrame,
     feats: list,
@@ -130,10 +161,15 @@ def train_ranker(
     valid_panel: pd.DataFrame | None = None,
     early_stopping_rounds: int = EARLY_STOPPING_ROUNDS,
     half_life_years: float | None = None,
+    eval_metric: str = "rmse",
 ):
     """Fit a LightGBM model. When ``half_life_years`` is set, training rows are
     weighted with exponential time decay (most recent = 1.0); validation is
-    unweighted so early stopping reflects recent out-of-sample fit."""
+    unweighted so early stopping reflects recent out-of-sample fit.
+
+    ``eval_metric``: "rmse" (built-in) or "ic" -> early-stop on the mean daily
+    cross-sectional IC of the validation fold (the ranking metric we optimize).
+    """
     default = dict(
         objective="regression", #"lambdarank",
         metric="rmse", #"ndcg",
@@ -164,10 +200,16 @@ def train_ranker(
     train_set = _build_datasets(default, panel, feats, label_name, train_w)
     valid_sets = []
     callbacks = []
+    feval = None
 
     if valid_panel is not None and not valid_panel.empty:
         valid_set = _build_datasets(default, valid_panel, feats, label_name)
         valid_sets = [valid_set]
+        if eval_metric == "ic":
+            # disable the built-in metric so early stopping keys on the custom IC
+            default["metric"] = "None"
+            feval = _ic_eval_factory(valid_panel["date"].to_numpy(),
+                                     valid_panel[label_name].to_numpy())
         callbacks.append(lgb.early_stopping(stopping_rounds=early_stopping_rounds))
 
     booster = lgb.train(
@@ -175,6 +217,7 @@ def train_ranker(
         train_set,
         num_boost_round=num_boost_round,
         valid_sets=valid_sets or None,
+        feval=feval,
         callbacks=callbacks or None,
     )
     booster.feature_names = feats

@@ -11,8 +11,26 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.targets import _apply_label, build_targets_multi
+from src.data_aggregate.utils.targets import (
+    _apply_label, build_targets_multi, cross_sectional_zscore,
+)
 from src.data_aggregate.utils.cube import _labels_to_long, panel_from_cube
+
+
+def test_zscore_target_is_winsorized():
+    dates = pd.bdate_range("2020-01-01", periods=1)
+    cols = [f"T{i}" for i in range(21)]            # 20 zeros + 1 outlier -> raw z ~4.36
+    eps = pd.DataFrame([[0.0] * 20 + [5.0]], index=dates, columns=cols)
+
+    z = cross_sectional_zscore(eps, min_names=3, clip=3.0)
+    z_noclip = cross_sectional_zscore(eps, min_names=3, clip=None)
+
+    assert z.abs().max().max() <= 3.0 + 1e-9, "z-score target not winsorized to +-3"
+    assert z_noclip.abs().max().max() > 4.0, "sanity: the outlier's raw z should exceed 3"
+
+    print("\n=== SANITY CHECK: z-score target winsorized ===")
+    print(f"  outlier raw z={z_noclip.abs().max().max():.2f} -> clipped to "
+          f"{z.abs().max().max():.2f} (+-3). Fat tails no longer dominate. Validated.")
 
 
 # --------------------------------------------------------------------------- #

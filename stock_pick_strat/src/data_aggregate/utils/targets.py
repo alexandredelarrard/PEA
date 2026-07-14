@@ -111,9 +111,16 @@ def cross_sectional_rank(eps: pd.DataFrame, min_names: int = 20) -> pd.DataFrame
     return ranked
 
 
-def cross_sectional_zscore(eps: pd.DataFrame, min_names: int = 20) -> pd.DataFrame:
+def cross_sectional_zscore(eps: pd.DataFrame, min_names: int = 20,
+                           clip: float | None = 3.0) -> pd.DataFrame:
+    """Cross-sectional z-score per day. Residual returns are fat-tailed, so the
+    z-score is winsorized to +-`clip` (default 3): without it a handful of
+    extreme names dominate an RMSE loss and make the target hard/unstable to fit.
+    """
     valid = eps.notna().sum(axis=1) >= min_names
     z = eps.sub(eps.mean(axis=1), axis=0).div(eps.std(axis=1), axis=0)
+    if clip is not None:
+        z = z.clip(-clip, clip)
     z[~valid] = np.nan
     return z
 

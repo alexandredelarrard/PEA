@@ -13,6 +13,7 @@ the optimizer uses magnitude, and z-scores make the mean-variance tilt meaningfu
 from __future__ import annotations
 
 import json
+import pickle
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -56,15 +57,22 @@ class StepBacktest(Step):
         self.target_type = meta.get("target_type",
                                     self._config.model.get("target_type", "rank"))
         self.train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
+        self.model_type = meta.get("model_type", "lightgbm")
         self.backtest_start = pd.Timestamp(meta["train_end"])
         self.horizons = list(self._cube_cfg.targets.horizons)
         self.models = {}
         for h in self.horizons:
-            p = models_dir / f"model_h{h}.txt"
-            if p.exists():
-                self.models[h] = lgb.Booster(model_file=str(p))
+            if self.model_type == "lightgbm":
+                p = models_dir / f"model_h{h}.txt"
+                if p.exists():
+                    self.models[h] = lgb.Booster(model_file=str(p))
+            else:                                   # pickled linear baseline
+                p = models_dir / f"model_h{h}.pkl"
+                if p.exists():
+                    with p.open("rb") as f:
+                        self.models[h] = pickle.load(f)
         if not self.models:
-            raise FileNotFoundError(f"No model_h*.txt files found in {models_dir}.")
+            raise FileNotFoundError(f"No saved models found in {models_dir}.")
         self._log.info("Loaded %d models (horizons %s); backtest starts %s",
                        len(self.models), list(self.models.keys()), self.backtest_start.date())
 

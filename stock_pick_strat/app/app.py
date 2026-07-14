@@ -435,8 +435,8 @@ def render_results(bt: StepBacktest):
 
     styled = (
         display.style
-        .applymap(_colour_hit, subset=["hit_rate_%"])
-        .applymap(_colour_out, subset=["outperformed_spy"])
+        .map(_colour_hit, subset=["hit_rate_%"])
+        .map(_colour_out, subset=["outperformed_spy"])
         .format({
             "hit_rate_%": "{:.1f}",
             "strategy_return_%": "{:+.3f}",

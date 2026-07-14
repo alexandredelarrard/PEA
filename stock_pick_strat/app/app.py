@@ -6,10 +6,11 @@ Run from stock_pick_strat/ with:
 
 Behaviour:
   * Sidebar exposes every backtest parameter.
-  * Backtest start date is pinned to modellling.yml `train.end_date` (the model
-    train-end), so the backtest is always strictly out-of-sample.
-  * If trained models already exist AND their stored train_end matches the current
-    config, they are reused. Otherwise StepModelling is run first and the central
+  * Backtest start date == the trained model's end date, so the backtest is always
+    strictly out-of-sample. The desired start is modellling.yml `train.end_date`.
+  * If the existing model's end date is aligned (same day) with the desired backtest
+    start, the models are reused. If it is not aligned — earlier OR later — or the
+    models are absent/incomplete, StepModelling is retrained first and the central
     panel shows a "models are being retrained" banner with live logs.
   * Live pipeline logs are streamed in the central panel while the backtest runs,
     then replaced by the results once computation finishes.
@@ -134,10 +135,12 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Retrain detection + log streaming helpers
 # ---------------------------------------------------------------------------
-def needs_retrain(ctx, expected_train_end: str) -> tuple[bool, str]:
+def needs_retrain(ctx, desired_start: str) -> tuple[bool, str]:
     """
-    Retrain when: no metadata, no model files, or the stored train_end differs
-    from the current modellling.yml train.end_date.
+    The backtest must start exactly at the model's end date to stay out-of-sample.
+    Retrain when that alignment is broken: the trained model's end date is earlier
+    OR later than the desired backtest start, or when models are absent/incomplete.
+    Dates are compared normalized (day granularity), not as raw strings.
     """
     models_dir = ctx.paths["MODELS_DIR"]
     meta_path = models_dir / "metadata.json"
@@ -147,17 +150,28 @@ def needs_retrain(ctx, expected_train_end: str) -> tuple[bool, str]:
         meta = json.loads(meta_path.read_text())
     except Exception:
         return True, "model metadata unreadable"
-    stored = str(meta.get("train_end", ""))
-    if stored != expected_train_end:
-        return True, f"train_end changed ({stored or 'unset'} -> {expected_train_end})"
-    horizons = meta.get("horizons", [])
-    model_types = meta.get("model_types", [])
-    for h in horizons:
-        for kind in model_types:
+
+    stored = meta.get("train_end")
+    if not stored:
+        return True, "model train_end missing from metadata"
+
+    model_end = pd.Timestamp(stored).normalize()
+    want = pd.Timestamp(desired_start).normalize()
+    if model_end < want:
+        return True, (f"model end {model_end.date()} is EARLIER than desired backtest "
+                      f"start {want.date()} — not aligned, retrain")
+    if model_end > want:
+        return True, (f"model end {model_end.date()} is LATER than desired backtest "
+                      f"start {want.date()} — not aligned, retrain")
+
+    # dates aligned -> make sure the model files are actually present
+    for h in meta.get("horizons", []):
+        for kind in meta.get("model_types", []):
             ext = "txt" if kind == "lightgbm" else "pkl"
             if not (models_dir / f"model_h{h}_{kind}.{ext}").exists():
                 return True, f"missing model file for h{h}/{kind}"
-    return False, f"up-to-date (train_end={stored})"
+
+    return False, f"model end aligned with backtest start ({model_end.date()})"
 
 
 def _clear_log_buffer(ctx):
@@ -214,10 +228,16 @@ def run_pipeline(params: dict, do_retrain: bool, placeholder):
 
     # ---- backtest ---------------------------------------------------------
     bt = StepBacktest(context=context, config=config)
+    # load_models() sets bt.backtest_start = the MODEL's end date (meta train_end);
+    # that IS the backtest start, so we keep it rather than overriding with config.
     bt.load_models()
-    # Pin the backtest start to the model train-end (out-of-sample guarantee)
-    bt.backtest_start = pd.Timestamp(train_end)
-    bt._log.info("Backtest start pinned to model train-end: %s", train_end)
+    model_end = pd.Timestamp(bt.backtest_start).normalize()
+    want = pd.Timestamp(train_end).normalize()
+    if model_end != want:
+        # should not happen after the retrain check; surface loudly if it does
+        bt._log.warning("Backtest start %s != model end date %s — alignment check failed",
+                        want.date(), model_end.date())
+    bt._log.info("Backtest start = model end date: %s", model_end.date())
 
     _run_phase(
         [

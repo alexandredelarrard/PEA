@@ -277,7 +277,7 @@ def predict(booster, panel: pd.DataFrame, feats: list) -> pd.Series:
     return pd.Series(preds, index=panel.index, name="score")
 
 
-def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list) -> pd.Series:
+def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list) -> tuple[pd.Series, list]:
     """Average the CROSS-SECTIONALLY-STANDARDIZED (per day) predictions of several
     models into one ensemble score per row.
 
@@ -297,7 +297,7 @@ def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list) -> pd.Serie
              .transform(lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan)))
         zs.append(z.to_numpy())
     avg = np.nanmean(np.column_stack(zs), axis=1)
-    return pd.Series(avg, index=panel.index, name="score")
+    return pd.Series(avg, index=panel.index, name="score"), zs
 
 
 def feature_importance(booster, feats: list) -> dict[str, float]:

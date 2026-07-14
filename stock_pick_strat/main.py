@@ -14,11 +14,11 @@ if __name__ == "__main__":
     # self = StepDeducePeers(context=context, config=config)
     # self.run()
 
-    self = StepBuildCube(context=context, config=config)
-    self.run()
+    # self = StepBuildCube(context=context, config=config)
+    # self.run()
 
     self = StepModelling(context=context, config=config)
-    self.run()
+    # self.run()
 
-    self = StepBacktest(context=context, config=config)
-    self.run() 
+    # self = StepBacktest(context=context, config=config)
+    # self.run() 

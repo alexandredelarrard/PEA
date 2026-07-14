@@ -196,11 +196,13 @@ class StepModelling(Step):
 
     def cross_validate_all_horizons(self):
         """Purged walk-forward CV per horizon; collect IC to weight the blend."""
+        
         cfg = self._config.model
         self.cv_results = {}
         self.horizon_ic = {}
         self.member_ic = {}         # {h: {member_name: {mean_ic, ic_ir}}}  per-model CV IC
         self.oos_predictions = {}   # concatenated out-of-sample ENSEMBLE preds -> IC-over-time
+        
         if self._half_life():
             self._log.info("Time-decay sample weights enabled (half_life=%.1f years)",
                            self._half_life())
@@ -320,7 +322,7 @@ class StepModelling(Step):
             # ensemble = per-day-standardized average of the trained families;
             # also keep each member's standardized prediction for transparency
             scores, members = ml.ensemble_predict(
-                models, panel, self.feature_cols, return_members=True)
+                models, panel, self.feature_cols)
             df = panel[["date", "ticker"]].copy()
             df["score"] = scores.to_numpy()
             # cross-sectional z-score per day so horizons are comparable

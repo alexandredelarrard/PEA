@@ -1,8 +1,8 @@
 model:
   label_column: y
-  target_type: zscore            # which stored cube target to train on: rank | zscore
+  target_type: rank            # which stored cube target to train on: rank | zscore
                                # (must be present in build_cube.targets.labels)
-  type: elasticnet             # single-model fallback used only when `ensemble` is unset
+  type: ensemble               # single-model fallback used only when `ensemble` is unset
   ensemble: [elasticnet, lightgbm]   # train BOTH families and AVERAGE their per-day
                                # standardized predictions (linear bias + tree variance
                                # decorrelate -> the ensemble usually beats either alone).
@@ -14,7 +14,7 @@ model:
                                #  on this near-noise target)
   linear:                      # linear-baseline hyperparameters (type: elasticnet | ridge)
     alpha: 0.005              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
-    l1_ratio: 0.5              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
+    l1_ratio: 0.3              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
                                # correlated features 0.3-0.7 selects while sharing weight.
     max_iter: 1000             # coordinate-descent iterations (elasticnet)
     tol: 1.0e-6                # coordinate-descent convergence tolerance
@@ -46,7 +46,7 @@ model:
 
 train:
   start_date: 2014-01-01
-  end_date: 2025-01-01
+  end_date: 2023-01-01
 
 # Feature allow-list: the model trains ONLY on the uncommented entries below.
 # Comment a line out to drop that feature; a name not present in the cube is

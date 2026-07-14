@@ -128,6 +128,7 @@ class StepBacktest(Step):
         z = blended[zc].to_numpy()
         mask = ~np.isnan(z)
         wsum = np.where(mask, w, 0).sum(axis=1)
+        
         # IR-weighted combined z-score; KEEP magnitude (no percentile rank) for the optimizer
         blended["combined"] = np.where(
             wsum > 0,

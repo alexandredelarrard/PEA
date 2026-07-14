@@ -277,8 +277,7 @@ def predict(booster, panel: pd.DataFrame, feats: list) -> pd.Series:
     return pd.Series(preds, index=panel.index, name="score")
 
 
-def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list,
-                     return_members: bool = False):
+def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list):
     """Average the CROSS-SECTIONALLY-STANDARDIZED (per day) predictions of several
     models into one ensemble score per row.
 
@@ -287,14 +286,10 @@ def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list,
     ranking scale first -- that is what makes model-averaging help. With one model
     this reduces to its per-day z-score. `models` is {name: fitted_model}; each
     model just needs a `.predict(X)` (LightGBM booster or a LinearModel).
-
-    When ``return_members=True`` also return ``{name: per-day-z-scored Series}`` --
-    the exact standardized components that get averaged -- so callers can add each
-    member's prediction to a frame or score members individually. The blended
-    ``score`` is ``nanmean`` over those member series.
     """
     if not models:
         raise ValueError("ensemble_predict received no models")
+        
     dates = panel["date"].to_numpy()
     members: dict[str, pd.Series] = {}
     zs = []
@@ -308,9 +303,7 @@ def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list,
         members[str(name)] = pd.Series(z, index=panel.index, name=str(name))
     avg = np.nanmean(np.column_stack(zs), axis=1)
     blended = pd.Series(avg, index=panel.index, name="score")
-    if return_members:
-        return blended, members
-    return blended
+    return blended, members
 
 
 def feature_importance(booster, feats: list) -> dict[str, float]:

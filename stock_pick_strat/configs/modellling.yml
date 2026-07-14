@@ -2,7 +2,7 @@ model:
   label_column: y
   target_type: zscore            # which stored cube target to train on: rank | zscore
                                # (must be present in build_cube.targets.labels)
-  type: elasticnet               # model family: lightgbm | elasticnet | ridge (linear baseline)
+  type: lightgbm               # model family: lightgbm | elasticnet | ridge (linear baseline)
   eval_metric: ic              # lightgbm early-stopping metric: ic | rmse
                                # (ic = mean daily cross-sectional IC -> aligns stopping
                                #  with the ranking objective; RMSE stops after ~1 round
@@ -31,7 +31,7 @@ model:
     lambda_l1: 3.0
     lambda_l2: 5.0
     num_boost_round: 3000      # cap only; early stopping ends well before this
-    early_stopping_rounds: 60 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
+    early_stopping_rounds: 100 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
 
   diagnostics:                 # per-run, per-horizon model-diagnosis artifacts
     enabled: true

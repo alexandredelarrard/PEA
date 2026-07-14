@@ -78,6 +78,32 @@ def _is_up_to_date(max_date: pd.Timestamp, today: pd.Timestamp) -> bool:
     return max_date >= last_expected
 
 
+def _trading_calendar(existing: pd.DataFrame, min_coverage: float = 0.5) -> pd.DatetimeIndex:
+    """Reference set of trading dates: dates present for at least `min_coverage`
+    of the tickers in the file. Robust to any single ticker's interior gaps (a
+    date is 'real' because MOST names traded it), so it can catch a benchmark
+    (e.g. SPY) that is itself missing an interior window even though the stocks
+    have it."""
+    counts = existing.groupby("date")["ticker"].nunique()
+    n_tickers = existing["ticker"].nunique()
+    return counts.index[counts >= min_coverage * max(1, n_tickers)]
+
+
+def _interior_gap_start(ticker_dates: pd.Series,
+                        calendar: pd.DatetimeIndex) -> pd.Timestamp | None:
+    """Earliest reference trading date the ticker is MISSING inside its own span
+    [min, max]. None if the ticker has no interior hole. The incremental updater
+    only appends past max_date, so without this an interior hole (e.g. a partial
+    yfinance response saved once) is never revisited and drops those dates for
+    the whole universe when SPY defines the cube calendar."""
+    if calendar is None or len(calendar) == 0 or ticker_dates.empty:
+        return None
+    lo, hi = ticker_dates.min(), ticker_dates.max()
+    expected = calendar[(calendar >= lo) & (calendar <= hi)]
+    missing = expected.difference(pd.DatetimeIndex(ticker_dates.unique()))
+    return missing.min() if len(missing) else None
+
+
 def _tickers_needing_download(
     existing: pd.DataFrame | None,
     tickers: list[str],
@@ -102,6 +128,9 @@ def _tickers_needing_download(
 
     global_min = None if existing is None or existing.empty else existing["date"].min()
     history_reaches_back = global_min is not None and global_min <= backfill_floor
+    # trading calendar to detect interior holes (see _interior_gap_start)
+    calendar = (_trading_calendar(existing)
+                if existing is not None and not existing.empty else None)
 
     plans: dict[str, tuple[pd.Timestamp, pd.Timestamp] | None] = {}
     for tkr in tickers:
@@ -116,9 +145,16 @@ def _tickers_needing_download(
         # Only backfill earlier bars when the dataset as a whole is short of the
         # window (not merely because this ticker is younger than the window).
         need_backfill = (not history_reaches_back) and (min_date > backfill_floor)
+        # An interior hole is never healed by the tail-append path below, so
+        # widen the window back to the first missing trading day when present.
+        gap_start = _interior_gap_start(ticker_data, calendar)
 
         if need_backfill:
             plans[tkr] = (required_start, today)
+        elif gap_start is not None:
+            # one window that both heals the interior hole and refreshes the tail;
+            # _merge_prices dedups keep="last", so re-fetched bars fill the gap
+            plans[tkr] = (gap_start, today)
         elif not _is_up_to_date(max_date, today):
             start = max_date + pd.Timedelta(days=1)
             plans[tkr] = (start, today) if start <= today else None

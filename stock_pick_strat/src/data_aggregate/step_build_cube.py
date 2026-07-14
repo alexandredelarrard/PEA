@@ -67,6 +67,21 @@ class StepBuildCube(Step):
         self.low = du.extract_field(raw, "Low") if "Low" in raw.columns.get_level_values(0) else None
 
         trading_days = self.close[cfg.market_ticker].notna()
+        # Surface interior calendar holes BEFORE dropping: dates where a quorum of
+        # stocks trade but the market_ticker (which defines the calendar) is
+        # missing get dropped for the WHOLE universe -> the classic "no stock for
+        # month X" cube symptom. Warn so it is not silent; heal via price extraction.
+        stock_cov = (self.close.drop(columns=[cfg.market_ticker], errors="ignore")
+                     .notna().sum(axis=1))
+        quorum = 0.5 * max(1, self.close.shape[1] - 1)
+        holes = self.close.index[(~trading_days) & (stock_cov >= quorum)]
+        if len(holes):
+            self._log.warning(
+                "%s (market_ticker) missing on %d date(s) where >=50%% of stocks "
+                "trade (%s .. %s) -> these dates are dropped for the ENTIRE universe. "
+                "Re-run price extraction to backfill %s (interior-gap heal in "
+                "fetch_prices).", cfg.market_ticker, len(holes),
+                holes.min().date(), holes.max().date(), cfg.market_ticker)
         self.close = self.close.loc[trading_days]
         self.open_ = self.open_.loc[trading_days]
         if self.high is not None:

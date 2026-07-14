@@ -68,6 +68,10 @@ def get_context():
 # ---------------------------------------------------------------------------
 base_config, context = get_context()
 train_end = str(base_config.train.end_date)
+# forecast horizons the model was actually trained on (30/60/90 by default)
+MODEL_HORIZONS = [int(h) for h in base_config.build_cube.targets.horizons]
+PRIMARY_HORIZON = int(base_config.build_cube.targets.get("primary_horizon",
+                                                         MODEL_HORIZONS[0]))
 
 st.sidebar.header("Backtest Parameters")
 st.sidebar.caption(f"Backtest start pinned to model train-end: **{train_end}**")
@@ -127,6 +131,15 @@ with st.sidebar:
     force_retrain = st.checkbox(
         "Force retrain models", value=False,
         help="Retrain even if up-to-date models already exist"
+    )
+
+    st.subheader("Prediction Accuracy")
+    accuracy_horizon = st.selectbox(
+        "Accuracy horizon (trading days)", MODEL_HORIZONS,
+        index=MODEL_HORIZONS.index(PRIMARY_HORIZON),
+        help="Directional accuracy is measured over the model's FORECAST horizon "
+             "(the signal targets 30/60/90-day moves), not next-day noise. "
+             "Changing this re-renders instantly — no re-run needed.",
     )
 
     run_btn = st.button("▶  Run Backtest", type="primary", use_container_width=True)
@@ -251,62 +264,92 @@ def run_pipeline(params: dict, do_retrain: bool, placeholder):
 
 
 # ---------------------------------------------------------------------------
-# Accuracy helper — per-day hit rate
+# Accuracy helper — HORIZON-forward, cross-sectional hit rate
 # ---------------------------------------------------------------------------
-def compute_daily_accuracy(bt: StepBacktest) -> pd.DataFrame:
+def _forward_return(daily_ret: pd.DataFrame | pd.Series, horizon: int):
+    """Compounded forward return over t+1..t+horizon from daily returns (same
+    convention as targets.forward_compound). At date t this is the return the
+    horizon-h model is actually trying to forecast -- NOT next-day noise."""
+    safe = daily_ret.clip(lower=-0.999999)
+    logr = np.log1p(safe)
+    fwd_log = logr[::-1].rolling(horizon, min_periods=horizon).sum()[::-1].shift(-1)
+    return np.expm1(fwd_log)
+
+
+def compute_horizon_accuracy(bt: StepBacktest, horizon: int,
+                             active_thresh: float = 0.1) -> pd.DataFrame:
+    """Per rebalance date, directional accuracy of the signal over the model's
+    FORECAST horizon, measured CROSS-SECTIONALLY (relative to the universe) — the
+    signal is a market-neutral cross-sectional score, so "correct" means the name
+    out/under-performed its peers over the next `horizon` days in the predicted
+    direction, not that it went up in absolute terms.
+
+    Columns: hit_rate_% (sign match), correct/total active picks, long_short_fwd_%
+    (realized horizon return of predicted-longs minus predicted-shorts = the alpha
+    the signal captured that period), and spy_fwd_% (market's horizon return).
     """
-    For each day: fraction of alpha positions where sign(signal) == sign(next-day return).
-    """
-    signal: pd.DataFrame = bt.signal          # date x ticker, z-score
-    stock_ret: pd.DataFrame = bt.stock_ret    # date x ticker, daily return
+    signal: pd.DataFrame = bt.signal          # date x ticker, combined z
+    fwd = _forward_return(bt.stock_ret, horizon)          # date x ticker
+    spy_fwd = _forward_return(bt.spy_ret, horizon)        # date series
 
     rows = []
-    dates = signal.index.sort_values()
-
-    for i, date in enumerate(dates):
-        if i + 1 >= len(dates):
-            break
-        next_date = dates[i + 1]
-        if next_date not in stock_ret.index:
+    for date in signal.index.sort_values():
+        if date not in fwd.index:
             continue
-
-        sig_row = signal.loc[date].dropna()
-        ret_row = stock_ret.loc[next_date].reindex(sig_row.index).dropna()
-
-        common = sig_row.index.intersection(ret_row.index)
-        if common.empty:
+        s = signal.loc[date].dropna()
+        f = fwd.loc[date].reindex(s.index).dropna()
+        common = s.index.intersection(f.index)
+        if len(common) < 10:
             continue
+        s = s[common]
+        f = f[common]
+        rel = f - f.mean()                    # cross-sectional (market-neutral) fwd
 
-        s = sig_row[common]
-        r = ret_row[common]
-
-        # only evaluate where signal is non-trivial (|z| > 0.1 to avoid noise)
-        mask = s.abs() > 0.1
-        if mask.sum() == 0:
+        mask = s.abs() > active_thresh        # evaluate only conviction names
+        n = int(mask.sum())
+        if n == 0:
             continue
+        correct = int(((s[mask] > 0) == (rel[mask] > 0)).sum())
 
-        correct = ((s[mask] > 0) == (r[mask] > 0)).sum()
-        total = mask.sum()
-        hit_rate = correct / total
-
-        # portfolio outperformed SPY that day?
-        daily_row = bt.daily.loc[bt.daily.index == next_date]
-        strat_ret = float(daily_row["net_ret"].iloc[0]) if not daily_row.empty else np.nan
-        spy_ret_val = bt.spy_ret.get(next_date, np.nan)
-        if hasattr(spy_ret_val, "iloc"):
-            spy_ret_val = float(spy_ret_val.iloc[0])
+        longs = f[mask & (s > 0)]
+        shorts = f[mask & (s < 0)]
+        ls_spread = (longs.mean() - shorts.mean()) if len(longs) and len(shorts) else np.nan
+        spy_v = spy_fwd.get(date, np.nan)
+        if hasattr(spy_v, "iloc"):
+            spy_v = float(spy_v.iloc[0])
 
         rows.append({
-            "date": next_date,
-            "hit_rate_%": round(hit_rate * 100, 1),
-            "correct_picks": int(correct),
-            "total_active_picks": int(total),
-            "strategy_return_%": round(strat_ret * 100, 3) if not np.isnan(strat_ret) else np.nan,
-            "spy_return_%": round(spy_ret_val * 100, 3) if not np.isnan(spy_ret_val) else np.nan,
-            "outperformed_spy": (strat_ret > spy_ret_val) if not (np.isnan(strat_ret) or np.isnan(spy_ret_val)) else None,
+            "date": date,
+            "hit_rate_%": round(correct / n * 100, 1),
+            "correct_picks": correct,
+            "total_active_picks": n,
+            "long_short_fwd_%": round(ls_spread * 100, 3) if np.isfinite(ls_spread) else np.nan,
+            "spy_fwd_%": round(spy_v * 100, 3) if np.isfinite(spy_v) else np.nan,
         })
 
-    return pd.DataFrame(rows).set_index("date")
+    return pd.DataFrame(rows).set_index("date") if rows else pd.DataFrame()
+
+
+def horizon_accuracy_summary(bt: StepBacktest, horizons: list[int]) -> pd.DataFrame:
+    """Compact per-horizon summary: avg hit rate, share of dates with a positive
+    long/short spread, and the mean realized long/short spread."""
+    out = []
+    for h in horizons:
+        acc = compute_horizon_accuracy(bt, h)
+        if acc.empty:
+            out.append({"horizon": h, "avg_hit_rate_%": np.nan,
+                        "pct_dates_positive_%": np.nan, "avg_long_short_%": np.nan,
+                        "n_dates": 0})
+            continue
+        spread = acc["long_short_fwd_%"].dropna()
+        out.append({
+            "horizon": h,
+            "avg_hit_rate_%": round(acc["hit_rate_%"].mean(), 2),
+            "pct_dates_positive_%": round((spread > 0).mean() * 100, 1) if len(spread) else np.nan,
+            "avg_long_short_%": round(spread.mean(), 3) if len(spread) else np.nan,
+            "n_dates": len(acc),
+        })
+    return pd.DataFrame(out).set_index("horizon")
 
 
 # ---------------------------------------------------------------------------
@@ -343,21 +386,23 @@ def plot_equity(daily: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def plot_hit_rate(acc: pd.DataFrame) -> plt.Figure:
+def plot_hit_rate(acc: pd.DataFrame, horizon: int) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(12, 3))
     rolling = acc["hit_rate_%"].rolling(21, min_periods=5).mean()
-    ax.bar(acc.index, acc["hit_rate_%"], color="#90caf9", alpha=0.5, width=1, label="Daily")
-    ax.plot(rolling.index, rolling, color="#1565c0", linewidth=1.5, label="21-day MA")
+    ax.bar(acc.index, acc["hit_rate_%"], color="#90caf9", alpha=0.5, width=1,
+           label="Per-date")
+    ax.plot(rolling.index, rolling, color="#1565c0", linewidth=1.5, label="21-obs MA")
     ax.axhline(50, color="red", linewidth=1, linestyle="--", label="50% (random)")
     ax.set_ylabel("Hit Rate (%)")
-    ax.set_title("Daily Directional Accuracy — Signal vs Next-Day Return")
+    ax.set_title(f"Cross-Sectional Directional Accuracy — Signal vs {horizon}-Day "
+                 f"Forward Return")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
 
 
-def render_results(bt: StepBacktest):
+def render_results(bt: StepBacktest, accuracy_horizon: int, model_horizons: list[int]):
     daily = bt.daily
     metrics = bt.metrics
 
@@ -390,44 +435,68 @@ def render_results(bt: StepBacktest):
     st.pyplot(fig_eq)
     plt.close(fig_eq)
 
-    # ---- Daily accuracy ----
-    st.subheader("Daily Prediction Accuracy")
-    with st.spinner("Computing per-day hit rates…"):
-        acc = compute_daily_accuracy(bt)
+    # ---- Prediction accuracy AT THE FORECAST HORIZON ----
+    st.subheader("Prediction Accuracy (forecast horizon)")
+    st.caption(
+        "The signal targets 30/60/90-day moves, so accuracy is measured over the "
+        "forecast horizon and CROSS-SECTIONALLY (did the name beat/lag its peers in "
+        "the predicted direction), not against next-day noise. A daily-horizon hit "
+        "rate near 50% is expected and uninformative for this model."
+    )
+
+    # cross-horizon summary first — the honest at-a-glance edge
+    with st.spinner("Scoring accuracy across horizons…"):
+        summary = horizon_accuracy_summary(bt, model_horizons)
+    st.markdown("**Directional accuracy by horizon**")
+    st.dataframe(
+        summary.style.format({
+            "avg_hit_rate_%": "{:.2f}", "pct_dates_positive_%": "{:.1f}",
+            "avg_long_short_%": "{:+.3f}", "n_dates": "{:d}",
+        }, na_rep="—"),
+        use_container_width=True,
+    )
+
+    # detailed panel for the chosen horizon
+    with st.spinner(f"Computing {accuracy_horizon}-day hit rates…"):
+        acc = compute_horizon_accuracy(bt, accuracy_horizon)
 
     if acc.empty:
-        st.warning("Could not compute daily accuracy — no overlapping signal/return data.")
+        st.warning("Could not compute horizon accuracy — no overlapping signal/return "
+                   "data (need ≥ horizon days of forward returns).")
         return
 
     avg_hit = acc["hit_rate_%"].mean()
-    pct_beat = (acc["outperformed_spy"].dropna().sum()
-                / acc["outperformed_spy"].dropna().count() * 100)
+    spread = acc["long_short_fwd_%"].dropna()
+    pct_pos = (spread > 0).mean() * 100 if len(spread) else np.nan
 
     acol1, acol2, acol3 = st.columns(3)
-    acol1.metric("Avg Daily Hit Rate", f"{avg_hit:.1f}%",
-                 help="Fraction of active signal positions with correct direction next day")
-    acol2.metric("Days Outperforming SPY", f"{pct_beat:.1f}%")
-    acol3.metric("Total Evaluated Days", f"{len(acc):,}")
+    acol1.metric(f"Avg {accuracy_horizon}-Day Hit Rate", f"{avg_hit:.2f}%",
+                 delta=f"{avg_hit - 50:.2f}% vs coin-flip",
+                 help="Share of conviction names whose sign matched the peer-relative "
+                      f"{accuracy_horizon}-day forward return")
+    acol2.metric("Dates w/ Positive Long-Short", f"{pct_pos:.1f}%")
+    acol3.metric("Mean Long-Short Spread",
+                 f"{spread.mean():+.3f}%" if len(spread) else "—",
+                 help=f"Realized {accuracy_horizon}-day return of predicted longs "
+                      f"minus predicted shorts")
 
-    fig_hr = plot_hit_rate(acc)
+    fig_hr = plot_hit_rate(acc, accuracy_horizon)
     st.pyplot(fig_hr)
     plt.close(fig_hr)
 
-    st.subheader("Daily Detail Table")
+    st.subheader(f"Detail Table — {accuracy_horizon}-day horizon")
 
     def _colour_hit(val):
-        if isinstance(val, float):
-            if val >= 60:
+        if isinstance(val, (int, float)):
+            if val >= 54:
                 return "background-color: #c8e6c9"
-            elif val < 45:
+            elif val < 46:
                 return "background-color: #ffcdd2"
         return ""
 
-    def _colour_out(val):
-        if val is True:
-            return "background-color: #c8e6c9"
-        elif val is False:
-            return "background-color: #ffcdd2"
+    def _colour_spread(val):
+        if isinstance(val, (int, float)) and np.isfinite(val):
+            return "background-color: #c8e6c9" if val > 0 else "background-color: #ffcdd2"
         return ""
 
     display = acc.copy()
@@ -436,20 +505,20 @@ def render_results(bt: StepBacktest):
     styled = (
         display.style
         .map(_colour_hit, subset=["hit_rate_%"])
-        .map(_colour_out, subset=["outperformed_spy"])
+        .map(_colour_spread, subset=["long_short_fwd_%"])
         .format({
             "hit_rate_%": "{:.1f}",
-            "strategy_return_%": "{:+.3f}",
-            "spy_return_%": "{:+.3f}",
+            "long_short_fwd_%": "{:+.3f}",
+            "spy_fwd_%": "{:+.3f}",
         }, na_rep="—")
     )
     st.dataframe(styled, height=420, use_container_width=True)
 
     csv = acc.reset_index().to_csv(index=False)
     st.download_button(
-        "Download daily accuracy CSV",
+        f"Download {accuracy_horizon}-day accuracy CSV",
         data=csv,
-        file_name="backtest_daily_accuracy.csv",
+        file_name=f"backtest_accuracy_h{accuracy_horizon}.csv",
         mime="text/csv",
     )
 
@@ -497,13 +566,18 @@ if run_btn:
         st.exception(exc)
         st.stop()
 
-    # replace live logs with the results
     log_placeholder.empty()
-    render_results(bt)
+    # cache the finished backtest so changing the accuracy horizon re-renders the
+    # results WITHOUT re-running (or retraining) the whole pipeline
+    st.session_state["bt"] = bt
+    st.session_state["run_logs"] = context.log_buffer.getvalue()
 
+# Render whenever a completed backtest is available (fresh run or a horizon flip)
+bt = st.session_state.get("bt")
+if bt is not None:
+    render_results(bt, int(accuracy_horizon), MODEL_HORIZONS)
     with st.expander("Show full run logs"):
-        st.code(context.log_buffer.getvalue(), language="log")
-
+        st.code(st.session_state.get("run_logs", ""), language="log")
 else:
     st.info("Configure parameters in the sidebar, then click **▶ Run Backtest**.")
     ok, reason = needs_retrain(context, train_end)

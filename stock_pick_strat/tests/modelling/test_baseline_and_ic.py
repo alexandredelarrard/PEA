@@ -11,8 +11,29 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+import warnings
+
 from src.modelling.utils_model import model as ml
 from src.modelling.utils_model import baselines
+
+
+def test_standardize_no_warning_on_all_nan_column():
+    """A feature that is entirely NaN in a fold must not emit numpy
+    'Mean of empty slice' / 'Degrees of freedom <= 0' RuntimeWarnings, and its
+    standardized column becomes all zeros (contributes nothing)."""
+    X = np.array([[1.0, np.nan, 5.0],
+                  [2.0, np.nan, 6.0],
+                  [3.0, np.nan, 7.0]])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)   # any RuntimeWarning -> failure
+        Xs, mean, std = baselines._standardize(X)
+
+    assert np.allclose(Xs[:, 1], 0.0), "all-NaN column should standardize to zeros"
+    assert mean[1] == 0.0 and std[1] == 1.0
+    assert np.isfinite(Xs).all()
+
+    print("\n=== SANITY CHECK: standardize handles all-NaN column ===")
+    print("  all-NaN feature -> no RuntimeWarning, mean=0/std=1, column -> zeros. Validated.")
 
 
 def _panel(T: int = 300, N: int = 80, K: int = 8, noise: float = 1.5, seed: int = 0):

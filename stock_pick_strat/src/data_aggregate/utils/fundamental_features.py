@@ -115,6 +115,14 @@ _MEAN_REVERSION_FIELDS = (
 _HIST_WINDOW = 1260      # ~5 trading years of daily observations
 _HIST_MIN_PERIODS = 252  # require >= 1y of history before emitting a z-score
 
+# Company-regime STATE flags. These are absolute 0/1 indicators (is the firm
+# profitable? cash-generative? in negative equity? growing fast?) emitted RAW
+# into the panel -- NOT peer-standardized -- so the model can CONDITION on the
+# regime instead of averaging a feature whose meaning flips between profitable
+# and loss-making / hyper-growth names.
+_STATE_FIELDS = ("profitable", "fcf_positive", "negative_equity", "hyper_growth")
+_HYPER_GROWTH = 0.25     # YoY revenue growth above which a name is "hyper-growth"
+
 
 # --------------------------------------------------------------------------- #
 # Helpers                                                                      #
@@ -296,10 +304,16 @@ def _derived_fields(
     # ---- Valuation yields (need a daily market cap) ----
     mcap = daily_market_cap(fund_hist, close) if close is not None else pd.DataFrame()
     if not mcap.empty:
-        F["earnings_yield"] = _ratio(net_income, mcap, positive_den=True)
+        # Earnings/FCF/EV yields are only monotone as "cheapness" when the
+        # NUMERATOR is positive: a negative E/P is not "cheap", it is a loss, so
+        # ranking loss-makers by it is noise. Mask those to NaN (LightGBM handles
+        # NaN; the peer-z/rank then only ranks names where the metric is defined),
+        # and let the `profitable` / `fcf_positive` flags carry the regime instead.
+        # Sales/price stays valid for everyone (revenue is always positive).
+        F["earnings_yield"] = _ratio(net_income.where(net_income > 0), mcap, positive_den=True)
         F["sales_yield"] = _ratio(revenue, mcap, positive_den=True)
-        F["book_yield"] = _ratio(equity, mcap, positive_den=True)
-        F["fcf_yield"] = _ratio(fcf, mcap, positive_den=True)
+        F["book_yield"] = _ratio(equity.where(equity > 0), mcap, positive_den=True)
+        F["fcf_yield"] = _ratio(fcf.where(fcf > 0), mcap, positive_den=True)
         if not ebitda.empty:
             # Enterprise value from the real balance sheet:
             #   EV = marketCap + total debt + stock-based comp - cash
@@ -310,7 +324,7 @@ def _derived_fields(
             if debt.empty and not d2e.empty and not equity.empty:
                 debt = d2e.clip(lower=0.0) * equity.where(equity > 0)
             ev = _enterprise_value(mcap, debt, sbc, cash)
-            F["ebitda_to_ev"] = _ratio(ebitda, ev, positive_den=True)
+            F["ebitda_to_ev"] = _ratio(ebitda.where(ebitda > 0), ev, positive_den=True)
 
     # ---- Profitability / moat (raw ratios straight from the history) ----
     for field in ["grossMargins", "operatingMargins", "profitMargins",
@@ -345,6 +359,34 @@ def _derived_fields(
     rd_intensity = _ratio(rnd, revenue, positive_den=True)
     if not rd_intensity.empty and rd_intensity.notna().any().any():
         F["rd_intensity"] = rd_intensity
+
+    # ---- REGIME-ROBUST quality + state flags (loss-makers / growth names) ----
+    # gross profitability (Novy-Marx) = gross profit / total assets. Defined and
+    # monotone even for a net-loss-making firm, so it scores the growth /
+    # unprofitable cohort where the earnings-based yields above are masked out.
+    assets = daily("totalAssets")
+    gm_lvl = F.get("grossMargins")
+    if gm_lvl is not None and not revenue.empty and not assets.empty:
+        cols = gm_lvl.columns.intersection(revenue.columns)
+        gross_profit = gm_lvl[cols] * revenue[cols]           # grossMargins * revenue
+        gp = _ratio(gross_profit, assets, positive_den=True)
+        if not gp.empty and gp.notna().any().any():
+            F["gross_profitability"] = gp
+
+    # absolute 0/1 regime flags (emitted RAW, see _STATE_FIELDS): a NaN base ->
+    # NaN flag (never a false 0), so "no data" is not read as "unprofitable".
+    def _flag(base: pd.DataFrame, cond: pd.DataFrame) -> pd.DataFrame:
+        return cond.astype(float).where(base.notna())
+
+    if not net_income.empty:
+        F["profitable"] = _flag(net_income, net_income > 0)
+    if not fcf.empty:
+        F["fcf_positive"] = _flag(fcf, fcf > 0)
+    if not equity.empty:
+        F["negative_equity"] = _flag(equity, equity <= 0)
+    rev_growth_lvl = daily("revenueGrowth")
+    if not rev_growth_lvl.empty:
+        F["hyper_growth"] = _flag(rev_growth_lvl, rev_growth_lvl > _HYPER_GROWTH)
 
     # ---- LATEST-QUARTER momentum (discrete single quarter, not TTM) ----
     # captures acceleration/inflection that TTM smooths away. Needs the discrete
@@ -549,7 +591,12 @@ def build_fundamental_feature_panel(
     yoy_periods = _infer_yoy_periods(fundamentals_history)
     fields = _derived_fields(fundamentals_history, trading_index, stock_close,
                              yoy_periods=yoy_periods, intrinsic_cfg=intrinsic_cfg)
-    peer_panel = build_peer_relative_panel(fields, peer_dict)
+
+    # regime state flags -> RAW `f_<name>`; everything else -> peer-relative.
+    state_fields = {k: v for k, v in fields.items() if k in _STATE_FIELDS}
+    peer_fields = {k: v for k, v in fields.items() if k not in _STATE_FIELDS}
+
+    peer_panel = build_peer_relative_panel(peer_fields, peer_dict)
 
     # Self-history (mean-reversion) z-scores on the valuation yields only.
     hist_fields = {
@@ -558,12 +605,36 @@ def build_fundamental_feature_panel(
         if name in fields and fields[name] is not None and not fields[name].empty
     }
     hist_panel = build_self_history_panel(hist_fields)
+    state_panel = build_state_panel(state_fields)
 
-    if hist_panel.empty or list(hist_panel.columns) == ["date", "ticker"]:
-        return peer_panel
-    if peer_panel.empty or list(peer_panel.columns) == ["date", "ticker"]:
-        return hist_panel
-    return peer_panel.merge(hist_panel, on=["date", "ticker"], how="outer")
+    return _merge_feature_panels([peer_panel, hist_panel, state_panel])
+
+
+def _merge_feature_panels(panels: list[pd.DataFrame]) -> pd.DataFrame:
+    """Outer-merge the non-empty long panels on ['date','ticker']."""
+    out = None
+    for p in panels:
+        if p is None or p.empty or list(p.columns) == ["date", "ticker"]:
+            continue
+        out = p if out is None else out.merge(p, on=["date", "ticker"], how="outer")
+    return out if out is not None else pd.DataFrame(columns=["date", "ticker"])
+
+
+def build_state_panel(fields: dict) -> pd.DataFrame:
+    """Stack raw 0/1 regime flags into long `f_<name>` columns -- absolute state
+    indicators the model conditions on, NOT peer-standardized."""
+    if not fields:
+        return pd.DataFrame(columns=["date", "ticker"])
+    long_frames = []
+    for name, fdf in fields.items():
+        if fdf is None or fdf.empty:
+            continue
+        s = fdf.stack()
+        s.index.set_names(["date", "ticker"], inplace=True)
+        long_frames.append(s.rename(f"f_{name}"))
+    if not long_frames:
+        return pd.DataFrame(columns=["date", "ticker"])
+    return pd.concat(long_frames, axis=1).reset_index()
 
 
 def build_self_history_panel(fields: dict) -> pd.DataFrame:

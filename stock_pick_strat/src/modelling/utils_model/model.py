@@ -277,6 +277,29 @@ def predict(booster, panel: pd.DataFrame, feats: list) -> pd.Series:
     return pd.Series(preds, index=panel.index, name="score")
 
 
+def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list) -> pd.Series:
+    """Average the CROSS-SECTIONALLY-STANDARDIZED (per day) predictions of several
+    models into one ensemble score per row.
+
+    Each model's raw output is z-scored within each day BEFORE averaging, so a
+    GBDT and a linear model (very different output scales) are put on a common
+    ranking scale first -- that is what makes model-averaging help. With one model
+    this reduces to its per-day z-score. `models` is {name: fitted_model}; each
+    model just needs a `.predict(X)` (LightGBM booster or a LinearModel)."""
+    if not models:
+        raise ValueError("ensemble_predict received no models")
+    dates = panel["date"].to_numpy()
+    zs = []
+    for m in models.values():
+        raw = predict(m, panel, feats).to_numpy()
+        z = (pd.DataFrame({"date": dates, "v": raw})
+             .groupby("date")["v"]
+             .transform(lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan)))
+        zs.append(z.to_numpy())
+    avg = np.nanmean(np.column_stack(zs), axis=1)
+    return pd.Series(avg, index=panel.index, name="score")
+
+
 def feature_importance(booster, feats: list) -> dict[str, float]:
     """LightGBM gain importance keyed by feature name."""
     gains = booster.feature_importance(importance_type="gain")

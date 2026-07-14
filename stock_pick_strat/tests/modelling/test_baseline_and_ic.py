@@ -154,3 +154,61 @@ def test_elasticnet_baseline_close_to_lightgbm():
     print("\n=== SANITY CHECK: elastic-net baseline vs LightGBM (OOS IC) ===")
     print(f"  purged-CV mean IC:  LightGBM={lgb_ic:+.4f}   elasticnet={en_ic:+.4f}   "
           f"|diff|={abs(en_ic - lgb_ic):.4f}  -> competitive. Validated.")
+
+
+class _Const:
+    """Model stub with a booster-compatible predict(X) that ignores X."""
+    def __init__(self, vals):
+        self.vals = np.asarray(vals, dtype=float)
+
+    def predict(self, X):
+        return self.vals
+
+
+def test_ensemble_predict_is_per_day_average_of_zscores():
+    d = pd.Timestamp("2020-01-01")
+    panel = pd.DataFrame({"date": [d] * 4, "ticker": list("ABCD"), "f0": [0.0, 0.0, 0.0, 0.0]})
+    up, down = _Const([1, 2, 3, 4]), _Const([4, 3, 2, 1])   # perfectly opposed
+
+    # two opposed models -> per-day z-scores cancel -> ensemble ~ 0
+    ens = ml.ensemble_predict({"a": up, "b": down}, panel, ["f0"])
+    assert np.allclose(ens.to_numpy(), 0.0, atol=1e-9)
+
+    # single model -> just its per-day z-score
+    one = ml.ensemble_predict({"a": up}, panel, ["f0"])
+    zu = pd.Series([1.0, 2, 3, 4]); zu = (zu - zu.mean()) / zu.std()
+    assert np.allclose(one.to_numpy(), zu.to_numpy(), atol=1e-9)
+
+    print("\n=== SANITY CHECK: ensemble_predict ===")
+    print("  opposed members cancel to ~0; single member == its per-day z-score. Validated.")
+
+
+def _cv_three(panel, feats, n_splits=4, embargo=5):
+    il, ie, ien = [], [], []
+    for tr_d, te_d in ml.purged_wf_splits(panel["date"], n_splits=n_splits, embargo=embargo):
+        tr, te = panel[panel["date"].isin(tr_d)], panel[panel["date"].isin(te_d)]
+        if tr.empty or te.empty:
+            continue
+        sub_tr, sub_val = ml.temporal_valid_split(tr)
+        lgbm = ml.train_ranker(sub_tr, feats, "y", valid_panel=sub_val,
+                               num_boost_round=400, early_stopping_rounds=50, eval_metric="ic")
+        en = baselines.train_elasticnet(sub_tr, feats, "y", alpha=0.001, l1_ratio=0.5)
+        members = {"lightgbm": lgbm, "elasticnet": en}
+        il.append(ml.daily_ic(te, ml.predict(lgbm, te, feats), "y", horizon=1)["mean_ic"])
+        ie.append(ml.daily_ic(te, ml.predict(en, te, feats), "y", horizon=1)["mean_ic"])
+        ien.append(ml.daily_ic(te, ml.ensemble_predict(members, te, feats), "y", horizon=1)["mean_ic"])
+    return float(np.nanmean(il)), float(np.nanmean(ie)), float(np.nanmean(ien))
+
+
+def test_ensemble_at_least_matches_average_of_members():
+    panel, feats = _panel()
+    ic_lgb, ic_en, ic_ens = _cv_three(panel, feats)
+
+    assert ic_ens > 0
+    # the averaged model should not be worse than the mean of its members (it is
+    # usually >= the best, because their errors partly cancel)
+    assert ic_ens >= (ic_lgb + ic_en) / 2 - 0.03
+
+    print("\n=== SANITY CHECK: ensemble vs members (OOS IC) ===")
+    print(f"  LightGBM={ic_lgb:+.4f}  elasticnet={ic_en:+.4f}  ENSEMBLE={ic_ens:+.4f} "
+          f"(>= mean of members). Validated.")

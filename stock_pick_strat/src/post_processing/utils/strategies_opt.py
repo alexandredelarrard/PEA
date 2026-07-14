@@ -36,9 +36,12 @@ is unit-tested; only the day loop touches state.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 
+_log = logging.getLogger(__name__)
 _ANN = 252.0
 
 
@@ -113,6 +116,38 @@ def vol_target_scale(w: np.ndarray, var: np.ndarray, target_ann_vol: float,
     if gross > gross_cap:
         w = w * (gross_cap / gross)
     return w
+
+
+def risk_target_book(aim: pd.Series, beta_row: pd.Series, var_row: pd.Series,
+                     target_ann_vol: float, gross_cap: float, pos_cap: float | None,
+                     beta_neutral: bool) -> pd.Series:
+    """Re-scale the ACTUALLY-HELD book `aim` to the vol target and re-apply the
+    caps, using the current day's risk model.
+
+    The optimizer sizes the *target* w* to the vol budget, but the book actually
+    held is the partial-step `aim`, whose gross (and therefore realized vol) is
+    lower than w* -- and shrinks further the more often we rebalance, because the
+    partial step averages successive (noisy) targets. Without this, realized risk
+    and book size depend on `rebalance_freq` instead of the vol target. Applying
+    the vol target to the held book makes realized risk frequency-invariant.
+
+    Only names with a finite beta AND variance today are risk-scaled; the rest of
+    `aim` is preserved. A degenerate (all-zero) book is returned unchanged."""
+    names = [tk for tk in aim.index
+             if np.isfinite(var_row.get(tk, np.nan))
+             and np.isfinite(beta_row.get(tk, np.nan))]
+    if not names:
+        return aim
+    w = aim[names].to_numpy(float)
+    if not np.isfinite(w).any() or np.sum(np.abs(w)) == 0.0:
+        return aim
+    v = var_row[names].to_numpy(float)
+    b = beta_row[names].to_numpy(float)
+    w = vol_target_scale(w, v, target_ann_vol, gross_cap)
+    w = enforce_pos_cap(w, b, beta_neutral, pos_cap)
+    out = aim.copy()
+    out[names] = w
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -190,6 +225,11 @@ def simulate_portfolio_opt(
             delta = aim - prev_w[tickers]
             aim = prev_w[tickers] + delta.where(delta.abs() >= no_trade_band, 0.0)
 
+        # risk-target the ACTUALLY-HELD book so realized vol/gross does not depend
+        # on rebalance_freq (the partial step shrinks gross vs the target w*).
+        aim = risk_target_book(aim, beta_df.loc[t], var_df.loc[t],
+                               target_ann_vol, gross_cap, pos_cap, beta_neutral)
+
         w = pd.Series(0.0, index=tickers + ["SPY"])
         w[tickers] = aim.values
         w["SPY"] = market_weight
@@ -213,4 +253,15 @@ def simulate_portfolio_opt(
                      "alpha_max_w": float(w[tickers].abs().max())})
         prev_w = w
 
-    return pd.DataFrame(rows).set_index("date")
+    out = pd.DataFrame(rows).set_index("date")
+
+    # Surface a silently-inactive alpha book instead of returning a flat curve.
+    # (With market_weight=0 the SPY sleeve no longer masks a dead alpha sleeve.)
+    if not out.empty and float(out["alpha_gross"].mean()) < 1e-6:
+        _log.warning(
+            "Alpha sleeve never established a position (avg gross ~0). Likely a "
+            "degenerate signal (no cross-sectional dispersion) or < 10 names with a "
+            "finite beta/variance on rebalance days. With market_weight=%.2f the "
+            "portfolio trades effectively nothing.", market_weight)
+
+    return out

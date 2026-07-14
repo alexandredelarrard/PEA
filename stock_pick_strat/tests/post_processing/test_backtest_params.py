@@ -94,3 +94,69 @@ def test_pos_cap_binds_on_final_weights():
     print("\n=== SANITY CHECK: pos_cap enforced on final weights ===")
     print(f"  avg max|w|: pos_cap=0.5 -> {loose:.3f} (slack); pos_cap=0.01 -> {tight:.4f} "
           f"(binds ~0.01). Cap now applies AFTER vol targeting. Validated.")
+
+
+def test_realized_risk_is_frequency_invariant():
+    """Regression: the held book's realized vol / gross must NOT collapse as the
+    rebalance frequency rises. Before the fix, vol targeting was applied to the
+    TARGET w* only, so the partial-step book at rebalance_freq=1 (market_weight=0)
+    carried ~44% of the intended gross -> it looked like it barely traded. The fix
+    risk-targets the ACTUALLY-HELD book each day, making realized risk frequency-
+    invariant while turnover still falls with less-frequent rebalancing."""
+    def _stats(freq):
+        d = _run(target_ann_vol=0.08, rebalance_freq=freq)
+        return (float(d["alpha_gross"].mean()),
+                float(d["alpha_ret"].std() * np.sqrt(252)),
+                float(d["turnover"].mean()))
+
+    g1, v1, to1 = _stats(1)
+    g63, v63, to63 = _stats(63)
+
+    # realized alpha vol tracks the 0.08 target at BOTH frequencies (within ~35%)
+    for v in (v1, v63):
+        assert 0.05 <= v <= 0.11, f"realized alpha vol {v:.3f} not near target 0.08"
+    # daily rebalancing no longer shrinks the book vs quarterly (ratio near 1)
+    assert g1 > 0.7 * g63, f"book gross collapses at freq=1 (g1={g1:.2f}, g63={g63:.2f})"
+    # turnover control still works: more frequent rebalancing => more turnover
+    assert to1 > to63
+
+    print("\n=== SANITY CHECK: realized risk is rebalance-frequency invariant ===")
+    print(f"  market_weight=0: freq=1 -> gross {g1:.2f}, alpha_vol {v1:.3f}, turnover {to1:.3f}")
+    print(f"                   freq=63-> gross {g63:.2f}, alpha_vol {v63:.3f}, turnover {to63:.3f}")
+    print(f"  book gross ratio freq1/freq63 = {g1/g63:.2f} (was ~0.44 before the fix); "
+          f"realized vol tracks the 0.08 target at both. The alpha sleeve no longer "
+          f"goes inert at daily rebalancing when market_weight=0. Validated.")
+
+
+def test_degenerate_signal_warns(caplog=None):
+    """A signal with no cross-sectional dispersion yields an empty alpha book;
+    with market_weight=0 the whole portfolio is inert. The engine must WARN
+    rather than silently return a flat curve."""
+    import logging
+    T, N = 120, 40
+    dates = pd.bdate_range("2020-01-01", periods=T)
+    tickers = [f"T{i:02d}" for i in range(N)]
+    stock_ret = pd.DataFrame(np.random.default_rng(0).normal(0, 0.01, (T, N)),
+                             index=dates, columns=tickers)
+    spy_ret = pd.Series(np.random.default_rng(1).normal(0, 0.01, T), index=dates)
+    flat_sig = pd.DataFrame(1.0, index=dates, columns=tickers)  # zero dispersion
+
+    logger = logging.getLogger("src.post_processing.utils.strategies_opt")
+    records = []
+    handler = logging.Handler()
+    handler.emit = lambda r: records.append(r.getMessage())
+    logger.addHandler(handler); logger.setLevel(logging.WARNING)
+    try:
+        d = simulate_portfolio_opt(flat_sig, stock_ret, spy_ret, market_weight=0.0,
+                                   target_ann_vol=0.08, beta_neutral=True, pos_cap=0.05,
+                                   gross_cap=5.0, step=0.35)
+    finally:
+        logger.removeHandler(handler)
+
+    assert float(d["alpha_gross"].mean()) < 1e-6, "flat signal should give empty book"
+    assert any("never established a position" in m for m in records), \
+        "degenerate/inert alpha book must emit a warning"
+
+    print("\n=== SANITY CHECK: degenerate signal is flagged, not silent ===")
+    print(f"  zero-dispersion signal + market_weight=0 -> avg alpha gross "
+          f"{d['alpha_gross'].mean():.2e}; engine logged the inactivity warning. Validated.")

@@ -39,6 +39,10 @@ from omegaconf import OmegaConf
 from src.context import get_config_context
 from src.modelling.step_modelling import StepModelling
 from src.post_processing.step_backtest import StepBacktest
+from src.post_processing.utils.accuracy import (
+    compute_horizon_accuracy,
+    horizon_accuracy_summary,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -261,95 +265,6 @@ def run_pipeline(params: dict, do_retrain: bool, placeholder):
         placeholder, context, phase="Backtest",
     )
     return bt
-
-
-# ---------------------------------------------------------------------------
-# Accuracy helper — HORIZON-forward, cross-sectional hit rate
-# ---------------------------------------------------------------------------
-def _forward_return(daily_ret: pd.DataFrame | pd.Series, horizon: int):
-    """Compounded forward return over t+1..t+horizon from daily returns (same
-    convention as targets.forward_compound). At date t this is the return the
-    horizon-h model is actually trying to forecast -- NOT next-day noise."""
-    safe = daily_ret.clip(lower=-0.999999)
-    logr = np.log1p(safe)
-    fwd_log = logr[::-1].rolling(horizon, min_periods=horizon).sum()[::-1].shift(-1)
-    return np.expm1(fwd_log)
-
-
-def compute_horizon_accuracy(bt: StepBacktest, horizon: int,
-                             active_thresh: float = 0.1) -> pd.DataFrame:
-    """Per rebalance date, directional accuracy of the signal over the model's
-    FORECAST horizon, measured CROSS-SECTIONALLY (relative to the universe) — the
-    signal is a market-neutral cross-sectional score, so "correct" means the name
-    out/under-performed its peers over the next `horizon` days in the predicted
-    direction, not that it went up in absolute terms.
-
-    Columns: hit_rate_% (sign match), correct/total active picks, long_short_fwd_%
-    (realized horizon return of predicted-longs minus predicted-shorts = the alpha
-    the signal captured that period), and spy_fwd_% (market's horizon return).
-    """
-    signal: pd.DataFrame = bt.signal          # date x ticker, combined z
-    fwd = _forward_return(bt.stock_ret, horizon)          # date x ticker
-    spy_fwd = _forward_return(bt.spy_ret, horizon)        # date series
-
-    rows = []
-    for date in signal.index.sort_values():
-        if date not in fwd.index:
-            continue
-        s = signal.loc[date].dropna()
-        f = fwd.loc[date].reindex(s.index).dropna()
-        common = s.index.intersection(f.index)
-        if len(common) < 10:
-            continue
-        s = s[common]
-        f = f[common]
-        rel = f - f.mean()                    # cross-sectional (market-neutral) fwd
-
-        mask = s.abs() > active_thresh        # evaluate only conviction names
-        n = int(mask.sum())
-        if n == 0:
-            continue
-        correct = int(((s[mask] > 0) == (rel[mask] > 0)).sum())
-
-        longs = f[mask & (s > 0)]
-        shorts = f[mask & (s < 0)]
-        ls_spread = (longs.mean() - shorts.mean()) if len(longs) and len(shorts) else np.nan
-        spy_v = spy_fwd.get(date, np.nan)
-        if hasattr(spy_v, "iloc"):
-            spy_v = float(spy_v.iloc[0])
-
-        rows.append({
-            "date": date,
-            "hit_rate_%": round(correct / n * 100, 1),
-            "correct_picks": correct,
-            "total_active_picks": n,
-            "long_short_fwd_%": round(ls_spread * 100, 3) if np.isfinite(ls_spread) else np.nan,
-            "spy_fwd_%": round(spy_v * 100, 3) if np.isfinite(spy_v) else np.nan,
-        })
-
-    return pd.DataFrame(rows).set_index("date") if rows else pd.DataFrame()
-
-
-def horizon_accuracy_summary(bt: StepBacktest, horizons: list[int]) -> pd.DataFrame:
-    """Compact per-horizon summary: avg hit rate, share of dates with a positive
-    long/short spread, and the mean realized long/short spread."""
-    out = []
-    for h in horizons:
-        acc = compute_horizon_accuracy(bt, h)
-        if acc.empty:
-            out.append({"horizon": h, "avg_hit_rate_%": np.nan,
-                        "pct_dates_positive_%": np.nan, "avg_long_short_%": np.nan,
-                        "n_dates": 0})
-            continue
-        spread = acc["long_short_fwd_%"].dropna()
-        out.append({
-            "horizon": h,
-            "avg_hit_rate_%": round(acc["hit_rate_%"].mean(), 2),
-            "pct_dates_positive_%": round((spread > 0).mean() * 100, 1) if len(spread) else np.nan,
-            "avg_long_short_%": round(spread.mean(), 3) if len(spread) else np.nan,
-            "n_dates": len(acc),
-        })
-    return pd.DataFrame(out).set_index("horizon")
 
 
 # ---------------------------------------------------------------------------

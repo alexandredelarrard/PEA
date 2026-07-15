@@ -154,13 +154,27 @@ def risk_target_book(aim: pd.Series, beta_row: pd.Series, var_row: pd.Series,
 # Rolling risk inputs (self-contained: no dependency on cube betas)            #
 # --------------------------------------------------------------------------- #
 def rolling_beta_var(stock_ret: pd.DataFrame, spy_ret: pd.Series,
-                     beta_window: int = 63, vol_window: int = 63):
+                     beta_window: int = 63, vol_window: int = 63,
+                     min_obs: int | None = None):
     """Trailing market beta and idiosyncratic daily variance per name (point-in-
-    time: uses only past returns). idio var = var(stock) - beta^2 * var(spy)."""
-    var_spy = spy_ret.rolling(beta_window).var()
-    cov = stock_ret.rolling(beta_window).cov(spy_ret)
+    time: uses only past returns). idio var = var(stock) - beta^2 * var(spy).
+
+    NaN-tolerant. Daily returns (pct_change) always start with a NaN and carry
+    scattered holes (suspensions, missing closes, recent IPOs); with the default
+    rolling `min_periods == window` a SINGLE NaN anywhere in the trailing window
+    blanks the estimate, so `beta_df` comes back almost entirely NaN and the day
+    loop's `len(common) >= 10` check never passes -> the book never trades. And a
+    NaN in `spy_ret` would blank the WHOLE cross-section for those windows. We set
+    `min_periods` (default ~half the window, floored at 20, matching
+    build_cube.betas.min_obs) so a window with a few gaps still yields a beta from
+    the observations it does have; a genuinely data-poor name (too few obs) stays
+    NaN and is correctly skipped."""
+    b_min = int(min_obs) if min_obs is not None else max(20, beta_window // 2)
+    v_min = int(min_obs) if min_obs is not None else max(20, vol_window // 2)
+    var_spy = spy_ret.rolling(beta_window, min_periods=b_min).var()
+    cov = stock_ret.rolling(beta_window, min_periods=b_min).cov(spy_ret)
     beta = cov.div(var_spy, axis=0)
-    tot_var = stock_ret.rolling(vol_window).var()
+    tot_var = stock_ret.rolling(vol_window, min_periods=v_min).var()
     idio_var = (tot_var - beta.pow(2).mul(var_spy, axis=0)).clip(lower=1e-8)
     return beta, idio_var
 

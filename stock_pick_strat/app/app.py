@@ -430,6 +430,45 @@ def render_horizon_blend(bt: StepBacktest, model_horizons: list[int]):
                    "the horizon had no panel in the window or a non-positive IR.")
 
 
+def render_signal_coverage(bt: StepBacktest, model_horizons: list[int]):
+    """Signal coverage diagnostic. The backtest can ONLY trade / be scored on dates
+    that carry a signal, and a signal exists only where the cube has a defined
+    target (panel_from_cube drops target-NaN rows). Sparse coverage here is the
+    single explanation for: sporadic accuracy-table dates, a late first trade, and
+    empty long horizons. This makes the coverage visible instead of implicit."""
+    sig = bt.signal
+    dates = pd.DatetimeIndex(sig.index).sort_values()
+    st.subheader("Signal coverage (why trades/rows appear where they do)")
+    if len(dates) == 0:
+        st.error("The signal is EMPTY — the cube has no defined target in the backtest "
+                 "window. Nothing can trade. Rebuild the cube with complete price data.")
+        return
+    names_per_date = sig.notna().sum(axis=1)
+    gaps = dates.to_series().diff().dt.days.dropna()
+    active = names_per_date[names_per_date >= 10]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Signal dates", f"{len(dates):,}")
+    c2.metric("First → last", f"{dates.min().date()} → {dates.max().date()}")
+    c3.metric("Median gap (cal. days)", f"{gaps.median():.0f}" if len(gaps) else "—")
+    c4.metric("Largest gap (cal. days)", f"{gaps.max():.0f}" if len(gaps) else "—")
+    st.caption(f"Median names/date with a signal: {int(names_per_date.median())}; "
+               f"dates with ≥10 names (tradeable): {len(active)} "
+               f"(first {active.index.min().date() if len(active) else '—'}).")
+
+    if len(gaps) and gaps.max() > 7:
+        st.warning(
+            f"The signal is SPARSE — consecutive signal dates are up to "
+            f"{gaps.max():.0f} calendar days apart (a dense daily signal would be ~1–4). "
+            f"A signal exists only on dates where the cube has a defined target, so a "
+            f"sparse/gappy cube (missing prices → missing targets) is why the detail "
+            f"table shows only scattered dates, why the first trade is late (the book "
+            f"can't trade before a tradeable signal exists), and why long horizons are "
+            f"empty. Fix = heal the price/factor gaps (re-run extraction) and REBUILD "
+            f"the cube; these KPIs are reporting the data faithfully."
+        )
+
+
 def render_results(bt: StepBacktest, accuracy_horizon: int, model_horizons: list[int]):
     daily = bt.daily
     metrics = bt.metrics
@@ -450,6 +489,8 @@ def render_results(bt: StepBacktest, accuracy_horizon: int, model_horizons: list
                 f"extends past the model train-end ({train_end}) — not a metric bug. "
                 f"Extend the cube/prices past {train_end} to evaluate longer horizons."
             )
+
+    render_signal_coverage(bt, model_horizons)
 
     # ---- Metrics KPI row ----
     st.subheader("Performance Summary")

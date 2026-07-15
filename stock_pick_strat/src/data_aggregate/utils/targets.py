@@ -101,14 +101,24 @@ def compute_epsilon(
             continue
         b = betas[ticker].reindex(close.index)
         resid = fwd_stock[ticker].copy()
-        # subtract every shared factor's forward return * its loading
+        # Subtract every shared factor's forward return * its loading. A SHARED
+        # factor is the same series for every stock, so a single missing value
+        # (e.g. a data gap in oil / gold / USD-EUR, whose calendar differs from
+        # equities) would otherwise NaN the residual for the WHOLE cross-section
+        # and drop the entire date. Fill ONLY the factor's forward return with 0
+        # on those dates -> that factor is simply not neutralized there (a tiny
+        # approximation, since commodity/FX betas are small for most equities),
+        # while the target stays defined. We fill the factor, NOT the product, so
+        # a missing BETA still propagates NaN (early-history dates keep their old
+        # behaviour); and the stock's OWN forward return is never filled, so the
+        # genuine tail (no future price yet) is still correctly undefined.
         for c in fwd_shared.columns:
             bc = f"beta_{c}"
             if bc in b.columns:
-                resid = resid - b[bc] * fwd_shared[c]
-        # subtract sector
+                resid = resid - b[bc] * fwd_shared[c].fillna(0.0)
+        # subtract sector (same graceful treatment when a peer basket is missing)
         if "beta_sector" in b.columns:
-            resid = resid - b["beta_sector"] * fwd_sector[ticker]
+            resid = resid - b["beta_sector"] * fwd_sector[ticker].fillna(0.0)
         eps[ticker] = resid
     return eps
 

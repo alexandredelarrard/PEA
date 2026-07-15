@@ -171,11 +171,12 @@ def test_ensemble_predict_is_per_day_average_of_zscores():
     up, down = _Const([1, 2, 3, 4]), _Const([4, 3, 2, 1])   # perfectly opposed
 
     # two opposed models -> per-day z-scores cancel -> ensemble ~ 0
-    ens = ml.ensemble_predict({"a": up, "b": down}, panel, ["f0"])
+    # (ensemble_predict returns (blended_score, members) -- take the blended score)
+    ens, _ = ml.ensemble_predict({"a": up, "b": down}, panel, ["f0"])
     assert np.allclose(ens.to_numpy(), 0.0, atol=1e-9)
 
     # single model -> just its per-day z-score
-    one = ml.ensemble_predict({"a": up}, panel, ["f0"])
+    one, _ = ml.ensemble_predict({"a": up}, panel, ["f0"])
     zu = pd.Series([1.0, 2, 3, 4]); zu = (zu - zu.mean()) / zu.std()
     assert np.allclose(one.to_numpy(), zu.to_numpy(), atol=1e-9)
 
@@ -196,7 +197,8 @@ def _cv_three(panel, feats, n_splits=4, embargo=5):
         members = {"lightgbm": lgbm, "elasticnet": en}
         il.append(ml.daily_ic(te, ml.predict(lgbm, te, feats), "y", horizon=1)["mean_ic"])
         ie.append(ml.daily_ic(te, ml.predict(en, te, feats), "y", horizon=1)["mean_ic"])
-        ien.append(ml.daily_ic(te, ml.ensemble_predict(members, te, feats), "y", horizon=1)["mean_ic"])
+        ens_preds, _ = ml.ensemble_predict(members, te, feats)
+        ien.append(ml.daily_ic(te, ens_preds, "y", horizon=1)["mean_ic"])
     return float(np.nanmean(il)), float(np.nanmean(ie)), float(np.nanmean(ien))
 
 

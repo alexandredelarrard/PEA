@@ -96,17 +96,20 @@ class StepBacktest(Step):
         self.stock_ret = rets.drop(columns=drop, errors="ignore")
         self._log.info("Backtest window %s -> %s", self.backtest_start.date(), self.end.date())
 
-    def _blend_weights(self) -> dict:
-        if self._cfg.get("blend", "ir") == "equal" or not self.train_ic:
-            return {h: 1.0 / len(self.models) for h in self.models}
-        irs = {h: max(0.0, self.train_ic.get(h, 0.0)) for h in self.models}
-        tot = sum(irs.values())
-        return ({h: irs[h] / tot for h in self.models} if tot > 0
-                else {h: 1.0 / len(self.models) for h in self.models})
+    def _horizon_blend_weights(self, signals: dict, ir: dict) -> dict:
+        """Correlation-aware, shrinkage-regularized optimal combination of the
+        per-horizon forecasts (see model.optimal_forecast_weights). Falls back to
+        equal weights when blend='equal'. Unlike the old max(0, IR)/sum(IR), a
+        horizon whose CV IR is NaN is treated as a neutral prior (not dropped), so
+        e.g. the 90d horizon still participates instead of getting weight 0."""
+        if self._cfg.get("blend", "ir") == "equal" or not signals:
+            return {h: 1.0 / len(signals) for h in signals} if signals else {}
+        return ml.optimal_forecast_weights(
+            signals, ir, shrink=float(self._cfg.get("blend_shrink", 0.5)))
 
     def predict_and_blend(self):
-        weights = self._blend_weights()
-        self._log.info("Blend weights: %s", {h: round(w, 3) for h, w in weights.items()})
+        # 1) build each horizon's per-day-standardized ensemble z-signal FIRST, so
+        #    the blend weights can see the signals' cross-correlation
         blended = None
         for h, models in self.models.items():
             panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
@@ -114,23 +117,40 @@ class StepBacktest(Step):
                                     target_type=self.target_type)
             panel = panel[(panel["date"] >= self.backtest_start) & (panel["date"] <= self.end)]
             if panel.empty:
+                self._log.warning("Horizon %s: no panel rows in the backtest window "
+                                  "[%s, %s] -> excluded from the blend.",
+                                  h, self.backtest_start.date(), self.end.date())
                 continue
             df = panel[["date", "ticker"]].copy()
             # ensemble = per-day-standardized average of the trained families
-            scores, zs = ml.ensemble_predict(models, panel, self.feature_cols)
+            scores, _members = ml.ensemble_predict(models, panel, self.feature_cols)
             df["z"] = scores.to_numpy()
             df["z"] = df.groupby("date")["z"].transform(
                 lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
             df = df.rename(columns={"z": f"z_{h}"})
             blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
 
-        zc = [f"z_{h}" for h in self.models if f"z_{h}" in blended.columns]
-        w = np.array([weights[int(c.split('_')[1])] for c in zc])
+        zc = [f"z_{h}" for h in self.models if f"z_{h}" in (blended.columns if blended is not None else [])]
+        if not zc:
+            raise RuntimeError("No horizon produced a signal in the backtest window.")
+        hs = [int(c.split("_")[1]) for c in zc]
+
+        # 2) correlation-aware, shrinkage-regularized optimal horizon weights
+        signals = {h: blended[f"z_{h}"].to_numpy() for h in hs}
+        ir = {h: self.train_ic.get(h, np.nan) for h in hs}
+        weights = self._horizon_blend_weights(signals, ir)
+        self.blend_weights = weights
+        self._log.info("Per-horizon CV IC_IR: %s",
+                       {h: (round(ir[h], 3) if np.isfinite(ir[h]) else None) for h in hs})
+        self._log.info("Blend weights (corr-aware, shrunk): %s",
+                       {h: round(w, 3) for h, w in weights.items()})
+
+        # 3) combine: weighted, NaN-tolerant average of the horizon z-scores
+        #    (KEEP magnitude -- the optimizer uses it, not a percentile rank)
+        w = np.array([weights[h] for h in hs])
         z = blended[zc].to_numpy()
         mask = ~np.isnan(z)
         wsum = np.where(mask, w, 0).sum(axis=1)
-        
-        # IR-weighted combined z-score; KEEP magnitude (no percentile rank) for the optimizer
         blended["combined"] = np.where(
             wsum > 0,
             np.nansum(np.where(mask, z * w, 0), axis=1) / np.where(wsum > 0, wsum, 1),

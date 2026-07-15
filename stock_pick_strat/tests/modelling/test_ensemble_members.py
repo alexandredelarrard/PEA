@@ -52,7 +52,8 @@ def test_ensemble_returns_members_and_blend_is_their_mean():
         "lightgbm":   _LinearMock([1.0, 0.0], noise=2.0, seed=7),  # noisier copy
     }
 
-    blended, members = ml.ensemble_predict(models, panel, feats, return_members=True)
+    # ensemble_predict always returns (blended_score, {member_name: z-series})
+    blended, members = ml.ensemble_predict(models, panel, feats)
 
     # members keyed by model name, aligned to panel
     assert set(members) == {"elasticnet", "lightgbm"}
@@ -70,17 +71,13 @@ def test_ensemble_returns_members_and_blend_is_their_mean():
     # blended score == nanmean of the member z-scores, elementwise
     stacked = np.column_stack([members[n].to_numpy() for n in members])
     assert np.allclose(blended.to_numpy(), np.nanmean(stacked, axis=1), atol=1e-9)
-
-    # backward compat: without the flag we still get just the Series
-    only = ml.ensemble_predict(models, panel, feats)
-    assert isinstance(only, pd.Series)
-    assert np.allclose(only.to_numpy(), blended.to_numpy(), atol=1e-12)
+    assert isinstance(blended, pd.Series)
 
     print("\n=== SANITY CHECK: ensemble_predict returns blend + members ===")
     print(f"  members={list(members)}; each per-day z (mean~0,std~1); "
           f"blend == nanmean(members) (max abs diff "
           f"{np.max(np.abs(blended.to_numpy() - np.nanmean(stacked,axis=1))):.2e}). "
-          f"Backward-compatible single-return preserved. Validated.")
+          f"Validated.")
 
 
 def test_per_member_ic_separates_skill_from_noise():
@@ -90,7 +87,7 @@ def test_per_member_ic_separates_skill_from_noise():
         "skilled": _LinearMock([1.0, 0.0]),                    # reads f0 -> high IC
         "noise":   _LinearMock([0.0, 0.0], noise=1.0, seed=3),  # pure noise -> IC ~0
     }
-    _, members = ml.ensemble_predict(models, panel, feats, return_members=True)
+    _, members = ml.ensemble_predict(models, panel, feats)
 
     ic_skilled = ml.daily_ic(panel, members["skilled"], "y", horizon=1)
     ic_noise = ml.daily_ic(panel, members["noise"], "y", horizon=1)

@@ -306,6 +306,72 @@ def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list):
     return blended, members
 
 
+def _pairwise_corr(M: np.ndarray) -> np.ndarray:
+    """Correlation matrix of the columns of M, computed pairwise-complete (ignores
+    rows where either column is NaN) so horizons with different coverage still get
+    a valid off-diagonal. Degenerate pairs (constant / too few obs) -> 0."""
+    n = M.shape[1]
+    C = np.eye(n)
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = M[:, i], M[:, j]
+            m = np.isfinite(a) & np.isfinite(b)
+            if m.sum() > 2 and a[m].std() > 0 and b[m].std() > 0:
+                c = float(np.corrcoef(a[m], b[m])[0, 1])
+                C[i, j] = C[j, i] = c if np.isfinite(c) else 0.0
+    return C
+
+
+def optimal_forecast_weights(signals: dict[int, np.ndarray],
+                             ir: dict[int, float],
+                             shrink: float = 0.5) -> dict[int, float]:
+    """Optimal combination of correlated per-horizon forecasts (Grinold-Kahn):
+
+        w  ∝  Σ⁻¹ · IR
+
+    IR = each horizon's information ratio (risk-adjusted skill); Σ = correlation of
+    the horizon signals. Highly-correlated horizons (30/60/90 move together) then
+    SHARE weight instead of triple-counting their common component, and a horizon
+    with a weak *standalone* IR can still earn weight if it DIVERSIFIES the others.
+
+    Robustness (fixes "a horizon drops out"):
+      * Σ is shrunk toward the identity by `shrink` for a stable inverse.
+      * an unestimable IR (NaN) is replaced by the MEAN of the finite IRs -- a
+        neutral prior -- so a horizon whose CV IR could not be measured is never
+        silently zeroed (only a genuinely non-positive IR loses weight).
+      * negative optimal weights are floored at 0 and the result renormalized;
+        all-invalid or singular cases fall back to equal weights.
+    """
+    hs = list(signals)
+    n = len(hs)
+    if n == 0:
+        return {}
+    if n == 1:
+        return {hs[0]: 1.0}
+
+    ir_vec = np.array([ir.get(h, np.nan) for h in hs], dtype=float)
+    finite = np.isfinite(ir_vec)
+    if not finite.any():
+        return {h: 1.0 / n for h in hs}
+    ir_vec[~finite] = ir_vec[finite].mean()          # neutral prior for NaN IR
+    mu = np.clip(ir_vec, 0.0, None)
+    if mu.sum() <= 0:
+        return {h: 1.0 / n for h in hs}
+
+    M = np.column_stack([np.asarray(signals[h], float) for h in hs])
+    C = _pairwise_corr(M)
+    C = (1.0 - shrink) * C + shrink * np.eye(n)
+    try:
+        w = np.linalg.solve(C, mu)
+    except np.linalg.LinAlgError:
+        w = mu.copy()
+    w = np.clip(w, 0.0, None)
+    if w.sum() <= 0:
+        w = mu.copy()
+    w = w / w.sum()
+    return {h: float(w[i]) for i, h in enumerate(hs)}
+
+
 def feature_importance(booster, feats: list) -> dict[str, float]:
     """LightGBM gain importance keyed by feature name."""
     gains = booster.feature_importance(importance_type="gain")

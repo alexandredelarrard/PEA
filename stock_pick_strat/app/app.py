@@ -402,9 +402,54 @@ def plot_hit_rate(acc: pd.DataFrame, horizon: int) -> plt.Figure:
     return fig
 
 
+def render_horizon_blend(bt: StepBacktest, model_horizons: list[int]):
+    """Per-horizon CV IC_IR (from the trained model's metadata) alongside the
+    actual blend weight the strategy used — makes it explicit whether e.g. the
+    90d horizon contributes, and why."""
+    st.subheader("Horizon Blend (ensemble → combined signal)")
+    train_ic = getattr(bt, "train_ic", {}) or {}
+    weights = getattr(bt, "blend_weights", {}) or {}
+    rows = []
+    for h in model_horizons:
+        ir = train_ic.get(h, np.nan)
+        rows.append({
+            "horizon": h,
+            "cv_ic_ir": round(float(ir), 3) if ir is not None and np.isfinite(ir) else np.nan,
+            "blend_weight": round(float(weights.get(h, 0.0)), 3),
+            "used": "yes" if weights.get(h, 0.0) > 1e-6 else "NO",
+        })
+    tbl = pd.DataFrame(rows).set_index("horizon")
+    st.dataframe(
+        tbl.style.format({"cv_ic_ir": "{:.3f}", "blend_weight": "{:.3f}"}, na_rep="—"),
+        use_container_width=True,
+    )
+    dropped = [h for h in model_horizons if weights.get(h, 0.0) <= 1e-6]
+    if dropped:
+        st.caption(f"Horizons with ~zero weight: {dropped}. With the correlation-aware "
+                   "blend, a NaN CV IC_IR no longer forces weight 0 — a zero here means "
+                   "the horizon had no panel in the window or a non-positive IR.")
+
+
 def render_results(bt: StepBacktest, accuracy_horizon: int, model_horizons: list[int]):
     daily = bt.daily
     metrics = bt.metrics
+
+    # ---- Backtest span (surfaces "expected 2y but only N days" data-coverage gaps)
+    span_days = len(daily)
+    if span_days:
+        d0, d1 = daily.index.min(), daily.index.max()
+        st.caption(f"**Backtest span:** {d0.date()} → {d1.date()}  "
+                   f"({span_days:,} trading days ≈ {span_days/252:.1f}y). "
+                   f"Signal matrix: {bt.signal.shape[0]}×{bt.signal.shape[1]} (dates×tickers).")
+        if span_days < max(model_horizons):
+            st.warning(
+                f"The backtest window ({span_days} days) is shorter than the longest "
+                f"forecast horizon ({max(model_horizons)}d): horizons ≥ the window "
+                f"length cannot be scored (their forward return needs future data that "
+                f"isn't in the window). This is a DATA-COVERAGE issue — the cube barely "
+                f"extends past the model train-end ({train_end}) — not a metric bug. "
+                f"Extend the cube/prices past {train_end} to evaluate longer horizons."
+            )
 
     # ---- Metrics KPI row ----
     st.subheader("Performance Summary")
@@ -428,6 +473,9 @@ def render_results(bt: StepBacktest, accuracy_horizon: int, model_horizons: list
     col6.metric("SPY Total Return", f"{metrics['spy_total_return']*100:.1f}%")
     col7.metric("Avg Daily Turnover", f"{metrics['avg_daily_turnover']:.3f}")
     col8.metric("Avg Daily Cost", f"{metrics['avg_daily_cost']*100:.4f}%")
+
+    # ---- Horizon blend (which horizons actually feed the signal, and why) ----
+    render_horizon_blend(bt, model_horizons)
 
     # ---- Equity curve ----
     st.subheader("Equity Curve vs SPY")

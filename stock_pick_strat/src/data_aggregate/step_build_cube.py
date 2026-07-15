@@ -43,7 +43,7 @@ class StepBuildCube(Step):
         self.build_features()
         self.build_fundamental_features()
         self.build_earnings_features()
-        self.build_analyst_features()
+        # self.build_analyst_features()
         self.build_management_features()
         self.build_employee_features()
         self.build_composite_signals()
@@ -166,7 +166,6 @@ class StepBuildCube(Step):
         self.macro_cols = list(macro_chg.columns)
 
         #retreive commo info
-
         commodity_returns = commodity_factor_returns(self.close, tickers={"oil": "CL=F", "gold": "GC=F"})
         currency_returns = currency_factor_returns(self.close, tickers={"USD/EUR": "USDEUR=X"})
 

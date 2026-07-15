@@ -20,5 +20,5 @@ if __name__ == "__main__":
     self = StepModelling(context=context, config=config)
     self.run()
 
-    # self = StepBacktest(context=context, config=config)
-    # self.run() 
+    self = StepBacktest(context=context, config=config)
+    self.run() 

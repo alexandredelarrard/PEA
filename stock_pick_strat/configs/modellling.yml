@@ -1,6 +1,6 @@
 model:
   label_column: y
-  target_type: rank            # which stored cube target to train on: rank | zscore
+  target_type: rank          # which stored cube target to train on: rank | zscore
                                # (must be present in build_cube.targets.labels)
   type: ensemble               # single-model fallback used only when `ensemble` is unset
   ensemble: [elasticnet, lightgbm]   # train BOTH families and AVERAGE their per-day
@@ -13,8 +13,8 @@ model:
                                #  with the ranking objective; RMSE stops after ~1 round
                                #  on this near-noise target)
   linear:                      # linear-baseline hyperparameters (type: elasticnet | ridge)
-    alpha: 0.005              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
-    l1_ratio: 0.3              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
+    alpha: 0.01              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
+    l1_ratio: 0.5              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
                                # correlated features 0.3-0.7 selects while sharing weight.
     max_iter: 1000             # coordinate-descent iterations (elasticnet)
     tol: 1.0e-6                # coordinate-descent convergence tolerance
@@ -26,15 +26,15 @@ model:
     n_splits: 5
     embargo: null          # defaults to primary_horizon when null
   lightgbm:
-    learning_rate: 0.003     
+    learning_rate: 0.002     
     max_depth: 5
     num_leaves: 31             # <= 2^max_depth; explicit so depth/leaves stay consistent
     subsample: 0.8             # row bagging fraction -- ONLY active with bagging_freq>0
     bagging_freq: 1            # apply row bagging every iteration (activates subsample)
     colsample_bytree: 0.8
-    min_child_samples: 40
+    min_child_samples: 30
     lambda_l1: 3.0
-    lambda_l2: 5.0
+    lambda_l2: 3.0
     num_boost_round: 3000      # cap only; early stopping ends well before this
     early_stopping_rounds: 100 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
 
@@ -75,15 +75,15 @@ inputs:
     #      not scored as if they were mature profitable firms. NaN base -> NaN flag
     #      (never a false 0); LightGBM splits on them natively, the linear member
     #      imputes NaN->neutral. Directions are set in inputs.monotonic below. ----
-    - f_profitable
+    # - f_profitable
     # - f_fcf_positive
     - f_negative_equity
-    - f_hyper_growth
+    # - f_hyper_growth
 
   #   # ---- Price / technical (point-in-time; MACD/RSI/ATR lagged 1 day) ----
   #   - mom_12_1
   #   - rev_21
-  #   - vol_63
+    - vol_63
   #   - ma_ratio_50
   #   - atr_14
   #   # - rev_5
@@ -120,15 +120,15 @@ inputs:
   #   # - f_earnings_yield_vs_peers
   #   # - f_earnings_yield_xs
   #   - f_sales_yield_vs_peers
-  #   - f_sales_yield_xs
+    - f_sales_yield_xs
   #   - f_book_yield_vs_peers
   #   - f_book_yield_xs
   #   # - f_fcf_yield_vs_peers
-  #   - f_fcf_yield_xs
+    # - f_fcf_yield_xs
   #   # - f_ebitda_to_ev_vs_peers
   #   # - f_ebitda_to_ev_xs
   #   - f_intrinsic_yield_vs_peers
-  #   - f_intrinsic_yield_xs
+    - f_intrinsic_yield_xs
 
   #   # ---- Peer-relative fundamentals: profitability / quality ----
   #   - f_grossMargins_vs_peers
@@ -138,7 +138,7 @@ inputs:
   #   # - f_profitMargins_vs_peers
   #   - f_profitMargins_xs
   #   - f_returnOnEquity_vs_peers
-  #   - f_returnOnEquity_xs
+    - f_returnOnEquity_xs
   #   - f_debtToEquity_vs_peers
   #   - f_debtToEquity_xs
   #   # - f_fcf_margin_vs_peers
@@ -146,7 +146,7 @@ inputs:
   #   - f_accruals_vs_peers
   #   # - f_accruals_xs
   #   - f_rd_intensity_vs_peers
-  #   - f_rd_intensity_xs
+    - f_rd_intensity_xs
 
   #   # ---- Company-regime handling (profitable vs loss-making / hyper-growth) ----
   #   # gross_profitability (Novy-Marx: gross profit / assets) stays valid for
@@ -154,7 +154,7 @@ inputs:
   #   # are RAW (not peer-relative) so the model conditions on the regime instead
   #   # of averaging a feature whose meaning flips across profitability.
   #   - f_gross_profitability_vs_peers
-  #   - f_gross_profitability_xs
+    - f_gross_profitability_xs
 
     
 
@@ -168,7 +168,7 @@ inputs:
   #   - f_gross_margin_chg_vs_peers
   #   - f_gross_margin_chg_xs
   #   # - f_shares_growth_vs_peers
-  #   - f_shares_growth_xs
+    - f_shares_growth_xs
 
   #   # ---- Latest-quarter momentum (discrete single quarter, not TTM) ----
   #   # - f_q_rev_growth_vs_peers
@@ -188,7 +188,7 @@ inputs:
   #   - f_y_rev_growth_accel_vs_peers
   #   - f_y_rev_growth_accel_xs
   #   - f_y_earnings_growth_vs_peers
-  #   - f_y_earnings_growth_xs
+    - f_y_earnings_growth_xs
   #   # - f_y_margin_vs_ttm_vs_peers
   #   # - f_y_margin_vs_ttm_xs -> wrong trend (weirds)
 
@@ -211,32 +211,32 @@ inputs:
   #   - f_interest_coverage_vs_peers
   #   - f_interest_coverage_xs
   #   - f_current_ratio_vs_peers
-  #   - f_current_ratio_xs
+    - f_current_ratio_xs
   #   - f_cash_to_debt_vs_peers
-  #   - f_cash_to_debt_xs
+    - f_cash_to_debt_xs
 
   #   # ---- Marketing & sales efficiency: SG&A intensity, SG&A growth, and operating
   #   #      leverage (revenue growth - SG&A growth; >0 = scaling profitably). ----
   #   - f_sga_intensity_vs_peers
   #   - f_sga_intensity_xs
   #   - f_sga_growth_vs_peers
-  #   - f_sga_growth_xs
+    - f_sga_growth_xs
   #   - f_operating_leverage_vs_peers
   #   - f_operating_leverage_xs
 
   #   # ---- M&A footprint: acquisition intensity (acq spend / assets) and goodwill
   #   #      growth. Distinguishes inorganic from organic growth; impairment risk. ----
   #   - f_acquisition_intensity_vs_peers
-  #   - f_acquisition_intensity_xs
+    - f_acquisition_intensity_xs
   #   - f_goodwill_growth_vs_peers
-  #   - f_goodwill_growth_xs
+    - f_goodwill_growth_xs
 
   #   # ---- Stock-based compensation ("employee shares given"): SBC/revenue and
   #   #      SBC/operating-cash-flow. GROSS give-away, unlike net shares_growth. ----
   #   # - f_sbc_intensity_vs_peers
   #   - f_sbc_intensity_xs
   #   - f_sbc_to_ocf_vs_peers
-  #   - f_sbc_to_ocf_xs
+    - f_sbc_to_ocf_xs
 
   #   # ---- Earnings expectations (historical forward EPS vs actual; ~96% cover) ----
   #   # forward E/P + expected EPS growth carry standalone signal (IC ~ +0.02) and
@@ -252,13 +252,13 @@ inputs:
   #   - f_revenue_per_employee_vs_peers
   #   - f_revenue_per_employee_xs
   #   # - f_employee_growth_vs_peers
-  #   - f_employee_growth_xs
+    - f_employee_growth_xs
 
   #   # ---- Analyst estimates: leak-free but NO accrued history yet, so they are
   #   #      ~all-NaN historically. Uncomment once you have collected estimate
   #   #      snapshots over time (see fetch_analyst_estimates). ----
   #   - f_est_fwd_earnings_yield_vs_peers
-  #   - f_est_fwd_earnings_yield_xs
+    - f_est_fwd_earnings_yield_xs
   #   - f_est_eps_growth_vs_peers
   #   - f_est_eps_growth_xs
   #   - f_est_rev_growth_vs_peers
@@ -272,7 +272,7 @@ inputs:
   #   - f_est_rec_score_vs_peers
   #   - f_est_rec_score_xs
   #   - f_est_vs_intrinsic_vs_peers
-  #   - f_est_vs_intrinsic_xs
+    - f_est_vs_intrinsic_xs
 
   #   # ---- Governance / ownership (snapshot-only: no free historical archive yet).
   #   #      Leak-free (point-in-time from as_of) but ~all-NaN historically until the
@@ -309,7 +309,7 @@ inputs:
       - comp_workforce: 1             # more productive workforce -> higher
       - comp_technical: 1             # positive momentum / low risk -> higher
       # Regime flags: only the economically-unambiguous signs are constrained.
-      - f_profitable: 1               # profitable firms -> higher (profitability premium)
+      # - f_profitable: 1               # profitable firms -> higher (profitability premium)
       - f_negative_equity: -1         # negative book equity = distress -> lower
       # f_hyper_growth intentionally UNCONSTRAINED: its forward-return sign is not
       # robust (growth premium vs speculative over-valuation), so it is a free

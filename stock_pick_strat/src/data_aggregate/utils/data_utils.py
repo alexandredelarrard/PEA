@@ -59,7 +59,7 @@ def prices_long_to_multiindex(prices: pd.DataFrame) -> pd.DataFrame:
     prices = prices.rename(columns=colmap)
 
     fields = {"Close": "close", "Open": "open"}
-    for cap, low in (("High", "high"), ("Low", "low")):
+    for cap, low in (("High", "high"), ("Low", "low"), ("Volume", "volume")):
         if low in prices.columns:
             fields[cap] = low
     wide = {cap: prices.pivot(index="date", columns="ticker", values=low)

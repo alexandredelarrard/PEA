@@ -1,0 +1,88 @@
+"""
+fetch_dividends.py  (src/data_extract/utils/fetch_dividends.py)
+---------------------------------------------------------------
+Cash-dividend history per ticker via yfinance (free, full history). Saved as a
+long parquet [date, ticker, dividend] keyed on the EX-date (known/paid at that
+date, so point-in-time and backtestable). Dividends are otherwise invisible to
+the model because prices are auto-adjusted.
+
+Re-runs are incremental: only ex-dates after each ticker's cached max are pulled.
+Network access is isolated in `_ticker_dividends`; the parse step
+(`_series_to_long`) is pure and unit-tested.
+"""
+from __future__ import annotations
+
+import time
+
+import pandas as pd
+import yfinance as yf
+from tqdm import tqdm
+
+from src.context import Context
+
+
+def _series_to_long(dividends: pd.Series, ticker: str) -> pd.DataFrame:
+    """Convert a yfinance dividends Series (index=ex-date, value=cash/share) into
+    long rows [date, ticker, dividend]. Drops non-positive/na entries. Pure."""
+    if dividends is None or len(dividends) == 0:
+        return pd.DataFrame(columns=["date", "ticker", "dividend"])
+    s = pd.Series(dividends).dropna()
+    s = s[s > 0]
+    if s.empty:
+        return pd.DataFrame(columns=["date", "ticker", "dividend"])
+    out = pd.DataFrame({
+        "date": pd.to_datetime(s.index).tz_localize(None).normalize(),
+        "ticker": ticker,
+        "dividend": s.to_numpy(dtype="float64"),
+    })
+    return out.reset_index(drop=True)
+
+
+def _ticker_dividends(ticker: str) -> pd.Series:
+    """Network call, isolated for testability/mocking. Returns the ex-date series."""
+    return yf.Ticker(ticker).dividends
+
+
+def _load_existing(path) -> pd.DataFrame | None:
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path)
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    return df
+
+
+def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3) -> pd.DataFrame:
+    """Download (incrementally) cash-dividend history for `tickers` and cache it."""
+    path = context.paths["DIVIDENDS_PATH"]
+    existing = _load_existing(path)
+    last_by_ticker = ({} if existing is None
+                      else existing.groupby("ticker")["date"].max().to_dict())
+
+    new_frames: list[pd.DataFrame] = []
+    for tkr in tqdm(tickers, desc="Downloading dividends"):
+        try:
+            long = _series_to_long(_ticker_dividends(tkr), tkr)
+        except Exception as e:  # one bad ticker must not abort the whole run
+            print(f"Dividends fetch failed for {tkr}: {e}")
+            continue
+        if long.empty:
+            continue
+        cutoff = last_by_ticker.get(tkr)
+        if cutoff is not None:
+            long = long[long["date"] > cutoff]
+        if not long.empty:
+            new_frames.append(long)
+        time.sleep(pause)
+
+    parts = [df for df in (existing, *new_frames) if df is not None and not df.empty]
+    if not parts:
+        print("No dividend data available.")
+        return pd.DataFrame(columns=["date", "ticker", "dividend"])
+
+    out = (pd.concat(parts, ignore_index=True)
+           .drop_duplicates(subset=["ticker", "date"], keep="last")
+           .sort_values(["ticker", "date"])
+           .reset_index(drop=True))
+    out.to_parquet(path, index=False)
+    print(f"Saved {len(out)} dividend rows to {path}")
+    return out

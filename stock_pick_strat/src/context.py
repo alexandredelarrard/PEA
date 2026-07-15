@@ -27,6 +27,7 @@ def define_global_paths(config: DictConfig):
     # Prices & universe
     global_paths["PRICES_PATH"] = global_paths["DATA_STORE"] / "prices.parquet"
     global_paths["TICKERS_PATH"] = global_paths["DATA_STORE"] / "sp500_tickers.csv"
+    global_paths["DIVIDENDS_PATH"] = global_paths["DATA_STORE"] / "dividends.parquet"
 
     # Fundamentals
     global_paths["FUNDAMENTALS_SNAPSHOT_PATH"] = global_paths["DATA_STORE"] / "fundamentals_latest.parquet"
@@ -35,6 +36,10 @@ def define_global_paths(config: DictConfig):
     # Macro & news
     global_paths["MACRO_PATH"] = global_paths["DATA_STORE"] / "macro.parquet"
     global_paths["NEWS_PATH"] = global_paths["DATA_STORE"] / "news_latest.parquet"
+
+    # Retail-attention alt-data (Wikipedia pageviews + Google Trends)
+    global_paths["WIKI_PAGEVIEWS_PATH"] = global_paths["DATA_STORE"] / "wiki_pageviews.parquet"
+    global_paths["GOOGLE_TRENDS_PATH"] = global_paths["DATA_STORE"] / "google_trends.parquet"
 
     # Analyst estimates
     global_paths["ANALYST_ESTIMATES_PATH"] = global_paths["DATA_STORE"] / "analyst_estimates.parquet"
@@ -66,6 +71,7 @@ def define_global_paths(config: DictConfig):
     # Insider & institutional (SEC bulk data)
     global_paths["INSIDER_TRANSACTIONS_PATH"] = global_paths["DATA_STORE"] / "insider_transactions.parquet"
     global_paths["INSTITUTIONAL_HOLDINGS_PATH"] = global_paths["DATA_STORE"] / "institutional_holdings.parquet"
+    global_paths["CUSIP_MAP_PATH"] = global_paths["DATA_STORE"] / "cusip_ticker_map.parquet"
 
     # Strategy outputs
     global_paths["BACKTEST_RESULT_PATH"] = global_paths["DATA_STORE"] / "backtest_result.parquet"

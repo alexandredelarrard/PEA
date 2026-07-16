@@ -162,7 +162,9 @@ class StepBacktest(Step):
     def simulate(self):
         c = self._cfg
         self.daily = simulate_portfolio_opt(
-            self.signal, self.stock_ret, self.spy_ret,
+            signal=self.signal, 
+            stock_ret=self.stock_ret, 
+            spy_ret=self.spy_ret,
             starting_capital=float(c.starting_capital),
             market_weight=c.get("market_weight", 0.5),
             target_ann_vol=c.get("target_ann_vol", 0.08),

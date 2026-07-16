@@ -13,8 +13,8 @@ model:
                                #  with the ranking objective; RMSE stops after ~1 round
                                #  on this near-noise target)
   linear:                      # linear-baseline hyperparameters (type: elasticnet | ridge)
-    alpha: 0.01              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
-    l1_ratio: 0.5              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
+    alpha: 0.05              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
+    l1_ratio: 0.7              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
                                # correlated features 0.3-0.7 selects while sharing weight.
     max_iter: 1000             # coordinate-descent iterations (elasticnet)
     tol: 1.0e-6                # coordinate-descent convergence tolerance
@@ -26,15 +26,15 @@ model:
     n_splits: 5
     embargo: null          # defaults to primary_horizon when null
   lightgbm:
-    learning_rate: 0.002     
+    learning_rate: 0.001     
     max_depth: 5
     num_leaves: 31             # <= 2^max_depth; explicit so depth/leaves stay consistent
     subsample: 0.8             # row bagging fraction -- ONLY active with bagging_freq>0
     bagging_freq: 1            # apply row bagging every iteration (activates subsample)
     colsample_bytree: 0.8
     min_child_samples: 30
-    lambda_l1: 3.0
-    lambda_l2: 3.0
+    lambda_l1: 5.0
+    lambda_l2: 5.0
     num_boost_round: 3000      # cap only; early stopping ends well before this
     early_stopping_rounds: 100 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
 
@@ -58,7 +58,6 @@ inputs:
   # ---- Thematic COMPOSITE signals (built in build_cube.composites): denoised,
     #      low-collinearity per-theme scores. ADDITIVE -- the raw features above
     #      are still trained on; these are extra, more-stable inputs. ----
-    - comp_value
     - comp_quality
     - comp_growth
     - comp_distress
@@ -66,7 +65,8 @@ inputs:
     - comp_expectations
     - comp_management
     - comp_workforce
-    - comp_technical
+    # - comp_technical
+    # - comp_value
 
   # ---- Company-regime state flags (RAW 0/1, NOT peer-relative). The composites
     #      above rank names WITHIN a regime but cannot express the regime itself;
@@ -77,12 +77,12 @@ inputs:
     #      imputes NaN->neutral. Directions are set in inputs.monotonic below. ----
     # - f_profitable
     # - f_fcf_positive
-    - f_negative_equity
+    # - f_negative_equity
     # - f_hyper_growth
 
   #   # ---- Price / technical (point-in-time; MACD/RSI/ATR lagged 1 day) ----
   #   - mom_12_1
-  #   - rev_21
+    - rev_21
     - vol_63
   #   - ma_ratio_50
   #   - atr_14
@@ -127,7 +127,7 @@ inputs:
     # - f_fcf_yield_xs
   #   # - f_ebitda_to_ev_vs_peers
   #   # - f_ebitda_to_ev_xs
-  #   - f_intrinsic_yield_vs_peers
+    - f_intrinsic_yield_vs_peers
     - f_intrinsic_yield_xs
 
   #   # ---- Peer-relative fundamentals: profitability / quality ----
@@ -136,7 +136,7 @@ inputs:
   #   - f_operatingMargins_vs_peers
   #   - f_operatingMargins_xs
   #   # - f_profitMargins_vs_peers
-  #   - f_profitMargins_xs
+    - f_profitMargins_xs
   #   - f_returnOnEquity_vs_peers
     - f_returnOnEquity_xs
   #   - f_debtToEquity_vs_peers
@@ -156,8 +156,6 @@ inputs:
   #   - f_gross_profitability_vs_peers
     - f_gross_profitability_xs
 
-    
-
   #   # ---- Peer-relative fundamentals: growth / trend / dilution ----
   #   - f_revenueGrowth_vs_peers
   #   - f_revenueGrowth_xs
@@ -172,7 +170,7 @@ inputs:
 
   #   # ---- Latest-quarter momentum (discrete single quarter, not TTM) ----
   #   # - f_q_rev_growth_vs_peers
-  #   # - f_q_rev_growth_xs
+    # - f_q_rev_growth_xs
   #   # - f_rev_growth_accel_vs_peers
   #   # - f_rev_growth_accel_xs
   #   # - f_q_earnings_growth_vs_peers
@@ -184,7 +182,7 @@ inputs:
   #   # Computed fresh from level columns (totalRevenue, netIncome, profitMargins) so
   #   # backtestable from the full fundamentals history. Complements q_* features.
   #   # - f_y_rev_growth_vs_peers
-  #   - f_y_rev_growth_xs
+    - f_y_rev_growth_xs
   #   - f_y_rev_growth_accel_vs_peers
   #   - f_y_rev_growth_accel_xs
   #   - f_y_earnings_growth_vs_peers
@@ -208,8 +206,8 @@ inputs:
   #   #      Needs the raw balance-sheet levels now carried in the fundamentals history. ----
   #   - f_net_debt_to_ebitda_vs_peers
   #   - f_net_debt_to_ebitda_xs
-  #   - f_interest_coverage_vs_peers
-  #   - f_interest_coverage_xs
+    - f_interest_coverage_vs_peers
+    # - f_interest_coverage_xs
   #   - f_current_ratio_vs_peers
     - f_current_ratio_xs
   #   - f_cash_to_debt_vs_peers
@@ -242,15 +240,15 @@ inputs:
   #   # forward E/P + expected EPS growth carry standalone signal (IC ~ +0.02) and
   #   # capture "what the market prices in for the future" / unrealistic optimism.
   #   # - f_fwd_eps_yield_vs_peers
-  #   - f_fwd_eps_yield_xs
+    - f_fwd_eps_yield_xs
   #   - f_eps_expectation_growth_vs_peers
-  #   - f_eps_expectation_growth_xs
+    - f_eps_expectation_growth_xs
 
   #   # ---- Workforce (EDGAR historical employee counts, from 10-K filings):
   #   #      genuinely historical & point-in-time, so backtestable. Columns absent
   #   #      from cube if fetch_employees_edgar has not run -- safe to leave enabled. ----
   #   - f_revenue_per_employee_vs_peers
-  #   - f_revenue_per_employee_xs
+    - f_revenue_per_employee_xs
   #   # - f_employee_growth_vs_peers
     - f_employee_growth_xs
 
@@ -258,7 +256,7 @@ inputs:
   #   #      ~all-NaN historically. Uncomment once you have collected estimate
   #   #      snapshots over time (see fetch_analyst_estimates). ----
   #   - f_est_fwd_earnings_yield_vs_peers
-    - f_est_fwd_earnings_yield_xs
+    # - f_est_fwd_earnings_yield_xs
   #   - f_est_eps_growth_vs_peers
   #   - f_est_eps_growth_xs
   #   - f_est_rev_growth_vs_peers
@@ -272,34 +270,33 @@ inputs:
   #   - f_est_rec_score_vs_peers
   #   - f_est_rec_score_xs
   #   - f_est_vs_intrinsic_vs_peers
-    - f_est_vs_intrinsic_xs
+    # - f_est_vs_intrinsic_xs
 
   #   # ---- Governance / ownership (snapshot-only: no free historical archive yet).
   #   #      Leak-free (point-in-time from as_of) but ~all-NaN historically until the
   #   #      snapshot archive builds up. Useful NOW for live cross-sectional ranking. ----
-  #   - f_insider_ownership_vs_peers
-  #   - f_insider_ownership_xs
+    - f_insider_ownership_vs_peers
+    # - f_insider_ownership_xs
   #   - f_institutional_ownership_vs_peers
   #   - f_institutional_ownership_xs
   #   # - f_founder_led_vs_peers
   #   - f_founder_led_xs
-  #   # - f_founder_ceo_vs_peers
-  #   - f_founder_ceo_xs
+    - f_founder_ceo_vs_peers
+    # - f_founder_ceo_xs
   #   - f_family_owned_vs_peers
   #   - f_family_owned_xs
   #   - f_net_insider_buying_vs_peers
   #   - f_net_insider_buying_xs
   #   - f_ceo_age_vs_peers
-  #   - f_ceo_age_xs
+    - f_ceo_age_xs
   #   - f_n_officers_vs_peers
   #   - f_n_officers_xs
   #   - f_avg_officer_age_vs_peers
-  #   - f_avg_officer_age_xs
+    - f_avg_officer_age_xs
 
   monotonic:
     enabled: true
     features:
-      - comp_value: 1                 # cheaper -> higher expected return
       - comp_quality: 1               # more profitable / higher-quality -> higher
       - comp_growth: 1                # faster (oriented) growth -> higher
       - comp_distress: 1              # safer / less distressed -> higher
@@ -307,10 +304,21 @@ inputs:
       - comp_expectations: 1          # richer forward expectations -> higher
       - comp_management: 1            # founder-led / insider buying -> higher
       - comp_workforce: 1             # more productive workforce -> higher
-      - comp_technical: 1             # positive momentum / low risk -> higher
-      # Regime flags: only the economically-unambiguous signs are constrained.
-      # - f_profitable: 1               # profitable firms -> higher (profitability premium)
-      - f_negative_equity: -1         # negative book equity = distress -> lower
-      # f_hyper_growth intentionally UNCONSTRAINED: its forward-return sign is not
-      # robust (growth premium vs speculative over-valuation), so it is a free
-      # split variable for the tree rather than a forced monotone prior.
+      
+      - f_employee_growth_xs: 1
+      - f_sbc_to_ocf_xs: 1
+      - f_goodwill_growth_xs: -1
+      - f_acquisition_intensity_xs: -1
+      - f_sga_growth_xs: -1
+      - f_cash_to_debt_xs: 1 
+      - f_current_ratio_xs: -1
+      - f_gross_profitability_xs: 1
+      - f_rd_intensity_xs: 1
+      - f_shares_growth_xs: 1
+      - f_returnOnEquity_xs: 1
+      - f_y_earnings_growth_xs: 1
+      - f_sales_yield_xs: 1
+      - f_intrinsic_yield_vs_peers: 1
+      - f_avg_officer_age_xs: -1
+      - f_eps_expectation_growth_xs: +1
+      - f_interest_coverage_vs_peers: +1

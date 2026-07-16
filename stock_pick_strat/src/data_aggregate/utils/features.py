@@ -86,13 +86,20 @@ def compute_raw_features(
     sector_returns: pd.DataFrame,
     high: pd.DataFrame | None = None,
     low: pd.DataFrame | None = None,
+    volume: pd.DataFrame | None = None,
+    seasonal_horizons: list[int] | None = None,
+    seasonal_years: int = 5,
 ) -> dict:
     """
     Compute raw (un-standardized) feature frames. Returns dict:
         {feature_name: DataFrame[date x ticker]}
 
     `high`/`low` are only needed for ATR(14); if absent, ATR is skipped and
-    every other feature is still produced.
+    every other feature is still produced. `volume` enables the liquidity family
+    (dollar volume, Amihud illiquidity, relative volume); if absent it is skipped.
+    `seasonal_horizons` (e.g. the target horizons) enables the cross-sectional
+    seasonality feature `seasonal_h<h>` per horizon (averaged over the last
+    `seasonal_years` prior years); if absent it is skipped.
     """
     ret = close.pct_change(fill_method=None)
     feats = {}
@@ -144,6 +151,43 @@ def compute_raw_features(
     mkt = ret.mean(axis=1)
     feats["idio_vol_63"] = _safe(ret.sub(mkt, axis=0).rolling(63).std())
 
+    # ---- Liquidity / volume (point-in-time trailing windows; skipped w/o volume) ----
+    if volume is not None:
+        volume = volume.reindex_like(close)
+        dollar_vol = close * volume                        # daily $ traded
+        # Liquidity/size proxy: log average daily dollar volume (63d).
+        feats["dollar_volume_63"] = _safe(
+            np.log1p(dollar_vol.rolling(63, min_periods=20).mean()))
+        # Amihud (2002) illiquidity = mean(|ret| / $volume). HIGHER = more illiquid
+        # (illiquidity premium). Scale is irrelevant post cross-sectional ranking.
+        amihud = _safe(ret.abs() / dollar_vol.where(dollar_vol > 0))
+        feats["amihud_63"] = amihud.rolling(63, min_periods=20).mean()
+        # Relative volume: recent 5d vs 63d average -> volume spike / attention.
+        v5 = volume.rolling(5, min_periods=3).mean()
+        v63 = volume.rolling(63, min_periods=20).mean()
+        feats["rel_volume_5_63"] = _safe(v5 / v63.where(v63 > 0))
+
+    # ---- Cross-sectional SEASONALITY at the forecast target t+h (Heston-Sadka) ----
+    # A calendar dummy (month of t+h) is identical for every stock on a date -> it
+    # has NO cross-sectional dispersion and cannot help a market-neutral ranker.
+    # The cross-sectionally useful seasonal signal is the STOCK'S OWN average return
+    # over the SAME calendar window in PRIOR years: seasonal_h(t) = mean over the
+    # last few years y>=1 of the h-day forward return at t-252*y. Because only
+    # y>=1 (>= a year back, fully realized) is used, it is strictly leak-free, and
+    # it differs per stock (some names have real same-season repeatability).
+    if seasonal_horizons:
+        logr = np.log1p(ret.clip(lower=-0.999999))
+        for h in sorted({int(x) for x in seasonal_horizons}):
+            mp = max(1, int(round(h * 0.6)))
+            fwd_h = np.expm1(logr[::-1].rolling(h, min_periods=mp).sum()[::-1].shift(-1))
+            prior = np.stack([fwd_h.shift(252 * y).to_numpy() for y in range(1, seasonal_years + 1)])
+            finite = np.isfinite(prior)
+            cnt = finite.sum(axis=0)
+            ssum = np.where(finite, prior, 0.0).sum(axis=0)
+            seasonal = np.where(cnt > 0, ssum / np.maximum(cnt, 1), np.nan)
+            feats[f"seasonal_h{h}"] = _safe(
+                pd.DataFrame(seasonal, index=close.index, columns=close.columns))
+
     # ---- Technical indicators, LAGGED one day (exclude t -> no leakage) ----
     macd_norm, macd_hist = _macd(close)
     feats["macd"] = macd_norm.shift(1)
@@ -178,6 +222,8 @@ def build_feature_panel(
     method: str = "rank",
     high: pd.DataFrame | None = None,
     low: pd.DataFrame | None = None,
+    volume: pd.DataFrame | None = None,
+    seasonal_horizons: list[int] | None = None,
 ) -> pd.DataFrame:
     """
     Build a long-format feature panel ready for modeling.
@@ -185,9 +231,11 @@ def build_feature_panel(
     Returns a tidy DataFrame with columns:
         ['date', 'ticker', <feature_1>, <feature_2>, ...]
     Each feature already cross-sectionally standardized within its date.
-    `high`/`low` enable the ATR(14) feature.
+    `high`/`low` enable the ATR(14) feature; `volume` enables the liquidity family;
+    `seasonal_horizons` enables the per-horizon cross-sectional seasonality feature.
     """
-    raw = compute_raw_features(close, open_, sector_returns, high=high, low=low)
+    raw = compute_raw_features(close, open_, sector_returns, high=high, low=low,
+                               volume=volume, seasonal_horizons=seasonal_horizons)
     std = {name: cross_sectional_standardize(f, method) for name, f in raw.items()}
 
     long_frames = []

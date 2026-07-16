@@ -13,6 +13,9 @@ from src.data_aggregate.utils.analyst_features import build_analyst_feature_pane
 from src.data_aggregate.utils.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.management_features import build_management_feature_panel
 from src.data_aggregate.utils.employee_features import build_employee_feature_panel
+from src.data_aggregate.utils.dividend_features import build_dividend_feature_panel
+from src.data_aggregate.utils.attention_features import build_attention_feature_panel
+from src.data_aggregate.utils.institutional_features import build_institutional_feature_panel
 from src.data_aggregate.utils.composites import build_composites as build_composite_signals
 from src.data_aggregate.utils.factors import (
     build_style_factor_returns,
@@ -46,6 +49,9 @@ class StepBuildCube(Step):
         # self.build_analyst_features()
         self.build_management_features()
         self.build_employee_features()
+        self.build_dividend_features()
+        self.build_attention_features()
+        self.build_institutional_features()
         self.build_composite_signals()
         self.aggregate_cube()
         self.save_cube()
@@ -65,6 +71,7 @@ class StepBuildCube(Step):
         self.open_ = du.extract_field(raw, "Open")
         self.high = du.extract_field(raw, "High") if "High" in raw.columns.get_level_values(0) else None
         self.low = du.extract_field(raw, "Low") if "Low" in raw.columns.get_level_values(0) else None
+        self.volume = du.extract_field(raw, "Volume") if "Volume" in raw.columns.get_level_values(0) else None
 
         trading_days = self.close[cfg.market_ticker].notna()
         # Surface interior calendar holes BEFORE dropping: dates where a quorum of
@@ -100,6 +107,9 @@ class StepBuildCube(Step):
                            if self.high is not None else None)
         self.stock_low = (self.low.drop(columns=drop_cols, errors="ignore")
                           if self.low is not None else None)
+        self.stock_volume = (self.volume.reindex(self.close.index)
+                             .drop(columns=drop_cols, errors="ignore")
+                             if self.volume is not None else None)
 
         self._log.info("Normalized prices: %s dates, %s stocks",
                        self.close.shape[0], self.stock_ret.shape[1])
@@ -145,6 +155,26 @@ class StepBuildCube(Step):
         if self.employees is None:
             self._log.warning("No employee-count history -> workforce features skipped "
                               "(run fetch_employees; needs FMP_API_KEY).")
+
+        dpath = self._context.paths["DIVIDENDS_PATH"]
+        self.dividends = pd.read_parquet(dpath) if dpath.exists() else None
+        if self.dividends is None:
+            self._log.warning("No dividend history -> dividend/shareholder-yield "
+                              "features skipped (run fetch_dividends).")
+
+        wvpath = self._context.paths["WIKI_PAGEVIEWS_PATH"]
+        self.wiki_pageviews = pd.read_parquet(wvpath) if wvpath.exists() else None
+        gtpath = self._context.paths["GOOGLE_TRENDS_PATH"]
+        self.google_trends = pd.read_parquet(gtpath) if gtpath.exists() else None
+        if self.wiki_pageviews is None and self.google_trends is None:
+            self._log.warning("No attention data -> Wikipedia/Google-Trends features "
+                              "skipped (run fetch_wiki_pageviews / fetch_google_trends).")
+
+        ipath = self._context.paths["INSTITUTIONAL_HOLDINGS_PATH"]
+        self.institutional = pd.read_parquet(ipath) if ipath.exists() else None
+        if self.institutional is None:
+            self._log.warning("No 13F holdings -> institutional-ownership features "
+                              "skipped (run fetch_13f).")
 
     def _intrinsic_cfg(self) -> dict:
         cfg = self._cfg.get("intrinsic", {})
@@ -231,9 +261,12 @@ class StepBuildCube(Step):
             self.stock_close, self.stock_open, self.sector_ret,
             method=cfg.standardize_method,
             high=self.stock_high, low=self.stock_low,
+            volume=getattr(self, "stock_volume", None),
+            seasonal_horizons=list(self._cfg.targets.horizons),
         )
-        self._log.info("Price feature panel: %s rows, %s features",
-                       len(self.feature_panel), len(self.feature_panel.columns) - 2)
+        self._log.info("Price feature panel: %s rows, %s features (volume liquidity: %s)",
+                       len(self.feature_panel), len(self.feature_panel.columns) - 2,
+                       "yes" if getattr(self, "stock_volume", None) is not None else "no")
 
     def build_fundamental_features(self):
         """Peer-relative fundamentals (firm vs direct competitors) -> merged in.
@@ -342,6 +375,68 @@ class StepBuildCube(Step):
         added = len(self.feature_panel.columns) - 2 - before
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s workforce features (row coverage %.1f%%)",
+                       added, 100 * cov)
+
+    def build_dividend_features(self):
+        """Dividend / shareholder-yield features (TTM yield, payout growth, payer
+        flag, dividend + buyback yield) from the ex-date dividend history. Point-
+        in-time (a dividend enters TTM only from its ex-date); non-payers get a
+        real 0 yield so they rank correctly."""
+        panel = build_dividend_feature_panel(
+            getattr(self, "dividends", None), self.peers, self.stock_close.index,
+            stock_close=self.stock_close, fundamentals_history=self.fundamentals,
+        )
+        if panel.empty:
+            self._log.warning("No dividend features built (missing dividend history).")
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(
+            panel, on=["date", "ticker"], how="left"
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s dividend features (row coverage %.1f%%)",
+                       added, 100 * cov)
+
+    def build_attention_features(self):
+        """Retail-attention features (abnormal Wikipedia pageviews and Google
+        Trends search interest vs each name's own baseline). Point-in-time
+        (trailing windows). Each source is optional; absent sources are skipped."""
+        idx = self.stock_close.index
+        sources = [("wiki", getattr(self, "wiki_pageviews", None), "pageviews"),
+                   ("gt", getattr(self, "google_trends", None), "search_interest")]
+        for prefix, hist, value_col in sources:
+            panel = build_attention_feature_panel(hist, self.peers, idx,
+                                                  prefix=prefix, value_col=value_col)
+            if panel.empty:
+                continue
+            before = len(self.feature_panel.columns) - 2
+            self.feature_panel = self.feature_panel.merge(
+                panel, on=["date", "ticker"], how="left"
+            )
+            added = len(self.feature_panel.columns) - 2 - before
+            cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+            self._log.info("Merged %s %s-attention features (row coverage %.1f%%)",
+                           added, prefix, 100 * cov)
+
+    def build_institutional_features(self):
+        """13F institutional-ownership features (breadth, accumulation, new-buyer /
+        exiter counts, cluster buying, ownership %). Aggregated across all 13F
+        managers per quarter and stamped point-in-time with the 45-day filing lag."""
+        panel = build_institutional_feature_panel(
+            getattr(self, "institutional", None), self.peers, self.stock_close.index,
+            shares_out_history=self.fundamentals,
+        )
+        if panel.empty:
+            self._log.warning("No institutional (13F) features built.")
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(
+            panel, on=["date", "ticker"], how="left"
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s institutional (13F) features (row coverage %.1f%%)",
                        added, 100 * cov)
 
     def build_composite_signals(self):

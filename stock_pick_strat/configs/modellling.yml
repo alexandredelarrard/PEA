@@ -103,6 +103,41 @@ inputs:
   #   - downside_vol_63
   #   - idio_vol_63
 
+  # ---- Cross-sectional SEASONALITY at t+h (Heston-Sadka): the stock's OWN
+    #      average return over the same calendar window in prior years, per target
+    #      horizon. Leak-free & stock-specific (a calendar dummy would be flat
+    #      across names -> useless for a market-neutral ranker). ----
+    - seasonal_h30
+    - seasonal_h60
+    - seasonal_h90
+
+  # ---- Liquidity / volume (price+volume; point-in-time). dollar_volume_63 =
+    #      log avg $ traded (size/liquidity); amihud_63 = Amihud illiquidity
+    #      (higher = more illiquid -> illiquidity premium); rel_volume_5_63 =
+    #      recent vs trailing volume (spike / attention). Need volume in prices. ----
+    - dollar_volume_63
+    - amihud_63
+    - rel_volume_5_63
+
+  # ---- Retail attention (abnormal Wikipedia pageviews / Google Trends vs the
+    #      name's own baseline). All-NaN until fetch_wiki_pageviews / fetch_google_
+    #      trends have run; safe to leave listed (missing cols are skipped). ----
+    # - f_wiki_attn_spike_xs
+    # - f_wiki_attn_level_xs
+    # - f_gt_attn_spike_xs
+    # - f_gt_attn_level_xs
+
+  # ---- Institutional 13F ownership (all filers, aggregated per quarter, 45-day
+    #      filing lag -> point-in-time). Breadth change / accumulation / cluster
+    #      buying predict drift (Chen-Hong-Stein). All-NaN until fetch_13f has run;
+    #      slow quarterly signal -> best for the 60/90d sleeve. ----
+    # - f_inst_breadth_chg_xs
+    # - f_inst_shares_chg_xs
+    # - f_cluster_buying_xs
+    # - f_new_buyers_xs
+    # - f_inst_holders_xs
+    # - f_inst_ownership_pct_xs
+
   #   # ---- Risk exposures (rolling betas) ----
   #   # - beta_market
   #   # - beta_market_simple
@@ -129,6 +164,17 @@ inputs:
   #   # - f_ebitda_to_ev_xs
     - f_intrinsic_yield_vs_peers
     - f_intrinsic_yield_xs
+
+  # ---- Dividends / shareholder yield (ex-date dividend history; point-in-time).
+    #      dividend_yield = TTM cash div / price; dividend_growth = TTM YoY;
+    #      dividend_payer = paid in last year; shareholder_yield = dividend +
+    #      buyback yield (net of issuance). Non-payers rank as real 0 yield. ----
+    - f_dividend_yield_xs
+    - f_dividend_growth_xs
+    - f_shareholder_yield_xs
+    # - f_dividend_payer_xs
+    # - f_dividend_yield_vs_peers
+    # - f_shareholder_yield_vs_peers
 
   #   # ---- Peer-relative fundamentals: profitability / quality ----
   #   - f_grossMargins_vs_peers

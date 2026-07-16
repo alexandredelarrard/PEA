@@ -193,6 +193,7 @@ def _download_price_chunk(
                 "interval": "1d",
                 "group_by": "ticker",
                 "auto_adjust": True,
+                "actions": True,          # also return Dividends / Stock Splits
                 "threads": True,
                 "progress": False,
             }
@@ -246,6 +247,42 @@ def _download_prices(
     return _normalize_prices(pd.concat(frames, ignore_index=True))
 
 
+_ACTION_COLS = ["dividends", "stock splits"]
+
+
+def _extract_dividends(long_prices: pd.DataFrame | None) -> pd.DataFrame:
+    """Pull the (raw, pre-adjust) cash dividends out of a normalized price frame
+    that was downloaded with actions=True -> long [date, ticker, dividend], only
+    the nonzero ex-dates. Pure. Empty if no dividends column."""
+    cols = {"date", "ticker", "dividends"}
+    if long_prices is None or long_prices.empty or not cols.issubset(long_prices.columns):
+        return pd.DataFrame(columns=["date", "ticker", "dividend"])
+    d = long_prices[["date", "ticker", "dividends"]].copy()
+    d["dividends"] = pd.to_numeric(d["dividends"], errors="coerce")
+    d = d[d["dividends"] > 0].rename(columns={"dividends": "dividend"})
+    d["date"] = pd.to_datetime(d["date"]).dt.normalize()
+    return d.reset_index(drop=True)
+
+
+def _save_dividends(context: Context, new_prices: pd.DataFrame) -> None:
+    """Dividends piggy-back on the SAME yfinance price download (actions=True), so
+    there is no separate dividend run. Accumulate nonzero ex-dates into the
+    dividends parquet the aggregator already reads."""
+    div = _extract_dividends(new_prices)
+    if div.empty:
+        return
+    path = context.paths["DIVIDENDS_PATH"]
+    existing = pd.read_parquet(path) if path.exists() else None
+    if existing is not None:
+        existing["date"] = pd.to_datetime(existing["date"]).dt.normalize()
+    parts = [x for x in (existing, div) if x is not None and not x.empty]
+    out = (pd.concat(parts, ignore_index=True)
+           .drop_duplicates(subset=["ticker", "date"], keep="last")
+           .sort_values(["ticker", "date"]).reset_index(drop=True))
+    out.to_parquet(path, index=False)
+    print(f"Saved {len(out)} dividend rows to {path} (from the price download)")
+
+
 def _merge_prices(
     existing: pd.DataFrame | None,
     new: pd.DataFrame,
@@ -288,6 +325,11 @@ def fetch_price_history(
         f"({len(tickers) - len(tickers_to_fetch)} already up to date)"
     )
     new = _download_prices(plans, years_history, chunk_size, pause)
+    # dividends come from the SAME download (actions=True) -> no separate run
+    _save_dividends(context, new)
+    # keep prices.parquet a clean OHLCV frame (drop the action columns)
+    if not new.empty:
+        new = new.drop(columns=_ACTION_COLS, errors="ignore")
     out = _merge_prices(existing, new, years_history)
     out.to_parquet(path, index=False)
     print(f"Saved {len(out)} price rows to {path}")

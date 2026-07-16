@@ -162,22 +162,10 @@ def _clean_name(greedy: str) -> str:
     return " ".join(toks)
 
 
-def extract_executive_officers(text: str) -> dict:
-    """
-    Parse the '(Information about our) Executive Officers' block into a list of
-    {name, age, title}, plus derived CEO age / founder flags / officer stats.
-    Falls back to scanning the whole doc if the section header isn't found.
-    """
-    out = {
-        "officers": [], "ceo_name": None, "ceo_age": None,
-        "founder_present": 0, "founder_ceo": 0,
-        "n_officers": 0, "avg_officer_age": None,
-    }
-    if not text:
-        return out
-    scope = _slice_officer_section(text) or text
+def _people_from_scope(scope: str) -> list[dict]:
+    """Name/age/title/bio records from a text scope (10-K officer block or DEF 14A
+    director/officer section). Shared by both parsers so their behaviour matches."""
     scope = _flat(scope)
-
     # Pass 1: age anchors -> (clean name, char span). Title end is the NEXT
     # record's clean-name start, so titles keep their full text.
     recs = []
@@ -201,10 +189,18 @@ def extract_executive_officers(text: str) -> dict:
         # Company in ...") and which the CEO-role search below also scans.
         officers.append({"name": r["name"], "age": r["age"],
                          "title": blurb[:80], "bio": blurb[:400]})
+    return officers
 
+
+def _derive_officer_stats(officers: list[dict]) -> dict:
+    """Derive CEO age / founder flags / officer stats from a people list."""
+    out = {
+        "officers": [], "ceo_name": None, "ceo_age": None,
+        "founder_present": 0, "founder_ceo": 0,
+        "n_officers": 0, "avg_officer_age": None,
+    }
     if not officers:
         return out
-
     ages = [o["age"] for o in officers]
     out["officers"] = officers
     out["n_officers"] = len(officers)
@@ -223,6 +219,58 @@ def extract_executive_officers(text: str) -> dict:
         out["ceo_age"] = ceo["age"]
         out["founder_ceo"] = int(_is_founder(ceo["bio"]))
     return out
+
+
+def extract_executive_officers(text: str) -> dict:
+    """
+    Parse the '(Information about our) Executive Officers' block into a list of
+    {name, age, title}, plus derived CEO age / founder flags / officer stats.
+    Falls back to scanning the whole doc if the section header isn't found.
+    """
+    if not text:
+        return _derive_officer_stats([])
+    scope = _slice_officer_section(text) or text
+    return _derive_officer_stats(_people_from_scope(scope))
+
+
+# --------------------------------------------------------------------------- #
+# DEF 14A proxy fallback (directors + officers, when the 10-K has no ages)     #
+# --------------------------------------------------------------------------- #
+# Many firms incorporate executive-officer/age info by reference into the DEF 14A
+# proxy rather than the 10-K, so ~half of 10-Ks yield no age. The proxy's director
+# nominee / executive-officer tables carry Name + Age + bio in the same shape the
+# 10-K parser already handles -- we just point it at the proxy's sections. The CEO
+# is (almost always) a director nominee, so its age is recoverable here.
+_DEF14A_ANCHORS = (
+    "information about our executive officers",
+    "executive officers of the",
+    "our executive officers",
+    "nominees for election",
+    "nominees for director",
+    "election of directors",
+    "directors and nominees",
+    "our board of directors",
+    "board of directors",
+)
+
+
+def _slice_def14a_section(text: str) -> str | None:
+    """Slice from the first director/officer anchor. Proxy tables run long, so the
+    scope is wider than the 10-K's."""
+    low = text.lower()
+    best = min((low.find(a) for a in _DEF14A_ANCHORS if low.find(a) != -1),
+               default=-1)
+    return text[best:best + 20000] if best != -1 else None
+
+
+def extract_management_from_def14a(text: str) -> dict:
+    """Fallback management parse from a DEF 14A proxy: same {name, age, title, bio}
+    extraction + CEO age / founder / officer stats, scoped to the proxy's director
+    and executive-officer sections. Use only to FILL what the 10-K did not yield."""
+    if not text:
+        return _derive_officer_stats([])
+    scope = _slice_def14a_section(text) or text
+    return _derive_officer_stats(_people_from_scope(scope))
 
 
 # --------------------------------------------------------------------------- #

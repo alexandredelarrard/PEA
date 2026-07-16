@@ -49,13 +49,14 @@ from src.data_extract.utils.sec_utils import (
 )
 from src.data_extract.utils.edgar_fillings import list_filings
 from src.data_extract.utils.edgar_extract import (
-    html_to_text, extract_executive_officers,
+    html_to_text, extract_executive_officers, extract_management_from_def14a,
     parse_form4, signed_open_market_shares, rolling_net_insider,
 )
 
 # columns management_features.py maps; placeholders kept so it never KeyErrors
 _PLACEHOLDER_COLS = ["heldPercentInsiders", "heldPercentInstitutions", "family_owned"]
 _OFFICER_FORMS = ["10-K"]
+_PROXY_FORMS = ["DEF 14A"]
 _INSIDER_FORMS = ["4"]
 _MAX_WORKERS = 8                      # concurrent tickers (rate-limited in sec_get)
 
@@ -98,6 +99,41 @@ def _officer_rows(context, ticker, cik, company, years, seen, since) -> list[dic
     return rows
 
 
+def _def14a_rows(context, ticker, cik, company, years, seen, since) -> list[dict]:
+    """DEF 14A proxy fallback rows: parse director/officer ages the 10-K did not
+    disclose (many firms incorporate them by reference into the proxy). Same
+    incremental discipline as the 10-K path (only filings after `since`, skipping
+    seen accessions). Kept a SEPARATE as_of row (its own filing date) so it fills
+    forward independently -- it complements, never overwrites, the 10-K rows."""
+    rows = []
+    try:
+        filings = list_filings(cik, _PROXY_FORMS, years, company, since=since)
+    except Exception as e:
+        context.log.warning("%s: DEF 14A list failed (%s)", ticker, e)
+        return rows
+    for _, f in filings.iterrows():
+        if f["accession_number"] in seen:
+            continue
+        try:
+            info = extract_management_from_def14a(html_to_text(sec_get(f["doc_url"]).text))
+        except Exception as e:
+            context.log.warning("%s %s: DEF 14A parse failed (%s)", ticker,
+                                f["filing_date"].date(), e)
+            continue
+        # only keep the proxy row if it actually recovered an age (CEO or officers)
+        if not info["officers"] or info["ceo_age"] is None:
+            continue
+        rows.append({
+            "ticker": ticker, "as_of": f["filing_date"],
+            "period": pd.to_datetime(f.get("period_of_report"), errors="coerce"),
+            "form_type": f["form"], "accession_number": f["accession_number"],
+            "ceo_name": info["ceo_name"], "ceo_age": info["ceo_age"],
+            "founder_present": info["founder_present"], "founder_ceo": info["founder_ceo"],
+            "n_officers": info["n_officers"], "avg_officer_age": info["avg_officer_age"],
+        })
+    return rows
+
+
 def _insider_rows(context, ticker, cik, company, years) -> list[dict]:
     """Trailing-6m net open-market insider shares per Form 4 filing date. NOT
     incremental: the rolling window needs the full history, so this recomputes
@@ -124,9 +160,13 @@ def _insider_rows(context, ticker, cik, company, years) -> list[dict]:
 
 
 def _rows_for_ticker(context, ticker, cik, company, years, seen, since,
-                     with_insiders) -> list[dict]:
-    """All new rows for one ticker (runs in a worker thread)."""
+                     with_insiders, with_proxy=True) -> list[dict]:
+    """All new rows for one ticker (runs in a worker thread). The DEF 14A proxy
+    path (`with_proxy`) adds director/officer ages the 10-K omits -> lifts the
+    ~50% CEO-age coverage."""
     rows = _officer_rows(context, ticker, cik, company, years, seen, since)
+    if with_proxy:
+        rows += _def14a_rows(context, ticker, cik, company, years, seen, since)
     if with_insiders:
         rows += _insider_rows(context, ticker, cik, company, years)
     return rows

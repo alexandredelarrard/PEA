@@ -21,6 +21,7 @@ import time
 
 import pandas as pd
 from tqdm import tqdm
+from pytrends.request import TrendReq
 
 from src.context import Context
 
@@ -43,7 +44,6 @@ def _df_to_long(interest: pd.DataFrame, keyword: str, ticker: str) -> pd.DataFra
 
 def _interest_over_time(keyword: str, timeframe: str):
     """Network/lib call, isolated for mocking. Requires the optional pytrends dep."""
-    from pytrends.request import TrendReq
     pt = TrendReq(hl="en-US", tz=0)
     pt.build_payload([keyword], timeframe=timeframe)
     return pt.interest_over_time()
@@ -54,13 +54,6 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     """Download search interest per company name; cache to parquet. Skips cleanly
     if `pytrends` is not installed."""
     path = context.paths["GOOGLE_TRENDS_PATH"]
-    try:
-        import pytrends  # noqa: F401
-    except Exception:
-        print("pytrends not installed -> Google Trends extraction skipped "
-              "(pip install pytrends).")
-        return pd.DataFrame(columns=["date", "ticker", "search_interest"])
-
     names = pd.read_csv(context.paths["TICKERS_PATH"])
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
@@ -70,6 +63,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
         keyword = str(row["name"])
         try:
             long = _df_to_long(_interest_over_time(keyword, timeframe), keyword, row["ticker"])
+            time.sleep(pause*3)
         except Exception as e:
             print(f"Trends fetch failed for {row['ticker']} ({keyword}): {e}")
             time.sleep(pause * 3)                  # back off on rate-limit

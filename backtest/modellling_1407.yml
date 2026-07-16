@@ -1,0 +1,335 @@
+model:
+  label_column: y
+  target_type: rank          # which stored cube target to train on: rank | zscore
+                               # (must be present in build_cube.targets.labels)
+  type: ensemble               # single-model fallback used only when `ensemble` is unset
+  ensemble: [elasticnet, lightgbm]   # train BOTH families and AVERAGE their per-day
+                               # standardized predictions (linear bias + tree variance
+                               # decorrelate -> the ensemble usually beats either alone).
+                               # Use a single-entry list (or remove and rely on `type`)
+                               # to train just one family.
+  eval_metric: ic              # lightgbm early-stopping metric: ic | rmse
+                               # (ic = mean daily cross-sectional IC -> aligns stopping
+                               #  with the ranking objective; RMSE stops after ~1 round
+                               #  on this near-noise target)
+  linear:                      # linear-baseline hyperparameters (type: elasticnet | ridge)
+    alpha: 0.03              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
+    l1_ratio: 0.5              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
+                               # correlated features 0.3-0.7 selects while sharing weight.
+    max_iter: 1000             # coordinate-descent iterations (elasticnet)
+    tol: 1.0e-6                # coordinate-descent convergence tolerance
+  save_models: true
+  weight_decay:
+    enabled: true
+    half_life_years: 3
+  cv:
+    n_splits: 5
+    embargo: null          # defaults to primary_horizon when null
+  lightgbm:
+    learning_rate: 0.002     
+    max_depth: 5
+    num_leaves: 31             # <= 2^max_depth; explicit so depth/leaves stay consistent
+    subsample: 0.8             # row bagging fraction -- ONLY active with bagging_freq>0
+    bagging_freq: 1            # apply row bagging every iteration (activates subsample)
+    colsample_bytree: 0.8
+    min_child_samples: 30
+    lambda_l1: 3.0
+    lambda_l2: 3.0
+    num_boost_round: 3000      # cap only; early stopping ends well before this
+    early_stopping_rounds: 100 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
+
+  diagnostics:                 # per-run, per-horizon model-diagnosis artifacts
+    enabled: true
+    top_n_features: 50         # top features rendered as individual PDPs + SHAP bar
+    shap_sample: 11000          # rows sampled for SHAP / partial dependence (speed)
+    pdp_grid: 30               # partial-dependence grid resolution
+
+train:
+  start_date: 2014-01-01
+  end_date: 2024-07-01
+
+# Feature allow-list: the model trains ONLY on the uncommented entries below.
+# Comment a line out to drop that feature; a name not present in the cube is
+# skipped with a warning. If this whole list is empty/removed, the model falls
+# back to every feature in the cube.
+inputs:
+  columns:
+
+  # ---- Thematic COMPOSITE signals (built in build_cube.composites): denoised,
+    #      low-collinearity per-theme scores. ADDITIVE -- the raw features above
+    #      are still trained on; these are extra, more-stable inputs. ----
+    - comp_quality
+    - comp_growth
+    - comp_distress
+    - comp_capital_allocation
+    - comp_expectations
+    - comp_management
+    - comp_workforce
+    # - comp_technical
+    # - comp_value
+
+  # ---- Company-regime state flags (RAW 0/1, NOT peer-relative). The composites
+    #      above rank names WITHIN a regime but cannot express the regime itself;
+    #      these let the model CONDITION on it, so loss-makers, cash-burners,
+    #      negative-equity firms and too-young/no-revenue hyper-growth names are
+    #      not scored as if they were mature profitable firms. NaN base -> NaN flag
+    #      (never a false 0); LightGBM splits on them natively, the linear member
+    #      imputes NaN->neutral. Directions are set in inputs.monotonic below. ----
+    # - f_profitable
+    # - f_fcf_positive
+    # - f_negative_equity
+    # - f_hyper_growth
+
+  #   # ---- Price / technical (point-in-time; MACD/RSI/ATR lagged 1 day) ----
+  #   - mom_12_1
+    - rev_21
+    - vol_63
+  #   - ma_ratio_50
+  #   - atr_14
+  #   # - rev_5
+  #   # - ma_ratio_200
+  #   # - high_prox_252
+  #   # - gap_21
+  #   # - range_21
+  #   # - peer_mom_63
+  #   # - macd
+  #   # - macd_hist
+  #   # - rsi_14
+  #   # - vol_21
+
+  #   # ---- Higher-moment / lottery / idiosyncratic-risk anomalies (price-only) ----
+  #   - max_21
+  #   - ret_skew_126
+  #   - downside_vol_63
+  #   - idio_vol_63
+
+  #   # ---- Risk exposures (rolling betas) ----
+  #   # - beta_market
+  #   # - beta_market_simple
+  #   # - beta_sector
+  #   # - beta_momentum
+  #   # - beta_size
+  #   # - beta_value
+  #   # - beta_quality
+  #   # - beta_resvol
+  #   # - beta_d_yield_10y
+  #   # - beta_d_yield_curve
+  #   # - beta_d_vix
+
+  #   # ---- Peer-relative fundamentals: valuation ----
+  #   # - f_earnings_yield_vs_peers
+  #   # - f_earnings_yield_xs
+  #   - f_sales_yield_vs_peers
+    - f_sales_yield_xs
+  #   - f_book_yield_vs_peers
+  #   - f_book_yield_xs
+  #   # - f_fcf_yield_vs_peers
+    # - f_fcf_yield_xs
+  #   # - f_ebitda_to_ev_vs_peers
+  #   # - f_ebitda_to_ev_xs
+    - f_intrinsic_yield_vs_peers
+    - f_intrinsic_yield_xs
+
+  #   # ---- Peer-relative fundamentals: profitability / quality ----
+  #   - f_grossMargins_vs_peers
+  #   - f_grossMargins_xs
+  #   - f_operatingMargins_vs_peers
+  #   - f_operatingMargins_xs
+  #   # - f_profitMargins_vs_peers
+  #   - f_profitMargins_xs
+  #   - f_returnOnEquity_vs_peers
+    - f_returnOnEquity_xs
+  #   - f_debtToEquity_vs_peers
+  #   - f_debtToEquity_xs
+  #   # - f_fcf_margin_vs_peers
+  #   - f_fcf_margin_xs
+  #   - f_accruals_vs_peers
+  #   # - f_accruals_xs
+  #   - f_rd_intensity_vs_peers
+    - f_rd_intensity_xs
+
+  #   # ---- Company-regime handling (profitable vs loss-making / hyper-growth) ----
+  #   # gross_profitability (Novy-Marx: gross profit / assets) stays valid for
+  #   # loss-makers, where earnings yields are masked to NaN. The 0/1 state flags
+  #   # are RAW (not peer-relative) so the model conditions on the regime instead
+  #   # of averaging a feature whose meaning flips across profitability.
+  #   - f_gross_profitability_vs_peers
+    - f_gross_profitability_xs
+
+  #   # ---- Peer-relative fundamentals: growth / trend / dilution ----
+  #   - f_revenueGrowth_vs_peers
+  #   - f_revenueGrowth_xs
+  #   - f_earningsGrowth_vs_peers
+  #   - f_earningsGrowth_xs
+  #   - f_fcf_growth_vs_peers
+  #   # - f_fcf_growth_xs
+  #   - f_gross_margin_chg_vs_peers
+  #   - f_gross_margin_chg_xs
+  #   # - f_shares_growth_vs_peers
+    - f_shares_growth_xs
+
+  #   # ---- Latest-quarter momentum (discrete single quarter, not TTM) ----
+  #   # - f_q_rev_growth_vs_peers
+  #   # - f_q_rev_growth_xs
+  #   # - f_rev_growth_accel_vs_peers
+  #   # - f_rev_growth_accel_xs
+  #   # - f_q_earnings_growth_vs_peers
+  #   # - f_q_earnings_growth_xs
+  #   # - f_q_margin_vs_ttm_vs_peers
+  #   # - f_q_margin_vs_ttm_xs
+
+  #   # ---- Yearly-TTM momentum (TTM vs TTM one year ago; less noisy, longer horizon) ----
+  #   # Computed fresh from level columns (totalRevenue, netIncome, profitMargins) so
+  #   # backtestable from the full fundamentals history. Complements q_* features.
+  #   # - f_y_rev_growth_vs_peers
+  #   - f_y_rev_growth_xs
+  #   - f_y_rev_growth_accel_vs_peers
+  #   - f_y_rev_growth_accel_xs
+  #   - f_y_earnings_growth_vs_peers
+    - f_y_earnings_growth_xs
+  #   # - f_y_margin_vs_ttm_vs_peers
+  #   # - f_y_margin_vs_ttm_xs -> wrong trend (weirds)
+
+  #   # ---- Valuation MEAN-REVERSION (self-history): each yield vs the firm's OWN
+  #   #      trailing ~5y (z-score). "cheap vs its own past" (e.g. PE below its 5y
+  #   #      average) -- an axis orthogonal to the cross-sectional "cheap vs peers".
+  #   #      HIGH = cheaper than its own norm. ----
+  #   # - f_earnings_yield_vs_hist
+  #   - f_sales_yield_vs_hist
+  #   - f_book_yield_vs_hist
+  #   # - f_fcf_yield_vs_hist
+  #   - f_ebitda_to_ev_vs_hist
+  #   - f_intrinsic_yield_vs_hist
+
+  #   # ---- Distress / solvency (debt-SERVICING ability, which debtToEquity misses):
+  #   #      net-debt/EBITDA (leverage), interest coverage, current ratio, cash/debt.
+  #   #      Needs the raw balance-sheet levels now carried in the fundamentals history. ----
+  #   - f_net_debt_to_ebitda_vs_peers
+  #   - f_net_debt_to_ebitda_xs
+    - f_interest_coverage_vs_peers
+    # - f_interest_coverage_xs
+  #   - f_current_ratio_vs_peers
+    - f_current_ratio_xs
+  #   - f_cash_to_debt_vs_peers
+    - f_cash_to_debt_xs
+
+  #   # ---- Marketing & sales efficiency: SG&A intensity, SG&A growth, and operating
+  #   #      leverage (revenue growth - SG&A growth; >0 = scaling profitably). ----
+  #   - f_sga_intensity_vs_peers
+  #   - f_sga_intensity_xs
+  #   - f_sga_growth_vs_peers
+    - f_sga_growth_xs
+  #   - f_operating_leverage_vs_peers
+  #   - f_operating_leverage_xs
+
+  #   # ---- M&A footprint: acquisition intensity (acq spend / assets) and goodwill
+  #   #      growth. Distinguishes inorganic from organic growth; impairment risk. ----
+  #   - f_acquisition_intensity_vs_peers
+    - f_acquisition_intensity_xs
+  #   - f_goodwill_growth_vs_peers
+    - f_goodwill_growth_xs
+
+  #   # ---- Stock-based compensation ("employee shares given"): SBC/revenue and
+  #   #      SBC/operating-cash-flow. GROSS give-away, unlike net shares_growth. ----
+  #   # - f_sbc_intensity_vs_peers
+  #   - f_sbc_intensity_xs
+  #   - f_sbc_to_ocf_vs_peers
+    - f_sbc_to_ocf_xs
+
+  #   # ---- Earnings expectations (historical forward EPS vs actual; ~96% cover) ----
+  #   # forward E/P + expected EPS growth carry standalone signal (IC ~ +0.02) and
+  #   # capture "what the market prices in for the future" / unrealistic optimism.
+  #   # - f_fwd_eps_yield_vs_peers
+  #   - f_fwd_eps_yield_xs
+  #   - f_eps_expectation_growth_vs_peers
+    - f_eps_expectation_growth_xs
+
+  #   # ---- Workforce (EDGAR historical employee counts, from 10-K filings):
+  #   #      genuinely historical & point-in-time, so backtestable. Columns absent
+  #   #      from cube if fetch_employees_edgar has not run -- safe to leave enabled. ----
+  #   - f_revenue_per_employee_vs_peers
+  #   - f_revenue_per_employee_xs
+  #   # - f_employee_growth_vs_peers
+    - f_employee_growth_xs
+
+  #   # ---- Analyst estimates: leak-free but NO accrued history yet, so they are
+  #   #      ~all-NaN historically. Uncomment once you have collected estimate
+  #   #      snapshots over time (see fetch_analyst_estimates). ----
+  #   - f_est_fwd_earnings_yield_vs_peers
+    # - f_est_fwd_earnings_yield_xs
+  #   - f_est_eps_growth_vs_peers
+  #   - f_est_eps_growth_xs
+  #   - f_est_rev_growth_vs_peers
+  #   - f_est_rev_growth_xs
+  #   - f_est_target_upside_vs_peers
+  #   - f_est_target_upside_xs
+  #   - f_est_revision_ratio_vs_peers
+  #   - f_est_revision_ratio_xs
+  #   - f_est_eps_trend_3m_vs_peers
+  #   - f_est_eps_trend_3m_xs
+  #   - f_est_rec_score_vs_peers
+  #   - f_est_rec_score_xs
+  #   - f_est_vs_intrinsic_vs_peers
+    # - f_est_vs_intrinsic_xs
+
+  #   # ---- Governance / ownership (snapshot-only: no free historical archive yet).
+  #   #      Leak-free (point-in-time from as_of) but ~all-NaN historically until the
+  #   #      snapshot archive builds up. Useful NOW for live cross-sectional ranking. ----
+  #   - f_insider_ownership_vs_peers
+  #   - f_insider_ownership_xs
+  #   - f_institutional_ownership_vs_peers
+  #   - f_institutional_ownership_xs
+  #   # - f_founder_led_vs_peers
+  #   - f_founder_led_xs
+  #   # - f_founder_ceo_vs_peers
+  #   - f_founder_ceo_xs
+  #   - f_family_owned_vs_peers
+  #   - f_family_owned_xs
+  #   - f_net_insider_buying_vs_peers
+  #   - f_net_insider_buying_xs
+  #   - f_ceo_age_vs_peers
+  #   - f_ceo_age_xs
+  #   - f_n_officers_vs_peers
+  #   - f_n_officers_xs
+  #   - f_avg_officer_age_vs_peers
+    - f_avg_officer_age_xs
+
+  monotonic:
+    enabled: true
+    features:
+      - comp_quality: 1               # more profitable / higher-quality -> higher
+      - comp_growth: 1                # faster (oriented) growth -> higher
+      - comp_distress: 1              # safer / less distressed -> higher
+      - comp_capital_allocation: 1    # less dilution / better allocation -> higher
+      - comp_expectations: 1          # richer forward expectations -> higher
+      - comp_management: 1            # founder-led / insider buying -> higher
+      - comp_workforce: 1             # more productive workforce -> higher
+      
+      - f_employee_growth_xs: 1
+      - f_sbc_to_ocf_xs: 1
+      - f_goodwill_growth_xs: -1
+      - f_acquisition_intensity_xs: -1
+      - f_sga_growth_xs: -1
+      - f_cash_to_debt_xs: 1 
+      - f_current_ratio_xs: -1
+      - f_gross_profitability_xs: 1
+      - f_rd_intensity_xs: 1
+      - f_shares_growth_xs: 1
+      - f_returnOnEquity_xs: 1
+      - f_y_earnings_growth_xs: 1
+      - f_sales_yield_xs: 1
+      - f_intrinsic_yield_vs_peers: 1
+      - f_avg_officer_age_xs: -1
+      - f_eps_expectation_growth_xs: +1
+      - f_interest_coverage_vs_peers: +1
+
+
+2026-07-14 21:47:40 - INFO - horizon 30: [ENSEMBLE] CV mean_IC=+0.0315  IC_IR=+1.42
+2026-07-14 21:47:40 - INFO - horizon 30:   [elasticnet] CV mean_IC=+0.0289  IC_IR=+1.33
+2026-07-14 21:47:40 - INFO - horizon 30:   [lightgbm  ] CV mean_IC=+0.0213  IC_IR=+1.03
+2026-07-14 21:48:35 - INFO - horizon 60: [ENSEMBLE] CV mean_IC=+0.0337  IC_IR=+1.18
+2026-07-14 21:48:35 - INFO - horizon 60:   [elasticnet] CV mean_IC=+0.0312  IC_IR=+1.17
+2026-07-14 21:48:35 - INFO - horizon 60:   [lightgbm  ] CV mean_IC=+0.0220  IC_IR=+0.89
+2026-07-14 21:49:42 - INFO - horizon 90: [ENSEMBLE] CV mean_IC=+0.0554  IC_IR=+1.51
+2026-07-14 21:49:42 - INFO - horizon 90:   [elasticnet] CV mean_IC=+0.0527  IC_IR=+1.43
+2026-07-14 21:49:42 - INFO - horizon 90:   [lightgbm  ] CV mean_IC=+0.0277  IC_IR=+0.88

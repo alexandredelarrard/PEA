@@ -51,15 +51,30 @@ def _load_existing(path) -> pd.DataFrame | None:
     return df
 
 
-def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3) -> pd.DataFrame:
-    """Download (incrementally) cash-dividend history for `tickers` and cache it."""
+def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3,
+                    refetch_window_days: int = 80) -> pd.DataFrame:
+    """Download (incrementally) cash-dividend history for `tickers` and cache it.
+
+    Incremental: a ticker whose most recent cached ex-date is within
+    `refetch_window_days` of today is considered CURRENT and is NOT re-downloaded
+    (dividends are ~quarterly, so no new one is due yet). Tickers with no cached
+    dividend (never paid, or new) are always checked. yfinance `.dividends` has no
+    date-range API, so we skip current tickers rather than request a sub-range,
+    and only the ex-dates after the cached max are appended.
+    """
     path = context.paths["DIVIDENDS_PATH"]
     existing = _load_existing(path)
     last_by_ticker = ({} if existing is None
                       else existing.groupby("ticker")["date"].max().to_dict())
+    today = pd.Timestamp.today().normalize()
 
     new_frames: list[pd.DataFrame] = []
+    skipped = 0
     for tkr in tqdm(tickers, desc="Downloading dividends"):
+        cutoff = last_by_ticker.get(tkr)
+        if cutoff is not None and (today - cutoff).days <= refetch_window_days:
+            skipped += 1                       # already current -> no re-download
+            continue
         try:
             long = _series_to_long(_ticker_dividends(tkr), tkr)
         except Exception as e:  # one bad ticker must not abort the whole run
@@ -67,12 +82,12 @@ def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3) ->
             continue
         if long.empty:
             continue
-        cutoff = last_by_ticker.get(tkr)
         if cutoff is not None:
-            long = long[long["date"] > cutoff]
+            long = long[long["date"] > cutoff]   # append only new ex-dates
         if not long.empty:
             new_frames.append(long)
         time.sleep(pause)
+    print(f"Dividends: {skipped}/{len(tickers)} tickers already current (skipped).")
 
     parts = [df for df in (existing, *new_frames) if df is not None and not df.empty]
     if not parts:

@@ -16,6 +16,7 @@ from src.data_aggregate.utils.employee_features import build_employee_feature_pa
 from src.data_aggregate.utils.dividend_features import build_dividend_feature_panel
 from src.data_aggregate.utils.attention_features import build_attention_feature_panel
 from src.data_aggregate.utils.institutional_features import build_institutional_feature_panel
+from src.data_aggregate.utils.short_interest_features import build_short_interest_feature_panel
 from src.data_aggregate.utils.composites import build_composites as build_composite_signals
 from src.data_aggregate.utils.factors import (
     build_style_factor_returns,
@@ -52,6 +53,7 @@ class StepBuildCube(Step):
         self.build_dividend_features()
         self.build_attention_features()
         self.build_institutional_features()
+        self.build_short_interest_features()
         self.build_composite_signals()
         self.aggregate_cube()
         self.save_cube()
@@ -175,6 +177,12 @@ class StepBuildCube(Step):
         if self.institutional is None:
             self._log.warning("No 13F holdings -> institutional-ownership features "
                               "skipped (run fetch_13f).")
+
+        spath = self._context.paths["SHORT_INTEREST_PATH"]
+        self.short_interest = pd.read_parquet(spath) if spath.exists() else None
+        if self.short_interest is None:
+            self._log.warning("No short-volume data -> short-interest features "
+                              "skipped (run fetch_short_interest).")
 
     def _intrinsic_cfg(self) -> dict:
         cfg = self._cfg.get("intrinsic", {})
@@ -437,6 +445,25 @@ class StepBuildCube(Step):
         added = len(self.feature_panel.columns) - 2 - before
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s institutional (13F) features (row coverage %.1f%%)",
+                       added, 100 * cov)
+
+    def build_short_interest_features(self):
+        """Short-selling-pressure features (RegSHO short-volume ratio + its change).
+        Point-in-time: each day's file is disseminated next morning, so the ratio
+        is lagged one trading day inside the builder."""
+        panel = build_short_interest_feature_panel(
+            getattr(self, "short_interest", None), self.peers, self.stock_close.index,
+        )
+        if panel.empty:
+            self._log.warning("No short-interest features built.")
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(
+            panel, on=["date", "ticker"], how="left"
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s short-interest features (row coverage %.1f%%)",
                        added, 100 * cov)
 
     def build_composite_signals(self):

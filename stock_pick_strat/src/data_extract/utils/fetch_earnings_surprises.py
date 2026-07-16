@@ -34,6 +34,7 @@ import yfinance as yf
 from tqdm import tqdm
 
 from src.context import Context
+from src.data_extract.utils.rate_limit import call_with_retries
 
 _RENAME = {
     "EPS Estimate": "eps_estimate",
@@ -47,8 +48,17 @@ _RECENT_LIMIT = 8
 
 
 def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
-    """One ticker's earnings-date table normalized to `_COLUMNS`; None if empty."""
-    raw = yf.Ticker(ticker).get_earnings_dates(limit=limit)
+    """One ticker's earnings-date table normalized to `_COLUMNS`; None if empty.
+
+    yfinance's earnings-dates endpoint is aggressively rate-limited (429), which
+    used to make a ~fixed subset of tickers fail on every run and be silently
+    skipped. We now wait + retry on 429 (exponential backoff) so throttled tickers
+    recover; a genuine empty (Yahoo has no calendar for the name) still returns
+    None after the retries.
+    """
+    raw = call_with_retries(
+        lambda: yf.Ticker(ticker).get_earnings_dates(limit=limit),
+        retries=3, base_wait=10.0, label=f"earnings {ticker}")
     if raw is None or raw.empty:
         return None
 
@@ -107,15 +117,23 @@ def fetch_earnings_surprises(
              len(plan), len(tickers), len(tickers) - len(plan))
 
     new_frames = []
+    empty, failed = [], []
     for tkr, limit in tqdm(plan, desc="Fetching earnings-surprise history"):
         try:
             df = _download_one(tkr, limit)
         except Exception as e:  # noqa: BLE001 - network/parse issues are per-ticker
             log.warning("%s: earnings history failed (%s)", tkr, e)
+            failed.append(tkr)
             continue
         if df is not None:
             new_frames.append(df)
+        else:
+            empty.append(tkr)          # Yahoo returned no calendar (genuine gap)
         time.sleep(pause)
+    if empty or failed:
+        log.warning("Earnings: %d empty (no Yahoo calendar) + %d failed after retries "
+                    "out of %d fetched. Empty e.g.: %s", len(empty), len(failed),
+                    len(plan), empty[:15])
 
     parts = [df for df in (existing, *new_frames) if df is not None and not df.empty]
     if not parts:

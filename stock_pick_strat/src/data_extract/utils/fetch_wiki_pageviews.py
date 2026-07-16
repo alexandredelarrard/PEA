@@ -57,32 +57,60 @@ def _fetch_article(article: str, start: str, end: str) -> list[dict]:
     return r.json().get("items", [])
 
 
+def _load_existing(path):
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path)
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    return df
+
+
 def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
                          years_history: int = 10, pause: float = 0.1) -> pd.DataFrame:
-    """Download daily pageviews for the S&P 500 names and cache to parquet."""
+    """Download daily pageviews for the S&P 500 names and cache to parquet.
+
+    Incremental: for a ticker already in the cache we only request days AFTER its
+    cached max date (the Wikimedia API takes an explicit start/end), so a re-run
+    downloads only the missing days; a ticker already current through yesterday is
+    skipped entirely."""
     path = context.paths["WIKI_PAGEVIEWS_PATH"]
     names = pd.read_csv(context.paths["TICKERS_PATH"])
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
-    start = (pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)).strftime("%Y%m%d")
-    end = pd.Timestamp.today().normalize().strftime("%Y%m%d")
 
-    frames = []
+    existing = _load_existing(path)
+    last_by_ticker = ({} if existing is None
+                      else existing.groupby("ticker")["date"].max().to_dict())
+    today = pd.Timestamp.today().normalize()
+    default_start = today - pd.DateOffset(years=years_history)
+    # pageviews for a day are available the next day; stop at yesterday
+    end_ts = today - pd.Timedelta(days=1)
+    end = end_ts.strftime("%Y%m%d")
+
+    frames, skipped = [], 0
     for _, row in tqdm(list(names.iterrows()), desc="Wikipedia pageviews"):
+        last = last_by_ticker.get(row["ticker"])
+        start_ts = (last + pd.Timedelta(days=1)) if last is not None else default_start
+        if start_ts > end_ts:                       # already current -> skip
+            skipped += 1
+            continue
         article = _company_to_article(row["name"])
         try:
-            long = _json_to_long(_fetch_article(article, start, end), row["ticker"])
+            long = _json_to_long(
+                _fetch_article(article, start_ts.strftime("%Y%m%d"), end), row["ticker"])
         except Exception as e:
             print(f"Wiki fetch failed for {row['ticker']} ({article}): {e}")
             continue
         if not long.empty:
             frames.append(long)
         time.sleep(pause)
+    print(f"Wikipedia: {skipped}/{len(names)} tickers already current (skipped).")
 
-    if not frames:
+    parts = [df for df in (existing, *frames) if df is not None and not df.empty]
+    if not parts:
         print("No Wikipedia pageview data available.")
-        return pd.DataFrame(columns=["date", "ticker", "pageviews"])
-    out = (pd.concat(frames, ignore_index=True)
+        return existing if existing is not None else pd.DataFrame(columns=["date", "ticker", "pageviews"])
+    out = (pd.concat(parts, ignore_index=True)
            .drop_duplicates(subset=["ticker", "date"], keep="last")
            .sort_values(["ticker", "date"]).reset_index(drop=True))
     out.to_parquet(path, index=False)

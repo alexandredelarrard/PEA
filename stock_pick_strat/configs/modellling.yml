@@ -111,6 +111,12 @@ inputs:
     - seasonal_h60
     - seasonal_h90
 
+  # ---- Short-selling pressure (FINRA RegSHO short-volume ratio; lagged 1 day).
+    #      High short_vol_ratio = heavily shorted -> short-interest anomaly (lower
+    #      forward returns). All-NaN until fetch_short_interest has run. ----
+    # - f_short_vol_ratio_xs
+    # - f_short_vol_ratio_chg_xs
+
   # ---- Liquidity / volume (price+volume; point-in-time). dollar_volume_63 =
     #      log avg $ traded (size/liquidity); amihud_63 = Amihud illiquidity
     #      (higher = more illiquid -> illiquidity premium); rel_volume_5_63 =
@@ -118,6 +124,16 @@ inputs:
     - dollar_volume_63
     - amihud_63
     - rel_volume_5_63
+
+  # ---- Volume-flow dynamics + forced year-end flow (price+volume; PIT).
+    #      signed_vol_63 = up-day minus down-day volume (order-flow proxy);
+    #      volume_trend_63 = activity rising/fading; volume_cv_63 = lumpy vs steady
+    #      trading; tax_loss_pressure = YTD-loss magnitude active Oct-Dec
+    #      (tax-loss selling -> January rebound; cross-sectional, not a flat dummy). ----
+    - signed_vol_63
+    - volume_trend_63
+    - volume_cv_63
+    - tax_loss_pressure
 
   # ---- Retail attention (abnormal Wikipedia pageviews / Google Trends vs the
     #      name's own baseline). All-NaN until fetch_wiki_pageviews / fetch_google_

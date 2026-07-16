@@ -167,6 +167,22 @@ def compute_raw_features(
         v63 = volume.rolling(63, min_periods=20).mean()
         feats["rel_volume_5_63"] = _safe(v5 / v63.where(v63 > 0))
 
+        # ---- Volume-flow dynamics ----
+        # Signed-volume imbalance: up-day minus down-day volume as a fraction of
+        # total volume (63d) -> net buying(+) / selling(-) pressure (order-flow proxy).
+        signed = np.sign(ret) * volume
+        num = signed.rolling(63, min_periods=20).sum()
+        den = volume.rolling(63, min_periods=20).sum()
+        feats["signed_vol_63"] = _safe(num / den.where(den > 0))
+        # Volume trend: recent (21d) vs long (252d) average volume (log) -> whether
+        # trading activity is structurally rising or fading.
+        v252 = volume.rolling(252, min_periods=60).mean()
+        feats["volume_trend_63"] = _safe(np.log(v63 / v252.where(v252 > 0)))
+        # Volume dispersion (coefficient of variation, 63d) -> lumpy/event-driven
+        # trading vs steady flow.
+        feats["volume_cv_63"] = _safe(
+            volume.rolling(63, min_periods=20).std() / v63.where(v63 > 0))
+
     # ---- Cross-sectional SEASONALITY at the forecast target t+h (Heston-Sadka) ----
     # A calendar dummy (month of t+h) is identical for every stock on a date -> it
     # has NO cross-sectional dispersion and cannot help a market-neutral ranker.
@@ -187,6 +203,20 @@ def compute_raw_features(
             seasonal = np.where(cnt > 0, ssum / np.maximum(cnt, 1), np.nan)
             feats[f"seasonal_h{h}"] = _safe(
                 pd.DataFrame(seasonal, index=close.index, columns=close.columns))
+
+    # ---- Tax-loss-selling / January-effect pressure (forced year-end flow) ----
+    # Which names get dumped into year-end is a per-STOCK effect (driven by its
+    # YTD loss), so it IS cross-sectional (a bare "it's December" dummy is flat
+    # across names and useless). tax_loss_pressure = YTD loss magnitude, active
+    # only in the tax-selling window (Oct-Dec, covering fund Oct-31 & individual
+    # Dec-31 year-ends); it flags names under selling pressure now that tend to
+    # rebound in January. Leak-free: YTD uses only past prices, the calendar of t
+    # is known. The model learns the sign.
+    year_start = close.groupby(close.index.year).transform("first")
+    ytd = _safe(close / year_start.where(year_start > 0) - 1.0)
+    tax_window = np.isin(close.index.month, [10, 11, 12]).astype(float)
+    tax_loss = (-ytd).clip(lower=0.0).mul(pd.Series(tax_window, index=close.index), axis=0)
+    feats["tax_loss_pressure"] = _safe(tax_loss)
 
     # ---- Technical indicators, LAGGED one day (exclude t -> no leakage) ----
     macd_norm, macd_hist = _macd(close)

@@ -7,6 +7,7 @@ from src.data_extract.utils.fetch_dividends import fetch_dividends
 from src.data_extract.utils.fetch_wiki_pageviews import fetch_wiki_pageviews
 from src.data_extract.utils.fetch_google_trends import fetch_google_trends
 from src.data_extract.utils.fetch_13f import fetch_13f
+from src.data_extract.utils.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.fetch_fundamentals import fetch_fundamentals
 from src.data_extract.utils.fetch_macro import fetch_macro
 from src.data_extract.utils.fetch_news import fetch_news
@@ -34,6 +35,7 @@ class StepExtractAllData(Step):
         
         fetch_price_history(self._context, tickers=tickers)
         fetch_dividends(self._context, tickers=tickers)
+        fetch_short_interest(self._context, tickers=tickers)
         fetch_fundamentals(self._context, tickers=tickers)
         fetch_macro(self._context)
         fetch_earnings_surprises(self._context, tickers=tickers)
@@ -49,7 +51,7 @@ class StepExtractAllData(Step):
         # 13F institutional holdings (SEC bulk + OpenFIGI cusip map; slow one-off)
         fetch_13f(self._context)
 
-        # no historical version yet
+        # no historical version yet - FMP API paying
         # fetch_analyst_grades(self._context, tickers=tickers)
         # fetch_analyst_actions(self._context, tickers=tickers)
         # fetch_exec_comp(self._context, tickers=tickers)

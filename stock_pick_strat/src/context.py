@@ -72,6 +72,7 @@ def define_global_paths(config: DictConfig):
     global_paths["INSIDER_TRANSACTIONS_PATH"] = global_paths["DATA_STORE"] / "insider_transactions.parquet"
     global_paths["INSTITUTIONAL_HOLDINGS_PATH"] = global_paths["DATA_STORE"] / "institutional_holdings.parquet"
     global_paths["CUSIP_MAP_PATH"] = global_paths["DATA_STORE"] / "cusip_ticker_map.parquet"
+    global_paths["SHORT_INTEREST_PATH"] = global_paths["DATA_STORE"] / "short_interest.parquet"
 
     # Strategy outputs
     global_paths["BACKTEST_RESULT_PATH"] = global_paths["DATA_STORE"] / "backtest_result.parquet"

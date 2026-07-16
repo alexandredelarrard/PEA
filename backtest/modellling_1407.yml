@@ -13,8 +13,8 @@ model:
                                #  with the ranking objective; RMSE stops after ~1 round
                                #  on this near-noise target)
   linear:                      # linear-baseline hyperparameters (type: elasticnet | ridge)
-    alpha: 0.05              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
-    l1_ratio: 0.7              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
+    alpha: 0.03              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
+    l1_ratio: 0.5              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
                                # correlated features 0.3-0.7 selects while sharing weight.
     max_iter: 1000             # coordinate-descent iterations (elasticnet)
     tol: 1.0e-6                # coordinate-descent convergence tolerance
@@ -26,15 +26,15 @@ model:
     n_splits: 5
     embargo: null          # defaults to primary_horizon when null
   lightgbm:
-    learning_rate: 0.001     
+    learning_rate: 0.002     
     max_depth: 5
     num_leaves: 31             # <= 2^max_depth; explicit so depth/leaves stay consistent
     subsample: 0.8             # row bagging fraction -- ONLY active with bagging_freq>0
     bagging_freq: 1            # apply row bagging every iteration (activates subsample)
     colsample_bytree: 0.8
     min_child_samples: 30
-    lambda_l1: 5.0
-    lambda_l2: 5.0
+    lambda_l1: 3.0
+    lambda_l2: 3.0
     num_boost_round: 3000      # cap only; early stopping ends well before this
     early_stopping_rounds: 100 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
 
@@ -103,57 +103,6 @@ inputs:
   #   - downside_vol_63
   #   - idio_vol_63
 
-  # ---- Cross-sectional SEASONALITY at t+h (Heston-Sadka): the stock's OWN
-    #      average return over the same calendar window in prior years, per target
-    #      horizon. Leak-free & stock-specific (a calendar dummy would be flat
-    #      across names -> useless for a market-neutral ranker). ----
-    - seasonal_h30
-    - seasonal_h60
-    - seasonal_h90
-
-  # ---- Short-selling pressure (FINRA RegSHO short-volume ratio; lagged 1 day).
-    #      High short_vol_ratio = heavily shorted -> short-interest anomaly (lower
-    #      forward returns). All-NaN until fetch_short_interest has run. ----
-    # - f_short_vol_ratio_xs
-    # - f_short_vol_ratio_chg_xs
-
-  # ---- Liquidity / volume (price+volume; point-in-time). dollar_volume_63 =
-    #      log avg $ traded (size/liquidity); amihud_63 = Amihud illiquidity
-    #      (higher = more illiquid -> illiquidity premium); rel_volume_5_63 =
-    #      recent vs trailing volume (spike / attention). Need volume in prices. ----
-    - dollar_volume_63
-    - amihud_63
-    - rel_volume_5_63
-
-  # ---- Volume-flow dynamics + forced year-end flow (price+volume; PIT).
-    #      signed_vol_63 = up-day minus down-day volume (order-flow proxy);
-    #      volume_trend_63 = activity rising/fading; volume_cv_63 = lumpy vs steady
-    #      trading; tax_loss_pressure = YTD-loss magnitude active Oct-Dec
-    #      (tax-loss selling -> January rebound; cross-sectional, not a flat dummy). ----
-    - signed_vol_63
-    - volume_trend_63
-    - volume_cv_63
-    - tax_loss_pressure
-
-  # ---- Retail attention (abnormal Wikipedia pageviews / Google Trends vs the
-    #      name's own baseline). All-NaN until fetch_wiki_pageviews / fetch_google_
-    #      trends have run; safe to leave listed (missing cols are skipped). ----
-    # - f_wiki_attn_spike_xs
-    # - f_wiki_attn_level_xs
-    # - f_gt_attn_spike_xs
-    # - f_gt_attn_level_xs
-
-  # ---- Institutional 13F ownership (all filers, aggregated per quarter, 45-day
-    #      filing lag -> point-in-time). Breadth change / accumulation / cluster
-    #      buying predict drift (Chen-Hong-Stein). All-NaN until fetch_13f has run;
-    #      slow quarterly signal -> best for the 60/90d sleeve. ----
-    # - f_inst_breadth_chg_xs
-    # - f_inst_shares_chg_xs
-    # - f_cluster_buying_xs
-    # - f_new_buyers_xs
-    # - f_inst_holders_xs
-    # - f_inst_ownership_pct_xs
-
   #   # ---- Risk exposures (rolling betas) ----
   #   # - beta_market
   #   # - beta_market_simple
@@ -181,24 +130,13 @@ inputs:
     - f_intrinsic_yield_vs_peers
     - f_intrinsic_yield_xs
 
-  # ---- Dividends / shareholder yield (ex-date dividend history; point-in-time).
-    #      dividend_yield = TTM cash div / price; dividend_growth = TTM YoY;
-    #      dividend_payer = paid in last year; shareholder_yield = dividend +
-    #      buyback yield (net of issuance). Non-payers rank as real 0 yield. ----
-    - f_dividend_yield_xs
-    - f_dividend_growth_xs
-    - f_shareholder_yield_xs
-    # - f_dividend_payer_xs
-    # - f_dividend_yield_vs_peers
-    # - f_shareholder_yield_vs_peers
-
   #   # ---- Peer-relative fundamentals: profitability / quality ----
   #   - f_grossMargins_vs_peers
   #   - f_grossMargins_xs
   #   - f_operatingMargins_vs_peers
   #   - f_operatingMargins_xs
   #   # - f_profitMargins_vs_peers
-    - f_profitMargins_xs
+  #   - f_profitMargins_xs
   #   - f_returnOnEquity_vs_peers
     - f_returnOnEquity_xs
   #   - f_debtToEquity_vs_peers
@@ -232,7 +170,7 @@ inputs:
 
   #   # ---- Latest-quarter momentum (discrete single quarter, not TTM) ----
   #   # - f_q_rev_growth_vs_peers
-    # - f_q_rev_growth_xs
+  #   # - f_q_rev_growth_xs
   #   # - f_rev_growth_accel_vs_peers
   #   # - f_rev_growth_accel_xs
   #   # - f_q_earnings_growth_vs_peers
@@ -244,7 +182,7 @@ inputs:
   #   # Computed fresh from level columns (totalRevenue, netIncome, profitMargins) so
   #   # backtestable from the full fundamentals history. Complements q_* features.
   #   # - f_y_rev_growth_vs_peers
-    - f_y_rev_growth_xs
+  #   - f_y_rev_growth_xs
   #   - f_y_rev_growth_accel_vs_peers
   #   - f_y_rev_growth_accel_xs
   #   - f_y_earnings_growth_vs_peers
@@ -302,7 +240,7 @@ inputs:
   #   # forward E/P + expected EPS growth carry standalone signal (IC ~ +0.02) and
   #   # capture "what the market prices in for the future" / unrealistic optimism.
   #   # - f_fwd_eps_yield_vs_peers
-    - f_fwd_eps_yield_xs
+  #   - f_fwd_eps_yield_xs
   #   - f_eps_expectation_growth_vs_peers
     - f_eps_expectation_growth_xs
 
@@ -310,7 +248,7 @@ inputs:
   #   #      genuinely historical & point-in-time, so backtestable. Columns absent
   #   #      from cube if fetch_employees_edgar has not run -- safe to leave enabled. ----
   #   - f_revenue_per_employee_vs_peers
-    - f_revenue_per_employee_xs
+  #   - f_revenue_per_employee_xs
   #   # - f_employee_growth_vs_peers
     - f_employee_growth_xs
 
@@ -337,20 +275,20 @@ inputs:
   #   # ---- Governance / ownership (snapshot-only: no free historical archive yet).
   #   #      Leak-free (point-in-time from as_of) but ~all-NaN historically until the
   #   #      snapshot archive builds up. Useful NOW for live cross-sectional ranking. ----
-    - f_insider_ownership_vs_peers
-    # - f_insider_ownership_xs
+  #   - f_insider_ownership_vs_peers
+  #   - f_insider_ownership_xs
   #   - f_institutional_ownership_vs_peers
   #   - f_institutional_ownership_xs
   #   # - f_founder_led_vs_peers
   #   - f_founder_led_xs
-    - f_founder_ceo_vs_peers
-    # - f_founder_ceo_xs
+  #   # - f_founder_ceo_vs_peers
+  #   - f_founder_ceo_xs
   #   - f_family_owned_vs_peers
   #   - f_family_owned_xs
   #   - f_net_insider_buying_vs_peers
   #   - f_net_insider_buying_xs
   #   - f_ceo_age_vs_peers
-    - f_ceo_age_xs
+  #   - f_ceo_age_xs
   #   - f_n_officers_vs_peers
   #   - f_n_officers_xs
   #   - f_avg_officer_age_vs_peers
@@ -384,3 +322,14 @@ inputs:
       - f_avg_officer_age_xs: -1
       - f_eps_expectation_growth_xs: +1
       - f_interest_coverage_vs_peers: +1
+
+
+2026-07-14 21:47:40 - INFO - horizon 30: [ENSEMBLE] CV mean_IC=+0.0315  IC_IR=+1.42
+2026-07-14 21:47:40 - INFO - horizon 30:   [elasticnet] CV mean_IC=+0.0289  IC_IR=+1.33
+2026-07-14 21:47:40 - INFO - horizon 30:   [lightgbm  ] CV mean_IC=+0.0213  IC_IR=+1.03
+2026-07-14 21:48:35 - INFO - horizon 60: [ENSEMBLE] CV mean_IC=+0.0337  IC_IR=+1.18
+2026-07-14 21:48:35 - INFO - horizon 60:   [elasticnet] CV mean_IC=+0.0312  IC_IR=+1.17
+2026-07-14 21:48:35 - INFO - horizon 60:   [lightgbm  ] CV mean_IC=+0.0220  IC_IR=+0.89
+2026-07-14 21:49:42 - INFO - horizon 90: [ENSEMBLE] CV mean_IC=+0.0554  IC_IR=+1.51
+2026-07-14 21:49:42 - INFO - horizon 90:   [elasticnet] CV mean_IC=+0.0527  IC_IR=+1.43
+2026-07-14 21:49:42 - INFO - horizon 90:   [lightgbm  ] CV mean_IC=+0.0277  IC_IR=+0.88

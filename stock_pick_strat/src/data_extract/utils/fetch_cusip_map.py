@@ -19,7 +19,7 @@ import requests
 from src.context import Context
 
 _URL = "https://api.openfigi.com/v3/mapping"
-_BATCH = 100          # OpenFIGI allows up to 100 jobs per request (no key)
+_BATCH = 50          # OpenFIGI allows up to 100 jobs per request (no key)
 
 
 def _parse_openfigi(results: list[dict], cusips: list[str]) -> dict[str, str]:

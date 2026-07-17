@@ -14,6 +14,7 @@ from src.data_extract.utils.fetch_sec_filings import fetch_sec_filings
 from src.data_extract.utils.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fetch_analyst_estimates import fetch_analyst_estimates
 from src.data_extract.utils.fetch_management_edgar import fetch_management_edgar
+from src.data_extract.utils.fetch_def14a_llm import fetch_def14a_llm
 from src.data_extract.utils.fetch_employees_edgar import fetch_employees_edgar
 from src.data_extract.utils.fetch_fmp_history import (
     fetch_analyst_grades,
@@ -41,6 +42,7 @@ class StepExtractAllData(Step):
         fetch_earnings_surprises(self._context, tickers=tickers)
         fetch_employees_edgar(self._context, tickers=tickers)
         fetch_management_edgar(self._context, tickers=tickers)
+        fetch_def14a_llm(self._context, tickers=tickers)
         fetch_sec_filings(self._context)
 
         # Retail-attention alt-data (slow / rate-limited -> opt-in; the cube step

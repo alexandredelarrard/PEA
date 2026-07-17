@@ -48,6 +48,7 @@ def define_global_paths(config: DictConfig):
     # Management / ownership (yfinance snapshot; accrues history over time)
     global_paths["MANAGEMENT_PATH"] = global_paths["DATA_STORE"] / "management.parquet"
     global_paths["MANAGEMENT_HISTORY_PATH"] = global_paths["DATA_STORE"] / "management_history.parquet"
+    global_paths["DEF14A_LLM_PATH"] = global_paths["DATA_STORE"] / "def14a_llm.parquet"
 
     # Employee counts (FMP historical-employee-count; genuinely historical, from filings)
     global_paths["EMPLOYEES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "employees_history.parquet"

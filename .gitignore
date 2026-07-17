@@ -1,6 +1,5 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
-data_store/
 *.py[cod]
 *$py.class
 
@@ -122,4 +121,3 @@ venv.bak/
 # Data folders (not versioned)
 *.pkl
 data/
-**/data_store/

@@ -47,7 +47,7 @@ class StepExtractAllData(Step):
         # picks up whatever parquet exists). Wikipedia is reliable & daily; Google
         # Trends needs `pip install pytrends` and self-skips if absent.
         fetch_wiki_pageviews(self._context, tickers=tickers)
-        fetch_google_trends(self._context, tickers=tickers)
+        # fetch_google_trends(self._context, tickers=tickers)
         # 13F institutional holdings (SEC bulk + OpenFIGI cusip map; slow one-off)
         fetch_13f(self._context)
 

@@ -21,11 +21,18 @@ from __future__ import annotations
 import time
 import pandas as pd
 from tqdm import tqdm
+import re
 
 from src.context import Context
 from src.data_extract.utils.rate_limit import call_with_retries
 from pytrends.request import TrendReq
 
+
+_HEADER = {
+        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+    }
 
 def _df_to_long(interest: pd.DataFrame, keyword: str, ticker: str) -> pd.DataFrame:
     """pytrends interest_over_time() frame -> [date, ticker, search_interest]. Pure."""
@@ -45,7 +52,7 @@ def _df_to_long(interest: pd.DataFrame, keyword: str, ticker: str) -> pd.DataFra
 
 def _interest_over_time(keyword: str, timeframe: str):
     """Network/lib call, isolated for mocking. Requires the optional pytrends dep."""
-    pt = TrendReq(hl="en-US", tz=0)
+    pt = TrendReq(hl="en-US", tz=0, requests_args={'headers': _HEADER})
     pt.build_payload([keyword], timeframe=timeframe)
     return pt.interest_over_time()
 
@@ -59,7 +66,7 @@ def _load_existing(path):
 
 
 def fetch_google_trends(context: Context, tickers: list[str] | None = None,
-                        timeframe: str = "today 5-y", pause: float = 1.0,
+                        timeframe: str = "all", pause: float = 1.0,
                         refetch_window_days: int = 7) -> pd.DataFrame:
     """Download search interest per company name; cache to parquet.
 
@@ -73,6 +80,8 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     """
     path = context.paths["GOOGLE_TRENDS_PATH"]
     names = pd.read_csv(context.paths["TICKERS_PATH"])
+    names['name'] = names['name'].apply(lambda x: re.sub(r"\s*\([^)]*\)", "", x).strip())
+
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
 

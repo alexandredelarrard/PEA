@@ -23,8 +23,9 @@ import requests
 from src.context import Context
 from src.data_extract.utils.fetch_cusip_map import build_cusip_ticker_map
 
-_BASE = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/{tag}_form13f.zip"
-_HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; contact@example.com)"}
+_BASE = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/{start_q}_{end_q}_form13f.zip"
+_HEADERS = {
+    "User-Agent": "stock_pick_strat/1.0 (research; valar_analytics@gmail.com)"}
 
 
 def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
@@ -83,9 +84,10 @@ def _download_quarter(tag: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     return sub, info
 
 
-def fetch_13f(context: Context, years_history: int = 10) -> pd.DataFrame:
+def fetch_13f(context: Context) -> pd.DataFrame:
     """Download the 13F data sets, map to tickers, keep the universe, and cache."""
     universe = set(pd.read_csv(context.paths["TICKERS_PATH"])["ticker"])
+    years_history = context.config.data_extract.years_history
     frames = []
     for tag in _quarter_tags(years_history):
         try:

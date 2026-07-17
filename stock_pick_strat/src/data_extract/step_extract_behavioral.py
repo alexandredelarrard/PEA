@@ -24,5 +24,5 @@ class StepExtractBehavioral(Step):
 
     def run(self, tickers: list[str]) -> None:
         fetch_wiki_pageviews(self._context, tickers=tickers)
-        # fetch_google_trends(self._context, tickers=tickers)
+        fetch_google_trends(self._context, tickers=tickers)
         # fetch_news(self._context, tickers=tickers)

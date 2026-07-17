@@ -9,6 +9,7 @@ ticker universe once and hands it to each sub-step in turn:
   3. structure     — employees, management, DEF 14A governance, SEC filings
   4. behavioral    — Wikipedia pageviews (+Google Trends, news)
 """
+
 from omegaconf import DictConfig
 
 from src.context import Context
@@ -23,7 +24,9 @@ from src.data_extract.step_extract_behavioral import StepExtractBehavioral
 class StepExtractAllData(Step):
 
     def __init__(self, context: Context, config: DictConfig):
+
         super().__init__(context=context, config=config)
+        
         self._prices = StepExtractPrices(context=context, config=config)
         self._fundamentals = StepExtractFundamentals(context=context, config=config)
         self._structure = StepExtractStructure(context=context, config=config)

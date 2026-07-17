@@ -25,7 +25,9 @@ dependencies = [
     "matplotlib (>=3.8)",
     "openpyxl (>=3.1)",
     "openai (>=2.45.0,<3.0.0)",
-    "pytrends (>=4.9.2,<5.0.0)"
+    "pytrends (>=4.9.2,<5.0.0)",
+    "sqlalchemy (>=2.0,<3.0)",
+    "psycopg2-binary (>=2.9,<3.0)"
 ]
 
 [tool.poetry]

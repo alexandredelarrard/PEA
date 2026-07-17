@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+tests
+data/sec_bulk_cache
+data/sec_filings_text
+data/output/models
+data/output/diagnostics
+data/output/backtest
+_sanity.db
+*.log

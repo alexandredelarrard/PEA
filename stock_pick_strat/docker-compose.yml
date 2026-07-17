@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16
+    container_name: pea_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pea}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pea}
+      POSTGRES_DB: ${POSTGRES_DB:-pea}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # persistent data — survives container restarts
+      - pgdata:/var/lib/postgresql/data
+      # schema.sql runs once, on first init of an empty volume
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pea} -d ${POSTGRES_DB:-pea}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Application image: runs the extraction pipeline / migrator against `db`.
+  # Optional for Phase 1 — the migrator can also be run from the host venv.
+  app:
+    build: .
+    container_name: pea_app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-pea}:${POSTGRES_PASSWORD:-pea}@db:5432/${POSTGRES_DB:-pea}
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    # default: load existing flat files into the DB (schema is applied by db init)
+    command: ["python", "-m", "scripts.migrate_parquet_to_db"]
+
+volumes:
+  pgdata:

@@ -7,6 +7,7 @@ backtest:
   market_weight: 0.0          # deliberate SPY beta sleeve (total portfolio beta = this)
   target_ann_vol: 0.1          # alpha-sleeve ex-ante volatility target
   beta_neutral: true           # enforce beta'w = 0 (market-neutral alpha sleeve)
+  sector_neutral: true         # enforce net exposure ~0 per GICS industry group (24)
   pos_cap: 0.05                # max |weight| per name
   gross_cap: 3.0               # max sum|w| (leverage safety)
  

@@ -23,9 +23,15 @@ import requests
 from src.context import Context
 from src.data_extract.utils.fetch_cusip_map import build_cusip_ticker_map
 
-_BASE = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/{start_q}_{end_q}_form13f.zip"
+_BASE = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/{name}_form13f.zip"
 _HEADERS = {
     "User-Agent": "stock_pick_strat/1.0 (research; valar_analytics@gmail.com)"}
+
+# SEC 13F data-set zips are named by the 3-month FILING-RECEIPT window (NOT calendar
+# quarters), start-date to end-date, e.g. `01jun2025-31aug2025_form13f.zip`. The four
+# windows per year are Dec-Feb, Mar-May, Jun-Aug, Sep-Nov (13F for the Dec-31 period
+# is filed by mid-Feb, hence the one-month shift). Format: DDMMMYYYY-DDMMMYYYY (lower).
+_WINDOWS = [(12, -1, 2), (3, 0, 5), (6, 0, 8), (9, 0, 11)]  # (start_month, yr_delta, end_month)
 
 
 def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
@@ -60,19 +66,25 @@ def _join_13f(submission: pd.DataFrame, infotable: pd.DataFrame) -> pd.DataFrame
     return holdings.dropna(subset=["cusip", "cik", "period"])
 
 
-def _quarter_tags(years_history: int) -> list[str]:
-    end = pd.Timestamp.today()
-    start_year = end.year - years_history
-    tags = []
-    for y in range(start_year, end.year + 1):
-        for q in range(1, 5):
-            tags.append(f"{y}q{q}")
-    return tags
+def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
+    """Data-set base names (no extension) for every filing window in range, e.g.
+    '01jun2025-31aug2025'. Only windows whose end date has passed are included.
+    Pure/deterministic (pass `today` in tests)."""
+    today = (today or pd.Timestamp.today()).normalize()
+    names = []
+    for y in range(today.year - years_history, today.year + 1):
+        for start_month, yr_delta, end_month in _WINDOWS:
+            start = pd.Timestamp(year=y + yr_delta, month=start_month, day=1)
+            end = pd.Timestamp(year=y, month=end_month, day=1) + pd.offsets.MonthEnd(0)
+            if end > today:
+                continue
+            names.append(f"{start.strftime('%d%b%Y')}-{end.strftime('%d%b%Y')}".lower())
+    return names
 
 
-def _download_quarter(tag: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Download+unzip one quarter's SUBMISSION and INFOTABLE tsvs. Network IO."""
-    r = requests.get(_BASE.format(tag=tag), headers=_HEADERS, timeout=120)
+def _download_quarter(name: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """Download+unzip one window's SUBMISSION and INFOTABLE tsvs. Network IO."""
+    r = requests.get(_BASE.format(name=name), headers=_HEADERS, timeout=120)
     if r.status_code != 200:
         return None
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
@@ -89,7 +101,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     universe = set(pd.read_csv(context.paths["TICKERS_PATH"])["ticker"])
     years_history = context.config.data_extract.years_history
     frames = []
-    for tag in _quarter_tags(years_history):
+    for tag in _period_names(years_history):
         try:
             got = _download_quarter(tag)
         except Exception as e:

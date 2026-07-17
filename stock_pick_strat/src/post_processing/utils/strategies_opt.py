@@ -57,23 +57,54 @@ def _neutralize(a: np.ndarray, X: np.ndarray, w_metric: np.ndarray) -> np.ndarra
     return a - X @ coef
 
 
+def _sector_dummies(sector_labels) -> np.ndarray:
+    """One-hot (n,k) matrix of sector membership. Missing labels go to a shared
+    '__NA__' bucket so every name is constrained to exactly one group (the columns
+    span the constant, so per-sector dollar-neutrality implies global neutrality)."""
+    labels = ["__NA__" if (l is None or (isinstance(l, float) and np.isnan(l))) else str(l)
+              for l in sector_labels]
+    uniq = list(dict.fromkeys(labels))
+    idx = {u: i for i, u in enumerate(uniq)}
+    D = np.zeros((len(labels), len(uniq)))
+    for r, l in enumerate(labels):
+        D[r, idx[l]] = 1.0
+    return D
+
+
+def _neutralizer_X(n: int, beta: np.ndarray, beta_neutral: bool,
+                   sector_labels=None) -> np.ndarray:
+    """Design matrix the weights are made orthogonal to: sector one-hots (or a
+    single constant for plain dollar-neutrality) plus the market beta. Sector
+    one-hots => the book is dollar-neutral WITHIN each sector (net sector exposure
+    ~ 0) -- the industry-group neutrality top market-neutral funds enforce."""
+    if sector_labels is not None and len(sector_labels) == n:
+        base = _sector_dummies(sector_labels)          # spans the constant
+    else:
+        base = np.ones((n, 1))
+    if beta_neutral:
+        return np.column_stack([base, np.asarray(beta, float).reshape(-1, 1)])
+    return base
+
+
 def optimize_day(alpha: np.ndarray, beta: np.ndarray, var: np.ndarray,
-                 beta_neutral: bool = True, pos_cap: float | None = 0.03) -> np.ndarray:
+                 beta_neutral: bool = True, pos_cap: float | None = 0.03,
+                 sector_labels=None) -> np.ndarray:
     """
-    Closed-form mean-variance long/short weights with dollar (and optional beta)
-    neutrality and a diagonal idiosyncratic-risk model.
+    Closed-form mean-variance long/short weights with dollar (and optional beta
+    and sector) neutrality and a diagonal idiosyncratic-risk model.
 
     alpha : centered cross-sectional score (magnitude matters; z-scores ideal)
     beta  : per-name market beta
     var   : per-name idiosyncratic DAILY variance (>0)
-    Returns weights summing to ~0 (dollar-neutral) and beta'w ~ 0 if beta_neutral.
-    Scale is arbitrary here (set later by vol targeting).
+    sector_labels : per-name group (e.g. GICS industry group). When given, weights
+        are made orthogonal to each sector dummy -> net exposure per sector ~ 0.
+    Returns weights summing to ~0 (dollar-neutral, and per-sector if labelled) and
+    beta'w ~ 0 if beta_neutral. Scale is arbitrary here (set later by vol targeting).
     """
     n = len(alpha)
     var = np.clip(var, np.nanpercentile(var[np.isfinite(var)], 5) if np.isfinite(var).any() else 1e-6, None)
     invd = 1.0 / var
-    ones = np.ones(n)
-    X = np.column_stack([ones, beta]) if beta_neutral else ones.reshape(-1, 1)
+    X = _neutralizer_X(n, beta, beta_neutral, sector_labels)
 
     a_res = _neutralize(alpha, X, invd)
     w = invd * a_res                       # D^{-1} * residual alpha
@@ -88,18 +119,16 @@ def optimize_day(alpha: np.ndarray, beta: np.ndarray, var: np.ndarray,
 
 
 def enforce_pos_cap(w: np.ndarray, beta: np.ndarray, beta_neutral: bool,
-                    pos_cap: float | None) -> np.ndarray:
-    """Clip |w| to `pos_cap` and restore neutrality, applied to the FINAL
-    (vol-targeted) weights. The cap inside `optimize_day` is a PRE-scale shape
-    limit; vol targeting then rescales the book, so without this a name can end
-    up above pos_cap. This makes pos_cap the true max |weight| per name on the
-    traded book. When the book is diversified enough that no name reaches the cap
-    (the usual case for a large universe) this is a no-op."""
+                    pos_cap: float | None, sector_labels=None) -> np.ndarray:
+    """Clip |w| to `pos_cap` and restore neutrality (dollar / beta / sector),
+    applied to the FINAL (vol-targeted) weights. The cap inside `optimize_day` is
+    a PRE-scale shape limit; vol targeting then rescales the book, so without this
+    a name can end up above pos_cap. When the book is diversified enough that no
+    name reaches the cap (the usual case) this is a no-op."""
     if pos_cap is None:
         return w
-    n = len(w)
-    X = np.column_stack([np.ones(n), beta]) if beta_neutral else np.ones((n, 1))
-    return _neutralize(np.clip(w, -pos_cap, pos_cap), X, np.ones(n))
+    X = _neutralizer_X(len(w), beta, beta_neutral, sector_labels)
+    return _neutralize(np.clip(w, -pos_cap, pos_cap), X, np.ones(len(w)))
 
 
 def vol_target_scale(w: np.ndarray, var: np.ndarray, target_ann_vol: float,
@@ -120,7 +149,7 @@ def vol_target_scale(w: np.ndarray, var: np.ndarray, target_ann_vol: float,
 
 def risk_target_book(aim: pd.Series, beta_row: pd.Series, var_row: pd.Series,
                      target_ann_vol: float, gross_cap: float, pos_cap: float | None,
-                     beta_neutral: bool) -> pd.Series:
+                     beta_neutral: bool, sector_map: dict | None = None) -> pd.Series:
     """Re-scale the ACTUALLY-HELD book `aim` to the vol target and re-apply the
     caps, using the current day's risk model.
 
@@ -143,8 +172,9 @@ def risk_target_book(aim: pd.Series, beta_row: pd.Series, var_row: pd.Series,
         return aim
     v = var_row[names].to_numpy(float)
     b = beta_row[names].to_numpy(float)
+    sec = [sector_map.get(tk) for tk in names] if sector_map else None
     w = vol_target_scale(w, v, target_ann_vol, gross_cap)
-    w = enforce_pos_cap(w, b, beta_neutral, pos_cap)
+    w = enforce_pos_cap(w, b, beta_neutral, pos_cap, sector_labels=sec)
     out = aim.copy()
     out[names] = w
     return out
@@ -199,9 +229,12 @@ def simulate_portfolio_opt(
     fee_bps: float = 1.0,
     spread_bps: float = 5.0,
     rebalance_freq: int = 1,
+    sector_map: dict | None = None,   # ticker -> group (e.g. GICS industry group)
+    sector_neutral: bool = False,     # enforce net sector exposure ~ 0
 ) -> pd.DataFrame:
     cost_rate = (fee_bps + spread_bps) / 1e4
     beta_df, var_df = rolling_beta_var(stock_ret, spy_ret, beta_window, vol_window)
+    smap = sector_map if (sector_neutral and sector_map) else None
 
     dates = sorted(d for d in signal.index
                    if d in stock_ret.index and d in spy_ret.index
@@ -225,11 +258,12 @@ def simulate_portfolio_opt(
                 a = (a - a.mean()) / (a.std() if a.std() > 0 else 1.0)   # centered z
                 b = beta_df.loc[t, common].to_numpy(float)
                 v = var_df.loc[t, common].to_numpy(float)
-                w_star = optimize_day(a, b, v, beta_neutral, pos_cap)
+                sec = [smap.get(tk) for tk in common] if smap else None
+                w_star = optimize_day(a, b, v, beta_neutral, pos_cap, sector_labels=sec)
                 w_star = vol_target_scale(w_star, v, target_ann_vol, gross_cap)
                 # enforce pos_cap on the FINAL weights (vol targeting rescales the
                 # pre-scale cap applied inside optimize_day)
-                w_star = enforce_pos_cap(w_star, b, beta_neutral, pos_cap)
+                w_star = enforce_pos_cap(w_star, b, beta_neutral, pos_cap, sector_labels=sec)
                 target_alpha = pd.Series(0.0, index=tickers)
                 target_alpha[common] = w_star
 
@@ -242,7 +276,8 @@ def simulate_portfolio_opt(
         # risk-target the ACTUALLY-HELD book so realized vol/gross does not depend
         # on rebalance_freq (the partial step shrinks gross vs the target w*).
         aim = risk_target_book(aim, beta_df.loc[t], var_df.loc[t],
-                               target_ann_vol, gross_cap, pos_cap, beta_neutral)
+                               target_ann_vol, gross_cap, pos_cap, beta_neutral,
+                               sector_map=smap)
 
         w = pd.Series(0.0, index=tickers + ["SPY"])
         w[tickers] = aim.values

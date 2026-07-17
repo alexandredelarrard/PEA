@@ -159,11 +159,31 @@ class StepBacktest(Step):
         self.signal.index = pd.to_datetime(self.signal.index)
         self._log.info("Signal (combined z) matrix: %s days x %s tickers", *self.signal.shape)
 
+    def _sector_map(self) -> dict:
+        """ticker -> GICS group for sector-neutral construction. Uses the
+        `industry_group` column (24-level) from tickers.csv, falling back to
+        `sector` (11) if that column is absent (older tickers.csv)."""
+        path = self._context.paths["TICKERS_PATH"]
+        if not path.exists():
+            return {}
+        tk = pd.read_csv(path)
+        col = ("industry_group" if "industry_group" in tk.columns
+               else "sector" if "sector" in tk.columns else None)
+        if col is None:
+            return {}
+        return dict(zip(tk["ticker"], tk[col]))
+
     def simulate(self):
         c = self._cfg
+        sector_neutral = bool(c.get("sector_neutral", False))
+        sector_map = self._sector_map() if sector_neutral else None
+        if sector_neutral:
+            n_groups = len(set(sector_map.values())) if sector_map else 0
+            self._log.info("Sector-neutral construction ON: %s groups (industry-group level)",
+                           n_groups)
         self.daily = simulate_portfolio_opt(
-            signal=self.signal, 
-            stock_ret=self.stock_ret, 
+            signal=self.signal,
+            stock_ret=self.stock_ret,
             spy_ret=self.spy_ret,
             starting_capital=float(c.starting_capital),
             market_weight=c.get("market_weight", 0.5),
@@ -176,7 +196,8 @@ class StepBacktest(Step):
             beta_window=c.get("beta_window", 63),
             vol_window=c.get("vol_window", 63),
             fee_bps=c.fee_bps, spread_bps=c.spread_bps,
-            rebalance_freq=c.get("rebalance_freq", 1))
+            rebalance_freq=c.get("rebalance_freq", 1),
+            sector_map=sector_map, sector_neutral=sector_neutral)
         self.metrics = compute_metrics(self.daily, rf_annual=c.get("risk_free_rate", 0.0))
 
     def report(self):

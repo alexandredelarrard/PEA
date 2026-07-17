@@ -18,6 +18,7 @@ Network/library access is isolated in `_interest_over_time`; the parser
 
 from __future__ import annotations
 
+import random
 import time
 import pandas as pd
 from tqdm import tqdm
@@ -28,10 +29,29 @@ from src.data_extract.utils.rate_limit import call_with_retries
 from pytrends.request import TrendReq
 
 
-_HEADER = {
-        'Accept-Language': 'en-US,en;q=0.9',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+# Anti-429 (Google throttles scrapers hard): rotate a realistic desktop User-Agent
+# per request, send full browser-like headers with a Referer, use a FRESH TrendReq
+# (fresh session/cookie) each call so no sticky cookie fingerprint builds up, add
+# pytrends' native retry/backoff, and jitter the delay between queries. See
+# cloro.dev / pytrends issues #243, #535.
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+]
+
+
+def _random_header() -> dict:
+    """Browser-like headers with a rotated User-Agent + Referer (harder to flag)."""
+    return {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                   "image/avif,image/webp,*/*;q=0.8"),
+        "Referer": "https://trends.google.com/trends/explore",
+        "Connection": "keep-alive",
     }
 
 def _df_to_long(interest: pd.DataFrame, keyword: str, ticker: str) -> pd.DataFrame:
@@ -51,8 +71,10 @@ def _df_to_long(interest: pd.DataFrame, keyword: str, ticker: str) -> pd.DataFra
 
 
 def _interest_over_time(keyword: str, timeframe: str):
-    """Network/lib call, isolated for mocking. Requires the optional pytrends dep."""
-    pt = TrendReq(hl="en-US", tz=0, requests_args={'headers': _HEADER})
+    """Network/lib call, isolated for mocking. Fresh TrendReq (fresh session/cookie)
+    + rotated header + pytrends native retry/backoff each call, to dodge 429s."""
+    pt = TrendReq(hl="en-US", tz=0, timeout=(10, 25), retries=2, backoff_factor=0.5,
+                  requests_args={"headers": _random_header()})
     pt.build_payload([keyword], timeframe=timeframe)
     return pt.interest_over_time()
 
@@ -110,7 +132,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
             long = long[long["date"] > last]     # append only new weeks
         if not long.empty:
             frames.append(long)
-        time.sleep(pause)
+        time.sleep(pause + random.uniform(2.0, 8.0))   # jitter -> less bot-like
     print(f"Google Trends: {skipped}/{len(names)} tickers already current (skipped).")
 
     parts = [df for df in (existing, *frames) if df is not None and not df.empty]

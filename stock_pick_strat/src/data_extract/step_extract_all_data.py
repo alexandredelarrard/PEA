@@ -3,7 +3,6 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.utils.step import Step
 from src.data_extract.utils.fetch_prices import fetch_price_history, get_sp500_tickers
-from src.data_extract.utils.fetch_dividends import fetch_dividends
 from src.data_extract.utils.fetch_wiki_pageviews import fetch_wiki_pageviews
 from src.data_extract.utils.fetch_google_trends import fetch_google_trends
 from src.data_extract.utils.fetch_13f import fetch_13f
@@ -33,8 +32,9 @@ class StepExtractAllData(Step):
         tickers = get_sp500_tickers(self._context)
         tickers = tickers + self._config.data_extract.other_tickers
         
+        # prices + dividends come from ONE yfinance download (actions=True):
+        # fetch_price_history writes both prices.parquet and dividends.parquet.
         fetch_price_history(self._context, tickers=tickers)
-        fetch_dividends(self._context, tickers=tickers)
         fetch_short_interest(self._context, tickers=tickers)
         fetch_fundamentals(self._context, tickers=tickers)
         fetch_macro(self._context)

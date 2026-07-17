@@ -360,6 +360,25 @@ def _derived_fields(
     if not rd_intensity.empty and rd_intensity.notna().any().any():
         F["rd_intensity"] = rd_intensity
 
+    # ---- Reinvestment quality: depreciation & amortization vs capex ----
+    # If D&A runs ABOVE capex (da_to_capex > 1) and, worse, is GROWING faster than
+    # capex (da_minus_capex_growth > 0), the firm is consuming its asset base faster
+    # than it reinvests -> aging PP&E / under-investment / a likely future capex
+    # cliff, and reported earnings flattered by low capex. Both come straight from
+    # the SEC fields already extracted (depAmort, capex); the model learns the sign.
+    depamort = daily("depAmort")
+    capex = daily("capex")
+    if not depamort.empty and not capex.empty:
+        da_to_capex = _ratio(depamort.abs(), capex.abs(), positive_den=True)
+        if da_to_capex.notna().any().any():
+            F["da_to_capex"] = da_to_capex
+    da_growth = _fiscal_change_to_daily(fund_hist, "depAmort", idx,
+                                        kind="pct", periods=yoy_periods)
+    capex_growth = _fiscal_change_to_daily(fund_hist, "capex", idx,
+                                           kind="pct", periods=yoy_periods)
+    if da_growth.notna().any().any() and capex_growth.notna().any().any():
+        F["da_minus_capex_growth"] = da_growth - capex_growth
+
     # ---- REGIME-ROBUST quality + state flags (loss-makers / growth names) ----
     # gross profitability (Novy-Marx) = gross profit / total assets. Defined and
     # monotone even for a net-loss-making firm, so it scores the growth /

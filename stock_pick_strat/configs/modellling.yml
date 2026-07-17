@@ -210,6 +210,12 @@ inputs:
   #   - f_rd_intensity_vs_peers
     - f_rd_intensity_xs
 
+  #   # ---- Reinvestment quality: D&A vs capex (from SEC depAmort/capex) ----
+    #   da_to_capex >1 = consuming assets faster than reinvesting; da_minus_capex_
+    #   growth >0 = D&A rising faster than capex (under-investment / capex cliff). ----
+    - f_da_to_capex_xs
+    - f_da_minus_capex_growth_xs
+
   #   # ---- Company-regime handling (profitable vs loss-making / hyper-growth) ----
   #   # gross_profitability (Novy-Marx: gross profit / assets) stays valid for
   #   # loss-makers, where earnings yields are masked to NaN. The 0/1 state flags

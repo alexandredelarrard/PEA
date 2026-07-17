@@ -21,15 +21,10 @@ from __future__ import annotations
 import time
 import pandas as pd
 from tqdm import tqdm
-from pytrends.request import TrendReq
 
 from src.context import Context
 from src.data_extract.utils.rate_limit import call_with_retries
-
-try:                                    # optional dep: keep the module importable
-    from pytrends.request import TrendReq
-except Exception:                       # (step_extract_all_data imports it at top)
-    TrendReq = None
+from pytrends.request import TrendReq
 
 
 def _df_to_long(interest: pd.DataFrame, keyword: str, ticker: str) -> pd.DataFrame:

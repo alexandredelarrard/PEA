@@ -98,7 +98,7 @@ def _download_quarter(name: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
 
 def fetch_13f(context: Context) -> pd.DataFrame:
     """Download the 13F data sets, map to tickers, keep the universe, and cache."""
-    universe = set(pd.read_csv(context.paths["TICKERS_PATH"])["ticker"])
+    universe = set(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
     years_history = context.config.data_extract.years_history
     frames = []
     for tag in _period_names(years_history):
@@ -119,7 +119,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     cmap = build_cusip_ticker_map(context, raw["cusip"].unique().tolist())
     raw = raw.merge(cmap, on="cusip", how="inner")
     out = raw[raw["ticker"].isin(universe)].reset_index(drop=True)
-    out.to_parquet(context.paths["INSTITUTIONAL_HOLDINGS_PATH"], index=False)
+    context.store.save("institutional_holdings", out)
     print(f"Saved {len(out)} 13F holding rows ({out['ticker'].nunique()} tickers) "
-          f"to {context.paths['INSTITUTIONAL_HOLDINGS_PATH']}")
+          f"to DB table 'institutional_holdings'")
     return out

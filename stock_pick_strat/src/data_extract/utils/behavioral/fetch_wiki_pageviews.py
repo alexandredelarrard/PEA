@@ -57,10 +57,10 @@ def _fetch_article(article: str, start: str, end: str) -> list[dict]:
     return r.json().get("items", [])
 
 
-def _load_existing(path):
-    if not path.exists():
+def _load_existing(context: Context):
+    df = context.store.load("wiki_pageviews")
+    if df.empty:
         return None
-    df = pd.read_parquet(path)
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     return df
 
@@ -73,12 +73,11 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
     cached max date (the Wikimedia API takes an explicit start/end), so a re-run
     downloads only the missing days; a ticker already current through yesterday is
     skipped entirely."""
-    path = context.paths["WIKI_PAGEVIEWS_PATH"]
-    names = pd.read_csv(context.paths["TICKERS_PATH"])
+    names = context.store.load("sp500_tickers")
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
 
-    existing = _load_existing(path)
+    existing = _load_existing(context)
     last_by_ticker = ({} if existing is None
                       else existing.groupby("ticker")["date"].max().to_dict())
     today = pd.Timestamp.today().normalize()
@@ -113,6 +112,8 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
     out = (pd.concat(parts, ignore_index=True)
            .drop_duplicates(subset=["ticker", "date"], keep="last")
            .sort_values(["ticker", "date"]).reset_index(drop=True))
-    out.to_parquet(path, index=False)
-    print(f"Saved {len(out)} Wikipedia pageview rows to {path}")
+    new = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not new.empty:
+        context.store.save("wiki_pageviews", new)
+    print(f"Saved {len(new)} new Wikipedia pageview rows to DB table 'wiki_pageviews'")
     return out

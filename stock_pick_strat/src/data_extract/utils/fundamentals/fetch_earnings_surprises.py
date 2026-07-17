@@ -106,9 +106,9 @@ def fetch_earnings_surprises(
     """Build/refresh the incremental earnings-surprise history and save it to
     EARNINGS_SURPRISES_PATH. Returns the full merged history."""
     log = context.log
-    path = context.paths["EARNINGS_SURPRISES_PATH"]
-    existing = pd.read_parquet(path) if path.exists() else None
-    if existing is not None and not existing.empty:
+    existing = context.store.load("earnings_surprises")
+    existing = None if existing.empty else existing
+    if existing is not None:
         existing["earnings_date"] = pd.to_datetime(existing["earnings_date"]).dt.normalize()
 
     full_limit = int(context.config.data_extract.years_history) * 4 + 4
@@ -147,8 +147,12 @@ def fetch_earnings_surprises(
               .drop_duplicates(subset=["ticker", "earnings_date"], keep="last")
               .reset_index(drop=True))
 
-    out.to_parquet(path, index=False)
+    # upsert the freshly-fetched rows; the DB merges on (ticker, earnings_date),
+    # so a now-filled actual overwrites the old forward-estimate row.
+    new = pd.concat(new_frames, ignore_index=True)[_COLUMNS] if new_frames else pd.DataFrame()
+    if not new.empty:
+        context.store.save("earnings_surprises", new)
     reported = int(out["eps_actual"].notna().sum())
-    log.info("Saved %d earnings rows (%d reported, %d forward) for %d tickers to %s",
-             len(out), reported, len(out) - reported, out["ticker"].nunique(), path)
+    log.info("Saved %d new earnings rows (history %d rows, %d reported) for %d tickers to DB",
+             len(new), len(out), reported, out["ticker"].nunique())
     return out

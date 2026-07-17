@@ -60,9 +60,8 @@ class StepBuildCube(Step):
 
     # ------------------------------------------------------------------ #
     def load_prices(self):
-        path = self._context.paths["PRICES_PATH"]
-        self._log.info("Loading prices from %s", path)
-        self.prices_long = pd.read_parquet(path)
+        self._log.info("Loading prices from DB table 'prices'")
+        self.prices_long = self._context.store.load("prices")
 
       
     def normalize_prices(self):
@@ -122,64 +121,59 @@ class StepBuildCube(Step):
         n = sum(1 for p in self.peers.values() if p)
         self._log.info("Sector returns ready for %s / %s tickers", n, len(self.peers))
 
+    def _load_or_none(self, table: str) -> pd.DataFrame | None:
+        """Load a DB table, returning None when it is absent/empty (so every
+        downstream feature builder keeps its 'optional source' semantics)."""
+        df = self._context.store.load(table)
+        return None if df.empty else df
+
     def load_fundamentals_and_macro(self):
         """Load fundamentals history and macro; both optional but recommended."""
-        fpath = self._context.paths["FUNDAMENTALS_HISTORY_PATH"]
-        self.fundamentals = pd.read_parquet(fpath) if fpath.exists() else None
+        self.fundamentals = self._load_or_none("fundamentals_history")
         if self.fundamentals is None:
             self._log.warning("No fundamentals history -> value/quality factors "
                               "and peer-relative fundamentals will be skipped.")
 
-        mpath = self._context.paths["MACRO_PATH"]
-        self.macro = pd.read_parquet(mpath) if mpath.exists() else None
+        self.macro = self._load_or_none("macro")
         if self.macro is None:
-            self._log.warning("No macro file -> macro betas will be skipped.")
+            self._log.warning("No macro data -> macro betas will be skipped.")
 
-        apath = self._context.paths["ANALYST_ESTIMATES_HISTORY_PATH"]
-        self.analyst = pd.read_parquet(apath) if apath.exists() else None
+        self.analyst = self._load_or_none("analyst_estimates_history")
         if self.analyst is None:
             self._log.warning("No analyst-estimate history -> analyst features skipped.")
 
-        epath = self._context.paths["EARNINGS_SURPRISES_PATH"]
-        self.earnings = pd.read_parquet(epath) if epath.exists() else None
+        self.earnings = self._load_or_none("earnings_surprises")
         if self.earnings is None:
             self._log.warning("No earnings-surprise history -> earnings expectation "
                               "features skipped (run fetch_earnings_surprises).")
 
-        gpath = self._context.paths["MANAGEMENT_HISTORY_PATH"]
-        self.management = pd.read_parquet(gpath) if gpath.exists() else None
+        self.management = self._load_or_none("management_history")
         if self.management is None:
             self._log.warning("No management/ownership history -> governance features "
                               "skipped (run fetch_management).")
 
-        wpath = self._context.paths["EMPLOYEES_HISTORY_PATH"]
-        self.employees = pd.read_parquet(wpath) if wpath.exists() else None
+        self.employees = self._load_or_none("employees_history")
         if self.employees is None:
             self._log.warning("No employee-count history -> workforce features skipped "
                               "(run fetch_employees; needs FMP_API_KEY).")
 
-        dpath = self._context.paths["DIVIDENDS_PATH"]
-        self.dividends = pd.read_parquet(dpath) if dpath.exists() else None
+        self.dividends = self._load_or_none("dividends")
         if self.dividends is None:
             self._log.warning("No dividend history -> dividend/shareholder-yield "
                               "features skipped (run fetch_dividends).")
 
-        wvpath = self._context.paths["WIKI_PAGEVIEWS_PATH"]
-        self.wiki_pageviews = pd.read_parquet(wvpath) if wvpath.exists() else None
-        gtpath = self._context.paths["GOOGLE_TRENDS_PATH"]
-        self.google_trends = pd.read_parquet(gtpath) if gtpath.exists() else None
+        self.wiki_pageviews = self._load_or_none("wiki_pageviews")
+        self.google_trends = self._load_or_none("google_trends")
         if self.wiki_pageviews is None and self.google_trends is None:
             self._log.warning("No attention data -> Wikipedia/Google-Trends features "
                               "skipped (run fetch_wiki_pageviews / fetch_google_trends).")
 
-        ipath = self._context.paths["INSTITUTIONAL_HOLDINGS_PATH"]
-        self.institutional = pd.read_parquet(ipath) if ipath.exists() else None
+        self.institutional = self._load_or_none("institutional_holdings")
         if self.institutional is None:
             self._log.warning("No 13F holdings -> institutional-ownership features "
                               "skipped (run fetch_13f).")
 
-        spath = self._context.paths["SHORT_INTEREST_PATH"]
-        self.short_interest = pd.read_parquet(spath) if spath.exists() else None
+        self.short_interest = self._load_or_none("short_interest")
         if self.short_interest is None:
             self._log.warning("No short-volume data -> short-interest features "
                               "skipped (run fetch_short_interest).")
@@ -495,7 +489,6 @@ class StepBuildCube(Step):
                        self.cube["ticker"].nunique())
 
     def save_cube(self):
-        cube_path = self._context.paths["CUBE_PATH"]
-        cube_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cube.to_parquet(cube_path, index=False)
-        self._log.info("Saved cube to %s", cube_path)
+        # full rebuild each run -> replace the table (truncate + fast COPY)
+        n = self._context.store.replace("cube", self.cube)
+        self._log.info("Saved cube to DB table 'cube' (%s rows)", n)

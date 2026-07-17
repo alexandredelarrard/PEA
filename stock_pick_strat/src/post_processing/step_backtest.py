@@ -83,10 +83,10 @@ class StepBacktest(Step):
                        self.model_types, list(self.models.keys()), self.backtest_start.date())
 
     def load_cube_and_returns(self):
-        self.cube = pd.read_parquet(self._context.paths["CUBE_PATH"])
+        self.cube = self._context.store.load("cube")
         self.end = (pd.Timestamp(self._cfg.end) if self._cfg.get("end")
                     else pd.Timestamp(self.cube["date"].max()))
-        prices_long = pd.read_parquet(self._context.paths["PRICES_PATH"])
+        prices_long = self._context.store.load("prices")
         raw = du.prices_long_to_multiindex(prices_long)
         close = du.extract_field(raw, "Close")
         mkt = self._cube_cfg.market_ticker
@@ -163,10 +163,9 @@ class StepBacktest(Step):
         """ticker -> GICS group for sector-neutral construction. Uses the
         `industry_group` column (24-level) from tickers.csv, falling back to
         `sector` (11) if that column is absent (older tickers.csv)."""
-        path = self._context.paths["TICKERS_PATH"]
-        if not path.exists():
+        tk = self._context.store.load("sp500_tickers")
+        if tk.empty:
             return {}
-        tk = pd.read_csv(path)
         col = ("industry_group" if "industry_group" in tk.columns
                else "sector" if "sector" in tk.columns else None)
         if col is None:

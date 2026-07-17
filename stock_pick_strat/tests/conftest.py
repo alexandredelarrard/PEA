@@ -25,6 +25,15 @@ if str(ROOT) not in sys.path:
 
 DATA = ROOT / "data"
 
+
+def _store():
+    """DB-backed data store for the real-data fixtures (DB is the source of
+    truth now that the pipeline is DB-only). Skips a fixture when its table is
+    empty — mirrors the old 'skip if parquet absent' behaviour."""
+    from src.utils.db import get_engine
+    from src.data_store.store import DataStore
+    return DataStore(get_engine())
+
 MARKET = "SPY"
 OTHER_TICKERS = ["SPY", "^VIX"]
 SUBSET_SIZE = 100  # keep the real-data pipeline fast but keep a real cross-section
@@ -39,10 +48,9 @@ def real_frames():
     speed but guaranteed to contain AMD (the ticker under investigation)."""
     from src.data_aggregate.utils import data_utils as du
 
-    if not (DATA / "prices.parquet").exists():
-        pytest.skip("data/prices.parquet not available")
-
-    prices = pd.read_parquet(DATA / "prices.parquet")
+    prices = _store().load("prices")
+    if prices.empty:
+        pytest.skip("prices table is empty")
     raw = du.prices_long_to_multiindex(prices)
     close = du.extract_field(raw, "Close")
     close = close.loc[close[MARKET].notna()]
@@ -80,14 +88,11 @@ def real_pipeline(real_frames):
     stock_ret = real_frames["stock_ret"]
     mkt_ret = real_frames["mkt_ret"]
 
-    fundamentals = (
-        pd.read_parquet(DATA / "fundamentals_history.parquet")
-        if (DATA / "fundamentals_history.parquet").exists() else None
-    )
-    macro = (
-        pd.read_parquet(DATA / "macro.parquet")
-        if (DATA / "macro.parquet").exists() else None
-    )
+    store = _store()
+    fundamentals = store.load("fundamentals_history")
+    fundamentals = None if fundamentals.empty else fundamentals
+    macro = store.load("macro")
+    macro = None if macro.empty else macro
 
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     sector_ret = compute_sector_returns(stock_ret, peers)
@@ -131,11 +136,9 @@ def fundamental_panel(real_frames):
     from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
     from src.modelling.utils_model.sector_peers import build_peer_dict
 
-    fpath = DATA / "fundamentals_history.parquet"
-    if not fpath.exists():
-        pytest.skip("fundamentals_history.parquet not available")
-
-    fundamentals = pd.read_parquet(fpath)
+    fundamentals = _store().load("fundamentals_history")
+    if fundamentals.empty:
+        pytest.skip("fundamentals_history table is empty")
     stock_close = real_frames["stock_close"]
     stock_ret = real_frames["stock_ret"]
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)

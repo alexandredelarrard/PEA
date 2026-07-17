@@ -79,10 +79,10 @@ def _interest_over_time(keyword: str, timeframe: str):
     return pt.interest_over_time()
 
 
-def _load_existing(path):
-    if not path.exists():
+def _load_existing(context: Context):
+    df = context.store.load("google_trends")
+    if df.empty:
         return None
-    df = pd.read_parquet(path)
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     return df
 
@@ -100,14 +100,13 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     * RATE LIMIT (429): instead of skipping the ticker, WAIT and retry with
       exponential backoff (>=3 retries) via call_with_retries.
     """
-    path = context.paths["GOOGLE_TRENDS_PATH"]
-    names = pd.read_csv(context.paths["TICKERS_PATH"])
+    names = context.store.load("sp500_tickers")
     names['name'] = names['name'].apply(lambda x: re.sub(r"\s*\([^)]*\)", "", x).strip())
 
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
 
-    existing = _load_existing(path)
+    existing = _load_existing(context)
     last_by_ticker = ({} if existing is None
                       else existing.groupby("ticker")["date"].max().to_dict())
     today = pd.Timestamp.today().normalize()
@@ -143,6 +142,8 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     out = (pd.concat(parts, ignore_index=True)
            .drop_duplicates(subset=["ticker", "date"], keep="last")
            .sort_values(["ticker", "date"]).reset_index(drop=True))
-    out.to_parquet(path, index=False)
-    print(f"Saved {len(out)} Google Trends rows to {path}")
+    new = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not new.empty:
+        context.store.save("google_trends", new)
+    print(f"Saved {len(new)} new Google Trends rows to DB table 'google_trends'")
     return out

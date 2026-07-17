@@ -39,22 +39,23 @@ def _api_key() -> str:
 # --------------------------------------------------------------------------- #
 def fetch_business_descriptions(
     tickers: list[str],
-    cache_path: Path | None = None,
+    store=None,
     pause: float = 0.2,
     force: bool = False,
 ) -> dict[str, str]:
     """
     Return {ticker: description}. Yahoo is queried ONLY for tickers not already
-    in the cache (unless force=True). New descriptions are merged into the cache.
+    in the DB cache (`ticker_descriptions`) unless force=True; new descriptions
+    are merged back into the table.
     """
     cached: dict[str, str] = {}
-    if cache_path and Path(cache_path).exists():
-        df = pd.read_parquet(cache_path)
-        cached = df["description"].to_dict()
+    if store is not None:
+        df = store.load("ticker_descriptions")
+        if not df.empty:
+            cached = dict(zip(df["ticker"], df["description"]))
 
     missing = [t for t in tickers if force or t not in cached]
     if missing:
-        
         new: dict[str, str] = {}
         for t in tqdm(missing, desc=f"Fetching {len(missing)} descriptions (Yahoo)"):
             try:
@@ -68,9 +69,9 @@ def fetch_business_descriptions(
             time.sleep(pause)
 
         cached = {**cached, **new}
-        if cache_path and new:
-            Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame({"description": cached}).to_parquet(cache_path)  # index = ticker
+        if store is not None and new:
+            store.save("ticker_descriptions",
+                       pd.DataFrame({"ticker": list(new), "description": list(new.values())}))
     else:
         print(f"All {len(tickers)} descriptions already cached - no Yahoo calls.")
 
@@ -83,21 +84,22 @@ def fetch_business_descriptions(
 def get_openai_embeddings(
     descriptions: dict[str, str],
     model: str = "text-embedding-3-small",
-    cache_path: Path | None = None,
+    store=None,
     batch_size: int = 100,
     max_chars: int = 8000,
     force: bool = False,
 ) -> pd.DataFrame:
     """
     Return DataFrame index=ticker, columns=embedding dims. OpenAI is called ONLY
-    for tickers not already in the embedding cache (unless force=True). New
-    vectors are merged into the cache.
+    for tickers not already in the DB embedding cache (`ticker_embeddings`, one
+    float8[] array per ticker) unless force=True. New vectors are merged back.
     """
     cached: dict[str, np.ndarray] = {}
-    if cache_path and Path(cache_path).exists():
-        cache = pd.read_parquet(cache_path)
-        for t in cache.index:
-            cached[t] = cache.loc[t].to_numpy(dtype="float64")
+    if store is not None:
+        cache = store.load("ticker_embeddings")
+        if not cache.empty:
+            for _, r in cache.iterrows():
+                cached[r["ticker"]] = np.asarray(r["embedding"], dtype="float64")
 
     todo = [t for t in descriptions if force or t not in cached]
 
@@ -122,9 +124,10 @@ def get_openai_embeddings(
     emb = pd.DataFrame.from_dict(all_vecs, orient="index")
     emb.columns = [f"e{i}" for i in range(emb.shape[1])]
 
-    if cache_path and new:                              # persist only if we added new
-        Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
-        emb.to_parquet(cache_path)
+    if store is not None and new:                       # persist only newly added
+        rows = pd.DataFrame({"ticker": list(new),
+                             "embedding": [v.tolist() for v in new.values()]})
+        store.save("ticker_embeddings", rows)
 
     req = [t for t in descriptions if t in emb.index]
     return emb.loc[req]

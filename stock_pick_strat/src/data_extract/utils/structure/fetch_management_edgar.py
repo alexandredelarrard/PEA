@@ -197,7 +197,8 @@ def _is_up_to_date(context: Context, cik_map: pd.DataFrame) -> bool:
     """True when the history was already built today for the full universe."""
     path = context.paths["MANAGEMENT_HISTORY_PATH"]
     meta = load_extract_meta(path)
-    if meta is None or meta.get("last_built") != today_iso() or not path.exists():
+    if (meta is None or meta.get("last_built") != today_iso()
+            or not context.store.exists("management_history")):
         return False
     return meta.get("universe_size", 0) >= len(cik_map)
 
@@ -213,7 +214,8 @@ def fetch_management_edgar(context: Context, tickers: list[str],
     cik_map = load_cik_mapping(context)
     cik_map = cik_map[cik_map["ticker"].isin(tickers)]
 
-    existing = pd.read_parquet(path) if path.exists() else None
+    existing = context.store.load("management_history")
+    existing = None if existing.empty else existing
     if _is_up_to_date(context, cik_map):
         context.log.info("EDGAR management already up to date for %s — skipping (%d rows)",
                          today_iso(), 0 if existing is None else len(existing))
@@ -247,7 +249,7 @@ def fetch_management_edgar(context: Context, tickers: list[str],
         if c not in out.columns:
             out[c] = pd.NA
     out = out.sort_values(["ticker", "as_of"]).reset_index(drop=True)
-    out.to_parquet(path, index=False)
+    context.store.save("management_history", out)   # small table — full upsert
 
     last_fd = out["as_of"].max()
     save_extract_meta(path, last_fd.date().isoformat() if pd.notna(last_fd) else None,

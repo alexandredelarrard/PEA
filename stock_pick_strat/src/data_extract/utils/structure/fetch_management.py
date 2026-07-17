@@ -158,13 +158,13 @@ def fetch_snapshot(context: Context, tickers: list[str], pause: float = 0.3) -> 
 
 
 def append_to_history(context: Context, snapshot: pd.DataFrame) -> pd.DataFrame:
-    path = context.paths["MANAGEMENT_HISTORY_PATH"]
-    if path.exists():
-        hist = pd.concat([pd.read_parquet(path), snapshot], ignore_index=True)
+    existing = context.store.load("management_history")
+    if not existing.empty:
+        hist = pd.concat([existing, snapshot], ignore_index=True)
         hist = hist.drop_duplicates(subset=["ticker", "as_of"], keep="last")
     else:
         hist = snapshot
-    hist.to_parquet(path, index=False)
+    context.store.save("management_history", hist)
     return hist
 
 
@@ -172,7 +172,6 @@ def fetch_management(context: Context, tickers: list[str], pause: float = 0.3) -
     """Pull today's management/ownership snapshot, save it, and append it to the
     accruing history (point-in-time archive built up over successive runs)."""
     snapshot = fetch_snapshot(context, tickers, pause)
-    snapshot.to_parquet(context.paths["MANAGEMENT_PATH"], index=False)
     hist = append_to_history(context, snapshot)
     context.log.info("Management snapshot: %d tickers (founder-led=%d, family-owned=%d); "
                      "history now %d rows across %d dates",

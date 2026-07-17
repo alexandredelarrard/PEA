@@ -116,13 +116,16 @@ def build_cik_mapping(context: Context, sp500_tickers: list[str] | None = None) 
     if sp500_tickers:
         df = df[df["ticker"].isin(sp500_tickers)]
 
-    df.to_csv(context.paths["CIK_MAPPING_PATH"], index=False)
-    print(f"Saved CIK mapping for {len(df)} tickers to {context.paths["CIK_MAPPING_PATH"]}")
+    context.store.save("cik_mapping", df)
+    print(f"Saved CIK mapping for {len(df)} tickers to DB table 'cik_mapping'")
     return df
 
 
 def load_cik_mapping(context: Context) -> pd.DataFrame:
-    if context.paths["CIK_MAPPING_PATH"].exists():
-        return pd.read_csv(context.paths["CIK_MAPPING_PATH"], dtype={"cik": str})
-    tickers = pd.read_csv(context.paths["TICKERS_PATH"])["ticker"].tolist()
-    return build_cik_mapping(context, tickers)
+    df = context.store.load("cik_mapping")
+    if df.empty:
+        tickers = context.store.load("sp500_tickers", columns=["ticker"])["ticker"].tolist()
+        return build_cik_mapping(context, tickers)
+    # CIK is stored numerically but SEC URLs need the 10-digit zero-padded form
+    df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
+    return df

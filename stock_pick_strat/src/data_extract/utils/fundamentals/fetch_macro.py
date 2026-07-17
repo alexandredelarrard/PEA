@@ -37,10 +37,7 @@ def _macro_is_up_to_date(context: Context) -> bool:
     """True when the cached macro file already covers the last business day
     (the daily yield/VIX series set the max date). Skips redundant re-pulls
     on weekends / same-day re-runs."""
-    path = context.paths["MACRO_PATH"]
-    if not path.exists():
-        return False
-    existing = pd.read_parquet(path, columns=["date"])
+    existing = context.store.load("macro", columns=["date"])
     if existing.empty:
         return False
     max_date = pd.to_datetime(existing["date"]).max()
@@ -72,5 +69,5 @@ def fetch_macro(context: Context):
     macro.index.name = "date"
     macro = macro.reset_index()
 
-    macro.to_parquet(context.paths["MACRO_PATH"], index=False)
-    print(f"Saved {len(macro)} rows of macro data to {context.paths["MACRO_PATH"]}")
+    context.store.save("macro", macro)
+    print(f"Saved {len(macro)} rows of macro data to DB table 'macro'")

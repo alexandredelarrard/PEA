@@ -49,10 +49,9 @@ class StepModelling(Step):
 
     # ------------------------------------------------------------------ #
     def load_cube(self):
-        cube_path = self._context.paths["CUBE_PATH"]
-        if not cube_path.exists():
-            raise FileNotFoundError(f"Cube not found at {cube_path}. Run StepBuildCube first.")
-        self.cube = pd.read_parquet(cube_path)
+        self.cube = self._context.store.load("cube")
+        if self.cube.empty:
+            raise FileNotFoundError("Cube table is empty. Run StepBuildCube first.")
         self.horizons = sorted(self.cube["target_horizon"].unique())
         self.primary_horizon = self._cfg.targets.primary_horizon
         self.label_column = self._config.model.label_column
@@ -390,10 +389,9 @@ class StepModelling(Step):
 
     def save_outputs(self):
         out = self._cfg.output
-        predictions_path = self._context.paths["PREDICTIONS_PATH"]
-        predictions_path.parent.mkdir(parents=True, exist_ok=True)
-        self.predictions.to_parquet(predictions_path, index=False)
-        self._log.info("Saved predictions to %s", predictions_path)
+        # full rebuild each run -> replace the predictions table
+        self._context.store.replace("predictions", self.predictions)
+        self._log.info("Saved predictions to DB table 'predictions'")
 
         if not self._context.save:
             return
@@ -403,13 +401,14 @@ class StepModelling(Step):
             for h, folds in self.cv_results.items():
                 for i, r in enumerate(folds):
                     rows.append({"horizon": h, "fold": i, **r})
+            # CV results are a diagnostics artifact -> keep as a file
             pd.DataFrame(rows).to_parquet(self._context.paths["CUBE_CV_RESULTS_PATH"], index=False)
 
         if out.save_signal:
             sig = self.signal.rename("signal").reset_index()
             sig.insert(0, "date", self.signal_date)
-            sig.to_parquet(self._context.paths["CUBE_SIGNAL_PATH"], index=False)
-            self._log.info("Saved blended signal to %s", self._context.paths["CUBE_SIGNAL_PATH"])
+            self._context.store.replace("cube_signal", sig)
+            self._log.info("Saved blended signal to DB table 'cube_signal'")
 
     def save_models(self):
         """Persist each horizon's booster + metadata for the backtest step."""

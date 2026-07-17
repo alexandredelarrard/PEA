@@ -44,8 +44,8 @@ _MAX_WORKERS = 8                      # concurrent tickers (rate-limited in sec_
 
 
 def _load_existing(context: Context) -> pd.DataFrame | None:
-    path = context.paths["EMPLOYEES_HISTORY_PATH"]
-    return pd.read_parquet(path) if path.exists() else None
+    df = context.store.load("employees_history")
+    return None if df.empty else df
 
 
 def _seen_accessions(existing: pd.DataFrame | None) -> set:
@@ -69,7 +69,8 @@ def _is_up_to_date(context: Context, cik_map: pd.DataFrame) -> bool:
     """True when the history was already built today for the full universe."""
     path = context.paths["EMPLOYEES_HISTORY_PATH"]
     meta = load_extract_meta(path)
-    if meta is None or meta.get("last_built") != today_iso() or not path.exists():
+    if (meta is None or meta.get("last_built") != today_iso()
+            or not context.store.exists("employees_history")):
         return False
     return meta.get("universe_size", 0) >= len(cik_map)
 
@@ -154,7 +155,7 @@ def fetch_employees_edgar(context: Context, tickers: list[str],
     out = (out.sort_values(["ticker", "as_of"])
               .drop_duplicates(subset=["ticker", "as_of"], keep="last")
               .reset_index(drop=True))
-    out.to_parquet(path, index=False)
+    context.store.save("employees_history", out)   # small table — full upsert
 
     last_fd = out["as_of"].max()
     save_extract_meta(path, last_fd.date().isoformat() if pd.notna(last_fd) else None,

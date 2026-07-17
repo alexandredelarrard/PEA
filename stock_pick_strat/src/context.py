@@ -12,6 +12,8 @@ from omegaconf import DictConfig, OmegaConf
 from src.utils.utils_read_files import check_path_exist
 from src.utils.config import read_config
 from src.utils.seed import set_seed
+from src.utils.db import get_engine
+from src.data_store.store import DataStore
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
@@ -109,6 +111,11 @@ class Context:
 
         # env variables
         self._load_env()
+
+        # database-backed data store (replaces parquet I/O for tabular data;
+        # `paths` are kept only for non-tabular artifacts: models, plots,
+        # SEC JSON caches, filing text)
+        self.store = DataStore(get_engine())
 
         self._use_cache = use_cache
         self._save = save

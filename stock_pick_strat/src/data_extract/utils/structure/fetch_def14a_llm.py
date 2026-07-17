@@ -212,7 +212,8 @@ def _process_filing(
 def _is_up_to_date(context: Context, n_universe: int) -> bool:
     path = context.paths["DEF14A_LLM_PATH"]
     meta = load_extract_meta(path)
-    if meta is None or meta.get("last_built") != today_iso() or not path.exists():
+    if (meta is None or meta.get("last_built") != today_iso()
+            or not context.store.exists("def14a_llm")):
         return False
     return meta.get("universe_size", 0) >= n_universe
 
@@ -235,11 +236,12 @@ def fetch_def14a_llm(
     cik_map = cik_map[cik_map["ticker"].isin(tickers)]
 
     if _is_up_to_date(context, len(cik_map)):
-        existing = pd.read_parquet(path) if path.exists() else pd.DataFrame()
+        existing = context.store.load("def14a_llm")
         context.log.info("DEF 14A LLM already up to date — skipping (%d rows)", len(existing))
         return existing
 
-    existing = pd.read_parquet(path) if path.exists() else None
+    existing = context.store.load("def14a_llm")
+    existing = None if existing.empty else existing
     seen: set[str] = set()
     if existing is not None and not existing.empty and "accession_number" in existing.columns:
         seen = set(existing["accession_number"].dropna())
@@ -278,7 +280,8 @@ def fetch_def14a_llm(
     out["as_of"] = pd.to_datetime(out["as_of"]).dt.normalize()
     out = out.drop_duplicates(subset=["ticker", "accession_number"], keep="last")
     out = out.sort_values(["ticker", "as_of"]).reset_index(drop=True)
-    out.to_parquet(path, index=False)
+    if not new_df.empty:
+        context.store.save("def14a_llm", new_df)
 
     last_fd = out["as_of"].max()
     save_extract_meta(

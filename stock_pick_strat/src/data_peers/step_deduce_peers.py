@@ -46,9 +46,8 @@ class StepDeducePeers(Step):
         return self.peers
 
     def load_prices(self):
-        path = self._context.paths["PRICES_PATH"]
-        self._log.info("Loading prices from %s", path)
-        self.prices_long = pd.read_parquet(path)
+        self._log.info("Loading prices from DB table 'prices'")
+        self.prices_long = self._context.store.load("prices")
 
     def normalize_prices(self):
         mkt = self._config.build_cube.market_ticker
@@ -67,15 +66,14 @@ class StepDeducePeers(Step):
         Returns None on any failure so the caller falls back to correlation-only."""
         tickers = list(self.stock_ret.columns)
         try:
-            descriptions = fetch_business_descriptions(tickers)
+            descriptions = fetch_business_descriptions(tickers, store=self._context.store)
             if not descriptions:
                 self._log.warning("No business descriptions fetched -> corr-only peers")
                 return None
-            cache_path = self._context.paths["DATA_STORE"] / "ticker_embeddings.parquet"
             emb = get_openai_embeddings(
                 descriptions,
                 model=self._cfg.get("embedding_model", "text-embedding-3-small"),
-                cache_path=cache_path,
+                store=self._context.store,
             )
             if emb.empty:
                 return None

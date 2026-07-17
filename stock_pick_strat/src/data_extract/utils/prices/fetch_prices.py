@@ -75,9 +75,8 @@ def get_sp500_tickers(context: Context) -> list[str]:
 
     keep = [c for c in ["ticker", "name", "sector", "industry_group", "sub_industry", "cik"]
             if c in df.columns]
-    tickers_path = context.paths["TICKERS_PATH"]
-    df[keep].to_csv(tickers_path, index=False)
-    print(f"Saved {len(df)} tickers to {tickers_path}")
+    context.store.save("sp500_tickers", df[keep])
+    print(f"Saved {len(df)} tickers to DB table 'sp500_tickers'")
     return df["ticker"].tolist()
 
 
@@ -89,10 +88,10 @@ def _normalize_prices(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _load_existing_prices(path) -> pd.DataFrame | None:
-    if not path.exists():
+def _load_existing_prices(context: Context) -> pd.DataFrame | None:
+    df = context.store.load("prices")
+    if df.empty:
         return None
-    df = pd.read_parquet(path)
     return _normalize_prices(df)
 
 
@@ -302,16 +301,9 @@ def _save_dividends(context: Context, new_prices: pd.DataFrame) -> None:
     div = _extract_dividends(new_prices)
     if div.empty:
         return
-    path = context.paths["DIVIDENDS_PATH"]
-    existing = pd.read_parquet(path) if path.exists() else None
-    if existing is not None:
-        existing["date"] = pd.to_datetime(existing["date"]).dt.normalize()
-    parts = [x for x in (existing, div) if x is not None and not x.empty]
-    out = (pd.concat(parts, ignore_index=True)
-           .drop_duplicates(subset=["ticker", "date"], keep="last")
-           .sort_values(["ticker", "date"]).reset_index(drop=True))
-    out.to_parquet(path, index=False)
-    print(f"Saved {len(out)} dividend rows to {path} (from the price download)")
+    # upsert on (ticker, date) — the DB merges with any prior dividend rows
+    n = context.store.save("dividends", div)
+    print(f"Saved {n} dividend rows to DB table 'dividends' (from the price download)")
 
 
 def _merge_prices(
@@ -339,16 +331,16 @@ def fetch_price_history(
     chunk_size: int = 50,
     pause: float = 2.0,
 ) -> pd.DataFrame:
-    """Download daily OHLCV, incrementally appending to the cached parquet file."""
-    path = context.paths["PRICES_PATH"]
+    """Download daily OHLCV, incrementally upserting into the `prices` DB table."""
     years_history = context.config.data_extract.years_history
 
-    existing = _load_existing_prices(path)
+    existing = _load_existing_prices(context)
     plans = _tickers_needing_download(existing, tickers, years_history)
     tickers_to_fetch = [t for t, window in plans.items() if window is not None]
 
     if not tickers_to_fetch:
-        print(f"Price history already up to date ({len(existing)} rows) — {path}")
+        n = 0 if existing is None else len(existing)
+        print(f"Price history already up to date ({n} rows) — DB table 'prices'")
         return existing
 
     print(
@@ -358,10 +350,13 @@ def fetch_price_history(
     new = _download_prices(plans, years_history, chunk_size, pause)
     # dividends come from the SAME download (actions=True) -> no separate run
     _save_dividends(context, new)
-    # keep prices.parquet a clean OHLCV frame (drop the action columns)
+    # keep the prices table a clean OHLCV frame (drop the action columns)
     if not new.empty:
         new = new.drop(columns=_ACTION_COLS, errors="ignore")
     out = _merge_prices(existing, new, years_history)
-    out.to_parquet(path, index=False)
-    print(f"Saved {len(out)} price rows to {path}")
+    # upsert only the freshly-downloaded delta; the DB merges on (ticker, date)
+    if not new.empty:
+        context.store.save("prices", new)
+    print(f"Saved {len(new)} new price rows to DB table 'prices' "
+          f"(table now spans {len(out)} rows in memory)")
     return out

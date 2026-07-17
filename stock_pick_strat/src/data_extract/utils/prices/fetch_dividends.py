@@ -47,10 +47,10 @@ def _ticker_dividends(ticker: str) -> pd.Series:
     return yf.Ticker(ticker).dividends
 
 
-def _load_existing(path) -> pd.DataFrame | None:
-    if not path.exists():
+def _load_existing(context: Context) -> pd.DataFrame | None:
+    df = context.store.load("dividends")
+    if df.empty:
         return None
-    df = pd.read_parquet(path)
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     return df
 
@@ -66,8 +66,7 @@ def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3,
     date-range API, so we skip current tickers rather than request a sub-range,
     and only the ex-dates after the cached max are appended.
     """
-    path = context.paths["DIVIDENDS_PATH"]
-    existing = _load_existing(path)
+    existing = _load_existing(context)
     last_by_ticker = ({} if existing is None
                       else existing.groupby("ticker")["date"].max().to_dict())
     today = pd.Timestamp.today().normalize()
@@ -104,6 +103,9 @@ def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3,
            .drop_duplicates(subset=["ticker", "date"], keep="last")
            .sort_values(["ticker", "date"])
            .reset_index(drop=True))
-    out.to_parquet(path, index=False)
-    print(f"Saved {len(out)} dividend rows to {path}")
+    # persist only the newly-fetched ex-dates; the DB merges on (ticker, date)
+    new = pd.concat(new_frames, ignore_index=True) if new_frames else pd.DataFrame()
+    if not new.empty:
+        context.store.save("dividends", new)
+    print(f"Saved {len(new)} new dividend rows to DB table 'dividends'")
     return out

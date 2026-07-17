@@ -51,10 +51,10 @@ def _fetch_day(day: pd.Timestamp) -> str | None:
     return r.text if r.status_code == 200 else None
 
 
-def _load_existing(path):
-    if not path.exists():
+def _load_existing(context: Context):
+    df = context.store.load("short_interest")
+    if df.empty:
         return None
-    df = pd.read_parquet(path)
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     return df
 
@@ -62,8 +62,7 @@ def _load_existing(path):
 def fetch_short_interest(context: Context, tickers: list[str] | None = None,
                          years_history: int = 10, pause: float = 0.05) -> pd.DataFrame:
     """Download RegSHO daily short-volume files incrementally; cache to parquet."""
-    path = context.paths["SHORT_INTEREST_PATH"]
-    existing = _load_existing(path)
+    existing = _load_existing(context)
     start = (existing["date"].max() + pd.Timedelta(days=1)) if existing is not None \
         else pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     days = pd.bdate_range(start, pd.Timestamp.today().normalize())
@@ -92,6 +91,9 @@ def fetch_short_interest(context: Context, tickers: list[str] | None = None,
     out = (pd.concat(parts, ignore_index=True)
            .drop_duplicates(["ticker", "date"], keep="last")
            .sort_values(["ticker", "date"]).reset_index(drop=True))
-    out.to_parquet(path, index=False)
-    print(f"Saved {len(out)} short-volume rows to {path}")
+    # persist only the newly-downloaded days; the DB merges on (ticker, date)
+    new = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not new.empty:
+        context.store.save("short_interest", new)
+    print(f"Saved {len(new)} new short-volume rows to DB table 'short_interest'")
     return out

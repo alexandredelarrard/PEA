@@ -49,8 +49,9 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
     """Return + cache a [cusip, ticker] map for the given CUSIPs (deduplicated).
     Reuses the cache and only looks up CUSIPs not already mapped."""
     import os
-    path = context.paths["CUSIP_MAP_PATH"]
-    cached = pd.read_parquet(path) if path.exists() else pd.DataFrame(columns=["cusip", "ticker"])
+    cached = context.store.load("cusip_ticker_map")
+    if cached.empty:
+        cached = pd.DataFrame(columns=["cusip", "ticker"])
     known = set(cached["cusip"])
     todo = sorted({c for c in cusips if c and c not in known})
     if not todo:
@@ -68,6 +69,7 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
 
     new = pd.DataFrame({"cusip": list(mapped), "ticker": list(mapped.values())})
     out = pd.concat([cached, new], ignore_index=True).drop_duplicates("cusip", keep="last")
-    out.to_parquet(path, index=False)
-    print(f"CUSIP->ticker map: {len(out)} entries ({len(new)} new) -> {path}")
+    if not new.empty:
+        context.store.save("cusip_ticker_map", new)
+    print(f"CUSIP->ticker map: {len(out)} entries ({len(new)} new) -> DB 'cusip_ticker_map'")
     return out

@@ -149,10 +149,8 @@ def _save_history_meta(
 
 
 def _load_existing_history(context: Context) -> pd.DataFrame | None:
-    path = context.paths["FUNDAMENTALS_HISTORY_PATH"]
-    if not path.exists():
-        return None
-    return pd.read_parquet(path)
+    df = context.store.load("fundamentals_history")
+    return None if df.empty else df
 
 
 def _is_sec_history_up_to_date(context: Context, cik_mapping: pd.DataFrame) -> bool:
@@ -160,7 +158,7 @@ def _is_sec_history_up_to_date(context: Context, cik_mapping: pd.DataFrame) -> b
     meta = _load_history_meta(context)
     if meta is None or meta.get("last_built") != _today_iso():
         return False
-    if not context.paths["FUNDAMENTALS_HISTORY_PATH"].exists():
+    if not context.store.exists("fundamentals_history"):
         return False
     return meta.get("universe_size", 0) >= len(cik_mapping)
 
@@ -523,8 +521,7 @@ def build_fundamentals_history_sec(context: Context,
         cik_mapping = load_cik_mapping(context)
 
     if _is_sec_history_up_to_date(context, cik_mapping):
-        path = context.paths["FUNDAMENTALS_HISTORY_PATH"]
-        hist = pd.read_parquet(path)
+        hist = context.store.load("fundamentals_history")
         print(
             f"SEC fundamentals history already up to date for {_today_iso()} "
             f"— skipping ({len(hist)} rows, {hist['ticker'].nunique()} tickers)"
@@ -566,11 +563,13 @@ def build_fundamentals_history_sec(context: Context,
     out = out.drop_duplicates(subset=["ticker", "as_of"], keep="last")
     out = out.sort_values(["ticker", "as_of"]).reset_index(drop=True)
 
-    path = context.paths["FUNDAMENTALS_HISTORY_PATH"]
-    out.to_parquet(path, index=False)
+    # persist only the newly-built rows; the DB merges on (ticker, as_of)
+    new = pd.concat(new_frames, ignore_index=True) if new_frames else pd.DataFrame()
+    if not new.empty:
+        context.store.save("fundamentals_history", new)
     _save_history_meta(context, out, len(cik_mapping))
-    print(f"Saved {len(out)} SEC fundamental rows "
-          f"({out['ticker'].nunique()} tickers) to {path}")
+    print(f"Saved {len(new)} new SEC fundamental rows "
+          f"({out['ticker'].nunique()} tickers) to DB table 'fundamentals_history'")
     return out
 
 
@@ -583,13 +582,11 @@ SNAPSHOT_FIELDS = ["marketCap", "trailingPE", "forwardPE", "sector", "industry",
 def _snapshot_up_to_date(context: Context, tickers: list[str]) -> pd.DataFrame | None:
     """Return the cached snapshot if it was already pulled today for the full
     requested universe, else None."""
-    path = context.paths["FUNDAMENTALS_SNAPSHOT_PATH"]
-    if not path.exists():
-        return None
-    existing = pd.read_parquet(path)
+    existing = context.store.load("fundamentals_latest")
     if existing.empty or "as_of" not in existing.columns:
         return None
-    if not (existing["as_of"] == _today_iso()).all():
+    as_of = pd.to_datetime(existing["as_of"], errors="coerce").dt.strftime("%Y-%m-%d")
+    if not (as_of == _today_iso()).all():
         return None
     if not set(tickers).issubset(set(existing["ticker"].unique())):
         return None
@@ -645,7 +642,7 @@ def fetch_fundamentals(context: Context, tickers: list[str]):
 
     # Latest-row enrichment with current market cap / sector for the screen.
     snapshot = fetch_snapshot(context, tickers)
-    snap_path = context.paths["FUNDAMENTALS_SNAPSHOT_PATH"]
-    snapshot.to_parquet(snap_path, index=False)
-    print(f"Saved current snapshot for {len(snapshot)} tickers to {snap_path}")
+    if not snapshot.empty:
+        context.store.save("fundamentals_latest", snapshot)
+    print(f"Saved current snapshot for {len(snapshot)} tickers to DB 'fundamentals_latest'")
     return history

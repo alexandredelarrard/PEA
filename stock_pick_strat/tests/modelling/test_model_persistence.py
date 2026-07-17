@@ -15,13 +15,11 @@ from src.modelling.utils_model import model as ml
 def sample_panel():
     from src.context import get_config_context
 
-    _, ctx = get_config_context("./configs", use_cache=False, save=False)
-    cube_path = ctx.paths["CUBE_PATH"]
-    if not cube_path.exists():
-        pytest.skip("cube.parquet not available")
+    config, ctx = get_config_context("./configs", use_cache=False, save=False)
+    cube = ctx.store.load("cube")
+    if cube.empty:
+        pytest.skip("cube table is empty")
 
-    config, _ = get_config_context("./configs", use_cache=False, save=False)
-    cube = pd.read_parquet(cube_path)
     label = config.model.label_column
     h = config.build_cube.targets.primary_horizon
     feats = [c for c in config.inputs.columns if c in cube.columns][:12]

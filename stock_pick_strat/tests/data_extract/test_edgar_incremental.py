@@ -95,12 +95,15 @@ def test_extract_meta_roundtrip(tmp_path):
 def test_is_up_to_date_skip_guard(tmp_path):
     from src.data_extract.utils.structure import fetch_employees_edgar as fee
 
-    pq = tmp_path / "employees_history.parquet"
-    pd.DataFrame({"ticker": ["AAA"], "as_of": pd.to_datetime(["2021-02-01"]),
-                  "employees": [100]}).to_parquet(pq)
+    pq = tmp_path / "employees_history.parquet"   # only anchors the meta sidecar path
+
+    class _Store:
+        def exists(self, name):        # table present in the DB (data-only guard)
+            return True
 
     class _Ctx:
         paths = {"EMPLOYEES_HISTORY_PATH": pq}
+        store = _Store()
 
     ctx, cik_map = _Ctx(), pd.DataFrame({"ticker": ["AAA", "BBB"]})
 

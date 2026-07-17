@@ -54,7 +54,7 @@ def _index_is_up_to_date(context: Context, cik_mapping: pd.DataFrame) -> bool:
     """True when the filing index was already rebuilt today for the full universe.
     Filings are event-driven, so a once-per-day re-index is enough."""
     path = _index_meta_path(context)
-    if not path.exists() or not context.paths["SEC_FILINGS_INDEX_PATH"].exists():
+    if not path.exists() or not context.store.exists("sec_filings_index"):
         return False
     try:
         meta = json.loads(path.read_text(encoding="utf-8"))
@@ -132,7 +132,7 @@ def download_filings_bulk(index_df: pd.DataFrame, form_filter: list[str] | None 
     Explicit, filtered bulk text download — you must opt into this and
     should filter first. Example:
 
-        idx = pd.read_parquet(context.paths["SEC_FILINGS_INDEX_PATH"])
+        idx = context.store.load("sec_filings_index")
         download_filings_bulk(idx, form_filter=["10-K"], ticker_filter=["AAPL", "MSFT"])
     """
 
@@ -165,7 +165,7 @@ def fetch_sec_filings(context: Context):
         return
 
     index_df = build_filing_index(context, cik_mapping)
-    index_df.to_parquet(context.paths["SEC_FILINGS_INDEX_PATH"], index=False)
+    context.store.save("sec_filings_index", index_df)
     _index_meta_path(context).write_text(
         json.dumps({
             "last_built": _today_iso(),

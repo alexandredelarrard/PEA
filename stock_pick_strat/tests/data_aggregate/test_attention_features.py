@@ -10,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.fetch_wiki_pageviews import _company_to_article, _json_to_long
-from src.data_extract.utils.fetch_google_trends import _df_to_long
+from src.data_extract.utils.behavioral.fetch_wiki_pageviews import _company_to_article, _json_to_long
+from src.data_extract.utils.behavioral.fetch_google_trends import _df_to_long
 from src.data_aggregate.utils.attention_features import (
     _attention_fields, build_attention_feature_panel,
 )

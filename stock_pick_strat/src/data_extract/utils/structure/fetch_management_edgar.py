@@ -44,11 +44,11 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.sec_utils import (
+from src.data_extract.utils.common.sec_utils import (
     sec_get, load_cik_mapping, load_extract_meta, save_extract_meta, today_iso,
 )
-from src.data_extract.utils.edgar_fillings import list_filings
-from src.data_extract.utils.edgar_extract import (
+from src.data_extract.utils.common.edgar_fillings import list_filings
+from src.data_extract.utils.common.edgar_extract import (
     html_to_text, extract_executive_officers, extract_management_from_def14a,
     parse_form4, signed_open_market_shares, rolling_net_insider,
 )

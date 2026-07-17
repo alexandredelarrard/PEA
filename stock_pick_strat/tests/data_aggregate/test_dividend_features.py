@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.fetch_dividends import _series_to_long
+from src.data_extract.utils.prices.fetch_dividends import _series_to_long
 from src.data_aggregate.utils.dividend_features import (
     _dividend_fields, build_dividend_feature_panel,
 )

@@ -24,7 +24,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.fmp_client import fetch_incremental
+from src.data_extract.utils.common.fmp_client import fetch_incremental
 
 _DATA_COLUMNS = ["ticker", "as_of", "period", "employees", "form_type"]
 

@@ -52,7 +52,7 @@ def get_sp500_tickers(context: Context) -> list[str]:
     """Scrape current S&P 500 tickers + sector info from Wikipedia. Adds the GICS
     industry group (24-level, for sector-neutral construction) and deduplicates
     dual-class share listings."""
-    from src.data_extract.utils.gics import industry_group
+    from src.data_extract.utils.common.gics import industry_group
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     response = requests.get(url, headers=_WIKI_HEADERS, timeout=30)
     response.raise_for_status()

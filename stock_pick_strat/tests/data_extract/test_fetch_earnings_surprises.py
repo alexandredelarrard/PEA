@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_extract.fetch_earnings_surprises import _plan_fetch, _RECENT_LIMIT
+from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _plan_fetch, _RECENT_LIMIT
 
 
 def test_plan_fetch_incremental():

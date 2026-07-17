@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.utils.sec_utils import (
+from src.data_extract.utils.common.sec_utils import (
     load_extract_meta, save_extract_meta, today_iso,
 )
 
@@ -48,7 +48,7 @@ def _submissions(forms_dates):
 # 1. list_filings `since` = incremental window                                 #
 # --------------------------------------------------------------------------- #
 def test_list_filings_since_filters_to_after_D(monkeypatch):
-    import src.data_extract.utils.edgar_fillings as ef
+    import src.data_extract.utils.common.edgar_fillings as ef
 
     payload = _submissions([
         ("10-K", "2020-02-15"),
@@ -93,7 +93,7 @@ def test_extract_meta_roundtrip(tmp_path):
 
 
 def test_is_up_to_date_skip_guard(tmp_path):
-    from src.data_extract.utils import fetch_employees_edgar as fee
+    from src.data_extract.utils.structure import fetch_employees_edgar as fee
 
     pq = tmp_path / "employees_history.parquet"
     pd.DataFrame({"ticker": ["AAA"], "as_of": pd.to_datetime(["2021-02-01"]),
@@ -118,7 +118,7 @@ def test_is_up_to_date_skip_guard(tmp_path):
 # 3. Per-ticker incremental cutoff (`D`)                                       #
 # --------------------------------------------------------------------------- #
 def test_employees_cutoff_per_ticker():
-    from src.data_extract.utils.fetch_employees_edgar import _last_asof_by_ticker
+    from src.data_extract.utils.structure.fetch_employees_edgar import _last_asof_by_ticker
 
     existing = pd.DataFrame({
         "ticker": ["AAA", "AAA", "BBB"],
@@ -138,7 +138,7 @@ def test_employees_cutoff_per_ticker():
 
 
 def test_management_cutoff_ignores_insider_rows():
-    from src.data_extract.utils.fetch_management_edgar import _last_officer_asof
+    from src.data_extract.utils.structure.fetch_management_edgar import _last_officer_asof
 
     existing = pd.DataFrame({
         "ticker": ["AAA", "AAA", "AAA"],

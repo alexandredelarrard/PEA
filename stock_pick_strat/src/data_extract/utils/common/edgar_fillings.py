@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.utils.sec_utils import sec_get
+from src.data_extract.utils.common.sec_utils import sec_get
 
 
 def _doc_url(cik: str, accession: str, primary_doc: str) -> str:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.utils import fetch_prices as fp
+from src.data_extract.utils.prices import fetch_prices as fp
 
 
 def _existing_with_spy_gap():

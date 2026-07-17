@@ -14,14 +14,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.data_extract.utils.def14a_schema import (
+from src.data_extract.utils.structure.def14a_schema import (
     Def14AExtract,
     DirectorInfo,
     ExecutiveCompensation,
     ExecutiveOfficer,
     ShareOwnership,
 )
-from src.data_extract.utils.fetch_def14a_llm import prepare_def14a_sections
+from src.data_extract.utils.structure.fetch_def14a_llm import prepare_def14a_sections
 
 # --------------------------------------------------------------------------- #
 # Synthetic DEF 14A fixture                                                    #
@@ -142,14 +142,14 @@ def test_def14a_sections_extraction():
 
 def test_llm_extractor_mock():
     """LLMExtractor.extract() with a mocked OpenAI Responses API call."""
-    from src.data_extract.utils.llm_extractor import LLMExtractor
+    from src.data_extract.utils.common.llm_extractor import LLMExtractor
 
     expected = _make_expected()
     mock_response = MagicMock()
     mock_response.output_parsed = expected
 
     with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-        with patch("src.data_extract.utils.llm_extractor.OpenAI") as mock_cls:
+        with patch("src.data_extract.utils.common.llm_extractor.OpenAI") as mock_cls:
             mock_client = MagicMock()
             mock_client.responses.parse.return_value = mock_response
             mock_cls.return_value = mock_client
@@ -179,10 +179,10 @@ def test_llm_extractor_mock():
 )
 def test_llm_extractor_real_apple():
     """Live integration: fetch Apple's most recent DEF 14A from EDGAR, extract with OpenAI."""
-    from src.data_extract.utils.edgar_extract import html_to_text
-    from src.data_extract.utils.edgar_fillings import list_filings
-    from src.data_extract.utils.llm_extractor import LLMExtractor
-    from src.data_extract.utils.sec_utils import sec_get
+    from src.data_extract.utils.common.edgar_extract import html_to_text
+    from src.data_extract.utils.common.edgar_fillings import list_filings
+    from src.data_extract.utils.common.llm_extractor import LLMExtractor
+    from src.data_extract.utils.common.sec_utils import sec_get
 
     AAPL_CIK = "0000320193"
     filings = list_filings(AAPL_CIK, ["DEF 14A"], years=2, company_name="Apple Inc.")

@@ -53,7 +53,7 @@ import yfinance as yf
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.sec_utils import sec_get, load_cik_mapping
+from src.data_extract.utils.common.sec_utils import sec_get, load_cik_mapping
 
 
 # --------------------------------------------------------------------------- #

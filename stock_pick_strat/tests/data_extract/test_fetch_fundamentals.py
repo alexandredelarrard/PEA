@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_extract.fetch_fundamentals import (
+from src.data_extract.utils.fundamentals.fetch_fundamentals import (
     _quarterly_flow,
     _extract_concept,
     build_ticker_history,

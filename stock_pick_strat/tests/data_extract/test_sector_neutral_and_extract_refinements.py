@@ -12,7 +12,7 @@ import pandas as pd
 
 # ---- 1. 13F filenames --------------------------------------------------------
 def test_13f_period_names_format():
-    from src.data_extract.utils.fetch_13f import _period_names
+    from src.data_extract.utils.prices.fetch_13f import _period_names
     today = pd.Timestamp("2026-07-15")
     names = _period_names(years_history=2, today=today)
     # user's example window must be produced, and the Jun-Aug 2025 one
@@ -31,8 +31,8 @@ def test_13f_period_names_format():
 
 # ---- 3. dual-class dedup + GICS industry group ------------------------------
 def test_dedupe_share_classes_and_gics():
-    from src.data_extract.utils.fetch_prices import _dedupe_share_classes
-    from src.data_extract.utils.gics import industry_group
+    from src.data_extract.utils.prices.fetch_prices import _dedupe_share_classes
+    from src.data_extract.utils.common.gics import industry_group
     df = pd.DataFrame({
         "ticker": ["GOOGL", "GOOG", "FOXA", "FOX", "NWSA", "NWS", "AAPL"],
         "cik": ["0001652044", "0001652044", "0001754301", "0001754301",
@@ -86,7 +86,7 @@ def test_sector_neutral_weights_sum_to_zero_per_group():
 # ---- 4. Google Trends header rotation ---------------------------------------
 def test_google_trends_header_rotation():
     try:
-        from src.data_extract.utils.fetch_google_trends import _random_header, _USER_AGENTS
+        from src.data_extract.utils.behavioral.fetch_google_trends import _random_header, _USER_AGENTS
     except ModuleNotFoundError as e:      # module hard-imports pytrends at top
         print(f"\n=== SKIP: Google Trends header test (pytrends not installed: {e}) ===")
         return

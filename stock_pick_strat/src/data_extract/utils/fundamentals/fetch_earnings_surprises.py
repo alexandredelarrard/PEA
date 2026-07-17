@@ -34,7 +34,7 @@ import yfinance as yf
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.rate_limit import call_with_retries
+from src.data_extract.utils.common.rate_limit import call_with_retries
 
 _RENAME = {
     "EPS Estimate": "eps_estimate",

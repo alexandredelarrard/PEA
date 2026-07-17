@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_extract.fetch_management import (
+from src.data_extract.utils.structure.fetch_management import (
     _parse_officers, _parse_family, _parse_insider_net,
 )
 

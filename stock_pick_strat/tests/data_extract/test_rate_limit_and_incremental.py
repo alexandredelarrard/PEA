@@ -13,7 +13,7 @@ import types
 
 import pandas as pd
 
-from src.data_extract.utils.rate_limit import is_rate_limited, call_with_retries
+from src.data_extract.utils.common.rate_limit import is_rate_limited, call_with_retries
 
 
 def test_retry_waits_then_succeeds_and_reraises_other():
@@ -49,7 +49,7 @@ def test_retry_waits_then_succeeds_and_reraises_other():
 
 
 def test_earnings_download_one_retries_rate_limit(monkeypatch):
-    import src.data_extract.utils.fetch_earnings_surprises as fe
+    import src.data_extract.utils.fundamentals.fetch_earnings_surprises as fe
 
     state = {"n": 0}
     idx = pd.to_datetime(["2024-02-01"])

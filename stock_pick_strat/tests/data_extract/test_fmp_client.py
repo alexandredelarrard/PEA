@@ -8,7 +8,7 @@ import logging
 
 import pandas as pd
 
-from src.data_extract.fmp_client import (
+from src.data_extract.utils.common.fmp_client import (
     collect_api_keys, is_rate_limited, plan_fetch, run_rotating_fetch,
     FMPRateLimitError,
 )

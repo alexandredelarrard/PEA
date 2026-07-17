@@ -36,7 +36,7 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from src.data_extract.utils.sec_utils import sec_get, load_cik_mapping
+from src.data_extract.utils.common.sec_utils import sec_get, load_cik_mapping
 from src.context import Context
 
 FORM_TYPES = ["10-K", "10-Q", "8-K"]

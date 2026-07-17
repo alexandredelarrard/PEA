@@ -6,7 +6,7 @@ existing 10-K parser (extract_executive_officers) behaving identically.
 """
 from __future__ import annotations
 
-from src.data_extract.utils.edgar_extract import (
+from src.data_extract.utils.common.edgar_extract import (
     extract_management_from_def14a, extract_executive_officers,
 )
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.fetch_fmp_history import (
+from src.data_extract.utils.fundamentals.fetch_fmp_history import (
     normalize_grades, normalize_actions, normalize_exec_comp, normalize_estimates,
 )
 

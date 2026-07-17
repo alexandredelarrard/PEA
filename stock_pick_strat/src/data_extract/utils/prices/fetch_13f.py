@@ -21,7 +21,7 @@ import pandas as pd
 import requests
 
 from src.context import Context
-from src.data_extract.utils.fetch_cusip_map import build_cusip_ticker_map
+from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map
 
 _BASE = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/{name}_form13f.zip"
 _HEADERS = {

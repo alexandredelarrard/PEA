@@ -1,63 +1,42 @@
+"""
+step_extract_all_data.py  (src/data_extract/step_extract_all_data.py)
+---------------------------------------------------------------------
+Super step orchestrating the four data-extraction sub-steps. Resolves the
+ticker universe once and hands it to each sub-step in turn:
+
+  1. prices        — price history (+dividends), short interest, 13F holdings
+  2. fundamentals  — fundamentals, earnings surprises, macro
+  3. structure     — employees, management, DEF 14A governance, SEC filings
+  4. behavioral    — Wikipedia pageviews (+Google Trends, news)
+"""
 from omegaconf import DictConfig
 
 from src.context import Context
 from src.utils.step import Step
-from src.data_extract.utils.fetch_prices import fetch_price_history, get_sp500_tickers
-from src.data_extract.utils.fetch_wiki_pageviews import fetch_wiki_pageviews
-from src.data_extract.utils.fetch_google_trends import fetch_google_trends
-from src.data_extract.utils.fetch_13f import fetch_13f
-from src.data_extract.utils.fetch_short_interest import fetch_short_interest
-from src.data_extract.utils.fetch_fundamentals import fetch_fundamentals
-from src.data_extract.utils.fetch_macro import fetch_macro
-from src.data_extract.utils.fetch_news import fetch_news
-from src.data_extract.utils.fetch_sec_filings import fetch_sec_filings
-from src.data_extract.utils.fetch_earnings_surprises import fetch_earnings_surprises
-from src.data_extract.utils.fetch_analyst_estimates import fetch_analyst_estimates
-from src.data_extract.utils.fetch_management_edgar import fetch_management_edgar
-from src.data_extract.utils.fetch_def14a_llm import fetch_def14a_llm
-from src.data_extract.utils.fetch_employees_edgar import fetch_employees_edgar
-from src.data_extract.utils.fetch_fmp_history import (
-    fetch_analyst_grades,
-    fetch_analyst_actions,
-    fetch_exec_comp,
-    fetch_estimates,
-)
+from src.data_extract.utils.prices.fetch_prices import get_sp500_tickers
+from src.data_extract.step_extract_prices import StepExtractPrices
+from src.data_extract.step_extract_fundamentals import StepExtractFundamentals
+from src.data_extract.step_extract_structure import StepExtractStructure
+from src.data_extract.step_extract_behavioral import StepExtractBehavioral
+
 
 class StepExtractAllData(Step):
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
+        self._prices = StepExtractPrices(context=context, config=config)
+        self._fundamentals = StepExtractFundamentals(context=context, config=config)
+        self._structure = StepExtractStructure(context=context, config=config)
+        self._behavioral = StepExtractBehavioral(context=context, config=config)
 
-    def run(self):
-
+    def _resolve_tickers(self) -> list[str]:
         tickers = get_sp500_tickers(self._context)
-        tickers = tickers + self._config.data_extract.other_tickers
-        
-        # prices + dividends come from ONE yfinance download (actions=True):
-        # fetch_price_history writes both prices.parquet and dividends.parquet.
-        fetch_price_history(self._context, tickers=tickers)
-        fetch_short_interest(self._context, tickers=tickers)
-        fetch_fundamentals(self._context, tickers=tickers)
-        fetch_macro(self._context)
-        fetch_earnings_surprises(self._context, tickers=tickers)
-        fetch_employees_edgar(self._context, tickers=tickers)
-        fetch_management_edgar(self._context, tickers=tickers)
-        fetch_def14a_llm(self._context, tickers=tickers)
-        fetch_sec_filings(self._context)
+        return tickers + self._config.data_extract.other_tickers
 
-        # Retail-attention alt-data (slow / rate-limited -> opt-in; the cube step
-        # picks up whatever parquet exists). Wikipedia is reliable & daily; Google
-        # Trends needs `pip install pytrends` and self-skips if absent.
-        fetch_wiki_pageviews(self._context, tickers=tickers)
-        # fetch_google_trends(self._context, tickers=tickers)
-        # 13F institutional holdings (SEC bulk + OpenFIGI cusip map; slow one-off)
-        fetch_13f(self._context)
+    def run(self) -> None:
+        tickers = self._resolve_tickers()
 
-        # no historical version yet - FMP API paying
-        # fetch_analyst_grades(self._context, tickers=tickers)
-        # fetch_analyst_actions(self._context, tickers=tickers)
-        # fetch_exec_comp(self._context, tickers=tickers)
-        # fetch_estimates(self._context, tickers=tickers)
-        # fetch_news(self._context, tickers=tickers)
-        # fetch_analyst_estimates(self._context, tickers=tickers)
-        # fetch_management(self._context, tickers=tickers)
+        self._prices.run(tickers=tickers)
+        self._fundamentals.run(tickers=tickers)
+        self._structure.run(tickers=tickers)
+        self._behavioral.run(tickers=tickers)

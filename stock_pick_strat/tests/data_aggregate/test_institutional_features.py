@@ -12,8 +12,8 @@ import pandas as pd
 from src.data_aggregate.utils.institutional_features import (
     _quarter_features, build_institutional_feature_panel,
 )
-from src.data_extract.utils.fetch_13f import _join_13f
-from src.data_extract.utils.fetch_cusip_map import _parse_openfigi
+from src.data_extract.utils.prices.fetch_13f import _join_13f
+from src.data_extract.utils.prices.fetch_cusip_map import _parse_openfigi
 
 
 def _holdings():

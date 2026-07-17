@@ -25,7 +25,7 @@ from tqdm import tqdm
 import re
 
 from src.context import Context
-from src.data_extract.utils.rate_limit import call_with_retries
+from src.data_extract.utils.common.rate_limit import call_with_retries
 from pytrends.request import TrendReq
 
 

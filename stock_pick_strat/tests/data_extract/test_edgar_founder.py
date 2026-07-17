@@ -9,7 +9,7 @@ positive (a non-founder CEO whose bio merely states when the company was founded
 """
 from __future__ import annotations
 
-from src.data_extract.utils.edgar_extract import extract_executive_officers, _is_founder
+from src.data_extract.utils.common.edgar_extract import extract_executive_officers, _is_founder
 
 
 # --- realistic 10-K "Information about our Executive Officers" formats -------- #

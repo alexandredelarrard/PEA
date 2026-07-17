@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.fetch_employees import normalize_employees
+from src.data_extract.utils.structure.fetch_employees import normalize_employees
 
 
 def _fmp_records():

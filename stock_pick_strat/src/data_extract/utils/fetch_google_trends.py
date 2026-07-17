@@ -15,10 +15,10 @@ CAVEATS (research-grade signal):
 Network/library access is isolated in `_interest_over_time`; the parser
 (`_df_to_long`) is pure and unit-tested.
 """
+
 from __future__ import annotations
 
 import time
-
 import pandas as pd
 from tqdm import tqdm
 from pytrends.request import TrendReq
@@ -50,10 +50,6 @@ def _df_to_long(interest: pd.DataFrame, keyword: str, ticker: str) -> pd.DataFra
 
 def _interest_over_time(keyword: str, timeframe: str):
     """Network/lib call, isolated for mocking. Requires the optional pytrends dep."""
-<<<<<<< HEAD
-    
-=======
->>>>>>> ac27b309b4789f0d5b5406fd541b43bdd5229db3
     pt = TrendReq(hl="en-US", tz=0)
     pt.build_payload([keyword], timeframe=timeframe)
     return pt.interest_over_time()
@@ -81,13 +77,6 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
       exponential backoff (>=3 retries) via call_with_retries.
     """
     path = context.paths["GOOGLE_TRENDS_PATH"]
-<<<<<<< HEAD
-    if TrendReq is None:
-        print("pytrends not installed -> Google Trends extraction skipped "
-              "(pip install pytrends).")
-        return pd.DataFrame(columns=["date", "ticker", "search_interest"])
-=======
->>>>>>> ac27b309b4789f0d5b5406fd541b43bdd5229db3
     names = pd.read_csv(context.paths["TICKERS_PATH"])
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
@@ -99,20 +88,10 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
 
     frames, skipped = [], 0
     for _, row in tqdm(list(names.iterrows()), desc="Google Trends"):
-<<<<<<< HEAD
         tkr, keyword = row["ticker"], str(row["name"])
         last = last_by_ticker.get(tkr)
         if last is not None and (today - last).days <= refetch_window_days:
             skipped += 1                        # already current -> skip
-=======
-        keyword = str(row["name"])
-        try:
-            long = _df_to_long(_interest_over_time(keyword, timeframe), keyword, row["ticker"])
-            time.sleep(pause*3)
-        except Exception as e:
-            print(f"Trends fetch failed for {row['ticker']} ({keyword}): {e}")
-            time.sleep(pause * 3)                  # back off on rate-limit
->>>>>>> ac27b309b4789f0d5b5406fd541b43bdd5229db3
             continue
         try:
             # wait + retry on 429 (>=3 retries) rather than dropping the ticker

@@ -90,10 +90,14 @@ def _officer_rows(context, ticker, cik, company, years, seen, since) -> list[dic
         rows.append({
             "ticker": ticker, "as_of": f["filing_date"],
             "period": pd.to_datetime(f.get("period_of_report"), errors="coerce"),
-            "form_type": f["form"], "accession_number": f["accession_number"],
-            "ceo_name": info["ceo_name"], "ceo_age": info["ceo_age"],
-            "founder_present": info["founder_present"], "founder_ceo": info["founder_ceo"],
-            "n_officers": info["n_officers"], "avg_officer_age": info["avg_officer_age"],
+            "form_type": f["form"], 
+            "accession_number": f["accession_number"],
+            "ceo_name": info["ceo_name"], 
+            "ceo_age": info["ceo_age"],
+            "founder_present": info["founder_present"], 
+            "founder_ceo": info["founder_ceo"],
+            "n_officers": info["n_officers"], 
+            "avg_officer_age": info["avg_officer_age"],
         })
     return rows
 

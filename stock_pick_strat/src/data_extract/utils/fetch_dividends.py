@@ -17,14 +17,18 @@ import time
 import pandas as pd
 import yfinance as yf
 from tqdm import tqdm
+import logging
 
 from src.context import Context
+
+logger = logging.getLogger(__name__)
 
 
 def _series_to_long(dividends: pd.Series, ticker: str) -> pd.DataFrame:
     """Convert a yfinance dividends Series (index=ex-date, value=cash/share) into
     long rows [date, ticker, dividend]. Drops non-positive/na entries. Pure."""
     if dividends is None or len(dividends) == 0:
+        logger.warning(f"No dividends found for {ticker}")
         return pd.DataFrame(columns=["date", "ticker", "dividend"])
     s = pd.Series(dividends).dropna()
     s = s[s > 0]
@@ -70,7 +74,9 @@ def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3,
 
     new_frames: list[pd.DataFrame] = []
     skipped = 0
-    for tkr in tqdm(tickers, desc="Downloading dividends"):
+
+    ticks = [ticker for ticker in tickers if ticker not in context.config.data_extract.other_tickers]
+    for tkr in tqdm(ticks, desc="Downloading dividends"):
         cutoff = last_by_ticker.get(tkr)
         if cutoff is not None and (today - cutoff).days <= refetch_window_days:
             skipped += 1                       # already current -> no re-download
@@ -78,7 +84,7 @@ def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3,
         try:
             long = _series_to_long(_ticker_dividends(tkr), tkr)
         except Exception as e:  # one bad ticker must not abort the whole run
-            print(f"Dividends fetch failed for {tkr}: {e}")
+            logger.error(f"Dividends fetch failed for {tkr}: {e}")
             continue
         if long.empty:
             continue
@@ -87,11 +93,11 @@ def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3,
         if not long.empty:
             new_frames.append(long)
         time.sleep(pause)
-    print(f"Dividends: {skipped}/{len(tickers)} tickers already current (skipped).")
+    logger.info(f"Dividends: {skipped}/{len(tickers)} tickers already current (skipped).")
 
     parts = [df for df in (existing, *new_frames) if df is not None and not df.empty]
     if not parts:
-        print("No dividend data available.")
+        logger.info("No dividend data available.")
         return pd.DataFrame(columns=["date", "ticker", "dividend"])
 
     out = (pd.concat(parts, ignore_index=True)

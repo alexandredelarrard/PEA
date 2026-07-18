@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from tqdm import tqdm
 
 import pandas as pd
 import requests
@@ -101,7 +102,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     universe = set(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
     years_history = context.config.data_extract.years_history
     frames = []
-    for tag in _period_names(years_history):
+    for tag in tqdm(_period_names(years_history), desc="Downloading 13F data"):
         try:
             got = _download_quarter(tag)
         except Exception as e:
@@ -110,6 +111,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
         if got is None:
             continue
         frames.append(_join_13f(*got))
+
     if not frames:
         print("No 13F data downloaded.")
         return pd.DataFrame(columns=["cik", "period", "filing_date", "ticker",

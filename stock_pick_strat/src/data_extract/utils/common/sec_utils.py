@@ -103,10 +103,23 @@ def save_extract_meta(parquet_path: Path, last_filing_date: str | None,
     )
 
 
+# SEC's company_tickers.json occasionally maps an ACTIVE, currently-trading ticker to
+# a newly-registered non-filing holding shell (empty companyfacts) instead of the real
+# operating filer — pin those to the operating CIK. (We do NOT drop pre-spin-off shells
+# such as FDXF / HONA: their mapping is correct, they simply have no filings yet; the
+# builder skips empty companyfacts gracefully and they auto-populate once they file, so
+# a hardcoded drop-list would only become a stale landmine that hides them forever.)
+_CIK_OVERRIDES = {
+    "XOM": "0000034088",   # SEC maps XOM -> "ExxonMobil Holdings Corp" (no filings); operating filer is 34088
+}
+
+
 def build_cik_mapping(context: Context, sp500_tickers: list[str] | None = None) -> pd.DataFrame:
     """
     Fetch SEC's full ticker->CIK mapping and filter to our S&P 500 universe.
     Source: https://www.sec.gov/files/company_tickers.json (free, no key).
+    Applies _CIK_OVERRIDES to correct SEC's occasional mapping of an active ticker to a
+    non-filing holding shell (which would otherwise yield empty companyfacts).
     """
     resp = sec_get(SEC_COMPANY_TICKERS_URL)
     raw = resp.json()  # dict of {index: {cik_str, ticker, title}}
@@ -116,6 +129,9 @@ def build_cik_mapping(context: Context, sp500_tickers: list[str] | None = None) 
 
     if sp500_tickers:
         df = df[df["ticker"].isin(sp500_tickers)]
+
+    for _tk, _cik in _CIK_OVERRIDES.items():
+        df.loc[df["ticker"] == _tk, "cik"] = _cik
 
     context.store.save("cik_mapping", df)
     print(f"Saved CIK mapping for {len(df)} tickers to DB table 'cik_mapping'")

@@ -64,15 +64,29 @@ from src.data_extract.utils.common.sec_utils import sec_get, load_cik_mapping
 # same economic concept differently, so candidates matter.
 # --------------------------------------------------------------------------- #
 FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
+    # Base is built on the revenue period-ends, so a gap in revenue-tag coverage
+    # truncates the WHOLE ticker after that era. Filers switch the headline-revenue
+    # concept over time / by sector: banks -> RevenuesNetOfInterestExpense (~2013),
+    # utilities -> RegulatedAndUnregulatedOperatingRevenue (~2014). Coalescing these
+    # (lower priority, fill-only) extends the history instead of dropping it.
     "totalRevenue": ["RevenueFromContractWithCustomerExcludingAssessedTax",
-                     "Revenues", "SalesRevenueNet"],
+                     "RevenueFromContractWithCustomerIncludingAssessedTax",
+                     "Revenues", "SalesRevenueNet",
+                     "RevenuesNetOfInterestExpense",              # banks (net revenue)
+                     "RegulatedAndUnregulatedOperatingRevenue"],  # utilities
     "netIncome": ["NetIncomeLoss", "ProfitLoss"],
     "grossProfit": ["GrossProfit"],
-    "costOfRevenue": ["CostOfGoodsAndServicesSold", "CostOfRevenue"],
-    "operatingIncome": ["OperatingIncomeLoss"],
+    # Filers used CostOfGoodsSold / CostOfServices before the ASC-606-era
+    # consolidation onto CostOfGoodsAndServicesSold (e.g. LLY tags the latter only
+    # from ~2018; CostOfGoodsSold covers the earlier years). Coalescing recovers
+    # the early cost line -> early gross profit -> gross/operating margin + EBITDA.
+    "costOfRevenue": ["CostOfGoodsAndServicesSold", "CostOfRevenue",
+                      "CostOfGoodsSold", "CostOfServices"],
+    "operatingIncome": ["OperatingIncomeLoss", "OperatingAndNonoperatingRevenues", "OperatingLoss", "OperatingIncome"],
     "depAmort": ["DepreciationDepletionAndAmortization",
                  "DepreciationAmortizationAndAccretionNet",
-                 "DepreciationAndAmortization"],
+                 "DepreciationAndAmortization",
+                 "DepreciationAndAmortizationRealEstate"],
     "operatingCashFlow": ["NetCashProvidedByUsedInOperatingActivities",
                           "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment",
@@ -82,7 +96,8 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
     # ---- added for refined features (S&M efficiency, M&A, SBC, distress) ----
     "sellingGeneralAdmin": ["SellingGeneralAndAdministrativeExpense",
                             "GeneralAndAdministrativeExpense",
-                            "SellingAndMarketingExpense"],
+                            "SellingAndMarketingExpense",
+                            "MarketingAndAdvertisingExpense"],
     "stockBasedComp": ["ShareBasedCompensation",
                        "AllocatedShareBasedCompensationExpense"],
     "acquisitions": ["PaymentsToAcquireBusinessesNetOfCashAcquired",
@@ -94,8 +109,13 @@ STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
     "stockholdersEquity": ["StockholdersEquity",
                            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
     "totalLiabilities": ["Liabilities"],
-    "longTermDebt": ["LongTermDebtNoncurrent", "LongTermDebt"],
-    "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments"],
+    # many filers (e.g. HD, MU pre-2020) tag long-term debt only under the
+    # capital-lease-inclusive element — coalesce it so LTD isn't ~null for them.
+    "longTermDebt": ["LongTermDebtNoncurrent", "LongTermDebt",
+                     "LongTermDebtAndCapitalLeaseObligations"],
+    "cash": ["CashAndCashEquivalentsAtCarryingValue", 
+              "CashCashEquivalentsAndShortTermInvestments",
+              "CashAndDueFromBanks"],
     # ---- added for refined features (distress / liquidity, M&A footprint) ----
     "shortTermDebt": ["DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings"],
     "currentAssets": ["AssetsCurrent"],
@@ -135,8 +155,14 @@ EXTRA_FLOW_TAGS = {
     "financingCashFlow": ["NetCashProvidedByUsedInFinancingActivities",
                           "NetCashProvidedByUsedInFinancingActivitiesContinuingOperations"],
     "changeInInventory": ["IncreaseDecreaseInInventories"],
-    "changeInReceivables": ["IncreaseDecreaseInAccountsReceivable"],
-    "changeInPayables": ["IncreaseDecreaseInAccountsPayableTrade", "IncreaseDecreaseInAccountsPayable"],
+    # filers tag the working-capital change under many element names; coalesce the
+    # common variants (generic `...InReceivables`, `...AndOtherReceivables`, and the
+    # combined payables-and-accrued-liabilities line) so it isn't null for most.
+    "changeInReceivables": ["IncreaseDecreaseInAccountsReceivable",
+                            "IncreaseDecreaseInReceivables",
+                            "IncreaseDecreaseInAccountsAndOtherReceivables"],
+    "changeInPayables": ["IncreaseDecreaseInAccountsPayableTrade", "IncreaseDecreaseInAccountsPayable",
+                         "IncreaseDecreaseInAccountsPayableAndAccruedLiabilities"],
     "impairment": ["AssetImpairmentCharges", "GoodwillImpairmentLoss",
                    "ImpairmentOfLongLivedAssetsHeldForUse"],
     "restructuring": ["RestructuringCharges", "RestructuringSettlementAndImpairmentProvisions"],
@@ -156,13 +182,19 @@ EXTRA_FLOW_TAGS = {
     "netInvestmentIncome": ["NetInvestmentIncome"],
     "dacAmortization": ["DeferredPolicyAcquisitionCostAmortizationExpense"],
     # ---- REITs ----
-    "rentalIncome": ["OperatingLeaseLeaseIncome", "OperatingLeasesIncomeStatementLeaseRevenue"],
+    "rentalIncome": ["OperatingLeaseLeaseIncome", "OperatingLeasesIncomeStatementLeaseRevenue",
+                     "RealEstateRevenueNet", "LeaseIncome"],
     "gainOnDispositions": ["GainLossOnDispositionOfRealEstate",
-                           "GainLossOnSaleOfProperties"],
+                           "GainLossOnSaleOfProperties",
+                           "GainLossOnDispositionOfProperty",
+                           "GainsLossesOnSalesOfInvestmentRealEstate"],
     # ---- Energy (oil & gas) ----
     "explorationExpense": ["ExplorationExpense", "ExplorationAbandonmentAndDryHoleCosts",
                            "ResultsOfOperationsExplorationExpense"],
-    "depletionDDA": ["ResultsOfOperationsDepreciationDepletionAmortizationAndAccretion"],
+    # E&P filers report their depletion under the standard DD&A element rather than
+    # the oil&gas-supplement one (which is annual-only) -> coalesce the standard tag.
+    "depletionDDA": ["ResultsOfOperationsDepreciationDepletionAmortizationAndAccretion",
+                     "DepreciationDepletionAndAmortization"],
 }
 
 EXTRA_STOCK_TAGS = {
@@ -212,6 +244,17 @@ EXTRA_STOCK_TAGS = {
 # value point-in-time) -> true per-share + net-issuance signals
 DILUTED_SHARES_TAGS = ["WeightedAverageNumberOfDilutedSharesOutstanding",
                        "WeightedAverageNumberOfDilutedSharesOutstandingAdjustment"]
+
+# Event / charge / financing flows where a quarter with NO reported tag means the
+# event did not occur (= 0), not "missing" — reported only in periods it happens,
+# and often as year-to-date cumulatives that never yield 4 discrete quarters, so a
+# plain TTM sum stays NaN forever. These are 0-filled within the ticker's reporting
+# span before the TTM so they become usable features (e.g. TTM impairment = 0 in
+# normal years, non-zero after a write-off). Continuous operating flows (revenue,
+# NII, premiums, …) are NOT here: their absence means sector-N/A or a coverage gap.
+CHARGE_FLOWS = {"impairment", "restructuring", "acquisitions", "buybacks",
+                "equityIssuance", "debtIssued", "debtRepaid", "dividendsPaid",
+                "gainOnDispositions"}
 
 ANNUAL_MIN_DAYS, ANNUAL_MAX_DAYS = 340, 380   # accept a fiscal year as ~365d
 QUARTER_MIN_DAYS, QUARTER_MAX_DAYS = 80, 100   # accept a fiscal quarter as ~13 weeks
@@ -506,12 +549,25 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
                             else _extract_concept(gaap, SHARES_TAGS["sharesOutstanding"]))
     diluted = _instant_stock(_extract_concept(gaap, DILUTED_SHARES_TAGS))
 
-    rev = flows.get("totalRevenue")
-    if rev is None or rev.empty:
+    # Build the quarter grid (`base`) from the UNION of period-ends across the core
+    # "spine" concepts, not revenue alone. Filers change the revenue tag over time
+    # (banks ~2013, utilities ~2014); basing the whole history on revenue dropped
+    # every quarter after such a gap even though the balance sheet / earnings
+    # continued (e.g. NEE truncated at 2013). Unioning revenue + net income +
+    # operating cash flow + total assets + equity + liabilities ends keeps the full
+    # history — revenue-derived features are simply NaN in any quarter revenue is missing.
+    _spine_ends: set = set()
+    for _k in ("totalRevenue", "netIncome", "operatingCashFlow"):
+        _s = flows.get(_k)
+        if _s is not None and not _s.empty:
+            _spine_ends |= set(_s["end"])
+    for _k in ("totalAssets", "stockholdersEquity", "totalLiabilities"):
+        _s = stocks.get(_k)
+        if _s is not None and not _s.empty:
+            _spine_ends |= set(_s["end"])
+    if not _spine_ends:
         return pd.DataFrame()
-
-    # Base frame on the quarterly revenue ends; merge every other concept by end.
-    base = _series_on_ends(rev, "totalRevenue")
+    base = pd.DataFrame({"end": sorted(_spine_ends)})
 
     # Merge only the concepts a filer actually reports; collect the rest and add
     # them as NA in ONE concat (per-column assignment fragments the frame — with
@@ -525,7 +581,7 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
             return base
         return base.merge(_series_on_ends(src, key), on="end", how="left")
 
-    _curated_flows = ["netIncome", "grossProfit", "costOfRevenue", "operatingIncome",
+    _curated_flows = ["totalRevenue", "netIncome", "grossProfit", "costOfRevenue", "operatingIncome",
                       "depAmort", "operatingCashFlow", "capex", "researchAndDevelopment",
                       "sellingGeneralAdmin", "stockBasedComp", "acquisitions", "interestExpense"]
     for key in _curated_flows + list(EXTRA_FLOW_TAGS):
@@ -589,7 +645,7 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     rnd_ttm = ttm(col("researchAndDevelopment"))
     sga_ttm = ttm(col("sellingGeneralAdmin"))
     sbc_ttm = ttm(col("stockBasedComp"))
-    acq_ttm = ttm(col("acquisitions"))
+    acq_ttm = ttm(col("acquisitions").fillna(0.0))   # no acquisition this quarter = 0 (charge flow)
     int_ttm = ttm(col("interestExpense"))
     eq = col("stockholdersEquity")          # instant (point-in-time), not summed
     liab = col("totalLiabilities")
@@ -601,6 +657,13 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     cur_l = col("currentLiabilities")
     goodwill = col("goodwill")
     assets = col("totalAssets")
+
+    # Derive total liabilities when a filer doesn't tag `Liabilities` as a single
+    # element (e.g. LLY, AMD report only Assets + Equity + LiabilitiesAnd-
+    # StockholdersEquity, leaving `Liabilities` absent). Accounting identity:
+    # Liabilities = Assets - Equity. Only where both sides exist, so filers that
+    # report none of them stay NaN.
+    liab = liab.where(liab.notna(), assets - eq)
 
     gross_profit_ttm = gp_ttm.where(gp_ttm.notna(), rev_ttm - cor_ttm)
     # Derive operating income when the filer doesn't tag OperatingIncomeLoss
@@ -659,7 +722,10 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     extra = {"costOfRevenue": cor_ttm, "grossProfit": gross_profit_ttm,
              "dilutedShares": col("dilutedShares")}
     for key in EXTRA_FLOW_TAGS:
-        extra[key] = ttm(col(key))
+        s = col(key)
+        if key in CHARGE_FLOWS:          # absent quarter = event didn't happen = 0
+            s = s.fillna(0.0)
+        extra[key] = ttm(s)
     for key in EXTRA_STOCK_TAGS:
         extra[key] = col(key)
     out = pd.concat([out, pd.DataFrame(extra, index=out.index)], axis=1)

@@ -90,7 +90,6 @@ ADM,Consumer Staples,claimsIncurred,SECTOR_NA,45
 ADM,Consumer Staples,rentalIncome,SECTOR_NA,45
 ADM,Consumer Staples,explorationExpense,SECTOR_NA,45
 ADP,Industrials,changeInInventory,DATA_ABSENT,39
-ADP,Industrials,changeInReceivables,DATA_ABSENT,39
 ADP,Industrials,interestIncomeBank,SECTOR_NA,39
 ADP,Industrials,netInterestIncome,SECTOR_NA,39
 ADP,Industrials,noninterestExpense,SECTOR_NA,39
@@ -236,7 +235,6 @@ ALL,Financials,noninterestExpense,SECTOR_NA,44
 ALL,Financials,claimsIncurred,EXTRACTION,44
 ALL,Financials,rentalIncome,SECTOR_NA,44
 ALL,Financials,explorationExpense,SECTOR_NA,44
-ALLE,Industrials,changeInReceivables,DATA_ABSENT,36
 ALLE,Industrials,interestIncomeBank,SECTOR_NA,36
 ALLE,Industrials,netInterestIncome,SECTOR_NA,36
 ALLE,Industrials,noninterestExpense,SECTOR_NA,36
@@ -306,7 +304,6 @@ AMT,Real Estate,noninterestExpense,SECTOR_NA,48
 AMT,Real Estate,premiumsEarned,SECTOR_NA,48
 AMT,Real Estate,claimsIncurred,SECTOR_NA,48
 AMT,Real Estate,explorationExpense,SECTOR_NA,48
-AMZN,Consumer Discretionary,changeInReceivables,PRESENTATION_CHANGED,45
 AMZN,Consumer Discretionary,interestIncomeBank,SECTOR_NA,45
 AMZN,Consumer Discretionary,netInterestIncome,SECTOR_NA,45
 AMZN,Consumer Discretionary,noninterestExpense,SECTOR_NA,45
@@ -489,7 +486,6 @@ AWK,Utilities,rentalIncome,SECTOR_NA,47
 AWK,Utilities,explorationExpense,SECTOR_NA,47
 AXON,Industrials,longTermDebt,COVERED_BY_TOTALDEBT,47
 AXON,Industrials,shortTermDebt,COVERED_BY_TOTALDEBT,47
-AXON,Industrials,changeInReceivables,PRESENTATION_CHANGED,47
 AXON,Industrials,interestIncomeBank,SECTOR_NA,47
 AXON,Industrials,netInterestIncome,SECTOR_NA,47
 AXON,Industrials,noninterestExpense,SECTOR_NA,47
@@ -506,7 +502,6 @@ AXP,Financials,currentAssets,UNCLASSIFIED_BALANCE_SHEET,44
 AXP,Financials,currentLiabilities,UNCLASSIFIED_BALANCE_SHEET,44
 AXP,Financials,changeInInventory,DATA_ABSENT,44
 AXP,Financials,changeInReceivables,DATA_ABSENT,44
-AXP,Financials,changeInPayables,PRESENTATION_CHANGED,44
 AXP,Financials,premiumsEarned,SECTOR_NA,44
 AXP,Financials,claimsIncurred,SECTOR_NA,44
 AXP,Financials,rentalIncome,SECTOR_NA,44
@@ -1003,7 +998,6 @@ CMG,Consumer Discretionary,premiumsEarned,SECTOR_NA,49
 CMG,Consumer Discretionary,claimsIncurred,SECTOR_NA,49
 CMG,Consumer Discretionary,rentalIncome,SECTOR_NA,49
 CMG,Consumer Discretionary,explorationExpense,SECTOR_NA,49
-CMI,Industrials,changeInReceivables,DATA_ABSENT,47
 CMI,Industrials,interestIncomeBank,SECTOR_NA,47
 CMI,Industrials,netInterestIncome,SECTOR_NA,47
 CMI,Industrials,noninterestExpense,SECTOR_NA,47
@@ -1209,7 +1203,6 @@ CTSH,Information Technology,premiumsEarned,SECTOR_NA,42
 CTSH,Information Technology,claimsIncurred,SECTOR_NA,42
 CTSH,Information Technology,rentalIncome,SECTOR_NA,42
 CTSH,Information Technology,explorationExpense,SECTOR_NA,42
-CTVA,Materials,changeInReceivables,EXTRACTION,24
 CTVA,Materials,interestIncomeBank,SECTOR_NA,24
 CTVA,Materials,netInterestIncome,SECTOR_NA,24
 CTVA,Materials,noninterestExpense,SECTOR_NA,24
@@ -1232,7 +1225,6 @@ CVS,Health Care,netInterestIncome,SECTOR_NA,47
 CVS,Health Care,noninterestExpense,SECTOR_NA,47
 CVS,Health Care,rentalIncome,SECTOR_NA,47
 CVS,Health Care,explorationExpense,SECTOR_NA,47
-CVX,Energy,changeInReceivables,DATA_ABSENT,45
 CVX,Energy,interestIncomeBank,SECTOR_NA,45
 CVX,Energy,netInterestIncome,SECTOR_NA,45
 CVX,Energy,noninterestExpense,SECTOR_NA,45
@@ -1271,7 +1263,6 @@ DASH,Consumer Discretionary,claimsIncurred,SECTOR_NA,16
 DASH,Consumer Discretionary,rentalIncome,SECTOR_NA,16
 DASH,Consumer Discretionary,explorationExpense,SECTOR_NA,16
 DD,Materials,changeInInventory,PRESENTATION_CHANGED,25
-DD,Materials,changeInReceivables,PRESENTATION_CHANGED,25
 DD,Materials,interestIncomeBank,SECTOR_NA,25
 DD,Materials,netInterestIncome,SECTOR_NA,25
 DD,Materials,noninterestExpense,SECTOR_NA,25
@@ -1396,7 +1387,6 @@ DOC,Real Estate,shortTermDebt,DEBT_FREE_OR_NOTAG,47
 DOC,Real Estate,currentAssets,UNCLASSIFIED_BALANCE_SHEET,47
 DOC,Real Estate,currentLiabilities,UNCLASSIFIED_BALANCE_SHEET,47
 DOC,Real Estate,changeInInventory,DATA_ABSENT,47
-DOC,Real Estate,changeInReceivables,PRESENTATION_CHANGED,47
 DOC,Real Estate,interestIncomeBank,SECTOR_NA,47
 DOC,Real Estate,netInterestIncome,SECTOR_NA,47
 DOC,Real Estate,noninterestExpense,SECTOR_NA,47
@@ -1411,7 +1401,6 @@ DOV,Industrials,claimsIncurred,SECTOR_NA,43
 DOV,Industrials,rentalIncome,SECTOR_NA,43
 DOV,Industrials,explorationExpense,SECTOR_NA,43
 DOW,Materials,shortTermDebt,COVERED_BY_TOTALDEBT,19
-DOW,Materials,changeInReceivables,DATA_ABSENT,19
 DOW,Materials,interestIncomeBank,SECTOR_NA,19
 DOW,Materials,netInterestIncome,SECTOR_NA,19
 DOW,Materials,noninterestExpense,SECTOR_NA,19
@@ -1578,7 +1567,6 @@ EL,Consumer Staples,claimsIncurred,SECTOR_NA,44
 EL,Consumer Staples,rentalIncome,SECTOR_NA,44
 EL,Consumer Staples,explorationExpense,SECTOR_NA,44
 ELV,Health Care,changeInInventory,DATA_ABSENT,44
-ELV,Health Care,changeInPayables,PRESENTATION_CHANGED,44
 ELV,Health Care,interestIncomeBank,SECTOR_NA,44
 ELV,Health Care,netInterestIncome,SECTOR_NA,44
 ELV,Health Care,noninterestExpense,SECTOR_NA,44
@@ -1675,7 +1663,6 @@ ESS,Real Estate,currentLiabilities,UNCLASSIFIED_BALANCE_SHEET,46
 ESS,Real Estate,goodwill,NO_GOODWILL,46
 ESS,Real Estate,changeInInventory,DATA_ABSENT,46
 ESS,Real Estate,changeInReceivables,DATA_ABSENT,46
-ESS,Real Estate,changeInPayables,PRESENTATION_CHANGED,46
 ESS,Real Estate,interestIncomeBank,SECTOR_NA,46
 ESS,Real Estate,netInterestIncome,SECTOR_NA,46
 ESS,Real Estate,noninterestExpense,SECTOR_NA,46
@@ -1755,7 +1742,6 @@ EXPD,Industrials,claimsIncurred,SECTOR_NA,48
 EXPD,Industrials,rentalIncome,SECTOR_NA,48
 EXPD,Industrials,explorationExpense,SECTOR_NA,48
 EXPE,Consumer Discretionary,changeInInventory,DATA_ABSENT,47
-EXPE,Consumer Discretionary,changeInPayables,DATA_ABSENT,47
 EXPE,Consumer Discretionary,interestIncomeBank,SECTOR_NA,47
 EXPE,Consumer Discretionary,netInterestIncome,SECTOR_NA,47
 EXPE,Consumer Discretionary,noninterestExpense,SECTOR_NA,47
@@ -1777,8 +1763,6 @@ EXR,Real Estate,claimsIncurred,SECTOR_NA,43
 EXR,Real Estate,explorationExpense,SECTOR_NA,43
 F,Consumer Discretionary,longTermDebt,PRESENTATION_CHANGED,41
 F,Consumer Discretionary,shortTermDebt,DEBT_FREE_OR_NOTAG,41
-F,Consumer Discretionary,changeInReceivables,EXTRACTION,41
-F,Consumer Discretionary,changeInPayables,DATA_ABSENT,41
 F,Consumer Discretionary,interestIncomeBank,SECTOR_NA,41
 F,Consumer Discretionary,netInterestIncome,SECTOR_NA,41
 F,Consumer Discretionary,noninterestExpense,SECTOR_NA,41
@@ -1826,7 +1810,6 @@ FDX,Industrials,grossMargins,PRESENTATION_CHANGED,50
 FDX,Industrials,costOfRevenue,PRESENTATION_CHANGED,50
 FDX,Industrials,shortTermDebt,COVERED_BY_TOTALDEBT,50
 FDX,Industrials,changeInInventory,DATA_ABSENT,50
-FDX,Industrials,changeInPayables,EXTRACTION,50
 FDX,Industrials,interestIncomeBank,SECTOR_NA,50
 FDX,Industrials,netInterestIncome,SECTOR_NA,50
 FDX,Industrials,noninterestExpense,SECTOR_NA,50
@@ -1913,8 +1896,6 @@ FOXA,Communication Services,costOfRevenue,NO_COGS_SERVICES,26
 FOXA,Communication Services,operatingMargins,NO_COGS_SERVICES,26
 FOXA,Communication Services,ebitda,NO_COGS_SERVICES,26
 FOXA,Communication Services,changeInInventory,DATA_ABSENT,26
-FOXA,Communication Services,changeInReceivables,PRESENTATION_CHANGED,26
-FOXA,Communication Services,changeInPayables,PRESENTATION_CHANGED,26
 FOXA,Communication Services,interestIncomeBank,SECTOR_NA,26
 FOXA,Communication Services,netInterestIncome,SECTOR_NA,26
 FOXA,Communication Services,noninterestExpense,SECTOR_NA,26
@@ -2213,7 +2194,6 @@ HLT,Consumer Discretionary,costOfRevenue,NO_COGS_SERVICES,38
 HLT,Consumer Discretionary,returnOnEquity,NEG_OR_ZERO_EQUITY,38
 HLT,Consumer Discretionary,shortTermDebt,COVERED_BY_TOTALDEBT,38
 HLT,Consumer Discretionary,changeInInventory,PRESENTATION_CHANGED,38
-HLT,Consumer Discretionary,changeInPayables,PRESENTATION_CHANGED,38
 HLT,Consumer Discretionary,interestIncomeBank,SECTOR_NA,38
 HLT,Consumer Discretionary,netInterestIncome,SECTOR_NA,38
 HLT,Consumer Discretionary,noninterestExpense,SECTOR_NA,38
@@ -2332,7 +2312,6 @@ IBKR,Financials,currentLiabilities,UNCLASSIFIED_BALANCE_SHEET,46
 IBKR,Financials,goodwill,NO_GOODWILL,46
 IBKR,Financials,changeInInventory,DATA_ABSENT,46
 IBKR,Financials,changeInReceivables,DATA_ABSENT,46
-IBKR,Financials,changeInPayables,DATA_ABSENT,46
 IBKR,Financials,interestIncomeBank,SECTOR_NA,46
 IBKR,Financials,premiumsEarned,SECTOR_NA,46
 IBKR,Financials,claimsIncurred,SECTOR_NA,46
@@ -2418,7 +2397,6 @@ INVH,Real Estate,noninterestExpense,SECTOR_NA,32
 INVH,Real Estate,premiumsEarned,SECTOR_NA,32
 INVH,Real Estate,claimsIncurred,SECTOR_NA,32
 INVH,Real Estate,explorationExpense,SECTOR_NA,32
-IP,Materials,changeInReceivables,DATA_ABSENT,39
 IP,Materials,interestIncomeBank,SECTOR_NA,39
 IP,Materials,noninterestExpense,SECTOR_NA,39
 IP,Materials,premiumsEarned,SECTOR_NA,39
@@ -2481,8 +2459,6 @@ IVZ,Financials,shortTermDebt,COVERED_BY_TOTALDEBT,44
 IVZ,Financials,currentAssets,UNCLASSIFIED_BALANCE_SHEET,44
 IVZ,Financials,currentLiabilities,UNCLASSIFIED_BALANCE_SHEET,44
 IVZ,Financials,changeInInventory,DATA_ABSENT,44
-IVZ,Financials,changeInReceivables,EXTRACTION,44
-IVZ,Financials,changeInPayables,EXTRACTION,44
 IVZ,Financials,interestIncomeBank,SECTOR_NA,44
 IVZ,Financials,netInterestIncome,SECTOR_NA,44
 IVZ,Financials,noninterestExpense,SECTOR_NA,44
@@ -2554,7 +2530,6 @@ JPM,Financials,interestIncomeBank,EXTRACTION,40
 JPM,Financials,premiumsEarned,SECTOR_NA,40
 JPM,Financials,claimsIncurred,SECTOR_NA,40
 JPM,Financials,explorationExpense,SECTOR_NA,40
-KDP,Consumer Staples,changeInPayables,PRESENTATION_CHANGED,46
 KDP,Consumer Staples,interestIncomeBank,SECTOR_NA,46
 KDP,Consumer Staples,netInterestIncome,SECTOR_NA,46
 KDP,Consumer Staples,noninterestExpense,SECTOR_NA,46
@@ -2599,7 +2574,6 @@ KIM,Real Estate,currentAssets,UNCLASSIFIED_BALANCE_SHEET,45
 KIM,Real Estate,currentLiabilities,UNCLASSIFIED_BALANCE_SHEET,45
 KIM,Real Estate,goodwill,NO_GOODWILL,45
 KIM,Real Estate,changeInInventory,DATA_ABSENT,45
-KIM,Real Estate,changeInReceivables,EXTRACTION,45
 KIM,Real Estate,interestIncomeBank,SECTOR_NA,45
 KIM,Real Estate,netInterestIncome,SECTOR_NA,45
 KIM,Real Estate,noninterestExpense,SECTOR_NA,45
@@ -2719,7 +2693,6 @@ LHX,Industrials,premiumsEarned,SECTOR_NA,48
 LHX,Industrials,claimsIncurred,SECTOR_NA,48
 LHX,Industrials,rentalIncome,SECTOR_NA,48
 LHX,Industrials,explorationExpense,SECTOR_NA,48
-LII,Industrials,changeInReceivables,DATA_ABSENT,48
 LII,Industrials,interestIncomeBank,SECTOR_NA,48
 LII,Industrials,netInterestIncome,SECTOR_NA,48
 LII,Industrials,noninterestExpense,SECTOR_NA,48
@@ -2930,7 +2903,6 @@ MDLZ,Consumer Staples,premiumsEarned,SECTOR_NA,49
 MDLZ,Consumer Staples,claimsIncurred,SECTOR_NA,49
 MDLZ,Consumer Staples,rentalIncome,SECTOR_NA,49
 MDLZ,Consumer Staples,explorationExpense,SECTOR_NA,49
-MDT,Health Care,changeInReceivables,DATA_ABSENT,32
 MDT,Health Care,interestIncomeBank,SECTOR_NA,32
 MDT,Health Care,noninterestExpense,SECTOR_NA,32
 MDT,Health Care,premiumsEarned,SECTOR_NA,32
@@ -3190,7 +3162,6 @@ NI,Utilities,premiumsEarned,SECTOR_NA,43
 NI,Utilities,claimsIncurred,SECTOR_NA,43
 NI,Utilities,rentalIncome,SECTOR_NA,43
 NI,Utilities,explorationExpense,SECTOR_NA,43
-NKE,Consumer Discretionary,changeInPayables,DATA_ABSENT,45
 NKE,Consumer Discretionary,interestIncomeBank,SECTOR_NA,45
 NKE,Consumer Discretionary,netInterestIncome,SECTOR_NA,45
 NKE,Consumer Discretionary,noninterestExpense,SECTOR_NA,45
@@ -3291,21 +3262,18 @@ NVR,Consumer Discretionary,premiumsEarned,SECTOR_NA,49
 NVR,Consumer Discretionary,claimsIncurred,SECTOR_NA,49
 NVR,Consumer Discretionary,rentalIncome,SECTOR_NA,49
 NVR,Consumer Discretionary,explorationExpense,SECTOR_NA,49
-NWSA,Communication Services,grossProfit,NO_COGS_SERVICES,38
-NWSA,Communication Services,grossMargins,NO_COGS_SERVICES,38
-NWSA,Communication Services,costOfRevenue,NO_COGS_SERVICES,38
-NWSA,Communication Services,operatingMargins,NO_COGS_SERVICES,38
-NWSA,Communication Services,ebitda,NO_COGS_SERVICES,38
-NWSA,Communication Services,changeInReceivables,DATA_ABSENT,38
-NWSA,Communication Services,changeInPayables,DATA_ABSENT,38
-NWSA,Communication Services,interestIncomeBank,SECTOR_NA,38
-NWSA,Communication Services,netInterestIncome,SECTOR_NA,38
-NWSA,Communication Services,noninterestExpense,SECTOR_NA,38
-NWSA,Communication Services,premiumsEarned,SECTOR_NA,38
-NWSA,Communication Services,claimsIncurred,SECTOR_NA,38
-NWSA,Communication Services,rentalIncome,SECTOR_NA,38
-NWSA,Communication Services,explorationExpense,SECTOR_NA,38
-NXPI,Information Technology,changeInReceivables,DATA_ABSENT,25
+NWSA,Communication Services,grossProfit,NO_COGS_SERVICES,39
+NWSA,Communication Services,grossMargins,NO_COGS_SERVICES,39
+NWSA,Communication Services,costOfRevenue,NO_COGS_SERVICES,39
+NWSA,Communication Services,operatingMargins,NO_COGS_SERVICES,39
+NWSA,Communication Services,ebitda,NO_COGS_SERVICES,39
+NWSA,Communication Services,interestIncomeBank,SECTOR_NA,39
+NWSA,Communication Services,netInterestIncome,SECTOR_NA,39
+NWSA,Communication Services,noninterestExpense,SECTOR_NA,39
+NWSA,Communication Services,premiumsEarned,SECTOR_NA,39
+NWSA,Communication Services,claimsIncurred,SECTOR_NA,39
+NWSA,Communication Services,rentalIncome,SECTOR_NA,39
+NWSA,Communication Services,explorationExpense,SECTOR_NA,39
 NXPI,Information Technology,interestIncomeBank,SECTOR_NA,25
 NXPI,Information Technology,netInterestIncome,SECTOR_NA,25
 NXPI,Information Technology,noninterestExpense,SECTOR_NA,25
@@ -3322,7 +3290,6 @@ O,Real Estate,longTermDebt,COVERED_BY_TOTALDEBT,44
 O,Real Estate,currentAssets,UNCLASSIFIED_BALANCE_SHEET,44
 O,Real Estate,currentLiabilities,UNCLASSIFIED_BALANCE_SHEET,44
 O,Real Estate,changeInInventory,DATA_ABSENT,44
-O,Real Estate,changeInReceivables,DATA_ABSENT,44
 O,Real Estate,interestIncomeBank,SECTOR_NA,44
 O,Real Estate,netInterestIncome,SECTOR_NA,44
 O,Real Estate,noninterestExpense,SECTOR_NA,44
@@ -3369,7 +3336,6 @@ ORCL,Information Technology,grossMargins,PRESENTATION_CHANGED,50
 ORCL,Information Technology,costOfRevenue,PRESENTATION_CHANGED,50
 ORCL,Information Technology,longTermDebt,COVERED_BY_TOTALDEBT,50
 ORCL,Information Technology,changeInInventory,PRESENTATION_CHANGED,50
-ORCL,Information Technology,changeInPayables,PRESENTATION_CHANGED,50
 ORCL,Information Technology,interestIncomeBank,SECTOR_NA,50
 ORCL,Information Technology,netInterestIncome,SECTOR_NA,50
 ORCL,Information Technology,noninterestExpense,SECTOR_NA,50
@@ -3442,7 +3408,6 @@ PCG,Utilities,grossProfit,NO_COGS_STRUCTURAL,42
 PCG,Utilities,grossMargins,NO_COGS_STRUCTURAL,42
 PCG,Utilities,costOfRevenue,NO_COGS_STRUCTURAL,42
 PCG,Utilities,goodwill,NO_GOODWILL,42
-PCG,Utilities,changeInReceivables,PRESENTATION_CHANGED,42
 PCG,Utilities,interestIncomeBank,SECTOR_NA,42
 PCG,Utilities,netInterestIncome,SECTOR_NA,42
 PCG,Utilities,noninterestExpense,SECTOR_NA,42
@@ -3460,7 +3425,6 @@ PEG,Utilities,noninterestExpense,SECTOR_NA,46
 PEG,Utilities,premiumsEarned,SECTOR_NA,46
 PEG,Utilities,claimsIncurred,SECTOR_NA,46
 PEG,Utilities,explorationExpense,SECTOR_NA,46
-PEP,Consumer Staples,changeInReceivables,DATA_ABSENT,42
 PEP,Consumer Staples,interestIncomeBank,SECTOR_NA,42
 PEP,Consumer Staples,netInterestIncome,SECTOR_NA,42
 PEP,Consumer Staples,noninterestExpense,SECTOR_NA,42
@@ -3599,7 +3563,6 @@ PNR,Industrials,claimsIncurred,SECTOR_NA,46
 PNR,Industrials,rentalIncome,SECTOR_NA,46
 PNR,Industrials,explorationExpense,SECTOR_NA,46
 PNW,Utilities,goodwill,NO_GOODWILL,49
-PNW,Utilities,changeInReceivables,PRESENTATION_CHANGED,49
 PNW,Utilities,interestIncomeBank,SECTOR_NA,49
 PNW,Utilities,netInterestIncome,SECTOR_NA,49
 PNW,Utilities,noninterestExpense,SECTOR_NA,49
@@ -3695,8 +3658,6 @@ PTC,Information Technology,premiumsEarned,SECTOR_NA,43
 PTC,Information Technology,claimsIncurred,SECTOR_NA,43
 PTC,Information Technology,rentalIncome,SECTOR_NA,43
 PTC,Information Technology,explorationExpense,SECTOR_NA,43
-PWR,Industrials,changeInReceivables,DATA_ABSENT,46
-PWR,Industrials,changeInPayables,DATA_ABSENT,46
 PWR,Industrials,interestIncomeBank,SECTOR_NA,46
 PWR,Industrials,netInterestIncome,SECTOR_NA,46
 PWR,Industrials,noninterestExpense,SECTOR_NA,46
@@ -3717,7 +3678,6 @@ PYPL,Financials,claimsIncurred,SECTOR_NA,35
 PYPL,Financials,rentalIncome,SECTOR_NA,35
 PYPL,Financials,explorationExpense,SECTOR_NA,35
 Q,Information Technology,changeInInventory,SPINOFF_REORG,3
-Q,Information Technology,changeInReceivables,SPINOFF_REORG,3
 Q,Information Technology,interestIncomeBank,SECTOR_NA,3
 Q,Information Technology,netInterestIncome,SECTOR_NA,3
 Q,Information Technology,noninterestExpense,SECTOR_NA,3
@@ -3987,7 +3947,6 @@ SPG,Real Estate,shortTermDebt,DEBT_FREE_OR_NOTAG,51
 SPG,Real Estate,currentAssets,UNCLASSIFIED_BALANCE_SHEET,51
 SPG,Real Estate,currentLiabilities,UNCLASSIFIED_BALANCE_SHEET,51
 SPG,Real Estate,changeInInventory,DATA_ABSENT,51
-SPG,Real Estate,changeInReceivables,DATA_ABSENT,51
 SPG,Real Estate,changeInPayables,DATA_ABSENT,51
 SPG,Real Estate,interestIncomeBank,SECTOR_NA,51
 SPG,Real Estate,netInterestIncome,SECTOR_NA,51
@@ -4008,7 +3967,6 @@ SRE,Utilities,grossMargins,NO_COGS_STRUCTURAL,43
 SRE,Utilities,costOfRevenue,NO_COGS_STRUCTURAL,43
 SRE,Utilities,operatingMargins,NO_COGS_STRUCTURAL,43
 SRE,Utilities,ebitda,NO_COGS_STRUCTURAL,43
-SRE,Utilities,changeInReceivables,DATA_ABSENT,43
 SRE,Utilities,interestIncomeBank,SECTOR_NA,43
 SRE,Utilities,netInterestIncome,SECTOR_NA,43
 SRE,Utilities,noninterestExpense,SECTOR_NA,43
@@ -4051,7 +4009,6 @@ STX,Information Technology,premiumsEarned,SECTOR_NA,45
 STX,Information Technology,claimsIncurred,SECTOR_NA,45
 STX,Information Technology,rentalIncome,SECTOR_NA,45
 STX,Information Technology,explorationExpense,SECTOR_NA,45
-STZ,Consumer Staples,changeInReceivables,EXTRACTION,48
 STZ,Consumer Staples,interestIncomeBank,SECTOR_NA,48
 STZ,Consumer Staples,netInterestIncome,SECTOR_NA,48
 STZ,Consumer Staples,noninterestExpense,SECTOR_NA,48
@@ -4109,7 +4066,6 @@ SYK,Health Care,rentalIncome,SECTOR_NA,42
 SYK,Health Care,explorationExpense,SECTOR_NA,42
 SYY,Consumer Staples,shortTermDebt,COVERED_BY_TOTALDEBT,39
 SYY,Consumer Staples,changeInInventory,PRESENTATION_CHANGED,39
-SYY,Consumer Staples,changeInReceivables,PRESENTATION_CHANGED,39
 SYY,Consumer Staples,interestIncomeBank,SECTOR_NA,39
 SYY,Consumer Staples,netInterestIncome,SECTOR_NA,39
 SYY,Consumer Staples,noninterestExpense,SECTOR_NA,39
@@ -4121,7 +4077,6 @@ T,Communication Services,grossProfit,EXTRACTION,47
 T,Communication Services,grossMargins,EXTRACTION,47
 T,Communication Services,costOfRevenue,EXTRACTION,47
 T,Communication Services,changeInInventory,DATA_ABSENT,47
-T,Communication Services,changeInPayables,PRESENTATION_CHANGED,47
 T,Communication Services,interestIncomeBank,SECTOR_NA,47
 T,Communication Services,netInterestIncome,SECTOR_NA,47
 T,Communication Services,noninterestExpense,SECTOR_NA,47
@@ -4167,7 +4122,6 @@ TEL,Information Technology,rentalIncome,SECTOR_NA,46
 TEL,Information Technology,explorationExpense,SECTOR_NA,46
 TER,Information Technology,longTermDebt,COVERED_BY_TOTALDEBT,38
 TER,Information Technology,shortTermDebt,COVERED_BY_TOTALDEBT,38
-TER,Information Technology,changeInPayables,PRESENTATION_CHANGED,38
 TER,Information Technology,interestIncomeBank,SECTOR_NA,38
 TER,Information Technology,netInterestIncome,SECTOR_NA,38
 TER,Information Technology,noninterestExpense,SECTOR_NA,38
@@ -4259,7 +4213,6 @@ TPR,Consumer Discretionary,claimsIncurred,SECTOR_NA,43
 TPR,Consumer Discretionary,rentalIncome,SECTOR_NA,43
 TPR,Consumer Discretionary,explorationExpense,SECTOR_NA,43
 TRGP,Energy,shortTermDebt,COVERED_BY_TOTALDEBT,41
-TRGP,Energy,changeInReceivables,DATA_ABSENT,41
 TRGP,Energy,changeInPayables,PRESENTATION_CHANGED,41
 TRGP,Energy,interestIncomeBank,SECTOR_NA,41
 TRGP,Energy,netInterestIncome,SECTOR_NA,41
@@ -4334,7 +4287,6 @@ TSN,Consumer Staples,explorationExpense,SECTOR_NA,46
 TT,Industrials,grossProfit,EXTRACTION,45
 TT,Industrials,grossMargins,EXTRACTION,45
 TT,Industrials,costOfRevenue,EXTRACTION,45
-TT,Industrials,changeInReceivables,DATA_ABSENT,45
 TT,Industrials,interestIncomeBank,SECTOR_NA,45
 TT,Industrials,netInterestIncome,SECTOR_NA,45
 TT,Industrials,noninterestExpense,SECTOR_NA,45
@@ -4547,8 +4499,6 @@ VLTO,Industrials,noninterestExpense,SECTOR_NA,10
 VLTO,Industrials,premiumsEarned,SECTOR_NA,10
 VLTO,Industrials,claimsIncurred,SECTOR_NA,10
 VLTO,Industrials,explorationExpense,SECTOR_NA,10
-VMC,Materials,changeInReceivables,DATA_ABSENT,44
-VMC,Materials,changeInPayables,DATA_ABSENT,44
 VMC,Materials,interestIncomeBank,SECTOR_NA,44
 VMC,Materials,netInterestIncome,SECTOR_NA,44
 VMC,Materials,noninterestExpense,SECTOR_NA,44
@@ -4659,7 +4609,6 @@ WAT,Health Care,claimsIncurred,SECTOR_NA,49
 WAT,Health Care,rentalIncome,SECTOR_NA,49
 WAT,Health Care,explorationExpense,SECTOR_NA,49
 WBD,Communication Services,changeInInventory,DATA_ABSENT,44
-WBD,Communication Services,changeInReceivables,PRESENTATION_CHANGED,44
 WBD,Communication Services,interestIncomeBank,SECTOR_NA,44
 WBD,Communication Services,netInterestIncome,SECTOR_NA,44
 WBD,Communication Services,noninterestExpense,SECTOR_NA,44
@@ -4714,7 +4663,6 @@ WFC,Financials,currentAssets,UNCLASSIFIED_BALANCE_SHEET,48
 WFC,Financials,currentLiabilities,UNCLASSIFIED_BALANCE_SHEET,48
 WFC,Financials,changeInInventory,DATA_ABSENT,48
 WFC,Financials,changeInReceivables,DATA_ABSENT,48
-WFC,Financials,changeInPayables,DATA_ABSENT,48
 WFC,Financials,premiumsEarned,SECTOR_NA,48
 WFC,Financials,claimsIncurred,SECTOR_NA,48
 WFC,Financials,rentalIncome,SECTOR_NA,48
@@ -4730,7 +4678,6 @@ WM,Industrials,explorationExpense,SECTOR_NA,45
 WMB,Energy,grossProfit,PRESENTATION_CHANGED,48
 WMB,Energy,grossMargins,PRESENTATION_CHANGED,48
 WMB,Energy,costOfRevenue,PRESENTATION_CHANGED,48
-WMB,Energy,changeInReceivables,DATA_ABSENT,48
 WMB,Energy,interestIncomeBank,SECTOR_NA,48
 WMB,Energy,netInterestIncome,SECTOR_NA,48
 WMB,Energy,noninterestExpense,SECTOR_NA,48
@@ -4829,7 +4776,6 @@ XOM,Energy,costOfRevenue,NO_COGS_STRUCTURAL,47
 XOM,Energy,operatingMargins,NO_COGS_STRUCTURAL,47
 XOM,Energy,ebitda,NO_COGS_STRUCTURAL,47
 XOM,Energy,goodwill,NO_GOODWILL,47
-XOM,Energy,changeInReceivables,DATA_ABSENT,47
 XOM,Energy,interestIncomeBank,SECTOR_NA,47
 XOM,Energy,netInterestIncome,SECTOR_NA,47
 XOM,Energy,noninterestExpense,SECTOR_NA,47
@@ -4856,7 +4802,6 @@ XYZ,Financials,rentalIncome,SECTOR_NA,28
 XYZ,Financials,explorationExpense,SECTOR_NA,28
 YUM,Consumer Discretionary,returnOnEquity,NEG_OR_ZERO_EQUITY,47
 YUM,Consumer Discretionary,changeInInventory,PRESENTATION_CHANGED,47
-YUM,Consumer Discretionary,changeInReceivables,DATA_ABSENT,47
 YUM,Consumer Discretionary,interestIncomeBank,SECTOR_NA,47
 YUM,Consumer Discretionary,noninterestExpense,SECTOR_NA,47
 YUM,Consumer Discretionary,premiumsEarned,SECTOR_NA,47

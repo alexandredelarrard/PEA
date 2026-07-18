@@ -71,7 +71,7 @@ Key tables (PK): `prices` (ticker,date) · `dividends` · `short_interest` ·
 `fundamentals_history` (ticker,as_of) · `fundamentals_snapshot` (ticker,as_of, accrues) ·
 `earnings_surprises` · `macro` (date) · `employees_history` · `management_history` ·
 `def14a_llm` (ticker,accession_number) · `institutional_holdings` · `cusip_ticker_map` ·
-`sp500_tickers` / `cik_mapping` (ticker, + sector/industry) · `google_trends` ·
+`sp500_tickers` (ticker, + name/cik/sector/industry — also the ticker→CIK source) · `google_trends` ·
 `wiki_pageviews` · `ticker_embeddings` · `cube` (ticker,date,target_horizon) ·
 `predictions` · `cube_signal`.
 

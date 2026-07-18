@@ -81,7 +81,12 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
     # from ~2018; CostOfGoodsSold covers the earlier years). Coalescing recovers
     # the early cost line -> early gross profit -> gross/operating margin + EBITDA.
     "costOfRevenue": ["CostOfGoodsAndServicesSold", "CostOfRevenue",
-                      "CostOfGoodsSold", "CostOfServices"],
+                      "CostOfGoodsSold", "CostOfServices",
+                      # excl-D&A variants: the headline cost line for many services /
+                      # utilities (e.g. CTSH, AEP); slightly understate COGS vs incl-D&A
+                      # filers, so kept at LOWER priority (fill-only).
+                      "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+                      "CostOfServicesExcludingDepreciationDepletionAndAmortization"],
     "operatingIncome": ["OperatingIncomeLoss", "OperatingAndNonoperatingRevenues", "OperatingLoss", "OperatingIncome"],
     "depAmort": ["DepreciationDepletionAndAmortization",
                  "DepreciationAmortizationAndAccretionNet",
@@ -113,11 +118,15 @@ STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
     # capital-lease-inclusive element — coalesce it so LTD isn't ~null for them.
     "longTermDebt": ["LongTermDebtNoncurrent", "LongTermDebt",
                      "LongTermDebtAndCapitalLeaseObligations"],
-    "cash": ["CashAndCashEquivalentsAtCarryingValue", 
-              "CashCashEquivalentsAndShortTermInvestments",
-              "CashAndDueFromBanks"],
+    # clean unrestricted cash first; then bank / plain-`Cash` variants; the
+    # restricted-inclusive and cash+ST-investment totals are last-resort fallbacks
+    # for insurers / asset managers (e.g. AIG, ALL) that omit the clean tag.
+    "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashAndDueFromBanks", "Cash",
+             "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+             "CashCashEquivalentsAndShortTermInvestments"],
     # ---- added for refined features (distress / liquidity, M&A footprint) ----
-    "shortTermDebt": ["DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings"],
+    "shortTermDebt": ["DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings",
+                      "CommercialPaper", "OtherShortTermBorrowings"],
     "currentAssets": ["AssetsCurrent"],
     "currentLiabilities": ["LiabilitiesCurrent"],
     "goodwill": ["Goodwill"],
@@ -160,9 +169,13 @@ EXTRA_FLOW_TAGS = {
     # combined payables-and-accrued-liabilities line) so it isn't null for most.
     "changeInReceivables": ["IncreaseDecreaseInAccountsReceivable",
                             "IncreaseDecreaseInReceivables",
-                            "IncreaseDecreaseInAccountsAndOtherReceivables"],
+                            "IncreaseDecreaseInAccountsAndOtherReceivables",
+                            "IncreaseDecreaseInAccountsAndNotesReceivable",
+                            "IncreaseDecreaseInAccountsReceivableAndOtherOperatingAssets"],
     "changeInPayables": ["IncreaseDecreaseInAccountsPayableTrade", "IncreaseDecreaseInAccountsPayable",
-                         "IncreaseDecreaseInAccountsPayableAndAccruedLiabilities"],
+                         "IncreaseDecreaseInAccountsPayableAndAccruedLiabilities",
+                         "IncreaseDecreaseInAccountsPayableAndOtherOperatingLiabilities",
+                         "IncreaseDecreaseInOtherAccountsPayableAndAccruedLiabilities"],
     "impairment": ["AssetImpairmentCharges", "GoodwillImpairmentLoss",
                    "ImpairmentOfLongLivedAssetsHeldForUse"],
     "restructuring": ["RestructuringCharges", "RestructuringSettlementAndImpairmentProvisions"],
@@ -170,7 +183,9 @@ EXTRA_FLOW_TAGS = {
     "interestIncomeBank": ["InterestAndDividendIncomeOperating"],
     "netInterestIncome": ["InterestIncomeExpenseNet", "InterestIncomeExpenseAfterProvisionForLoanLoss"],
     "provisionForCreditLosses": ["ProvisionForLoanLossesExpensed",
-                                 "ProvisionForLoanLeaseAndOtherLosses", "ProvisionForDoubtfulAccounts"],
+                                 "ProvisionForLoanLeaseAndOtherLosses", "ProvisionForDoubtfulAccounts",
+                                 # CECL-era element used by many banks from 2020
+                                 "ProvisionForLoanAndLeaseLosses", "ProvisionForCreditLossExpenseReversal"],
     "noninterestIncome": ["NoninterestIncome"],
     "noninterestExpense": ["NoninterestExpense"],
     # ---- Insurance ----
@@ -200,12 +215,17 @@ EXTRA_FLOW_TAGS = {
 EXTRA_STOCK_TAGS = {
     # ---- universal balance sheet (cross-sector §B) ----
     "longTermDebtTotal": ["LongTermDebt", "LongTermDebtAndCapitalLeaseObligations"],
+    "debtCombined": ["DebtLongtermAndShorttermCombinedAmount"],   # single ST+LT total (banks/insurers)
+    "notesPayable": ["NotesPayable"],                             # REIT total-debt fallback
     "commercialPaper": ["CommercialPaper"],
     "operatingLeaseLiability": ["OperatingLeaseLiability"],
     "financeLeaseLiability": ["FinanceLeaseLiabilityNoncurrent", "FinanceLeaseLiability"],
     "accountsReceivable": ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"],
     "inventory": ["InventoryNet"],
     "accountsPayable": ["AccountsPayableCurrent", "AccountsPayableAndAccruedLiabilitiesCurrent"],
+    # net PP&E is the common balance-sheet line; gross is reconstructed as
+    # net + accumulated depreciation in build_ticker_history for net-only filers.
+    "ppeNet": ["PropertyPlantAndEquipmentNet"],
     "ppeGross": ["PropertyPlantAndEquipmentGross"],
     "accumulatedDepreciation": ["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"],
     "intangiblesExGoodwill": ["IntangibleAssetsNetExcludingGoodwill", "FiniteLivedIntangibleAssetsNet"],
@@ -215,8 +235,12 @@ EXTRA_STOCK_TAGS = {
     "minorityInterest": ["MinorityInterest"],
     "shortTermInvestments": ["ShortTermInvestments"],
     "longTermInvestments": ["LongTermInvestments"],
-    "deferredRevenue": ["ContractWithCustomerLiabilityCurrent", "ContractWithCustomerLiability",
-                        "DeferredRevenueCurrent"],
+    # deferred revenue -> a consistent TOTAL pool: the combined tag when present,
+    # else current + noncurrent (filers such as CRM report only the split parts) --
+    # reconstructed in build_ticker_history so current-only is never mixed with total.
+    "deferredRevenue": ["ContractWithCustomerLiability", "DeferredRevenue"],
+    "deferredRevenueCurrent": ["ContractWithCustomerLiabilityCurrent", "DeferredRevenueCurrent"],
+    "deferredRevenueNoncurrent": ["ContractWithCustomerLiabilityNoncurrent", "DeferredRevenueNoncurrent"],
     "remainingPerformanceObligation": ["RevenueRemainingPerformanceObligation"],
     # ---- Banks ----
     "loans": ["LoansAndLeasesReceivableNetReportedAmount",
@@ -235,6 +259,10 @@ EXTRA_STOCK_TAGS = {
     # ---- Energy ----
     "oilGasPropertyNet": ["OilAndGasPropertySuccessfulEffortMethodNet",
                           "OilAndGasPropertyFullCostMethodNet"],
+    # E&P filers usually tag GROSS oil&gas property (+ accumulated DD&A); net is
+    # reconstructed as gross - accumulated in build_ticker_history.
+    "oilGasPropertyGross": ["OilAndGasPropertySuccessfulEffortMethodGross",
+                            "OilAndGasPropertyFullCostMethodGross"],
     # ---- Utilities ----
     "regulatoryAssets": ["RegulatoryAssetsNoncurrent", "RegulatoryAssetsCurrent"],
     "regulatoryLiabilities": ["RegulatoryLiabilityNoncurrent", "RegulatoryLiabilityCurrent"],
@@ -452,7 +480,10 @@ def _quarterly_flow(df: pd.DataFrame) -> pd.DataFrame:
     implied = implied.where(~is_first, d["dur"])
 
     q = d.assign(val=disc, implied=implied)
-    q = q[(q["implied"] >= 75) & (q["implied"] <= 100)]     # keep quarter-length only
+    # keep quarter-length periods. Upper bound 120d (not 100) so 52/53-week retailers
+    # with a 16-week fiscal Q1 (~112d, e.g. KR/COST/TGT) aren't dropped -> their flows
+    # now form 4 quarters and TTM populates. 6-month YTD (181d) stays excluded.
+    q = q[(q["implied"] >= 75) & (q["implied"] <= 120)]
     q = (q.sort_values("filed").drop_duplicates(subset=["end"], keep="first")
            [["end", "filed", "val"]])
 
@@ -542,7 +573,12 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
 
     all_flow_tags = {**FLOW_TAGS, **EXTRA_FLOW_TAGS}
     all_stock_tags = {**STOCK_TAGS, **EXTRA_STOCK_TAGS}
-    flows = {k: _quarterly_flow(_extract_concept(gaap, tags)) for k, tags in all_flow_tags.items()}
+    _flow_raw = {k: _extract_concept(gaap, tags) for k, tags in all_flow_tags.items()}
+    flows = {k: _quarterly_flow(v) for k, v in _flow_raw.items()}
+    # annual (full-year) value per concept — itself a valid trailing-twelve-month at
+    # each fiscal-year end; used as a fallback for filers that report a flow ONLY
+    # annually (no de-cumulable interim quarters, e.g. some working-capital changes).
+    annuals = {k: _annual_flow(v) for k, v in _flow_raw.items()}
     stocks = {k: _instant_stock(_extract_concept(gaap, tags)) for k, tags in all_stock_tags.items()}
     shares = _instant_stock(_extract_concept(dei, SHARES_TAGS["sharesOutstanding"])
                             if any(t in dei for t in SHARES_TAGS["sharesOutstanding"])
@@ -587,6 +623,13 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     for key in _curated_flows + list(EXTRA_FLOW_TAGS):
         base = merge_present(base, key, flows.get(key))
 
+    # merge the annual full-year fallback at fiscal-year ends (column suffix `_ann`)
+    for key in _curated_flows + list(EXTRA_FLOW_TAGS):
+        _a = annuals.get(key)
+        if _a is not None and not _a.empty:
+            base = base.merge(_a.rename(columns={"val": key + "_ann"})[["end", key + "_ann"]],
+                              on="end", how="left")
+
     _curated_stocks = ["stockholdersEquity", "totalLiabilities", "longTermDebt", "cash",
                        "shortTermDebt", "currentAssets", "currentLiabilities",
                        "goodwill", "totalAssets"]
@@ -611,6 +654,15 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     base = base.sort_values("end").reset_index(drop=True)
     base = base.copy()
 
+    # Carry point-in-time balance-sheet LEVELS forward across interim quarters: many
+    # filers report a level only in the 10-K, leaving 10-Q quarters null even though
+    # the last filed value is the best point-in-time estimate. Leak-free — a later
+    # quarter's as_of post-dates the filing the value came from. Flows are NOT filled
+    # (they are discrete-quarter); the limit avoids carrying a stale level past ~1y.
+    _level_cols = [k for k in (list(STOCK_TAGS) + list(EXTRA_STOCK_TAGS)) if k in base.columns]
+    if _level_cols:
+        base[_level_cols] = base[_level_cols].ffill(limit=4)
+
     # as_of = latest filing date among the merged concepts (ensures all public).
     filed_cols = [c for c in base.columns if c.endswith("_filed")]
     base["as_of"] = base[filed_cols].max(axis=1)
@@ -624,6 +676,22 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
         # trailing 12 months = sum of the 4 most recent quarters
         return s.rolling(TTM_QUARTERS, min_periods=TTM_QUARTERS).sum()
 
+    def ttm_a(key, charge=False):
+        """TTM of the quarterly series, falling back to the forward-filled ANNUAL
+        full-year value where quarters are unavailable (a filer's reported full year
+        IS a trailing-twelve-month). Leak-free: the annual value was filed before the
+        interim quarters it is carried into. Used for filers that report a flow only
+        annually (no de-cumulable interim quarters)."""
+        s = col(key)
+        if charge:
+            s = s.fillna(0.0)
+        q = ttm(s)
+        acol = key + "_ann"
+        if acol in base.columns:
+            ann = pd.to_numeric(base[acol], errors="coerce").ffill(limit=4)
+            q = q.where(q.notna(), ann)
+        return q
+
     # discrete SINGLE-QUARTER values (before rolling) -> "latest quarter" features
     rev_q = col("totalRevenue")
     ni_q = col("netIncome")
@@ -634,19 +702,19 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     ebitda_q = oi_q + da_q.fillna(0)
     fcf_q = ocf_q - capex_q.fillna(0)
 
-    rev_ttm = ttm(rev_q)
-    ni_ttm = ttm(ni_q)
-    gp_ttm = ttm(col("grossProfit"))
-    cor_ttm = ttm(col("costOfRevenue"))
-    oi_ttm = ttm(oi_q)
-    da_ttm = ttm(da_q)
-    ocf_ttm = ttm(ocf_q)
-    capex_ttm = ttm(capex_q)
-    rnd_ttm = ttm(col("researchAndDevelopment"))
-    sga_ttm = ttm(col("sellingGeneralAdmin"))
-    sbc_ttm = ttm(col("stockBasedComp"))
-    acq_ttm = ttm(col("acquisitions").fillna(0.0))   # no acquisition this quarter = 0 (charge flow)
-    int_ttm = ttm(col("interestExpense"))
+    rev_ttm = ttm_a("totalRevenue")
+    ni_ttm = ttm_a("netIncome")
+    gp_ttm = ttm_a("grossProfit")
+    cor_ttm = ttm_a("costOfRevenue")
+    oi_ttm = ttm_a("operatingIncome")
+    da_ttm = ttm_a("depAmort")
+    ocf_ttm = ttm_a("operatingCashFlow")
+    capex_ttm = ttm_a("capex")
+    rnd_ttm = ttm_a("researchAndDevelopment")
+    sga_ttm = ttm_a("sellingGeneralAdmin")
+    sbc_ttm = ttm_a("stockBasedComp")
+    acq_ttm = ttm_a("acquisitions", charge=True)     # no acquisition this quarter = 0 (charge flow)
+    int_ttm = ttm_a("interestExpense")
     eq = col("stockholdersEquity")          # instant (point-in-time), not summed
     liab = col("totalLiabilities")
     ltd = col("longTermDebt")
@@ -664,6 +732,20 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     # Liabilities = Assets - Equity. Only where both sides exist, so filers that
     # report none of them stay NaN.
     liab = liab.where(liab.notna(), assets - eq)
+
+    # Total interest-bearing debt (universal): the single combined ST+LT tag when a
+    # filer reports it (many banks / insurers), else long-term + short-term, else
+    # notes payable (REITs). Its OWN pool, so short- and long-term are never merged
+    # into longTermDebt.
+    _debt_combined = col("debtCombined")
+    _lt_st = (ltd.fillna(0) + std_debt.fillna(0)).where(ltd.notna() | std_debt.notna())
+    total_debt = _debt_combined.where(_debt_combined.notna(), _lt_st)
+    total_debt = total_debt.where(total_debt.notna(), col("notesPayable"))
+    # a filer that reports a balance sheet but NO debt tag in ANY quarter is
+    # genuinely debt-free -> totalDebt = 0 (not "missing"). Filers that report debt in
+    # some quarters keep their values, so captive-finance names are never masked to 0.
+    if total_debt.notna().sum() == 0 and assets.notna().any():
+        total_debt = pd.Series(0.0, index=total_debt.index).where(assets.notna())
 
     gross_profit_ttm = gp_ttm.where(gp_ttm.notna(), rev_ttm - cor_ttm)
     # Derive operating income when the filer doesn't tag OperatingIncomeLoss
@@ -695,6 +777,7 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
         "cash": cash,
         "longTermDebt": ltd,
         "shortTermDebt": std_debt,
+        "totalDebt": total_debt,
         "totalLiabilities": liab,
         "currentAssets": cur_a,
         "currentLiabilities": cur_l,
@@ -722,12 +805,26 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     extra = {"costOfRevenue": cor_ttm, "grossProfit": gross_profit_ttm,
              "dilutedShares": col("dilutedShares")}
     for key in EXTRA_FLOW_TAGS:
-        s = col(key)
-        if key in CHARGE_FLOWS:          # absent quarter = event didn't happen = 0
-            s = s.fillna(0.0)
-        extra[key] = ttm(s)
+        extra[key] = ttm_a(key, charge=(key in CHARGE_FLOWS))
     for key in EXTRA_STOCK_TAGS:
         extra[key] = col(key)
+
+    # --- clean reconstructions: fill each target level by DERIVING from its own
+    #     components, never by coalescing a different pool (which would mix signals) ---
+    _accum = extra["accumulatedDepreciation"]
+    # gross PP&E for net-only filers:  gross = net + accumulated depreciation
+    extra["ppeGross"] = extra["ppeGross"].where(extra["ppeGross"].notna(),
+                                                extra["ppeNet"] + _accum)
+    # net oil&gas property for E&P filers that tag only gross:  net = gross - accumulated
+    extra["oilGasPropertyNet"] = extra["oilGasPropertyNet"].where(
+        extra["oilGasPropertyNet"].notna(), extra["oilGasPropertyGross"] - _accum)
+    # total deferred revenue: combined tag when present, else current + noncurrent
+    # (no double-count: the split is used only where the combined tag is absent)
+    _dr_split = extra["deferredRevenueCurrent"].fillna(0) + extra["deferredRevenueNoncurrent"].fillna(0)
+    _dr_split = _dr_split.where(extra["deferredRevenueCurrent"].notna()
+                               | extra["deferredRevenueNoncurrent"].notna())
+    extra["deferredRevenue"] = extra["deferredRevenue"].where(extra["deferredRevenue"].notna(), _dr_split)
+
     out = pd.concat([out, pd.DataFrame(extra, index=out.index)], axis=1)
 
     # sector tags so downstream KPIs can be computed / neutralized sector-relatively

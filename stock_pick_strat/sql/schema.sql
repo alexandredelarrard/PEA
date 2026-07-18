@@ -15,15 +15,6 @@ CREATE TABLE IF NOT EXISTS "sp500_tickers" (
     PRIMARY KEY ("ticker")
 );
 
--- [reference] cik_mapping  (pk: ticker)
-
-CREATE TABLE IF NOT EXISTS "cik_mapping" (
-    "cik" TEXT,
-    "ticker" TEXT NOT NULL,
-    "company_name" TEXT,
-    PRIMARY KEY ("ticker")
-);
-
 -- [extract] prices  (pk: ticker, date)
 
 CREATE TABLE IF NOT EXISTS "prices" (

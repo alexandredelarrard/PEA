@@ -20,7 +20,6 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from src.constants.constants import SEC_COMPANY_TICKERS_URL
 from src.context import Context
 
 _MIN_INTERVAL = 0.11          # ~9 req/sec, safely under SEC's 10/sec limit
@@ -103,63 +102,24 @@ def save_extract_meta(parquet_path: Path, last_filing_date: str | None,
     )
 
 
-# SEC's company_tickers.json occasionally maps an ACTIVE, currently-trading ticker to
-# a newly-registered non-filing holding shell (empty companyfacts) instead of the real
-# operating filer — pin those to the operating CIK. (We do NOT drop pre-spin-off shells
-# such as FDXF / HONA: their mapping is correct, they simply have no filings yet; the
-# builder skips empty companyfacts gracefully and they auto-populate once they file, so
-# a hardcoded drop-list would only become a stale landmine that hides them forever.)
-_CIK_OVERRIDES = {
-    "XOM": "0000034088",   # SEC maps XOM -> "ExxonMobil Holdings Corp" (no filings); operating filer is 34088
-}
-
-
-def build_cik_mapping(context: Context, sp500_tickers: list[str] | None = None) -> pd.DataFrame:
-    """
-    Fetch SEC's full ticker->CIK mapping and filter to our S&P 500 universe.
-    Source: https://www.sec.gov/files/company_tickers.json (free, no key).
-    Applies _CIK_OVERRIDES to correct SEC's occasional mapping of an active ticker to a
-    non-filing holding shell (which would otherwise yield empty companyfacts).
-    """
-    resp = sec_get(SEC_COMPANY_TICKERS_URL)
-    raw = resp.json()  # dict of {index: {cik_str, ticker, title}}
-    df = pd.DataFrame(raw.values())
-    df["cik_str"] = df["cik_str"].astype(str).str.zfill(10)
-    df = df.rename(columns={"cik_str": "cik", "title": "company_name"})
-
-    if sp500_tickers:
-        df = df[df["ticker"].isin(sp500_tickers)]
-
-    for _tk, _cik in _CIK_OVERRIDES.items():
-        df.loc[df["ticker"] == _tk, "cik"] = _cik
-
-    context.store.save("cik_mapping", df)
-    print(f"Saved CIK mapping for {len(df)} tickers to DB table 'cik_mapping'")
-    return df
-
-
-_SECTOR_COLS = ["sector", "industry_group", "sub_industry"]
-
-
-def _attach_sector(context: Context, df: pd.DataFrame) -> pd.DataFrame:
-    """Left-join GICS sector / industry_group / sub_industry from sp500_tickers
-    so the CIK mapping can drive sector-relative KPI computation downstream.
-    Defensive: if sp500_tickers is empty the sector columns are added as NA."""
-    universe = context.store.load("sp500_tickers")
-    if universe.empty or "ticker" not in universe.columns:
-        for c in _SECTOR_COLS:
-            df[c] = pd.NA
-        return df
-    keep = ["ticker"] + [c for c in _SECTOR_COLS if c in universe.columns]
-    return df.merge(universe[keep], on="ticker", how="left")
-
-
 def load_cik_mapping(context: Context) -> pd.DataFrame:
-    df = context.store.load("cik_mapping")
-    if df.empty:
-        tickers = context.store.load("sp500_tickers", columns=["ticker"])["ticker"].tolist()
-        df = build_cik_mapping(context, tickers)
-    else:
-        # CIK is stored numerically but SEC URLs need the 10-digit zero-padded form
-        df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
-    return _attach_sector(context, df)
+    """Ticker -> CIK (+ name / GICS) resolution for the SEC EDGAR fetchers.
+
+    Single source of truth is `sp500_tickers` (built by fetch_prices), which already
+    carries `cik` alongside `name` / `sector` / `industry_group` / `sub_industry`.
+    `company_name` is exposed (aliased from `name`) for callers that log it.
+
+    Formerly a separate `cik_mapping` table rebuilt from SEC's company_tickers.json;
+    dropped because it merely duplicated `sp500_tickers` AND its CIK source mismapped
+    active tickers (e.g. XOM -> a non-filing "ExxonMobil Holdings Corp" shell), while
+    sp500_tickers already held the correct CIKs.
+    """
+    df = context.store.load("sp500_tickers")
+    if df.empty or "cik" not in df.columns:
+        return df
+    df = df.copy()
+    # SEC URLs need the 10-digit zero-padded CIK
+    df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
+    if "company_name" not in df.columns and "name" in df.columns:
+        df["company_name"] = df["name"]
+    return df

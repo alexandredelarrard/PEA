@@ -31,12 +31,13 @@ class TableSpec:
 
 
 # --------------------------------------------------------------------------- #
-# Reference / dimension tables (ticker universe, ticker<->CIK map)             #
+# Reference / dimension table: the ticker universe. Carries ticker, name, cik and
+# GICS sector / industry_group / sub_industry — the single source of truth for
+# ticker->CIK resolution too (see sec_utils.load_cik_mapping); the old separate
+# `cik_mapping` table was dropped as a redundant duplicate.
 # --------------------------------------------------------------------------- #
 REFERENCE_TABLES: list[TableSpec] = [
     TableSpec("sp500_tickers", "sp500_tickers.csv", ("ticker",), "reference",
-              date_col=None),
-    TableSpec("cik_mapping", "cik_mapping.csv", ("ticker",), "reference",
               date_col=None),
 ]
 

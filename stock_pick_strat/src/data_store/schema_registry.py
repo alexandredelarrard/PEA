@@ -53,8 +53,10 @@ EXTRACT_TABLES: list[TableSpec] = [
     TableSpec("fundamentals_history", "fundamentals_history.parquet",
               ("ticker", "as_of"), "extract", date_col="as_of",
               date_type_cols=("as_of", "fiscal_end")),
-    TableSpec("fundamentals_latest", "fundamentals_latest.parquet",
-              ("ticker",), "extract", date_col=None, date_type_cols=("as_of",)),
+    # yfinance forward-looking snapshot — ACCRUES point-in-time history (one row
+    # per ticker per run day) so forward earnings yield becomes backtestable
+    TableSpec("fundamentals_snapshot", "fundamentals_snapshot.parquet",
+              ("ticker", "as_of"), "extract", date_col="as_of", date_type_cols=("as_of",)),
     TableSpec("earnings_surprises", "earnings_surprises.parquet",
               ("ticker", "earnings_date"), "extract", date_col="earnings_date"),
     TableSpec("macro", "macro.parquet", ("date",), "extract",

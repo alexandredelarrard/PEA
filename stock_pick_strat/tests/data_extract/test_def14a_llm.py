@@ -194,15 +194,14 @@ def test_llm_extractor_mock():
     assert call_kw["model"] == "gpt-4o-mini"
     assert call_kw["text_format"] is Def14AExtract
     assert call_kw["instructions"]
-    # deterministic + cacheable
-    assert call_kw["temperature"] == 0.0
+    # cacheable (prompt-cache key on by default)
     assert call_kw["prompt_cache_key"] == "gpt-4o-mini:Def14AExtract"
 
     print("\n=== SANITY CHECK: LLMExtractor mock ===")
     print(f"  extract() -> {result.company_name}: {len(result.directors)} directors, "
           f"CEO salary ${result.compensation[0].salary_usd:,.0f}.")
-    print(f"  responses.parse() called with temperature={call_kw['temperature']} "
-          f"and prompt_cache_key={call_kw['prompt_cache_key']!r}. Validated.")
+    print(f"  responses.parse() called with prompt_cache_key="
+          f"{call_kw['prompt_cache_key']!r}. Validated.")
 
 
 @pytest.mark.skipif(

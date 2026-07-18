@@ -9,6 +9,7 @@ from src.data_aggregate.utils.betas import estimate_all_betas
 from src.data_aggregate.utils.targets import build_targets_multi
 from src.data_aggregate.utils.features import build_feature_panel
 from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
+from src.data_aggregate.utils.forward_features import build_forward_valuation_panel
 from src.data_aggregate.utils.analyst_features import build_analyst_feature_panel
 from src.data_aggregate.utils.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.management_features import build_management_feature_panel
@@ -48,6 +49,7 @@ class StepBuildCube(Step):
         self.build_features()
         self.build_fundamental_features()
         self.build_sector_features()
+        self.build_forward_features()
         self.build_earnings_features()
         # self.build_analyst_features()
         self.build_management_features()
@@ -135,6 +137,11 @@ class StepBuildCube(Step):
         if self.fundamentals is None:
             self._log.warning("No fundamentals history -> value/quality factors "
                               "and peer-relative fundamentals will be skipped.")
+
+        self.fundamentals_snapshot = self._load_or_none("fundamentals_snapshot")
+        if self.fundamentals_snapshot is None:
+            self._log.warning("No fundamentals snapshot -> forward earnings-yield "
+                              "feature skipped (accrues once fetch_fundamentals runs).")
 
         self.macro = self._load_or_none("macro")
         if self.macro is None:
@@ -316,6 +323,26 @@ class StepBuildCube(Step):
         added = len(self.feature_panel.columns) - 2 - before
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s sector-KPI features (row coverage %.1f%%)",
+                       added, 100 * cov)
+
+    def build_forward_features(self):
+        """Forward earnings yield (1 / forward P/E) from the accruing yfinance
+        snapshot, peer-relative. Point-in-time; coverage accrues as the snapshot
+        is collected over run days (near-empty on a cold start)."""
+        panel = build_forward_valuation_panel(
+            getattr(self, "fundamentals_snapshot", None), self.peers, self.stock_close.index,
+        )
+        if panel.empty:
+            self._log.warning("No forward-valuation features built "
+                              "(fundamentals_snapshot empty — accrues over time).")
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(
+            panel, on=["date", "ticker"], how="left"
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s forward-valuation features (row coverage %.1f%%)",
                        added, 100 * cov)
 
     def build_earnings_features(self):

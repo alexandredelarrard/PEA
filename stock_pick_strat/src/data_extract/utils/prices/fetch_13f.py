@@ -26,32 +26,29 @@ missing. Network/zip IO is isolated in `_ensure_zip`/`_read_zip`; the parse/join
 """
 from __future__ import annotations
 
+from tkinter.constants import Y
 import zipfile
 from pathlib import Path
+import logging
 
 import numpy as np
 import pandas as pd
 import requests
 from tqdm import tqdm
 
-from src.constants.constants import SEC_FORM13F_URL
+from src.constants.constants import SEC_FORM13F_URL_DICT
 from src.context import Context
 from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map
 
+logger = logging.getLogger(__name__)
+
 _HEADERS = {
     "User-Agent": "stock_pick_strat/1.0 (research; valar_analytics@gmail.com)"}
-
-# SEC 13F data-set zips are named by the 3-month FILING-RECEIPT window (NOT calendar
-# quarters), start-date to end-date, e.g. `01jun2025-31aug2025_form13f.zip`. The four
-# windows per year are Dec-Feb, Mar-May, Jun-Aug, Sep-Nov (13F for the Dec-31 period
-# is filed by mid-Feb, hence the one-month shift). Format: DDMMMYYYY-DDMMMYYYY (lower).
-_WINDOWS = [(12, -1, 2), (3, 0, 5), (6, 0, 8), (9, 0, 11)]  # (start_month, yr_delta, end_month)
 
 # SEC changed the 13F VALUE unit from $thousands to $ones with the amendment
 # effective 2023-01-03; scale by filing_date so pre/post-2023 values are comparable.
 _VALUE_DOLLARS_FROM = pd.Timestamp("2023-01-01")
 _VALUE_COLS = ["shares_value", "call_value", "put_value", "debt_value", "other_value"]
-
 
 def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
     """Return the first present column (case-insensitive) among candidates."""
@@ -122,17 +119,14 @@ def _join_13f(submission: pd.DataFrame, infotable: pd.DataFrame) -> pd.DataFrame
 
 def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Data-set base names (no extension) for every filing window in range, e.g.
-    '01jun2025-31aug2025'. Only windows whose end date has passed are included.
+    '01jun2025-31aug2025' from 2024. Only windows whose end date has passed are included.
     Pure/deterministic (pass `today` in tests)."""
     today = (today or pd.Timestamp.today()).normalize()
     names = []
     for y in range(today.year - years_history, today.year + 1):
-        for start_month, yr_delta, end_month in _WINDOWS:
-            start = pd.Timestamp(year=y + yr_delta, month=start_month, day=1)
-            end = pd.Timestamp(year=y, month=end_month, day=1) + pd.offsets.MonthEnd(0)
-            if end > today:
-                continue
-            names.append(f"{start.strftime('%d%b%Y')}-{end.strftime('%d%b%Y')}".lower())
+        if y >= 2013: # SEC started filing 13F data in 2013 q2
+            for quarter in range(1,5):
+                names.append(f"{y}q{quarter}")
     return names
 
 
@@ -153,12 +147,13 @@ def _ensure_zip(name: str, cache_dir: Path) -> Path | None:
     if path.exists() and path.stat().st_size > 0:
         return path
     try:
-        r = requests.get(SEC_FORM13F_URL.format(name=name), headers=_HEADERS,
+        r = requests.get(SEC_FORM13F_URL_DICT.get(name), headers=_HEADERS,
                          timeout=180, stream=True)
     except Exception as e:
-        print(f"13F {name} download failed: {e}")
+        logger.warning(f"13F {name} download failed: {e}")
         return None
     if r.status_code != 200:
+        logger.warning(f"13F {name} download failed: {r.status_code}")
         return None
     tmp = path.with_suffix(".part")
     with open(tmp, "wb") as f:
@@ -179,7 +174,7 @@ def _read_zip(path: Path) -> tuple[pd.DataFrame, pd.DataFrame] | None:
             info = pd.read_csv(z.open(names["INFOTABLE.TSV"]), sep="\t", dtype=str, low_memory=False)
         return sub, info
     except zipfile.BadZipFile:
-        print(f"13F {path.name}: corrupt zip — deleting so it re-downloads next run")
+        logger.warning(f"13F {path.name}: corrupt zip — deleting so it re-downloads next run")
         path.unlink(missing_ok=True)
         return None
 
@@ -188,7 +183,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     """Download (once, cached) the 13F data sets, split by holding type, map to
     tickers, keep the universe, and store."""
     universe = set(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
-    years_history = context.config.data_extract.years_history
+    years_history = context.config.data_extract.years_history + 1
     cache_dir = _cache_dir(context)
 
     frames = []
@@ -204,7 +199,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
             "call_shares", "call_value", "put_shares", "put_value",
             "debt_prn", "debt_value", "other_value"]
     if not frames:
-        print("No 13F data downloaded.")
+        logger.warning("No 13F data downloaded.")
         return pd.DataFrame(columns=cols)
 
     raw = pd.concat(frames, ignore_index=True)
@@ -212,6 +207,6 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     raw = raw.merge(cmap, on="cusip", how="inner")
     out = raw[raw["ticker"].isin(universe)].reset_index(drop=True)
     context.store.save("institutional_holdings", out)
-    print(f"Saved {len(out)} 13F holding rows ({out['ticker'].nunique()} tickers) "
+    logger.warning(f"Saved {len(out)} 13F holding rows ({out['ticker'].nunique()} tickers) "
           f"to DB table 'institutional_holdings'")
     return out

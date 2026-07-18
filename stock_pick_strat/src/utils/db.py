@@ -17,11 +17,9 @@ from functools import lru_cache
 from sqlalchemy import Engine, create_engine
 
 # matches docker-compose.yml (service name `db`, or localhost from the host)
-_DEFAULT_URL = f"postgresql+psycopg2://{os.environ.get("POSTGRES_USER", 'pea')}:{os.environ.get("POSTGRES_PASSWORD", 'pea')}@localhost:{os.environ.get("POSTGRES_PORT", '5432')}/{os.environ.get("POSTGRES_DB", 'pea')}"
-
 def database_url() -> str:
-    return os.getenv("DATABASE_URL", _DEFAULT_URL)
-
+    string_url = f"postgresql+psycopg2://{os.environ.get("POSTGRES_USER", 'pea')}:{os.environ.get("POSTGRES_PASSWORD", 'pea')}@localhost:{os.environ.get("POSTGRES_PORT", '5432')}/{os.environ.get("POSTGRES_DB", 'pea')}"
+    return os.getenv("DATABASE_URL", string_url)
 
 @lru_cache(maxsize=8)
 def get_engine(url: str | None = None) -> Engine:

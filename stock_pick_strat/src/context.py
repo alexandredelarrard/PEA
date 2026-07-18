@@ -15,6 +15,7 @@ from src.utils.seed import set_seed
 from src.utils.db import get_engine
 from src.data_store.store import DataStore
 
+os.environ['LC_ALL'] = "C"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
 

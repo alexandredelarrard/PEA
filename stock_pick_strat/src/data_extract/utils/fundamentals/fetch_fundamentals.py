@@ -313,34 +313,49 @@ def _fetch_companyfacts(context: Context, cik: str) -> dict | None:
 # --------------------------------------------------------------------------- #
 # Concept extraction                                                          #
 # --------------------------------------------------------------------------- #
+_CONCEPT_COLS = ["end", "start", "filed", "form", "fp", "val"]
+
+
 def _extract_concept(section: dict, tag_candidates: list[str]) -> pd.DataFrame:
     """
-    From one facts section (us-gaap or dei), return the observations for the
-    first matching tag as a DataFrame [end, start, filed, form, fp, val].
+    Observations for a logical concept as [end, start, filed, form, fp, val],
+    COALESCED across all candidate tags rather than taking only the first one.
+
+    Filers split the same economic concept across tags — over time (ASC-606
+    revenue: `Revenues` pre-2018, `RevenueFromContractWithCustomer…` after) and
+    by scope (`NetIncomeLoss` excl. NCI vs `ProfitLoss` incl. NCI; equity with /
+    without NCI). Taking only the first present tag truncated history badly
+    (e.g. CVX revenue from 2018, AVGO/CAT net income near-empty, JNJ/UNH ROE
+    only a few years). We therefore union every candidate and, PER PERIOD
+    (start, end), keep the highest-priority (earliest-listed) candidate that
+    reported it — retaining all of that candidate's filings so the downstream
+    earliest-disclosure / point-in-time logic is unchanged.
     """
-    for tag in tag_candidates:
+    frames = []
+    for prio, tag in enumerate(tag_candidates):
         if tag not in section:
             continue
         units = section[tag].get("units", {})
-        # prefer USD, then shares, then whatever exists
         unit_key = next((u for u in ("USD", "shares") if u in units),
                         next(iter(units), None))
         if unit_key is None:
             continue
-        rows = []
-        for obs in units[unit_key]:
-            rows.append({
-                "end": obs.get("end"), "start": obs.get("start"),
-                "filed": obs.get("filed"), "form": obs.get("form"),
-                "fp": obs.get("fp"), "val": obs.get("val"),
-            })
-        df = pd.DataFrame(rows)
-        if df.empty:
-            continue
-        for c in ("end", "start", "filed"):
-            df[c] = pd.to_datetime(df[c], errors="coerce")
-        return df
-    return pd.DataFrame(columns=["end", "start", "filed", "form", "fp", "val"])
+        rows = [{"end": o.get("end"), "start": o.get("start"),
+                 "filed": o.get("filed"), "form": o.get("form"),
+                 "fp": o.get("fp"), "val": o.get("val"), "_prio": prio}
+                for o in units[unit_key]]
+        if rows:
+            frames.append(pd.DataFrame(rows))
+    if not frames:
+        return pd.DataFrame(columns=_CONCEPT_COLS)
+
+    df = pd.concat(frames, ignore_index=True)
+    for c in ("end", "start", "filed"):
+        df[c] = pd.to_datetime(df[c], errors="coerce")
+    # per (start, end) period, keep only the best-priority candidate's rows
+    df["_min_prio"] = df.groupby(["start", "end"], dropna=False)["_prio"].transform("min")
+    df = df[df["_prio"] == df["_min_prio"]]
+    return df[_CONCEPT_COLS].reset_index(drop=True)
 
 
 def _annual_flow(df: pd.DataFrame) -> pd.DataFrame:
@@ -531,7 +546,7 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     base = _merge_shares_asof(base, shares)
     base = _attach_asof(base, diluted, "dilutedShares")
 
-    base = base.sort_values("end").reset_index(drop=True)
+    base = base.sort_values("end").reset_index(drop=True).copy()   # de-fragment
 
     # as_of = latest filing date among the merged concepts (ensures all public).
     filed_cols = [c for c in base.columns if c.endswith("_filed")]
@@ -581,6 +596,12 @@ def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
     assets = col("totalAssets")
 
     gross_profit_ttm = gp_ttm.where(gp_ttm.notna(), rev_ttm - cor_ttm)
+    # Derive operating income when the filer doesn't tag OperatingIncomeLoss
+    # (e.g. LLY, CVX, JNJ post-2015): operating income ≈ gross profit − SG&A − R&D.
+    # Only where the components exist, so banks (no gross profit) stay NaN.
+    oi_derived = gross_profit_ttm - sga_ttm.fillna(0) - rnd_ttm.fillna(0)
+    oi_ttm = oi_ttm.where(oi_ttm.notna(), oi_derived)
+
     out = pd.DataFrame({
         "ticker": ticker,
         "as_of": base["as_of"].dt.date.astype(str),

@@ -1,13 +1,11 @@
 """
-Fetch macro series from FRED (free, complete history, needs a free API key):
-  - CPIAUCSL: CPI, all urban consumers (inflation)
-  - WALCL: Fed total assets (balance sheet size)
+Fetch macro series from FRED (free, complete history, needs a free API key) and save
+them to the `macro` DB table (PK: date). Series: Treasury yields (3M/2Y/10Y/30Y), the
+10Y-2Y / 10Y-3M curve spreads, VIX, IG/HY credit spreads, 10Y breakeven inflation —
+see SERIES below.
 
 Get a free key: https://fred.stlouisfed.org/docs/api/api_key.html
 Put it in .env as FRED_API_KEY=...
-
-Run:
-    python -m data.fetch_macro
 """
 import pandas as pd
 import os 
@@ -34,9 +32,9 @@ SERIES = {
 
 
 def _macro_is_up_to_date(context: Context) -> bool:
-    """True when the cached macro file already covers the last business day
-    (the daily yield/VIX series set the max date). Skips redundant re-pulls
-    on weekends / same-day re-runs."""
+    """True when the `macro` DB table already covers the last business day (the daily
+    yield / VIX series set the max date). Skips redundant re-pulls on weekends /
+    same-day re-runs."""
     existing = context.store.load("macro", columns=["date"])
     if existing.empty:
         return False
@@ -54,7 +52,7 @@ def fetch_macro(context: Context):
         )
 
     if _macro_is_up_to_date(context):
-        print(f"Macro data already up to date — skipping {context.paths['MACRO_PATH']}")
+        print("Macro data already up to date - skipping (DB table 'macro')")
         return
 
     fred = Fred(api_key=os.getenv("FRED_API_KEY"))

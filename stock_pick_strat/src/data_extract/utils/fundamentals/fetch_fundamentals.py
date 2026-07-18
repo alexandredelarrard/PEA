@@ -520,157 +520,151 @@ def _instant_stock(df: pd.DataFrame) -> pd.DataFrame:
     return d[["end", "filed", "val"]].sort_values("end").reset_index(drop=True)
 
 
-def _series_on_ends(concept_df: pd.DataFrame, name: str) -> pd.DataFrame:
-    return concept_df.rename(columns={"val": name, "filed": f"{name}_filed"})
-
-
-def _merge_shares_asof(base: pd.DataFrame, shares: pd.DataFrame) -> pd.DataFrame:
-    """Attach the most recent sharesOutstanding as of each fiscal-year `end`
-    (backward as-of merge). Cover-page share counts are dated near the filing,
-    not at fiscal-year end, so an exact `end` join misses almost everything."""
-    if shares is None or shares.empty:
-        base["sharesOutstanding"] = pd.NA
-        base["sharesOutstanding_filed"] = pd.NaT
-        return base
-    s = shares.rename(columns={"val": "sharesOutstanding",
-                               "filed": "sharesOutstanding_filed"})
-    s = s[["end", "sharesOutstanding", "sharesOutstanding_filed"]].sort_values("end")
-    left = base.sort_values("end")
-    merged = pd.merge_asof(left, s, on="end", direction="backward")
-    # restore original row order
-    return merged.sort_values("end").reset_index(drop=True)
-
-
-def _attach_asof(base: pd.DataFrame, series: pd.DataFrame, colname: str) -> pd.DataFrame:
-    """Backward as-of merge of an instant series onto `base` by `end` (same
-    treatment as sharesOutstanding — the value is dated near the filing, not the
-    period end)."""
-    if series is None or series.empty:
-        base[colname] = pd.NA
-        return base
-    s = series.rename(columns={"val": colname})[["end", colname]].sort_values("end")
-    merged = pd.merge_asof(base.sort_values("end"), s, on="end", direction="backward")
-    return merged.sort_values("end").reset_index(drop=True)
-
-
 # --------------------------------------------------------------------------- #
-# Build one ticker's QUARTERLY history (TTM levels) from its companyfacts      #
+# Per-ticker fundamentals history builder                                      #
 # --------------------------------------------------------------------------- #
+# curated (always-checked) concepts + the "spine" whose period-ends define the grid
+_CURATED_FLOWS = ["totalRevenue", "netIncome", "grossProfit", "costOfRevenue", "operatingIncome",
+                  "depAmort", "operatingCashFlow", "capex", "researchAndDevelopment",
+                  "sellingGeneralAdmin", "stockBasedComp", "acquisitions", "interestExpense"]
+_CURATED_STOCKS = ["stockholdersEquity", "totalLiabilities", "longTermDebt", "cash",
+                   "shortTermDebt", "currentAssets", "currentLiabilities", "goodwill", "totalAssets"]
+_SPINE_FLOWS = ("totalRevenue", "netIncome", "operatingCashFlow")
+_SPINE_STOCKS = ("totalAssets", "stockholdersEquity", "totalLiabilities")
+
+
+def _extract_all(gaap: dict, dei: dict) -> tuple[dict, dict, dict, pd.DataFrame, pd.DataFrame]:
+    """Raw us-gaap/dei -> per-concept quarterly flows, annual full-year fallbacks,
+    instant balance-sheet levels, plus cover-page shares (dei) and diluted shares."""
+    raw = {k: _extract_concept(gaap, tags) for k, tags in {**FLOW_TAGS, **EXTRA_FLOW_TAGS}.items()}
+    flows = {k: _quarterly_flow(v) for k, v in raw.items()}
+    annuals = {k: _annual_flow(v) for k, v in raw.items()}      # full-year TTM fallback
+    stocks = {k: _instant_stock(_extract_concept(gaap, tags))
+              for k, tags in {**STOCK_TAGS, **EXTRA_STOCK_TAGS}.items()}
+    _sh = SHARES_TAGS["sharesOutstanding"]
+    shares = _instant_stock(_extract_concept(dei, _sh) if any(t in dei for t in _sh)
+                            else _extract_concept(gaap, _sh))
+    diluted = _instant_stock(_extract_concept(gaap, DILUTED_SHARES_TAGS))
+    return flows, annuals, stocks, shares, diluted
+
+
+def _spine_grid(flows: dict, stocks: dict) -> "pd.DatetimeIndex | None":
+    """Fiscal-quarter row grid = UNION of period-ends across the core spine concepts,
+    so a revenue-tag gap (banks ~2013, utilities ~2014) doesn't truncate the ticker."""
+    ends: set = set()
+    for k in _SPINE_FLOWS:
+        s = flows.get(k)
+        if s is not None and not s.empty:
+            ends |= set(s["end"])
+    for k in _SPINE_STOCKS:
+        s = stocks.get(k)
+        if s is not None and not s.empty:
+            ends |= set(s["end"])
+    return pd.DatetimeIndex(sorted(ends)) if ends else None
+
+
+def _assemble_base(ends, flows, annuals, stocks, shares, diluted) -> pd.DataFrame:
+    """Align every concept onto the quarter grid in ONE frame construction (a single
+    dict -> one DataFrame, no repeated column inserts -> no pandas fragmentation).
+    Exact-end join for flows/annuals/stocks; backward as-of (reindex-ffill) for the
+    cover-page shares; balance-sheet levels carried forward across interim quarters;
+    `as_of` = latest filing date among a row's concepts (point-in-time / leak-free)."""
+    cols: dict[str, object] = {}
+
+    def exact(key, src, filed=True):
+        if src is None or src.empty:
+            return
+        s = src.drop_duplicates("end").set_index("end").reindex(ends)
+        cols[key] = s["val"].to_numpy()
+        if filed:
+            cols[key + "_filed"] = s["filed"].to_numpy()
+
+    def asof(key, src, filed=False):     # value is dated near the filing, not period end
+        if src is None or src.empty:
+            return
+        s = src.drop_duplicates("end").sort_values("end").set_index("end")
+        cols[key] = s["val"].reindex(ends, method="ffill").to_numpy()
+        if filed:
+            cols[key + "_filed"] = s["filed"].reindex(ends, method="ffill").to_numpy()
+
+    flow_keys = _CURATED_FLOWS + list(EXTRA_FLOW_TAGS)
+    for key in flow_keys:
+        exact(key, flows.get(key))
+    for key in flow_keys:                # annual full-year fallback (suffix `_ann`)
+        a = annuals.get(key)
+        if a is not None and not a.empty:
+            cols[key + "_ann"] = a.drop_duplicates("end").set_index("end")["val"].reindex(ends).to_numpy()
+    for key in _CURATED_STOCKS + list(EXTRA_STOCK_TAGS):
+        exact(key, stocks.get(key))
+    asof("sharesOutstanding", shares, filed=True)
+    asof("dilutedShares", diluted)
+
+    base = pd.DataFrame(cols, index=ends)
+    level_cols = [k for k in (list(STOCK_TAGS) + list(EXTRA_STOCK_TAGS)) if k in base.columns]
+    if level_cols:                       # carry point-in-time levels forward (~1y cap)
+        base[level_cols] = base[level_cols].ffill(limit=4)
+    filed_cols = [c for c in base.columns if c.endswith("_filed")]
+    base["as_of"] = base[filed_cols].max(axis=1) if filed_cols else pd.NaT
+    base = base[base["as_of"].notna()]
+    return base.rename_axis("end").reset_index().sort_values("end").reset_index(drop=True)
+
+
+class TickerFundamentalsBuilder:
+    """Builds one ticker's point-in-time QUARTERLY fundamentals history from its SEC
+    companyfacts. Fundamentals are the backbone of the cube, so the build is split
+    into small, testable stages — extract -> grid -> assemble -> derive:
+
+        _extract_all    raw us-gaap/dei -> quarterly / annual / instant concept series
+        _spine_grid     the fiscal-quarter row grid (union of core period-ends)
+        _assemble_base  align concepts onto the grid in ONE frame + point-in-time as_of
+        _derive_history TTM sums (annual fallback), margins/ratios, level reconstructions
+
+    Flows are trailing-twelve-month sums of discrete quarters (annual full-year value
+    as a fallback); balance-sheet items are the last filed level carried point-in-time;
+    `as_of` is the latest filing date among a row's concepts, so nothing leaks.
+    """
+
+    def __init__(self, ticker: str, facts: dict, sector: str | None = None,
+                 industry_group: str | None = None):
+        self.ticker = ticker
+        self.sector = sector
+        self.industry_group = industry_group
+        self._gaap = facts.get("facts", {}).get("us-gaap", {})
+        self._dei = facts.get("facts", {}).get("dei", {})
+
+    def build(self) -> pd.DataFrame:
+        flows, annuals, stocks, shares, diluted = _extract_all(self._gaap, self._dei)
+        ends = _spine_grid(flows, stocks)
+        if ends is None:
+            return pd.DataFrame()
+        base = _assemble_base(ends, flows, annuals, stocks, shares, diluted)
+        if base.empty:
+            return pd.DataFrame()
+        return _derive_history(base, self.ticker, self.sector, self.industry_group)
+
+
 def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
                          industry_group: str | None = None) -> pd.DataFrame:
-    """One row per FISCAL QUARTER, keyed on the filing date (`as_of`).
+    """One row per FISCAL QUARTER, keyed on the filing date (`as_of`). Public entry
+    point — delegates to TickerFundamentalsBuilder (see it for the full pipeline)."""
+    return TickerFundamentalsBuilder(ticker, facts, sector, industry_group).build()
 
-    Flow items (revenue, income, cash flows, R&D) are stored as
-    TRAILING-TWELVE-MONTH (TTM) sums of the four most recent discrete quarters,
-    which is the correct, seasonality-free level for valuation and margins and
-    still refreshes every quarter. Balance-sheet items and shares are the
-    point-in-time value at each quarter end. Growth is year-over-year (TTM vs 4
-    quarters earlier). `as_of` is the latest filing date among the merged
-    concepts, so a value is only visible once fully public (no look-ahead).
-    """
-    gaap = facts.get("facts", {}).get("us-gaap", {})
-    dei = facts.get("facts", {}).get("dei", {})
 
-    all_flow_tags = {**FLOW_TAGS, **EXTRA_FLOW_TAGS}
-    all_stock_tags = {**STOCK_TAGS, **EXTRA_STOCK_TAGS}
-    _flow_raw = {k: _extract_concept(gaap, tags) for k, tags in all_flow_tags.items()}
-    flows = {k: _quarterly_flow(v) for k, v in _flow_raw.items()}
-    # annual (full-year) value per concept — itself a valid trailing-twelve-month at
-    # each fiscal-year end; used as a fallback for filers that report a flow ONLY
-    # annually (no de-cumulable interim quarters, e.g. some working-capital changes).
-    annuals = {k: _annual_flow(v) for k, v in _flow_raw.items()}
-    stocks = {k: _instant_stock(_extract_concept(gaap, tags)) for k, tags in all_stock_tags.items()}
-    shares = _instant_stock(_extract_concept(dei, SHARES_TAGS["sharesOutstanding"])
-                            if any(t in dei for t in SHARES_TAGS["sharesOutstanding"])
-                            else _extract_concept(gaap, SHARES_TAGS["sharesOutstanding"]))
-    diluted = _instant_stock(_extract_concept(gaap, DILUTED_SHARES_TAGS))
-
-    # Build the quarter grid (`base`) from the UNION of period-ends across the core
-    # "spine" concepts, not revenue alone. Filers change the revenue tag over time
-    # (banks ~2013, utilities ~2014); basing the whole history on revenue dropped
-    # every quarter after such a gap even though the balance sheet / earnings
-    # continued (e.g. NEE truncated at 2013). Unioning revenue + net income +
-    # operating cash flow + total assets + equity + liabilities ends keeps the full
-    # history — revenue-derived features are simply NaN in any quarter revenue is missing.
-    _spine_ends: set = set()
-    for _k in ("totalRevenue", "netIncome", "operatingCashFlow"):
-        _s = flows.get(_k)
-        if _s is not None and not _s.empty:
-            _spine_ends |= set(_s["end"])
-    for _k in ("totalAssets", "stockholdersEquity", "totalLiabilities"):
-        _s = stocks.get(_k)
-        if _s is not None and not _s.empty:
-            _spine_ends |= set(_s["end"])
-    if not _spine_ends:
-        return pd.DataFrame()
-    base = pd.DataFrame({"end": sorted(_spine_ends)})
-
-    # Merge only the concepts a filer actually reports; collect the rest and add
-    # them as NA in ONE concat (per-column assignment fragments the frame — with
-    # ~60 concepts that is slow and noisy).
-    _missing: dict[str, object] = {}
-
-    def merge_present(base, key, src):
-        if src is None or src.empty:
-            _missing[key] = pd.NA
-            _missing[f"{key}_filed"] = pd.NaT
-            return base
-        return base.merge(_series_on_ends(src, key), on="end", how="left")
-
-    _curated_flows = ["totalRevenue", "netIncome", "grossProfit", "costOfRevenue", "operatingIncome",
-                      "depAmort", "operatingCashFlow", "capex", "researchAndDevelopment",
-                      "sellingGeneralAdmin", "stockBasedComp", "acquisitions", "interestExpense"]
-    for key in _curated_flows + list(EXTRA_FLOW_TAGS):
-        base = merge_present(base, key, flows.get(key))
-
-    # merge the annual full-year fallback at fiscal-year ends (column suffix `_ann`)
-    for key in _curated_flows + list(EXTRA_FLOW_TAGS):
-        _a = annuals.get(key)
-        if _a is not None and not _a.empty:
-            base = base.merge(_a.rename(columns={"val": key + "_ann"})[["end", key + "_ann"]],
-                              on="end", how="left")
-
-    _curated_stocks = ["stockholdersEquity", "totalLiabilities", "longTermDebt", "cash",
-                       "shortTermDebt", "currentAssets", "currentLiabilities",
-                       "goodwill", "totalAssets"]
-    for key in _curated_stocks + list(EXTRA_STOCK_TAGS):
-        base = merge_present(base, key, stocks.get(key))
-
-    if _missing:
-        base = pd.concat([base, pd.DataFrame(_missing, index=base.index)], axis=1)
-
-    # sharesOutstanding is a dei COVER-PAGE fact whose `end` is the cover date,
-    # which almost never equals a period `end` -> an exact merge drops it for
-    # ~95% of filers. Attach instead the most recent shares count as of each
-    # quarter end (backward as-of merge), which keeps it point-in-time.
-    base = _merge_shares_asof(base, shares)
-    base = _attach_asof(base, diluted, "dilutedShares")
-
-    # The ~60 concept merges above leave `base` with many column blocks; adding
-    # further columns to it triggers pandas' "highly fragmented DataFrame"
-    # PerformanceWarning. Consolidate into one contiguous frame first (the
-    # `newframe = frame.copy()` the warning recommends) so the derived-column
-    # assignments below are single, cheap inserts.
-    base = base.sort_values("end").reset_index(drop=True)
-    base = base.copy()
-
-    # Carry point-in-time balance-sheet LEVELS forward across interim quarters: many
-    # filers report a level only in the 10-K, leaving 10-Q quarters null even though
-    # the last filed value is the best point-in-time estimate. Leak-free — a later
-    # quarter's as_of post-dates the filing the value came from. Flows are NOT filled
-    # (they are discrete-quarter); the limit avoids carrying a stale level past ~1y.
-    _level_cols = [k for k in (list(STOCK_TAGS) + list(EXTRA_STOCK_TAGS)) if k in base.columns]
-    if _level_cols:
-        base[_level_cols] = base[_level_cols].ffill(limit=4)
-
-    # as_of = latest filing date among the merged concepts (ensures all public).
-    filed_cols = [c for c in base.columns if c.endswith("_filed")]
-    base["as_of"] = base[filed_cols].max(axis=1)
-    base = base.dropna(subset=["as_of"]).sort_values("end").reset_index(drop=True)
+# --------------------------------------------------------------------------- #
+# Derived history: TTM flows (annual fallback), margins/ratios, reconstructions #
+# --------------------------------------------------------------------------- #
+def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> pd.DataFrame:
+    """Turn the assembled quarter grid into the output history: TTM flow sums (with
+    the annual full-year fallback), margins / ratios, and clean balance-sheet level
+    reconstructions. Flows are seasonality-free trailing-twelve-month; balance-sheet
+    items are point-in-time; `as_of` was already stamped as the latest filing date."""
 
     # ---- discrete quarterly numerics ----
     def col(name):
-        return pd.to_numeric(base.get(name), errors="coerce")
+        # a concept a filer never reports isn't a column in the assembled frame -> NaN
+        if name in base.columns:
+            return pd.to_numeric(base[name], errors="coerce")
+        return pd.Series(float("nan"), index=base.index)
 
     def ttm(s):
         # trailing 12 months = sum of the 4 most recent quarters

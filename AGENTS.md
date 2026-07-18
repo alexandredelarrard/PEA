@@ -1,63 +1,82 @@
 
 ## Project overview
-`stock_pick_strat` — Python quant stock-picking pipeline: extract market data, engineer features,
-train ML models with time-series CV, run portfolio backtests, expose results via `app/`.
+`stock_pick_strat` — Python quant long/short stock-picking pipeline: extract market /
+fundamental / governance / alt-data into **PostgreSQL**, engineer point-in-time peer-relative
+features (the "cube"), train ML models with time-series CV, run portfolio backtests, expose
+results via `app/`.
 
-Stack: Python, OmegaConf (`DictConfig`), pandas, pytest.
+Stack: Python, OmegaConf (`DictConfig`), pandas, **SQLAlchemy + PostgreSQL (Docker)**,
+OpenAI (DEF 14A extraction + embeddings), pytest.
+
+> Keep this file and `CLAUDE.md` in sync with the code — see "Keep the docs current" below.
 
 ---
 
 ## Directory layout
 ```
 stock_pick_strat/
-├── configs/*.yaml          # OmegaConf configs — one per pipeline stage
-├── data/                   # All artifacts: raw data, processed files, saved models
+├── configs/*.yml           # OmegaConf configs — one per pipeline stage
+├── data/                   # NON-tabular artifacts ONLY: sec_bulk_cache/ (companyfacts JSON + 13F zips),
+│                           #   sec_filings_text/, output/{models,diagnostics}, sector_peers.json
+├── sql/schema.sql          # generated DDL (CREATE TABLE IF NOT EXISTS + PKs), run on DB init
+├── docker-compose.yml      # Postgres 16 + persistent volume   (+ Dockerfile)
+├── scripts/                # schema generator, parquet→DB migrator
 ├── src/
-│   ├── constants/*.py      # Column names, file keys, categorical values — SINGLE source of truth
-│   ├── data_aggregation/   # Feature engineering: loads from data/, saves enriched files back
-│   ├── data_extraction/    # Raw data fetching: fetches, saves to data/, returns None
-│   ├── modelling/          # Model training, TimeSeriesSplit CV, SHAP analysis
-│   ├── post_processing/    # Portfolio construction, backtesting
-│   ├── utils/              # Shared helpers — only cross-folder logic lives here
-│   ├── cli.py              # CLI definitions for future Airflow DAGs
-│   └── context.py          # Runtime object: logger, env, paths — imported by every step
-├── tests
-│   └── fixture/            # Shared real-data fixtures, conftest.py
-├── app/                    # Coming: Streamlit or React app
-├── README.md
-└── pyproject.toml
+│   ├── constants/constants.py  # global literals (date formats, SEC URLs) — SINGLE source of truth
+│   ├── context.py              # Context: config, logging, env, `.store` (DB), `.paths` (artifacts only)
+│   ├── data_store/             # DB layer: DataStore (store.py), schema_registry, schema_sql, io
+│   ├── data_extract/           # step_extract_* : super-step + prices/fundamentals/structure/behavioral
+│   │   └── utils/{prices,fundamentals,structure,behavioral,common}/   # fetchers
+│   ├── data_peers/             # step_deduce_peers  (return-corr + OpenAI-embedding peers)
+│   ├── data_aggregate/         # step_build_cube — peer-relative feature panels → `cube`
+│   ├── modelling/              # step_modelling — TimeSeriesSplit CV + SHAP → predictions, cube_signal
+│   ├── post_processing/        # step_backtest
+│   ├── utils/                  # shared helpers (db.py, step.py, config.py, …) — cross-folder logic only
+│   └── cli.py
+├── tests/                  # mirrors src/ ; conftest.py holds shared real-data fixtures
+├── app/                    # Streamlit app
+├── main.py, README.md, pyproject.toml
 ```
 
 ---
 
 ## The Step pattern
 
-Every `src/` subfolder owns exactly one `step_*.py` orchestrator. This is the project's
-most important structural convention — never deviate from it.
+Every `src/` subfolder owns a `step_*.py` orchestrator (a super-step may compose sub-steps
+in the same folder, as `data_extract/` does). This is the project's most important structural
+convention — never deviate from it.
 
 **Rules:**
 - Inherits from `Step` (`src.utils.step`) to get `self._context` and `self._config`
 - `__init__` always calls `super().__init__(context=context, config=config)`
 - `run()` is the only public entry point — it calls helpers from the same folder
 - Never call functions from another `src/` subfolder inside a step — use `src/utils/` instead
+- Fetchers **save to the DB** via `self._context.store` and return the frame (they no longer write parquet)
+- A super-step composes sub-steps and resolves shared inputs once (e.g. the ticker universe)
 
 ```python
 from omegaconf import DictConfig
 
 from src.context import Context
 from src.utils.step import Step
-from src.data_extraction.fetch_prices import fetch_price_history
-from src.data_extraction.fetch_fundamentals import fetch_fundamentals
+from src.data_extract.utils.prices.fetch_prices import get_sp500_tickers
+from src.data_extract.step_extract_prices import StepExtractPrices
+from src.data_extract.step_extract_fundamentals import StepExtractFundamentals
+# … structure, behavioral
 
 class StepExtractAllData(Step):
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
+        self._prices = StepExtractPrices(context=context, config=config)
+        self._fundamentals = StepExtractFundamentals(context=context, config=config)
+        # … structure, behavioral
 
-    def run(self):
-        tickers = self._config.data_extract.tickers
-        fetch_price_history(self._context, tickers=tickers)
-        fetch_fundamentals(self._context, tickers=tickers)
+    def run(self) -> None:
+        tickers = get_sp500_tickers(self._context) + self._config.data_extract.other_tickers
+        self._prices.run(tickers=tickers)
+        self._fundamentals.run(tickers=tickers)
+        # … structure, behavioral
 ```
 
 ---
@@ -75,10 +94,27 @@ Before naming a column, DataFrame key, file path constant, or config key:
 
 - `self._context.logger` for all logging — never `print()` or `logging.getLogger()` directly
 - `self._config.<section>.<key>` for all config values — never hardcode
-- Never access `os.environ` directly — use the context object
-- All paths from config — never build paths with f-strings or `os.path.join` in business logic
+- Env is loaded by `Context`; business logic reads it through the context (infra like `utils/db.py` / the LLM extractor may read `os.getenv` for secret keys)
 - Full type annotations on every function signature
 - No cross-folder imports between `src/` subfolders except via `src/utils/`
+- Global literals (date formats, SEC/API URLs, env-var keys, thresholds) live in `src/constants/constants.py` — never hardcode inline
+
+---
+
+## Data / DB conventions
+
+- **DB-only I/O.** All tabular data reads/writes go through `self._context.store` (`DataStore`):
+  `load` / `save` (upsert on PK) / `replace` (full rebuild) / `existing_dates`. Never read/write
+  parquet for tables. New DataFrame columns auto-add to the table via `ensure_columns`.
+- `context.paths` holds ONLY non-tabular artifacts (models, plots, `sec_bulk_cache/*.json`, filing text).
+- **Point-in-time + incremental.** Fetchers resume from the DB's max date per entity and save
+  **per entity**, so an interrupted run never loses expensive work (LLM / 13F / API calls); lag
+  by filing date so features are leak-free.
+- **Cache large downloads** to disk (companyfacts JSON, 13F zips); re-download only when missing.
+- **Coalesce alternative XBRL tags** — union candidate tags per period, don't take the first present
+  (`Revenues`↔`RevenueFromContractWithCustomer`, `NetIncomeLoss`↔`ProfitLoss`, equity ±NCI).
+- **Booleans → numeric 1.0/0.0 flags** so they're usable as model features.
+- New logical tables are declared in `src/data_store/schema_registry.py` (name → PK + incremental date col).
 
 ---
 
@@ -89,8 +125,13 @@ Before naming a column, DataFrame key, file path constant, or config key:
 df = load_real_data(context).head(100)   # time-series
 df = load_real_data(context).sample(100, random_state=42)   # non-temporal
 ```
-Never mock DataFrames with synthetic data for feature tests — real data catches NaNs,
-delisted tickers, corporate actions, and weekend gaps that mocks never will.
+Never mock DataFrames with synthetic data for **feature / economic** tests — real data catches
+NaNs, delisted tickers, corporate actions, and weekend gaps that mocks never will.
+
+**Exception — parsing / derivation math** (XBRL concept extraction, TTM, ratio formulas, KPI
+math): use synthetic **known-truth** fixtures, because you can only assert a value is correct if
+you know the true inputs. Pair these with a real-data coverage check against the cached source
+(e.g. build a real ticker's history and confirm the previously-missing field now populates).
 
 ### Write sanity checks, not just assertions
 Every new feature test must include checks that validate economic or logical validity,
@@ -127,11 +168,15 @@ pytest tests/path/to/test_file.py::test_function -v -s   # single test, -s to se
 ```
 
 ### Fixtures
-Shared real-data loaders live in `tests/fixture/conftest.py`, scoped to `session`:
+Shared real-data loaders live in `tests/conftest.py`, scoped to `session`, and read from the DB
+via the store:
 ```python
 @pytest.fixture(scope="session")
-def sample_prices(context):
-    return load_prices(context).head(100)
+def sample_prices():
+    prices = _store().load("prices")
+    if prices.empty:
+        pytest.skip("prices table is empty")
+    return prices
 ```
 
 ### File structure
@@ -152,3 +197,18 @@ Every model must have all three before it is considered complete:
 
 One yaml per pipeline stage: `data_extract.yaml`, `modelling.yaml`, `backtest.yaml`.
 All numeric hyperparameters, window sizes, and thresholds live in config — never hardcoded.
+
+---
+
+## Keep the docs current
+
+`AGENTS.md` and `CLAUDE.md` are the source of truth for how this repo is built — they must
+track the code, not drift from it.
+
+- **Review both regularly** and whenever the structure or conventions change (a new step / table /
+  package, a moved or renamed module, a new data source, a changed data-flow), update them in the
+  **same change** so they never go stale. `README.md` too when the pipeline stages change.
+- When a **generic, reusable convention** emerges from a request, **propose it and ask for
+  confirmation before writing it** into `AGENTS.md` / `CLAUDE.md` — don't edit these docs unprompted.
+- Keep the two consistent: `CLAUDE.md` is the concise rulebook, `AGENTS.md` the fuller guide with
+  examples; a convention added to one should be reflected in the other.

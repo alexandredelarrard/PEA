@@ -6,9 +6,38 @@
 | `src/utils/step.py` | Base class for all steps — changes break all inheritors |
 | `src/constants/*.py` | Renaming any constant breaks all downstream references |
 | `configs/*.yaml` | Structural changes must be mirrored in all consuming code |
-| `data/` (existing files) | Overwriting saved parquet/model files is not recoverable |
+| `src/data_store/*`, `sql/schema.sql` | DB access layer + DDL — a table/PK rename cascades to every read/write |
+| `data/` artifacts & the Postgres volume | Model/plot files, `sec_bulk_cache/` JSON, and the DB volume — overwriting or dropping is not recoverable |
 
 For any of the above: propose the change and wait for approval before editing.
+
+---
+
+## Code structure (`stock_pick_strat/`)
+
+The pipeline is a chain of `Step` classes (base: `src/utils/step.py`), each with a
+`run()`; `main.py` wires them. **All tabular data lives in PostgreSQL** (docker-compose
++ named volume) and is accessed via `context.store` (`DataStore`) — parquet is retired.
+
+- `src/context.py` — `Context`: config, logging, env, `.store` (DB), `.paths` (non-tabular artifacts only).
+- `src/constants/constants.py` — global literals (date formats, SEC URLs).
+- `src/data_store/` — DB layer: `store.py` (`DataStore`: `load` / `save` upsert / `replace` / `ensure_columns` / `existing_dates`), `schema_registry.py` (logical table → PK + incremental date col), `schema_sql.py` (generates `sql/schema.sql`), `io.py`.
+- `src/data_extract/` — `StepExtractAllData` super-step → 4 sub-steps: **prices** (prices+dividends, short interest, 13F), **fundamentals** (SEC companyfacts history + forward-P/E snapshot, earnings surprises, macro), **structure** (employees, management, DEF 14A LLM governance, SEC filings index), **behavioral** (Wikipedia, Google Trends). Fetchers live under `utils/{prices,fundamentals,structure,behavioral,common}/`.
+- `src/data_peers/` — `StepDeducePeers` (return-correlation + OpenAI-embedding peers).
+- `src/data_aggregate/` — `StepBuildCube`: peer-relative feature panels (fundamental, sector KPIs, forward valuation, earnings, management, employee, dividend, attention, institutional, short-interest) → `cube` table.
+- `src/modelling/` — `StepModelling` → `predictions`, `cube_signal`.
+- `src/post_processing/` — `StepBacktest`.
+- Infra: `docker-compose.yml` (Postgres 16 + volume), `Dockerfile`, `sql/schema.sql`, `scripts/` (schema generator, parquet→DB migrator).
+
+---
+
+## Data / DB conventions
+
+- **DB-only I/O.** Read/write tabular data through `context.store` (`load` / `save` / `replace` / `existing_dates`), never parquet. New DataFrame columns auto-add to the table via `ensure_columns`. Only non-tabular artifacts (models, plots, `sec_bulk_cache/*.json`, filing text) stay on disk under `context.paths`.
+- **Point-in-time + incremental.** Fetchers resume from the DB's max date per entity, save **per entity** (an interrupted run must never lose expensive work — LLM / 13F / API calls), and lag by filing date so features are leak-free.
+- **Cache large downloads** to disk (companyfacts JSON, 13F zips) and only re-download when missing.
+- **Coalesce alternative XBRL tags** — union across candidate tags per period, don't take the first present (filers split concepts by era/scope: `Revenues`↔`RevenueFromContractWithCustomer`, `NetIncomeLoss`↔`ProfitLoss`, equity with/without NCI).
+- **Booleans → numeric flags** (1.0/0.0) so they are usable as model features.
 
 ---
 
@@ -18,9 +47,10 @@ For any of the above: propose the change and wait for approval before editing.
 2. Check `src/utils/` for existing helpers before writing a new one
 3. Implement the feature
 4. Write the test alongside the implementation — not after
-5. Run `pytest tests/path/to/new_test.py::test_function -v -s`
-6. Show me **only the output of the new test**, not the full pytest summary
-7. The test output must include the printed sanity check conclusion — if it doesn't, the work is not done
+5. Sanity-check real-data edge cases before submitting — not just synthetic tests: missing / sparse / NaN inputs, TTM warmup, metrics that are N/A for a sector, alternative XBRL tags. Prove data vs extraction issues against the actual source when values look missing.
+6. Run `pytest tests/path/to/new_test.py::test_function -v -s`
+7. Show me **only the output of the new test**, not the full pytest summary
+8. The test output must include the printed sanity check conclusion — if it doesn't, the work is not done
 
 ---
 
@@ -36,10 +66,13 @@ For any of the above: propose the change and wait for approval before editing.
 ## What to do automatically
 
 - Always check `src/constants/*.py` before introducing a new column name or string key
+- Put global literals (date formats, SEC/API URLs, env-var keys, magic thresholds) in `src/constants/constants.py` — never hardcode them inline
 - After implementing a feature, propose the unit test before marking done
 - Log via `self._context.logger`, never `print()`
 - When writing a new config key, add it to the appropriate `configs/*.yaml`
 - When a helper is useful across folders, place it in `src/utils/` not inline
+- When a generic, reusable convention emerges from a request, **propose it and ask before adding it to this CLAUDE.md** — don't edit CLAUDE.md unprompted
+- Keep `CLAUDE.md`, `AGENTS.md`, and `README.md` in sync with the code: review them regularly and update them **in the same change** whenever the structure or conventions evolve (new step / table / package, moved module, new data source) — the `Code structure` section above must not drift
 
 ---
 

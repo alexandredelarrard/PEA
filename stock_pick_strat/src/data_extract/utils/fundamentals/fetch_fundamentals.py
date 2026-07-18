@@ -311,8 +311,16 @@ EXTRA_STOCK_TAGS = {
     "oilGasPropertyGross": ["OilAndGasPropertySuccessfulEffortMethodGross",
                             "OilAndGasPropertyFullCostMethodGross"],
     # ---- Utilities ----
-    "regulatoryAssets": ["RegulatoryAssetsNoncurrent", "RegulatoryAssetsCurrent"],
-    "regulatoryLiabilities": ["RegulatoryLiabilityNoncurrent", "RegulatoryLiabilityCurrent"],
+    # regulatory assets/liabilities -> a consistent TOTAL pool: the combined tag when
+    # present (e.g. SO), else current + noncurrent (reconstructed in build_ticker_history
+    # so the current portion is never dropped -> needed for regulatoryAssets/totalAssets
+    # and clean-asset-base KPIs). Most utilities split the two (NEE/AEP/D/XEL).
+    "regulatoryAssets": ["RegulatoryAssets"],
+    "regulatoryAssetsCurrent": ["RegulatoryAssetsCurrent"],
+    "regulatoryAssetsNoncurrent": ["RegulatoryAssetsNoncurrent"],
+    "regulatoryLiabilities": ["RegulatoryLiabilities"],
+    "regulatoryLiabilitiesCurrent": ["RegulatoryLiabilityCurrent"],
+    "regulatoryLiabilitiesNoncurrent": ["RegulatoryLiabilityNoncurrent"],
 }
 
 # diluted weighted-average shares (duration fact; we take the latest period's
@@ -969,6 +977,13 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
     _dr_split = _dr_split.where(extra["deferredRevenueCurrent"].notna()
                                | extra["deferredRevenueNoncurrent"].notna())
     extra["deferredRevenue"] = extra["deferredRevenue"].where(extra["deferredRevenue"].notna(), _dr_split)
+    # regulatory assets/liabilities total: combined tag when present, else current +
+    # noncurrent (utilities split them) -> the full pool the utility KPIs need.
+    for _tot, _cur, _nc in (("regulatoryAssets", "regulatoryAssetsCurrent", "regulatoryAssetsNoncurrent"),
+                            ("regulatoryLiabilities", "regulatoryLiabilitiesCurrent", "regulatoryLiabilitiesNoncurrent")):
+        _sp = extra[_cur].fillna(0) + extra[_nc].fillna(0)
+        _sp = _sp.where(extra[_cur].notna() | extra[_nc].notna())
+        extra[_tot] = extra[_tot].where(extra[_tot].notna(), _sp)
 
     out = pd.concat([out, pd.DataFrame(extra, index=out.index)], axis=1)
 

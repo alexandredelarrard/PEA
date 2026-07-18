@@ -317,6 +317,25 @@ def test_bank_net_revenue_override_fee_slice():
           f"profitMargins={ye['profitMargins']:.2f}. Validated.")
 
 
+def test_regulatory_assets_total_current_plus_noncurrent():
+    """Utilities split regulatory assets into current + noncurrent; the total pool the
+    utility KPIs need must SUM them (not coalesce one), and use the combined tag when the
+    filer reports it (e.g. SO) without double-counting."""
+    # split-only reporter (NEE/AEP/XEL) -> total = current + noncurrent
+    g1 = {"Revenues": {"units": {"USD": _year(1000.0, [2019, 2020])}},
+          "RegulatoryAssetsCurrent": {"units": {"USD": _inst(200.0, [2019, 2020])}},
+          "RegulatoryAssetsNoncurrent": {"units": {"USD": _inst(800.0, [2019, 2020])}}}
+    assert _ye(_build(g1))["regulatoryAssets"] == pytest.approx(1000.0)
+    # combined-tag reporter (SO) -> use combined, NOT combined + split
+    g2 = {"Revenues": {"units": {"USD": _year(1000.0, [2019, 2020])}},
+          "RegulatoryAssets": {"units": {"USD": _inst(900.0, [2019, 2020])}},
+          "RegulatoryAssetsCurrent": {"units": {"USD": _inst(200.0, [2019, 2020])}},
+          "RegulatoryAssetsNoncurrent": {"units": {"USD": _inst(800.0, [2019, 2020])}}}
+    assert _ye(_build(g2))["regulatoryAssets"] == pytest.approx(900.0)
+    print("\n=== SANITY CHECK: regulatory assets total (current + noncurrent) ===")
+    print("  split-only reporter total=1000 (200+800); combined-tag reporter=900 (no double-count). Validated.")
+
+
 def test_operating_income_bottom_up_ebit_nonfinancial_only():
     """Non-financials with no operating-income tag and no gross profit (REIT / integrated
     oil, e.g. O, DVN, XOM) get operatingIncome = pre-tax income + interest (EBIT) so

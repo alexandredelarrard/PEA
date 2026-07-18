@@ -14,15 +14,12 @@ its estimate and a NaN actual: that row is the live forward EPS.
     2026-05-05    | 1.29         | 1.37       | 5.82           <- reported (beat)
     ...
 
-INCREMENTAL: the history parquet is keyed on (ticker, earnings_date). On each run
-we only fetch tickers that are (a) missing entirely, or (b) stale -- their most
-recent known earnings date is older than `refetch_window_days` (a new quarter has
-likely been reported since). Up-to-date tickers are skipped, and a stale ticker
-is re-pulled with a small limit just to append the newest quarters and fill in
-the actual for a row that was previously a forward estimate.
-
-Run:
-    python -m src.data_extract.fetch_earnings_surprises
+INCREMENTAL (DB table `earnings_surprises`, keyed on (ticker, earnings_date)): each run
+only fetches tickers that are (a) missing entirely, or (b) due -- their next earnings
+date (the forward row yfinance returns with eps_actual = NaN) has already passed, so
+the actual should now be available. Tickers whose next earnings is still in the future
+are skipped (nothing new to fetch yet); a due ticker is re-pulled with a small limit to
+append the new quarter and fill the actual for the prior forward-estimate row.
 """
 from __future__ import annotations
 
@@ -77,23 +74,38 @@ def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
 
 def _plan_fetch(tickers: list[str], existing: pd.DataFrame | None,
                 full_limit: int, refetch_window_days: int) -> list[tuple[str, int]]:
-    """(ticker, limit) list: full pull for unseen tickers, small pull for stale
-    ones, nothing for up-to-date tickers."""
-    last_seen: dict[str, pd.Timestamp] = {}
+    """(ticker, limit) list: full pull for unseen tickers; a small pull only for
+    tickers whose NEXT earnings date has already passed (a new quarter is due);
+    nothing for tickers whose next earnings is still in the future.
+
+    yfinance returns the upcoming (not-yet-reported) date as a forward row
+    (eps_actual = NaN), so its max earnings_date is the next-expected date. Gating on
+    that — instead of a fixed staleness window shorter than the ~91-day quarterly
+    cycle — stops ~30% of names being re-pulled needlessly in the ~10-day gap before
+    they report (they already have full history; there is simply nothing new yet).
+    Tickers with no known forward date fall back to the staleness window."""
+    last_reported: dict[str, pd.Timestamp] = {}
+    next_expected: dict[str, pd.Timestamp] = {}
     if existing is not None and not existing.empty:
         reported = existing.dropna(subset=["eps_actual"])
         if not reported.empty:
-            last_seen = reported.groupby("ticker")["earnings_date"].max().to_dict()
+            last_reported = reported.groupby("ticker")["earnings_date"].max().to_dict()
+        next_expected = existing.groupby("ticker")["earnings_date"].max().to_dict()
 
     today = pd.Timestamp.today().normalize()
     plan = []
     for t in tickers:
-        last = last_seen.get(t)
+        last = last_reported.get(t)
         if last is None:
-            plan.append((t, full_limit))
-        elif (today - last).days > refetch_window_days:
+            plan.append((t, full_limit))            # never seen -> full pull
+            continue
+        nxt = next_expected.get(t, last)
+        if nxt > last:                              # a forward earnings date is known
+            if nxt <= today:                        # ... and it has passed -> new quarter due
+                plan.append((t, _RECENT_LIMIT))
+        elif (today - last).days > refetch_window_days:   # no forward date -> staleness window
             plan.append((t, _RECENT_LIMIT))
-        # else: already current -> skip
+        # else: next earnings still in the future / already current -> skip
     return plan
 
 
@@ -101,11 +113,15 @@ def fetch_earnings_surprises(
     context: Context,
     tickers: list[str],
     pause: float = 0.3,
-    refetch_window_days: int = 80,
+    refetch_window_days: int = 95,      # > one quarter; fallback only when no forward date is known
 ) -> pd.DataFrame:
-    """Build/refresh the incremental earnings-surprise history and save it to
-    EARNINGS_SURPRISES_PATH. Returns the full merged history."""
+    """Build/refresh the incremental earnings-surprise history and upsert it into the
+    `earnings_surprises` DB table. Returns the full merged history."""
     log = context.log
+    # earnings are an equity concept — drop non-equity instruments (indices / futures /
+    # FX from other_tickers, e.g. ^VIX, CL=F, USDEUR=X) that never return a calendar and
+    # would otherwise be re-attempted every run as "missing".
+    tickers = [t for t in tickers if not any(c in t for c in ("^", "="))]
     existing = context.store.load("earnings_surprises")
     existing = None if existing.empty else existing
     if existing is not None:

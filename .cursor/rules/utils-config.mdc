@@ -1,81 +1,52 @@
 ---
 globs:
   - "src/utils/**/*.py"
-  - "configs/**/*.yaml"
+  - "src/data_store/**/*.py"
+  - "configs/**/*.yml"
   - "src/context.py"
   - "src/constants/**/*.py"
 alwaysApply: false
-description: "Utility functions, OmegaConf config, context, and constants conventions"
+description: "Utils, DB layer (data_store), OmegaConf config, context and constants conventions"
 ---
 
-# Utils, config, and constants conventions
+# Utils, DB layer, config, constants
 
 ## src/utils/ — shared helpers
-
-Utility functions are the only place shared logic lives. Any function needed by more than one `src/` subfolder belongs here.
-
+The only place cross-folder logic lives — any function needed by more than one `src/` subfolder.
 ```python
-# Good — utility takes context and/or config explicitly
-def save_dataframe(df: pd.DataFrame, path: str, context: Context) -> None:
-    context.logger.info(f"Saving {df.shape} to {path}")
-    df.to_parquet(path, index=True)
-
-# Bad — function with hidden global state or direct env access
-def save_dataframe(df: pd.DataFrame, path: str) -> None:
-    print(f"Saving...")  # wrong: use context.logger
-    df.to_parquet(path)
+# Good — takes context/config explicitly, fully typed, logs via context.log
+def coalesce_concept(facts: dict, candidates: list[str], context: Context) -> pd.DataFrame:
+    context.log.info(f"coalescing {candidates}")
+    ...
 ```
+- Pass `context` / `config` explicitly — no global logger or hidden state.
+- `context.log` for logging — never `print()`.
+- Full type hints on every signature; one logical concern per file.
 
-- Always pass `context` explicitly — no global logger instances
-- Pass `config` (or specific config values) as arguments — never import config inside a util function
-- Return type-annotated — every utility function must have full type hints
-- One logical concern per file (`utils/io.py`, `utils/date_utils.py`, etc.)
+## src/data_store/ — the DB layer
+`DataStore` (`store.py`) is the single tabular I/O path — dialect-aware (Postgres / SQLite):
+- `load(table, columns=…)` · `save(table, df)` (upsert on PK) · `replace(table, df)` (truncate + COPY
+  full rebuild) · `existing_dates(table, …)` (incremental resume) · `ensure_columns` (auto-ALTER to
+  add new DataFrame columns — schema evolution).
+- Logical tables are declared in `schema_registry.py` (name → PK + date col); `schema_sql.py`
+  regenerates `sql/schema.sql`. Identifier-like numeric codes (`cik`) are TEXT (keep leading zeros).
+- Never open raw SQL / parquet from feature code — always go through the store.
 
-## src/constants/ — single source of truth for names
+## src/constants/constants.py — single source of truth
+Every column name, key, URL, date format, env-var key, and threshold used in more than one place is
+declared here. Grep first; if it exists, import it; if not, add it before using.
 
-This is the most important anti-drift mechanism. Every column name, file name key, config section name, and categorical value that appears in more than one place **must** be declared here.
+## configs/*.yml — OmegaConf
+Loaded via OmegaConf; one yml per stage (`build_cube.yml`, `modellling.yml`, `backtest.yml`,
+`peers.yml`, `paths.yml`, `configs.yml`).
+- All numeric hyperparameters / windows / thresholds in config — never hardcoded.
+- Access via `self._config.<section>.<key>`; defaults always present.
 
-```python
-# src/constants/columns.py
-PRICE_COL = "adjusted_close"
-DATE_COL = "date"
-TICKER_COL = "ticker"
-MOMENTUM_20D_COL = "momentum_20d"
+## src/context.py — shared runtime (risk zone)
+`Context` is passed through every step and owns:
+- `context.config` — the OmegaConf tree
+- `context.log` — the logger (never `print()` / `logging.getLogger()` in app code)
+- `context.store` — the `DataStore` (all tabular I/O)
+- `context.paths` — NON-tabular artifact paths only (models, plots, `sec_bulk_cache/`, filing text)
 
-# src/constants/paths.py
-PRICES_FILE = "prices.parquet"
-FUNDAMENTALS_FILE = "fundamentals.parquet"
-```
-
-When writing any new function: grep `src/constants/` first. If the name exists, import it. If it doesn't, add it to the appropriate constants file before using it.
-
-## configs/*.yaml — OmegaConf structure
-
-Config files are loaded via OmegaConf. Sections should mirror the `src/` folder structure.
-
-```yaml
-# configs/data_extract.yaml
-data_extract:
-  other_tickers: ["AAPL", "MSFT"]
-  lookback_years: 5
-
-paths:
-  data_dir: data/
-  prices: data/prices.parquet
-```
-
-Rules:
-- One yaml per major pipeline stage (`data_extract.yaml`, `modelling.yaml`, `backtest.yaml`)
-- All paths declared in config — never build paths in code with f-strings
-- Default values always present — no required-but-missing keys
-- Numeric hyperparameters (window sizes, thresholds) always in config — never hardcoded
-
-## src/context.py — the shared runtime object
-
-`Context` is the single object passed through every step. It owns:
-- `context.logger` — the project logger (use this, never `print()` or `logging.getLogger()` directly)
-- `context.env` — current environment (`"dev"`, `"test"`, `"prod"`)
-- Paths and runtime metadata as needed
-
-Do not add heavy business logic to `context.py`. It is infrastructure, not application code.
-Changes here affect every class in the project — treat it as a risk zone.
+Infrastructure, not business logic. Changes cascade to every class — treat it as a risk zone.

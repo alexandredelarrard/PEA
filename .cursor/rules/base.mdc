@@ -5,32 +5,37 @@ description: "Core conventions for stock_pick_strat — applies to every file"
 
 # Core conventions
 
-Project: `stock_pick_strat` — Python quant stock-picking pipeline.
-Stack: Python, OmegaConf (`DictConfig`), pandas, pytest.
-Configs: `configs/*.yaml`, always loaded via OmegaConf — never hardcode config values inline.
-OS: run in windows powershell script to run commands 
+Project: `stock_pick_strat` — Python quant long/short stock-picking pipeline.
+Stack: Python, OmegaConf (`DictConfig`), pandas, SQLAlchemy + PostgreSQL (Docker), OpenAI, pytest.
+Configs: `configs/*.yml`, loaded via OmegaConf — never hardcode config values inline.
+OS: Windows PowerShell; run Python via the project's Poetry venv.
 
-## Architecture pattern
-Every `src/` subfolder owns exactly one `step_*.py` (the orchestrator).
-All step classes inherit from `Step` (`src.utils.step`) to get `self._context` and `self._config`.
-The `run()` method is the only public entry point — it calls helpers from the same folder.
+## Architecture
+- A chain of `Step` classes (`src.utils.step`); each `src/` subfolder owns a `step_*.py` orchestrator
+  (a super-step may compose sub-steps in the same folder). `run()` is the only public entry point and
+  calls helpers from the SAME folder.
+- **All tabular data lives in PostgreSQL**, via `context.store` (`DataStore`) — never parquet.
+  `context.paths` is only for non-tabular artifacts (models, plots, JSON/zip caches, filing text).
 
-## Naming — check constants first
-Before naming any column, DataFrame key, file path, or constant: **check `src/constants/*.py` first**.
-Never hardcode strings that are already declared there. If a name doesn't exist yet, add it to constants before using it.
+## Naming — constants first
+Before naming any column, key, URL, or literal: check `src/constants/constants.py`. Reuse if present;
+add it there before using if not. Never hardcode global literals inline.
 
-## Project layout
-```
-configs/   data/   src/   tests/ (or test/)   app/ 
-```
-
-## Commands
-- Run a specific test: `pytest tests/path/to/test_file.py`
-- Run a specific function: `pytest tests/path/to/test_file.py::test_function_name`
-- Start with `conda run -n trading ` when starting a run in terminal
+## Data / DB
+- Read/write tables via `context.store.load / save / replace / existing_dates`; new columns auto-add
+  via `ensure_columns`. Fetchers save to the DB (return the frame), resume from the DB max date per
+  entity, save per entity, and are point-in-time (filing-date lag → leak-free).
+- Cache large downloads (companyfacts JSON, 13F zips) to disk; re-download only when missing.
 
 ## Anti-patterns
-- Never import from a sibling `src/` folder directly — cross-folder logic goes in `src/utils/`
-- Never use `print()` for logging — use `self._log`
-- Never store raw data outside `data/`
-- Never access `os.environ` directly — use the context object
+- No cross-folder imports between `src/` subfolders — shared logic goes in `src/utils/`.
+- No `print()` for logging — use `self._log` (steps) / `context.log` (helpers).
+- Never write tabular data to parquet/CSV — use `context.store`.
+- Sanity-check real-data edge cases before declaring done; tests must print a sanity conclusion.
+
+## Docs
+Keep the `.cursor/rules`, `CLAUDE.md`, `AGENTS.md`, `README.md` in sync with the code; propose &
+confirm a new convention before adding it. Keep this file short — it loads on every call.
+
+## Commands
+- `pytest tests/path/to/test_file.py::test_fn -v -s`   (`-s` shows the sanity-check print)

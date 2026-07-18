@@ -7,52 +7,55 @@ description: "Step class pattern for orchestrator classes in each src subfolder"
 
 # Step class pattern
 
-Every `step_*.py` is the main orchestrator for its folder. It must follow this structure exactly.
+Each `step_*.py` orchestrates its folder. A **super-step** may compose sub-steps in the same folder
+(as `data_extract/` does). It must follow this structure.
 
-## Required imports (always at the top)
+## Required imports (top of file)
 ```python
 from omegaconf import DictConfig
 
 from src.context import Context
 from src.utils.step import Step
-from src.{folder}.{helper_module} import {helper_function}
-# ... other helpers from the SAME folder only
+from src.data_extract.step_extract_prices import StepExtractPrices   # sub-steps / same-folder helpers ONLY
 ```
 
 ## Class structure
 ```python
-class Step{FolderName}(Step):
+class StepExtractAllData(Step):
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
+        self._prices = StepExtractPrices(context=context, config=config)   # compose sub-steps here
 
-    def run(self):
-        # 1. Read what you need from self._config.<section>
-        # 2. Call helpers from the same folder — one logical step per line
-        # 3. Keep run() readable as a high-level summary of the process
-        pass
+    def run(self) -> None:
+        # 1. resolve shared inputs once (e.g. the ticker universe)
+        # 2. call helpers / sub-steps — one logical step per line
+        # 3. keep run() readable as a high-level summary
+        tickers = self._resolve_universe()
+        self._prices.run(tickers=tickers)
 ```
 
 ## Rules
-- `run()` is the ONLY public method — all logic lives in helpers imported from the same folder
-- Use `self._context` for logging (`self._context.logger.info(...)`) and paths
-- Use `self._config.<section>.<key>` for config access — never hardcode values
-- Never call functions from another `src/` subfolder — use `src/utils/` for shared logic
-- Class name: `Step` + PascalCase folder name (e.g., `StepExtractAllData`, `StepModelling`)
-- File name: `step_<snake_case_description>.py`
+- `run()` is the ONLY public method — logic lives in same-folder helpers / composed sub-steps.
+- Never call functions from another `src/` subfolder — shared logic goes in `src/utils/`.
+- Config via `self._config.<section>.<key>` — never hardcode values.
+- Logging via `self._log` (in helpers taking `context`, use `context.log`) — never `print()`.
+- Fetchers persist through `context.store` (DB) and return the frame — no parquet.
+- Class name: `Step` + PascalCase description (`StepExtractAllData`, `StepBuildCube`, `StepModelling`).
+  File name: `step_<snake_case>.py`.
 
-## Config access pattern
+## Config access
 ```python
 # Good — via OmegaConf
-tickers = self._config.data_extract.tickers
-output_path = self._config.paths.data_dir
+tickers = self._config.data_extract.other_tickers
+n_splits = self._config.modelling.cv.n_splits
 
-# Bad — hardcoded
-output_path = "data/prices.parquet"
+# Bad — hardcoded literal
+horizon = 21
 ```
 
-## Logging pattern
+## Logging
 ```python
-self._context.logger.info(f"Fetching {len(tickers)} tickers")
-self._context.logger.error(f"Failed to fetch {ticker}: {e}")
+self._log.info(f"Fetching {len(tickers)} tickers")
+self._log.error(f"Failed to fetch {ticker}: {e}")
 ```

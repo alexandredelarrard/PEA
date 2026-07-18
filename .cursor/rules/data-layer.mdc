@@ -1,57 +1,60 @@
 ---
 globs:
-  - "src/data_extraction/**/*.py"
-  - "src/data_aggregation/**/*.py"
+  - "src/data_extract/**/*.py"
+  - "src/data_aggregate/**/*.py"
+  - "src/data_peers/**/*.py"
 alwaysApply: false
-description: "Data extraction and feature engineering conventions"
+description: "Data extraction and feature-engineering conventions (DB-backed)"
 ---
 
 # Data layer conventions
 
-## data_extraction/ — fetching raw data
+## data_extract/ — fetching raw data into the DB
 
-Each function in this folder fetches ONE data source. Functions receive `context` (and optionally `config` or `tickers`) as arguments.
-
-```python
-def fetch_price_history(context: Context, tickers: list[str]) -> None:
-    # Fetch, validate, save to data/ via context paths
-    # Return None — side effect is saving to disk
-    pass
-```
-
-- **Output:** always save to `data/` using paths from `self._config` or `context`
-- **Column names:** check `src/constants/*.py` — use declared constants, never raw strings
-- **Errors:** catch provider-level errors per ticker, log with `context.logger.warning()`, continue
-- **Never** return large DataFrames from extraction functions — save to disk, return `None` or a small summary
-
-## data_aggregation/ — feature engineering
-
-Functions here load from `data/`, transform, and save enriched datasets back to `data/`.
+`data_extract/` is a super-step (`StepExtractAllData`) composing sub-steps
+(`step_extract_{prices,fundamentals,structure,behavioral}.py`); fetchers live in
+`utils/{prices,fundamentals,structure,behavioral,common}/`. Each fetcher takes `context`
+(and optionally `tickers`/`config`), fetches ONE source, and UPSERTs to a DB table.
 
 ```python
-def compute_momentum_features(context: Context, config: DictConfig) -> pd.DataFrame:
-    # Load → transform → validate → save
-    pass
+def fetch_price_history(context: Context, tickers: list[str]) -> pd.DataFrame:
+    # fetch -> validate -> context.store.save("prices", df)  (upsert on PK)
+    # return the frame (no parquet); side effect is the DB write
+    ...
 ```
 
-- **Load / save paths** via config keys, never hardcoded
-- **New feature names:** declare in `src/constants/*.py` before using as a column name
-- **Validate** output shape and dtypes before saving — log a summary (`df.shape`, key stats)
-- **Avoid** wide transformations without a sanity check (e.g., confirm no NaN explosion after a join)
+- **Output:** `context.store.save(table, df)` (upsert on PK) — never write parquet/CSV for tables.
+- **Incremental & point-in-time:** resume from `context.store.existing_dates(...)` (max date per
+  ticker), save **per entity** so an interrupted run never loses expensive work (LLM / 13F / API),
+  and lag by filing date so features stay leak-free.
+- **Coalesce alternative XBRL tags** per period — union the candidate tags, don't take the first
+  present (`Revenues`↔`RevenueFromContractWithCustomer`, `NetIncomeLoss`↔`ProfitLoss`, equity ±NCI);
+  derive missing concepts (operating income = gross − SG&A − R&D) when a filer doesn't tag them.
+- **Reconcile SEC entities by identifier** (CUSIP→ticker via OpenFIGI, CIK) — never the free-text name.
+- **Cache large downloads** (companyfacts JSON, 13F zips) under `data/sec_bulk_cache/`; re-download
+  only when missing.
+- **Errors:** catch provider errors per ticker, `context.log.warning(...)`, continue.
+- **Column names / URLs / formats:** from `src/constants/constants.py`, never raw literals.
 
-## DataFrame conventions
-- Index: `DatetimeIndex` for time series data, or a clearly named column (`date`, `ticker`)
-- Date column name: check `src/constants/*.py` — use the declared constant
-- Dtypes: cast explicitly after load — don't trust inferred dtypes from parquet/csv
-- Parquet preferred over CSV for intermediate files
+## data_aggregate/ — feature engineering (the `cube`)
 
-## Config section for data paths
-```yaml
-# configs/data.yaml (example)
-paths:
-  data_dir: data/
-  prices: data/prices.parquet
-  fundamentals: data/fundamentals.parquet
+`StepBuildCube` loads tables via `context.store.load(...)`, builds point-in-time peer-relative
+panels (momentum, sector KPIs, forward earnings yield, …), merges into the feature panel, and writes
+the `cube` via `context.store.replace("cube", df)`.
+
+```python
+def build_sector_features(context: Context, config: DictConfig) -> pd.DataFrame:
+    # load -> transform (peer-relative, leak-free) -> validate -> return
+    ...
 ```
 
-Access via `self._config.paths.prices` — never build paths with string concatenation.
+- **Leak-free:** forward-fill each feature from its `as_of`; normalize / neutralize vs peers
+  (return-correlation + embedding baskets from `data_peers`), at the GICS industry-group level.
+- **Booleans → numeric 1.0/0.0 flags** so they are usable as model features.
+- **Validate** shape / coverage and log a summary; sanity-check no NaN explosion after joins.
+- **New feature names:** declare in `src/constants/constants.py` before use.
+
+## New tables
+Declare each logical table in `src/data_store/schema_registry.py` (name → PK + incremental date
+column); `schema_sql.py` regenerates `sql/schema.sql`. Identifier-like numeric codes (e.g. `cik`)
+are stored as TEXT to preserve leading zeros.

@@ -29,7 +29,8 @@ tscv = TimeSeriesSplit(
 
 ## SHAP analysis
 - Compute SHAP values on the **validation set**, not the training set
-- Save SHAP summary plot to `data/` with a name declared in `src/constants/*.py`
+- Save the SHAP summary plot as a non-tabular artifact under `context.paths`
+  (e.g. `data/output/diagnostics/`), with a name declared in `src/constants/constants.py`
 - Log top-N features by mean absolute SHAP value before finishing
 
 ```python
@@ -41,12 +42,15 @@ shap_importance = pd.Series(
     np.abs(shap_values.values).mean(axis=0),
     index=X_val.columns
 ).sort_values(ascending=False)
-context.logger.info(f"Top features:\n{shap_importance.head(10)}")
+context.log.info(f"Top features:\n{shap_importance.head(10)}")
 ```
 
-## Model serialization
-- Save models with `joblib` or `pickle` to `data/models/` — path from config
-- Always save alongside: feature list, training date, OOF metrics, config snapshot
+## Outputs
+- **Predictions land in the DB**, not files: write `predictions` and `cube_signal` via
+  `context.store.replace(...)` (they are tabular).
+- **Serialized models** are non-tabular artifacts: save with `joblib` under `context.paths`
+  (e.g. `data/output/models/`) — never in the DB.
+- Save alongside each model: feature list, training date, OOF metrics, config snapshot.
 
 ## Anti-patterns
 - Never evaluate on data that overlapped with training — always enforce temporal order

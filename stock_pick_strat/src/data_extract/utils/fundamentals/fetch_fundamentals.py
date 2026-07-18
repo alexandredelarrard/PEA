@@ -69,9 +69,24 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
     "totalRevenue": ["RevenueFromContractWithCustomerExcludingAssessedTax",
                      "RevenueFromContractWithCustomerIncludingAssessedTax",
                      "Revenues", "SalesRevenueNet",
+                     # pre-ASC-606 goods/services split (the only revenue tag many
+                     # filers used before ~2018, e.g. WDC=Goods, VRSK=Services) ->
+                     # recovers otherwise-truncated pre-2017 revenue history.
+                     "SalesRevenueGoodsNet", "SalesRevenueServicesNet",
+                     "SalesRevenueEnergyServices",                # utilities pre-2016 (e.g. WEC)
                      "RevenuesNetOfInterestExpense",              # banks (net revenue)
-                     "RegulatedAndUnregulatedOperatingRevenue"],  # utilities
-    "netIncome": ["NetIncomeLoss", "ProfitLoss"],
+                     "RegulatedAndUnregulatedOperatingRevenue",   # utilities
+                     "FoodAndBeverageRevenue"],                   # restaurants pre-2016 (e.g. CMG)
+    # NetIncomeLoss (to parent) / ProfitLoss (incl. NCI) are the modern tags; many
+    # filers used neither before ~2016 (e.g. WAT 2011-2015) and instead tagged only
+    # continuing-ops-incl-NCI. That tag shares ProfitLoss's basis (incl. NCI), so
+    # coalescing it at LOWER priority (fill-only) recovers otherwise-truncated early
+    # netIncome without altering filers that report the primary tags. The net-income-
+    # TO-COMMON tag is added conditionally per filer in `_extract_all` (see
+    # `_net_income_tags`) because it is net of preferred dividends and would corrupt
+    # preferred-paying REIT/bank/insurer history if coalesced unconditionally.
+    "netIncome": ["NetIncomeLoss", "ProfitLoss",
+                  "IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest"],
     "grossProfit": ["GrossProfit"],
     # Filers used CostOfGoodsSold / CostOfServices before the ASC-606-era
     # consolidation onto CostOfGoodsAndServicesSold (e.g. LLY tags the latter only
@@ -83,16 +98,40 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                       # utilities (e.g. CTSH, AEP); slightly understate COGS vs incl-D&A
                       # filers, so kept at LOWER priority (fill-only).
                       "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
-                      "CostOfServicesExcludingDepreciationDepletionAndAmortization"],
+                      "CostOfServicesExcludingDepreciationDepletionAndAmortization",
+                      # goods-only excl-D&A variant: the pre-2018 cost line for several
+                      # manufacturers / telecom (e.g. PPG, OXY, HWM, T) -> recovers their
+                      # otherwise-missing pre-2017 gross margin.
+                      "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization",
+                      # real-estate cost of revenue: homebuilders (PHM/DHI cost of homes
+                      # sold, pre-2019) and residential REITs (CPT/DOC property operating
+                      # cost -> NOI-style margin) tag their COGS here, not under the goods/
+                      # services elements. Fill-only, so standard filers are untouched.
+                      "CostOfRealEstateRevenue", "CostsOfRealEstateServicesAndLandSales",
+                      # restaurant food/beverage cost of sales (company-operated, e.g. CMG).
+                      "FoodAndBeverageCostOfSales",
+                      # regulated-utility cost of revenue (fuel + purchased power / gas): the
+                      # complete electric/energy cost line filers tag instead of the goods/
+                      # services elements (e.g. PNW/AES electric, DTE energy, PEG services).
+                      "CostOfGoodsSoldElectric", "CostOfGoodsAndServicesEnergyCommoditiesAndServices",
+                      "CostOfServicesEnergyServices", "CostOfDomesticRegulatedElectric"],
     "operatingIncome": ["OperatingIncomeLoss", "OperatingAndNonoperatingRevenues", "OperatingLoss", "OperatingIncome"],
     "depAmort": ["DepreciationDepletionAndAmortization",
                  "DepreciationAmortizationAndAccretionNet",
                  "DepreciationAndAmortization",
-                 "DepreciationAndAmortizationRealEstate"],
+                 "DepreciationAndAmortizationRealEstate",
+                 "Depreciation"],   # many REITs (e.g. EQR) tag plain Depreciation only
     "operatingCashFlow": ["NetCashProvidedByUsedInOperatingActivities",
                           "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment",
-              "PaymentsToAcquireProductiveAssets"],
+              "PaymentsToAcquireProductiveAssets",
+              # pure E&P tag capital spend as oil&gas property, not generic PP&E
+              # (e.g. EOG, FANG) -> needed for AFFO / FCF / capital-intensity.
+              "PaymentsToAcquireOilAndGasProperty",
+              "PaymentsToAcquireOilAndGasPropertyAndEquipment",
+              # REITs tag recurring/maintenance capex here (not generic PP&E) -> AFFO =
+              # FFO - recurring capex. Fill-only (growth capex acquire/develop excluded).
+              "PaymentsForCapitalImprovements"],
     "researchAndDevelopment": ["ResearchAndDevelopmentExpense",
                                "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
     # ---- added for refined features (S&M efficiency, M&A, SBC, distress) ----
@@ -145,6 +184,10 @@ SHARES_TAGS = {  # tried under dei first, then us-gaap
 EXTRA_FLOW_TAGS = {
     # ---- universal income statement / cash flow (cross-sector §B) ----
     "incomeTaxExpense": ["IncomeTaxExpenseBenefit"],
+    # consolidated `Revenues` line kept separately (it is also in the totalRevenue
+    # coalesce, but the ASC-606 contract slice outranks it there) so the Financials
+    # top-line rebuild can recover it for asset managers / insurers.
+    "revenuesTotal": ["Revenues"],
     "pretaxIncome": [
         "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
         "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"],
@@ -202,6 +245,7 @@ EXTRA_FLOW_TAGS = {
                            "GainsLossesOnSalesOfInvestmentRealEstate"],
     # ---- Energy (oil & gas) ----
     "explorationExpense": ["ExplorationExpense", "ExplorationAbandonmentAndDryHoleCosts",
+                           "ExplorationAbandonmentAndImpairmentExpense",   # DVN/EQT/OXY
                            "ResultsOfOperationsExplorationExpense"],
     # E&P filers report their depletion under the standard DD&A element rather than
     # the oil&gas-supplement one (which is annual-only) -> coalesce the standard tag.
@@ -243,9 +287,15 @@ EXTRA_STOCK_TAGS = {
     "loans": ["LoansAndLeasesReceivableNetReportedAmount",
               "FinancingReceivableExcludingAccruedInterestBeforeAllowanceForCreditLoss"],
     "deposits": ["Deposits", "InterestBearingDepositLiabilities"],
+    "depositsDomestic": ["DepositsDomestic"],   # deposit-stickiness metric (sparsely tagged)
     "allowanceCreditLosses": ["FinancingReceivableAllowanceForCreditLosses",
                               "LoansAndLeasesReceivableAllowance"],
-    "tier1CapitalRatio": ["TierOneRiskBasedCapitalToRiskWeightedAssets"],
+    # Tier-1 risk-based ratio; fall back to the modern CET1 ratio for banks that report
+    # only CET1 (post-2015). Both are capital-adequacy ratios (>11% = well-capitalised);
+    # CET1 <= Tier1, so the >11% screen stays conservative.
+    "tier1CapitalRatio": ["TierOneRiskBasedCapitalToRiskWeightedAssets",
+                          "CommonEquityTierOneCapitalToRiskWeightedAssets",
+                          "CommonEquityTierOneCapitalRatio"],
     # ---- Insurance ----
     "insuranceReserves": ["LiabilityForClaimsAndClaimsAdjustmentExpense",
                           "LiabilityForFuturePolicyBenefits"],
@@ -284,6 +334,11 @@ CHARGE_FLOWS = {"impairment", "restructuring", "acquisitions", "buybacks",
 ANNUAL_MIN_DAYS, ANNUAL_MAX_DAYS = 340, 380   # accept a fiscal year as ~365d
 QUARTER_MIN_DAYS, QUARTER_MAX_DAYS = 80, 100   # accept a fiscal quarter as ~13 weeks
 TTM_QUARTERS = 4                               # trailing-twelve-months = 4 quarters
+# Gross margin is mathematically <= 1 (a value > 1 implies negative COGS); a value
+# below -200% only arises when revenue is truncated / period-mismatched vs the cost
+# line (e.g. a REIT whose rental income moved to the ASC-842 lease-income tag). Values
+# outside this band are nulled as extraction artifacts rather than shipped as features.
+GROSS_MARGIN_MIN, GROSS_MARGIN_MAX = -2.0, 1.0
 
 
 def _today_iso() -> str:
@@ -530,10 +585,54 @@ _SPINE_FLOWS = ("totalRevenue", "netIncome", "operatingCashFlow")
 _SPINE_STOCKS = ("totalAssets", "stockholdersEquity", "totalLiabilities")
 
 
+# net-income-to-common: added to the netIncome coalesce ONLY for filers with no
+# material preferred dividends (see `_net_income_tags`).
+_NET_INCOME_TO_COMMON_TAG = "NetIncomeLossAvailableToCommonStockholdersBasic"
+_TO_COMMON_MIN_OVERLAP = 4     # need this many primary-vs-to-common overlaps to judge
+_TO_COMMON_TOL = 0.02          # per-period relative gap treated as "equal"
+_TO_COMMON_MIN_MATCH = 0.90    # share of overlap periods that must match to trust it
+
+
+def _concept_periods(gaap: dict, tag: str) -> dict[tuple, float]:
+    """`{(start, end): val}` for one raw us-gaap tag (USD unit), for the preferred-
+    dividend safety check — light-weight, no coalescing/date parsing."""
+    units = gaap.get(tag, {}).get("units", {})
+    uk = "USD" if "USD" in units else next(iter(units), None)
+    if uk is None:
+        return {}
+    return {(o["start"], o["end"]): o["val"] for o in units[uk]
+            if o.get("start") and o.get("end") and o.get("val") is not None}
+
+
+def _net_income_tags(gaap: dict) -> list[str]:
+    """netIncome coalesce list, extended with the net-income-to-common tag ONLY when
+    it materially equals ProfitLoss/NetIncomeLoss on their overlapping periods — i.e.
+    the filer has no meaningful preferred dividends. This recovers pre-2016 netIncome
+    for no-preferred filers (e.g. WAT 2014-2015) without contaminating the YTD
+    de-cumulation chain of preferred-paying REITs/banks/insurers (WELL, O, SPG, USB,
+    VTR, ...), whose to-common figure is net of preferred dividends."""
+    tags = list(FLOW_TAGS["netIncome"])
+    common = _concept_periods(gaap, _NET_INCOME_TO_COMMON_TAG)
+    if not common:
+        return tags
+    primary: dict[tuple, float] = {}
+    for tag in ("NetIncomeLoss", "ProfitLoss"):
+        for k, v in _concept_periods(gaap, tag).items():
+            primary.setdefault(k, v)
+    rel = [abs(common[k] - primary[k]) / abs(primary[k])
+           for k in common if k in primary and primary[k]]
+    if len(rel) >= _TO_COMMON_MIN_OVERLAP and \
+            sum(r <= _TO_COMMON_TOL for r in rel) / len(rel) >= _TO_COMMON_MIN_MATCH:
+        tags.append(_NET_INCOME_TO_COMMON_TAG)
+    return tags
+
+
 def _extract_all(gaap: dict, dei: dict) -> tuple[dict, dict, dict, pd.DataFrame, pd.DataFrame]:
     """Raw us-gaap/dei -> per-concept quarterly flows, annual full-year fallbacks,
     instant balance-sheet levels, plus cover-page shares (dei) and diluted shares."""
-    raw = {k: _extract_concept(gaap, tags) for k, tags in {**FLOW_TAGS, **EXTRA_FLOW_TAGS}.items()}
+    flow_tags = {**FLOW_TAGS, **EXTRA_FLOW_TAGS}
+    flow_tags["netIncome"] = _net_income_tags(gaap)   # preferred-dividend-guarded fill
+    raw = {k: _extract_concept(gaap, tags) for k, tags in flow_tags.items()}
     flows = {k: _quarterly_flow(v) for k, v in raw.items()}
     annuals = {k: _annual_flow(v) for k, v in raw.items()}      # full-year TTM fallback
     stocks = {k: _instant_stock(_extract_concept(gaap, tags))
@@ -691,10 +790,28 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
     ocf_q = col("operatingCashFlow")
     capex_q = col("capex")
     ebitda_q = oi_q + da_q.fillna(0)
+    # bottom-up single-quarter EBITDA for filers without an operating-income line
+    ebitda_q = ebitda_q.where(ebitda_q.notna(),
+                              ni_q + col("incomeTaxExpense").fillna(0)
+                              + col("interestExpense").fillna(0) + da_q.fillna(0))
     fcf_q = ocf_q - capex_q.fillna(0)
 
     rev_ttm = ttm_a("totalRevenue")
     ni_ttm = ttm_a("netIncome")
+    # Financials top line: the ASC-606 contract-revenue element tags only a FEE SLICE for
+    # banks / insurers / asset managers, understating revenue many-fold (e.g. FITB $0.5B
+    # vs true $8B, MET, AIG) -> nonsense margins. For the Financials sector ONLY, rebuild
+    # revenue from its components and take the most complete signal — the fee slice is
+    # always a subset, so max() never double-counts: net interest income + noninterest
+    # income (banks), premiums earned + net investment income (insurers), or the
+    # consolidated `Revenues` line (asset managers). Non-financials are untouched.
+    if sector == "Financials":
+        nii, noni = ttm_a("netInterestIncome"), ttm_a("noninterestIncome")
+        prem, inv = ttm_a("premiumsEarned"), ttm_a("netInvestmentIncome")
+        bank_rev = (nii.fillna(0) + noni.fillna(0)).where(nii.notna() | noni.notna())
+        insurer_rev = (prem.fillna(0) + inv.fillna(0)).where(prem.notna() | inv.notna())
+        rev_ttm = pd.concat([rev_ttm, bank_rev, insurer_rev, ttm_a("revenuesTotal")],
+                            axis=1).max(axis=1)
     gp_ttm = ttm_a("grossProfit")
     cor_ttm = ttm_a("costOfRevenue")
     oi_ttm = ttm_a("operatingIncome")
@@ -739,11 +856,39 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
         total_debt = pd.Series(0.0, index=total_debt.index).where(assets.notna())
 
     gross_profit_ttm = gp_ttm.where(gp_ttm.notna(), rev_ttm - cor_ttm)
+    # Gross margin, with an extraction-artifact guard: a value > 1 (negative COGS) or
+    # below -200% only arises from a revenue/cost period-or-scope mismatch (truncated
+    # revenue), never as a real gross margin, so it is nulled rather than shipped.
+    gross_margin = (gross_profit_ttm / rev_ttm).where(rev_ttm > 0)
+    gross_margin = gross_margin.where(
+        (gross_margin >= GROSS_MARGIN_MIN) & (gross_margin <= GROSS_MARGIN_MAX))
+    # Net margin, with a FINANCIALS-ONLY artifact guard: a bank/insurer/asset-manager net
+    # income exceeding ~1.5x net revenue (or a loss beyond -200%) reflects consolidated-
+    # fund NCI / one-time attribution (e.g. ARES pre-IPO), not a real margin. The bound
+    # holds structurally in-sector, so it is nulled there; other sectors (biotech losses,
+    # one-time gains) keep their genuine extreme margins.
+    profit_margin = (ni_ttm / rev_ttm).where(rev_ttm > 0)
+    if sector == "Financials":
+        profit_margin = profit_margin.where((profit_margin >= -2.0) & (profit_margin <= 1.5))
     # Derive operating income when the filer doesn't tag OperatingIncomeLoss
     # (e.g. LLY, CVX, JNJ post-2015): operating income ≈ gross profit − SG&A − R&D.
     # Only where the components exist, so banks (no gross profit) stay NaN.
     oi_derived = gross_profit_ttm - sga_ttm.fillna(0) - rnd_ttm.fillna(0)
     oi_ttm = oi_ttm.where(oi_ttm.notna(), oi_derived)
+    # REITs / integrated oil & gas tag no operating-income line and have no gross profit
+    # (e.g. O, EQR, DVN, XOM), yet EBITDAre / EBITDAX need operating income -> bottom-up
+    # EBIT = pre-tax income + interest expense. Gated to non-financials (banks / insurers
+    # have their own operating-income proxies), so their operating margin stays N/A.
+    if sector != "Financials":
+        oi_ttm = oi_ttm.where(oi_ttm.notna(), ttm_a("pretaxIncome") + int_ttm.fillna(0))
+
+    # EBITDA = operating income + D&A, with a bottom-up fallback (net income + taxes
+    # + interest + D&A) for filers that report no operating-income line, e.g.
+    # integrated oil (XOM). All four inputs exist even when OI/gross profit don't.
+    ebitda = oi_ttm + da_ttm.fillna(0)
+    ebitda = ebitda.where(ebitda.notna(),
+                          ni_ttm + ttm_a("incomeTaxExpense").fillna(0)
+                          + int_ttm.fillna(0) + da_ttm.fillna(0))
 
     out = pd.DataFrame({
         "ticker": ticker,
@@ -751,12 +896,21 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
         "fiscal_end": base["end"].dt.date.astype(str),
         "totalRevenue": rev_ttm,
         "netIncome": ni_ttm,
-        "grossMargins": (gross_profit_ttm / rev_ttm).where(rev_ttm > 0),
+        "grossMargins": gross_margin,
         "operatingMargins": (oi_ttm / rev_ttm).where(rev_ttm > 0),
-        "profitMargins": (ni_ttm / rev_ttm).where(rev_ttm > 0),
-        "returnOnEquity": (ni_ttm / eq).where(eq > 0),
+        "profitMargins": profit_margin,
+        # ROE is defined whenever equity is non-zero; negative-equity firms (heavy
+        # buybacks, e.g. VRSN/WYNN) get a (negative) ROE rather than being dropped.
+        "returnOnEquity": (ni_ttm / eq).where(eq != 0),
         "debtToEquity": (ltd.where(ltd.notna(), liab) / eq).where(eq > 0),
-        "ebitda": oi_ttm + da_ttm.fillna(0),
+        "ebitda": ebitda,
+        # operatingIncome / depAmort / capex are emitted as raw TTM levels (not just
+        # folded into margins / FCF) because the sector KPIs consume them directly:
+        # EBITDAre = operatingIncome + depAmort (REIT), EBITDAX = + explorationExpense
+        # (oil & gas), FFO uses depAmort, AFFO = FFO - capex, bank operating-income proxy.
+        "operatingIncome": oi_ttm,
+        "depAmort": da_ttm,
+        "capex": capex_ttm,
         "freeCashflow": ocf_ttm - capex_ttm.fillna(0),
         "operatingCashFlow": ocf_ttm,
         "researchAndDevelopment": rnd_ttm,

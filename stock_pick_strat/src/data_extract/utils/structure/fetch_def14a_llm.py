@@ -94,7 +94,6 @@ _OWNERSHIP_ANCHORS = (
     "beneficial ownership",
 )
 
-
 def _find_content_section(
     text: str,
     content_re: re.Pattern,

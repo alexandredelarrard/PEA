@@ -657,8 +657,6 @@ def build_fundamentals_history_sec(context: Context,
       - If history exists from today but new tickers appeared, fetch only those.
       - On a new calendar day, refresh all tickers and merge with existing rows.
     """
-    if cik_mapping is None:
-        cik_mapping = load_cik_mapping(context)
 
     if _is_sec_history_up_to_date(context, cik_mapping):
         hist = context.store.load("fundamentals_history")

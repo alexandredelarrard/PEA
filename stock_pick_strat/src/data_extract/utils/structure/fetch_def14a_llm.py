@@ -143,7 +143,6 @@ _PAYAUDIT_ANCHORS = (
 
 _AUX_SECTION_CHARS = 16_000       # smaller budget for the prose aux sections
 
-
 def _find_content_section(
     text: str,
     content_re: re.Pattern | None,

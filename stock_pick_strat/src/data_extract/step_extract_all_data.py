@@ -43,3 +43,22 @@ class StepExtractAllData(Step):
         self._fundamentals.run(tickers=tickers)
         self._structure.run(tickers=tickers)
         self._behavioral.run(tickers=tickers)
+
+        # TODO: extract disclosures from SEC filings and notes 
+        # https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets
+
+        # TODO: fail to deliver stock 
+        # https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data     
+
+        # TODO: senior executive & insiders transactions
+        # https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets
+
+    def analysis(self) -> None:
+        import pandas as pd
+        df = pd.read_sql('fundamentals_history', self._context.store.engine)
+        x = df.isnull().groupby(df['ticker']).sum()
+        x['max'] = x.max(axis=1)
+        for col in x.columns : 
+            x[col] /= (0.001+ x['max'])
+        print(x.mean(axis=1).mean())
+        x.to_csv('sanity_check_financials_missing_infos.csv')

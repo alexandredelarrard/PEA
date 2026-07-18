@@ -4,14 +4,17 @@ fetch_def14a_llm.py  (src/data_extract/utils/fetch_def14a_llm.py)
 Extract structured governance data from SEC DEF 14A proxy statements using an
 LLM with structured output (Def14AExtract schema).
 
-For each ticker, this fetches all DEF 14A filings from EDGAR (using existing
-edgar_fillings helpers), sends targeted sections to the OpenAI Responses API
-(which is constrained to the Def14AExtract Pydantic schema), and upserts the
-results into the `def14a_llm` Postgres table — scalar summary columns plus a
-raw JSON field for full downstream use.
+Per ticker, it fetches that ticker's DEF 14A filings from EDGAR, sends targeted
+sections to the OpenAI Responses API (constrained to the Def14AExtract Pydantic
+schema, temperature=0, prompt caching on), then **immediately upserts that
+ticker's rows into the `def14a_llm` Postgres table** before moving to the next
+ticker — so an interrupted run never loses the (expensive) LLM calls already made.
 
-Incremental: already-processed accession numbers are skipped so successive
-runs only process new filings.
+Year-incremental: the per-ticker cutoff is the latest `as_of` already stored in
+the DB for that ticker, so only filings AFTER it are sent to the LLM. Tickers
+with no rows yet are fetched over the full `years_history` window; tickers with
+shorter histories simply have fewer filings — each resumes from its own latest
+stored filing, never re-running the LLM on a year already saved.
 
 Requires OPENAI_API_KEY (or OPEN_AI_API_KEY) in the .env file.
 If the key is absent the function logs a warning and returns whatever exists.
@@ -225,16 +228,48 @@ def _is_up_to_date(context: Context, n_universe: int) -> bool:
     return meta.get("universe_size", 0) >= n_universe
 
 
+def _last_asof_by_ticker(existing: pd.DataFrame | None) -> dict[str, pd.Timestamp]:
+    """Max `as_of` (filing date) already stored per ticker -> the per-ticker
+    incremental cutoff. Tickers absent here are fetched over the full window."""
+    if existing is None or existing.empty or "as_of" not in existing.columns:
+        return {}
+    s = existing[["ticker", "as_of"]].copy()
+    s["as_of"] = pd.to_datetime(s["as_of"], errors="coerce")
+    s = s.dropna(subset=["as_of"])
+    return s.groupby("ticker")["as_of"].max().to_dict()
+
+
+def _seen_accessions(existing: pd.DataFrame | None) -> set[str]:
+    if existing is None or existing.empty or "accession_number" not in existing.columns:
+        return set()
+    return set(existing["accession_number"].dropna())
+
+
+def _save_ticker_rows(context: Context, rows: list[dict]) -> int:
+    """Upsert one ticker's freshly-extracted rows into `def14a_llm` right away
+    (LLM calls are expensive — persist per ticker so a crash loses nothing)."""
+    df = pd.DataFrame(rows)
+    for c in _NUMERIC_COLS:                     # keep DB columns numeric
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["as_of"] = pd.to_datetime(df["as_of"]).dt.normalize()
+    df = df.drop_duplicates(subset=["ticker", "accession_number"], keep="last")
+    return context.store.save("def14a_llm", df)
+
+
 def fetch_def14a_llm(
     context: Context,
     tickers: list[str],
     model: str = "gpt-4o-mini",
     max_chars: int = 100_000,
+    temperature: float = 0.0,
+    cache: bool = True,
 ) -> pd.DataFrame:
-    """Build/refresh the DEF 14A LLM governance extract.
+    """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
-    Incremental: skips filings already in the DB table (by accession_number).
-    Skips gracefully when OPENAI_API_KEY is absent.
+    For each ticker only filings AFTER its latest stored `as_of` are sent to the
+    LLM (year-incremental), and the ticker's rows are upserted to Postgres
+    immediately. Skips gracefully when OPENAI_API_KEY is absent.
     """
     years = context.config.data_extract.years_history
     path = context.paths["DEF14A_LLM_PATH"]
@@ -249,62 +284,47 @@ def fetch_def14a_llm(
 
     existing = context.store.load("def14a_llm")
     existing = None if existing.empty else existing
-    seen: set[str] = set()
-    if existing is not None and not existing.empty and "accession_number" in existing.columns:
-        seen = set(existing["accession_number"].dropna())
+    last_asof = _last_asof_by_ticker(existing)     # per-ticker year cutoff (from SQL)
+    seen = _seen_accessions(existing)
 
     try:
-        extractor = LLMExtractor(model=model, max_chars=max_chars)
+        extractor = LLMExtractor(model=model, max_chars=max_chars,
+                                 temperature=temperature, cache=cache)
     except EnvironmentError as e:
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
         return existing if existing is not None else pd.DataFrame(columns=["ticker", "as_of"])
 
-    new_rows: list[dict] = []
+    total_new, tickers_touched = 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
         ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
+        # only filings after this ticker's latest already in SQL (full window if none)
+        since = last_asof.get(ticker)
         try:
-            filings = list_filings(cik, _FORM, years, company)
+            filings = list_filings(cik, _FORM, years, company, since=since)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue
 
+        ticker_rows: list[dict] = []
         for _, f in filings.iterrows():
             if f["accession_number"] in seen:
                 continue
             row = _process_filing(ticker, f, extractor)
             if row is not None:
-                new_rows.append(row)
+                ticker_rows.append(row)
                 seen.add(f["accession_number"])
 
-    new_df = pd.DataFrame(new_rows)
-    # coerce numeric columns to float so the DB table is created with numeric
-    # types even when a batch's optional fields (e.g. option awards) are all null
-    for c in _NUMERIC_COLS:
-        if c in new_df.columns:
-            new_df[c] = pd.to_numeric(new_df[c], errors="coerce")
-    parts = [d for d in (existing, new_df) if d is not None and not d.empty]
+        # persist THIS ticker before moving on (don't batch — LLM calls are costly)
+        if ticker_rows:
+            _save_ticker_rows(context, ticker_rows)
+            total_new += len(ticker_rows)
+            tickers_touched += 1
 
-    if not parts:
-        save_extract_meta(path, None, 0, len(cik_map))
-        return existing if existing is not None else pd.DataFrame(columns=["ticker", "as_of"])
-
-    out = pd.concat(parts, ignore_index=True)
-    out["as_of"] = pd.to_datetime(out["as_of"]).dt.normalize()
-    out = out.drop_duplicates(subset=["ticker", "accession_number"], keep="last")
-    out = out.sort_values(["ticker", "as_of"]).reset_index(drop=True)
-    if not new_df.empty:
-        context.store.save("def14a_llm", new_df)
-
-    last_fd = out["as_of"].max()
-    save_extract_meta(
-        path,
-        last_fd.date().isoformat() if pd.notna(last_fd) else None,
-        out["ticker"].nunique(),
-        len(cik_map),
-    )
+    save_extract_meta(path, today_iso(), len(cik_map), len(cik_map))
+    out = context.store.load("def14a_llm")
     context.log.info(
-        "DEF 14A LLM: %d rows, %d tickers (avg %.1f filings/ticker)",
-        len(out), out["ticker"].nunique(),
-        len(out) / max(out["ticker"].nunique(), 1),
+        "DEF 14A LLM: +%d new rows across %d tickers; table now %d rows, %d tickers",
+        total_new, tickers_touched, len(out),
+        out["ticker"].nunique() if not out.empty else 0,
     )
     return out

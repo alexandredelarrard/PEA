@@ -160,7 +160,7 @@ def test_llm_extractor_mock():
             mock_client.responses.parse.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            extractor = LLMExtractor(model="gpt-4o-mini")
+            extractor = LLMExtractor(model="gpt-4o-mini")   # defaults: temperature=0, cache=True
             result = extractor.extract(Def14AExtract, _SYNTHETIC)
 
     assert isinstance(result, Def14AExtract)
@@ -172,11 +172,15 @@ def test_llm_extractor_mock():
     assert call_kw["model"] == "gpt-4o-mini"
     assert call_kw["text_format"] is Def14AExtract
     assert call_kw["instructions"]
+    # deterministic + cacheable
+    assert call_kw["temperature"] == 0.0
+    assert call_kw["prompt_cache_key"] == "gpt-4o-mini:Def14AExtract"
 
     print("\n=== SANITY CHECK: LLMExtractor mock ===")
     print(f"  extract() -> {result.company_name}: {len(result.directors)} directors, "
-          f"CEO salary ${result.compensation[0].salary_usd:,.0f}.  "
-          f"responses.parse() called once with correct args. Validated.")
+          f"CEO salary ${result.compensation[0].salary_usd:,.0f}.")
+    print(f"  responses.parse() called with temperature={call_kw['temperature']} "
+          f"and prompt_cache_key={call_kw['prompt_cache_key']!r}. Validated.")
 
 
 @pytest.mark.skipif(
@@ -318,3 +322,96 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
         print("  Persisted to Postgres, NOT parquet. Validated.")
     finally:
         _cleanup()
+
+
+# --------------------------------------------------------------------------- #
+# Year-incremental cutoff + per-ticker save                                    #
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(not os.getenv("DATABASE_URL"),
+                    reason="DATABASE_URL not set — needs the Postgres DB")
+def test_fetch_def14a_llm_incremental_by_year(monkeypatch):
+    """A ticker with rows already in SQL only sends filings AFTER its latest
+    stored `as_of` to the LLM (year-incremental), and the new row is upserted
+    without disturbing the already-saved one."""
+    from sqlalchemy import text
+    from src.context import get_config_context
+    from src.data_extract.utils.structure import fetch_def14a_llm as mod
+
+    try:
+        _, ctx = get_config_context("./configs", use_cache=False, save=False)
+        ctx.store.exists("def14a_llm")
+    except Exception as e:                                   # noqa: BLE001
+        pytest.skip(f"DB not reachable: {e}")
+
+    TICKER, OLD_ACC, NEW_ACC = "ZZINC", "1111111111-11-111111", "2222222222-22-222222"
+
+    def _cleanup():
+        if ctx.store.exists("def14a_llm"):
+            with ctx.store.engine.begin() as c:
+                c.execute(text('DELETE FROM def14a_llm WHERE ticker = :t'), {"t": TICKER})
+
+    _cleanup()
+    try:
+        # seed one already-processed 2022 filing for the ticker
+        seed = _flatten_row(TICKER, OLD_ACC, pd.Timestamp("2022-04-01"))
+        mod._save_ticker_rows(ctx, [seed])
+
+        captured: dict = {}
+
+        class _FakeExtractor:
+            def __init__(self, **kwargs):
+                pass
+
+            def extract(self, schema, text_):
+                return _make_expected()
+
+        def _fake_list_filings(cik, forms, years, company="", since=None):
+            captured["since"] = since                        # record the cutoff
+            # EDGAR would return only filings strictly after `since`
+            return pd.DataFrame([{
+                "accession_number": NEW_ACC, "doc_url": "http://x/new.htm",
+                "filing_date": pd.Timestamp("2024-04-01"),
+                "period_of_report": "2023-12-31", "form": "DEF 14A",
+            }])
+
+        class _Resp:
+            text = "<html>proxy</html>"
+
+        monkeypatch.setattr(mod, "LLMExtractor", _FakeExtractor)
+        monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
+        monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame(
+            {"ticker": [TICKER], "cik": ["0000000001"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
+
+        mod.fetch_def14a_llm(ctx, tickers=[TICKER])
+
+        # (1) the LLM cutoff was the latest as_of already in SQL (2022-04-01)
+        assert captured["since"] is not None
+        assert pd.Timestamp(captured["since"]).normalize() == pd.Timestamp("2022-04-01")
+
+        # (2) both the old (untouched) and the new row are in the table
+        back = ctx.store.load("def14a_llm")
+        rows = back[back["ticker"] == TICKER]
+        accs = set(rows["accession_number"])
+        assert accs == {OLD_ACC, NEW_ACC}, accs
+
+        print("\n=== SANITY CHECK: DEF 14A year-incremental ===")
+        print(f"  ticker had 2022 filing stored -> list_filings called with "
+              f"since={pd.Timestamp(captured['since']).date()} (only newer years hit the LLM)")
+        print(f"  after run, table holds both accessions: {sorted(accs)}. Validated.")
+    finally:
+        _cleanup()
+
+
+def _flatten_row(ticker: str, acc: str, as_of: "pd.Timestamp") -> dict:
+    """Minimal def14a_llm row for seeding the incremental test."""
+    return {
+        "ticker": ticker, "as_of": as_of, "period": as_of,
+        "accession_number": acc, "company_name": "Z", "fiscal_year_extract": as_of.year - 1,
+        "n_directors": 3, "avg_director_age": 60.0, "avg_board_tenure": 8.0,
+        "pct_independent_directors": 0.66, "n_officers": 2,
+        "ceo_name_proxy": "Old CEO", "ceo_salary": 800_000.0, "ceo_bonus": None,
+        "ceo_stock_awards": None, "ceo_option_awards": None, "ceo_total_comp": 1_000_000.0,
+        "def14a_json": "{}",
+    }

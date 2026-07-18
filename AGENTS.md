@@ -155,7 +155,6 @@ def test_momentum_feature(sample_prices):
     print(f"  Range : [{result['momentum_20d'].min():.4f}, {result['momentum_20d'].max():.4f}]")
     print(f"  NaN % : {result['momentum_20d'].isna().mean():.1%}  (expected ~{20/len(result):.1%} for window=20)")
     print(f"  ✓ Winners positive, losers negative — direction is correct")
-    print(f"  → Feature validated.")
 ```
 
 The printed conclusion is mandatory. It states what was checked and why the result is valid.

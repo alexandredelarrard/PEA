@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.fundamentals.fetch_fundamentals import (
-    build_ticker_history, EXTRA_FLOW_TAGS)
+    build_ticker_history, EXTRA_FLOW_TAGS, FLOW_TAGS)
 
 
 def _q(end, start, val):
@@ -156,6 +156,222 @@ def test_cash_plain_tag_fallback():
     assert ye["cash"] == pytest.approx(500.0)
     print("\n=== SANITY CHECK: cash plain-tag fallback ===")
     print(f"  cash={ye['cash']:.0f} from the plain `Cash` element. Validated.")
+
+
+def test_revenue_pre_asc606_goods_services_tags():
+    """Filers that only tagged the pre-ASC-606 goods/services split (e.g. WDC=Goods,
+    VRSK=Services) still get total revenue -> no pre-2017 truncation."""
+    assert "SalesRevenueGoodsNet" in FLOW_TAGS["totalRevenue"]
+    gaap = {"SalesRevenueGoodsNet": {"units": {"USD": _year(1000.0, [2018, 2019, 2020])}}}
+    ye = _ye(_build(gaap))
+    assert ye["totalRevenue"] == pytest.approx(4000.0)          # TTM = 4 x 1000
+    print("\n=== SANITY CHECK: pre-ASC-606 revenue tag ===")
+    print(f"  totalRevenue={ye['totalRevenue']:.0f} from SalesRevenueGoodsNet. Validated.")
+
+
+def test_ebitda_bottom_up_fallback():
+    """A filer with no operating-income / gross-profit line (e.g. integrated oil)
+    still gets EBITDA bottom-up: net income + taxes + interest + D&A."""
+    gaap = {
+        "Revenues": {"units": {"USD": _year(1000.0, [2018, 2019, 2020])}},
+        "NetIncomeLoss": {"units": {"USD": _year(100.0, [2018, 2019, 2020])}},
+        "IncomeTaxExpenseBenefit": {"units": {"USD": _year(30.0, [2018, 2019, 2020])}},
+        "InterestExpense": {"units": {"USD": _year(20.0, [2018, 2019, 2020])}},
+        "DepreciationDepletionAndAmortization": {"units": {"USD": _year(50.0, [2018, 2019, 2020])}},
+        # NO OperatingIncomeLoss, NO GrossProfit/CostOfRevenue
+    }
+    ye = _ye(_build(gaap))
+    # TTM: NI 400 + tax 120 + interest 80 + D&A 200 = 800
+    assert ye["ebitda"] == pytest.approx(800.0)
+    print("\n=== SANITY CHECK: bottom-up EBITDA (no operating-income line) ===")
+    print(f"  ebitda={ye['ebitda']:.0f} = NI 400 + tax 120 + interest 80 + D&A 200. Validated.")
+
+
+def test_roe_defined_for_negative_equity():
+    """Negative-equity firms (heavy buybacks, e.g. VRSN) get a (negative) ROE rather
+    than being dropped by an equity>0 guard."""
+    gaap = {
+        "Revenues": {"units": {"USD": _year(1000.0, [2019, 2020])}},
+        "NetIncomeLoss": {"units": {"USD": _year(100.0, [2019, 2020])}},
+        "StockholdersEquity": {"units": {"USD": _inst(-500.0, [2019, 2020])}},
+    }
+    ye = _ye(_build(gaap))
+    assert ye["returnOnEquity"] == pytest.approx(-0.8)          # NI 400 / equity -500
+    print("\n=== SANITY CHECK: ROE for negative book equity ===")
+    print(f"  returnOnEquity={ye['returnOnEquity']:.2f} (NI 400 / equity -500). Validated.")
+
+
+def test_netincome_incl_nci_fallback_fills_gap():
+    """A filer that stopped tagging ProfitLoss/NetIncomeLoss for an early stretch but
+    kept the continuing-ops-INCL-NCI tag (same basis as ProfitLoss, e.g. WAT ~2011-2014)
+    still gets netIncome there — the tag is coalesced fill-only, primaries win elsewhere."""
+    incl_nci = "IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest"
+    assert incl_nci in FLOW_TAGS["netIncome"]
+    gaap = {
+        "Revenues": {"units": {"USD": _year(1000.0, [2018, 2019, 2020])}},
+        "ProfitLoss": {"units": {"USD": _year(100.0, [2019, 2020])}},   # gap in 2018
+        incl_nci: {"units": {"USD": _year(90.0, [2018])}},              # fills the 2018 gap
+    }
+    fe = _build(gaap)
+    assert _ye(fe, "2018-12-31")["netIncome"] == pytest.approx(360.0)   # 4 x 90 (incl-NCI)
+    assert _ye(fe, "2020-12-31")["netIncome"] == pytest.approx(400.0)   # 4 x 100 (ProfitLoss wins)
+    print("\n=== SANITY CHECK: netIncome incl-NCI fill-only fallback ===")
+    print("  2018 gap filled from incl-NCI tag (360=4x90); 2020 uses ProfitLoss (400=4x100). Validated.")
+
+
+def test_netincome_to_common_fill_when_no_preferred():
+    """A no-preferred filer (to-common == net income on overlapping periods) recovers
+    an early netIncome gap from NetIncomeLossAvailableToCommonStockholdersBasic."""
+    to_common = "NetIncomeLossAvailableToCommonStockholdersBasic"
+    gaap = {
+        "Revenues": {"units": {"USD": _year(1000.0, [2017, 2018, 2019, 2020])}},
+        "NetIncomeLoss": {"units": {"USD": _year(100.0, [2018, 2019, 2020])}},          # gap in 2017
+        # to-common EQUALS the primary on 2018-2020 (no preferred) -> guard trusts it,
+        # so the 2017-only to-common value fills the gap.
+        to_common: {"units": {"USD": _year(90.0, [2017]) + _year(100.0, [2018, 2019, 2020])}},
+    }
+    fe = _build(gaap)
+    assert _ye(fe, "2017-12-31")["netIncome"] == pytest.approx(360.0)   # 4 x 90 (to-common fill)
+    assert _ye(fe, "2020-12-31")["netIncome"] == pytest.approx(400.0)   # NetIncomeLoss wins
+    print("\n=== SANITY CHECK: netIncome to-common fill (no preferred) ===")
+    print("  guard confirmed to-common == primary on overlap; 2017 gap filled (360=4x90). Validated.")
+
+
+def test_netincome_to_common_guarded_off_for_preferred():
+    """A preferred-paying filer (to-common < net income by the preferred dividend) must
+    NOT have its netIncome contaminated: the to-common tag is rejected by the guard, so
+    a period with only a to-common value stays empty rather than mixing bases."""
+    to_common = "NetIncomeLossAvailableToCommonStockholdersBasic"
+    gaap = {
+        "Revenues": {"units": {"USD": _year(1000.0, [2017, 2018, 2019, 2020])}},
+        "NetIncomeLoss": {"units": {"USD": _year(100.0, [2018, 2019, 2020])}},          # gap in 2017
+        # to-common is 20% below the primary on the overlap (preferred dividends) ->
+        # guard rejects it; the 2017 gap is NOT filled with the contaminated figure.
+        to_common: {"units": {"USD": _year(70.0, [2017]) + _year(80.0, [2018, 2019, 2020])}},
+    }
+    fe = _build(gaap)
+    assert pd.isna(_ye(fe, "2017-12-31")["netIncome"]), "contaminated to-common must be rejected"
+    assert _ye(fe, "2020-12-31")["netIncome"] == pytest.approx(400.0)   # primary untouched
+    print("\n=== SANITY CHECK: netIncome to-common guarded off (preferred payer) ===")
+    print("  to-common differs 20% on overlap -> rejected; 2017 stays empty; 2020 primary intact. Validated.")
+
+
+def test_real_estate_cost_of_revenue_gross_margin():
+    """Homebuilders / residential REITs tag COGS under the real-estate cost elements,
+    not the goods/services ones — coalescing them recovers gross margin (e.g. PHM)."""
+    assert "CostOfRealEstateRevenue" in FLOW_TAGS["costOfRevenue"]
+    gaap = {
+        "Revenues": {"units": {"USD": _year(1000.0, [2018, 2019, 2020])}},
+        "CostOfRealEstateRevenue": {"units": {"USD": _year(750.0, [2018, 2019, 2020])}},
+        # NO CostOfGoodsAndServicesSold / GrossProfit
+    }
+    ye = _ye(_build(gaap))
+    # TTM gross profit = 4000 - 3000 = 1000 -> margin 0.25
+    assert ye["grossMargins"] == pytest.approx(0.25)
+    print("\n=== SANITY CHECK: real-estate cost-of-revenue gross margin ===")
+    print(f"  grossMargins={ye['grossMargins']:.2f} from CostOfRealEstateRevenue (homebuilder COGS). Validated.")
+
+
+def test_gross_margin_artifact_guard():
+    """A revenue/cost period-or-scope mismatch (truncated revenue vs full cost, e.g. a
+    REIT whose rental income moved to the ASC-842 lease tag) yields an implausible gross
+    margin (< -200% or > 1); the guard nulls it rather than shipping a garbage feature."""
+    # cost >> revenue -> gross margin ~ -3 -> must be nulled
+    bad = {
+        "Revenues": {"units": {"USD": _year(100.0, [2018, 2019, 2020])}},
+        "CostOfGoodsAndServicesSold": {"units": {"USD": _year(400.0, [2018, 2019, 2020])}},
+    }
+    ye_bad = _ye(_build(bad))
+    assert pd.isna(ye_bad["grossMargins"]), "gross margin of -300% must be nulled as an artifact"
+
+    # a normal filer is untouched
+    good = {
+        "Revenues": {"units": {"USD": _year(1000.0, [2018, 2019, 2020])}},
+        "CostOfGoodsAndServicesSold": {"units": {"USD": _year(300.0, [2018, 2019, 2020])}},
+    }
+    ye_good = _ye(_build(good))
+    assert ye_good["grossMargins"] == pytest.approx(0.70)
+    print("\n=== SANITY CHECK: gross-margin artifact guard ===")
+    print(f"  cost>>revenue -> grossMargins nulled ({ye_bad['grossMargins']}); "
+          f"normal filer kept ({ye_good['grossMargins']:.2f}). Validated.")
+
+
+def test_bank_net_revenue_override_fee_slice():
+    """Banks tag only a small fee slice under the ASC-606 contract-revenue element; their
+    true top line is net interest income + noninterest income. That total must OVERRIDE
+    the fee slice (else revenue is understated ~10x -> absurd margins, e.g. FITB 400%)."""
+    gaap = {
+        "NetIncomeLoss": {"units": {"USD": _year(300.0, [2019, 2020])}},
+        # small ASC-606 fee slice the coalesce would otherwise treat as the top line
+        "RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": _year(100.0, [2019, 2020])}},
+        "InterestIncomeExpenseNet": {"units": {"USD": _year(1000.0, [2019, 2020])}},
+        "NoninterestIncome": {"units": {"USD": _year(500.0, [2019, 2020])}},
+    }
+    # the rebuild is gated to the Financials sector
+    fe = build_ticker_history("BANK", {"facts": {"us-gaap": gaap, "dei": {}}}, "Financials")
+    ye = fe[fe["fiscal_end"] == "2020-12-31"].iloc[0]
+    assert ye["totalRevenue"] == pytest.approx(6000.0)   # 4x(1000+500), not 4x100
+    assert ye["profitMargins"] == pytest.approx(0.20)    # 1200/6000, not 3.0
+    print("\n=== SANITY CHECK: bank net-revenue override ===")
+    print(f"  totalRevenue={ye['totalRevenue']:.0f} (NII+noninterest, not the 400 fee slice); "
+          f"profitMargins={ye['profitMargins']:.2f}. Validated.")
+
+
+def test_operating_income_bottom_up_ebit_nonfinancial_only():
+    """Non-financials with no operating-income tag and no gross profit (REIT / integrated
+    oil, e.g. O, DVN, XOM) get operatingIncome = pre-tax income + interest (EBIT) so
+    EBITDAre / EBITDAX compute; financials are excluded (they use their own proxy)."""
+    pretax = ("IncomeLossFromContinuingOperationsBeforeIncomeTaxes"
+              "MinorityInterestAndIncomeLossFromEquityMethodInvestments")
+    gaap = {
+        "Revenues": {"units": {"USD": _year(1000.0, [2019, 2020])}},
+        "NetIncomeLoss": {"units": {"USD": _year(100.0, [2019, 2020])}},
+        pretax: {"units": {"USD": _year(130.0, [2019, 2020])}},
+        "InterestExpense": {"units": {"USD": _year(20.0, [2019, 2020])}},
+        "DepreciationDepletionAndAmortization": {"units": {"USD": _year(50.0, [2019, 2020])}},
+        # NO OperatingIncomeLoss, NO GrossProfit / CostOfRevenue
+    }
+    reit = build_ticker_history("R", {"facts": {"us-gaap": gaap, "dei": {}}}, "Real Estate")
+    ye = reit[reit["fiscal_end"] == "2020-12-31"].iloc[0]
+    assert ye["operatingIncome"] == pytest.approx(600.0)   # EBIT = pretax 520 + interest 80
+    assert ye["depAmort"] == pytest.approx(200.0)          # now emitted as a column
+    assert ye["ebitda"] == pytest.approx(800.0)            # EBITDAre = opInc 600 + D&A 200
+
+    fin = build_ticker_history("B", {"facts": {"us-gaap": gaap, "dei": {}}}, "Financials")
+    assert pd.isna(fin[fin["fiscal_end"] == "2020-12-31"].iloc[0]["operatingIncome"])
+    print("\n=== SANITY CHECK: bottom-up EBIT operatingIncome (non-financials) ===")
+    print(f"  REIT operatingIncome={ye['operatingIncome']:.0f} (EBIT), EBITDAre={ye['ebitda']:.0f}; "
+          f"financial excluded. Validated.")
+
+
+def test_financials_profit_margin_guard():
+    """A Financials-sector net margin above ~1.5x (consolidated-fund NCI / one-time
+    attribution, e.g. ARES pre-IPO) is nulled; the same margin in another sector (a
+    one-time gain / biotech) is kept."""
+    gaap = {"InterestIncomeExpenseNet": {"units": {"USD": _year(100.0, [2019, 2020])}},  # bank rev
+            "NetIncomeLoss": {"units": {"USD": _year(200.0, [2019, 2020])}}}             # ni > rev
+    fin = build_ticker_history("F", {"facts": {"us-gaap": gaap, "dei": {}}}, "Financials")
+    assert pd.isna(fin[fin["fiscal_end"] == "2020-12-31"].iloc[0]["profitMargins"])
+
+    gaap2 = {"Revenues": {"units": {"USD": _year(100.0, [2019, 2020])}},
+             "NetIncomeLoss": {"units": {"USD": _year(200.0, [2019, 2020])}}}
+    other = build_ticker_history("X", {"facts": {"us-gaap": gaap2, "dei": {}}}, "Health Care")
+    ye_o = other[other["fiscal_end"] == "2020-12-31"].iloc[0]
+    assert ye_o["profitMargins"] == pytest.approx(2.0)   # non-financial extreme kept
+    print("\n=== SANITY CHECK: financials profit-margin guard ===")
+    print(f"  financial ni>1.5x rev -> nulled; non-financial kept ({ye_o['profitMargins']:.1f}). Validated.")
+
+
+def test_restaurant_food_beverage_revenue():
+    """Company-operated restaurants tag pre-2016 revenue under FoodAndBeverageRevenue,
+    not Revenues -> coalescing recovers the otherwise-missing early top line (e.g. CMG)."""
+    assert "FoodAndBeverageRevenue" in FLOW_TAGS["totalRevenue"]
+    gaap = {"FoodAndBeverageRevenue": {"units": {"USD": _year(1000.0, [2018, 2019, 2020])}},
+            "NetIncomeLoss": {"units": {"USD": _year(100.0, [2018, 2019, 2020])}}}
+    ye = _ye(_build(gaap))
+    assert ye["totalRevenue"] == pytest.approx(4000.0)
+    print("\n=== SANITY CHECK: restaurant FoodAndBeverageRevenue ===")
+    print(f"  totalRevenue={ye['totalRevenue']:.0f} from FoodAndBeverageRevenue. Validated.")
 
 
 def test_annual_only_flow_ttm_fallback():

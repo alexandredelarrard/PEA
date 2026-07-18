@@ -91,23 +91,57 @@ def test_panel_columns_and_ownership_pct():
 def test_extractor_parsers():
     sub = pd.DataFrame({
         "ACCESSION_NUMBER": ["a1", "a2"], "CIK": ["111", "222"],
-        "FILING_DATE": ["2022-05-10", "2022-05-12"],
+        "FILING_DATE": ["2022-05-10", "2022-05-12"],   # pre-2023 -> VALUE in $1000s
         "PERIODOFREPORT": ["03-31-2022", "03-31-2022"]})
     info = pd.DataFrame({
         "ACCESSION_NUMBER": ["a1", "a1", "a2"],
         "CUSIP": ["037833100", "037833100", "594918104"],
         "VALUE": ["1000", "500", "2000"], "SSHPRNAMT": ["10", "5", "20"]})
-    h = _join_13f(sub, info)
-    assert set(["cik", "period", "filing_date", "cusip", "value_usd", "shares"]).issubset(h.columns)
-    assert (h["value_usd"] == pd.Series([1e6, 5e5, 2e6])).all()   # $1000s -> dollars
+    h = _join_13f(sub, info).sort_values("cusip").reset_index(drop=True)
+    assert set(["cik", "period", "filing_date", "cusip", "value_usd", "shares",
+                "call_shares", "put_shares", "debt_value", "other_value"]).issubset(h.columns)
+    # a manager's two lines for the same CUSIP are summed into one row
+    assert len(h) == 2
+    assert h.loc[0, "shares"] == 15.0 and h.loc[0, "value_usd"] == 1.5e6   # (1000+500)*1000
+    assert h.loc[1, "shares"] == 20.0 and h.loc[1, "value_usd"] == 2e6
     assert h["period"].iloc[0] == pd.Timestamp("2022-03-31")
 
     figi = [{"data": [{"ticker": "AAPL"}]}, {"warning": "no match"}]
     m = _parse_openfigi(figi, ["037833100", "999999999"])
     assert m == {"037833100": "AAPL"}
     print("\n=== SANITY CHECK: 13F + OpenFIGI parsers ===")
-    print("  SUBMISSION+INFOTABLE join maps columns & scales $1000s->$; OpenFIGI "
-          "parser aligns CUSIP->ticker and skips no-match jobs. Validated.")
+    print("  join sums a manager's duplicate-CUSIP lines, scales $1000s->$; OpenFIGI "
+          "maps CUSIP->ticker (not the free-text issuer name). Validated.")
+
+
+def test_join_13f_splits_holding_types():
+    """Stock / call / put / debt / other land in separate columns; long `shares`
+    excludes options and bond principal (the noise that was inflating shares)."""
+    sub = pd.DataFrame({
+        "ACCESSION_NUMBER": ["a1"], "CIK": ["111"],
+        "FILING_DATE": ["2024-05-10"],            # post-2023 -> VALUE already in $
+        "PERIODOFREPORT": ["03-31-2024"]})
+    info = pd.DataFrame({
+        "ACCESSION_NUMBER": ["a1"] * 5,
+        "CUSIP": ["037833100"] * 5,
+        "NAMEOFISSUER": ["APPLE INC", "APPLE INC", "APPLE", "Apple Inc.", "APPLE INC"],
+        "VALUE":       ["1000000", "300000", "200000", "50000", "7000"],
+        "SSHPRNAMT":   ["10000",   "3000",   "2000",   "40000", "70"],
+        "SSHPRNAMTTYPE": ["SH",    "SH",     "SH",     "PRN",   "XX"],
+        "PUTCALL":     ["",        "Call",   "Put",    "",      ""]})
+    h = _join_13f(sub, info)
+    assert len(h) == 1
+    r = h.iloc[0]
+    assert r["shares"] == 10000 and r["value_usd"] == 1_000_000       # long stock ONLY
+    assert r["call_shares"] == 3000 and r["call_value"] == 300_000
+    assert r["put_shares"] == 2000 and r["put_value"] == 200_000      # bearish / sell-side
+    assert r["debt_prn"] == 40000 and r["debt_value"] == 50_000
+    assert r["other_value"] == 7_000                                  # malformed type -> other
+
+    print("\n=== SANITY CHECK: 13F holding-type split ===")
+    print(f"  shares(long)={r['shares']:.0f} calls={r['call_shares']:.0f} "
+          f"puts={r['put_shares']:.0f} debt$={r['debt_value']:.0f} other$={r['other_value']:.0f} "
+          f"-> long shares no longer contaminated by options/bonds. Validated.")
 
 
 if __name__ == "__main__":
@@ -115,3 +149,4 @@ if __name__ == "__main__":
     test_filing_lag_point_in_time()
     test_panel_columns_and_ownership_pct()
     test_extractor_parsers()
+    test_join_13f_splits_holding_types()

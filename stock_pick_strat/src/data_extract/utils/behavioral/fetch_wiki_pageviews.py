@@ -19,6 +19,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
+from src.constants.constants import DATE_FORMAT_COMPACT
 from src.context import Context
 
 _API = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
@@ -84,7 +85,7 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
     default_start = today - pd.DateOffset(years=years_history)
     # pageviews for a day are available the next day; stop at yesterday
     end_ts = today - pd.Timedelta(days=1)
-    end = end_ts.strftime("%Y%m%d")
+    end = end_ts.strftime(DATE_FORMAT_COMPACT)
 
     frames, skipped = [], 0
     for _, row in tqdm(list(names.iterrows()), desc="Wikipedia pageviews"):
@@ -96,7 +97,8 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
         article = _company_to_article(row["name"])
         try:
             long = _json_to_long(
-                _fetch_article(article, start_ts.strftime("%Y%m%d"), end), row["ticker"])
+                _fetch_article(article, start_ts.strftime(DATE_FORMAT_COMPACT), end),
+                row["ticker"])
         except Exception as e:
             print(f"Wiki fetch failed for {row['ticker']} ({article}): {e}")
             continue

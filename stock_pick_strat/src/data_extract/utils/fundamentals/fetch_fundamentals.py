@@ -52,6 +52,7 @@ import pandas as pd
 import yfinance as yf
 from tqdm import tqdm
 
+from src.constants.constants import SEC_COMPANYFACTS_URL
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get, load_cik_mapping
 
@@ -195,7 +196,7 @@ def _fetch_companyfacts(context: Context, cik: str) -> dict | None:
         except Exception:
             pass
     try:
-        resp = sec_get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json")
+        resp = sec_get(SEC_COMPANYFACTS_URL.format(cik=cik))
         data = resp.json()
         cache.write_text(json.dumps(data), encoding="utf-8")
         return data

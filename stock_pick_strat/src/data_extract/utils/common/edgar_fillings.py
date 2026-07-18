@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.constants.constants import (
+    SEC_ARCHIVES_BASE_URL, SEC_SUBMISSIONS_PAGE_URL, SEC_SUBMISSIONS_URL,
+)
 from src.data_extract.utils.common.sec_utils import sec_get
 
 
 def _doc_url(cik: str, accession: str, primary_doc: str) -> str:
     acc_nodash = accession.replace("-", "")
-    return (f"https://www.sec.gov/Archives/edgar/data/"
-            f"{int(cik)}/{acc_nodash}/{primary_doc}")
+    return f"{SEC_ARCHIVES_BASE_URL}/{int(cik)}/{acc_nodash}/{primary_doc}"
 
 
 def _rows_from_recent(block: dict, cik: str, company: str, forms: set,
@@ -59,7 +61,7 @@ def list_filings(cik: str, forms: list[str], years: int,
         # strictly after the last date already parsed
         cutoff = max(cutoff, pd.Timestamp(since).normalize() + pd.Timedelta(days=1))
 
-    data = sec_get(f"https://data.sec.gov/submissions/CIK{cik}.json").json()
+    data = sec_get(SEC_SUBMISSIONS_URL.format(cik=cik)).json()
     company = company_name or data.get("name", "")
     filings = data.get("filings", {})
 
@@ -75,7 +77,7 @@ def list_filings(cik: str, forms: list[str], years: int,
         if page_to and pd.Timestamp(page_to) < cutoff:
             continue
         try:
-            page = sec_get(f"https://data.sec.gov/submissions/{older_name}").json()
+            page = sec_get(SEC_SUBMISSIONS_PAGE_URL.format(name=older_name)).json()
         except Exception:
             continue
         rows += _rows_from_recent(page, cik, company, forms_set, cutoff)

@@ -20,6 +20,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from src.constants.constants import SEC_COMPANY_TICKERS_URL
 from src.context import Context
 
 _MIN_INTERVAL = 0.11          # ~9 req/sec, safely under SEC's 10/sec limit
@@ -107,7 +108,7 @@ def build_cik_mapping(context: Context, sp500_tickers: list[str] | None = None) 
     Fetch SEC's full ticker->CIK mapping and filter to our S&P 500 universe.
     Source: https://www.sec.gov/files/company_tickers.json (free, no key).
     """
-    resp = sec_get("https://www.sec.gov/files/company_tickers.json")
+    resp = sec_get(SEC_COMPANY_TICKERS_URL)
     raw = resp.json()  # dict of {index: {cik_str, ticker, title}}
     df = pd.DataFrame(raw.values())
     df["cik_str"] = df["cik_str"].astype(str).str.zfill(10)

@@ -19,76 +19,39 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
 
 def define_global_paths(config: DictConfig):
+    """Filesystem paths for NON-tabular artifacts only. All tabular data
+    (prices, fundamentals, cube, predictions, ...) now lives in the database
+    and is accessed via `context.store`; the parquet/CSV paths were removed
+    when the pipeline moved to DB-only I/O.
 
+    The `*_HISTORY_PATH` / `SEC_FILINGS_INDEX_PATH` / `DEF14A_LLM_PATH` entries
+    are kept ONLY to anchor each fetcher's incremental `_meta.json` sidecar
+    (built via `<path>.with_name("<stem>_meta.json")`); no parquet is written
+    to them.
+    """
     global_paths = {}
 
     global_paths["ROOT"] = Path(os.getenv("ROOT_PATH", config.local.paths.root))
     data_store = config.local.paths.get("data_store", "data_store")
     global_paths["DATA_STORE"] = global_paths["ROOT"] / data_store
 
-    # Prices & universe
-    global_paths["PRICES_PATH"] = global_paths["DATA_STORE"] / "prices.parquet"
-    global_paths["TICKERS_PATH"] = global_paths["DATA_STORE"] / "sp500_tickers.csv"
-    global_paths["DIVIDENDS_PATH"] = global_paths["DATA_STORE"] / "dividends.parquet"
-
-    # Fundamentals
-    global_paths["FUNDAMENTALS_SNAPSHOT_PATH"] = global_paths["DATA_STORE"] / "fundamentals_latest.parquet"
-    global_paths["FUNDAMENTALS_HISTORY_PATH"] = global_paths["DATA_STORE"] / "fundamentals_history.parquet"
-
-    # Macro & news
-    global_paths["MACRO_PATH"] = global_paths["DATA_STORE"] / "macro.parquet"
-    global_paths["NEWS_PATH"] = global_paths["DATA_STORE"] / "news_latest.parquet"
-
-    # Retail-attention alt-data (Wikipedia pageviews + Google Trends)
-    global_paths["WIKI_PAGEVIEWS_PATH"] = global_paths["DATA_STORE"] / "wiki_pageviews.parquet"
-    global_paths["GOOGLE_TRENDS_PATH"] = global_paths["DATA_STORE"] / "google_trends.parquet"
-
-    # Analyst estimates
-    global_paths["ANALYST_ESTIMATES_PATH"] = global_paths["DATA_STORE"] / "analyst_estimates.parquet"
-    global_paths["ANALYST_ESTIMATES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "analyst_estimates_history.parquet"
-
-    # Management / ownership (yfinance snapshot; accrues history over time)
-    global_paths["MANAGEMENT_PATH"] = global_paths["DATA_STORE"] / "management.parquet"
-    global_paths["MANAGEMENT_HISTORY_PATH"] = global_paths["DATA_STORE"] / "management_history.parquet"
-    global_paths["DEF14A_LLM_PATH"] = global_paths["DATA_STORE"] / "def14a_llm.parquet"
-
-    # Employee counts (FMP historical-employee-count; genuinely historical, from filings)
-    global_paths["EMPLOYEES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "employees_history.parquet"
-
-    # FMP historical endpoints (one call = full ticker history; see fetch_fmp_history)
-    global_paths["ANALYST_GRADES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "analyst_grades_history.parquet"
-    global_paths["ANALYST_ACTIONS_HISTORY_PATH"] = global_paths["DATA_STORE"] / "analyst_actions_history.parquet"
-    global_paths["EXEC_COMP_HISTORY_PATH"] = global_paths["DATA_STORE"] / "exec_compensation_history.parquet"
-    global_paths["FMP_ESTIMATES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "fmp_estimates_history.parquet"
-
-    # Earnings surprises & PEAD
-    global_paths["EARNINGS_SURPRISES_PATH"] = global_paths["DATA_STORE"] / "earnings_surprises.parquet"
-    global_paths["PEAD_RESULTS_PATH"] = global_paths["DATA_STORE"] / "pead_results.parquet"
-
-    # SEC filings
-    global_paths["CIK_MAPPING_PATH"] = global_paths["DATA_STORE"] / "cik_mapping.csv"
-    global_paths["SEC_FILINGS_INDEX_PATH"] = global_paths["DATA_STORE"] / "sec_filings_index.parquet"
-    global_paths["SEC_FILINGS_TEXT_DIR"] = global_paths["DATA_STORE"] / "sec_filings_text"
+    # Raw file caches (not tabular -> stay on disk)
     global_paths["SEC_BULK_CACHE_DIR"] = global_paths["DATA_STORE"] / "sec_bulk_cache"
+    global_paths["SEC_FILINGS_TEXT_DIR"] = global_paths["DATA_STORE"] / "sec_filings_text"
 
-    # Insider & institutional (SEC bulk data)
-    global_paths["INSIDER_TRANSACTIONS_PATH"] = global_paths["DATA_STORE"] / "insider_transactions.parquet"
-    global_paths["INSTITUTIONAL_HOLDINGS_PATH"] = global_paths["DATA_STORE"] / "institutional_holdings.parquet"
-    global_paths["CUSIP_MAP_PATH"] = global_paths["DATA_STORE"] / "cusip_ticker_map.parquet"
-    global_paths["SHORT_INTEREST_PATH"] = global_paths["DATA_STORE"] / "short_interest.parquet"
+    # Incremental meta-sidecar anchors (the parquet file itself is unused; only
+    # its stem names the sibling "<stem>_meta.json" the fetcher reads/writes)
+    global_paths["FUNDAMENTALS_HISTORY_PATH"] = global_paths["DATA_STORE"] / "fundamentals_history.parquet"
+    global_paths["MANAGEMENT_HISTORY_PATH"] = global_paths["DATA_STORE"] / "management_history.parquet"
+    global_paths["EMPLOYEES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "employees_history.parquet"
+    global_paths["DEF14A_LLM_PATH"] = global_paths["DATA_STORE"] / "def14a_llm.parquet"
+    global_paths["SEC_FILINGS_INDEX_PATH"] = global_paths["DATA_STORE"] / "sec_filings_index.parquet"
 
-    # Strategy outputs
-    global_paths["BACKTEST_RESULT_PATH"] = global_paths["DATA_STORE"] / "backtest_result.parquet"
-
-    # Cube / model pipeline outputs
+    # Pipeline output artifacts (models, diagnostics, peer dict, CV results)
     global_paths["OUTPUT_DIR"] = global_paths["DATA_STORE"] / "output"
-    global_paths["SECTOR_PEERS_PATH"] = global_paths["OUTPUT_DIR"] / "sector_peers.json"
-    global_paths["CUBE_PATH"] = global_paths["OUTPUT_DIR"] / "cube.parquet"
-    global_paths["PREDICTIONS_PATH"] = global_paths["OUTPUT_DIR"] / "predictions.parquet"
-    global_paths["CUBE_SIGNAL_PATH"] = global_paths["OUTPUT_DIR"] / "cube_signal.parquet"
-    global_paths["CUBE_CV_RESULTS_PATH"] = global_paths["OUTPUT_DIR"] / "cube_cv_results.parquet"
-    global_paths["CUBE_PANEL_PATH"] = global_paths["OUTPUT_DIR"] / "cube_panel.parquet"
     global_paths["MODELS_DIR"] = global_paths["OUTPUT_DIR"] / "models"
+    global_paths["SECTOR_PEERS_PATH"] = global_paths["OUTPUT_DIR"] / "sector_peers.json"
+    global_paths["CUBE_CV_RESULTS_PATH"] = global_paths["OUTPUT_DIR"] / "cube_cv_results.parquet"
 
     for _, path in global_paths.items():
         if "https" not in str(path):

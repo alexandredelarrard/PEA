@@ -6,12 +6,18 @@ test_def14a_sections_extraction   — prepare_def14a_sections() isolates the rig
 test_llm_extractor_mock           — LLMExtractor.extract() with a mocked OpenAI call
 test_llm_extractor_real_apple     — Live EDGAR + OpenAI extraction of Apple's DEF 14A
                                     (skips when OPENAI_API_KEY is not set)
+test_fetch_def14a_llm_to_postgres — fetch_def14a_llm() drives the LLM against the
+                                    Def14AExtract schema and upserts the row into
+                                    the def14a_llm Postgres table (network + LLM
+                                    mocked; skips when the DB is unreachable)
 """
 from __future__ import annotations
 
+import json
 import os
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from src.data_extract.utils.structure.def14a_schema import (
@@ -231,3 +237,84 @@ def test_llm_extractor_real_apple():
         print(f"  Ownership ({len(result.share_ownership)}): "
               f"{[s.name for s in result.share_ownership[:4]]}...")
     print("  Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# fetch_def14a_llm(): schema-constrained LLM -> Postgres def14a_llm table      #
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(not os.getenv("DATABASE_URL"),
+                    reason="DATABASE_URL not set — needs the Postgres DB")
+def test_fetch_def14a_llm_to_postgres(monkeypatch):
+    """End-to-end (network + LLM mocked): confirms the fetcher (1) drives the LLM
+    against the Def14AExtract Pydantic schema, and (2) UPSERTS the flattened row
+    into the `def14a_llm` Postgres table — not a parquet file."""
+    from sqlalchemy import text
+    from src.context import get_config_context
+    from src.data_extract.utils.structure import fetch_def14a_llm as mod
+
+    try:
+        _, ctx = get_config_context("./configs", use_cache=False, save=False)
+        ctx.store.exists("def14a_llm")                      # force a DB round-trip
+    except Exception as e:                                   # noqa: BLE001
+        pytest.skip(f"DB not reachable: {e}")
+
+    TICKER, ACC = "ZZTEST", "9999999999-99-999999"
+
+    def _cleanup():
+        if ctx.store.exists("def14a_llm"):
+            with ctx.store.engine.begin() as c:
+                c.execute(text('DELETE FROM def14a_llm WHERE ticker = :t'), {"t": TICKER})
+
+    _cleanup()
+    try:
+        captured: dict = {}
+
+        class _FakeExtractor:                               # no OPENAI key needed
+            def __init__(self, **kwargs):
+                pass
+
+            def extract(self, schema, text_):
+                captured["schema"] = schema                 # record what the LLM must respect
+                return _make_expected()
+
+        filings = pd.DataFrame([{
+            "accession_number": ACC, "doc_url": "http://example/def14a.htm",
+            "filing_date": pd.Timestamp("2024-04-01"),
+            "period_of_report": "2023-12-31", "form": "DEF 14A",
+        }])
+
+        class _Resp:
+            text = "<html>proxy statement</html>"
+
+        monkeypatch.setattr(mod, "LLMExtractor", _FakeExtractor)
+        monkeypatch.setattr(mod, "list_filings", lambda *a, **k: filings)
+        monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame(
+            {"ticker": [TICKER], "cik": ["0000000000"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
+
+        mod.fetch_def14a_llm(ctx, tickers=[TICKER])
+
+        # (1) the LLM was constrained to the passed Pydantic schema
+        assert captured["schema"] is Def14AExtract, captured
+
+        # (2) the flattened output was persisted to the Postgres table
+        back = ctx.store.load("def14a_llm")
+        row = back[back["ticker"] == TICKER]
+        assert len(row) == 1, "row not found in def14a_llm table"
+        r = row.iloc[0]
+        assert r["accession_number"] == ACC
+        assert int(r["n_directors"]) == 3
+        assert float(r["ceo_salary"]) == 850_000.0
+        assert json.loads(r["def14a_json"])["company_name"] == "ACME Corporation"
+
+        print("\n=== SANITY CHECK: DEF 14A LLM -> Postgres ===")
+        print(f"  LLM constrained to schema: {captured['schema'].__name__}")
+        print(f"  Upserted into DB table 'def14a_llm': ticker={r['ticker']} "
+              f"acc={r['accession_number']} n_directors={int(r['n_directors'])} "
+              f"ceo_salary=${float(r['ceo_salary']):,.0f}")
+        print(f"  Full schema JSON stored in def14a_json (company="
+              f"{json.loads(r['def14a_json'])['company_name']}).")
+        print("  Persisted to Postgres, NOT parquet. Validated.")
+    finally:
+        _cleanup()

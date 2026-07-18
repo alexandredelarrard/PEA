@@ -20,10 +20,10 @@ import zipfile
 import pandas as pd
 import requests
 
+from src.constants.constants import SEC_FORM13F_URL
 from src.context import Context
 from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map
 
-_BASE = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/{name}_form13f.zip"
 _HEADERS = {
     "User-Agent": "stock_pick_strat/1.0 (research; valar_analytics@gmail.com)"}
 
@@ -84,7 +84,7 @@ def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list
 
 def _download_quarter(name: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     """Download+unzip one window's SUBMISSION and INFOTABLE tsvs. Network IO."""
-    r = requests.get(_BASE.format(name=name), headers=_HEADERS, timeout=120)
+    r = requests.get(SEC_FORM13F_URL.format(name=name), headers=_HEADERS, timeout=120)
     if r.status_code != 200:
         return None
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:

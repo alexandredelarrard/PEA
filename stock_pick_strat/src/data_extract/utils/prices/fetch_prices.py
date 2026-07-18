@@ -23,6 +23,7 @@ import requests
 import yfinance as yf
 from tqdm import tqdm
 
+from src.constants.constants import DATE_FORMAT
 from src.context import Context
 
 _WIKI_HEADERS = {
@@ -230,8 +231,8 @@ def _download_price_chunk(
             if period is not None:
                 kwargs["period"] = period
             else:
-                kwargs["start"] = start.strftime("%Y-%m-%d")
-                kwargs["end"] = (end + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                kwargs["start"] = start.strftime(DATE_FORMAT)
+                kwargs["end"] = (end + pd.Timedelta(days=1)).strftime(DATE_FORMAT)
 
             data = yf.download(chunk, **kwargs)
             return _chunk_response_to_frames(data, chunk)

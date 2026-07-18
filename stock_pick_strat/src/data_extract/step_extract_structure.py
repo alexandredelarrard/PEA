@@ -6,9 +6,6 @@ Company-structure extraction (workforce, management, governance, filings):
   * management / officers   (10-K + DEF 14A, EDGAR)
   * DEF 14A governance      (directors, compensation, ownership; LLM-parsed)
   * SEC filings index
-
-Disabled: yfinance management snapshot (no history) — superseded by the EDGAR
-historical path.
 """
 from omegaconf import DictConfig
 
@@ -30,6 +27,3 @@ class StepExtractStructure(Step):
         fetch_management_edgar(self._context, tickers=tickers)
         fetch_def14a_llm(self._context, tickers=tickers)
         fetch_sec_filings(self._context)
-
-        # yfinance management snapshot (no history) — superseded by EDGAR path
-        # fetch_management(self._context, tickers=tickers)

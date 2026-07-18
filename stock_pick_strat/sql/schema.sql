@@ -11,14 +11,14 @@ CREATE TABLE IF NOT EXISTS "sp500_tickers" (
     "sector" TEXT,
     "industry_group" TEXT,
     "sub_industry" TEXT,
-    "cik" BIGINT,
+    "cik" TEXT,
     PRIMARY KEY ("ticker")
 );
 
 -- [reference] cik_mapping  (pk: ticker)
 
 CREATE TABLE IF NOT EXISTS "cik_mapping" (
-    "cik" BIGINT,
+    "cik" TEXT,
     "ticker" TEXT NOT NULL,
     "company_name" TEXT,
     PRIMARY KEY ("ticker")
@@ -210,6 +210,14 @@ CREATE TABLE IF NOT EXISTS "ticker_embeddings" (
     "embedding" DOUBLE PRECISION[],
     PRIMARY KEY ("ticker")
 );
+
+-- SKIPPED (source missing): cusip_ticker_map <- cusip_ticker_map.parquet
+
+-- SKIPPED (source missing): institutional_holdings <- institutional_holdings.parquet
+
+-- SKIPPED (source missing): def14a_llm <- def14a_llm.parquet
+
+-- SKIPPED (source missing): ticker_descriptions <- ticker_descriptions.parquet
 
 -- [aggregate] cube  (pk: ticker, date, target_horizon)
 

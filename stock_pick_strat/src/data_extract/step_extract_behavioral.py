@@ -14,7 +14,6 @@ from src.context import Context
 from src.utils.step import Step
 from src.data_extract.utils.behavioral.fetch_wiki_pageviews import fetch_wiki_pageviews
 from src.data_extract.utils.behavioral.fetch_google_trends import fetch_google_trends
-from src.data_extract.utils.behavioral.fetch_news import fetch_news
 
 
 class StepExtractBehavioral(Step):
@@ -25,4 +24,3 @@ class StepExtractBehavioral(Step):
     def run(self, tickers: list[str]) -> None:
         fetch_wiki_pageviews(self._context, tickers=tickers)
         fetch_google_trends(self._context, tickers=tickers)
-        # fetch_news(self._context, tickers=tickers)

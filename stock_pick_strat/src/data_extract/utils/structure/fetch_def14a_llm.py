@@ -5,8 +5,9 @@ Extract structured governance data from SEC DEF 14A proxy statements using an
 LLM with structured output (Def14AExtract schema).
 
 For each ticker, this fetches all DEF 14A filings from EDGAR (using existing
-edgar_fillings helpers), sends targeted sections to the OpenAI Responses API,
-and stores the results as a flat parquet with scalar summary columns plus a
+edgar_fillings helpers), sends targeted sections to the OpenAI Responses API
+(which is constrained to the Def14AExtract Pydantic schema), and upserts the
+results into the `def14a_llm` Postgres table — scalar summary columns plus a
 raw JSON field for full downstream use.
 
 Incremental: already-processed accession numbers are skipped so successive
@@ -15,7 +16,7 @@ runs only process new filings.
 Requires OPENAI_API_KEY (or OPEN_AI_API_KEY) in the .env file.
 If the key is absent the function logs a warning and returns whatever exists.
 
-Output schema (flat columns):
+Output columns (DB table `def14a_llm`):
     ticker, as_of, period, accession_number, company_name, fiscal_year_extract,
     n_directors, avg_director_age, avg_board_tenure, pct_independent_directors,
     n_officers,
@@ -41,6 +42,13 @@ from src.data_extract.utils.common.sec_utils import (
 )
 
 _FORM = ["DEF 14A"]
+
+# flattened output columns that must be stored numeric (float) in the DB
+_NUMERIC_COLS = [
+    "fiscal_year_extract", "n_directors", "avg_director_age", "avg_board_tenure",
+    "pct_independent_directors", "n_officers", "ceo_salary", "ceo_bonus",
+    "ceo_stock_awards", "ceo_option_awards", "ceo_total_comp",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +234,7 @@ def fetch_def14a_llm(
 ) -> pd.DataFrame:
     """Build/refresh the DEF 14A LLM governance extract.
 
-    Incremental: skips filings already in the parquet (by accession_number).
+    Incremental: skips filings already in the DB table (by accession_number).
     Skips gracefully when OPENAI_API_KEY is absent.
     """
     years = context.config.data_extract.years_history
@@ -270,6 +278,11 @@ def fetch_def14a_llm(
                 seen.add(f["accession_number"])
 
     new_df = pd.DataFrame(new_rows)
+    # coerce numeric columns to float so the DB table is created with numeric
+    # types even when a batch's optional fields (e.g. option awards) are all null
+    for c in _NUMERIC_COLS:
+        if c in new_df.columns:
+            new_df[c] = pd.to_numeric(new_df[c], errors="coerce")
     parts = [d for d in (existing, new_df) if d is not None and not d.empty]
 
     if not parts:

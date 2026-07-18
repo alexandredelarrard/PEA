@@ -18,10 +18,16 @@ from pandas.api import types as ptypes
 from src.data_store.io import read_source
 from src.data_store.schema_registry import ALL_TABLES, TableSpec
 
+# Columns that are zero-padded string identifiers, never numeric — forcing them
+# to TEXT preserves leading zeros (SEC CIK "0000320193" would lose them as BIGINT).
+_TEXT_IDENTIFIER_COLS = {"cik"}
+
 
 def _sql_type(col: str, dtype, spec: TableSpec) -> str:
     if col in spec.date_type_cols:
         return "DATE"
+    if col.lower() in _TEXT_IDENTIFIER_COLS:
+        return "TEXT"
     if ptypes.is_datetime64_any_dtype(dtype):
         return "TIMESTAMP"
     if ptypes.is_bool_dtype(dtype):

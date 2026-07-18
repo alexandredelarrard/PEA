@@ -20,6 +20,7 @@ import time
 import pandas as pd
 import requests
 
+from src.constants.constants import DATE_FORMAT_COMPACT
 from src.context import Context
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
@@ -47,7 +48,8 @@ def _parse_regsho(text: str) -> pd.DataFrame:
 
 def _fetch_day(day: pd.Timestamp) -> str | None:
     """Network call for one date, isolated for mocking. None if no file."""
-    r = requests.get(_URL.format(yyyymmdd=day.strftime("%Y%m%d")), headers=_HEADERS, timeout=30)
+    r = requests.get(_URL.format(yyyymmdd=day.strftime(DATE_FORMAT_COMPACT)),
+                     headers=_HEADERS, timeout=30)
     return r.text if r.status_code == 200 else None
 
 

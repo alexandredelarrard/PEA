@@ -72,6 +72,11 @@ def _transform(spec: TableSpec, df: pd.DataFrame) -> pd.DataFrame:
     for c in spec.date_type_cols:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
+    # CIK is a 10-digit zero-padded SEC identifier — the seed CSV stores it as an
+    # unpadded int, so restore the padding before it lands in the TEXT column
+    if "cik" in df.columns:
+        df["cik"] = (df["cik"].astype("string").str.replace(r"\.0$", "", regex=True)
+                     .str.zfill(10))
     return df
 
 

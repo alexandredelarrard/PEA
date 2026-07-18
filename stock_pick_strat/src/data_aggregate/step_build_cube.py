@@ -12,6 +12,7 @@ from src.data_aggregate.utils.fundamental_features import build_fundamental_feat
 from src.data_aggregate.utils.analyst_features import build_analyst_feature_panel
 from src.data_aggregate.utils.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.management_features import build_management_feature_panel
+from src.data_aggregate.utils.sector_features import build_sector_feature_panel
 from src.data_aggregate.utils.employee_features import build_employee_feature_panel
 from src.data_aggregate.utils.dividend_features import build_dividend_feature_panel
 from src.data_aggregate.utils.attention_features import build_attention_feature_panel
@@ -46,6 +47,7 @@ class StepBuildCube(Step):
         self.build_targets()
         self.build_features()
         self.build_fundamental_features()
+        self.build_sector_features()
         self.build_earnings_features()
         # self.build_analyst_features()
         self.build_management_features()
@@ -295,6 +297,26 @@ class StepBuildCube(Step):
         )
         added = len(self.feature_panel.columns) - 2 - before
         self._log.info("Merged %s peer-relative fundamental features", added)
+
+    def build_sector_features(self):
+        """Sector-specific fundamental KPIs (combined/loss ratio, NIM, efficiency
+        ratio, FFO, inventory days, shareholder payout, net-debt/EBITDA, accruals).
+        Availability-gated per row (a KPI is null unless its sector reported the
+        inputs), then peer-relative + neutralized like the other panels."""
+        panel = build_sector_feature_panel(
+            self.fundamentals, self.peers, self.stock_close.index,
+        )
+        if panel.empty:
+            self._log.warning("No sector KPI features built (missing fundamentals).")
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(
+            panel, on=["date", "ticker"], how="left"
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s sector-KPI features (row coverage %.1f%%)",
+                       added, 100 * cov)
 
     def build_earnings_features(self):
         """Historical earnings-expectation features: forward EPS yield, expected

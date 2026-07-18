@@ -122,11 +122,28 @@ def build_cik_mapping(context: Context, sp500_tickers: list[str] | None = None) 
     return df
 
 
+_SECTOR_COLS = ["sector", "industry_group", "sub_industry"]
+
+
+def _attach_sector(context: Context, df: pd.DataFrame) -> pd.DataFrame:
+    """Left-join GICS sector / industry_group / sub_industry from sp500_tickers
+    so the CIK mapping can drive sector-relative KPI computation downstream.
+    Defensive: if sp500_tickers is empty the sector columns are added as NA."""
+    universe = context.store.load("sp500_tickers")
+    if universe.empty or "ticker" not in universe.columns:
+        for c in _SECTOR_COLS:
+            df[c] = pd.NA
+        return df
+    keep = ["ticker"] + [c for c in _SECTOR_COLS if c in universe.columns]
+    return df.merge(universe[keep], on="ticker", how="left")
+
+
 def load_cik_mapping(context: Context) -> pd.DataFrame:
     df = context.store.load("cik_mapping")
     if df.empty:
         tickers = context.store.load("sp500_tickers", columns=["ticker"])["ticker"].tolist()
-        return build_cik_mapping(context, tickers)
-    # CIK is stored numerically but SEC URLs need the 10-digit zero-padded form
-    df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
-    return df
+        df = build_cik_mapping(context, tickers)
+    else:
+        # CIK is stored numerically but SEC URLs need the 10-digit zero-padded form
+        df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
+    return _attach_sector(context, df)

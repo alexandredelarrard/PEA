@@ -52,6 +52,27 @@ def ensure_table(engine: Engine, name: str, df: pd.DataFrame) -> None:
                 conn.execute(text(stmt))
 
 
+def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
+    """Schema evolution: ADD COLUMN for any DataFrame column missing from the
+    table, so newly-extracted fundamentals / features persist instead of being
+    silently dropped by the column-filter in upsert/copy. Returns the columns
+    added. No-op if the table doesn't exist yet (caller runs ensure_table first)
+    or on non-Postgres engines (SQLite is dynamically typed)."""
+    if engine.dialect.name != "postgresql" or not table_exists(engine, name):
+        return []
+    from src.data_store.schema_sql import _sql_type
+    existing = set(_reflect(engine, name).c.keys())
+    missing = [c for c in df.columns if c not in existing]
+    if not missing:
+        return []
+    with engine.begin() as conn:
+        for c in missing:
+            sqltype = _sql_type(c, df[c].dtype, spec=None)
+            conn.execute(text(f'ALTER TABLE "{name}" '
+                              f'ADD COLUMN IF NOT EXISTS "{c}" {sqltype}'))
+    return missing
+
+
 def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
     """Fast bulk insert via Postgres COPY (CSV). For the one-time seed of empty
     tables; no conflict handling. Falls back to upsert on non-Postgres engines
@@ -199,6 +220,7 @@ class DataStore:
             from src.data_store.schema_registry import BY_NAME
             pk = list(BY_NAME[name].pk)
         ensure_table(self.engine, name, df)
+        ensure_columns(self.engine, name, df)     # evolve schema for new columns
         return upsert_dataframe(self.engine, df, name, pk)
 
     def bulk_seed(self, name: str, df: pd.DataFrame) -> int:
@@ -211,6 +233,7 @@ class DataStore:
         if df is None or df.empty:
             return 0
         ensure_table(self.engine, name, df)
+        ensure_columns(self.engine, name, df)     # evolve schema for new columns
         with self.engine.begin() as conn:
             conn.execute(text(f'DELETE FROM "{name}"'))
         for i in range(0, len(df), chunksize):

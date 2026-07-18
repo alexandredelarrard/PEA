@@ -107,6 +107,111 @@ SHARES_TAGS = {  # tried under dei first, then us-gaap
                           "CommonStockSharesOutstanding", "WeightedAverageNumberOfDilutedSharesOutstanding"],
 }
 
+# --------------------------------------------------------------------------- #
+# EXPANDED coverage. companyfacts already returns every tag a filer reports, so
+# extracting more concepts costs no extra API calls — non-applicable tags are
+# simply null for a company. EXTRA_FLOW_TAGS are duration facts (TTM-summed like
+# the curated flows); EXTRA_STOCK_TAGS are instant balance-sheet levels. Sector
+# line items are mixed in here (banks/insurance/REIT/energy/utility only report
+# their own) and are turned into ratios sector-relatively in data_aggregate.
+# --------------------------------------------------------------------------- #
+EXTRA_FLOW_TAGS = {
+    # ---- universal income statement / cash flow (cross-sector §B) ----
+    "incomeTaxExpense": ["IncomeTaxExpenseBenefit"],
+    "pretaxIncome": [
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"],
+    "interestIncome": ["InvestmentIncomeInterest"],
+    "amortizationIntangibles": ["AmortizationOfIntangibleAssets"],
+    "dividendsPaid": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
+    "buybacks": ["PaymentsForRepurchaseOfCommonStock",
+                 "PaymentsForRepurchaseOfCommonStockAndEmployeeShareRepurchases"],
+    "equityIssuance": ["ProceedsFromIssuanceOfCommonStock"],
+    "debtIssued": ["ProceedsFromIssuanceOfLongTermDebt"],
+    "debtRepaid": ["RepaymentsOfLongTermDebt"],
+    "investingCashFlow": ["NetCashProvidedByUsedInInvestingActivities",
+                          "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations"],
+    "financingCashFlow": ["NetCashProvidedByUsedInFinancingActivities",
+                          "NetCashProvidedByUsedInFinancingActivitiesContinuingOperations"],
+    "changeInInventory": ["IncreaseDecreaseInInventories"],
+    "changeInReceivables": ["IncreaseDecreaseInAccountsReceivable"],
+    "changeInPayables": ["IncreaseDecreaseInAccountsPayableTrade", "IncreaseDecreaseInAccountsPayable"],
+    "impairment": ["AssetImpairmentCharges", "GoodwillImpairmentLoss",
+                   "ImpairmentOfLongLivedAssetsHeldForUse"],
+    "restructuring": ["RestructuringCharges", "RestructuringSettlementAndImpairmentProvisions"],
+    # ---- Banks ----
+    "interestIncomeBank": ["InterestAndDividendIncomeOperating"],
+    "netInterestIncome": ["InterestIncomeExpenseNet", "InterestIncomeExpenseAfterProvisionForLoanLoss"],
+    "provisionForCreditLosses": ["ProvisionForLoanLossesExpensed",
+                                 "ProvisionForLoanLeaseAndOtherLosses", "ProvisionForDoubtfulAccounts"],
+    "noninterestIncome": ["NoninterestIncome"],
+    "noninterestExpense": ["NoninterestExpense"],
+    # ---- Insurance ----
+    "premiumsEarned": ["PremiumsEarnedNet", "PremiumsEarnedNetPropertyAndCasualty"],
+    "premiumsWritten": ["PremiumsWrittenNet"],
+    "claimsIncurred": ["PolicyholderBenefitsAndClaimsIncurredNet",
+                       "IncurredClaimsPropertyCasualtyAndLiability",
+                       "PolicyholderBenefitsAndClaimsIncurredHomeAndAutoAndOther"],
+    "netInvestmentIncome": ["NetInvestmentIncome"],
+    "dacAmortization": ["DeferredPolicyAcquisitionCostAmortizationExpense"],
+    # ---- REITs ----
+    "rentalIncome": ["OperatingLeaseLeaseIncome", "OperatingLeasesIncomeStatementLeaseRevenue"],
+    "gainOnDispositions": ["GainLossOnDispositionOfRealEstate",
+                           "GainLossOnSaleOfProperties"],
+    # ---- Energy (oil & gas) ----
+    "explorationExpense": ["ExplorationExpense", "ExplorationAbandonmentAndDryHoleCosts",
+                           "ResultsOfOperationsExplorationExpense"],
+    "depletionDDA": ["ResultsOfOperationsDepreciationDepletionAmortizationAndAccretion"],
+}
+
+EXTRA_STOCK_TAGS = {
+    # ---- universal balance sheet (cross-sector §B) ----
+    "longTermDebtTotal": ["LongTermDebt", "LongTermDebtAndCapitalLeaseObligations"],
+    "commercialPaper": ["CommercialPaper"],
+    "operatingLeaseLiability": ["OperatingLeaseLiability"],
+    "financeLeaseLiability": ["FinanceLeaseLiabilityNoncurrent", "FinanceLeaseLiability"],
+    "accountsReceivable": ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"],
+    "inventory": ["InventoryNet"],
+    "accountsPayable": ["AccountsPayableCurrent", "AccountsPayableAndAccruedLiabilitiesCurrent"],
+    "ppeGross": ["PropertyPlantAndEquipmentGross"],
+    "accumulatedDepreciation": ["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"],
+    "intangiblesExGoodwill": ["IntangibleAssetsNetExcludingGoodwill", "FiniteLivedIntangibleAssetsNet"],
+    "retainedEarnings": ["RetainedEarningsAccumulatedDeficit"],
+    "treasuryStock": ["TreasuryStockValue", "TreasuryStockCommonValue"],
+    "preferredEquity": ["PreferredStockValue", "PreferredStockValueOutstanding"],
+    "minorityInterest": ["MinorityInterest"],
+    "shortTermInvestments": ["ShortTermInvestments"],
+    "longTermInvestments": ["LongTermInvestments"],
+    "deferredRevenue": ["ContractWithCustomerLiabilityCurrent", "ContractWithCustomerLiability",
+                        "DeferredRevenueCurrent"],
+    "remainingPerformanceObligation": ["RevenueRemainingPerformanceObligation"],
+    # ---- Banks ----
+    "loans": ["LoansAndLeasesReceivableNetReportedAmount",
+              "FinancingReceivableExcludingAccruedInterestBeforeAllowanceForCreditLoss"],
+    "deposits": ["Deposits", "InterestBearingDepositLiabilities"],
+    "allowanceCreditLosses": ["FinancingReceivableAllowanceForCreditLosses",
+                              "LoansAndLeasesReceivableAllowance"],
+    "tier1CapitalRatio": ["TierOneRiskBasedCapitalToRiskWeightedAssets"],
+    # ---- Insurance ----
+    "insuranceReserves": ["LiabilityForClaimsAndClaimsAdjustmentExpense",
+                          "LiabilityForFuturePolicyBenefits"],
+    "deferredAcqCosts": ["DeferredPolicyAcquisitionCost", "DeferredPolicyAcquisitionCosts"],
+    # ---- REITs ----
+    "realEstateNet": ["RealEstateInvestmentPropertyNet"],
+    "realEstateGross": ["RealEstateInvestmentPropertyAtCost"],
+    # ---- Energy ----
+    "oilGasPropertyNet": ["OilAndGasPropertySuccessfulEffortMethodNet",
+                          "OilAndGasPropertyFullCostMethodNet"],
+    # ---- Utilities ----
+    "regulatoryAssets": ["RegulatoryAssetsNoncurrent", "RegulatoryAssetsCurrent"],
+    "regulatoryLiabilities": ["RegulatoryLiabilityNoncurrent", "RegulatoryLiabilityCurrent"],
+}
+
+# diluted weighted-average shares (duration fact; we take the latest period's
+# value point-in-time) -> true per-share + net-issuance signals
+DILUTED_SHARES_TAGS = ["WeightedAverageNumberOfDilutedSharesOutstanding",
+                       "WeightedAverageNumberOfDilutedSharesOutstandingAdjustment"]
+
 ANNUAL_MIN_DAYS, ANNUAL_MAX_DAYS = 340, 380   # accept a fiscal year as ~365d
 QUARTER_MIN_DAYS, QUARTER_MAX_DAYS = 80, 100   # accept a fiscal quarter as ~13 weeks
 TTM_QUARTERS = 4                               # trailing-twelve-months = 4 quarters
@@ -346,10 +451,23 @@ def _merge_shares_asof(base: pd.DataFrame, shares: pd.DataFrame) -> pd.DataFrame
     return merged.sort_values("end").reset_index(drop=True)
 
 
+def _attach_asof(base: pd.DataFrame, series: pd.DataFrame, colname: str) -> pd.DataFrame:
+    """Backward as-of merge of an instant series onto `base` by `end` (same
+    treatment as sharesOutstanding — the value is dated near the filing, not the
+    period end)."""
+    if series is None or series.empty:
+        base[colname] = pd.NA
+        return base
+    s = series.rename(columns={"val": colname})[["end", colname]].sort_values("end")
+    merged = pd.merge_asof(base.sort_values("end"), s, on="end", direction="backward")
+    return merged.sort_values("end").reset_index(drop=True)
+
+
 # --------------------------------------------------------------------------- #
 # Build one ticker's QUARTERLY history (TTM levels) from its companyfacts      #
 # --------------------------------------------------------------------------- #
-def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
+def build_ticker_history(ticker: str, facts: dict, sector: str | None = None,
+                         industry_group: str | None = None) -> pd.DataFrame:
     """One row per FISCAL QUARTER, keyed on the filing date (`as_of`).
 
     Flow items (revenue, income, cash flows, R&D) are stored as
@@ -363,11 +481,14 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
     gaap = facts.get("facts", {}).get("us-gaap", {})
     dei = facts.get("facts", {}).get("dei", {})
 
-    flows = {k: _quarterly_flow(_extract_concept(gaap, tags)) for k, tags in FLOW_TAGS.items()}
-    stocks = {k: _instant_stock(_extract_concept(gaap, tags)) for k, tags in STOCK_TAGS.items()}
+    all_flow_tags = {**FLOW_TAGS, **EXTRA_FLOW_TAGS}
+    all_stock_tags = {**STOCK_TAGS, **EXTRA_STOCK_TAGS}
+    flows = {k: _quarterly_flow(_extract_concept(gaap, tags)) for k, tags in all_flow_tags.items()}
+    stocks = {k: _instant_stock(_extract_concept(gaap, tags)) for k, tags in all_stock_tags.items()}
     shares = _instant_stock(_extract_concept(dei, SHARES_TAGS["sharesOutstanding"])
                             if any(t in dei for t in SHARES_TAGS["sharesOutstanding"])
                             else _extract_concept(gaap, SHARES_TAGS["sharesOutstanding"]))
+    diluted = _instant_stock(_extract_concept(gaap, DILUTED_SHARES_TAGS))
 
     rev = flows.get("totalRevenue")
     if rev is None or rev.empty:
@@ -376,36 +497,39 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
     # Base frame on the quarterly revenue ends; merge every other concept by end.
     base = _series_on_ends(rev, "totalRevenue")
 
-    def merge_flow(base, key):
-        s = flows.get(key)
-        if s is None or s.empty:
-            base[key] = pd.NA
-            base[f"{key}_filed"] = pd.NaT
-            return base
-        return base.merge(_series_on_ends(s, key), on="end", how="left")
+    # Merge only the concepts a filer actually reports; collect the rest and add
+    # them as NA in ONE concat (per-column assignment fragments the frame — with
+    # ~60 concepts that is slow and noisy).
+    _missing: dict[str, object] = {}
 
-    for key in ["netIncome", "grossProfit", "costOfRevenue", "operatingIncome",
-                "depAmort", "operatingCashFlow", "capex", "researchAndDevelopment",
-                "sellingGeneralAdmin", "stockBasedComp", "acquisitions", "interestExpense"]:
-        base = merge_flow(base, key)
-
-    def merge_stock(base, key, src):
+    def merge_present(base, key, src):
         if src is None or src.empty:
-            base[key] = pd.NA
-            base[f"{key}_filed"] = pd.NaT
+            _missing[key] = pd.NA
+            _missing[f"{key}_filed"] = pd.NaT
             return base
         return base.merge(_series_on_ends(src, key), on="end", how="left")
 
-    for key in ["stockholdersEquity", "totalLiabilities", "longTermDebt", "cash",
-                "shortTermDebt", "currentAssets", "currentLiabilities",
-                "goodwill", "totalAssets"]:
-        base = merge_stock(base, key, stocks.get(key))
+    _curated_flows = ["netIncome", "grossProfit", "costOfRevenue", "operatingIncome",
+                      "depAmort", "operatingCashFlow", "capex", "researchAndDevelopment",
+                      "sellingGeneralAdmin", "stockBasedComp", "acquisitions", "interestExpense"]
+    for key in _curated_flows + list(EXTRA_FLOW_TAGS):
+        base = merge_present(base, key, flows.get(key))
+
+    _curated_stocks = ["stockholdersEquity", "totalLiabilities", "longTermDebt", "cash",
+                       "shortTermDebt", "currentAssets", "currentLiabilities",
+                       "goodwill", "totalAssets"]
+    for key in _curated_stocks + list(EXTRA_STOCK_TAGS):
+        base = merge_present(base, key, stocks.get(key))
+
+    if _missing:
+        base = pd.concat([base, pd.DataFrame(_missing, index=base.index)], axis=1)
 
     # sharesOutstanding is a dei COVER-PAGE fact whose `end` is the cover date,
     # which almost never equals a period `end` -> an exact merge drops it for
     # ~95% of filers. Attach instead the most recent shares count as of each
     # quarter end (backward as-of merge), which keeps it point-in-time.
     base = _merge_shares_asof(base, shares)
+    base = _attach_asof(base, diluted, "dilutedShares")
 
     base = base.sort_values("end").reset_index(drop=True)
 
@@ -501,7 +625,22 @@ def build_ticker_history(ticker: str, facts: dict) -> pd.DataFrame:
     out["revenueGrowth"] = rev_ttm.pct_change(TTM_QUARTERS)
     out["earningsGrowth"] = ni_ttm.pct_change(TTM_QUARTERS)
 
-    return out.reset_index(drop=True)
+    # ---- expanded raw coverage (universal §B + sector line items) ----
+    # flows -> TTM (seasonality-free); balance-sheet items -> point-in-time level.
+    # Assemble all extra columns at once (avoids DataFrame fragmentation).
+    extra = {"costOfRevenue": cor_ttm, "grossProfit": gross_profit_ttm,
+             "dilutedShares": col("dilutedShares")}
+    for key in EXTRA_FLOW_TAGS:
+        extra[key] = ttm(col(key))
+    for key in EXTRA_STOCK_TAGS:
+        extra[key] = col(key)
+    out = pd.concat([out, pd.DataFrame(extra, index=out.index)], axis=1)
+
+    # sector tags so downstream KPIs can be computed / neutralized sector-relatively
+    out["sector"] = sector
+    out["industry_group"] = industry_group
+
+    return out.copy().reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -550,7 +689,7 @@ def build_fundamentals_history_sec(context: Context,
         facts = _fetch_companyfacts(context, cik)
         if not facts:
             continue
-        hist = build_ticker_history(ticker, facts)
+        hist = build_ticker_history(ticker, facts, r.get("sector"), r.get("industry_group"))
         if not hist.empty:
             new_frames.append(hist)
 

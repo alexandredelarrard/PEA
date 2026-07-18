@@ -25,9 +25,10 @@ from src.data_extract.utils.structure.def14a_schema import (
     DirectorInfo,
     ExecutiveCompensation,
     ExecutiveOfficer,
+    GovernanceProfile,
     ShareOwnership,
 )
-from src.data_extract.utils.structure.fetch_def14a_llm import prepare_def14a_sections
+from src.data_extract.utils.structure.fetch_def14a_llm import _flatten, prepare_def14a_sections
 
 # --------------------------------------------------------------------------- #
 # Synthetic DEF 14A fixture                                                    #
@@ -68,11 +69,17 @@ def _make_expected() -> Def14AExtract:
     return Def14AExtract(
         company_name="ACME Corporation",
         fiscal_year=2023,
+        ceo_name="Alice Johnson", ceo_age=58, ceo_title="President and CEO",
+        ceo_since_year=2019, ceo_is_founder=True, ceo_is_board_chair=True,
         directors=[
-            DirectorInfo(name="Alice Johnson", age=58, tenure_years=5.0, is_independent=False),
+            DirectorInfo(name="Alice Johnson", age=58, tenure_years=5.0, is_independent=False,
+                         is_board_chair=True, gender="female", other_public_company_boards=1),
             DirectorInfo(name="Robert Williams", age=64, tenure_years=14.0, is_independent=True,
+                         gender="male", other_public_company_boards=2,
+                         audit_committee_financial_expert=True,
                          committees=["Audit", "Compensation"]),
             DirectorInfo(name="Mary Chen", age=52, tenure_years=9.0, is_independent=True,
+                         gender="female", other_public_company_boards=0,
                          committees=["Audit", "Nominating and Governance"]),
         ],
         executive_officers=[
@@ -82,8 +89,9 @@ def _make_expected() -> Def14AExtract:
         compensation=[
             ExecutiveCompensation(
                 name="Alice Johnson", title="CEO", fiscal_year=2023,
-                salary_usd=850_000, bonus_usd=500_000,
-                stock_awards_usd=3_200_000, total_compensation_usd=4_900_000,
+                salary_usd=850_000, bonus_usd=500_000, stock_awards_usd=3_200_000,
+                option_awards_usd=250_000, non_equity_incentive_usd=100_000,
+                all_other_comp_usd=50_000, total_compensation_usd=4_900_000,
             ),
             ExecutiveCompensation(
                 name="James Thompson", title="CFO", fiscal_year=2023,
@@ -98,7 +106,16 @@ def _make_expected() -> Def14AExtract:
                            shares_owned=45_000, percent_owned=0.001),
             ShareOwnership(name="Mary Chen", is_director=True, is_officer=False,
                            shares_owned=32_000, percent_owned=0.001),
+            ShareOwnership(name="The Vanguard Group", is_five_percent_owner=True,
+                           shares_owned=6_000_000, percent_owned=0.094),
         ],
+        governance=GovernanceProfile(
+            board_size=3, independent_chair=False, ceo_is_board_chair=True,
+            classified_board=False, dual_class_shares=False, poison_pill=False,
+            say_on_pay_support_pct=0.95, ceo_pay_ratio=250.0,
+            median_employee_pay_usd=60_000.0, auditor_name="Ernst & Young LLP",
+            auditor_fees_usd=5_000_000.0,
+        ),
     )
 
 
@@ -117,6 +134,11 @@ def test_def14a_schema_roundtrip():
     assert roundtrip.directors[1].committees == ["Audit", "Compensation"]
     assert roundtrip.compensation[0].salary_usd == 850_000.0
     assert roundtrip.share_ownership[0].percent_owned == pytest.approx(0.082)
+    # expanded fields survive the roundtrip
+    assert roundtrip.ceo_age == 58 and roundtrip.ceo_is_board_chair is True
+    assert roundtrip.governance.ceo_pay_ratio == 250.0
+    assert roundtrip.governance.auditor_name == "Ernst & Young LLP"
+    assert roundtrip.directors[1].other_public_company_boards == 2
 
     print("\n=== SANITY CHECK: Def14AExtract schema roundtrip ===")
     print(f"  company={roundtrip.company_name}  fiscal_year={roundtrip.fiscal_year}")
@@ -310,13 +332,17 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
         assert r["accession_number"] == ACC
         assert int(r["n_directors"]) == 3
         assert float(r["ceo_salary"]) == 850_000.0
+        assert int(r["ceo_age"]) == 58                        # the user's explicit ask
+        assert float(r["ceo_pay_ratio"]) == 250.0             # expanded governance signal
+        assert float(r["pct_female_directors"]) == pytest.approx(2 / 3, abs=1e-3)
         assert json.loads(r["def14a_json"])["company_name"] == "ACME Corporation"
 
         print("\n=== SANITY CHECK: DEF 14A LLM -> Postgres ===")
         print(f"  LLM constrained to schema: {captured['schema'].__name__}")
         print(f"  Upserted into DB table 'def14a_llm': ticker={r['ticker']} "
               f"acc={r['accession_number']} n_directors={int(r['n_directors'])} "
-              f"ceo_salary=${float(r['ceo_salary']):,.0f}")
+              f"ceo_age={int(r['ceo_age'])} ceo_salary=${float(r['ceo_salary']):,.0f} "
+              f"pay_ratio={float(r['ceo_pay_ratio']):.0f}:1")
         print(f"  Full schema JSON stored in def14a_json (company="
               f"{json.loads(r['def14a_json'])['company_name']}).")
         print("  Persisted to Postgres, NOT parquet. Validated.")
@@ -415,3 +441,64 @@ def _flatten_row(ticker: str, acc: str, as_of: "pd.Timestamp") -> dict:
         "ceo_stock_awards": None, "ceo_option_awards": None, "ceo_total_comp": 1_000_000.0,
         "def14a_json": "{}",
     }
+
+
+# --------------------------------------------------------------------------- #
+# _flatten surfaces the expanded governance / comp / ownership signals          #
+# --------------------------------------------------------------------------- #
+def test_flatten_surfaces_all_signals():
+    """_flatten emits ceo_age and every new aggregate/governance column with the
+    right values (the user's explicit ask: ensure ceo_age is included)."""
+    filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"),
+                        "period_of_report": "2023-12-31",
+                        "accession_number": "0000-24-000001"})
+    row = _flatten("ACME", filing, _make_expected())
+
+    # CEO — including age (top-level) and the duality / founder flags
+    assert row["ceo_age"] == 58
+    assert row["ceo_is_board_chair"] == 1.0
+    assert row["ceo_is_founder"] == 1.0
+    assert row["ceo_since_year"] == 2019
+    assert row["ceo_non_equity_incentive"] == 100_000
+    assert row["ceo_equity_pay_pct"] == pytest.approx((3_200_000 + 250_000) / 4_900_000, abs=1e-3)
+    # board composition
+    assert row["pct_female_directors"] == pytest.approx(2 / 3, abs=1e-3)     # Alice, Mary
+    assert row["avg_other_public_boards"] == pytest.approx((1 + 2 + 0) / 3, abs=1e-3)
+    assert row["n_financial_experts"] == 1
+    # NEO aggregate + ownership
+    assert row["n_neos"] == 2
+    assert row["total_neo_comp"] == 4_900_000 + 2_900_000
+    assert row["ceo_ownership_pct"] == pytest.approx(0.082)
+    assert row["insider_ownership_pct"] == pytest.approx(0.082 + 0.001 + 0.001, abs=1e-4)
+    assert row["n_five_percent_holders"] == 1                                # Vanguard
+    # governance provisions (booleans -> numeric flags)
+    assert row["classified_board"] == 0.0 and row["dual_class_shares"] == 0.0
+    assert row["say_on_pay_support_pct"] == pytest.approx(0.95)
+    assert row["ceo_pay_ratio"] == 250.0
+    assert row["median_employee_pay"] == 60_000.0
+    assert row["auditor_name"] == "Ernst & Young LLP"
+    assert row["auditor_fees"] == 5_000_000.0
+
+    print("\n=== SANITY CHECK: _flatten expanded signals ===")
+    print(f"  ceo_age={row['ceo_age']} duality={row['ceo_is_board_chair']} "
+          f"pay_ratio={row['ceo_pay_ratio']:.0f}:1 equity_pay={row['ceo_equity_pay_pct']:.2f}")
+    print(f"  board: %female={row['pct_female_directors']:.2f} avg_other_boards="
+          f"{row['avg_other_public_boards']:.2f} fin_experts={row['n_financial_experts']}")
+    print(f"  ownership: insider={row['insider_ownership_pct']:.3f} ceo={row['ceo_ownership_pct']:.3f} "
+          f"5%+ holders={row['n_five_percent_holders']}; auditor={row['auditor_name']}. Validated.")
+
+
+def test_flatten_ceo_age_fallback_to_directors():
+    """When ceo_age isn't given top-level, _flatten recovers it from the CEO's
+    entry in the directors list (the CEO is a director nominee)."""
+    filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"),
+                        "period_of_report": None, "accession_number": "acc-x"})
+    extract = Def14AExtract(
+        company_name="FallbackCo", ceo_name="Bob Stone",   # ceo_age deliberately omitted
+        directors=[DirectorInfo(name="Bob Stone", age=61, is_independent=False),
+                   DirectorInfo(name="Jane Roe", age=55, is_independent=True)],
+    )
+    row = _flatten("FBK", filing, extract)
+    assert row["ceo_age"] == 61          # recovered from the directors list
+    print("\n=== SANITY CHECK: ceo_age fallback ===")
+    print(f"  ceo_age omitted top-level -> recovered {row['ceo_age']} from directors. Validated.")

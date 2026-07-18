@@ -23,8 +23,8 @@ from src.data_store.schema_registry import ALL_TABLES, TableSpec
 _TEXT_IDENTIFIER_COLS = {"cik"}
 
 
-def _sql_type(col: str, dtype, spec: TableSpec) -> str:
-    if col in spec.date_type_cols:
+def _sql_type(col: str, dtype, spec: TableSpec | None = None) -> str:
+    if spec is not None and col in spec.date_type_cols:
         return "DATE"
     if col.lower() in _TEXT_IDENTIFIER_COLS:
         return "TEXT"

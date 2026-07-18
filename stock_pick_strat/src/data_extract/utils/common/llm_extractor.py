@@ -63,8 +63,7 @@ class LLMExtractor:
             "model": self._model,
             "input": truncated,
             "instructions": _SYSTEM_PROMPT,
-            "text_format": schema,
-            "temperature": self._temperature,
+            "text_format": schema
         }
         if self._cache:
             # stable key -> OpenAI reuses the cached prompt prefix for this

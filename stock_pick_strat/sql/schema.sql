@@ -11,14 +11,14 @@ CREATE TABLE IF NOT EXISTS "sp500_tickers" (
     "sector" TEXT,
     "industry_group" TEXT,
     "sub_industry" TEXT,
-    "cik" BIGINT,
+    "cik" TEXT,
     PRIMARY KEY ("ticker")
 );
 
 -- [reference] cik_mapping  (pk: ticker)
 
 CREATE TABLE IF NOT EXISTS "cik_mapping" (
-    "cik" BIGINT,
+    "cik" TEXT,
     "ticker" TEXT NOT NULL,
     "company_name" TEXT,
     PRIMARY KEY ("ticker")

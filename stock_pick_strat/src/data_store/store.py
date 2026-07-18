@@ -24,6 +24,7 @@ import pandas as pd
 from sqlalchemy import Engine, MetaData, Table, func, inspect, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import and_, tuple_
 
 _CHUNK = 5_000
 
@@ -131,7 +132,7 @@ def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str,
 
 
 def _delete_then_insert(conn, tbl: Table, chunk: list[dict], pk: list[str]) -> None:
-    from sqlalchemy import and_, tuple_
+    
     keys = [tuple(r[k] for k in pk) for r in chunk]
     conn.execute(tbl.delete().where(tuple_(*[tbl.c[k] for k in pk]).in_(keys)))
     conn.execute(tbl.insert(), chunk)

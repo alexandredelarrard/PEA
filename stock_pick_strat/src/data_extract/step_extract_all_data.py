@@ -41,6 +41,7 @@ class StepExtractAllData(Step):
 
         # self._prices.run(tickers=tickers)
         self._fundamentals.run(tickers=tickers)
+        self.analysis()
         # self._structure.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
 
@@ -52,6 +53,8 @@ class StepExtractAllData(Step):
 
         # TODO: senior executive & insiders transactions
         # https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets
+
+        # TODO: papers & citations -> OPen Alex
 
     def analysis(self) -> None:
         import pandas as pd

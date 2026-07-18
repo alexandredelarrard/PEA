@@ -1112,5 +1112,4 @@ def fetch_fundamentals(context: Context, tickers: list[str]):
     return history
 
 
-
 # docker run --rm -v stock_pick_strat_pgdata:/volume -v ./:/backup alpine tar -czf /backup/volume_backup.tar.gz -C /volume .

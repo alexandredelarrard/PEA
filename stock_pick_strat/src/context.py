@@ -39,6 +39,7 @@ def define_global_paths(config: DictConfig):
     # Raw file caches (not tabular -> stay on disk)
     global_paths["SEC_BULK_CACHE_DIR"] = global_paths["DATA_STORE"] / "sec_bulk_cache"
     global_paths["SEC_FILINGS_TEXT_DIR"] = global_paths["DATA_STORE"] / "sec_filings_text"
+    global_paths["SEC_13F_INSIDERS_DIR"] = global_paths["DATA_STORE"] / "sec_13f_insiders"
 
     # Incremental meta-sidecar anchors (the parquet file itself is unused; only
     # its stem names the sibling "<stem>_meta.json" the fetcher reads/writes)

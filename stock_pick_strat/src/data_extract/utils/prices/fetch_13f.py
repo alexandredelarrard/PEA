@@ -134,7 +134,7 @@ def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list
 # Zip cache: download once to disk, reuse thereafter                           #
 # --------------------------------------------------------------------------- #
 def _cache_dir(context: Context) -> Path:
-    d = context.paths["SEC_BULK_CACHE_DIR"] / "form13f"
+    d = context.paths["SEC_13F_INSIDERS_DIR"]
     d.mkdir(parents=True, exist_ok=True)
     return d
 

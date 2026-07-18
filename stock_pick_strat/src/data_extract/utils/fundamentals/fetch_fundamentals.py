@@ -12,10 +12,7 @@ THREE sources, in order of how much history they give you:
    Q4 derived as FY - Q1 - Q2 - Q3), refreshed every quarter. Built by
    `build_fundamentals_history_sec()`.
 
-2. SimFin bulk CSV (free tier, ~10y) -> alternative if you prefer a single
-   download. `load_simfin_bulk()`.
-
-3. yfinance `.info` forward snapshot (free, current only) -> forward P/E (needs
+2. yfinance `.info` forward snapshot (free, current only) -> forward P/E (needs
    analyst forward EPS, which SEC filings never carry) + current market cap,
    APPENDED daily to `fundamentals_snapshot` so a point-in-time forward-earnings-
    yield history accrues going forward. `fetch_snapshot()`.
@@ -940,19 +937,6 @@ def fetch_snapshot(context: Context, tickers: list[str], pause: float = 0.3) -> 
     return pd.DataFrame(rows)
 
 
-def load_simfin_bulk(context: Context, csv_path: str) -> pd.DataFrame:
-    """Alternative 10y source: SimFin free-tier bulk CSV. Adjust rename map to
-    your export's header. Kept as a secondary option to the SEC builder."""
-    df = pd.read_csv(csv_path, sep=";")
-    rename_map = {
-        "Ticker": "ticker", "Report Date": "as_of",
-        "Revenue": "totalRevenue", "Net Income": "netIncome",
-        "Shares (Diluted)": "sharesOutstanding",
-        "Total Equity": "stockholdersEquity",
-    }
-    return df.rename(columns=rename_map)
-
-
 # --------------------------------------------------------------------------- #
 # Entry point (called by StepExtractAllData)                                  #
 # --------------------------------------------------------------------------- #
@@ -972,3 +956,7 @@ def fetch_fundamentals(context: Context, tickers: list[str]):
         context.store.save("fundamentals_snapshot", snapshot)
         print(f"Appended snapshot for {len(snapshot)} tickers to DB 'fundamentals_snapshot'")
     return history
+
+
+
+# docker run --rm -v stock_pick_strat_pgdata:/volume -v ./:/backup alpine tar -czf /backup/volume_backup.tar.gz -C /volume .

@@ -25,10 +25,9 @@ def define_global_paths(config: DictConfig):
     and is accessed via `context.store`; the parquet/CSV paths were removed
     when the pipeline moved to DB-only I/O.
 
-    The `*_HISTORY_PATH` / `SEC_FILINGS_INDEX_PATH` / `DEF14A_LLM_PATH` entries
-    are kept ONLY to anchor each fetcher's incremental `_meta.json` sidecar
-    (built via `<path>.with_name("<stem>_meta.json")`); no parquet is written
-    to them.
+    The `*_HISTORY_PATH` / `DEF14A_LLM_PATH` entries are kept ONLY to anchor each
+    fetcher's incremental `_meta.json` sidecar (built via
+    `<path>.with_name("<stem>_meta.json")`); no parquet is written to them.
     """
     global_paths = {}
 
@@ -38,7 +37,6 @@ def define_global_paths(config: DictConfig):
 
     # Raw file caches (not tabular -> stay on disk)
     global_paths["SEC_BULK_CACHE_DIR"] = global_paths["DATA_STORE"] / "sec_bulk_cache"
-    global_paths["SEC_FILINGS_TEXT_DIR"] = global_paths["DATA_STORE"] / "sec_filings_text"
     global_paths["SEC_13F_INSIDERS_DIR"] = global_paths["DATA_STORE"] / "sec_13f_insiders"
 
     # Incremental meta-sidecar anchors (the parquet file itself is unused; only
@@ -46,7 +44,6 @@ def define_global_paths(config: DictConfig):
     global_paths["FUNDAMENTALS_HISTORY_PATH"] = global_paths["DATA_STORE"] / "fundamentals_history.parquet"
     global_paths["EMPLOYEES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "employees_history.parquet"
     global_paths["DEF14A_LLM_PATH"] = global_paths["DATA_STORE"] / "def14a_llm.parquet"
-    global_paths["SEC_FILINGS_INDEX_PATH"] = global_paths["DATA_STORE"] / "sec_filings_index.parquet"
 
     # Pipeline output artifacts (models, diagnostics, peer dict, CV results)
     global_paths["OUTPUT_DIR"] = global_paths["DATA_STORE"] / "output"

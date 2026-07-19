@@ -3,8 +3,9 @@ edgar_filings.py  (src/data_extract/utils/edgar_filings.py)
 -----------------------------------------------------------
 List a company's filings of arbitrary form types over the full history,
 INCLUDING the older paginated pages that submissions/CIK{cik}.json splits out
-(the `filings.files[]` archives). build_filing_index in fetch_sec_filings only
-reads `filings.recent`, which truncates long histories -- this covers 15y+.
+(the `filings.files[]` archives), so long histories are not truncated (covers
+15y+). Shared, on-demand filing discovery for the structure fetchers (DEF 14A,
+employees) -- there is no separate filing-index download.
 """
 from __future__ import annotations
 

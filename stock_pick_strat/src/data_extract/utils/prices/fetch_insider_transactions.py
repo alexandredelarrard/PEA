@@ -161,7 +161,9 @@ def _filter_universe(df: pd.DataFrame, universe: set[str], cik2tkr: dict) -> pd.
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
 def _cache_dir(context: Context) -> Path:
-    d = context.paths["SEC_BULK_CACHE_DIR"] / "insider_transactions"
+    # dedicated dir (NOT data/sec_bulk_cache, which holds the companyfacts CIK JSONs)
+    # so the quarterly zips stay separate from the JSON cache.
+    d = context.paths["DATA_STORE"] / "sec_insider_transactions"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -221,6 +223,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     years_history = context.config.data_extract.years_history + 1
     cache_dir = _cache_dir(context)
 
+    tickers = {str(t).upper() for t in tickers}          # universe as an uppercased set
     done_q = bulk_ingested_quarters(store, _TABLE)
     new_tickers = tickers - load_processed_universe(cache_dir, _TABLE)   # empty once converged
     if new_tickers:

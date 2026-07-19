@@ -60,8 +60,6 @@ EXTRACT_TABLES: list[TableSpec] = [
               date_col="date", ticker_col=None),
     TableSpec("employees_history", "employees_history.parquet",
               ("ticker", "as_of"), "extract", date_col="as_of"),
-    TableSpec("sec_filings_index", "sec_filings_index.parquet",
-              ("ticker", "accession_number"), "extract", date_col="filing_date"),
     TableSpec("google_trends", "google_trends.parquet", ("ticker", "date"), "extract",
               date_col="date"),
     TableSpec("wiki_pageviews", "wiki_pageviews.parquet", ("ticker", "date"), "extract",

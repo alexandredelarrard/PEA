@@ -19,8 +19,8 @@ from src.data_extract.utils.prices import fetch_insider_transactions as ins
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 
 REPO = Path(__file__).resolve().parents[2]
-INSIDER_ZIP = REPO / "data" / "sec_bulk_cache" / "insider_transactions" / "2024q1_form345.zip"
-FINSTMT_ZIP = REPO / "data" / "sec_bulk_cache" / "financial_statements" / "2024q1.zip"
+INSIDER_ZIP = REPO / "data" / "sec_insider_transactions" / "2024q1_form345.zip"
+FINSTMT_ZIP = REPO / "data" / "sec_financial_statements" / "2024q1.zip"
 
 
 # --------------------------------------------------------------------------- #

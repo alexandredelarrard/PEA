@@ -40,9 +40,8 @@ class StepExtractAllData(Step):
         tickers = self._resolve_tickers()
 
         # self._prices.run(tickers=tickers)
-        self._fundamentals.run(tickers=tickers)
-        self.analysis()
-        # self._structure.run(tickers=tickers)
+        # self._fundamentals.run(tickers=tickers)
+        self._structure.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
 
         # TODO: extract disclosures from SEC filings and notes 
@@ -54,7 +53,16 @@ class StepExtractAllData(Step):
         # TODO: senior executive & insiders transactions
         # https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets
 
+        ####### very strong driver, need data feed / LLM
+        # TODO: map furnishers and sellers in a graph to adjust each stock financials with each stock earnings 
+        # TODO: news extract from global free source 
         # TODO: papers & citations -> OPen Alex
+
+        ####### LONG TERM
+        # TODO: Job posting ??? source to find 
+        # TODO: track stocks of indutries (reconcilitation of stocks with industries)
+        # TODO: flux & flows of airlines & boats 
+        
 
     def analysis(self) -> None:
         import pandas as pd

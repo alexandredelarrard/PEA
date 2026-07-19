@@ -1,14 +1,24 @@
 """
 Fetch macro series from FRED (free, complete history, needs a free API key) and save
 them to the `macro` DB table (PK: date). Series: Treasury yields (3M/2Y/10Y/30Y), the
-10Y-2Y / 10Y-3M curve spreads, VIX, IG/HY credit spreads, 10Y breakeven inflation —
-see SERIES below.
+10Y-2Y / 10Y-3M curve spreads, VIX, the Moody's Baa credit spread, 10Y breakeven
+inflation — see SERIES below.
+
+Credit spread: Moody's Seasoned Baa Corporate Bond yield over the 10Y Treasury
+(`baa_credit_spread`, FRED `BAA10Y`). It replaces the ICE BofA IG/HY OAS spreads, which
+FRED truncates to ~3 years (ICE licensing) — Baa-10Y is a single real series with one
+consistent definition across the full history (same noise a decade ago as today).
+
+The daily series drop the odd day (market holidays / one-off FRED misses); those short
+interior gaps are filled with the mean of the two bracketing observed days (only when the
+gap is shorter than a week).
 
 Get a free key: https://fred.stlouisfed.org/docs/api/api_key.html
 Put it in .env as FRED_API_KEY=...
 """
+import os
+
 import pandas as pd
-import os 
 from fredapi import Fred
 
 from src.context import Context
@@ -24,11 +34,35 @@ SERIES = {
     "T10Y3M": "yield_curve_10y3m",
     # Volatility
     "VIXCLS": "vix",
-    # Credit spreads (bonus: useful risk-sentiment overlay)
-    "BAMLC0A0CM": "ig_credit_spread",
-    "BAMLH0A0HYM2": "hy_credit_spread",
+    # Credit spread: Moody's Baa corporate bond yield over 10Y Treasury -> one real,
+    # full-history, consistently-defined series (no ICE ~3y truncation, no splice).
+    "BAA10Y": "baa_credit_spread",
+    # Inflation expectations
     "T10YIE": "breakeven_10y",
 }
+
+MAX_GAP_DAYS = 7                 # fill sporadic daily gaps strictly shorter than this
+
+
+def fill_short_gaps(df: pd.DataFrame, cols: list[str],
+                    max_gap_days: int = MAX_GAP_DAYS) -> pd.DataFrame:
+    """Fill sporadic interior NaN runs (market holidays / one-off FRED misses) in each of
+    `cols` with the MEAN of the two bracketing observed values, but ONLY when the gap spans
+    fewer than `max_gap_days` calendar days. Longer outages and leading / trailing NaNs are
+    left untouched. `df` must be indexed by a DatetimeIndex."""
+    df = df.sort_index()
+    idx = pd.Series(df.index, index=df.index)
+    for c in cols:
+        s = df[c]
+        gap = s.isna()
+        if not gap.any():
+            continue
+        prev_val, next_val = s.ffill(), s.bfill()
+        obs = idx.where(s.notna())                       # observation date, else NaT
+        span_days = (obs.bfill() - obs.ffill()).dt.days  # bracketing-days distance
+        fillable = gap & prev_val.notna() & next_val.notna() & (span_days < max_gap_days)
+        df.loc[fillable, c] = (prev_val[fillable] + next_val[fillable]) / 2.0
+    return df
 
 
 def _macro_is_up_to_date(context: Context) -> bool:
@@ -43,6 +77,25 @@ def _macro_is_up_to_date(context: Context) -> bool:
     return max_date >= last_expected
 
 
+def _refresh_macro(context: Context) -> None:
+    """Download every series, fill short daily gaps, and rewrite the `macro` DB table."""
+    fred = Fred(api_key=os.getenv("FRED_API_KEY"))
+    start = pd.Timestamp.today() - pd.DateOffset(years=context.config.data_extract.years_history + 1)
+
+    macro = pd.DataFrame({name: fred.get_series(sid, observation_start=start)
+                          for sid, name in SERIES.items()})
+    macro.index.name = "date"
+
+    # sporadic daily gaps (holidays / one-off FRED misses) -> mean of the bracketing days
+    macro = fill_short_gaps(macro, list(macro.columns))
+
+    macro = macro.reset_index()
+    # replace (not upsert): the full history is re-fetched every run, so a clean rewrite
+    # keeps the table consistent and never leaves stale rows if a series/definition changes.
+    context.store.replace("macro", macro)
+    context.log.info("Saved %d rows of macro data to DB table 'macro' (short gaps filled)", len(macro))
+
+
 def fetch_macro(context: Context):
     if not os.getenv("FRED_API_KEY"):
         raise RuntimeError(
@@ -50,22 +103,7 @@ def fetch_macro(context: Context):
             "https://fred.stlouisfed.org/docs/api/api_key.html and add it "
             "to your .env file."
         )
-
     if _macro_is_up_to_date(context):
-        print("Macro data already up to date - skipping (DB table 'macro')")
+        context.log.info("Macro data already up to date - skipping (DB table 'macro')")
         return
-
-    fred = Fred(api_key=os.getenv("FRED_API_KEY"))
-    start = pd.Timestamp.today() - pd.DateOffset(years=context.config.data_extract.years_history + 1)
-
-    frames = {}
-    for series_id, name in SERIES.items():
-        s = fred.get_series(series_id, observation_start=start)
-        frames[name] = s
-
-    macro = pd.DataFrame(frames)
-    macro.index.name = "date"
-    macro = macro.reset_index()
-
-    context.store.save("macro", macro)
-    print(f"Saved {len(macro)} rows of macro data to DB table 'macro'")
+    _refresh_macro(context)

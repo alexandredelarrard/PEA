@@ -92,6 +92,66 @@ def test_dividend_fields_economics_and_pit():
           f"N0 yield=0, shareholder<0 (issuer). Future dividend didn't change past value. Validated.")
 
 
+def _synth_reconcile():
+    """~6y so the 5y CAGR is defined. Three names:
+      A      — pays via BOTH sources (per-share ex-dates AND `dividendsPaid`), grows 10%/yr,
+      B_ONLY — pays via source B ONLY (no ex-date history; yfinance missed it), flat,
+      N      — never pays."""
+    dates = pd.bdate_range("2018-01-01", periods=6 * 252 + 20)
+    tickers = ["A", "B_ONLY", "N"]
+    close = pd.DataFrame(100.0, index=dates, columns=tickers)
+    ex = dates[::63]                                        # quarterly ex-dates
+    rows = [{"date": d, "ticker": "A", "dividend": 1.0 * (1.10 ** (i // 4))}
+            for i, d in enumerate(ex)]                      # A grows 10%/yr per share
+    div_hist = pd.DataFrame(rows)
+    frows = []
+    for q, aso in enumerate(dates[::63]):
+        ttm = 4.0 * (1.10 ** (q // 4))                      # A's TTM per-share ~= 4 * quarterly
+        frows += [
+            {"ticker": "A", "as_of": aso, "sharesOutstanding": 1000.0,
+             "dividendsPaid": ttm * 1000.0, "netIncome": 8000.0, "freeCashflow": 12000.0},
+            {"ticker": "B_ONLY", "as_of": aso, "sharesOutstanding": 1000.0,
+             "dividendsPaid": 2000.0, "netIncome": 8000.0, "freeCashflow": 1000.0},
+            {"ticker": "N", "as_of": aso, "sharesOutstanding": 1000.0,
+             "dividendsPaid": 0.0, "netIncome": 8000.0, "freeCashflow": 5000.0},
+        ]
+    return dates, close, div_hist, pd.DataFrame(frows)
+
+
+def test_reconcile_sources_5y_growth_payout_coverage():
+    dates, close, div_hist, fund = _synth_reconcile()
+    F = _dividend_fields(div_hist, close, fund)
+    t = dates[-1]
+    for k in ("dividend_growth_5y", "dividend_payout_ratio", "dividend_coverage"):
+        assert k in F, f"missing {k}"
+
+    # RECONCILIATION: A's per-share (source A) yield agrees with its source-B yield
+    # (dividendsPaid/mcap) — same cash two ways.
+    src_b_yield_A = 4.0 * (1.10 ** 5) * 1000.0 / (1000.0 * 100.0)   # dividendsPaid / mcap
+    assert abs(F["dividend_yield"].loc[t, "A"] - src_b_yield_A) < 0.03
+    # RECONCILIATION gap-fill: B_ONLY has NO ex-dates, yield comes from source B = 2000/100000
+    assert abs(F["dividend_yield"].loc[t, "B_ONLY"] - 0.02) < 1e-6
+    assert F["dividend_payer"].loc[t, "B_ONLY"] == 1.0        # counted as a payer via source B
+    assert F["dividend_yield"].loc[t, "N"] == 0.0             # true non-payer -> real 0
+
+    # 5-YEAR GROWTH: A grew per-share ~10%/yr -> 5y CAGR ~= 0.10
+    assert abs(F["dividend_growth_5y"].loc[t, "A"] - 0.10) < 0.02
+    assert pd.isna(F["dividend_growth_5y"].loc[t, "N"])       # non-payer -> undefined
+
+    # PAYOUT + COVERAGE (dividend safety): B_ONLY pays 2000 on 8000 NI (25%), FCF only
+    # 1000 -> coverage 0.5 (<1, UNSAFE); A's FCF 12000 comfortably covers -> coverage > 1
+    assert abs(F["dividend_payout_ratio"].loc[t, "B_ONLY"] - 0.25) < 1e-6
+    assert abs(F["dividend_coverage"].loc[t, "B_ONLY"] - 0.5) < 1e-6
+    assert F["dividend_coverage"].loc[t, "A"] > 1.0 > F["dividend_coverage"].loc[t, "B_ONLY"]
+
+    print("\n=== SANITY CHECK: dividend source reconciliation + 5y growth + safety ===")
+    print(f"  A yield (src A) {F['dividend_yield'].loc[t,'A']:.4f} ~= dividendsPaid/mcap "
+          f"{src_b_yield_A:.4f} (two sources agree); B_ONLY yield {F['dividend_yield'].loc[t,'B_ONLY']:.3f} "
+          f"gap-filled from source B; A 5y CAGR {F['dividend_growth_5y'].loc[t,'A']:.3f}~0.10; "
+          f"B_ONLY payout {F['dividend_payout_ratio'].loc[t,'B_ONLY']:.2f}, coverage "
+          f"{F['dividend_coverage'].loc[t,'B_ONLY']:.2f}<1 (unsafe) < A {F['dividend_coverage'].loc[t,'A']:.2f}. Validated.")
+
+
 def test_panel_exposes_f_columns():
     dates, tickers, close, div_hist, fund = _synth()
     # give each ticker enough peers for the _vs_peers column to populate

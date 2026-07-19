@@ -34,6 +34,7 @@ def _def14a() -> pd.DataFrame:
                 "avg_board_tenure": 7.0,
                 "say_on_pay_support_pct": 0.92,
                 "insider_ownership_pct": 0.01,
+                "ceo_is_founder": 1.0 if tkr in ("AAA", "CCC") else 0.0,
             })
     return pd.DataFrame(rows)
 
@@ -52,8 +53,12 @@ def test_governance_fields_pay_growth_and_misalignment():
 
     assert "ceo_pay_growth" in F and "ceo_pay_vs_revenue_growth" in F
     for name in ("ceo_pay_ratio", "pct_independent_directors", "pct_female_directors",
-                 "say_on_pay_support", "avg_board_tenure", "insider_ownership_pct"):
+                 "say_on_pay_support", "avg_board_tenure", "insider_ownership_pct",
+                 "founder_ceo"):
         assert name in F, f"missing level field {name}"
+    # founder-CEO flag surfaced from ceo_is_founder (AAA/CCC founder-led -> 1)
+    assert F["founder_ceo"]["AAA"].dropna().iloc[-1] == 1.0
+    assert F["founder_ceo"]["BBB"].dropna().iloc[-1] == 0.0
 
     # CEO pay grew ~20%/yr; the latest observed pay_growth should be ~0.20
     pay_g = F["ceo_pay_growth"]["AAA"].dropna()

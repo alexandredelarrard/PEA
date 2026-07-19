@@ -266,6 +266,29 @@ def test_pension_adjusted_ev_and_overhang_leverage():
           f"EV=770 (incl. pension) -> ebitda_to_ev={50/770:.4f} < 50/690 (no pension). Validated.")
 
 
+def test_operating_margin_5y_trend_and_refinancing_risk():
+    """5y operating-margin trend (structural expansion) + refinancing risk
+    (short-term debt vs cash + FCF liquidity)."""
+    idx = pd.bdate_range("2018-01-02", periods=6 * 252 + 20)   # >5y so shift(_FIVE_YEARS) exists
+    rows = []
+    for i, yr in enumerate(range(2018, 2025)):                  # margin 0.10 -> 0.22 over 6y
+        rows.append({"ticker": "M", "as_of": f"{yr}-06-30", "totalRevenue": 1000.0,
+                     "operatingIncome": 100.0 + 20.0 * i, "shortTermDebt": 200.0,
+                     "cash": 50.0, "freeCashflow": 50.0, "sharesOutstanding": 100.0})
+    F = _derived_fields(pd.DataFrame(rows), idx, pd.DataFrame({"M": 10.0}, index=idx))
+    d = idx[-1]
+    # refinancing risk = ST debt / (cash + positive FCF) = 200 / (50+50) = 2.0
+    assert abs(F["refinancing_risk"].loc[d, "M"] - 2.0) < 1e-9
+    # operating margin expanded materially over ~5y (now ~0.22 vs ~0.12 five years back)
+    assert "operating_margin_5y_chg" in F
+    assert F["operating_margin_5y_chg"].loc[d, "M"] > 0.05
+
+    print("\n=== SANITY CHECK: 5y margin trend + refinancing risk ===")
+    print(f"  operating_margin_5y_chg={F['operating_margin_5y_chg'].loc[d,'M']:+.3f} (>0.05, "
+          f"structural expansion); refinancing_risk={F['refinancing_risk'].loc[d,'M']:.2f} "
+          f"(200 ST debt / 100 liquidity = 2.0x). Validated.")
+
+
 def test_pension_footnote_features_from_notes_num():
     """Financial Statement & NOTES sets (`notes_num`) supply the footnote PBO and
     plan assets the primary statements never expose:

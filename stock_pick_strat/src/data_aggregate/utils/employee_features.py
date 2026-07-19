@@ -48,6 +48,13 @@ def _employee_fields(
         rev_per_emp = _ratio(revenue, employees, positive_den=True)
         if not rev_per_emp.empty and rev_per_emp.notna().any().any():
             F["revenue_per_employee"] = rev_per_emp
+            # YoY GROWTH in revenue-per-employee: is revenue outgrowing headcount
+            # (productivity rising, operating leverage) or just scaling linearly with
+            # the people pool (flat rev/employee)? Past-vs-past -> leak-free.
+            rpe_growth = (rev_per_emp / rev_per_emp.shift(_YOY_TRADING_DAYS) - 1.0)
+            rpe_growth = rpe_growth.replace([float("inf"), float("-inf")], pd.NA)
+            if rpe_growth.notna().any().any():
+                F["revenue_per_employee_growth"] = rpe_growth
         # headcount elasticity to revenue (M&A DIGESTION #3): %Δemployees / %Δrevenue.
         # <1 = revenue outgrowing the people pool (scale / synergies captured); ~1 =
         # headcount scaling 1:1 with (often acquired) revenue -> integration not landing.

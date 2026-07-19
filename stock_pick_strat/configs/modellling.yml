@@ -26,7 +26,7 @@ model:
     n_splits: 5
     embargo: null          # defaults to primary_horizon when null
   lightgbm:
-    learning_rate: 0.001     
+    learning_rate: 0.001
     max_depth: 5
     num_leaves: 31             # <= 2^max_depth; explicit so depth/leaves stay consistent
     subsample: 0.8             # row bagging fraction -- ONLY active with bagging_freq>0
@@ -48,355 +48,120 @@ train:
   start_date: 2014-01-01
   end_date: 2024-07-01
 
-# Feature allow-list: the model trains ONLY on the uncommented entries below.
-# Comment a line out to drop that feature; a name not present in the cube is
-# skipped with a warning. If this whole list is empty/removed, the model falls
-# back to every feature in the cube.
+# =====================================================================
+# Feature allow-list: the model trains ONLY on the uncommented entries.
+# ONE feature per DISTINCT information type (NO thematic composites), plus a
+# lean price/technical block (a different kind of information). Comment a line
+# to drop it; a name absent from the cube is skipped with a warning.
+#
+# Normalization (done at cube-build time): `_xs` = universe percentile RANK in
+# [0,1] (outlier-proof); `_vs_peers` = peer z-score, winsorized to the per-day
+# cross-sectional 1%/99% (outlier-trimmed). Growth features already compare vs
+# 1 year ago or vs ~5 years ago by construction.
+# =====================================================================
 inputs:
+
+  # ---- Categorical features (LightGBM-only NATIVE categorical splits; int-coded
+  #      in the cube). The linear ensemble member ignores these. Important for the
+  #      non-linear return shifts across GICS sectors / industries. ----
+  categoricals:
+    - sector
+    - industry_group
+
   columns:
 
-  # ---- Thematic COMPOSITE signals (built in build_cube.composites): denoised,
-    #      low-collinearity per-theme scores. ADDITIVE -- the raw features above
-    #      are still trained on; these are extra, more-stable inputs. ----
-    - comp_quality
-    - comp_growth
-    - comp_distress
-    - comp_capital_allocation
-    - comp_expectations
-    - comp_governance
-    - comp_workforce
-    - comp_eps_beat
-    - comp_accounting_quality
-    - comp_ma_digestion
-    - comp_ai_leverage
-    - comp_insider
-    # - comp_technical
-    # - comp_value
-
-  # ---- Company-regime state flags (RAW 0/1, NOT peer-relative). The composites
-    #      above rank names WITHIN a regime but cannot express the regime itself;
-    #      these let the model CONDITION on it, so loss-makers, cash-burners,
-    #      negative-equity firms and too-young/no-revenue hyper-growth names are
-    #      not scored as if they were mature profitable firms. NaN base -> NaN flag
-    #      (never a false 0); LightGBM splits on them natively, the linear member
-    #      imputes NaN->neutral. Directions are set in inputs.monotonic below. ----
-    # - f_profitable
-    # - f_fcf_positive
-    # - f_negative_equity
-    # - f_hyper_growth
-
-  #   # ---- Price / technical (point-in-time; MACD/RSI/ATR lagged 1 day) ----
-  #   - mom_12_1
-    - rev_21
-    - vol_63
-  #   - ma_ratio_50
-  #   - atr_14
-  #   # - rev_5
-  #   # - ma_ratio_200
-  #   # - high_prox_252
-  #   # - gap_21
-  #   # - range_21
-  #   # - peer_mom_63
-  #   # - macd
-  #   # - macd_hist
-  #   # - rsi_14
-  #   # - vol_21
-
-  #   # ---- Higher-moment / lottery / idiosyncratic-risk anomalies (price-only) ----
-  #   - max_21
-  #   - ret_skew_126
-  #   - downside_vol_63
-  #   - idio_vol_63
-
-  # ---- Cross-sectional SEASONALITY at t+h (Heston-Sadka): the stock's OWN
-    #      average return over the same calendar window in prior years, per target
-    #      horizon. Leak-free & stock-specific (a calendar dummy would be flat
-    #      across names -> useless for a market-neutral ranker). ----
-    - seasonal_h30
+    # ---- Price / technical (point-in-time; a distinct information kind) ----
+    - rev_21                     # 1-month reversal
+    - vol_63                     # 3-month realized volatility
+    - seasonal_h30               # own same-calendar-window return, per horizon (leak-free)
     - seasonal_h60
     - seasonal_h90
+    - dollar_volume_63           # size / liquidity
+    - amihud_63                  # illiquidity premium
+    - rel_volume_5_63            # volume spike / attention
+    - signed_vol_63              # order-flow proxy (up minus down volume)
+    - volume_trend_63            # activity rising / fading
+    - volume_cv_63               # lumpy vs steady trading
+    - tax_loss_pressure          # YTD-loss-driven Oct-Dec selling
 
-  # ---- Short-selling pressure (FINRA RegSHO short-volume ratio; lagged 1 day).
-    #      High short_vol_ratio = heavily shorted -> short-interest anomaly (lower
-    #      forward returns). All-NaN until fetch_short_interest has run. ----
-    # - f_short_vol_ratio_xs
-    # - f_short_vol_ratio_chg_xs
+    # ---- Growth ----
+    - f_y_rev_growth_xs                    # revenue growth (TTM vs 1y ago)
+    - f_operating_margin_5y_chg_xs         # is margin structurally expanding (vs 5y)
+    - f_operating_leverage_xs              # revenue growing faster than operating cost
+    - f_revenue_per_employee_growth_xs     # revenue outrunning headcount (productivity)
+    - f_acquisition_intensity_xs           # internal vs external (M&A) growth
 
-  # ---- Liquidity / volume (price+volume; point-in-time). dollar_volume_63 =
-    #      log avg $ traded (size/liquidity); amihud_63 = Amihud illiquidity
-    #      (higher = more illiquid -> illiquidity premium); rel_volume_5_63 =
-    #      recent vs trailing volume (spike / attention). Need volume in prices. ----
-    - dollar_volume_63
-    - amihud_63
-    - rel_volume_5_63
+    # ---- Valuation / expectations ----
+    - f_ebitda_to_ev_xs                    # is the company over-priced (EV yield)
+    - f_pegy_xs                            # price vs growth + dividend yield (PEGY)
+    - f_core_earnings_yield_xs             # CORRECTED earnings (ex non-recurring items)
+    - f_nonrecurring_pretax_share_xs       # what proportion of profit is non-recurring
 
-  # ---- Volume-flow dynamics + forced year-end flow (price+volume; PIT).
-    #      signed_vol_63 = up-day minus down-day volume (order-flow proxy);
-    #      volume_trend_63 = activity rising/fading; volume_cv_63 = lumpy vs steady
-    #      trading; tax_loss_pressure = YTD-loss magnitude active Oct-Dec
-    #      (tax-loss selling -> January rebound; cross-sectional, not a flat dummy). ----
-    - signed_vol_63
-    - volume_trend_63
-    - volume_cv_63
-    - tax_loss_pressure
+    # ---- Quality / moat ----
+    - f_gross_profitability_xs             # profitability level (Novy-Marx, regime-robust)
+    - f_rd_intensity_vs_peers              # can it hold its moat with R&D spend
+    - f_capitalized_software_intensity_vs_peers   # AI / IT-investment score
 
-  # ---- Retail attention (abnormal Wikipedia pageviews / Google Trends vs the
-    #      name's own baseline). All-NaN until fetch_wiki_pageviews / fetch_google_
-    #      trends have run; safe to leave listed (missing cols are skipped). ----
-    # - f_wiki_attn_spike_xs
-    # - f_wiki_attn_level_xs
-    # - f_gt_attn_spike_xs
-    # - f_gt_attn_level_xs
+    # ---- Capital allocation ----
+    - f_shareholder_yield_xs               # what it does with cash (dividends + buybacks)
+    - f_da_to_capex_xs                     # under-investing in production tools (D&A > capex)
+    - f_shares_growth_xs                   # share dilution (net share-count change)
+    - f_sbc_to_ocf_xs                      # stock given to employees (stock-based comp)
+    - f_dividend_growth_5y_xs              # are dividends growing over the past 5 years
 
-  # ---- Institutional 13F ownership (all filers, aggregated per quarter, 45-day
-    #      filing lag -> point-in-time). Breadth change / accumulation / cluster
-    #      buying predict drift (Chen-Hong-Stein). All-NaN until fetch_13f has run;
-    #      slow quarterly signal -> best for the 60/90d sleeve. ----
-    # - f_inst_breadth_chg_xs
-    # - f_inst_shares_chg_xs
-    # - f_cluster_buying_xs
-    # - f_new_buyers_xs
-    # - f_inst_holders_xs
-    # - f_inst_ownership_pct_xs
+    # ---- Solvency / debt ----
+    - f_interest_coverage_vs_peers         # can the company cover its debt
+    - f_net_debt_to_ebitda_xs              # is it over-burdened by debt
+    - f_refinancing_risk_xs                # must it borrow to roll its debt (refi risk)
 
-  #   # ---- Risk exposures (rolling betas) ----
-  #   # - beta_market
-  #   # - beta_market_simple
-  #   # - beta_sector
-  #   # - beta_momentum
-  #   # - beta_size
-  #   # - beta_value
-  #   # - beta_quality
-  #   # - beta_resvol
-  #   # - beta_d_yield_10y
-  #   # - beta_d_yield_curve
-  #   # - beta_d_vix
+    # ---- Governance / insider ----
+    - f_founder_ceo_vs_peers               # is the CEO the founder (interacts w/ rev growth)
+    - f_insider_net_buy_ratio_xs           # do insiders buy or sell their position
 
-  #   # ---- Peer-relative fundamentals: valuation ----
-  #   # - f_earnings_yield_vs_peers
-  #   # - f_earnings_yield_xs
-  #   - f_sales_yield_vs_peers
-    - f_sales_yield_xs
-  #   - f_book_yield_vs_peers
-  #   - f_book_yield_xs
-  #   # - f_fcf_yield_vs_peers
-    # - f_fcf_yield_xs
-  #   # - f_ebitda_to_ev_vs_peers
-  #   # - f_ebitda_to_ev_xs
-    - f_intrinsic_yield_vs_peers
-    - f_intrinsic_yield_xs
+    # ---- Public attention ----
+    - f_wiki_attn_spike_xs                 # Wikipedia pageviews interest spike
+    - f_gt_attn_spike_xs                   # Google Trends search-interest spike
 
-  # ---- Dividends / shareholder yield (ex-date dividend history; point-in-time).
-    #      dividend_yield = TTM cash div / price; dividend_growth = TTM YoY;
-    #      dividend_payer = paid in last year; shareholder_yield = dividend +
-    #      buyback yield (net of issuance). Non-payers rank as real 0 yield. ----
-    - f_dividend_yield_xs
-    - f_dividend_growth_xs
-    - f_shareholder_yield_xs
-    # - f_dividend_payer_xs
-    # - f_dividend_yield_vs_peers
-    # - f_shareholder_yield_vs_peers
+    # ---- Sector-specific (sparse: NaN outside the sector; LightGBM splits on NaN) ----
+    - f_tier1_capital_ratio_xs             # banks: capital adequacy
+    - f_combined_ratio_xs                  # insurers: underwriting profitability (<1 = profit)
+    - f_ebitdax_margin_xs                  # energy: EBITDAX margin
 
-  #   # ---- Peer-relative fundamentals: profitability / quality ----
-  #   - f_grossMargins_vs_peers
-  #   - f_grossMargins_xs
-  #   - f_operatingMargins_vs_peers
-  #   - f_operatingMargins_xs
-  #   # - f_profitMargins_vs_peers
-    - f_profitMargins_xs
-  #   - f_returnOnEquity_vs_peers
-    - f_returnOnEquity_xs
-  #   - f_debtToEquity_vs_peers
-  #   - f_debtToEquity_xs
-  #   # - f_fcf_margin_vs_peers
-  #   - f_fcf_margin_xs
-  #   - f_accruals_vs_peers
-  #   # - f_accruals_xs
-  #   - f_rd_intensity_vs_peers
-    - f_rd_intensity_xs
-
-  #   # ---- Reinvestment quality: D&A vs capex (from SEC depAmort/capex) ----
-    #   da_to_capex >1 = consuming assets faster than reinvesting; da_minus_capex_
-    #   growth >0 = D&A rising faster than capex (under-investment / capex cliff). ----
-    - f_da_to_capex_xs
-    - f_da_minus_capex_growth_xs
-
-  #   # ---- Company-regime handling (profitable vs loss-making / hyper-growth) ----
-  #   # gross_profitability (Novy-Marx: gross profit / assets) stays valid for
-  #   # loss-makers, where earnings yields are masked to NaN. The 0/1 state flags
-  #   # are RAW (not peer-relative) so the model conditions on the regime instead
-  #   # of averaging a feature whose meaning flips across profitability.
-  #   - f_gross_profitability_vs_peers
-    - f_gross_profitability_xs
-
-  #   # ---- Peer-relative fundamentals: growth / trend / dilution ----
-  #   - f_revenueGrowth_vs_peers
-  #   - f_revenueGrowth_xs
-  #   - f_earningsGrowth_vs_peers
-  #   - f_earningsGrowth_xs
-  #   - f_fcf_growth_vs_peers
-  #   # - f_fcf_growth_xs
-  #   - f_gross_margin_chg_vs_peers
-  #   - f_gross_margin_chg_xs
-  #   # - f_shares_growth_vs_peers
-    - f_shares_growth_xs
-
-  #   # ---- Latest-quarter momentum (discrete single quarter, not TTM) ----
-  #   # - f_q_rev_growth_vs_peers
-    # - f_q_rev_growth_xs
-  #   # - f_rev_growth_accel_vs_peers
-  #   # - f_rev_growth_accel_xs
-  #   # - f_q_earnings_growth_vs_peers
-  #   # - f_q_earnings_growth_xs
-  #   # - f_q_margin_vs_ttm_vs_peers
-  #   # - f_q_margin_vs_ttm_xs
-
-  #   # ---- Yearly-TTM momentum (TTM vs TTM one year ago; less noisy, longer horizon) ----
-  #   # Computed fresh from level columns (totalRevenue, netIncome, profitMargins) so
-  #   # backtestable from the full fundamentals history. Complements q_* features.
-  #   # - f_y_rev_growth_vs_peers
-    - f_y_rev_growth_xs
-  #   - f_y_rev_growth_accel_vs_peers
-  #   - f_y_rev_growth_accel_xs
-  #   - f_y_earnings_growth_vs_peers
-    - f_y_earnings_growth_xs
-  #   # - f_y_margin_vs_ttm_vs_peers
-  #   # - f_y_margin_vs_ttm_xs -> wrong trend (weirds)
-
-  #   # ---- Valuation MEAN-REVERSION (self-history): each yield vs the firm's OWN
-  #   #      trailing ~5y (z-score). "cheap vs its own past" (e.g. PE below its 5y
-  #   #      average) -- an axis orthogonal to the cross-sectional "cheap vs peers".
-  #   #      HIGH = cheaper than its own norm. ----
-  #   # - f_earnings_yield_vs_hist
-  #   - f_sales_yield_vs_hist
-  #   - f_book_yield_vs_hist
-  #   # - f_fcf_yield_vs_hist
-  #   - f_ebitda_to_ev_vs_hist
-  #   - f_intrinsic_yield_vs_hist
-
-  #   # ---- Distress / solvency (debt-SERVICING ability, which debtToEquity misses):
-  #   #      net-debt/EBITDA (leverage), interest coverage, current ratio, cash/debt.
-  #   #      Needs the raw balance-sheet levels now carried in the fundamentals history. ----
-  #   - f_net_debt_to_ebitda_vs_peers
-  #   - f_net_debt_to_ebitda_xs
-    - f_interest_coverage_vs_peers
-    # - f_interest_coverage_xs
-  #   - f_current_ratio_vs_peers
-    - f_current_ratio_xs
-  #   - f_cash_to_debt_vs_peers
-    - f_cash_to_debt_xs
-
-  #   # ---- Marketing & sales efficiency: SG&A intensity, SG&A growth, and operating
-  #   #      leverage (revenue growth - SG&A growth; >0 = scaling profitably). ----
-  #   - f_sga_intensity_vs_peers
-  #   - f_sga_intensity_xs
-  #   - f_sga_growth_vs_peers
-    - f_sga_growth_xs
-  #   - f_operating_leverage_vs_peers
-  #   - f_operating_leverage_xs
-
-  #   # ---- M&A footprint: acquisition intensity (acq spend / assets) and goodwill
-  #   #      growth. Distinguishes inorganic from organic growth; impairment risk. ----
-  #   - f_acquisition_intensity_vs_peers
-    - f_acquisition_intensity_xs
-  #   - f_goodwill_growth_vs_peers
-    - f_goodwill_growth_xs
-
-  #   # ---- Stock-based compensation ("employee shares given"): SBC/revenue and
-  #   #      SBC/operating-cash-flow. GROSS give-away, unlike net shares_growth. ----
-  #   # - f_sbc_intensity_vs_peers
-  #   - f_sbc_intensity_xs
-  #   - f_sbc_to_ocf_vs_peers
-    - f_sbc_to_ocf_xs
-
-  #   # ---- Earnings expectations (historical forward EPS vs actual; ~96% cover) ----
-  #   # forward E/P + expected EPS growth carry standalone signal (IC ~ +0.02) and
-  #   # capture "what the market prices in for the future" / unrealistic optimism.
-  #   # - f_fwd_eps_yield_vs_peers
-    - f_fwd_eps_yield_xs
-  #   - f_eps_expectation_growth_vs_peers
-    - f_eps_expectation_growth_xs
-
-  #   # ---- Workforce (EDGAR historical employee counts, from 10-K filings):
-  #   #      genuinely historical & point-in-time, so backtestable. Columns absent
-  #   #      from cube if fetch_employees_edgar has not run -- safe to leave enabled. ----
-  #   - f_revenue_per_employee_vs_peers
-    - f_revenue_per_employee_xs
-  #   # - f_employee_growth_vs_peers
-    - f_employee_growth_xs
-
-  #   # ---- Analyst estimates: leak-free but NO accrued history yet, so they are
-  #   #      ~all-NaN historically. Uncomment once you have collected estimate
-  #   #      snapshots over time (see fetch_analyst_estimates). ----
-  #   - f_est_fwd_earnings_yield_vs_peers
-    # - f_est_fwd_earnings_yield_xs
-  #   - f_est_eps_growth_vs_peers
-  #   - f_est_eps_growth_xs
-  #   - f_est_rev_growth_vs_peers
-  #   - f_est_rev_growth_xs
-  #   - f_est_target_upside_vs_peers
-  #   - f_est_target_upside_xs
-  #   - f_est_revision_ratio_vs_peers
-  #   - f_est_revision_ratio_xs
-  #   - f_est_eps_trend_3m_vs_peers
-  #   - f_est_eps_trend_3m_xs
-  #   - f_est_rec_score_vs_peers
-  #   - f_est_rec_score_xs
-  #   - f_est_vs_intrinsic_vs_peers
-    # - f_est_vs_intrinsic_xs
-
-  #   # ---- Governance / ownership (snapshot-only: no free historical archive yet).
-  #   #      Leak-free (point-in-time from as_of) but ~all-NaN historically until the
-  #   #      snapshot archive builds up. Useful NOW for live cross-sectional ranking. ----
-    - f_insider_ownership_vs_peers
-    # - f_insider_ownership_xs
-  #   - f_institutional_ownership_vs_peers
-  #   - f_institutional_ownership_xs
-  #   # - f_founder_led_vs_peers
-  #   - f_founder_led_xs
-    - f_founder_ceo_vs_peers
-    # - f_founder_ceo_xs
-  #   - f_family_owned_vs_peers
-  #   - f_family_owned_xs
-  #   - f_net_insider_buying_vs_peers
-  #   - f_net_insider_buying_xs
-  #   - f_ceo_age_vs_peers
-    - f_ceo_age_xs
-  #   - f_n_officers_vs_peers
-  #   - f_n_officers_xs
-  #   - f_avg_officer_age_vs_peers
-    - f_avg_officer_age_xs
-
+  # Monotone direction per feature for the LightGBM member (target = higher forward
+  # return). +1 = higher feature -> higher rank; -1 = inverse; unlisted = free (0).
+  # Categoricals + price/technical + attention are left free.
   monotonic:
     enabled: true
     features:
-      - comp_quality: 1               # more profitable / higher-quality -> higher
-      - comp_growth: 1                # faster (oriented) growth -> higher
-      - comp_distress: 1              # safer / less distressed -> higher
-      - comp_capital_allocation: 1    # less dilution / better allocation -> higher
-      - comp_expectations: 1          # richer forward expectations -> higher
-      - comp_governance: 1            # independent board, aligned & modest CEO pay -> higher
-      - comp_workforce: 1             # more productive workforce -> higher
-      - comp_eps_beat: 1              # higher beat-propensity (quality + momentum, low bar) -> higher
-      - comp_accounting_quality: 1    # cleaner books (low Beneish/one-offs/WC drift) -> higher
-      - comp_ma_digestion: 1          # acquisitions earning their cost of capital -> higher
-      - comp_ai_leverage: 1           # best-positioned AI adopter within its sector -> higher
-      - comp_insider: 1               # net open-market insider buying / cluster breadth -> higher
-      
-      - f_employee_growth_xs: 1
-      - f_sbc_to_ocf_xs: 1
-      - f_goodwill_growth_xs: -1
-      - f_acquisition_intensity_xs: -1
-      - f_sga_growth_xs: -1
-      - f_cash_to_debt_xs: 1 
-      - f_current_ratio_xs: -1
+      # growth
+      - f_y_rev_growth_xs: 1
+      - f_operating_margin_5y_chg_xs: 1
+      - f_operating_leverage_xs: 1
+      - f_revenue_per_employee_growth_xs: 1
+      - f_acquisition_intensity_xs: -1          # more inorganic / M&A -> digestion risk
+      # valuation / expectations
+      - f_ebitda_to_ev_xs: 1                     # higher EV yield = cheaper = better
+      - f_pegy_xs: -1                            # lower PEGY (cheap for its growth) = better
+      - f_core_earnings_yield_xs: 1
+      - f_nonrecurring_pretax_share_xs: -1       # more one-off / low-quality profit = worse
+      # quality / moat
       - f_gross_profitability_xs: 1
-      - f_rd_intensity_xs: 1
-      - f_shares_growth_xs: 1
-      - f_returnOnEquity_xs: 1
-      - f_y_earnings_growth_xs: 1
-      - f_sales_yield_xs: 1
-      - f_intrinsic_yield_vs_peers: 1
-      - f_avg_officer_age_xs: -1
-      - f_eps_expectation_growth_xs: +1
-      - f_interest_coverage_vs_peers: +1
+      - f_rd_intensity_vs_peers: 1
+      - f_capitalized_software_intensity_vs_peers: 1
+      # capital allocation
+      - f_shareholder_yield_xs: 1
+      - f_da_to_capex_xs: -1                     # under-investment (D&A > capex) = worse
+      - f_shares_growth_xs: -1                   # dilution (issuing shares) = worse
+      - f_sbc_to_ocf_xs: -1                      # more stock given to employees = worse
+      - f_dividend_growth_5y_xs: 1
+      # solvency / debt
+      - f_interest_coverage_vs_peers: 1
+      - f_net_debt_to_ebitda_xs: -1
+      - f_refinancing_risk_xs: -1
+      # governance / insider
+      - f_founder_ceo_vs_peers: 1
+      - f_insider_net_buy_ratio_xs: 1
+      # sector-specific
+      - f_tier1_capital_ratio_xs: 1
+      - f_combined_ratio_xs: -1                  # lower combined ratio = underwriting profit
+      - f_ebitdax_margin_xs: 1

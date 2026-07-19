@@ -58,6 +58,30 @@ def test_employee_fields_pit_growth_and_rev_per_employee():
     print("  Both NaN before the first filing -> historical & leak-free. Validated.")
 
 
+def test_revenue_per_employee_growth():
+    """rev/employee GROWTH = is revenue outgrowing headcount (productivity up) or
+    scaling linearly with it (flat)? Past-vs-past, leak-free."""
+    emp = pd.DataFrame({
+        "ticker": ["AAA", "AAA"],
+        "as_of": [pd.Timestamp("2019-02-01"), pd.Timestamp("2020-02-03")],
+        "employees": [1000.0, 1200.0],
+    })
+    fund = pd.DataFrame({
+        "ticker": ["AAA", "AAA"], "as_of": ["2019-02-01", "2020-02-03"],
+        "totalRevenue": [500_000.0, 720_000.0],   # rev/emp 500 -> 600 (+20%)
+    })
+    idx = pd.bdate_range("2018-06-01", "2020-06-01")
+    F = _employee_fields(emp, idx, fund)
+    after = pd.Timestamp("2020-03-02")
+    assert "revenue_per_employee_growth" in F
+    g = F["revenue_per_employee_growth"].loc[after, "AAA"]
+    assert abs(g - 0.20) < 0.03, f"expected ~+20% rev/employee growth, got {g}"
+    # leak-free: NaN before the first filing
+    assert pd.isna(F["revenue_per_employee_growth"].loc[pd.Timestamp("2018-11-30"), "AAA"])
+    print("\n=== SANITY CHECK: revenue-per-employee GROWTH ===")
+    print(f"  rev/emp 500 -> 600 => growth {g:+.1%} (~+20%, revenue outrunning headcount). Validated.")
+
+
 def test_build_panel_empty_without_history():
     idx = pd.bdate_range("2020-01-01", "2020-06-01")
     panel = build_employee_feature_panel(None, {"AAA": ["BBB"]}, idx)

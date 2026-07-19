@@ -126,6 +126,23 @@ _MEAN_REVERSION_FIELDS = (
 _HIST_WINDOW = 1260      # ~5 trading years of daily observations
 _HIST_MIN_PERIODS = 252  # require >= 1y of history before emitting a z-score
 
+# Cross-sectional winsorization for the Z-SCORE features (peer-z + self-history z):
+# clip each day's distribution to its [1%, 99%] percentiles so a few extreme names
+# can't dominate the standardized value -> better generalization. The percentile-
+# RANK features (`_xs`) are already outlier-proof and are left untouched.
+_WINSOR_LO, _WINSOR_HI = 0.01, 0.99
+
+
+def _winsorize_xs(df: pd.DataFrame, lo: float = _WINSOR_LO,
+                  hi: float = _WINSOR_HI) -> pd.DataFrame:
+    """Clip each ROW (date) to its cross-sectional [lo, hi] quantiles across tickers.
+    NaN-safe: an all-NaN row yields NaN bounds -> clip is a no-op there."""
+    if df is None or df.empty:
+        return df
+    lo_q = df.quantile(lo, axis=1)
+    hi_q = df.quantile(hi, axis=1)
+    return df.clip(lower=lo_q, upper=hi_q, axis=0)
+
 # Company-regime STATE flags. These are absolute 0/1 indicators (is the firm
 # profitable? cash-generative? in negative equity? growing fast?) emitted RAW
 # into the panel -- NOT peer-standardized -- so the model can CONDITION on the
@@ -204,7 +221,8 @@ def _self_history_z(field_df: pd.DataFrame, window: int = _HIST_WINDOW,
     mean = field_df.rolling(window, min_periods=min_periods).mean()
     std = field_df.rolling(window, min_periods=min_periods).std()
     z = (field_df - mean) / std.where(std > 0)
-    return z.clip(-clip, clip).replace([np.inf, -np.inf], np.nan)
+    z = z.clip(-clip, clip).replace([np.inf, -np.inf], np.nan)
+    return _winsorize_xs(z)            # trim per-day cross-sectional 1%/99% outliers
 
 
 def _infer_yoy_periods(fund_hist: pd.DataFrame) -> int:
@@ -289,6 +307,7 @@ def _fiscal_apply_to_daily(fund_hist, field, idx, func) -> pd.DataFrame:
 # `daily` is the memoized accessor from _derived_fields (field -> date x ticker).
 # --------------------------------------------------------------------------- #
 _YEAR = 252   # trailing trading days ~= one calendar year (year-ago comparison)
+_FIVE_YEARS = 5 * _YEAR   # ~5 trading years (multi-year trend comparison)
 
 
 def _effective_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
@@ -801,7 +820,10 @@ def _derived_fields(
             growth_pct = _fiscal_change_to_daily(fund_hist, "netIncome", idx,
                                                  kind="pct", periods=yoy_periods) * 100.0
         # div yield fills to 0 for non-payers, but GROWTH must be known or PEGY is
-        # undefined (don't silently treat unknown growth as 0).
+        # undefined (don't silently treat unknown growth as 0). This is the SEC
+        # cash-flow (`dividendsPaid`) leg of the reconciled dividend yield — the
+        # precise per-share/ex-date version is the standalone `dividend_yield`
+        # feature in dividend_features.py (both agree; see its reconciliation note).
         div_yield_pct = _ratio(daily("dividendsPaid"), mcap, positive_den=True) * 100.0
         denom = (growth_pct + div_yield_pct.fillna(0.0)).where(lambda x: x > 0)
         pegy = _ratio(pe, denom)
@@ -860,6 +882,15 @@ def _derived_fields(
                                      kind="diff", periods=yoy_periods)
     if gm_chg.notna().any().any():
         F["gross_margin_chg"] = gm_chg
+
+    # ---- 5-YEAR MARGIN TREND: is the operating margin STRUCTURALLY expanding, not
+    # just one good year. TTM operating income / revenue now vs ~5 trading years ago
+    # (point-in-time, percentage-point change). Positive = durable margin expansion. ----
+    op_margin = _ratio(daily("operatingIncome"), revenue, positive_den=True)
+    if not op_margin.empty and op_margin.notna().any().any():
+        om_5y = (op_margin - op_margin.shift(_FIVE_YEARS)).replace([np.inf, -np.inf], np.nan)
+        if om_5y.notna().any().any():
+            F["operating_margin_5y_chg"] = om_5y
 
     # ---- R&D intensity (only if collected) ----
     rd_intensity = _ratio(rnd, revenue, positive_den=True)
@@ -988,6 +1019,15 @@ def _derived_fields(
         cash_to_debt = _ratio(cash, total_debt, positive_den=True)
         if not cash_to_debt.empty and cash_to_debt.notna().any().any():
             F["cash_to_debt"] = cash_to_debt
+
+    # ---- REFINANCING RISK: near-term debt maturities vs the liquidity to cover them.
+    # short-term debt / (cash + trailing free cash flow). HIGH (>>1) = the firm must
+    # roll/refinance a big slug of debt it cannot self-fund -> exposed to rate spikes
+    # / frozen credit markets. (short_debt / cash / fcf are hoisted above.) ----
+    liquidity = cash.add(fcf.where(fcf > 0), fill_value=0.0)
+    refi = _ratio(short_debt, liquidity, positive_den=True)
+    if not refi.empty and refi.notna().any().any():
+        F["refinancing_risk"] = refi
 
     # ---- MARKETING & SALES efficiency (operating leverage) ----
     sga = daily("sellingGeneralAdmin")
@@ -1248,7 +1288,9 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict) -> pd.DataFrame:
     for name, fdf in fields.items():
         if fdf is None or fdf.empty:
             continue
-        rel = _peer_relative(fdf, peer_dict)
+        # peer z-score, then trim per-day cross-sectional 1%/99% outliers (the
+        # percentile-rank `_xs` below is already outlier-proof, so it uses raw fdf).
+        rel = _winsorize_xs(_peer_relative(fdf, peer_dict))
         s = rel.stack()
         s.index.set_names(["date", "ticker"], inplace=True)
         long_frames.append(s.rename(f"f_{name}_vs_peers"))

@@ -91,6 +91,25 @@ class StepModelling(Step):
         self._log.info("Training on %d configured features", len(selected))
         return selected
 
+    def _select_categoricals(self, available: list[str]) -> list[str]:
+        """Categorical columns (`inputs.categoricals` in modellling.yml, e.g. sector /
+        industry_group). Fed to the LightGBM member as native categoricals; the
+        linear member ignores them. Missing-from-cube names are skipped."""
+        ci = self._config.get("inputs", None)
+        cats = list(ci.categoricals) if (ci and ci.get("categoricals")) else []
+        avail = set(available)
+        present = [c for c in cats if c in avail]
+        missing = [c for c in cats if c not in avail]
+        if missing:
+            self._log.warning("Configured categoricals not in cube (skipped): %s", missing)
+        if present:
+            self._log.info("Categorical features (LightGBM-only): %s", present)
+        return present
+
+    def _lgb_feats(self) -> list[str]:
+        """Feature list for the LightGBM member = numeric allow-list + categoricals."""
+        return list(self.feature_cols) + list(getattr(self, "categorical_cols", []))
+
     def build_panels(self):
         """One modeling panel per horizon, restricted to the configured features."""
 
@@ -100,12 +119,14 @@ class StepModelling(Step):
             end_date = self._config.get("train").end_date
        
         available = feature_columns_from_cube(self.cube, self.label_column)
-        self.feature_cols = self._select_features(available)
+        self.feature_cols = self._select_features(available)      # numeric (both members)
+        self.categorical_cols = self._select_categoricals(available)  # LightGBM-only
+        panel_cols = self.feature_cols + self.categorical_cols
 
         self.panels = {}
         for h in self.horizons:
             panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
-                                    feature_cols=self.feature_cols,
+                                    feature_cols=panel_cols,
                                     target_type=self.target_type)
 
             if start_date:
@@ -135,8 +156,11 @@ class StepModelling(Step):
             self._log.warning("inputs.monotonic.enabled but no features configured")
             return None
 
-        constraints = ml.build_monotone_constraints(self.feature_cols, feature_map)
-        missing = [f for f in feature_map if f not in self.feature_cols]
+        # align to the LightGBM feature order (numeric + categoricals); categoricals
+        # are unconstrained (0). Only the LightGBM member consumes these.
+        lgb_feats = self._lgb_feats()
+        constraints = ml.build_monotone_constraints(lgb_feats, feature_map)
+        missing = [f for f in feature_map if f not in lgb_feats]
         if missing:
             self._log.warning("Monotone features not in training set (skipped): %s",
                               missing)
@@ -181,13 +205,17 @@ class StepModelling(Step):
         early stopping; the linear baselines are closed-form and ignore it."""
         if kind in ("ridge", "elasticnet"):
             lc = self._config.model.get("linear", {}) or {}
+            # linear member: NUMERIC features only (categoricals are LightGBM-native)
             return baselines.train_linear(
                 train, self.feature_cols, self.label_column, kind=kind,
                 alpha=float(lc.get("alpha", 1e-3)), l1_ratio=float(lc.get("l1_ratio", 0.5)),
                 max_iter=int(lc.get("max_iter", 1000)), tol=float(lc.get("tol", 1e-6)),
                 half_life_years=self._half_life())
-        return ml.train_ranker(train, self.feature_cols, self.label_column,
-                               valid_panel=valid, **self._train_kwargs())
+        # LightGBM member: numeric + categorical, with native categorical splits
+        return ml.train_ranker(train, self._lgb_feats(), self.label_column,
+                               valid_panel=valid,
+                               categorical_features=self.categorical_cols or None,
+                               **self._train_kwargs())
 
     def _fit_models(self, train: pd.DataFrame, valid: pd.DataFrame | None) -> dict:
         """Fit every configured family -> {kind: model}. Averaged at predict time."""
@@ -282,7 +310,7 @@ class StepModelling(Step):
         run_dir = self._context.paths["OUTPUT_DIR"] / "diagnostics" / run_stamp
         try:
             diagnostics.save_run_diagnostics(
-                run_dir, tree_models, self.panels, self.feature_cols,
+                run_dir, tree_models, self.panels, self._lgb_feats(),
                 getattr(self, "oos_predictions", {}),
                 label_name=self.label_column, top_n=top_n,
                 shap_sample=shap_sample, pdp_grid=pdp_grid, logger=self._log,
@@ -366,7 +394,7 @@ class StepModelling(Step):
                 for model in models.values():
                     # LightGBM gain vs |coef| for the linear baselines; normalize
                     # each member to sum 1 first so the two scales are comparable.
-                    gains = (ml.feature_importance(model, self.feature_cols)
+                    gains = (ml.feature_importance(model, list(model.feature_names))
                              if isinstance(model, lgb.Booster)
                              else baselines.linear_importance(model))
                     s = pd.Series(gains, dtype=float)
@@ -424,6 +452,7 @@ class StepModelling(Step):
         meta = {
             "horizons": [int(h) for h in self.models],
             "feature_cols": list(self.feature_cols),
+            "categorical_cols": list(getattr(self, "categorical_cols", [])),
             "label_column": self.label_column,
             "target_type": self.target_type,
             "model_types": list(self.model_types),

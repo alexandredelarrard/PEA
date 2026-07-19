@@ -52,6 +52,10 @@ class StepBacktest(Step):
             raise FileNotFoundError(f"No models at {models_dir}. Run StepModelling first.")
         meta = json.loads(meta_path.read_text())
         self.feature_cols = meta["feature_cols"]
+        # LightGBM-only categoricals (sector/industry) must be in the scored panel too;
+        # ensemble_predict picks each model's own feature_names, so the linear member
+        # still ignores them. Older models (no categoricals) -> empty list.
+        self.categorical_cols = meta.get("categorical_cols", [])
         self.label_column = meta["label_column"]
         # match the target the model was trained on (rank/zscore); config fallback
         self.target_type = meta.get("target_type",
@@ -113,7 +117,7 @@ class StepBacktest(Step):
         blended = None
         for h, models in self.models.items():
             panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
-                                    feature_cols=self.feature_cols,
+                                    feature_cols=self.feature_cols + self.categorical_cols,
                                     target_type=self.target_type)
             panel = panel[(panel["date"] >= self.backtest_start) & (panel["date"] <= self.end)]
             if panel.empty:

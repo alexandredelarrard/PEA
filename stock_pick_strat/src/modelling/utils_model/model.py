@@ -155,9 +155,22 @@ def _build_datasets(
     feats: list,
     label_name: str,
     weights: np.ndarray | None = None,
+    categorical_features: list[str] | None = None,
 ) -> lgb.Dataset:
-    x = panel[feats].to_numpy(dtype="float32")
-    kw: dict = {"feature_name": feats}
+    # With categoricals, pass a DataFrame (int category codes kept as int, so
+    # LightGBM makes native categorical splits); else the fast all-float numpy path.
+    if categorical_features:
+        cat = set(categorical_features)
+        x = panel[feats].copy()
+        num = [f for f in feats if f not in cat]
+        if num:
+            x[num] = x[num].astype("float32")
+        for c in categorical_features:
+            x[c] = pd.to_numeric(x[c], errors="coerce").fillna(-1).astype("int32")
+        kw: dict = {"feature_name": feats, "categorical_feature": list(categorical_features)}
+    else:
+        x = panel[feats].to_numpy(dtype="float32")
+        kw = {"feature_name": feats}
     if weights is not None:
         kw["weight"] = weights
     if params["objective"] == "lambdarank":
@@ -209,6 +222,7 @@ def train_ranker(
     early_stopping_rounds: int = EARLY_STOPPING_ROUNDS,
     half_life_years: float | None = None,
     eval_metric: str = "rmse",
+    categorical_features: list[str] | None = None,
 ):
     """Fit a LightGBM model. When ``half_life_years`` is set, training rows are
     weighted with exponential time decay (most recent = 1.0); validation is
@@ -244,13 +258,15 @@ def train_ranker(
 
     train_w = (time_decay_weights(panel["date"], half_life_years)
                if half_life_years is not None else None)
-    train_set = _build_datasets(default, panel, feats, label_name, train_w)
+    train_set = _build_datasets(default, panel, feats, label_name, train_w,
+                                categorical_features=categorical_features)
     valid_sets = []
     callbacks = []
     feval = None
 
     if valid_panel is not None and not valid_panel.empty:
-        valid_set = _build_datasets(default, valid_panel, feats, label_name)
+        valid_set = _build_datasets(default, valid_panel, feats, label_name,
+                                    categorical_features=categorical_features)
         valid_sets = [valid_set]
         if eval_metric == "ic":
             # disable the built-in metric so early stopping keys on the custom IC
@@ -272,8 +288,13 @@ def train_ranker(
 
 
 def predict(booster, panel: pd.DataFrame, feats: list) -> pd.Series:
-    """Return a prediction Series indexed like `panel` (higher = long side)."""
-    preds = booster.predict(panel[feats].to_numpy(dtype="float32"))
+    """Return a prediction Series indexed like `panel` (higher = long side).
+
+    Passes a DataFrame (not a float32 array) so integer category codes survive:
+    LightGBM then applies the SAME categorical bins it learned at train time, and
+    the linear member's own predict() casts its numeric features to float. Result
+    is identical to the old numpy path for all-numeric models."""
+    preds = booster.predict(panel[feats])
     return pd.Series(preds, index=panel.index, name="score")
 
 
@@ -294,7 +315,11 @@ def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list):
     members: dict[str, pd.Series] = {}
     zs = []
     for name, m in models.items():
-        raw = predict(m, panel, feats).to_numpy()
+        # each member scores on ITS OWN feature list (the LightGBM member also has
+        # the categorical columns; the linear member is numeric-only) -> falls back
+        # to the shared `feats` for models without a stored feature_names.
+        mfeats = list(getattr(m, "feature_names", None) or feats)
+        raw = predict(m, panel, mfeats).to_numpy()
         z = (pd.DataFrame({"date": dates, "v": raw})
              .groupby("date")["v"]
              .transform(lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))

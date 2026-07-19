@@ -50,6 +50,10 @@ _LEVEL_FIELDS: list[tuple[str, str]] = [
     ("avg_board_tenure", "avg_board_tenure"),
     ("say_on_pay_support_pct", "say_on_pay_support"),
     ("insider_ownership_pct", "insider_ownership_pct"),
+    # founder-CEO flag (DEF 14A `ceo_is_founder`, 1/0): founder-led firms behave
+    # differently (long-termism, skin in the game); the model interacts it with
+    # revenue growth (a separate feature) to capture "founder-led high-growth".
+    ("ceo_is_founder", "founder_ceo"),
 ]
 
 

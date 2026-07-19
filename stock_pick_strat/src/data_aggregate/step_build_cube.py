@@ -180,7 +180,8 @@ class StepBuildCube(Step):
         self.dividends = self._load_or_none("dividends")
         if self.dividends is None:
             self._log.warning("No dividend history -> dividend/shareholder-yield "
-                              "features skipped (run fetch_dividends).")
+                              "features skipped (dividends come from the price download, "
+                              "fetch_price_history -> StepExtractPrices).")
 
         self.wiki_pageviews = self._load_or_none("wiki_pageviews")
         self.google_trends = self._load_or_none("google_trends")
@@ -430,10 +431,12 @@ class StepBuildCube(Step):
                        added, 100 * cov)
 
     def build_dividend_features(self):
-        """Dividend / shareholder-yield features (TTM yield, payout growth, payer
-        flag, dividend + buyback yield) from the ex-date dividend history. Point-
-        in-time (a dividend enters TTM only from its ex-date); non-payers get a
-        real 0 yield so they rank correctly."""
+        """Dividend / shareholder-yield features (TTM yield, 1y + 5y payout growth,
+        payer flag, payout ratio, FCF coverage, dividend + buyback yield). RECONCILES
+        the two dividend sources: the per-share ex-date history (`dividends`, primary)
+        and the SEC cash-flow `dividendsPaid` total (from `fundamentals`, gap-fill +
+        payout/coverage). Point-in-time; non-payers get a real 0 yield so they rank
+        correctly."""
         panel = build_dividend_feature_panel(
             getattr(self, "dividends", None), self.peers, self.stock_close.index,
             stock_close=self.stock_close, fundamentals_history=self.fundamentals,
@@ -558,9 +561,27 @@ class StepBuildCube(Step):
         self.cube = build_cube_dataframe(
             self.feature_panel, self.labels, self.betas, self.peers,
         )
+        self._add_categorical_codes()
         self._log.info("Aggregated cube: %s rows, %s horizons, %s tickers",
                        len(self.cube), self.cube["target_horizon"].nunique(),
                        self.cube["ticker"].nunique())
+
+    def _add_categorical_codes(self):
+        """Attach GICS sector / industry_group as INTEGER category codes
+        (deterministic sorted mapping; unknown -> -1) so LightGBM can make native
+        non-linear categorical splits on them. Stored as ints so they flow through
+        the numeric panel path unchanged; the linear ensemble member ignores them
+        (they are listed under inputs.categoricals, not inputs.columns)."""
+        ref = self._context.store.load("sp500_tickers")
+        for col in ("sector", "industry_group"):
+            if ref.empty or col not in ref.columns:
+                self._log.warning("sp500_tickers has no '%s' -> categorical skipped", col)
+                continue
+            m = dict(zip(ref["ticker"].astype(str), ref[col].astype("string")))
+            cats = self.cube["ticker"].astype(str).map(m).astype("category")
+            self.cube[col] = cats.cat.codes.astype("int16")     # unknown / NaN -> -1
+            self._log.info("Added categorical '%s' (%d categories) to cube",
+                           col, cats.cat.categories.size)
 
     def save_cube(self):
         # full rebuild each run -> replace the table (truncate + fast COPY)

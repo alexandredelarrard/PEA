@@ -657,6 +657,18 @@ def _derived_fields(
     short_debt = daily("shortTermDebt")
     sbc = daily("stockBasedComp")
 
+    # ---- Pension / OPEB overhang (debt-like): the recognized net UNDERFUNDED liability.
+    # Prefer the combined pension+OPEB tag, else the pension-only tag (combine_first, NOT a
+    # sum -> no OPEB double-count for filers reporting both). Bulk `pension_facts` source
+    # preferred, companyfacts `pensionDeficit` fills gaps. Feeds the True EV + overhang ratio.
+    pension_ret = _pension_deficit_daily(pension_facts, idx)
+    _pdcf = daily("pensionDeficit")
+    pension_ret = pension_ret.combine_first(_pdcf) if not pension_ret.empty else _pdcf
+    if not pension_ret.empty:
+        pension_ret = pension_ret.clip(lower=0.0)          # underfunding only (>= 0)
+        if pension_ret.notna().any().any():
+            F["pension_retirement_liability"] = pension_ret
+
     # ---- Valuation yields (need a daily market cap) ----
     mcap = daily_market_cap(fund_hist, close) if close is not None else pd.DataFrame()
     if not mcap.empty:
@@ -672,7 +684,7 @@ def _derived_fields(
         F["fcf_yield"] = _ratio(fcf.where(fcf > 0), mcap, positive_den=True)
         # ---- True (fully-diluted) enterprise value; feeds every EV yield ----
         #   EV = fully-diluted mcap + total debt + leases + minority interest
-        #        - cash - short-term investments
+        #        + pension/OPEB net deficit - cash - short-term investments
         # Prefer diluted shares x price for the equity claim (falls back to basic
         # mcap when diluted shares are absent); real debt columns preferred, with
         # debtToEquity*equity as a last-resort fallback.
@@ -686,8 +698,14 @@ def _derived_fields(
         if debt.empty and not d2e.empty and not equity.empty:
             debt = d2e.clip(lower=0.0) * equity.where(equity > 0)
         leases = daily("operatingLeaseLiability").add(daily("financeLeaseLiability"), fill_value=0.0)
-        ev = _enterprise_value(fd_mcap, [debt, leases, daily("minorityInterest")],
+        ev = _enterprise_value(fd_mcap, [debt, leases, daily("minorityInterest"), pension_ret],
                                [cash, daily("shortTermInvestments")])
+        # Pension Overhang Leverage = pension/OPEB deficit / market cap (debt-like burden on
+        # the equity value); higher = a bigger retirement obligation overhanging the stock.
+        if not pension_ret.empty:
+            pol = _ratio(pension_ret, mcap, positive_den=True)
+            if pol.notna().any().any():
+                F["pension_overhang_leverage"] = pol
         if not ebitda.empty:
             F["ebitda_to_ev"] = _ratio(ebitda.where(ebitda > 0), ev, positive_den=True)
         # FCF/EV yield: cash the whole capital structure earns vs its total price.
@@ -1009,7 +1027,7 @@ def _derived_fields(
     #   #2 D&A/SBC realism, #5 forensic red flags, #3 M&A digestion,
     #   #1 core/adjusted earnings (kept alongside the reported figures above).
     F.update(_da_realism_fields(daily))
-    F.update(_forensic_fields(daily, idx, _pension_deficit_daily(pension_facts, idx)))
+    F.update(_forensic_fields(daily, idx, pension_ret))   # reuse the coalesced overhang pool
     F.update(_digestion_fields(daily, fund_hist, idx, yoy_periods))
     F.update(_core_earnings_fields(daily, mcap))
     F.update(_ai_leverage_fields(daily))

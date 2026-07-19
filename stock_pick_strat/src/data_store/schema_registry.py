@@ -51,6 +51,12 @@ EXTRACT_TABLES: list[TableSpec] = [
               date_col="date"),
     TableSpec("short_interest", "short_interest.parquet", ("ticker", "date"), "extract",
               date_col="date"),
+    # SEC Fails-to-Deliver: settlement fails per ticker x date (same grain as
+    # short_interest but a separate table -> its semi-monthly, ~2-month-lagged files
+    # don't pollute short_interest's global-max-date incremental; combined at the
+    # feature layer). `period` = source semi-monthly file tag (for incremental skip).
+    TableSpec("fails_to_deliver", "fails_to_deliver.parquet", ("ticker", "date"), "extract",
+              date_col="date", date_type_cols=("date",)),
     TableSpec("fundamentals_history", "fundamentals_history.parquet",
               ("ticker", "as_of"), "extract", date_col="as_of",
               date_type_cols=("as_of", "fiscal_end")),

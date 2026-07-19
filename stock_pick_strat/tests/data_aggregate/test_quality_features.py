@@ -16,7 +16,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.fundamental_features import (
     _da_realism_fields, _forensic_fields, _digestion_fields,
-    _core_earnings_fields, _beneish_m_score, _ai_leverage_fields,
+    _core_earnings_fields, _beneish_m_score, _ai_leverage_fields, _derived_fields,
 )
 
 IDX = pd.bdate_range("2022-01-03", periods=300)     # >252 so shift(_YEAR) has a year-ago
@@ -242,6 +242,28 @@ def test_ai_leverage_it_maturity():
     print("\n=== SANITY CHECK: #4 AI-leverage IT maturity ===")
     print(f"  A capitalized-software/assets = 0.20 (IT-mature) >> B = 0.02; "
           f"software/revenue = 0.25. Capability proxy ready (score assembled as composite). Validated.")
+
+
+def test_pension_adjusted_ev_and_overhang_leverage():
+    """Pension/OPEB deficit is added to the True EV (debt-like), a pension_overhang_leverage
+    ratio (deficit / market cap) is emitted, and the deficit is surfaced as
+    pension_retirement_liability. The EV inclusion lowers the EV yields vs no-pension."""
+    fh = pd.DataFrame([{"ticker": "P", "as_of": "2019-12-31",
+                        "sharesOutstanding": 100.0, "ebitda": 50.0, "cash": 10.0,
+                        "longTermDebt": 200.0, "pensionDeficit": 80.0}])
+    idx = pd.bdate_range("2020-01-02", periods=30)
+    close = pd.DataFrame({"P": 5.0}, index=idx)        # market cap = 100 * 5 = 500
+    F = _derived_fields(fh, idx, close)
+    d = idx[-1]
+    assert abs(F["pension_retirement_liability"].loc[d, "P"] - 80.0) < 1e-6
+    assert abs(F["pension_overhang_leverage"].loc[d, "P"] - 80.0 / 500.0) < 1e-9   # 0.16
+    # True EV = 500 mcap + 200 debt + 80 pension - 10 cash = 770 ; ebitda_to_ev = 50/770
+    assert abs(F["ebitda_to_ev"].loc[d, "P"] - 50.0 / 770.0) < 1e-6
+    assert F["ebitda_to_ev"].loc[d, "P"] < 50.0 / 690.0    # lower than EV without the pension add
+
+    print("\n=== SANITY CHECK: pension-adjusted EV + overhang leverage ===")
+    print(f"  pension_retirement_liability=80; pension_overhang_leverage=80/500={80/500:.2f}; "
+          f"EV=770 (incl. pension) -> ebitda_to_ev={50/770:.4f} < 50/690 (no pension). Validated.")
 
 
 def test_absent_new_tags_do_not_break_existing_factors():

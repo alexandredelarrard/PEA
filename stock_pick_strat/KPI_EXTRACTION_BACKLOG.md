@@ -10,7 +10,6 @@ extraction.
 |---|-----|------------------|--------------------------|------------------|
 | 1 | **Organic revenue growth** | Inorganic (acquired) revenue contribution per period | 10-K/10-Q MD&A free text ("acquisitions contributed $X") — not XBRL-tagged | `revenueGrowth` / `y_rev_growth` (total); `acquisition_intensity` flags inorganic activity |
 | 14 | **Economic Profit / EVA** | **WACC** = cost of equity (rf + β·ERP) + cost of debt, capital-weighted | Modelling assembly: wire `betas` in + add rf/ERP config (NOT an extraction gap) | `roic` shipped; EVA = InvestedCapital·(ROIC − WACC) once WACC assembled |
-| 11 | **PEGY (projected)** | Forward/analyst consensus EPS growth | `analyst_estimates_history` (accruing, sparse) | `pegy` uses **TTM realized** EPS growth as the growth term |
 | 21 | **NIM (exact)** | "Average earning assets" subset (loans + securities ex non-earning) | Bank supplements / call reports — not a clean XBRL tag | `net_interest_margin` uses **total assets** as the denominator |
 | 23 | **CET1 ratio** | Broader CET1/Tier-1 tagging | Only ~6 banks XBRL-tag `Tier1RiskBasedCapitalToRiskWeightedAssets` today | `tier1_capital_ratio` (sparse; falls back to CET1 in the extractor) |
 | 24 | **Combined ratio (exact)** | Reinsurance recoveries, ceding commissions, **gross** policy-acquisition costs | Insurance MD&A / schedules — not tagged | `loss_ratio` = gross claims/premiums; `expense_ratio` = (SG&A + DAC amort)/premiums |

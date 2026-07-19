@@ -41,8 +41,8 @@ class StepExtractAllData(Step):
 
         # self._prices.run(tickers=tickers)
         # self._fundamentals.run(tickers=tickers)
-        # self._structure.run(tickers=tickers)
-        self._behavioral.run(tickers=tickers)
+        self._structure.run(tickers=tickers)
+        # self._behavioral.run(tickers=tickers)
 
         # TODO: extract disclosures from SEC filings and notes 
         # https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets

@@ -39,15 +39,17 @@ build_cube:
     method: zscore           # zscore | rank (per-day cross-sectional standardization)
     groups:
       value: [f_sales_yield_xs, f_book_yield_xs, f_fcf_yield_xs, f_ebitda_to_ev_xs,
-              f_intrinsic_yield_xs, f_sales_yield_vs_hist, f_book_yield_vs_hist,
-              f_ebitda_to_ev_vs_hist, f_intrinsic_yield_vs_hist]
+              f_intrinsic_yield_xs, f_core_earnings_yield_xs, f_sales_yield_vs_hist,
+              f_book_yield_vs_hist, f_ebitda_to_ev_vs_hist, f_intrinsic_yield_vs_hist,
+              f_core_earnings_yield_vs_hist]   # core_earnings_yield = one-off-adjusted E/P
       quality: [f_grossMargins_xs, f_operatingMargins_xs, f_profitMargins_xs,
                 f_returnOnEquity_xs, f_gross_profitability_xs, f_fcf_margin_xs,
                 "-f_accruals_vs_peers", f_rd_intensity_xs]
       growth: [f_revenueGrowth_xs, f_earningsGrowth_xs, f_y_rev_growth_xs,
                f_y_earnings_growth_xs, f_operating_leverage_xs, f_gross_margin_chg_xs]
-      distress: ["-f_net_debt_to_ebitda_xs", f_interest_coverage_xs, f_current_ratio_xs,
-                 f_cash_to_debt_xs, "-f_debtToEquity_xs"]
+      distress: ["-f_net_debt_to_ebitda_xs", "-f_net_debt_incl_offbs_to_ebitda_xs",
+                 f_interest_coverage_xs, f_current_ratio_xs,
+                 f_cash_to_debt_xs, "-f_debtToEquity_xs"]   # off-BS = +leases +pension deficit
       capital_allocation: ["-f_sbc_intensity_xs", "-f_sbc_to_ocf_xs", "-f_shares_growth_xs",
                            "-f_acquisition_intensity_xs", "-f_goodwill_growth_xs"]
       expectations: [f_fwd_eps_yield_xs, f_eps_expectation_growth_xs]
@@ -55,6 +57,22 @@ build_cube:
                    f_ceo_equity_pay_pct_xs, "-f_ceo_pay_ratio_xs",
                    "-f_ceo_pay_vs_revenue_growth_xs"]
       workforce: [f_revenue_per_employee_xs, f_employee_growth_xs]
+      eps_beat: [f_eps_surprise_4q_avg_xs, "-f_accruals_xs", f_earnings_quality_xs,
+                 f_y_rev_growth_xs, f_margin_expansion_delta_xs,
+                 "-f_eps_expectation_growth_xs"]   # beat-propensity: surprise persistence +
+                                                   # quality + top-line/margin momentum, less the bar
+      # ---- business-quality themes (higher = cleaner books / better digestion /
+      #      better AI-adoption position). Members absent until re-fetch (goodwill
+      #      impairment, capitalized software) are skipped automatically. ----
+      accounting_quality: ["-f_beneish_m_score_xs", "-f_nonrecurring_pretax_share_xs",
+                           "-f_dso_change_xs", "-f_dpo_change_xs",
+                           "-f_useful_life_change_xs", "-f_sbc_to_buyback_xs"]
+      ma_digestion: [f_roic_incl_goodwill_xs, f_goodwill_roic_drag_xs,
+                     "-f_goodwill_intangibles_to_assets_xs", "-f_goodwill_to_equity_xs",
+                     "-f_sga_elasticity_xs", "-f_headcount_elasticity_xs",
+                     "-f_goodwill_impairment_intensity_xs"]
+      ai_leverage: [f_sga_intensity_vs_peers, "-f_revenue_per_employee_vs_peers",
+                    f_rd_intensity_vs_peers, f_capitalized_software_intensity_vs_peers]
       technical: [mom_12_1, ma_ratio_50, "-vol_63", "-max_21", "-ret_skew_126",
                   "-idio_vol_63", "-downside_vol_63"]
 

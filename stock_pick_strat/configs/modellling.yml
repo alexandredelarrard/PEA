@@ -65,6 +65,10 @@ inputs:
     - comp_expectations
     - comp_governance
     - comp_workforce
+    - comp_eps_beat
+    - comp_accounting_quality
+    - comp_ma_digestion
+    - comp_ai_leverage
     # - comp_technical
     # - comp_value
 
@@ -372,6 +376,10 @@ inputs:
       - comp_expectations: 1          # richer forward expectations -> higher
       - comp_governance: 1            # independent board, aligned & modest CEO pay -> higher
       - comp_workforce: 1             # more productive workforce -> higher
+      - comp_eps_beat: 1              # higher beat-propensity (quality + momentum, low bar) -> higher
+      - comp_accounting_quality: 1    # cleaner books (low Beneish/one-offs/WC drift) -> higher
+      - comp_ma_digestion: 1          # acquisitions earning their cost of capital -> higher
+      - comp_ai_leverage: 1           # best-positioned AI adopter within its sector -> higher
       
       - f_employee_growth_xs: 1
       - f_sbc_to_ocf_xs: 1

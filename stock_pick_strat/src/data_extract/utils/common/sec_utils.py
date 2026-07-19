@@ -102,6 +102,38 @@ def save_extract_meta(parquet_path: Path, last_filing_date: str | None,
     )
 
 
+def bulk_ingested_quarters(store, table: str) -> set[str]:
+    """Distinct source-zip `quarter` tags already stored in a bulk table -> the
+    set of quarters an incremental re-run can SKIP (a past quarter's data set is
+    final once the quarter ends). Empty when the table doesn't exist yet."""
+    if not store.exists(table):
+        return set()
+    from sqlalchemy import text
+    with store.engine.connect() as c:
+        return set(pd.read_sql(text(f'SELECT DISTINCT quarter FROM "{table}"'), c)
+                   ["quarter"].dropna())
+
+
+def load_processed_universe(cache_dir: Path, table: str) -> set[str]:
+    """The ticker universe a bulk table was last built against (sidecar JSON). Used
+    to decide whether cached zips must be re-parsed to back-fill NEW tickers.
+    Comparing to the processed set (not to the tickers that happened to file) is
+    what makes the re-parse converge instead of firing every run."""
+    p = cache_dir / f"{table}_universe.json"
+    if not p.exists():
+        return set()
+    try:
+        return set(json.loads(p.read_text(encoding="utf-8")).get("universe", []))
+    except Exception:
+        return set()
+
+
+def save_processed_universe(cache_dir: Path, table: str, universe: set[str]) -> None:
+    (cache_dir / f"{table}_universe.json").write_text(
+        json.dumps({"universe": sorted(universe), "saved": today_iso()}),
+        encoding="utf-8")
+
+
 def load_cik_mapping(context: Context) -> pd.DataFrame:
     """Ticker -> CIK (+ name / GICS) resolution for the SEC EDGAR fetchers.
 

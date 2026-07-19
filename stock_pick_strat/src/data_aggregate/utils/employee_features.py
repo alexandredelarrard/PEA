@@ -8,6 +8,8 @@ yfinance snapshot, which only knows today's headcount):
 
     revenue_per_employee   TTM revenue / employees   (operational efficiency / moat)
     employee_growth        year-over-year change in headcount (expansion / retrenchment)
+    headcount_elasticity   %Δemployees / %Δrevenue   (M&A digestion: <1 = revenue
+                           outgrowing the people pool = scale / synergies captured)
 
 Both are applied strictly point-in-time (stepwise from each filing's `as_of`),
 and employee_growth compares only past-vs-past headcounts, so there is no
@@ -46,6 +48,14 @@ def _employee_fields(
         rev_per_emp = _ratio(revenue, employees, positive_den=True)
         if not rev_per_emp.empty and rev_per_emp.notna().any().any():
             F["revenue_per_employee"] = rev_per_emp
+        # headcount elasticity to revenue (M&A DIGESTION #3): %Δemployees / %Δrevenue.
+        # <1 = revenue outgrowing the people pool (scale / synergies captured); ~1 =
+        # headcount scaling 1:1 with (often acquired) revenue -> integration not landing.
+        if "employee_growth" in F:
+            rev_growth = revenue / revenue.shift(_YOY_TRADING_DAYS) - 1.0
+            el = _ratio(F["employee_growth"], rev_growth.where(rev_growth.abs() >= 0.02))
+            if not el.empty and el.notna().any().any():
+                F["headcount_elasticity"] = el
     return F
 
 

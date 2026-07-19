@@ -19,6 +19,8 @@ from src.data_extract.step_extract_prices import StepExtractPrices
 from src.data_extract.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.step_extract_structure import StepExtractStructure
 from src.data_extract.step_extract_behavioral import StepExtractBehavioral
+from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
+from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 
 
 class StepExtractAllData(Step):
@@ -44,14 +46,19 @@ class StepExtractAllData(Step):
         self._structure.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
 
-        # TODO: extract disclosures from SEC filings and notes 
+        # SEC bulk quarterly data sets (zips cached under data/sec_bulk_cache/,
+        # incremental by quarter + new-ticker back-fill -- see the fetchers).
+        # Pension facts from the Financial Statement Data Sets (num/sub XBRL):
+        fetch_financial_statements(self._context)
+        # Officer / director / 10%-owner transactions from the Insider Transactions sets:
+        fetch_insider_transactions(self._context)
+
+        # TODO: fail to deliver stock
+        # https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data
+
+        # TODO: financial-statement NOTES data sets (footnote PBO / plan assets /
+        # funded status) for fuller pension detail -- heavier (~1GB+/qtr) follow-up.
         # https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets
-
-        # TODO: fail to deliver stock 
-        # https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data     
-
-        # TODO: senior executive & insiders transactions
-        # https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets
 
         ####### very strong driver, need data feed / LLM
         # TODO: map furnishers and sellers in a graph to adjust each stock financials with each stock earnings 

@@ -394,6 +394,12 @@ _NET_PENSION_TAGS = (
     "DefinedBenefitPensionPlanLiabilitiesNoncurrent",                          # variant
 )
 
+# Footnote pension tags from the Financial Statement & NOTES sets (`notes_num`):
+# the projected benefit obligation and fair value of plan assets, both INSTANT
+# (balance-type) facts the primary statements never expose.
+_FN_PBO_TAG = "DefinedBenefitPlanBenefitObligation"          # projected benefit obligation
+_FN_PLAN_ASSETS_TAG = "DefinedBenefitPlanFairValueOfPlanAssets"
+
 
 def _pension_deficit_daily(pension_facts: pd.DataFrame | None,
                            idx: pd.DatetimeIndex) -> pd.DataFrame:
@@ -425,6 +431,29 @@ def _pension_deficit_daily(pension_facts: pd.DataFrame | None,
     if var.empty:
         return prim
     return prim.combine_first(var)
+
+
+def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str,
+                     idx: pd.DatetimeIndex, instant: bool = True) -> pd.DataFrame:
+    """One footnote-numeric tag from the NOTES sets (`notes_num`) -> daily wide
+    frame, point-in-time on the FILING date, latest period-end (`ddate`) per filing.
+    `instant` keeps the balance-type facts (qtrs==0, e.g. PBO / plan assets); else
+    the duration facts (qtrs>0, e.g. service cost). Empty frame if unavailable."""
+    if (notes_num is None or notes_num.empty
+            or "tag" not in notes_num.columns or "ticker" not in notes_num.columns):
+        return pd.DataFrame(index=idx)
+    d = notes_num[notes_num["tag"] == tag].copy()
+    if d.empty:
+        return pd.DataFrame(index=idx)
+    d["as_of"] = pd.to_datetime(d.get("filed"), errors="coerce")
+    d["value"] = pd.to_numeric(d.get("value"), errors="coerce")
+    q = pd.to_numeric(d.get("qtrs"), errors="coerce").fillna(0)
+    d = d[(q == 0) if instant else (q > 0)]
+    d = d.dropna(subset=["as_of", "value", "ticker"])
+    if d.empty:
+        return pd.DataFrame(index=idx)
+    d = d.sort_values(["ticker", "as_of", "ddate"]).rename(columns={"value": tag})
+    return fundamentals_to_daily(d, tag, idx)
 
 
 def _forensic_fields(daily, idx: pd.DatetimeIndex,
@@ -625,6 +654,7 @@ def _derived_fields(
     intrinsic_cfg: dict | None = None,
     earnings_history: pd.DataFrame | None = None,
     pension_facts: pd.DataFrame | None = None,
+    notes_num: pd.DataFrame | None = None,
 ) -> dict:
     """Build daily wide frames (date x ticker) for every characteristic.
 
@@ -658,12 +688,27 @@ def _derived_fields(
     sbc = daily("stockBasedComp")
 
     # ---- Pension / OPEB overhang (debt-like): the recognized net UNDERFUNDED liability.
-    # Prefer the combined pension+OPEB tag, else the pension-only tag (combine_first, NOT a
-    # sum -> no OPEB double-count for filers reporting both). Bulk `pension_facts` source
-    # preferred, companyfacts `pensionDeficit` fills gaps. Feeds the True EV + overhang ratio.
+    # Point-in-time, gap-filled (combine_first, NOT a sum -> no OPEB double-count) across
+    # three sources in order of directness:
+    #   1) bulk Financial-Statement-Data-Sets recognized net liability (`pension_facts`),
+    #   2) companyfacts `pensionDeficit`,
+    #   3) footnote funded status = PBO - plan assets from the NOTES sets (`notes_num`).
+    # Feeds the True EV + overhang ratio. The NOTES footnote (PBO / plan assets) ALSO
+    # yields standalone funded-health features below (funded ratio, PBO / underfunding vs mcap).
+    pbo = _notes_num_daily(notes_num, _FN_PBO_TAG, idx, instant=True)
+    plan_assets = _notes_num_daily(notes_num, _FN_PLAN_ASSETS_TAG, idx, instant=True)
+    fn_deficit = pd.DataFrame()
+    if not pbo.empty and not plan_assets.empty:
+        # funded status = plan assets - PBO; the deficit (underfunding) is the debt-like part.
+        fn_deficit = pbo.sub(plan_assets).clip(lower=0.0)
+        funded_ratio = _ratio(plan_assets, pbo, positive_den=True)   # 1.0 = fully funded, <1 under
+        if funded_ratio.notna().any().any():
+            F["pension_funded_ratio"] = funded_ratio
+
     pension_ret = _pension_deficit_daily(pension_facts, idx)
-    _pdcf = daily("pensionDeficit")
-    pension_ret = pension_ret.combine_first(_pdcf) if not pension_ret.empty else _pdcf
+    for _src in (daily("pensionDeficit"), fn_deficit):
+        if not _src.empty:
+            pension_ret = pension_ret.combine_first(_src) if not pension_ret.empty else _src
     if not pension_ret.empty:
         pension_ret = pension_ret.clip(lower=0.0)          # underfunding only (>= 0)
         if pension_ret.notna().any().any():
@@ -706,6 +751,18 @@ def _derived_fields(
             pol = _ratio(pension_ret, mcap, positive_den=True)
             if pol.notna().any().any():
                 F["pension_overhang_leverage"] = pol
+        # NOTES footnote scale vs equity value: gross obligation (PBO) and the
+        # underfunding, both relative to market cap. PBO/mcap flags rate/return
+        # sensitivity even for FUNDED plans; underfunding/mcap is the cleaner deficit
+        # burden (footnote-sourced, so it covers names the balance-sheet tag misses).
+        if not pbo.empty:
+            pbo_mc = _ratio(pbo, mcap, positive_den=True)
+            if pbo_mc.notna().any().any():
+                F["pbo_to_mcap"] = pbo_mc
+        if not fn_deficit.empty:
+            und_mc = _ratio(fn_deficit, mcap, positive_den=True)
+            if und_mc.notna().any().any():
+                F["pension_underfunding_to_mcap"] = und_mc
         if not ebitda.empty:
             F["ebitda_to_ev"] = _ratio(ebitda.where(ebitda > 0), ev, positive_den=True)
         # FCF/EV yield: cash the whole capital structure earns vs its total price.
@@ -1088,6 +1145,7 @@ def build_fundamental_feature_panel(
     hist_min_periods: int = _HIST_MIN_PERIODS,
     earnings_history: pd.DataFrame | None = None,
     pension_facts: pd.DataFrame | None = None,
+    notes_num: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Long-format panel: ['date','ticker', f_<char>_vs_peers, f_<char>_xs,
@@ -1112,7 +1170,8 @@ def build_fundamental_feature_panel(
     yoy_periods = _infer_yoy_periods(fundamentals_history)
     fields = _derived_fields(fundamentals_history, trading_index, stock_close,
                              yoy_periods=yoy_periods, intrinsic_cfg=intrinsic_cfg,
-                             earnings_history=earnings_history, pension_facts=pension_facts)
+                             earnings_history=earnings_history, pension_facts=pension_facts,
+                             notes_num=notes_num)
 
     # regime state flags -> RAW `f_<name>`; everything else -> peer-relative.
     state_fields = {k: v for k, v in fields.items() if k in _STATE_FIELDS}

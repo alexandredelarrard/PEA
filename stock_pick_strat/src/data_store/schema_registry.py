@@ -92,6 +92,20 @@ EXTRACT_TABLES: list[TableSpec] = [
     TableSpec("pension_facts", "pension_facts.parquet",
               ("cik", "tag", "ddate", "qtrs"), "extract", date_col="ddate",
               date_type_cols=("ddate", "filed")),
+    # SEC Financial Statement AND NOTES Data Sets — footnote NUMERIC facts
+    # (consolidated / undimensioned, curated tag set: PBO, plan assets, funded
+    # status, service cost, employer contributions, discount rate). Grain = one
+    # fact per filing (`adsh`) / tag / period-end (`ddate`) / duration (`qtrs`).
+    # `period` = source zip tag (quarterly "YYYYqQ" or monthly "YYYY_MM") for
+    # incremental skip.
+    TableSpec("notes_num", "notes_num.parquet",
+              ("adsh", "tag", "ddate", "qtrs"), "extract", date_col="ddate",
+              date_type_cols=("ddate", "filed")),
+    # SEC notes NARRATIVE TEXT blocks (high-signal notes only), stored raw for
+    # later embedding / sentiment. Same grain as notes_num; `value` is the text.
+    TableSpec("notes_text", "notes_text.parquet",
+              ("adsh", "tag", "ddate", "qtrs"), "extract", date_col="ddate",
+              date_type_cols=("ddate", "filed")),
 ]
 
 # --------------------------------------------------------------------------- #

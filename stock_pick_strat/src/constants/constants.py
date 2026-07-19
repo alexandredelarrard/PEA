@@ -32,6 +32,18 @@ SEC_FINSTMT_URL_TEMPLATE = (
 SEC_INSIDER_FIRST_YEAR = 2011      # earliest insider-transactions data set
 SEC_FINSTMT_FIRST_YEAR = 2009      # earliest financial-statement data set (2009q2)
 
+# SEC "Financial Statement AND Notes" data sets: like finstmt but ALSO carry the
+# NOTES (footnote) facts — numeric (num.tsv, incl. footnote PBO / plan-asset /
+# funded-status detail) AND the narrative TEXT blocks (txt.tsv, for embedding /
+# sentiment). Files are .tsv (not .txt). {period} is either quarterly "YYYYqQ" OR
+# monthly "YYYY_MM": the SEC now consolidates months into a quarter after ~1 year,
+# so at any time only the last ~12 months exist as monthly and older data as
+# quarterly (the fetcher probes both and skips 404s). ~300-450MB per file.
+SEC_FINNOTES_URL_TEMPLATE = (
+    "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/"
+    "{period}_notes.zip")
+SEC_FINNOTES_FIRST_YEAR = 2009     # earliest notes data set (2009q1)
+
 # SEC Fails-to-Deliver: semi-monthly settlement-fails files ({period} = "YYYYMMa" for
 # settlement dates 1-15, "YYYYMMb" for 16-end). Daily grain (ticker x settlement date).
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"

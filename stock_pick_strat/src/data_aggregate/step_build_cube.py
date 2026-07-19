@@ -166,6 +166,12 @@ class StepBuildCube(Step):
             self._log.warning("No pension_facts (Financial Statement Data Sets) -> the "
                               "companyfacts pensionDeficit is used for off-BS leverage.")
 
+        self.notes_num = self._load_or_none("notes_num")
+        if self.notes_num is None:
+            self._log.warning("No notes_num (Financial Statement & Notes sets) -> footnote "
+                              "pension detail (PBO/plan assets/funded ratio) skipped "
+                              "(run fetch_financial_notes).")
+
         self.insider = self._load_or_none("insider_transactions")
         if self.insider is None:
             self._log.warning("No insider_transactions -> insider-trading features skipped "
@@ -306,6 +312,7 @@ class StepBuildCube(Step):
             hist_min_periods=int(hist.get("min_periods", 252)),
             earnings_history=getattr(self, "earnings", None),   # PEGY projected-growth term
             pension_facts=getattr(self, "pension_facts", None), # bulk off-BS pension deficit
+            notes_num=getattr(self, "notes_num", None),         # footnote PBO / plan assets
         )
         if fund_panel.empty:
             self._log.warning("No fundamental features built (missing fundamentals).")

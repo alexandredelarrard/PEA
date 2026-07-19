@@ -14,6 +14,7 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals import fetch_fundame
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
+from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 
 
 class StepExtractFundamentals(Step):
@@ -33,9 +34,8 @@ class StepExtractFundamentals(Step):
         # Officer / director / 10%-owner transactions from the Insider Transactions sets:
         fetch_insider_transactions(self._context, tickers=tickers)
 
-        # TODO: fail to deliver stock
-        # https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data
-
-        # TODO: financial-statement NOTES data sets (footnote PBO / plan assets /
-        # funded status) for fuller pension detail -- heavier (~1GB+/qtr) follow-up.
-        # https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets
+        # Footnote (notes) pension detail + note TEXT from the Financial Statement
+        # AND Notes data sets -> notes_num / notes_text. Heavy (~26GB back-fill at
+        # notes_years_history=15); own cache dir + config knob. (fetch_fails_to_deliver
+        # lives in StepExtractPrices, alongside the other price/settlement signals.)
+        fetch_financial_notes(self._context, tickers=tickers)

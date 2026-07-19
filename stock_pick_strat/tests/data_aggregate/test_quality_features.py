@@ -266,6 +266,51 @@ def test_pension_adjusted_ev_and_overhang_leverage():
           f"EV=770 (incl. pension) -> ebitda_to_ev={50/770:.4f} < 50/690 (no pension). Validated.")
 
 
+def test_pension_footnote_features_from_notes_num():
+    """Financial Statement & NOTES sets (`notes_num`) supply the footnote PBO and
+    plan assets the primary statements never expose:
+      * pension_funded_ratio = plan assets / PBO,
+      * pbo_to_mcap, pension_underfunding_to_mcap (scale vs equity value),
+      * and the footnote funded status (PBO - assets) GAP-FILLS the recognized
+        pension deficit -> pension_retirement_liability + True EV for a name that
+        has NO balance-sheet net-liability / companyfacts pension tag."""
+    # No pensionDeficit / pension_facts here -> the ONLY pension source is the footnote.
+    fh = pd.DataFrame([{"ticker": "U", "as_of": "2019-12-31",
+                        "sharesOutstanding": 100.0, "ebitda": 50.0, "cash": 10.0,
+                        "longTermDebt": 200.0}])
+    idx = pd.bdate_range("2020-01-02", periods=30)
+    close = pd.DataFrame({"U": 5.0}, index=idx)          # market cap = 100 * 5 = 500
+    notes_num = pd.DataFrame([
+        {"ticker": "U", "tag": "DefinedBenefitPlanBenefitObligation",
+         "ddate": "2019-09-30", "qtrs": 0, "value": 1000.0, "filed": "2019-11-15"},
+        {"ticker": "U", "tag": "DefinedBenefitPlanFairValueOfPlanAssets",
+         "ddate": "2019-09-30", "qtrs": 0, "value": 600.0, "filed": "2019-11-15"},
+        # a DURATION fact (qtrs>0) must be ignored by the instant PBO/asset reshape:
+        {"ticker": "U", "tag": "DefinedBenefitPlanBenefitObligation",
+         "ddate": "2019-09-30", "qtrs": 4, "value": 99.0, "filed": "2019-11-15"},
+    ])
+    F = _derived_fields(fh, idx, close, notes_num=notes_num)
+    d = idx[-1]
+    assert abs(F["pension_funded_ratio"].loc[d, "U"] - 0.6) < 1e-9          # 600 / 1000
+    assert abs(F["pbo_to_mcap"].loc[d, "U"] - 1000.0 / 500.0) < 1e-9        # 2.0
+    assert abs(F["pension_underfunding_to_mcap"].loc[d, "U"] - 400.0 / 500.0) < 1e-9  # 0.8
+    # footnote deficit (1000-600=400) fills the recognized pension deficit + EV:
+    assert abs(F["pension_retirement_liability"].loc[d, "U"] - 400.0) < 1e-6
+    assert abs(F["pension_overhang_leverage"].loc[d, "U"] - 400.0 / 500.0) < 1e-9
+    # True EV = 500 mcap + 200 debt + 400 pension - 10 cash = 1090
+    assert abs(F["ebitda_to_ev"].loc[d, "U"] - 50.0 / 1090.0) < 1e-6
+
+    # absent notes_num -> footnote features simply don't appear (no crash)
+    F0 = _derived_fields(fh, idx, close)
+    assert "pension_funded_ratio" not in F0 and "pbo_to_mcap" not in F0
+
+    print("\n=== SANITY CHECK: pension FOOTNOTE features (notes_num) ===")
+    print(f"  PBO=1000, plan assets=600 -> funded_ratio=0.60, pbo_to_mcap=2.0, "
+          f"underfunding/mcap=0.80; footnote deficit 400 (no other source) fills "
+          f"pension_retirement_liability=400 & EV=1090 -> ebitda_to_ev={50/1090:.4f}. "
+          f"Duration (qtrs>0) PBO ignored. Absent notes_num -> features skipped. Validated.")
+
+
 def test_absent_new_tags_do_not_break_existing_factors():
     """Before the DB is re-fetched the new tags are absent; the helpers must still
     produce the existing factors (empty daily frame -> component contributes 0)."""

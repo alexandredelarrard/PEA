@@ -17,7 +17,8 @@ OpenAI (DEF 14A extraction + embeddings), pytest.
 stock_pick_strat/
 ├── configs/*.yml           # OmegaConf configs — one per pipeline stage
 ├── data/                   # NON-tabular artifacts ONLY: sec_bulk_cache/ (companyfacts JSON + 13F zips),
-│                           #   sec_filings_text/, output/{models,diagnostics}, sector_peers.json
+│                           #   sec_{financial_statements,financial_notes,fails_to_deliver}/ (bulk-set zips;
+│                           #   notes sets ~26GB @ 15y), output/{models,diagnostics}, sector_peers.json
 ├── sql/schema.sql          # generated DDL (CREATE TABLE IF NOT EXISTS + PKs), run on DB init
 ├── docker-compose.yml      # Postgres 16 + persistent volume   (+ Dockerfile)
 ├── scripts/                # schema generator, parquet→DB migrator

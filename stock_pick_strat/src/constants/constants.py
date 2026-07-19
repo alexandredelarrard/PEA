@@ -21,6 +21,15 @@ SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 
+# --------------------------------------------------------------------------- #
+# Google Trends (unofficial API — retail-attention proxy). The explore call    #
+# returns widget tokens; the multiline call returns the interest-over-time     #
+# series for a token. Priming the home URL first sets the required NID cookie.  #
+# --------------------------------------------------------------------------- #
+GOOGLE_TRENDS_HOME_URL = "https://trends.google.com/?geo=US"
+GOOGLE_TRENDS_EXPLORE_URL = "https://trends.google.com/trends/api/explore"
+GOOGLE_TRENDS_MULTILINE_URL = "https://trends.google.com/trends/api/widgetdata/multiline"
+
 SEC_FORM13F_URL_DICT = {
     "2013q2": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2013q2_form13f.zip",
     "2013q3": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2013q3_form13f.zip",

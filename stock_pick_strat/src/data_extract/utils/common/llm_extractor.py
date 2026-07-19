@@ -51,18 +51,20 @@ class LLMExtractor:
         self._temperature = temperature
         self._cache = cache
 
-    def extract(self, schema: Type[T], text: str) -> T:
+    def extract(self, schema: Type[T], text: str, instructions: str | None = None) -> T:
         """Extract structured data from text according to the Pydantic schema.
 
         The text is truncated to max_chars before being sent. For long documents
         (e.g. full DEF 14A filings), pre-slice the relevant sections upstream via
-        prepare_def14a_sections() to avoid truncating important tables.
+        prepare_def14a_sections() to avoid truncating important tables. Pass
+        `instructions` to override the generic system prompt with a task-tailored one
+        (more accurate, and cached per (model, schema) so it stays cheap).
         """
         truncated = text[: self._max_chars]
         kwargs: dict = {
             "model": self._model,
             "input": truncated,
-            "instructions": _SYSTEM_PROMPT,
+            "instructions": instructions or _SYSTEM_PROMPT,
             "text_format": schema
         }
         if self._cache:

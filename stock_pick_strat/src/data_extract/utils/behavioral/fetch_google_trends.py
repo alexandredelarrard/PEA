@@ -1,39 +1,65 @@
 """
-fetch_google_trends.py  (src/data_extract/utils/fetch_google_trends.py)
------------------------------------------------------------------------
-Google Trends search-interest per company (via the optional `pytrends` library).
-A RETAIL-ATTENTION proxy. Saved long [date, ticker, search_interest].
+fetch_google_trends.py  (src/data_extract/utils/behavioral/fetch_google_trends.py)
+----------------------------------------------------------------------------------
+Google Trends search-interest per company (a RETAIL-ATTENTION proxy). Saved long
+[date, ticker, search_interest] to the `google_trends` DB table.
 
-CAVEATS (research-grade signal):
-  * Google Trends returns interest normalized 0-100 WITHIN the requested window,
-    and the series is REVISED over time -> it is not perfectly point-in-time.
-    Use it as an attention proxy, not a precise as-of value; the attention_features
-    builder only uses within-name relative spikes, which are the robust part.
-  * Weekly resolution and heavy rate-limiting -> we pause between queries and skip
-    failures. `pytrends` is optional; if not installed, extraction is skipped.
+Why this is not a thin `pytrends` wrapper:
+  * ANTI-429. Google throttles the unofficial Trends API by TLS/JA3 fingerprint, so
+    rotating User-Agent headers on top of `requests` (which always looks like Python)
+    gets blocked within ~20 calls. We instead drive the API with `curl_cffi`, which
+    IMPERSONATES a real Chrome TLS handshake — the single biggest lever against the
+    fast 429 — plus a primed NID cookie, browser-like headers, jittered pacing,
+    periodic session refresh, and exponential backoff on 429 (via call_with_retries).
+  * WEEKLY over 15 YEARS. Trends returns weekly buckets only for windows of ~8 months
+    to 5 years; a 15-year request silently degrades to MONTHLY. So we fetch overlapping
+    ~4-year WEEKLY windows and stitch them into one continuous series, chain-scaling
+    adjacent chunks by their overlap (Trends re-normalises each window 0-100
+    independently), then rescale the whole series to 0-100.
 
-Network/library access is isolated in `_interest_over_time`; the parser
-(`_df_to_long`) is pure and unit-tested.
+CAVEATS (research-grade signal): the series is normalised within the requested window
+and revised over time, so it is an attention proxy, not a precise point-in-time value;
+the attention_features builder only uses within-name relative spikes (the robust part).
+
+Network access is isolated in `_TrendsClient`; the stitching / windowing helpers
+(`_weekly_windows`, `_stitch_chunks`, `_scale_to_reference`) are pure and unit-tested.
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import random
 import time
+from datetime import datetime, timezone
+
 import pandas as pd
 from tqdm import tqdm
-import re
 
+from src.constants.constants import (
+    GOOGLE_TRENDS_EXPLORE_URL,
+    GOOGLE_TRENDS_HOME_URL,
+    GOOGLE_TRENDS_MULTILINE_URL,
+)
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from pytrends.request import TrendReq
 
+try:                                            # TLS-impersonating transport (anti-429)
+    from curl_cffi import requests as _cffi_requests
+except Exception:                               # pragma: no cover - optional dependency
+    _cffi_requests = None
 
-# Anti-429 (Google throttles scrapers hard): rotate a realistic desktop User-Agent
-# per request, send full browser-like headers with a Referer, use a FRESH TrendReq
-# (fresh session/cookie) each call so no sticky cookie fingerprint builds up, add
-# pytrends' native retry/backoff, and jitter the delay between queries. See
-# cloro.dev / pytrends issues #243, #535.
+logger = logging.getLogger(__name__)
+
+# Env toggles: verify=0 only for sandboxes behind an SSL-inspecting proxy whose CA is
+# absent from the venv trust store; the impersonation target can be pinned if Google
+# starts flagging a specific Chrome build.
+_VERIFY = os.getenv("TRENDS_VERIFY", "1") != "0"
+_IMPERSONATE = os.getenv("TRENDS_IMPERSONATE", "chrome124")
+
+# Anti-429: rotate a realistic desktop User-Agent + full browser-like headers on top of
+# the curl_cffi TLS impersonation (belt and suspenders).
 _USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
@@ -41,6 +67,20 @@ _USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
+
+# Weekly-resolution ceiling is ~5y; use 4y windows with 1y overlap so adjacent chunks
+# share ~1y of weeks to chain-scale on.
+_CHUNK_YEARS = 4
+_OVERLAP_YEARS = 1
+
+
+class TrendsRateLimited(RuntimeError):
+    """Raised on an HTTP 429 from Google Trends (message carries '429' so
+    call_with_retries treats it as rate-limited and backs off)."""
+
+
+class TrendsError(RuntimeError):
+    """Any other non-recoverable Google Trends response (bad status / unparseable)."""
 
 
 def _random_header() -> dict:
@@ -54,32 +94,186 @@ def _random_header() -> dict:
         "Connection": "keep-alive",
     }
 
-def _df_to_long(interest: pd.DataFrame, keyword: str, ticker: str) -> pd.DataFrame:
-    """pytrends interest_over_time() frame -> [date, ticker, search_interest]. Pure."""
-    if interest is None or interest.empty or keyword not in interest.columns:
-        return pd.DataFrame(columns=["date", "ticker", "search_interest"])
-    s = interest[keyword]
-    if "isPartial" in interest.columns:            # drop the still-forming last bucket
-        s = s[~interest["isPartial"].astype(bool)]
-    if s.empty:
-        return pd.DataFrame(columns=["date", "ticker", "search_interest"])
-    return pd.DataFrame({
-        "date": pd.to_datetime(s.index).tz_localize(None).normalize(),
-        "ticker": ticker,
-        "search_interest": s.to_numpy(dtype="float64"),
-    })
+
+class _TrendsClient:
+    """Minimal Google Trends client over a curl_cffi (TLS-impersonating) session.
+
+    Implements the two-step public flow: `explore` returns widget tokens, then
+    `widgetdata/multiline` returns the interest-over-time series for the TIMESERIES
+    widget's token. A primed NID cookie is required, so the home URL is fetched once
+    per session. Raises `TrendsRateLimited` on 429 so callers can back off.
+    """
+
+    def __init__(self, verify: bool = True, impersonate: str = "chrome124",
+                 timeout: int = 30) -> None:
+        if _cffi_requests is None:
+            raise ImportError("curl_cffi is required for Google Trends extraction "
+                              "(pip install curl_cffi)")
+        self._verify = verify
+        self._impersonate = impersonate
+        self._timeout = timeout
+        self._session = None
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Start a fresh impersonated session and re-prime the NID cookie (call
+        periodically so no single session fingerprint accumulates throttling)."""
+        self._session = _cffi_requests.Session(
+            impersonate=self._impersonate, verify=self._verify, timeout=self._timeout)
+        self._session.headers.update(_random_header())
+        try:
+            self._session.get(GOOGLE_TRENDS_HOME_URL)     # sets NID cookie
+        except Exception as e:                            # noqa: BLE001
+            logger.debug("Trends cookie priming failed (continuing): %s", e)
+
+    @staticmethod
+    def _decode(text: str) -> dict:
+        """Trends responses are JSON prefixed with an anti-JSON-hijack guard
+        (")]}',\\n"); strip everything before the first brace and parse."""
+        i = text.find("{")
+        return json.loads(text[i:]) if i >= 0 else {}
+
+    def _get(self, url: str, params: dict):
+        resp = self._session.get(url, params=params)
+        if resp.status_code == 429:
+            raise TrendsRateLimited(f"429 Too Many Requests from {url}")
+        if resp.status_code != 200:
+            raise TrendsError(f"HTTP {resp.status_code} from {url}")
+        return resp
+
+    def interest_over_time(self, keyword: str, timeframe: str, geo: str = "") -> pd.DataFrame:
+        """Return [date, search_interest] (weekly for ~8mo-5y windows). Empty frame
+        when the term has no measurable interest for the window."""
+        explore = self._get(GOOGLE_TRENDS_EXPLORE_URL, {
+            "hl": "en-US", "tz": "0",
+            "req": json.dumps({"comparisonItem": [{"keyword": keyword, "geo": geo,
+                                                   "time": timeframe}],
+                               "category": 0, "property": ""}),
+        })
+        widgets = self._decode(explore.text).get("widgets", [])
+        ts = next((w for w in widgets if str(w.get("id", "")).startswith("TIMESERIES")), None)
+        if ts is None:
+            return _empty_series()
+        data = self._get(GOOGLE_TRENDS_MULTILINE_URL, {
+            "hl": "en-US", "tz": "0",
+            "req": json.dumps(ts["request"]), "token": ts["token"],
+        })
+        timeline = self._decode(data.text).get("default", {}).get("timelineData", [])
+        rows = [
+            (pd.Timestamp(datetime.fromtimestamp(int(p["time"]), tz=timezone.utc)).tz_localize(None).normalize(),
+             float(p["value"][0]))
+            for p in timeline
+            if p.get("value") and not p.get("isPartial")
+        ]
+        return pd.DataFrame(rows, columns=["date", "search_interest"])
 
 
-def _interest_over_time(keyword: str, timeframe: str):
-    """Network/lib call, isolated for mocking. Fresh TrendReq (fresh session/cookie)
-    + rotated header + pytrends native retry/backoff each call, to dodge 429s."""
-    pt = TrendReq(hl="en-US", tz=0, timeout=(10, 25), retries=2, backoff_factor=0.5,
-                  requests_args={"headers": _random_header()})
-    pt.build_payload([keyword], timeframe=timeframe)
-    return pt.interest_over_time()
+def _empty_series() -> pd.DataFrame:
+    return pd.DataFrame(columns=["date", "search_interest"])
 
 
-def _load_existing(context: Context):
+# --------------------------------------------------------------------------- #
+# Pure helpers: windowing, stitching, incremental re-scaling                   #
+# --------------------------------------------------------------------------- #
+def _weekly_windows(years: int, end: pd.Timestamp | None = None,
+                    chunk_years: int = _CHUNK_YEARS,
+                    overlap_years: int = _OVERLAP_YEARS) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Overlapping [start, end] windows (each <= `chunk_years`, so Trends returns
+    WEEKLY data) covering `years` back from `end`. Adjacent windows overlap by
+    `overlap_years` so their series can be chain-scaled onto a common level."""
+    end = (end or pd.Timestamp.today()).normalize()
+    start0 = end - pd.DateOffset(years=years)
+    step = pd.DateOffset(years=chunk_years - overlap_years)
+    windows, s = [], start0
+    while True:
+        e = min(end, s + pd.DateOffset(years=chunk_years))
+        windows.append((s, e))
+        if e >= end:
+            break
+        s = s + step
+    return windows
+
+
+def _stitch_chunks(chunks: list[pd.DataFrame]) -> pd.DataFrame:
+    """Chain-scale independently-normalised overlapping weekly chunks into one
+    continuous series, then rescale to 0-100.
+
+    Chunks are ordered oldest->newest and anchored on the NEWEST (its scale = 1).
+    Each older chunk is multiplied by the ratio of the newer chunk's values to its
+    own over their shared weeks, so levels line up across the seams. In overlaps the
+    newer chunk's (already-anchored) value wins.
+    """
+    chunks = [c.dropna(subset=["search_interest"]).sort_values("date")
+              for c in chunks if c is not None and not c.empty]
+    chunks = [c for c in chunks if not c.empty]
+    if not chunks:
+        return _empty_series()
+    chunks.sort(key=lambda c: c["date"].min())
+    n = len(chunks)
+    scale = [1.0] * n
+    for i in range(n - 2, -1, -1):
+        a = chunks[i].set_index("date")["search_interest"]
+        b = chunks[i + 1].set_index("date")["search_interest"]
+        common = a.index.intersection(b.index)
+        if len(common) >= 2:
+            va, vb = a.loc[common], b.loc[common]
+            mask = (va > 0) & (vb > 0)
+            if int(mask.sum()) >= 2 and va[mask].mean() > 0:
+                scale[i] = scale[i + 1] * (vb[mask].mean() / va[mask].mean())
+                continue
+        scale[i] = scale[i + 1]                 # no usable overlap -> carry level
+    merged: dict[pd.Timestamp, float] = {}
+    for i, c in enumerate(chunks):              # oldest->newest: newer overwrites overlaps
+        for d, v in zip(c["date"], c["search_interest"]):
+            merged[d] = v * scale[i]
+    out = pd.DataFrame(sorted(merged.items()), columns=["date", "search_interest"])
+    mx = out["search_interest"].max()
+    if mx and mx > 0:
+        out["search_interest"] = (out["search_interest"] / mx * 100).round(2).clip(0, 100)
+    return out.reset_index(drop=True)
+
+
+def _scale_to_reference(new: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
+    """Scale a freshly-fetched window (`new`, 0-100 within itself) onto the level of
+    the already-stored series (`ref`) using their overlapping weeks, so appended
+    weeks are continuous with history. No-op if there is too little overlap."""
+    if new is None or new.empty or ref is None or ref.empty:
+        return new
+    a = new.set_index("date")["search_interest"]
+    b = ref.set_index("date")["search_interest"]
+    common = a.index.intersection(b.index)
+    if len(common) >= 2:
+        va, vb = a.loc[common], b.loc[common]
+        mask = (va > 0) & (vb > 0)
+        if int(mask.sum()) >= 2 and va[mask].mean() > 0:
+            factor = vb[mask].mean() / va[mask].mean()
+            new = new.copy()
+            new["search_interest"] = (new["search_interest"] * factor).round(2)
+    return new
+
+
+def _fetch_weekly_history(client: _TrendsClient, keyword: str, years: int,
+                          pause: float, printer=logger.info) -> pd.DataFrame:
+    """Fetch overlapping weekly windows across `years` and stitch them (see module
+    docstring). Each window retries with backoff on 429."""
+    chunks: list[pd.DataFrame] = []
+    for start, end in _weekly_windows(years):
+        timeframe = f"{start.date()} {end.date()}"
+        try:
+            df = call_with_retries(
+                lambda tf=timeframe: client.interest_over_time(keyword, tf),
+                retries=4, base_wait=45.0, label=f"trends {keyword} {timeframe}",
+                printer=printer)
+        except Exception as e:                  # noqa: BLE001 - skip a window, keep the rest
+            printer(f"trends {keyword} {timeframe}: window failed ({e})")
+            df = None
+        if df is not None and not df.empty:
+            chunks.append(df)
+        time.sleep(pause + random.uniform(1.0, 4.0))
+    return _stitch_chunks(chunks)
+
+
+def _load_existing(context: Context) -> pd.DataFrame | None:
     df = context.store.load("google_trends")
     if df.empty:
         return None
@@ -87,63 +281,91 @@ def _load_existing(context: Context):
     return df
 
 
+def _clean_name(raw: str) -> str:
+    """Company display name -> search keyword: drop parenthetical suffixes/qualifiers."""
+    import re
+    return re.sub(r"\s*\([^)]*\)", "", str(raw)).strip()
+
+
 def fetch_google_trends(context: Context, tickers: list[str] | None = None,
-                        timeframe: str = "all", pause: float = 1.0,
-                        refetch_window_days: int = 7) -> pd.DataFrame:
-    """Download search interest per company name; cache to parquet.
+                        pause: float = 2.0, refetch_window_days: int = 7,
+                        verify: bool | None = None,
+                        impersonate: str | None = None) -> pd.DataFrame:
+    """Download weekly search interest per company over `years_history` and upsert to
+    the `google_trends` DB table, one ticker at a time.
 
-    * Skips cleanly if `pytrends` is not installed.
-    * INCREMENTAL: a ticker whose cached data is within `refetch_window_days` of
-      today is skipped (Trends is weekly and re-normalizes the whole window, so we
-      skip current names rather than request a sub-range); only ex-weeks after the
-      cached max are appended for the rest.
-    * RATE LIMIT (429): instead of skipping the ticker, WAIT and retry with
-      exponential backoff (>=3 retries) via call_with_retries.
+    * WEEKLY / 15y: a ticker with no (or shallow) history gets a full chunked+stitched
+      backfill; a ticker already deep and current is skipped; otherwise only new weeks
+      after its stored max are appended (re-scaled onto the stored level).
+    * ANTI-429: curl_cffi TLS impersonation + primed cookie + jitter + periodic session
+      refresh + exponential backoff. Skips cleanly if curl_cffi is unavailable.
     """
-    names = context.store.load("sp500_tickers")
-    names['name'] = names['name'].apply(lambda x: re.sub(r"\s*\([^)]*\)", "", x).strip())
+    years = context.config.data_extract.years_history
+    verify = _VERIFY if verify is None else verify
+    impersonate = impersonate or _IMPERSONATE
 
+    names = context.store.load("sp500_tickers")
+    names["name"] = names["name"].apply(_clean_name)
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
 
     existing = _load_existing(context)
-    last_by_ticker = ({} if existing is None
-                      else existing.groupby("ticker")["date"].max().to_dict())
+    if existing is None:
+        span: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
+    else:
+        agg = existing.groupby("ticker")["date"].agg(["min", "max"])
+        span = {t: (r["min"], r["max"]) for t, r in agg.iterrows()}
     today = pd.Timestamp.today().normalize()
+    deep_before = today - pd.DateOffset(years=years - 1)      # history counts as "deep" if it reaches here
 
-    frames, skipped = [], 0
-    for _, row in tqdm(list(names.iterrows()), desc="Google Trends"):
+    try:
+        client = _TrendsClient(verify=verify, impersonate=impersonate)
+    except ImportError as e:
+        context.log.warning("Google Trends extraction skipped: %s", e)
+        return existing if existing is not None else _empty_long()
+
+    total_new, touched, skipped = 0, 0, 0
+    for i, (_, row) in enumerate(tqdm(list(names.iterrows()), desc="Google Trends")):
         tkr, keyword = row["ticker"], str(row["name"])
-        last = last_by_ticker.get(tkr)
-        if last is not None and (today - last).days <= refetch_window_days:
-            skipped += 1                        # already current -> skip
+        mn, mx = span.get(tkr, (None, None))
+        deep = mn is not None and mn <= deep_before
+        current = mx is not None and (today - mx).days <= refetch_window_days
+        if deep and current:
+            skipped += 1
             continue
-        try:
-            # wait + retry on 429 (>=3 retries) rather than dropping the ticker
-            interest = call_with_retries(
-                lambda: _interest_over_time(keyword, timeframe),
-                retries=3, base_wait=60.0, label=f"trends {tkr}")
-        except Exception as e:
-            print(f"Trends fetch failed for {tkr} ({keyword}) after retries: {e}")
-            continue
-        long = _df_to_long(interest, keyword, tkr)
-        if last is not None and not long.empty:
-            long = long[long["date"] > last]     # append only new weeks
-        if not long.empty:
-            frames.append(long)
-        time.sleep(pause + random.uniform(2.0, 8.0))   # jitter -> less bot-like
-    print(f"Google Trends: {skipped}/{len(names)} tickers already current (skipped).")
 
-    parts = [df for df in (existing, *frames) if df is not None and not df.empty]
-    if not parts:
-        print("No Google Trends data available.")
-        return existing if existing is not None else pd.DataFrame(
-            columns=["date", "ticker", "search_interest"])
-    out = (pd.concat(parts, ignore_index=True)
-           .drop_duplicates(subset=["ticker", "date"], keep="last")
-           .sort_values(["ticker", "date"]).reset_index(drop=True))
-    new = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    if not new.empty:
-        context.store.save("google_trends", new)
-    print(f"Saved {len(new)} new Google Trends rows to DB table 'google_trends'")
-    return out
+        try:
+            if not deep:                                     # full weekly backfill
+                series = _fetch_weekly_history(client, keyword, years, pause,
+                                               printer=context.log.info)
+            else:                                            # deep but stale -> append new weeks
+                recent = call_with_retries(
+                    lambda: client.interest_over_time(keyword, "today 5-y"),
+                    retries=4, base_wait=45.0, label=f"trends {tkr} recent",
+                    printer=context.log.info)
+                ref = existing[existing["ticker"] == tkr][["date", "search_interest"]]
+                series = _scale_to_reference(recent, ref)
+                series = series[series["date"] > mx] if not series.empty else series
+        except Exception as e:                               # noqa: BLE001
+            context.log.warning("Trends fetch failed for %s (%s): %s", tkr, keyword, e)
+            continue
+
+        if series is not None and not series.empty:
+            out = series.copy()
+            out["ticker"] = tkr
+            context.store.save("google_trends", out[["date", "ticker", "search_interest"]])
+            total_new += len(out)
+            touched += 1
+
+        if (i + 1) % 15 == 0:                                # periodic fresh fingerprint
+            client.refresh()
+        time.sleep(pause + random.uniform(2.0, 6.0))
+
+    context.log.info("Google Trends: +%d rows across %d tickers (%d already current).",
+                     total_new, touched, skipped)
+    out = context.store.load("google_trends")
+    return out if not out.empty else _empty_long()
+
+
+def _empty_long() -> pd.DataFrame:
+    return pd.DataFrame(columns=["date", "ticker", "search_interest"])

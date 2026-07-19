@@ -73,6 +73,9 @@ build_cube:
                      "-f_goodwill_impairment_intensity_xs"]
       ai_leverage: [f_sga_intensity_vs_peers, "-f_revenue_per_employee_vs_peers",
                     f_rd_intensity_vs_peers, f_capitalized_software_intensity_vs_peers]
+      # insider open-market buying (Forms 3/4/5): net buying + cluster breadth = bullish
+      insider: [f_insider_net_buy_ratio_xs, f_insider_buy_sell_count_ratio_xs,
+                f_insider_buy_count_xs, f_insider_net_buy_to_mcap_xs]
       technical: [mom_12_1, ma_ratio_50, "-vol_63", "-max_21", "-ret_skew_126",
                   "-idio_vol_63", "-downside_vol_63"]
 

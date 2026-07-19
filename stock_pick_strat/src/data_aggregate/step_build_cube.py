@@ -17,6 +17,7 @@ from src.data_aggregate.utils.employee_features import build_employee_feature_pa
 from src.data_aggregate.utils.dividend_features import build_dividend_feature_panel
 from src.data_aggregate.utils.attention_features import build_attention_feature_panel
 from src.data_aggregate.utils.institutional_features import build_institutional_feature_panel
+from src.data_aggregate.utils.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.short_interest_features import build_short_interest_feature_panel
 from src.data_aggregate.utils.composites import build_composites as build_composite_signals
 from src.data_aggregate.utils.factors import (
@@ -55,6 +56,7 @@ class StepBuildCube(Step):
         self.build_dividend_features()
         self.build_attention_features()
         self.build_institutional_features()
+        self.build_insider_features()
         self.build_short_interest_features()
         self.build_composite_signals()
         self.aggregate_cube()
@@ -158,6 +160,16 @@ class StepBuildCube(Step):
         if self.employees is None:
             self._log.warning("No employee-count history -> workforce features skipped "
                               "(run fetch_employees; needs FMP_API_KEY).")
+
+        self.pension_facts = self._load_or_none("pension_facts")
+        if self.pension_facts is None:
+            self._log.warning("No pension_facts (Financial Statement Data Sets) -> the "
+                              "companyfacts pensionDeficit is used for off-BS leverage.")
+
+        self.insider = self._load_or_none("insider_transactions")
+        if self.insider is None:
+            self._log.warning("No insider_transactions -> insider-trading features skipped "
+                              "(run fetch_insider_transactions).")
 
         self.dividends = self._load_or_none("dividends")
         if self.dividends is None:
@@ -288,6 +300,7 @@ class StepBuildCube(Step):
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
             earnings_history=getattr(self, "earnings", None),   # PEGY projected-growth term
+            pension_facts=getattr(self, "pension_facts", None), # bulk off-BS pension deficit
         )
         if fund_panel.empty:
             self._log.warning("No fundamental features built (missing fundamentals).")
@@ -466,6 +479,26 @@ class StepBuildCube(Step):
         added = len(self.feature_panel.columns) - 2 - before
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s institutional (13F) features (row coverage %.1f%%)",
+                       added, 100 * cov)
+
+    def build_insider_features(self):
+        """Insider-trading features (trailing-window net open-market buying, buy/sell
+        breadth, cluster-buy count, size-scaled net conviction) from Forms 3/4/5.
+        Point-in-time on the filing date (Form 4 filed within ~2 business days)."""
+        panel = build_insider_feature_panel(
+            getattr(self, "insider", None), self.peers, self.stock_close.index,
+            shares_out_history=self.fundamentals, stock_close=self.stock_close,
+        )
+        if panel.empty:
+            self._log.warning("No insider-trading features built.")
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(
+            panel, on=["date", "ticker"], how="left"
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s insider-trading features (row coverage %.1f%%)",
                        added, 100 * cov)
 
     def build_short_interest_features(self):

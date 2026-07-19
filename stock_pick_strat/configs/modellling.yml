@@ -69,6 +69,7 @@ inputs:
     - comp_accounting_quality
     - comp_ma_digestion
     - comp_ai_leverage
+    - comp_insider
     # - comp_technical
     # - comp_value
 
@@ -380,6 +381,7 @@ inputs:
       - comp_accounting_quality: 1    # cleaner books (low Beneish/one-offs/WC drift) -> higher
       - comp_ma_digestion: 1          # acquisitions earning their cost of capital -> higher
       - comp_ai_leverage: 1           # best-positioned AI adopter within its sector -> higher
+      - comp_insider: 1               # net open-market insider buying / cluster breadth -> higher
       
       - f_employee_growth_xs: 1
       - f_sbc_to_ocf_xs: 1

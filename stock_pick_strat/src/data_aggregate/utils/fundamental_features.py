@@ -389,11 +389,51 @@ def _beneish_m_score(daily, idx: pd.DatetimeIndex) -> pd.DataFrame:
     return m.replace([np.inf, -np.inf], np.nan)
 
 
-def _forensic_fields(daily, idx: pd.DatetimeIndex) -> dict:
+_NET_PENSION_TAGS = (
+    "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",  # primary
+    "DefinedBenefitPensionPlanLiabilitiesNoncurrent",                          # variant
+)
+
+
+def _pension_deficit_daily(pension_facts: pd.DataFrame | None,
+                           idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """Universe-wide recognized net DB-pension deficit from the Financial Statement
+    Data Sets (`pension_facts` table), point-in-time on the FILING date, taking the
+    latest period-end per filing. Primary net-liability tag preferred, the pension-
+    only variant fills gaps. Empty frame if the table is unavailable."""
+    if (pension_facts is None or pension_facts.empty
+            or "tag" not in pension_facts.columns or "ticker" not in pension_facts.columns):
+        return pd.DataFrame(index=idx)
+    pf = pension_facts.copy()
+    pf["as_of"] = pd.to_datetime(pf.get("filed"), errors="coerce")
+    pf["value"] = pd.to_numeric(pf.get("value"), errors="coerce")
+    if "qtrs" in pf.columns:                          # instant (balance-sheet) facts only
+        pf = pf[pd.to_numeric(pf["qtrs"], errors="coerce").fillna(0) == 0]
+    pf = pf.dropna(subset=["as_of", "value", "ticker"])
+
+    def _one(tag: str) -> pd.DataFrame:
+        d = pf[pf["tag"] == tag]
+        if d.empty:
+            return pd.DataFrame(index=idx)
+        # sort so the latest period-end (ddate) wins within a filing (aggfunc='last')
+        d = d.sort_values(["ticker", "as_of", "ddate"]).rename(columns={"value": "pension_deficit"})
+        return fundamentals_to_daily(d, "pension_deficit", idx)
+
+    prim, var = _one(_NET_PENSION_TAGS[0]), _one(_NET_PENSION_TAGS[1])
+    if prim.empty:
+        return var
+    if var.empty:
+        return prim
+    return prim.combine_first(var)
+
+
+def _forensic_fields(daily, idx: pd.DatetimeIndex,
+                     pension_deficit: pd.DataFrame | None = None) -> dict:
     """#5 -- accounting-quality / hidden-leverage red flags: working-capital days
     and their year-over-year drift (supplier-funded growth = rising DPO; channel
     stuffing = rising DSO), off-balance-sheet-INCLUSIVE net leverage (adds lease
-    liabilities), and the Beneish M-score. All inputs already extracted."""
+    liabilities + pension deficit), and the Beneish M-score. All inputs already
+    extracted; `pension_deficit` is the bulk Financial-Statement-Data-Sets frame."""
     F: dict[str, pd.DataFrame] = {}
     rev, cogs = daily("totalRevenue"), daily("costOfRevenue")
     ar, ap, inv = daily("accountsReceivable"), daily("accountsPayable"), daily("inventory")
@@ -422,7 +462,12 @@ def _forensic_fields(daily, idx: pd.DatetimeIndex) -> dict:
     cash, ebitda = daily("cash"), daily("ebitda")
     if not debt.empty and not ebitda.empty:
         net_od = debt.add(leases, fill_value=0.0)
-        pension = daily("pensionDeficit")   # recognized net deficit (>=0); absent pre-refetch
+        # bulk Financial-Statement-Data-Sets pension deficit preferred (universe-wide);
+        # the companyfacts `pensionDeficit` column fills any remaining gaps.
+        pension = daily("pensionDeficit")
+        if pension_deficit is not None and not pension_deficit.empty:
+            pension = (pension_deficit.combine_first(pension) if not pension.empty
+                       else pension_deficit)
         if not pension.empty:
             net_od = net_od.add(pension.clip(lower=0.0), fill_value=0.0)
         if not cash.empty:
@@ -579,6 +624,7 @@ def _derived_fields(
     yoy_periods: int = 1,
     intrinsic_cfg: dict | None = None,
     earnings_history: pd.DataFrame | None = None,
+    pension_facts: pd.DataFrame | None = None,
 ) -> dict:
     """Build daily wide frames (date x ticker) for every characteristic.
 
@@ -963,7 +1009,7 @@ def _derived_fields(
     #   #2 D&A/SBC realism, #5 forensic red flags, #3 M&A digestion,
     #   #1 core/adjusted earnings (kept alongside the reported figures above).
     F.update(_da_realism_fields(daily))
-    F.update(_forensic_fields(daily, idx))
+    F.update(_forensic_fields(daily, idx, _pension_deficit_daily(pension_facts, idx)))
     F.update(_digestion_fields(daily, fund_hist, idx, yoy_periods))
     F.update(_core_earnings_fields(daily, mcap))
     F.update(_ai_leverage_fields(daily))
@@ -1023,6 +1069,7 @@ def build_fundamental_feature_panel(
     hist_window: int = _HIST_WINDOW,
     hist_min_periods: int = _HIST_MIN_PERIODS,
     earnings_history: pd.DataFrame | None = None,
+    pension_facts: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Long-format panel: ['date','ticker', f_<char>_vs_peers, f_<char>_xs,
@@ -1047,7 +1094,7 @@ def build_fundamental_feature_panel(
     yoy_periods = _infer_yoy_periods(fundamentals_history)
     fields = _derived_fields(fundamentals_history, trading_index, stock_close,
                              yoy_periods=yoy_periods, intrinsic_cfg=intrinsic_cfg,
-                             earnings_history=earnings_history)
+                             earnings_history=earnings_history, pension_facts=pension_facts)
 
     # regime state flags -> RAW `f_<name>`; everything else -> peer-relative.
     state_fields = {k: v for k, v in fields.items() if k in _STATE_FIELDS}

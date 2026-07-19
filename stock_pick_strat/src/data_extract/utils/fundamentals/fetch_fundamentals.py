@@ -1,21 +1,17 @@
 """
 Fetch fundamental data per ticker.
 
-THREE sources, in order of how much history they give you:
+SEC EDGAR `companyfacts` (free, no key) -> genuine ~10-year point-in-time history
+at QUARTERLY cadence. This is the one that lets you make size / value / quality
+risk-neutral over a real backtest, because every value comes with the FILING DATE
+(`filed`), so we key each row on the date the number actually became public -- no
+look-ahead. Flow items are stored as trailing-twelve-month (TTM) sums of discrete
+quarters (Q1-Q3 from the 10-Qs, Q4 derived as FY - Q1 - Q2 - Q3), refreshed every
+quarter. Built by `build_fundamentals_history_sec()`.
 
-1. SEC EDGAR `companyfacts` (PRIMARY, free, no key) -> genuine ~10-year
-   point-in-time history at QUARTERLY cadence. This is the one that lets you
-   make size / value / quality risk-neutral over a real backtest, because every
-   value comes with the FILING DATE (`filed`), so we key each row on the date
-   the number actually became public -- no look-ahead. Flow items are stored as
-   trailing-twelve-month (TTM) sums of discrete quarters (Q1-Q3 from the 10-Qs,
-   Q4 derived as FY - Q1 - Q2 - Q3), refreshed every quarter. Built by
-   `build_fundamentals_history_sec()`.
-
-2. yfinance `.info` forward snapshot (free, current only) -> forward P/E (needs
-   analyst forward EPS, which SEC filings never carry) + current market cap,
-   APPENDED daily to `fundamentals_snapshot` so a point-in-time forward-earnings-
-   yield history accrues going forward. `fetch_snapshot()`.
+(Forward P/E is NOT scraped as a today-only yfinance snapshot any more; it is
+reconstructed historically from the earnings-surprise archive in
+earnings_features.forward_earnings_yield, and market cap = shares x daily close.)
 
 Output schema (same `fundamentals_history.parquet` the cube reads):
     ticker, as_of (= filing date), fiscal_end,
@@ -43,11 +39,9 @@ Run:
     python -m data.fetch_fundamentals
 """
 import json
-import time
 from datetime import datetime, timezone
 
 import pandas as pd
-import yfinance as yf
 from tqdm import tqdm
 
 from src.constants.constants import SEC_COMPANYFACTS_URL
@@ -1063,68 +1057,21 @@ def build_fundamentals_history_sec(context: Context,
 
 
 # --------------------------------------------------------------------------- #
-# yfinance forward-looking snapshot (accrues point-in-time history)            #
-# --------------------------------------------------------------------------- #
-# Only the fields SEC XBRL / price cannot give: forward P/E (needs analyst
-# forward EPS) and current market cap (a convenience cross-check; the model's
-# market cap is shares x price). sector/industry live in sp500_tickers; trailing
-# P/E is the inverse of the earnings_yield feature -> both dropped as redundant.
-SNAPSHOT_FIELDS = ["marketCap", "forwardPE"]
-
-
-def _snapshot_done_today(context: Context, tickers: list[str]) -> bool:
-    """True if TODAY's snapshot row already exists for the full requested
-    universe -> skip re-pulling within the same day (the table ACCRUES across
-    days rather than being overwritten)."""
-    existing = context.store.load("fundamentals_snapshot")
-    if existing.empty or "as_of" not in existing.columns:
-        return False
-    today = pd.to_datetime(existing["as_of"], errors="coerce").dt.strftime("%Y-%m-%d") == _today_iso()
-    if not today.any():
-        return False
-    return set(tickers).issubset(set(existing.loc[today, "ticker"].unique()))
-
-
-def fetch_snapshot(context: Context, tickers: list[str], pause: float = 0.3) -> pd.DataFrame:
-    """One row per ticker for TODAY (ticker, as_of, marketCap, forwardPE).
-    Empty when today's snapshot is already stored (same-day skip)."""
-    if _snapshot_done_today(context, tickers):
-        print(f"Snapshot already pulled today for {len(tickers)} tickers — skipping")
-        return pd.DataFrame()
-
-    as_of = _today_iso()
-    rows = []
-    for tkr in tqdm(tickers, desc="Fetching forward-P/E snapshot"):
-        try:
-            info = yf.Ticker(tkr).info
-        except Exception as e:
-            print(f"{tkr}: snapshot failed ({e})")
-            continue
-        rows.append({"ticker": tkr, "as_of": as_of,
-                     **{f: info.get(f) for f in SNAPSHOT_FIELDS}})
-        time.sleep(pause)
-    return pd.DataFrame(rows)
-
-
-# --------------------------------------------------------------------------- #
 # Entry point (called by StepExtractAllData)                                  #
 # --------------------------------------------------------------------------- #
 def fetch_fundamentals(context: Context, tickers: list[str]):
     """
-    Build the SEC 10-year history (primary) and a current snapshot (enrichment).
-    SEC history is incremental: skips when already built today for the full
-    universe; companyfacts JSONs are cached per CIK between runs.
+    Build the SEC 10-year fundamentals history (incremental: skips when already
+    built today for the full universe; companyfacts JSONs are cached per CIK
+    between runs).
+
+    Forward P/E is no longer scraped as a today-only yfinance snapshot -- it is
+    reconstructed HISTORICALLY in the feature layer (earnings_features:
+    forward_earnings_yield) from the earnings-surprise archive, and market cap is
+    shares x daily close in the factor layer.
     """
     cik_mapping = load_cik_mapping(context)
-    history = build_fundamentals_history_sec(context, cik_mapping)
-
-    # Forward-P/E snapshot -> APPENDED to the accruing point-in-time table
-    # (PK (ticker, as_of)); each run day adds a new dated row.
-    snapshot = fetch_snapshot(context, tickers)
-    if not snapshot.empty:
-        context.store.save("fundamentals_snapshot", snapshot)
-        print(f"Appended snapshot for {len(snapshot)} tickers to DB 'fundamentals_snapshot'")
-    return history
+    return build_fundamentals_history_sec(context, cik_mapping)
 
 
 # docker run --rm -v stock_pick_strat_pgdata:/volume -v ./:/backup alpine tar -czf /backup/volume_backup.tar.gz -C /volume .

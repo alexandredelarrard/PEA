@@ -30,7 +30,7 @@ StepBacktest                # 5. long/short backtest
 |---|---|---|
 | Prices, dividends | yfinance | full daily OHLCV, no key |
 | Fundamentals (history) | SEC EDGAR `companyfacts` (XBRL) | ~10-15y point-in-time, keyed on filing date |
-| Forward P/E, market cap | yfinance `.info` | accrues daily into `fundamentals_snapshot` |
+| Forward P/E (historical) | derived from `earnings_surprises` (consensus EPS) ÷ price | NTM forward-earnings yield, backtestable; market cap = shares × daily close |
 | Governance / comp / ownership | SEC **DEF 14A** proxy, parsed by **OpenAI** (structured output) | directors, CEO age/pay, board, say-on-pay, ownership |
 | Employees, mgmt, filings | SEC EDGAR (10-K text, submissions) | |
 | Institutional holdings | SEC **Form 13F** data sets | split by stock / call / put / debt; CUSIP→ticker via OpenFIGI |
@@ -68,8 +68,8 @@ an existing DB from legacy parquet (one-off): `python -m scripts.migrate_parquet
 ## Database
 
 Key tables (PK): `prices` (ticker,date) · `dividends` · `short_interest` ·
-`fundamentals_history` (ticker,as_of) · `fundamentals_snapshot` (ticker,as_of, accrues) ·
-`earnings_surprises` · `macro` (date) · `employees_history` · `management_history` ·
+`fundamentals_history` (ticker,as_of) ·
+`earnings_surprises` · `macro` (date) · `employees_history` ·
 `def14a_llm` (ticker,accession_number) · `institutional_holdings` · `cusip_ticker_map` ·
 `sp500_tickers` (ticker, + name/cik/sector/industry — also the ticker→CIK source) · `google_trends` ·
 `wiki_pageviews` · `ticker_embeddings` · `cube` (ticker,date,target_horizon) ·

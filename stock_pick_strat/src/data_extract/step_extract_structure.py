@@ -1,10 +1,11 @@
 """
 step_extract_structure.py  (src/data_extract/step_extract_structure.py)
 -----------------------------------------------------------------------
-Company-structure extraction (workforce, management, governance, filings):
+Company-structure extraction (workforce, governance, filings):
   * employee counts        (10-K text, EDGAR)
-  * management / officers   (10-K + DEF 14A, EDGAR)
-  * DEF 14A governance      (directors, compensation, ownership; LLM-parsed)
+  * DEF 14A governance      (directors, compensation, ownership, executive pay;
+                             LLM-parsed — this fully replaces the old EDGAR
+                             officer/insider regex extraction)
   * SEC filings index
 """
 from omegaconf import DictConfig

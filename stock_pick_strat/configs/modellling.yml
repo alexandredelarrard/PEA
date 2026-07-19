@@ -63,7 +63,7 @@ inputs:
     - comp_distress
     - comp_capital_allocation
     - comp_expectations
-    - comp_management
+    - comp_governance
     - comp_workforce
     # - comp_technical
     # - comp_value
@@ -370,7 +370,7 @@ inputs:
       - comp_distress: 1              # safer / less distressed -> higher
       - comp_capital_allocation: 1    # less dilution / better allocation -> higher
       - comp_expectations: 1          # richer forward expectations -> higher
-      - comp_management: 1            # founder-led / insider buying -> higher
+      - comp_governance: 1            # independent board, aligned & modest CEO pay -> higher
       - comp_workforce: 1             # more productive workforce -> higher
       
       - f_employee_growth_xs: 1

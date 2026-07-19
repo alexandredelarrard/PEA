@@ -18,10 +18,17 @@ Point-in-time discipline (two directions):
 
 Characteristics
     fwd_eps_yield          next-quarter consensus EPS / price (forward E/P)
+    forward_earnings_yield NTM (annual, forward-rolled) EPS / price = 1 / forward P/E
+                           -- the historical, backtestable replacement for the
+                           yfinance forwardPE snapshot. NTM EPS = next-quarter
+                           consensus estimate + trailing 3 reported actuals (only
+                           the newest quarter is an estimate -> leak-free).
     eps_expectation_growth next-quarter estimate vs last reported EPS
                            (high => market pricing in aggressive growth)
     eps_surprise_last      most recent reported surprise % (beat > 0 / miss < 0)
     eps_surprise_4q_avg    trailing 4-quarter mean surprise (consistency of beats)
+
+Also exposes `ntm_ttm_eps()` (NTM & TTM annual EPS) for PEGY's projected-growth term.
 """
 
 from __future__ import annotations
@@ -80,6 +87,47 @@ def _reported_rolling_to_daily(df: pd.DataFrame, value_col: str,
     return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
 
 
+def _trailing_actual_sum(df: pd.DataFrame, idx: pd.DatetimeIndex, window: int) -> pd.DataFrame:
+    """Trailing `window`-quarter SUM of REPORTED eps_actual, forward-filled from each
+    report date (point-in-time; requires a full `window` of reported quarters)."""
+    sub = df.dropna(subset=["eps_actual"]).copy()
+    if sub.empty:
+        return pd.DataFrame(index=idx)
+    sub["v"] = sub.groupby("ticker")["eps_actual"].transform(
+        lambda s: s.rolling(window, min_periods=window).sum())
+    wide = sub.pivot_table(index="earnings_date", columns="ticker",
+                           values="v", aggfunc="last").sort_index()
+    return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
+
+
+def _ntm_ttm_from_prepped(df: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(ntm_eps, ttm_eps) daily wide frames from a prepped earnings frame.
+
+    ttm_eps = trailing 4 REPORTED quarterly actuals (annual trailing EPS).
+    ntm_eps = next-quarter consensus estimate + trailing 3 reported actuals -- a
+    leak-free, forward-ROLLED annual EPS: only the newest quarter is an estimate
+    (the same near-report consensus used by fwd_eps_yield), the other three are
+    reported actuals. A true 4-quarter-ahead consensus is NOT reconstructable
+    leak-free here (yfinance stores one estimate per quarter, so q+2..q+4 would use
+    values not known at the as-of date)."""
+    fwd_eps = _forward_to_daily(df, "eps_estimate", idx)     # next quarter (est), PIT window
+    ttm4 = _trailing_actual_sum(df, idx, 4)
+    ttm3 = _trailing_actual_sum(df, idx, 3)
+    ntm = fwd_eps + ttm3 if not fwd_eps.empty and not ttm3.empty else pd.DataFrame(index=idx)
+    return ntm, ttm4
+
+
+def ntm_ttm_eps(earnings_history: pd.DataFrame | None,
+                idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Public helper: forward-rolled annual EPS (NTM) and trailing annual EPS (TTM)
+    from the earnings-surprise archive. Reused by fundamental_features for PEGY's
+    projected-growth term. Empty frames when the archive is unavailable."""
+    if (earnings_history is None or earnings_history.empty
+            or "earnings_date" not in earnings_history.columns):
+        return pd.DataFrame(index=idx), pd.DataFrame(index=idx)
+    return _ntm_ttm_from_prepped(_prep(earnings_history), idx)
+
+
 def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
                              close: pd.DataFrame) -> dict:
     df = _prep(hist)
@@ -90,9 +138,15 @@ def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
     price = close.reindex(idx)
 
     if not fwd_eps.empty:
-        F["fwd_eps_yield"] = _ratio(fwd_eps, price)                 # forward E/P (may be <0)
+        F["fwd_eps_yield"] = _ratio(fwd_eps, price)                 # next-quarter forward E/P
         if not last_actual.empty:
             F["eps_expectation_growth"] = _ratio(fwd_eps, last_actual, positive_den=True) - 1.0
+
+    # NTM (annual, forward-rolled) forward-earnings yield = 1 / forward P/E -- the
+    # historical, backtestable replacement for the yfinance forwardPE snapshot.
+    ntm_eps, _ = _ntm_ttm_from_prepped(df, idx)
+    if not ntm_eps.empty and ntm_eps.notna().any().any():
+        F["forward_earnings_yield"] = _ratio(ntm_eps, price)        # NTM E/P (higher = cheaper)
 
     last_surprise = _realized_to_daily(df, "surprise_pct", idx)
     if not last_surprise.empty:

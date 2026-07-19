@@ -141,26 +141,6 @@ CREATE TABLE IF NOT EXISTS "employees_history" (
     PRIMARY KEY ("ticker", "as_of")
 );
 
--- [extract] management_history  (pk: ticker, as_of)
-
-CREATE TABLE IF NOT EXISTS "management_history" (
-    "ticker" TEXT NOT NULL,
-    "as_of" TIMESTAMP NOT NULL,
-    "period" TIMESTAMP,
-    "form_type" TEXT,
-    "accession_number" TEXT,
-    "ceo_name" TEXT,
-    "ceo_age" DOUBLE PRECISION,
-    "founder_present" BIGINT,
-    "founder_ceo" BIGINT,
-    "n_officers" BIGINT,
-    "avg_officer_age" DOUBLE PRECISION,
-    "heldPercentInsiders" TEXT,
-    "heldPercentInstitutions" TEXT,
-    "family_owned" TEXT,
-    PRIMARY KEY ("ticker", "as_of")
-);
-
 -- [extract] sec_filings_index  (pk: ticker, accession_number)
 
 CREATE TABLE IF NOT EXISTS "sec_filings_index" (

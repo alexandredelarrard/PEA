@@ -51,7 +51,9 @@ build_cube:
       capital_allocation: ["-f_sbc_intensity_xs", "-f_sbc_to_ocf_xs", "-f_shares_growth_xs",
                            "-f_acquisition_intensity_xs", "-f_goodwill_growth_xs"]
       expectations: [f_fwd_eps_yield_xs, f_eps_expectation_growth_xs]
-      management: [f_founder_ceo_xs, f_net_insider_buying_xs, "-f_ceo_age_xs"]
+      governance: [f_pct_independent_directors_xs, f_insider_ownership_pct_xs,
+                   f_ceo_equity_pay_pct_xs, "-f_ceo_pay_ratio_xs",
+                   "-f_ceo_pay_vs_revenue_growth_xs"]
       workforce: [f_revenue_per_employee_xs, f_employee_growth_xs]
       technical: [mom_12_1, ma_ratio_50, "-vol_63", "-max_21", "-ret_skew_126",
                   "-idio_vol_63", "-downside_vol_63"]

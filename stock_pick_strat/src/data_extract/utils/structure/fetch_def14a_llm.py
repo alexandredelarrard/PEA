@@ -526,6 +526,7 @@ def _save_ticker_rows(context: Context, rows: list[dict]) -> int:
     for c in _NUMERIC_COLS:                     # keep DB columns numeric
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+            
     df["as_of"] = pd.to_datetime(df["as_of"]).dt.normalize()
     df = df.drop_duplicates(subset=["ticker", "accession_number"], keep="last")
     return context.store.save("def14a_llm", df)

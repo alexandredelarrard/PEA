@@ -39,10 +39,11 @@ class StepExtractAllData(Step):
     def run(self) -> None:
         tickers = self._resolve_tickers()
 
-        self._prices.run(tickers=tickers)
+        # self._prices.run(tickers=tickers)
         self._fundamentals.run(tickers=tickers)
-        self._structure.run(tickers=tickers)
-        self._behavioral.run(tickers=tickers)
+        self.analysis()
+        # self._structure.run(tickers=tickers)
+        # self._behavioral.run(tickers=tickers)
 
         # TODO: extract disclosures from SEC filings and notes 
         # https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets
@@ -53,8 +54,11 @@ class StepExtractAllData(Step):
         # TODO: senior executive & insiders transactions
         # https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets
 
+        # TODO: papers & citations -> OPen Alex
+
     def analysis(self) -> None:
         import pandas as pd
+        
         df = pd.read_sql('fundamentals_history', self._context.store.engine)
         x = df.isnull().groupby(df['ticker']).sum()
         x['max'] = x.max(axis=1)

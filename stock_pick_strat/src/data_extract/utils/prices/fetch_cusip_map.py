@@ -12,9 +12,10 @@ Network is isolated in `_openfigi_request`; the response parser
 from __future__ import annotations
 
 import time
-
+import os
 import pandas as pd
 import requests
+from tqdm import tqdm
 
 from src.context import Context
 
@@ -48,10 +49,11 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
                            pause: float = 6.0) -> pd.DataFrame:
     """Return + cache a [cusip, ticker] map for the given CUSIPs (deduplicated).
     Reuses the cache and only looks up CUSIPs not already mapped."""
-    import os
+    
     cached = context.store.load("cusip_ticker_map")
     if cached.empty:
         cached = pd.DataFrame(columns=["cusip", "ticker"])
+
     known = set(cached["cusip"])
     todo = sorted({c for c in cusips if c and c not in known})
     if not todo:
@@ -59,7 +61,7 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
 
     api_key = os.getenv("OPENFIGI_API_KEY")
     mapped: dict[str, str] = {}
-    for i in range(0, len(todo), _BATCH):
+    for i in tqdm(range(0, len(todo), _BATCH)):
         batch = todo[i:i + _BATCH]
         try:
             mapped.update(_parse_openfigi(_openfigi_request(batch, api_key), batch))

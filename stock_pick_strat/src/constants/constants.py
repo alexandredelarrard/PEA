@@ -21,6 +21,17 @@ SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 
+# SEC bulk quarterly structured data sets (free TSV zips; {quarter} = e.g. "2024q1").
+# insider = Forms 3/4/5 officer/director transactions; finstmt = primary-statement
+# XBRL facts (num/sub) incl. the balance-sheet net pension liability.
+SEC_INSIDER_URL_TEMPLATE = (
+    "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
+    "{quarter}_form345.zip")
+SEC_FINSTMT_URL_TEMPLATE = (
+    "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip")
+SEC_INSIDER_FIRST_YEAR = 2011      # earliest insider-transactions data set
+SEC_FINSTMT_FIRST_YEAR = 2009      # earliest financial-statement data set (2009q2)
+
 # --------------------------------------------------------------------------- #
 # Google Trends (unofficial API — retail-attention proxy). The explore call    #
 # returns widget tokens; the multiline call returns the interest-over-time     #

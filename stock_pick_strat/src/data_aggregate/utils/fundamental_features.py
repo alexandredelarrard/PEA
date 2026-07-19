@@ -121,6 +121,7 @@ from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
 _MEAN_REVERSION_FIELDS = (
     "earnings_yield", "sales_yield", "book_yield",
     "fcf_yield", "ebitda_to_ev", "fcf_to_ev", "ffo_yield", "intrinsic_yield",
+    "core_earnings_yield",   # adjusted E/P also gets a "cheap vs its own past" z
 )
 _HIST_WINDOW = 1260      # ~5 trading years of daily observations
 _HIST_MIN_PERIODS = 252  # require >= 1y of history before emitting a z-score
@@ -281,6 +282,294 @@ def _fiscal_apply_to_daily(fund_hist, field, idx, func) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- #
+# Business-quality helpers (all from tags ALREADY extracted -- no new SEC pull)
+#   #2 D&A/SBC realism, #5 forensic, #3 M&A digestion, #1 core/adjusted earnings.
+# Each returns a {name: daily wide frame} dict that _derived_fields merges into F,
+# so every field auto-expands to f_<name>_vs_peers + f_<name>_xs downstream.
+# `daily` is the memoized accessor from _derived_fields (field -> date x ticker).
+# --------------------------------------------------------------------------- #
+_YEAR = 252   # trailing trading days ~= one calendar year (year-ago comparison)
+
+
+def _effective_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
+    """Point-in-time effective tax rate = tax / pretax, clipped to [0, 0.5] and
+    defaulted to the US statutory ~21% where missing/nonsensical. Used to tax-
+    adjust special items (core earnings) and to build NOPAT (ROIC)."""
+    tax, pre = daily("incomeTaxExpense"), daily("pretaxIncome")
+    if tax.empty or pre.empty:
+        return pd.DataFrame()
+    return _ratio(tax, pre.where(pre > 0)).clip(0.0, 0.5).fillna(default)
+
+
+def _da_realism_fields(daily) -> dict:
+    """#2 -- is reported depreciation believable given the asset base? Extending
+    useful lives (a jump in implied life) or an aging base (high accumulated /
+    gross PP&E) are classic earnings-quality tells the aggregate D&A line hides.
+    `sbc_to_buyback` flags buybacks that merely offset option dilution."""
+    F: dict[str, pd.DataFrame] = {}
+    depamort = daily("depAmort")
+    amort_intang = daily("amortizationIntangibles")
+    ppe_gross = daily("ppeGross")
+    accum_dep = daily("accumulatedDepreciation")
+    # PP&E depreciation = D&A minus intangible amortization (fall back to full D&A
+    # when the split is absent) so the useful-life read is about hard assets.
+    depreciation = (depamort.sub(amort_intang, fill_value=0.0)
+                    if not amort_intang.empty else depamort)
+
+    if not ppe_gross.empty and not depreciation.empty:
+        life = _ratio(ppe_gross, depreciation, positive_den=True)
+        if life.notna().any().any():
+            F["implied_useful_life"] = life
+            luc = (life - life.shift(_YEAR)).replace([np.inf, -np.inf], np.nan)
+            if luc.notna().any().any():
+                F["useful_life_change"] = luc     # jump UP = lives extended = red flag
+    if not accum_dep.empty and not ppe_gross.empty:
+        age = _ratio(accum_dep, ppe_gross, positive_den=True)
+        if age.notna().any().any():
+            F["asset_age"] = age                  # high = old base -> capex catch-up ahead
+    if not amort_intang.empty and not depamort.empty:
+        ias = _ratio(amort_intang, depamort, positive_den=True)
+        if ias.notna().any().any():
+            F["intangible_amortization_share"] = ias
+    sbc, buyback = daily("stockBasedComp"), daily("buybacks")
+    if not sbc.empty and not buyback.empty:
+        s2b = _ratio(sbc, buyback.abs(), positive_den=True)
+        if s2b.notna().any().any():
+            F["sbc_to_buyback"] = s2b             # >1 = buybacks don't even cover SBC
+    return F
+
+
+def _beneish_m_score(daily, idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """Beneish (1999) 8-variable earnings-manipulation model, each index computed
+    as this year vs one year ago (trailing 252 trading days). Higher M = more
+    likely a manipulator (the classic screen is M > -1.78). Missing index ->
+    neutral (1.0; TATA -> 0), so M is defined wherever revenue+assets exist."""
+    rev, assets = daily("totalRevenue"), daily("totalAssets")
+    if rev.empty or assets.empty:
+        return pd.DataFrame()
+    ar, gp = daily("accountsReceivable"), daily("grossProfit")
+    ca, ppe = daily("currentAssets"), daily("ppeNet")
+    dep, sga = daily("depAmort"), daily("sellingGeneralAdmin")
+    ltd, cl = daily("longTermDebt"), daily("currentLiabilities")
+    ni, ocf = daily("netIncome"), daily("operatingCashFlow")
+
+    def ix(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
+        if cur is None or cur.empty or prev is None or prev.empty:
+            return pd.DataFrame()
+        return _ratio(cur, prev.where(prev != 0))
+
+    ar_sales = _ratio(ar, rev)
+    dsri = ix(ar_sales, ar_sales.shift(_YEAR))                 # days sales in receivables
+    gm = _ratio(gp, rev, positive_den=True)
+    gmi = ix(gm.shift(_YEAR), gm)                              # gross-margin deterioration
+    noncore = 1.0 - _ratio(ca.add(ppe, fill_value=0.0), assets, positive_den=True)
+    aqi = ix(noncore, noncore.shift(_YEAR))                    # asset-quality (soft assets)
+    sgi = ix(rev, rev.shift(_YEAR))                            # sales growth
+    deprate = _ratio(dep, dep.add(ppe, fill_value=0.0), positive_den=True)
+    depi = ix(deprate.shift(_YEAR), deprate)                   # slowing depreciation
+    sgar = _ratio(sga, rev, positive_den=True)
+    sgai = ix(sgar, sgar.shift(_YEAR))                         # SG&A efficiency
+    lev = _ratio(ltd.add(cl, fill_value=0.0), assets, positive_den=True)
+    lvgi = ix(lev, lev.shift(_YEAR))                           # leverage change
+    tata = _ratio(ni.sub(ocf, fill_value=np.nan), assets)     # total accruals / assets
+
+    terms = [(0.920, dsri, 1.0), (0.528, gmi, 1.0), (0.404, aqi, 1.0),
+             (0.892, sgi, 1.0), (0.115, depi, 1.0), (-0.172, sgai, 1.0),
+             (-0.327, lvgi, 1.0), (4.679, tata, 0.0)]
+    cols = sorted(set().union(*[set(t[1].columns) for t in terms
+                                if isinstance(t[1], pd.DataFrame) and not t[1].empty]))
+    if not cols:
+        return pd.DataFrame()
+    m = pd.DataFrame(-4.84, index=idx, columns=cols)
+    for coef, df, neutral in terms:
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            m = m + coef * df.reindex(index=idx, columns=cols).fillna(neutral).clip(-10.0, 10.0)
+        else:
+            m = m + coef * neutral
+    return m.replace([np.inf, -np.inf], np.nan)
+
+
+def _forensic_fields(daily, idx: pd.DatetimeIndex) -> dict:
+    """#5 -- accounting-quality / hidden-leverage red flags: working-capital days
+    and their year-over-year drift (supplier-funded growth = rising DPO; channel
+    stuffing = rising DSO), off-balance-sheet-INCLUSIVE net leverage (adds lease
+    liabilities), and the Beneish M-score. All inputs already extracted."""
+    F: dict[str, pd.DataFrame] = {}
+    rev, cogs = daily("totalRevenue"), daily("costOfRevenue")
+    ar, ap, inv = daily("accountsReceivable"), daily("accountsPayable"), daily("inventory")
+
+    dso = _ratio(ar, rev, positive_den=True) * 365.0
+    if dso.notna().any().any():
+        F["dso"] = dso
+        F["dso_change"] = (dso - dso.shift(_YEAR)).replace([np.inf, -np.inf], np.nan)
+    dpo = _ratio(ap, cogs, positive_den=True) * 365.0
+    if dpo.notna().any().any():
+        F["dpo"] = dpo
+        F["dpo_change"] = (dpo - dpo.shift(_YEAR)).replace([np.inf, -np.inf], np.nan)
+    dio = _ratio(inv, cogs, positive_den=True) * 365.0
+    if dio.notna().any().any():
+        F["dio"] = dio
+    if "dso" in F and "dpo" in F and "dio" in F:
+        ccc = F["dso"].add(F["dio"], fill_value=np.nan).sub(F["dpo"], fill_value=np.nan)
+        if ccc.notna().any().any():
+            F["cash_conversion_cycle"] = ccc
+
+    # off-BS-inclusive net leverage = (total debt + lease liabilities + pension deficit
+    # - cash) / EBITDA. Pension deficit = underfunding only (negative funded status);
+    # pension is absent until the tag is extracted, so this reduces to debt+leases then.
+    debt = _combine_debt(daily("longTermDebt"), daily("shortTermDebt"), daily("totalLiabilities"))
+    leases = daily("operatingLeaseLiability").add(daily("financeLeaseLiability"), fill_value=0.0)
+    cash, ebitda = daily("cash"), daily("ebitda")
+    if not debt.empty and not ebitda.empty:
+        net_od = debt.add(leases, fill_value=0.0)
+        pension = daily("pensionDeficit")   # recognized net deficit (>=0); absent pre-refetch
+        if not pension.empty:
+            net_od = net_od.add(pension.clip(lower=0.0), fill_value=0.0)
+        if not cash.empty:
+            net_od = net_od.sub(cash, fill_value=0.0)
+        nlev = _ratio(net_od, ebitda, positive_den=True)
+        if nlev.notna().any().any():
+            F["net_debt_incl_offbs_to_ebitda"] = nlev
+
+    m = _beneish_m_score(daily, idx)
+    if not m.empty and m.notna().any().any():
+        F["beneish_m_score"] = m
+    return F
+
+
+def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
+                      yoy_periods: int) -> dict:
+    """#3 -- is bought growth being digested? ROIC WITH vs WITHOUT goodwill (the
+    wedge = how much acquisitions drag returns), goodwill+intangibles balance-
+    sheet weight (writedown exposure), and SG&A elasticity to revenue (<1 =
+    synergies captured, ~1 = bolt-on with no integration)."""
+    F: dict[str, pd.DataFrame] = {}
+    oi, assets = daily("operatingIncome"), daily("totalAssets")
+    equity, cash = daily("stockholdersEquity"), daily("cash")
+    goodwill, intang = daily("goodwill"), daily("intangiblesExGoodwill")
+    tax = _effective_tax_rate(daily)
+    debt = _combine_debt(daily("longTermDebt"), daily("shortTermDebt"), pd.DataFrame())
+
+    if not oi.empty and not equity.empty:
+        nopat = oi * (1.0 - tax) if not tax.empty else oi
+        ic = equity.copy()
+        if not debt.empty:
+            ic = ic.add(debt, fill_value=0.0)
+        if not cash.empty:
+            ic = ic.sub(cash, fill_value=0.0)
+        roic_incl = _ratio(nopat, ic, positive_den=True)
+        if roic_incl.notna().any().any():
+            F["roic_incl_goodwill"] = roic_incl
+            ic_ex = ic
+            if not goodwill.empty:
+                ic_ex = ic_ex.sub(goodwill, fill_value=0.0)
+            if not intang.empty:
+                ic_ex = ic_ex.sub(intang, fill_value=0.0)
+            roic_ex = _ratio(nopat, ic_ex, positive_den=True)
+            if roic_ex.notna().any().any():
+                F["roic_ex_goodwill"] = roic_ex
+                # incl - ex < 0 => goodwill/intangibles dilute returns (overpaid)
+                F["goodwill_roic_drag"] = roic_incl.sub(roic_ex, fill_value=np.nan)
+
+    if not goodwill.empty and not assets.empty:
+        gi = goodwill.add(intang, fill_value=0.0)
+        gta = _ratio(gi, assets, positive_den=True)
+        if gta.notna().any().any():
+            F["goodwill_intangibles_to_assets"] = gta
+        gte = _ratio(goodwill, equity.where(equity > 0))
+        if gte.notna().any().any():
+            F["goodwill_to_equity"] = gte     # >1 => a writedown can wipe out book equity
+        gw_imp = daily("goodwillImpairment")  # absent until split-out tag is extracted
+        if not gw_imp.empty:
+            gii = _ratio(gw_imp, assets, positive_den=True)
+            if gii.notna().any().any():
+                F["goodwill_impairment_intensity"] = gii   # writedown = overpayment admitted
+
+    sga_g = _fiscal_change_to_daily(fund_hist, "sellingGeneralAdmin", idx, kind="pct", periods=yoy_periods)
+    rev_g = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods)
+    if sga_g.notna().any().any() and rev_g.notna().any().any():
+        el = _ratio(sga_g, rev_g.where(rev_g.abs() >= 0.02))   # guard ~flat-revenue blow-ups
+        if el.notna().any().any():
+            F["sga_elasticity"] = el
+    return F
+
+
+def _core_earnings_fields(daily, mcap: pd.DataFrame) -> dict:
+    """#1 -- normalize earnings for non-recurring items (impairment + restructuring
+    added back, gains on disposition removed) -> CORE margins/yield kept ALONGSIDE
+    the reported ones (both versions live in the cube). `nonrecurring_pretax_share`
+    is how transitory the quarter's profit is. The special-items pool widens once
+    litigation / discontinued-ops / unusual tags are extracted (see backlog)."""
+    F: dict[str, pd.DataFrame] = {}
+    rev = daily("totalRevenue")
+    if rev.empty:
+        return F
+    pretax, ni = daily("pretaxIncome"), daily("netIncome")
+    oi, ebitda = daily("operatingIncome"), daily("ebitda")
+    impair, restr, gains = daily("impairment"), daily("restructuring"), daily("gainOnDispositions")
+
+    charges = impair.add(restr, fill_value=0.0)          # >=0 expense add-backs
+    litig = daily("litigationExpense")                   # positive charge (add back); absent pre-refetch
+    if not litig.empty:
+        charges = charges.add(litig, fill_value=0.0)
+    # signed gains removed from core (gain +, loss -): disposals, bargain purchase, net unusual
+    for extra in ("gainOnSaleGeneric", "bargainPurchaseGain", "unusualItems"):
+        g = daily(extra)
+        if not g.empty:
+            gains = gains.add(g, fill_value=0.0) if not gains.empty else g
+    special = charges.sub(gains, fill_value=0.0)         # +net charges (reported depressed) / -net gains
+    if special.empty or not special.notna().any().any():
+        return F
+    tax = _effective_tax_rate(daily)
+    rev_pos = rev.where(rev > 0)
+
+    if not pretax.empty:
+        share = _ratio(special.abs(), pretax.abs(), positive_den=True)
+        if share.notna().any().any():
+            F["nonrecurring_pretax_share"] = share
+    F["special_items_intensity"] = _ratio(special, rev_pos)    # signed: +ve => one-offs hurt reported
+
+    core_ni = ni.add(special.mul(1.0 - tax) if not tax.empty else special, fill_value=0.0)
+    # discontinued operations are net-of-tax and transitory -> removed from core directly
+    disc = daily("discontinuedOps")
+    if not core_ni.empty and not disc.empty:
+        core_ni = core_ni.sub(disc, fill_value=0.0)
+    if not core_ni.empty:
+        F["core_profit_margin"] = _ratio(core_ni, rev_pos)     # vs reported profitMargins
+        if mcap is not None and not mcap.empty:
+            cey = _ratio(core_ni.where(core_ni > 0), mcap, positive_den=True)
+            if cey.notna().any().any():
+                F["core_earnings_yield"] = cey                 # vs reported earnings_yield
+    if not oi.empty:
+        F["core_operating_margin"] = _ratio(oi.add(charges, fill_value=0.0), rev_pos)
+    if not ebitda.empty:
+        F["adjusted_ebitda_margin"] = _ratio(
+            ebitda.add(charges, fill_value=0.0).sub(gains, fill_value=0.0), rev_pos)
+    return F
+
+
+def _ai_leverage_fields(daily) -> dict:
+    """#4 -- IT-MATURITY inputs for the AI-leverage score: how much a firm invests in
+    its own software (the capability to deploy AI on its cost base). Populates once
+    CapitalizedComputerSoftware* is extracted; empty before that. The OPPORTUNITY
+    side (SG&A intensity = automatable admin/marketing, low revenue-per-employee =
+    labor-heavy) and the sector-neutral score are assembled as a composite in
+    build_cube.yml from existing peer-relative members (kept sector-neutral so it
+    finds the best adopter in each industry, not just the hyperscalers)."""
+    F: dict[str, pd.DataFrame] = {}
+    soft, assets, rev = daily("capitalizedSoftware"), daily("totalAssets"), daily("totalRevenue")
+    if not soft.empty and not assets.empty:
+        si = _ratio(soft, assets, positive_den=True)
+        if si.notna().any().any():
+            F["capitalized_software_intensity"] = si
+    if not soft.empty and not rev.empty:
+        sr = _ratio(soft, rev.where(rev > 0))
+        if sr.notna().any().any():
+            F["software_to_revenue"] = sr
+    return F
+
+
+# --------------------------------------------------------------------------- #
 # Derived characteristics                                                      #
 # --------------------------------------------------------------------------- #
 def _derived_fields(
@@ -300,8 +589,14 @@ def _derived_fields(
     F: dict[str, pd.DataFrame] = {}
     intrinsic_cfg = intrinsic_cfg or {}
 
+    _daily_cache: dict[str, pd.DataFrame] = {}
+
     def daily(field):
-        return fundamentals_to_daily(fund_hist, field, idx)
+        # memoized: several fields are reused across blocks (and the new business-
+        # quality helpers), so cache the pivot+ffill instead of recomputing it.
+        if field not in _daily_cache:
+            _daily_cache[field] = fundamentals_to_daily(fund_hist, field, idx)
+        return _daily_cache[field]
 
     revenue = daily("totalRevenue")
     net_income = daily("netIncome")
@@ -663,6 +958,15 @@ def _derived_fields(
         iy = iv.get("yield")
         if iy is not None and not iy.empty and iy.notna().any().any():
             F["intrinsic_yield"] = iy
+
+    # ---- BUSINESS-QUALITY blocks (all from tags already extracted) ----
+    #   #2 D&A/SBC realism, #5 forensic red flags, #3 M&A digestion,
+    #   #1 core/adjusted earnings (kept alongside the reported figures above).
+    F.update(_da_realism_fields(daily))
+    F.update(_forensic_fields(daily, idx))
+    F.update(_digestion_fields(daily, fund_hist, idx, yoy_periods))
+    F.update(_core_earnings_fields(daily, mcap))
+    F.update(_ai_leverage_fields(daily))
 
     return F
 

@@ -77,6 +77,17 @@ EXTRACT_TABLES: list[TableSpec] = [
               "extract", date_col="as_of"),
     TableSpec("ticker_descriptions", "ticker_descriptions.parquet", ("ticker",),
               "extract", date_col=None),
+    # SEC Insider Transactions Data Sets (Forms 3/4/5): one row per reported
+    # transaction (non-derivative + derivative), keyed by accession + table + SK.
+    TableSpec("insider_transactions", "insider_transactions.parquet",
+              ("accession_number", "security_type", "transaction_sk"), "extract",
+              date_col="transaction_date",
+              date_type_cols=("transaction_date", "filing_date", "period_of_report")),
+    # SEC Financial Statement Data Sets (num/sub): curated pension facts per
+    # company/tag/period-end (`ddate`) / duration (`qtrs`).
+    TableSpec("pension_facts", "pension_facts.parquet",
+              ("cik", "tag", "ddate", "qtrs"), "extract", date_col="ddate",
+              date_type_cols=("ddate", "filed")),
 ]
 
 # --------------------------------------------------------------------------- #

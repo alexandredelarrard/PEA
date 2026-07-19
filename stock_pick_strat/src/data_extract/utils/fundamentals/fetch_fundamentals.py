@@ -213,6 +213,19 @@ EXTRA_FLOW_TAGS = {
     "impairment": ["AssetImpairmentCharges", "GoodwillImpairmentLoss",
                    "ImpairmentOfLongLivedAssetsHeldForUse"],
     "restructuring": ["RestructuringCharges", "RestructuringSettlementAndImpairmentProvisions"],
+    # ---- non-recurring items: WIDEN the core-earnings normalization pool (#1) and
+    # split goodwill impairment out of the blended `impairment` pool (M&A digestion #3).
+    # All are event flows -> 0-filled + TTM-summed via CHARGE_FLOWS below. Signs:
+    # charges (litigation) are positive expenses (add back); gains / bargain-purchase /
+    # net unusual are signed (gain +, removed from core); discontinued ops is net-of-tax
+    # income (removed from core directly).
+    "goodwillImpairment": ["GoodwillImpairmentLoss"],
+    "gainOnSaleGeneric": ["GainLossOnSaleOfBusiness",
+                          "GainLossOnSaleOfPropertyPlantEquipment"],
+    "litigationExpense": ["LitigationSettlementExpense"],
+    "discontinuedOps": ["IncomeLossFromDiscontinuedOperationsNetOfTax"],
+    "unusualItems": ["UnusualOrInfrequentItemNetGainLoss"],
+    "bargainPurchaseGain": ["BusinessCombinationBargainPurchaseGainRecognizedAmount"],
     # ---- Banks ----
     "interestIncomeBank": ["InterestAndDividendIncomeOperating"],
     "netInterestIncome": ["InterestIncomeExpenseNet", "InterestIncomeExpenseAfterProvisionForLoanLoss"],
@@ -264,6 +277,11 @@ EXTRA_STOCK_TAGS = {
     "ppeGross": ["PropertyPlantAndEquipmentGross"],
     "accumulatedDepreciation": ["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"],
     "intangiblesExGoodwill": ["IntangibleAssetsNetExcludingGoodwill", "FiniteLivedIntangibleAssetsNet"],
+    # capitalized internal-use / product software -> IT-investment proxy (AI-leverage #4)
+    "capitalizedSoftware": ["CapitalizedComputerSoftwareNet", "CapitalizedComputerSoftwareGross"],
+    # recognized net underfunded DB-pension/OPEB liability (POSITIVE = deficit) -> off-
+    # balance-sheet-ish leverage input (#5). NaN when the firm has no DB-plan deficit.
+    "pensionDeficit": ["PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"],
     "retainedEarnings": ["RetainedEarningsAccumulatedDeficit"],
     "treasuryStock": ["TreasuryStockValue", "TreasuryStockCommonValue"],
     "preferredEquity": ["PreferredStockValue", "PreferredStockValueOutstanding"],
@@ -331,7 +349,11 @@ DILUTED_SHARES_TAGS = ["WeightedAverageNumberOfDilutedSharesOutstanding",
 # NII, premiums, …) are NOT here: their absence means sector-N/A or a coverage gap.
 CHARGE_FLOWS = {"impairment", "restructuring", "acquisitions", "buybacks",
                 "equityIssuance", "debtIssued", "debtRepaid", "dividendsPaid",
-                "gainOnDispositions"}
+                "gainOnDispositions",
+                # widened non-recurring pool (see EXTRA_FLOW_TAGS): 0 in a normal
+                # quarter, non-zero only when the event occurs.
+                "goodwillImpairment", "gainOnSaleGeneric", "litigationExpense",
+                "discontinuedOps", "unusualItems", "bargainPurchaseGain"}
 
 ANNUAL_MIN_DAYS, ANNUAL_MAX_DAYS = 340, 380   # accept a fiscal year as ~365d
 QUARTER_MIN_DAYS, QUARTER_MAX_DAYS = 80, 100   # accept a fiscal quarter as ~13 weeks

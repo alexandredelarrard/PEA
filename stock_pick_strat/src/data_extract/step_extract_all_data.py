@@ -41,15 +41,8 @@ class StepExtractAllData(Step):
 
         # self._prices.run(tickers=tickers)
         # self._fundamentals.run(tickers=tickers)
-        # self._structure.run(tickers=tickers)
+        self._structure.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
-
-        # TODO: fail to deliver stock
-        # https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data
-
-        # TODO: financial-statement NOTES data sets (footnote PBO / plan assets /
-        # funded status) for fuller pension detail -- heavier (~1GB+/qtr) follow-up.
-        # https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets
 
         ####### very strong driver, need data feed / LLM
         # TODO: map furnishers and sellers in a graph to adjust each stock financials with each stock earnings 

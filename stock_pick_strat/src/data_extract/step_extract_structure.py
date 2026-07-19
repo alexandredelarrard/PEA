@@ -8,6 +8,7 @@ Company-structure extraction (workforce, governance, filings):
                              officer/insider regex extraction)
   * SEC filings index
 """
+
 from omegaconf import DictConfig
 
 from src.context import Context
@@ -23,7 +24,7 @@ class StepExtractStructure(Step):
         super().__init__(context=context, config=config)
 
     def run(self, tickers: list[str]) -> None:
-        fetch_employees_edgar(self._context, tickers=tickers)
+        # fetch_employees_edgar(self._context, tickers=tickers)
         fetch_def14a_llm(self._context, tickers=tickers,
                         model=self._config.data_extract.llm_model)
         # fetch_sec_filings(self._context)

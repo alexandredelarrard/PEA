@@ -161,12 +161,12 @@ def _read_pension_facts(path: Path) -> pd.DataFrame | None:
     return _join_pension(num, sub)
 
 
-def fetch_financial_statements(context: Context) -> int:
+def fetch_financial_statements(context: Context, tickers: list[str]) -> int:
     """Download (cached) the Financial Statement Data Sets over `years_history`,
     extract pension facts for the universe, upsert to `pension_facts`. Returns the
     number of rows upserted."""
+
     store = context.store
-    universe = {t.upper() for t in store.load("sp500_tickers", columns=["ticker"])["ticker"]}
     cikmap = load_cik_mapping(context)
     cik2tkr = ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
                if not cikmap.empty and "ticker" in cikmap.columns else {})
@@ -174,7 +174,7 @@ def fetch_financial_statements(context: Context) -> int:
     cache_dir = _cache_dir(context)
 
     done_q = bulk_ingested_quarters(store, _TABLE)
-    new_tickers = universe - load_processed_universe(cache_dir, _TABLE)   # empty once converged
+    new_tickers = tickers - load_processed_universe(cache_dir, _TABLE)   # empty once converged
     if new_tickers:
         logger.info("finstmt: %d new/changed tickers -> re-parsing cached quarters",
                     len(new_tickers))
@@ -190,7 +190,7 @@ def fetch_financial_statements(context: Context) -> int:
         if facts is None or facts.empty:
             continue
         facts["ticker"] = facts["cik"].map(cik2tkr)
-        facts = facts[facts["ticker"].isin(universe)]
+        facts = facts[facts["ticker"].isin(tickers)]
         if facts.empty:
             continue
         # keep the latest-filed value per (cik, tag, period-end, duration)
@@ -199,7 +199,7 @@ def fetch_financial_statements(context: Context) -> int:
         facts["quarter"] = q
         saved += store.save(_TABLE, facts[[c for c in _OUT_COLS if c in facts.columns]])
 
-    save_processed_universe(cache_dir, _TABLE, universe)   # so a converged re-run skips
+    save_processed_universe(cache_dir, _TABLE, tickers)   # so a converged re-run skips
     logger.warning("pension_facts: upserted %d rows (%d quarters scanned)",
                    saved, len(_quarters(years_history)))
     return saved

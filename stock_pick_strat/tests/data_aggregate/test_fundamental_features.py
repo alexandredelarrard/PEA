@@ -214,6 +214,8 @@ def test_derived_valuation_and_dilution_exact():
     assert abs(F["shares_growth"].loc[d, "AAA"] - 0.10) < 1e-9
     # EV/EBITDA yield: EV = mcap + debt(d2e*equity=0.6*60=36) = 2236; ebitda 26
     assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / 2236) < 1e-6
+    # FCF/EV yield on the SAME EV (fcf 12) -> the new cross-sector cash-valuation yield
+    assert abs(F["fcf_to_ev"].loc[d, "AAA"] - 12.0 / 2236) < 1e-6
 
     print("\n=== SANITY CHECK: derived valuation / dilution / R&D ===")
     print(f"  AAA E/P={F['earnings_yield'].loc[d,'AAA']:.5f}  S/P={F['sales_yield'].loc[d,'AAA']:.5f}"
@@ -568,28 +570,113 @@ def test_pct_growth_signed_base_is_negative_when_losing_money():
 # --------------------------------------------------------------------------- #
 # 13. Enterprise value = mktcap + real debt + SBC - cash (exact)               #
 # --------------------------------------------------------------------------- #
-def test_enterprise_value_uses_real_debt_sbc_and_cash():
+def test_valuation_engine_kpis_exact():
+    """Altman Z, PEGY, operating-leverage elasticity, and the REIT/energy EV
+    multiples, on a 2-year history with a known price."""
+    y19, y20 = "2019-12-31", "2020-12-31"
+    fund = pd.DataFrame([
+        # GEN: 2 years -> growth/elasticity/PEGY; full Altman inputs
+        dict(ticker="GEN", as_of=y19, totalRevenue=100.0, netIncome=10.0, operatingIncome=12.0,
+             ebitda=15.0, grossProfit=40.0, totalAssets=200.0, currentAssets=80.0,
+             currentLiabilities=40.0, retainedEarnings=50.0, totalLiabilities=100.0,
+             longTermDebt=50.0, shortTermDebt=10.0, cash=20.0,
+             sharesOutstanding=100.0, dilutedShares=100.0, dividendsPaid=4.0),
+        dict(ticker="GEN", as_of=y20, totalRevenue=120.0, netIncome=15.0, operatingIncome=18.0,
+             ebitda=18.0, grossProfit=50.0, totalAssets=200.0, currentAssets=80.0,
+             currentLiabilities=40.0, retainedEarnings=50.0, totalLiabilities=100.0,
+             longTermDebt=50.0, shortTermDebt=10.0, cash=20.0,
+             sharesOutstanding=100.0, dilutedShares=100.0, dividendsPaid=4.0),
+        # REIT: FFO yield + implied cap rate
+        dict(ticker="REI", as_of=y20, totalRevenue=300.0, netIncome=50.0, operatingIncome=90.0,
+             depAmort=100.0, gainOnDispositions=10.0, realEstateNet=2000.0,
+             longTermDebt=800.0, cash=50.0, sharesOutstanding=100.0, dilutedShares=100.0),
+        # Energy: EV/EBITDAX
+        dict(ticker="OIL", as_of=y20, totalRevenue=1000.0, netIncome=120.0, operatingIncome=180.0,
+             depAmort=110.0, explorationExpense=70.0, oilGasPropertyNet=5000.0,
+             longTermDebt=1000.0, cash=100.0, sharesOutstanding=100.0, dilutedShares=100.0),
+    ])
+    idx = pd.bdate_range("2021-03-01", periods=3)
+    close = pd.DataFrame({t: 2.0 for t in ("GEN", "REI", "OIL")}, index=idx)
+    F = _derived_fields(fund, idx, close)   # annual history -> yoy_periods default 1
+    d = idx[-1]
+
+    # GEN: PE = 200 mcap / 15 NI = 13.33; growth 50%, div yield 2% -> PEGY = 13.33/52
+    assert F["pegy"].loc[d, "GEN"] == pytest.approx((200 / 15) / (50 + 2), rel=1e-6)
+    # operating leverage elasticity = %ΔOI (50%) / %ΔRev (20%) = 2.5
+    assert F["operating_leverage_elasticity"].loc[d, "GEN"] == pytest.approx(2.5, rel=1e-6)
+    # Altman Z = 1.2*.2 + 1.4*.25 + 3.3*.09 + 0.6*2.0 + 1.0*.6 = 2.687
+    assert F["altman_z"].loc[d, "GEN"] == pytest.approx(2.687, abs=1e-3)
+    # REIT: FFO = 50+100-10 = 140 -> ffo_yield 140/200 = 0.70; EV=200+800-50=950 -> cap 190/950
+    assert F["ffo_yield"].loc[d, "REI"] == pytest.approx(140 / 200)
+    assert F["implied_cap_rate"].loc[d, "REI"] == pytest.approx(190 / 950)
+    # Energy: EBITDAX=180+110+70=360; EV=200+1000-100=1100 -> 360/1100
+    assert F["ebitdax_to_ev"].loc[d, "OIL"] == pytest.approx(360 / 1100)
+    # gating: non-REIT has no ffo_yield, non-energy has no ebitdax_to_ev
+    assert np.isnan(F["ffo_yield"].loc[d, "OIL"]) and np.isnan(F["ebitdax_to_ev"].loc[d, "REI"])
+
+    print("\n=== SANITY CHECK: valuation-engine KPIs ===")
+    print(f"  GEN PEGY={F['pegy'].loc[d,'GEN']:.3f} op_lev_elasticity={F['operating_leverage_elasticity'].loc[d,'GEN']:.2f} "
+          f"AltmanZ={F['altman_z'].loc[d,'GEN']:.3f}")
+    print(f"  REIT ffo_yield={F['ffo_yield'].loc[d,'REI']:.3f} implied_cap={F['implied_cap_rate'].loc[d,'REI']:.3f}; "
+          f"OIL ev/ebitdax_yield={F['ebitdax_to_ev'].loc[d,'OIL']:.3f}; sector-gated. Validated.")
+
+
+def test_pegy_uses_projected_eps_growth():
+    """PEGY's growth term prefers PROJECTED EPS growth (NTM/TTM-1 from the earnings
+    archive) when earnings_history is supplied, and falls back to TTM otherwise."""
+    fund = pd.DataFrame([dict(ticker="A", as_of="2025-11-05", totalRevenue=100.0,
+                              netIncome=50.0, sharesOutstanding=10.0, dividendsPaid=2.0,
+                              totalAssets=200.0)])
+    earn = pd.DataFrame({
+        "ticker": ["A"] * 5,
+        "earnings_date": ["2025-02-01", "2025-05-01", "2025-08-01", "2025-11-01", "2026-02-15"],
+        "eps_estimate": [1.0, 1.0, 1.0, 1.0, 1.5],
+        "eps_actual":   [1.1, 1.2, 1.3, 1.4, np.nan],
+    })
+    idx = pd.bdate_range("2026-01-05", "2026-01-30")
+    close = pd.DataFrame({"A": 100.0}, index=idx)
+    d = idx[-1]
+
+    # with projected growth: PE = mcap(1000)/NI(50)=20; growth = 5.4/5.0-1 = 8%; div yield 0.2%
+    F_proj = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=earn)
+    assert F_proj["pegy"].loc[d, "A"] == pytest.approx(20 / (8 + 0.2), rel=1e-3)
+    # without earnings: single fundamentals row -> TTM growth undefined -> PEGY NaN (fallback path)
+    F_ttm = _derived_fields(fund, idx, close, yoy_periods=4)
+    assert "pegy" not in F_ttm or np.isnan(F_ttm["pegy"].loc[d, "A"])
+
+    print("\n=== SANITY CHECK: PEGY uses projected EPS growth ===")
+    print(f"  projected growth 8% -> PEGY = 20/(8+0.2) = {F_proj['pegy'].loc[d,'A']:.3f}; "
+          f"TTM fallback undefined here (single filing). Validated.")
+
+
+def test_true_enterprise_value_fully_diluted():
+    """True EV = diluted-shares*price + total debt + leases + minority interest
+    - cash - short-term investments. SBC is NOT part of EV (corrected definition)."""
     fund = pd.DataFrame([
         dict(ticker="AAA", as_of="2020-02-01", totalRevenue=120.0, netIncome=15.0,
              stockholdersEquity=60.0, freeCashflow=12.0, ebitda=26.0,
-             debtToEquity=0.6, sharesOutstanding=1100.0,
-             longTermDebt=40.0, shortTermDebt=10.0, stockBasedComp=6.0, cash=25.0),
+             sharesOutstanding=1000.0, dilutedShares=1100.0,      # diluted > basic
+             longTermDebt=40.0, shortTermDebt=10.0,
+             operatingLeaseLiability=8.0, financeLeaseLiability=2.0,
+             minorityInterest=5.0, cash=25.0, shortTermInvestments=15.0,
+             stockBasedComp=6.0),                                  # present, must NOT affect EV
     ])
     idx = pd.bdate_range("2020-03-02", periods=3)
-    close = pd.DataFrame({"AAA": 2.0}, index=idx)   # mcap = 1100 * 2 = 2200
+    close = pd.DataFrame({"AAA": 2.0}, index=idx)
     F = _derived_fields(fund, idx, close)
     d = idx[-1]
 
-    # EV = mcap 2200 + debt(40+10) + SBC 6 - cash 25 = 2231
-    ev = 2200.0 + 50.0 + 6.0 - 25.0
+    # EV = FD mcap (1100*2=2200) + debt(50) + leases(10) + minority(5) - cash(25) - STI(15)
+    ev = 1100 * 2.0 + 50.0 + 10.0 + 5.0 - 25.0 - 15.0     # = 2225
     assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / ev) < 1e-9
+    assert abs(F["fcf_to_ev"].loc[d, "AAA"] - 12.0 / ev) < 1e-9
+    # uses DILUTED (2200) not basic (2000) for the equity value
+    ev_basic = 1000 * 2.0 + 50.0 + 10.0 + 5.0 - 25.0 - 15.0
+    assert abs(ev - ev_basic) == 200.0
+    # SBC=6 is present but excluded: EV would be 2231 if SBC were added -> assert it is NOT
+    assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / (ev + 6.0)) > 1e-9
 
-    print("\n=== SANITY CHECK: enterprise value (real debt + SBC - cash) ===")
-    print(f"  EV = 2200 + (40+10 debt) + 6 SBC - 25 cash = {ev:.0f}; "
-          f"EBITDA/EV = 26/{ev:.0f} = {F['ebitda_to_ev'].loc[d,'AAA']:.5f}. Exact.")
-    # SBC and debt both RAISE EV -> LOWER the yield vs ignoring them (a diluter looks dearer)
-    ev_no_adj = 2200.0
-    assert 26.0 / ev < 26.0 / ev_no_adj
-
-    print(f"  Adding debt+SBC and removing cash lowers EBITDA/EV from "
-          f"{26/ev_no_adj:.5f} (mktcap only) to {26/ev:.5f} -> diluter/levered looks more expensive.")
+    print("\n=== SANITY CHECK: True (fully-diluted) enterprise value ===")
+    print(f"  EV = 2200 FD-mcap + 50 debt + 10 leases + 5 minority - 25 cash - 15 STI = {ev:.0f}; "
+          f"EBITDA/EV = 26/{ev:.0f} = {F['ebitda_to_ev'].loc[d,'AAA']:.5f}; "
+          f"FCF/EV = 12/{ev:.0f}. Diluted (not basic) shares used; SBC excluded. Exact.")

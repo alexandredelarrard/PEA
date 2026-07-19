@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.earnings_features import _derived_earnings_fields
+from src.data_aggregate.utils.earnings_features import _derived_earnings_fields, ntm_ttm_eps
 
 
 def _synth_earnings():
@@ -61,6 +61,32 @@ def test_forward_eps_yield_and_expected_growth_math():
     print("\n=== SANITY CHECK: forward EPS yield & expected growth ===")
     print(f"  fwd E/P = 1.30/50 = {F['fwd_eps_yield'].loc[d,'AAA']:.4f}; "
           f"expected growth = 1.30/1.05-1 = {F['eps_expectation_growth'].loc[d,'AAA']:+.2%}.")
+
+
+def test_ntm_forward_earnings_yield():
+    """NTM (annual, forward-rolled) EPS = next-quarter estimate + trailing 3 reported
+    actuals; forward_earnings_yield = NTM EPS / price (the historical forwardPE replacement)."""
+    hist = pd.DataFrame({
+        "ticker": ["A"] * 5,
+        "earnings_date": ["2025-02-01", "2025-05-01", "2025-08-01", "2025-11-01", "2026-02-15"],
+        "eps_estimate": [1.0, 1.0, 1.0, 1.0, 1.5],
+        "eps_actual":   [1.1, 1.2, 1.3, 1.4, np.nan],   # last row = upcoming (estimate only)
+        "surprise_pct": [10.0, 20.0, 30.0, 40.0, np.nan],
+    })
+    idx = pd.bdate_range("2026-01-05", "2026-01-30")     # after the Nov report, before Feb report
+    close = pd.DataFrame({"A": 100.0}, index=idx)
+    d = idx[-1]
+
+    ntm, ttm = ntm_ttm_eps(hist, idx)
+    assert abs(ntm.loc[d, "A"] - (1.5 + 1.2 + 1.3 + 1.4)) < 1e-9    # est(Q+1) + last 3 actuals = 5.4
+    assert abs(ttm.loc[d, "A"] - (1.1 + 1.2 + 1.3 + 1.4)) < 1e-9    # trailing 4 actuals = 5.0
+
+    F = _derived_earnings_fields(hist, idx, close)
+    assert abs(F["forward_earnings_yield"].loc[d, "A"] - 5.4 / 100.0) < 1e-9
+    print("\n=== SANITY CHECK: NTM forward-earnings yield ===")
+    print(f"  NTM EPS = 1.5 est + (1.2+1.3+1.4) actuals = {ntm.loc[d,'A']:.1f}; TTM = {ttm.loc[d,'A']:.1f}; "
+          f"forward_earnings_yield = 5.4/100 = {F['forward_earnings_yield'].loc[d,'A']:.4f} "
+          f"(= 1/forward P/E, leak-free). Validated.")
 
 
 def test_forward_feature_does_not_leak_reported_actual():

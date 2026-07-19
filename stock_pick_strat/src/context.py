@@ -44,7 +44,6 @@ def define_global_paths(config: DictConfig):
     # Incremental meta-sidecar anchors (the parquet file itself is unused; only
     # its stem names the sibling "<stem>_meta.json" the fetcher reads/writes)
     global_paths["FUNDAMENTALS_HISTORY_PATH"] = global_paths["DATA_STORE"] / "fundamentals_history.parquet"
-    global_paths["MANAGEMENT_HISTORY_PATH"] = global_paths["DATA_STORE"] / "management_history.parquet"
     global_paths["EMPLOYEES_HISTORY_PATH"] = global_paths["DATA_STORE"] / "employees_history.parquet"
     global_paths["DEF14A_LLM_PATH"] = global_paths["DATA_STORE"] / "def14a_llm.parquet"
     global_paths["SEC_FILINGS_INDEX_PATH"] = global_paths["DATA_STORE"] / "sec_filings_index.parquet"

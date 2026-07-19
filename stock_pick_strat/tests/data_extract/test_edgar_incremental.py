@@ -3,8 +3,7 @@
 skip-if-fresh guard). All network access is mocked, so these are fast and offline.
 
 What matters: a re-run must fetch ONLY filings after the last date already parsed
-(`D`), must skip entirely when already built today, and the officer cutoff must
-not be advanced by insider-only rows.
+(`D`), and must skip entirely when already built today.
 """
 from __future__ import annotations
 
@@ -138,22 +137,3 @@ def test_employees_cutoff_per_ticker():
     print("\n=== SANITY CHECK: employees per-ticker cutoff ===")
     print(f"  AAA -> {cutoff['AAA'].date()}, BBB -> {cutoff['BBB'].date()}, "
           f"unseen ticker -> full history. Validated.")
-
-
-def test_management_cutoff_ignores_insider_rows():
-    from src.data_extract.utils.structure.fetch_management_edgar import _last_officer_asof
-
-    existing = pd.DataFrame({
-        "ticker": ["AAA", "AAA", "AAA"],
-        "as_of": pd.to_datetime(["2021-02-01", "2022-02-01", "2023-06-01"]),
-        # last row is an insider-only row (no accession) with a LATER date
-        "accession_number": ["a1", "a2", None],
-    })
-    cutoff = _last_officer_asof(existing)
-
-    # the later insider-only row must NOT advance the officer cutoff, else we'd
-    # wrongly skip re-fetching 10-K officer data filed between 2022 and 2023.
-    assert cutoff["AAA"] == pd.Timestamp("2022-02-01")
-
-    print("\n=== SANITY CHECK: management officer cutoff ignores insider rows ===")
-    print(f"  officer cutoff -> {cutoff['AAA'].date()} (insider-only 2023-06 row ignored). Validated.")

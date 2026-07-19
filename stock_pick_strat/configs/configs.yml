@@ -10,6 +10,3 @@ data_extract:
     # SEC EDGAR requires a descriptive User-Agent — set SEC_USER_AGENT in .env
     form_types: ["10-K", "10-Q", "8-K"]
     rate_limit_seconds: 0.15
-  insider_institutional:
-    # Institutional 13F bulk download is large/slow — off by default
-    with_13f: false

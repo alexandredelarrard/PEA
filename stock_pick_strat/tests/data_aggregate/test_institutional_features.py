@@ -144,9 +144,75 @@ def test_join_13f_splits_holding_types():
           f"-> long shares no longer contaminated by options/bonds. Validated.")
 
 
+def _holdings_opts():
+    """Manager-grain 13F WITH option exposure over 2 quarters (ticker A), using
+    real recent quarter-ends to exercise the March->May availability lag:
+      Q1 2025-12-31: M1/M2/M3, long value 3.0M, calls 200k / puts 100k
+      Q2 2026-03-31: M3 exits, M4 new; long value 4.0M, calls 400k / puts 0 (bullish shift)"""
+    return pd.DataFrame([
+        {"cik": "M1", "period": "2025-12-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
+         "call_value": 100_000, "put_value": 50_000},
+        {"cik": "M2", "period": "2025-12-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
+         "call_value": 50_000, "put_value": 50_000},
+        {"cik": "M3", "period": "2025-12-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
+         "call_value": 50_000, "put_value": 0},
+        {"cik": "M1", "period": "2026-03-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
+         "call_value": 200_000, "put_value": 0},
+        {"cik": "M2", "period": "2026-03-31", "ticker": "A", "shares": 150, "value_usd": 1_500_000,
+         "call_value": 100_000, "put_value": 0},
+        {"cik": "M4", "period": "2026-03-31", "ticker": "A", "shares": 150, "value_usd": 1_500_000,
+         "call_value": 100_000, "put_value": 0},
+    ])
+
+
+def test_value_flow_options_and_concentration():
+    qf = _quarter_features(_holdings_opts())
+    q2 = qf[qf["as_of"] == pd.Timestamp("2026-03-31") + pd.Timedelta(days=45)].iloc[0]
+    # the crux: a March-31 quarter is only public ~mid-May
+    assert q2["as_of"] == pd.Timestamp("2026-05-15")
+    assert abs(q2["inst_value_chg"] - (4e6 / 3e6 - 1)) < 1e-9              # +33.3% VALUE flow
+    assert abs(q2["inst_shares_chg"] - (400 / 300 - 1)) < 1e-9            # +33.3% VOLUME flow
+    # net options = (calls - puts) / (long value + calls + puts) = 400k / 4.4M
+    assert abs(q2["net_options_ratio"] - (400_000 / 4_400_000)) < 1e-6
+    assert q2["net_options_ratio_chg"] > 0                                # shifted bullish vs Q1
+    assert abs(q2["new_buyer_ratio"] - (1 / 3)) < 1e-9                    # M4 new of 3 holders
+    # Herfindahl of manager value shares (1.0/1.5/1.5 of 4.0M)
+    assert abs(q2["inst_concentration"] - ((1 / 4) ** 2 + 2 * (1.5 / 4) ** 2)) < 1e-6
+    print("\n=== SANITY CHECK: 13F value flow / options / concentration ===")
+    print(f"  Q2(2026-03-31) as_of={q2['as_of'].date()} (leak-free); value_chg={q2['inst_value_chg']:.3f} "
+          f"net_options={q2['net_options_ratio']:.4f} (chg {q2['net_options_ratio_chg']:+.4f}) "
+          f"HHI={q2['inst_concentration']:.3f} new_buyer_ratio={q2['new_buyer_ratio']:.3f}. Validated.")
+
+
+def test_value_to_mcap_and_flow_panel():
+    idx = pd.bdate_range("2025-10-01", "2026-09-30")
+    tickers = ["A", "B", "C", "D"]
+    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
+    fund = pd.DataFrame([{"ticker": t, "as_of": "2025-01-01", "sharesOutstanding": 1_000_000.0}
+                         for t in tickers])
+    close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)           # price 10 -> mcap 10M
+    panel = build_institutional_feature_panel(
+        _holdings_opts(), peers, idx, shares_out_history=fund, stock_close=close)
+    for c in ("f_inst_value_chg_xs", "f_net_options_ratio_xs", "f_net_options_ratio_chg_xs",
+              "f_inst_concentration_xs", "f_new_buyer_ratio_xs",
+              "f_inst_value_to_mcap_xs", "f_inst_flow_to_mcap_xs"):
+        assert c in panel.columns, f"{c} missing from panel"
+    # A after its Q2 becomes public: long value 4.0M / mcap 10M = 0.40 (raw, pre xs-rank)
+    from src.data_aggregate.utils.factors import daily_market_cap, fundamentals_to_daily
+    qf = _quarter_features(_holdings_opts())
+    iv = fundamentals_to_daily(qf, "inst_value", idx)["A"].dropna().iloc[-1]
+    mc = daily_market_cap(fund, close)["A"].iloc[-1]
+    assert abs(iv / mc - 0.40) < 1e-6
+    print("\n=== SANITY CHECK: institutional weight (value / market cap) ===")
+    print(f"  A inst_value=${iv:,.0f} / mcap=${mc:,.0f} = {iv / mc:.2f}; panel exposes "
+          f"value_to_mcap + flow_to_mcap + options + concentration (_xs). Validated.")
+
+
 if __name__ == "__main__":
     test_quarter_feature_math()
     test_filing_lag_point_in_time()
     test_panel_columns_and_ownership_pct()
     test_extractor_parsers()
     test_join_13f_splits_holding_types()
+    test_value_flow_options_and_concentration()
+    test_value_to_mcap_and_flow_panel()

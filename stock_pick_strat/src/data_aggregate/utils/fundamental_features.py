@@ -24,12 +24,22 @@ every day with the price, not only when a new filing lands:
     sales_yield     = totalRevenue     / marketCap      (S/P, inverse P/S)
     book_yield      = stockholdersEquity/ marketCap      (B/P, inverse P/B)
     fcf_yield       = freeCashflow     / marketCap      (FCF/P)
-    ebitda_to_ev    = ebitda / enterpriseValue (inverse EV/EBITDA), where
-                      EV = marketCap + total debt + stock-based comp - cash.
-                      SBC is added like debt ("future debt disguised as stock":
-                      the equity claim serial diluters keep handing employees);
-                      real debt columns are used, with debtToEquity*equity as a
+    ebitda_to_ev    = ebitda / TRUE EV (inverse EV/EBITDA), where the True
+                      (fully-diluted) EV = diluted-shares*price + total debt +
+                      lease liabilities + minority interest - cash - short-term
+                      investments (only non-operating liquid assets are netted).
+                      Real debt columns are used, with debtToEquity*equity as a
                       fallback for histories that lack them.
+    fcf_to_ev       = freeCashflow / EV (Fully-Diluted FCF Yield) -- cash the whole
+                      capital structure throws off vs its total price; the cross-
+                      sector cash-valuation yield (and the energy "FCF EV yield").
+    altman_z        = market-value Altman Z bankruptcy screen (WC/RE/EBIT/mcap/sales
+                      over assets); pegy = P/E / (EPS growth% + dividend yield%).
+    ffo_yield / implied_cap_rate (REITs), ebitdax_to_ev (energy) -- sector EV/price
+                      multiples gated on the sector's balance-sheet signature.
+    operating_leverage_elasticity = %ΔOperatingIncome / %ΔRevenue; nwc_elasticity =
+                      %ΔNWC / %ΔRevenue; margin_expansion_delta = Δgross - ΔEBITDA
+                      margin; diluted_shares_growth; ebit_interest_coverage.
 
 Profitability / moat:
     grossMargins, operatingMargins, profitMargins, returnOnEquity  (raw ratios)
@@ -110,7 +120,7 @@ from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
 # the firm's own norm -> classic valuation mean-reversion signal.
 _MEAN_REVERSION_FIELDS = (
     "earnings_yield", "sales_yield", "book_yield",
-    "fcf_yield", "ebitda_to_ev", "intrinsic_yield",
+    "fcf_yield", "ebitda_to_ev", "fcf_to_ev", "ffo_yield", "intrinsic_yield",
 )
 _HIST_WINDOW = 1260      # ~5 trading years of daily observations
 _HIST_MIN_PERIODS = 252  # require >= 1y of history before emitting a z-score
@@ -157,20 +167,24 @@ def _combine_debt(long_debt: pd.DataFrame, short_debt: pd.DataFrame,
     return fallback if fallback is not None else pd.DataFrame()
 
 
-def _enterprise_value(mcap: pd.DataFrame, debt: pd.DataFrame,
-                      sbc: pd.DataFrame, cash: pd.DataFrame) -> pd.DataFrame:
-    """EV = market cap + total debt + stock-based comp - cash, restricted to the
-    tickers that have a market cap.
+def _enterprise_value(mcap: pd.DataFrame, additions: list, subtractions: list) -> pd.DataFrame:
+    """True (fully-diluted) enterprise value, restricted to tickers with a market cap:
 
-    Stock-based comp is added like debt: it is the equity claim the firm keeps
-    handing employees -- "future debt disguised as stock" -- so a serial diluter
-    has a larger true EV (and a lower EBITDA/EV yield) than its market cap alone
-    suggests. NaN-tolerant: a missing component contributes 0."""
+        EV = fully-diluted market cap
+             + Σ additions      (total debt, lease liabilities, minority interest)
+             − Σ subtractions   (cash, short-term investments)
+
+    This is the production textbook EV: only NON-OPERATING liquid financial assets
+    (cash + short-term investments) are netted, and the claims senior to / alongside
+    common equity (debt, capitalized leases, minority interest) are added. NaN-
+    tolerant: a missing component contributes 0."""
     ev = mcap.copy()
-    for part, sign in ((debt, 1.0), (sbc, 1.0), (cash, -1.0)):
+    for part in additions:
         if part is not None and not part.empty:
-            aligned = part.reindex(columns=mcap.columns).fillna(0.0)
-            ev = ev + sign * aligned
+            ev = ev + part.reindex(columns=mcap.columns).fillna(0.0)
+    for part in subtractions:
+        if part is not None and not part.empty:
+            ev = ev - part.reindex(columns=mcap.columns).fillna(0.0)
     return ev
 
 
@@ -275,6 +289,7 @@ def _derived_fields(
     close: pd.DataFrame | None,
     yoy_periods: int = 1,
     intrinsic_cfg: dict | None = None,
+    earnings_history: pd.DataFrame | None = None,
 ) -> dict:
     """Build daily wide frames (date x ticker) for every characteristic.
 
@@ -314,17 +329,92 @@ def _derived_fields(
         F["sales_yield"] = _ratio(revenue, mcap, positive_den=True)
         F["book_yield"] = _ratio(equity.where(equity > 0), mcap, positive_den=True)
         F["fcf_yield"] = _ratio(fcf.where(fcf > 0), mcap, positive_den=True)
+        # ---- True (fully-diluted) enterprise value; feeds every EV yield ----
+        #   EV = fully-diluted mcap + total debt + leases + minority interest
+        #        - cash - short-term investments
+        # Prefer diluted shares x price for the equity claim (falls back to basic
+        # mcap when diluted shares are absent); real debt columns preferred, with
+        # debtToEquity*equity as a last-resort fallback.
+        diluted = daily("dilutedShares")
+        fd_mcap = mcap
+        if close is not None and not diluted.empty and diluted.notna().any().any():
+            cols = diluted.columns.intersection(close.columns)
+            fd = (close[cols] * diluted[cols]).where(lambda x: x > 0)
+            fd_mcap = fd.combine_first(mcap)          # diluted where available, else basic
+        debt = _combine_debt(long_debt, short_debt, fallback=pd.DataFrame())
+        if debt.empty and not d2e.empty and not equity.empty:
+            debt = d2e.clip(lower=0.0) * equity.where(equity > 0)
+        leases = daily("operatingLeaseLiability").add(daily("financeLeaseLiability"), fill_value=0.0)
+        ev = _enterprise_value(fd_mcap, [debt, leases, daily("minorityInterest")],
+                               [cash, daily("shortTermInvestments")])
         if not ebitda.empty:
-            # Enterprise value from the real balance sheet:
-            #   EV = marketCap + total debt + stock-based comp - cash
-            # SBC is added as future dilution ("debt disguised as stock"). Prefer
-            # the real debt columns; older histories without them fall back to the
-            # debtToEquity * equity approximation.
-            debt = _combine_debt(long_debt, short_debt, fallback=pd.DataFrame())
-            if debt.empty and not d2e.empty and not equity.empty:
-                debt = d2e.clip(lower=0.0) * equity.where(equity > 0)
-            ev = _enterprise_value(mcap, debt, sbc, cash)
             F["ebitda_to_ev"] = _ratio(ebitda.where(ebitda > 0), ev, positive_den=True)
+        # FCF/EV yield: cash the whole capital structure earns vs its total price.
+        # The cleanest cross-sector cash-valuation yield, and it is exactly the
+        # "Fully-Diluted FCF Yield" / energy FCF-EV yield (freeCashflow = OCF - capex).
+        fcf_to_ev = _ratio(fcf.where(fcf > 0), ev, positive_den=True)
+        if not fcf_to_ev.empty and fcf_to_ev.notna().any().any():
+            F["fcf_to_ev"] = fcf_to_ev
+
+        # ---- Altman Z (market-value variant): standard bankruptcy-risk screen ----
+        #   Z = 1.2*WC/TA + 1.4*RE/TA + 3.3*EBIT/TA + 0.6*mcap/TL + 1.0*Sales/TA
+        assets_z = daily("totalAssets")
+        if not assets_z.empty:
+            ta = assets_z.where(assets_z > 0)
+            wc = daily("currentAssets").sub(daily("currentLiabilities"), fill_value=np.nan)
+            z = (1.2 * _ratio(wc, ta) + 1.4 * _ratio(daily("retainedEarnings"), ta)
+                 + 3.3 * _ratio(daily("operatingIncome"), ta)
+                 + 0.6 * _ratio(mcap, daily("totalLiabilities"), positive_den=True)
+                 + 1.0 * _ratio(revenue, ta))
+            if not z.empty and z.notna().any().any():
+                F["altman_z"] = z.replace([np.inf, -np.inf], np.nan)
+
+        # ---- PEGY = P/E / (EPS growth% + dividend yield%) ----
+        # trailing P/E; growth term PREFERS PROJECTED EPS growth (NTM/TTM-1 from the
+        # analyst-estimate archive) and falls back to TTM realized net-income growth.
+        pe = _ratio(mcap, net_income.where(net_income > 0), positive_den=True)
+        growth_pct = None
+        if earnings_history is not None and not earnings_history.empty:
+            from src.data_aggregate.utils.earnings_features import ntm_ttm_eps  # lazy: avoid cycle
+            ntm_e, ttm_e = ntm_ttm_eps(earnings_history, idx)
+            if not ntm_e.empty and not ttm_e.empty:
+                proj = _ratio(ntm_e, ttm_e.where(ttm_e > 0)) - 1.0        # projected EPS growth
+                if proj.notna().any().any():
+                    growth_pct = proj * 100.0
+        if growth_pct is None:
+            growth_pct = _fiscal_change_to_daily(fund_hist, "netIncome", idx,
+                                                 kind="pct", periods=yoy_periods) * 100.0
+        # div yield fills to 0 for non-payers, but GROWTH must be known or PEGY is
+        # undefined (don't silently treat unknown growth as 0).
+        div_yield_pct = _ratio(daily("dividendsPaid"), mcap, positive_den=True) * 100.0
+        denom = (growth_pct + div_yield_pct.fillna(0.0)).where(lambda x: x > 0)
+        pegy = _ratio(pe, denom)
+        if not pegy.empty and pegy.notna().any().any():
+            F["pegy"] = pegy.replace([np.inf, -np.inf], np.nan)
+
+        # ---- REIT price multiples (gated on real-estate signature) ----
+        re_gate = daily("realEstateNet").notna() | daily("rentalIncome").notna()
+        depamort_ev = daily("depAmort")
+        ffo = net_income.add(depamort_ev, fill_value=0.0).sub(
+            daily("gainOnDispositions"), fill_value=0.0)
+        ffo_yield = _ratio(ffo, mcap, positive_den=True)
+        if not re_gate.empty:
+            fy = ffo_yield.where(re_gate)
+            if fy.notna().any().any():
+                F["ffo_yield"] = fy                                   # FFO/price = 1 / P-FFO
+            icr = _ratio(daily("operatingIncome").add(depamort_ev, fill_value=0.0), ev,
+                         positive_den=True).where(re_gate)            # NOI(≈EBITDAre) / EV
+            if icr.notna().any().any():
+                F["implied_cap_rate"] = icr
+
+        # ---- Energy EV/EBITDAX yield (gated on oil-gas property) ----
+        energy_gate = daily("oilGasPropertyNet").notna()
+        if not energy_gate.empty and energy_gate.any().any():
+            ebitdax = (daily("operatingIncome").add(depamort_ev, fill_value=0.0)
+                       .add(daily("explorationExpense"), fill_value=0.0))
+            ex = _ratio(ebitdax.where(ebitdax > 0), ev, positive_den=True).where(energy_gate)
+            if ex.notna().any().any():
+                F["ebitdax_to_ev"] = ex
 
     # ---- Profitability / moat (raw ratios straight from the history) ----
     for field in ["grossMargins", "operatingMargins", "profitMargins",
@@ -525,6 +615,48 @@ def _derived_fields(
         if not sbc_to_ocf.empty and sbc_to_ocf.notna().any().any():
             F["sbc_to_ocf"] = sbc_to_ocf
 
+    # ---- REFINED VALUATION-ENGINE RATIOS (elasticity / divergence / dilution) ----
+    # Operating-leverage ELASTICITY = %ΔOperatingIncome / %ΔRevenue (>1 = scalable
+    # model, exponential profit vs linear sales; <1 = diseconomies of scale). This is
+    # the user's exact def, distinct from `operating_leverage` (revenue - SG&A growth).
+    oi_growth = _fiscal_change_to_daily(fund_hist, "operatingIncome", idx, kind="pct", periods=yoy_periods)
+    rev_growth_f = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods)
+    # guard: elasticity is meaningless (and explodes) when revenue is ~flat, so require
+    # at least a 2% revenue move for the denominator.
+    ol_el = _ratio(oi_growth, rev_growth_f.where(rev_growth_f.abs() >= 0.02))
+    if not ol_el.empty and ol_el.notna().any().any():
+        F["operating_leverage_elasticity"] = ol_el
+    # Gross vs EBITDA margin-expansion divergence: gross margin expanding while EBITDA
+    # margin lags = losing SG&A/overhead control; both expanding = true pricing power.
+    gm = _ratio(daily("grossProfit"), revenue, positive_den=True)
+    if gm.empty:
+        gm = daily("grossMargins")
+    em = _ratio(ebitda, revenue, positive_den=True)
+    if not gm.empty and not em.empty:
+        med = (gm - gm.shift(252)) - (em - em.shift(252))     # ~1y change divergence
+        if med.notna().any().any():
+            F["margin_expansion_delta"] = med.replace([np.inf, -np.inf], np.nan)
+    # Net working-capital elasticity = %ΔNWC / %ΔRevenue (>1 = cash-hungry growth).
+    cur_a2, cur_l2 = daily("currentAssets"), daily("currentLiabilities")
+    if not cur_a2.empty and not cur_l2.empty and not revenue.empty:
+        nwc = cur_a2.sub(cur_l2, fill_value=np.nan)
+        prev_nwc = nwc.shift(252)
+        nwc_g = _ratio(nwc - prev_nwc, prev_nwc, positive_den=True)
+        prev_rev = revenue.shift(252)
+        rev_g = _ratio(revenue - prev_rev, prev_rev, positive_den=True)
+        nwc_el = _ratio(nwc_g, rev_g.where(rev_g.abs() >= 0.02))   # guard ~flat-revenue blow-ups
+        if not nwc_el.empty and nwc_el.notna().any().any():
+            F["nwc_elasticity"] = nwc_el
+    # Fully-diluted shareholder dilution rate (YoY change in diluted shares).
+    dil_growth = _fiscal_change_to_daily(fund_hist, "dilutedShares", idx, kind="pct", periods=yoy_periods)
+    if dil_growth.notna().any().any():
+        F["diluted_shares_growth"] = dil_growth
+    # EBIT interest coverage = EBIT / interest (the user's def; complements the
+    # EBITDA-based interest_coverage). LOW (< ~2x) = structural distress risk.
+    eic = _ratio(daily("operatingIncome"), daily("interestExpense").abs(), positive_den=True)
+    if not eic.empty and eic.notna().any().any():
+        F["ebit_interest_coverage"] = eic
+
     # ---- INTRINSIC VALUE (two-stage DCF on TTM FCF) vs price ----
     if close is not None:
         iv = intrinsic_value_daily(fund_hist, close, idx, **intrinsic_cfg)
@@ -586,6 +718,7 @@ def build_fundamental_feature_panel(
     intrinsic_cfg: dict | None = None,
     hist_window: int = _HIST_WINDOW,
     hist_min_periods: int = _HIST_MIN_PERIODS,
+    earnings_history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Long-format panel: ['date','ticker', f_<char>_vs_peers, f_<char>_xs,
@@ -609,7 +742,8 @@ def build_fundamental_feature_panel(
 
     yoy_periods = _infer_yoy_periods(fundamentals_history)
     fields = _derived_fields(fundamentals_history, trading_index, stock_close,
-                             yoy_periods=yoy_periods, intrinsic_cfg=intrinsic_cfg)
+                             yoy_periods=yoy_periods, intrinsic_cfg=intrinsic_cfg,
+                             earnings_history=earnings_history)
 
     # regime state flags -> RAW `f_<name>`; everything else -> peer-relative.
     state_fields = {k: v for k, v in fields.items() if k in _STATE_FIELDS}

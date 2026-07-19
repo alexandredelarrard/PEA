@@ -1,9 +1,10 @@
 """Step 3 — Retail-attention features (Wikipedia pageviews + Google Trends).
 
-Checks: pure parsers (article-title cleaning, Wikimedia JSON, pytrends frame);
-the abnormal-attention builder is point-in-time; a genuine attention spike ranks
-high on <prefix>_attn_spike; weekly (Trends) series forward-fill onto the daily
-calendar; and the built panel exposes the f_* columns.
+Checks: pure parsers (article-title cleaning, Wikimedia JSON); the abnormal-attention
+builder is point-in-time; a genuine attention spike ranks high on <prefix>_attn_spike;
+weekly (Trends) series forward-fill onto the daily calendar; and the built panel
+exposes the f_* columns. (Google Trends response parsing is covered by
+tests/data_extract/test_google_trends.py, which tests the curl_cffi client directly.)
 """
 from __future__ import annotations
 
@@ -11,7 +12,6 @@ import numpy as np
 import pandas as pd
 
 from src.data_extract.utils.behavioral.fetch_wiki_pageviews import _company_to_article, _json_to_long
-from src.data_extract.utils.behavioral.fetch_google_trends import _df_to_long
 from src.data_aggregate.utils.attention_features import (
     _attention_fields, build_attention_feature_panel,
 )
@@ -31,15 +31,8 @@ def test_pure_parsers():
     assert wj["date"].iloc[0] == pd.Timestamp("2015-07-01") and wj["pageviews"].iloc[0] == 1000
     assert _json_to_long([], "AAPL").empty
 
-    # pytrends frame -> long, dropping the still-forming (isPartial) last bucket
-    idx = pd.to_datetime(["2022-01-02", "2022-01-09", "2022-01-16"])
-    tr = pd.DataFrame({"Apple Inc.": [10, 20, 99], "isPartial": [False, False, True]}, index=idx)
-    gl = _df_to_long(tr, "Apple Inc.", "AAPL")
-    assert len(gl) == 2 and gl["search_interest"].tolist() == [10.0, 20.0]
-
     print("\n=== SANITY CHECK: attention parsers ===")
-    print("  title cleaning strips suffixes; Wikimedia JSON & pytrends frames parse; "
-          "isPartial bucket dropped. Validated.")
+    print("  title cleaning strips suffixes; Wikimedia JSON parses. Validated.")
 
 
 def _attn_hist(dates, tickers, value_col, spike_ticker, spike_from):

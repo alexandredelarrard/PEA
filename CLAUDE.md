@@ -22,9 +22,9 @@ The pipeline is a chain of `Step` classes (base: `src/utils/step.py`), each with
 - `src/context.py` — `Context`: config, logging, env, `.store` (DB), `.paths` (non-tabular artifacts only).
 - `src/constants/constants.py` — global literals (date formats, SEC URLs).
 - `src/data_store/` — DB layer: `store.py` (`DataStore`: `load` / `save` upsert / `replace` / `ensure_columns` / `existing_dates`), `schema_registry.py` (logical table → PK + incremental date col), `schema_sql.py` (generates `sql/schema.sql`), `io.py`.
-- `src/data_extract/` — `StepExtractAllData` super-step → 4 sub-steps: **prices** (prices+dividends, short interest, 13F), **fundamentals** (SEC companyfacts history + forward-P/E snapshot, earnings surprises, macro), **structure** (employees, management, DEF 14A LLM governance, SEC filings index), **behavioral** (Wikipedia, Google Trends). Fetchers live under `utils/{prices,fundamentals,structure,behavioral,common}/`.
+- `src/data_extract/` — `StepExtractAllData` super-step → 4 sub-steps: **prices** (prices+dividends, short interest, 13F), **fundamentals** (SEC companyfacts history, earnings surprises → historical forward P/E, macro), **structure** (employees, DEF 14A LLM governance/executive-pay, SEC filings index), **behavioral** (Wikipedia, Google Trends). Fetchers live under `utils/{prices,fundamentals,structure,behavioral,common}/`.
 - `src/data_peers/` — `StepDeducePeers` (return-correlation + OpenAI-embedding peers).
-- `src/data_aggregate/` — `StepBuildCube`: peer-relative feature panels (fundamental, sector KPIs, forward valuation, earnings, management, employee, dividend, attention, institutional, short-interest) → `cube` table.
+- `src/data_aggregate/` — `StepBuildCube`: peer-relative feature panels (fundamental, sector KPIs, forward valuation, earnings, governance/executive-pay [from `def14a_llm`], employee, dividend, attention, institutional, short-interest) → `cube` table.
 - `src/modelling/` — `StepModelling` → `predictions`, `cube_signal`.
 - `src/post_processing/` — `StepBacktest`.
 - Infra: `docker-compose.yml` (Postgres 16 + volume), `Dockerfile`, `sql/schema.sql`, `scripts/` (schema generator, parquet→DB migrator).

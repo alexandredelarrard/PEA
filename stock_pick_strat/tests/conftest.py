@@ -65,6 +65,9 @@ def real_frames():
         "mkt_ret": returns[MARKET],
         "stock_close": stock_close[keep],
         "stock_ret": stock_ret[keep],
+        # full close (ALL tickers incl. commodity/FX proxies like CL=F/GC=F/USDEUR=X,
+        # which are not in the 100-stock subset) for the commodity/currency factors
+        "close_full": close,
     }
 
 
@@ -76,10 +79,12 @@ def real_pipeline(real_frames):
     from src.data_aggregate.utils.targets import build_targets
     from src.data_aggregate.utils.factors import (
         build_style_factor_returns,
-        build_macro_factor_changes,
+        macro_change_factors,
+        commodity_factor_returns,
+        currency_factor_returns,
         assemble_factor_panel,
     )
-    from src.modelling.utils_model.sector_peers import (
+    from src.data_peers.utils.sector_peers import (
         build_peer_dict,
         compute_sector_returns,
     )
@@ -87,6 +92,7 @@ def real_pipeline(real_frames):
     stock_close = real_frames["stock_close"]
     stock_ret = real_frames["stock_ret"]
     mkt_ret = real_frames["mkt_ret"]
+    close_full = real_frames["close_full"]
 
     store = _store()
     fundamentals = store.load("fundamentals_history")
@@ -97,13 +103,16 @@ def real_pipeline(real_frames):
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     sector_ret = compute_sector_returns(stock_ret, peers)
 
+    # mirror step_build_cube.build_factor_panel: market + style + commodity + currency + macro
     style = build_style_factor_returns(stock_close, stock_ret, fundamentals, 63)
     if macro is not None:
-        macro_chg = build_macro_factor_changes(macro, stock_close.index)
+        macro_chg = macro_change_factors(macro, stock_close.index)
     else:
         macro_chg = pd.DataFrame(index=stock_close.index)
-    macro_cols = list(macro_chg.columns)
-    factor_panel = assemble_factor_panel(mkt_ret, style, macro_chg)
+    commodity_returns = commodity_factor_returns(close_full, tickers={"oil": "CL=F", "gold": "GC=F"})
+    currency_returns = currency_factor_returns(close_full, tickers={"USD/EUR": "USDEUR=X"})
+    factor_panel, macro_cols = assemble_factor_panel(
+        mkt_ret, style, commodity_returns, currency_returns, macro_chg)
 
     betas = estimate_all_betas(
         stock_ret, factor_panel, sector_ret,
@@ -134,7 +143,7 @@ def fundamental_panel(real_frames):
     """Peer-relative fundamental feature panel on the real (canonical) history,
     plus the inputs needed to sanity-check it against the target."""
     from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
-    from src.modelling.utils_model.sector_peers import build_peer_dict
+    from src.data_peers.utils.sector_peers import build_peer_dict
 
     fundamentals = _store().load("fundamentals_history")
     if fundamentals.empty:

@@ -60,6 +60,15 @@ class GovernanceProfile(BaseModel):
         None, description="Number of independent directors (e.g. '7 of our 8 directors are independent')")
     n_women_directors: Optional[int] = Field(
         None, description="Number of women / female directors")
+    # ---- board technology / software maturity (AI-adoption governance signal) ----
+    n_technology_directors: Optional[int] = Field(
+        None, description="Number of directors with material technology / software / IT / "
+                          "cybersecurity / digital-transformation expertise, as shown in the board "
+                          "SKILLS-AND-QUALIFICATIONS matrix or the director bios; null if not disclosed")
+    technology_committee: Optional[bool] = Field(
+        None, description="True if the board has a dedicated technology / cybersecurity / digital / "
+                          "innovation committee (beyond the usual audit / compensation / nominating "
+                          "committees); else False")
     # ---- board leadership & anti-takeover provisions (infer FALSE if not present) ----
     independent_chair: Optional[bool] = Field(
         None, description="True if the Board Chair is independent (not the CEO)")

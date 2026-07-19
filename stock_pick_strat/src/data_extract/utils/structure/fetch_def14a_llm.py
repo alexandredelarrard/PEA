@@ -23,7 +23,8 @@ Output columns (DB table `def14a_llm`), scalar summaries + raw JSON:
     keys        ticker, as_of, period, accession_number, company_name, fiscal_year_extract
     board       n_directors, board_size, avg_director_age, avg_board_tenure,
                 pct_independent_directors, pct_female_directors,
-                avg_other_public_boards
+                avg_other_public_boards, n_technology_directors,
+                pct_technology_directors, technology_committee
     ceo         ceo_name_proxy, ceo_age, ceo_since_year, ceo_is_founder,
                 ceo_is_board_chair, ceo_salary, ceo_bonus, ceo_stock_awards,
                 ceo_option_awards, ceo_non_equity_incentive, ceo_all_other_comp,
@@ -62,6 +63,7 @@ _NUMERIC_COLS = [
     # board / directors
     "n_directors", "board_size", "avg_director_age", "avg_board_tenure",
     "pct_independent_directors", "pct_female_directors", "avg_other_public_boards",
+    "n_technology_directors", "pct_technology_directors", "technology_committee",
     # CEO
     "ceo_age", "ceo_since_year", "ceo_is_founder", "ceo_is_board_chair",
     "ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards",
@@ -97,6 +99,10 @@ _DEF14A_PROMPT = (
     "n_five_percent_holders = count of owners holding >=5%.\n"
     "- auditor_fees_usd = the TOTAL of all fee categories paid to the auditor. "
     "say_on_pay_support_pct as a decimal (92% -> 0.92); ceo_pay_ratio as a number (533:1 -> 533).\n"
+    "- Board technology maturity: n_technology_directors = how many directors have material "
+    "technology / software / IT / cybersecurity / digital expertise, per the board SKILLS-AND-"
+    "QUALIFICATIONS matrix or their bios; technology_committee = True if the board has a dedicated "
+    "technology / cybersecurity / digital / innovation committee (else False).\n"
     "Only use values stated in the text; use null when genuinely absent (except the provisions above)."
 )
 
@@ -469,6 +475,12 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
         "dual_class_shares": _bnum(g("dual_class_shares")),
         "poison_pill": _bnum(g("poison_pill")),
         "majority_voting": _bnum(g("majority_voting_for_directors")),
+        # ---- board technology / software maturity (AI-adoption governance signal) ----
+        "n_technology_directors": g("n_technology_directors"),
+        "pct_technology_directors": (round(g("n_technology_directors") / board_size, 3)
+                                     if g("n_technology_directors") is not None and board_size
+                                     else None),
+        "technology_committee": _bnum(g("technology_committee")),
         "say_on_pay_support_pct": g("say_on_pay_support_pct"),
         "ceo_pay_ratio": g("ceo_pay_ratio"),
         "median_employee_pay": g("median_employee_pay_usd"),
@@ -493,13 +505,20 @@ def _process_filing(
         return None
 
 
-def _is_up_to_date(context: Context, n_universe: int) -> bool:
-    path = context.paths["DEF14A_LLM_PATH"]
-    meta = load_extract_meta(path)
-    if (meta is None or meta.get("last_built") != today_iso()
-            or not context.store.exists("def14a_llm")):
+def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
+    """Up to date only when EVERY requested ticker already has rows in the DB AND
+    the index was refreshed today. The old check compared a DATE + a stored COUNT
+    (`universe_size`), so a same-day rerun skipped tickers that were never actually
+    extracted -- the '~15 tickers then it stops' bug. Checking per-ticker coverage
+    (tickers x date) makes a rerun pick up the still-missing names; the per-ticker
+    loop then skips already-done filings via `last_asof`/`seen` (no re-LLM)."""
+    if not context.store.exists("def14a_llm"):
         return False
-    return meta.get("universe_size", 0) >= n_universe
+    meta = load_extract_meta(context.paths["DEF14A_LLM_PATH"])
+    if meta is None or meta.get("last_built") != today_iso():
+        return False
+    have = set(context.store.load("def14a_llm", columns=["ticker"])["ticker"].dropna())
+    return set(requested_tickers).issubset(have)
 
 
 def _last_asof_by_ticker(existing: pd.DataFrame | None) -> dict[str, pd.Timestamp]:
@@ -552,9 +571,10 @@ def fetch_def14a_llm(
     cik_map = load_cik_mapping(context)
     cik_map = cik_map[cik_map["ticker"].isin(tickers)]
 
-    if _is_up_to_date(context, len(cik_map)):
+    if _is_up_to_date(context, cik_map["ticker"].tolist()):
         existing = context.store.load("def14a_llm")
-        context.log.info("DEF 14A LLM already up to date — skipping (%d rows)", len(existing))
+        context.log.info("DEF 14A LLM already up to date — every requested ticker present "
+                         "(%d rows) — skipping", len(existing))
         return existing
 
     existing = context.store.load("def14a_llm")

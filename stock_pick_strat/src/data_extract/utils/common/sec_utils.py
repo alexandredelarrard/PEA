@@ -16,6 +16,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from sqlalchemy import text
 
 import pandas as pd
 import requests
@@ -108,7 +109,7 @@ def bulk_ingested_quarters(store, table: str) -> set[str]:
     final once the quarter ends). Empty when the table doesn't exist yet."""
     if not store.exists(table):
         return set()
-    from sqlalchemy import text
+    
     with store.engine.connect() as c:
         return set(pd.read_sql(text(f'SELECT DISTINCT quarter FROM "{table}"'), c)
                    ["quarter"].dropna())

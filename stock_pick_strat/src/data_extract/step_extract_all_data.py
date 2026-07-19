@@ -19,8 +19,6 @@ from src.data_extract.step_extract_prices import StepExtractPrices
 from src.data_extract.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.step_extract_structure import StepExtractStructure
 from src.data_extract.step_extract_behavioral import StepExtractBehavioral
-from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
-from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 
 
 class StepExtractAllData(Step):
@@ -43,15 +41,8 @@ class StepExtractAllData(Step):
 
         # self._prices.run(tickers=tickers)
         # self._fundamentals.run(tickers=tickers)
-        self._structure.run(tickers=tickers)
+        # self._structure.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
-
-        # SEC bulk quarterly data sets (zips cached under data/sec_bulk_cache/,
-        # incremental by quarter + new-ticker back-fill -- see the fetchers).
-        # Pension facts from the Financial Statement Data Sets (num/sub XBRL):
-        fetch_financial_statements(self._context)
-        # Officer / director / 10%-owner transactions from the Insider Transactions sets:
-        fetch_insider_transactions(self._context)
 
         # TODO: fail to deliver stock
         # https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data

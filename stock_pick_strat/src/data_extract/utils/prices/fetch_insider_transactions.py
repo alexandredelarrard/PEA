@@ -209,12 +209,12 @@ def _read_tables(path: Path):
         return None
 
 
-def fetch_insider_transactions(context: Context) -> int:
+def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     """Download (cached) the insider-transactions data sets over `years_history`,
     flatten to transactions, keep the universe, upsert to `insider_transactions`.
     Returns the number of rows upserted."""
+    
     store = context.store
-    universe = {t.upper() for t in store.load("sp500_tickers", columns=["ticker"])["ticker"]}
     cikmap = load_cik_mapping(context)
     cik2tkr = ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
                if not cikmap.empty and "ticker" in cikmap.columns else {})
@@ -222,7 +222,7 @@ def fetch_insider_transactions(context: Context) -> int:
     cache_dir = _cache_dir(context)
 
     done_q = bulk_ingested_quarters(store, _TABLE)
-    new_tickers = universe - load_processed_universe(cache_dir, _TABLE)   # empty once converged
+    new_tickers = tickers - load_processed_universe(cache_dir, _TABLE)   # empty once converged
     if new_tickers:
         logger.info("insider: %d new/changed tickers -> re-parsing cached quarters",
                     len(new_tickers))
@@ -237,13 +237,13 @@ def fetch_insider_transactions(context: Context) -> int:
         tables = _read_tables(path)
         if tables is None:
             continue
-        df = _filter_universe(_parse_insider(*tables), universe, cik2tkr)
+        df = _filter_universe(_parse_insider(*tables), tickers, cik2tkr)
         if df.empty:
             continue
         df["quarter"] = q
         saved += store.save(_TABLE, df[[c for c in _OUT_COLS if c in df.columns]])
 
-    save_processed_universe(cache_dir, _TABLE, universe)   # so a converged re-run skips
+    save_processed_universe(cache_dir, _TABLE, tickers)   # so a converged re-run skips
     logger.warning("insider_transactions: upserted %d rows (%d quarters scanned)",
                    saved, len(_quarters(years_history)))
     return saved

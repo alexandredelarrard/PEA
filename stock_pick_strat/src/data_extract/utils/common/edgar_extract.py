@@ -37,6 +37,7 @@ def html_to_text(raw: str) -> str:
     raw = re.sub(r"<[^>]+>", " ", raw)            # remaining tags
     text = html.unescape(raw)
     text = text.replace("\xa0", " ")              # non-breaking space
+    text = text.replace("​", "").replace("﻿", "")   # zero-width spaces (proxy tables)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\s*\n\s*", "\n", text)
     return text.strip()

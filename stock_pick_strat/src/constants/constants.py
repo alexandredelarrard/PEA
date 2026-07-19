@@ -32,6 +32,11 @@ SEC_FINSTMT_URL_TEMPLATE = (
 SEC_INSIDER_FIRST_YEAR = 2011      # earliest insider-transactions data set
 SEC_FINSTMT_FIRST_YEAR = 2009      # earliest financial-statement data set (2009q2)
 
+# SEC Fails-to-Deliver: semi-monthly settlement-fails files ({period} = "YYYYMMa" for
+# settlement dates 1-15, "YYYYMMb" for 16-end). Daily grain (ticker x settlement date).
+SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
+SEC_FTD_FIRST_YEAR = 2016          # earliest semi-monthly file on this path (pre-2016 = legacy paths)
+
 # --------------------------------------------------------------------------- #
 # Google Trends (unofficial API — retail-attention proxy). The explore call    #
 # returns widget tokens; the multiline call returns the interest-over-time     #

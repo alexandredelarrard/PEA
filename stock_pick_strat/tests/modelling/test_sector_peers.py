@@ -1,4 +1,4 @@
-"""Tests for compute_sector_returns (src/modelling/utils_model/sector_peers.py).
+"""Tests for compute_sector_returns (src/data_peers/utils/sector_peers.py).
 
 The sector return is a weighted average of a stock's peer returns. It must be
 NaN-TOLERANT: a single missing peer on a date (e.g. a peer that only listed
@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils_model.sector_peers import compute_sector_returns
+from src.data_peers.utils.sector_peers import compute_sector_returns
 
 
 def _returns_with_late_peer():

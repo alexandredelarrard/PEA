@@ -192,6 +192,11 @@ class StepBuildCube(Step):
             self._log.warning("No short-volume data -> short-interest features "
                               "skipped (run fetch_short_interest).")
 
+        self.fails_to_deliver = self._load_or_none("fails_to_deliver")
+        if self.fails_to_deliver is None:
+            self._log.warning("No fails-to-deliver data -> FTD features skipped "
+                              "(run fetch_fails_to_deliver).")
+
     def _intrinsic_cfg(self) -> dict:
         cfg = self._cfg.get("intrinsic", {})
         return OmegaConf.to_container(cfg, resolve=True) if cfg else {}
@@ -502,11 +507,13 @@ class StepBuildCube(Step):
                        added, 100 * cov)
 
     def build_short_interest_features(self):
-        """Short-selling-pressure features (RegSHO short-volume ratio + its change).
-        Point-in-time: each day's file is disseminated next morning, so the ratio
-        is lagged one trading day inside the builder."""
+        """Short-selling-pressure features (RegSHO short-volume ratio + its change) plus
+        SEC fails-to-deliver (settlement stress). Point-in-time: RegSHO is lagged one
+        trading day; FTD is lagged ~2 months (its publication delay) inside the builder."""
         panel = build_short_interest_feature_panel(
             getattr(self, "short_interest", None), self.peers, self.stock_close.index,
+            fails_history=getattr(self, "fails_to_deliver", None),
+            volume=getattr(self, "stock_volume", None),
         )
         if panel.empty:
             self._log.warning("No short-interest features built.")

@@ -317,6 +317,57 @@ def test_bank_net_revenue_override_fee_slice():
           f"profitMargins={ye['profitMargins']:.2f}. Validated.")
 
 
+def test_reit_revenue_rental_override():
+    """REITs tag rent under the operating-lease elements (leases are outside ASC-606),
+    so the contract-revenue element the coalesce grabs is only a small fee slice. The
+    Real-Estate override recovers the rental total (max -> no double-count); a REIT that
+    tags rent under contract-revenue keeps its higher total."""
+    # fee-slice reporter (CPT/EXR): tiny RCC fee + big rent under the lease element
+    g = {"RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": _year(10.0, [2019, 2020])}},
+         "OperatingLeaseLeaseIncome": {"units": {"USD": _year(250.0, [2019, 2020])}}}
+    ye = build_ticker_history("R", {"facts": {"us-gaap": g, "dei": {}}}, "Real Estate")
+    assert ye[ye["fiscal_end"] == "2020-12-31"].iloc[0]["totalRevenue"] == pytest.approx(1000.0)  # 4x250, not 40
+
+    # rent-in-contract-revenue reporter (ARE/PLD): RCC is the total -> no double-count with the component
+    g2 = {"RevenueFromContractWithCustomerIncludingAssessedTax": {"units": {"USD": _year(500.0, [2019, 2020])}},
+          "RealEstateRevenueNet": {"units": {"USD": _year(200.0, [2019, 2020])}}}
+    ye2 = build_ticker_history("R2", {"facts": {"us-gaap": g2, "dei": {}}}, "Real Estate")
+    assert ye2[ye2["fiscal_end"] == "2020-12-31"].iloc[0]["totalRevenue"] == pytest.approx(2000.0)  # 4x500, not 2800
+
+    print("\n=== SANITY CHECK: REIT rental revenue override ===")
+    print("  fee-slice REIT -> 1000 (rent, not the 40 fee); rent-in-RCC REIT -> 2000 (no double-count). Validated.")
+
+
+def test_energy_and_healthcare_revenue_recovery():
+    """Pure E&P tag the top line as oil&gas revenue (Energy-gated override; integrated
+    majors' fuller Revenues wins). Health-care filers tag patient-service revenue, now
+    coalesced into totalRevenue. A non-energy filer with a small oil&gas line is untouched."""
+    # E&P: only oil&gas revenue (+ a net-income anchor for the quarter grid) -> recovered
+    g = {"OilAndGasRevenue": {"units": {"USD": _year(500.0, [2019, 2020])}},
+         "NetIncomeLoss": {"units": {"USD": _year(50.0, [2019, 2020])}}}
+    ye = build_ticker_history("EP", {"facts": {"us-gaap": g, "dei": {}}}, "Energy")
+    assert ye[ye["fiscal_end"] == "2020-12-31"].iloc[0]["totalRevenue"] == pytest.approx(2000.0)
+    # integrated major: fuller Revenues wins (no double-count)
+    g2 = {"Revenues": {"units": {"USD": _year(800.0, [2019, 2020])}},
+          "OilAndGasRevenue": {"units": {"USD": _year(500.0, [2019, 2020])}}}
+    ye2 = build_ticker_history("BIGOIL", {"facts": {"us-gaap": g2, "dei": {}}}, "Energy")
+    assert ye2[ye2["fiscal_end"] == "2020-12-31"].iloc[0]["totalRevenue"] == pytest.approx(3200.0)
+    # non-energy (asset mgr consolidating an oil&gas portfolio co): oil&gas ignored, not overridden
+    g3 = {"Revenues": {"units": {"USD": _year(800.0, [2019, 2020])}},
+          "OilAndGasRevenue": {"units": {"USD": _year(5.0, [2019, 2020])}}}
+    yf = build_ticker_history("AM", {"facts": {"us-gaap": g3, "dei": {}}}, "Financials")
+    assert yf[yf["fiscal_end"] == "2020-12-31"].iloc[0]["totalRevenue"] == pytest.approx(3200.0)  # Revenues, not 20
+
+    # health care: patient-service revenue coalesced into totalRevenue
+    gh = {"HealthCareOrganizationRevenue": {"units": {"USD": _year(1000.0, [2018, 2019, 2020])}}}
+    yh = _ye(_build(gh))
+    assert yh["totalRevenue"] == pytest.approx(4000.0)
+
+    print("\n=== SANITY CHECK: energy + health-care revenue recovery ===")
+    print("  E&P oil&gas -> 2000; integrated major keeps Revenues 3200 (no double-count); "
+          "non-energy oil&gas line ignored (3200); health-care patient revenue -> 4000. Validated.")
+
+
 def test_regulatory_assets_total_current_plus_noncurrent():
     """Utilities split regulatory assets into current + noncurrent; the total pool the
     utility KPIs need must SUM them (not coalesce one), and use the combined tag when the
@@ -361,6 +412,34 @@ def test_operating_income_bottom_up_ebit_nonfinancial_only():
     print("\n=== SANITY CHECK: bottom-up EBIT operatingIncome (non-financials) ===")
     print(f"  REIT operatingIncome={ye['operatingIncome']:.0f} (EBIT), EBITDAre={ye['ebitda']:.0f}; "
           f"financial excluded. Validated.")
+
+
+def test_operating_income_from_costs_and_expenses_nonfinancial():
+    """A non-financial reporting 'Total costs and expenses' but no operating-income
+    line (integrated oil pre-restructuring, e.g. COP 2012-2016) gets
+    operatingIncome = revenue - total costs. A >60% implied margin (incompletely
+    tagged costs, e.g. COP's pre-2012 integrated years) is rejected as an artifact;
+    financials are excluded (gated)."""
+    assert "CostsAndExpenses" in EXTRA_FLOW_TAGS["costsAndExpenses"]
+    rev = {"Revenues": {"units": {"USD": _year(1000.0, [2019, 2020])}}}     # TTM 4000
+
+    # complete costs -> OI = revenue - costs (20% margin, kept); preferred over EBIT
+    g = {**rev, "CostsAndExpenses": {"units": {"USD": _year(800.0, [2019, 2020])}}}
+    ye = _ye(build_ticker_history("OIL", {"facts": {"us-gaap": g, "dei": {}}}, "Energy"))
+    assert ye["operatingIncome"] == pytest.approx(800.0)        # 4000 - 3200
+
+    # incompletely-tagged costs -> 80% implied margin -> rejected -> NaN (no other fallback)
+    g2 = {**rev, "CostsAndExpenses": {"units": {"USD": _year(200.0, [2019, 2020])}}}
+    ye2 = _ye(build_ticker_history("OIL2", {"facts": {"us-gaap": g2, "dei": {}}}, "Energy"))
+    assert pd.isna(ye2["operatingIncome"])                      # 80% margin = artifact
+
+    # financials excluded even with complete costs
+    fin = _ye(build_ticker_history("FIN", {"facts": {"us-gaap": g, "dei": {}}}, "Financials"))
+    assert pd.isna(fin["operatingIncome"])
+
+    print("\n=== SANITY CHECK: operatingIncome = revenue - CostsAndExpenses ===")
+    print(f"  non-fin complete costs -> OI={ye['operatingIncome']:.0f} (4000-3200); "
+          f"80%-margin (incomplete costs) rejected -> NaN; financial gated -> NaN. Validated.")
 
 
 def test_financials_profit_margin_guard():

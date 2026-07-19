@@ -48,6 +48,7 @@ build_cube:
       growth: [f_revenueGrowth_xs, f_earningsGrowth_xs, f_y_rev_growth_xs,
                f_y_earnings_growth_xs, f_operating_leverage_xs, f_gross_margin_chg_xs]
       distress: ["-f_net_debt_to_ebitda_xs", "-f_net_debt_incl_offbs_to_ebitda_xs",
+                 "-f_pension_overhang_leverage_xs",          # pension/OPEB deficit / market cap
                  f_interest_coverage_xs, f_current_ratio_xs,
                  f_cash_to_debt_xs, "-f_debtToEquity_xs"]   # off-BS = +leases +pension deficit
       capital_allocation: ["-f_sbc_intensity_xs", "-f_sbc_to_ocf_xs", "-f_shares_growth_xs",

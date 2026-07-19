@@ -70,7 +70,19 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                      "SalesRevenueEnergyServices",                # utilities pre-2016 (e.g. WEC)
                      "RevenuesNetOfInterestExpense",              # banks (net revenue)
                      "RegulatedAndUnregulatedOperatingRevenue",   # utilities
-                     "FoodAndBeverageRevenue"],                   # restaurants pre-2016 (e.g. CMG)
+                     "FoodAndBeverageRevenue",                    # restaurants pre-2016 (e.g. CMG)
+                     # ---- sector TOTAL top-line tags (pre-ASC-606 / sector-specific),
+                     # appended LAST (lowest priority = FILL-ONLY) so the general tags above
+                     # always win where present (recent years untouched). ONLY tags that are
+                     # the filer's actual TOTAL revenue are included -- rental-only and
+                     # oil&gas-only COMPONENTS are deliberately EXCLUDED: they wrongly win a
+                     # small value for mixed filers (an asset manager consolidating an oil&gas
+                     # portfolio co -> $22M; a self-storage REIT whose income isn't operating-
+                     # lease-classified -> $52M). These stay sector-recoverable via `Revenues`.
+                     "HealthCareOrganizationRevenue",             # health care total (e.g. DVA pre-2015)
+                     "HealthCareOrganizationPatientServiceRevenueLessProvisionForBadDebts",
+                     "HealthCareOrganizationPatientServiceRevenue",
+                     "RealEstateRevenueNet"],                     # REIT total real-estate revenue
     # NetIncomeLoss (to parent) / ProfitLoss (incl. NCI) are the modern tags; many
     # filers used neither before ~2016 (e.g. WAT 2011-2015) and instead tagged only
     # continuing-ops-incl-NCI. That tag shares ProfitLoss's basis (incl. NCI), so
@@ -185,6 +197,10 @@ EXTRA_FLOW_TAGS = {
     "pretaxIncome": [
         "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
         "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"],
+    # "Total costs and expenses" (incl. DD&A): lets us derive operating income as
+    # revenue - this for non-financials that report no OperatingIncomeLoss line
+    # (integrated oil pre-restructuring, e.g. COP 2012-2016).
+    "costsAndExpenses": ["CostsAndExpenses"],
     "interestIncome": ["InvestmentIncomeInterest"],
     "amortizationIntangibles": ["AmortizationOfIntangibleAssets"],
     "dividendsPaid": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
@@ -251,6 +267,7 @@ EXTRA_FLOW_TAGS = {
                            "GainLossOnDispositionOfProperty",
                            "GainsLossesOnSalesOfInvestmentRealEstate"],
     # ---- Energy (oil & gas) ----
+    "oilGasRevenue": ["OilAndGasRevenue", "OilAndGasSalesRevenue"],  # E&P top line (pure players / pre-ASC-606)
     "explorationExpense": ["ExplorationExpense", "ExplorationAbandonmentAndDryHoleCosts",
                            "ExplorationAbandonmentAndImpairmentExpense",   # DVN/EQT/OXY
                            "ResultsOfOperationsExplorationExpense"],
@@ -836,6 +853,19 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
         insurer_rev = (prem.fillna(0) + inv.fillna(0)).where(prem.notna() | inv.notna())
         rev_ttm = pd.concat([rev_ttm, bank_rev, insurer_rev, ttm_a("revenuesTotal")],
                             axis=1).max(axis=1)
+    elif sector == "Real Estate":
+        # REITs tag rental income under the operating-LEASE elements (leases are outside
+        # ASC-606), so the contract-revenue element the coalesce grabs is only a small FEE
+        # slice (e.g. CPT $11M, EXR $52M vs ~$1B of rent). Take the larger of the coalesced
+        # total and the rental line: rent is a subset, so max() never double-counts, and
+        # REITs that DO tag rent under contract-revenue (e.g. ARE/PLD) keep their higher total.
+        rev_ttm = pd.concat([rev_ttm, ttm_a("rentalIncome")], axis=1).max(axis=1)
+    elif sector == "Energy":
+        # E&P filers tag the top line as oil & gas revenue; integrated majors report a
+        # fuller `Revenues`, which max() keeps (oil&gas is a subset -> no double-count).
+        # Sector-gated so a non-energy filer consolidating an oil&gas portfolio company
+        # (e.g. an asset manager) is untouched.
+        rev_ttm = pd.concat([rev_ttm, ttm_a("oilGasRevenue")], axis=1).max(axis=1)
     gp_ttm = ttm_a("grossProfit")
     cor_ttm = ttm_a("costOfRevenue")
     oi_ttm = ttm_a("operatingIncome")
@@ -904,6 +934,16 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
     # EBIT = pre-tax income + interest expense. Gated to non-financials (banks / insurers
     # have their own operating-income proxies), so their operating margin stays N/A.
     if sector != "Financials":
+        # some non-financials report "Total costs and expenses" (incl. DD&A) but no
+        # operating-income line (integrated oil pre-restructuring, e.g. COP 2012-2016):
+        # operating income = revenue - total operating costs. Preferred over the EBIT
+        # proxy below because it excludes non-operating items. Guard: reject an
+        # implausibly high (>60%) implied operating margin, which signals INCOMPLETELY
+        # tagged costs (e.g. COP's pre-2012 integrated years) rather than real OI.
+        oi_cae = rev_ttm - ttm_a("costsAndExpenses")
+        oi_cae = oi_cae.where(oi_cae <= 0.60 * rev_ttm)
+        oi_ttm = oi_ttm.where(oi_ttm.notna(), oi_cae)
+        # last resort: bottom-up EBIT = pre-tax income + interest expense.
         oi_ttm = oi_ttm.where(oi_ttm.notna(), ttm_a("pretaxIncome") + int_ttm.fillna(0))
 
     # EBITDA = operating income + D&A, with a bottom-up fallback (net income + taxes

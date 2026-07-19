@@ -44,9 +44,6 @@ class StepExtractAllData(Step):
         # self._structure.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
 
-        # TODO: fail to deliver stock
-        # https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data
-
         # TODO: financial-statement NOTES data sets (footnote PBO / plan assets /
         # funded status) for fuller pension detail -- heavier (~1GB+/qtr) follow-up.
         # https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets

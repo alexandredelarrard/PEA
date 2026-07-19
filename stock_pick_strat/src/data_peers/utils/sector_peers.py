@@ -22,6 +22,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import DUAL_CLASS_SECONDARY_TO_PRIMARY
+
 
 def _weights_from_similarity(sim_row: pd.Series, top_k: int, weighting: str) -> dict:
     """Top-k peers from one row of a similarity matrix (self excluded)."""
@@ -46,10 +48,62 @@ def _weights_from_similarity(sim_row: pd.Series, top_k: int, weighting: str) -> 
 _weights_from_corr = _weights_from_similarity
 
 
-def build_peer_dict(stock_returns, top_k=20, weighting="corr", min_obs=120) -> dict:
-    """Correlation-only peer dict (unchanged; kept for fallback/comparison)."""
+# --------------------------------------------------------------------------- #
+# Dual-class share dedup (GOOG/GOOGL, FOX/FOXA, NWS/NWSA)                       #
+# --------------------------------------------------------------------------- #
+def _peers_from_similarity_matrix(
+    sim: pd.DataFrame,
+    top_k: int,
+    weighting: str,
+    redundant_map: dict[str, str] | None = None,
+) -> dict:
+    """Top-k peers per ticker from a similarity matrix, with DUAL-CLASS dedup.
+
+    A secondary share class (class B/C, e.g. GOOG) correlates ~1.0 with its primary
+    (GOOGL), so it would otherwise be a stock's own #1 peer and double-count the
+    company in every basket. It is therefore never a peer CANDIDATE; instead each
+    secondary INHERITS its primary's basket, so it still has valid, non-self peers.
+    """
+    redundant_map = (DUAL_CLASS_SECONDARY_TO_PRIMARY if redundant_map is None
+                     else redundant_map)
+    secondaries = set(redundant_map)
+    cand = [c for c in sim.columns if c not in secondaries]         # peer candidates
+    sim_c = sim[cand]
+    peer_dict = {t: _weights_from_similarity(sim_c.loc[t], top_k, weighting)
+                 for t in sim.index if t not in secondaries}
+    for sec, prim in redundant_map.items():                         # twin -> primary's basket
+        if sec in sim.index and prim in peer_dict:
+            peer_dict[sec] = dict(peer_dict[prim])
+    return peer_dict
+
+
+def dedupe_share_classes(peer_dict: dict,
+                         redundant_map: dict[str, str] | None = None) -> dict:
+    """Post-hoc dual-class dedup for an already-built / CACHED peer dict: strip every
+    secondary share class out of all baskets (renormalizing the remaining weights)
+    and give each secondary its primary's basket. Idempotent -- applied on load so a
+    dict built before this fix is corrected without recomputing embeddings."""
+    redundant_map = (DUAL_CLASS_SECONDARY_TO_PRIMARY if redundant_map is None
+                     else redundant_map)
+    if not redundant_map:
+        return peer_dict
+    secondaries = set(redundant_map)
+    out: dict = {}
+    for t, peers in peer_dict.items():
+        kept = {p: w for p, w in (peers or {}).items() if p not in secondaries}
+        s = sum(kept.values())
+        out[t] = {p: float(round(w / s, 6)) for p, w in kept.items()} if s > 0 else {}
+    for sec, prim in redundant_map.items():
+        if prim in out:
+            out[sec] = dict(out[prim])
+    return out
+
+
+def build_peer_dict(stock_returns, top_k=20, weighting="corr", min_obs=120,
+                    redundant_map=None) -> dict:
+    """Correlation-only peer dict (dual-class-deduped; kept for fallback/comparison)."""
     corr = stock_returns.corr(min_periods=min_obs)
-    return {t: _weights_from_similarity(corr[t], top_k, weighting) for t in corr.columns}
+    return _peers_from_similarity_matrix(corr, top_k, weighting, redundant_map)
 
 
 # --------------------------------------------------------------------------- #
@@ -101,15 +155,15 @@ def build_peer_dict_hybrid(
     min_obs: int = 120,
     w_corr: float = 0.5,
     w_embed: float = 0.5,
+    redundant_map: dict[str, str] | None = None,
 ) -> dict:
     """
-    Peer dict from the combined (correlation + embedding) similarity.
-    Falls back to correlation-only where embeddings are unavailable.
+    Peer dict from the combined (correlation + embedding) similarity (dual-class-
+    deduped). Falls back to correlation-only where embeddings are unavailable.
     """
     corr = stock_returns.corr(min_periods=min_obs)
     combined = combine_similarity(corr, embed_sim, w_corr, w_embed)
-    return {t: _weights_from_similarity(combined[t], top_k, weighting)
-            for t in combined.columns}
+    return _peers_from_similarity_matrix(combined, top_k, weighting, redundant_map)
 
 
 # --------------------------------------------------------------------------- #
@@ -133,9 +187,11 @@ def compute_sector_returns(stock_returns: pd.DataFrame, peer_dict: dict) -> pd.D
     return sector
 
 
-def load_peer_dict(path: Path) -> dict:
+def load_peer_dict(path: Path, redundant_map: dict[str, str] | None = None) -> dict:
+    """Load a cached peer dict, applying the dual-class dedup on the way in so a dict
+    built before this fix is corrected without recomputing embeddings."""
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        return dedupe_share_classes(json.load(f), redundant_map)
 
 
 def save_peer_dict(peer_dict: dict, path: Path) -> None:

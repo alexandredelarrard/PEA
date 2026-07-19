@@ -12,7 +12,53 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_peers.utils.sector_peers import compute_sector_returns
+from src.data_peers.utils.sector_peers import (
+    compute_sector_returns, build_peer_dict, dedupe_share_classes,
+)
+
+
+def test_dual_class_excluded_from_peer_candidates():
+    """A secondary share class (GOOG) must NEVER be anyone's peer (it's the same
+    company as GOOGL, correlation ~1.0), and it inherits GOOGL's basket so it still
+    has valid, non-self peers."""
+    dates = pd.bdate_range("2020-01-01", periods=300)
+    rng = np.random.default_rng(1)
+    df = pd.DataFrame({t: rng.normal(0, 0.01, len(dates))
+                       for t in ["AAA", "BBB", "CCC", "DDD", "GOOGL"]}, index=dates)
+    df["GOOG"] = df["GOOGL"] + rng.normal(0, 1e-6, len(dates))     # ~identical twin
+
+    peers = build_peer_dict(df, top_k=3, weighting="corr", min_obs=50,
+                            redundant_map={"GOOG": "GOOGL"})
+
+    # GOOG is never a peer CANDIDATE for anyone (incl. GOOGL)
+    assert all("GOOG" not in basket for basket in peers.values()), "GOOG leaked as a peer"
+    assert "GOOG" not in peers["GOOGL"] and "GOOGL" not in peers["GOOGL"]
+    # GOOG inherits GOOGL's basket and never contains itself or its twin
+    assert peers["GOOG"] == peers["GOOGL"]
+    assert "GOOG" not in peers["GOOG"] and "GOOGL" not in peers["GOOG"]
+
+    print("\n=== SANITY CHECK: dual-class peer dedup (build) ===")
+    print(f"  GOOG (~identical to GOOGL) is NOT a peer of any stock; "
+          f"GOOG inherits GOOGL's basket = {sorted(peers['GOOG'])}. No self/twin peers. Validated.")
+
+
+def test_dedupe_share_classes_fixes_cached_dict():
+    """The load-path post-processor strips secondaries from a cached dict, renormalizes
+    the survivors, and gives each secondary its primary's basket (no re-embedding)."""
+    cached = {
+        "AAA": {"GOOG": 0.5, "BBB": 0.5},        # GOOG must be stripped + renormalized
+        "GOOGL": {"AAA": 0.6, "GOOG": 0.4},      # its own twin must be stripped
+        "GOOG": {"AAA": 1.0},                     # will inherit GOOGL's cleaned basket
+    }
+    out = dedupe_share_classes(cached, {"GOOG": "GOOGL"})
+    assert out["AAA"] == {"BBB": 1.0}             # 0.5 -> renorm 1.0
+    assert out["GOOGL"] == {"AAA": 1.0}           # 0.6 -> renorm 1.0
+    assert out["GOOG"] == out["GOOGL"]            # secondary inherits primary
+    assert dedupe_share_classes(out, {"GOOG": "GOOGL"}) == out   # idempotent
+
+    print("\n=== SANITY CHECK: dual-class dedup (cached load) ===")
+    print(f"  GOOG stripped from AAA -> {out['AAA']}; GOOGL twin stripped -> {out['GOOGL']}; "
+          f"GOOG inherits GOOGL. Idempotent. Fixes existing cache without re-embedding. Validated.")
 
 
 def _returns_with_late_peer():

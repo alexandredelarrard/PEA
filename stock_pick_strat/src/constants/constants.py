@@ -13,6 +13,22 @@ DATE_FORMAT = "%Y-%m-%d"          # ISO day — as_of / filing / query dates
 DATE_FORMAT_COMPACT = "%Y%m%d"    # SEC / FINRA daily-file name stamps
 
 # --------------------------------------------------------------------------- #
+# Dual-class share redundancy                                                  #
+# --------------------------------------------------------------------------- #
+# Some companies trade under TWO tickers for the SAME business (e.g. Alphabet
+# GOOGL/GOOG, Fox FOXA/FOX, News Corp NWSA/NWS). Their returns correlate ~1.0, so
+# in the peer calc the twin would be a stock's own #1 "peer" and would double-count
+# that company in everyone else's basket -> flawed peers. We keep the PRIMARY
+# (class A / more liquid) and map each redundant SECONDARY (class B/C) to it: the
+# secondary is dropped as a peer CANDIDATE and instead inherits its primary's
+# basket. Extend as the universe adds dual-class names (e.g. "UA": "UAA").
+DUAL_CLASS_SECONDARY_TO_PRIMARY: dict[str, str] = {
+    "GOOG": "GOOGL",   # Alphabet   class C -> class A
+    "FOX": "FOXA",     # Fox        class B -> class A
+    "NWS": "NWSA",     # News Corp  class B -> class A
+}
+
+# --------------------------------------------------------------------------- #
 # SEC EDGAR endpoints (free, no key; require a descriptive User-Agent)         #
 # --------------------------------------------------------------------------- #
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"

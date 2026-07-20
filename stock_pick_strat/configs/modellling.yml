@@ -85,6 +85,7 @@ inputs:
     - volume_trend_63            # activity rising / fading
     - volume_cv_63               # lumpy vs steady trading
     - tax_loss_pressure          # YTD-loss-driven Oct-Dec selling
+    - peer_mom_63                # A4: industry/residual momentum (stock - sector cum return)
 
     # ---- Growth ----
     - f_y_rev_growth_xs                    # revenue growth (TTM vs 1y ago)
@@ -92,6 +93,9 @@ inputs:
     - f_operating_leverage_xs              # revenue growing faster than operating cost
     - f_revenue_per_employee_growth_xs     # revenue outrunning headcount (productivity)
     - f_acquisition_intensity_xs           # internal vs external (M&A) growth
+    - f_asset_growth_xs                    # A2: asset growth (FF5 investment/CMA; over-investment)
+    - f_rule_of_40_xs                      # A5: growth% + FCF-margin% (SaaS/growth health)
+    - f_rpo_growth_xs                      # A5: remaining-perf-obligation growth (forward bookings)
 
     # ---- Valuation / expectations / earnings momentum ----
     - f_ebitda_to_ev_xs                    # is the company over-priced (EV yield)
@@ -103,6 +107,7 @@ inputs:
 
     # ---- Quality / moat ----
     - f_gross_profitability_xs             # profitability level (Novy-Marx, regime-robust)
+    - f_piotroski_f_score_xs               # A3: 9-point fundamental-health score
     - f_accruals_xs                        # earnings quality (Sloan accruals; high = low quality)
     - f_rd_intensity_vs_peers              # can it hold its moat with R&D spend
     - f_capitalized_software_intensity_vs_peers   # AI / IT-investment score
@@ -137,6 +142,18 @@ inputs:
     - f_tier1_capital_ratio_xs             # banks: capital adequacy
     - f_combined_ratio_xs                  # insurers: underwriting profitability (<1 = profit)
     - f_ebitdax_margin_xs                  # energy: EBITDAX margin
+    - f_nii_growth_xs                      # A7 banks: net-interest-income growth
+    - f_loan_growth_xs                     # A7 banks: loan-book growth
+    - f_book_value_growth_xs               # A6 financials: book-value compounding
+    - f_premium_growth_xs                  # A6 insurers: premium growth
+    - f_float_growth_xs                    # A6 insurers: investable-float growth
+    - f_affo_dividend_coverage_xs          # A8 REITs: AFFO dividend coverage (safety)
+    # ---- B1/B3 bank risk: enable AFTER a fetch_fundamentals re-run populates the new
+    #      XBRL tags (AOCI / HTM / nonaccrual / charge-offs), then a cube rebuild. ----
+    # - f_aoci_to_equity_xs                # B1: AFS securities-mark drag on capital
+    # - f_htm_unrealized_loss_ratio_xs     # B1: hidden HTM unrealized loss (the SVB signal)
+    # - f_npl_ratio_xs                     # B3: non-performing loans
+    # - f_net_charge_off_rate_xs           # B3: realized loan losses
 
   # Monotone direction per feature for the LightGBM member (target = higher forward
   # return). +1 = higher feature -> higher rank; -1 = inverse; unlisted = free (0).
@@ -187,3 +204,15 @@ inputs:
       - f_short_vol_ratio_xs: -1                 # heavily shorted = bearish
       - f_short_vol_ratio_chg_xs: -1            # rising short pressure = bearish
       - f_fails_to_deliver_ratio_xs: -1         # settlement fails / squeeze-risk = bearish
+      # Tier-A quick wins (available now)
+      - peer_mom_63: 1                          # A4 industry/residual momentum
+      - f_asset_growth_xs: -1                    # A2 CMA: aggressive asset growth -> underperforms
+      - f_piotroski_f_score_xs: 1               # A3 higher fundamental-health score = better
+      - f_rule_of_40_xs: 1                       # A5 growth+profitability health
+      - f_rpo_growth_xs: 1                       # A5 forward bookings momentum
+      - f_book_value_growth_xs: 1               # A6 book-value compounding
+      - f_premium_growth_xs: 1                  # A6 insurance top-line growth
+      - f_float_growth_xs: 1                    # A6 investable-float growth
+      - f_affo_dividend_coverage_xs: 1          # A8 REIT dividend safety
+      - f_nii_growth_xs: 1                      # A7 bank net-interest-income growth
+      # (f_loan_growth_xs left free: growth is good but can also signal risk-taking)

@@ -929,6 +929,53 @@ def _derived_fields(
         if not gp.empty and gp.notna().any().any():
             F["gross_profitability"] = gp
 
+    # ---- A2: asset growth (Fama-French CMA "investment" factor). Firms that expand
+    # the asset base aggressively subsequently UNDERperform (empire-building / over-
+    # investment); sign is -1 in the model. ----
+    asset_growth = _fiscal_change_to_daily(fund_hist, "totalAssets", idx,
+                                           kind="pct", periods=yoy_periods)
+    if asset_growth.notna().any().any():
+        F["asset_growth"] = asset_growth
+
+    # ---- A5: Rule of 40 (growth+profitability health) = TTM revenue-growth% + FCF-
+    # margin%; >40 is elite (a fast grower OR a cash cow). Plus RPO growth = forward
+    # bookings momentum (only defined for filers that report RPO -> tech-gated). ----
+    rev_growth_pct = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
+                                             kind="pct", periods=yoy_periods) * 100.0
+    fcf_margin_pct = _ratio(fcf, revenue, positive_den=True) * 100.0
+    rule40 = (rev_growth_pct + fcf_margin_pct).replace([np.inf, -np.inf], np.nan)
+    if rule40.notna().any().any():
+        F["rule_of_40"] = rule40
+    rpo_growth = _fiscal_change_to_daily(fund_hist, "remainingPerformanceObligation", idx,
+                                         kind="pct", periods=yoy_periods)
+    if rpo_growth.notna().any().any():
+        F["rpo_growth"] = rpo_growth
+
+    # ---- A3: Piotroski F-score (0-9). Nine fundamental-health binaries: profitability
+    # (ROA>0, CFO>0, ΔROA>0, CFO/assets>ROA), lower leverage / better liquidity / no
+    # dilution, and rising gross margin / asset turnover. Higher = stronger; scored only
+    # where the core inputs (assets, NI, CFO) exist so a data-less name isn't a false 0. ----
+    _oa = daily("totalAssets"); _ocf = daily("operatingCashFlow"); _sh = daily("sharesOutstanding")
+    _roa = _ratio(net_income, _oa, positive_den=True)
+    _cr = _ratio(daily("currentAssets"), daily("currentLiabilities"), positive_den=True)
+    _lev = _ratio(long_debt, _oa, positive_den=True)
+    _gm = daily("grossMargins")
+    _turn = _ratio(revenue, _oa, positive_den=True)
+    if not _oa.empty and not _ocf.empty and not net_income.empty:
+        y = _YEAR
+        parts = [
+            (_roa > 0), (_ocf > 0), (_roa > _roa.shift(y)),
+            (_ratio(_ocf, _oa, positive_den=True) > _roa),                 # accruals: cash > profit
+            (_lev < _lev.shift(y)), (_cr > _cr.shift(y)),
+            (_sh <= _sh.shift(y) * 1.001),                                 # no net dilution
+            (_gm > _gm.shift(y)), (_turn > _turn.shift(y)),
+        ]
+        fscore = sum(p.astype("float64") for p in parts)
+        gate = _oa.notna() & net_income.notna() & _ocf.notna()
+        fscore = fscore.where(gate)
+        if fscore.notna().any().any():
+            F["piotroski_f_score"] = fscore
+
     # absolute 0/1 regime flags (emitted RAW, see _STATE_FIELDS): a NaN base ->
     # NaN flag (never a false 0), so "no data" is not read as "unprofitable".
     def _flag(base: pd.DataFrame, cond: pd.DataFrame) -> pd.DataFrame:

@@ -57,6 +57,11 @@ logger = logging.getLogger(__name__)
 # starts flagging a specific Chrome build.
 _VERIFY = os.getenv("TRENDS_VERIFY", "1") != "0"
 _IMPERSONATE = os.getenv("TRENDS_IMPERSONATE", "chrome124")
+# A ticker with at least this much stitched weekly history is treated as fully
+# BACKFILLED (won't be re-backfilled): Google Trends often can't reach the full
+# years_history for younger names / low-search keywords, so requiring the history to
+# reach the deep_before floor made those tickers re-run the whole backfill EVERY time.
+_MIN_BACKFILL_DAYS = 3 * 365
 
 # Anti-429: rotate a realistic desktop User-Agent + full browser-like headers on top of
 # the curl_cffi TLS impersonation (belt and suspenders).
@@ -328,7 +333,9 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     for i, (_, row) in enumerate(tqdm(list(names.iterrows()), desc="Google Trends")):
         tkr, keyword = row["ticker"], str(row["name"])
         mn, mx = span.get(tkr, (None, None))
-        deep = mn is not None and mn <= deep_before
+        # "backfilled" = history reaches the full window OR already spans >= 3y (as deep
+        # as Trends will give for this keyword) -> don't re-run the full backfill.
+        deep = mn is not None and (mn <= deep_before or (mx - mn).days >= _MIN_BACKFILL_DAYS)
         current = mx is not None and (today - mx).days <= refetch_window_days
         if deep and current:
             skipped += 1

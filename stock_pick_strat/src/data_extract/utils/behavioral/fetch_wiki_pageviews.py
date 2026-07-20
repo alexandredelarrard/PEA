@@ -67,13 +67,17 @@ def _load_existing(context: Context):
 
 
 def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
-                         years_history: int = 10, pause: float = 0.1) -> pd.DataFrame:
+                         years_history: int = 10, pause: float = 0.1,
+                         refetch_window_days: int = 2) -> pd.DataFrame:
     """Download daily pageviews for the S&P 500 names and cache to parquet.
 
     Incremental: for a ticker already in the cache we only request days AFTER its
     cached max date (the Wikimedia API takes an explicit start/end), so a re-run
-    downloads only the missing days; a ticker already current through yesterday is
-    skipped entirely."""
+    downloads only the missing days. A ticker whose latest cached day is within
+    `refetch_window_days` of today is considered CURRENT and makes NO request at all
+    -- pageviews publish with a ~1-2 day lag, so without this tolerance the freshest
+    cached day never reaches `end_ts` (yesterday) and EVERY run fires ~500 empty API
+    calls (the "always redone" bug)."""
     names = context.store.load("sp500_tickers")
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
@@ -90,8 +94,12 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
     frames, skipped = [], 0
     for _, row in tqdm(list(names.iterrows()), desc="Wikipedia pageviews"):
         last = last_by_ticker.get(row["ticker"])
+        # already current within the publication lag -> no API call at all
+        if last is not None and (today - last).days <= refetch_window_days:
+            skipped += 1
+            continue
         start_ts = (last + pd.Timedelta(days=1)) if last is not None else default_start
-        if start_ts > end_ts:                       # already current -> skip
+        if start_ts > end_ts:                       # nothing new to request
             skipped += 1
             continue
         article = _company_to_article(row["name"])

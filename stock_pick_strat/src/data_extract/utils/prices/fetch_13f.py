@@ -26,7 +26,6 @@ missing. Network/zip IO is isolated in `_ensure_zip`/`_read_zip`; the parse/join
 """
 from __future__ import annotations
 
-from tkinter.constants import Y
 import zipfile
 from pathlib import Path
 import logging
@@ -34,11 +33,14 @@ import logging
 import numpy as np
 import pandas as pd
 import requests
+from sqlalchemy import inspect, text
 from tqdm import tqdm
 
 from src.constants.constants import SEC_FORM13F_URL_DICT
 from src.context import Context
 from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map
+from src.data_extract.utils.common.sec_utils import (
+    load_processed_universe, save_processed_universe)
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +84,9 @@ def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
     z = pd.Series(0.0, index=infotable.index)
     return pd.DataFrame({
         "accession": _pick(infotable, "ACCESSION_NUMBER", "accession_number"),
-        "cusip": _pick(infotable, "CUSIP", "cusip").astype(str).str.strip().str.upper(),
+        # canonical 9-char CUSIP (restore any dropped leading zero) so the map skip
+        # and the holdings<->ticker merge use ONE form (see fetch_cusip_map.normalize_cusip)
+        "cusip": _pick(infotable, "CUSIP", "cusip").astype(str).str.strip().str.upper().str.zfill(9),
         "shares": amt.where(is_stock, z),        "shares_value": val.where(is_stock, z),
         "call_shares": amt.where(is_call, z),    "call_value": val.where(is_call, z),
         "put_shares": amt.where(is_put, z),      "put_value": val.where(is_put, z),
@@ -179,34 +183,74 @@ def _read_zip(path: Path) -> tuple[pd.DataFrame, pd.DataFrame] | None:
         return None
 
 
+def _ingested_quarters(store) -> set[str]:
+    """Zip-tag quarters already ingested into institutional_holdings (skippable). A
+    published quarter's 13F set is final, so a re-run needn't re-parse/re-ingest it.
+    Empty when the table or the `quarter` column is absent (re-ingest once to add it)."""
+    if not store.exists("institutional_holdings"):
+        return set()
+    cols = {c["name"] for c in inspect(store.engine).get_columns("institutional_holdings")}
+    if "quarter" not in cols:
+        return set()
+    with store.engine.connect() as c:
+        return set(pd.read_sql(text('SELECT DISTINCT quarter FROM institutional_holdings'), c)
+                   ["quarter"].dropna())
+
+
 def fetch_13f(context: Context) -> pd.DataFrame:
     """Download (once, cached) the 13F data sets, split by holding type, map to
-    tickers, keep the universe, and store."""
-    universe = set(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
+    tickers, keep the universe, and store.
+
+    INCREMENTAL: a quarter already ingested into `institutional_holdings` is skipped
+    ENTIRELY (no re-download, no re-parse of the cached zip, no re-ingest) unless the
+    ticker universe grew (then cached zips are re-parsed to back-fill new names). The
+    CUSIP->ticker map is built only over the NEW quarters' cusips (and itself skips
+    already-attempted cusips), so a converged re-run does almost no work."""
+    store = context.store
+    universe = set(store.load("sp500_tickers", columns=["ticker"])["ticker"])
     years_history = context.config.data_extract.years_history + 1
     cache_dir = _cache_dir(context)
 
-    frames = []
+    done = _ingested_quarters(store)
+    new_tickers = universe - load_processed_universe(cache_dir, "institutional_holdings")
+    if new_tickers:
+        logger.info("13F: %d new/changed tickers -> re-parsing cached quarters", len(new_tickers))
+
+    quarter_frames: dict[str, pd.DataFrame] = {}
     for tag in tqdm(_period_names(years_history), desc="13F data sets"):
+        if tag in done and not new_tickers:
+            continue                                   # downloaded + ingested already -> skip
         path = _ensure_zip(tag, cache_dir)
         if path is None:
             continue
         got = _read_zip(path)
-        if got is not None:
-            frames.append(_join_13f(*got))
+        if got is None:
+            continue
+        h = _join_13f(*got)
+        if not h.empty:
+            h["quarter"] = tag
+            quarter_frames[tag] = h
 
     cols = ["cik", "period", "filing_date", "ticker", "cusip", "shares", "value_usd",
             "call_shares", "call_value", "put_shares", "put_value",
-            "debt_prn", "debt_value", "other_value"]
-    if not frames:
-        logger.warning("No 13F data downloaded.")
+            "debt_prn", "debt_value", "other_value", "quarter"]
+    if not quarter_frames:
+        save_processed_universe(cache_dir, "institutional_holdings", universe)
+        logger.info("13F institutional_holdings already up to date (no new quarters).")
         return pd.DataFrame(columns=cols)
 
-    raw = pd.concat(frames, ignore_index=True)
-    cmap = build_cusip_ticker_map(context, raw["cusip"].unique().tolist())
-    raw = raw.merge(cmap, on="cusip", how="inner")
-    out = raw[raw["ticker"].isin(universe)].reset_index(drop=True)
-    context.store.save("institutional_holdings", out)
-    logger.warning(f"Saved {len(out)} 13F holding rows ({out['ticker'].nunique()} tickers) "
-          f"to DB table 'institutional_holdings'")
-    return out
+    all_cusips = sorted(set().union(*(set(h["cusip"].unique()) for h in quarter_frames.values())))
+    cmap = build_cusip_ticker_map(context, all_cusips)
+
+    saved, saved_frames = 0, []
+    for tag, h in quarter_frames.items():
+        out = h.merge(cmap, on="cusip", how="inner")
+        out = out[out["ticker"].isin(universe)]
+        if not out.empty:
+            keep = out[[c for c in cols if c in out.columns]]
+            saved += store.save("institutional_holdings", keep)
+            saved_frames.append(keep)
+    save_processed_universe(cache_dir, "institutional_holdings", universe)
+    logger.warning("Saved %d 13F holding rows across %d new quarter(s) to 'institutional_holdings'",
+                   saved, len(quarter_frames))
+    return pd.concat(saved_frames, ignore_index=True) if saved_frames else pd.DataFrame(columns=cols)

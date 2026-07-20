@@ -15,7 +15,7 @@ from src.data_aggregate.utils.governance_features import build_governance_featur
 from src.data_aggregate.utils.sector_features import build_sector_feature_panel
 from src.data_aggregate.utils.employee_features import build_employee_feature_panel
 from src.data_aggregate.utils.dividend_features import build_dividend_feature_panel
-from src.data_aggregate.utils.attention_features import build_attention_feature_panel
+from src.data_aggregate.utils.attention_features import build_combined_attention_panel
 from src.data_aggregate.utils.institutional_features import build_institutional_feature_panel
 from src.data_aggregate.utils.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.short_interest_features import build_short_interest_feature_panel
@@ -454,25 +454,27 @@ class StepBuildCube(Step):
                        added, 100 * cov)
 
     def build_attention_features(self):
-        """Retail-attention features (abnormal Wikipedia pageviews and Google
-        Trends search interest vs each name's own baseline). Point-in-time
-        (trailing windows). Each source is optional; absent sources are skipped."""
+        """Retail-attention features: Wikipedia pageviews and Google Trends search
+        interest are two noisy proxies of the same latent (public attention), so
+        they are rank-BLENDED into one robust indicator (f_attn_spike/level) rather
+        than shipped as two correlated features. Point-in-time (trailing windows).
+        Empty only if BOTH sources are absent (single source -> that source alone)."""
         idx = self.stock_close.index
-        sources = [("wiki", getattr(self, "wiki_pageviews", None), "pageviews"),
-                   ("gt", getattr(self, "google_trends", None), "search_interest")]
-        for prefix, hist, value_col in sources:
-            panel = build_attention_feature_panel(hist, self.peers, idx,
-                                                  prefix=prefix, value_col=value_col)
-            if panel.empty:
-                continue
-            before = len(self.feature_panel.columns) - 2
-            self.feature_panel = self.feature_panel.merge(
-                panel, on=["date", "ticker"], how="left"
-            )
-            added = len(self.feature_panel.columns) - 2 - before
-            cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-            self._log.info("Merged %s %s-attention features (row coverage %.1f%%)",
-                           added, prefix, 100 * cov)
+        panel = build_combined_attention_panel(
+            getattr(self, "wiki_pageviews", None),
+            getattr(self, "google_trends", None),
+            self.peers, idx,
+        )
+        if panel.empty:
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(
+            panel, on=["date", "ticker"], how="left"
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s combined-attention features (wiki+Google Trends "
+                       "rank-blend; row coverage %.1f%%)", added, 100 * cov)
 
     def build_institutional_features(self):
         """13F institutional-ownership features (breadth, share/value accumulation,

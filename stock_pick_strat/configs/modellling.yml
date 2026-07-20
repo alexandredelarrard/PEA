@@ -127,6 +127,8 @@ inputs:
 
     # ---- Governance / ownership / smart money ----
     - f_founder_ceo_vs_peers               # is the CEO the founder (interacts w/ rev growth)
+    - f_ceo_tenure_vs_peers                # years the CEO has led the firm (experience vs entrenchment)
+    - f_pct_female_directors_vs_peers      # board gender diversity vs peers
     - f_insider_net_buy_ratio_xs           # do insiders buy or sell their position
     - f_inst_flow_to_mcap_xs               # net 13F institutional $ flow / mcap (smart money)
     - f_ceo_age_vs_peers                   # Ceo age vs peers
@@ -136,9 +138,8 @@ inputs:
     - f_short_vol_ratio_chg_xs             # rising short pressure (5d vs 63d ratio)
     - f_fails_to_deliver_ratio_xs          # settlement fails / naked-short pressure
 
-    # ---- Public attention ----
-    - f_wiki_attn_spike_xs                 # Wikipedia pageviews interest spike
-    - f_gt_attn_spike_xs                   # Google Trends search-interest spike
+    # ---- Public attention (robust rank-blend of Wikipedia + Google-Trends spikes) ----
+    - f_attn_spike_xs                      # blended retail-attention spike (wiki + Google Trends)
 
     # ---- Sector-specific (sparse: NaN outside the sector; LightGBM splits on NaN) ----
     - f_tier1_capital_ratio_xs             # banks: capital adequacy

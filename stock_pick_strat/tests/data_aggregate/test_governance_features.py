@@ -21,7 +21,11 @@ from src.data_aggregate.utils.governance_features import (
 
 def _def14a() -> pd.DataFrame:
     rows = []
-    for tkr, pay0 in [("AAA", 10e6), ("BBB", 12e6), ("CCC", 8e6), ("DDD", 15e6)]:
+    # (ticker, base CEO pay, CEO-since year, pct female directors) — the last two vary
+    # cross-sectionally so ceo_tenure and pct_female_directors have real peer dispersion.
+    specs = [("AAA", 10e6, 2010, 0.40), ("BBB", 12e6, 2018, 0.20),
+             ("CCC", 8e6, 2005, 0.50), ("DDD", 15e6, 2022, 0.30)]
+    for tkr, pay0, since_yr, fem in specs:
         for i, yr in enumerate((2023, 2024, 2025)):
             rows.append({
                 "ticker": tkr, "as_of": pd.Timestamp(f"{yr}-04-01"),
@@ -29,12 +33,13 @@ def _def14a() -> pd.DataFrame:
                 "ceo_pay_ratio": 200 + 50 * i,
                 "ceo_equity_pay_pct": 0.70,
                 "pct_independent_directors": 0.85,
-                "pct_female_directors": 0.40,
+                "pct_female_directors": fem,
                 "board_size": 10,
                 "avg_board_tenure": 7.0,
                 "say_on_pay_support_pct": 0.92,
                 "insider_ownership_pct": 0.01,
                 "ceo_is_founder": 1.0 if tkr in ("AAA", "CCC") else 0.0,
+                "ceo_since_year": since_yr,
             })
     return pd.DataFrame(rows)
 
@@ -60,6 +65,17 @@ def test_governance_fields_pay_growth_and_misalignment():
     assert F["founder_ceo"]["AAA"].dropna().iloc[-1] == 1.0
     assert F["founder_ceo"]["BBB"].dropna().iloc[-1] == 0.0
 
+    # CEO tenure accrues by CALENDAR year (not a stale as_of snapshot): AAA CEO since
+    # 2010 -> 15y on a 2025 date and 16y on a 2026 date; CCC (since 2005) outranks DDD (2022).
+    assert "ceo_tenure" in F
+    ten = F["ceo_tenure"]
+    aaa_2025 = ten.loc[ten.index.year == 2025, "AAA"].dropna()
+    aaa_2026 = ten.loc[ten.index.year == 2026, "AAA"].dropna()
+    assert aaa_2025.iloc[-1] == pytest.approx(2025 - 2010)   # 15
+    assert aaa_2026.iloc[-1] == pytest.approx(2026 - 2010)   # 16 -> grows with the calendar
+    last = idx[-1]
+    assert ten.loc[last, "CCC"] > ten.loc[last, "DDD"]       # 2005 vs 2022 start
+
     # CEO pay grew ~20%/yr; the latest observed pay_growth should be ~0.20
     pay_g = F["ceo_pay_growth"]["AAA"].dropna()
     assert pay_g.iloc[-1] == pytest.approx(0.20, abs=1e-6)
@@ -67,9 +83,11 @@ def test_governance_fields_pay_growth_and_misalignment():
     mis = F["ceo_pay_vs_revenue_growth"]["AAA"].dropna()
     assert mis.iloc[-1] > 0.05
 
-    print("\n=== SANITY CHECK: governance pay dynamics ===")
+    print("\n=== SANITY CHECK: governance pay dynamics + CEO tenure ===")
     print(f"  ceo_pay_growth(last)={pay_g.iloc[-1]:.3f} (~0.20); "
-          f"pay_vs_revenue_growth(last)={mis.iloc[-1]:.3f} (>0 = pay outpacing revenue). Validated.")
+          f"pay_vs_revenue_growth(last)={mis.iloc[-1]:.3f} (>0 = pay outpacing revenue).")
+    print(f"  ceo_tenure AAA(since 2010): {aaa_2025.iloc[-1]:.0f}y in 2025 -> {aaa_2026.iloc[-1]:.0f}y in 2026 "
+          f"(accrues by calendar year); CCC {ten.loc[last, 'CCC']:.0f}y > DDD {ten.loc[last, 'DDD']:.0f}y. Validated.")
 
 
 def test_governance_panel_and_empty_guard():
@@ -82,11 +100,15 @@ def test_governance_panel_and_empty_guard():
     # both the peer-relative and the cross-sectional views of the headline signal exist
     assert "f_ceo_pay_vs_revenue_growth_vs_peers" in cols
     assert "f_ceo_pay_ratio_xs" in cols and "f_pct_independent_directors_xs" in cols
+    # the two newly-wired governance features (both used peer-relative in modelling.yml)
+    assert "f_ceo_tenure_vs_peers" in cols
+    assert "f_pct_female_directors_vs_peers" in cols
 
     # no archive -> empty (optional-source semantics, never raises)
     empty = build_governance_feature_panel(None, peers, idx)
     assert list(empty.columns) == ["date", "ticker"] and empty.empty
 
     print("\n=== SANITY CHECK: governance panel ===")
-    print(f"  built {len(cols)} governance features incl pay-vs-revenue misalignment; "
+    print(f"  built {len(cols)} governance features incl pay-vs-revenue misalignment, "
+          f"f_ceo_tenure_vs_peers + f_pct_female_directors_vs_peers (both now in modelling.yml); "
           f"None archive -> empty panel (skipped, no crash). Validated.")

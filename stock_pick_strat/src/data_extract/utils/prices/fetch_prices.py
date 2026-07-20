@@ -337,14 +337,16 @@ def fetch_price_history(
     tickers: list[str],
     chunk_size: int = 50,
     pause: float = 2.0,
+    download_dividends: bool = True,
 ) -> pd.DataFrame:
-    """Download daily OHLCV, incrementally upserting into the `prices` DB table."""
+    """Download daily OHLCV for `tickers`, incrementally upserting into the `prices`
+    DB table. `download_dividends=False` skips the dividend side-table — used for the
+    market/macro price tickers (`fetch_market_prices`), which carry no equity data."""
     years_history = context.config.data_extract.years_history
-    other_ticker = context.config.data_extract.other_tickers
 
     existing = _load_existing_prices(context)
     plans = _tickers_needing_download(existing, tickers, years_history)
-    tickers_to_fetch = [t for t, window in plans.items() if window is not None and t not in other_ticker] 
+    tickers_to_fetch = [t for t, window in plans.items() if window is not None]
 
     if not tickers_to_fetch:
         n = 0 if existing is None else len(existing)
@@ -357,9 +359,11 @@ def fetch_price_history(
     )
     new = _download_prices(plans, years_history, chunk_size, pause)
 
-    # dividends come from the SAME download (actions=True) -> no separate run
-    _save_dividends(context, new)
-    
+    # dividends piggy-back on the SAME download (actions=True); skipped for the
+    # market/macro tickers, which are not part of the equity universe
+    if download_dividends:
+        _save_dividends(context, new)
+
     # keep the prices table a clean OHLCV frame (drop the action columns)
     if not new.empty:
         new = new.drop(columns=_ACTION_COLS, errors="ignore")
@@ -371,3 +375,25 @@ def fetch_price_history(
           f"(table now spans {len(out)} rows in memory)")
 
     return out
+
+
+def fetch_market_prices(
+    context: Context,
+    chunk_size: int = 50,
+    pause: float = 2.0,
+) -> pd.DataFrame | None:
+    """Fetch OHLCV (open/close/volume) for the benchmark + macro price tickers
+    (`data_extract.other_tickers`: SPY, ^VIX, oil/gold, FX) into the `prices` table.
+
+    These are NOT part of the equity universe: no fundamentals / behavioral / SEC data
+    and NO dividends — they exist only so the cube can read the market-beta benchmark
+    and the commodity / currency factor series. Kept in `prices` (not `macro`) because
+    they are per-ticker OHLCV, which is exactly the price pipeline's shape; the cube
+    already restricts FEATURES to the `sp500_tickers` universe, so these never become
+    peers or feature rows."""
+    others = list(context.config.data_extract.other_tickers)
+    if not others:
+        return None
+    print(f"Fetching market/macro price series (OHLCV, no dividends): {others}")
+    return fetch_price_history(context, tickers=others, chunk_size=chunk_size,
+                               pause=pause, download_dividends=False)

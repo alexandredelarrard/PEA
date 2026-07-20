@@ -10,6 +10,11 @@ data_extract:
   benchmark_ticker: SPY
   other_tickers: ["SPY", "CL=F", "GC=F", "USDEUR=X"]
   redundant_ticks: ["GOOG", "FOX", "NWS"]
+  # The analysis universe is the `sp500_tickers` table (single entry point, read by
+  # every step). It is seeded via the S&P 500 scraper only when empty; set this true
+  # to force a re-scrape/refresh. Leave false so a custom universe you load into the
+  # table (e.g. Russell 1000 via store.replace) is never clobbered on re-runs.
+  refresh_universe: false
   llm_model: "gpt-5-mini"
   sec:
     # SEC EDGAR requires a descriptive User-Agent — set SEC_USER_AGENT in .env

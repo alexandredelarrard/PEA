@@ -82,6 +82,37 @@ def test_revenue_per_employee_growth():
     print(f"  rev/emp 500 -> 600 => growth {g:+.1%} (~+20%, revenue outrunning headcount). Validated.")
 
 
+def test_rev_per_employee_growth_handles_inf_no_crash():
+    """Regression: a zero prior-period revenue-per-employee makes the YoY growth inf,
+    so the frame mixes inf with the NaN warmup. `DataFrame.replace([inf,-inf], pd.NA)`
+    used to raise 'IndexError: pop index out of range' on exactly that shape (pandas
+    3.x). Now inf -> NaN cleanly and _employee_fields must not raise."""
+    # AAA: finite +20% rev/employee growth; ZZZ: 0 -> 5000 => +inf. The combined frame
+    # is the finite + inf + NaN-warmup mix that triggered the old crash.
+    emp = pd.DataFrame({
+        "ticker": ["AAA", "AAA", "ZZZ", "ZZZ"],
+        "as_of": [pd.Timestamp("2019-02-01"), pd.Timestamp("2020-02-03")] * 2,
+        "employees": [1000.0, 1200.0, 100.0, 100.0],
+    })
+    fund = pd.DataFrame({
+        "ticker": ["AAA", "AAA", "ZZZ", "ZZZ"],
+        "as_of": ["2019-02-01", "2020-02-03", "2019-02-01", "2020-02-03"],
+        "totalRevenue": [500_000.0, 720_000.0, 0.0, 500_000.0],   # AAA 500->600 (+20%); ZZZ 0->5000 (inf)
+    })
+    idx = pd.bdate_range("2018-06-01", "2020-06-01")
+
+    F = _employee_fields(emp, idx, fund)         # must NOT raise IndexError
+    assert "revenue_per_employee_growth" in F    # AAA's finite values keep the field alive
+    g = F["revenue_per_employee_growth"]
+    after = pd.Timestamp("2020-03-02")
+    assert abs(g.loc[after, "AAA"] - 0.20) < 0.03            # finite ticker unaffected
+    assert not np.isinf(g.to_numpy()).any(), "inf not scrubbed -> would poison the z-score"
+    assert pd.isna(g.loc[after, "ZZZ"])                      # 5000/0 = inf -> NaN, no crash
+    print("\n=== SANITY CHECK: rev/employee growth inf handling ===")
+    print(f"  AAA finite +{g.loc[after,'AAA']:.0%}; ZZZ 0->5000 gives +inf -> scrubbed to NaN "
+          "via replace([inf,-inf], np.nan) with NO IndexError (pandas 3.x). Validated.")
+
+
 def test_build_panel_empty_without_history():
     idx = pd.bdate_range("2020-01-01", "2020-06-01")
     panel = build_employee_feature_panel(None, {"AAA": ["BBB"]}, idx)

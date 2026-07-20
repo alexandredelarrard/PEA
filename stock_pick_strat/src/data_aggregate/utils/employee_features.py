@@ -17,6 +17,7 @@ look-ahead.
 """
 
 from __future__ import annotations
+import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.factors import fundamentals_to_daily
@@ -52,7 +53,9 @@ def _employee_fields(
             # (productivity rising, operating leverage) or just scaling linearly with
             # the people pool (flat rev/employee)? Past-vs-past -> leak-free.
             rpe_growth = (rev_per_emp / rev_per_emp.shift(_YOY_TRADING_DAYS) - 1.0)
-            rpe_growth = rpe_growth.replace([float("inf"), float("-inf")], pd.NA)
+            # use np.nan (not pd.NA): DataFrame.replace(..., pd.NA) raises
+            # "IndexError: pop index out of range" on an inf+NaN mixed frame (pandas 3.x)
+            rpe_growth = rpe_growth.replace([np.inf, -np.inf], np.nan)
             if rpe_growth.notna().any().any():
                 F["revenue_per_employee_growth"] = rpe_growth
         # headcount elasticity to revenue (M&A DIGESTION #3): %Δemployees / %Δrevenue.

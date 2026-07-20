@@ -3,6 +3,7 @@ from omegaconf import DictConfig
 
 from src.utils.step import Step
 from src.context import Context
+from src.utils.universe import load_universe_tickers
 from src.data_aggregate.utils import data_utils as du
 from src.data_peers.utils.embeddings import (
     fetch_business_descriptions,
@@ -59,6 +60,15 @@ class StepDeducePeers(Step):
         self.close = self.close.loc[trading_days]
         self.returns = du.daily_returns(self.close)
         self.stock_ret = self.returns.drop(columns=[mkt])
+        # restrict to the authoritative universe (sp500_tickers) so peers are built
+        # ONLY among analysed names — swap that table and the peer graph reroutes.
+        universe = [t for t in load_universe_tickers(self._context)
+                    if t in self.stock_ret.columns]
+        if universe:
+            self.stock_ret = self.stock_ret[universe]
+        else:
+            self._log.warning("sp500_tickers empty -> peers over ALL priced names; "
+                              "seed the universe table to scope peers")
         self._log.info("Normalized prices: %s dates, %s stocks",
                        self.close.shape[0], self.stock_ret.shape[1])
 

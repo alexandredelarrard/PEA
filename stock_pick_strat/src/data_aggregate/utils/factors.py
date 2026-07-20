@@ -242,8 +242,9 @@ def commodity_factor_returns(
     tickers: dict | None = None,
 ) -> pd.DataFrame:
     """
-    Daily RETURNS of commodity proxies, taken from the price panel (they flow
-    through the normal price pipeline as `other_tickers`).
+    Daily RETURNS of commodity proxies, taken from the price panel (fetched OHLCV-only
+    as `other_tickers` via fetch_market_prices; they live in `prices` but are never
+    part of the analysed universe / features).
 
     tickers maps factor name -> price column, e.g.
         {"oil": "CL=F", "gold": "GC=F"}   or   {"oil": "USO", "gold": "GLD"}
@@ -260,8 +261,8 @@ def currency_factor_returns(
     tickers: dict | None = None,
 ) -> pd.DataFrame:
     """
-    Daily RETURNS of currency proxies, taken from the price panel (they flow
-    through the normal price pipeline as `other_tickers`).
+    Daily RETURNS of currency proxies, taken from the price panel (fetched OHLCV-only
+    as `other_tickers` via fetch_market_prices; in `prices` but never a feature/peer).
     """
     out = {}
     for name, col in tickers.items():

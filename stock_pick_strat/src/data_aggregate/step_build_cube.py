@@ -6,6 +6,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.utils.step import Step
 from src.context import Context
+from src.utils.universe import load_universe_tickers
 from src.constants.constants import SUPERINVESTORS_JSON
 from src.data_aggregate.utils import data_utils as du
 from src.data_aggregate.utils.betas import estimate_all_betas
@@ -107,17 +108,28 @@ class StepBuildCube(Step):
         self.mkt_ret = self.returns[cfg.market_ticker]
         self.market_close = self.close[cfg.market_ticker]
 
-        drop_cols = self._config.data_extract.other_tickers
-        self.stock_ret = self.returns.drop(columns=drop_cols)
-        self.stock_close = self.close.drop(columns=drop_cols)
-        self.stock_open = self.open_.drop(columns=drop_cols)
-        self.stock_high = (self.high.drop(columns=drop_cols, errors="ignore")
-                           if self.high is not None else None)
-        self.stock_low = (self.low.drop(columns=drop_cols, errors="ignore")
-                          if self.low is not None else None)
-        self.stock_volume = (self.volume.reindex(self.close.index)
-                             .drop(columns=drop_cols, errors="ignore")
-                             if self.volume is not None else None)
+        # Analysis universe = the `sp500_tickers` table (single entry point). Restrict
+        # every stock_* frame to it so the cube is built ONLY for the analysed names —
+        # swap that table (e.g. Russell 1000) and the whole cube reroutes. Fall back to
+        # "all priced names minus benchmark/macro" if the table is not yet seeded.
+        avail = set(self.close.columns)
+        universe = [t for t in load_universe_tickers(self._context) if t in avail]
+        if not universe:
+            drop_cols = set(self._config.data_extract.other_tickers)
+            universe = [c for c in self.close.columns if c not in drop_cols]
+            self._log.warning("sp500_tickers empty/unseeded -> cube universe = all priced "
+                              "names minus benchmark/macro; seed it to scope the cube")
+
+        def _sub(f):
+            return f[[c for c in universe if c in f.columns]] if f is not None else None
+
+        self.stock_ret = _sub(self.returns)
+        self.stock_close = _sub(self.close)
+        self.stock_open = _sub(self.open_)
+        self.stock_high = _sub(self.high)
+        self.stock_low = _sub(self.low)
+        self.stock_volume = _sub(self.volume.reindex(self.close.index)
+                                 if self.volume is not None else None)
 
         self._log.info("Normalized prices: %s dates, %s stocks",
                        self.close.shape[0], self.stock_ret.shape[1])

@@ -33,7 +33,9 @@ import requests
 from sqlalchemy import text
 from tqdm import tqdm
 
-from src.constants.constants import SEC_FTD_URL_TEMPLATE, SEC_FTD_FIRST_YEAR
+from src.constants.constants import (
+    SEC_FTD_URL_TEMPLATE, SEC_FTD_LEGACY_URL_TEMPLATE,
+    SEC_FTD_LEGACY_LAST_PERIOD, SEC_FTD_FIRST_YEAR)
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import (
     load_processed_universe, save_processed_universe)
@@ -100,25 +102,36 @@ def _cache_dir(context: Context) -> Path:
     return d
 
 
+def _period_urls(period: str) -> tuple[str, ...]:
+    """Download URL(s) for a semi-monthly period, path chosen by date: the FOIA
+    'legacy' path for <= 2017-06a, the current path for >= 2017-06b. The other path
+    is tried as a fallback (boundary / occasional re-issued files live on both).
+    Fixed-width 'YYYYMMx' tags sort chronologically, so a string compare is safe."""
+    modern = SEC_FTD_URL_TEMPLATE.format(period=period)
+    legacy = SEC_FTD_LEGACY_URL_TEMPLATE.format(period=period)
+    return (legacy, modern) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy)
+
+
 def _ensure_zip(period: str, cache_dir: Path) -> Path | None:
     path = cache_dir / f"cnsfails{period}.zip"
     if path.exists() and path.stat().st_size > 0:
         return path
-    url = SEC_FTD_URL_TEMPLATE.format(period=period)
-    try:
-        r = requests.get(url, headers=_HEADERS, timeout=180, stream=True)
-    except Exception as e:
-        logger.warning("FTD %s download failed: %s", period, e)
-        return None
-    if r.status_code != 200:                       # not-yet-published / missing semi-month
-        logger.info("FTD %s not available (HTTP %s)", period, r.status_code)
-        return None
-    tmp = path.with_suffix(".part")
-    with open(tmp, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1 << 20):
-            f.write(chunk)
-    tmp.replace(path)
-    return path
+    for url in _period_urls(period):               # period-appropriate path first, then fallback
+        try:
+            r = requests.get(url, headers=_HEADERS, timeout=180, stream=True)
+        except Exception as e:
+            logger.warning("FTD %s download failed (%s): %s", period, url, e)
+            continue
+        if r.status_code != 200:                   # not on this path -> try the other
+            continue
+        tmp = path.with_suffix(".part")
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 20):
+                f.write(chunk)
+        tmp.replace(path)
+        return path
+    logger.info("FTD %s not available on either path (not yet published / missing)", period)
+    return None
 
 
 def _read_zip(path: Path) -> str | None:

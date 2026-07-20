@@ -62,8 +62,15 @@ SEC_FINNOTES_FIRST_YEAR = 2009     # earliest notes data set (2009q1)
 
 # SEC Fails-to-Deliver: semi-monthly settlement-fails files ({period} = "YYYYMMa" for
 # settlement dates 1-15, "YYYYMMb" for 16-end). Daily grain (ticker x settlement date).
+# The SAME cnsfails{period}.zip files (identical pipe format) live under TWO paths:
+#   * current path       -> 2017-06b onward
+#   * FOIA "legacy" path  -> 2009-07a .. 2017-06a  (pre-2017-06 history)
+# The fetcher picks the path by period (with a cross-fallback for the boundary file).
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
-SEC_FTD_FIRST_YEAR = 2016          # earliest semi-monthly file on this path (pre-2016 = legacy paths)
+SEC_FTD_LEGACY_URL_TEMPLATE = ("https://www.sec.gov/files/data/"
+                               "frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip")
+SEC_FTD_LEGACY_LAST_PERIOD = "201706a"   # last period on the legacy path (>= 201706b uses the current path)
+SEC_FTD_FIRST_YEAR = 2009          # earliest FTD file overall (2009-07, legacy path) -> full 15y coverage
 
 # moves from LEGACY URLto NEW on second half of june 2017
 # NEW  href="https://www.sec.gov/files/data/fails-deliver-data/cnsfails202007b.zip"

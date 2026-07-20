@@ -15,8 +15,26 @@ def test_periods_semimonthly_bounded():
     assert ps[-2:] == ["202403a", "202403b"]                # up to the current month only
     assert "202312b" in ps
     assert all(int(p[:4]) >= ftd.SEC_FTD_FIRST_YEAR for p in ftd._periods(50, today=pd.Timestamp("2024-03-10")))
+    # 15y reaches into the legacy era (FIRST_YEAR=2009) -> full history, not just 2017+
+    assert "201001a" in ftd._periods(15, today=pd.Timestamp("2024-03-10"))
     print("\n=== SANITY: FTD semi-monthly periods ===")
-    print(f"  years_history=1 @2024-03 -> {len(ps)} files 202301a..202403b (current month only). Validated.")
+    print(f"  years_history=1 @2024-03 -> {len(ps)} files 202301a..202403b; 15y reaches back to 2010 "
+          f"(legacy era, FIRST_YEAR={ftd.SEC_FTD_FIRST_YEAR}). Validated.")
+
+
+def test_period_urls_legacy_vs_modern_boundary():
+    """<= 2017-06a -> FOIA legacy path (first); >= 2017-06b -> current path; the other
+    path is the fallback. The switch is the 2nd half of June 2017."""
+    _FOIA = "frequently-requested-foia"
+    leg = ftd._period_urls("201301a")
+    assert _FOIA in leg[0] and "cnsfails201301a.zip" in leg[0] and _FOIA not in leg[1]
+    assert _FOIA in ftd._period_urls("201706a")[0]      # boundary: last legacy period
+    assert _FOIA not in ftd._period_urls("201706b")[0]  # boundary: first modern period
+    mod = ftd._period_urls("202401a")
+    assert _FOIA not in mod[0] and "fails-deliver-data/cnsfails202401a" in mod[0] and _FOIA in mod[1]
+    print("\n=== SANITY: FTD legacy/modern URL selection ===")
+    print("  <=201706a -> FOIA legacy path first (modern fallback); >=201706b -> current path "
+          "(legacy fallback). Boundary at 2017-06b. Validated.")
 
 
 def test_parse_ftd_math_and_na_price():

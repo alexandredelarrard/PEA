@@ -13,7 +13,7 @@ import pandas as pd
 
 from src.data_extract.utils.behavioral.fetch_wiki_pageviews import _company_to_article, _json_to_long
 from src.data_aggregate.utils.attention_features import (
-    _attention_fields, build_attention_feature_panel,
+    _attention_fields, build_combined_attention_panel,
 )
 
 
@@ -76,7 +76,7 @@ def test_attention_builder_pit_and_spike():
           f"perturbing future left the past value unchanged (point-in-time). Validated.")
 
 
-def test_weekly_series_ffills_to_daily_and_panel_columns():
+def test_weekly_series_ffills_to_daily():
     # weekly (Google Trends cadence) -> must forward-fill onto daily trading days
     weekly = pd.date_range("2022-01-02", periods=30, freq="7D")
     daily = pd.bdate_range("2022-01-03", periods=140)
@@ -88,19 +88,52 @@ def test_weekly_series_ffills_to_daily_and_panel_columns():
     cov = F["gt_attn_level"].notna().mean().mean()
     assert cov > 0.5, f"weekly series did not ffill to daily (coverage {cov:.2f})"
 
-    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
-    panel = build_attention_feature_panel(hist, peers, daily, prefix="gt",
-                                          value_col="search_interest")
-    for c in ("f_gt_attn_spike_xs", "f_gt_attn_level_xs", "f_gt_attn_spike_vs_peers"):
-        assert c in panel.columns, f"{c} missing"
-    assert panel["f_gt_attn_spike_xs"].dropna().between(0, 1).all()
+    print("\n=== SANITY CHECK: weekly ffill ===")
+    print(f"  weekly Trends series ffilled to daily (coverage {cov*100:.0f}%). Validated.")
 
-    print("\n=== SANITY CHECK: weekly ffill + panel columns ===")
-    print(f"  weekly Trends series ffilled to daily (coverage {cov*100:.0f}%); panel "
-          f"exposes f_gt_attn_spike/level (_xs & _vs_peers), xs in [0,1]. Validated.")
+
+def test_combined_attention_blend():
+    """The dedicated wiki+Google-Trends blend: one robust indicator, not two."""
+    dates = pd.bdate_range("2022-01-03", periods=200)
+    tickers = [f"S{i}" for i in range(6)]
+    spike_from = dates[150]
+    # S0 spikes in BOTH sources; Google Trends covers only S0..S4 (S5 wiki-only) to
+    # exercise the single-source coverage fallback in the blend.
+    wiki = _attn_hist(dates, tickers, "pageviews", "S0", spike_from)
+    gt = _attn_hist(dates, tickers[:5], "search_interest", "S0", spike_from)
+    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
+
+    panel = build_combined_attention_panel(wiki, gt, peers, dates)
+    for c in ("f_attn_spike_xs", "f_attn_spike_vs_peers", "f_attn_level_xs"):
+        assert c in panel.columns, f"{c} missing"
+    assert panel["f_attn_spike_xs"].dropna().between(0, 1).all()
+    # the two retired per-source features must NOT leak through the blend
+    assert not any(c.startswith(("f_wiki_", "f_gt_")) for c in panel.columns)
+
+    # S0 spikes in BOTH sources -> tops the blended spike shortly after the jump
+    t = dates[158]
+    row = panel[panel["date"] == t].set_index("ticker")["f_attn_spike_xs"]
+    assert row.idxmax() == "S0", (t, row.to_dict())
+
+    # coverage fallback: S5 is wiki-only yet still gets a blended value (nan-mean of 1)
+    s5 = panel[(panel["ticker"] == "S5") & (panel["date"] == t)]["f_attn_spike_xs"]
+    assert not s5.empty and s5.notna().all()
+
+    # single source works; both absent -> empty (optional-source semantics, no crash)
+    only_wiki = build_combined_attention_panel(wiki, None, peers, dates)
+    assert "f_attn_spike_xs" in only_wiki.columns and not only_wiki.empty
+    empty = build_combined_attention_panel(None, None, peers, dates)
+    assert list(empty.columns) == ["date", "ticker"] and empty.empty
+
+    n_feats = len([c for c in panel.columns if c not in ("date", "ticker")])
+    print("\n=== SANITY CHECK: combined wiki+Google-Trends attention blend ===")
+    print(f"  blended {n_feats} f_attn_* features (no f_wiki_/f_gt_ leakage); S0 (spikes in "
+          f"BOTH) tops f_attn_spike_xs @ {t.date()}; wiki-only S5 still covered via nan-mean; "
+          f"single-source works, both-absent -> empty. Validated.")
 
 
 if __name__ == "__main__":
     test_pure_parsers()
     test_attention_builder_pit_and_spike()
-    test_weekly_series_ffills_to_daily_and_panel_columns()
+    test_weekly_series_ffills_to_daily()
+    test_combined_attention_blend()

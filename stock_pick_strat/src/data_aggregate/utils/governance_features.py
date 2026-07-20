@@ -17,6 +17,8 @@ Characteristics (all point-in-time from each proxy's `as_of`, so leak-free):
                                 ahead of the business = governance red flag / short)
     ceo_pay_ratio               CEO-to-median-employee pay ratio (excess-pay level)
     ceo_equity_pay_pct          share of CEO pay that is equity (alignment with owners)
+    ceo_tenure                  years the CEO has led the firm (calendar year − ceo_since_year;
+                                experience/stability vs entrenchment)
     pct_independent_directors   board independence
     pct_female_directors        board diversity
     board_size                  board size (bloat vs lean)
@@ -69,6 +71,17 @@ def _governance_fields(
         f = fundamentals_to_daily(def14a_hist, src, idx)
         if not f.empty and f.notna().any().any():
             F[name] = f
+
+    # CEO tenure = years the CEO has led the firm at each date. Tenure accrues daily,
+    # so it is the current calendar year MINUS the (point-in-time ffilled) `ceo_since_year`,
+    # not a stale as_of snapshot. Guard bad extractions (start year in the future ->
+    # negative); the downstream peer-relative winsorization clips any remaining outliers.
+    since = fundamentals_to_daily(def14a_hist, "ceo_since_year", idx)
+    if not since.empty and since.notna().any().any():
+        years = pd.Series(idx.year, index=idx, dtype="float64")
+        tenure = since.rsub(years, axis=0).where(lambda t: t >= 0)
+        if tenure.notna().any().any():
+            F["ceo_tenure"] = tenure
 
     # CEO total-comp growth (proxies are annual -> one filing per year -> periods=1)
     pay_growth = _fiscal_change_to_daily(def14a_hist, "ceo_total_comp", idx,

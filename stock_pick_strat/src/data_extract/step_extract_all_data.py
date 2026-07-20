@@ -2,7 +2,8 @@
 step_extract_all_data.py  (src/data_extract/step_extract_all_data.py)
 ---------------------------------------------------------------------
 Super step orchestrating the four data-extraction sub-steps. Resolves the
-ticker universe once and hands it to each sub-step in turn:
+ticker universe once — from the `sp500_tickers` table (the single entry point;
+seeded via the S&P 500 scraper only when empty) — and hands it to each sub-step:
 
   1. prices        — price history (+dividends), short interest, 13F holdings
   2. fundamentals  — fundamentals, earnings surprises, macro
@@ -14,6 +15,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.utils.step import Step
+from src.utils.universe import load_universe_tickers
 from src.data_extract.utils.prices.fetch_prices import get_sp500_tickers
 from src.data_extract.step_extract_prices import StepExtractPrices
 from src.data_extract.step_extract_fundamentals import StepExtractFundamentals
@@ -33,8 +35,26 @@ class StepExtractAllData(Step):
         self._behavioral = StepExtractBehavioral(context=context, config=config)
 
     def _resolve_tickers(self) -> list[str]:
-        tickers = get_sp500_tickers(self._context)
-        return tickers + self._config.data_extract.other_tickers
+        """The EQUITY universe to analyse — the `sp500_tickers` table (single entry
+        point), seeded via the S&P 500 scraper ONLY when empty (or when
+        `data_extract.refresh_universe` is set), so a custom universe you load into it
+        (e.g. Russell 1000) survives re-runs and reroutes the whole flow.
+
+        The benchmark/macro `other_tickers` (SPY, ^VIX, oil/gold, FX) are deliberately
+        EXCLUDED here: they carry no fundamentals/behavioral data and are fetched
+        OHLCV-only in the market/macro pull (fetch_market_prices), so no sub-step ever
+        treats them as an analysed name / builds features on them."""
+        store = self._context.store
+        refresh = bool(self._config.data_extract.get("refresh_universe", False))
+        if refresh or store.row_count("sp500_tickers") == 0:
+            self._log.info("Seeding sp500_tickers via S&P 500 scraper (refresh=%s)", refresh)
+            get_sp500_tickers(self._context)              # scrape + persist the table
+
+        universe = load_universe_tickers(self._context)
+        self._log.info("Equity universe: %d tickers from sp500_tickers "
+                       "(other_tickers fetched separately as market/macro prices)",
+                       len(universe))
+        return universe
 
     def run(self) -> None:
         tickers = self._resolve_tickers()

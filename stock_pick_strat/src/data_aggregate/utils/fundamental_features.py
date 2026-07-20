@@ -1302,7 +1302,10 @@ def build_state_panel(fields: dict) -> pd.DataFrame:
         long_frames.append(s.rename(f"f_{name}"))
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])
-    return pd.concat(long_frames, axis=1).reset_index()
+    # .copy() consolidates the many single-column blocks that concat(axis=1) leaves
+    # behind, so the reset_index() column insert doesn't trip the "highly fragmented
+    # DataFrame" PerformanceWarning once the panel has 100+ feature columns.
+    return pd.concat(long_frames, axis=1).copy().reset_index()
 
 
 def build_self_history_panel(fields: dict) -> pd.DataFrame:
@@ -1320,7 +1323,10 @@ def build_self_history_panel(fields: dict) -> pd.DataFrame:
         long_frames.append(s.rename(f"f_{name}_vs_hist"))
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])
-    return pd.concat(long_frames, axis=1).reset_index()
+    # .copy() consolidates the many single-column blocks that concat(axis=1) leaves
+    # behind, so the reset_index() column insert doesn't trip the "highly fragmented
+    # DataFrame" PerformanceWarning once the panel has 100+ feature columns.
+    return pd.concat(long_frames, axis=1).copy().reset_index()
 
 
 def build_peer_relative_panel(fields: dict, peer_dict: dict) -> pd.DataFrame:
@@ -1349,4 +1355,7 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict) -> pd.DataFrame:
 
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])
-    return pd.concat(long_frames, axis=1).reset_index()
+    # .copy() consolidates the many single-column blocks that concat(axis=1) leaves
+    # behind, so the reset_index() column insert doesn't trip the "highly fragmented
+    # DataFrame" PerformanceWarning once the panel has 100+ feature columns.
+    return pd.concat(long_frames, axis=1).copy().reset_index()

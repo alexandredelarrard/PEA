@@ -6,6 +6,8 @@ features are already outlier-proof and are left untouched.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -13,6 +15,32 @@ import pytest
 from src.data_aggregate.utils.fundamental_features import (
     _winsorize_xs, _peer_relative, build_peer_relative_panel,
 )
+
+
+def test_peer_panel_no_fragmentation_warning():
+    """Regression: build_peer_relative_panel concats one block per feature column,
+    so once the panel has 100+ columns the reset_index() insert used to emit
+    pandas' 'DataFrame is highly fragmented' PerformanceWarning. The `.copy()`
+    that consolidates the blocks must keep it silent."""
+    dates = pd.bdate_range("2022-01-03", periods=30)
+    tickers = [f"T{i}" for i in range(6)]
+    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
+    rng = np.random.default_rng(0)
+    # 60 fields -> 120 f_*_vs_peers/_xs columns (+ date,ticker) => well over 100 blocks
+    fields = {f"feat{k}": pd.DataFrame(rng.standard_normal((len(dates), len(tickers))),
+                                       index=dates, columns=tickers)
+              for k in range(60)}
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        panel = build_peer_relative_panel(fields, peers)
+    frag = [w for w in caught if "fragmented" in str(w.message).lower()]
+
+    assert not frag, f"fragmentation warning emitted: {[str(w.message)[:80] for w in frag]}"
+    assert panel.shape[1] == 2 + 60 * 2 and {"date", "ticker"} <= set(panel.columns)
+    print("\n=== SANITY CHECK: peer panel not fragmented ===")
+    print(f"  built {panel.shape[1]-2} feature cols from 60 fields with ZERO "
+          "'highly fragmented' warnings (blocks consolidated via .copy()). Validated.")
 
 
 def test_winsorize_xs_clips_each_row_to_1_99():

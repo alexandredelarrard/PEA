@@ -84,8 +84,8 @@ class StepDeducePeers(Step):
             return None
 
     def build_peers(self):
+        
         use_emb = self._cfg.get("use_embeddings", False)
-
         embed_sim = self._embedding_similarity() if use_emb else None
 
         if embed_sim is not None:

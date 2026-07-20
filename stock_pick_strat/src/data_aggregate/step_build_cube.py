@@ -54,7 +54,6 @@ class StepBuildCube(Step):
         self.build_fundamental_features()
         self.build_sector_features()
         self.build_earnings_features()
-        # self.build_analyst_features()
         self.build_governance_features()
         self.build_employee_features()
         self.build_dividend_features()
@@ -146,10 +145,6 @@ class StepBuildCube(Step):
         self.macro = self._load_or_none("macro")
         if self.macro is None:
             self._log.warning("No macro data -> macro betas will be skipped.")
-
-        self.analyst = self._load_or_none("analyst_estimates_history")
-        if self.analyst is None:
-            self._log.warning("No analyst-estimate history -> analyst features skipped.")
 
         self.earnings = self._load_or_none("earnings_surprises")
         if self.earnings is None:
@@ -370,27 +365,6 @@ class StepBuildCube(Step):
         added = len(self.feature_panel.columns) - 2 - before
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s earnings-expectation features (row coverage %.1f%%)",
-                       added, 100 * cov)
-
-    def build_analyst_features(self):
-        """Sell-side analyst-estimate features (level, revisions, and estimates
-        vs our intrinsic value). Point-in-time from each `as_of`, so leak-free;
-        coverage only accrues as the estimate history is collected over time."""
-        panel = build_analyst_feature_panel(
-            self.analyst, self.peers, self.stock_close.index,
-            stock_close=self.stock_close, fundamentals_history=self.fundamentals,
-            intrinsic_cfg=self._intrinsic_cfg(),
-        )
-        if panel.empty:
-            self._log.warning("No analyst features built (missing/empty estimate history).")
-            return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s analyst-estimate features (row coverage %.1f%%)",
                        added, 100 * cov)
 
     def build_governance_features(self):

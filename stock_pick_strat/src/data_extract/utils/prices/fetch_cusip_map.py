@@ -16,8 +16,11 @@ import os
 import pandas as pd
 import requests
 from tqdm import tqdm
+import logging 
 
 from src.context import Context
+
+logger = logging.getLogger(__name__)
 
 _URL = "https://api.openfigi.com/v3/mapping"
 _BATCH = 90          # OpenFIGI allows up to 100 jobs per request (no key)
@@ -95,12 +98,12 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
             mapped.update(_parse_openfigi(_openfigi_request(batch, api_key), batch))
             attempted.extend(batch)          # responded (map or genuine no-match) -> record it
         except Exception as e:               # network / rate error -> leave for a later run
-            print(f"OpenFIGI batch {i // _BATCH} failed: {e}")
+            logger.warning(f"OpenFIGI batch {i // _BATCH} failed: {e}")
 
         if not api_key:
             time.sleep(pause)                     # unauthenticated OpenFIGI is ~25 req/min
         else:
-            time.sleep(pause//3) 
+            time.sleep(pause//4.5) 
             
     # Persist EVERY responded cusip (mapped -> ticker, no-match -> None). Recording the
     # large UNMAPPABLE tail (bonds / options / warrants / delisted / foreign lines) is
@@ -112,6 +115,6 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
         context.store.save("cusip_ticker_map", new)
     out = pd.concat([cached, new], ignore_index=True).drop_duplicates("cusip", keep="last")
     n_mapped = int(out["ticker"].notna().sum())
-    print(f"CUSIP->ticker map: {n_mapped} mapped / {len(out)} attempted "
+    logger.info(f"CUSIP->ticker map: {n_mapped} mapped / {len(out)} attempted "
           f"({len(mapped)} newly mapped of {len(attempted)} attempted) -> DB 'cusip_ticker_map'")
     return _mapped_only(out)      # only real mappings feed the holdings<->ticker merge

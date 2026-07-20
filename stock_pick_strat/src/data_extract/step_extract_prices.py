@@ -46,7 +46,4 @@ class StepExtractPrices(Step):
         # Superinvestors roster: curated top managers (Dataroma) -> CIK subset JSON,
         # ranked by 13F AUM, for the elite "smart-money" features. Best-effort: an
         # external (Dataroma) failure must never break the price extraction.
-        try:
-            build_superinvestors_json(self._context)
-        except Exception as e:                                   # noqa: BLE001
-            self._log.warning("Superinvestors roster refresh skipped: %s", e)
+        build_superinvestors_json(self._context)

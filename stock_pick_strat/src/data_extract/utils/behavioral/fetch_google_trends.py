@@ -139,7 +139,7 @@ class _TrendsClient:
         return json.loads(text[i:]) if i >= 0 else {}
 
     def _get(self, url: str, params: dict):
-        resp = self._session.get(url, params=params)
+        resp = self._session.get(url, params=params) # type: ignore
         if resp.status_code == 429:
             raise TrendsRateLimited(f"429 Too Many Requests from {url}")
         if resp.status_code != 200:
@@ -258,7 +258,7 @@ def _scale_to_reference(new: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fetch_weekly_history(client: _TrendsClient, keyword: str, years: int,
-                          pause: float, printer=logger.info) -> pd.DataFrame:
+                          pause: float) -> pd.DataFrame:
     """Fetch overlapping weekly windows across `years` and stitch them (see module
     docstring). Each window retries with backoff on 429."""
     chunks: list[pd.DataFrame] = []
@@ -267,10 +267,9 @@ def _fetch_weekly_history(client: _TrendsClient, keyword: str, years: int,
         try:
             df = call_with_retries(
                 lambda tf=timeframe: client.interest_over_time(keyword, tf),
-                retries=4, base_wait=45.0, label=f"trends {keyword} {timeframe}",
-                printer=printer)
+                retries=4, base_wait=45.0, label=f"trends {keyword} {timeframe}")
         except Exception as e:                  # noqa: BLE001 - skip a window, keep the rest
-            printer(f"trends {keyword} {timeframe}: window failed ({e})")
+            logger.warning(f"trends {keyword} {timeframe}: window failed ({e})")
             df = None
         if df is not None and not df.empty:
             chunks.append(df)
@@ -320,6 +319,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     else:
         agg = existing.groupby("ticker")["date"].agg(["min", "max"])
         span = {t: (r["min"], r["max"]) for t, r in agg.iterrows()}
+    
     today = pd.Timestamp.today().normalize()
     deep_before = today - pd.DateOffset(years=years - 1)      # history counts as "deep" if it reaches here
 
@@ -333,6 +333,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     for i, (_, row) in enumerate(tqdm(list(names.iterrows()), desc="Google Trends")):
         tkr, keyword = row["ticker"], str(row["name"])
         mn, mx = span.get(tkr, (None, None))
+
         # "backfilled" = history reaches the full window OR already spans >= 3y (as deep
         # as Trends will give for this keyword) -> don't re-run the full backfill.
         deep = mn is not None and (mn <= deep_before or (mx - mn).days >= _MIN_BACKFILL_DAYS)
@@ -342,19 +343,19 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
             continue
 
         try:
-            if not deep:                                     # full weekly backfill
-                series = _fetch_weekly_history(client, keyword, years, pause,
-                                               printer=context.log.info)
-            else:                                            # deep but stale -> append new weeks
+            if not deep: # full weekly backfill
+                logger.info(f"Redo full history extract for {tkr}")
+                series = _fetch_weekly_history(client, keyword, years, pause)
+            else: # deep but stale -> append new weeks
+                logger.info(f"Extract last month for {tkr}")
                 recent = call_with_retries(
-                    lambda: client.interest_over_time(keyword, "today 5-y"),
-                    retries=4, base_wait=45.0, label=f"trends {tkr} recent",
-                    printer=context.log.info)
+                    lambda: client.interest_over_time(keyword, "today -m"),
+                    retries=4, base_wait=45.0, label=f"trends {tkr} recent")
                 ref = existing[existing["ticker"] == tkr][["date", "search_interest"]]
                 series = _scale_to_reference(recent, ref)
                 series = series[series["date"] > mx] if not series.empty else series
         except Exception as e:                               # noqa: BLE001
-            context.log.warning("Trends fetch failed for %s (%s): %s", tkr, keyword, e)
+            logger.warning("Trends fetch failed for %s (%s): %s", tkr, keyword, e)
             continue
 
         if series is not None and not series.empty:

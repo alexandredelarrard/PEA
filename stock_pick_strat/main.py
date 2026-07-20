@@ -16,7 +16,7 @@ if __name__ == "__main__":
     config, context = get_config_context("./configs", use_cache=False, save=True)
     
     self = StepExtractAllData(context=context, config=config)
-    self.run()
+    # self.run()
 
     # self = StepDeducePeers(context=context, config=config)
     # self.run()

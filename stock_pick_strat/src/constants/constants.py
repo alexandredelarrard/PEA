@@ -112,6 +112,15 @@ SUPERINVESTORS_WEIGHTING = "rank"
 # for the few names the fuzzy filer-name match misses.
 SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
     "BRK": "0001067983",   # Berkshire Hathaway  (Warren Buffett)
+    "HA" : "0000827280",
+    "VAN" : "0000858172",
+    "RC" : "0001570775", 
+    "DAC": "0000200217",
+    "PI": "0001549574",
+    "MPF": "0000932223",
+    "DAV": "0000200305",
+    "T" : "0001002778",
+    "oa" : "0000885665"
 }
 
 SEC_FORM13F_URL_DICT = {

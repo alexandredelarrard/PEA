@@ -9,7 +9,9 @@ and retry with exponential backoff.
 from __future__ import annotations
 
 import time
+import logging 
 
+logger = logging.getLogger(__name__)
 
 def is_rate_limited(exc: BaseException) -> bool:
     """True if an exception looks like a rate-limit / 429 / too-many-requests."""
@@ -17,10 +19,8 @@ def is_rate_limited(exc: BaseException) -> bool:
     return ("429" in s or "too many requests" in s or "toomanyrequests" in s
             or "rate limit" in s or "ratelimit" in s)
 
-
 def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0,
-                      label: str = "", printer=print,
-                      retry_empty=None):
+                      label: str = "", retry_empty=None):
     """Call `fn()`; on a rate-limit error, WAIT (exponential backoff) and retry up
     to `retries` times before giving up. Non-rate-limit exceptions propagate
     immediately. If `retry_empty` is given (a predicate on the result), an "empty"
@@ -35,7 +35,7 @@ def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0,
         except Exception as e:                     # noqa: BLE001
             if is_rate_limited(e) and attempt < retries:
                 wait = base_wait * (2 ** attempt)
-                printer(f"[{label}] rate-limited (429); attempt {attempt + 1}/{retries}"
+                logger.warning(f"[{label}] rate-limited (429); attempt {attempt + 1}/{retries}"
                         f" -> waiting {wait:.0f}s before retry")
                 time.sleep(wait)
                 attempt += 1
@@ -43,7 +43,7 @@ def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0,
             raise
         if retry_empty is not None and attempt < retries and retry_empty(result):
             wait = base_wait * (2 ** attempt)
-            printer(f"[{label}] empty response; attempt {attempt + 1}/{retries}"
+            logger.warning(f"[{label}] empty response; attempt {attempt + 1}/{retries}"
                     f" -> waiting {wait:.0f}s before retry")
             time.sleep(wait)
             attempt += 1

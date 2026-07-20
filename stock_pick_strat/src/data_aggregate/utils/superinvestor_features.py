@@ -47,9 +47,24 @@ def _pad_cik(x: object) -> str:
 
 
 def _weight_map(roster: dict | list | None) -> dict[str, float]:
-    """{padded-cik: weight} from a loaded roster JSON (dict with 'managers', or a
-    bare manager list). Managers without a CIK/weight are skipped."""
-    managers = roster.get("managers", []) if isinstance(roster, dict) else (roster or [])
+    """{padded-cik: weight} from a loaded superinvestors roster.
+
+    Primary shape is the `{cik: investor_name}` map under `cik_to_name` (or a bare
+    `{cik: name}` dict): EQUAL-weighted — each elite manager counts the same, and
+    since the features are peer-relativized downstream the absolute weight scale is
+    irrelevant. Falls back to the legacy `{managers: [{cik, weight}]}` / bare-list
+    shape (explicit per-manager weights)."""
+    if roster is None:
+        return {}
+    if isinstance(roster, dict):
+        mapping = roster.get("cik_to_name")
+        if mapping is None and "managers" not in roster:      # a bare {cik: name} dict
+            mapping = {k: v for k, v in roster.items() if isinstance(v, str) and _pad_cik(k)}
+        if mapping:
+            return {c: 1.0 for cik in mapping if (c := _pad_cik(cik))}
+        managers = roster.get("managers", [])
+    else:
+        managers = roster or []
     out: dict[str, float] = {}
     for m in managers:
         cik = _pad_cik(m.get("cik"))

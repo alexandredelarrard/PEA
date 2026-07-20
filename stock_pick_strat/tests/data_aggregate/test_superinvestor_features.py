@@ -44,11 +44,17 @@ def _holdings():
 
 
 def test_weight_map_pads_and_sums():
-    w = _weight_map(_ROSTER)
-    assert w == {"0000000001": 0.7, "0000000002": 0.3}          # padded keys
+    # legacy explicit-weight shape (back-compat)
+    assert _weight_map(_ROSTER) == {"0000000001": 0.7, "0000000002": 0.3}
     assert _weight_map({"managers": []}) == {} and _weight_map(None) == {}
+    # NEW primary shape: {cik_to_name} -> EQUAL weights (1.0 each), padded, junk dropped
+    eq = _weight_map({"cik_to_name": {"1067983": "Buffett", "0000000002": "Ackman", "N/A": "x"}})
+    assert eq == {"0001067983": 1.0, "0000000002": 1.0}
+    # a bare {cik: name} dict (no wrapper) resolves the same way
+    assert _weight_map({"1067983": "Buffett"}) == {"0001067983": 1.0}
     print("\n=== SANITY CHECK: roster -> weight map ===")
-    print("  managers -> {padded_cik: weight}; empty/None -> {} (skipped downstream). Validated.")
+    print("  {cik_to_name} -> equal weights (padded, junk dropped); legacy {managers:[{cik,weight}]} "
+          "still honoured; empty/None -> {}. Validated.")
 
 
 def test_weighted_accumulation_subset_and_leakfree():

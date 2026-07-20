@@ -36,6 +36,13 @@ SEC_SUBMISSIONS_PAGE_URL = "https://data.sec.gov/submissions/{name}"
 SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
+# EDGAR company-name search (atom): the authoritative NAME -> CIK lookup. Filtered to
+# 13F-HR filers so a fund name resolves to its institutional-manager CIK. {company}
+# must be URL-quoted. Response: one <company-info> block per match with <cik> +
+# <conformed-name> (tags are lower-case).
+SEC_EDGAR_COMPANY_SEARCH_URL = (
+    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}"
+    "&type=13F-HR&dateb=&owner=include&count=10&output=atom")
 
 # SEC bulk quarterly structured data sets (free TSV zips; {quarter} = e.g. "2024q1").
 # insider = Forms 3/4/5 officer/director transactions; finstmt = primary-statement

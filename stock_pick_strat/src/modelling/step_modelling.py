@@ -223,10 +223,19 @@ class StepModelling(Step):
         # are unconstrained (0). Only the LightGBM member consumes these.
         lgb_feats = self._lgb_feats()
         constraints = ml.build_monotone_constraints(lgb_feats, feature_map)
-        missing = [f for f in feature_map if f not in lgb_feats]
-        if missing:
-            self._log.warning("Monotone features not in training set (skipped): %s",
-                              missing)
+        # A constrained feature absent from the trained set: if it IS in the allow-list
+        # it's simply not in the cube yet (already reported once by load_cube) -> stay
+        # quiet. Only WARN for a feature constrained but not even listed in
+        # inputs.columns -- a genuine config typo.
+        allow = set((self._config.get("inputs") or {}).get("columns", []) or [])
+        absent = [f for f in feature_map if f not in lgb_feats]
+        typos = [f for f in absent if f not in allow]
+        if typos:
+            self._log.warning("Monotone constraint on feature(s) not in inputs.columns "
+                              "(typo?): %s", typos)
+        elif absent:
+            self._log.info("%d monotone constraint(s) inactive (feature not in the current "
+                           "cube; applies after a rebuild)", len(absent))
         return constraints
 
     def _train_kwargs(self) -> dict:
@@ -415,10 +424,9 @@ class StepModelling(Step):
                 models, panel, self.feature_cols)
             df = panel[["date", "ticker"]].copy()
             df["score"] = scores.to_numpy()
-            # cross-sectional z-score per day so horizons are comparable
-            df["z"] = df.groupby("date")["score"].transform(
-                lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan)
-            )
+            # cross-sectional z-score per day so horizons are comparable (warning-safe:
+            # NaN on <2-name days / a constant member, no DOF/empty-slice RuntimeWarnings)
+            df["z"] = ml.per_day_zscore(df["score"].to_numpy(), df["date"].to_numpy())
             # per-model predictions (already per-day standardized in ensemble_predict)
             member_cols = []
             for name, mz in members.items():

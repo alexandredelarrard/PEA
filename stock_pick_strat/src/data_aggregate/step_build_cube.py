@@ -523,9 +523,9 @@ class StepBuildCube(Step):
         )
         added = len(self.feature_panel.columns) - 2 - before
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        n_mgrs = len(roster.get("cik_to_name") or roster.get("managers", []))
         self._log.info("Merged %s superinvestor (elite 13F) features "
-                       "(%d managers; row coverage %.1f%%)",
-                       added, len(roster.get("managers", [])), 100 * cov)
+                       "(%d managers; row coverage %.1f%%)", added, n_mgrs, 100 * cov)
 
     def build_insider_features(self):
         """Insider-trading features (trailing-window net open-market buying, buy/sell

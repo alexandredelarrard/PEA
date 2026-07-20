@@ -1,9 +1,12 @@
+import json
+
 import numpy as np
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
 from src.utils.step import Step
 from src.context import Context
+from src.constants.constants import SUPERINVESTORS_JSON
 from src.data_aggregate.utils import data_utils as du
 from src.data_aggregate.utils.betas import estimate_all_betas
 from src.data_aggregate.utils.targets import build_targets_multi
@@ -17,6 +20,7 @@ from src.data_aggregate.utils.employee_features import build_employee_feature_pa
 from src.data_aggregate.utils.dividend_features import build_dividend_feature_panel
 from src.data_aggregate.utils.attention_features import build_combined_attention_panel
 from src.data_aggregate.utils.institutional_features import build_institutional_feature_panel
+from src.data_aggregate.utils.superinvestor_features import build_superinvestor_feature_panel
 from src.data_aggregate.utils.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.short_interest_features import build_short_interest_feature_panel
 from src.data_aggregate.utils.composites import build_composites as build_composite_signals
@@ -56,6 +60,7 @@ class StepBuildCube(Step):
         self.build_dividend_features()
         self.build_attention_features()
         self.build_institutional_features()
+        self.build_superinvestor_features()
         self.build_insider_features()
         self.build_short_interest_features()
         self.build_composite_signals()
@@ -497,6 +502,45 @@ class StepBuildCube(Step):
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s institutional (13F) features (row coverage %.1f%%)",
                        added, 100 * cov)
+
+    def _load_superinvestors(self) -> dict | None:
+        """Read the persisted superinvestors roster JSON (built by
+        fetch_superinvestors.build_superinvestors_json). None if it is absent."""
+        path = self._context.paths["DATA_STORE"] / SUPERINVESTORS_JSON
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            self._log.warning("Superinvestors roster at %s is unreadable", path)
+            return None
+
+    def build_superinvestor_features(self):
+        """Elite-manager 13F buy/sell-evolution features (Dataroma superinvestors),
+        each weighted by its roster rank, layered ON TOP of the all-filer institutional
+        features. Reads the roster JSON; skipped if it has not been built."""
+        roster = self._load_superinvestors()
+        if not roster:
+            self._log.warning("No superinvestors roster JSON -> elite 13F features "
+                              "skipped (run fetch_superinvestors.build_superinvestors_json).")
+            return
+        panel = build_superinvestor_feature_panel(
+            getattr(self, "institutional", None), roster, self.peers,
+            self.stock_close.index, shares_out_history=self.fundamentals,
+            stock_close=self.stock_close,
+        )
+        if panel.empty:
+            self._log.warning("No superinvestor (elite 13F) features built.")
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(
+            panel, on=["date", "ticker"], how="left"
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s superinvestor (elite 13F) features "
+                       "(%d managers; row coverage %.1f%%)",
+                       added, len(roster.get("managers", [])), 100 * cov)
 
     def build_insider_features(self):
         """Insider-trading features (trailing-window net open-market buying, buy/sell

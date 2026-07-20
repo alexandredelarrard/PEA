@@ -85,6 +85,28 @@ GOOGLE_TRENDS_HOME_URL = "https://trends.google.com/?geo=US"
 GOOGLE_TRENDS_EXPLORE_URL = "https://trends.google.com/trends/api/explore"
 GOOGLE_TRENDS_MULTILINE_URL = "https://trends.google.com/trends/api/widgetdata/multiline"
 
+# --------------------------------------------------------------------------- #
+# Dataroma "superinvestors" — a curated roster of proven long-term investors.  #
+# We scrape the roster, resolve each manager to its SEC 13F CIK, rank the top  #
+# N by 13F long-equity AUM, and persist a weighted subset JSON so the elite    #
+# "smart-money" 13F features can be recomputed reproducibly (fetch_superinvestors #
+# -> superinvestor_features). Dataroma exposes NO returns and NO CIK, so the    #
+# roster is the curation and CIKs are resolved from cached 13F filer names.     #
+# --------------------------------------------------------------------------- #
+DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
+DATAROMA_HEADERS = {"User-Agent": "Mozilla/5.0 (research; valar_analytics@gmail.com)"}
+# roster JSON, relative to DATA_STORE (non-tabular artifact, like sec_bulk_cache)
+SUPERINVESTORS_JSON = "superinvestors/superinvestors.json"
+SUPERINVESTORS_DEFAULT_TOP_N = 30
+# manager weighting scheme within the selected top-N: "rank" (linear decay, top
+# gets the most), "aum" (proportional to 13F AUM), or "equal"
+SUPERINVESTORS_WEIGHTING = "rank"
+# Dataroma manager code -> SEC 13F CIK (zero-padded 10-digit, as in sp500_tickers),
+# for the few names the fuzzy filer-name match misses.
+SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
+    "BRK": "0001067983",   # Berkshire Hathaway  (Warren Buffett)
+}
+
 SEC_FORM13F_URL_DICT = {
     "2013q2": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2013q2_form13f.zip",
     "2013q3": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2013q3_form13f.zip",

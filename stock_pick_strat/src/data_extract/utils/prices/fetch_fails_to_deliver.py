@@ -33,7 +33,9 @@ import requests
 from sqlalchemy import text
 from tqdm import tqdm
 
-from src.constants.constants import SEC_FTD_URL_TEMPLATE, SEC_FTD_FIRST_YEAR
+from src.constants.constants import (
+    SEC_FTD_URL_TEMPLATE, SEC_FTD_LEGACY_URL_TEMPLATE,
+    SEC_FTD_LEGACY_LAST_PERIOD, SEC_FTD_FIRST_YEAR)
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import (
     load_processed_universe, save_processed_universe)

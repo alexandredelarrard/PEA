@@ -106,6 +106,12 @@ EXTRACT_TABLES: list[TableSpec] = [
     TableSpec("notes_text", "notes_text.parquet",
               ("adsh", "tag", "ddate", "qtrs"), "extract", date_col="ddate",
               date_type_cols=("ddate", "filed")),
+    # FREE earnings-call transcripts (Motley Fool), split into high-signal sections
+    # (prepared_remarks / qa / participants) for later sentiment / embedding. One row
+    # per ticker / fiscal quarter / section; `as_of` = call date, `text` = the prose.
+    TableSpec("earnings_call_sections", "earnings_call_sections.parquet",
+              ("ticker", "quarter", "tag"), "extract", date_col="as_of",
+              date_type_cols=("as_of",)),
 ]
 
 # --------------------------------------------------------------------------- #

@@ -72,6 +72,10 @@ SEC_FTD_LEGACY_URL_TEMPLATE = ("https://www.sec.gov/files/data/"
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"   # last period on the legacy path (>= 201706b uses the current path)
 SEC_FTD_FIRST_YEAR = 2009          # earliest FTD file overall (2009-07, legacy path) -> full 15y coverage
 
+# moves from LEGACY URLto NEW on second half of june 2017
+# NEW  href="https://www.sec.gov/files/data/fails-deliver-data/cnsfails202007b.zip"
+# LEGACY href= "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails201301a.zip"
+
 # --------------------------------------------------------------------------- #
 # Google Trends (unofficial API — retail-attention proxy). The explore call    #
 # returns widget tokens; the multiline call returns the interest-over-time     #

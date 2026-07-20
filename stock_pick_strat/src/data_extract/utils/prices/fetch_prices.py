@@ -23,6 +23,7 @@ import requests
 import yfinance as yf
 from tqdm import tqdm
 
+from src.data_extract.utils.common.gics import industry_group
 from src.constants.constants import DATE_FORMAT
 from src.context import Context
 
@@ -53,11 +54,12 @@ def get_sp500_tickers(context: Context) -> list[str]:
     """Scrape current S&P 500 tickers + sector info from Wikipedia. Adds the GICS
     industry group (24-level, for sector-neutral construction) and deduplicates
     dual-class share listings."""
-    from src.data_extract.utils.common.gics import industry_group
+
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     response = requests.get(url, headers=_WIKI_HEADERS, timeout=30)
     response.raise_for_status()
     tables = pd.read_html(io.StringIO(response.text))
+
     df = tables[0]
     df = df.rename(columns={
         "Symbol": "ticker",
@@ -69,13 +71,16 @@ def get_sp500_tickers(context: Context) -> list[str]:
     df["ticker"] = df["ticker"].str.replace(".", "-", regex=False)  # yfinance format, e.g. BRK.B -> BRK-B
     if "cik" in df.columns:
         df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
+    
     # GICS industry group (24) from sub-industry, sector fallback -> sector neutrality
+    tick_redundant = context.config.data_extract.redundant_ticks
     df["industry_group"] = [industry_group(s, sec)
                             for s, sec in zip(df["sub_industry"], df["sector"])]
     df = _dedupe_share_classes(df)
 
     keep = [c for c in ["ticker", "name", "sector", "industry_group", "sub_industry", "cik"]
             if c in df.columns]
+    df = df.loc[~df['ticker'].isin(tick_redundant)].reset_index(drop=True)
     context.store.save("sp500_tickers", df[keep])
     print(f"Saved {len(df)} tickers to DB table 'sp500_tickers'")
     return df["ticker"].tolist()
@@ -302,6 +307,7 @@ def _save_dividends(context: Context, new_prices: pd.DataFrame) -> None:
     div = _extract_dividends(new_prices)
     if div.empty:
         return
+        
     # upsert on (ticker, date) — the DB merges with any prior dividend rows
     n = context.store.save("dividends", div)
     print(f"Saved {n} dividend rows to DB table 'dividends' (from the price download)")
@@ -334,10 +340,11 @@ def fetch_price_history(
 ) -> pd.DataFrame:
     """Download daily OHLCV, incrementally upserting into the `prices` DB table."""
     years_history = context.config.data_extract.years_history
+    other_ticker = context.config.data_extract.other_tickers
 
     existing = _load_existing_prices(context)
     plans = _tickers_needing_download(existing, tickers, years_history)
-    tickers_to_fetch = [t for t, window in plans.items() if window is not None]
+    tickers_to_fetch = [t for t, window in plans.items() if window is not None and t not in other_ticker] 
 
     if not tickers_to_fetch:
         n = 0 if existing is None else len(existing)
@@ -349,8 +356,10 @@ def fetch_price_history(
         f"({len(tickers) - len(tickers_to_fetch)} already up to date)"
     )
     new = _download_prices(plans, years_history, chunk_size, pause)
+
     # dividends come from the SAME download (actions=True) -> no separate run
     _save_dividends(context, new)
+    
     # keep the prices table a clean OHLCV frame (drop the action columns)
     if not new.empty:
         new = new.drop(columns=_ACTION_COLS, errors="ignore")
@@ -360,4 +369,5 @@ def fetch_price_history(
         context.store.save("prices", new)
     print(f"Saved {len(new)} new price rows to DB table 'prices' "
           f"(table now spans {len(out)} rows in memory)")
+
     return out

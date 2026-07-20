@@ -298,6 +298,28 @@ def predict(booster, panel: pd.DataFrame, feats: list) -> pd.Series:
     return pd.Series(preds, index=panel.index, name="score")
 
 
+def per_day_zscore(values: np.ndarray, dates: np.ndarray) -> np.ndarray:
+    """Cross-sectionally z-score ``values`` within each day.
+
+    Days with < 2 names, or zero / undefined dispersion (e.g. a member whose
+    coefficients were all shrunk to zero under strong L1 -> a CONSTANT prediction),
+    return NaN -- computed WITHOUT tripping numpy's 'Degrees of freedom <= 0' /
+    'invalid value encountered in divide' RuntimeWarnings: the < 2 guard skips the
+    ddof=1 std on a single element, and the finite/positive guard skips the divide.
+    """
+    df = pd.DataFrame({"date": np.asarray(dates), "v": np.asarray(values, dtype=float)})
+
+    def _z(s: pd.Series) -> pd.Series:
+        if len(s) < 2:
+            return pd.Series(np.nan, index=s.index)
+        sd = s.std()
+        if not np.isfinite(sd) or sd <= 0.0:
+            return pd.Series(np.nan, index=s.index)
+        return (s - s.mean()) / sd
+
+    return df.groupby("date")["v"].transform(_z).to_numpy()
+
+
 def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list):
     """Average the CROSS-SECTIONALLY-STANDARDIZED (per day) predictions of several
     models into one ensemble score per row.
@@ -310,7 +332,7 @@ def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list):
     """
     if not models:
         raise ValueError("ensemble_predict received no models")
-        
+
     dates = panel["date"].to_numpy()
     members: dict[str, pd.Series] = {}
     zs = []
@@ -320,13 +342,15 @@ def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list):
         # to the shared `feats` for models without a stored feature_names.
         mfeats = list(getattr(m, "feature_names", None) or feats)
         raw = predict(m, panel, mfeats).to_numpy()
-        z = (pd.DataFrame({"date": dates, "v": raw})
-             .groupby("date")["v"]
-             .transform(lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
-             ).to_numpy()
+        z = per_day_zscore(raw, dates)          # NaN on <2-name days / a constant member
         zs.append(z)
         members[str(name)] = pd.Series(z, index=panel.index, name=str(name))
-    avg = np.nanmean(np.column_stack(zs), axis=1)
+    # nan-mean across members WITHOUT np.nanmean, so an all-NaN row (a day no member
+    # could standardize -- e.g. a single-name day) yields NaN rather than a
+    # "Mean of empty slice" RuntimeWarning.
+    stack = np.column_stack(zs)
+    cnt = np.isfinite(stack).sum(axis=1)
+    avg = np.where(cnt > 0, np.nansum(stack, axis=1) / np.where(cnt > 0, cnt, 1), np.nan)
     blended = pd.Series(avg, index=panel.index, name="score")
     return blended, members
 
@@ -443,15 +467,17 @@ def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y",
             ic, _ = spearmanr(g["pred"], g[label_name])
             if np.isfinite(ic):
                 ics.append(ic)
-    ics = np.array(ics)
+    ics = np.asarray(ics, dtype=float)
+    n = len(ics)
     periods_per_year = trading_days_per_year / max(1, int(horizon))
-    return {
-        "mean_ic": float(ics.mean()) if len(ics) else np.nan,
-        "ic_std": float(ics.std()) if len(ics) else np.nan,
-        "ic_ir": (float(ics.mean() / ics.std() * np.sqrt(periods_per_year))
-                  if ics.std() > 0 else np.nan),
-        "n_days": int(len(ics)),
-    }
+    # Guard EVERY mean/std behind n>0: np.std([]) emits "Mean of empty slice" +
+    # "Degrees of freedom <= 0" + "invalid value encountered in divide". `ics` is
+    # empty whenever a member's predictions are constant (no day has >2 unique
+    # preds), e.g. an all-zero-coefficient elasticnet under strong L1.
+    mean_ic = float(ics.mean()) if n else np.nan
+    std_ic = float(ics.std()) if n else np.nan
+    ic_ir = (mean_ic / std_ic * np.sqrt(periods_per_year)) if (n and std_ic > 0) else np.nan
+    return {"mean_ic": mean_ic, "ic_std": std_ic, "ic_ir": ic_ir, "n_days": n}
 
 
 def cross_validate(

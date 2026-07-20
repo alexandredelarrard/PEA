@@ -1,3 +1,10 @@
+# Trust the corporate TLS-inspection proxy CA. MUST run before importing any HTTP
+# client: yfinance/curl_cffi freeze their default CA path at import time, so setting
+# the CA env vars afterwards would be ignored. No-op if you already set SSL_CERT_FILE
+# yourself (see src/utils/ssl_setup.py; `python -m src.utils.ssl_setup` for setx).
+from src.utils.ssl_setup import configure_corporate_ca
+configure_corporate_ca()
+
 from src.context import get_config_context
 from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_aggregate.step_build_cube import StepBuildCube

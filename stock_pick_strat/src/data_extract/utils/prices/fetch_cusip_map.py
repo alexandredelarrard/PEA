@@ -23,6 +23,23 @@ _URL = "https://api.openfigi.com/v3/mapping"
 _BATCH = 50          # OpenFIGI allows up to 100 jobs per request (no key)
 
 
+def normalize_cusip(cusip) -> str | None:
+    """Canonical CUSIP: uppercased, stripped, and left zero-padded to 9 chars.
+
+    A CUSIP is ALWAYS 9 characters, but filers (and any int-coercing reader) drop
+    the leading zero on all-digit CUSIPs -- so the SAME security appears as
+    '037833100' and '37833100'. Without a single canonical form, the incremental
+    'already mapped?' check (`c not in known`) and the holdings<->ticker merge both
+    miss, so the map is rebuilt (and the rate-limited OpenFIGI lookup re-run) every
+    time. Returns None for blank / NaN so those are skipped."""
+    if cusip is None:
+        return None
+    s = str(cusip).strip().upper()
+    if not s or s in ("NAN", "NONE", "<NA>"):
+        return None
+    return s.zfill(9)
+
+
 def _parse_openfigi(results: list[dict], cusips: list[str]) -> dict[str, str]:
     """Align OpenFIGI's per-job results to the input CUSIPs -> {cusip: ticker}.
     Jobs with a warning / no data are skipped. Pure."""
@@ -53,25 +70,44 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
     cached = context.store.load("cusip_ticker_map")
     if cached.empty:
         cached = pd.DataFrame(columns=["cusip", "ticker"])
+    else:
+        # normalize the STORED cusips too, so a legacy row saved before this fix
+        # (or a differently-zero-padded one) still counts as 'already mapped'.
+        cached = (cached.assign(cusip=cached["cusip"].map(normalize_cusip))
+                  .dropna(subset=["cusip"]).drop_duplicates("cusip", keep="last"))
+
+    def _mapped_only(df: pd.DataFrame) -> pd.DataFrame:
+        """Real mappings only (drop the recorded misses) -> feeds the ticker merge."""
+        return df[df["ticker"].notna() & (df["ticker"].astype("string").str.strip() != "")]
 
     known = set(cached["cusip"])
-    todo = sorted({c for c in cusips if c and c not in known})
+    # compare on the SAME canonical form on both sides -> the skip actually skips
+    todo = sorted({n for c in cusips if (n := normalize_cusip(c)) and n not in known})
     if not todo:
-        return cached
+        return _mapped_only(cached)
 
     api_key = os.getenv("OPENFIGI_API_KEY")
     mapped: dict[str, str] = {}
+    attempted: list[str] = []      # cusips whose OpenFIGI batch RESPONDED (a miss is permanent)
     for i in tqdm(range(0, len(todo), _BATCH)):
         batch = todo[i:i + _BATCH]
         try:
             mapped.update(_parse_openfigi(_openfigi_request(batch, api_key), batch))
-        except Exception as e:
+            attempted.extend(batch)          # responded (map or genuine no-match) -> record it
+        except Exception as e:               # network / rate error -> leave for a later run
             print(f"OpenFIGI batch {i // _BATCH} failed: {e}")
-        time.sleep(pause)          # unauthenticated OpenFIGI is ~25 req/min
+        time.sleep(pause)                     # unauthenticated OpenFIGI is ~25 req/min
 
-    new = pd.DataFrame({"cusip": list(mapped), "ticker": list(mapped.values())})
-    out = pd.concat([cached, new], ignore_index=True).drop_duplicates("cusip", keep="last")
+    # Persist EVERY responded cusip (mapped -> ticker, no-match -> None). Recording the
+    # large UNMAPPABLE tail (bonds / options / warrants / delisted / foreign lines) is
+    # what stops the whole rate-limited lookup being re-run every time -> the "takes
+    # ages" bug: those cusips never got a ticker, so were never stored, so were re-
+    # queried forever. Transient (network) failures are NOT recorded, so they retry.
+    new = pd.DataFrame({"cusip": attempted, "ticker": [mapped.get(c) for c in attempted]})
     if not new.empty:
         context.store.save("cusip_ticker_map", new)
-    print(f"CUSIP->ticker map: {len(out)} entries ({len(new)} new) -> DB 'cusip_ticker_map'")
-    return out
+    out = pd.concat([cached, new], ignore_index=True).drop_duplicates("cusip", keep="last")
+    n_mapped = int(out["ticker"].notna().sum())
+    print(f"CUSIP->ticker map: {n_mapped} mapped / {len(out)} attempted "
+          f"({len(mapped)} newly mapped of {len(attempted)} attempted) -> DB 'cusip_ticker_map'")
+    return _mapped_only(out)      # only real mappings feed the holdings<->ticker merge

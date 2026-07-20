@@ -61,10 +61,14 @@ SECTOR_KPI_COLS: list[str] = [
     # banks
     "net_interest_margin", "efficiency_ratio", "provision_rate", "loan_to_deposit", "bank_roa",
     "bank_operating_margin", "reserve_coverage_velocity", "tier1_capital_ratio", "deposit_stickiness",
+    "nii_growth", "loan_growth",                                                         # A7
+    "aoci_to_equity", "htm_unrealized_loss_ratio", "npl_ratio", "net_charge_off_rate",  # B1 + B3
     # insurance
     "loss_ratio", "expense_ratio", "combined_ratio", "investment_income_ratio",
+    "book_value_growth", "premium_growth", "float_growth",                              # A6
     # reits
     "ffo_margin", "ffo_payout", "rental_margin", "affo_margin", "net_debt_to_ebitdare",
+    "affo_dividend_coverage",                                                            # A8
     # energy
     "exploration_intensity", "ddna_intensity", "ebitdax_margin", "property_overvaluation_cushion",
     # software / tech
@@ -294,6 +298,36 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     adj_capital = (g("stockholdersEquity").fillna(0) + total_debt
                    + rd_asset.fillna(0) - cash.fillna(0))
     df["rd_capitalized_roic"] = _safe_div(adj_oper_income, adj_capital, True).where(rd.notna())
+
+    # ---- financial-sector growth & capital (A6 insurance, A7 banks) ------- #
+    def _yoy_growth(s: pd.Series) -> pd.Series:
+        prior = _yearly_lag(df, s, 1, yoy)
+        return _safe_div(s - prior, prior, True)
+
+    df["nii_growth"] = _yoy_growth(nii).where(bank_gate)                       # A7
+    df["loan_growth"] = _yoy_growth(g("loans")).where(g("loans").notna())      # A7
+    fin_gate = premiums.notna() | bank_gate
+    equity = g("stockholdersEquity")
+    df["book_value_growth"] = _yoy_growth(equity).where(fin_gate)              # A6 (compounding)
+    df["premium_growth"] = _yoy_growth(g("premiumsWritten"))                   # A6
+    df["float_growth"] = _yoy_growth(g("insuranceReserves"))                   # A6 (investable float)
+
+    # ---- A8 REIT: AFFO dividend coverage (dividend safety) --------------- #
+    affo = ffo - capex.fillna(0.0)
+    df["affo_dividend_coverage"] = _safe_div(affo, g("dividendsPaid"), True).where(re_gate)
+
+    # ---- B1 bank/insurer securities-mark drag (the 2023 SVB signal) ------ #
+    # AOCI is mostly the AFS mark-to-market; a large NEGATIVE AOCI = unrealized
+    # securities losses eroding tangible capital (signed: negative = losses).
+    df["aoci_to_equity"] = _safe_div(g("accumulatedOCI"), equity, True)
+    # HELD-TO-MATURITY unrealized loss = amortized cost - footnote fair value, the
+    # loss hidden OFF the balance sheet (what sank SVB). Positive = unrecognized loss.
+    htm_loss = g("htmSecurities") - g("htmSecuritiesFairValue")
+    df["htm_unrealized_loss_ratio"] = _safe_div(htm_loss, equity, True)
+
+    # ---- B3 bank credit quality: non-performing loans + net charge-offs -- #
+    df["npl_ratio"] = _safe_div(g("nonaccrualLoans"), g("loans"), True)
+    df["net_charge_off_rate"] = _safe_div(g("netChargeOffs"), g("loans"), True)
 
     return df
 

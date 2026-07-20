@@ -251,6 +251,12 @@ EXTRA_FLOW_TAGS = {
                                  "ProvisionForLoanAndLeaseLosses", "ProvisionForCreditLossExpenseReversal"],
     "noninterestIncome": ["NoninterestIncome"],
     "noninterestExpense": ["NoninterestExpense"],
+    # net loan charge-offs (write-offs, net of recoveries) -> realized credit losses
+    # (B3). Duration flow -> TTM-summed. Net tag preferred, gross write-offs fallback.
+    "netChargeOffs": ["FinancingReceivableAllowanceForCreditLossesWriteoffAfterRecovery",
+                      "FinancingReceivableAllowanceForCreditLossesWriteoff",
+                      "AllowanceForLoanAndLeaseLossesWriteOffs",
+                      "AllowanceForLoanAndLeaseLossesWriteoffsNet"],
     # ---- Insurance ----
     "premiumsEarned": ["PremiumsEarnedNet", "PremiumsEarnedNetPropertyAndCasualty"],
     "premiumsWritten": ["PremiumsWrittenNet"],
@@ -303,6 +309,10 @@ EXTRA_STOCK_TAGS = {
     "treasuryStock": ["TreasuryStockValue", "TreasuryStockCommonValue"],
     "preferredEquity": ["PreferredStockValue", "PreferredStockValueOutstanding"],
     "minorityInterest": ["MinorityInterest"],
+    # accumulated OCI (mostly the available-for-sale securities mark) -> a large
+    # NEGATIVE value = unrealized securities losses eroding tangible capital
+    # (B1 / the 2023 SVB signal). Near-universal tag.
+    "accumulatedOCI": ["AccumulatedOtherComprehensiveIncomeLossNetOfTax"],
     "shortTermInvestments": ["ShortTermInvestments"],
     "longTermInvestments": ["LongTermInvestments"],
     # deferred revenue -> a consistent TOTAL pool: the combined tag when present,
@@ -319,6 +329,14 @@ EXTRA_STOCK_TAGS = {
     "depositsDomestic": ["DepositsDomestic"],   # deposit-stickiness metric (sparsely tagged)
     "allowanceCreditLosses": ["FinancingReceivableAllowanceForCreditLosses",
                               "LoansAndLeasesReceivableAllowance"],
+    # held-to-maturity book (amortized cost) + its footnote FAIR VALUE -> the OFF-
+    # balance-sheet unrealized loss = amortized - fair value (B1, the SVB blow-up).
+    "htmSecurities": ["HeldToMaturitySecurities",
+                      "HeldToMaturitySecuritiesAmortizedCostAfterAllowanceForCreditLoss"],
+    "htmSecuritiesFairValue": ["HeldToMaturitySecuritiesFairValue"],
+    # non-performing (nonaccrual) loans -> forward credit-quality (B3)
+    "nonaccrualLoans": ["FinancingReceivableRecordedInvestmentNonaccrualStatus",
+                        "FinancingReceivableExcludingAccruedInterestNonaccrualStatus"],
     # Tier-1 risk-based ratio; fall back to the modern CET1 ratio for banks that report
     # only CET1 (post-2015). Both are capital-adequacy ratios (>11% = well-capitalised);
     # CET1 <= Tier1, so the >11% screen stays conservative.

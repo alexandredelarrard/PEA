@@ -71,8 +71,10 @@ inputs:
   columns:
 
     # ---- Price / technical (point-in-time; a distinct information kind) ----
+    - mom_12_1                   # 12-1 price momentum (skip the reversal month)
     - rev_21                     # 1-month reversal
     - vol_63                     # 3-month realized volatility
+    - max_21                     # lottery / MAX effect (max 1-day return; -> lower returns)
     - seasonal_h30               # own same-calendar-window return, per horizon (leak-free)
     - seasonal_h60
     - seasonal_h90
@@ -83,6 +85,7 @@ inputs:
     - volume_trend_63            # activity rising / fading
     - volume_cv_63               # lumpy vs steady trading
     - tax_loss_pressure          # YTD-loss-driven Oct-Dec selling
+    - peer_mom_63                # A4: industry/residual momentum (stock - sector cum return)
 
     # ---- Growth ----
     - f_y_rev_growth_xs                    # revenue growth (TTM vs 1y ago)
@@ -90,15 +93,22 @@ inputs:
     - f_operating_leverage_xs              # revenue growing faster than operating cost
     - f_revenue_per_employee_growth_xs     # revenue outrunning headcount (productivity)
     - f_acquisition_intensity_xs           # internal vs external (M&A) growth
+    - f_asset_growth_xs                    # A2: asset growth (FF5 investment/CMA; over-investment)
+    - f_rule_of_40_xs                      # A5: growth% + FCF-margin% (SaaS/growth health)
+    - f_rpo_growth_xs                      # A5: remaining-perf-obligation growth (forward bookings)
 
-    # ---- Valuation / expectations ----
+    # ---- Valuation / expectations / earnings momentum ----
     - f_ebitda_to_ev_xs                    # is the company over-priced (EV yield)
+    - f_ebitda_to_ev_vs_hist               # cheap vs its OWN 5y history (mean-reversion)
     - f_pegy_xs                            # price vs growth + dividend yield (PEGY)
     - f_core_earnings_yield_xs             # CORRECTED earnings (ex non-recurring items)
     - f_nonrecurring_pretax_share_xs       # what proportion of profit is non-recurring
+    - f_eps_surprise_4q_avg_xs             # earnings-surprise drift (PEAD), trailing 4Q
 
     # ---- Quality / moat ----
     - f_gross_profitability_xs             # profitability level (Novy-Marx, regime-robust)
+    - f_piotroski_f_score_xs               # A3: 9-point fundamental-health score
+    - f_accruals_xs                        # earnings quality (Sloan accruals; high = low quality)
     - f_rd_intensity_vs_peers              # can it hold its moat with R&D spend
     - f_capitalized_software_intensity_vs_peers   # AI / IT-investment score
 
@@ -114,9 +124,15 @@ inputs:
     - f_net_debt_to_ebitda_xs              # is it over-burdened by debt
     - f_refinancing_risk_xs                # must it borrow to roll its debt (refi risk)
 
-    # ---- Governance / insider ----
+    # ---- Governance / ownership / smart money ----
     - f_founder_ceo_vs_peers               # is the CEO the founder (interacts w/ rev growth)
     - f_insider_net_buy_ratio_xs           # do insiders buy or sell their position
+    - f_inst_flow_to_mcap_xs               # net 13F institutional $ flow / mcap (smart money)
+
+    # ---- Positioning / short interest (short-side pressure & settlement stress) ----
+    - f_short_vol_ratio_xs                 # heavily shorted -> lower forward returns
+    - f_short_vol_ratio_chg_xs             # rising short pressure (5d vs 63d ratio)
+    - f_fails_to_deliver_ratio_xs          # settlement fails / naked-short pressure
 
     # ---- Public attention ----
     - f_wiki_attn_spike_xs                 # Wikipedia pageviews interest spike
@@ -126,6 +142,18 @@ inputs:
     - f_tier1_capital_ratio_xs             # banks: capital adequacy
     - f_combined_ratio_xs                  # insurers: underwriting profitability (<1 = profit)
     - f_ebitdax_margin_xs                  # energy: EBITDAX margin
+    - f_nii_growth_xs                      # A7 banks: net-interest-income growth
+    - f_loan_growth_xs                     # A7 banks: loan-book growth
+    - f_book_value_growth_xs               # A6 financials: book-value compounding
+    - f_premium_growth_xs                  # A6 insurers: premium growth
+    - f_float_growth_xs                    # A6 insurers: investable-float growth
+    - f_affo_dividend_coverage_xs          # A8 REITs: AFFO dividend coverage (safety)
+    # ---- B1/B3 bank risk: enable AFTER a fetch_fundamentals re-run populates the new
+    #      XBRL tags (AOCI / HTM / nonaccrual / charge-offs), then a cube rebuild. ----
+    # - f_aoci_to_equity_xs                # B1: AFS securities-mark drag on capital
+    # - f_htm_unrealized_loss_ratio_xs     # B1: hidden HTM unrealized loss (the SVB signal)
+    # - f_npl_ratio_xs                     # B3: non-performing loans
+    # - f_net_charge_off_rate_xs           # B3: realized loan losses
 
   # Monotone direction per feature for the LightGBM member (target = higher forward
   # return). +1 = higher feature -> higher rank; -1 = inverse; unlisted = free (0).
@@ -165,3 +193,26 @@ inputs:
       - f_tier1_capital_ratio_xs: 1
       - f_combined_ratio_xs: -1                  # lower combined ratio = underwriting profit
       - f_ebitdax_margin_xs: 1
+      # price / expectations / earnings quality
+      - mom_12_1: 1                              # winners keep winning (12-1 momentum)
+      - max_21: -1                               # lottery demand -> lower forward returns
+      - f_eps_surprise_4q_avg_xs: 1             # positive surprise drift (PEAD)
+      - f_ebitda_to_ev_vs_hist: 1               # cheaper than its own history = better
+      - f_accruals_xs: -1                        # high accruals = low earnings quality
+      # positioning / short interest / smart money
+      - f_inst_flow_to_mcap_xs: 1               # institutional accumulation = bullish
+      - f_short_vol_ratio_xs: -1                 # heavily shorted = bearish
+      - f_short_vol_ratio_chg_xs: -1            # rising short pressure = bearish
+      - f_fails_to_deliver_ratio_xs: -1         # settlement fails / squeeze-risk = bearish
+      # Tier-A quick wins (available now)
+      - peer_mom_63: 1                          # A4 industry/residual momentum
+      - f_asset_growth_xs: -1                    # A2 CMA: aggressive asset growth -> underperforms
+      - f_piotroski_f_score_xs: 1               # A3 higher fundamental-health score = better
+      - f_rule_of_40_xs: 1                       # A5 growth+profitability health
+      - f_rpo_growth_xs: 1                       # A5 forward bookings momentum
+      - f_book_value_growth_xs: 1               # A6 book-value compounding
+      - f_premium_growth_xs: 1                  # A6 insurance top-line growth
+      - f_float_growth_xs: 1                    # A6 investable-float growth
+      - f_affo_dividend_coverage_xs: 1          # A8 REIT dividend safety
+      - f_nii_growth_xs: 1                      # A7 bank net-interest-income growth
+      # (f_loan_growth_xs left free: growth is good but can also signal risk-taking)

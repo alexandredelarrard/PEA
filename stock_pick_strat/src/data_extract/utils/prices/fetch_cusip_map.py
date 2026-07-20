@@ -20,7 +20,7 @@ from tqdm import tqdm
 from src.context import Context
 
 _URL = "https://api.openfigi.com/v3/mapping"
-_BATCH = 50          # OpenFIGI allows up to 100 jobs per request (no key)
+_BATCH = 90          # OpenFIGI allows up to 100 jobs per request (no key)
 
 
 def normalize_cusip(cusip) -> str | None:
@@ -96,8 +96,12 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
             attempted.extend(batch)          # responded (map or genuine no-match) -> record it
         except Exception as e:               # network / rate error -> leave for a later run
             print(f"OpenFIGI batch {i // _BATCH} failed: {e}")
-        time.sleep(pause)                     # unauthenticated OpenFIGI is ~25 req/min
 
+        if not api_key:
+            time.sleep(pause)                     # unauthenticated OpenFIGI is ~25 req/min
+        else:
+            time.sleep(pause//3) 
+            
     # Persist EVERY responded cusip (mapped -> ticker, no-match -> None). Recording the
     # large UNMAPPABLE tail (bonds / options / warrants / delisted / foreign lines) is
     # what stops the whole rate-limited lookup being re-run every time -> the "takes

@@ -206,6 +206,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     ticker universe grew (then cached zips are re-parsed to back-fill new names). The
     CUSIP->ticker map is built only over the NEW quarters' cusips (and itself skips
     already-attempted cusips), so a converged re-run does almost no work."""
+    
     store = context.store
     universe = set(store.load("sp500_tickers", columns=["ticker"])["ticker"])
     years_history = context.config.data_extract.years_history + 1

@@ -8,11 +8,7 @@ data_extract:
   # scoped independently of the global years_history. 15 -> ~26GB of cached zips.
   notes_years_history: 15
   benchmark_ticker: SPY
-  # Market/macro price series — NOT part of the equity universe and NO features are
-  # built on them. Fetched OHLCV-only (no dividends/fundamentals/behavioral) in the
-  # market/macro pull (fetch_market_prices) so the cube can read the market-beta
-  # benchmark (SPY) + commodity/FX factors (oil/gold/USD). VIX also comes from FRED.
-  other_tickers: ["SPY", "^VIX", "CL=F", "GC=F", "USDEUR=X"]
+  other_tickers: ["SPY", "CL=F", "GC=F", "USDEUR=X"]
   redundant_ticks: ["GOOG", "FOX", "NWS"]
   # The analysis universe is the `sp500_tickers` table (single entry point, read by
   # every step). It is seeded via the S&P 500 scraper only when empty; set this true

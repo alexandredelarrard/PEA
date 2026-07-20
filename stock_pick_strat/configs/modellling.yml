@@ -91,7 +91,7 @@ inputs:
     - f_y_rev_growth_xs                    # revenue growth (TTM vs 1y ago)
     - f_operating_margin_5y_chg_xs         # is margin structurally expanding (vs 5y)
     - f_operating_leverage_xs              # revenue growing faster than operating cost
-    - f_revenue_per_employee_growth_xs     # revenue outrunning headcount (productivity)
+    - f_revenue_per_employee_growth_xs     # revenue outrunning headcount (productivity) -> carefull because headcount is per year, rev per quarter
     - f_acquisition_intensity_xs           # internal vs external (M&A) growth
     - f_asset_growth_xs                    # A2: asset growth (FF5 investment/CMA; over-investment)
     - f_rule_of_40_xs                      # A5: growth% + FCF-margin% (SaaS/growth health)
@@ -104,6 +104,7 @@ inputs:
     - f_core_earnings_yield_xs             # CORRECTED earnings (ex non-recurring items)
     - f_nonrecurring_pretax_share_xs       # what proportion of profit is non-recurring
     - f_eps_surprise_4q_avg_xs             # earnings-surprise drift (PEAD), trailing 4Q
+    - f_intrinsic_yield_vs_peers           # value of the firm vs peers
 
     # ---- Quality / moat ----
     - f_gross_profitability_xs             # profitability level (Novy-Marx, regime-robust)

@@ -8,8 +8,8 @@ from src.data_peers.step_deduce_peers import StepDeducePeers
 if __name__ == "__main__":
     config, context = get_config_context("./configs", use_cache=False, save=True)
     
-    self = StepExtractAllData(context=context, config=config)
-    self.run()
+    # self = StepExtractAllData(context=context, config=config)
+    # self.run()
 
     self = StepDeducePeers(context=context, config=config)
     self.run()

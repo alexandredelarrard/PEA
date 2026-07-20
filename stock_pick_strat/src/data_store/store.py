@@ -24,9 +24,9 @@ import pandas as pd
 from sqlalchemy import Engine, MetaData, Table, func, inspect, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy import and_, tuple_
+from sqlalchemy import tuple_
 
-_CHUNK = 5_000
+_CHUNK = 10_000
 
 
 def table_exists(engine: Engine, name: str) -> bool:

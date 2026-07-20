@@ -12,6 +12,10 @@ ONCE-ONLY on-disk caching keyed by ticker:
 So once all 500 tickers are cached, subsequent runs make ZERO API calls. Use
 `force=True` on either to rebuild from scratch (e.g. after a universe change).
 
+The peers step (StepDeducePeers) uses `load_embedded_tickers` as the single "done"
+gate: tickers already in `ticker_embeddings` skip BOTH the Yahoo description and the
+OpenAI embedding — only tickers missing from that table are (re)processed.
+
 Env: reads OPEN_AI_API_KEY (your .env spelling) or OPENAI_API_KEY.
 """
 from __future__ import annotations
@@ -81,6 +85,16 @@ def fetch_business_descriptions(
 # --------------------------------------------------------------------------- #
 # Embeddings (OpenAI) - cached once per ticker                                 #
 # --------------------------------------------------------------------------- #
+def load_embedded_tickers(store) -> set[str]:
+    """Tickers already present in the `ticker_embeddings` cache — the 'done' set.
+    A ticker here needs NEITHER a (Yahoo) description NOR an (OpenAI) embedding, so
+    the caller can skip it end-to-end and only process the rest."""
+    if store is None:
+        return set()
+    df = store.load("ticker_embeddings", columns=["ticker"])
+    return set(df["ticker"].dropna()) if not df.empty else set()
+
+
 def get_openai_embeddings(
     descriptions: dict[str, str],
     model: str = "text-embedding-3-small",
@@ -88,11 +102,16 @@ def get_openai_embeddings(
     batch_size: int = 100,
     max_chars: int = 8000,
     force: bool = False,
+    universe: list[str] | None = None,
 ) -> pd.DataFrame:
     """
     Return DataFrame index=ticker, columns=embedding dims. OpenAI is called ONLY
     for tickers not already in the DB embedding cache (`ticker_embeddings`, one
     float8[] array per ticker) unless force=True. New vectors are merged back.
+
+    `descriptions` need only cover the tickers that still need embedding; pass
+    `universe` (the full ticker list) to get every ticker's vector back — cached
+    ones included — so the caller can feed only the to-do descriptions here.
     """
     cached: dict[str, np.ndarray] = {}
     if store is not None:
@@ -106,8 +125,7 @@ def get_openai_embeddings(
     new: dict[str, np.ndarray] = {}
     if todo:
         client = OpenAI(api_key=_api_key())
-        print(f"Embedding {len(todo)} new tickers (OpenAI); "
-              f"{len(descriptions) - len(todo)} already cached.")
+        print(f"Embedding {len(todo)} new tickers (OpenAI); {len(cached)} already cached.")
         for i in range(0, len(todo), batch_size):
             chunk = todo[i:i + batch_size]
             inputs = [descriptions[t][:max_chars] for t in chunk]
@@ -129,5 +147,6 @@ def get_openai_embeddings(
                              "embedding": [v.tolist() for v in new.values()]})
         store.save("ticker_embeddings", rows)
 
-    req = [t for t in descriptions if t in emb.index]
+    selection = universe if universe is not None else list(descriptions)
+    req = [t for t in selection if t in emb.index]
     return emb.loc[req]

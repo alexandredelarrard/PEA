@@ -8,7 +8,7 @@ data_extract:
   # scoped independently of the global years_history. 15 -> ~26GB of cached zips.
   notes_years_history: 15
   benchmark_ticker: SPY
-  other_tickers: ["SPY", "^VIX", "CL=F", "GC=F", "USDEUR=X"]
+  other_tickers: ["SPY", "CL=F", "GC=F", "USDEUR=X"]
   redundant_ticks: ["GOOG", "FOX", "NWS"]
   llm_model: "gpt-5-mini"
   sec:

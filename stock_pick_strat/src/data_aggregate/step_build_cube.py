@@ -12,7 +12,6 @@ from src.data_aggregate.utils.betas import estimate_all_betas
 from src.data_aggregate.utils.targets import build_targets_multi
 from src.data_aggregate.utils.features import build_feature_panel
 from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
-from src.data_aggregate.utils.analyst_features import build_analyst_feature_panel
 from src.data_aggregate.utils.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.governance_features import build_governance_feature_panel
 from src.data_aggregate.utils.sector_features import build_sector_feature_panel

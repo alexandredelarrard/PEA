@@ -4,6 +4,7 @@ import pickle
 import pandas as pd
 from datetime import datetime
 from omegaconf import DictConfig
+from sqlalchemy import text
 import lightgbm as lgb
 
 from src.utils.step import Step
@@ -49,10 +50,6 @@ class StepModelling(Step):
 
     # ------------------------------------------------------------------ #
     def load_cube(self):
-        self.cube = self._context.store.load("cube")
-        if self.cube.empty:
-            raise FileNotFoundError("Cube table is empty. Run StepBuildCube first.")
-        self.horizons = sorted(self.cube["target_horizon"].unique())
         self.primary_horizon = self._cfg.targets.primary_horizon
         self.label_column = self._config.model.label_column
         self.target_type = self._config.model.get("target_type", "rank")
@@ -61,8 +58,74 @@ class StepModelling(Step):
         # the single `model.type`.
         ens = self._config.model.get("ensemble", None)
         self.model_types = list(ens) if ens else [self._config.model.get("type", "lightgbm")]
-        self._log.info("Loaded cube (%s rows), horizons=%s, target_type=%s, models=%s",
-                       len(self.cube), self.horizons, self.target_type, self.model_types)
+
+        # Load ONLY what the model needs: the index/target columns plus the
+        # modelling.yml allow-list + categoricals that actually exist in the cube,
+        # and ONLY rows where the target is available. The cube's NULL-label rows
+        # (the beta-warmup head + the forward-return tail) are dropped downstream by
+        # panel_from_cube anyway, so pushing the filter into SQL yields the SAME
+        # panels (CV / training / blending / saved predictions unchanged) while
+        # avoiding a full 159-column x millions-of-rows load.
+        cube_cols = self._cube_columns()
+        target_col = self._target_column(cube_cols)
+        load_cols, dropped = self._select_load_columns(cube_cols, target_col)
+        self.cube = self._load_cube_where_labelled(load_cols, target_col)
+        if self.cube.empty:
+            raise FileNotFoundError(
+                f"No cube rows with a non-null target '{target_col}'. Run StepBuildCube "
+                "first (and confirm build_cube.targets.labels includes "
+                f"'{self.target_type}').")
+
+        self.horizons = sorted(self.cube["target_horizon"].unique())
+        self._log.info("Loaded cube: %s labelled rows x %s cols (target=%s), horizons=%s, "
+                       "target_type=%s, models=%s", len(self.cube), len(load_cols),
+                       target_col, self.horizons, self.target_type, self.model_types)
+        if dropped:
+            self._log.info("modelling.yml columns absent from the cube (not loaded, "
+                           "%d): %s", len(dropped), dropped)
+
+    # ------------------------------------------------------------------ #
+    def _cube_columns(self) -> set[str]:
+        """Column names actually present in the `cube` table (no data scan)."""
+        q = text("SELECT column_name FROM information_schema.columns "
+                 "WHERE table_name = 'cube'")
+        with self._context.store.engine.connect() as c:
+            return set(pd.read_sql(q, c)["column_name"])
+
+    def _target_column(self, cube_cols: set[str]) -> str:
+        """Stored target column for the configured `target_type` (falls back to a
+        legacy single `target` column), matching panel_from_cube's own resolution."""
+        col = f"target_{self.target_type}"
+        if col in cube_cols:
+            return col
+        if "target" in cube_cols:
+            return "target"
+        raise KeyError(
+            f"Target column '{col}' not in cube; rebuild the cube with "
+            f"'{self.target_type}' in build_cube.targets.labels.")
+
+    def _select_load_columns(self, cube_cols: set[str], target_col: str
+                             ) -> tuple[list[str], list[str]]:
+        """Columns to pull: the index + target, plus the modelling.yml numeric
+        allow-list and categoricals that exist in the cube. Returns (load_cols,
+        dropped) where `dropped` are configured names absent from the cube."""
+        inp = self._config.get("inputs")
+        wanted = list(inp.columns) if (inp and inp.get("columns")) else []
+        cats = list(inp.categoricals) if (inp and inp.get("categoricals")) else []
+        requested = wanted + cats
+        meta = ["date", "ticker", "target_horizon", target_col]
+        feats = [c for c in requested if c in cube_cols and c not in meta]
+        dropped = [c for c in requested if c not in cube_cols]
+        load_cols = list(dict.fromkeys(meta + feats))          # de-dup, keep order
+        return load_cols, dropped
+
+    def _load_cube_where_labelled(self, load_cols: list[str], target_col: str
+                                  ) -> pd.DataFrame:
+        """SELECT the projected columns for rows whose target is non-null."""
+        projected = ", ".join(f'"{c}"' for c in load_cols)
+        q = text(f'SELECT {projected} FROM cube WHERE "{target_col}" IS NOT NULL')
+        with self._context.store.engine.connect() as c:
+            return pd.read_sql(q, c, parse_dates=["date"])
 
     def _select_features(self, available: list[str]) -> list[str]:
         """Restrict training to the config allow-list (`inputs.columns` in

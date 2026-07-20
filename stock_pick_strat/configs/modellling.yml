@@ -130,6 +130,8 @@ inputs:
     - f_pct_female_directors_vs_peers      # board gender diversity vs peers
     - f_insider_net_buy_ratio_xs           # do insiders buy or sell their position
     - f_inst_flow_to_mcap_xs               # net 13F institutional $ flow / mcap (smart money)
+    - f_super_cluster_buying_xs            # top superinvestors' net accumulation (elite smart money)
+    - f_super_flow_to_mcap_xs              # net $ inflow from top superinvestors / mcap
 
     # ---- Positioning / short interest (short-side pressure & settlement stress) ----
     - f_short_vol_ratio_xs                 # heavily shorted -> lower forward returns
@@ -202,6 +204,8 @@ inputs:
       - f_accruals_xs: -1                        # high accruals = low earnings quality
       # positioning / short interest / smart money
       - f_inst_flow_to_mcap_xs: 1               # institutional accumulation = bullish
+      - f_super_cluster_buying_xs: 1            # top superinvestors accumulating = bullish
+      - f_super_flow_to_mcap_xs: 1              # top superinvestors' net $ inflow = bullish
       - f_short_vol_ratio_xs: -1                 # heavily shorted = bearish
       - f_short_vol_ratio_chg_xs: -1            # rising short pressure = bearish
       - f_fails_to_deliver_ratio_xs: -1         # settlement fails / squeeze-risk = bearish

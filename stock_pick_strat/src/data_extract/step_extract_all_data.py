@@ -41,7 +41,7 @@ class StepExtractAllData(Step):
 
         self._prices.run(tickers=tickers)
         self._fundamentals.run(tickers=tickers)
-        self._structure.run(tickers=tickers)
+        # self._structure.run(tickers=tickers)
         self._behavioral.run(tickers=tickers)
 
         ####### very strong driver, need data feed / LLM

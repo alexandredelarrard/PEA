@@ -65,6 +65,10 @@ SEC_FINNOTES_FIRST_YEAR = 2009     # earliest notes data set (2009q1)
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_FIRST_YEAR = 2016          # earliest semi-monthly file on this path (pre-2016 = legacy paths)
 
+# moves from LEGACY URLto NEW on second half of june 2017
+# NEW  href="https://www.sec.gov/files/data/fails-deliver-data/cnsfails202007b.zip"
+# LEGACY href= "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails201301a.zip"
+
 # --------------------------------------------------------------------------- #
 # Google Trends (unofficial API — retail-attention proxy). The explore call    #
 # returns widget tokens; the multiline call returns the interest-over-time     #

@@ -13,6 +13,9 @@ build_cube:
                              # the model picks one via model.target_type in modellling.yml
     min_names: 20
     neutralize_momentum: true  # orthogonalize target vs 12-1 momentum characteristic
+    neutralize_sectors: true   # neutralize target to ACTUAL GICS sector + industry_group
+                               # (per-day within-group demean) INSTEAD of the peer basket,
+                               # so sector/industry can't predict it (else they dominate)
 
   features:
     standardize_method: rank # rank | zscore

@@ -272,11 +272,26 @@ class StepBuildCube(Step):
         self._log.info("Estimated multi-factor betas for %s tickers "
                         "(mean beta_market_simple=%.2f)", len(self.betas), bm)
 
+    def _gics_group_maps(self) -> dict[str, dict[str, str]]:
+        """Ticker -> GICS sector / industry_group maps (from sp500_tickers) used to
+        neutralize the target to the ACTUAL sector + industry (not the peer basket)."""
+        ref = self._context.store.load("sp500_tickers")
+        maps: dict[str, dict[str, str]] = {}
+        for col in ("sector", "industry_group"):
+            if not ref.empty and col in ref.columns:
+                maps[col] = {str(t): str(g) for t, g in zip(ref["ticker"], ref[col])
+                             if pd.notna(g) and str(g).strip()}
+        return maps
+
     def build_targets(self):
         cfg = self._cfg.targets
         # store EVERY configured target version (e.g. rank AND zscore) in the cube
         # so the modelling step can pick one via model.target_type without a rebuild
         label_types = list(cfg.get("labels", [cfg.get("label", "rank")]))
+        # neutralize the target to the ACTUAL GICS sector + industry (per-day within-
+        # group demeaning) INSTEAD of the return-correlation peer basket, so sector /
+        # industry membership can't predict the target (else they dominate the model).
+        sector_groups = self._gics_group_maps() if cfg.get("neutralize_sectors", True) else None
         self.labels = build_targets_multi(
             close=self.stock_close,
             stock_returns=self.stock_ret,
@@ -288,11 +303,13 @@ class StepBuildCube(Step):
             labels=tuple(label_types),
             min_names=cfg.min_names,
             neutralize_momentum=cfg.get("neutralize_momentum", True),
+            sector_groups=sector_groups,
         )
         non_null = sum(int(df.notna().sum().sum())
                        for per in self.labels.values() for df in per.values())
-        self._log.info("Built factor-neutral targets %s for horizons %s (non-null=%s)",
-                       label_types, list(cfg.horizons), non_null)
+        self._log.info("Built factor-neutral targets %s for horizons %s "
+                       "(GICS sector+industry-neutral=%s, non-null=%s)",
+                       label_types, list(cfg.horizons), sector_groups is not None, non_null)
 
     def build_features(self):
         cfg = self._cfg.features

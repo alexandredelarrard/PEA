@@ -7,6 +7,7 @@ from src.data_aggregate.utils import data_utils as du
 from src.data_peers.utils.embeddings import (
     fetch_business_descriptions,
     get_openai_embeddings,
+    load_embedded_tickers,
 )
 from src.data_peers.utils.sector_peers import (
     build_peer_dict,
@@ -63,19 +64,30 @@ class StepDeducePeers(Step):
 
     def _embedding_similarity(self):
         """Fetch descriptions -> OpenAI embeddings (cached) -> cosine similarity.
-        Returns None on any failure so the caller falls back to correlation-only."""
+        Returns None on any failure so the caller falls back to correlation-only.
+
+        INCREMENTAL: `ticker_embeddings` is the single 'done' gate — tickers already
+        in that table skip BOTH the Yahoo description fetch and the OpenAI embedding;
+        only tickers missing from it are (re)processed. `universe` still returns the
+        full cached-plus-new matrix for the similarity computation."""
+        store = self._context.store
         tickers = list(self.stock_ret.columns)
         try:
-            descriptions = fetch_business_descriptions(tickers, store=self._context.store)
-            if not descriptions:
-                self._log.warning("No business descriptions fetched -> corr-only peers")
-                return None
+            done = load_embedded_tickers(store)
+            todo = [t for t in tickers if t not in done]
+            self._log.info("Embeddings: %s/%s tickers already in ticker_embeddings, "
+                           "%s to (re)process", len(tickers) - len(todo), len(tickers), len(todo))
+            # descriptions (Yahoo) only for the not-done tickers; already-embedded
+            # tickers never touch Yahoo or OpenAI again.
+            descriptions = fetch_business_descriptions(todo, store=store) if todo else {}
             emb = get_openai_embeddings(
                 descriptions,
                 model=self._cfg.get("embedding_model", "text-embedding-3-small"),
-                store=self._context.store,
+                store=store,
+                universe=tickers,          # return every ticker's vector (cached + new)
             )
             if emb.empty:
+                self._log.warning("No embeddings available -> corr-only peers")
                 return None
             self._log.info("Embedded %s / %s tickers", len(emb), len(tickers))
             return cosine_similarity_matrix(emb)

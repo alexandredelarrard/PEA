@@ -38,6 +38,7 @@ from omegaconf import OmegaConf
 
 from src.context import get_config_context
 from src.modelling.step_modelling import StepModelling
+from src.modelling.utils_model import model as ml
 from src.post_processing.step_backtest import StepBacktest
 from src.post_processing.utils.accuracy import (
     compute_horizon_accuracy,
@@ -181,14 +182,24 @@ def needs_retrain(ctx, desired_start: str) -> tuple[bool, str]:
         return True, (f"model end {model_end.date()} is LATER than desired backtest "
                       f"start {want.date()} — not aligned, retrain")
 
-    # dates aligned -> make sure the model files are actually present
+    # ensemble COMPOSITION changed in the config (e.g. random_forest added / removed) ->
+    # retrain so every chosen member is trained + saved (and none goes stale)
+    desired_members = list(base_config.model.get("ensemble")
+                           or [base_config.model.get("type", "lightgbm")])
+    saved_members = list(meta.get("model_types", []))
+    if set(desired_members) != set(saved_members):
+        return True, (f"ensemble changed: config wants {sorted(desired_members)}, saved "
+                      f"models are {sorted(saved_members)} — retrain to (re)save all members")
+
+    # dates + ensemble aligned -> make sure every chosen member's file is actually present
+    # (member_model_path picks .txt for booster kinds incl. random_forest, .pkl for linear)
     for h in meta.get("horizons", []):
-        for kind in meta.get("model_types", []):
-            ext = "txt" if kind == "lightgbm" else "pkl"
-            if not (models_dir / f"model_h{h}_{kind}.{ext}").exists():
+        for kind in saved_members:
+            if not ml.member_model_path(models_dir, h, kind).exists():
                 return True, f"missing model file for h{h}/{kind}"
 
-    return False, f"model end aligned with backtest start ({model_end.date()})"
+    return False, (f"model end aligned with backtest start ({model_end.date()}); "
+                   f"ensemble {sorted(saved_members)} present")
 
 
 def _clear_log_buffer(ctx):

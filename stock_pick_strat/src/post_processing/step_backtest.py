@@ -73,23 +73,25 @@ class StepBacktest(Step):
         for h in self.horizons:
             members = {}
             for kind in self.model_types:
-                if kind == "lightgbm":
-                    p = models_dir / f"model_h{h}_{kind}.txt"
-                    if p.exists():
-                        b = lgb.Booster(model_file=str(p))
-                        # A Booster reloaded from file loses the custom `.feature_names`
-                        # attribute that ensemble_predict reads (train_ranker set it to the
-                        # model's OWN 60 features incl. the sector/industry_group
-                        # categoricals). Without this it falls back to the 58-col numeric
-                        # union -> LightGBM raises "58 vs 60 features". Restore it from the
-                        # model file's own feature names.
-                        b.feature_names = b.feature_name()
-                        members[kind] = b
+                # booster kinds (lightgbm AND random_forest via boosting='rf') live in a
+                # .txt; linear baselines (elasticnet/ridge) in a .pkl. member_model_path is
+                # the shared naming rule StepModelling.save_models wrote, so every chosen
+                # ensemble member is reloaded (RF is no longer silently skipped).
+                p = ml.member_model_path(models_dir, h, kind)
+                if not p.exists():
+                    continue
+                if kind in ml.BOOSTER_MEMBER_KINDS:
+                    b = lgb.Booster(model_file=str(p))
+                    # A reloaded Booster loses the custom `.feature_names` attr that
+                    # ensemble_predict reads (train_ranker set it to the member's OWN
+                    # features incl. the sector/industry_group categoricals). Without this
+                    # it falls back to the numeric union -> LightGBM raises "N vs M
+                    # features". Restore it from the model file's own feature names.
+                    b.feature_names = b.feature_name()
+                    members[kind] = b
                 else:                               # pickled linear baseline
-                    p = models_dir / f"model_h{h}_{kind}.pkl"
-                    if p.exists():
-                        with p.open("rb") as f:
-                            members[kind] = pickle.load(f)
+                    with p.open("rb") as f:
+                        members[kind] = pickle.load(f)
             if members:
                 self.models[h] = members            # {kind: model} per horizon
         if not self.models:

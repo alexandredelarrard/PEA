@@ -582,10 +582,14 @@ class StepModelling(Step):
         models_dir = self._context.paths["MODELS_DIR"]
         for h, models in self.models.items():
             for kind, model in models.items():
+                # booster kinds (lightgbm AND random_forest via boosting='rf') -> .txt;
+                # linear baselines -> .pkl. member_model_path is the shared naming rule the
+                # backtest + app read back, so every chosen member round-trips.
+                path = ml.member_model_path(models_dir, h, kind)
                 if isinstance(model, lgb.Booster):
-                    model.save_model(str(models_dir / f"model_h{h}_{kind}.txt"))
+                    model.save_model(str(path))
                 else:                               # linear baseline -> pickle
-                    with (models_dir / f"model_h{h}_{kind}.pkl").open("wb") as f:
+                    with path.open("wb") as f:
                         pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
 
         meta = {
@@ -593,6 +597,7 @@ class StepModelling(Step):
             "feature_cols": list(self.feature_cols),        # union (backtest panel + fallback)
             "linear_cols": list(getattr(self, "linear_cols", [])),
             "lgbm_cols": list(getattr(self, "lgbm_cols", [])),
+            "rf_cols": list(getattr(self, "rf_cols", [])),
             "categorical_cols": list(getattr(self, "categorical_cols", [])),
             "label_column": self.label_column,
             "target_type": self.target_type,

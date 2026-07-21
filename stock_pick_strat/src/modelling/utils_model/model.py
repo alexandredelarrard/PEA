@@ -513,6 +513,22 @@ def cross_validate(
 # --------------------------------------------------------------------------- #
 # 5. Persist / reload trained rankers (one pickle per horizon)                #
 # --------------------------------------------------------------------------- #
+
+# Ensemble members trained as LightGBM boosters (persisted with Booster.save_model ->
+# .txt); every other member (elastic-net / ridge LinearModel) is pickled (.pkl). Single
+# source of truth shared by StepModelling.save_models, StepBacktest.load_models and the
+# app, so a `random_forest` member (LightGBM boosting='rf') is saved AND reloaded as a
+# booster instead of being silently skipped by a lightgbm-only check.
+BOOSTER_MEMBER_KINDS = frozenset({"lightgbm", "random_forest"})
+
+
+def member_model_path(models_dir: Path, horizon: int, kind: str) -> Path:
+    """File path of one ensemble member: `.txt` for booster kinds (lightgbm /
+    random_forest), `.pkl` for the pickled linear baselines (elasticnet / ridge)."""
+    ext = "txt" if kind in BOOSTER_MEMBER_KINDS else "pkl"
+    return Path(models_dir) / f"model_h{int(horizon)}_{kind}.{ext}"
+
+
 def model_pickle_path(models_dir: Path, horizon: int) -> Path:
     return Path(models_dir) / f"ranker_h{int(horizon)}.pkl"
 

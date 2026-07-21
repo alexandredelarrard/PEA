@@ -42,3 +42,5 @@ if __name__ == "__main__":
 # TODO, clean def 14 to deduce fields missing : for instance if large total comp but missing info on bonus, but similar past year, then cen fill missing value, etc.
 # 413 with divid only ? -> might be because no div for some of them -> should still be there, at 0
 # TODO: outstanding div, sometimes happend. How to handle the increase std and mean over time ? 
+
+# docker run --rm -v stock_pick_strat_pgdata:/volume alpine tar czf - -C /volume . > stock_pick_strat_pgdata.tar.gz

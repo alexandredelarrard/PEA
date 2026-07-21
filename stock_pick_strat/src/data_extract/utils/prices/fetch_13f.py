@@ -130,7 +130,10 @@ def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list
     for y in range(today.year - years_history, today.year + 1):
         if y >= 2013: # SEC started filing 13F data in 2013 q2
             for quarter in range(1,5):
-                names.append(f"{y}q{quarter}")
+                tag = f"{y}q{quarter}"
+                if tag in ['2013q1'] or pd.to_datetime(tag) > today:
+                    continue
+                names.append(tag)
     return names
 
 

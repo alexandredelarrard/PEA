@@ -203,6 +203,6 @@ def fetch_financial_statements(context: Context, tickers: list[str]) -> int:
         saved += store.save(_TABLE, facts[[c for c in _OUT_COLS if c in facts.columns]])
 
     save_processed_universe(cache_dir, _TABLE, tickers)   # so a converged re-run skips
-    logger.warning("pension_facts: upserted %d rows (%d quarters scanned)",
+    logger.info("pension_facts: upserted %d rows (%d quarters scanned)",
                    saved, len(_quarters(years_history)))
     return saved

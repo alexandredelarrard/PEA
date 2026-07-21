@@ -352,6 +352,6 @@ def fetch_financial_notes(context: Context, tickers: list[str]) -> int:
             n_txt += store.save(_TXT_TABLE, txt[[c for c in _TXT_OUT if c in txt.columns]])
 
     save_processed_universe(cache_dir, _NUM_TABLE, universe)   # so a converged re-run skips
-    logger.warning("notes: upserted %d num + %d text rows (%d periods scanned)",
+    logger.info("notes: upserted %d num + %d text rows (%d periods scanned)",
                    n_num, n_txt, len(periods))
     return n_num + n_txt

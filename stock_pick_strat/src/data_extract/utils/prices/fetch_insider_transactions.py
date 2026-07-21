@@ -247,6 +247,6 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
         saved += store.save(_TABLE, df[[c for c in _OUT_COLS if c in df.columns]])
 
     save_processed_universe(cache_dir, _TABLE, tickers)   # so a converged re-run skips
-    logger.warning("insider_transactions: upserted %d rows (%d quarters scanned)",
+    logger.info("insider_transactions: upserted %d rows (%d quarters scanned)",
                    saved, len(_quarters(years_history)))
     return saved

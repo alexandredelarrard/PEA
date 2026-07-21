@@ -208,7 +208,7 @@ def build_superinvestors_json(
     path = _json_path(context, out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, indent=2), encoding="utf-8")
-    logger.warning("Saved superinvestors roster: %d CIKs (of %d roster) -> %s",
+    logger.info("Saved superinvestors roster: %d CIKs (of %d roster) -> %s",
                    len(cik_to_name), len(roster), path)
     return out
 

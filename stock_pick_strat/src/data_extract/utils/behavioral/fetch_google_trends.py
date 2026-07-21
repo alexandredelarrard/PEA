@@ -349,7 +349,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
             else: # deep but stale -> append new weeks
                 logger.info(f"Extract last month for {tkr}")
                 recent = call_with_retries(
-                    lambda: client.interest_over_time(keyword, "today 1-m"),
+                    lambda: client.interest_over_time(keyword, "today 1-y"),
                     retries=4, base_wait=45.0, label=f"trends {tkr} recent")
                 ref = existing[existing["ticker"] == tkr][["date", "search_interest"]]
                 series = _scale_to_reference(recent, ref)

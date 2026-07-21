@@ -142,12 +142,21 @@ class StepModelling(Step):
         inp = self._config.get("inputs")
         return inp.get("monotonic") if inp else None
 
+    def _rf_cfg(self):
+        return self._config.get("random_forest") or {}
+
+    def _rf_columns(self) -> list[str]:
+        c = self._config.get("random_forest")
+        if c and c.get("columns"):
+            return list(c.columns)
+        return self._lgbm_columns()          # default: RF reuses the LightGBM feature set
+
     def _select_load_columns(self, cube_cols: set[str], target_col: str
                              ) -> tuple[list[str], list[str]]:
         """Columns to pull: the index + target, plus the modelling.yml numeric
         allow-list and categoricals that exist in the cube. Returns (load_cols,
         dropped) where `dropped` are configured names absent from the cube."""
-        wanted = list(dict.fromkeys(self._linear_columns() + self._lgbm_columns()))
+        wanted = list(dict.fromkeys(self._linear_columns() + self._lgbm_columns() + self._rf_columns()))
         cats = self._lgbm_categoricals()
         requested = wanted + cats
         meta = ["date", "ticker", "target_horizon", target_col]
@@ -183,6 +192,11 @@ class StepModelling(Step):
         return list(getattr(self, "lgbm_cols", self.feature_cols)) + \
             list(getattr(self, "categorical_cols", []))
 
+    def _rf_feats(self) -> list[str]:
+        """Feature list for the Random Forest member = its columns (default = LightGBM's) + categoricals."""
+        return list(getattr(self, "rf_cols", getattr(self, "lgbm_cols", self.feature_cols))) + \
+            list(getattr(self, "categorical_cols", []))
+
     def build_panels(self):
         """One modeling panel per horizon, restricted to the configured features."""
 
@@ -196,10 +210,11 @@ class StepModelling(Step):
         # each family trains on its OWN column list (linear_modelling.yml / lgbm_modelling.yml)
         self.linear_cols = [c for c in self._linear_columns() if c in avail]
         self.lgbm_cols = [c for c in self._lgbm_columns() if c in avail]
-        self.categorical_cols = [c for c in self._lgbm_categoricals() if c in avail]  # LightGBM-only
+        self.rf_cols = [c for c in self._rf_columns() if c in avail]           # RF (default = lgbm)
+        self.categorical_cols = [c for c in self._lgbm_categoricals() if c in avail]  # tree members
         # union drives the cube projection + is the ensemble_predict fallback; each fitted
         # model still stores + predicts on its own feature_names.
-        self.feature_cols = sorted(set(self.linear_cols) | set(self.lgbm_cols))
+        self.feature_cols = sorted(set(self.linear_cols) | set(self.lgbm_cols) | set(self.rf_cols))
         for name, want, got in (("linear", self._linear_columns(), self.linear_cols),
                                 ("lgbm", self._lgbm_columns(), self.lgbm_cols)):
             miss = [c for c in want if c not in avail]
@@ -310,11 +325,37 @@ class StepModelling(Step):
                 alpha=float(lc.get("alpha", 1e-3)), l1_ratio=float(lc.get("l1_ratio", 0.5)),
                 max_iter=int(lc.get("max_iter", 1000)), tol=float(lc.get("tol", 1e-6)),
                 half_life_years=self._half_life())
+        if kind == "random_forest":
+            return self._fit_rf(train)
         # LightGBM member: numeric + categorical, with native categorical splits
         return ml.train_ranker(train, self._lgb_feats(), self.label_column,
                                valid_panel=valid,
                                categorical_features=self.categorical_cols or None,
                                **self._train_kwargs())
+
+    def _fit_rf(self, train: pd.DataFrame):
+        """Random Forest = LightGBM in `boosting='rf'` mode: bagged INDEPENDENT trees, a FIXED
+        count, NO early stopping (more trees only lower variance, never overfit). Reuses the
+        LightGBM monotone map + categoricals; NaNs handled natively."""
+        rf = self._rf_cfg()
+        params = {
+            "objective": "regression", "metric": "rmse", "boosting": rf.get("boosting", "rf"),
+            "bagging_fraction": float(rf.get("bagging_fraction", 0.7)),
+            "bagging_freq": int(rf.get("bagging_freq", 1)),
+            "feature_fraction": float(rf.get("feature_fraction", 0.6)),
+            "max_depth": int(rf.get("max_depth", 8)), "num_leaves": int(rf.get("num_leaves", 127)),
+            "min_child_samples": int(rf.get("min_child_samples", 50)),
+            "lambda_l1": float(rf.get("lambda_l1", 0.0)), "lambda_l2": float(rf.get("lambda_l2", 1.0)),
+            "verbosity": -1, "seed": int(self._config.get("seed", ml.DEFAULT_SEED)),
+            "deterministic": True, "force_row_wise": True,
+        }
+        mono = self._monotone_constraints()   # aligned to _lgb_feats == _rf_feats when RF reuses lgbm cols
+        if mono is not None and len(mono) == len(self._rf_feats()):
+            params["monotone_constraints"] = mono
+        return ml.train_ranker(train, self._rf_feats(), self.label_column, valid_panel=None,
+                               params=params, num_boost_round=int(rf.get("num_boost_round", 500)),
+                               categorical_features=self.categorical_cols or None,
+                               half_life_years=self._half_life())
 
     def _fit_models(self, train: pd.DataFrame, valid: pd.DataFrame | None) -> dict:
         """Fit every configured family -> {kind: model}. Averaged at predict time."""

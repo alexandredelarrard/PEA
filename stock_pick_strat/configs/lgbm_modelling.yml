@@ -47,11 +47,7 @@ lgbm:
     - f_combined_ratio_xs: -1
     - mom_12_1: 1
     - max_21: -1
-    - f_eps_surprise_4q_avg_xs: 1
-    - f_ebitda_to_ev_vs_hist: 1
-    - f_accruals_xs: -1
     - f_inst_flow_to_mcap_xs: 1
-    - f_super_cluster_buying_xs: 1
     - f_super_flow_to_mcap_xs: 1
     - f_short_vol_ratio_xs: -1
     - f_short_vol_ratio_chg_xs: -1
@@ -61,7 +57,6 @@ lgbm:
     - f_ec_qa_gap_xs: 1
     - f_ec_uncertainty_xs: -1
     - peer_mom_63: 1
-    - f_asset_growth_xs: -1
     - f_piotroski_f_score_xs: 1
     - f_rule_of_40_xs: 1
     - f_rpo_growth_xs: 1
@@ -89,19 +84,19 @@ lgbm:
   - f_operating_leverage_xs
   - f_revenue_per_employee_growth_xs
   - f_acquisition_intensity_xs
-  - f_asset_growth_xs
+  - f_q_margin_vs_ttm_vs_peers
   - f_rule_of_40_xs
   - f_rpo_growth_xs
   - f_ebitda_to_ev_xs
-  - f_ebitda_to_ev_vs_hist
+  - f_fcf_to_ev_vs_hist
   - f_pegy_xs
   - f_core_earnings_yield_xs
   - f_nonrecurring_pretax_share_xs
-  - f_eps_surprise_4q_avg_xs
+  - f_eps_expectation_growth_vs_peers
   - f_intrinsic_yield_vs_peers
   - f_gross_profitability_xs
   - f_piotroski_f_score_xs
-  - f_accruals_xs
+  - f_goodwill_intangibles_to_assets_vs_peers
   - f_rd_intensity_vs_peers
   - f_capitalized_software_intensity_vs_peers
   - f_shareholder_yield_xs
@@ -116,7 +111,7 @@ lgbm:
   - f_pct_female_directors_vs_peers
   - f_insider_net_buy_ratio_xs
   - f_inst_flow_to_mcap_xs
-  - f_super_cluster_buying_xs
+  - f_super_new_buyer_ratio_vs_peers
   - f_super_flow_to_mcap_xs
   - f_short_vol_ratio_xs
   - f_short_vol_ratio_chg_xs

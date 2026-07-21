@@ -1,0 +1,17 @@
+# random_forest_modelling.yml -- Random Forest member (merged via read_config, key `random_forest`).
+# Implemented as LightGBM in `boosting: rf` mode: bagged, INDEPENDENT trees (no boosting) --
+# so it handles the cube's NaNs + native categoricals + monotone constraints, unlike sklearn's
+# RandomForest (which needs imputation + one-hot). REUSES the LightGBM feature set, categoricals
+# and monotone map (no `columns:` here) -- add a `columns:` list to give RF its own variables.
+# Add "random_forest" to model.ensemble in modellling.yml to include it in the blend.
+random_forest:
+  boosting: rf
+  num_boost_round: 500         # number of bagged trees (RF: more trees lower variance, no overfit)
+  bagging_fraction: 0.7        # row subsample per tree (REQUIRED for rf mode, with bagging_freq>0)
+  bagging_freq: 1
+  feature_fraction: 0.6        # column subsample per tree -> decorrelates the trees
+  max_depth: 8                 # fuller trees than the GBDT; variance averaged out by bagging
+  num_leaves: 127
+  min_child_samples: 50
+  lambda_l1: 0.0
+  lambda_l2: 1.0

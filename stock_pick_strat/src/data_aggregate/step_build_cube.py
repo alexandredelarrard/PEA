@@ -15,6 +15,7 @@ from src.data_aggregate.utils.features import build_feature_panel
 from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
 from src.data_aggregate.utils.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.governance_features import build_governance_feature_panel
+from src.data_aggregate.utils.def14a_impute import impute_def14a
 from src.data_aggregate.utils.sector_features import build_sector_feature_panel
 from src.data_aggregate.utils.employee_features import build_employee_feature_panel
 from src.data_aggregate.utils.dividend_features import build_dividend_feature_panel
@@ -171,6 +172,12 @@ class StepBuildCube(Step):
         if self.def14a is None:
             self._log.warning("No DEF 14A LLM proxy history -> executive-pay/board "
                               "features skipped (run fetch_def14a_llm).")
+        else:
+            self.def14a, imp_stats = impute_def14a(self.def14a)
+            if imp_stats:
+                self._log.info("DEF 14A clean-on-read: deduced %d missing cells across "
+                               "%d rules (raw table untouched).", sum(imp_stats.values()),
+                               len(imp_stats))
 
         self.employees = self._load_or_none("employees_history")
         if self.employees is None:

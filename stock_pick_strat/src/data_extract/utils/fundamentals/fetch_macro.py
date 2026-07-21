@@ -73,7 +73,10 @@ def _macro_is_up_to_date(context: Context) -> bool:
     if existing.empty:
         return False
     max_date = pd.to_datetime(existing["date"]).max()
-    last_expected = pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(1)
+
+    last_expected = pd.Timestamp.today().normalize()
+    if last_expected.day_of_week in [5,6]:
+        last_expected -= pd.tseries.offsets.BDay(1)
     return max_date >= last_expected
 
 

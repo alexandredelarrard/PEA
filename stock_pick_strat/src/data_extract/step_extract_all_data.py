@@ -35,18 +35,8 @@ class StepExtractAllData(Step):
         self._behavioral = StepExtractBehavioral(context=context, config=config)
 
     def _resolve_tickers(self) -> list[str]:
-        """The EQUITY universe to analyse — the `sp500_tickers` table (single entry
-        point), seeded via the S&P 500 scraper ONLY when empty (or when
-        `data_extract.refresh_universe` is set), so a custom universe you load into it
-        (e.g. Russell 1000) survives re-runs and reroutes the whole flow.
-
-        The benchmark/macro `other_tickers` (SPY, ^VIX, oil/gold, FX) are deliberately
-        EXCLUDED here: they carry no fundamentals/behavioral data and are fetched
-        OHLCV-only in the market/macro pull (fetch_market_prices), so no sub-step ever
-        treats them as an analysed name / builds features on them."""
-        store = self._context.store
         refresh = bool(self._config.data_extract.get("refresh_universe", False))
-        if refresh or store.row_count("sp500_tickers") == 0:
+        if refresh or self._context.store.row_count("sp500_tickers") == 0:
             self._log.info("Seeding sp500_tickers via S&P 500 scraper (refresh=%s)", refresh)
             get_sp500_tickers(self._context)              # scrape + persist the table
 
@@ -61,7 +51,7 @@ class StepExtractAllData(Step):
 
         self._prices.run(tickers=tickers)
         self._fundamentals.run(tickers=tickers)
-        # self._structure.run(tickers=tickers)
+        self._structure.run(tickers=tickers)
         self._behavioral.run(tickers=tickers)
 
         ####### very strong driver, need data feed / LLM

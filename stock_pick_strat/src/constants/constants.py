@@ -93,6 +93,35 @@ GOOGLE_TRENDS_EXPLORE_URL = "https://trends.google.com/trends/api/explore"
 GOOGLE_TRENDS_MULTILINE_URL = "https://trends.google.com/trends/api/widgetdata/multiline"
 
 # --------------------------------------------------------------------------- #
+# Earnings-call transcripts (The Motley Fool — free, full text, no API key)    #
+# and local FinBERT-tone sentiment scoring of the parsed sections.             #
+# --------------------------------------------------------------------------- #
+MOTLEY_FOOL_BASE_URL = "https://www.fool.com"
+MOTLEY_FOOL_TRANSCRIPT_INDEX_URL = "https://www.fool.com/earnings-call-transcripts/"
+MOTLEY_FOOL_HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                      "Chrome/124.0 Safari/537.36")}
+# raw transcript HTML + link-index cache, relative to DATA_STORE (non-tabular artifact)
+EARNINGS_CALL_CACHE_DIR = "call_transcripts"
+EARNINGS_CALL_SECTIONS_TABLE = "earnings_call_sections"
+
+# Per-call sentiment / text-metrics cache (one row per ticker / quarter / tag). The
+# EXPENSIVE, call-intrinsic scores (FinBERT tone probs + word count + lexicon ratios)
+# live here so the GPU pass runs once; the cross-call KPIs (tone delta, Q&A gap,
+# length delta, vocabulary novelty) are cheap and derived at cube-build time.
+EARNINGS_CALL_SENTIMENT_TABLE = "earnings_call_sentiment"
+# Sections we score for tone (the high-signal prose); 'participants'/'full' are skipped
+# for KPIs ('full' stays in the sections table as a format-proof fallback).
+EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")
+
+# FinBERT-tone: finance-domain tone classifier (positive / neutral / negative),
+# trained on analyst reports & earnings text. ~440MB, runs locally on GPU (fits 6GB)
+# or CPU; free (HuggingFace). Sections longer than the 512-token BERT window are
+# chunked and length-weighted (see src/utils/nlp_sentiment.py).
+FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
+FINBERT_MAX_TOKENS = 512
+
+# --------------------------------------------------------------------------- #
 # Dataroma "superinvestors" — a curated roster of proven long-term investors.  #
 # We scrape the roster, resolve each manager to its SEC 13F CIK, rank the top  #
 # N by 13F long-equity AUM, and persist a weighted subset JSON so the elite    #

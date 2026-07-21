@@ -142,6 +142,15 @@ inputs:
     # ---- Public attention (robust rank-blend of Wikipedia + Google-Trends spikes) ----
     - f_attn_spike_xs                      # blended retail-attention spike (wiki + Google Trends)
 
+    # ---- Earnings-call language (local FinBERT-tone + text-refinement KPIs; point-in-
+    #      time on the call date + 1 trading day, forward-filled until the next call) ----
+    - f_ec_tone_xs                         # call tone P(pos)-P(neg), length-weighted
+    - f_ec_tone_delta_xs                   # tone momentum vs the prior call
+    - f_ec_qa_gap_xs                       # Q&A tone - scripted tone (management candor gap)
+    - f_ec_uncertainty_xs                  # hedging / Loughran-McDonald uncertainty word ratio
+    - f_ec_vocab_novelty_xs                # narrative shift vs prior call (1 - cosine of vocab)
+    - f_ec_length_delta_xs                 # change in disclosure length (log words vs prior call)
+
     # ---- Sector-specific (sparse: NaN outside the sector; LightGBM splits on NaN) ----
     - f_tier1_capital_ratio_xs             # banks: capital adequacy
     - f_combined_ratio_xs                  # insurers: underwriting profitability (<1 = profit)
@@ -210,6 +219,12 @@ inputs:
       - f_short_vol_ratio_xs: -1                 # heavily shorted = bearish
       - f_short_vol_ratio_chg_xs: -1            # rising short pressure = bearish
       - f_fails_to_deliver_ratio_xs: -1         # settlement fails / squeeze-risk = bearish
+      # earnings-call language (FinBERT-tone + text KPIs)
+      - f_ec_tone_xs: 1                         # positive call tone -> higher forward return
+      - f_ec_tone_delta_xs: 1                   # improving tone vs the last call = bullish
+      - f_ec_qa_gap_xs: 1                        # candid (Q&A tone >= scripted) = bullish
+      - f_ec_uncertainty_xs: -1                 # more hedging / uncertainty language = bearish
+      # (f_ec_vocab_novelty_xs, f_ec_length_delta_xs left FREE: direction is ambiguous)
       # Tier-A quick wins (available now)
       - peer_mom_63: 1                          # A4 industry/residual momentum
       - f_asset_growth_xs: -1                    # A2 CMA: aggressive asset growth -> underperforms

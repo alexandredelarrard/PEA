@@ -65,19 +65,32 @@ def fill_short_gaps(df: pd.DataFrame, cols: list[str],
     return df
 
 
-def _macro_is_up_to_date(context: Context) -> bool:
-    """True when the `macro` DB table already covers the last business day (the daily
-    yield / VIX series set the max date). Skips redundant re-pulls on weekends /
-    same-day re-runs."""
-    existing = context.store.load("macro", columns=["date"])
-    if existing.empty:
-        return False
-    max_date = pd.to_datetime(existing["date"]).max()
+# Core daily LEVEL series (Treasury yields + VIX): FRED publishes these with a ~1
+# business-day lag. The COMPUTED series (T10Y2Y / T10Y3M spreads, T10YIE breakeven)
+# publish SAME-DAY, so "up to date" must NOT be judged on the overall max date — a
+# fast series would mark the table current while the level block is still stale,
+# skipping the very refresh that would fill the yields/VIX (the "1-day gap" bug).
+_CORE_LEVEL_SERIES = ["yield_3m", "yield_2y", "yield_10y", "yield_30y", "vix"]
 
-    last_expected = pd.Timestamp.today().normalize()
-    if last_expected.day_of_week in [5,6]:
-        last_expected -= pd.tseries.offsets.BDay(1)
-    return max_date >= last_expected
+
+def _macro_is_up_to_date(context: Context) -> bool:
+    """True only when the CORE LEVEL series (Treasury yields + VIX) already reach the
+    previous business day — FRED's realistic freshest for them (they lag ~1 BDay; the
+    computed spreads/breakeven publish same-day and come along for free). Keying on
+    the overall max let a same-day spread mask a stale level block and skip the
+    refresh; keying the level block on `today` would instead re-pull every run (they
+    never reach today). The previous business day settles both."""
+    existing = context.store.load("macro")
+    if existing is None or existing.empty or "date" not in existing.columns:
+        return False
+    existing["date"] = pd.to_datetime(existing["date"])
+    last_expected = pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(1)
+    core = [c for c in _CORE_LEVEL_SERIES if c in existing.columns]
+    if not core:                                   # legacy table -> fall back to overall max
+        return existing["date"].max() >= last_expected
+    # the LAGGIEST core series drives it: up-to-date only if ALL of them reach yesterday
+    core_last = min(existing.loc[existing[c].notna(), "date"].max() for c in core)
+    return bool(pd.notna(core_last) and core_last >= last_expected)
 
 
 def _refresh_macro(context: Context) -> None:

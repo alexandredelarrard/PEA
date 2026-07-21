@@ -20,6 +20,7 @@ import matplotlib
 matplotlib.use("Agg")
 import lightgbm as lgb
 from omegaconf import DictConfig
+from sqlalchemy import text
 
 from src.utils.step import Step
 from src.context import Context
@@ -42,6 +43,8 @@ class StepBacktest(Step):
         self.load_models()
         self.load_cube_and_returns()
         self.predict_and_blend()
+        self.save_predictions()      # flat files in /data: each method + the ensemble
+        self.compare_strategies()    # OOS construction comparison vs SP500
         self.simulate()
         self.report()
 
@@ -73,7 +76,15 @@ class StepBacktest(Step):
                 if kind == "lightgbm":
                     p = models_dir / f"model_h{h}_{kind}.txt"
                     if p.exists():
-                        members[kind] = lgb.Booster(model_file=str(p))
+                        b = lgb.Booster(model_file=str(p))
+                        # A Booster reloaded from file loses the custom `.feature_names`
+                        # attribute that ensemble_predict reads (train_ranker set it to the
+                        # model's OWN 60 features incl. the sector/industry_group
+                        # categoricals). Without this it falls back to the 58-col numeric
+                        # union -> LightGBM raises "58 vs 60 features". Restore it from the
+                        # model file's own feature names.
+                        b.feature_names = b.feature_name()
+                        members[kind] = b
                 else:                               # pickled linear baseline
                     p = models_dir / f"model_h{h}_{kind}.pkl"
                     if p.exists():
@@ -86,11 +97,72 @@ class StepBacktest(Step):
         self._log.info("Loaded ensemble %s for horizons %s; backtest starts %s",
                        self.model_types, list(self.models.keys()), self.backtest_start.date())
 
+    # ------------------------------------------------------------------ #
+    # Cube read: ONLY the columns the models score on, ONLY the OOS window #
+    # ------------------------------------------------------------------ #
+    def _cube_columns(self) -> set[str]:
+        """Column names present in the `cube` table (no data scan)."""
+        q = text("SELECT column_name FROM information_schema.columns "
+                 "WHERE table_name = 'cube'")
+        with self._context.store.engine.connect() as c:
+            return set(pd.read_sql(q, c)["column_name"])
+
+    def _target_column(self, cube_cols: set[str]) -> str:
+        """Stored target column for the model's target_type (legacy `target` fallback)."""
+        col = f"target_{self.target_type}"
+        if col in cube_cols:
+            return col
+        if "target" in cube_cols:
+            return "target"
+        raise KeyError(f"Target column '{col}' not in cube; rebuild with "
+                       f"'{self.target_type}' in build_cube.targets.labels.")
+
+    def _load_cube_projected(self):
+        """Load ONLY what prediction needs: the index + the model's feature/categorical
+        columns + the target column, restricted to the ensemble's horizons and the OOS
+        window (date >= train_end). Avoids pulling the full ~159-col x millions-of-rows
+        cube — the scored panels (and thus the signal) are identical."""
+        cube_cols = self._cube_columns()
+        self.target_col = self._target_column(cube_cols)
+        want = list(dict.fromkeys(self.feature_cols + self.categorical_cols))
+        feats = [c for c in want if c in cube_cols]
+        missing = [c for c in want if c not in cube_cols]
+        meta = ["date", "ticker", "target_horizon", self.target_col]
+        load_cols = list(dict.fromkeys(meta + feats))
+        horizons = sorted(int(h) for h in self.models)
+        projected = ", ".join(f'"{c}"' for c in load_cols)
+        where = [f'target_horizon IN ({",".join(str(h) for h in horizons)})',
+                 f"date >= '{self.backtest_start.date()}'"]
+        if self._end_cfg is not None:
+            where.append(f"date <= '{self._end_cfg.date()}'")
+        q = text(f'SELECT {projected} FROM cube WHERE ' + " AND ".join(where))
+        with self._context.store.engine.connect() as c:
+            self.cube = pd.read_sql(q, c, parse_dates=["date"])
+        self._log.info("Loaded projected cube: %d rows x %d cols (features %d/%d requested, "
+                       "horizons=%s, date>=%s)", len(self.cube), len(load_cols), len(feats),
+                       len(want), horizons, self.backtest_start.date())
+        if missing:
+            self._log.info("backtest: %d model feature(s) absent from cube (scored as NaN "
+                           "by LightGBM): %s", len(missing), missing)
+
+    def _load_prices_since(self, cutoff) -> pd.DataFrame:
+        """Prices from `cutoff` forward only — enough history to warm up the rolling
+        risk model before the OOS window, not the full 15y series."""
+        q = text("SELECT * FROM prices WHERE date >= :cut")
+        with self._context.store.engine.connect() as c:
+            return pd.read_sql(q, c, params={"cut": str(cutoff)}, parse_dates=["date"])
+
     def load_cube_and_returns(self):
-        self.cube = self._context.store.load("cube")
-        self.end = (pd.Timestamp(self._cfg.end) if self._cfg.get("end")
-                    else pd.Timestamp(self.cube["date"].max()))
-        prices_long = self._context.store.load("prices")
+        self._end_cfg = pd.Timestamp(self._cfg.end) if self._cfg.get("end") else None
+        self._load_cube_projected()
+        self.end = self._end_cfg if self._end_cfg is not None else pd.Timestamp(self.cube["date"].max())
+
+        # returns for the risk model + P&L: load prices only from a warmup buffer before
+        # the window (the rolling beta/vol need ~beta_window+vol_window trading days first)
+        buffer_days = int(2.2 * (int(self._cfg.get("beta_window", 63))
+                                 + int(self._cfg.get("vol_window", 63))) + 30)
+        cutoff = (self.backtest_start - pd.Timedelta(days=buffer_days)).date()
+        prices_long = self._load_prices_since(cutoff)
         raw = du.prices_long_to_multiindex(prices_long)
         close = du.extract_field(raw, "Close")
         mkt = self._cube_cfg.market_ticker
@@ -98,7 +170,8 @@ class StepBacktest(Step):
         self.spy_ret = rets[mkt]
         drop = [mkt] + list(self._config.data_extract.get("other_tickers", []))
         self.stock_ret = rets.drop(columns=drop, errors="ignore")
-        self._log.info("Backtest window %s -> %s", self.backtest_start.date(), self.end.date())
+        self._log.info("Backtest window %s -> %s (prices loaded from %s; %d return days)",
+                       self.backtest_start.date(), self.end.date(), cutoff, len(rets))
 
     def _horizon_blend_weights(self, signals: dict, ir: dict) -> dict:
         """Correlation-aware, shrinkage-regularized optimal combination of the
@@ -115,6 +188,7 @@ class StepBacktest(Step):
         # 1) build each horizon's per-day-standardized ensemble z-signal FIRST, so
         #    the blend weights can see the signals' cross-correlation
         blended = None
+        member_frames = []
         for h, models in self.models.items():
             panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
                                     feature_cols=self.feature_cols + self.categorical_cols,
@@ -126,13 +200,23 @@ class StepBacktest(Step):
                                   h, self.backtest_start.date(), self.end.date())
                 continue
             df = panel[["date", "ticker"]].copy()
-            # ensemble = per-day-standardized average of the trained families
-            scores, _members = ml.ensemble_predict(models, panel, self.feature_cols)
+            # ensemble = per-day-standardized average of the trained families; keep each
+            # member's per-day-standardized prediction for the flat prediction files
+            scores, members = ml.ensemble_predict(models, panel, self.feature_cols)
             df["z"] = scores.to_numpy()
             df["z"] = df.groupby("date")["z"].transform(
                 lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
+            mf = panel[["date", "ticker"]].copy()
+            mf["horizon"] = h
+            for name, mz in members.items():
+                mf[f"pred_{name}"] = mz.to_numpy()          # individual method (per-day z)
+            mf["pred_ensemble"] = df["z"].to_numpy()        # ensembling method (per-day z)
+            member_frames.append(mf)
             df = df.rename(columns={"z": f"z_{h}"})
             blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
+
+        self.member_predictions = (pd.concat(member_frames, ignore_index=True)
+                                   if member_frames else pd.DataFrame())
 
         zc = [f"z_{h}" for h in self.models if f"z_{h}" in (blended.columns if blended is not None else [])]
         if not zc:
@@ -161,7 +245,101 @@ class StepBacktest(Step):
             np.nan)
         self.signal = blended.pivot(index="date", columns="ticker", values="combined")
         self.signal.index = pd.to_datetime(self.signal.index)
+        # tidy long form of the blended cross-horizon signal for the flat prediction file
+        self.blended_signal_long = blended[["date", "ticker", "combined"]].dropna(subset=["combined"]).copy()
         self._log.info("Signal (combined z) matrix: %s days x %s tickers", *self.signal.shape)
+
+    def save_predictions(self):
+        """Write the OOS predictions as flat local files under data/predictions/:
+          * backtest_member_predictions.{parquet,csv}: one row per (date, ticker,
+            horizon) with EACH individual method (pred_elasticnet, pred_lightgbm, ...)
+            AND the ensembling method (pred_ensemble), all per-day cross-sectional z.
+          * backtest_blended_signal.{parquet,csv}: the cross-horizon blended signal
+            (combined z + its per-day percentile rank) actually fed to construction."""
+        out = self._context.paths["DATA_STORE"] / "predictions"
+        out.mkdir(parents=True, exist_ok=True)
+        mp = getattr(self, "member_predictions", pd.DataFrame())
+        methods = [c for c in mp.columns if c.startswith("pred_")] if not mp.empty else []
+        if not mp.empty:
+            mp = mp.sort_values(["date", "horizon", "ticker"]).reset_index(drop=True)
+            mp.to_parquet(out / "backtest_member_predictions.parquet", index=False)
+            mp.to_csv(out / "backtest_member_predictions.csv", index=False)
+        bl = getattr(self, "blended_signal_long", pd.DataFrame())
+        if not bl.empty:
+            bl = bl.copy()
+            bl["signal_rank"] = bl.groupby("date")["combined"].rank(pct=True)
+            bl = bl.sort_values(["date", "ticker"]).reset_index(drop=True)
+            bl.to_parquet(out / "backtest_blended_signal.parquet", index=False)
+            bl.to_csv(out / "backtest_blended_signal.csv", index=False)
+        self._log.info("Saved flat prediction files to %s (methods=%s, %d member rows, "
+                       "%d blended rows)", out, methods, len(mp), len(bl))
+
+    # ------------------------------------------------------------------ #
+    # OOS comparison of construction strategies (all on the SAME signal)   #
+    # ------------------------------------------------------------------ #
+    def _opt_common(self, sector_map) -> dict:
+        c = self._cfg
+        return dict(
+            signal=self.signal, stock_ret=self.stock_ret, spy_ret=self.spy_ret,
+            starting_capital=float(c.starting_capital),
+            target_ann_vol=c.get("target_ann_vol", 0.1), beta_neutral=c.get("beta_neutral", True),
+            pos_cap=c.get("pos_cap", 0.05), gross_cap=c.get("gross_cap", 3.0),
+            step=c.get("step", 0.35), no_trade_band=c.get("no_trade_band", 0.0),
+            beta_window=c.get("beta_window", 63), vol_window=c.get("vol_window", 63),
+            fee_bps=c.fee_bps, spread_bps=c.spread_bps,
+            rebalance_freq=c.get("rebalance_freq", 63),
+            sector_map=sector_map, sector_neutral=bool(c.get("sector_neutral", False)))
+
+    def _regime_kwargs(self) -> dict:
+        c = self._cfg
+        return dict(regime_target_vol=c.get("regime_target_vol", 0.15),
+                    regime_vol_window=c.get("regime_vol_window", 63),
+                    regime_scale_floor=c.get("regime_scale_floor", 0.3),
+                    regime_scale_cap=c.get("regime_scale_cap", 1.5))
+
+    def compare_strategies(self):
+        """Backtest several construction strategies on the OOS signal and report each
+        one's return vs SP500. Same trained models + signal + window throughout — only
+        the portfolio construction differs, so the table isolates the construction."""
+        if not self._cfg.get("compare", True):
+            return
+        c = self._cfg
+        sector_map = self._sector_map() if c.get("sector_neutral", False) else None
+        oc, reg = self._opt_common(sector_map), self._regime_kwargs()
+        mw = float(c.get("compare_market_weight", 1.0))     # SPY sleeve for the "with spy" variant
+        variants = {
+            "optimizer_volscaled": lambda: simulate_portfolio_opt(
+                **oc, market_weight=0.0, vol_scaling=True, **reg),               # saved default, no SPY
+            "optimizer_volscaled_with_spy": lambda: simulate_portfolio_opt(
+                **oc, market_weight=mw, vol_scaling=True, **reg),                # + SPY beta sleeve
+        }
+        rows, last_m = [], None
+        for name, fn in variants.items():
+            try:
+                d = fn()
+                m = compute_metrics(d, rf_annual=c.get("risk_free_rate", 0.0))
+            except Exception as e:                                  # noqa: BLE001
+                self._log.warning("strategy '%s' failed: %s", name, e)
+                continue
+            last_m = m
+            rows.append({"strategy": name, "total_%": round(m["total_return"] * 100, 1),
+                         "ann_%": round(m["ann_return"] * 100, 1),
+                         "vol_%": round(m["ann_vol"] * 100, 1), "sharpe": round(m["sharpe"], 2),
+                         "maxDD_%": round(m["max_drawdown"] * 100, 1),
+                         "turnover": round(m["avg_daily_turnover"], 3)})
+        if last_m is not None:
+            rows.append({"strategy": "SP500 (SPY)", "total_%": round(last_m["spy_total_return"] * 100, 1),
+                         "ann_%": round(last_m["spy_ann_return"] * 100, 1),
+                         "vol_%": round(last_m["spy_ann_vol"] * 100, 1),
+                         "sharpe": round(last_m["spy_sharpe"], 2),
+                         "maxDD_%": round(last_m["spy_max_drawdown"] * 100, 1), "turnover": np.nan})
+        self.comparison = pd.DataFrame(rows)
+        out_dir = self._context.paths["OUTPUT_DIR"] / "backtest"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.comparison.to_csv(out_dir / "strategy_comparison.csv", index=False)
+        self._log.info("=== OOS strategy comparison (%s -> %s) vs SP500 ===\n%s",
+                       self.backtest_start.date(), self.end.date(),
+                       self.comparison.to_string(index=False))
 
     def _sector_map(self) -> dict:
         """ticker -> GICS group for sector-neutral construction. Uses the
@@ -184,23 +362,17 @@ class StepBacktest(Step):
             n_groups = len(set(sector_map.values())) if sector_map else 0
             self._log.info("Sector-neutral construction ON: %s groups (industry-group level)",
                            n_groups)
+        vol_scaling = bool(c.get("vol_scaling", False))
+        reg = self._regime_kwargs() if vol_scaling else {}
+        if vol_scaling:
+            self._log.info("Vol-regime de-risking ON: exposure = clip(%.2f / trailing SPY "
+                           "vol, %.2f, %.2f) over a %dd window",
+                           reg["regime_target_vol"], reg["regime_scale_floor"],
+                           reg["regime_scale_cap"], reg["regime_vol_window"])
         self.daily = simulate_portfolio_opt(
-            signal=self.signal,
-            stock_ret=self.stock_ret,
-            spy_ret=self.spy_ret,
-            starting_capital=float(c.starting_capital),
+            **self._opt_common(sector_map),
             market_weight=c.get("market_weight", 0.5),
-            target_ann_vol=c.get("target_ann_vol", 0.08),
-            beta_neutral=c.get("beta_neutral", True),
-            pos_cap=c.get("pos_cap", 0.03),
-            gross_cap=c.get("gross_cap", 3.0),
-            step=c.get("step", 0.35),
-            no_trade_band=c.get("no_trade_band", 0.0),
-            beta_window=c.get("beta_window", 63),
-            vol_window=c.get("vol_window", 63),
-            fee_bps=c.fee_bps, spread_bps=c.spread_bps,
-            rebalance_freq=c.get("rebalance_freq", 1),
-            sector_map=sector_map, sector_neutral=sector_neutral)
+            vol_scaling=vol_scaling, **reg)
         self.metrics = compute_metrics(self.daily, rf_annual=c.get("risk_free_rate", 0.0))
 
     def report(self):
@@ -234,6 +406,11 @@ class StepBacktest(Step):
             self._log.info(
                 "Market sleeve: weight %.2f -> realized vol %.1f%%  (dominates total risk "
                 "when the alpha sleeve is smaller)", float(c.get("market_weight", 0.5)), mkt_vol*100)
+            if "regime_scale" in d.columns and bool(c.get("vol_scaling", False)):
+                rsc = d["regime_scale"]
+                self._log.info("Vol-regime overlay: avg exposure x%.2f (min %.2f in the "
+                               "highest-vol days, max %.2f in calm) -> book de-risks through "
+                               "vol spikes", float(rsc.mean()), float(rsc.min()), float(rsc.max()))
             # flag knobs that are configured so loosely they never activate
             if avg_gross < 0.8 * gross_cap:
                 self._log.info("  note: gross_cap (%.1f) never binds (avg gross %.2f) -> "

@@ -22,4 +22,5 @@ def compute_metrics(daily, rf_annual=0.0):
             "max_drawdown": s_dd, "avg_daily_turnover": float(daily["turnover"].mean()),
             "avg_daily_cost": float(daily["cost"].mean()),
             "spy_total_return": float(daily["spy_value"].iloc[-1] / daily["spy_value"].iloc[0] - 1),
-            "spy_ann_return": float(b_ann), "spy_sharpe": float(b_sharpe), "spy_max_drawdown": b_dd}
+            "spy_ann_return": float(b_ann), "spy_ann_vol": float(b_vol),
+            "spy_sharpe": float(b_sharpe), "spy_max_drawdown": b_dd}

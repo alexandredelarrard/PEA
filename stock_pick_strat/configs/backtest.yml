@@ -15,13 +15,22 @@ backtest:
   step: 0.35                   # partial trade toward target; lower = slower = cheaper
   no_trade_band: 0.0           # optional: skip per-name trades smaller than this
   rebalance_freq: 63            # recompute target every N days
- 
+
+  # --- vol-regime de-risking (less volatile through high-vol periods) ---
+  vol_scaling: true            # scale BOTH sleeves by clip(target/trailing-SPY-vol, floor, cap)
+  regime_target_vol: 0.15      # SPY ann-vol at which the exposure multiplier = 1.0
+  regime_vol_window: 63        # trailing window for the SPY vol estimate
+  regime_scale_floor: 0.3      # min exposure in a deep vol spike (2020/2022)
+  regime_scale_cap: 1.5        # max exposure in calm markets
+
   # --- risk-model windows ---
   beta_window: 63
   vol_window: 63
- 
+
   # --- costs / blend ---
   fee_bps: 1.0
   spread_bps: 5.0
   blend: ir                    # ir | equal  (multi-horizon combine)
   risk_free_rate: 0.03
+  compare: true                # run + log the OOS construction comparison vs SP500
+  compare_market_weight: 1.0   # SPY sleeve for the "with spy" comparison variant

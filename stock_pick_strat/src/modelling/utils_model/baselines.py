@@ -16,10 +16,14 @@ modelling/backtest code treats them interchangeably.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 
 from src.modelling.utils_model.model import time_decay_weights
+
+_log = logging.getLogger(__name__)
 
 
 class LinearModel:
@@ -139,6 +143,19 @@ def train_elasticnet(panel: pd.DataFrame, feats: list, label_name: str = "y",
     y_bar = float(np.average(y, weights=w))
     coef = _enet_coordinate_descent(Xs, y - y_bar, w, float(alpha), float(l1_ratio),
                                     int(max_iter), float(tol))
+    # Guard the silent-degeneracy failure mode: if `alpha` is too high for the
+    # target's scale, every feature's gradient |rho| falls below the L1 threshold
+    # (alpha*l1_ratio) and ALL coefficients soft-threshold to exactly zero -> the
+    # model predicts a CONSTANT (just y_bar) and contributes nothing to the
+    # ensemble. This is what killed the linear member before; warn loudly instead
+    # of shipping a dead model.
+    n_nonzero = int(np.count_nonzero(np.abs(coef) > 0))
+    if n_nonzero == 0:
+        _log.warning(
+            "elastic-net is DEGENERATE: all %d coefficients are zero (alpha=%.4g too "
+            "high for the target scale -> every |rho| < alpha*l1_ratio=%.4g). The model "
+            "will predict a CONSTANT; lower `alpha` in linear_modelling.yml.",
+            len(coef), alpha, alpha * l1_ratio)
     return LinearModel(coef, y_bar, mean, std, feats, "elasticnet")
 
 

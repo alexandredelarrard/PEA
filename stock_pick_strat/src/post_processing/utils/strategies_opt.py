@@ -183,6 +183,27 @@ def risk_target_book(aim: pd.Series, beta_row: pd.Series, var_row: pd.Series,
 # --------------------------------------------------------------------------- #
 # Rolling risk inputs (self-contained: no dependency on cube betas)            #
 # --------------------------------------------------------------------------- #
+def regime_vol_scale(spy_ret: pd.Series, window: int = 63, target_vol: float = 0.15,
+                     floor: float = 0.3, cap: float = 1.5,
+                     min_periods: int | None = None) -> pd.Series:
+    """Point-in-time exposure multiplier that DE-RISKS the whole book when the market
+    is volatile -- a standard volatility-control overlay (exposure inversely
+    proportional to realized vol, the user's "weights ~ 1/vol" idea applied to the
+    sleeve, not just per name):
+
+        scale_t = clip( target_vol / trailing_ann_vol(SPY)_t , floor, cap )
+
+    Trailing SPY vol at t uses only returns up to close t, so the multiplier applied
+    to the book held into the t->t+1 return is leak-free. In calm markets the ratio
+    saturates at `cap` (lever up modestly); in a vol spike (2020, 2022) it collapses
+    toward `floor`, so realized portfolio vol and drawdowns become far less sensitive
+    to the vol regime. Warmup (no vol yet) -> neutral 1.0."""
+    mp = int(min_periods) if min_periods is not None else max(20, window // 2)
+    vol = spy_ret.rolling(window, min_periods=mp).std() * np.sqrt(_ANN)
+    scale = (target_vol / vol).clip(lower=floor, upper=cap)
+    return scale.fillna(1.0)
+
+
 def rolling_beta_var(stock_ret: pd.DataFrame, spy_ret: pd.Series,
                      beta_window: int = 63, vol_window: int = 63,
                      min_obs: int | None = None):
@@ -231,10 +252,18 @@ def simulate_portfolio_opt(
     rebalance_freq: int = 1,
     sector_map: dict | None = None,   # ticker -> group (e.g. GICS industry group)
     sector_neutral: bool = False,     # enforce net sector exposure ~ 0
+    vol_scaling: bool = False,        # de-risk the whole book when the market is volatile
+    regime_target_vol: float = 0.15,  # SPY ann-vol at which exposure multiplier = 1
+    regime_vol_window: int = 63,
+    regime_scale_floor: float = 0.3,  # min exposure multiplier (deep vol spike)
+    regime_scale_cap: float = 1.5,    # max exposure multiplier (calm markets)
 ) -> pd.DataFrame:
     cost_rate = (fee_bps + spread_bps) / 1e4
     beta_df, var_df = rolling_beta_var(stock_ret, spy_ret, beta_window, vol_window)
     smap = sector_map if (sector_neutral and sector_map) else None
+    reg_scale = (regime_vol_scale(spy_ret, regime_vol_window, regime_target_vol,
+                                  regime_scale_floor, regime_scale_cap)
+                 if vol_scaling else None)
 
     dates = sorted(d for d in signal.index
                    if d in stock_ret.index and d in spy_ret.index
@@ -283,6 +312,12 @@ def simulate_portfolio_opt(
         w[tickers] = aim.values
         w["SPY"] = market_weight
 
+        # market-regime vol overlay: shrink BOTH sleeves when SPY vol is high so the
+        # portfolio de-risks through vol spikes (point-in-time, uses vol up to t).
+        rs = float(reg_scale.get(t, 1.0)) if reg_scale is not None else 1.0
+        if rs != 1.0:
+            w = w * rs
+
         turnover = (w - prev_w).abs().sum()
         cost = turnover * cost_rate
         r_stocks = stock_ret.loc[t1, tickers].fillna(0.0)
@@ -299,7 +334,8 @@ def simulate_portfolio_opt(
                      # sleeve diagnostics (make the construction params visible)
                      "alpha_ret": alpha_ret, "mkt_ret": mkt_ret,
                      "alpha_gross": float(w[tickers].abs().sum()),
-                     "alpha_max_w": float(w[tickers].abs().max())})
+                     "alpha_max_w": float(w[tickers].abs().max()),
+                     "regime_scale": rs})
         prev_w = w
 
     out = pd.DataFrame(rows).set_index("date")

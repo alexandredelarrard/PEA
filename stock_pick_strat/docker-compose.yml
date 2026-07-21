@@ -22,20 +22,20 @@ services:
 
   # Application image: runs the extraction pipeline / migrator against `db`.
   # Optional for Phase 1 — the migrator can also be run from the host venv.
-  app:
-    build: .
-    container_name: pea_app
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-pea}:${POSTGRES_PASSWORD:-pea}@db:5432/${POSTGRES_DB:-pea}
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-    # default: load existing flat files into the DB (schema is applied by db init)
-    command: ["python", "-m", "scripts.migrate_parquet_to_db"]
+  # app:
+  #   build: .
+  #   container_name: pea_app
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-pea}:${POSTGRES_PASSWORD:-pea}@db:5432/${POSTGRES_DB:-pea}
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./data:/app/data
+  #   # default: load existing flat files into the DB (schema is applied by db init)
+  #   command: ["python", "-m", "scripts.migrate_parquet_to_db"]
 
 volumes:
   pgdata:

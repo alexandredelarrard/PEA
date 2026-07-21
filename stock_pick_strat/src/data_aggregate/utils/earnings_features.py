@@ -128,6 +128,32 @@ def ntm_ttm_eps(earnings_history: pd.DataFrame | None,
     return _ntm_ttm_from_prepped(_prep(earnings_history), idx)
 
 
+_EPOCH = pd.Timestamp("1970-01-01")
+
+
+def days_since_earnings(df: pd.DataFrame, idx: pd.DatetimeIndex,
+                        cap_days: int = 180) -> pd.DataFrame:
+    """Wide [date x ticker] CALENDAR days since the most recent PAST earnings report
+    (0 on the report day, rising to ~90+ as the next report approaches, then resetting).
+
+    Leak-free / point-in-time: on date t it uses only earnings dates on/before t (the
+    last report's date is public). NaN before a ticker's first report; clipped to
+    [0, cap_days] so a late/skipped quarter or data gap can't produce an outlier.
+    A near-zero value flags the post-earnings-announcement-drift (PEAD) window."""
+    sub = df.dropna(subset=["earnings_date"])[["ticker", "earnings_date"]].copy()
+    if sub.empty:
+        return pd.DataFrame(index=idx)
+    # numeric ordinal (days since epoch) so the pivot/ffill stays a clean float path
+    sub["ord"] = (sub["earnings_date"] - _EPOCH).dt.days
+    wide = sub.pivot_table(index="earnings_date", columns="ticker", values="ord",
+                           aggfunc="last").sort_index()
+    # last report ordinal known on/before each trading day (forward-fill the date)
+    wide = wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
+    idx_ord = pd.Series((idx - _EPOCH).days, index=idx)
+    days = wide.rsub(idx_ord, axis=0)                       # idx_ord - last_report_ord
+    return days.clip(lower=0, upper=cap_days)
+
+
 def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
                              close: pd.DataFrame) -> dict:
     df = _prep(hist)
@@ -169,5 +195,18 @@ def build_earnings_feature_panel(
             or stock_close is None or "earnings_date" not in earnings_history.columns):
         return pd.DataFrame(columns=["date", "ticker"])
 
+    prepped = _prep(earnings_history)
     fields = _derived_earnings_fields(earnings_history, trading_index, stock_close)
-    return build_peer_relative_panel(fields, peer_dict)
+    panel = build_peer_relative_panel(fields, peer_dict)
+
+    # RAW calendar signal (NOT peer-relative): days since the most recent earnings.
+    # Same meaning for every name, so it is emitted as a plain `f_days_since_earnings`
+    # (the model splits/loads on the raw value; PEAD decays as this rises).
+    dse = days_since_earnings(prepped, trading_index)
+    if not dse.empty and dse.notna().any().any():
+        long = dse.stack()
+        long.index.set_names(["date", "ticker"], inplace=True)
+        long = long.rename("f_days_since_earnings").reset_index()
+        panel = long if (panel is None or panel.empty) else \
+            panel.merge(long, on=["date", "ticker"], how="outer")
+    return panel

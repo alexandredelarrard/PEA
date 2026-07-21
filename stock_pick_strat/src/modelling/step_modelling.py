@@ -104,14 +104,51 @@ class StepModelling(Step):
             f"Target column '{col}' not in cube; rebuild the cube with "
             f"'{self.target_type}' in build_cube.targets.labels.")
 
+    # ---- per-model config accessors: linear_modelling.yml (`linear:`) and
+    #      lgbm_modelling.yml (`lgbm:`), each with its OWN hyperparams + `columns`.
+    #      Fall back to the legacy single-file layout (model.linear / model.lightgbm /
+    #      inputs.*) so an old modellling.yml still works. ----
+    def _lin_cfg(self):
+        return self._config.get("linear") or (self._config.model.get("linear") or {})
+
+    def _lgb_cfg(self):
+        return self._config.get("lgbm") or (self._config.model.get("lightgbm") or {})
+
+    def _linear_columns(self) -> list[str]:
+        c = self._config.get("linear")
+        if c and c.get("columns"):
+            return list(c.columns)
+        inp = self._config.get("inputs")
+        return list(inp.columns) if (inp and inp.get("columns")) else []
+
+    def _lgbm_columns(self) -> list[str]:
+        c = self._config.get("lgbm")
+        if c and c.get("columns"):
+            return list(c.columns)
+        inp = self._config.get("inputs")
+        return list(inp.columns) if (inp and inp.get("columns")) else []
+
+    def _lgbm_categoricals(self) -> list[str]:
+        c = self._config.get("lgbm")
+        if c and c.get("categoricals") is not None:
+            return list(c.categoricals)
+        inp = self._config.get("inputs")
+        return list(inp.categoricals) if (inp and inp.get("categoricals")) else []
+
+    def _lgbm_monotonic(self):
+        c = self._config.get("lgbm")
+        if c and c.get("monotonic") is not None:
+            return c.get("monotonic")
+        inp = self._config.get("inputs")
+        return inp.get("monotonic") if inp else None
+
     def _select_load_columns(self, cube_cols: set[str], target_col: str
                              ) -> tuple[list[str], list[str]]:
         """Columns to pull: the index + target, plus the modelling.yml numeric
         allow-list and categoricals that exist in the cube. Returns (load_cols,
         dropped) where `dropped` are configured names absent from the cube."""
-        inp = self._config.get("inputs")
-        wanted = list(inp.columns) if (inp and inp.get("columns")) else []
-        cats = list(inp.categoricals) if (inp and inp.get("categoricals")) else []
+        wanted = list(dict.fromkeys(self._linear_columns() + self._lgbm_columns()))
+        cats = self._lgbm_categoricals()
         requested = wanted + cats
         meta = ["date", "ticker", "target_horizon", target_col]
         feats = [c for c in requested if c in cube_cols and c not in meta]
@@ -127,39 +164,11 @@ class StepModelling(Step):
         with self._context.store.engine.connect() as c:
             return pd.read_sql(q, c, parse_dates=["date"])
 
-    def _select_features(self, available: list[str]) -> list[str]:
-        """Restrict training to the config allow-list (`inputs.columns` in
-        modellling.yml). Commented-out YAML entries are simply not parsed, so
-        only the uncommented names are used. Falls back to ALL cube features
-        when no list is configured."""
-        cfg_inputs = self._config.get("inputs", None)
-        wanted = list(cfg_inputs.columns) if (cfg_inputs and cfg_inputs.get("columns")) else None
-        if not wanted:
-            self._log.warning("inputs.columns not configured -> training on ALL %d "
-                              "cube features", len(available))
-            return available
-
-        avail = set(available)
-        selected = [c for c in wanted if c in avail]
-        missing = [c for c in wanted if c not in avail]
-        excluded = [c for c in available if c not in set(wanted)]
-        if missing:
-            self._log.warning("Configured features not in cube (skipped): %s", missing)
-        if excluded:
-            self._log.info("Cube features excluded by allow-list (%d): %s",
-                           len(excluded), excluded)
-        if not selected:
-            raise ValueError("No configured features are present in the cube; "
-                             "check inputs.columns in modellling.yml")
-        self._log.info("Training on %d configured features", len(selected))
-        return selected
-
     def _select_categoricals(self, available: list[str]) -> list[str]:
         """Categorical columns (`inputs.categoricals` in modellling.yml, e.g. sector /
         industry_group). Fed to the LightGBM member as native categoricals; the
         linear member ignores them. Missing-from-cube names are skipped."""
-        ci = self._config.get("inputs", None)
-        cats = list(ci.categoricals) if (ci and ci.get("categoricals")) else []
+        cats = self._lgbm_categoricals()
         avail = set(available)
         present = [c for c in cats if c in avail]
         missing = [c for c in cats if c not in avail]
@@ -170,8 +179,9 @@ class StepModelling(Step):
         return present
 
     def _lgb_feats(self) -> list[str]:
-        """Feature list for the LightGBM member = numeric allow-list + categoricals."""
-        return list(self.feature_cols) + list(getattr(self, "categorical_cols", []))
+        """Feature list for the LightGBM member = its OWN numeric columns + categoricals."""
+        return list(getattr(self, "lgbm_cols", self.feature_cols)) + \
+            list(getattr(self, "categorical_cols", []))
 
     def build_panels(self):
         """One modeling panel per horizon, restricted to the configured features."""
@@ -182,9 +192,27 @@ class StepModelling(Step):
             end_date = self._config.get("train").end_date
        
         available = feature_columns_from_cube(self.cube, self.label_column)
-        self.feature_cols = self._select_features(available)      # numeric (both members)
-        self.categorical_cols = self._select_categoricals(available)  # LightGBM-only
-        panel_cols = self.feature_cols + self.categorical_cols
+        avail = set(available)
+        # each family trains on its OWN column list (linear_modelling.yml / lgbm_modelling.yml)
+        self.linear_cols = [c for c in self._linear_columns() if c in avail]
+        self.lgbm_cols = [c for c in self._lgbm_columns() if c in avail]
+        self.categorical_cols = [c for c in self._lgbm_categoricals() if c in avail]  # LightGBM-only
+        # union drives the cube projection + is the ensemble_predict fallback; each fitted
+        # model still stores + predicts on its own feature_names.
+        self.feature_cols = sorted(set(self.linear_cols) | set(self.lgbm_cols))
+        for name, want, got in (("linear", self._linear_columns(), self.linear_cols),
+                                ("lgbm", self._lgbm_columns(), self.lgbm_cols)):
+            miss = [c for c in want if c not in avail]
+            if miss:
+                self._log.warning("%s: %d configured feature(s) absent from cube (skipped): %s",
+                                  name, len(miss), miss)
+        if not self.linear_cols and not self.lgbm_cols:
+            raise ValueError("No configured features present in the cube; check "
+                             "linear_modelling.yml / lgbm_modelling.yml `columns`.")
+        self._log.info("Feature sets -> linear:%d  lgbm:%d  (+%d categoricals)  union:%d",
+                       len(self.linear_cols), len(self.lgbm_cols),
+                       len(self.categorical_cols), len(self.feature_cols))
+        panel_cols = list(dict.fromkeys(self.feature_cols + self.categorical_cols))
 
         self.panels = {}
         for h in self.horizons:
@@ -209,8 +237,7 @@ class StepModelling(Step):
 
     def _monotone_constraints(self) -> list[int] | None:
         """Build LightGBM monotone_constraints from inputs.monotonic in config."""
-        inputs = self._config.get("inputs")
-        mono = inputs.get("monotonic") if inputs else None
+        mono = self._lgbm_monotonic()
         if not mono or not mono.get("enabled", False):
             return None
 
@@ -227,7 +254,7 @@ class StepModelling(Step):
         # it's simply not in the cube yet (already reported once by load_cube) -> stay
         # quiet. Only WARN for a feature constrained but not even listed in
         # inputs.columns -- a genuine config typo.
-        allow = set((self._config.get("inputs") or {}).get("columns", []) or [])
+        allow = set(self._lgbm_columns())
         absent = [f for f in feature_map if f not in lgb_feats]
         typos = [f for f in absent if f not in allow]
         if typos:
@@ -239,7 +266,7 @@ class StepModelling(Step):
         return constraints
 
     def _train_kwargs(self) -> dict:
-        c = self._config.model.lightgbm
+        c = self._lgb_cfg()
         kw = {
             "params": {
                 "learning_rate": c.learning_rate, "max_depth": c.max_depth,
@@ -257,8 +284,8 @@ class StepModelling(Step):
             },
             "num_boost_round": c.num_boost_round,
             "early_stopping_rounds": int(c.get("early_stopping_rounds", ml.EARLY_STOPPING_ROUNDS)),
-            # early-stop on cross-sectional IC (ranking metric) rather than RMSE
-            "eval_metric": self._config.model.get("eval_metric", "ic"),
+            # early-stop metric: lgbm-config `eval_metric` wins, else legacy model.eval_metric
+            "eval_metric": c.get("eval_metric") or self._config.model.get("eval_metric", "rmse"),
         }
         monotone = self._monotone_constraints()   # only consumed by the LightGBM member
         if monotone is not None:
@@ -276,10 +303,10 @@ class StepModelling(Step):
         """Fit ONE model family. LightGBM uses the purged validation fold for IC
         early stopping; the linear baselines are closed-form and ignore it."""
         if kind in ("ridge", "elasticnet"):
-            lc = self._config.model.get("linear", {}) or {}
-            # linear member: NUMERIC features only (categoricals are LightGBM-native)
+            lc = self._lin_cfg()
+            # linear member: its OWN numeric columns (categoricals are LightGBM-native)
             return baselines.train_linear(
-                train, self.feature_cols, self.label_column, kind=kind,
+                train, self.linear_cols, self.label_column, kind=kind,
                 alpha=float(lc.get("alpha", 1e-3)), l1_ratio=float(lc.get("l1_ratio", 0.5)),
                 max_iter=int(lc.get("max_iter", 1000)), tol=float(lc.get("tol", 1e-6)),
                 half_life_years=self._half_life())
@@ -522,7 +549,9 @@ class StepModelling(Step):
 
         meta = {
             "horizons": [int(h) for h in self.models],
-            "feature_cols": list(self.feature_cols),
+            "feature_cols": list(self.feature_cols),        # union (backtest panel + fallback)
+            "linear_cols": list(getattr(self, "linear_cols", [])),
+            "lgbm_cols": list(getattr(self, "lgbm_cols", [])),
             "categorical_cols": list(getattr(self, "categorical_cols", [])),
             "label_column": self.label_column,
             "target_type": self.target_type,

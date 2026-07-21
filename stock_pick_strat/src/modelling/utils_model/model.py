@@ -223,6 +223,7 @@ def train_ranker(
     half_life_years: float | None = None,
     eval_metric: str = "rmse",
     categorical_features: list[str] | None = None,
+    sample_weight: np.ndarray | None = None,
 ):
     """Fit a LightGBM model. When ``half_life_years`` is set, training rows are
     weighted with exponential time decay (most recent = 1.0); validation is
@@ -256,8 +257,13 @@ def train_ranker(
     if params:
         default.update(params)
 
-    train_w = (time_decay_weights(panel["date"], half_life_years)
-               if half_life_years is not None else None)
+    # explicit per-row sample_weight (e.g. time-decay x inverse-variance) wins; else
+    # fall back to the time-decay-only weight from half_life_years.
+    if sample_weight is not None:
+        train_w = np.asarray(sample_weight, dtype=float)
+    else:
+        train_w = (time_decay_weights(panel["date"], half_life_years)
+                   if half_life_years is not None else None)
     train_set = _build_datasets(default, panel, feats, label_name, train_w,
                                 categorical_features=categorical_features)
     valid_sets = []

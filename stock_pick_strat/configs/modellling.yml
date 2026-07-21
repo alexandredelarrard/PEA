@@ -1,239 +1,36 @@
+# modellling.yml -- GENERIC / shared model config only.
+# Per-model hyperparameters AND feature sets now live in their own files (merged in by
+# read_config via distinct top-level keys):
+#   * linear_modelling.yml  -> `linear:`  (elastic-net: hyperparams + its columns)
+#   * lgbm_modelling.yml     -> `lgbm:`    (LightGBM: hyperparams + monotone + categoricals + columns)
+# This split lets each model carry its own variables/tuning and makes adding a third
+# family (e.g. random_forest_modelling.yml -> `random_forest:`) a drop-in.
 model:
   label_column: y
-  target_type: rank          # which stored cube target to train on: rank | zscore
-                               # (must be present in build_cube.targets.labels)
+  target_type: rank            # which stored cube target to train on: rank | zscore
+                               # (rank won on both mean IC and cross-fold stability; zscore
+                               #  added a negative LightGBM fold)
   type: ensemble               # single-model fallback used only when `ensemble` is unset
-  ensemble: [elasticnet, lightgbm]   # train BOTH families and AVERAGE their per-day
-                               # standardized predictions (linear bias + tree variance
-                               # decorrelate -> the ensemble usually beats either alone).
-                               # Use a single-entry list (or remove and rely on `type`)
-                               # to train just one family.
-  eval_metric: ic              # lightgbm early-stopping metric: ic | rmse
-                               # (ic = mean daily cross-sectional IC -> aligns stopping
-                               #  with the ranking objective; RMSE stops after ~1 round
-                               #  on this near-noise target)
-  linear:                      # linear-baseline hyperparameters (type: elasticnet | ridge)
-    alpha: 0.05              # overall penalty on the normalized (1/2n) loss (~1e-4..1e-1)
-    l1_ratio: 0.7              # elastic-net L1 fraction: 0=ridge, 1=lasso. With many
-                               # correlated features 0.3-0.7 selects while sharing weight.
-    max_iter: 1000             # coordinate-descent iterations (elasticnet)
-    tol: 1.0e-6                # coordinate-descent convergence tolerance
+  ensemble: [elasticnet, lightgbm]   # families to train; per-day-standardized preds are averaged.
+                               # Add "random_forest" here once its config file exists.
   save_models: true
   weight_decay:
-    enabled: true
-    half_life_years: 3
+    enabled: false             # OFF: time-decay up-weighted recent folds and WIDENED the
+                               # cross-fold IC spread. Off lifts fold-IR 1.85 -> 2.50 (tighter,
+                               # all-positive folds) at a small mean-IC cost -- the
+                               # bias-for-consistency trade. Re-enable with ~10y (fold-IR 2.28)
+                               # for a mild recency tilt in live prediction.
+    half_life_years: 10
   cv:
     n_splits: 5
-    embargo: null          # defaults to primary_horizon when null
-  lightgbm:
-    learning_rate: 0.001
-    max_depth: 5
-    num_leaves: 31             # <= 2^max_depth; explicit so depth/leaves stay consistent
-    subsample: 0.8             # row bagging fraction -- ONLY active with bagging_freq>0
-    bagging_freq: 1            # apply row bagging every iteration (activates subsample)
-    colsample_bytree: 0.8
-    min_child_samples: 30
-    lambda_l1: 5.0
-    lambda_l2: 5.0
-    num_boost_round: 3000      # cap only; early stopping ends well before this
-    early_stopping_rounds: 100 # more tolerant so noisy val-RMSE doesn't stop at ~1 round
+    embargo: null              # defaults to primary_horizon when null
 
-  diagnostics:                 # per-run, per-horizon model-diagnosis artifacts
+  diagnostics:                 # per-run, per-horizon model-diagnosis artifacts (LightGBM member)
     enabled: true
     top_n_features: 50         # top features rendered as individual PDPs + SHAP bar
-    shap_sample: 11000          # rows sampled for SHAP / partial dependence (speed)
+    shap_sample: 11000         # rows sampled for SHAP / partial dependence (speed)
     pdp_grid: 30               # partial-dependence grid resolution
 
 train:
   start_date: 2014-01-01
   end_date: 2024-07-01
-
-# =====================================================================
-# Feature allow-list: the model trains ONLY on the uncommented entries.
-# ONE feature per DISTINCT information type (NO thematic composites), plus a
-# lean price/technical block (a different kind of information). Comment a line
-# to drop it; a name absent from the cube is skipped with a warning.
-#
-# Normalization (done at cube-build time): `_xs` = universe percentile RANK in
-# [0,1] (outlier-proof); `_vs_peers` = peer z-score, winsorized to the per-day
-# cross-sectional 1%/99% (outlier-trimmed). Growth features already compare vs
-# 1 year ago or vs ~5 years ago by construction.
-# =====================================================================
-inputs:
-
-  # ---- Categorical features (LightGBM-only NATIVE categorical splits; int-coded
-  #      in the cube). The linear ensemble member ignores these. Important for the
-  #      non-linear return shifts across GICS sectors / industries. ----
-  categoricals:
-    - sector
-    - industry_group
-
-  columns:
-
-    # ---- Price / technical (point-in-time; a distinct information kind) ----
-    - mom_12_1                   # 12-1 price momentum (skip the reversal month)
-    - rev_21                     # 1-month reversal
-    - vol_63                     # 3-month realized volatility
-    - max_21                     # lottery / MAX effect (max 1-day return; -> lower returns)
-    - seasonal_h30               # own same-calendar-window return, per horizon (leak-free)
-    - seasonal_h60
-    - seasonal_h90
-    - dollar_volume_63           # size / liquidity
-    - amihud_63                  # illiquidity premium
-    - rel_volume_5_63            # volume spike / attention
-    - signed_vol_63              # order-flow proxy (up minus down volume)
-    - volume_trend_63            # activity rising / fading
-    - volume_cv_63               # lumpy vs steady trading
-    - tax_loss_pressure          # YTD-loss-driven Oct-Dec selling
-    - peer_mom_63                # A4: industry/residual momentum (stock - sector cum return)
-
-    # ---- Growth ----
-    - f_y_rev_growth_xs                    # revenue growth (TTM vs 1y ago)
-    - f_operating_margin_5y_chg_xs         # is margin structurally expanding (vs 5y)
-    - f_operating_leverage_xs              # revenue growing faster than operating cost
-    - f_revenue_per_employee_growth_xs     # revenue outrunning headcount (productivity) -> carefull because headcount is per year, rev per quarter
-    - f_acquisition_intensity_xs           # internal vs external (M&A) growth
-    - f_asset_growth_xs                    # A2: asset growth (FF5 investment/CMA; over-investment)
-    - f_rule_of_40_xs                      # A5: growth% + FCF-margin% (SaaS/growth health)
-    - f_rpo_growth_xs                      # A5: remaining-perf-obligation growth (forward bookings)
-
-    # ---- Valuation / expectations / earnings momentum ----
-    - f_ebitda_to_ev_xs                    # is the company over-priced (EV yield)
-    - f_ebitda_to_ev_vs_hist               # cheap vs its OWN 5y history (mean-reversion)
-    - f_pegy_xs                            # price vs growth + dividend yield (PEGY)
-    - f_core_earnings_yield_xs             # CORRECTED earnings (ex non-recurring items)
-    - f_nonrecurring_pretax_share_xs       # what proportion of profit is non-recurring
-    - f_eps_surprise_4q_avg_xs             # earnings-surprise drift (PEAD), trailing 4Q
-    - f_intrinsic_yield_vs_peers           # value of the firm vs peers
-
-    # ---- Quality / moat ----
-    - f_gross_profitability_xs             # profitability level (Novy-Marx, regime-robust)
-    - f_piotroski_f_score_xs               # A3: 9-point fundamental-health score
-    - f_accruals_xs                        # earnings quality (Sloan accruals; high = low quality)
-    - f_rd_intensity_vs_peers              # can it hold its moat with R&D spend
-    - f_capitalized_software_intensity_vs_peers   # AI / IT-investment score
-
-    # ---- Capital allocation ----
-    - f_shareholder_yield_xs               # what it does with cash (dividends + buybacks)
-    - f_da_to_capex_xs                     # under-investing in production tools (D&A > capex)
-    - f_shares_growth_xs                   # share dilution (net share-count change)
-    - f_sbc_to_ocf_xs                      # stock given to employees (stock-based comp)
-    - f_dividend_growth_5y_xs              # are dividends growing over the past 5 years
-
-    # ---- Solvency / debt ----
-    - f_interest_coverage_vs_peers         # can the company cover its debt
-    - f_net_debt_to_ebitda_xs              # is it over-burdened by debt
-    - f_refinancing_risk_xs                # must it borrow to roll its debt (refi risk)
-
-    # ---- Governance / ownership / smart money ----
-    - f_founder_ceo_vs_peers               # is the CEO the founder (interacts w/ rev growth)
-    - f_ceo_tenure_vs_peers                # years the CEO has led the firm (experience vs entrenchment)
-    - f_pct_female_directors_vs_peers      # board gender diversity vs peers
-    - f_insider_net_buy_ratio_xs           # do insiders buy or sell their position
-    - f_inst_flow_to_mcap_xs               # net 13F institutional $ flow / mcap (smart money)
-    - f_super_cluster_buying_xs            # top superinvestors' net accumulation (elite smart money)
-    - f_super_flow_to_mcap_xs              # net $ inflow from top superinvestors / mcap
-
-    # ---- Positioning / short interest (short-side pressure & settlement stress) ----
-    - f_short_vol_ratio_xs                 # heavily shorted -> lower forward returns
-    - f_short_vol_ratio_chg_xs             # rising short pressure (5d vs 63d ratio)
-    - f_fails_to_deliver_ratio_xs          # settlement fails / naked-short pressure
-
-    # ---- Public attention (robust rank-blend of Wikipedia + Google-Trends spikes) ----
-    - f_attn_spike_xs                      # blended retail-attention spike (wiki + Google Trends)
-
-    # ---- Earnings-call language (local FinBERT-tone + text-refinement KPIs; point-in-
-    #      time on the call date + 1 trading day, forward-filled until the next call) ----
-    - f_ec_tone_xs                         # call tone P(pos)-P(neg), length-weighted
-    - f_ec_tone_delta_xs                   # tone momentum vs the prior call
-    - f_ec_qa_gap_xs                       # Q&A tone - scripted tone (management candor gap)
-    - f_ec_uncertainty_xs                  # hedging / Loughran-McDonald uncertainty word ratio
-    - f_ec_vocab_novelty_xs                # narrative shift vs prior call (1 - cosine of vocab)
-    - f_ec_length_delta_xs                 # change in disclosure length (log words vs prior call)
-
-    # ---- Sector-specific (sparse: NaN outside the sector; LightGBM splits on NaN) ----
-    - f_tier1_capital_ratio_xs             # banks: capital adequacy
-    - f_combined_ratio_xs                  # insurers: underwriting profitability (<1 = profit)
-    - f_ebitdax_margin_xs                  # energy: EBITDAX margin
-    - f_nii_growth_xs                      # A7 banks: net-interest-income growth
-    - f_loan_growth_xs                     # A7 banks: loan-book growth
-    - f_book_value_growth_xs               # A6 financials: book-value compounding
-    - f_premium_growth_xs                  # A6 insurers: premium growth
-    - f_float_growth_xs                    # A6 insurers: investable-float growth
-    - f_affo_dividend_coverage_xs          # A8 REITs: AFFO dividend coverage (safety)
-    # ---- B1/B3 bank risk: enable AFTER a fetch_fundamentals re-run populates the new
-    #      XBRL tags (AOCI / HTM / nonaccrual / charge-offs), then a cube rebuild. ----
-    # - f_aoci_to_equity_xs                # B1: AFS securities-mark drag on capital
-    # - f_htm_unrealized_loss_ratio_xs     # B1: hidden HTM unrealized loss (the SVB signal)
-    # - f_npl_ratio_xs                     # B3: non-performing loans
-    # - f_net_charge_off_rate_xs           # B3: realized loan losses
-
-  # Monotone direction per feature for the LightGBM member (target = higher forward
-  # return). +1 = higher feature -> higher rank; -1 = inverse; unlisted = free (0).
-  # Categoricals + price/technical + attention are left free.
-  monotonic:
-    enabled: true
-    features:
-      # growth
-      - f_y_rev_growth_xs: 1
-      - f_operating_margin_5y_chg_xs: 1
-      - f_operating_leverage_xs: 1
-      - f_revenue_per_employee_growth_xs: 1
-      - f_acquisition_intensity_xs: -1          # more inorganic / M&A -> digestion risk
-      # valuation / expectations
-      - f_ebitda_to_ev_xs: 1                     # higher EV yield = cheaper = better
-      - f_pegy_xs: -1                            # lower PEGY (cheap for its growth) = better
-      - f_core_earnings_yield_xs: 1
-      - f_nonrecurring_pretax_share_xs: -1       # more one-off / low-quality profit = worse
-      # quality / moat
-      - f_gross_profitability_xs: 1
-      - f_rd_intensity_vs_peers: 1
-      - f_capitalized_software_intensity_vs_peers: 1
-      # capital allocation
-      - f_shareholder_yield_xs: 1
-      - f_da_to_capex_xs: -1                     # under-investment (D&A > capex) = worse
-      - f_shares_growth_xs: -1                   # dilution (issuing shares) = worse
-      - f_sbc_to_ocf_xs: -1                      # more stock given to employees = worse
-      - f_dividend_growth_5y_xs: 1
-      # solvency / debt
-      - f_interest_coverage_vs_peers: 1
-      - f_net_debt_to_ebitda_xs: -1
-      - f_refinancing_risk_xs: -1
-      # governance / insider
-      - f_founder_ceo_vs_peers: 1
-      - f_insider_net_buy_ratio_xs: 1
-      # sector-specific
-      - f_tier1_capital_ratio_xs: 1
-      - f_combined_ratio_xs: -1                  # lower combined ratio = underwriting profit
-      - f_ebitdax_margin_xs: 1
-      # price / expectations / earnings quality
-      - mom_12_1: 1                              # winners keep winning (12-1 momentum)
-      - max_21: -1                               # lottery demand -> lower forward returns
-      - f_eps_surprise_4q_avg_xs: 1             # positive surprise drift (PEAD)
-      - f_ebitda_to_ev_vs_hist: 1               # cheaper than its own history = better
-      - f_accruals_xs: -1                        # high accruals = low earnings quality
-      # positioning / short interest / smart money
-      - f_inst_flow_to_mcap_xs: 1               # institutional accumulation = bullish
-      - f_super_cluster_buying_xs: 1            # top superinvestors accumulating = bullish
-      - f_super_flow_to_mcap_xs: 1              # top superinvestors' net $ inflow = bullish
-      - f_short_vol_ratio_xs: -1                 # heavily shorted = bearish
-      - f_short_vol_ratio_chg_xs: -1            # rising short pressure = bearish
-      - f_fails_to_deliver_ratio_xs: -1         # settlement fails / squeeze-risk = bearish
-      # earnings-call language (FinBERT-tone + text KPIs)
-      - f_ec_tone_xs: 1                         # positive call tone -> higher forward return
-      - f_ec_tone_delta_xs: 1                   # improving tone vs the last call = bullish
-      - f_ec_qa_gap_xs: 1                        # candid (Q&A tone >= scripted) = bullish
-      - f_ec_uncertainty_xs: -1                 # more hedging / uncertainty language = bearish
-      # (f_ec_vocab_novelty_xs, f_ec_length_delta_xs left FREE: direction is ambiguous)
-      # Tier-A quick wins (available now)
-      - peer_mom_63: 1                          # A4 industry/residual momentum
-      - f_asset_growth_xs: -1                    # A2 CMA: aggressive asset growth -> underperforms
-      - f_piotroski_f_score_xs: 1               # A3 higher fundamental-health score = better
-      - f_rule_of_40_xs: 1                       # A5 growth+profitability health
-      - f_rpo_growth_xs: 1                       # A5 forward bookings momentum
-      - f_book_value_growth_xs: 1               # A6 book-value compounding
-      - f_premium_growth_xs: 1                  # A6 insurance top-line growth
-      - f_float_growth_xs: 1                    # A6 investable-float growth
-      - f_affo_dividend_coverage_xs: 1          # A8 REIT dividend safety
-      - f_nii_growth_xs: 1                      # A7 bank net-interest-income growth
-      # (f_loan_growth_xs left free: growth is good but can also signal risk-taking)

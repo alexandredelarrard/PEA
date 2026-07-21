@@ -1,0 +1,137 @@
+# lgbm_modelling.yml -- LightGBM member: hyperparameters + its OWN feature set + monotone.
+# Merged into the global config by read_config (distinct top-level key `lgbm`). Robust
+# recipe chosen on cross-fold IC stability (foldIR): lr .02, min_child 100, eval=rmse,
+# monotone ON. Keeps the sparse sector-specific + (not-yet-in-cube) f_ec_* columns --
+# LightGBM handles NaN/sparsity natively.
+lgbm:
+  learning_rate: 0.02
+  max_depth: 5
+  num_leaves: 31
+  subsample: 0.8
+  bagging_freq: 1
+  colsample_bytree: 0.8
+  min_child_samples: 100
+  lambda_l1: 5.0
+  lambda_l2: 5.0
+  num_boost_round: 3000
+  early_stopping_rounds: 100
+  eval_metric: rmse
+  categoricals:
+  - sector
+  - industry_group
+  monotonic:
+    enabled: true
+    features:
+    - f_y_rev_growth_xs: 1
+    - f_operating_margin_5y_chg_xs: 1
+    - f_operating_leverage_xs: 1
+    - f_revenue_per_employee_growth_xs: 1
+    - f_acquisition_intensity_xs: -1
+    - f_ebitda_to_ev_xs: 1
+    - f_pegy_xs: -1
+    - f_core_earnings_yield_xs: 1
+    - f_nonrecurring_pretax_share_xs: -1
+    - f_gross_profitability_xs: 1
+    - f_rd_intensity_vs_peers: 1
+    - f_capitalized_software_intensity_vs_peers: 1
+    - f_shareholder_yield_xs: 1
+    - f_da_to_capex_xs: -1
+    - f_shares_growth_xs: -1
+    - f_sbc_to_ocf_xs: -1
+    - f_dividend_growth_5y_xs: 1
+    - f_interest_coverage_vs_peers: 1
+    - f_net_debt_to_ebitda_xs: -1
+    - f_refinancing_risk_xs: -1
+    - f_insider_net_buy_ratio_xs: 1
+    - f_tier1_capital_ratio_xs: 1
+    - f_combined_ratio_xs: -1
+    - mom_12_1: 1
+    - max_21: -1
+    - f_eps_surprise_4q_avg_xs: 1
+    - f_ebitda_to_ev_vs_hist: 1
+    - f_accruals_xs: -1
+    - f_inst_flow_to_mcap_xs: 1
+    - f_super_cluster_buying_xs: 1
+    - f_super_flow_to_mcap_xs: 1
+    - f_short_vol_ratio_xs: -1
+    - f_short_vol_ratio_chg_xs: -1
+    - f_fails_to_deliver_ratio_xs: -1
+    - f_ec_tone_xs: 1
+    - f_ec_tone_delta_xs: 1
+    - f_ec_qa_gap_xs: 1
+    - f_ec_uncertainty_xs: -1
+    - peer_mom_63: 1
+    - f_asset_growth_xs: -1
+    - f_piotroski_f_score_xs: 1
+    - f_rule_of_40_xs: 1
+    - f_rpo_growth_xs: 1
+    - f_book_value_growth_xs: 1
+    - f_premium_growth_xs: 1
+    - f_float_growth_xs: 1
+    - f_affo_dividend_coverage_xs: 1
+    - f_nii_growth_xs: 1
+  columns:
+  - mom_12_1
+  - rev_21
+  - vol_63
+  - max_21
+  - seasonal_h60
+  - seasonal_h90
+  - dollar_volume_63
+  - amihud_63
+  - rel_volume_5_63
+  - volume_trend_63
+  - volume_cv_63
+  - tax_loss_pressure
+  - peer_mom_63
+  - f_y_rev_growth_xs
+  - f_operating_margin_5y_chg_xs
+  - f_operating_leverage_xs
+  - f_revenue_per_employee_growth_xs
+  - f_acquisition_intensity_xs
+  - f_asset_growth_xs
+  - f_rule_of_40_xs
+  - f_rpo_growth_xs
+  - f_ebitda_to_ev_xs
+  - f_ebitda_to_ev_vs_hist
+  - f_pegy_xs
+  - f_core_earnings_yield_xs
+  - f_nonrecurring_pretax_share_xs
+  - f_eps_surprise_4q_avg_xs
+  - f_intrinsic_yield_vs_peers
+  - f_gross_profitability_xs
+  - f_piotroski_f_score_xs
+  - f_accruals_xs
+  - f_rd_intensity_vs_peers
+  - f_capitalized_software_intensity_vs_peers
+  - f_shareholder_yield_xs
+  - f_da_to_capex_xs
+  - f_shares_growth_xs
+  - f_sbc_to_ocf_xs
+  - f_dividend_growth_5y_xs
+  - f_interest_coverage_vs_peers
+  - f_net_debt_to_ebitda_xs
+  - f_refinancing_risk_xs
+  - f_ceo_tenure_vs_peers
+  - f_pct_female_directors_vs_peers
+  - f_insider_net_buy_ratio_xs
+  - f_inst_flow_to_mcap_xs
+  - f_super_cluster_buying_xs
+  - f_super_flow_to_mcap_xs
+  - f_short_vol_ratio_xs
+  - f_short_vol_ratio_chg_xs
+  - f_fails_to_deliver_ratio_xs
+  - f_attn_spike_xs
+  - f_ec_tone_xs
+  - f_ec_tone_delta_xs
+  - f_ec_qa_gap_xs
+  - f_ec_uncertainty_xs
+  - f_ec_vocab_novelty_xs
+  - f_ec_length_delta_xs
+  - f_tier1_capital_ratio_xs
+  - f_combined_ratio_xs
+  - f_nii_growth_xs
+  - f_book_value_growth_xs
+  - f_premium_growth_xs
+  - f_float_growth_xs
+  - f_affo_dividend_coverage_xs

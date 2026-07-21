@@ -283,7 +283,10 @@ def _download_prices(
     return _normalize_prices(pd.concat(frames, ignore_index=True))
 
 
-_ACTION_COLS = ["dividends", "stock splits"]
+# yfinance actions=True columns to DROP from the OHLCV `prices` table: dividends are
+# saved separately (see _save_dividends); "capital gains" is a mutual-fund/ETF
+# distribution field (~99% empty for equities, unused) — keep prices clean OHLCV.
+_ACTION_COLS = ["dividends", "stock splits", "capital gains"]
 
 
 def _extract_dividends(long_prices: pd.DataFrame | None) -> pd.DataFrame:

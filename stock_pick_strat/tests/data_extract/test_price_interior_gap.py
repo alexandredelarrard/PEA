@@ -73,6 +73,25 @@ def test_download_plan_widens_to_cover_the_gap(monkeypatch=None):
           f"Interior gaps are now refetched instead of orphaned. Validated.")
 
 
+def test_action_columns_dropped_keep_prices_clean_ohlcv():
+    """Regression: yfinance actions=True returns Dividends, Stock Splits AND
+    'Capital Gains' (a fund/ETF distribution field, ~99% empty for equities, unused).
+    All three must be dropped so the `prices` table stays clean OHLCV — 'capital
+    gains' used to leak in."""
+    assert "capital gains" in fp._ACTION_COLS
+    raw = pd.DataFrame({
+        "date": [pd.Timestamp("2024-01-02")], "ticker": ["SPY"],
+        "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1.0],
+        "dividends": [0.0], "stock splits": [0.0], "capital gains": [0.0],
+    })
+    kept = raw.drop(columns=fp._ACTION_COLS, errors="ignore")
+    assert set(kept.columns) == {"date", "ticker", "open", "high", "low", "close", "volume"}
+    print("\n=== SANITY CHECK: prices stays clean OHLCV ===")
+    print("  dividends / stock splits / capital gains dropped from the price download -> "
+          "prices table is date,ticker,OHLCV only. Validated.")
+
+
 if __name__ == "__main__":
     test_interior_spy_gap_is_scheduled_for_refetch()
     test_download_plan_widens_to_cover_the_gap()
+    test_action_columns_dropped_keep_prices_clean_ohlcv()

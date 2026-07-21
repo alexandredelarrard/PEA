@@ -32,11 +32,62 @@ _SUFFIXES = re.compile(
 
 def _company_to_article(name: str) -> str:
     """Best-effort Wikipedia article title from a company name: strip common
-    corporate suffixes/punctuation, collapse spaces, use underscores."""
+    corporate suffixes/punctuation, collapse spaces, use underscores. Kept as the
+    FALLBACK when the search resolver (below) finds nothing."""
     s = _SUFFIXES.sub(" ", str(name))
     s = re.sub(r"[.,]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s.replace(" ", "_")
+
+
+# The S&P "Security" names carry list artifacts that break the title guess AND a raw
+# search: "Coca-Cola Company (The)", "Alphabet Inc. (Class A)", "Lilly (Eli)".
+_THE_SUFFIX = re.compile(r"^(.*?)\s*\(\s*the\s*\)\s*$", re.IGNORECASE)
+_CLASS_SUFFIX = re.compile(r"\s*\(\s*class\s+[abc]\s*\)\s*$", re.IGNORECASE)
+_PAREN_FIRST = re.compile(r"^([^()]+?)\s*\(([^)]+)\)\s*$")
+_SEARCH_API = "https://en.wikipedia.org/w/api.php"
+
+
+def _clean_company_name(name: str) -> str:
+    """Normalize an S&P 'Security' name into a natural search query: 'X (The)' -> 'The X',
+    drop '(Class A/B/C)', reorder 'Surname (First)' -> 'First Surname' (e.g. 'Lilly (Eli)'
+    -> 'Eli Lilly'). Leaves ordinary names ('Deere & Company', 'S&P Global') unchanged."""
+    s = re.sub(r"\s+", " ", str(name)).strip()
+    m = _THE_SUFFIX.match(s)
+    if m:
+        return f"The {m.group(1).strip()}"
+    s = _CLASS_SUFFIX.sub("", s).strip()
+    m = _PAREN_FIRST.match(s)
+    if m and m.group(2).strip().lower() != "the":
+        return f"{m.group(2).strip()} {m.group(1).strip()}"
+    return s
+
+
+def _wiki_search(query: str) -> str | None:
+    """Top main-namespace Wikipedia article title for `query`, or None. Isolated for
+    mocking. Searching the full (cleaned) COMPANY name biases the hit to the company
+    article (e.g. 'The Coca-Cola Company') over the brand ('Coca-Cola')."""
+    r = requests.get(_SEARCH_API, headers=_HEADERS, timeout=30, params={
+        "action": "query", "list": "search", "srsearch": query,
+        "srlimit": 1, "srnamespace": 0, "format": "json"})
+    if r.status_code != 200:
+        return None
+    hits = r.json().get("query", {}).get("search", [])
+    return hits[0]["title"] if hits else None
+
+
+def _resolve_wiki_article(name: str, search_fn=_wiki_search) -> str:
+    """Company name -> Wikipedia article title via search on the cleaned name (handles
+    the 'The'/'Class'/'Surname (First)' artifacts + redirects that the naive heuristic
+    misses). Fallback when search yields nothing is the CLEANED name itself — usually
+    the real article ('The Coca-Cola Company', 'Alphabet Inc.', 'The Home Depot') and
+    strictly better than the aggressive suffix-strip, which drops 'Company'/'Inc'/'The'."""
+    cleaned = _clean_company_name(name)
+    try:
+        title = search_fn(cleaned)
+    except Exception:                                            # noqa: BLE001
+        title = None
+    return (title or cleaned).replace(" ", "_")
 
 
 def _json_to_long(items: list[dict], ticker: str) -> pd.DataFrame:
@@ -102,7 +153,10 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
         if start_ts > end_ts:                       # nothing new to request
             skipped += 1
             continue
-        article = _company_to_article(row["name"])
+        # resolve the real Wikipedia article via search (handles 'Deere & Company' ->
+        # John Deere, 'Alphabet Inc. (Class A)' -> Alphabet Inc., 'Home Depot (The)' ->
+        # The Home Depot, ...); the naive suffix-strip is only the fallback.
+        article = _resolve_wiki_article(row["name"])
         try:
             long = _json_to_long(
                 _fetch_article(article, start_ts.strftime(DATE_FORMAT_COMPACT), end),

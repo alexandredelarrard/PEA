@@ -112,6 +112,13 @@ EXTRACT_TABLES: list[TableSpec] = [
     TableSpec("earnings_call_sections", "earnings_call_sections.parquet",
               ("ticker", "quarter", "tag"), "extract", date_col="as_of",
               date_type_cols=("as_of",)),
+    # Per-call sentiment / text-metrics cache (FinBERT-tone + LM lexicon), one row per
+    # ticker / fiscal quarter / section. Holds the EXPENSIVE, call-intrinsic scores
+    # (tone probs, word count, uncertainty ratio) so the GPU pass runs once; the
+    # cross-call KPIs are derived cheaply at cube-build time. Same grain as sections.
+    TableSpec("earnings_call_sentiment", "earnings_call_sentiment.parquet",
+              ("ticker", "quarter", "tag"), "extract", date_col="as_of",
+              date_type_cols=("as_of",)),
 ]
 
 # --------------------------------------------------------------------------- #

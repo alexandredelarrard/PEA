@@ -538,6 +538,22 @@ def _seen_accessions(existing: pd.DataFrame | None) -> set[str]:
     return set(existing["accession_number"].dropna())
 
 
+def _strip_nul(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove NUL (`\\x00`) characters from every string cell. Postgres TEXT columns
+    cannot store NUL (psycopg2 raises 'a string literal cannot contain NUL characters'),
+    and DEF 14A filings are HTML / PDF-derived, so the extracted strings (company_name,
+    ceo_name_proxy, the def14a_json dump, ...) occasionally carry stray NULs. Pure.
+
+    Dtype-agnostic (pandas 2 `object` AND pandas 3 `str` string columns): only the
+    columns that actually hold a NUL-bearing string are rewritten, so numeric / datetime
+    columns keep their dtype."""
+    for c in df.columns:
+        col = df[c]
+        if col.map(lambda v: isinstance(v, str) and "\x00" in v).any():
+            df[c] = col.map(lambda v: v.replace("\x00", "") if isinstance(v, str) else v)
+    return df
+
+
 def _save_ticker_rows(context: Context, rows: list[dict]) -> int:
     """Upsert one ticker's freshly-extracted rows into `def14a_llm` right away
     (LLM calls are expensive — persist per ticker so a crash loses nothing)."""
@@ -545,7 +561,8 @@ def _save_ticker_rows(context: Context, rows: list[dict]) -> int:
     for c in _NUMERIC_COLS:                     # keep DB columns numeric
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-            
+
+    df = _strip_nul(df)                         # Postgres TEXT rejects NUL (\x00)
     df["as_of"] = pd.to_datetime(df["as_of"]).dt.normalize()
     df = df.drop_duplicates(subset=["ticker", "accession_number"], keep="last")
     return context.store.save("def14a_llm", df)

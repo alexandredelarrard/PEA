@@ -18,7 +18,7 @@ StepExtractAllData          # 1. extract  (super-step → 4 sub-steps)
   ├─ StepExtractPrices        prices (+dividends), short interest, 13F holdings
   ├─ StepExtractFundamentals  SEC companyfacts history, forward-P/E snapshot, earnings, macro
   ├─ StepExtractStructure     employees, management, DEF 14A governance (LLM), SEC filings index
-  └─ StepExtractBehavioral    Wikipedia pageviews, Google Trends
+  └─ StepExtractBehavioral    Wikipedia pageviews, Google Trends, earnings-call transcripts
 StepDeducePeers             # 2. peer baskets (return-corr + OpenAI embeddings)
 StepBuildCube               # 3. peer-relative feature panels → `cube` table
 StepModelling               # 4. cross-sectional models → `predictions`, `cube_signal`
@@ -37,6 +37,7 @@ StepBacktest                # 5. long/short backtest
 | Macro | FRED | yields, curve, VIX, credit spreads, breakeven |
 | Short interest | FINRA RegSHO | daily short-volume |
 | Attention | Wikipedia pageviews, Google Trends | retail-attention alt-data |
+| Earnings-call tone | Motley Fool transcripts → local **FinBERT-tone** (GPU) + LM-uncertainty | `f_ec_*` tone / Q&A-gap / uncertainty / vocab-novelty (MF scraper needs a rework — JS/anti-bot site) |
 | Peers / descriptions | OpenAI embeddings | business-similarity peers |
 
 ## Quick start

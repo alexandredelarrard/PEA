@@ -19,6 +19,10 @@ from src.data_aggregate.utils.sector_features import build_sector_feature_panel
 from src.data_aggregate.utils.employee_features import build_employee_feature_panel
 from src.data_aggregate.utils.dividend_features import build_dividend_feature_panel
 from src.data_aggregate.utils.attention_features import build_combined_attention_panel
+from src.data_aggregate.utils.earnings_call_features import (
+    build_earnings_call_feature_panel,
+    score_earnings_calls,
+)
 from src.data_aggregate.utils.institutional_features import build_institutional_feature_panel
 from src.data_aggregate.utils.superinvestor_features import build_superinvestor_feature_panel
 from src.data_aggregate.utils.insider_features import build_insider_feature_panel
@@ -62,6 +66,7 @@ class StepBuildCube(Step):
         self.build_superinvestor_features()
         self.build_insider_features()
         self.build_short_interest_features()
+        self.build_earnings_call_features()
         self.build_composite_signals()
         self.aggregate_cube()
         self.save_cube()
@@ -214,6 +219,11 @@ class StepBuildCube(Step):
         if self.fails_to_deliver is None:
             self._log.warning("No fails-to-deliver data -> FTD features skipped "
                               "(run fetch_fails_to_deliver).")
+
+        self.earnings_call_sections = self._load_or_none("earnings_call_sections")
+        if self.earnings_call_sections is None:
+            self._log.warning("No earnings_call_sections -> earnings-call sentiment/text "
+                              "features skipped (run fetch_earnings_calls).")
 
     def _intrinsic_cfg(self) -> dict:
         cfg = self._cfg.get("intrinsic", {})
@@ -583,6 +593,34 @@ class StepBuildCube(Step):
         added = len(self.feature_panel.columns) - 2 - before
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s short-interest features (row coverage %.1f%%)",
+                       added, 100 * cov)
+
+    def build_earnings_call_features(self):
+        """Earnings-call TEXT features. Scores each parsed transcript section with the
+        local FinBERT-tone model (cached + incremental in `earnings_call_sentiment`, so
+        the GPU pass runs once), then derives the smart per-call KPIs — tone level &
+        momentum, the Q&A-vs-scripted candor gap, the hedging (uncertainty) ratio, the
+        disclosure-length change, and vocabulary novelty — as peer-relative, point-in-
+        time features (a call at date d only affects features on d+1 onward). Skipped
+        cleanly when there are no transcripts or the ML stack/model is unavailable."""
+        sections = getattr(self, "earnings_call_sections", None)
+        if sections is None:
+            return
+        sentiment = score_earnings_calls(self._context, sections=sections)
+        panel = build_earnings_call_feature_panel(
+            sentiment, self.peers, self.stock_close.index, sections=sections,
+        )
+        if panel.empty:
+            self._log.warning("No earnings-call features built (unscored transcripts "
+                              "or sentiment model unavailable).")
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(
+            panel, on=["date", "ticker"], how="left"
+        )
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s earnings-call sentiment/text features (row coverage %.1f%%)",
                        added, 100 * cov)
 
     def build_composite_signals(self):

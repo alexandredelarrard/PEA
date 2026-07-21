@@ -10,8 +10,8 @@ all incremental:
      URL slug, keep the universe, and persist the WHOLE link list to a big JSON in
      the repo cache: data/call_transcripts/transcript_index.json .
   2. download_transcripts()    -> read the JSON, fetch each not-yet-cached
-     transcript's HTML, extract the article body TEXT, save to
-     data/call_transcripts/{TICKER}/{YYYY}Q{Q}.txt (skip already-downloaded).
+     transcript's raw HTML and cache it to
+     data/call_transcripts/{TICKER}/{YYYY}Q{Q}.html (skip already-downloaded).
   3. ingest_earnings_calls()   -> parse each cached transcript into the high-signal
      SECTIONS funds analyse -- management prepared remarks, the analyst Q&A, and the
      call participants -- and upsert to the `earnings_call_sections` DB table
@@ -32,15 +32,21 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
+from src.constants.constants import (
+    EARNINGS_CALL_CACHE_DIR,
+    EARNINGS_CALL_SECTIONS_TABLE,
+    MOTLEY_FOOL_BASE_URL,
+    MOTLEY_FOOL_HEADERS,
+    MOTLEY_FOOL_TRANSCRIPT_INDEX_URL,
+)
 from src.context import Context
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://www.fool.com"
-_INDEX = "https://www.fool.com/earnings-call-transcripts/"
-_HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")}
-_TABLE = "earnings_call_sections"
+_BASE = MOTLEY_FOOL_BASE_URL
+_INDEX = MOTLEY_FOOL_TRANSCRIPT_INDEX_URL
+_HEADERS = MOTLEY_FOOL_HEADERS
+_TABLE = EARNINGS_CALL_SECTIONS_TABLE
 
 # transcript-link path + the (year, month, day, slug, quarter, fiscal-year) groups
 _LINK_RE = re.compile(
@@ -52,7 +58,7 @@ _HREF_RE = re.compile(r'href="(/earnings/call-transcripts/\d{4}/\d{2}/\d{2}/[^"?
 # IO helpers                                                                    #
 # --------------------------------------------------------------------------- #
 def _cache_dir(context: Context) -> Path:
-    d = context.paths["DATA_STORE"] / "call_transcripts"
+    d = context.paths["DATA_STORE"] / EARNINGS_CALL_CACHE_DIR
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -112,20 +118,26 @@ def _links_on_page(html: str, slug_map: dict[str, str]) -> list[dict]:
     return recs
 
 
-def build_transcript_index(context: Context, max_pages: int = 800,
-                           stop_after_empty: int = 3, pause: float = 0.4) -> dict[str, dict]:
+def build_transcript_index(context: Context, tickers: list[str] | None = None,
+                           max_pages: int = 800, stop_after_empty: int = 3,
+                           pause: float = 0.4) -> dict[str, dict]:
     """Crawl the MF transcript index (newest first) and MERGE every universe
     transcript link into the big JSON. Incremental: stops after `stop_after_empty`
     consecutive pages that add no NEW links (a converged re-run only reads a page or
-    two of the newest transcripts)."""
+    two of the newest transcripts). `tickers` restricts the kept universe (None = all)."""
     universe = list(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
+    if tickers is not None:                          # scope to a subset (e.g. a test run)
+        keep = set(tickers)
+        universe = [t for t in universe if t in keep]
     slug_map = _universe_slug_map(universe)
     path = _index_path(context)
     index = _load_index(path)
 
     empty_streak = 0
     for page in range(1, max_pages + 1):
-        html = _get(f"{_INDEX}?page={page}")
+        # MF paginates at /earnings-call-transcripts/page/N/ (page 1 = the base URL);
+        # the old ?page=N query param is ignored by the site (always served page 1).
+        html = _get(_INDEX if page == 1 else f"{_INDEX}page/{page}/")
         if not html:
             break
         recs = _links_on_page(html, slug_map)
@@ -219,14 +231,18 @@ def _transcript_path(cache_dir: Path, rec: dict) -> Path:
     return d / f"{rec['quarter']}.txt"
 
 
-def download_transcripts(context: Context, pause: float = 0.4, limit: int | None = None) -> int:
+def download_transcripts(context: Context, tickers: list[str] | None = None,
+                         pause: float = 0.4, limit: int | None = None) -> int:
     """Download each indexed transcript's HTML and cache the raw HTML to disk
     (data/call_transcripts/{ticker}/{quarter}.html). Skips already-downloaded files.
-    Returns the number newly downloaded. `limit` bounds a test run."""
+    Returns the number newly downloaded. `tickers` restricts to a subset (None = all);
+    `limit` bounds a test run."""
     cache_dir = _cache_dir(context)
     index = _load_index(_index_path(context))
+    keep = set(tickers) if tickers is not None else None
     todo = [r for r in index.values()
-            if not (cache_dir / r["ticker"] / f"{r['quarter']}.html").exists()]
+            if (keep is None or r["ticker"] in keep)
+            and not (cache_dir / r["ticker"] / f"{r['quarter']}.html").exists()]
     if limit is not None:
         todo = todo[:limit]
     n = 0
@@ -244,15 +260,19 @@ def download_transcripts(context: Context, pause: float = 0.4, limit: int | None
     return n
 
 
-def ingest_earnings_calls(context: Context) -> int:
+def ingest_earnings_calls(context: Context, tickers: list[str] | None = None) -> int:
     """Parse every cached transcript HTML into sections and upsert to
     `earnings_call_sections` (ticker, quarter, as_of, tag, text, url). Returns rows
-    upserted. Only sections with real text are stored."""
+    upserted. Only sections with real text are stored. `tickers` restricts to a subset
+    (None = every cached transcript)."""
     cache_dir = _cache_dir(context)
     index = {(r["ticker"], r["quarter"]): r for r in _load_index(_index_path(context)).values()}
+    keep = set(tickers) if tickers is not None else None
     rows: list[dict] = []
     for html_path in cache_dir.glob("*/*.html"):
         ticker, quarter = html_path.parent.name, html_path.stem
+        if keep is not None and ticker not in keep:
+            continue
         rec = index.get((ticker, quarter), {})
         sections = parse_transcript_sections(html_path.read_text(encoding="utf-8", errors="replace"))
         for tag, text in sections.items():
@@ -270,9 +290,11 @@ def ingest_earnings_calls(context: Context) -> int:
     return saved
 
 
-def fetch_earnings_calls(context: Context, limit: int | None = None) -> int:
+def fetch_earnings_calls(context: Context, tickers: list[str] | None = None,
+                         limit: int | None = None) -> int:
     """Full pipeline: (re)build the link index, download new transcripts, ingest
-    sections. Every stage is incremental. `limit` bounds the download for a test."""
-    build_transcript_index(context)
-    download_transcripts(context, limit=limit)
-    return ingest_earnings_calls(context)
+    sections. Every stage is incremental. `tickers` restricts to a subset (None = the
+    full universe); `limit` bounds the number of transcripts downloaded for a test."""
+    build_transcript_index(context, tickers=tickers)
+    download_transcripts(context, tickers=tickers, limit=limit)
+    return ingest_earnings_calls(context, tickers=tickers)

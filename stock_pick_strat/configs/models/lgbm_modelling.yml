@@ -4,7 +4,7 @@
 # monotone ON. Keeps the sparse sector-specific + (not-yet-in-cube) f_ec_* columns --
 # LightGBM handles NaN/sparsity natively.
 lgbm:
-  learning_rate: 0.02
+  learning_rate: 0.01
   max_depth: 5
   num_leaves: 31
   subsample: 0.8
@@ -17,11 +17,12 @@ lgbm:
   early_stopping_rounds: 100
   eval_metric: rmse
   categoricals:
-  - sector
   - industry_group
   monotonic:
     enabled: true
     features:
+    - amihud_63: 1
+    - vol_63: -1
     - f_y_rev_growth_xs: 1
     - f_operating_margin_5y_chg_xs: 1
     - f_operating_leverage_xs: 1
@@ -65,13 +66,22 @@ lgbm:
     - f_float_growth_xs: 1
     - f_affo_dividend_coverage_xs: 1
     - f_nii_growth_xs: 1
+    - f_super_new_buyer_ratio_vs_peers: 1
+    - f_q_margin_vs_ttm_vs_peers: 1
+    - f_pct_female_directors_vs_peers: 1
+    - tax_loss_pressure: 1
+    - f_eps_expectation_growth_vs_peers: 1
+    - f_intrinsic_yield_vs_peers: 1
+    - f_goodwill_intangibles_to_assets_vs_peers: -1
+    - f_fcf_to_ev_vs_hist: 1
+    - f_ceo_tenure_vs_peers: 1
+    - f_attn_spike_xs : 1
   columns:
   - mom_12_1
   - rev_21
   - vol_63
   - max_21
   - seasonal_h60
-  - seasonal_h90
   - dollar_volume_63
   - amihud_63
   - rel_volume_5_63

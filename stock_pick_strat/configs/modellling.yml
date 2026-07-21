@@ -11,7 +11,7 @@ model:
                                # (rank won on both mean IC and cross-fold stability; zscore
                                #  added a negative LightGBM fold)
   type: ensemble               # single-model fallback used only when `ensemble` is unset
-  ensemble: [elasticnet, lightgbm]   # families to train; per-day-standardized preds are averaged.
+  ensemble: [elasticnet, lightgbm, random_forest]   # families to train; per-day-standardized preds are averaged.
                                # Add "random_forest" here once its config file exists.
   save_models: true
   weight_decay:
@@ -28,7 +28,7 @@ model:
   diagnostics:                 # per-run, per-horizon model-diagnosis artifacts (LightGBM member)
     enabled: true
     top_n_features: 50         # top features rendered as individual PDPs + SHAP bar
-    shap_sample: 11000         # rows sampled for SHAP / partial dependence (speed)
+    shap_sample: 12000         # rows sampled for SHAP / partial dependence (speed)
     pdp_grid: 30               # partial-dependence grid resolution
 
 train:

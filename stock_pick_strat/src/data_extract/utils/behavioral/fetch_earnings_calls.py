@@ -181,7 +181,7 @@ def _page_converged(recs: list[dict], added: int) -> bool:
 
 
 def build_transcript_index(context: Context, tickers: list[str] | None = None,
-                           max_pages: int = 1000, stop_after_empty: int = 4,
+                           max_pages: int = 490, stop_after_empty: int = 4,
                            pause: float = 0.6, history_years: float = 6.0) -> dict[str, dict]:
     """Crawl the MF transcript index (a global, all-companies, newest-first feed) and
     MERGE every universe transcript link into the big JSON.
@@ -322,12 +322,6 @@ def parse_transcript_sections(html: str) -> dict[str, str]:
     return out
 
 
-def _transcript_path(cache_dir: Path, rec: dict) -> Path:
-    d = cache_dir / rec["ticker"]
-    d.mkdir(parents=True, exist_ok=True)
-    return d / f"{rec['quarter']}.txt"
-
-
 def download_transcripts(context: Context, tickers: list[str] | None = None,
                          pause: float = 0.6, limit: int | None = None) -> int:
     """Download each indexed transcript's HTML and cache the raw HTML to disk
@@ -343,7 +337,7 @@ def download_transcripts(context: Context, tickers: list[str] | None = None,
     if limit is not None:
         todo = todo[:limit]
     n = 0
-    for rec in todo:
+    for rec in tqdm(todo, "EC download"):
         html = _get(rec["url"])
         if not html or "call-transcripts" not in html.lower():
             continue
@@ -352,7 +346,7 @@ def download_transcripts(context: Context, tickers: list[str] | None = None,
         out.write_text(html, encoding="utf-8")
         n += 1
         time.sleep(pause)
-    logger.warning("Downloaded %d new transcripts (%d already cached) -> %s",
+    logger.info("Downloaded %d new transcripts (%d already cached) -> %s",
                    n, len(index) - n, cache_dir)
     return n
 
@@ -366,7 +360,7 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None) ->
     index = {(r["ticker"], r["quarter"]): r for r in _load_index(_index_path(context)).values()}
     keep = set(tickers) if tickers is not None else None
     rows: list[dict] = []
-    for html_path in cache_dir.glob("*/*.html"):
+    for html_path in tqdm(cache_dir.glob("*/*.html"), "EC ingestion db"):
         ticker, quarter = html_path.parent.name, html_path.stem
         if keep is not None and ticker not in keep:
             continue
@@ -380,9 +374,10 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None) ->
     if not rows:
         logger.warning("No transcript sections parsed to ingest.")
         return 0
+    
     df = pd.DataFrame(rows)
     saved = context.store.save(_TABLE, df)
-    logger.warning("Ingested %d transcript sections (%d transcripts, %d tickers) -> '%s'",
+    logger.info("Ingested %d transcript sections (%d transcripts, %d tickers) -> '%s'",
                    saved, df.groupby(["ticker", "quarter"]).ngroups, df["ticker"].nunique(), _TABLE)
     return saved
 

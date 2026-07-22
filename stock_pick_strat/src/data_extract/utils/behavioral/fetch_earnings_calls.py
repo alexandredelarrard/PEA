@@ -27,6 +27,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from tqdm import tqdm
 
 import pandas as pd
 import requests
@@ -134,7 +135,7 @@ def build_transcript_index(context: Context, tickers: list[str] | None = None,
     index = _load_index(path)
 
     empty_streak = 0
-    for page in range(1, max_pages + 1):
+    for page in tqdm(range(1, max_pages + 1), "transcript index urls"):
         # MF paginates at /earnings-call-transcripts/page/N/ (page 1 = the base URL);
         # the old ?page=N query param is ignored by the site (always served page 1).
         html = _get(_INDEX if page == 1 else f"{_INDEX}page/{page}/")
@@ -146,8 +147,6 @@ def build_transcript_index(context: Context, tickers: list[str] | None = None,
             if rec["url"] not in index:
                 index[rec["url"]] = rec
                 added += 1
-        logger.info("MF index page %d: %d universe links, %d new (total %d)",
-                    page, len(recs), added, len(index))
         empty_streak = empty_streak + 1 if added == 0 else 0
         if empty_streak >= stop_after_empty:
             break

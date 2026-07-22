@@ -33,4 +33,4 @@ class StepExtractBehavioral(Step):
         # populate data. The downstream (scoring -> cube -> model) is built + tested and
         # self-skips while the table is empty. Re-enable once fetch_earnings_calls works.
         
-        # fetch_earnings_calls(self._context, tickers=tickers)
+        fetch_earnings_calls(self._context, tickers=tickers)

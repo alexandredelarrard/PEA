@@ -34,3 +34,21 @@ backtest:
   risk_free_rate: 0.03
   compare: true                # run + log the OOS construction comparison vs SP500
   compare_market_weight: 1.0   # SPY sleeve for the "with spy" comparison variant
+
+  # --- multi-STRATEGY blend (day-by-day, vol-weighted across sleeves) ---
+  # Blend several diversifying return streams into one book: inverse-vol (risk-parity) mix across
+  # sleeves + one portfolio-level leverage to hit `portfolio_vol_target`. Recomputed every day
+  # from trailing vols (point-in-time). The trend sleeve is read from `trend_asset_returns`
+  # (run StepTrendAssetClass first). See src/post_processing/utils/strategies_blend.py.
+  strategy_blend:
+    enabled: true
+    # Two diversifying sleeves only: the market-NEUTRAL equity alpha + the multi-asset trend book.
+    # No standalone SPY sleeve — the equity BETA is provided DYNAMICALLY by trend's equity leg
+    # (long when equities trend up, flat/short when they roll over), so market exposure isn't
+    # double-counted. (Trend risk-budgets across asset classes internally; see modelling_trend_asset.)
+    strategies: [equity_ls, trend_asset]
+    scheme: inverse_vol         # inverse_vol (risk parity) | equal
+    vol_window: 63              # trailing window for per-sleeve + portfolio vol
+    portfolio_vol_target: 0.10  # annualized total-book volatility target
+    max_weight: 0.7             # cap any single sleeve's mix weight
+    max_leverage: 2.0           # cap total leverage applied to hit the vol target

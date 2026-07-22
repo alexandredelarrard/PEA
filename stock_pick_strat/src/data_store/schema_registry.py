@@ -72,6 +72,12 @@ EXTRACT_TABLES: list[TableSpec] = [
               date_col="date"),
     TableSpec("ticker_embeddings", "ticker_embeddings.parquet", ("ticker",), "extract",
               date_col=None, vector_col="embedding", vector_prefix="e"),
+    # OpenAI earnings-call embeddings: one float8[] `embedding` per ticker·quarter·section
+    # (prepared_remarks / qa) + Q&A-coherence stats + model/run stamp. Cache for the QoQ-distance
+    # and Q&A-coherence cube features (see src/data_aggregate/utils/earnings_call_embeddings.py).
+    TableSpec("earning_calls_embedding", "earning_calls_embedding.parquet",
+              ("ticker", "quarter", "section"), "extract", date_col=None,
+              vector_col="embedding", vector_prefix="e"),
     # tables with no seed file yet (created on first fetcher write via ensure_table)
     TableSpec("cusip_ticker_map", "cusip_ticker_map.parquet", ("cusip",), "extract",
               date_col=None, ticker_col="ticker"),
@@ -131,6 +137,10 @@ AGGREGATE_TABLES: list[TableSpec] = [
               ("ticker", "date"), "aggregate", date_col="date"),
     TableSpec("predictions", "output/predictions.parquet",
               ("ticker", "date"), "aggregate", date_col="date"),
+    # Multi-asset trend sleeve daily NET returns (one row per date, no ticker) — a directional
+    # cross-asset time-series-momentum book blended with the equity alpha + SPY in the backtest.
+    TableSpec("trend_asset_returns", "output/trend_asset_returns.parquet",
+              ("date",), "aggregate", date_col="date", ticker_col=None),
 ]
 
 ALL_TABLES: list[TableSpec] = REFERENCE_TABLES + EXTRACT_TABLES + AGGREGATE_TABLES

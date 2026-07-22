@@ -24,6 +24,7 @@ from src.data_aggregate.utils.earnings_call_features import (
     build_earnings_call_feature_panel,
     score_earnings_calls,
 )
+from src.data_aggregate.utils.earnings_call_embeddings import embed_earnings_calls
 from src.data_aggregate.utils.institutional_features import build_institutional_feature_panel
 from src.data_aggregate.utils.superinvestor_features import build_superinvestor_feature_panel
 from src.data_aggregate.utils.insider_features import build_insider_feature_panel
@@ -614,8 +615,12 @@ class StepBuildCube(Step):
         if sections is None:
             return
         sentiment = score_earnings_calls(self._context, sections=sections)
+        # OpenAI-embedding pass (cached/incremental; no-op without an API key): Q&A coherence
+        # cos(question, answer) + quarter-to-quarter embedding drift -> extra f_ec_* features.
+        embeddings = embed_earnings_calls(self._context, sections=sections)
         panel = build_earnings_call_feature_panel(
             sentiment, self.peers, self.stock_close.index, sections=sections,
+            embeddings=embeddings,
         )
         if panel.empty:
             self._log.warning("No earnings-call features built (unscored transcripts "

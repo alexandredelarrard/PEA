@@ -23,7 +23,7 @@ class StepExtractBehavioral(Step):
         super().__init__(context=context, config=config)
 
     def run(self, tickers: list[str]) -> None:
-        fetch_wiki_pageviews(self._context, tickers=tickers)
+        # fetch_wiki_pageviews(self._context, tickers=tickers)
         # fetch_google_trends(self._context, tickers=tickers)
 
         # Earnings-call transcripts -> earnings_call_sections -> FinBERT sentiment/text

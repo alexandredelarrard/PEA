@@ -120,6 +120,12 @@ HF_TRANSCRIPTS_CACHE = "hf_sp500_transcripts.parquet"
 # live here so the GPU pass runs once; the cross-call KPIs (tone delta, Q&A gap,
 # length delta, vocabulary novelty) are cheap and derived at cube-build time.
 EARNINGS_CALL_SENTIMENT_TABLE = "earnings_call_sentiment"
+# OpenAI-embedding cache for earnings calls (one row per ticker / quarter / section, section in
+# {prepared_remarks, qa}). Stores the section's mean-pooled embedding + the Q&A-coherence stats
+# (n_qa, cosine(question, answer) mean/std) + which model produced it and when. Feeds the
+# quarter-to-quarter embedding-distance + Q&A-coherence cube features. See earnings_call_embeddings.py.
+EARNINGS_CALL_EMBEDDING_TABLE = "earning_calls_embedding"
+EARNINGS_CALL_EMBED_MODEL = "text-embedding-3-small"     # cheap, 1536-dim; cost-efficient default
 # Sections we score for tone (the high-signal prose); 'participants'/'full' are skipped
 # for KPIs ('full' stays in the sections table as a format-proof fallback).
 EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")
@@ -219,3 +225,12 @@ SEC_FORM13F_URL_DICT = {
     "2026q3": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/01sep2026-30nov2026_form13f.zip",
     "2026q4": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/01dec2026-28feb2027_form13f.zip",
 }
+
+# --------------------------------------------------------------------------- #
+# Multi-asset trend (time-series-momentum) sleeve — StepTrendAssetClass output #
+# --------------------------------------------------------------------------- #
+# Daily NET return of the directional cross-asset trend book (one row per date, no ticker),
+# consumed by StepBacktest as a diversifying sleeve to blend with the equity L/S alpha + SPY.
+TREND_ASSET_RETURNS_TABLE = "trend_asset_returns"
+# model artifact (params + vol-target calibration) under paths["MODELS_DIR"]
+TREND_ASSET_MODEL_FILE = "trend_asset_model.json"

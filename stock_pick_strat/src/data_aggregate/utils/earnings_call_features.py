@@ -42,6 +42,7 @@ from src.constants.constants import (
     FINBERT_TONE_MODEL,
 )
 from src.context import Context
+from src.data_aggregate.utils.earnings_call_embeddings import build_embedding_kpis
 from src.data_aggregate.utils.fundamental_features import build_peer_relative_panel
 from src.utils.nlp_sentiment import get_sentiment_engine
 from src.utils.text_metrics import content_frequency, cosine_similarity, uncertainty_ratio, word_count
@@ -155,6 +156,9 @@ def _per_call_kpis(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd
         "as_of": pd.to_datetime(as_of), "ec_tone": ec_tone,
         "ec_qa_gap": ec_qa_gap, "ec_uncertainty": ec_unc,
         "total_words": tot_w,
+        # per-section tone levels (helpers -> quarter-to-quarter tone deltas below)
+        "qa_tone_lvl": tone_tag[qa] if qa in tone_tag.columns else np.nan,
+        "prep_tone_lvl": tone_tag[prep] if prep in tone_tag.columns else np.nan,
     }).reset_index()
 
     nov = _vocab_novelty(sections) if sections is not None else None
@@ -170,7 +174,10 @@ def _per_call_kpis(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd
     prev_words = g["total_words"].shift(1)
     per_q["ec_length_delta"] = np.log(per_q["total_words"] / prev_words.where(prev_words > 0))
     per_q["ec_length_delta"] = per_q["ec_length_delta"].replace([np.inf, -np.inf], np.nan)
-    return per_q
+    # quarter-to-quarter tone distance, PER SECTION (qa vs qa, prepared vs prepared)
+    per_q["ec_qa_tone_delta"] = g["qa_tone_lvl"].diff()
+    per_q["ec_prep_tone_delta"] = g["prep_tone_lvl"].diff()
+    return per_q.drop(columns=["qa_tone_lvl", "prep_tone_lvl"])
 
 
 def _vocab_novelty(sections: pd.DataFrame, tag: str = _VOCAB_TAG) -> pd.DataFrame | None:
@@ -208,7 +215,11 @@ def _daily_frame(per_call: pd.DataFrame, value_col: str,
 
 
 _KPI_COLS = ["ec_tone", "ec_tone_delta", "ec_qa_gap", "ec_uncertainty",
-             "ec_length_delta", "ec_vocab_novelty"]
+             "ec_length_delta", "ec_vocab_novelty",
+             "ec_qa_tone_delta", "ec_prep_tone_delta",   # per-section quarter-to-quarter tone drift
+             # OpenAI-embedding KPIs (present only when the embedding cache is passed):
+             "ec_qa_coherence_mean", "ec_qa_coherence_std", "ec_n_qa",
+             "ec_qa_qq_sim", "ec_prep_qq_sim"]
 
 
 def build_earnings_call_feature_panel(
@@ -216,14 +227,20 @@ def build_earnings_call_feature_panel(
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
     sections: pd.DataFrame | None = None,
+    embeddings: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format earnings-call feature panel (`f_ec_<kpi>_vs_peers`, `f_ec_<kpi>_xs`).
-    Empty if the sentiment cache is unavailable/empty."""
+    Empty if the sentiment cache is unavailable/empty. When `embeddings` (the
+    `earning_calls_embedding` cache) is provided, the Q&A-coherence + quarter-to-quarter
+    embedding-drift KPIs are merged in and expressed on the same daily, peer-relative basis."""
     if sentiment is None or sentiment.empty or "sent_pos" not in sentiment.columns:
         return pd.DataFrame(columns=["date", "ticker"])
     per_call = _per_call_kpis(sentiment, sections)
     if per_call.empty:
         return pd.DataFrame(columns=["date", "ticker"])
+    ekpi = build_embedding_kpis(embeddings)
+    if ekpi is not None and not ekpi.empty:
+        per_call = per_call.merge(ekpi, on=["ticker", "quarter"], how="left")
 
     fields: dict[str, pd.DataFrame] = {}
     for col in _KPI_COLS:

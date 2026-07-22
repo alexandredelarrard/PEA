@@ -1,0 +1,39 @@
+# modelling_trend_asset.yml -- multi-asset TIME-SERIES-MOMENTUM (trend / CTA) sleeve.
+# Merged into the global config by read_config (top-level key `trend_asset`). A DIRECTIONAL,
+# cross-asset-class book (long trending-up assets, short trending-down) — the positive-skew
+# "crisis alpha" diversifier for the long-biased equity book. Price-only (NO macro inputs).
+trend_asset:
+  # Tradeable universe — must exist in the `prices` table (data_extract.other_tickers). VIX is
+  # deliberately EXCLUDED (a mean-reverting vol INDEX, not a trend asset). To enrich the sleeve,
+  # add bonds (TLT/IEF) + broad commodities (DBC) to other_tickers and re-extract.
+  assets: ["SPY", "CL=F", "GC=F", "USDEUR=X"]   # equity index, crude, gold, EURUSD
+  # Risk-budget ACROSS asset classes (equal per class by default) so a class with many instruments
+  # (e.g. commodities) doesn't crowd out one with few (equity) — the sleeve times equity / bonds /
+  # commodities / FX on an equal footing, and provides the book's DYNAMIC equity beta (long when
+  # equities trend up, short when they roll over) so no separate static SPY sleeve is needed.
+  asset_classes:
+    SPY: equity
+    "CL=F": commodity
+    "GC=F": commodity
+    "USDEUR=X": fx
+  # class_budgets: {equity: 0.34, commodity: 0.33, fx: 0.33}   # optional; default = equal per class
+  lookbacks: [63, 126, 252]        # momentum windows in trading days (~3 / 6 / 12 months)
+  vol_window: 63                   # trailing window for per-asset vol (sizing + normalization)
+  signal_cap: 2.0                  # cap |standardized signal| -> bounds leverage on runaway moves
+  # Per-class DIRECTION blend. Framework supports trend + value + carry, BUT a multi-regime test
+  # (2016-2024) showed the naive price-only VALUE (5y reversal on this 6-asset universe) is a
+  # persistent "short-the-bull" bet: it wrecked the sleeve everywhere except the 2020 V-rebound
+  # (full-period Sharpe 0.40 trend-only -> -0.67 with value; maxDD -19% -> -52%). Single-asset CARRY
+  # on the inverted curve added losing bond shorts. So default = TREND-ONLY. Re-enable value/carry
+  # only with a PROPER construction (real-yield / PPP / CAPE valuation anchors, a WIDER universe,
+  # and a small shrunk weight) — not this crude reversal. Signals kept for that future work.
+  signals: {trend: 1.0, value: 0.0, carry: 0.0}   # trend-only (value/carry empirically hurt here)
+  value_lookback: 1260             # ~5y reversal window for the value signal (needs 5y+ history)
+  # CARRY (rates-driven) — set weight>0 above AND map each asset to macro rate series (in %):
+  #   carry_map: {TLT: [[DGS10, 1], [DGS3MO, -1]], "USDEUR=X": [[ECBDFR, 1], [DGS3MO, -1]]}
+  # (bond = 10y-3m curve slope; FX = EUR-USD short-rate diff). Reads the `macro` table.
+  per_asset_vol_target: 0.15       # ex-ante annual vol budget per asset at full conviction (|f|=1)
+  sleeve_vol_target: 0.10          # calibrate the WHOLE sleeve to this annual vol (fit on train)
+  rebalance_freq: 5                # trading days between target updates (turnover control)
+  fee_bps: 1.0
+  spread_bps: 5.0

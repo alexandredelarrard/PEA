@@ -27,9 +27,11 @@ from src.context import Context
 from src.data_aggregate.utils import data_utils as du
 from src.data_aggregate.utils.cube import panel_from_cube
 from src.modelling.utils_model import model as ml
+from src.constants.constants import TREND_ASSET_RETURNS_TABLE
 from src.post_processing.utils.metrics import compute_metrics
 from src.post_processing.utils.plot_analysis import plot_equity
 from src.post_processing.utils.strategies_opt import simulate_portfolio_opt
+from src.post_processing.utils.strategies_blend import blend_strategies as blend_sleeves
 
 
 class StepBacktest(Step):
@@ -46,6 +48,7 @@ class StepBacktest(Step):
         self.save_predictions()      # flat files in /data: each method + the ensemble
         self.compare_strategies()    # OOS construction comparison vs SP500
         self.simulate()
+        self.blend_strategies()      # day-by-day vol-weighted blend of sleeves (SPY / alpha / trend)
         self.report()
 
     def load_models(self):
@@ -376,6 +379,71 @@ class StepBacktest(Step):
             market_weight=c.get("market_weight", 0.5),
             vol_scaling=vol_scaling, **reg)
         self.metrics = compute_metrics(self.daily, rf_annual=c.get("risk_free_rate", 0.0))
+
+    # ------------------------------------------------------------------ #
+    # Multi-strategy blend: combine sleeve return streams day-by-day       #
+    # ------------------------------------------------------------------ #
+    def _daily_from_returns(self, net: pd.Series, spy: pd.Series) -> pd.DataFrame:
+        """Wrap a plain daily-return series into the daily frame compute_metrics expects."""
+        df = pd.DataFrame({"net_ret": net.astype(float)}).dropna()
+        cap = float(self._cfg.starting_capital)
+        s = spy.reindex(df.index).fillna(0.0)
+        df["portfolio_value"] = (1.0 + df["net_ret"]).cumprod() * cap
+        df["spy_value"] = (1.0 + s).cumprod() * cap
+        df["turnover"] = 0.0
+        df["cost"] = 0.0
+        return df
+
+    def blend_strategies(self):
+        """Blend several sleeve daily-return streams (SPY / equity L/S alpha / multi-asset trend)
+        into one book, weighting by inverse trailing vol and scaling the blend to a global vol
+        target (src/post_processing/utils/strategies_blend). Sleeves listed in
+        backtest.strategy_blend.strategies; the trend sleeve is read from `trend_asset_returns`
+        (run StepTrendAssetClass first — skipped with a warning if absent). Reports vs SP500."""
+        bc = self._cfg.get("strategy_blend", None)
+        if not bc or not bc.get("enabled", False):
+            return
+        sector_map = self._sector_map() if self._cfg.get("sector_neutral", False) else None
+        # sleeve return streams (all daily, net of each sleeve's own costs)
+        streams: dict[str, pd.Series] = {"spy": self.spy_ret}
+        alpha = simulate_portfolio_opt(**self._opt_common(sector_map), market_weight=0.0,
+                                       vol_scaling=False)               # pure market-neutral alpha
+        streams["equity_ls"] = alpha["net_ret"] if not alpha.empty else pd.Series(dtype=float)
+        try:
+            tr = self._context.store.load(TREND_ASSET_RETURNS_TABLE)
+            if tr is not None and not tr.empty:
+                s = tr.copy(); s["date"] = pd.to_datetime(s["date"])
+                streams["trend_asset"] = s.set_index("date")["ret"].astype(float).sort_index()
+        except Exception as e:                                          # noqa: BLE001
+            self._log.warning("trend sleeve unavailable (%s) — blending without it. Run "
+                              "StepTrendAssetClass to add the trend_asset_returns table.", e)
+        want = [s for s in bc.strategies if s in streams and not streams[s].dropna().empty]
+        if len(want) < 2:
+            self._log.warning("strategy_blend: <2 sleeves available (%s) — skipping blend.", want)
+            return
+        rets = pd.DataFrame({k: streams[k] for k in want}).sort_index()
+        rets = rets[(rets.index >= self.backtest_start) & (rets.index <= self.end)].dropna(how="all")
+
+        blended, weights = blend_sleeves(
+            rets, portfolio_vol_target=float(bc.get("portfolio_vol_target", 0.10)),
+            vol_window=int(bc.get("vol_window", 63)), scheme=str(bc.get("scheme", "inverse_vol")),
+            max_weight=float(bc.get("max_weight", 0.7)), max_leverage=float(bc.get("max_leverage", 2.0)))
+        m = compute_metrics(self._daily_from_returns(blended["ret"], self.spy_ret))
+        self.blend_metrics, self.blend_weights_daily = m, weights
+        self._log.info("=== Multi-strategy blend (%s; day-by-day, vol-target %.2f) vs SP500 ===",
+                       "+".join(want), float(bc.get("portfolio_vol_target", 0.10)))
+        self._log.info("Blend:  total %.1f%%  ann %.1f%%  vol %.1f%%  Sharpe %.2f  maxDD %.1f%%  "
+                       "avg lev %.2f", m["total_return"]*100, m["ann_return"]*100, m["ann_vol"]*100,
+                       m["sharpe"], m["max_drawdown"]*100, float(blended["leverage"].mean()))
+        self._log.info("SP500:  total %.1f%%  ann %.1f%%  vol %.1f%%  Sharpe %.2f  maxDD %.1f%%",
+                       m["spy_total_return"]*100, m["spy_ann_return"]*100, m["spy_ann_vol"]*100,
+                       m["spy_sharpe"], m["spy_max_drawdown"]*100)
+        self._log.info("Avg sleeve weights: %s",
+                       {k: round(float(v), 3) for k, v in weights.mean().items()})
+        out_dir = self._context.paths["OUTPUT_DIR"] / "backtest"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        blended.to_parquet(out_dir / "strategy_blend_daily.parquet")
+        weights.to_parquet(out_dir / "strategy_blend_weights.parquet")
 
     def report(self):
         m = self.metrics

@@ -45,8 +45,26 @@ logger = logging.getLogger(__name__)
 
 _BASE = MOTLEY_FOOL_BASE_URL
 _INDEX = MOTLEY_FOOL_TRANSCRIPT_INDEX_URL
-_HEADERS = MOTLEY_FOOL_HEADERS
+# fuller browser headers (fool.com is behind Cloudflare; UA-only requests are more
+# likely to be challenged). Extends the UA-only constant WITHOUT editing constants.py.
+_HEADERS = {**MOTLEY_FOOL_HEADERS,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Connection": "keep-alive"}
 _TABLE = EARNINGS_CALL_SECTIONS_TABLE
+
+_SESSION: requests.Session | None = None
+
+
+def _session() -> requests.Session:
+    """Shared keep-alive session (connection reuse + stable headers looks less bot-like
+    to Cloudflare than a fresh connection per request)."""
+    global _SESSION
+    if _SESSION is None:
+        s = requests.Session()
+        s.headers.update(_HEADERS)
+        _SESSION = s
+    return _SESSION
 
 # transcript-link path + the (year, month, day, slug, quarter, fiscal-year) groups
 _LINK_RE = re.compile(
@@ -76,13 +94,35 @@ def _load_index(path: Path) -> dict[str, dict]:
         return {}
 
 
-def _get(url: str, timeout: int = 30) -> str | None:
-    try:
-        r = requests.get(url, headers=_HEADERS, timeout=timeout)
-        return r.text if r.status_code == 200 else None
-    except Exception as e:                              # noqa: BLE001
-        logger.warning("GET failed %s: %s", url, e)
-        return None
+def _get(url: str, timeout: int = 30, retries: int = 3, backoff: float = 2.0) -> str | None:
+    """GET with retry + exponential backoff on rate-limit / transient errors. A non-200
+    is LOGGED (not swallowed) so Cloudflare throttling — the classic "downloads stop after
+    N" symptom — is visible instead of silently returning None and dropping the record."""
+    for attempt in range(retries + 1):
+        try:
+            r = _session().get(url, timeout=timeout)
+            if r.status_code == 200:
+                return r.text
+            if r.status_code in (403, 429) or r.status_code >= 500:  # blocked / throttled / transient
+                if attempt < retries:
+                    wait = backoff * (2 ** attempt)
+                    logger.warning("GET %s -> HTTP %d (rate-limited/blocked); backoff %.1fs "
+                                   "(retry %d/%d)", url, r.status_code, wait, attempt + 1, retries)
+                    time.sleep(wait)
+                    continue
+                logger.warning("GET %s -> HTTP %d after %d retries; giving up (site is "
+                               "throttling — raise `pause` / lower request rate)", url,
+                               r.status_code, retries)
+            else:                                        # 4xx that won't fix on retry (404 etc.)
+                logger.warning("GET %s -> HTTP %d", url, r.status_code)
+            return None
+        except Exception as e:                          # noqa: BLE001
+            if attempt < retries:
+                time.sleep(backoff * (2 ** attempt))
+                continue
+            logger.warning("GET failed %s: %s", url, e)
+            return None
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -118,13 +158,43 @@ def _links_on_page(html: str, slug_map: dict[str, str]) -> list[dict]:
     return recs
 
 
+def _page_call_dates(html: str) -> list[str]:
+    """Every transcript's call date (YYYY-MM-DD) on the page — universe or not. The MF
+    feed is globally reverse-chronological, so the NEWEST date on a page gauges how far
+    back the crawl has paged (used for the history-horizon stop)."""
+    out = []
+    for href in _HREF_RE.findall(html or ""):
+        m = _LINK_RE.search(href)
+        if m:
+            out.append(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
+    return out
+
+
+def _page_converged(recs: list[dict], added: int) -> bool:
+    """Whether a page counts toward the convergence stop. TRUE only when the page HAS
+    universe transcripts but they are ALL already indexed (an incremental re-run catching
+    up to what it saw last time). A page with NO universe names is just small-cap noise in
+    the all-companies feed and must NOT stop the crawl — conflating the two is the bug that
+    truncated the index to ~16 links."""
+    return bool(recs) and added == 0
+
+
 def build_transcript_index(context: Context, tickers: list[str] | None = None,
-                           max_pages: int = 800, stop_after_empty: int = 3,
-                           pause: float = 0.4) -> dict[str, dict]:
-    """Crawl the MF transcript index (newest first) and MERGE every universe
-    transcript link into the big JSON. Incremental: stops after `stop_after_empty`
-    consecutive pages that add no NEW links (a converged re-run only reads a page or
-    two of the newest transcripts). `tickers` restricts the kept universe (None = all)."""
+                           max_pages: int = 1000, stop_after_empty: int = 4,
+                           pause: float = 0.6, history_years: float = 6.0) -> dict[str, dict]:
+    """Crawl the MF transcript index (a global, all-companies, newest-first feed) and
+    MERGE every universe transcript link into the big JSON.
+
+    STOP conditions (both bounded so a first build goes DEEP, a re-run returns fast):
+      * convergence — `stop_after_empty` consecutive pages that HAVE universe transcripts
+        but all already indexed (see `_page_converged`). Crucially, a page with NO universe
+        names does NOT count: those are small-caps in the global feed, and treating them as
+        "empty" was the bug that stopped the crawl at ~16 links.
+      * history horizon — the feed has paged back past `history_years` (the newest call on
+        the page is older than the cutoff), so we have enough per-ticker history.
+      * `max_pages` / end-of-feed (a page that won't load) as hard safety caps.
+
+    `tickers` restricts the kept universe (None = all)."""
     universe = list(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
     if tickers is not None:                          # scope to a subset (e.g. a test run)
         keep = set(tickers)
@@ -132,6 +202,9 @@ def build_transcript_index(context: Context, tickers: list[str] | None = None,
     slug_map = _universe_slug_map(universe)
     path = _index_path(context)
     index = _load_index(path)
+    before = len(index)
+    min_date = ((pd.Timestamp.today().normalize() - pd.DateOffset(years=history_years))
+                .strftime("%Y-%m-%d"))
 
     empty_streak = 0
     for page in range(1, max_pages + 1):
@@ -139,23 +212,34 @@ def build_transcript_index(context: Context, tickers: list[str] | None = None,
         # the old ?page=N query param is ignored by the site (always served page 1).
         html = _get(_INDEX if page == 1 else f"{_INDEX}page/{page}/")
         if not html:
+            logger.warning("MF index page %d did not load (blocked or end of feed) -> stop "
+                           "at %d links", page, len(index))
             break
         recs = _links_on_page(html, slug_map)
         added = 0
-        for rec in recs:
-            if rec["url"] not in index:
-                index[rec["url"]] = rec
+        for r in recs:
+            if r["url"] not in index:
+                index[r["url"]] = r
                 added += 1
-        logger.info("MF index page %d: %d universe links, %d new (total %d)",
-                    page, len(recs), added, len(index))
-        empty_streak = empty_streak + 1 if added == 0 else 0
+        newest = max(_page_call_dates(html), default=None)
+        empty_streak = empty_streak + 1 if _page_converged(recs, added) else 0
+        logger.info("MF index page %d: %d universe links (%d new), newest %s, "
+                    "converge-streak %d/%d (index total %d)", page, len(recs), added,
+                    newest, empty_streak, stop_after_empty, len(index))
         if empty_streak >= stop_after_empty:
+            logger.info("Index converged (%d consecutive pages of already-seen universe "
+                        "links) -> stop", stop_after_empty)
+            break
+        if newest and newest < min_date:
+            logger.info("Reached %.0fy history horizon (newest call on page %s < %s) -> stop",
+                        history_years, newest, min_date)
             break
         time.sleep(pause)
 
     path.write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding="utf-8")
-    logger.warning("Transcript index: %d links across %d tickers -> %s",
-                   len(index), len({r["ticker"] for r in index.values()}), path)
+    logger.warning("Transcript index: %d links across %d tickers (%d new this run) -> %s",
+                   len(index), len({r["ticker"] for r in index.values()}),
+                   len(index) - before, path)
     return index
 
 
@@ -232,7 +316,7 @@ def _transcript_path(cache_dir: Path, rec: dict) -> Path:
 
 
 def download_transcripts(context: Context, tickers: list[str] | None = None,
-                         pause: float = 0.4, limit: int | None = None) -> int:
+                         pause: float = 0.6, limit: int | None = None) -> int:
     """Download each indexed transcript's HTML and cache the raw HTML to disk
     (data/call_transcripts/{ticker}/{quarter}.html). Skips already-downloaded files.
     Returns the number newly downloaded. `tickers` restricts to a subset (None = all);

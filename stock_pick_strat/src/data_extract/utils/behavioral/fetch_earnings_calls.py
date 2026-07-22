@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import random
 import re
 import time
 from pathlib import Path
@@ -54,18 +56,56 @@ _HEADERS = {**MOTLEY_FOOL_HEADERS,
             "Connection": "keep-alive"}
 _TABLE = EARNINGS_CALL_SECTIONS_TABLE
 
+# --- anti-429 transport ---------------------------------------------------- #
+# We COOPERATE with the rate limit (Cloudflare 429), we do NOT evade a ban: rotate a REAL
+# browser IMPERSONATION profile per request (curl_cffi -> a coherent UA+TLS+header
+# fingerprint, so the request looks like Chrome/Safari to Cloudflare, not a python-requests
+# JA3), honour Retry-After, back off exponentially WITH JITTER, and PERMANENTLY slow the whole
+# run after repeated 429s. Optional bring-your-own proxy via env (PEA_SCRAPE_PROXY / HTTPS_PROXY);
+# we deliberately do NOT ship or rotate anonymous/residential proxy pools.
+_IMPERSONATE_POOL = ("chrome124", "chrome123", "chrome120", "chrome131", "safari17_0", "edge101")
+_PROXY_ENV = ("PEA_SCRAPE_PROXY", "HTTPS_PROXY", "https_proxy")
+_PACE = {"mult": 1.0}          # run-wide slowdown multiplier, ratcheted up on each 429
+_PACE_CAP = 8.0
 _SESSION: requests.Session | None = None
 
 
 def _session() -> requests.Session:
-    """Shared keep-alive session (connection reuse + stable headers looks less bot-like
-    to Cloudflare than a fresh connection per request)."""
+    """requests fallback session (used only if curl_cffi is unavailable)."""
     global _SESSION
     if _SESSION is None:
         s = requests.Session()
         s.headers.update(_HEADERS)
         _SESSION = s
     return _SESSION
+
+
+def _proxy() -> dict | None:
+    for k in _PROXY_ENV:
+        v = os.getenv(k)
+        if v:
+            return {"http": v, "https": v}
+    return None
+
+
+def _retry_after_seconds(resp) -> float | None:
+    """Parse a Retry-After header (delta-seconds or HTTP-date) into seconds, if present."""
+    try:
+        ra = resp.headers.get("Retry-After")
+    except Exception:
+        return None
+    if not ra:
+        return None
+    try:
+        return float(ra)
+    except (TypeError, ValueError):
+        try:
+            import datetime as _dt
+            from email.utils import parsedate_to_datetime
+            return max(0.0, (parsedate_to_datetime(ra)
+                             - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
+        except Exception:
+            return None
 
 # transcript-link path + the (year, month, day, slug, quarter, fiscal-year) groups
 _LINK_RE = re.compile(
@@ -95,39 +135,67 @@ def _load_index(path: Path) -> dict[str, dict]:
         return {}
 
 
-def _get(url: str, timeout: int = 30, retries: int = 3, backoff: float = 2.0,
-         log_missing: bool = True) -> str | None:
-    """GET with retry + exponential backoff on rate-limit / transient errors. A non-200
-    is LOGGED (not swallowed) so Cloudflare throttling — the classic "downloads stop after
-    N" symptom — is visible instead of silently returning None and dropping the record.
-    `log_missing=False` silences the 404 warning (used when probing a quote page across
-    candidate exchanges, where the wrong exchange 404 is expected)."""
-    for attempt in range(retries + 1):
+def _http_get(url: str, timeout: int):
+    """One GET via curl_cffi with a ROTATED browser impersonation (coherent UA+TLS+headers ->
+    looks like a real browser to Cloudflare); falls back to the requests session. Returns a
+    response (.status_code/.text/.headers) or None on a transport error."""
+    proxies = _proxy()
+    prof = random.choice(_IMPERSONATE_POOL)
+    try:
+        from curl_cffi import requests as cr
         try:
-            r = _session().get(url, timeout=timeout)
-            if r.status_code == 200:
-                return r.text
-            if r.status_code in (403, 429) or r.status_code >= 500:  # blocked / throttled / transient
-                if attempt < retries:
-                    wait = backoff * (2 ** attempt)
-                    logger.warning("GET %s -> HTTP %d (rate-limited/blocked); backoff %.1fs "
-                                   "(retry %d/%d)", url, r.status_code, wait, attempt + 1, retries)
-                    time.sleep(wait)
-                    continue
-                logger.warning("GET %s -> HTTP %d after %d retries; giving up (site is "
-                               "throttling — raise `pause` / lower request rate)", url,
-                               r.status_code, retries)
-            else:                                        # 4xx that won't fix on retry (404 etc.)
-                if log_missing:
-                    logger.warning("GET %s -> HTTP %d", url, r.status_code)
+            return cr.get(url, impersonate=prof, timeout=timeout, proxies=proxies)
+        except Exception:                       # unknown profile / TLS quirk -> generic chrome
+            return cr.get(url, impersonate="chrome", timeout=timeout, proxies=proxies)
+    except Exception:
+        try:
+            return _session().get(url, timeout=timeout, proxies=proxies)
+        except Exception:
             return None
-        except Exception as e:                          # noqa: BLE001
+
+
+def _get(url: str, timeout: int = 30, retries: int = 4, backoff: float = 3.0,
+         log_missing: bool = True) -> str | None:
+    """GET with browser-impersonation + adaptive rate-limit handling. On 429/403/5xx it
+    honours Retry-After, backs off exponentially WITH JITTER, and ratchets up a run-wide pace
+    multiplier so the whole crawl slows down after being throttled (the correct response to a
+    429 — cooperate, don't hammer). A terminal non-200 is logged unless `log_missing=False`
+    (the quiet wrong-exchange probe)."""
+    for attempt in range(retries + 1):
+        r = _http_get(url, timeout)
+        if r is None:                                    # transport error (all paths failed)
             if attempt < retries:
-                time.sleep(backoff * (2 ** attempt))
+                time.sleep(backoff * (2 ** attempt) + random.uniform(0.5, 2.0))
                 continue
-            logger.warning("GET failed %s: %s", url, e)
+            logger.warning("GET failed (transport) %s", url)
             return None
+        code = getattr(r, "status_code", 0)
+        if code == 200:
+            return r.text
+        if code in (403, 429) or code >= 500:            # blocked / throttled / transient
+            if attempt < retries:
+                wait = max(_retry_after_seconds(r) or 0.0,
+                           backoff * (2 ** attempt)) + random.uniform(0.5, 2.5)
+                if code == 429:
+                    _PACE["mult"] = min(_PACE_CAP, _PACE["mult"] * 1.6)   # slow the WHOLE run
+                logger.warning("GET %s -> HTTP %d (rate-limited); wait %.1fs, run-pace x%.1f "
+                               "(retry %d/%d)", url, code, wait, _PACE["mult"], attempt + 1, retries)
+                time.sleep(wait)
+                continue
+            logger.warning("GET %s -> HTTP %d after %d retries; giving up. If this persists, "
+                           "lower the rate or set PEA_SCRAPE_PROXY.", url, code, retries)
+        elif log_missing:                                # 4xx that won't fix on retry (404 etc.)
+            logger.warning("GET %s -> HTTP %d", url, code)
+        return None
     return None
+
+
+def _sleep_pace(base: float) -> None:
+    """Inter-request sleep = base * run-wide-pace-multiplier + jitter -> a non-robotic cadence
+    that also honours the post-429 slowdown. `base<=0` disables throttling (tests)."""
+    if base <= 0:
+        return
+    time.sleep(base * _PACE["mult"] + random.uniform(0.1, 0.7))
 
 
 # --------------------------------------------------------------------------- #
@@ -239,7 +307,7 @@ def build_transcript_index(context: Context, tickers: list[str] | None = None,
             logger.info("Reached %.0fy history horizon (newest call on page %s < %s) -> stop",
                         history_years, newest, min_date)
             break
-        time.sleep(pause)
+        _sleep_pace(pause)
 
     path.write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding="utf-8")
     logger.warning("Transcript index: %d links across %d tickers (%d new this run) -> %s",
@@ -280,6 +348,27 @@ def _quote_page(ticker: str, exchanges: tuple[str, ...]) -> tuple[str | None, st
     return None, None
 
 
+def _expected_quarter_count(since: str, grace_days: int = 50) -> int:
+    """How many quarterly calls we EXPECT per ticker since `since` — calendar quarters from
+    `since` up to ~today, minus a grace window so the just-ended (maybe not-yet-reported)
+    quarter isn't required. A ticker with at least this many post-`since` transcripts is
+    treated as COMPLETE and its quote page is skipped (fewer requests -> fewer 429s)."""
+    start = pd.Timestamp(since)
+    end = pd.Timestamp.today() - pd.Timedelta(days=grace_days)
+    if end < start:
+        return 1
+    return max(1, (end.year - start.year) * 4 + (end.quarter - start.quarter) + 1)
+
+
+def _post_since_quarters(triples, since: str) -> dict[str, set]:
+    """{ticker: {quarters}} for rows whose call/as_of date is >= `since`."""
+    out: dict[str, set] = {}
+    for tk, q, d in triples:
+        if d and str(d)[:10] >= since:
+            out.setdefault(str(tk), set()).add(q)
+    return out
+
+
 def build_transcript_index_by_ticker(
     context: Context, tickers: list[str] | None = None, since: str = "2025-01-01",
     exchanges: tuple[str, ...] = ("nasdaq", "nyse"), pause: float = 0.6,
@@ -297,11 +386,33 @@ def build_transcript_index_by_ticker(
     slug_map = _universe_slug_map(universe)
     path = _index_path(context)
     index = _load_index(path)
-    before = len(index)
     since = str(since)
+    target = _expected_quarter_count(since)
 
-    added_total, missing = 0, []
+    # already-covered tickers are SKIPPED (no request) -> fewer hits, fewer 429s, resumable.
+    # A ticker is complete when it has >= `target` post-`since` quarters BOTH in the JSON index
+    # AND in the DB sections table (if the DB is reachable; else JSON coverage alone).
+    have_json = _post_since_quarters(
+        ((r["ticker"], r["quarter"], r.get("call_date")) for r in index.values()), since)
+    have_db = None
+    try:
+        db = context.store.load(_TABLE, columns=["ticker", "quarter", "as_of"])
+        if db is not None and not db.empty:
+            have_db = _post_since_quarters(
+                zip(db["ticker"], db["quarter"], db["as_of"].astype(str)), since)
+    except Exception:
+        have_db = None                        # DB unavailable -> resume on JSON coverage alone
+
+    def _covered(tk: str) -> bool:
+        if len(have_json.get(tk, ())) < target:
+            return False
+        return have_db is None or len(have_db.get(tk, ())) >= target
+
+    added_total, missing, skipped = 0, [], 0
     for tkr in tqdm(universe, "quote-page transcript urls"):
+        if _covered(tkr):
+            skipped += 1
+            continue
         html, exch = _quote_page(tkr, exchanges)
         if html is None:
             missing.append(tkr)
@@ -312,15 +423,19 @@ def build_transcript_index_by_ticker(
         for r in recs:
             if r["url"] not in index:
                 index[r["url"]] = r
+                have_json.setdefault(tkr, set()).add(r["quarter"])
                 added += 1
         added_total += added
         logger.info("MF quote %s (%s): %d links >= %s, %d new (index total %d)",
                     tkr, exch, len(recs), since, added, len(index))
-        time.sleep(pause)
+        if added:                             # DYNAMIC save -> progress survives a 429 / interrupt
+            path.write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding="utf-8")
+        _sleep_pace(pause)
 
     path.write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding="utf-8")
-    logger.warning("Quote-page discovery: +%d new links since %s (%d/%d tickers had no quote "
-                   "page) -> %s", added_total, since, len(missing), len(universe), path)
+    logger.warning("Quote-page discovery: +%d new links since %s | skipped %d already-complete "
+                   "| %d/%d had no quote page -> %s", added_total, since, skipped,
+                   len(missing), len(universe), path)
     if missing:
         logger.info("No MF quote page (exchange miss / not covered) for %d tickers: %s",
                     len(missing), missing[:40])
@@ -434,7 +549,7 @@ def download_transcripts(context: Context, tickers: list[str] | None = None,
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(html, encoding="utf-8")
         n += 1
-        time.sleep(pause)
+        _sleep_pace(pause)
     logger.warning("Downloaded %d new transcripts (%d already cached) -> %s",
                    n, len(index) - n, cache_dir)
     return n

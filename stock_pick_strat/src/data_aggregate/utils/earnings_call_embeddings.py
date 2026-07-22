@@ -30,6 +30,7 @@ import re
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from src.constants.constants import (
     EARNINGS_CALL_EMBED_MODEL,
@@ -109,6 +110,7 @@ def embed_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
     """Ensure every call has cached OpenAI embeddings + Q&A-coherence stats in
     `earning_calls_embedding`. Incremental (skips ticker·quarter already embedded), per-call upsert.
     `client` lets tests inject a stub embedder (no network / no spend). Returns the full table."""
+    
     store, log = context.store, context.log
     if sections is None:
         sections = store.load(EARNINGS_CALL_SECTIONS_TABLE)
@@ -134,7 +136,7 @@ def embed_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
 
     log.info("Embedding %d earnings calls (OpenAI %s)...", len(calls), model)
     n_new = 0
-    for (tkr, q) in calls:
+    for (tkr, q) in tqdm(calls, "EC EMbeddings calls"):
         run_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
         qa_text = text.loc[(tkr, q), _QA_TAG] if _QA_TAG in text.columns else None
         prep_text = text.loc[(tkr, q), _PREP_TAG] if _PREP_TAG in text.columns else None
@@ -157,6 +159,7 @@ def embed_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
                                   cos_std=round(float(cos.std()), 6)))
         if isinstance(prep_text, str) and prep_text.strip():
             rows.append(_call_row(tkr, q, aod, _PREP_TAG, V[-1], model, run_at))
+
         if rows:
             store.save(EARNINGS_CALL_EMBEDDING_TABLE, pd.DataFrame(rows))   # per-call upsert
             n_new += len(rows)

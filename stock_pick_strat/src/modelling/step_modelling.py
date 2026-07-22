@@ -114,15 +114,43 @@ class StepModelling(Step):
     def _lgb_cfg(self):
         return self._config.get("lgbm") or (self._config.model.get("lightgbm") or {})
 
-    def _linear_columns(self) -> list[str]:
+    @staticmethod
+    def _by_horizon(cfg, horizon) -> list[str] | None:
+        """Horizon-specific column override for a member config: returns
+        `cfg.columns_by_horizon[<horizon>]` when the member declares a list for this
+        horizon, else None so the caller falls back to the default `columns`. Keys are
+        compared as ints, so a YAML `30:` matches a numpy/int horizon regardless of how
+        OmegaConf typed the key."""
+        by_h = cfg.get("columns_by_horizon") if cfg else None
+        if not by_h or horizon is None:
+            return None
+        try:
+            h = int(horizon)
+        except (TypeError, ValueError):
+            return None
+        for k in by_h.keys():
+            try:
+                if int(k) == h and by_h.get(k):
+                    return list(by_h.get(k))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _linear_columns(self, horizon=None) -> list[str]:
         c = self._config.get("linear")
+        sp = self._by_horizon(c, horizon)
+        if sp:
+            return sp
         if c and c.get("columns"):
             return list(c.columns)
         inp = self._config.get("inputs")
         return list(inp.columns) if (inp and inp.get("columns")) else []
 
-    def _lgbm_columns(self) -> list[str]:
+    def _lgbm_columns(self, horizon=None) -> list[str]:
         c = self._config.get("lgbm")
+        sp = self._by_horizon(c, horizon)
+        if sp:
+            return sp
         if c and c.get("columns"):
             return list(c.columns)
         inp = self._config.get("inputs")
@@ -145,18 +173,43 @@ class StepModelling(Step):
     def _rf_cfg(self):
         return self._config.get("random_forest") or {}
 
-    def _rf_columns(self) -> list[str]:
+    def _rf_columns(self, horizon=None) -> list[str]:
         c = self._config.get("random_forest")
+        sp = self._by_horizon(c, horizon)
+        if sp:
+            return sp
         if c and c.get("columns"):
             return list(c.columns)
-        return self._lgbm_columns()          # default: RF reuses the LightGBM feature set
+        return self._lgbm_columns(horizon)   # default: RF reuses the LightGBM feature set
+
+    def _union_all_columns(self) -> list[str]:
+        """Every column any member might use at ANY horizon: each member's default
+        `columns` PLUS all of its `columns_by_horizon` overrides (+ the legacy inputs
+        fallback). Drives the cube projection so a horizon-specific feature is still
+        loaded from the cube even when it is absent from the default `columns`."""
+        out: list[str] = []
+        for key in ("linear", "lgbm", "random_forest"):
+            c = self._config.get(key)
+            if not c:
+                continue
+            if c.get("columns"):
+                out += list(c.columns)
+            by_h = c.get("columns_by_horizon")
+            if by_h:
+                for v in by_h.values():
+                    if v:
+                        out += list(v)
+        inp = self._config.get("inputs")
+        if inp and inp.get("columns"):
+            out += list(inp.columns)
+        return list(dict.fromkeys(out))
 
     def _select_load_columns(self, cube_cols: set[str], target_col: str
                              ) -> tuple[list[str], list[str]]:
         """Columns to pull: the index + target, plus the modelling.yml numeric
         allow-list and categoricals that exist in the cube. Returns (load_cols,
         dropped) where `dropped` are configured names absent from the cube."""
-        wanted = list(dict.fromkeys(self._linear_columns() + self._lgbm_columns() + self._rf_columns()))
+        wanted = self._union_all_columns()   # default + every columns_by_horizon override
         cats = self._lgbm_categoricals()
         requested = wanted + cats
         meta = ["date", "ticker", "target_horizon", target_col]
@@ -187,15 +240,21 @@ class StepModelling(Step):
             self._log.info("Categorical features (LightGBM-only): %s", present)
         return present
 
-    def _lgb_feats(self) -> list[str]:
-        """Feature list for the LightGBM member = its OWN numeric columns + categoricals."""
-        return list(getattr(self, "lgbm_cols", self.feature_cols)) + \
-            list(getattr(self, "categorical_cols", []))
+    def _lgb_feats(self, horizon=None) -> list[str]:
+        """Feature list for the LightGBM member at `horizon` = its horizon-resolved
+        numeric columns (columns_by_horizon override, else the default `columns`) + categoricals."""
+        by_h = getattr(self, "lgbm_cols_by_h", None)
+        base = by_h.get(horizon) if (by_h is not None and horizon is not None) else None
+        cols = base if base is not None else getattr(self, "lgbm_cols", self.feature_cols)
+        return list(cols) + list(getattr(self, "categorical_cols", []))
 
-    def _rf_feats(self) -> list[str]:
-        """Feature list for the Random Forest member = its columns (default = LightGBM's) + categoricals."""
-        return list(getattr(self, "rf_cols", getattr(self, "lgbm_cols", self.feature_cols))) + \
-            list(getattr(self, "categorical_cols", []))
+    def _rf_feats(self, horizon=None) -> list[str]:
+        """Feature list for the Random Forest member at `horizon` = its horizon-resolved
+        columns (columns_by_horizon override, else default `columns`, else LightGBM's) + categoricals."""
+        by_h = getattr(self, "rf_cols_by_h", None)
+        base = by_h.get(horizon) if (by_h is not None and horizon is not None) else None
+        cols = base if base is not None else getattr(self, "rf_cols", getattr(self, "lgbm_cols", self.feature_cols))
+        return list(cols) + list(getattr(self, "categorical_cols", []))
 
     def build_panels(self):
         """One modeling panel per horizon, restricted to the configured features."""
@@ -208,13 +267,23 @@ class StepModelling(Step):
         available = feature_columns_from_cube(self.cube, self.label_column)
         avail = set(available)
         # each family trains on its OWN column list (linear_modelling.yml / lgbm_modelling.yml)
-        self.linear_cols = [c for c in self._linear_columns() if c in avail]
+        self.linear_cols = [c for c in self._linear_columns() if c in avail]   # horizon-agnostic default
         self.lgbm_cols = [c for c in self._lgbm_columns() if c in avail]
-        self.rf_cols = [c for c in self._rf_columns() if c in avail]           # RF (default = lgbm)
+        self.rf_cols = [c for c in self._rf_columns() if c in avail]
         self.categorical_cols = [c for c in self._lgbm_categoricals() if c in avail]  # tree members
-        # union drives the cube projection + is the ensemble_predict fallback; each fitted
-        # model still stores + predicts on its own feature_names.
-        self.feature_cols = sorted(set(self.linear_cols) | set(self.lgbm_cols) | set(self.rf_cols))
+        # per-horizon resolved feature lists: a member uses its columns_by_horizon[h]
+        # override when present, else its default `columns` (see _by_horizon). Members
+        # with no override resolve to the same default list for every horizon.
+        self.linear_cols_by_h = {h: [c for c in self._linear_columns(h) if c in avail] for h in self.horizons}
+        self.lgbm_cols_by_h = {h: [c for c in self._lgbm_columns(h) if c in avail] for h in self.horizons}
+        self.rf_cols_by_h = {h: [c for c in self._rf_columns(h) if c in avail] for h in self.horizons}
+        # union across members AND horizons drives the cube projection + is the
+        # ensemble_predict fallback; each fitted model still stores + predicts on its
+        # OWN feature_names, so per-horizon members keep their own (leaner) column set.
+        allcols = set(self.linear_cols) | set(self.lgbm_cols) | set(self.rf_cols)
+        for h in self.horizons:
+            allcols |= set(self.linear_cols_by_h[h]) | set(self.lgbm_cols_by_h[h]) | set(self.rf_cols_by_h[h])
+        self.feature_cols = sorted(allcols)
         for name, want, got in (("linear", self._linear_columns(), self.linear_cols),
                                 ("lgbm", self._lgbm_columns(), self.lgbm_cols)):
             miss = [c for c in want if c not in avail]
@@ -250,8 +319,11 @@ class StepModelling(Step):
             self._log.info("  h=%s: %s rows, %s tickers, %s days",
                            h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
 
-    def _monotone_constraints(self) -> list[int] | None:
-        """Build LightGBM monotone_constraints from inputs.monotonic in config."""
+    def _monotone_constraints(self, feats: list[str] | None = None) -> list[int] | None:
+        """Build LightGBM monotone_constraints from inputs.monotonic in config, aligned
+        to `feats` (defaults to the LightGBM member's feature order). Passing the member's
+        own feature list keeps the constraint vector aligned when members use different
+        (per-horizon) column sets."""
         mono = self._lgbm_monotonic()
         if not mono or not mono.get("enabled", False):
             return None
@@ -261,9 +333,9 @@ class StepModelling(Step):
             self._log.warning("inputs.monotonic.enabled but no features configured")
             return None
 
-        # align to the LightGBM feature order (numeric + categoricals); categoricals
-        # are unconstrained (0). Only the LightGBM member consumes these.
-        lgb_feats = self._lgb_feats()
+        # align to the given feature order (numeric + categoricals); categoricals
+        # are unconstrained (0). Only the tree members consume these.
+        lgb_feats = feats if feats is not None else self._lgb_feats()
         constraints = ml.build_monotone_constraints(lgb_feats, feature_map)
         # A constrained feature absent from the trained set: if it IS in the allow-list
         # it's simply not in the cube yet (already reported once by load_cube) -> stay
@@ -280,7 +352,7 @@ class StepModelling(Step):
                            "cube; applies after a rebuild)", len(absent))
         return constraints
 
-    def _train_kwargs(self) -> dict:
+    def _train_kwargs(self, horizon=None) -> dict:
         c = self._lgb_cfg()
         kw = {
             "params": {
@@ -302,7 +374,7 @@ class StepModelling(Step):
             # early-stop metric: lgbm-config `eval_metric` wins, else legacy model.eval_metric
             "eval_metric": c.get("eval_metric") or self._config.model.get("eval_metric", "rmse"),
         }
-        monotone = self._monotone_constraints()   # only consumed by the LightGBM member
+        monotone = self._monotone_constraints(self._lgb_feats(horizon))   # LightGBM member, at this horizon
         if monotone is not None:
             kw["params"]["monotone_constraints"] = monotone
         wd = self._config.model.get("weight_decay")
@@ -314,26 +386,31 @@ class StepModelling(Step):
         wd = self._config.model.get("weight_decay")
         return float(wd.half_life_years) if (wd and wd.get("enabled", False)) else None
 
-    def _fit_one(self, kind: str, train: pd.DataFrame, valid: pd.DataFrame | None):
-        """Fit ONE model family. LightGBM uses the purged validation fold for IC
-        early stopping; the linear baselines are closed-form and ignore it."""
+    def _fit_one(self, kind: str, train: pd.DataFrame, valid: pd.DataFrame | None,
+                 horizon=None):
+        """Fit ONE model family at `horizon` (each member resolves its own
+        horizon-specific column set; see build_panels). LightGBM uses the purged
+        validation fold for IC early stopping; the linear baselines ignore it."""
         if kind in ("ridge", "elasticnet"):
             lc = self._lin_cfg()
+            by_h = getattr(self, "linear_cols_by_h", None)
+            lin = by_h.get(horizon) if (by_h is not None and horizon is not None) else None
+            lin = lin if lin is not None else self.linear_cols
             # linear member: its OWN numeric columns (categoricals are LightGBM-native)
             return baselines.train_linear(
-                train, self.linear_cols, self.label_column, kind=kind,
+                train, lin, self.label_column, kind=kind,
                 alpha=float(lc.get("alpha", 1e-3)), l1_ratio=float(lc.get("l1_ratio", 0.5)),
                 max_iter=int(lc.get("max_iter", 1000)), tol=float(lc.get("tol", 1e-6)),
                 half_life_years=self._half_life())
         if kind == "random_forest":
-            return self._fit_rf(train)
+            return self._fit_rf(train, horizon)
         # LightGBM member: numeric + categorical, with native categorical splits
-        return ml.train_ranker(train, self._lgb_feats(), self.label_column,
+        return ml.train_ranker(train, self._lgb_feats(horizon), self.label_column,
                                valid_panel=valid,
                                categorical_features=self.categorical_cols or None,
-                               **self._train_kwargs())
+                               **self._train_kwargs(horizon))
 
-    def _fit_rf(self, train: pd.DataFrame):
+    def _fit_rf(self, train: pd.DataFrame, horizon=None):
         """Random Forest = LightGBM in `boosting='rf'` mode: bagged INDEPENDENT trees, a FIXED
         count, NO early stopping (more trees only lower variance, never overfit). Reuses the
         LightGBM monotone map + categoricals; NaNs handled natively."""
@@ -349,17 +426,20 @@ class StepModelling(Step):
             "verbosity": -1, "seed": int(self._config.get("seed", ml.DEFAULT_SEED)),
             "deterministic": True, "force_row_wise": True,
         }
-        mono = self._monotone_constraints()   # aligned to _lgb_feats == _rf_feats when RF reuses lgbm cols
-        if mono is not None and len(mono) == len(self._rf_feats()):
+        feats = self._rf_feats(horizon)
+        mono = self._monotone_constraints(feats)   # aligned to THIS member's (horizon) feature order
+        if mono is not None and len(mono) == len(feats):
             params["monotone_constraints"] = mono
-        return ml.train_ranker(train, self._rf_feats(), self.label_column, valid_panel=None,
+        return ml.train_ranker(train, feats, self.label_column, valid_panel=None,
                                params=params, num_boost_round=int(rf.get("num_boost_round", 500)),
                                categorical_features=self.categorical_cols or None,
                                half_life_years=self._half_life())
 
-    def _fit_models(self, train: pd.DataFrame, valid: pd.DataFrame | None) -> dict:
-        """Fit every configured family -> {kind: model}. Averaged at predict time."""
-        return {kind: self._fit_one(kind, train, valid) for kind in self.model_types}
+    def _fit_models(self, train: pd.DataFrame, valid: pd.DataFrame | None,
+                    horizon=None) -> dict:
+        """Fit every configured family at `horizon` -> {kind: model}. Averaged at
+        predict time. Each member resolves its own horizon-specific column set."""
+        return {kind: self._fit_one(kind, train, valid, horizon) for kind in self.model_types}
 
     def cross_validate_all_horizons(self):
         """Purged walk-forward CV per horizon; collect IC to weight the blend."""
@@ -387,7 +467,7 @@ class StepModelling(Step):
                 if train.empty or test.empty:
                     continue
                 sub_tr, sub_val = ml.temporal_valid_split(train)
-                models = self._fit_models(sub_tr, sub_val)
+                models = self._fit_models(sub_tr, sub_val, h)
                 # ENSEMBLE preds + each member's per-day-standardized preds
                 preds, members = ml.ensemble_predict(
                     models, test, self.feature_cols)
@@ -473,7 +553,7 @@ class StepModelling(Step):
         self.models = {}
         for h, panel in self.panels.items():
             sub_tr, sub_val = ml.temporal_valid_split(panel, train_frac=0.9)
-            self.models[h] = self._fit_models(sub_tr, sub_val)
+            self.models[h] = self._fit_models(sub_tr, sub_val, h)
         self._log.info("Trained final models for %s horizons x %s (%s)",
                        len(self.models), len(self.model_types), self.model_types)
 
@@ -598,6 +678,10 @@ class StepModelling(Step):
             "linear_cols": list(getattr(self, "linear_cols", [])),
             "lgbm_cols": list(getattr(self, "lgbm_cols", [])),
             "rf_cols": list(getattr(self, "rf_cols", [])),
+            # per-horizon resolved feature sets (columns_by_horizon override, else default)
+            "linear_cols_by_h": {int(h): v for h, v in getattr(self, "linear_cols_by_h", {}).items()},
+            "lgbm_cols_by_h": {int(h): v for h, v in getattr(self, "lgbm_cols_by_h", {}).items()},
+            "rf_cols_by_h": {int(h): v for h, v in getattr(self, "rf_cols_by_h", {}).items()},
             "categorical_cols": list(getattr(self, "categorical_cols", [])),
             "label_column": self.label_column,
             "target_type": self.target_type,

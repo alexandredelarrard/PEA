@@ -11,7 +11,7 @@ model:
                                # (rank won on both mean IC and cross-fold stability; zscore
                                #  added a negative LightGBM fold)
   type: ensemble               # single-model fallback used only when `ensemble` is unset
-  ensemble: [elasticnet, lightgbm, random_forest]   # families to train; per-day-standardized preds are averaged.
+  ensemble: [elasticnet, random_forest]   # families to train; per-day-standardized preds are averaged.
                                # Add "random_forest" here once its config file exists.
   save_models: true
   weight_decay:

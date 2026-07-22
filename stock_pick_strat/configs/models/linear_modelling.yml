@@ -5,58 +5,47 @@
 linear:
   kind: elasticnet
   alpha: 0.001
-  l1_ratio: 0.3
+  l1_ratio: 0.6
   max_iter: 1000
   tol: 1.0e-06
   columns:
-  - mom_12_1
-  - rev_21
-  - vol_63
-  - max_21
-  - seasonal_h60
-  - seasonal_h90
-  - dollar_volume_63
-  - amihud_63
-  - rel_volume_5_63
-  - volume_trend_63
-  - volume_cv_63
-  - tax_loss_pressure
-  - peer_mom_63
-  - f_y_rev_growth_xs
-  - f_operating_margin_5y_chg_xs
-  - f_operating_leverage_xs
-  - f_revenue_per_employee_growth_xs
-  - f_acquisition_intensity_xs
-  - f_asset_growth_xs
-  - f_rule_of_40_xs
-  - f_rpo_growth_xs
-  - f_ebitda_to_ev_xs
-  - f_ebitda_to_ev_vs_hist
+  - f_short_vol_ratio_vs_peers
+  - f_goodwill_impairment_intensity_vs_peers
+  - f_rd_capitalized_roic_xs
+  - f_current_ratio_xs
+  - f_pegy_vs_peers
   - f_pegy_xs
-  - f_core_earnings_yield_xs
-  - f_nonrecurring_pretax_share_xs
-  - f_eps_surprise_4q_avg_xs
-  - f_intrinsic_yield_vs_peers
-  - f_gross_profitability_xs
-  - f_piotroski_f_score_xs
-  - f_accruals_xs
-  - f_rd_intensity_vs_peers
-  - f_capitalized_software_intensity_vs_peers
-  - f_shareholder_yield_xs
-  - f_da_to_capex_xs
-  - f_shares_growth_xs
-  - f_sbc_to_ocf_xs
-  - f_dividend_growth_5y_xs
-  - f_interest_coverage_vs_peers
-  - f_net_debt_to_ebitda_xs
-  - f_refinancing_risk_xs
-  - f_ceo_tenure_vs_peers
-  - f_pct_female_directors_vs_peers
+  - f_current_ratio_vs_peers
+  - f_negative_equity
+  - f_patent_cliff_xs
+  - f_pension_overhang_leverage_vs_peers
+  - f_intangible_amortization_share_vs_peers
+  - volume_trend_63
+  - f_nwc_elasticity_vs_peers
+  - f_dio_vs_peers
+  - f_gross_profitability_vs_peers
   - f_insider_net_buy_ratio_xs
-  - f_inst_flow_to_mcap_xs
-  - f_super_cluster_buying_xs
-  - f_super_flow_to_mcap_xs
-  - f_short_vol_ratio_xs
-  - f_short_vol_ratio_chg_xs
-  - f_fails_to_deliver_ratio_xs
-  - f_attn_spike_xs
+  - f_gmroi_xs
+  - tax_loss_pressure
+  - f_deferred_rev_intensity_xs
+  - f_patent_cliff_vs_peers
+  - f_gross_profitability_xs
+  - f_deferred_rev_intensity_vs_peers
+  - f_gmroi_vs_peers
+  - f_debtToEquity_vs_peers
+  - f_dividend_growth_xs
+  - f_days_payable_outstanding_xs
+  - f_fcf_yield_vs_peers
+  - f_dio_xs
+  - f_acquisition_intensity_vs_peers
+  - f_debtToEquity_xs
+  - f_refinancing_risk_xs
+  - f_fixed_cost_coverage_margin_vs_peers
+  - f_goodwill_intangibles_to_assets_vs_peers
+  - f_gross_margin_chg_vs_peers
+  - f_diluted_shares_growth_xs
+  - volume_cv_63
+  - f_insider_net_buy_ratio_vs_peers
+  - f_super_new_buyer_ratio_xs
+  - f_pension_overhang_leverage_xs
+  - f_fixed_cost_coverage_margin_xs

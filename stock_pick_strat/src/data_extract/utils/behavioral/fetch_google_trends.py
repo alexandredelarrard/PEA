@@ -44,6 +44,7 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
+from src.utils import polite_http as ph          # shared BYO-proxy resolver (PEA_SCRAPE_PROXY)
 
 try:                                            # TLS-impersonating transport (anti-429)
     from curl_cffi import requests as _cffi_requests
@@ -124,7 +125,8 @@ class _TrendsClient:
         """Start a fresh impersonated session and re-prime the NID cookie (call
         periodically so no single session fingerprint accumulates throttling)."""
         self._session = _cffi_requests.Session(
-            impersonate=self._impersonate, verify=self._verify, timeout=self._timeout)
+            impersonate=self._impersonate, verify=self._verify, timeout=self._timeout,
+            proxies=ph.resolve_proxy())              # honour PEA_SCRAPE_PROXY / HTTPS_PROXY if set
         self._session.headers.update(_random_header())
         try:
             self._session.get(GOOGLE_TRENDS_HOME_URL)     # sets NID cookie

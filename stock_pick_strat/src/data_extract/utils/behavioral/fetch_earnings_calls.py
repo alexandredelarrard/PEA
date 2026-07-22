@@ -425,6 +425,7 @@ def download_transcripts(context: Context, tickers: list[str] | None = None,
             and not (cache_dir / r["ticker"] / f"{r['quarter']}.html").exists()]
     if limit is not None:
         todo = todo[:limit]
+        
     n = 0
     for rec in tqdm(todo, "EC download"):
         html = _get(rec["url"])

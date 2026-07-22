@@ -1,8 +1,9 @@
 """
 Earnings-call OpenAI-embedding layer (src/data_aggregate/utils/earnings_call_embeddings.py).
-A STUB embedder (deterministic, no network/spend) drives the full path: Q&A pair splitting, the
-cached `earning_calls_embedding` table (qa + prepared rows, n_qa, cosine(Q,A) mean/std), incremental
-skip on re-run, and the quarter-to-quarter similarity + coherence KPIs.
+A STUB embedder (deterministic, no network/spend) drives the full per-turn path: speaker-turn
+splitting (question / answer / prepared with person + exchange pairing), the cached
+`earning_calls_embedding` table (ONE ROW PER TURN with its own embedding + text + tag), incremental
+skip on re-run, and the coherence + quarter-to-quarter drift KPIs DERIVED from the turns.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from src.data_aggregate.utils.earnings_call_embeddings import (
     build_embedding_kpis,
     embed_earnings_calls,
     split_qa_pairs,
+    split_turns,
 )
 
 _KW = ("revenue", "margin", "growth", "guidance", "cash", "demand", "cost", "?")
@@ -38,7 +40,7 @@ class StubClient:
 
 
 class FakeStore:
-    _PK = {"earning_calls_embedding": ["ticker", "quarter", "section"]}
+    _PK = {"earning_calls_embedding": ["ticker", "quarter", "seq"]}
     def __init__(self): self.t: dict[str, pd.DataFrame] = {}
     def load(self, table, columns=None): return self.t.get(table, pd.DataFrame()).copy()
     def save(self, table, df):
@@ -80,42 +82,63 @@ def _sections():
     return pd.DataFrame(rows)
 
 
-def test_qa_pair_split_embed_cache_and_kpis():
-    pairs = split_qa_pairs(_QA)
-    assert len(pairs) == 2, f"expected 2 Q&A exchanges, got {len(pairs)}"
-    assert "revenue growth" in pairs[0][0].lower() and "margins expanded" in pairs[0][1].lower()
+def test_per_turn_split_embed_cache_and_kpis():
+    # ---- turn splitting: 2 questions + 2 answers, persons, exchange pairing -------------------
+    turns = split_turns(_QA, "qa")
+    tags = [t["tag"] for t in turns]
+    assert tags == ["question", "answer", "question", "answer"], tags
+    assert [t["person"] for t in turns] == ["Jane Doe", "John Smith", "Mark Roe", "Sue Lee"]
+    assert turns[0]["exchange_idx"] == turns[1]["exchange_idx"] == 0     # Q0 pairs with A0
+    assert turns[2]["exchange_idx"] == turns[3]["exchange_idx"] == 1
+    prep = split_turns(_PREP, "prepared_remarks")
+    assert len(prep) == 1 and prep[0]["tag"] == "prepared" and prep[0]["exchange_idx"] == -1
+    assert len(split_qa_pairs(_QA)) == 2                                 # back-compat helper intact
 
+    # ---- embed -> ONE ROW PER TURN, cached with all metadata ----------------------------------
     store = FakeStore(); store.t["earnings_call_sections"] = _sections()
     ctx = FakeCtx(store); stub = StubClient()
-
     emb = embed_earnings_calls(ctx, client=stub)
+
     qa_rows = emb[emb["section"] == "qa"]
     prep_rows = emb[emb["section"] == "prepared_remarks"]
-    assert len(qa_rows) == 4 and len(prep_rows) == 4, "one qa + one prepared row per 4 calls"
-    assert (qa_rows["n_qa"] == 2).all(), "n_qa should be 2 for every call"
-    assert qa_rows["qa_cos_mean"].between(-1, 1).all(), "cosine(Q,A) must be in [-1,1]"
-    assert {"model", "run_at"}.issubset(emb.columns), "must stamp model + run timestamp"
+    assert len(qa_rows) == 16, f"4 qa turns x 4 calls, got {len(qa_rows)}"      # 2 Q + 2 A per call
+    assert len(prep_rows) == 4, f"1 prepared turn x 4 calls, got {len(prep_rows)}"
+    assert set(emb["tag"]) == {"question", "answer", "prepared"}
+    assert {"ticker", "quarter", "seq", "section", "tag", "exchange_idx", "person", "text",
+            "as_of", "embedding", "model", "run_at"}.issubset(emb.columns)
+    # a stored question turn and its answer turn share exchange_idx within a call
+    one = qa_rows[(qa_rows["ticker"] == "AAA") & (qa_rows["quarter"] == "2024Q1")]
+    q0 = one[(one["tag"] == "question") & (one["exchange_idx"] == 0)]
+    a0 = one[(one["tag"] == "answer") & (one["exchange_idx"] == 0)]
+    assert len(q0) == 1 and len(a0) == 1 and isinstance(q0.iloc[0]["embedding"], list)
+    assert q0.iloc[0]["person"] == "Jane Doe" and "revenue growth" in q0.iloc[0]["text"].lower()
     calls_after_first = stub.n_calls
 
-    embed_earnings_calls(ctx, client=stub)                       # re-run: incremental
+    embed_earnings_calls(ctx, client=stub)                              # re-run: incremental
     assert stub.n_calls == calls_after_first, "re-run must make ZERO new embedding calls"
 
+    # ---- KPIs derived from the turns ----------------------------------------------------------
     kpi = build_embedding_kpis(emb).sort_values(["ticker", "quarter"]).reset_index(drop=True)
-    assert (kpi["ec_n_qa"] == 2).all()
+    assert (kpi["ec_n_qa"] == 2).all(), "2 exchanges per call"
+    assert kpi["ec_qa_coherence_mean"].between(-1, 1).all()
     q1 = kpi[kpi["quarter"] == "2024Q1"]; q2 = kpi[kpi["quarter"] == "2024Q2"]
     assert q1["ec_qa_qq_sim"].isna().all(), "first quarter has no prior -> QoQ sim NaN"
     assert q2["ec_prep_qq_sim"].notna().all() and q2["ec_prep_qq_sim"].between(-1, 1).all()
 
-    print("\n=== SANITY CHECK: earnings-call embedding features ===")
-    print(f"  Q&A split: {len(pairs)} exchanges; e.g. Q='{pairs[0][0][:40]}...' A='{pairs[0][1][:40]}...'")
-    print(f"  cache: {len(qa_rows)} qa + {len(prep_rows)} prepared rows; n_qa=2; "
-          f"coherence mean {qa_rows['qa_cos_mean'].mean():.3f} (cosine of question vs answer)")
+    print("\n=== SANITY CHECK: per-turn earnings-call embeddings ===")
+    print(f"  turns: qa split -> {tags} with persons Jane/John/Mark/Sue; Q0<->A0, Q1<->A1 paired.")
+    print(f"  table: {len(qa_rows)} qa-turn rows + {len(prep_rows)} prepared-turn rows "
+          f"(1 row/turn), each with its own embedding + text + person + tag + exchange_idx + "
+          f"as_of + model/run_at.")
+    print(f"  coherence (cos question vs its answer turns): mean over exchanges "
+          f"{kpi['ec_qa_coherence_mean'].mean():.3f}; ec_n_qa=2.")
     print(f"  incremental: re-run made 0 new OpenAI calls (still {stub.n_calls}).")
-    print(f"  QoQ prepared-remarks similarity (2024Q2 vs Q1): "
-          f"{q2['ec_prep_qq_sim'].mean():.3f}  (lower = narrative shift; the Q2 call added a new topic)")
-    print("  CONCLUSION: Q&A coherence (cos(Q,A) mean/std) + n_qa + quarter-to-quarter embedding "
-          "drift computed and cached with model+timestamp. Validated (stub embedder, no spend).")
+    print(f"  QoQ prepared drift (2024Q2 vs Q1): {q2['ec_prep_qq_sim'].mean():.3f} "
+          f"(lower = narrative shift; Q2 added a new AI-platform topic).")
+    print("  CONCLUSION: each question & answer is now stored as its OWN row (ticker, quarter, "
+          "seq, tag, person, text, as_of, run_at, embedding); cosine(Q,A) coherence + QoQ drift "
+          "are DERIVED from those turns. Validated with a stub embedder (no spend).")
 
 
 if __name__ == "__main__":
-    test_qa_pair_split_embed_cache_and_kpis()
+    test_per_turn_split_embed_cache_and_kpis()

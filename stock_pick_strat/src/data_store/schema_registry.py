@@ -72,11 +72,14 @@ EXTRACT_TABLES: list[TableSpec] = [
               date_col="date"),
     TableSpec("ticker_embeddings", "ticker_embeddings.parquet", ("ticker",), "extract",
               date_col=None, vector_col="embedding", vector_prefix="e"),
-    # OpenAI earnings-call embeddings: one float8[] `embedding` per ticker·quarter·section
-    # (prepared_remarks / qa) + Q&A-coherence stats + model/run stamp. Cache for the QoQ-distance
-    # and Q&A-coherence cube features (see src/data_aggregate/utils/earnings_call_embeddings.py).
+    # OpenAI earnings-call embeddings: one row PER SPEAKER TURN (question / answer / prepared),
+    # each with its own float8[] `embedding` + raw `text` + `person` + `tag` + `exchange_idx`
+    # (links a question to its answer turns) + model/run stamp + `as_of` (call date). The
+    # Q&A-coherence + QoQ-distance cube features are DERIVED from these turns at build time (cos
+    # of question vs its answers, pooled per section for drift). See
+    # src/data_aggregate/utils/earnings_call_embeddings.py.
     TableSpec("earning_calls_embedding", "earning_calls_embedding.parquet",
-              ("ticker", "quarter", "section"), "extract", date_col=None,
+              ("ticker", "quarter", "seq"), "extract", date_col=None, ticker_col="ticker",
               vector_col="embedding", vector_prefix="e"),
     # tables with no seed file yet (created on first fetcher write via ensure_table)
     TableSpec("cusip_ticker_map", "cusip_ticker_map.parquet", ("cusip",), "extract",

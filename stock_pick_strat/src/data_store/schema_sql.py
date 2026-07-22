@@ -53,7 +53,11 @@ def _columns_for(spec: TableSpec, df: pd.DataFrame) -> list[tuple[str, str]]:
         prefix = spec.vector_prefix
         vec_cols = [c for c in df.columns if c.startswith(prefix)
                     and c[len(prefix):].isdigit()]
-        other = [c for c in df.columns if c not in vec_cols]
+        # exclude the collapsed vector column itself: producers may already supply it as a
+        # single pre-collapsed list column named `vector_col` (e.g. earning_calls_embedding,
+        # ticker_embeddings) rather than e0..eN scalars -- without this it would be emitted
+        # both as a scalar (in `other`) AND as the array below -> duplicate-column DDL.
+        other = [c for c in df.columns if c not in vec_cols and c != spec.vector_col]
         cols = [(c, _sql_type(c, df[c].dtype, spec)) for c in other]
         cols.append((spec.vector_col, "DOUBLE PRECISION[]"))
         return cols

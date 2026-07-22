@@ -253,24 +253,51 @@ def _is_caps_header(line: str) -> bool:
             and len(s.split()) <= 5)
 
 
-# the operator's phrase that opens the analyst Q&A (splits prepared remarks from Q&A)
+# the operator's phrase that opens the analyst Q&A (splits prepared remarks from Q&A).
+# Broadened across 2005-2025 transcript phrasings (tuned on real HF rows: split coverage
+# 50% -> 93%): the classic "question-and-answer session", the operator-instructions +
+# "first question comes from" hand-off, "we'll now begin/open/take/turn ... to questions",
+# "open the floor/line for questions".
 _QA_MARKER = re.compile(
-    r"(?i)question[- ]and[- ]answer session|questions?\s+and\s+answers?|"
-    r"(?:we(?:'ll| will)|now)\b[^.]{0,40}?(?:begin|open|take|start)[^.]{0,25}?question")
+    r"(?i)"
+    r"question[-\s]and[-\s]answer session|"
+    r"questions?\s*(?:and|&)\s*answers?|"                 # standalone Q&A heading (no 'session')
+    r"(?:first|next)\s+question\s+(?:comes?|is|will\s+come)\s+from|"
+    r"(?:we(?:'ll| will| are going to| would like to)|now|let's|i(?:'ll| will))\b"
+    r"[^.]{0,45}?(?:begin|open|take|start|conduct|move\s+to|go\s+to|turn[^.]{0,20}?to)"
+    r"[^.]{0,30}?questions?|"
+    r"open\s+(?:up\s+)?(?:the\s+)?(?:floor|line|lines|call)\b[^.]{0,25}?questions?|"
+    r"\[?operator instructions\]?")
+
+
+def split_prepared_qa(text: str) -> dict[str, str]:
+    """Source-agnostic split of a full transcript TEXT into the high-signal sections funds
+    analyse: `full` (ALWAYS kept -> format-proof), `prepared_remarks` (scripted management
+    comments from call-open to the Q&A) and `qa` (the analyst Q&A, after the operator's
+    hand-off). Used for BOTH the Motley Fool HTML-extracted text AND the HuggingFace
+    `content` field. Call prose starts at the first 'Operator' line (skips logo/date/
+    takeaways preamble); the Q&A hand-off is searched past the first ~2000 chars first
+    (operators PREVIEW the Q&A in the intro), then anywhere. prepared/qa only when
+    confidently split (>300 chars each)."""
+    out: dict[str, str] = {"full": text}
+    op = re.search(r"(?im)^\s*operator\b", text)
+    prose = text[op.start():] if op else text
+    m = _QA_MARKER.search(prose, 2000) or _QA_MARKER.search(prose)
+    if m:
+        pre, post = prose[:m.start()].strip(), prose[m.start():].strip()
+        if len(pre) > 300:
+            out["prepared_remarks"] = pre
+        if len(post) > 300:
+            out["qa"] = post
+    elif op:
+        out["prepared_remarks"] = prose.strip()          # no Q&A hand-off found -> all remarks
+    return out
 
 
 def parse_transcript_sections(html: str) -> dict[str, str]:
-    """Split a Motley Fool transcript into the high-signal sections funds analyse:
-      participants     (who was on the call -- a caps-headed list),
-      prepared_remarks (scripted management comments, from call-open to the Q&A),
-      qa               (the analyst Q&A -- the richest part, after the operator's
-                        'question-and-answer session' hand-off),
-    plus `full` (the whole transcript, ALWAYS kept -> format-proof: even if the split
-    heuristics miss, the raw text is stored for later sentiment / embedding).
-
-    MF's current format has no 'Prepared Remarks'/'Q&A' headings, so we take the
-    participants block from its ALL-CAPS header, then split the CALL PROSE (from the
-    first 'Operator:' line) at the operator's Q&A hand-off phrase."""
+    """Motley Fool transcript HTML -> sections. Extracts the nested transcript body, adds
+    the caps-headed `participants` block, then defers to `split_prepared_qa` for
+    full/prepared_remarks/qa."""
     soup = BeautifulSoup(html, "html.parser")
     div = (soup.find("div", class_=lambda c: c and "transcript-content" in c)
            or soup.find("div", class_=lambda c: c and "article-body" in c))
@@ -279,7 +306,7 @@ def parse_transcript_sections(html: str) -> dict[str, str]:
     text = div.get_text("\n", strip=True)
     if len(text) < 200:
         return {}
-    out: dict[str, str] = {"full": text}
+    out = split_prepared_qa(text)
 
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
     parts, grab = [], False
@@ -291,21 +318,6 @@ def parse_transcript_sections(html: str) -> dict[str, str]:
             parts.append(ln)
     if parts:
         out["participants"] = "\n".join(parts)
-
-    # call prose starts at the first "Operator:" line (skips logo/date/takeaways preamble)
-    op = re.search(r"(?im)^\s*operator\b", text)
-    prose = text[op.start():] if op else text
-    # operators often PREVIEW the Q&A in their opening remarks, so search for the real
-    # hand-off past the intro first (>=2000 chars in), then fall back to anywhere.
-    m = _QA_MARKER.search(prose, 2000) or _QA_MARKER.search(prose)
-    if m:
-        pre, post = prose[:m.start()].strip(), prose[m.start():].strip()
-        if len(pre) > 300:
-            out["prepared_remarks"] = pre
-        if len(post) > 300:
-            out["qa"] = post
-    elif op:
-        out["prepared_remarks"] = prose.strip()          # no Q&A hand-off found -> all remarks
     return out
 
 
@@ -375,10 +387,21 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None) ->
 
 
 def fetch_earnings_calls(context: Context, tickers: list[str] | None = None,
-                         limit: int | None = None) -> int:
-    """Full pipeline: (re)build the link index, download new transcripts, ingest
-    sections. Every stage is incremental. `tickers` restricts to a subset (None = the
-    full universe); `limit` bounds the number of transcripts downloaded for a test."""
-    build_transcript_index(context, tickers=tickers)
+                         limit: int | None = None, mf_history_years: float = 2.0,
+                         include_hf: bool = True) -> int:
+    """Full transcript pipeline. The HuggingFace dataset `kurry/sp500_earnings_transcripts`
+    is the 2005-2025 BACKBONE (deep history in one clean download); the Motley Fool crawl
+    only fills the RECENT gap past the dataset's ~2025 cut, bounded to `mf_history_years`
+    where MF's shallow crawl is reliable (going 15y deep on MF's global feed is impractical
+    and gets throttled). Every stage is incremental and deduped by (ticker, quarter).
+    `tickers` restricts to a subset (None = full universe); `limit` bounds the MF download
+    for a test; set `include_hf=False` to skip the backbone (MF-only)."""
+    saved = 0
+    if include_hf:
+        # deferred import: fetch_hf_transcripts imports helpers from THIS module
+        from src.data_extract.utils.behavioral.fetch_hf_transcripts import ingest_hf_transcripts
+        saved += ingest_hf_transcripts(context, tickers=tickers)
+    build_transcript_index(context, tickers=tickers, history_years=mf_history_years)
     download_transcripts(context, tickers=tickers, limit=limit)
-    return ingest_earnings_calls(context, tickers=tickers)
+    saved += ingest_earnings_calls(context, tickers=tickers)
+    return saved

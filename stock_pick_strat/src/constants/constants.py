@@ -105,6 +105,16 @@ MOTLEY_FOOL_HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 EARNINGS_CALL_CACHE_DIR = "call_transcripts"
 EARNINGS_CALL_SECTIONS_TABLE = "earnings_call_sections"
 
+# HuggingFace backbone: clean S&P 500 earnings-call transcripts 2005-2025 (MIT license,
+# 33k+ transcripts / 685 companies, full verbatim `content` + speaker-segmented
+# `structured_content`). Downloaded ONCE as a single ~1.8 GB parquet, cached under the
+# call_transcripts dir; the Motley Fool crawl then only fills the recent gap past its cut.
+HF_TRANSCRIPTS_DATASET = "kurry/sp500_earnings_transcripts"
+HF_TRANSCRIPTS_PARQUET_URL = (
+    "https://huggingface.co/datasets/kurry/sp500_earnings_transcripts/"
+    "resolve/main/parquet_files/part-0.parquet")
+HF_TRANSCRIPTS_CACHE = "hf_sp500_transcripts.parquet"
+
 # Per-call sentiment / text-metrics cache (one row per ticker / quarter / tag). The
 # EXPENSIVE, call-intrinsic scores (FinBERT tone probs + word count + lexicon ratios)
 # live here so the GPU pass runs once; the cross-call KPIs (tone delta, Q&A gap,

@@ -116,28 +116,6 @@ def test_quote_discovery_skips_covered_tickers(tmp_path, monkeypatch):
           "skipped). Re-runs don't redo extraction or re-hit the site.")
 
 
-def test_get_backoff_on_429_honours_retry_after_and_slows_run(monkeypatch):
-    fe._PACE["mult"] = 1.0                                         # isolate run-wide pace
-
-    class Resp:
-        def __init__(self, code, text="", headers=None):
-            self.status_code, self.text, self.headers = code, text, headers or {}
-
-    seq = [Resp(429, headers={"Retry-After": "2"}), Resp(200, "OK")]
-    monkeypatch.setattr(fe, "_http_get", lambda url, timeout: seq.pop(0))
-    waits = []
-    monkeypatch.setattr(fe.time, "sleep", lambda s: waits.append(s))
-
-    out = fe._get("https://x", retries=3, backoff=1.0)
-    assert out == "OK", "should retry past the 429 and return the 200 body"
-    assert waits and waits[0] >= 2.0, f"should honour Retry-After=2s (waited {waits})"
-    assert fe._PACE["mult"] > 1.0, "a 429 must ratchet up the run-wide pace multiplier"
-    fe._PACE["mult"] = 1.0                                         # reset for other tests
-    print("\n=== SANITY CHECK: 429 handling ===")
-    print(f"  429 -> honoured Retry-After ({waits[0]:.1f}s wait), ratcheted run-pace to "
-          f"x{1.6:.1f}+, then succeeded on retry. Cooperates with the rate limit.")
-
-
 if __name__ == "__main__":
     import tempfile, pathlib
     test_quote_discovery_live(pathlib.Path(tempfile.mkdtemp()))

@@ -13,7 +13,6 @@ CSV; unmatched/failed articles are skipped. Network is isolated in
 from __future__ import annotations
 
 import re
-import time
 
 import pandas as pd
 import requests
@@ -21,6 +20,7 @@ from tqdm import tqdm
 
 from src.constants.constants import DATE_FORMAT_COMPACT
 from src.context import Context
+from src.utils import polite_http as ph
 
 _API = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
         "en.wikipedia/all-access/user/{article}/daily/{start}/{end}")
@@ -67,10 +67,12 @@ def _wiki_search(query: str) -> str | None:
     """Top main-namespace Wikipedia article title for `query`, or None. Isolated for
     mocking. Searching the full (cleaned) COMPANY name biases the hit to the company
     article (e.g. 'The Coca-Cola Company') over the brand ('Coca-Cola')."""
-    r = requests.get(_SEARCH_API, headers=_HEADERS, timeout=30, params={
+    # shared anti-429 transport (retry + backoff + Retry-After + per-host slowdown). Wikimedia
+    # wants a descriptive contact User-Agent (not a spoofed browser) -> impersonate=False.
+    r = ph.http_get(_SEARCH_API, headers=_HEADERS, timeout=30, impersonate=False, params={
         "action": "query", "list": "search", "srsearch": query,
         "srlimit": 1, "srnamespace": 0, "format": "json"})
-    if r.status_code != 200:
+    if r is None:
         return None
     hits = r.json().get("query", {}).get("search", [])
     return hits[0]["title"] if hits else None
@@ -103,8 +105,8 @@ def _json_to_long(items: list[dict], ticker: str) -> pd.DataFrame:
 def _fetch_article(article: str, start: str, end: str) -> list[dict]:
     """Network call, isolated for mocking. Returns the 'items' list ([] on miss)."""
     url = _API.format(article=requests.utils.quote(article, safe=""), start=start, end=end)
-    r = requests.get(url, headers=_HEADERS, timeout=30)
-    if r.status_code != 200:
+    r = ph.http_get(url, headers=_HEADERS, timeout=30, impersonate=False)   # shared anti-429
+    if r is None:
         return []
     return r.json().get("items", [])
 
@@ -166,7 +168,7 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
             continue
         if not long.empty:
             frames.append(long)
-        time.sleep(pause)
+        ph.sleep_pace(pause, _API)                       # per-host paced (honours 429 slowdown)
     print(f"Wikipedia: {skipped}/{len(names)} tickers already current (skipped).")
 
     parts = [df for df in (existing, *frames) if df is not None and not df.empty]

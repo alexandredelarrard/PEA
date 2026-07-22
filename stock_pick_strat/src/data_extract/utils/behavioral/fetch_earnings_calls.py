@@ -24,89 +24,27 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import random
 import re
-import time
 from pathlib import Path
 from tqdm import tqdm
 
 import pandas as pd
-import requests
-from curl_cffi import requests as cr
 from bs4 import BeautifulSoup
 
 from src.constants.constants import (
     EARNINGS_CALL_CACHE_DIR,
     EARNINGS_CALL_SECTIONS_TABLE,
     MOTLEY_FOOL_BASE_URL,
-    MOTLEY_FOOL_HEADERS,
     MOTLEY_FOOL_TRANSCRIPT_INDEX_URL,
 )
 from src.context import Context
+from src.utils import polite_http as ph
 
 logger = logging.getLogger(__name__)
 
 _BASE = MOTLEY_FOOL_BASE_URL
 _INDEX = MOTLEY_FOOL_TRANSCRIPT_INDEX_URL
-# fuller browser headers (fool.com is behind Cloudflare; UA-only requests are more
-# likely to be challenged). Extends the UA-only constant WITHOUT editing constants.py.
-_HEADERS = {**MOTLEY_FOOL_HEADERS,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Connection": "keep-alive"}
 _TABLE = EARNINGS_CALL_SECTIONS_TABLE
-
-# --- anti-429 transport ---------------------------------------------------- #
-# We COOPERATE with the rate limit (Cloudflare 429), we do NOT evade a ban: rotate a REAL
-# browser IMPERSONATION profile per request (curl_cffi -> a coherent UA+TLS+header
-# fingerprint, so the request looks like Chrome/Safari to Cloudflare, not a python-requests
-# JA3), honour Retry-After, back off exponentially WITH JITTER, and PERMANENTLY slow the whole
-# run after repeated 429s. Optional bring-your-own proxy via env (PEA_SCRAPE_PROXY / HTTPS_PROXY);
-# we deliberately do NOT ship or rotate anonymous/residential proxy pools.
-_IMPERSONATE_POOL = ("chrome124", "chrome123", "chrome120", "chrome131", "safari17_0", "edge101")
-_PROXY_ENV = ("PEA_SCRAPE_PROXY", "HTTPS_PROXY", "https_proxy")
-_PACE = {"mult": 1.0}          # run-wide slowdown multiplier, ratcheted up on each 429
-_PACE_CAP = 8.0
-_SESSION: requests.Session | None = None
-
-
-def _session() -> requests.Session:
-    """requests fallback session (used only if curl_cffi is unavailable)."""
-    global _SESSION
-    if _SESSION is None:
-        s = requests.Session()
-        s.headers.update(_HEADERS)
-        _SESSION = s
-    return _SESSION
-
-
-def _proxy() -> dict | None:
-    for k in _PROXY_ENV:
-        v = os.getenv(k)
-        if v:
-            return {"http": v, "https": v}
-    return None
-
-
-def _retry_after_seconds(resp) -> float | None:
-    """Parse a Retry-After header (delta-seconds or HTTP-date) into seconds, if present."""
-    try:
-        ra = resp.headers.get("Retry-After")
-    except Exception:
-        return None
-    if not ra:
-        return None
-    try:
-        return float(ra)
-    except (TypeError, ValueError):
-        try:
-            import datetime as _dt
-            from email.utils import parsedate_to_datetime
-            return max(0.0, (parsedate_to_datetime(ra)
-                             - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
-        except Exception:
-            return None
 
 # transcript-link path + the (year, month, day, slug, quarter, fiscal-year) groups
 _LINK_RE = re.compile(
@@ -136,66 +74,19 @@ def _load_index(path: Path) -> dict[str, dict]:
         return {}
 
 
-def _http_get(url: str, timeout: int):
-    """One GET via curl_cffi with a ROTATED browser impersonation (coherent UA+TLS+headers ->
-    looks like a real browser to Cloudflare); falls back to the requests session. Returns a
-    response (.status_code/.text/.headers) or None on a transport error."""
-    proxies = _proxy()
-    prof = random.choice(_IMPERSONATE_POOL)
-    try:
-        try:
-            return cr.get(url, impersonate=prof, timeout=timeout, proxies=proxies)
-        except Exception:                       # unknown profile / TLS quirk -> generic chrome
-            return cr.get(url, impersonate="chrome", timeout=timeout, proxies=proxies)
-    except Exception:
-        try:
-            return _session().get(url, timeout=timeout, proxies=proxies)
-        except Exception:
-            return None
-
-
 def _get(url: str, timeout: int = 30, retries: int = 4, backoff: float = 3.0,
          log_missing: bool = True) -> str | None:
-    """GET with browser-impersonation + adaptive rate-limit handling. On 429/403/5xx it
-    honours Retry-After, backs off exponentially WITH JITTER, and ratchets up a run-wide pace
-    multiplier so the whole crawl slows down after being throttled (the correct response to a
-    429 — cooperate, don't hammer). A terminal non-200 is logged unless `log_missing=False`
-    (the quiet wrong-exchange probe)."""
-    for attempt in range(retries + 1):
-        r = _http_get(url, timeout)
-        if r is None:                                    # transport error (all paths failed)
-            if attempt < retries:
-                time.sleep(backoff * (2 ** attempt) + random.uniform(0.5, 2.0))
-                continue
-            logger.warning("GET failed (transport) %s", url)
-            return None
-        code = getattr(r, "status_code", 0)
-        if code == 200:
-            return r.text
-        if code in (403, 429) or code >= 500:            # blocked / throttled / transient
-            if attempt < retries:
-                wait = max(_retry_after_seconds(r) or 0.0,
-                           backoff * (2 ** attempt)) + random.uniform(0.5, 2.5)
-                if code == 429:
-                    _PACE["mult"] = min(_PACE_CAP, _PACE["mult"] * 1.6)   # slow the WHOLE run
-                logger.warning("GET %s -> HTTP %d (rate-limited); wait %.1fs, run-pace x%.1f "
-                               "(retry %d/%d)", url, code, wait, _PACE["mult"], attempt + 1, retries)
-                time.sleep(wait)
-                continue
-            logger.warning("GET %s -> HTTP %d after %d retries; giving up. If this persists, "
-                           "lower the rate or set PEA_SCRAPE_PROXY.", url, code, retries)
-        elif log_missing:                                # 4xx that won't fix on retry (404 etc.)
-            logger.warning("GET %s -> HTTP %d", url, code)
-        return None
-    return None
+    """MF transcript GET -> HTML text on 200 (else None). Delegates to the SHARED anti-429
+    transport `src/utils/polite_http.py` (rotated real-browser impersonation for Cloudflare,
+    Retry-After, backoff+jitter, per-host slowdown, BYO proxy). `log_missing=False` silences
+    the expected wrong-exchange 404 when probing quote pages."""
+    return ph.get_text(url, timeout=timeout, retries=retries, backoff=backoff,
+                       impersonate=True, log_missing=log_missing)
 
 
 def _sleep_pace(base: float) -> None:
-    """Inter-request sleep = base * run-wide-pace-multiplier + jitter -> a non-robotic cadence
-    that also honours the post-429 slowdown. `base<=0` disables throttling (tests)."""
-    if base <= 0:
-        return
-    time.sleep(base * _PACE["mult"] + random.uniform(0.1, 0.7))
+    """Paced inter-request sleep for fool.com (shared per-host slowdown + jitter)."""
+    ph.sleep_pace(base, _BASE)
 
 
 # --------------------------------------------------------------------------- #
@@ -543,7 +434,7 @@ def download_transcripts(context: Context, tickers: list[str] | None = None,
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(html, encoding="utf-8")
         n += 1
-        time.sleep(pause)
+        _sleep_pace(pause)
     logger.info("Downloaded %d new transcripts (%d already cached) -> %s",
                    n, len(index) - n, cache_dir)
     return n

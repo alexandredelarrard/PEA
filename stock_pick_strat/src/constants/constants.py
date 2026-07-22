@@ -120,12 +120,17 @@ HF_TRANSCRIPTS_CACHE = "hf_sp500_transcripts.parquet"
 # live here so the GPU pass runs once; the cross-call KPIs (tone delta, Q&A gap,
 # length delta, vocabulary novelty) are cheap and derived at cube-build time.
 EARNINGS_CALL_SENTIMENT_TABLE = "earnings_call_sentiment"
-# OpenAI-embedding cache for earnings calls (one row per ticker / quarter / section, section in
-# {prepared_remarks, qa}). Stores the section's mean-pooled embedding + the Q&A-coherence stats
-# (n_qa, cosine(question, answer) mean/std) + which model produced it and when. Feeds the
-# quarter-to-quarter embedding-distance + Q&A-coherence cube features. See earnings_call_embeddings.py.
+# OpenAI-embedding cache for earnings calls: one row PER SPEAKER TURN (question / answer /
+# prepared), each with its own embedding + raw text + person + tag + exchange_idx (links a
+# question to its answer turns) + model/run stamp + as_of (call date). The Q&A-coherence
+# (cosine of a question vs its answer turns) + quarter-to-quarter drift cube features are
+# DERIVED from these turns at build time. See earnings_call_embeddings.py.
 EARNINGS_CALL_EMBEDDING_TABLE = "earning_calls_embedding"
 EARNINGS_CALL_EMBED_MODEL = "text-embedding-3-small"     # cheap, 1536-dim; cost-efficient default
+# per-turn `tag` values in EARNINGS_CALL_EMBEDDING_TABLE
+EARNINGS_CALL_TAG_QUESTION = "question"      # a sell-side analyst turn (asks)
+EARNINGS_CALL_TAG_ANSWER = "answer"          # a management turn answering the current question
+EARNINGS_CALL_TAG_PREPARED = "prepared"      # a prepared-remarks (scripted) management turn
 # Sections we score for tone (the high-signal prose); 'participants'/'full' are skipped
 # for KPIs ('full' stays in the sections table as a format-proof fallback).
 EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")

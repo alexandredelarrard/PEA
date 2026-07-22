@@ -95,10 +95,13 @@ def _load_index(path: Path) -> dict[str, dict]:
         return {}
 
 
-def _get(url: str, timeout: int = 30, retries: int = 3, backoff: float = 2.0) -> str | None:
+def _get(url: str, timeout: int = 30, retries: int = 3, backoff: float = 2.0,
+         log_missing: bool = True) -> str | None:
     """GET with retry + exponential backoff on rate-limit / transient errors. A non-200
     is LOGGED (not swallowed) so Cloudflare throttling — the classic "downloads stop after
-    N" symptom — is visible instead of silently returning None and dropping the record."""
+    N" symptom — is visible instead of silently returning None and dropping the record.
+    `log_missing=False` silences the 404 warning (used when probing a quote page across
+    candidate exchanges, where the wrong exchange 404 is expected)."""
     for attempt in range(retries + 1):
         try:
             r = _session().get(url, timeout=timeout)
@@ -115,7 +118,8 @@ def _get(url: str, timeout: int = 30, retries: int = 3, backoff: float = 2.0) ->
                                "throttling — raise `pause` / lower request rate)", url,
                                r.status_code, retries)
             else:                                        # 4xx that won't fix on retry (404 etc.)
-                logger.warning("GET %s -> HTTP %d", url, r.status_code)
+                if log_missing:
+                    logger.warning("GET %s -> HTTP %d", url, r.status_code)
             return None
         except Exception as e:                          # noqa: BLE001
             if attempt < retries:
@@ -241,6 +245,85 @@ def build_transcript_index(context: Context, tickers: list[str] | None = None,
     logger.warning("Transcript index: %d links across %d tickers (%d new this run) -> %s",
                    len(index), len({r["ticker"] for r in index.values()}),
                    len(index) - before, path)
+    return index
+
+
+# --------------------------------------------------------------------------- #
+# Stage 1b: TARGETED discovery via per-ticker quote pages (no global-feed cap)  #
+# --------------------------------------------------------------------------- #
+# Transcript path as it appears on a QUOTE page's raw text/JSON (not always href="...").
+_QUOTE_PATH_RE = re.compile(
+    r"/earnings/call-transcripts/\d{4}/\d{2}/\d{2}/[a-z0-9-]+?-q[1-4]-\d{4}-earnings-call-transcript")
+
+
+def _quote_links(html: str, slug_map: dict[str, str]) -> list[dict]:
+    """Transcript links on a company QUOTE page. Their URLs live in the page's raw
+    text/JSON, so match the transcript PATH directly (vs the index crawl's href regex),
+    then resolve each via `_parse_link`."""
+    recs, seen = [], set()
+    for m in _QUOTE_PATH_RE.finditer((html or "").lower()):
+        rec = _parse_link(m.group(0), slug_map)
+        if rec and rec["url"] not in seen:
+            seen.add(rec["url"])
+            recs.append(rec)
+    return recs
+
+
+def _quote_page(ticker: str, exchanges: tuple[str, ...]) -> tuple[str | None, str | None]:
+    """Fetch a ticker's MF quote page, trying each exchange until one resolves (the wrong
+    exchange 404s -- quietly, since it's an expected probe). `/quote/{exchange}/{ticker}/`
+    needs no company slug (MF redirects the slug form to it). Returns (html, exchange)."""
+    for exch in exchanges:
+        html = _get(f"{_BASE}/quote/{exch}/{ticker.lower()}/", log_missing=False)
+        if html:
+            return html, exch
+    return None, None
+
+
+def build_transcript_index_by_ticker(
+    context: Context, tickers: list[str] | None = None, since: str = "2025-01-01",
+    exchanges: tuple[str, ...] = ("nasdaq", "nyse"), pause: float = 0.6,
+) -> dict[str, dict]:
+    """TARGETED discovery for the RECENT gap: ONE request per ticker to its MF quote page
+    `fool.com/quote/{exchange}/{ticker}/`, which lists that name's recent transcript URLs
+    (exact date + slug already in them). Keeps links with `call_date >= since` and merges
+    them into the same big JSON. Unlike the global-feed crawl this is NOT capped at ~500
+    pages and is complete per ticker for the recent window -> use it to get EVERY S&P 500
+    call since `since` (default 2025-01-01). `tickers` restricts the universe (None = all)."""
+    universe = list(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
+    if tickers is not None:
+        keep = set(tickers)
+        universe = [t for t in universe if t in keep]
+    slug_map = _universe_slug_map(universe)
+    path = _index_path(context)
+    index = _load_index(path)
+    before = len(index)
+    since = str(since)
+
+    added_total, missing = 0, []
+    for tkr in tqdm(universe, "quote-page transcript urls"):
+        html, exch = _quote_page(tkr, exchanges)
+        if html is None:
+            missing.append(tkr)
+            continue
+        recs = [r for r in _quote_links(html, slug_map)
+                if r["ticker"] == tkr and r["call_date"] >= since]
+        added = 0
+        for r in recs:
+            if r["url"] not in index:
+                index[r["url"]] = r
+                added += 1
+        added_total += added
+        logger.info("MF quote %s (%s): %d links >= %s, %d new (index total %d)",
+                    tkr, exch, len(recs), since, added, len(index))
+        time.sleep(pause)
+
+    path.write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding="utf-8")
+    logger.warning("Quote-page discovery: +%d new links since %s (%d/%d tickers had no quote "
+                   "page) -> %s", added_total, since, len(missing), len(universe), path)
+    if missing:
+        logger.info("No MF quote page (exchange miss / not covered) for %d tickers: %s",
+                    len(missing), missing[:40])
     return index
 
 
@@ -383,21 +466,27 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None) ->
 
 
 def fetch_earnings_calls(context: Context, tickers: list[str] | None = None,
-                         limit: int | None = None, mf_history_years: float = 2.0,
-                         include_hf: bool = True) -> int:
-    """Full transcript pipeline. The HuggingFace dataset `kurry/sp500_earnings_transcripts`
-    is the 2005-2025 BACKBONE (deep history in one clean download); the Motley Fool crawl
-    only fills the RECENT gap past the dataset's ~2025 cut, bounded to `mf_history_years`
-    where MF's shallow crawl is reliable (going 15y deep on MF's global feed is impractical
-    and gets throttled). Every stage is incremental and deduped by (ticker, quarter).
-    `tickers` restricts to a subset (None = full universe); `limit` bounds the MF download
-    for a test; set `include_hf=False` to skip the backbone (MF-only)."""
+                         limit: int | None = None, include_hf: bool = True,
+                         recent_since: str = "2025-01-01", use_global_crawl: bool = False,
+                         mf_history_years: float = 2.0) -> int:
+    """Full transcript pipeline, combining the best free sources:
+      1. HuggingFace `kurry/sp500_earnings_transcripts` = clean 2005->Q1'25 BACKBONE.
+      2. Per-ticker QUOTE-PAGE discovery = COMPLETE Motley Fool transcripts since
+         `recent_since` (default 2025-01-01): one request per ticker, NOT capped at MF's
+         ~500-page global feed, so it fills the whole recent gap.
+      3. (optional) the legacy global-feed crawl (`use_global_crawl=True`) -- capped/partial,
+         kept only as a fallback.
+    Then download + ingest. Every stage is incremental and deduped by (ticker, quarter).
+    `tickers` restricts to a subset (None = full universe); `limit` bounds the download for a
+    test; `include_hf=False` skips the backbone."""
     saved = 0
     if include_hf:
         # deferred import: fetch_hf_transcripts imports helpers from THIS module
         from src.data_extract.utils.behavioral.fetch_hf_transcripts import ingest_hf_transcripts
         saved += ingest_hf_transcripts(context, tickers=tickers)
-    build_transcript_index(context, tickers=tickers, history_years=mf_history_years)
+    build_transcript_index_by_ticker(context, tickers=tickers, since=recent_since)
+    if use_global_crawl:
+        build_transcript_index(context, tickers=tickers, history_years=mf_history_years)
     download_transcripts(context, tickers=tickers, limit=limit)
     saved += ingest_earnings_calls(context, tickers=tickers)
     return saved

@@ -103,6 +103,7 @@ lgbm:
   - f_core_earnings_yield_xs
   - f_nonrecurring_pretax_share_xs
   - f_eps_expectation_growth_vs_peers
+  - f_days_since_earnings          # raw PEAD-timing counter (0->180); monotone-free (tree interaction)
   - f_intrinsic_yield_vs_peers
   - f_gross_profitability_xs
   - f_piotroski_f_score_xs

@@ -75,13 +75,15 @@ The pipeline is a chain of `Step` classes (base: `src/utils/step.py`), each with
 - When a helper is useful across folders, place it in `src/utils/` not inline
 - When a generic, reusable convention emerges from a request, **propose it and ask before adding it to this CLAUDE.md** — don't edit CLAUDE.md unprompted
 - Keep `CLAUDE.md`, `AGENTS.md`, and `README.md` in sync with the code: review them regularly and update them **in the same change** whenever the structure or conventions evolve (new step / table / package, moved module, new data source) — the `Code structure` section above must not drift
-
+- Always import packages at the start of the python file
+- When a function is used through different parts of the code, refactor and put the reusable function in utils
 ---
 
 ## What NOT to do
 
 - Do not replace OmegaConf with another config system
 - Do not restructure the Step inheritance pattern
+- Do not print, use logger.info from logging 
 - Do not cross-import between `src/` subfolders (e.g. data_extraction importing from modelling)
 - Do not hardcode strings or paths that belong in `src/constants/`
 - Do not reformat code unrelated to the current task

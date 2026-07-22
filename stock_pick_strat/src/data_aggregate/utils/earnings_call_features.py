@@ -130,6 +130,7 @@ def _per_call_kpis(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd
     with the smart KPIs. Cross-call KPIs (deltas, novelty) are computed per ticker in
     call order. Returns columns: ticker, as_of, ec_tone, ec_tone_delta, ec_qa_gap,
     ec_uncertainty, ec_length_delta, ec_vocab_novelty."""
+    
     s = sentiment.copy()
     s["net"] = s["sent_pos"].astype(float) - s["sent_neg"].astype(float)
     s["n_words"] = pd.to_numeric(s["n_words"], errors="coerce").fillna(0.0)

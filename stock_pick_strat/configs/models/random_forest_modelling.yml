@@ -9,332 +9,376 @@ random_forest:
   num_boost_round: 500         # number of bagged trees (RF: more trees lower variance, no overfit)
   bagging_fraction: 0.6        # row subsample per tree (REQUIRED for rf mode, with bagging_freq>0)
   bagging_freq: 1
-  feature_fraction: 0.4        # column subsample per tree -> decorrelates the trees
+  feature_fraction: 0.5        # column subsample per tree -> decorrelates the trees
   max_depth: 8                 # fuller trees than the GBDT; variance averaged out by bagging
   num_leaves: 127
   min_child_samples: 50
   lambda_l1: 0.0
   lambda_l2: 1.0
   columns:
-  - amihud_63
+  - mom_12_1
+  - rev_21
+  - vol_63
+  - max_21
+  - seasonal_h60
   - dollar_volume_63
-  - f_accruals_ratio_vs_peers
-  - f_accruals_ratio_xs
-  - f_accruals_vs_peers
-  - f_accruals_xs
-  - f_acquisition_intensity_vs_peers
+  - amihud_63
+  - rel_volume_5_63
+  - volume_trend_63
+  - volume_cv_63
+  - tax_loss_pressure
+  - peer_mom_63
+  - f_y_rev_growth_xs
+  - f_operating_margin_5y_chg_xs
+  - f_operating_leverage_xs
+  - f_revenue_per_employee_growth_xs
   - f_acquisition_intensity_xs
-  - f_adjusted_ebitda_margin_vs_peers
-  - f_adjusted_ebitda_margin_xs
-  - f_altman_z_vs_peers
-  - f_altman_z_xs
-  - f_aoci_to_equity_vs_peers
-  - f_aoci_to_equity_xs
-  - f_asset_age_vs_peers
-  - f_asset_age_xs
-  - f_asset_growth_vs_peers
-  - f_asset_growth_xs
-  - f_asset_turnover_vs_peers
-  - f_asset_turnover_xs
-  - f_attn_level_vs_peers
-  - f_attn_level_xs
-  - f_attn_spike_vs_peers
-  - f_attn_spike_xs
-  - f_beneish_m_score_vs_peers
-  - f_beneish_m_score_xs
-  - f_book_yield_vs_hist
-  - f_book_yield_vs_peers
-  - f_book_yield_xs
-  - f_buyback_intensity_vs_peers
-  - f_buyback_intensity_xs
-  - f_capex_intensity_vs_peers
-  - f_capex_intensity_xs
-  - f_capex_to_dep_vs_peers
-  - f_capex_to_dep_xs
-  - f_cash_conversion_cycle_vs_peers
-  - f_cash_conversion_cycle_xs
-  - f_cash_to_debt_vs_peers
-  - f_cash_to_debt_xs
-  - f_cluster_buying_vs_peers
-  - f_cluster_buying_xs
-  - f_core_earnings_yield_vs_hist
-  - f_core_earnings_yield_vs_peers
-  - f_core_earnings_yield_xs
-  - f_core_operating_margin_vs_peers
-  - f_core_operating_margin_xs
-  - f_core_profit_margin_vs_peers
-  - f_core_profit_margin_xs
-  - f_current_ratio_vs_peers
-  - f_current_ratio_xs
-  - f_da_minus_capex_growth_vs_peers
-  - f_da_minus_capex_growth_xs
-  - f_da_to_capex_vs_peers
-  - f_da_to_capex_xs
-  - f_days_inventory_outstanding_vs_peers
-  - f_days_inventory_outstanding_xs
-  - f_days_payable_outstanding_vs_peers
-  - f_days_payable_outstanding_xs
-  - f_days_sales_outstanding_vs_peers
-  - f_days_sales_outstanding_xs
-  - f_debtToEquity_vs_peers
-  - f_debtToEquity_xs
-  - f_deferred_rev_intensity_vs_peers
-  - f_deferred_rev_intensity_xs
-  - f_diluted_shares_growth_vs_peers
-  - f_diluted_shares_growth_xs
-  - f_dio_vs_peers
-  - f_dio_xs
-  - f_dividend_coverage_vs_peers
-  - f_dividend_coverage_xs
-  - f_dividend_growth_5y_vs_peers
-  - f_dividend_growth_5y_xs
-  - f_dividend_growth_vs_peers
-  - f_dividend_growth_xs
-  - f_dividend_payer_vs_peers
-  - f_dividend_payer_xs
-  - f_dividend_payout_ratio_vs_peers
-  - f_dividend_payout_ratio_xs
-  - f_dividend_yield_vs_peers
-  - f_dividend_yield_xs
-  - f_dpo_change_vs_peers
-  - f_dpo_change_xs
-  - f_dpo_vs_peers
-  - f_dpo_xs
-  - f_dso_change_vs_peers
-  - f_dso_change_xs
-  - f_dso_vs_peers
-  - f_dso_xs
-  - f_earningsGrowth_vs_peers
-  - f_earningsGrowth_xs
-  - f_earnings_quality_vs_peers
-  - f_earnings_quality_xs
-  - f_earnings_yield_vs_hist
-  - f_earnings_yield_vs_peers
-  - f_earnings_yield_xs
-  - f_ebit_interest_coverage_vs_peers
-  - f_ebit_interest_coverage_xs
-  - f_ebitda_to_ev_vs_hist
-  - f_ebitda_to_ev_vs_peers
+  - f_q_margin_vs_ttm_vs_peers
+  - f_rule_of_40_xs
+  - f_rpo_growth_xs
   - f_ebitda_to_ev_xs
-  - f_effective_tax_rate_vs_peers
-  - f_effective_tax_rate_xs
+  - f_fcf_to_ev_vs_hist
+  - f_pegy_xs
+  - f_core_earnings_yield_xs
+  - f_nonrecurring_pretax_share_xs
+  - f_eps_expectation_growth_vs_peers
+  - f_days_since_earnings          # raw PEAD-timing counter (0->180); monotone-free (tree interaction)
+  - f_intrinsic_yield_vs_peers
+  - f_gross_profitability_xs
+  - f_piotroski_f_score_xs
+  - f_goodwill_intangibles_to_assets_vs_peers
+  - f_rd_intensity_vs_peers
+  - f_capitalized_software_intensity_vs_peers
+  - f_shareholder_yield_xs
+  - f_da_to_capex_xs
+  - f_shares_growth_xs
+  - f_sbc_to_ocf_xs
+  - f_dividend_growth_5y_xs
+  - f_interest_coverage_vs_peers
+  - f_net_debt_to_ebitda_xs
+  - f_refinancing_risk_xs
+  - f_ceo_tenure_vs_peers
+  - f_pct_female_directors_vs_peers
+  - f_insider_net_buy_ratio_xs
+  - f_inst_flow_to_mcap_xs
+  - f_super_new_buyer_ratio_vs_peers
+  - f_super_flow_to_mcap_xs
+  - f_short_vol_ratio_xs
+  - f_short_vol_ratio_chg_xs
+  - f_fails_to_deliver_ratio_xs
+  - f_attn_spike_xs
+  - f_ec_tone_xs
+  - f_ec_tone_delta_xs
+  - f_ec_qa_gap_xs
+  - f_ec_uncertainty_xs
+  - f_ec_vocab_novelty_xs
+  - f_ec_length_delta_xs
+  - f_tier1_capital_ratio_xs
+  - f_combined_ratio_xs
+  - f_nii_growth_xs
+  - f_book_value_growth_xs
+  - f_premium_growth_xs
+  - f_float_growth_xs
+  - f_affo_dividend_coverage_xs
+
+  - f_altman_z_vs_peers
+  - f_acquisition_intensity_xs
+  - f_dividend_growth_5y_vs_peers
   - f_employee_growth_vs_peers
   - f_employee_growth_xs
-  - f_eps_expectation_growth_vs_peers
   - f_eps_expectation_growth_xs
-  - f_eps_surprise_4q_avg_vs_peers
-  - f_eps_surprise_4q_avg_xs
-  - f_eps_surprise_last_vs_peers
-  - f_eps_surprise_last_xs
-  - f_exiters_vs_peers
-  - f_exiters_xs
-  - f_fails_to_deliver_chg_vs_peers
-  - f_fails_to_deliver_chg_xs
-  - f_fails_to_deliver_ratio_vs_peers
-  - f_fails_to_deliver_ratio_xs
-  - f_fcf_growth_vs_peers
-  - f_fcf_growth_xs
-  - f_fcf_margin_vs_peers
-  - f_fcf_margin_xs
-  - f_fcf_positive
-  - f_fcf_to_ev_vs_hist
-  - f_fcf_to_ev_vs_peers
-  - f_fcf_to_ev_xs
-  - f_fcf_yield_vs_hist
-  - f_fcf_yield_vs_peers
-  - f_fcf_yield_xs
-  - f_fixed_cost_coverage_margin_vs_peers
-  - f_fixed_cost_coverage_margin_xs
-  - f_forward_earnings_yield_vs_peers
-  - f_forward_earnings_yield_xs
-  - f_fwd_eps_yield_vs_peers
-  - f_fwd_eps_yield_xs
-  - f_gmroi_vs_peers
-  - f_gmroi_xs
-  - f_goodwill_growth_vs_peers
-  - f_goodwill_growth_xs
-  - f_goodwill_impairment_intensity_xs
-  - f_goodwill_intangibles_to_assets_vs_peers
-  - f_goodwill_intangibles_to_assets_xs
-  - f_goodwill_roic_drag_vs_peers
-  - f_goodwill_roic_drag_xs
-  - f_goodwill_to_equity_vs_peers
-  - f_goodwill_to_equity_xs
-  - f_grossMargins_vs_peers
-  - f_grossMargins_xs
-  - f_gross_margin_chg_vs_peers
-  - f_gross_margin_chg_xs
-  - f_gross_profitability_vs_peers
-  - f_gross_profitability_xs
-  - f_headcount_elasticity_vs_peers
-  - f_headcount_elasticity_xs
-  - f_hyper_growth
-  - f_implied_useful_life_vs_peers
-  - f_implied_useful_life_xs
-  - f_insider_buy_count_vs_peers
-  - f_insider_buy_count_xs
-  - f_insider_buy_sell_count_ratio_vs_peers
-  - f_insider_buy_sell_count_ratio_xs
-  - f_insider_net_buy_ratio_vs_peers
-  - f_insider_net_buy_ratio_xs
   - f_insider_net_buy_to_mcap_vs_peers
   - f_insider_net_buy_to_mcap_xs
-  - f_inst_breadth_chg_vs_peers
-  - f_inst_breadth_chg_xs
-  - f_inst_concentration_vs_peers
-  - f_inst_concentration_xs
-  - f_inst_flow_to_mcap_vs_peers
-  - f_inst_flow_to_mcap_xs
-  - f_inst_holders_vs_peers
-  - f_inst_holders_xs
-  - f_inst_ownership_pct_vs_peers
-  - f_inst_ownership_pct_xs
-  - f_inst_shares_chg_vs_peers
-  - f_inst_shares_chg_xs
-  - f_inst_value_chg_vs_peers
-  - f_inst_value_chg_xs
-  - f_inst_value_to_mcap_vs_peers
-  - f_inst_value_to_mcap_xs
-  - f_intangible_amortization_share_vs_peers
-  - f_intangible_amortization_share_xs
-  - f_interest_coverage_vs_peers
-  - f_interest_coverage_xs
-  - f_intrinsic_yield_vs_hist
-  - f_intrinsic_yield_vs_peers
-  - f_intrinsic_yield_xs
-  - f_margin_expansion_delta_vs_peers
-  - f_margin_expansion_delta_xs
-  - f_negative_equity
-  - f_net_debt_incl_offbs_to_ebitda_vs_peers
-  - f_net_debt_incl_offbs_to_ebitda_xs
   - f_net_debt_to_ebitda_vs_peers
-  - f_net_debt_to_ebitda_xs
-  - f_net_options_ratio_chg_vs_peers
-  - f_net_options_ratio_chg_xs
-  - f_net_options_ratio_vs_peers
-  - f_net_options_ratio_xs
-  - f_new_buyer_ratio_vs_peers
-  - f_new_buyer_ratio_xs
-  - f_new_buyers_vs_peers
-  - f_new_buyers_xs
-  - f_nonrecurring_pretax_share_vs_peers
-  - f_nonrecurring_pretax_share_xs
-  - f_nwc_elasticity_vs_peers
-  - f_nwc_elasticity_xs
-  - f_operatingMargins_vs_peers
-  - f_operatingMargins_xs
-  - f_operating_leverage_elasticity_vs_peers
-  - f_operating_leverage_elasticity_xs
-  - f_operating_leverage_vs_peers
-  - f_operating_leverage_xs
-  - f_operating_margin_5y_chg_vs_peers
-  - f_operating_margin_5y_chg_xs
-  - f_patent_cliff_vs_peers
-  - f_patent_cliff_xs
-  - f_payout_ratio_vs_peers
-  - f_payout_ratio_xs
-  - f_pegy_vs_peers
-  - f_pegy_xs
   - f_piotroski_f_score_vs_peers
-  - f_piotroski_f_score_xs
   - f_profitMargins_vs_peers
   - f_profitMargins_xs
   - f_profitable
-  - f_q_earnings_growth_vs_peers
-  - f_q_earnings_growth_xs
-  - f_q_margin_vs_ttm_vs_peers
-  - f_q_margin_vs_ttm_xs
-  - f_q_rev_growth_vs_peers
-  - f_q_rev_growth_xs
-  - f_rd_capitalized_roic_vs_peers
-  - f_rd_capitalized_roic_xs
-  - f_rd_intensity_vs_peers
-  - f_rd_intensity_xs
-  - f_refinancing_risk_vs_peers
-  - f_refinancing_risk_xs
-  - f_reinvestment_rate_vs_peers
-  - f_reinvestment_rate_xs
-  - f_returnOnEquity_vs_peers
-  - f_returnOnEquity_xs
-  - f_rev_growth_accel_vs_peers
-  - f_rev_growth_accel_xs
-  - f_revenueGrowth_vs_peers
-  - f_revenueGrowth_xs
-  - f_revenue_per_employee_growth_vs_peers
-  - f_revenue_per_employee_growth_xs
-  - f_revenue_per_employee_vs_peers
-  - f_revenue_per_employee_xs
-  - f_roic_ex_goodwill_vs_peers
-  - f_roic_ex_goodwill_xs
-  - f_roic_incl_goodwill_vs_peers
-  - f_roic_incl_goodwill_xs
-  - f_roic_vs_peers
-  - f_roic_xs
-  - f_rule_of_40_vs_peers
-  - f_rule_of_40_xs
-  - f_sales_yield_vs_hist
-  - f_sales_yield_vs_peers
-  - f_sales_yield_xs
-  - f_sbc_intensity_vs_peers
-  - f_sbc_intensity_xs
-  - f_sbc_to_buyback_vs_peers
-  - f_sbc_to_buyback_xs
-  - f_sbc_to_ocf_vs_peers
-  - f_sbc_to_ocf_xs
   - f_sga_elasticity_vs_peers
   - f_sga_elasticity_xs
-  - f_sga_growth_vs_peers
-  - f_sga_growth_xs
-  - f_sga_intensity_vs_peers
-  - f_sga_intensity_xs
-  - f_shareholder_yield_vs_peers
-  - f_shareholder_yield_xs
-  - f_shares_growth_vs_peers
-  - f_shares_growth_xs
-  - f_short_vol_ratio_chg_vs_peers
-  - f_short_vol_ratio_chg_xs
-  - f_short_vol_ratio_vs_peers
-  - f_short_vol_ratio_xs
-  - f_special_items_intensity_vs_peers
-  - f_special_items_intensity_xs
-  - f_super_breadth_chg_vs_peers
-  - f_super_breadth_chg_xs
-  - f_super_cluster_buying_vs_peers
-  - f_super_cluster_buying_xs
-  - f_super_flow_to_mcap_vs_peers
-  - f_super_flow_to_mcap_xs
-  - f_super_holders_vs_peers
-  - f_super_holders_xs
   - f_super_new_buyer_ratio_vs_peers
   - f_super_new_buyer_ratio_xs
-  - f_super_shares_chg_vs_peers
-  - f_super_shares_chg_xs
-  - f_super_value_chg_vs_peers
-  - f_super_value_chg_xs
-  - f_super_value_to_mcap_vs_peers
-  - f_super_value_to_mcap_xs
-  - f_sustainable_growth_rate_vs_peers
-  - f_sustainable_growth_rate_xs
-  - f_useful_life_change_vs_peers
-  - f_useful_life_change_xs
-  - f_y_earnings_growth_vs_peers
-  - f_y_earnings_growth_xs
-  - f_y_margin_vs_ttm_vs_peers
-  - f_y_margin_vs_ttm_xs
-  - f_y_rev_growth_accel_vs_peers
-  - f_y_rev_growth_accel_xs
-  - f_y_rev_growth_vs_peers
-  - f_y_rev_growth_xs
-  - max_21
-  - mom_12_1
-  - peer_mom_63
-  - rel_volume_5_63
-  - rev_21
-  - seasonal_h30
-  - seasonal_h60
-  - seasonal_h90
-  - signed_vol_63
-  - tax_loss_pressure
-  - vol_63
-  - volume_cv_63
-  - volume_trend_63
+  - f_core_earnings_yield_vs_hist
+  - f_ebitda_to_ev_vs_hist
+  - f_roic_ex_goodwill_vs_peers
+  - f_roic_ex_goodwill_xs
+
+  # - dollar_volume_63
+  # - amihud_63
+  # - f_ceo_tenure_vs_peers
+  # - f_pct_female_directors_vs_peers
+  # - f_accruals_xs
+  # - f_accruals_ratio_vs_peers
+  # - f_acquisition_intensity_vs_peers
+  # - f_acquisition_intensity_xs
+  # - f_adjusted_ebitda_margin_xs
+  # - f_altman_z_vs_peers
+  # - f_altman_z_xs
+  # - f_aoci_to_equity_vs_peers
+  # - f_aoci_to_equity_xs
+  # - f_asset_age_vs_peers
+  # - f_asset_growth_xs
+  # - f_asset_turnover_vs_peers
+  # - f_asset_turnover_xs
+  # - f_attn_level_xs
+  # - f_attn_spike_xs
+  # - f_beneish_m_score_vs_peers
+  # - f_beneish_m_score_xs
+  # - f_book_yield_vs_hist
+  # - f_book_yield_vs_peers
+  # - f_buyback_intensity_vs_peers
+  # - f_buyback_intensity_xs
+  # - f_capex_intensity_vs_peers
+  # - f_capex_intensity_xs
+  # - f_capex_to_dep_xs
+  # - f_cash_conversion_cycle_xs
+  # - f_cash_to_debt_vs_peers
+  # - f_cash_to_debt_xs
+  # - f_cluster_buying_vs_peers
+  # - f_core_earnings_yield_vs_hist
+  # - f_core_earnings_yield_vs_peers
+  # - f_core_operating_margin_vs_peers
+  # - f_core_operating_margin_xs
+  # - f_core_profit_margin_xs
+  # - f_current_ratio_xs
+  # - f_da_to_capex_vs_peers
+  # - f_da_to_capex_xs
+  # - f_days_inventory_outstanding_vs_peers
+  # - f_days_payable_outstanding_xs
+  # - f_days_sales_outstanding_xs
+  # - f_debtToEquity_vs_peers
+  # - f_deferred_rev_intensity_vs_peers
+  # - f_deferred_rev_intensity_xs
+  # - f_diluted_shares_growth_vs_peers
+  # - f_diluted_shares_growth_xs
+  # - f_dio_vs_peers
+  # - f_dio_xs
+  # - f_dividend_growth_5y_vs_peers
+  # - f_dividend_growth_5y_xs
+  # - f_dividend_payout_ratio_vs_peers
+  # - f_dividend_payout_ratio_xs
+  # - f_dpo_vs_peers
+  # - f_dpo_xs
+  # - f_dso_change_vs_peers
+  # - f_dso_change_xs
+  # - f_dso_vs_peers
+  # - f_dso_xs
+  # - f_earningsGrowth_vs_peers
+  # - f_earningsGrowth_xs
+  # - f_ebit_interest_coverage_vs_peers
+  # - f_ebit_interest_coverage_xs
+  # - f_ebitda_to_ev_vs_hist
+  # - f_ebitda_to_ev_vs_peers
+  # - f_ebitda_to_ev_xs
+  # - f_effective_tax_rate_vs_peers
+  # - f_effective_tax_rate_xs
+  # - f_employee_growth_vs_peers
+  # - f_employee_growth_xs
+  # - f_eps_expectation_growth_vs_peers
+  # - f_eps_expectation_growth_xs
+  # - f_eps_surprise_4q_avg_vs_peers
+  # - f_eps_surprise_4q_avg_xs
+  # - f_exiters_vs_peers
+  # - f_exiters_xs
+  # - f_fails_to_deliver_chg_vs_peers
+  # - f_fails_to_deliver_chg_xs
+  # - f_fails_to_deliver_ratio_vs_peers
+  # - f_fails_to_deliver_ratio_xs
+  # - f_fcf_growth_vs_peers
+  # - f_fcf_growth_xs
+  # - f_fcf_margin_vs_peers
+  # - f_fcf_margin_xs
+  # - f_fcf_positive
+  # - f_fcf_to_ev_vs_hist
+  # - f_fcf_to_ev_vs_peers
+  # - f_fcf_yield_vs_hist
+  # - f_fcf_yield_vs_peers
+  # - f_fixed_cost_coverage_margin_vs_peers
+  # - f_fixed_cost_coverage_margin_xs
+  # - f_forward_earnings_yield_vs_peers
+  # - f_forward_earnings_yield_xs
+  # - f_fwd_eps_yield_vs_peers
+  # - f_fwd_eps_yield_xs
+  # - f_gmroi_vs_peers
+  # - f_gmroi_xs
+  # - f_goodwill_growth_vs_peers
+  # - f_goodwill_growth_xs
+  # - f_goodwill_impairment_intensity_xs
+  # - f_goodwill_intangibles_to_assets_vs_peers
+  # - f_goodwill_intangibles_to_assets_xs
+  # - f_goodwill_roic_drag_vs_peers
+  # - f_goodwill_roic_drag_xs
+  # - f_goodwill_to_equity_vs_peers
+  # - f_goodwill_to_equity_xs
+  # - f_grossMargins_vs_peers
+  # - f_grossMargins_xs
+  # - f_gross_margin_chg_vs_peers
+  # - f_gross_margin_chg_xs
+  # - f_gross_profitability_vs_peers
+  # - f_gross_profitability_xs
+  # - f_headcount_elasticity_vs_peers
+  # - f_headcount_elasticity_xs
+  # - f_hyper_growth
+  # - f_implied_useful_life_vs_peers
+  # - f_implied_useful_life_xs
+  # - f_insider_buy_count_vs_peers
+  # - f_insider_buy_count_xs
+  # - f_insider_buy_sell_count_ratio_vs_peers
+  # - f_insider_buy_sell_count_ratio_xs
+  # - f_insider_net_buy_ratio_vs_peers
+  # - f_insider_net_buy_ratio_xs
+  # - f_insider_net_buy_to_mcap_vs_peers
+  # - f_insider_net_buy_to_mcap_xs
+  # - f_inst_breadth_chg_vs_peers
+  # - f_inst_breadth_chg_xs
+  # - f_inst_concentration_vs_peers
+  # - f_inst_concentration_xs
+  # - f_inst_flow_to_mcap_vs_peers
+  # - f_inst_flow_to_mcap_xs
+  # - f_inst_holders_vs_peers
+  # - f_inst_holders_xs
+  # - f_inst_ownership_pct_vs_peers
+  # - f_inst_ownership_pct_xs
+  # - f_inst_shares_chg_vs_peers
+  # - f_inst_shares_chg_xs
+  # - f_inst_value_chg_vs_peers
+  # - f_inst_value_chg_xs
+  # - f_inst_value_to_mcap_vs_peers
+  # - f_inst_value_to_mcap_xs
+  # - f_intangible_amortization_share_vs_peers
+  # - f_intangible_amortization_share_xs
+  # - f_interest_coverage_vs_peers
+  # - f_interest_coverage_xs
+  # - f_intrinsic_yield_vs_hist
+  # - f_intrinsic_yield_vs_peers
+  # - f_intrinsic_yield_xs
+  # - f_margin_expansion_delta_vs_peers
+  # - f_margin_expansion_delta_xs
+  # - f_negative_equity
+  # - f_net_debt_incl_offbs_to_ebitda_vs_peers
+  # - f_net_debt_incl_offbs_to_ebitda_xs
+  # - f_net_debt_to_ebitda_vs_peers
+  # - f_net_debt_to_ebitda_xs
+  # - f_net_options_ratio_chg_vs_peers
+  # - f_net_options_ratio_chg_xs
+  # - f_net_options_ratio_vs_peers
+  # - f_net_options_ratio_xs
+  # - f_new_buyer_ratio_vs_peers
+  # - f_new_buyer_ratio_xs
+  # - f_new_buyers_vs_peers
+  # - f_new_buyers_xs
+  # - f_nonrecurring_pretax_share_vs_peers
+  # - f_nonrecurring_pretax_share_xs
+  # - f_nwc_elasticity_vs_peers
+  # - f_nwc_elasticity_xs
+  # - f_operatingMargins_vs_peers
+  # - f_operatingMargins_xs
+  # - f_operating_leverage_elasticity_vs_peers
+  # - f_operating_leverage_elasticity_xs
+  # - f_operating_leverage_vs_peers
+  # - f_operating_leverage_xs
+  # - f_operating_margin_5y_chg_vs_peers
+  # - f_operating_margin_5y_chg_xs
+  # - f_patent_cliff_vs_peers
+  # - f_patent_cliff_xs
+  # - f_payout_ratio_vs_peers
+  # - f_payout_ratio_xs
+  # - f_pegy_vs_peers
+  # - f_pegy_xs
+  # - f_piotroski_f_score_vs_peers
+  # - f_piotroski_f_score_xs
+  # - f_profitMargins_vs_peers
+  # - f_profitMargins_xs
+  # - f_profitable
+  # - f_q_earnings_growth_vs_peers
+  # - f_q_earnings_growth_xs
+  # - f_rd_intensity_vs_peers
+  # - f_rd_intensity_xs
+  # - f_refinancing_risk_vs_peers
+  # - f_refinancing_risk_xs
+  # - f_reinvestment_rate_vs_peers
+  # - f_reinvestment_rate_xs
+  # - f_returnOnEquity_vs_peers
+  # - f_returnOnEquity_xs
+  # - f_rev_growth_accel_vs_peers
+  # - f_rev_growth_accel_xs
+  # - f_revenueGrowth_vs_peers
+  # - f_revenueGrowth_xs
+  # - f_revenue_per_employee_growth_vs_peers
+  # - f_revenue_per_employee_growth_xs
+  # - f_revenue_per_employee_vs_peers
+  # - f_revenue_per_employee_xs
+  # - f_roic_ex_goodwill_vs_peers
+  # - f_roic_ex_goodwill_xs
+  # - f_roic_incl_goodwill_vs_peers
+  # - f_roic_incl_goodwill_xs
+  # - f_roic_vs_peers
+  # - f_roic_xs
+  # - f_rule_of_40_vs_peers
+  # - f_rule_of_40_xs
+  # - f_sales_yield_vs_hist
+  # - f_sales_yield_vs_peers
+  # - f_sales_yield_xs
+  # - f_sbc_intensity_vs_peers
+  # - f_sbc_intensity_xs
+  # - f_sbc_to_buyback_vs_peers
+  # - f_sbc_to_buyback_xs
+  # - f_sbc_to_ocf_vs_peers
+  # - f_sbc_to_ocf_xs
+  # - f_sga_elasticity_vs_peers
+  # - f_sga_elasticity_xs
+  # - f_sga_growth_vs_peers
+  # - f_sga_growth_xs
+  # - f_sga_intensity_vs_peers
+  # - f_sga_intensity_xs
+  # - f_shareholder_yield_vs_peers
+  # - f_shareholder_yield_xs
+  # - f_shares_growth_vs_peers
+  # - f_shares_growth_xs
+  # - f_short_vol_ratio_chg_vs_peers
+  # - f_short_vol_ratio_chg_xs
+  # - f_short_vol_ratio_vs_peers
+  # - f_short_vol_ratio_xs
+  # - f_special_items_intensity_vs_peers
+  # - f_special_items_intensity_xs
+  # - f_super_breadth_chg_vs_peers
+  # - f_super_breadth_chg_xs
+  # - f_super_cluster_buying_vs_peers
+  # - f_super_cluster_buying_xs
+  # - f_super_flow_to_mcap_vs_peers
+  # - f_super_flow_to_mcap_xs
+  # - f_super_holders_vs_peers
+  # - f_super_holders_xs
+  # - f_super_new_buyer_ratio_vs_peers
+  # - f_super_new_buyer_ratio_xs
+  # - f_super_shares_chg_vs_peers
+  # - f_super_shares_chg_xs
+  # - f_super_value_chg_vs_peers
+  # - f_super_value_chg_xs
+  # - f_super_value_to_mcap_vs_peers
+  # - f_super_value_to_mcap_xs
+  # - f_sustainable_growth_rate_vs_peers
+  # - f_sustainable_growth_rate_xs
+  # - f_useful_life_change_vs_peers
+  # - f_useful_life_change_xs
+  # - f_y_earnings_growth_vs_peers
+  # - f_y_earnings_growth_xs
+  # - f_y_margin_vs_ttm_vs_peers
+  # - f_y_margin_vs_ttm_xs
+  # - f_y_rev_growth_accel_vs_peers
+  # - f_y_rev_growth_accel_xs
+  # - f_y_rev_growth_vs_peers
+  # - f_y_rev_growth_xs
+  # - max_21
+  # - mom_12_1
+  # - peer_mom_63
+  # - rel_volume_5_63
+  # - rev_21
+  # - seasonal_h30
+  # - seasonal_h60
+  # - seasonal_h90
+  # - signed_vol_63
+  # - tax_loss_pressure
+  # - vol_63
+  # - volume_cv_63
+  # - volume_trend_63

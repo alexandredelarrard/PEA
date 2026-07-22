@@ -314,8 +314,6 @@ def build_transcript_index_by_ticker(
                 index[r["url"]] = r
                 added += 1
         added_total += added
-        logger.info("MF quote %s (%s): %d links >= %s, %d new (index total %d)",
-                    tkr, exch, len(recs), since, added, len(index))
         time.sleep(pause)
 
     path.write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding="utf-8")

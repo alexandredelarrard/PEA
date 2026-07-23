@@ -34,6 +34,29 @@ def test_trade_blotter_math():
           f"spread ${d1.loc['AAA','spread_usd']:.0f}); day3 AAA SELL $50k; zero-trades dropped. Validated.")
 
 
+def test_shares_and_transition():
+    idx = pd.bdate_range("2024-01-01", periods=3)
+    # AAA: held (w=0.10) then dropped day3 ; BBB: new only on day3 (w=0.20). Prices drift.
+    w = pd.DataFrame({"AAA": [0.10, 0.10, 0.00], "BBB": [0.00, 0.00, 0.20]}, index=idx)
+    px = pd.DataFrame({"AAA": [10.0, 12.5, 12.0], "BBB": [5.0, 5.0, 5.0]}, index=idx)
+    bl = trade_blotter(w, capital=1_000_000, fee_bps=2.0, spread_bps=8.0, sleeve="ls_equity", prices=px)
+    g = bl.set_index(["date", "instrument"])
+
+    # day1: BUY 10,000 shares of AAA ($100k / $10)
+    assert g.loc[(idx[0], "AAA"), "shares_traded"] == 10_000 and g.loc[(idx[0], "AAA"), "side"] == "BUY"
+    # day2: $ position unchanged ($100k) but price rose 10->12.5 => hold 8,000 shares => SELL 2,000
+    assert g.loc[(idx[1], "AAA"), "shares_traded"] == -2_000        # price-drift share rebalance
+    assert g.loc[(idx[1], "AAA"), "traded_usd"] == -25_000
+    # day3: AAA fully EXITED (sell the 8,000 held) AND BBB NEWLY BOUGHT (40,000) -> two moves, two fees
+    assert g.loc[(idx[2], "AAA"), "shares_traded"] == -8_000 and g.loc[(idx[2], "AAA"), "side"] == "SELL"
+    assert g.loc[(idx[2], "BBB"), "shares_traded"] == 40_000 and g.loc[(idx[2], "BBB"), "side"] == "BUY"
+    assert g.loc[(idx[2], "AAA"), "fee_usd"] == abs(-8_000 * 12.0) * 2e-4    # fee per move on shares·price
+
+    print("\n=== SANITY CHECK: share-accurate blotter + transitions ===")
+    print(f"  day1 BUY 10,000 AAA; day2 SELL 2,000 AAA (price drift 10->12.5 at constant $100k); "
+          f"day3 SELL 8,000 AAA (exit) + BUY 40,000 BBB (new) — each a separate move+fee. Validated.")
+
+
 def test_write_trades_excel(tmp_path):
     idx = pd.bdate_range("2024-01-01", periods=3)
     w = pd.DataFrame({"AAA": [0.1, 0.2, 0.1]}, index=idx)

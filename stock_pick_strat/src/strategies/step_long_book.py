@@ -63,12 +63,19 @@ class LongBookStrategy(Strategy):
             extra["analysis"] = analyze_long_book(rets, out_dir)   # FULL-history asset-class corr
             self._log.info("long_book analysis: avg pairwise corr %.2f -> %s",
                            extra["analysis"]["avg_pairwise_corr"], out_dir)
-        # trade blotter: levered risky weights + cash residual, $-sized on the sleeve capital
+        # trade blotter: levered risky weights + cash residual, share-accurate on the asset LEVELS
+        # (equity_tr/gold/energy/bond_10y_tr/fx_usdeur — renamed to the alloc's asset labels; cash
+        # has no price -> reported in $ only, no fee).
         from src.strategies.utils.blotter import trade_blotter
+        _lvl = {"equity": "equity_tr", "gold": "gold", "energy": "energy",
+                "bond": "bond_10y_tr", "fx": "fx_usdeur"}
+        dd = df.copy(); dd["date"] = pd.to_datetime(dd["date"]); dd = dd.sort_values("date").set_index("date")
+        levels = pd.DataFrame({k: dd[v].astype(float) for k, v in _lvl.items() if v in dd.columns})
         wl = res["weights"].copy(); wl["cash"] = res["alloc_cash"]
         trades = trade_blotter(_slice(wl, inputs.start, inputs.end), inputs.capital,
                                float(c.get("fee_bps", inputs.fee_bps)),
-                               float(c.get("spread_bps", inputs.spread_bps)), self.name)
+                               float(c.get("spread_bps", inputs.spread_bps)), self.name,
+                               prices=levels)
         return StrategyResult(name=self.name, returns=ret,
                               metrics=series_metrics(ret, inputs.risk_free_rate),
                               positions=_slice(alloc, inputs.start, inputs.end),

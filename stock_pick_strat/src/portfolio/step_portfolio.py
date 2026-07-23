@@ -80,6 +80,10 @@ class StepPortfolio(Step):
                 self.results[n] = res
             else:
                 self._log.warning("sleeve '%s' produced an empty return stream — skipped", n)
+        self.requested_sleeves = names
+        self.dropped_sleeves = [n for n in names if n not in streams]     # requested but no data
+        if self.dropped_sleeves:
+            self._log.warning("sleeves DROPPED (no data in window): %s", self.dropped_sleeves)
         if len(streams) < 2:
             raise RuntimeError(f"portfolio needs >=2 sleeves with data, got {list(streams)}")
 

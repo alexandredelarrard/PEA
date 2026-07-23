@@ -106,3 +106,35 @@ backtest:
     spread_bps: 8.0
     risk_free_rate: 0.02         # for the Sharpe numerator
     starting_capital: 1000000
+
+  # --- UNIFIED 3-STRATEGY portfolio backtest (StepPortfolioBacktest) -----------
+  # Blend the three strategy sleeves' daily return streams into one book: risk-parity
+  # (inverse-vol EWMA) or ERC across sleeves + one global vol target / leverage. Each sleeve
+  # runs its own prediction/weighting internally (ls_equity wraps the trained L/S models,
+  # long_book the macro allocation, trend_cta a long/short CTA on the macro assets). L/S is
+  # out-of-sample only (starts at the model train_end). See src/post_processing/backtest/.
+  portfolio_backtest:
+    enabled: true
+    start: "2023-01-01"
+    end: null                    # null -> last common date
+    sleeves: [ls_equity, long_book, trend_cta]
+    scheme: erc                  # erc (correlation-aware) | inverse_vol  — across SLEEVES
+    cov_mode: ewma               # ewma | std — sleeve covariance for the mix
+    cov_halflife: 63
+    vol_window: 63               # trailing window for the sleeve mix + global vol
+    rebalance_freq: 21           # recompute sleeve mix every N days
+    portfolio_vol_target: 0.10   # GLOBAL annualized volatility target (adjustable)
+    max_leverage: 2.0            # GLOBAL leverage cap (adjustable)
+    risk_free_rate: 0.02
+    starting_capital: 1000000
+    # trend_cta sleeve — self-contained long/short book on the macro_asset_prices assets
+    trend:
+      include_fx: true
+      lookbacks: [63, 126, 252]  # 3/6/12m multi-speed TSMOM
+      vol_window: 63
+      signal_cap: 2.0
+      per_asset_vol_target: 0.15
+      sleeve_vol_target: 0.10    # trailing-vol-scale the whole CTA book to ~this ann-vol
+      rebalance_freq: 5
+      fee_bps: 2.0
+      spread_bps: 8.0

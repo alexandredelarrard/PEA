@@ -3,7 +3,7 @@
 -- Every statement is idempotent (CREATE TABLE/INDEX IF NOT EXISTS).
 
 
--- [reference] sp500_tickers  (pk: ticker)
+-- [reference] sp500_tickers  (pk: ticker; from live DB)
 
 CREATE TABLE IF NOT EXISTS "sp500_tickers" (
     "ticker" TEXT NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS "sp500_tickers" (
     PRIMARY KEY ("ticker")
 );
 
--- [extract] prices  (pk: ticker, date)
+-- [extract] prices  (pk: ticker, date; from live DB)
 
 CREATE TABLE IF NOT EXISTS "prices" (
     "date" TIMESTAMP NOT NULL,
@@ -25,10 +25,11 @@ CREATE TABLE IF NOT EXISTS "prices" (
     "close" DOUBLE PRECISION,
     "volume" DOUBLE PRECISION,
     "ticker" TEXT NOT NULL,
+    "capital gains" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] dividends  (pk: ticker, date)
+-- [extract] dividends  (pk: ticker, date; from live DB)
 
 CREATE TABLE IF NOT EXISTS "dividends" (
     "date" TIMESTAMP NOT NULL,
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS "dividends" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] short_interest  (pk: ticker, date)
+-- [extract] short_interest  (pk: ticker, date; from live DB)
 
 CREATE TABLE IF NOT EXISTS "short_interest" (
     "date" TIMESTAMP NOT NULL,
@@ -47,7 +48,18 @@ CREATE TABLE IF NOT EXISTS "short_interest" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] fundamentals_history  (pk: ticker, as_of)
+-- [extract] fails_to_deliver  (pk: ticker, date; from live DB)
+
+CREATE TABLE IF NOT EXISTS "fails_to_deliver" (
+    "ticker" TEXT NOT NULL,
+    "date" DATE NOT NULL,
+    "fails_quantity" DOUBLE PRECISION,
+    "fails_value" DOUBLE PRECISION,
+    "period" TEXT,
+    PRIMARY KEY ("ticker", "date")
+);
+
+-- [extract] fundamentals_history  (pk: ticker, as_of; from live DB)
 
 CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "ticker" TEXT NOT NULL,
@@ -61,6 +73,9 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "returnOnEquity" DOUBLE PRECISION,
     "debtToEquity" DOUBLE PRECISION,
     "ebitda" DOUBLE PRECISION,
+    "operatingIncome" DOUBLE PRECISION,
+    "depAmort" DOUBLE PRECISION,
+    "capex" DOUBLE PRECISION,
     "freeCashflow" DOUBLE PRECISION,
     "operatingCashFlow" DOUBLE PRECISION,
     "researchAndDevelopment" DOUBLE PRECISION,
@@ -69,6 +84,7 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "cash" DOUBLE PRECISION,
     "longTermDebt" DOUBLE PRECISION,
     "shortTermDebt" DOUBLE PRECISION,
+    "totalDebt" DOUBLE PRECISION,
     "totalLiabilities" DOUBLE PRECISION,
     "currentAssets" DOUBLE PRECISION,
     "currentLiabilities" DOUBLE PRECISION,
@@ -84,24 +100,101 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "freeCashflow_q" DOUBLE PRECISION,
     "revenueGrowth" DOUBLE PRECISION,
     "earningsGrowth" DOUBLE PRECISION,
+    "costOfRevenue" DOUBLE PRECISION,
+    "grossProfit" DOUBLE PRECISION,
+    "dilutedShares" DOUBLE PRECISION,
+    "incomeTaxExpense" DOUBLE PRECISION,
+    "revenuesTotal" DOUBLE PRECISION,
+    "pretaxIncome" DOUBLE PRECISION,
+    "costsAndExpenses" DOUBLE PRECISION,
+    "interestIncome" DOUBLE PRECISION,
+    "amortizationIntangibles" DOUBLE PRECISION,
+    "dividendsPaid" DOUBLE PRECISION,
+    "buybacks" DOUBLE PRECISION,
+    "equityIssuance" DOUBLE PRECISION,
+    "debtIssued" DOUBLE PRECISION,
+    "debtRepaid" DOUBLE PRECISION,
+    "investingCashFlow" DOUBLE PRECISION,
+    "financingCashFlow" DOUBLE PRECISION,
+    "changeInInventory" DOUBLE PRECISION,
+    "changeInReceivables" DOUBLE PRECISION,
+    "changeInPayables" DOUBLE PRECISION,
+    "impairment" DOUBLE PRECISION,
+    "restructuring" DOUBLE PRECISION,
+    "goodwillImpairment" DOUBLE PRECISION,
+    "gainOnSaleGeneric" DOUBLE PRECISION,
+    "litigationExpense" DOUBLE PRECISION,
+    "discontinuedOps" DOUBLE PRECISION,
+    "unusualItems" DOUBLE PRECISION,
+    "bargainPurchaseGain" DOUBLE PRECISION,
+    "interestIncomeBank" DOUBLE PRECISION,
+    "netInterestIncome" DOUBLE PRECISION,
+    "provisionForCreditLosses" DOUBLE PRECISION,
+    "noninterestIncome" DOUBLE PRECISION,
+    "noninterestExpense" DOUBLE PRECISION,
+    "netChargeOffs" DOUBLE PRECISION,
+    "premiumsEarned" DOUBLE PRECISION,
+    "premiumsWritten" DOUBLE PRECISION,
+    "claimsIncurred" DOUBLE PRECISION,
+    "netInvestmentIncome" DOUBLE PRECISION,
+    "dacAmortization" DOUBLE PRECISION,
+    "rentalIncome" DOUBLE PRECISION,
+    "gainOnDispositions" DOUBLE PRECISION,
+    "oilGasRevenue" DOUBLE PRECISION,
+    "explorationExpense" DOUBLE PRECISION,
+    "depletionDDA" DOUBLE PRECISION,
+    "longTermDebtTotal" DOUBLE PRECISION,
+    "debtCombined" DOUBLE PRECISION,
+    "notesPayable" DOUBLE PRECISION,
+    "commercialPaper" DOUBLE PRECISION,
+    "operatingLeaseLiability" DOUBLE PRECISION,
+    "financeLeaseLiability" DOUBLE PRECISION,
+    "accountsReceivable" DOUBLE PRECISION,
+    "inventory" DOUBLE PRECISION,
+    "accountsPayable" DOUBLE PRECISION,
+    "ppeNet" DOUBLE PRECISION,
+    "ppeGross" DOUBLE PRECISION,
+    "accumulatedDepreciation" DOUBLE PRECISION,
+    "intangiblesExGoodwill" DOUBLE PRECISION,
+    "capitalizedSoftware" DOUBLE PRECISION,
+    "pensionDeficit" DOUBLE PRECISION,
+    "retainedEarnings" DOUBLE PRECISION,
+    "treasuryStock" DOUBLE PRECISION,
+    "preferredEquity" DOUBLE PRECISION,
+    "minorityInterest" DOUBLE PRECISION,
+    "accumulatedOCI" DOUBLE PRECISION,
+    "shortTermInvestments" DOUBLE PRECISION,
+    "longTermInvestments" DOUBLE PRECISION,
+    "deferredRevenue" DOUBLE PRECISION,
+    "deferredRevenueCurrent" DOUBLE PRECISION,
+    "deferredRevenueNoncurrent" DOUBLE PRECISION,
+    "remainingPerformanceObligation" DOUBLE PRECISION,
+    "loans" DOUBLE PRECISION,
+    "deposits" DOUBLE PRECISION,
+    "depositsDomestic" DOUBLE PRECISION,
+    "allowanceCreditLosses" DOUBLE PRECISION,
+    "htmSecurities" DOUBLE PRECISION,
+    "htmSecuritiesFairValue" DOUBLE PRECISION,
+    "nonaccrualLoans" DOUBLE PRECISION,
+    "tier1CapitalRatio" DOUBLE PRECISION,
+    "insuranceReserves" DOUBLE PRECISION,
+    "deferredAcqCosts" DOUBLE PRECISION,
+    "realEstateNet" DOUBLE PRECISION,
+    "realEstateGross" DOUBLE PRECISION,
+    "oilGasPropertyNet" DOUBLE PRECISION,
+    "oilGasPropertyGross" DOUBLE PRECISION,
+    "regulatoryAssets" DOUBLE PRECISION,
+    "regulatoryAssetsCurrent" DOUBLE PRECISION,
+    "regulatoryAssetsNoncurrent" DOUBLE PRECISION,
+    "regulatoryLiabilities" DOUBLE PRECISION,
+    "regulatoryLiabilitiesCurrent" DOUBLE PRECISION,
+    "regulatoryLiabilitiesNoncurrent" DOUBLE PRECISION,
+    "sector" TEXT,
+    "industry_group" TEXT,
     PRIMARY KEY ("ticker", "as_of")
 );
 
--- [extract] fundamentals_latest  (pk: ticker)
-
-CREATE TABLE IF NOT EXISTS "fundamentals_latest" (
-    "ticker" TEXT NOT NULL,
-    "as_of" DATE,
-    "marketCap" DOUBLE PRECISION,
-    "trailingPE" DOUBLE PRECISION,
-    "forwardPE" DOUBLE PRECISION,
-    "sector" TEXT,
-    "industry" TEXT,
-    "shortName" TEXT,
-    PRIMARY KEY ("ticker")
-);
-
--- [extract] earnings_surprises  (pk: ticker, earnings_date)
+-- [extract] earnings_surprises  (pk: ticker, earnings_date; from live DB)
 
 CREATE TABLE IF NOT EXISTS "earnings_surprises" (
     "ticker" TEXT NOT NULL,
@@ -112,7 +205,7 @@ CREATE TABLE IF NOT EXISTS "earnings_surprises" (
     PRIMARY KEY ("ticker", "earnings_date")
 );
 
--- [extract] macro  (pk: date)
+-- [extract] macro  (pk: date; from live DB)
 
 CREATE TABLE IF NOT EXISTS "macro" (
     "date" TIMESTAMP NOT NULL,
@@ -123,13 +216,27 @@ CREATE TABLE IF NOT EXISTS "macro" (
     "yield_curve_10y2y" DOUBLE PRECISION,
     "yield_curve_10y3m" DOUBLE PRECISION,
     "vix" DOUBLE PRECISION,
-    "ig_credit_spread" DOUBLE PRECISION,
-    "hy_credit_spread" DOUBLE PRECISION,
+    "baa_credit_spread" DOUBLE PRECISION,
     "breakeven_10y" DOUBLE PRECISION,
     PRIMARY KEY ("date")
 );
 
--- [extract] employees_history  (pk: ticker, as_of)
+-- [extract] macro_asset_prices  (pk: date; from live DB)
+
+CREATE TABLE IF NOT EXISTS "macro_asset_prices" (
+    "date" DATE NOT NULL,
+    "yield_10y" DOUBLE PRECISION,
+    "cash_rate" DOUBLE PRECISION,
+    "fx_usdeur" DOUBLE PRECISION,
+    "equity_tr" DOUBLE PRECISION,
+    "gold" DOUBLE PRECISION,
+    "bond_10y_tr" DOUBLE PRECISION,
+    "energy" DOUBLE PRECISION,
+    "vix" DOUBLE PRECISION,
+    PRIMARY KEY ("date")
+);
+
+-- [extract] employees_history  (pk: ticker, as_of; from live DB)
 
 CREATE TABLE IF NOT EXISTS "employees_history" (
     "ticker" TEXT NOT NULL,
@@ -141,22 +248,7 @@ CREATE TABLE IF NOT EXISTS "employees_history" (
     PRIMARY KEY ("ticker", "as_of")
 );
 
--- [extract] sec_filings_index  (pk: ticker, accession_number)
-
-CREATE TABLE IF NOT EXISTS "sec_filings_index" (
-    "ticker" TEXT NOT NULL,
-    "cik" TEXT,
-    "company_name" TEXT,
-    "form" TEXT,
-    "filing_date" TIMESTAMP,
-    "accession_number" TEXT NOT NULL,
-    "primary_document" TEXT,
-    "doc_url" TEXT,
-    PRIMARY KEY ("ticker", "accession_number")
-);
-CREATE INDEX IF NOT EXISTS ix_sec_filings_index_filing_date ON "sec_filings_index" ("filing_date");
-
--- [extract] google_trends  (pk: ticker, date)
+-- [extract] google_trends  (pk: ticker, date; from live DB)
 
 CREATE TABLE IF NOT EXISTS "google_trends" (
     "date" TIMESTAMP NOT NULL,
@@ -165,7 +257,7 @@ CREATE TABLE IF NOT EXISTS "google_trends" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] wiki_pageviews  (pk: ticker, date)
+-- [extract] wiki_pageviews  (pk: ticker, date; from flat file)
 
 CREATE TABLE IF NOT EXISTS "wiki_pageviews" (
     "date" TIMESTAMP NOT NULL,
@@ -174,7 +266,7 @@ CREATE TABLE IF NOT EXISTS "wiki_pageviews" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] ticker_embeddings  (pk: ticker)
+-- [extract] ticker_embeddings  (pk: ticker; from flat file)
 
 CREATE TABLE IF NOT EXISTS "ticker_embeddings" (
     "ticker" TEXT NOT NULL,
@@ -182,15 +274,196 @@ CREATE TABLE IF NOT EXISTS "ticker_embeddings" (
     PRIMARY KEY ("ticker")
 );
 
--- SKIPPED (source missing): cusip_ticker_map <- cusip_ticker_map.parquet
+-- SKIPPED (source missing): earning_calls_embedding <- earning_calls_embedding.parquet
 
--- SKIPPED (source missing): institutional_holdings <- institutional_holdings.parquet
+-- [extract] cusip_ticker_map  (pk: cusip; from live DB)
 
--- SKIPPED (source missing): def14a_llm <- def14a_llm.parquet
+CREATE TABLE IF NOT EXISTS "cusip_ticker_map" (
+    "cusip" TEXT NOT NULL,
+    "ticker" TEXT,
+    PRIMARY KEY ("cusip")
+);
+CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ticker");
+
+-- [extract] institutional_holdings  (pk: cik, period, ticker, cusip; from live DB)
+
+CREATE TABLE IF NOT EXISTS "institutional_holdings" (
+    "accession" TEXT,
+    "cusip" TEXT NOT NULL,
+    "shares" BIGINT,
+    "shares_value" DOUBLE PRECISION,
+    "call_shares" BIGINT,
+    "call_value" DOUBLE PRECISION,
+    "put_shares" BIGINT,
+    "put_value" DOUBLE PRECISION,
+    "debt_prn" BIGINT,
+    "debt_value" DOUBLE PRECISION,
+    "other_value" DOUBLE PRECISION,
+    "cik" TEXT NOT NULL,
+    "filing_date" TIMESTAMP,
+    "period" TIMESTAMP NOT NULL,
+    "value_usd" DOUBLE PRECISION,
+    "ticker" TEXT NOT NULL,
+    "quarter" TEXT,
+    PRIMARY KEY ("cik", "period", "ticker", "cusip")
+);
+
+-- [extract] def14a_llm  (pk: ticker, accession_number; from live DB)
+
+CREATE TABLE IF NOT EXISTS "def14a_llm" (
+    "ticker" TEXT NOT NULL,
+    "as_of" TIMESTAMP,
+    "period" TIMESTAMP,
+    "accession_number" TEXT NOT NULL,
+    "company_name" TEXT,
+    "fiscal_year_extract" BIGINT,
+    "n_directors" BIGINT,
+    "board_size" BIGINT,
+    "avg_director_age" DOUBLE PRECISION,
+    "avg_board_tenure" DOUBLE PRECISION,
+    "pct_independent_directors" DOUBLE PRECISION,
+    "pct_female_directors" DOUBLE PRECISION,
+    "avg_other_public_boards" DOUBLE PRECISION,
+    "ceo_name_proxy" TEXT,
+    "ceo_age" BIGINT,
+    "ceo_since_year" BIGINT,
+    "ceo_is_founder" DOUBLE PRECISION,
+    "ceo_is_board_chair" DOUBLE PRECISION,
+    "ceo_salary" DOUBLE PRECISION,
+    "ceo_bonus" DOUBLE PRECISION,
+    "ceo_stock_awards" DOUBLE PRECISION,
+    "ceo_option_awards" DOUBLE PRECISION,
+    "ceo_non_equity_incentive" DOUBLE PRECISION,
+    "ceo_all_other_comp" DOUBLE PRECISION,
+    "ceo_total_comp" DOUBLE PRECISION,
+    "ceo_equity_pay_pct" DOUBLE PRECISION,
+    "n_neos" BIGINT,
+    "total_neo_comp" DOUBLE PRECISION,
+    "insider_ownership_pct" DOUBLE PRECISION,
+    "ceo_ownership_pct" DOUBLE PRECISION,
+    "n_five_percent_holders" BIGINT,
+    "independent_chair" DOUBLE PRECISION,
+    "lead_independent_director" DOUBLE PRECISION,
+    "classified_board" DOUBLE PRECISION,
+    "dual_class_shares" DOUBLE PRECISION,
+    "poison_pill" DOUBLE PRECISION,
+    "majority_voting" DOUBLE PRECISION,
+    "say_on_pay_support_pct" DOUBLE PRECISION,
+    "ceo_pay_ratio" DOUBLE PRECISION,
+    "median_employee_pay" DOUBLE PRECISION,
+    "auditor_fees" DOUBLE PRECISION,
+    "def14a_json" TEXT,
+    "n_technology_directors" DOUBLE PRECISION,
+    "pct_technology_directors" DOUBLE PRECISION,
+    "technology_committee" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_llm_as_of ON "def14a_llm" ("as_of");
 
 -- SKIPPED (source missing): ticker_descriptions <- ticker_descriptions.parquet
 
--- [aggregate] cube  (pk: ticker, date, target_horizon)
+-- [extract] insider_transactions  (pk: accession_number, security_type, transaction_sk; from live DB)
+
+CREATE TABLE IF NOT EXISTS "insider_transactions" (
+    "accession_number" TEXT NOT NULL,
+    "security_type" TEXT NOT NULL,
+    "transaction_sk" TEXT NOT NULL,
+    "ticker" TEXT,
+    "issuer_cik" TEXT,
+    "issuer_name" TEXT,
+    "owner_cik" TEXT,
+    "owner_name" TEXT,
+    "is_director" DOUBLE PRECISION,
+    "is_officer" DOUBLE PRECISION,
+    "is_ten_pct_owner" DOUBLE PRECISION,
+    "is_other" DOUBLE PRECISION,
+    "officer_title" TEXT,
+    "document_type" TEXT,
+    "transaction_date" DATE,
+    "filing_date" DATE,
+    "period_of_report" DATE,
+    "security_title" TEXT,
+    "transaction_code" TEXT,
+    "acquired_disposed" TEXT,
+    "shares" DOUBLE PRECISION,
+    "price_per_share" DOUBLE PRECISION,
+    "value_usd" DOUBLE PRECISION,
+    "shares_owned_after" DOUBLE PRECISION,
+    "direct_indirect" TEXT,
+    "quarter" TEXT,
+    PRIMARY KEY ("accession_number", "security_type", "transaction_sk")
+);
+CREATE INDEX IF NOT EXISTS ix_insider_transactions_ticker ON "insider_transactions" ("ticker");
+CREATE INDEX IF NOT EXISTS ix_insider_transactions_transaction_date ON "insider_transactions" ("transaction_date");
+
+-- [extract] pension_facts  (pk: cik, tag, ddate, qtrs; from live DB)
+
+CREATE TABLE IF NOT EXISTS "pension_facts" (
+    "cik" TEXT NOT NULL,
+    "ticker" TEXT,
+    "tag" TEXT NOT NULL,
+    "ddate" DATE NOT NULL,
+    "qtrs" BIGINT NOT NULL,
+    "uom" TEXT,
+    "value" DOUBLE PRECISION,
+    "adsh" TEXT,
+    "filed" DATE,
+    "form" TEXT,
+    "fy" TEXT,
+    "fp" TEXT,
+    "quarter" TEXT,
+    PRIMARY KEY ("cik", "tag", "ddate", "qtrs")
+);
+CREATE INDEX IF NOT EXISTS ix_pension_facts_ticker ON "pension_facts" ("ticker");
+
+-- [extract] notes_num  (pk: adsh, tag, ddate, qtrs; from live DB)
+
+CREATE TABLE IF NOT EXISTS "notes_num" (
+    "cik" TEXT,
+    "ticker" TEXT,
+    "adsh" TEXT NOT NULL,
+    "tag" TEXT NOT NULL,
+    "ddate" DATE NOT NULL,
+    "qtrs" BIGINT NOT NULL,
+    "uom" TEXT,
+    "value" DOUBLE PRECISION,
+    "footnote" TEXT,
+    "form" TEXT,
+    "fy" TEXT,
+    "fp" TEXT,
+    "filed" DATE,
+    "period" TEXT,
+    PRIMARY KEY ("adsh", "tag", "ddate", "qtrs")
+);
+CREATE INDEX IF NOT EXISTS ix_notes_num_ticker ON "notes_num" ("ticker");
+
+-- [extract] notes_text  (pk: adsh, tag, ddate, qtrs; from live DB)
+
+CREATE TABLE IF NOT EXISTS "notes_text" (
+    "cik" TEXT,
+    "ticker" TEXT,
+    "adsh" TEXT NOT NULL,
+    "tag" TEXT NOT NULL,
+    "ddate" DATE NOT NULL,
+    "qtrs" BIGINT NOT NULL,
+    "txtlen" BIGINT,
+    "escaped" TEXT,
+    "value" TEXT,
+    "footnote" TEXT,
+    "form" TEXT,
+    "fy" TEXT,
+    "fp" TEXT,
+    "filed" DATE,
+    "period" TEXT,
+    PRIMARY KEY ("adsh", "tag", "ddate", "qtrs")
+);
+CREATE INDEX IF NOT EXISTS ix_notes_text_ticker ON "notes_text" ("ticker");
+
+-- SKIPPED (source missing): earnings_call_sections <- earnings_call_sections.parquet
+
+-- SKIPPED (source missing): earnings_call_sentiment <- earnings_call_sentiment.parquet
+
+-- [aggregate] cube  (pk: ticker, date, target_horizon; from live DB)
 
 CREATE TABLE IF NOT EXISTS "cube" (
     "date" TIMESTAMP NOT NULL,
@@ -213,10 +486,24 @@ CREATE TABLE IF NOT EXISTS "cube" (
     "ret_skew_126" DOUBLE PRECISION,
     "downside_vol_63" DOUBLE PRECISION,
     "idio_vol_63" DOUBLE PRECISION,
+    "dollar_volume_63" DOUBLE PRECISION,
+    "amihud_63" DOUBLE PRECISION,
+    "rel_volume_5_63" DOUBLE PRECISION,
+    "signed_vol_63" DOUBLE PRECISION,
+    "volume_trend_63" DOUBLE PRECISION,
+    "volume_cv_63" DOUBLE PRECISION,
+    "seasonal_h30" DOUBLE PRECISION,
+    "seasonal_h60" DOUBLE PRECISION,
+    "seasonal_h90" DOUBLE PRECISION,
+    "tax_loss_pressure" DOUBLE PRECISION,
     "macd" DOUBLE PRECISION,
     "macd_hist" DOUBLE PRECISION,
     "rsi_14" DOUBLE PRECISION,
     "atr_14" DOUBLE PRECISION,
+    "f_pension_funded_ratio_vs_peers" DOUBLE PRECISION,
+    "f_pension_funded_ratio_xs" DOUBLE PRECISION,
+    "f_pension_retirement_liability_vs_peers" DOUBLE PRECISION,
+    "f_pension_retirement_liability_xs" DOUBLE PRECISION,
     "f_earnings_yield_vs_peers" DOUBLE PRECISION,
     "f_earnings_yield_xs" DOUBLE PRECISION,
     "f_sales_yield_vs_peers" DOUBLE PRECISION,
@@ -225,8 +512,26 @@ CREATE TABLE IF NOT EXISTS "cube" (
     "f_book_yield_xs" DOUBLE PRECISION,
     "f_fcf_yield_vs_peers" DOUBLE PRECISION,
     "f_fcf_yield_xs" DOUBLE PRECISION,
+    "f_pension_overhang_leverage_vs_peers" DOUBLE PRECISION,
+    "f_pension_overhang_leverage_xs" DOUBLE PRECISION,
+    "f_pbo_to_mcap_vs_peers" DOUBLE PRECISION,
+    "f_pbo_to_mcap_xs" DOUBLE PRECISION,
+    "f_pension_underfunding_to_mcap_vs_peers" DOUBLE PRECISION,
+    "f_pension_underfunding_to_mcap_xs" DOUBLE PRECISION,
     "f_ebitda_to_ev_vs_peers" DOUBLE PRECISION,
     "f_ebitda_to_ev_xs" DOUBLE PRECISION,
+    "f_fcf_to_ev_vs_peers" DOUBLE PRECISION,
+    "f_fcf_to_ev_xs" DOUBLE PRECISION,
+    "f_altman_z_vs_peers" DOUBLE PRECISION,
+    "f_altman_z_xs" DOUBLE PRECISION,
+    "f_pegy_vs_peers" DOUBLE PRECISION,
+    "f_pegy_xs" DOUBLE PRECISION,
+    "f_ffo_yield_vs_peers" DOUBLE PRECISION,
+    "f_ffo_yield_xs" DOUBLE PRECISION,
+    "f_implied_cap_rate_vs_peers" DOUBLE PRECISION,
+    "f_implied_cap_rate_xs" DOUBLE PRECISION,
+    "f_ebitdax_to_ev_vs_peers" DOUBLE PRECISION,
+    "f_ebitdax_to_ev_xs" DOUBLE PRECISION,
     "f_grossMargins_vs_peers" DOUBLE PRECISION,
     "f_grossMargins_xs" DOUBLE PRECISION,
     "f_operatingMargins_vs_peers" DOUBLE PRECISION,
@@ -251,10 +556,24 @@ CREATE TABLE IF NOT EXISTS "cube" (
     "f_shares_growth_xs" DOUBLE PRECISION,
     "f_gross_margin_chg_vs_peers" DOUBLE PRECISION,
     "f_gross_margin_chg_xs" DOUBLE PRECISION,
+    "f_operating_margin_5y_chg_vs_peers" DOUBLE PRECISION,
+    "f_operating_margin_5y_chg_xs" DOUBLE PRECISION,
     "f_rd_intensity_vs_peers" DOUBLE PRECISION,
     "f_rd_intensity_xs" DOUBLE PRECISION,
-    "f_gross_profitability_vs_peers" DOUBLE PRECISION,
-    "f_gross_profitability_xs" DOUBLE PRECISION,
+    "f_da_to_capex_vs_peers" DOUBLE PRECISION,
+    "f_da_to_capex_xs" DOUBLE PRECISION,
+    "f_da_minus_capex_growth_vs_peers" DOUBLE PRECISION,
+    "f_da_minus_capex_growth_xs" DOUBLE PRECISION,
+    "f_gross_profitability_vs_peers_x" DOUBLE PRECISION,
+    "f_gross_profitability_xs_x" DOUBLE PRECISION,
+    "f_asset_growth_vs_peers" DOUBLE PRECISION,
+    "f_asset_growth_xs" DOUBLE PRECISION,
+    "f_rule_of_40_vs_peers" DOUBLE PRECISION,
+    "f_rule_of_40_xs" DOUBLE PRECISION,
+    "f_rpo_growth_vs_peers" DOUBLE PRECISION,
+    "f_rpo_growth_xs" DOUBLE PRECISION,
+    "f_piotroski_f_score_vs_peers" DOUBLE PRECISION,
+    "f_piotroski_f_score_xs" DOUBLE PRECISION,
     "f_q_rev_growth_vs_peers" DOUBLE PRECISION,
     "f_q_rev_growth_xs" DOUBLE PRECISION,
     "f_rev_growth_accel_vs_peers" DOUBLE PRECISION,
@@ -271,14 +590,16 @@ CREATE TABLE IF NOT EXISTS "cube" (
     "f_y_earnings_growth_xs" DOUBLE PRECISION,
     "f_y_margin_vs_ttm_vs_peers" DOUBLE PRECISION,
     "f_y_margin_vs_ttm_xs" DOUBLE PRECISION,
-    "f_net_debt_to_ebitda_vs_peers" DOUBLE PRECISION,
-    "f_net_debt_to_ebitda_xs" DOUBLE PRECISION,
-    "f_interest_coverage_vs_peers" DOUBLE PRECISION,
-    "f_interest_coverage_xs" DOUBLE PRECISION,
+    "f_net_debt_to_ebitda_vs_peers_x" DOUBLE PRECISION,
+    "f_net_debt_to_ebitda_xs_x" DOUBLE PRECISION,
+    "f_interest_coverage_vs_peers_x" DOUBLE PRECISION,
+    "f_interest_coverage_xs_x" DOUBLE PRECISION,
     "f_current_ratio_vs_peers" DOUBLE PRECISION,
     "f_current_ratio_xs" DOUBLE PRECISION,
     "f_cash_to_debt_vs_peers" DOUBLE PRECISION,
     "f_cash_to_debt_xs" DOUBLE PRECISION,
+    "f_refinancing_risk_vs_peers" DOUBLE PRECISION,
+    "f_refinancing_risk_xs" DOUBLE PRECISION,
     "f_sga_intensity_vs_peers" DOUBLE PRECISION,
     "f_sga_intensity_xs" DOUBLE PRECISION,
     "f_sga_growth_vs_peers" DOUBLE PRECISION,
@@ -289,52 +610,326 @@ CREATE TABLE IF NOT EXISTS "cube" (
     "f_acquisition_intensity_xs" DOUBLE PRECISION,
     "f_goodwill_growth_vs_peers" DOUBLE PRECISION,
     "f_goodwill_growth_xs" DOUBLE PRECISION,
-    "f_sbc_intensity_vs_peers" DOUBLE PRECISION,
-    "f_sbc_intensity_xs" DOUBLE PRECISION,
+    "f_sbc_intensity_vs_peers_x" DOUBLE PRECISION,
+    "f_sbc_intensity_xs_x" DOUBLE PRECISION,
     "f_sbc_to_ocf_vs_peers" DOUBLE PRECISION,
     "f_sbc_to_ocf_xs" DOUBLE PRECISION,
+    "f_operating_leverage_elasticity_vs_peers" DOUBLE PRECISION,
+    "f_operating_leverage_elasticity_xs" DOUBLE PRECISION,
+    "f_margin_expansion_delta_vs_peers" DOUBLE PRECISION,
+    "f_margin_expansion_delta_xs" DOUBLE PRECISION,
+    "f_nwc_elasticity_vs_peers" DOUBLE PRECISION,
+    "f_nwc_elasticity_xs" DOUBLE PRECISION,
+    "f_diluted_shares_growth_vs_peers" DOUBLE PRECISION,
+    "f_diluted_shares_growth_xs" DOUBLE PRECISION,
+    "f_ebit_interest_coverage_vs_peers" DOUBLE PRECISION,
+    "f_ebit_interest_coverage_xs" DOUBLE PRECISION,
     "f_intrinsic_yield_vs_peers" DOUBLE PRECISION,
     "f_intrinsic_yield_xs" DOUBLE PRECISION,
+    "f_implied_useful_life_vs_peers" DOUBLE PRECISION,
+    "f_implied_useful_life_xs" DOUBLE PRECISION,
+    "f_useful_life_change_vs_peers" DOUBLE PRECISION,
+    "f_useful_life_change_xs" DOUBLE PRECISION,
+    "f_asset_age_vs_peers" DOUBLE PRECISION,
+    "f_asset_age_xs" DOUBLE PRECISION,
+    "f_intangible_amortization_share_vs_peers" DOUBLE PRECISION,
+    "f_intangible_amortization_share_xs" DOUBLE PRECISION,
+    "f_sbc_to_buyback_vs_peers" DOUBLE PRECISION,
+    "f_sbc_to_buyback_xs" DOUBLE PRECISION,
+    "f_dso_vs_peers" DOUBLE PRECISION,
+    "f_dso_xs" DOUBLE PRECISION,
+    "f_dso_change_vs_peers" DOUBLE PRECISION,
+    "f_dso_change_xs" DOUBLE PRECISION,
+    "f_dpo_vs_peers" DOUBLE PRECISION,
+    "f_dpo_xs" DOUBLE PRECISION,
+    "f_dpo_change_vs_peers" DOUBLE PRECISION,
+    "f_dpo_change_xs" DOUBLE PRECISION,
+    "f_dio_vs_peers" DOUBLE PRECISION,
+    "f_dio_xs" DOUBLE PRECISION,
+    "f_cash_conversion_cycle_vs_peers_x" DOUBLE PRECISION,
+    "f_cash_conversion_cycle_xs_x" DOUBLE PRECISION,
+    "f_net_debt_incl_offbs_to_ebitda_vs_peers" DOUBLE PRECISION,
+    "f_net_debt_incl_offbs_to_ebitda_xs" DOUBLE PRECISION,
+    "f_beneish_m_score_vs_peers" DOUBLE PRECISION,
+    "f_beneish_m_score_xs" DOUBLE PRECISION,
+    "f_roic_incl_goodwill_vs_peers" DOUBLE PRECISION,
+    "f_roic_incl_goodwill_xs" DOUBLE PRECISION,
+    "f_roic_ex_goodwill_vs_peers" DOUBLE PRECISION,
+    "f_roic_ex_goodwill_xs" DOUBLE PRECISION,
+    "f_goodwill_roic_drag_vs_peers" DOUBLE PRECISION,
+    "f_goodwill_roic_drag_xs" DOUBLE PRECISION,
+    "f_goodwill_intangibles_to_assets_vs_peers" DOUBLE PRECISION,
+    "f_goodwill_intangibles_to_assets_xs" DOUBLE PRECISION,
+    "f_goodwill_to_equity_vs_peers" DOUBLE PRECISION,
+    "f_goodwill_to_equity_xs" DOUBLE PRECISION,
+    "f_goodwill_impairment_intensity_vs_peers" DOUBLE PRECISION,
+    "f_goodwill_impairment_intensity_xs" DOUBLE PRECISION,
+    "f_sga_elasticity_vs_peers" DOUBLE PRECISION,
+    "f_sga_elasticity_xs" DOUBLE PRECISION,
+    "f_nonrecurring_pretax_share_vs_peers" DOUBLE PRECISION,
+    "f_nonrecurring_pretax_share_xs" DOUBLE PRECISION,
+    "f_special_items_intensity_vs_peers" DOUBLE PRECISION,
+    "f_special_items_intensity_xs" DOUBLE PRECISION,
+    "f_core_profit_margin_vs_peers" DOUBLE PRECISION,
+    "f_core_profit_margin_xs" DOUBLE PRECISION,
+    "f_core_earnings_yield_vs_peers" DOUBLE PRECISION,
+    "f_core_earnings_yield_xs" DOUBLE PRECISION,
+    "f_core_operating_margin_vs_peers" DOUBLE PRECISION,
+    "f_core_operating_margin_xs" DOUBLE PRECISION,
+    "f_adjusted_ebitda_margin_vs_peers" DOUBLE PRECISION,
+    "f_adjusted_ebitda_margin_xs" DOUBLE PRECISION,
+    "f_capitalized_software_intensity_vs_peers" DOUBLE PRECISION,
+    "f_capitalized_software_intensity_xs" DOUBLE PRECISION,
+    "f_software_to_revenue_vs_peers" DOUBLE PRECISION,
+    "f_software_to_revenue_xs" DOUBLE PRECISION,
     "f_earnings_yield_vs_hist" DOUBLE PRECISION,
     "f_sales_yield_vs_hist" DOUBLE PRECISION,
     "f_book_yield_vs_hist" DOUBLE PRECISION,
     "f_fcf_yield_vs_hist" DOUBLE PRECISION,
     "f_ebitda_to_ev_vs_hist" DOUBLE PRECISION,
+    "f_fcf_to_ev_vs_hist" DOUBLE PRECISION,
+    "f_ffo_yield_vs_hist" DOUBLE PRECISION,
     "f_intrinsic_yield_vs_hist" DOUBLE PRECISION,
+    "f_core_earnings_yield_vs_hist" DOUBLE PRECISION,
     "f_profitable" DOUBLE PRECISION,
     "f_fcf_positive" DOUBLE PRECISION,
     "f_negative_equity" DOUBLE PRECISION,
     "f_hyper_growth" DOUBLE PRECISION,
+    "f_effective_tax_rate_vs_peers" DOUBLE PRECISION,
+    "f_effective_tax_rate_xs" DOUBLE PRECISION,
+    "f_interest_coverage_vs_peers_y" DOUBLE PRECISION,
+    "f_interest_coverage_xs_y" DOUBLE PRECISION,
+    "f_net_debt_to_ebitda_vs_peers_y" DOUBLE PRECISION,
+    "f_net_debt_to_ebitda_xs_y" DOUBLE PRECISION,
+    "f_accruals_ratio_vs_peers" DOUBLE PRECISION,
+    "f_accruals_ratio_xs" DOUBLE PRECISION,
+    "f_gross_profitability_vs_peers_y" DOUBLE PRECISION,
+    "f_gross_profitability_xs_y" DOUBLE PRECISION,
+    "f_asset_turnover_vs_peers" DOUBLE PRECISION,
+    "f_asset_turnover_xs" DOUBLE PRECISION,
+    "f_capex_intensity_vs_peers" DOUBLE PRECISION,
+    "f_capex_intensity_xs" DOUBLE PRECISION,
+    "f_capex_to_dep_vs_peers" DOUBLE PRECISION,
+    "f_capex_to_dep_xs" DOUBLE PRECISION,
+    "f_payout_ratio_vs_peers" DOUBLE PRECISION,
+    "f_payout_ratio_xs" DOUBLE PRECISION,
+    "f_buyback_intensity_vs_peers" DOUBLE PRECISION,
+    "f_buyback_intensity_xs" DOUBLE PRECISION,
+    "f_days_sales_outstanding_vs_peers" DOUBLE PRECISION,
+    "f_days_sales_outstanding_xs" DOUBLE PRECISION,
+    "f_days_inventory_outstanding_vs_peers" DOUBLE PRECISION,
+    "f_days_inventory_outstanding_xs" DOUBLE PRECISION,
+    "f_days_payable_outstanding_vs_peers" DOUBLE PRECISION,
+    "f_days_payable_outstanding_xs" DOUBLE PRECISION,
+    "f_cash_conversion_cycle_vs_peers_y" DOUBLE PRECISION,
+    "f_cash_conversion_cycle_xs_y" DOUBLE PRECISION,
+    "f_roic_vs_peers" DOUBLE PRECISION,
+    "f_roic_xs" DOUBLE PRECISION,
+    "f_earnings_quality_vs_peers" DOUBLE PRECISION,
+    "f_earnings_quality_xs" DOUBLE PRECISION,
+    "f_reinvestment_rate_vs_peers" DOUBLE PRECISION,
+    "f_reinvestment_rate_xs" DOUBLE PRECISION,
+    "f_sustainable_growth_rate_vs_peers" DOUBLE PRECISION,
+    "f_sustainable_growth_rate_xs" DOUBLE PRECISION,
+    "f_fixed_cost_coverage_margin_vs_peers" DOUBLE PRECISION,
+    "f_fixed_cost_coverage_margin_xs" DOUBLE PRECISION,
+    "f_gmroi_vs_peers" DOUBLE PRECISION,
+    "f_gmroi_xs" DOUBLE PRECISION,
+    "f_net_interest_margin_vs_peers" DOUBLE PRECISION,
+    "f_net_interest_margin_xs" DOUBLE PRECISION,
+    "f_efficiency_ratio_vs_peers" DOUBLE PRECISION,
+    "f_efficiency_ratio_xs" DOUBLE PRECISION,
+    "f_provision_rate_vs_peers" DOUBLE PRECISION,
+    "f_provision_rate_xs" DOUBLE PRECISION,
+    "f_loan_to_deposit_vs_peers" DOUBLE PRECISION,
+    "f_loan_to_deposit_xs" DOUBLE PRECISION,
+    "f_bank_roa_vs_peers" DOUBLE PRECISION,
+    "f_bank_roa_xs" DOUBLE PRECISION,
+    "f_bank_operating_margin_vs_peers" DOUBLE PRECISION,
+    "f_bank_operating_margin_xs" DOUBLE PRECISION,
+    "f_reserve_coverage_velocity_vs_peers" DOUBLE PRECISION,
+    "f_reserve_coverage_velocity_xs" DOUBLE PRECISION,
+    "f_tier1_capital_ratio_vs_peers" DOUBLE PRECISION,
+    "f_tier1_capital_ratio_xs" DOUBLE PRECISION,
+    "f_deposit_stickiness_vs_peers" DOUBLE PRECISION,
+    "f_deposit_stickiness_xs" DOUBLE PRECISION,
+    "f_nii_growth_vs_peers" DOUBLE PRECISION,
+    "f_nii_growth_xs" DOUBLE PRECISION,
+    "f_loan_growth_vs_peers" DOUBLE PRECISION,
+    "f_loan_growth_xs" DOUBLE PRECISION,
+    "f_aoci_to_equity_vs_peers" DOUBLE PRECISION,
+    "f_aoci_to_equity_xs" DOUBLE PRECISION,
+    "f_htm_unrealized_loss_ratio_vs_peers" DOUBLE PRECISION,
+    "f_htm_unrealized_loss_ratio_xs" DOUBLE PRECISION,
+    "f_npl_ratio_vs_peers" DOUBLE PRECISION,
+    "f_npl_ratio_xs" DOUBLE PRECISION,
+    "f_net_charge_off_rate_vs_peers" DOUBLE PRECISION,
+    "f_net_charge_off_rate_xs" DOUBLE PRECISION,
+    "f_loss_ratio_vs_peers" DOUBLE PRECISION,
+    "f_loss_ratio_xs" DOUBLE PRECISION,
+    "f_expense_ratio_vs_peers" DOUBLE PRECISION,
+    "f_expense_ratio_xs" DOUBLE PRECISION,
+    "f_combined_ratio_vs_peers" DOUBLE PRECISION,
+    "f_combined_ratio_xs" DOUBLE PRECISION,
+    "f_investment_income_ratio_vs_peers" DOUBLE PRECISION,
+    "f_investment_income_ratio_xs" DOUBLE PRECISION,
+    "f_book_value_growth_vs_peers" DOUBLE PRECISION,
+    "f_book_value_growth_xs" DOUBLE PRECISION,
+    "f_premium_growth_vs_peers" DOUBLE PRECISION,
+    "f_premium_growth_xs" DOUBLE PRECISION,
+    "f_float_growth_vs_peers" DOUBLE PRECISION,
+    "f_float_growth_xs" DOUBLE PRECISION,
+    "f_ffo_margin_vs_peers" DOUBLE PRECISION,
+    "f_ffo_margin_xs" DOUBLE PRECISION,
+    "f_ffo_payout_vs_peers" DOUBLE PRECISION,
+    "f_ffo_payout_xs" DOUBLE PRECISION,
+    "f_rental_margin_vs_peers" DOUBLE PRECISION,
+    "f_rental_margin_xs" DOUBLE PRECISION,
+    "f_affo_margin_vs_peers" DOUBLE PRECISION,
+    "f_affo_margin_xs" DOUBLE PRECISION,
+    "f_net_debt_to_ebitdare_vs_peers" DOUBLE PRECISION,
+    "f_net_debt_to_ebitdare_xs" DOUBLE PRECISION,
+    "f_affo_dividend_coverage_vs_peers" DOUBLE PRECISION,
+    "f_affo_dividend_coverage_xs" DOUBLE PRECISION,
+    "f_exploration_intensity_vs_peers" DOUBLE PRECISION,
+    "f_exploration_intensity_xs" DOUBLE PRECISION,
+    "f_ddna_intensity_vs_peers" DOUBLE PRECISION,
+    "f_ddna_intensity_xs" DOUBLE PRECISION,
+    "f_ebitdax_margin_vs_peers" DOUBLE PRECISION,
+    "f_ebitdax_margin_xs" DOUBLE PRECISION,
+    "f_property_overvaluation_cushion_vs_peers" DOUBLE PRECISION,
+    "f_property_overvaluation_cushion_xs" DOUBLE PRECISION,
+    "f_deferred_rev_intensity_vs_peers" DOUBLE PRECISION,
+    "f_deferred_rev_intensity_xs" DOUBLE PRECISION,
+    "f_rpo_coverage_vs_peers" DOUBLE PRECISION,
+    "f_rpo_coverage_xs" DOUBLE PRECISION,
+    "f_sbc_intensity_vs_peers_y" DOUBLE PRECISION,
+    "f_sbc_intensity_xs_y" DOUBLE PRECISION,
+    "f_regulatory_asset_ratio_vs_peers" DOUBLE PRECISION,
+    "f_regulatory_asset_ratio_xs" DOUBLE PRECISION,
+    "f_capex_to_rate_base_vs_peers" DOUBLE PRECISION,
+    "f_capex_to_rate_base_xs" DOUBLE PRECISION,
+    "f_patent_cliff_vs_peers" DOUBLE PRECISION,
+    "f_patent_cliff_xs" DOUBLE PRECISION,
+    "f_rd_capitalized_roic_vs_peers" DOUBLE PRECISION,
+    "f_rd_capitalized_roic_xs" DOUBLE PRECISION,
     "f_fwd_eps_yield_vs_peers" DOUBLE PRECISION,
     "f_fwd_eps_yield_xs" DOUBLE PRECISION,
     "f_eps_expectation_growth_vs_peers" DOUBLE PRECISION,
     "f_eps_expectation_growth_xs" DOUBLE PRECISION,
+    "f_forward_earnings_yield_vs_peers" DOUBLE PRECISION,
+    "f_forward_earnings_yield_xs" DOUBLE PRECISION,
     "f_eps_surprise_last_vs_peers" DOUBLE PRECISION,
     "f_eps_surprise_last_xs" DOUBLE PRECISION,
     "f_eps_surprise_4q_avg_vs_peers" DOUBLE PRECISION,
     "f_eps_surprise_4q_avg_xs" DOUBLE PRECISION,
-    "f_founder_led_vs_peers" DOUBLE PRECISION,
-    "f_founder_led_xs" DOUBLE PRECISION,
+    "f_ceo_pay_ratio_vs_peers" DOUBLE PRECISION,
+    "f_ceo_pay_ratio_xs" DOUBLE PRECISION,
+    "f_ceo_equity_pay_pct_vs_peers" DOUBLE PRECISION,
+    "f_ceo_equity_pay_pct_xs" DOUBLE PRECISION,
+    "f_pct_independent_directors_vs_peers" DOUBLE PRECISION,
+    "f_pct_independent_directors_xs" DOUBLE PRECISION,
+    "f_pct_female_directors_vs_peers" DOUBLE PRECISION,
+    "f_pct_female_directors_xs" DOUBLE PRECISION,
+    "f_board_size_vs_peers" DOUBLE PRECISION,
+    "f_board_size_xs" DOUBLE PRECISION,
+    "f_avg_board_tenure_vs_peers" DOUBLE PRECISION,
+    "f_avg_board_tenure_xs" DOUBLE PRECISION,
+    "f_say_on_pay_support_vs_peers" DOUBLE PRECISION,
+    "f_say_on_pay_support_xs" DOUBLE PRECISION,
+    "f_insider_ownership_pct_vs_peers" DOUBLE PRECISION,
+    "f_insider_ownership_pct_xs" DOUBLE PRECISION,
     "f_founder_ceo_vs_peers" DOUBLE PRECISION,
     "f_founder_ceo_xs" DOUBLE PRECISION,
-    "f_ceo_age_vs_peers" DOUBLE PRECISION,
-    "f_ceo_age_xs" DOUBLE PRECISION,
-    "f_n_officers_vs_peers" DOUBLE PRECISION,
-    "f_n_officers_xs" DOUBLE PRECISION,
-    "f_avg_officer_age_vs_peers" DOUBLE PRECISION,
-    "f_avg_officer_age_xs" DOUBLE PRECISION,
+    "f_ceo_tenure_vs_peers" DOUBLE PRECISION,
+    "f_ceo_tenure_xs" DOUBLE PRECISION,
+    "f_ceo_pay_growth_vs_peers" DOUBLE PRECISION,
+    "f_ceo_pay_growth_xs" DOUBLE PRECISION,
+    "f_ceo_pay_vs_revenue_growth_vs_peers" DOUBLE PRECISION,
+    "f_ceo_pay_vs_revenue_growth_xs" DOUBLE PRECISION,
     "f_employee_growth_vs_peers" DOUBLE PRECISION,
     "f_employee_growth_xs" DOUBLE PRECISION,
     "f_revenue_per_employee_vs_peers" DOUBLE PRECISION,
     "f_revenue_per_employee_xs" DOUBLE PRECISION,
+    "f_revenue_per_employee_growth_vs_peers" DOUBLE PRECISION,
+    "f_revenue_per_employee_growth_xs" DOUBLE PRECISION,
+    "f_headcount_elasticity_vs_peers" DOUBLE PRECISION,
+    "f_headcount_elasticity_xs" DOUBLE PRECISION,
+    "f_dividend_yield_vs_peers" DOUBLE PRECISION,
+    "f_dividend_yield_xs" DOUBLE PRECISION,
+    "f_dividend_growth_vs_peers" DOUBLE PRECISION,
+    "f_dividend_growth_xs" DOUBLE PRECISION,
+    "f_dividend_growth_5y_vs_peers" DOUBLE PRECISION,
+    "f_dividend_growth_5y_xs" DOUBLE PRECISION,
+    "f_dividend_payer_vs_peers" DOUBLE PRECISION,
+    "f_dividend_payer_xs" DOUBLE PRECISION,
+    "f_dividend_payout_ratio_vs_peers" DOUBLE PRECISION,
+    "f_dividend_payout_ratio_xs" DOUBLE PRECISION,
+    "f_dividend_coverage_vs_peers" DOUBLE PRECISION,
+    "f_dividend_coverage_xs" DOUBLE PRECISION,
+    "f_shareholder_yield_vs_peers" DOUBLE PRECISION,
+    "f_shareholder_yield_xs" DOUBLE PRECISION,
+    "f_attn_spike_vs_peers" DOUBLE PRECISION,
+    "f_attn_spike_xs" DOUBLE PRECISION,
+    "f_attn_level_vs_peers" DOUBLE PRECISION,
+    "f_attn_level_xs" DOUBLE PRECISION,
+    "f_inst_holders_vs_peers" DOUBLE PRECISION,
+    "f_inst_holders_xs" DOUBLE PRECISION,
+    "f_inst_breadth_chg_vs_peers" DOUBLE PRECISION,
+    "f_inst_breadth_chg_xs" DOUBLE PRECISION,
+    "f_inst_shares_chg_vs_peers" DOUBLE PRECISION,
+    "f_inst_shares_chg_xs" DOUBLE PRECISION,
+    "f_inst_value_chg_vs_peers" DOUBLE PRECISION,
+    "f_inst_value_chg_xs" DOUBLE PRECISION,
+    "f_new_buyers_vs_peers" DOUBLE PRECISION,
+    "f_new_buyers_xs" DOUBLE PRECISION,
+    "f_exiters_vs_peers" DOUBLE PRECISION,
+    "f_exiters_xs" DOUBLE PRECISION,
+    "f_cluster_buying_vs_peers" DOUBLE PRECISION,
+    "f_cluster_buying_xs" DOUBLE PRECISION,
+    "f_new_buyer_ratio_vs_peers" DOUBLE PRECISION,
+    "f_new_buyer_ratio_xs" DOUBLE PRECISION,
+    "f_net_options_ratio_vs_peers" DOUBLE PRECISION,
+    "f_net_options_ratio_xs" DOUBLE PRECISION,
+    "f_net_options_ratio_chg_vs_peers" DOUBLE PRECISION,
+    "f_net_options_ratio_chg_xs" DOUBLE PRECISION,
+    "f_inst_concentration_vs_peers" DOUBLE PRECISION,
+    "f_inst_concentration_xs" DOUBLE PRECISION,
+    "f_inst_ownership_pct_vs_peers" DOUBLE PRECISION,
+    "f_inst_ownership_pct_xs" DOUBLE PRECISION,
+    "f_inst_value_to_mcap_vs_peers" DOUBLE PRECISION,
+    "f_inst_value_to_mcap_xs" DOUBLE PRECISION,
+    "f_inst_flow_to_mcap_vs_peers" DOUBLE PRECISION,
+    "f_inst_flow_to_mcap_xs" DOUBLE PRECISION,
+    "f_insider_net_buy_ratio_vs_peers" DOUBLE PRECISION,
+    "f_insider_net_buy_ratio_xs" DOUBLE PRECISION,
+    "f_insider_buy_sell_count_ratio_vs_peers" DOUBLE PRECISION,
+    "f_insider_buy_sell_count_ratio_xs" DOUBLE PRECISION,
+    "f_insider_buy_count_vs_peers" DOUBLE PRECISION,
+    "f_insider_buy_count_xs" DOUBLE PRECISION,
+    "f_insider_net_buy_to_mcap_vs_peers" DOUBLE PRECISION,
+    "f_insider_net_buy_to_mcap_xs" DOUBLE PRECISION,
+    "f_short_vol_ratio_vs_peers" DOUBLE PRECISION,
+    "f_short_vol_ratio_xs" DOUBLE PRECISION,
+    "f_short_vol_ratio_chg_vs_peers" DOUBLE PRECISION,
+    "f_short_vol_ratio_chg_xs" DOUBLE PRECISION,
+    "f_fails_to_deliver_ratio_vs_peers" DOUBLE PRECISION,
+    "f_fails_to_deliver_ratio_xs" DOUBLE PRECISION,
+    "f_fails_to_deliver_chg_vs_peers" DOUBLE PRECISION,
+    "f_fails_to_deliver_chg_xs" DOUBLE PRECISION,
     "comp_value" DOUBLE PRECISION,
     "comp_quality" DOUBLE PRECISION,
     "comp_growth" DOUBLE PRECISION,
     "comp_distress" DOUBLE PRECISION,
     "comp_capital_allocation" DOUBLE PRECISION,
     "comp_expectations" DOUBLE PRECISION,
-    "comp_management" DOUBLE PRECISION,
+    "comp_governance" DOUBLE PRECISION,
     "comp_workforce" DOUBLE PRECISION,
+    "comp_eps_beat" DOUBLE PRECISION,
+    "comp_accounting_quality" DOUBLE PRECISION,
+    "comp_ma_digestion" DOUBLE PRECISION,
+    "comp_ai_leverage" DOUBLE PRECISION,
+    "comp_insider" DOUBLE PRECISION,
     "comp_technical" DOUBLE PRECISION,
     "beta_market" DOUBLE PRECISION,
     "beta_momentum" DOUBLE PRECISION,
@@ -352,10 +947,28 @@ CREATE TABLE IF NOT EXISTS "cube" (
     "beta_sector" DOUBLE PRECISION,
     "beta_market_simple" DOUBLE PRECISION,
     "peers" TEXT,
+    "sector" BIGINT,
+    "industry_group" BIGINT,
+    "f_super_holders_vs_peers" DOUBLE PRECISION,
+    "f_super_holders_xs" DOUBLE PRECISION,
+    "f_super_breadth_chg_vs_peers" DOUBLE PRECISION,
+    "f_super_breadth_chg_xs" DOUBLE PRECISION,
+    "f_super_shares_chg_vs_peers" DOUBLE PRECISION,
+    "f_super_shares_chg_xs" DOUBLE PRECISION,
+    "f_super_value_chg_vs_peers" DOUBLE PRECISION,
+    "f_super_value_chg_xs" DOUBLE PRECISION,
+    "f_super_cluster_buying_vs_peers" DOUBLE PRECISION,
+    "f_super_cluster_buying_xs" DOUBLE PRECISION,
+    "f_super_new_buyer_ratio_vs_peers" DOUBLE PRECISION,
+    "f_super_new_buyer_ratio_xs" DOUBLE PRECISION,
+    "f_super_value_to_mcap_vs_peers" DOUBLE PRECISION,
+    "f_super_value_to_mcap_xs" DOUBLE PRECISION,
+    "f_super_flow_to_mcap_vs_peers" DOUBLE PRECISION,
+    "f_super_flow_to_mcap_xs" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "date", "target_horizon")
 );
 
--- [aggregate] cube_signal  (pk: ticker, date)
+-- [aggregate] cube_signal  (pk: ticker, date; from live DB)
 
 CREATE TABLE IF NOT EXISTS "cube_signal" (
     "date" TIMESTAMP NOT NULL,
@@ -364,7 +977,7 @@ CREATE TABLE IF NOT EXISTS "cube_signal" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [aggregate] predictions  (pk: ticker, date)
+-- [aggregate] predictions  (pk: ticker, date; from live DB)
 
 CREATE TABLE IF NOT EXISTS "predictions" (
     "date" TIMESTAMP NOT NULL,
@@ -382,3 +995,5 @@ CREATE TABLE IF NOT EXISTS "predictions" (
     "signal" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "date")
 );
+
+-- SKIPPED (source missing): trend_asset_returns <- output/trend_asset_returns.parquet

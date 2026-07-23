@@ -41,6 +41,7 @@ from src.modelling.step_modelling import StepModelling
 from src.modelling.utils_model import model as ml
 from src.post_processing.step_backtest import StepBacktest
 from src.post_processing.step_alloc_backtest import StepAllocationBacktest
+from src.post_processing.backtest import StepPortfolioBacktest
 from src.post_processing.utils.accuracy import (
     compute_horizon_accuracy,
     horizon_accuracy_summary,
@@ -185,6 +186,32 @@ with st.sidebar:
     aa_fee = st.number_input("Fee (bps)", 0.0, 20.0, float(_AA.get("fee_bps", 2.0)), 0.5)
     aa_spread = st.number_input("Spread (bps)", 0.0, 40.0, float(_AA.get("spread_bps", 8.0)), 0.5)
     aa_run_btn = st.button("▶  Run Allocation Backtest", use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Sidebar — UNIFIED 3-STRATEGY portfolio backtest
+# ---------------------------------------------------------------------------
+_PB = base_config.backtest.get("portfolio_backtest", {}) or {}
+with st.sidebar:
+    st.markdown("---")
+    st.header("Portfolio (3 strategies)")
+    st.caption("Blend L/S equity + long book + trend/CTA into one book; see each strategy's "
+               "Sharpe vs the global portfolio. L/S is out-of-sample from the model train-end.")
+    pb_sleeves = st.multiselect("Strategies (sleeves)", ["ls_equity", "long_book", "trend_cta"],
+                                default=[str(s) for s in _PB.get("sleeves",
+                                        ["ls_equity", "long_book", "trend_cta"])])
+    pb_scheme = st.selectbox("Blend across sleeves", ["erc", "inverse_vol"],
+                             index=0 if str(_PB.get("scheme", "erc")) == "erc" else 1,
+                             help="ERC = correlation-aware; inverse_vol = risk parity")
+    pb_cov = st.selectbox("Sleeve covariance", ["ewma", "std"],
+                          index=0 if str(_PB.get("cov_mode", "ewma")) == "ewma" else 1)
+    pb_vol_target = st.slider("Global Vol Target (annual)", 0.02, 0.30,
+                              float(_PB.get("portfolio_vol_target", 0.10)), 0.01, format="%.2f")
+    pb_max_lev = st.slider("Global Max Leverage", 1.0, 3.0, float(_PB.get("max_leverage", 2.0)), 0.25)
+    pb_rebal = st.selectbox("Rebalance freq (days)", [5, 21, 42, 63],
+                            index=[5, 21, 42, 63].index(int(_PB.get("rebalance_freq", 21))))
+    pb_start = st.text_input("Start date (YYYY-MM-DD)", value=str(_PB.get("start", "2023-01-01")))
+    pb_run_btn = st.button("▶  Run Portfolio Backtest", use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -628,6 +655,42 @@ def render_allocation(step: StepAllocationBacktest):
 
 
 # ---------------------------------------------------------------------------
+# Unified 3-strategy portfolio backtest — run + render
+# ---------------------------------------------------------------------------
+def run_portfolio(params: dict) -> StepPortfolioBacktest:
+    patch = OmegaConf.create({"backtest": {"portfolio_backtest": params}})
+    cfg = OmegaConf.merge(base_config, patch)
+    step = StepPortfolioBacktest(context=context, config=cfg)
+    step.run()
+    return step
+
+
+def render_portfolio(step: StepPortfolioBacktest):
+    st.header("Portfolio (3 strategies) — Results")
+    m = step.metrics
+    st.caption(f"Window {step.daily.index.min().date()} → {step.daily.index.max().date()} "
+               f"({len(step.daily):,} days). L/S is out-of-sample from the model train-end, so it "
+               f"joins the blend once it has history (NaN-aware).")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Portfolio Sharpe", f"{m['sharpe']:.2f}", delta=f"{m['sharpe']-m['spy_sharpe']:.2f} vs SP")
+    c2.metric("Ann. Return", f"{m['ann_return']*100:.1f}%")
+    c3.metric("Ann. Vol", f"{m['ann_vol']*100:.1f}%")
+    c4.metric("Max Drawdown", f"{m['max_drawdown']*100:.1f}%",
+              delta=f"{(m['max_drawdown']-m['spy_max_drawdown'])*100:.1f}% vs SP", delta_color="inverse")
+
+    st.subheader("Per-strategy Sharpe vs global portfolio")
+    st.dataframe(step.summary, use_container_width=True)
+    st.subheader("Sleeve return correlation (how independent the strategies are)")
+    st.dataframe(step.sleeve_corr.style.format("{:.2f}"), use_container_width=True)
+
+    out = context.paths["OUTPUT_DIR"] / "portfolio_backtest"
+    st.subheader("Portfolio vs SP500 (+ standalone sleeves)")
+    st.image(str(out / "portfolio_vs_sp.png"), use_container_width=True)
+    st.subheader("Strategy blend weights over time")
+    st.image(str(out / "sleeve_weights.png"), use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
 # Main panel
 # ---------------------------------------------------------------------------
 if run_btn:
@@ -726,3 +789,33 @@ if alloc is not None:
     render_allocation(alloc)
     with st.expander("Show allocation run logs"):
         st.code(st.session_state.get("alloc_logs", ""), language="log")
+
+
+# ---------------------------------------------------------------------------
+# Unified 3-strategy portfolio panel
+# ---------------------------------------------------------------------------
+if pb_run_btn:
+    pb_params = {
+        "enabled": True,
+        "start": pb_start.strip() or "2023-01-01",
+        "sleeves": list(pb_sleeves) or ["ls_equity", "long_book", "trend_cta"],
+        "scheme": pb_scheme,
+        "cov_mode": pb_cov,
+        "rebalance_freq": int(pb_rebal),
+        "portfolio_vol_target": float(pb_vol_target),
+        "max_leverage": float(pb_max_lev),
+    }
+    _clear_log_buffer(context)
+    try:
+        with st.spinner("Running 3-strategy portfolio backtest… (L/S may retrain/score models)"):
+            st.session_state["portfolio"] = run_portfolio(pb_params)
+        st.session_state["portfolio_logs"] = context.log_buffer.getvalue()
+    except Exception as exc:
+        st.exception(exc)
+        st.stop()
+
+portfolio = st.session_state.get("portfolio")
+if portfolio is not None:
+    render_portfolio(portfolio)
+    with st.expander("Show portfolio run logs"):
+        st.code(st.session_state.get("portfolio_logs", ""), language="log")

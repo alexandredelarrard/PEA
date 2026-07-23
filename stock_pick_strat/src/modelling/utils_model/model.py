@@ -518,8 +518,10 @@ def cross_validate(
 # .txt); every other member (elastic-net / ridge LinearModel) is pickled (.pkl). Single
 # source of truth shared by StepModelling.save_models, StepBacktest.load_models and the
 # app, so a `random_forest` member (LightGBM boosting='rf') is saved AND reloaded as a
-# booster instead of being silently skipped by a lightgbm-only check.
-BOOSTER_MEMBER_KINDS = frozenset({"lightgbm", "random_forest"})
+# booster instead of being silently skipped by a lightgbm-only check. Both the "lgbm"
+# (current config name) and legacy "lightgbm" aliases are included, so a Booster is never
+# mis-saved as a .pkl text file (which then fails pickle.load on reload).
+BOOSTER_MEMBER_KINDS = frozenset({"lgbm", "lightgbm", "random_forest"})
 
 
 def member_model_path(models_dir: Path, horizon: int, kind: str) -> Path:

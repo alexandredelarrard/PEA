@@ -22,21 +22,15 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# daily_vol / combined_forecast now live in the shared util so the post-processing
-# allocation backtest can reuse them without cross-importing this modelling package.
-from src.utils.trend import daily_vol, combined_forecast
+# The pure trend building blocks live in the SHARED util so the post-processing CTA
+# strategy + allocation backtest reuse them without cross-importing this modelling package.
+# Re-exported here so existing modelling imports keep working unchanged.
+from src.utils.trend import (                                       # noqa: F401
+    daily_vol, combined_forecast, vol_scaled_positions, sleeve_returns,
+    rebalanced as _rebalanced,
+)
 
 _ANN: float = 252.0
-
-
-def vol_scaled_positions(forecast: pd.DataFrame, close: pd.DataFrame, vol_window: int,
-                         per_asset_vol_target: float) -> pd.DataFrame:
-    """Turn forecasts into weights sized so each asset's ex-ante annual vol ~
-    forecast * per_asset_vol_target: weight_i = forecast_i * vol_target / ann_vol_i (date x asset)."""
-    ann_vol = daily_vol(close, vol_window) * np.sqrt(_ANN)
-    ann_vol = ann_vol.where(np.isfinite(ann_vol) & (ann_vol > 0))
-    w = forecast * (per_asset_vol_target / ann_vol)
-    return w.replace([np.inf, -np.inf], np.nan)
 
 
 def value_forecast(close: pd.DataFrame, lookback: int = 1260, vol_window: int = 63,
@@ -96,32 +90,6 @@ def apply_class_budget(weights: pd.DataFrame, asset_class: dict[str, str],
     for cls, assets in groups.items():
         out[assets] = weights[assets] * (float(budgets.get(cls, default_b)) / len(assets))
     return out
-
-
-def _rebalanced(weights: pd.DataFrame, rebalance_freq: int) -> pd.DataFrame:
-    """Update target weights only every `rebalance_freq` rows; hold (ffill) in between."""
-    if rebalance_freq <= 1:
-        return weights
-    mask = np.zeros(len(weights), dtype=bool)
-    mask[::rebalance_freq] = True
-    held = weights.where(pd.Series(mask, index=weights.index), other=np.nan)
-    return held.ffill()
-
-
-def sleeve_returns(weights: pd.DataFrame, close: pd.DataFrame, fee_bps: float = 1.0,
-                   spread_bps: float = 5.0, rebalance_freq: int = 5) -> pd.DataFrame:
-    """Daily NET return of the trend sleeve from target weights (held between rebalances).
-    Point-in-time: weights decided at t-1 earn the t-1->t return; turnover at t costs (fee+spread).
-    Returns date-indexed DataFrame [ret, gross, turnover]."""
-    cost_rate = (fee_bps + spread_bps) / 1e4
-    r = close.pct_change(fill_method=None)
-    w = _rebalanced(weights, rebalance_freq).reindex(close.index).fillna(0.0)
-    w_held = w.shift(1)                                              # held into today's return
-    gross_ret = (w_held * r).sum(axis=1, skipna=True)
-    turnover = (w - w.shift(1)).abs().sum(axis=1, skipna=True)
-    net_ret = gross_ret - turnover * cost_rate
-    out = pd.DataFrame({"ret": net_ret, "gross": w.abs().sum(axis=1), "turnover": turnover})
-    return out.iloc[1:]                                             # drop the first all-NaN row
 
 
 def realized_ann_vol(ret: pd.Series) -> float:

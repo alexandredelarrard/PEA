@@ -65,3 +65,43 @@ def trend_scale_long_only(close: pd.DataFrame, lookbacks: list[int], vol_window:
     if scheme == "linear":
         return (1.0 + fc / cap).clip(lower=floor, upper=1.0)         # cut on downside only
     raise ValueError(f"unknown trend scheme '{scheme}' (use linear | binary)")
+
+
+# --------------------------------------------------------------------------- #
+# LONG/SHORT vol-scaled trend book (the CTA sleeve) — shared so the modelling  #
+# trend sleeve AND the post-processing CTA strategy build it from one source.  #
+# --------------------------------------------------------------------------- #
+def vol_scaled_positions(forecast: pd.DataFrame, close: pd.DataFrame, vol_window: int,
+                         per_asset_vol_target: float) -> pd.DataFrame:
+    """Turn (signed) forecasts into weights sized so each asset's ex-ante annual vol ~
+    forecast * per_asset_vol_target: weight_i = forecast_i * vol_target / ann_vol_i (date x asset)."""
+    ann_vol = daily_vol(close, vol_window) * np.sqrt(_ANN)
+    ann_vol = ann_vol.where(np.isfinite(ann_vol) & (ann_vol > 0))
+    w = forecast * (per_asset_vol_target / ann_vol)
+    return w.replace([np.inf, -np.inf], np.nan)
+
+
+def rebalanced(weights: pd.DataFrame, rebalance_freq: int) -> pd.DataFrame:
+    """Update target weights only every `rebalance_freq` rows; hold (ffill) in between."""
+    if rebalance_freq <= 1:
+        return weights
+    mask = np.zeros(len(weights), dtype=bool)
+    mask[::rebalance_freq] = True
+    held = weights.where(pd.Series(mask, index=weights.index), other=np.nan)
+    return held.ffill()
+
+
+def sleeve_returns(weights: pd.DataFrame, close: pd.DataFrame, fee_bps: float = 1.0,
+                   spread_bps: float = 5.0, rebalance_freq: int = 5) -> pd.DataFrame:
+    """Daily NET return of a (long/short) trend book from target weights, held between rebalances.
+    Point-in-time: weights decided at t-1 earn the t-1->t return; turnover at t costs (fee+spread).
+    Returns date-indexed DataFrame [ret, gross, turnover]."""
+    cost_rate = (fee_bps + spread_bps) / 1e4
+    r = close.pct_change(fill_method=None)
+    w = rebalanced(weights, rebalance_freq).reindex(close.index).fillna(0.0)
+    w_held = w.shift(1)                                              # held into today's return
+    gross_ret = (w_held * r).sum(axis=1, skipna=True)
+    turnover = (w - w.shift(1)).abs().sum(axis=1, skipna=True)
+    net_ret = gross_ret - turnover * cost_rate
+    out = pd.DataFrame({"ret": net_ret, "gross": w.abs().sum(axis=1), "turnover": turnover})
+    return out.iloc[1:]                                             # drop the first all-NaN row

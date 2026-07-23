@@ -132,6 +132,15 @@ def run_portfolio(params: dict) -> StepPortfolio:
     return step
 
 
+def ls_model_ready(start: str) -> bool:
+    """True when the L/S sleeve can run OOS for this backtest: either it isn't selected, or a
+    model exists trained EXACTLY for this period (train_end == backtest start). A missing or
+    misaligned model must NOT be used — the run is blocked with a warning instead."""
+    if "ls_equity" not in sleeves:
+        return True
+    return TRAIN_END is not None and bool(start) and start == TRAIN_END
+
+
 def _clear_logs():
     context.log_buffer.seek(0); context.log_buffer.truncate(0)
 
@@ -219,20 +228,31 @@ def _img(step, rel: str):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-# Alignment guard: the L/S sleeve is OOS only from the model train-end. Warn (retrain) on mismatch.
-if "ls_equity" in sleeves and not TRAIN_END:
-    st.warning("⚠ No trained L/S model found — the `ls_equity` sleeve will be DROPPED. "
-               "Train StepModelling first (it saves models + metadata.json).")
-elif "ls_equity" in sleeves and TRAIN_END and start.strip() and start.strip() != TRAIN_END:
-    st.warning(f"⚠ **Backtest start {start.strip()} ≠ model train-end {TRAIN_END}.** The L/S sleeve "
-               f"is out-of-sample only from {TRAIN_END}: a start BEFORE that is in-sample "
-               f"(overfit-looking) and the window before {TRAIN_END} has no L/S. **Retrain** the "
-               f"L/S model to `train.end_date = {start.strip()}`, or set Start = {TRAIN_END}.")
+# The L/S sleeve needs a model TRAINED FOR THIS PERIOD (train_end == backtest start). If the model
+# is missing or trained for a different period, we do NOT run with the wrong model — we warn and
+# block, so the L/S results are always a clean out-of-sample test of the aligned model.
+_start = start.strip() or "2023-01-01"
+_ls_ready = ls_model_ready(_start)
+if "ls_equity" in sleeves and not _ls_ready:
+    if TRAIN_END is None:
+        st.warning(f"⚠ No trained L/S model found. Train the model for this period first "
+                   f"(`train.end_date = {_start}`, then StepModelling), or deselect `ls_equity`. "
+                   f"**The backtest will not run with a missing model.**")
+    else:
+        st.warning(f"⚠ The L/S model is trained to **train_end = {TRAIN_END}**, but the backtest "
+                   f"starts **{_start}** — the model is NOT trained for this period. Retrain it with "
+                   f"`train.end_date = {_start}` (then StepModelling), set Start = {TRAIN_END}, or "
+                   f"deselect `ls_equity`. **The backtest will not run with a misaligned model.**")
 
 if run_btn:
+    # guard: never run the backtest with a missing / misaligned L/S model
+    if "ls_equity" in sleeves and not _ls_ready:
+        st.error("Backtest blocked: the L/S model is missing or not trained for this backtest "
+                 "period (see the warning above). Fix the alignment or deselect `ls_equity`.")
+        st.stop()
     params = {
         "sleeves": list(sleeves) or ["ls_equity", "long_book", "trend_cta"],
-        "start": start.strip() or "2023-01-01",
+        "start": _start,
         "end": end.strip() or None,
         "scheme": scheme, "cov_mode": cov_mode, "rebalance_freq": int(rebalance_freq),
         "portfolio_vol_target": float(portfolio_vol_target), "max_leverage": float(max_leverage),
@@ -241,7 +261,7 @@ if run_btn:
     }
     _clear_logs()
     try:
-        with st.spinner("Running portfolio backtest… (L/S scores the cube — a few minutes)"):
+        with st.spinner("Running portfolio backtest… (L/S reads the model + scores the cube)"):
             st.session_state["portfolio"] = run_portfolio(params)
         st.session_state["portfolio_logs"] = context.log_buffer.getvalue()
     except Exception as exc:

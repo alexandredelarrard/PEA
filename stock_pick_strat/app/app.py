@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sys
 import os
+import json
 from pathlib import Path
 
 # Ensure imports resolve from stock_pick_strat/
@@ -48,6 +49,21 @@ def get_context():
 
 base_config, context = get_context()
 _PB = base_config.portfolio
+
+
+def model_train_end() -> str | None:
+    """The trained L/S ensemble's train_end (metadata.json) — the L/S sleeve is out-of-sample
+    only from this date. The backtest start must equal it for a clean OOS L/S."""
+    meta = context.paths["MODELS_DIR"] / "metadata.json"
+    if not meta.exists():
+        return None
+    try:
+        return str(json.loads(meta.read_text()).get("train_end"))
+    except Exception:
+        return None
+
+
+TRAIN_END = model_train_end()
 
 # friendly per-sleeve blurb (what to look for in its analysis tab)
 SLEEVE_INFO = {
@@ -88,7 +104,14 @@ with st.sidebar:
                                   help="Reference vol each sleeve is scaled to before blending")
 
     st.subheader("Window & capital")
-    start = st.text_input("Start date (YYYY-MM-DD)", value=str(_PB.get("start", "2023-01-01")))
+    if TRAIN_END:
+        st.caption(f"⚙ Model **train-end = {TRAIN_END}** — the L/S sleeve is out-of-sample from this "
+                   f"date. Keep Start = this for a clean OOS L/S.")
+    else:
+        st.error("No trained L/S model found (metadata.json). Train StepModelling first, "
+                 "otherwise the `ls_equity` sleeve will be dropped from the blend.")
+    # start defaults to the model train-end so L/S is OOS-aligned and always present
+    start = st.text_input("Start date (YYYY-MM-DD)", value=TRAIN_END or str(_PB.get("start", "2023-01-01")))
     end = st.text_input("End date (blank = last common)", value="")
     starting_capital = st.number_input("Starting capital ($)", 1, 1_000_000_000,
                                         int(_PB.get("starting_capital", 1_000_000)), 100_000, format="%d")
@@ -196,6 +219,16 @@ def _img(step, rel: str):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+# Alignment guard: the L/S sleeve is OOS only from the model train-end. Warn (retrain) on mismatch.
+if "ls_equity" in sleeves and not TRAIN_END:
+    st.warning("⚠ No trained L/S model found — the `ls_equity` sleeve will be DROPPED. "
+               "Train StepModelling first (it saves models + metadata.json).")
+elif "ls_equity" in sleeves and TRAIN_END and start.strip() and start.strip() != TRAIN_END:
+    st.warning(f"⚠ **Backtest start {start.strip()} ≠ model train-end {TRAIN_END}.** The L/S sleeve "
+               f"is out-of-sample only from {TRAIN_END}: a start BEFORE that is in-sample "
+               f"(overfit-looking) and the window before {TRAIN_END} has no L/S. **Retrain** the "
+               f"L/S model to `train.end_date = {start.strip()}`, or set Start = {TRAIN_END}.")
+
 if run_btn:
     params = {
         "sleeves": list(sleeves) or ["ls_equity", "long_book", "trend_cta"],
@@ -217,6 +250,14 @@ if run_btn:
 
 step = st.session_state.get("portfolio")
 if step is not None:
+    dropped = getattr(step, "dropped_sleeves", []) or []
+    if dropped:
+        hint = ""
+        if "ls_equity" in dropped:
+            hint = (f" — `ls_equity` needs model PREDICTIONS and is out-of-sample from the model "
+                    f"train-end ({TRAIN_END}); ensure the models exist and the window overlaps "
+                    f"[train-end, end]. Retrain if the start doesn't match the train-end.")
+        st.error(f"⚠ Sleeve(s) dropped (no data in window): **{dropped}**{hint}")
     render_overview(step)
     render_strategy_tabs(step)
     with st.expander("Show run logs"):

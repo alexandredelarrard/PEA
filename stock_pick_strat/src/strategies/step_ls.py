@@ -68,7 +68,8 @@ class LongShortStrategy(Strategy):
             w = w[w.index >= inputs.start]
         c = self._cfg
         return trade_blotter(w, inputs.capital, float(c.get("fee_bps", inputs.fee_bps)),
-                             float(c.get("spread_bps", inputs.spread_bps)), self.name)
+                             float(c.get("spread_bps", inputs.spread_bps)), self.name,
+                             prices=getattr(self, "close", None))    # share-accurate (per-name close)
 
     def _analyze(self, ret: pd.Series) -> dict:
         """IC + Sharpe/maxDD + market-neutrality (beta to SP, corr to energy) plots."""
@@ -166,10 +167,15 @@ class LongShortStrategy(Strategy):
         cutoff = (self.backtest_start - pd.Timedelta(days=buffer_days)).date()
         raw = du.prices_long_to_multiindex(self._load_prices_since(cutoff))
         close = du.extract_field(raw, "Close")
+        self.close = close                                  # per-name close prices (for the share blotter)
         mkt = self._cube_cfg.market_ticker
         rets = du.daily_returns(close)
         self.spy_ret = rets[mkt]
-        drop = [mkt] + list(self._config.data_extract.get("other_tickers", []))
+        # L/S universe = equities only. Drop the market benchmark + the market/macro `other_tickers`
+        # AND any INDEX / non-equity symbol (leading '^', e.g. ^VIX, ^GSPC) that may linger in the
+        # `prices` table — those are macro series, never L/S positions.
+        idx_syms = [c for c in rets.columns if str(c).startswith("^")]
+        drop = [mkt] + list(self._config.data_extract.get("other_tickers", [])) + idx_syms
         self.stock_ret = rets.drop(columns=drop, errors="ignore")
 
     def _horizon_blend_weights(self, signals: dict, ir: dict) -> dict:

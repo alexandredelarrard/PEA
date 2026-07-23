@@ -83,6 +83,7 @@ class StepPortfolio(Step):
         inputs = self._inputs()
         names = [str(s) for s in self._cfg.get("sleeves", ["ls_equity", "long_book", "trend_cta"])]
         streams, self.results = {}, {}
+
         for n in names:
             if n not in STRATEGY_REGISTRY:
                 self._log.warning("unknown sleeve '%s' — skipped", n); continue
@@ -95,6 +96,7 @@ class StepPortfolio(Step):
                 self.results[n] = res
             else:
                 self._log.warning("sleeve '%s' produced an empty return stream — skipped", n)
+        
         self.requested_sleeves = names
         self.dropped_sleeves = [n for n in names if n not in streams]     # requested but no data
         if self.dropped_sleeves:

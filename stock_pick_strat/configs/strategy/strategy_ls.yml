@@ -20,7 +20,7 @@ strategy_ls:
   #   correlation-aware, jointly down-weights correlated names so shared risk isn't
   #   double-counted. cov_shrink in [0,1] blends toward the diagonal (1.0 == diagonal).
   risk_model: covariance
-  cov_shrink: 0.5
+  cov_shrink: 0.7
   # --- risk-model windows ---
   beta_window: 63
   vol_window: 63

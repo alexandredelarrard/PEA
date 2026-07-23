@@ -90,7 +90,7 @@ with st.sidebar:
     st.subheader("Window & capital")
     start = st.text_input("Start date (YYYY-MM-DD)", value=str(_PB.get("start", "2023-01-01")))
     end = st.text_input("End date (blank = last common)", value="")
-    starting_capital = st.number_input("Starting capital ($)", 10_000, 1_000_000_000,
+    starting_capital = st.number_input("Starting capital ($)", 1, 1_000_000_000,
                                         int(_PB.get("starting_capital", 1_000_000)), 100_000, format="%d")
     fee_bps = st.number_input("Fee (bps)", 0.0, 20.0, float(_PB.get("fee_bps", 2.0)), 0.5)
     spread_bps = st.number_input("Spread (bps)", 0.0, 40.0, float(_PB.get("spread_bps", 8.0)), 0.5)

@@ -6,10 +6,10 @@
 portfolio:
   sleeves: [ls_equity, long_book, trend_cta]   # subset of strategies to evaluate
   # window applied to ALL sub-strategies (L/S is additionally OOS from its model train_end)
-  start: "2023-01-01"
+  start: "2022-01-01"
   end: null                    # null -> last common date
   # capital / risk handed down to each sleeve
-  starting_capital: 1000000
+  starting_capital: 1000
   sleeve_target_vol: 0.10      # per-sleeve reference vol each sleeve targets before blending
   fee_bps: 2.0                 # default sleeve trading cost (a sleeve may override in its own file)
   spread_bps: 8.0

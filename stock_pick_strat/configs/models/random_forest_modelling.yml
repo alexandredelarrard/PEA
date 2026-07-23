@@ -9,7 +9,7 @@ random_forest:
   num_boost_round: 500         # number of bagged trees (RF: more trees lower variance, no overfit)
   bagging_fraction: 0.6        # row subsample per tree (REQUIRED for rf mode, with bagging_freq>0)
   bagging_freq: 1
-  feature_fraction: 0.4        # column subsample per tree -> decorrelates the trees
+  feature_fraction: 0.5        # column subsample per tree -> decorrelates the trees
   max_depth: 8                 # fuller trees than the GBDT; variance averaged out by bagging
   num_leaves: 127
   min_child_samples: 50

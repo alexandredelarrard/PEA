@@ -131,6 +131,7 @@ def _per_call_kpis(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd
     with the smart KPIs. Cross-call KPIs (deltas, novelty) are computed per ticker in
     call order. Returns columns: ticker, as_of, ec_tone, ec_tone_delta, ec_qa_gap,
     ec_uncertainty, ec_length_delta, ec_vocab_novelty."""
+    
     s = sentiment.copy()
     s["net"] = s["sent_pos"].astype(float) - s["sent_neg"].astype(float)
     s["n_words"] = pd.to_numeric(s["n_words"], errors="coerce").fillna(0.0)
@@ -216,6 +217,7 @@ def _daily_frame(per_call: pd.DataFrame, value_col: str,
 _KPI_COLS = ["ec_tone", "ec_tone_delta", "ec_qa_gap", "ec_uncertainty",
              "ec_length_delta", "ec_vocab_novelty",
              "ec_qa_tone_delta", "ec_prep_tone_delta",   # per-section quarter-to-quarter tone drift
+             
              # OpenAI-embedding KPIs (present only when the embedding cache is passed):
              "ec_qa_coherence_mean", "ec_qa_coherence_std", "ec_n_qa",
              "ec_qa_qq_sim", "ec_prep_qq_sim"]

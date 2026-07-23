@@ -30,7 +30,5 @@ class StepExtractBehavioral(Step):
         # KPIs in the cube (earnings_call_features). DEFERRED: the Motley Fool site is now
         # a JS / anti-bot SPA (transcript detail pages 404 to HTTP clients), so the scraper
         # needs a rework (headless browser or an alternate free source) before this can
-        # populate data. The downstream (scoring -> cube -> model) is built + tested and
-        # self-skips while the table is empty. Re-enable once fetch_earnings_calls works.
         
         fetch_earnings_calls(self._context, tickers=tickers)

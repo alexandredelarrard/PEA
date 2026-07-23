@@ -32,6 +32,7 @@ import re
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from src.constants.constants import (
     EARNINGS_CALL_EMBED_MODEL,
@@ -140,6 +141,7 @@ def embed_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
     """Ensure every call's speaker turns are embedded + cached in `earning_calls_embedding`
     (one row per turn). Incremental (skips ticker·quarter already embedded), per-call upsert.
     `client` lets tests inject a stub embedder (no network / no spend). Returns the full table."""
+    
     store, log = context.store, context.log
     if sections is None:
         sections = store.load(EARNINGS_CALL_SECTIONS_TABLE)
@@ -165,7 +167,7 @@ def embed_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
 
     log.info("Embedding %d earnings calls per-turn (OpenAI %s)...", len(calls), model)
     n_new = 0
-    for (tkr, q) in calls:
+    for (tkr, q) in tqdm(calls, "EC EMbeddings calls"):
         run_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
         qa_text = text.loc[(tkr, q), _QA_TAG] if _QA_TAG in text.columns else None
         prep_text = text.loc[(tkr, q), _PREP_TAG] if _PREP_TAG in text.columns else None

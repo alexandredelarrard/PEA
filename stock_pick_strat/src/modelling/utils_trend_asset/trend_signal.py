@@ -22,28 +22,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+# daily_vol / combined_forecast now live in the shared util so the post-processing
+# allocation backtest can reuse them without cross-importing this modelling package.
+from src.utils.trend import daily_vol, combined_forecast
+
 _ANN: float = 252.0
-
-
-def daily_vol(close: pd.DataFrame, window: int, min_periods: int | None = None) -> pd.DataFrame:
-    """Trailing daily-return volatility per asset (date x asset). NaN-tolerant."""
-    mp = int(min_periods) if min_periods is not None else max(10, window // 2)
-    return close.pct_change(fill_method=None).rolling(window, min_periods=mp).std()
-
-
-def combined_forecast(close: pd.DataFrame, lookbacks: list[int], vol_window: int,
-                      cap: float = 2.0) -> pd.DataFrame:
-    """Capped multi-lookback vol-normalized trend forecast (date x asset), in [-cap, +cap].
-    Positive = uptrend (go long), negative = downtrend (go short)."""
-    if not lookbacks:
-        raise ValueError("combined_forecast: `lookbacks` must be non-empty")
-    dvol = daily_vol(close, vol_window)
-    parts: list[pd.DataFrame] = []
-    for lb in lookbacks:
-        mom = close.pct_change(lb, fill_method=None)                 # P_t/P_{t-lb} - 1
-        parts.append(mom / (dvol * np.sqrt(float(lb))))              # standardized trend strength
-    forecast = sum(parts) / float(len(parts))
-    return forecast.clip(lower=-cap, upper=cap)
 
 
 def vol_scaled_positions(forecast: pd.DataFrame, close: pd.DataFrame, vol_window: int,

@@ -232,6 +232,49 @@ SEC_FORM13F_URL_DICT = {
 }
 
 # --------------------------------------------------------------------------- #
+# Long-history multi-asset ALLOCATION series (FRED, free, deep history)        #
+# --------------------------------------------------------------------------- #
+# A separate, deeper-history pull than the `macro` feature table: total-return /
+# level series for the risk-parity + trend asset-allocation sleeve, back to ~1995
+# (scoped by data_extract.macro_asset_years_history). Written to MACRO_ASSET_PRICES_TABLE.
+#
+# Equity: FRED's S&P 500 (`SP500`) is license-truncated to ~10y daily, so the
+# long equity leg uses the Wilshire 5000 Total Market Full Cap index (near-identical
+# US equity beta, daily since ~1971). 10Y bond is stored as a TOTAL-RETURN index
+# reconstructed from the constant-maturity yield (carry + duration*Δyield) — the raw
+# yield is kept alongside for transparency. Cash = 3M T-bill secondary-market rate.
+MACRO_ASSET_PRICES_TABLE = "macro_asset_prices"
+# HYBRID source (verified July 2026): FRED's API no longer serves a broad daily S&P
+# (SP500 is license-truncated to ~10y) or ANY gold series (the London fixes were
+# removed ~2025), so the RATES/CASH/FX legs come from FRED (its strong long history)
+# and the EQUITY + GOLD legs from yfinance (the pipeline's existing market source).
+# FRED series id -> column name in MACRO_ASSET_PRICES_TABLE:
+MACRO_ASSET_FRED_SERIES = {
+    "DGS10": "yield_10y",           # 10Y constant-maturity Treasury yield -> bond_10y_tr
+    "DTB3": "cash_rate",            # 3-month T-bill secondary market rate (cash leg)
+    "DEXUSEU": "fx_usdeur",         # USD per EUR (FX leg; NaN before the euro, 1999)
+    "VIXCLS": "vix",                # CBOE VIX (since 1990) — REGIME SIGNAL, not an asset
+}
+# columns stored for their SIGNAL value only (regime detection), never allocated to as an
+# asset — asset_returns_from_macro whitelists the tradable legs, so these are excluded there.
+MACRO_ASSET_SIGNAL_COLUMNS = ("vix",)
+# yfinance symbol -> column name (daily, auto-adjusted so each is a total-return proxy):
+# SPY = S&P 500 total-return (since 1993); GC=F = COMEX gold front future (since 2000);
+# XLE = Energy Select Sector SPDR (since 1998) — the "commodity via ENERGY EQUITIES" sleeve
+# (no futures): the rate/inflation-shock diversifier that was +~60% in the 2022 selloff.
+MACRO_ASSET_YF_SERIES = {
+    "SPY": "equity_tr",
+    "GC=F": "gold",
+    "XLE": "energy",
+}
+MACRO_ASSET_GOLD_COLUMN = "gold"
+# reconstructed 10Y total-return index column + its maturity assumption
+MACRO_ASSET_BOND_TR_COLUMN = "bond_10y_tr"
+MACRO_ASSET_BOND_MATURITY_YEARS = 10
+# CORE daily level series used to judge table freshness (lag ~1 business day)
+MACRO_ASSET_CORE_LEVEL_COLUMNS = ("equity_tr", "yield_10y", "cash_rate")
+
+# --------------------------------------------------------------------------- #
 # Multi-asset trend (time-series-momentum) sleeve — StepTrendAssetClass output #
 # --------------------------------------------------------------------------- #
 # Daily NET return of the directional cross-asset trend book (one row per date, no ticker),

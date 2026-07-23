@@ -3,6 +3,11 @@ seed: 4325
 
 data_extract:
   years_history: 15
+  # Long-history multi-asset ALLOCATION sleeve (risk-parity + trend): a separate,
+  # deeper pull than the L/S `years_history`. FRED total-return/level series (equity,
+  # gold, 10Y bond TR, cash, FX) since ~1995. 31 -> back to 1995. See
+  # src/data_extract/utils/prices/fetch_macro_assets.py + table `macro_asset_prices`.
+  macro_asset_years_history: 31
   # SEC Financial Statement & Notes data sets are ~30x heavier than the other
   # sources (~380MB / quarterly zip). Kept on its own knob so this pull can be
   # scoped independently of the global years_history. 15 -> ~26GB of cached zips.

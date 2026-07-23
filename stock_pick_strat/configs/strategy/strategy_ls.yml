@@ -11,16 +11,16 @@ strategy_ls:
   pos_cap: 0.05                # max |weight| per name
   gross_cap: 3.0               # max sum|w| (leverage safety rail)
   # --- turnover control ---
-  step: 0.35                   # partial trade toward target; lower = slower = cheaper
-  no_trade_band: 0.0           # skip per-name trades smaller than this
-  rebalance_freq: 63           # recompute target every N days
+  step: 0.25                   # partial trade toward target; lower = slower = cheaper
+  no_trade_band: 0.005         # skip per-name trades smaller than this
+  rebalance_freq: 21            # recompute target every N days
   # --- risk model (position weighting) ---
   # diagonal  = inverse-variance per stock (weight ~ 1/vol, ignores correlation)
   # covariance = Ledoit-Wolf-shrunk idiosyncratic COVARIANCE (w = Σ⁻¹·residual-alpha):
   #   correlation-aware, jointly down-weights correlated names so shared risk isn't
   #   double-counted. cov_shrink in [0,1] blends toward the diagonal (1.0 == diagonal).
   risk_model: covariance
-  cov_shrink: 0.7
+  cov_shrink: 1
   # --- risk-model windows ---
   beta_window: 63
   vol_window: 63

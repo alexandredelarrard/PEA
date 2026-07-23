@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils_trend_asset import (
+from src.modelling.trend.utils import (
     apply_class_budget,
     carry_forecast,
     combine_signals,

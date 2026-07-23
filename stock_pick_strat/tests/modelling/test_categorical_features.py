@@ -7,8 +7,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils_model import model as ml
-from src.modelling.utils_model import baselines
+from src.modelling.long_short.utils import model as ml
+from src.modelling.long_short.utils import baselines
 
 
 def _panel(seed: int = 0) -> tuple[pd.DataFrame, list[str], list[str]]:

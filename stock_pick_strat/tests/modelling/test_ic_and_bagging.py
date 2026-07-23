@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils_model.model import daily_ic, train_ranker, predict
+from src.modelling.long_short.utils.model import daily_ic, train_ranker, predict
 
 
 def _ic_panel(n_days: int = 80, n_tickers: int = 40, seed: int = 3):

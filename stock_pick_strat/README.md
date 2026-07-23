@@ -21,9 +21,26 @@ StepExtractAllData          # 1. extract  (super-step → 4 sub-steps)
   └─ StepExtractBehavioral    Wikipedia pageviews, Google Trends, earnings-call transcripts
 StepDeducePeers             # 2. peer baskets (return-corr + OpenAI embeddings)
 StepBuildCube               # 3. peer-relative feature panels → `cube` table
-StepModelling               # 4. cross-sectional models → `predictions`, `cube_signal`
-StepBacktest                # 5. long/short backtest
+StepModelling               # 4. train the L/S ensemble (src/modelling/long_short) → `predictions`, `cube_signal`
+StepPortfolio               # 5. run + blend the strategy sleeves into one book vs SP-hold
 ```
+
+### Strategies & portfolio
+The backtest layer is a set of **self-contained strategy sleeves** (`src/strategies/`, each a
+`Strategy.run(PortfolioInputs) → StrategyResult`) blended by a portfolio step (`src/portfolio/`):
+
+| Sleeve | Model (`src/modelling/…`) | What it is |
+|---|---|---|
+| `ls_equity` | `long_short/` (trained ensemble) | market-neutral equity long/short alpha (OOS from `train_end`) |
+| `long_book` | `long_book/allocation.py` | long-only multi-asset ERC allocation + trend overlay + VIX regime tilt |
+| `trend_cta` | `trend/signal.py` | long/short multi-asset time-series-momentum (crisis-alpha diversifier) |
+
+`StepPortfolio` reads `configs/portfolio.yml` (sleeve set + global vol/leverage/capital), runs each
+sleeve on `configs/strategy/strategy_*.yml`, and blends their return streams by risk-parity/ERC
+(= dynamic $-allocation) + a global vol target — reporting **per-strategy Sharpe vs the global
+portfolio**. Each sleeve + the portfolio save analysis plots (IC, neutrality, correlation) under
+`data/output/*/analysis/`. The long-book/trend sleeves run off the long-history `macro_asset_prices`
+table (FRED rates/cash/FX + yfinance equity/gold/energy, since ~1995).
 
 ### Data sources (all free / freemium)
 | Domain | Source | Notes |
@@ -74,7 +91,8 @@ Key tables (PK): `prices` (ticker,date) · `dividends` · `short_interest` ·
 `def14a_llm` (ticker,accession_number) · `institutional_holdings` · `cusip_ticker_map` ·
 `sp500_tickers` (ticker, + name/cik/sector/industry — also the ticker→CIK source) · `google_trends` ·
 `wiki_pageviews` · `ticker_embeddings` · `cube` (ticker,date,target_horizon) ·
-`predictions` · `cube_signal`.
+`predictions` · `cube_signal` · `macro_asset_prices` (date — long-history multi-asset
+allocation series: equity/gold/energy/bond-TR/cash/FX/VIX).
 
 Access is always via `context.store` (`DataStore.load/save/replace/existing_dates`);
 new columns auto-add via `ensure_columns`. Non-tabular artifacts (models, plots,

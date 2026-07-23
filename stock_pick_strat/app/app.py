@@ -37,15 +37,17 @@ import streamlit as st
 from omegaconf import OmegaConf
 
 from src.context import get_config_context
-from src.modelling.step_modelling import StepModelling
-from src.modelling.utils_model import model as ml
-from src.post_processing.step_backtest import StepBacktest
-from src.post_processing.step_alloc_backtest import StepAllocationBacktest
-from src.post_processing.backtest import StepPortfolioBacktest
-from src.post_processing.utils.accuracy import (
+from src.modelling.long_short.step_train import StepModelling
+from src.modelling.long_short.utils import model as ml
+from src.portfolio import StepPortfolio
+from src.strategies.utils.accuracy import (
     compute_horizon_accuracy,
     horizon_accuracy_summary,
 )
+# NOTE: this dashboard is PENDING REWORK after the strategy/portfolio refactor. The old
+# StepBacktest / StepAllocationBacktest / StepPortfolioBacktest steps were replaced by
+# src/strategies (per-strategy steps) + src/portfolio.StepPortfolio. The panels below that
+# reference the old steps will not run until the app is updated to the new StepPortfolio API.
 
 
 # ---------------------------------------------------------------------------

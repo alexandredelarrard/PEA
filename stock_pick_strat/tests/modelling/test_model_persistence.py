@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.cube import panel_from_cube
-from src.modelling.utils_model import model as ml
+from src.modelling.long_short.utils import model as ml
 
 
 @pytest.fixture(scope="module")

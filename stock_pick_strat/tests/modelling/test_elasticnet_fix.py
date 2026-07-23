@@ -14,7 +14,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils_model import baselines
+from src.modelling.long_short.utils import baselines
 
 
 def _synthetic_panel(n: int = 4000, seed: int = 0) -> pd.DataFrame:
@@ -43,7 +43,7 @@ def test_elasticnet_learns_at_sane_alpha_and_warns_when_degenerate(caplog):
     assert ic > 0.5, f"prediction barely correlates with the target: corr={ic:.3f}"
 
     # --- degenerate alpha: all coefs zero, constant prediction, and it WARNS ---
-    with caplog.at_level(logging.WARNING, logger="src.modelling.utils_model.baselines"):
+    with caplog.at_level(logging.WARNING, logger="src.modelling.long_short.utils.baselines"):
         dead = baselines.train_elasticnet(panel, feats, "y", alpha=10.0, l1_ratio=0.3)
     assert np.count_nonzero(np.abs(dead.coef) > 0) == 0, "expected an all-zero (degenerate) fit"
     assert np.std(dead.predict(panel[feats].to_numpy())) < 1e-9, "degenerate fit must be constant"

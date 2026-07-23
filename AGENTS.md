@@ -15,7 +15,9 @@ OpenAI (DEF 14A extraction + embeddings), pytest.
 ## Directory layout
 ```
 stock_pick_strat/
-├── configs/*.yml           # OmegaConf configs — one per pipeline stage
+├── configs/*.yml           # OmegaConf configs (merged by top-level key): configs.yml, build_cube.yml,
+│                           #   modellling.yml (model:/train:), models/{lgbm,linear,random_forest},
+│                           #   strategy/{strategy_ls,strategy_trend,strategy_long_book}.yml, portfolio.yml
 ├── data/                   # NON-tabular artifacts ONLY: sec_bulk_cache/ (companyfacts JSON + 13F zips),
 │                           #   sec_{financial_statements,financial_notes,fails_to_deliver}/ (bulk-set zips;
 │                           #   notes sets ~26GB @ 15y), output/{models,diagnostics}, sector_peers.json
@@ -30,9 +32,14 @@ stock_pick_strat/
 │   │   └── utils/{prices,fundamentals,structure,behavioral,common}/   # fetchers
 │   ├── data_peers/             # step_deduce_peers  (return-corr + OpenAI-embedding peers)
 │   ├── data_aggregate/         # step_build_cube — peer-relative feature panels → `cube`
-│   ├── modelling/              # step_modelling — TimeSeriesSplit CV + SHAP → predictions, cube_signal
-│   ├── post_processing/        # step_backtest
-│   ├── utils/                  # shared helpers (db.py, step.py, config.py, …) — cross-folder logic only
+│   ├── modelling/              # per-STRATEGY model/signal: long_short/ (step_train=StepModelling + utils/),
+│   │                           #   trend/ (signal.py::trend_book + utils/), long_book/ (allocation.py)
+│   ├── strategies/             # self-contained per-strategy STEPS (base.Strategy.run(PortfolioInputs)):
+│   │                           #   step_ls / step_long_book / step_trend + utils/ (strategies_opt, metrics,
+│   │                           #   plot_analysis, accuracy) + analysis/ (per-sleeve IC/neutrality/corr plots)
+│   ├── portfolio/              # step_portfolio — runs the configured sleeves, blends by risk-parity/ERC
+│   │                           #   (dynamic $-allocation) + global vol/leverage; analysis.py (sleeve corr)
+│   ├── utils/                  # shared cross-folder helpers: db, step, config, trend.py, risk_parity.py, …
 │   └── cli.py
 ├── tests/                  # mirrors src/ ; conftest.py holds shared real-data fixtures
 ├── app/                    # Streamlit app
@@ -195,7 +202,10 @@ Every model must have all three before it is considered complete:
 
 ## Config conventions
 
-One yaml per pipeline stage: `data_extract.yaml`, `modelling.yaml`, `backtest.yaml`.
+`read_config` merges every `configs/**/*.yml` by its top-level key. Data/model stages:
+`configs.yml` (`data_extract`), `build_cube.yml`, `modellling.yml` (`model:`/`train:`),
+`configs/models/*` (per-family hyperparams). Strategy/portfolio stack: `configs/strategy/*.yml`
+(per-sleeve run params) + `configs/portfolio.yml` (sleeve set + global vol/leverage/capital/fees).
 All numeric hyperparameters, window sizes, and thresholds live in config — never hardcoded.
 
 ---

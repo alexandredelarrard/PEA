@@ -1,0 +1,13 @@
+# strategy_trend.yml -- multi-asset TREND / CTA sleeve (merged as top-level key `strategy_trend`).
+# A DIRECTIONAL long/short time-series-momentum book on the `macro_asset_prices` universe
+# (equity / gold / energy / 10Y-bond-TR / FX). Self-contained (src/modelling/trend/signal.py);
+# price-only, no ML. sleeve_vol_target + window come DOWN from the portfolio (PortfolioInputs).
+strategy_trend:
+  include_fx: true
+  lookbacks: [63, 126, 252]        # 3 / 6 / 12-month multi-speed momentum
+  vol_window: 63                   # trailing window for per-asset vol (sizing + normalization)
+  signal_cap: 2.0                  # cap |standardized signal| -> bounds leverage on runaway moves
+  per_asset_vol_target: 0.15       # ex-ante annual vol budget per asset at full conviction (|f|=1)
+  rebalance_freq: 5                # trading days between target updates (turnover control)
+  fee_bps: 2.0
+  spread_bps: 8.0

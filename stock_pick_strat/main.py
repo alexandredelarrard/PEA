@@ -1,8 +1,8 @@
 from src.context import get_config_context
 from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_aggregate.step_build_cube import StepBuildCube
-from src.modelling.step_modelling import StepModelling
-from src.post_processing.step_backtest import StepBacktest
+from src.modelling.long_short.step_train import StepModelling
+from src.portfolio import StepPortfolio
 from src.data_peers.step_deduce_peers import StepDeducePeers
 
 if __name__ == "__main__":
@@ -20,8 +20,8 @@ if __name__ == "__main__":
     # self = StepModelling(context=context, config=config)
     # self.run()
 
-    # self = StepBacktest(context=context, config=config)
-    # self.run() 
+    # self = StepPortfolio(context=context, config=config)
+    # self.run()
 
 # TODO: check how to rebase google trend week after week if pick is now ? 
 # TODO: check why those features are not computed 

@@ -19,8 +19,8 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
-from src.modelling.utils_model import model as ml
-from src.modelling.step_modelling import StepModelling
+from src.modelling.long_short.utils import model as ml
+from src.modelling.long_short.step_train import StepModelling
 
 
 def test_per_day_zscore_warning_safe():

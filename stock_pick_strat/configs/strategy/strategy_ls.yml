@@ -1,0 +1,24 @@
+# strategy_ls.yml -- market-neutral equity LONG/SHORT sleeve (merged as top-level key `strategy_ls`).
+# The ensemble is TRAINED by src/modelling/long_short (config `model:` / `train:` in modellling.yml
+# + hyperparameters in configs/models/); THIS file holds how the strategy is CONSTRUCTED/run given
+# the trained models. Out-of-sample only: it starts at the model train_end. target_ann_vol,
+# starting_capital, risk_free_rate and the window come DOWN from the portfolio (PortfolioInputs).
+strategy_ls:
+  target_type: rank            # which stored cube target the models were trained on (rank | zscore)
+  # --- construction (dollar/beta/sector-neutral inverse-variance optimizer) ---
+  beta_neutral: true           # enforce beta'w = 0 (market-neutral alpha)
+  sector_neutral: true         # enforce net exposure ~0 per GICS industry group
+  pos_cap: 0.05                # max |weight| per name
+  gross_cap: 3.0               # max sum|w| (leverage safety rail)
+  # --- turnover control ---
+  step: 0.35                   # partial trade toward target; lower = slower = cheaper
+  no_trade_band: 0.0           # skip per-name trades smaller than this
+  rebalance_freq: 63           # recompute target every N days
+  # --- risk-model windows ---
+  beta_window: 63
+  vol_window: 63
+  # --- multi-horizon combine + costs ---
+  blend: ir                    # ir | equal
+  blend_shrink: 0.5            # shrinkage for the correlation-aware horizon-weight blend
+  fee_bps: 1.0
+  spread_bps: 5.0

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
-from src.modelling.utils_model.model import (
+from src.modelling.long_short.utils.model import (
     build_monotone_constraints,
     parse_monotone_feature_map,
     train_ranker,

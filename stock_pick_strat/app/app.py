@@ -169,6 +169,13 @@ def render_overview(step: StepPortfolio):
     st.subheader("Per-strategy Sharpe vs global portfolio (+ dynamic $ allocation)")
     st.dataframe(step.summary, use_container_width=True)
 
+    tp = getattr(step, "trades_path", None)
+    if tp and Path(tp).exists():
+        with open(tp, "rb") as fh:
+            st.download_button("⬇  Download daily trade blotter (Excel — one sheet per sleeve)",
+                               fh.read(), file_name="trades.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
     cc1, cc2 = st.columns([1, 1])
     with cc1:
         st.subheader("Sleeve correlation")

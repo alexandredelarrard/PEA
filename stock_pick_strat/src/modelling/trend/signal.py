@@ -38,12 +38,12 @@ def load_close(store, include_fx: bool = True) -> pd.DataFrame:
     return d[cols].rename(columns=_RENAME).astype(float)
 
 
-def _vol_target(ret: pd.Series, target: float, window: int = 126, cap: float = 5.0) -> pd.Series:
-    """Scale to `target` ann-vol using TRAILING realized vol (point-in-time, shift 1) — a raw
-    multi-asset trend book runs hot (~40% vol); this normalizes it to a comparable ~target."""
+def _vol_target_scale(ret: pd.Series, target: float, window: int = 126, cap: float = 5.0) -> pd.Series:
+    """Trailing-vol-target SCALAR series (point-in-time, shift 1): target / trailing-ann-vol, capped.
+    A raw multi-asset trend book runs hot (~40% vol); this normalizes it to a comparable ~target.
+    Applied to BOTH the return stream and the position panel (so the held book is consistent)."""
     tv = ret.rolling(window, min_periods=max(20, window // 2)).std().shift(1) * np.sqrt(_ANN)
-    scale = (target / tv).clip(lower=1.0 / cap, upper=cap).fillna(1.0)
-    return ret * scale
+    return (target / tv).clip(lower=1.0 / cap, upper=cap).fillna(1.0)
 
 
 def trend_book(close: pd.DataFrame, *, lookbacks: tuple[int, ...] = (63, 126, 252),
@@ -55,5 +55,8 @@ def trend_book(close: pd.DataFrame, *, lookbacks: tuple[int, ...] = (63, 126, 25
     forecast = combined_forecast(close, list(lookbacks), vol_window, signal_cap)   # SIGNED
     weights = vol_scaled_positions(forecast, close, vol_window, per_asset_vol_target)
     sr = sleeve_returns(weights, close, fee_bps, spread_bps, rebalance_freq)
-    ret = _vol_target(sr["ret"].astype(float), sleeve_vol_target)
-    return {"ret": ret, "positions": weights, "gross": sr["gross"], "turnover": sr["turnover"]}
+    scale = _vol_target_scale(sr["ret"].astype(float), sleeve_vol_target)
+    ret = sr["ret"].astype(float) * scale
+    positions = weights.mul(scale.reindex(weights.index), axis=0)     # EFFECTIVE held book
+    return {"ret": ret, "positions": positions, "scale": scale,
+            "gross": sr["gross"], "turnover": sr["turnover"]}

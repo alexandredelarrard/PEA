@@ -63,9 +63,16 @@ class LongBookStrategy(Strategy):
             extra["analysis"] = analyze_long_book(rets, out_dir)   # FULL-history asset-class corr
             self._log.info("long_book analysis: avg pairwise corr %.2f -> %s",
                            extra["analysis"]["avg_pairwise_corr"], out_dir)
+        # trade blotter: levered risky weights + cash residual, $-sized on the sleeve capital
+        from src.strategies.utils.blotter import trade_blotter
+        wl = res["weights"].copy(); wl["cash"] = res["alloc_cash"]
+        trades = trade_blotter(_slice(wl, inputs.start, inputs.end), inputs.capital,
+                               float(c.get("fee_bps", inputs.fee_bps)),
+                               float(c.get("spread_bps", inputs.spread_bps)), self.name)
         return StrategyResult(name=self.name, returns=ret,
                               metrics=series_metrics(ret, inputs.risk_free_rate),
-                              positions=_slice(alloc, inputs.start, inputs.end), extra=extra)
+                              positions=_slice(alloc, inputs.start, inputs.end),
+                              trades=trades, extra=extra)
 
 
 def _slice(obj, start, end):

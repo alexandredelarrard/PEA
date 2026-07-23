@@ -25,3 +25,6 @@ portfolio:
   # analysis: each sleeve saves its own IC/Sharpe/neutrality/correlation plots, and the
   # portfolio saves the sleeve-correlation-evolution plot (data/output/*/analysis/).
   plot_analysis: true
+  # save a per-day, per-instrument trade blotter (traded $ / fee / spread) to
+  # data/output/portfolio/trades.xlsx — one sheet per sleeve + a summary sheet.
+  save_trades: true

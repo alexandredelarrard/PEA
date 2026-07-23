@@ -53,9 +53,22 @@ class LongShortStrategy(Strategy):
         extra = {"signal_shape": tuple(self.signal.shape)}
         if inputs.analysis:
             extra["analysis"] = self._analyze(ret)
+        trades = self._blotter(daily, inputs)
         return StrategyResult(name=self.name, returns=ret,
                               metrics=series_metrics(ret, inputs.risk_free_rate),
-                              positions=None, extra=extra)
+                              positions=None, trades=trades, extra=extra)
+
+    def _blotter(self, daily: pd.DataFrame, inputs: PortfolioInputs):
+        """Per-(day, ticker) trade blotter from the held-weight panel captured by the optimizer."""
+        w = daily.attrs.get("weights") if daily is not None else None
+        if w is None or w.empty:
+            return None
+        from src.strategies.utils.blotter import trade_blotter
+        if inputs.start is not None:
+            w = w[w.index >= inputs.start]
+        c = self._cfg
+        return trade_blotter(w, inputs.capital, float(c.get("fee_bps", inputs.fee_bps)),
+                             float(c.get("spread_bps", inputs.spread_bps)), self.name)
 
     def _analyze(self, ret: pd.Series) -> dict:
         """IC + Sharpe/maxDD + market-neutrality (beta to SP, corr to energy) plots."""
@@ -220,4 +233,6 @@ class LongShortStrategy(Strategy):
             vol_window=c.get("vol_window", 63),
             fee_bps=float(c.get("fee_bps", inp.fee_bps)), spread_bps=float(c.get("spread_bps", inp.spread_bps)),
             rebalance_freq=c.get("rebalance_freq", 63), sector_map=sector_map,
-            sector_neutral=sector_neutral, market_weight=0.0, vol_scaling=False)
+            sector_neutral=sector_neutral,
+            risk_model=str(c.get("risk_model", "diagonal")), cov_shrink=float(c.get("cov_shrink", 0.5)),
+            market_weight=0.0, vol_scaling=False, collect_weights=True)

@@ -42,6 +42,21 @@ class StepPortfolio(Step):
         self.blend()
         self.report()
         self.plots()
+        self.save_trades()
+
+    # ------------------------------------------------------------------ #
+    def save_trades(self) -> None:
+        """Aggregate each sleeve's daily trade blotter into ONE workbook (one sheet per sleeve
+        + a summary), so the trading needed to run the book is auditable per strategy."""
+        if not bool(self._cfg.get("save_trades", True)):
+            return
+        from src.strategies.utils.blotter import write_trades_excel
+        sleeve_trades = {n: self.results[n].trades for n in self.results}
+        self.trades_path = self._context.paths["OUTPUT_DIR"] / "portfolio" / "trades.xlsx"
+        write_trades_excel(sleeve_trades, self.trades_path)
+        n_rows = {n: (0 if t is None else len(t)) for n, t in sleeve_trades.items()}
+        self._log.info("Saved per-sleeve trade blotters -> %s (rows/sheet: %s)",
+                       self.trades_path, n_rows)
 
     # ------------------------------------------------------------------ #
     def _inputs(self) -> PortfolioInputs:

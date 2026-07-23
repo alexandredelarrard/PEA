@@ -46,6 +46,7 @@ class StrategyResult:
     returns: pd.Series                     # daily NET returns (fractional), date-indexed
     metrics: dict                          # ann_return / ann_vol / sharpe / max_drawdown
     positions: pd.DataFrame | None = None  # per-instrument / per-asset weights (optional)
+    trades: pd.DataFrame | None = None     # per-(day, instrument) trade blotter ($ traded/fee/spread)
     extra: dict = field(default_factory=dict)   # sleeve-specific diagnostics (leverage, cash, ...)
 
 

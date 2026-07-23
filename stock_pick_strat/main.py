@@ -14,11 +14,11 @@ if __name__ == "__main__":
     # self = StepDeducePeers(context=context, config=config)
     # self.run()
 
-    self = StepBuildCube(context=context, config=config)
-    self.run()
-
-    # self = StepModelling(context=context, config=config)
+    # self = StepBuildCube(context=context, config=config)
     # self.run()
+
+    self = StepModelling(context=context, config=config)
+    self.run()
 
     # self = StepBacktest(context=context, config=config)
     # self.run() 
@@ -26,10 +26,10 @@ if __name__ == "__main__":
 # TODO: check how to rebase google trend week after week if pick is now ? 
 # TODO: check why those features are not computed 
 # TODO: check Configured features not in cube (skipped): ['f_gross_profitability_xs', 'f_interest_coverage_vs_peers', 'f_net_debt_to_ebitda_xs', 'f_ec_tone_xs', 'f_ec_tone_delta_xs', 'f_ec_qa_gap_xs', 'f_ec_uncertainty_xs', 'f_ec_vocab_novelty_xs', 'f_ec_length_delta_xs']
-# TODO: earning calls feature extraction : distance tone prepare vs qa, sentiment qa, embedding dist q vs a, quarter to quarter distance of embeddings and tone 
 
-# TODO ##################### biggeer movers :
-# - Add News and deduce : geopolitics score per stock
+
+# TODO ##################### biggeer work :
+# - Add News and deduce : geopolitics score per sector. Need to understand how a news impact a stock ... 
 # - Neutral currency pools: 
 #           - LLM text extract from form 8 to get geo weight to build currency basket
 #           - LLM to build commo pool impact  
@@ -41,4 +41,19 @@ if __name__ == "__main__":
 
 ##### timeline 
 # sec insider = + 45days after as_of +1 16august for 30 june 
-# 
+
+
+# 2026-07-22 22:40:03 - src.utils.step - INFO - step_modelling.py - horizon 90: [ENSEMBLE] CV mean_IC=+0.0463  IC_IR=+1.50
+# 2026-07-22 22:40:03 - src.utils.step - INFO - step_modelling.py - horizon 90:   [elasticnet] CV mean_IC=+0.0314  IC_IR=+1.12
+# 2026-07-22 22:40:03 - src.utils.step - INFO - step_modelling.py - horizon 90:   [lgbm      ] CV mean_IC=+0.0342  IC_IR=+1.13
+# 2026-07-22 22:40:03 - src.utils.step - INFO - step_modelling.py - horizon 90:   [random_forest] CV mean_IC=+0.0329  IC_IR=+1.28
+
+# 2026-07-22 22:37:04 - src.utils.step - INFO - step_modelling.py - horizon 60: [ENSEMBLE] CV mean_IC=+0.0427  IC_IR=+1.55
+# 2026-07-22 22:37:04 - src.utils.step - INFO - step_modelling.py - horizon 60:   [elasticnet] CV mean_IC=+0.0349  IC_IR=+1.32
+# 2026-07-22 22:37:04 - src.utils.step - INFO - step_modelling.py - horizon 60:   [lgbm      ] CV mean_IC=+0.0250  IC_IR=+1.02
+# 2026-07-22 22:37:04 - src.utils.step - INFO - step_modelling.py - horizon 60:   [random_forest] CV mean_IC=+0.0347  IC_IR=+1.42
+
+# 2026-07-22 22:34:40 - src.utils.step - INFO - step_modelling.py - horizon 30: [ENSEMBLE] CV mean_IC=+0.0403  IC_IR=+2.07
+# 2026-07-22 22:34:40 - src.utils.step - INFO - step_modelling.py - horizon 30:   [elasticnet] CV mean_IC=+0.0312  IC_IR=+1.68
+# 2026-07-22 22:34:40 - src.utils.step - INFO - step_modelling.py - horizon 30:   [lgbm      ] CV mean_IC=+0.0265  IC_IR=+1.32
+# 2026-07-22 22:34:40 - src.utils.step - INFO - step_modelling.py - horizon 30:   [random_forest] CV mean_IC=+0.0343  IC_IR=+1.90

@@ -52,3 +52,57 @@ backtest:
     portfolio_vol_target: 0.10  # annualized total-book volatility target
     max_weight: 0.7             # cap any single sleeve's mix weight
     max_leverage: 2.0           # cap total leverage applied to hit the vol target
+
+  # --- multi-ASSET ALLOCATION sleeve (StepAllocationBacktest) ------------------
+  # Long-only % allocation across risky assets (equity / gold / 10Y bond / FX) with CASH
+  # as the residual/funding leg, driven off the long-history `macro_asset_prices` table
+  # (FRED, since ~1995). Layered: (1) risk-parity MIX [erc | inverse_vol], (2) long-only
+  # TREND overlay that scales an asset toward cash when it rolls over, (3) one global
+  # leverage to hit `portfolio_vol_target`. Fees charged on weight turnover. Separate from
+  # the equity L/S backtest above. See src/post_processing/utils/strategies_alloc.py.
+  asset_allocation:
+    enabled: true
+    start: "2000-01-01"          # backtest window start (macro_asset_prices reaches ~1995)
+    end: null                    # null -> table max date
+    include_fx: true             # add the USD/EUR leg (NaN before 1999)
+    include_ls: false            # add the equity L/S alpha stream as a 5th sleeve (from 2012)
+    # weighting
+    scheme: erc                  # erc (equal risk contribution) | inverse_vol
+    vol_window: 63               # trailing window for the covariance / vol estimate
+    rebalance_freq: 21           # recompute target weights every N trading days (monthly)
+    # trend overlay (long-only): scale each risky weight toward `trend_floor` on downtrends.
+    # DEFAULT chosen from the since-2000 sweep: binary 3/6/12m gives the best DRAWDOWN control
+    # (maxDD ~-15% vs ~-27% no-trend / linear) for a small Sharpe give-up — binary fully exits
+    # a downtrend and cuts the tail, whereas linear only trims proportionally (DD ~ no-trend).
+    # Set trend_enabled:false for max Sharpe (risk-parity only), or trend_scheme:linear for a
+    # smoother, lighter-touch de-risk. Sweep numbers: no_trend S=0.57/DD-27; binary_3_6_12m
+    # S=0.50/DD-15; linear_6_12m S=0.55/DD-26.
+    trend_enabled: true
+    trend_scheme: binary         # binary (on/off, best DD control) | linear (smooth, downside-only)
+    trend_lookbacks: [63, 126, 252]  # 3/6/12m blend (multi-speed TSMOM)
+    trend_vol_window: 63
+    trend_floor: 0.0             # min weight multiplier in a downtrend (0 = fully to cash)
+    trend_cap: 2.0
+    # sizing
+    portfolio_vol_target: 0.10   # annualized total-book volatility target (play with this)
+    max_leverage: 2.0            # hard leverage ceiling (used when lev_responsive: false)
+    # vol-responsive leverage: the ceiling scales 1x (stress) -> 2x (calm) with the risk-on
+    # score, so the book takes MORE total risk when crash-prob is low and de-levers in stress.
+    lev_responsive: true
+    lev_min: 1.0                 # leverage ceiling in deep stress (score -> 0): no leverage
+    lev_max: 2.0                 # leverage ceiling in a calm bull (score -> 1)
+    # --- risk model + RISK-ON regime tilt (take MORE equity when calm, less when vol high) ---
+    cov_mode: ewma               # ewma (reactive EWMA covariance, no 63d cliff) | std
+    cov_halflife: 42             # EWMA halflife (days) for covariance + portfolio vol
+    vol_mode: ewma               # ewma | std — portfolio vol estimator for the leverage target
+    lever_on: base               # base (trend->cash truly de-risks) | scaled (legacy)
+    risk_on_tilt: true           # tilt ERC risk budget toward equity/energy when crash-prob is low
+    use_vix: true                # include VIX (macro_asset_prices.vix) in the risk-on score
+    offensive: [equity, energy]  # sleeves lifted in risk-on regimes
+    off_share_min: 0.15          # min offensive RISK share (deep stress)
+    off_share_max: 0.85          # max offensive RISK share (calm bull market)
+    # costs (CONSERVATIVE: ~10 bps one-way per unit turnover on liquid multi-asset ETFs)
+    fee_bps: 2.0
+    spread_bps: 8.0
+    risk_free_rate: 0.02         # for the Sharpe numerator
+    starting_capital: 1000000

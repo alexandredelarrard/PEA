@@ -17,6 +17,7 @@ from src.data_extract.utils.prices.fetch_fails_to_deliver import fetch_fails_to_
 from src.data_extract.utils.prices.fetch_13f import fetch_13f
 from src.data_extract.utils.prices.fetch_superinvestors import build_superinvestors_json
 from src.data_extract.utils.fundamentals.fetch_macro import fetch_macro
+from src.data_extract.utils.prices.fetch_macro_assets import fetch_macro_assets
 
 
 class StepExtractPrices(Step):
@@ -39,6 +40,10 @@ class StepExtractPrices(Step):
         # then FRED macro series (yields, VIX, credit spread, breakevens).
         fetch_market_prices(self._context)
         fetch_macro(self._context)
+
+        # Long-history multi-asset ALLOCATION series (FRED, since ~1995): equity /
+        # gold / 10Y bond TR / cash / FX for the risk-parity + trend sleeve backtest.
+        fetch_macro_assets(self._context)
 
         # 13F institutional holdings (SEC bulk + OpenFIGI cusip map; slow one-off)
         fetch_13f(self._context)

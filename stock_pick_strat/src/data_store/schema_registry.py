@@ -64,6 +64,12 @@ EXTRACT_TABLES: list[TableSpec] = [
               ("ticker", "earnings_date"), "extract", date_col="earnings_date"),
     TableSpec("macro", "macro.parquet", ("date",), "extract",
               date_col="date", ticker_col=None),
+    # Long-history multi-asset ALLOCATION series (FRED, since ~1995): one row per
+    # date, no ticker. Total-return / level legs (equity_tr [Wilshire 5000], gold,
+    # bond_10y_tr [reconstructed from the 10Y yield], cash_rate, fx_usdeur) for the
+    # risk-parity + trend allocation sleeve. See fetch_macro_assets.py.
+    TableSpec("macro_asset_prices", "macro_asset_prices.parquet", ("date",), "extract",
+              date_col="date", ticker_col=None, date_type_cols=("date",)),
     TableSpec("employees_history", "employees_history.parquet",
               ("ticker", "as_of"), "extract", date_col="as_of"),
     TableSpec("google_trends", "google_trends.parquet", ("ticker", "date"), "extract",

@@ -40,6 +40,7 @@ from src.context import get_config_context
 from src.modelling.step_modelling import StepModelling
 from src.modelling.utils_model import model as ml
 from src.post_processing.step_backtest import StepBacktest
+from src.post_processing.step_alloc_backtest import StepAllocationBacktest
 from src.post_processing.utils.accuracy import (
     compute_horizon_accuracy,
     horizon_accuracy_summary,
@@ -148,6 +149,42 @@ with st.sidebar:
     )
 
     run_btn = st.button("▶  Run Backtest", type="primary", use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Sidebar — MULTI-ASSET ALLOCATION (separate, price-only, since ~2000)
+# ---------------------------------------------------------------------------
+_AA = base_config.backtest.get("asset_allocation", {}) or {}
+with st.sidebar:
+    st.markdown("---")
+    st.header("Multi-Asset Allocation")
+    st.caption("Long-only % allocation across equity / gold / 10Y bond / FX + cash "
+               "(FRED `macro_asset_prices`). Independent of the L/S backtest above.")
+    aa_scheme = st.selectbox("Weighting scheme", ["erc", "inverse_vol"],
+                             index=0 if str(_AA.get("scheme", "erc")) == "erc" else 1,
+                             help="ERC = Equal Risk Contribution (correlation-aware); "
+                                  "inverse_vol = risk parity ignoring correlation")
+    aa_vol_target = st.slider("Portfolio Vol Target (annual)", 0.02, 0.30,
+                              float(_AA.get("portfolio_vol_target", 0.10)), 0.01, format="%.2f",
+                              help="The whole book is levered (capped) to hit this vol")
+    aa_max_lev = st.slider("Max Leverage", 1.0, 3.0, float(_AA.get("max_leverage", 2.0)), 0.25)
+    aa_trend = st.checkbox("Trend overlay (de-risk into cash)", value=bool(_AA.get("trend_enabled", True)))
+    aa_trend_scheme = st.selectbox("Trend signal shape", ["linear", "binary"],
+                                   index=0 if str(_AA.get("trend_scheme", "linear")) == "linear" else 1)
+    aa_trend_lb = st.multiselect("Trend lookbacks (days)", [21, 63, 126, 252, 504],
+                                 default=[int(x) for x in _AA.get("trend_lookbacks", [63, 126, 252])])
+    aa_trend_floor = st.slider("Trend floor (min weight mult.)", 0.0, 1.0,
+                               float(_AA.get("trend_floor", 0.0)), 0.05)
+    aa_rebal = st.selectbox("Rebalance freq (days)", [5, 21, 42, 63],
+                            index=[5, 21, 42, 63].index(int(_AA.get("rebalance_freq", 21))))
+    aa_vol_window = st.selectbox("Vol/cov window (days)", [42, 63, 126, 252],
+                                 index=[42, 63, 126, 252].index(int(_AA.get("vol_window", 63))))
+    aa_start = st.text_input("Start date (YYYY-MM-DD)", value=str(_AA.get("start", "2000-01-01")))
+    aa_include_fx = st.checkbox("Include FX (USD/EUR, from 1999)", value=bool(_AA.get("include_fx", True)))
+    st.caption("Costs (conservative default ≈ 10 bps one-way per unit turnover)")
+    aa_fee = st.number_input("Fee (bps)", 0.0, 20.0, float(_AA.get("fee_bps", 2.0)), 0.5)
+    aa_spread = st.number_input("Spread (bps)", 0.0, 40.0, float(_AA.get("spread_bps", 8.0)), 0.5)
+    aa_run_btn = st.button("▶  Run Allocation Backtest", use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +576,58 @@ def render_results(bt: StepBacktest, accuracy_horizon: int, model_horizons: list
 
 
 # ---------------------------------------------------------------------------
+# Multi-asset allocation — run + render
+# ---------------------------------------------------------------------------
+def run_allocation(params: dict) -> StepAllocationBacktest:
+    patch = OmegaConf.create({"backtest": {"asset_allocation": params}})
+    cfg = OmegaConf.merge(base_config, patch)
+    step = StepAllocationBacktest(context=context, config=cfg)
+    step.run()
+    return step
+
+
+def render_allocation(step: StepAllocationBacktest):
+    st.header("Multi-Asset Allocation — Results")
+    m = step.metrics
+    d = step.daily
+    st.caption(f"**Span:** {d.index.min().date()} → {d.index.max().date()} "
+               f"({len(d):,} trading days ≈ {len(d)/252:.1f}y). "
+               f"Universe: {', '.join([c for c in step.rets.columns])} + cash.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Return", f"{m['total_return']*100:.1f}%",
+              delta=f"{(m['total_return']-m['spy_total_return'])*100:.1f}% vs SP")
+    c2.metric("Ann. Return", f"{m['ann_return']*100:.1f}%",
+              delta=f"{(m['ann_return']-m['spy_ann_return'])*100:.1f}% vs SP")
+    c3.metric("Sharpe", f"{m['sharpe']:.2f}", delta=f"{m['sharpe']-m['spy_sharpe']:.2f} vs SP")
+    c4.metric("Max Drawdown", f"{m['max_drawdown']*100:.1f}%",
+              delta=f"{(m['max_drawdown']-m['spy_max_drawdown'])*100:.1f}% vs SP",
+              delta_color="inverse")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Ann. Volatility", f"{m['ann_vol']*100:.1f}%")
+    c6.metric("SP500 Total Return", f"{m['spy_total_return']*100:.1f}%")
+    c7.metric("Avg Leverage", f"{float(step.result['leverage'].mean()):.2f}")
+    c8.metric("Avg Cash Weight", f"{float(step.result['alloc_cash'].mean())*100:.0f}%")
+
+    st.subheader("Per-asset — return / vol / Sharpe / maxDD (standalone buy & hold)")
+    pa = step.asset_metrics.copy()
+    pa.columns = ["Ann Return", "Ann Vol", "Sharpe", "Max DD"]
+    st.dataframe(pa.style.format({"Ann Return": "{:.1%}", "Ann Vol": "{:.1%}",
+                                  "Sharpe": "{:.2f}", "Max DD": "{:.1%}"}),
+                 use_container_width=True)
+
+    out = context.paths["OUTPUT_DIR"] / "allocation"
+    st.subheader("Portfolio value vs SP500")
+    st.image(str(out / "portfolio_vs_sp.png"), use_container_width=True)
+    st.subheader("Allocation weight evolution by asset (per period)")
+    st.image(str(out / "allocation_weights.png"), use_container_width=True)
+
+    if getattr(step, "regime_table", None) is not None and not step.regime_table.empty:
+        st.subheader("Portfolio vs SP by market regime")
+        st.dataframe(step.regime_table, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
 # Main panel
 # ---------------------------------------------------------------------------
 if run_btn:
@@ -593,10 +682,47 @@ if bt is not None:
     render_results(bt, int(accuracy_horizon), MODEL_HORIZONS)
     with st.expander("Show full run logs"):
         st.code(st.session_state.get("run_logs", ""), language="log")
-else:
-    st.info("Configure parameters in the sidebar, then click **▶ Run Backtest**.")
+elif st.session_state.get("alloc") is None:
+    st.info("Configure parameters in the sidebar, then click **▶ Run Backtest** "
+            "or **▶ Run Allocation Backtest**.")
     ok, reason = needs_retrain(context, train_end)
     if ok:
         st.caption(f"Note: models will be retrained on first run — {reason}.")
     else:
         st.caption(f"Trained models are {reason}; the next run will reuse them.")
+
+
+# ---------------------------------------------------------------------------
+# Multi-asset allocation panel (independent of the L/S backtest)
+# ---------------------------------------------------------------------------
+if aa_run_btn:
+    aa_params = {
+        "enabled": True,
+        "start": aa_start.strip() or "2000-01-01",
+        "include_fx": bool(aa_include_fx),
+        "scheme": aa_scheme,
+        "vol_window": int(aa_vol_window),
+        "rebalance_freq": int(aa_rebal),
+        "trend_enabled": bool(aa_trend),
+        "trend_scheme": aa_trend_scheme,
+        "trend_lookbacks": [int(x) for x in (aa_trend_lb or [63, 126, 252])],
+        "trend_floor": float(aa_trend_floor),
+        "portfolio_vol_target": float(aa_vol_target),
+        "max_leverage": float(aa_max_lev),
+        "fee_bps": float(aa_fee),
+        "spread_bps": float(aa_spread),
+    }
+    _clear_log_buffer(context)
+    try:
+        with st.spinner("Running multi-asset allocation backtest…"):
+            st.session_state["alloc"] = run_allocation(aa_params)
+        st.session_state["alloc_logs"] = context.log_buffer.getvalue()
+    except Exception as exc:
+        st.exception(exc)
+        st.stop()
+
+alloc = st.session_state.get("alloc")
+if alloc is not None:
+    render_allocation(alloc)
+    with st.expander("Show allocation run logs"):
+        st.code(st.session_state.get("alloc_logs", ""), language="log")

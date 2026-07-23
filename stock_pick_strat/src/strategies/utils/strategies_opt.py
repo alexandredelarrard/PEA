@@ -86,28 +86,47 @@ def _neutralizer_X(n: int, beta: np.ndarray, beta_neutral: bool,
     return base
 
 
+def _optimize_cov(alpha: np.ndarray, X: np.ndarray, cov: np.ndarray) -> np.ndarray:
+    """Full-covariance characteristic portfolio (correlation-aware generalization of the diagonal
+    case): w = Σ⁻¹ (alpha − X (Xᵀ Σ⁻¹ X)⁻¹ Xᵀ Σ⁻¹ alpha) — residualize alpha against the
+    neutrality columns X in the Σ⁻¹ metric, then weight by Σ⁻¹ (not D⁻¹). Correlated names are
+    jointly down-weighted so the book doesn't double-count shared (idiosyncratic) risk."""
+    Sinv_a = np.linalg.solve(cov, alpha)                    # Σ⁻¹ a
+    Sinv_X = np.linalg.solve(cov, X)                        # Σ⁻¹ X
+    M = X.T @ Sinv_X                                        # Xᵀ Σ⁻¹ X
+    coef = np.linalg.solve(M + 1e-12 * np.eye(X.shape[1]), X.T @ Sinv_a)
+    return Sinv_a - Sinv_X @ coef                          # Σ⁻¹ (a − X coef)
+
+
 def optimize_day(alpha: np.ndarray, beta: np.ndarray, var: np.ndarray,
                  beta_neutral: bool = True, pos_cap: float | None = 0.03,
-                 sector_labels=None) -> np.ndarray:
+                 sector_labels=None, cov: np.ndarray | None = None) -> np.ndarray:
     """
     Closed-form mean-variance long/short weights with dollar (and optional beta
-    and sector) neutrality and a diagonal idiosyncratic-risk model.
+    and sector) neutrality.
+
+    Risk model: DIAGONAL idiosyncratic variance `var` (D⁻¹ inverse-variance weighting) when
+    `cov` is None; the FULL (shrunk) idiosyncratic covariance `cov` (Σ⁻¹, correlation-aware)
+    when given — the latter is the ERC-like upgrade that accounts for stock-stock correlation.
 
     alpha : centered cross-sectional score (magnitude matters; z-scores ideal)
     beta  : per-name market beta
-    var   : per-name idiosyncratic DAILY variance (>0)
+    var   : per-name idiosyncratic DAILY variance (>0)  [diagonal risk model + fallback]
+    cov   : optional NxN idiosyncratic DAILY covariance (same name order as alpha)
     sector_labels : per-name group (e.g. GICS industry group). When given, weights
         are made orthogonal to each sector dummy -> net exposure per sector ~ 0.
     Returns weights summing to ~0 (dollar-neutral, and per-sector if labelled) and
     beta'w ~ 0 if beta_neutral. Scale is arbitrary here (set later by vol targeting).
     """
     n = len(alpha)
-    var = np.clip(var, np.nanpercentile(var[np.isfinite(var)], 5) if np.isfinite(var).any() else 1e-6, None)
-    invd = 1.0 / var
     X = _neutralizer_X(n, beta, beta_neutral, sector_labels)
 
-    a_res = _neutralize(alpha, X, invd)
-    w = invd * a_res                       # D^{-1} * residual alpha
+    if cov is not None:
+        w = _optimize_cov(alpha, X, cov)                   # Σ⁻¹ * residual alpha (correlation-aware)
+    else:
+        var = np.clip(var, np.nanpercentile(var[np.isfinite(var)], 5) if np.isfinite(var).any() else 1e-6, None)
+        invd = 1.0 / var
+        w = invd * _neutralize(alpha, X, invd)             # D⁻¹ * residual alpha (inverse-variance)
 
     if pos_cap is not None and n > 0:
         scale = np.sum(np.abs(w))
@@ -132,10 +151,11 @@ def enforce_pos_cap(w: np.ndarray, beta: np.ndarray, beta_neutral: bool,
 
 
 def vol_target_scale(w: np.ndarray, var: np.ndarray, target_ann_vol: float,
-                     gross_cap: float = 3.0) -> np.ndarray:
+                     gross_cap: float = 3.0, cov: np.ndarray | None = None) -> np.ndarray:
     """Scale weights so the sleeve's ex-ante annualized idiosyncratic vol equals
-    `target_ann_vol`, subject to a gross-leverage cap."""
-    daily_var = float(np.sum((w ** 2) * var))
+    `target_ann_vol`, subject to a gross-leverage cap. Uses the full covariance
+    (wᵀΣw, correlation-aware) when `cov` is given, else the diagonal sum(w²·var)."""
+    daily_var = float(w @ cov @ w) if cov is not None else float(np.sum((w ** 2) * var))
     ann_vol = np.sqrt(max(daily_var, 1e-18) * _ANN)
     if ann_vol <= 0:
         return w
@@ -145,6 +165,34 @@ def vol_target_scale(w: np.ndarray, var: np.ndarray, target_ann_vol: float,
     if gross > gross_cap:
         w = w * (gross_cap / gross)
     return w
+
+
+def shrunk_idio_cov(resid_window: np.ndarray, idio_var: np.ndarray,
+                    shrink: float) -> np.ndarray:
+    """Ledoit-Wolf-style shrunk idiosyncratic covariance (NxN, DAILY): a convex blend of the
+    sample residual covariance and the DIAGONAL idiosyncratic-variance target,
+        Σ = shrink · diag(idio_var) + (1 − shrink) · sample_cov(residuals),
+    plus a tiny ridge for numerical PD. With N > T the sample cov is rank-deficient, so
+    `shrink` (toward the diagonal the diagonal-model already uses) makes Σ invertible and
+    reduces EXACTLY to the inverse-variance risk model at shrink = 1."""
+    x = np.nan_to_num(np.asarray(resid_window, float), nan=0.0)
+    S = np.cov(x, rowvar=False)
+    S = np.atleast_2d(S)
+    D = np.diag(np.asarray(idio_var, float))
+    n = D.shape[0]
+    Sig = float(shrink) * D + (1.0 - float(shrink)) * S
+    return Sig + 1e-10 * np.eye(n)                          # ridge -> guaranteed PD
+
+
+def rebalance_idio_cov(stock_ret: pd.DataFrame, spy_ret: pd.Series, t, common: list[str],
+                       beta_vec: np.ndarray, idio_var: np.ndarray, window: int,
+                       shrink: float) -> np.ndarray:
+    """Shrunk idiosyncratic covariance for `common` names from the trailing `window` daily
+    returns up to t: residual_k = r_k − beta_k·r_spy (market removed), then `shrunk_idio_cov`."""
+    hist = stock_ret.loc[:t, common].tail(window)
+    spy_h = spy_ret.reindex(hist.index).fillna(0.0).to_numpy(float)
+    resid = hist.to_numpy(float) - np.outer(spy_h, np.asarray(beta_vec, float))
+    return shrunk_idio_cov(resid, idio_var, shrink)
 
 
 def risk_target_book(aim: pd.Series, beta_row: pd.Series, var_row: pd.Series,
@@ -252,13 +300,17 @@ def simulate_portfolio_opt(
     rebalance_freq: int = 1,
     sector_map: dict | None = None,   # ticker -> group (e.g. GICS industry group)
     sector_neutral: bool = False,     # enforce net sector exposure ~ 0
+    risk_model: str = "diagonal",     # diagonal (inverse-variance) | covariance (correlation-aware)
+    cov_shrink: float = 0.5,          # shrink toward the diagonal for the covariance risk model
     vol_scaling: bool = False,        # de-risk the whole book when the market is volatile
     regime_target_vol: float = 0.15,  # SPY ann-vol at which exposure multiplier = 1
     regime_vol_window: int = 63,
     regime_scale_floor: float = 0.3,  # min exposure multiplier (deep vol spike)
     regime_scale_cap: float = 1.5,    # max exposure multiplier (calm markets)
+    collect_weights: bool = False,    # stash the per-day held per-name weights on out.attrs["weights"]
 ) -> pd.DataFrame:
     cost_rate = (fee_bps + spread_bps) / 1e4
+    weights_hist: dict = {} if collect_weights else None
     beta_df, var_df = rolling_beta_var(stock_ret, spy_ret, beta_window, vol_window)
     smap = sector_map if (sector_neutral and sector_map) else None
     reg_scale = (regime_vol_scale(spy_ret, regime_vol_window, regime_target_vol,
@@ -288,8 +340,12 @@ def simulate_portfolio_opt(
                 b = beta_df.loc[t, common].to_numpy(float)
                 v = var_df.loc[t, common].to_numpy(float)
                 sec = [smap.get(tk) for tk in common] if smap else None
-                w_star = optimize_day(a, b, v, beta_neutral, pos_cap, sector_labels=sec)
-                w_star = vol_target_scale(w_star, v, target_ann_vol, gross_cap)
+                # correlation-aware risk model: build the shrunk idiosyncratic covariance for
+                # today's tradeable names (else None -> diagonal inverse-variance, as before)
+                cov = (rebalance_idio_cov(stock_ret, spy_ret, t, common, b, v, vol_window, cov_shrink)
+                       if risk_model == "covariance" else None)
+                w_star = optimize_day(a, b, v, beta_neutral, pos_cap, sector_labels=sec, cov=cov)
+                w_star = vol_target_scale(w_star, v, target_ann_vol, gross_cap, cov=cov)
                 # enforce pos_cap on the FINAL weights (vol targeting rescales the
                 # pre-scale cap applied inside optimize_day)
                 w_star = enforce_pos_cap(w_star, b, beta_neutral, pos_cap, sector_labels=sec)
@@ -336,9 +392,13 @@ def simulate_portfolio_opt(
                      "alpha_gross": float(w[tickers].abs().sum()),
                      "alpha_max_w": float(w[tickers].abs().max()),
                      "regime_scale": rs})
+        if weights_hist is not None:
+            weights_hist[t1] = w[tickers].copy()               # held book (t->t1), for the blotter
         prev_w = w
 
     out = pd.DataFrame(rows).set_index("date")
+    if weights_hist:
+        out.attrs["weights"] = pd.DataFrame(weights_hist).T     # date x ticker held weights
 
     # Surface a silently-inactive alpha book instead of returning a flat curve.
     # (With market_weight=0 the SPY sleeve no longer masks a dead alpha sleeve.)

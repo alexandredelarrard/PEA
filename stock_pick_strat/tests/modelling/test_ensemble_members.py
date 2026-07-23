@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils_model import model as ml
+from src.modelling.long_short.utils import model as ml
 
 
 class _LinearMock:

@@ -13,8 +13,8 @@ import pandas as pd
 
 import warnings
 
-from src.modelling.utils_model import model as ml
-from src.modelling.utils_model import baselines
+from src.modelling.long_short.utils import model as ml
+from src.modelling.long_short.utils import baselines
 
 
 def test_standardize_no_warning_on_all_nan_column():

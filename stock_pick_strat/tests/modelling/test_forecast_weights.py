@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.modelling.utils_model import model as ml
+from src.modelling.long_short.utils import model as ml
 
 
 def _corr_signals(n=4000, seed=0):

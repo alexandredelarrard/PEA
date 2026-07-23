@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 from omegaconf import OmegaConf
 
-from src.modelling.step_modelling import StepModelling
+from src.modelling.long_short.step_train import StepModelling
 
 
 def _step(cfg):

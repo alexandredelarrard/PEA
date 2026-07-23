@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils_model.model import CALENDAR_DAYS_PER_YEAR, time_decay_weights
+from src.modelling.long_short.utils.model import CALENDAR_DAYS_PER_YEAR, time_decay_weights
 
 
 def test_time_decay_half_life_at_reference_and_two_years_back():

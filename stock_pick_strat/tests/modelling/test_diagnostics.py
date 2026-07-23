@@ -11,10 +11,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils_model.model import (
+from src.modelling.long_short.utils.model import (
     train_ranker, predict, purged_wf_splits,
 )
-from src.modelling.utils_model import diagnostics
+from src.modelling.long_short.utils import diagnostics
 
 
 def _panel(n_days: int = 120, n_tickers: int = 60, n_feats: int = 6, seed: int = 0):

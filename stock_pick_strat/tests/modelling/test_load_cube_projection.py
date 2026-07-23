@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from omegaconf import OmegaConf
 
-from src.modelling.step_modelling import StepModelling
+from src.modelling.long_short.step_train import StepModelling
 
 
 def _fake(target_type="rank", columns=None, cats=None):

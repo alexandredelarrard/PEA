@@ -1,0 +1,27 @@
+# portfolio.yml -- UNIFIED multi-strategy portfolio (merged as top-level key `portfolio`).
+# Chooses which sleeves to run and applies the portfolio-level parameters. Each sleeve is run via
+# src/strategies (StepPortfolio -> Strategy.run(PortfolioInputs)), then their daily return streams
+# are blended by risk-parity/ERC (= dynamic capital allocation) + one global vol target / leverage.
+# See src/portfolio/step_portfolio.py.
+portfolio:
+  sleeves: [ls_equity, long_book, trend_cta]   # subset of strategies to evaluate
+  # window applied to ALL sub-strategies (L/S is additionally OOS from its model train_end)
+  start: "2023-01-01"
+  end: null                    # null -> last common date
+  # capital / risk handed down to each sleeve
+  starting_capital: 1000000
+  sleeve_target_vol: 0.10      # per-sleeve reference vol each sleeve targets before blending
+  fee_bps: 2.0                 # default sleeve trading cost (a sleeve may override in its own file)
+  spread_bps: 8.0
+  risk_free_rate: 0.02
+  # blend across sleeves (this IS the dynamic capital allocation) + global sizing
+  scheme: erc                  # erc (correlation-aware) | inverse_vol
+  cov_mode: ewma               # ewma | std
+  cov_halflife: 63
+  vol_window: 63               # trailing window for the sleeve mix + global vol
+  rebalance_freq: 21           # recompute the sleeve mix every N days
+  portfolio_vol_target: 0.10   # GLOBAL annualized volatility target (adjustable)
+  max_leverage: 2.0            # GLOBAL leverage cap (adjustable)
+  # analysis: each sleeve saves its own IC/Sharpe/neutrality/correlation plots, and the
+  # portfolio saves the sleeve-correlation-evolution plot (data/output/*/analysis/).
+  plot_analysis: true

@@ -16,7 +16,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils_model import baselines, model as ml
+from src.modelling.long_short.utils import baselines, model as ml
 
 
 def _panel(n: int = 1500, seed: int = 0) -> pd.DataFrame:

@@ -57,7 +57,7 @@ def test_dedupe_share_classes_and_gics():
 
 # ---- 2. sector-neutral portfolio --------------------------------------------
 def test_sector_neutral_weights_sum_to_zero_per_group():
-    from src.post_processing.utils.strategies_opt import optimize_day
+    from src.strategies.utils.strategies_opt import optimize_day
     rng = np.random.default_rng(0)
     n = 60
     alpha = rng.normal(0, 1, n)

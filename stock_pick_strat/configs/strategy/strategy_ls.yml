@@ -29,3 +29,19 @@ strategy_ls:
   blend_shrink: 0.5            # shrinkage for the correlation-aware horizon-weight blend
   fee_bps: 1.0
   spread_bps: 5.0
+  # --- whole-share (integer) book: you cannot hold/short a fraction of a share. When enabled,
+  # each rebalance's continuous target is projected to INTEGER shares via a MILP (min tracking
+  # error s.t. integer + dollar/beta/sector-neutral within tol + gross within ±gross_tol), then
+  # held (integer) between rebalances. Needs realistic capital (small capital -> positions < 1
+  # share -> book collapses). See src/strategies/utils/integer_shares.py.
+  integer_shares:
+    enabled: false
+    method: milp               # milp (exact, HiGHS) | round (nearest-integer fallback)
+    long_fractional: true      # retail: buy FRACTIONAL longs but SHORT only whole shares (only
+                               # the short leg is integer; fractional longs absorb the rounding)
+    gross_tol: 0.02            # relax gross ±this to reach an integer-feasible neutral book
+    dollar_tol: 0.005          # residual dollar-neutrality tolerance (fraction of capital)
+    beta_tol: 0.02
+    sector_tol: 0.03
+    share_cap_mult: 3.0
+    time_limit: 10.0

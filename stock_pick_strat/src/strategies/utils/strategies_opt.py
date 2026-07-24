@@ -41,6 +41,8 @@ import logging
 import numpy as np
 import pandas as pd
 
+from src.strategies.utils.integer_shares import integerize
+
 _log = logging.getLogger(__name__)
 _ANN = 252.0
 
@@ -409,4 +411,86 @@ def simulate_portfolio_opt(
             "finite beta/variance on rebalance days. With market_weight=%.2f the "
             "portfolio trades effectively nothing.", market_weight)
 
+    return out
+
+# --------------------------------------------------------------------------- #
+# INTEGER-SHARE L/S: rebalance to a whole-share book, hold integer shares      #
+# between rebalances (you cannot hold/short a fraction of a share).            #
+# --------------------------------------------------------------------------- #
+def simulate_integer_ls(
+    signal: pd.DataFrame, stock_ret: pd.DataFrame, spy_ret: pd.Series, close: pd.DataFrame, *,
+    starting_capital: float = 1_000_000, target_ann_vol: float = 0.08, beta_neutral: bool = True,
+    pos_cap: float = 0.05, gross_cap: float = 3.0, beta_window: int = 63, vol_window: int = 63,
+    fee_bps: float = 1.0, spread_bps: float = 5.0, rebalance_freq: int = 63,
+    sector_map: dict | None = None, sector_neutral: bool = False,
+    risk_model: str = "diagonal", cov_shrink: float = 0.5,
+    gross_tol: float = 0.02, dollar_tol: float = 0.005, beta_tol: float = 0.02,
+    sector_tol: float = 0.03, int_method: str = "milp", share_cap_mult: float = 3.0,
+    time_limit: float = 10.0, long_fractional: bool = False,
+) -> pd.DataFrame:
+    """Market-neutral L/S with WHOLE-SHARE positions. At each rebalance: build the continuous
+    optimal target (optimize_day + vol target + caps), then `integerize` it to integer shares
+    (dollar/beta/sector-neutral within tol, gross within ±gross_tol). Hold those integer shares
+    until the next rebalance (their $ weights drift with price; the share counts stay integer).
+    `long_fractional` -> only SHORTS are whole shares (fractional longs allowed, the retail case).
+    Returns the same daily frame as simulate_portfolio_opt (+ out.attrs['weights'] / ['shares'])."""
+    cost_rate = (fee_bps + spread_bps) / 1e4
+    beta_df, var_df = rolling_beta_var(stock_ret, spy_ret, beta_window, vol_window)
+    smap = sector_map if (sector_neutral and sector_map) else None
+    dates = sorted(d for d in signal.index
+                   if d in stock_ret.index and d in spy_ret.index and d in beta_df.index and d in close.index)
+    tickers = list(stock_ret.columns)
+    shares = pd.Series(0.0, index=tickers)
+    prev_shares = pd.Series(0.0, index=tickers)
+    V = spy_V = starting_capital
+    rows, weights_hist = [], {}
+
+    for i in range(len(dates) - 1):
+        t, t1 = dates[i], dates[i + 1]
+        if i % rebalance_freq == 0:
+            s = signal.loc[t].dropna()
+            common = [tk for tk in s.index if tk in beta_df.columns
+                      and np.isfinite(beta_df.loc[t, tk]) and np.isfinite(var_df.loc[t, tk])
+                      and np.isfinite(close.loc[t, tk]) and close.loc[t, tk] > 0]
+            if len(common) >= 10:
+                a = s[common].to_numpy(float); a = (a - a.mean()) / (a.std() or 1.0)
+                b = beta_df.loc[t, common].to_numpy(float)
+                v = var_df.loc[t, common].to_numpy(float)
+                sec = [smap.get(tk) for tk in common] if smap else None
+                cov = (rebalance_idio_cov(stock_ret, spy_ret, t, common, b, v, vol_window, cov_shrink)
+                       if risk_model == "covariance" else None)
+                w_star = optimize_day(a, b, v, beta_neutral, pos_cap, sector_labels=sec, cov=cov)
+                w_star = vol_target_scale(w_star, v, target_ann_vol, gross_cap, cov=cov)
+                w_star = enforce_pos_cap(w_star, b, beta_neutral, pos_cap, sector_labels=sec)
+                tw = pd.Series(w_star, index=common)
+                n = integerize(tw, close.loc[t, common], starting_capital,
+                               beta=pd.Series(b, index=common),
+                               sector=(pd.Series(sec, index=common) if sec else None),
+                               gross_tol=gross_tol, dollar_tol=dollar_tol, beta_tol=beta_tol,
+                               sector_tol=sector_tol, share_cap_mult=share_cap_mult,
+                               time_limit=time_limit, method=int_method, long_fractional=long_fractional)
+                shares = pd.Series(0.0, index=tickers); shares[common] = n.reindex(common).to_numpy()
+
+        px_t = close.loc[t].reindex(tickers)
+        w = (shares * px_t / starting_capital).fillna(0.0)          # integer book -> weights (drift w/ price)
+        turnover = float(((shares - prev_shares) * px_t).abs().sum() / starting_capital)
+        cost = turnover * cost_rate
+        r = stock_ret.loc[t1, tickers].fillna(0.0)
+        r_spy = spy_ret.loc[t1] if np.isfinite(spy_ret.loc[t1]) else 0.0
+        alpha_ret = float((w * r).sum())
+        net = alpha_ret - cost
+        V *= (1.0 + net); spy_V *= (1.0 + r_spy)
+        rows.append({"date": t1, "gross_ret": alpha_ret, "cost": cost, "net_ret": net,
+                     "turnover": turnover, "portfolio_value": V, "spy_value": spy_V,
+                     "alpha_ret": alpha_ret, "mkt_ret": 0.0, "alpha_gross": float(w.abs().sum()),
+                     "alpha_max_w": float(w.abs().max()), "regime_scale": 1.0})
+        weights_hist[t1] = w.copy()
+        prev_shares = shares
+
+    out = pd.DataFrame(rows).set_index("date")
+    if weights_hist:
+        out.attrs["weights"] = pd.DataFrame(weights_hist).T
+    if not out.empty and float(out["alpha_gross"].mean()) < 1e-6:
+        _log.warning("Integer L/S never established a position (avg gross ~0): capital likely too "
+                     "small for whole-share positions, or <10 tradeable names on rebalance days.")
     return out

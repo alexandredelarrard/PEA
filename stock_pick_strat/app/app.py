@@ -65,11 +65,18 @@ def model_train_end() -> str | None:
 
 TRAIN_END = model_train_end()
 
+# model-dependent equity sleeves (need the trained ensemble; OOS from its train_end)
+MODEL_SLEEVES = ("ls_equity", "eq_long_only")
+ALL_SLEEVES = ["ls_equity", "eq_long_only", "long_book", "trend_cta"]
+
 # friendly per-sleeve blurb (what to look for in its analysis tab)
 SLEEVE_INFO = {
     "ls_equity": ("Market-neutral equity L/S",
                   "Check: IC > 0 and stable (predictive), and rolling **beta-to-SP ≈ 0** / "
                   "**corr-to-energy ≈ 0** (market-neutral, idiosyncratic)."),
+    "eq_long_only": ("Long-only top-N equity (no shorts)",
+                     "Long the model's best-ranked names (top-N, hold-band). Check IC > 0; "
+                     "**beta-to-SP ≈ 1** here (it's a long book / smart-beta tilt, retail-viable)."),
     "long_book": ("Multi-asset long book (ERC)",
                   "Check: the asset classes stay lowly/negatively correlated over time "
                   "(diversification holds; watch stress spikes)."),
@@ -84,8 +91,8 @@ SLEEVE_INFO = {
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("Portfolio levers")
-    sleeves = st.multiselect("Strategies (sleeves)", ["ls_equity", "long_book", "trend_cta"],
-                             default=[str(s) for s in _PB.get("sleeves", ["ls_equity", "long_book", "trend_cta"])])
+    sleeves = st.multiselect("Strategies (sleeves)", ALL_SLEEVES,
+                             default=[str(s) for s in _PB.get("sleeves", ALL_SLEEVES)])
     st.subheader("Blend across sleeves")
     scheme = st.selectbox("Weighting scheme", ["erc", "inverse_vol"],
                           index=0 if str(_PB.get("scheme", "erc")) == "erc" else 1,
@@ -133,10 +140,10 @@ def run_portfolio(params: dict) -> StepPortfolio:
 
 
 def ls_model_ready(start: str) -> bool:
-    """True when the L/S sleeve can run OOS for this backtest: either it isn't selected, or a
-    model exists trained EXACTLY for this period (train_end == backtest start). A missing or
-    misaligned model must NOT be used — the run is blocked with a warning instead."""
-    if "ls_equity" not in sleeves:
+    """True when the model-dependent equity sleeves (ls_equity / eq_long_only) can run OOS for
+    this backtest: either none is selected, or a model exists trained EXACTLY for this period
+    (train_end == backtest start). A missing/misaligned model must NOT be used — block instead."""
+    if not any(s in sleeves for s in MODEL_SLEEVES):
         return True
     return TRAIN_END is not None and bool(start) and start == TRAIN_END
 
@@ -235,30 +242,31 @@ def _img(step, rel: str):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-# The L/S sleeve needs a model TRAINED FOR THIS PERIOD (train_end == backtest start). If the model
-# is missing or trained for a different period, we do NOT run with the wrong model — we warn and
-# block, so the L/S results are always a clean out-of-sample test of the aligned model.
+# The equity model sleeves (ls_equity / eq_long_only) need a model TRAINED FOR THIS PERIOD
+# (train_end == backtest start). If it's missing or trained for a different period, we do NOT run
+# with the wrong model — we warn and block, so results are a clean out-of-sample test.
 _start = start.strip() or "2023-01-01"
 _ls_ready = ls_model_ready(_start)
-if "ls_equity" in sleeves and not _ls_ready:
+_model_sel = [s for s in MODEL_SLEEVES if s in sleeves]
+if _model_sel and not _ls_ready:
     if TRAIN_END is None:
-        st.warning(f"⚠ No trained L/S model found. Train the model for this period first "
-                   f"(`train.end_date = {_start}`, then StepModelling), or deselect `ls_equity`. "
+        st.warning(f"⚠ No trained equity model found. Train it for this period first "
+                   f"(`train.end_date = {_start}`, then StepModelling), or deselect {_model_sel}. "
                    f"**The backtest will not run with a missing model.**")
     else:
-        st.warning(f"⚠ The L/S model is trained to **train_end = {TRAIN_END}**, but the backtest "
-                   f"starts **{_start}** — the model is NOT trained for this period. Retrain it with "
+        st.warning(f"⚠ The equity model is trained to **train_end = {TRAIN_END}**, but the backtest "
+                   f"starts **{_start}** — not trained for this period. Retrain with "
                    f"`train.end_date = {_start}` (then StepModelling), set Start = {TRAIN_END}, or "
-                   f"deselect `ls_equity`. **The backtest will not run with a misaligned model.**")
+                   f"deselect {_model_sel}. **The backtest will not run with a misaligned model.**")
 
 if run_btn:
-    # guard: never run the backtest with a missing / misaligned L/S model
-    if "ls_equity" in sleeves and not _ls_ready:
-        st.error("Backtest blocked: the L/S model is missing or not trained for this backtest "
-                 "period (see the warning above). Fix the alignment or deselect `ls_equity`.")
+    # guard: never run with a missing / misaligned equity model
+    if _model_sel and not _ls_ready:
+        st.error(f"Backtest blocked: the equity model for {_model_sel} is missing or not trained "
+                 f"for this period (see the warning above). Fix the alignment or deselect them.")
         st.stop()
     params = {
-        "sleeves": list(sleeves) or ["ls_equity", "long_book", "trend_cta"],
+        "sleeves": list(sleeves) or ALL_SLEEVES,
         "start": _start,
         "end": end.strip() or None,
         "scheme": scheme, "cov_mode": cov_mode, "rebalance_freq": int(rebalance_freq),
@@ -280,10 +288,10 @@ if step is not None:
     dropped = getattr(step, "dropped_sleeves", []) or []
     if dropped:
         hint = ""
-        if "ls_equity" in dropped:
-            hint = (f" — `ls_equity` needs model PREDICTIONS and is out-of-sample from the model "
-                    f"train-end ({TRAIN_END}); ensure the models exist and the window overlaps "
-                    f"[train-end, end]. Retrain if the start doesn't match the train-end.")
+        if any(s in dropped for s in MODEL_SLEEVES):
+            hint = (f" — the equity model sleeves need model PREDICTIONS and are out-of-sample from "
+                    f"the model train-end ({TRAIN_END}); ensure the models exist and the window "
+                    f"overlaps [train-end, end]. Retrain if the start doesn't match the train-end.")
         st.error(f"⚠ Sleeve(s) dropped (no data in window): **{dropped}**{hint}")
     render_overview(step)
     render_strategy_tabs(step)

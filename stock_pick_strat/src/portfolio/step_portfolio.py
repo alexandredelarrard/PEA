@@ -28,7 +28,8 @@ from src.strategies.utils.metrics import compute_metrics
 from src.utils.risk_parity import base_weights, series_metrics, daily_frame
 from src.portfolio.utils.blend import blend_to_vol_target
 
-_SLEEVE_COLORS = {"ls_equity": "#1f77b4", "long_book": "#2ca02c", "trend_cta": "#d62728"}
+_SLEEVE_COLORS = {"ls_equity": "#1f77b4", "eq_long_only": "#17becf", "long_book": "#2ca02c",
+                  "trend_cta": "#d62728"}
 
 
 class StepPortfolio(Step):

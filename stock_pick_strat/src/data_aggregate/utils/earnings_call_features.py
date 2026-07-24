@@ -220,6 +220,7 @@ _KPI_COLS = ["ec_tone", "ec_tone_delta", "ec_qa_gap", "ec_uncertainty",
              
              # OpenAI-embedding KPIs (present only when the embedding cache is passed):
              "ec_qa_coherence_mean", "ec_qa_coherence_std", "ec_n_qa",
+             "ec_qa_answer_ratio", "ec_qa_answer_ratio_qq",   # answer/question density + its QoQ change
              "ec_qa_qq_sim", "ec_prep_qq_sim"]
 
 

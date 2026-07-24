@@ -1,0 +1,17 @@
+# strategy_eq_long_only.yml -- long-only TOP-QUANTILE equity sleeve (merged as `strategy_eq_long_only`).
+# Holds the best-ranked names by the trained L/S model signal (shares the model with strategy_ls),
+# top_n with a hold-band buffer, weighted by inverse-vol / ERC — NO shorts. Fully invested long
+# (market beta ~1): a smart-beta long book, retail-viable. See src/strategies/step_eq_long_only.py.
+strategy_eq_long_only:
+  # selection
+  top_n: 50                 # number of top-ranked names to hold
+  buffer_mult: 2.0          # hold-band: keep a held name until it drops out of the top (top_n * this)
+                            # -> names only churn when they genuinely leave the top (cuts turnover)
+  rebalance_freq: 1         # re-rank/rebalance every N days (1 = daily, as intended)
+  # weighting of the selected longs (sum to 1)
+  weighting: erc            # inverse_vol | erc (correlation-aware) | equal
+  cov_shrink: 0.5           # shrink toward the diagonal for the erc covariance
+  vol_window: 63            # trailing window for per-name vol / covariance
+  # costs (a sleeve may override the portfolio defaults)
+  fee_bps: 1.0
+  spread_bps: 5.0

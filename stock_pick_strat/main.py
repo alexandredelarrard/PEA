@@ -41,7 +41,6 @@ if __name__ == "__main__":
 ##### timeline 
 # sec insider = + 45days after as_of +1 16august for 30 june 
 
-
 # 2026-07-22 22:40:03 - src.utils.step - INFO - step_modelling.py - horizon 90: [ENSEMBLE] CV mean_IC=+0.0463  IC_IR=+1.50
 # 2026-07-22 22:40:03 - src.utils.step - INFO - step_modelling.py - horizon 90:   [elasticnet] CV mean_IC=+0.0314  IC_IR=+1.12
 # 2026-07-22 22:40:03 - src.utils.step - INFO - step_modelling.py - horizon 90:   [lgbm      ] CV mean_IC=+0.0342  IC_IR=+1.13

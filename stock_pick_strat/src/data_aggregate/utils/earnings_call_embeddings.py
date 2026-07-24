@@ -61,9 +61,20 @@ _QA_TAG, _PREP_TAG = "qa", "prepared_remarks"
 # is named in the operator's hand-off line instead); the older HuggingFace backbone uses
 # "Name -- Role -- Firm" (dash). Support BOTH so the splitter works on every source.
 _NAME = r"[A-Z][A-Za-z.'’\-]+(?:\s+[A-Z][A-Za-z.'’\-]+){0,4}"
-_SPEAKER_COLON = re.compile(rf"^({_NAME}):\s*(.*)$")
+# allow optional whitespace before the colon ("Kurt Kuehn :" as well as "Amy Hood:") -- some
+# transcripts (e.g. UPS/INTC 2009) space the colon, which otherwise hides the management answers.
+_SPEAKER_COLON = re.compile(rf"^({_NAME})\s*:\s*(.*)$")
 _SPEAKER_DASH = re.compile(rf"^\s*({_NAME})\s+--\s+.+$")
+# older transcripts head turns with "Name - Firm/Role:" (single dash + affiliation, then colon),
+# e.g. "Matthew Dodds - Citigroup:" / "Mike McMullen - CEO:", often with the whole (long) question on
+# the SAME line. Bound the AFFILIATION to <=60 chars (not the whole line) so a long inline question
+# is still recognised as a header while ordinary prose isn't.
+_SPEAKER_DASH_COLON = re.compile(rf"^({_NAME})\s+[-–—]\s+[^:]{{1,60}}:\s*(.*)$")
 _NAME_ONLY = re.compile(rf"^{_NAME}$")           # a bare name line (multi-line "Name / -- / Role" header)
+# some HF `content` runs a "Name:" speaker header onto the SAME line as the previous sentence
+# (no newline before it) -> put it back on its own line so the tokenizer sees it. Requires a
+# sentence end + a "Name: " with trailing space (a 1-word "Word:" mid-prose stays as text).
+_INLINE_HDR = re.compile(r"(?<=[.?!])[ \t]+(?=" + _NAME + r"\s*:\s)")
 _MIN_TURN = 25                                   # chars: ignore "thanks"/"good morning" fragments
 
 
@@ -74,6 +85,11 @@ def _speaker(line: str) -> tuple[str, str] | None:
     m = _SPEAKER_DASH.match(line)
     if m and len(line) < 120:
         return m.group(1).strip(), ""
+    m = _SPEAKER_DASH_COLON.match(line)                  # "Name - Firm/Role:" (may carry a long inline Q)
+    if m:
+        name, inline = m.group(1).strip(), m.group(2).strip()
+        if len(name.split()) >= 2 or name.lower() == "operator":   # real names only (avoid prose)
+            return name, inline
     m = _SPEAKER_COLON.match(line)
     if m:
         name, inline = m.group(1).strip(), m.group(2).strip()
@@ -86,13 +102,16 @@ def _speaker(line: str) -> tuple[str, str] | None:
 
 # ---- operator / logistics turns (dropped; they delimit the Q&A exchanges) --- #
 _OPERATOR_NAME = re.compile(r"^operator$", re.I)
+# "questions" or "Q&A"/"Q and A" -- transcripts use both to name the Q&A opening
+_QN = r"(?:questions?|q\s*(?:&|and)\s*a)"
 _HANDOFF = re.compile(
     r"\b(?:next|first|final|last|following)?\s*questions?\s+(?:comes?|is|will\s+come|will\s+be)\s+from\b"
     r"|please\s+(?:go\s+ahead|proceed|stand\s+by)"
-    r"|press\s+(?:the\s+)?star|in\s+order\s+to\s+ask\s+a\s+question|poll\s+for\s+questions"
-    r"|(?:open|opening)\s+(?:up\s+)?(?:the\s+)?(?:floor|line|lines|call|phone\s+lines)\b[^.]{0,25}?questions?"
+    r"|press\s+(?:the\s+)?star|in\s+order\s+to\s+ask\s+a\s+question|poll\s+for\s+questions?"
+    r"|(?:open|opening)\s+(?:up\s+)?(?:the\s+)?(?:floor|line|lines|call|phone\s+lines)\b"
+    r"[^.]{0,25}?(?:for\s+)?" + _QN +
     r"|(?:we(?:'ll| will| are)|now|let's|i(?:'ll| will))\b[^.]{0,45}?"
-    r"(?:begin|open|take|start|move\s+to|go\s+to|turn\s+[^.]{0,20}?to)[^.]{0,30}?questions?"
+    r"(?:begin|open|take|start|move\s+to|go\s+to|turn\s+[^.]{0,20}?to)[^.]{0,30}?" + _QN +
     r"|question[-\s]and[-\s]answer\s+session", re.I)
 # IR-host flow logistics / call sign-off between or after questions -- NOT content, so dropped:
 # "Operator, next question please.", "we have time for one last question", "that wraps up the
@@ -106,9 +125,25 @@ _FLOW = re.compile(
     r"|this\s+concludes\b|thank(?:s|\s+you)[^.]{0,20}?for\s+joining", re.I)
 
 
+_LOGISTICS_MAX = 400            # hand-off / flow lines are short; longer turns are real content
+
+
+# the analyst NAME the operator announces at a hand-off ("...question comes from <Name>", "go to the
+# line of <Name>") -- the authoritative question-asker for the exchange. Phrase is case-insensitive;
+# the captured name stays case-sensitive so only a proper (capitalised) name is taken.
+_HANDOFF_NAME = re.compile(
+    r"(?i:(?:questions?|q\s*(?:&|and)\s*a)\s+(?:comes?|is|will\s+come|will\s+be)\s+from\s+"
+    r"(?:the\s+line\s+of\s+)?)(" + _NAME + r")"
+    r"|(?i:(?:go|turn|move)\s+(?:ahead\s+)?to\s+(?:the\s+)?line\s+of\s+)(" + _NAME + r")")
+
+
 def _is_operator(person: str | None, text: str) -> bool:
-    """Operator hand-off / call-logistics turn: not content, but marks a new exchange."""
-    return bool((person and _OPERATOR_NAME.match(person)) or _HANDOFF.search(text) or _FLOW.search(text))
+    """Operator hand-off / call-logistics turn (not content; marks a new exchange). A 'Operator'
+    speaker is always logistics; otherwise the hand-off/flow phrase must be in a SHORT turn, so a
+    long substantive remark that merely mentions 'we'll open it up for questions' isn't dropped."""
+    if person and _OPERATOR_NAME.match(person):
+        return True
+    return len(text) <= _LOGISTICS_MAX and bool(_HANDOFF.search(text) or _FLOW.search(text))
 
 
 # ---- pleasantry / non-informative cleaning --------------------------------- #
@@ -127,6 +162,16 @@ _NONINFO_Q = re.compile(
     r"^(?:do\s+you\s+have\s+(?:any\s+)?(?:other\s+|more\s+)?questions?|are\s+you\s+(?:okay|ok|good)"
     r"|any\s+(?:other|more|further)\s+questions?|no\s+(?:more|further)\s+questions?"
     r"|(?:i'?m|we'?re)\s+all\s+set|thank\s+you)\b", re.I)
+# a sentence that OPENS with a greeting, and a strong courtesy token -> a longer greeting sentence
+# (e.g. "Hey guys, congrats on the good prints here, ...") is still pure preamble worth dropping.
+_GREETING_START = re.compile(
+    r"^(?:hi|hey|hello|good\s+(?:morning|afternoon|evening)|morning|afternoon|thanks?|thank\s+you|"
+    r"yeah|yep|yes|sure|okay|ok|great|perfect|excellent|terrific|wonderful|congrats?|congratulations|"
+    r"awesome)\b", re.I)
+_STRONG_COURTESY = re.compile(
+    r"congrat|nice\s+(?:quarter|results?|print)|great\s+(?:quarter|results?|print)|"
+    r"good\s+(?:print|quarter|results?)|well\s+done|solid\s+(?:quarter|results?|print)|"
+    r"thanks?\s+for\s+taking|thank\s+you\s+for\s+taking", re.I)
 
 
 def _sentences(text: str) -> list[str]:
@@ -134,8 +179,15 @@ def _sentences(text: str) -> list[str]:
 
 
 def _is_pleasantry(sent: str) -> bool:
-    """A short courtesy/greeting sentence carrying no substantive question (never drops a '?')."""
-    return "?" not in sent and len(sent.split()) <= 14 and bool(_PLEASANTRY_CUE.search(sent))
+    """A courtesy/greeting sentence carrying no substantive question (never drops a '?'): a short
+    (<=14w) sentence with any courtesy cue, OR a longer opener (<=22w) that both starts with a
+    greeting AND carries a strong courtesy token ('Hey guys, congrats on the good prints, ...')."""
+    if "?" in sent:
+        return False
+    n = len(sent.split())
+    if n <= 14 and _PLEASANTRY_CUE.search(sent):
+        return True
+    return n <= 22 and bool(_GREETING_START.match(sent)) and bool(_STRONG_COURTESY.search(sent))
 
 
 def _clean(text: str) -> str:
@@ -155,16 +207,19 @@ def _is_informative_question(text: str) -> bool:
     return len(t) >= 20 and len(t.split()) >= 4 and not _NONINFO_Q.match(t)
 
 
-def split_turns(text: str, section: str, min_len: int = _MIN_TURN) -> list[dict]:
+def split_turns(text: str, section: str, min_len: int = _MIN_TURN,
+                mgmt_names: set[str] | None = None) -> list[dict]:
     """Split a section blob into CLEANED SPEAKER TURNS
     -> [{section, tag, person, text, exchange_idx, answer_idx}].
 
-      * qa: driven by the OPERATOR hand-off lines (not a role regex). Each hand-off opens a new
-        exchange; the first speaker after it is the ANALYST (a QUESTION), the following management
-        speakers are ANSWERS of that exchange, and the analyst speaking again is a follow-up
-        question. Operator / IR-flow / pure-courtesy turns are dropped; every kept turn is cleaned
-        to its substantive core. exchange_idx = which Q&A pair; answer_idx = 0 for the question and
-        1,2,... for the 1st, 2nd,... answer turn (so 'first vs last answer' is explicit).
+      * qa: OPERATOR hand-off lines delimit exchanges; the first NON-management speaker after a
+        hand-off is the ANALYST (a QUESTION), management speakers are ANSWERS, and the analyst
+        speaking again is a follow-up question. `mgmt_names` (lower-cased management speakers, taken
+        from the prepared remarks) is the reliable answerer signal: it stops an exec who speaks right
+        after a hand-off from being mislabelled as the analyst (their turn attaches as a trailing
+        answer of the prior exchange instead). Operator / IR-flow / pure-courtesy turns are dropped;
+        every kept turn is cleaned to its substantive core. exchange_idx = which Q&A pair; answer_idx
+        = 0 for the question and 1,2,... for the 1st..last answer turn ('first vs last' is explicit).
       * prepared_remarks: every management turn is 'prepared' (exchange_idx = -1, answer_idx = -1);
         the host's welcome/logistics is dropped.
 
@@ -173,6 +228,7 @@ def split_turns(text: str, section: str, min_len: int = _MIN_TURN) -> list[dict]
     if not text:
         return []
     is_qa = section == _QA_TAG
+    text = _INLINE_HDR.sub("\n", text)               # rescue "Name:" headers stuck mid-line (HF)
     # 1) raw turns by speaker header. Three real header shapes are supported: the newest MF
     # "Name:" (colon), the 2024-2025 MF multi-line "Name / -- / Role", and the legacy inline
     # "Name -- Role -- Firm"; plus bare "Operator" lines. qa opens with the operator preamble.
@@ -215,40 +271,54 @@ def split_turns(text: str, section: str, min_len: int = _MIN_TURN) -> list[dict]
                             "text": body, "exchange_idx": -1, "answer_idx": -1})
         return out
 
-    # 2b) qa -> exchanges of (question, mapped answers), segmented by operator hand-offs
+    # 2b) qa -> exchanges of (question, mapped answers). Role per turn:
+    #   analyst (QUESTION)  if the speaker is NAMED by an operator hand-off (authoritative), else
+    #   management (ANSWER) if the speaker gave prepared remarks (mgmt_names), else
+    #   position fallback   (the speaker right after a hand-off is the asker; otherwise an answer).
+    # This stays correct when the answering exec is absent from the prepared remarks (e.g. a CFO who
+    # goes straight to Q&A) or the asker is a substitute ("on for X"). A new informative question
+    # opens a new exchange; an answer never consumes the hand-off boundary (so an exec speaking
+    # before the named analyst still lets the analyst open the exchange).
+    mn = mgmt_names or set()
+    analyst_names: set[str] = set()
+    for _per, _txt in raw:
+        for m in _HANDOFF_NAME.finditer(_txt):
+            nm = (m.group(1) or m.group(2) or "").strip().lower()
+            if nm:
+                analyst_names.add(nm)
+
     out = []
-    ex, ans_i, analyst, new_exchange = -1, 0, None, True
+    ex, ans_i, cur, boundary, saw_answer = -1, 0, None, True, False
     for per, txt in raw:
         if _is_operator(per, txt):
-            new_exchange, analyst = True, None
+            boundary = True
             continue
-        if new_exchange:                                     # first speaker after a hand-off = analyst
-            ex, ans_i, analyst, new_exchange = ex + 1, 0, per, False
-            body = _clean(txt)
+        perl = (per or "").strip().lower()
+        role = ("q" if perl in analyst_names else
+                "a" if perl in mn else
+                ("q" if boundary else "a"))
+        body = _clean(txt)
+        if role == "q":
             if _is_informative_question(body):
+                if boundary or saw_answer or perl != cur:    # a new question -> new exchange
+                    ex, ans_i, cur, saw_answer = ex + 1, 0, perl, False
                 out.append({"section": section, "tag": EARNINGS_CALL_TAG_QUESTION, "person": per,
                             "text": body, "exchange_idx": ex, "answer_idx": 0})
-            continue
-        if per is not None and per == analyst:               # analyst again = follow-up question
-            body = _clean(txt)
-            if _is_informative_question(body):
-                out.append({"section": section, "tag": EARNINGS_CALL_TAG_QUESTION, "person": per,
-                            "text": body, "exchange_idx": ex, "answer_idx": 0})
-            continue
-        body = _clean(txt)                                   # management = answer
-        if len(body) >= min_len:
-            ans_i += 1
+            boundary = False
+        elif ex >= 0 and len(body) >= min_len:               # management / specialist answer
+            ans_i += 1; saw_answer = True
             out.append({"section": section, "tag": EARNINGS_CALL_TAG_ANSWER, "person": per,
                         "text": body, "exchange_idx": ex, "answer_idx": ans_i})
     return out
 
 
-def split_qa_exchanges(qa_text: str, min_len: int = _MIN_TURN) -> list[dict]:
+def split_qa_exchanges(qa_text: str, min_len: int = _MIN_TURN,
+                       mgmt_names: set[str] | None = None) -> list[dict]:
     """The cleaned LIST OF QUESTIONS with their MAPPED ANSWERS, one dict per exchange:
     {exchange_idx, question, analyst, answers:[...], managers:[...]}. Only exchanges that have a
-    real (cleaned) question are returned."""
+    real (cleaned) question are returned. `mgmt_names` (see split_turns) sharpens Q/A classification."""
     by_ex: dict[int, dict] = {}
-    for t in split_turns(qa_text, _QA_TAG, min_len):
+    for t in split_turns(qa_text, _QA_TAG, min_len, mgmt_names=mgmt_names):
         e = by_ex.setdefault(t["exchange_idx"], {"exchange_idx": t["exchange_idx"], "question": None,
                                                  "analyst": None, "answers": [], "managers": []})
         if t["tag"] == EARNINGS_CALL_TAG_QUESTION:
@@ -259,12 +329,13 @@ def split_qa_exchanges(qa_text: str, min_len: int = _MIN_TURN) -> list[dict]:
     return [by_ex[k] for k in sorted(by_ex) if by_ex[k]["question"]]
 
 
-def split_qa_pairs(qa_text: str, min_len: int = _MIN_TURN) -> list[tuple[str, str]]:
+def split_qa_pairs(qa_text: str, min_len: int = _MIN_TURN,
+                   mgmt_names: set[str] | None = None) -> list[tuple[str, str]]:
     """Backward-compat helper: pair each analyst question with the concatenated management answer
     turns of the same exchange, derived from `split_turns` so the two stay consistent. [] with no
     structure."""
     pairs: list[tuple[str, str]] = []
-    for e in split_qa_exchanges(qa_text, min_len):
+    for e in split_qa_exchanges(qa_text, min_len, mgmt_names=mgmt_names):
         q, a = (e["question"] or "").strip(), " ".join(e["answers"]).strip()
         if len(q) >= min_len and len(a) >= min_len:
             pairs.append((q, a))
@@ -324,11 +395,12 @@ def embed_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
         qa_text = text.loc[(tkr, q), _QA_TAG] if _QA_TAG in text.columns else None
         prep_text = text.loc[(tkr, q), _PREP_TAG] if _PREP_TAG in text.columns else None
         aod = as_of.get((tkr, q))
-        turns: list[dict] = []
-        if isinstance(prep_text, str) and prep_text.strip():
-            turns += split_turns(prep_text, _PREP_TAG)
-        if isinstance(qa_text, str) and qa_text.strip():
-            turns += split_turns(qa_text, _QA_TAG)
+        prep_turns = (split_turns(prep_text, _PREP_TAG)
+                      if isinstance(prep_text, str) and prep_text.strip() else [])
+        mgmt = {t["person"].strip().lower() for t in prep_turns if t.get("person")}
+        qa_turns = (split_turns(qa_text, _QA_TAG, mgmt_names=mgmt)
+                    if isinstance(qa_text, str) and qa_text.strip() else [])
+        turns = prep_turns + qa_turns
         if not turns:
             continue
         V = embed_texts([t["text"] for t in turns], model=model, client=client)

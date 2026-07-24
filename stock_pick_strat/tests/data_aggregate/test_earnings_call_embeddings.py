@@ -182,6 +182,51 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     print(f"  incremental: re-run made 0 new OpenAI calls (still {stub.n_calls}). Validated with a stub (no spend).")
 
 
+# HuggingFace-backbone shape: verbatim `content` with "Name:" colon headers, a long CEO remark that
+# ENDS with "we'll open it up for questions", and a Q&A where an exec greets before the (substitute)
+# analyst asks -- the cases that previously dropped the CEO / inverted Q&A.
+_HF_PREP = ("Operator: Good afternoon and welcome to the call. [Operator Instructions] Sir, please go "
+            "ahead. I would like to turn the call over to Mike. Mike Ceo: Thanks Ankur. "
+            + "Revenue grew on strong demand and margins expanded across every region as we executed "
+              "well this quarter. " * 5
+            + "With that, we'll open it up for your questions.")
+_HF_QA = ("Operator: Your first question comes from Doug of Cowen. Please go ahead. "
+          "Mike Ceo: Hi Doug. "
+          "Ryan Sub: Hi, this is Ryan on for Doug. Can you walk through the margin outlook and the "
+          "cash flow trends you expect into next quarter? "
+          "Mike Ceo: Sure. Margins improved and cash flow was strong on solid demand and cost control. "
+          "Bob Cfo: And on cash generation, we expect continued strength across our segments next quarter.")
+
+
+def test_hf_style_long_remarks_and_qa_classification():
+    # a long prepared remark that MENTIONS opening for questions must NOT be dropped -> CEO is known
+    prep = split_turns(_HF_PREP, "prepared_remarks")
+    mgmt = {t["person"].strip().lower() for t in prep if t.get("person")}
+    assert "mike ceo" in mgmt, f"long CEO remark wrongly dropped; mgmt={mgmt}"
+
+    # with the CEO in mgmt, an exec greeting after the hand-off is NOT mistaken for the analyst
+    ex = split_qa_exchanges(_HF_QA, mgmt_names=mgmt)
+    assert len(ex) == 1, ex
+    assert ex[0]["analyst"] == "Ryan Sub", f"analyst should be the (substitute) analyst, got {ex[0]['analyst']}"
+    assert ex[0]["managers"] == ["Mike Ceo", "Bob Cfo"], ex[0]["managers"]
+    q = ex[0]["question"].lower()
+    assert "margin outlook" in q and "hi doug" not in q, f"question not cleaned: {ex[0]['question']!r}"
+
+    # OLD (2007-2010) transcripts head turns with "Name - Firm/Role:" -> must still parse
+    old = ("Operator: Your first question comes from Matthew Dodds - Citigroup.\n"
+           "Matthew Dodds - Citigroup: Can you talk about the gross margin trend and the pricing outlook?\n"
+           "William Weldon - Chairman: Margins improved on favorable mix and cost control this quarter.")
+    eo = split_qa_exchanges(old)
+    assert eo and eo[0]["analyst"] == "Matthew Dodds" and eo[0]["managers"] == ["William Weldon"], eo
+    assert "gross margin" in eo[0]["question"].lower()
+
+    print("\n=== SANITY CHECK: HuggingFace-shape content ===")
+    print(f"  colon 'Name:' headers parse; long CEO remark ending 'we'll open it up for questions' "
+          f"KEPT -> mgmt={sorted(mgmt)}.")
+    print(f"  exec 'Hi Doug.' after the hand-off is NOT the analyst; ex0 analyst={ex[0]['analyst']!r} "
+          f"-> managers {ex[0]['managers']}; question cleaned to the meaty ask. Validated.")
+
+
 def test_force_reembed_drops_stale_turns():
     """A re-parse can yield FEWER turns than a prior run cached; a force re-embed must RECONCILE
     (drop the orphaned tail rows) so the table matches the current parse -- not leave stale answers
@@ -204,4 +249,5 @@ def test_force_reembed_drops_stale_turns():
 
 if __name__ == "__main__":
     test_per_turn_split_clean_embed_cache_and_kpis()
+    test_hf_style_long_remarks_and_qa_classification()
     test_force_reembed_drops_stale_turns()

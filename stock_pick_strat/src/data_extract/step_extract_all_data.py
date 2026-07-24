@@ -17,10 +17,10 @@ from src.context import Context
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 from src.data_extract.utils.prices.fetch_prices import get_sp500_tickers
-from src.data_extract.step_extract_prices import StepExtractPrices
-from src.data_extract.step_extract_fundamentals import StepExtractFundamentals
-from src.data_extract.step_extract_structure import StepExtractStructure
-from src.data_extract.step_extract_behavioral import StepExtractBehavioral
+from stock_pick_strat.src.data_extract.transformers.step_extract_prices import StepExtractPrices
+from stock_pick_strat.src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
+from stock_pick_strat.src.data_extract.transformers.step_extract_structure import StepExtractStructure
+from stock_pick_strat.src.data_extract.transformers.step_extract_behavioral import StepExtractBehavioral
 
 
 class StepExtractAllData(Step):
@@ -50,8 +50,8 @@ class StepExtractAllData(Step):
         tickers = self._resolve_tickers()
 
         self._prices.run(tickers=tickers)
-        self._fundamentals.run(tickers=tickers)
-        self._structure.run(tickers=tickers)
+        # self._fundamentals.run(tickers=tickers)
+        # self._structure.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
 
         ####### very strong driver, need data feed / LLM

@@ -37,7 +37,7 @@ from src.data_aggregate.utils.factors import (
     commodity_factor_returns,
     currency_factor_returns
 )
-from src.data_aggregate.utils.cube import build_cube_dataframe
+from src.data_aggregate.utils.cube import build_cube_dataframe, _betas_to_long, _labels_to_long
 from src.data_peers.step_deduce_peers import StepDeducePeers
 from src.data_peers.utils.sector_peers import compute_sector_returns
 
@@ -685,3 +685,146 @@ class StepBuildCube(Step):
         # full rebuild each run -> replace the table (truncate + fast COPY)
         n = self._context.store.replace("cube", self.cube)
         self._log.info("Saved cube to DB table 'cube' (%s rows)", n)
+
+    # ================================================================== #
+    # EXPLODED, memory-light execution for the Airflow `data_aggregation` DAG.
+    # Each feature group (and the target) runs STANDALONE — loading only prices +
+    # peers + its OWN source table(s) — and persists a compact part to the DB. A
+    # final `assemble` step reads the parts and builds the cube. So no single run
+    # ever holds all source tables at once, and the parts compute in PARALLEL.
+    # The monolithic run() above is unchanged (still used by main.py / tests).
+    # ================================================================== #
+
+    # feature group -> (source tables to load onto self, builder method)
+    _GROUP_SOURCES: dict[str, tuple[tuple[str, ...], str]] = {
+        "price":          ((), "build_features"),
+        "fundamental":    (("fundamentals_history", "pension_facts", "notes_num",
+                            "earnings_surprises"), "build_fundamental_features"),
+        "sector":         (("fundamentals_history",), "build_sector_features"),
+        "earnings":       (("earnings_surprises",), "build_earnings_features"),
+        "governance":     (("def14a_llm", "fundamentals_history"), "build_governance_features"),
+        "employee":       (("employees_history", "fundamentals_history"), "build_employee_features"),
+        "dividend":       (("dividends", "fundamentals_history"), "build_dividend_features"),
+        "attention":      (("wiki_pageviews", "google_trends"), "build_attention_features"),
+        "institutional":  (("institutional_holdings", "fundamentals_history"),
+                           "build_institutional_features"),
+        "superinvestor":  (("institutional_holdings", "fundamentals_history"),
+                           "build_superinvestor_features"),
+        "insider":        (("insider_transactions", "fundamentals_history"), "build_insider_features"),
+        "short_interest": (("short_interest", "fails_to_deliver"), "build_short_interest_features"),
+        "earnings_call":  (("earnings_call_sections",), "build_earnings_call_features"),
+    }
+    _TABLE_TO_ATTR: dict[str, str] = {
+        "fundamentals_history": "fundamentals", "earnings_surprises": "earnings",
+        "def14a_llm": "def14a", "employees_history": "employees", "dividends": "dividends",
+        "wiki_pageviews": "wiki_pageviews", "google_trends": "google_trends",
+        "institutional_holdings": "institutional", "insider_transactions": "insider",
+        "short_interest": "short_interest", "fails_to_deliver": "fails_to_deliver",
+        "pension_facts": "pension_facts", "notes_num": "notes_num",
+        "earnings_call_sections": "earnings_call_sections",
+    }
+
+    def _prereqs(self) -> None:
+        """Shared minimum for any standalone step: prices (trading calendar + returns) + peers
+        (peer baskets + sector returns; read from the SECTOR_PEERS_PATH cache the deduce-peers step
+        wrote, so this is cheap and does NOT recompute)."""
+        self.load_prices()
+        self.normalize_prices()
+        self.load_peers()
+
+    def _load_source(self, table: str) -> None:
+        setattr(self, self._TABLE_TO_ATTR[table], self._load_or_none(table))
+        if table == "def14a_llm" and getattr(self, "def14a", None) is not None:
+            self.def14a, _ = impute_def14a(self.def14a)
+
+    def _skeleton(self) -> pd.DataFrame:
+        """The (date, ticker) universe grid (cells that have a price) the merge-based feature
+        builders left-join onto."""
+        s = self.stock_close.reset_index()
+        idx = s.columns[0]
+        m = (s.melt(id_vars=idx, var_name="ticker", value_name="_v")
+             .dropna(subset=["_v"]).rename(columns={idx: "date"}))
+        return m[["date", "ticker"]].reset_index(drop=True)
+
+    @staticmethod
+    def _norm_date(df: pd.DataFrame) -> pd.DataFrame:
+        if df is not None and not df.empty and "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        return df
+
+    def _persist_part(self, name: str, df: pd.DataFrame) -> int:
+        """Full-rebuild an AD-HOC intermediate part table (not in the schema registry). Pre-create
+        it from the frame's own dtypes via to_sql(head(0)) so store.replace's registry-PK lookup is
+        skipped, then let store.replace do the fast COPY load into it."""
+        if df is None or df.empty:
+            return 0
+        df.head(0).to_sql(name, self._context.store.engine, if_exists="replace", index=False)
+        return self._context.store.replace(name, df)
+
+    def run_feature_group(self, group: str) -> None:
+        """Standalone: build ONE feature group's panel and persist it as `cube_part_<group>`
+        (compact: only rows carrying >=1 of that group's features)."""
+        if group not in self._GROUP_SOURCES:
+            raise ValueError(f"unknown feature group '{group}' "
+                             f"(known: {sorted(self._GROUP_SOURCES)})")
+        sources, method = self._GROUP_SOURCES[group]
+        self._prereqs()
+        for t in sources:
+            self._load_source(t)
+        if method == "build_features":
+            self.build_features()                        # SETS self.feature_panel (price panel)
+        else:
+            self.feature_panel = self._skeleton()        # merge-based builders left-join onto this
+            getattr(self, method)()
+        fcols = [c for c in self.feature_panel.columns if c not in ("date", "ticker")]
+        if not fcols:
+            self._log.warning("Feature group '%s' produced no features -> nothing persisted.", group)
+            return
+        part = self.feature_panel[self.feature_panel[fcols].notna().any(axis=1)]
+        n = self._persist_part(f"cube_part_{group}", part)
+        self._log.info("Persisted cube_part_%s: %s rows x %s feature cols.", group, n, len(fcols))
+
+    def run_target(self) -> None:
+        """Standalone: factor panel + betas + multi-horizon targets -> persist the LONG target &
+        beta tables (`cube_part_targets` / `cube_part_betas`) the assemble step joins. Needs no
+        feature sources, so it runs beside the feature groups."""
+        self._prereqs()
+        self._load_source("fundamentals_history")        # style factors + shares-out
+        self.macro = self._load_or_none("macro")
+        self.build_factor_panel()
+        self.estimate_betas()
+        self.build_targets()
+        nt = self._persist_part("cube_part_targets", _labels_to_long(self.labels))
+        nb = self._persist_part("cube_part_betas", _betas_to_long(self.betas))
+        self._log.info("Persisted cube_part_targets (%s rows) + cube_part_betas (%s rows).", nt, nb)
+
+    def assemble_cube_from_parts(self) -> None:
+        """Final step: read every persisted part, merge features + composites + betas + peers +
+        targets into the cube, and save it. Loads NO raw source tables and recomputes NO features
+        (mirrors build_cube_dataframe on the persisted long forms)."""
+        self._prereqs()                                  # peers dict (for the `peers` column)
+        panel = None
+        for group in self._GROUP_SOURCES:
+            t = f"cube_part_{group}"
+            if not self._context.store.exists(t):
+                self._log.warning("Feature part '%s' missing -> skipped.", t)
+                continue
+            p = self._norm_date(self._context.store.load(t))
+            if p.empty:
+                continue
+            panel = p if panel is None else panel.merge(p, on=["date", "ticker"], how="outer")
+        if panel is None or panel.empty:
+            raise RuntimeError("No feature parts found -> run the features-* steps first.")
+        self.feature_panel = panel
+        self.build_composite_signals()                   # composites over the merged feature panel
+
+        betas_long = self._norm_date(self._context.store.load("cube_part_betas"))
+        targets_long = self._norm_date(self._context.store.load("cube_part_targets"))
+        base = self.feature_panel.merge(betas_long, on=["date", "ticker"], how="left")
+        base["peers"] = base["ticker"].map(
+            lambda t: json.dumps(self.peers.get(t, {}), ensure_ascii=False))
+        self.cube = targets_long.merge(base, on=["date", "ticker"], how="inner")
+        self.cube = (self.cube.sort_values(["date", "ticker", "target_horizon"])
+                     .reset_index(drop=True))
+        self._add_categorical_codes()
+        self.save_cube()

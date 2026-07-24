@@ -1,4 +1,55 @@
+# PEA stack: the pipeline database (`db`, unchanged) + an Airflow "composer" (LocalExecutor) that
+# runs the data-extraction and data-aggregation DAGs nightly. Airflow lives in its own image
+# (apache/airflow, Python 3.12) with the PEA pipeline in an ISOLATED venv (/opt/pipeline, SQLAlchemy
+# 2.0) so its deps never clash with Airflow's (SQLAlchemy 1.4). DAGs call the pipeline as
+# `/opt/pipeline/bin/python -m src <package> <command>` with cwd=/opt/airflow/project.
+
+# ------------------------------------------------------------------ #
+# Shared Airflow config (YAML anchor; not a service).
+# ------------------------------------------------------------------ #
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  image: pea-airflow:latest
+  env_file:
+    - .env                                     # pipeline creds (POSTGRES_*) + API keys (FRED/OPENAI/SEC/…)
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__PARALLELISM: "16"            # max concurrent task instances across all DAGs
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "8"
+    AIRFLOW__WEBSERVER__SECRET_KEY: "pea-dev-secret"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    # the pipeline reaches the pipeline DB by the compose SERVICE name (not localhost), on the
+    # container-internal port 5432 (override any host-mapped POSTGRES_PORT from .env).
+    POSTGRES_HOST: db
+    POSTGRES_PORT: "5432"
+    # anchor the pipeline's data root to the mounted project (absolute, cwd-independent) so
+    # DATA_STORE = /opt/airflow/project/data -> the ./data bind mount below -> the HOST disk.
+    # All heavy downloads (SEC zip bulk sets under sec_financial_notes / sec_financial_statements /
+    # sec_bulk_cache / sec_13f_insiders, the HF transcript parquet under call_transcripts, models &
+    # peer dict under output/) are written there, so they SURVIVE the container and are reused
+    # (incremental fetchers skip a re-download when the cached zip is found on the host).
+    ROOT_PATH: /opt/airflow/project
+  volumes:
+    - ./src/dags:/opt/airflow/dags             # DAG definitions
+    - .:/opt/airflow/project                   # the repo -> `python -m src` runs from here
+    - ./data:/opt/airflow/project/data         # HOST-persistent download cache (SEC zips, HF parquet, models)
+    - airflow_logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+    db:
+      condition: service_healthy
+
 services:
+  # ------------------------------------------------------------------ #
+  # PEA pipeline database (unchanged).
+  # ------------------------------------------------------------------ #
   db:
     image: postgres:16
     container_name: pea_db
@@ -9,9 +60,7 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      # persistent data — survives container restarts
       - pgdata:/var/lib/postgresql/data
-      # schema.sql runs once, on first init of an empty volume
       - ./sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pea} -d ${POSTGRES_DB:-pea}"]
@@ -20,22 +69,73 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # Application image: runs the extraction pipeline / migrator against `db`.
-  # Optional for Phase 1 — the migrator can also be run from the host venv.
-  # app:
-  #   build: .
-  #   container_name: pea_app
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #   environment:
-  #     DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-pea}:${POSTGRES_PASSWORD:-pea}@db:5432/${POSTGRES_DB:-pea}
-  #   env_file:
-  #     - .env
-  #   volumes:
-  #     - ./data:/app/data
-  #   # default: load existing flat files into the DB (schema is applied by db init)
-  #   command: ["python", "-m", "scripts.migrate_parquet_to_db"]
+  # ------------------------------------------------------------------ #
+  # Airflow metadata database (separate from the pipeline DB).
+  # ------------------------------------------------------------------ #
+  airflow-db:
+    image: postgres:16
+    container_name: pea_airflow_db
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ #
+  # One-shot: migrate the Airflow metadata schema + create the admin user.
+  # ------------------------------------------------------------------ #
+  airflow-init:
+    <<: *airflow-common
+    container_name: pea_airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create --username admin --password admin \
+          --firstname admin --lastname admin --role Admin --email admin@example.com || true
+        # load-aware pools: cap the heavy / rate-limited task groups so only the LIGHT tasks fan out
+        airflow pools set sec_bulk  2 "SEC bulk zip downloads (notes/statements/insider/13F/FTD)" || true
+        airflow pools set sec_api   2 "per-ticker EDGAR API (companyfacts/employees/DEF14A)"       || true
+        airflow pools set scrape    2 "external scraping (Google Trends / Wikipedia / transcripts)" || true
+        airflow pools set aggregate 3 "cube feature-group builds (cap concurrency to bound memory)"  || true
+    restart: "no"
+
+  # ------------------------------------------------------------------ #
+  # Scheduler (runs the DAGs) + Webserver (UI on :8080).
+  # ------------------------------------------------------------------ #
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: pea_airflow_scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
+      interval: 20s
+      timeout: 20s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: pea_airflow_webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  airflow_pgdata:
+  airflow_logs:

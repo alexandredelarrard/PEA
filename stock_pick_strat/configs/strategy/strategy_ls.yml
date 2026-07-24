@@ -12,7 +12,7 @@ strategy_ls:
   gross_cap: 3.0               # max sum|w| (leverage safety rail)
   # --- turnover control ---
   step: 0.25                   # partial trade toward target; lower = slower = cheaper
-  no_trade_band: 0.005         # skip per-name trades smaller than this
+  no_trade_band: 0.007         # skip per-name trades smaller than this
   rebalance_freq: 21            # recompute target every N days
   # --- risk model (position weighting) ---
   # diagonal  = inverse-variance per stock (weight ~ 1/vol, ignores correlation)

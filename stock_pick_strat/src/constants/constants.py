@@ -143,6 +143,54 @@ FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
 FINBERT_MAX_TOKENS = 512
 
 # --------------------------------------------------------------------------- #
+# SEC footnote NARRATIVE (`notes_text`) -> risk/compliance features (data_aggregate).
+# The raw high-signal TextBlocks are embedded (OpenAI) + NLP-scored into per-filing,
+# per-theme features (narrative drift, risk-anchor similarity, tone/litigious density,
+# disclosure-length dynamics), then made peer-relative for the cube. See
+# src/data_aggregate/utils/notes_features.py.
+# --------------------------------------------------------------------------- #
+NOTES_TEXT_TABLE = "notes_text"
+NOTES_EMBEDDING_TABLE = "notes_embedding"          # cache: 1 row per (ticker, adsh, tag), pooled vector
+NOTES_EMBED_MODEL = "text-embedding-3-small"       # cheap, 1536-dim (shared with the earnings-call layer)
+# risk/compliance THEME <- the footnote TextBlock tags that carry it (see fetch_financial_notes
+# `_NOTES_TEXT_TAGS`). Drift/tone/length are tracked per tag and aggregated to the theme.
+NOTES_THEME_TAGS: dict[str, tuple[str, ...]] = {
+    "litigation": ("CommitmentsAndContingenciesDisclosureTextBlock",
+                   "LegalMattersAndContingenciesTextBlock"),
+    "going_concern": ("SubstantialDoubtAboutGoingConcernTextBlock",),
+    "revenue_rec": ("RevenueFromContractWithCustomerTextBlock",
+                    "RevenueRecognitionPolicyTextBlock", "RevenueRecognitionTextBlock"),
+    # `UseOfEstimates` intentionally EXCLUDED: it is mostly a canned boilerplate paragraph and its
+    # apparent drift is dominated by filers re-tagging content (e.g. ASC 606) -> not a risk signal.
+    "critical_estimates": ("SignificantAccountingPoliciesTextBlock",
+                           "OrganizationConsolidationAndPresentationOfFinancialStatements"
+                           "DisclosureAndSignificantAccountingPoliciesTextBlock"),
+    "concentration": ("ConcentrationRiskDisclosureTextBlock",),
+}
+
+# Named RISK / COMPLIANCE archetypes: each note embedding is scored by cosine to these anchor
+# phrases (feature B) -> "how close is this disclosure to a known risk pattern", trackable over time.
+NOTES_RISK_ANCHORS: dict[str, str] = {
+    "litigation_loss": ("It is probable that the company will incur a material adverse loss from "
+                        "pending litigation, and it recorded a charge or accrual for legal "
+                        "settlements, damages, fines or penalties."),
+    "regulatory_action": ("The company is subject to a government or regulatory investigation, "
+                          "subpoena, consent decree, or enforcement action alleging violations."),
+    "going_concern": ("There is substantial doubt about the company's ability to continue as a "
+                      "going concern due to recurring losses and liquidity problems."),
+    "covenant_breach": ("The company was not in compliance with its debt covenants and obtained a "
+                        "waiver or amendment from its lenders to avoid default."),
+    "impairment": ("The company recognized a goodwill or long-lived asset impairment charge because "
+                   "expected future cash flows and fair value declined."),
+    "control_weakness": ("A material weakness was identified in the company's internal control over "
+                         "financial reporting."),
+    "restatement": ("The company restated previously issued financial statements to correct a "
+                    "material misstatement or accounting error."),
+    "customer_concentration": ("A substantial portion of the company's revenue or credit exposure is "
+                               "concentrated in a single large customer, counterparty, supplier or region."),
+}
+
+# --------------------------------------------------------------------------- #
 # Dataroma "superinvestors" — a curated roster of proven long-term investors.  #
 # We scrape the roster, resolve each manager to its SEC 13F CIK, rank the top  #
 # N by 13F long-equity AUM, and persist a weighted subset JSON so the elite    #

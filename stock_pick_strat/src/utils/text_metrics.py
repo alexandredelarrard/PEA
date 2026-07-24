@@ -8,6 +8,9 @@ the FinBERT tone score:
   * uncertainty_ratio     share of Loughran-McDonald UNCERTAINTY / weak-modal words
                           (hedging language — managers hedge more when the outlook is
                           weak; a classic disclosure-tone signal)
+  * litigious_ratio       share of Loughran-McDonald LITIGIOUS words (lawsuit / claim /
+                          damages / settlement / regulatory) — rising density in a
+                          contingencies footnote flags escalating legal / regulatory risk
   * content_frequency     non-stopword token frequencies (bag of words)
   * cosine_similarity     cosine between two bag-of-words vectors -> feeds the
                           VOCABULARY-NOVELTY KPI (1 - similarity vs the prior call:
@@ -57,6 +60,31 @@ LM_UNCERTAINTY: frozenset[str] = frozenset({
     "volatility",
 })
 
+# Curated high-frequency subset of the Loughran-McDonald "Litigious" list (lowercased): the legal /
+# regulatory vocabulary whose density in a contingencies / legal footnote tracks litigation risk.
+LM_LITIGIOUS: frozenset[str] = frozenset({
+    "litigation", "litigations", "litigate", "litigated", "litigating", "litigious",
+    "lawsuit", "lawsuits", "suit", "suits", "sue", "sued", "suing", "plaintiff", "plaintiffs",
+    "defendant", "defendants", "allege", "alleged", "alleges", "alleging", "allegation",
+    "allegations", "claim", "claims", "claimed", "claimant", "claimants", "counterclaim",
+    "counterclaims", "damages", "settlement", "settlements", "settle", "settled", "settling",
+    "court", "courts", "judicial", "judgment", "judgments", "judgement", "judge", "jury",
+    "verdict", "verdicts", "appeal", "appeals", "appealed", "appellate", "testimony",
+    "subpoena", "subpoenas", "subpoenaed", "deposition", "depositions", "tort", "torts",
+    "breach", "breaches", "breached", "breaching", "injunction", "injunctions", "injunctive",
+    "statute", "statutes", "statutory", "regulation", "regulations", "regulatory", "regulator",
+    "regulators", "complaint", "complaints", "arbitration", "arbitrations", "arbitrator",
+    "indemnification", "indemnifications", "indemnify", "indemnifies", "indemnified", "indemnity",
+    "liable", "liabilities", "penalty", "penalties", "fine", "fined", "fines", "sanction",
+    "sanctions", "sanctioned", "decree", "consent", "prosecution", "prosecutor", "prosecuted",
+    "fraud", "fraudulent", "fraudulently", "illegal", "illegally", "unlawful", "unlawfully",
+    "infringement", "infringe", "infringed", "infringing", "antitrust", "investigation",
+    "investigations", "investigate", "investigated", "investigating", "enforcement", "violation",
+    "violations", "violate", "violated", "violating", "attorney", "attorneys", "counsel",
+    "adjudication", "adjudicated", "contingency", "contingencies", "contingent", "accrual",
+    "accruals", "accrued",
+})
+
 # Compact English stopword set for the vocabulary-novelty bag of words (drop the
 # high-frequency function words that would dominate a cosine and swamp real topic shifts).
 _STOPWORDS: frozenset[str] = frozenset({
@@ -96,6 +124,14 @@ def uncertainty_ratio(text: str) -> float:
         return 0.0
     hits = sum(1 for w in toks if w in LM_UNCERTAINTY)
     return hits / len(toks)
+
+
+def litigious_ratio(text: str) -> float:
+    """Share of tokens that are LM litigious (legal/regulatory) words. 0.0 for empty text."""
+    toks = word_tokens(text)
+    if not toks:
+        return 0.0
+    return sum(1 for w in toks if w in LM_LITIGIOUS) / len(toks)
 
 
 def content_frequency(text: str) -> Counter:

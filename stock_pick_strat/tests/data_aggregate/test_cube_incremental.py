@@ -106,7 +106,8 @@ def test_per_part_warmup_covers_binding_lookback():
         "short_interest": 63 + 40,       # rolling(63) + FTD shift(40)
         "attention":      63,            # rolling(63)
         "sector": 0, "earnings": 0, "governance": 0, "institutional": 0,
-        "superinvestor": 0, "insider": 0, "earnings_call": 0,   # source/filing-space -> ~0 grid
+        "superinvestor": 0, "insider": 0,                       # source/filing-space -> ~0 grid
+        "earnings_call_sentiment": 0, "earnings_call_embedding": 0,
     }
     assert set(w) == set(StepBuildCube._GROUP_SOURCES), "every feature group needs a warm-up entry"
     for g, need in binding.items():

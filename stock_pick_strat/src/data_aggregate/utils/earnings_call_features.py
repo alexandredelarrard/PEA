@@ -214,14 +214,15 @@ def _daily_frame(per_call: pd.DataFrame, value_col: str,
     return piv
 
 
-_KPI_COLS = ["ec_tone", "ec_tone_delta", "ec_qa_gap", "ec_uncertainty",
-             "ec_length_delta", "ec_vocab_novelty",
-             "ec_qa_tone_delta", "ec_prep_tone_delta",   # per-section quarter-to-quarter tone drift
-             
-             # OpenAI-embedding KPIs (present only when the embedding cache is passed):
-             "ec_qa_coherence_mean", "ec_qa_coherence_std", "ec_n_qa",
-             "ec_qa_answer_ratio", "ec_qa_answer_ratio_qq",   # answer/question density + its QoQ change
-             "ec_qa_qq_sim", "ec_prep_qq_sim"]
+# SENTIMENT KPIs — from the local FinBERT-tone + Loughran-McDonald pass (`score_earnings_calls`).
+_SENTIMENT_KPI_COLS = ["ec_tone", "ec_tone_delta", "ec_qa_gap", "ec_uncertainty",
+                       "ec_length_delta", "ec_vocab_novelty",
+                       "ec_qa_tone_delta", "ec_prep_tone_delta"]   # per-section QoQ tone drift
+# EMBEDDING KPIs — from the OpenAI-embedding pass (`embed_earnings_calls` -> build_embedding_kpis).
+_EMBEDDING_KPI_COLS = ["ec_qa_coherence_mean", "ec_qa_coherence_std", "ec_n_qa",
+                       "ec_qa_answer_ratio", "ec_qa_answer_ratio_qq",  # answer/question density + QoQ Δ
+                       "ec_qa_qq_sim", "ec_prep_qq_sim"]              # narrative QoQ drift
+_KPI_COLS = _SENTIMENT_KPI_COLS + _EMBEDDING_KPI_COLS
 
 
 def build_earnings_call_feature_panel(
@@ -246,6 +247,42 @@ def build_earnings_call_feature_panel(
 
     fields: dict[str, pd.DataFrame] = {}
     for col in _KPI_COLS:
+        if col not in per_call.columns:
+            continue
+        sub = per_call.loc[per_call[col].notna(), ["as_of", "ticker", col]]
+        if sub.empty:
+            continue
+        frame = _daily_frame(sub, col, trading_index)
+        if frame is not None and not frame.empty and frame.notna().any().any():
+            fields[col] = frame
+    if not fields:
+        return pd.DataFrame(columns=["date", "ticker"])
+    return build_peer_relative_panel(fields, peer_dict)
+
+
+def build_earnings_call_embedding_panel(
+    embeddings: pd.DataFrame | None,
+    peer_dict: dict,
+    trading_index: pd.DatetimeIndex,
+    sections: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """EMBEDDING-ONLY earnings-call feature panel (the OpenAI Q&A-coherence + quarter-to-quarter
+    narrative-drift KPIs), as `f_ec_<kpi>_{xs,vs_peers}`. INDEPENDENT of the FinBERT/LM sentiment
+    pass: the call date (`as_of`) each KPI is placed on comes from `sections`, not from scored
+    sentiment — so this runs as its own DAG task without a GPU tone pass. Empty when there are no
+    embeddings / sections."""
+    ekpi = build_embedding_kpis(embeddings)
+    if ekpi is None or ekpi.empty or sections is None or sections.empty:
+        return pd.DataFrame(columns=["date", "ticker"])
+    asof = (sections[["ticker", "quarter", "as_of"]].dropna(subset=["as_of"])
+            .drop_duplicates(subset=["ticker", "quarter"]))
+    per_call = ekpi.merge(asof, on=["ticker", "quarter"], how="left").dropna(subset=["as_of"])
+    if per_call.empty:
+        return pd.DataFrame(columns=["date", "ticker"])
+    per_call["as_of"] = pd.to_datetime(per_call["as_of"], errors="coerce")
+
+    fields: dict[str, pd.DataFrame] = {}
+    for col in _EMBEDDING_KPI_COLS:
         if col not in per_call.columns:
             continue
         sub = per_call.loc[per_call[col].notna(), ["as_of", "ticker", col]]

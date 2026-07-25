@@ -1301,6 +1301,14 @@ def build_fundamental_feature_panel(
                              earnings_history=earnings_history, pension_facts=pension_facts,
                              notes_num=notes_num)
 
+    # float32 the ~90 daily [dates x tickers] wide frames: every derived field is a ratio / yield /
+    # 0-1 flag that gets z-scored or ranked downstream, so float64 precision is wasted. This halves
+    # the resident `fields` dict (the fundamental group's dict alone is the largest of any group) and,
+    # with the float32 stacks in the panel builders, keeps the full-history rebuild off the OOM
+    # killer (the group was SIGKILL/-9 exceeding the DB/VM memory limit).
+    fields = {k: (v.astype("float32") if isinstance(v, pd.DataFrame) and not v.empty else v)
+              for k, v in fields.items()}
+
     # regime state flags -> RAW `f_<name>`; everything else -> peer-relative.
     state_fields = {k: v for k, v in fields.items() if k in _STATE_FIELDS}
     peer_fields = {k: v for k, v in fields.items() if k not in _STATE_FIELDS}
@@ -1338,7 +1346,7 @@ def build_state_panel(fields: dict) -> pd.DataFrame:
     for name, fdf in fields.items():
         if fdf is None or fdf.empty:
             continue
-        s = fdf.stack()
+        s = fdf.stack().astype("float32")
         s.index.set_names(["date", "ticker"], inplace=True)
         long_frames.append(s.rename(f"f_{name}"))
     if not long_frames:
@@ -1359,7 +1367,7 @@ def build_self_history_panel(fields: dict) -> pd.DataFrame:
     for name, zdf in fields.items():
         if zdf is None or zdf.empty:
             continue
-        s = zdf.stack()
+        s = zdf.stack().astype("float32")
         s.index.set_names(["date", "ticker"], inplace=True)
         long_frames.append(s.rename(f"f_{name}_vs_hist"))
     if not long_frames:
@@ -1393,15 +1401,19 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict) -> pd.DataFrame:
             continue
         # peer z-score, then trim per-day cross-sectional 1%/99% outliers (the
         # percentile-rank `_xs` below is already outlier-proof, so it uses raw fdf).
+        # The stacked long columns are cast to float32: these are z-scores / percentile ranks
+        # bounded to O(1), so float64 storage is wasted — halving them (and the concat +
+        # defrag copy below) is what keeps the many-feature panels off the OOM killer.
         rel = _winsorize_xs(_peer_relative(fdf, peer_dict))
-        s = rel.stack()
+        s = rel.stack().astype("float32")
         s.index.set_names(["date", "ticker"], inplace=True)
         long_frames.append(s.rename(f"f_{name}_vs_peers"))
 
         xs = fdf.rank(axis=1, pct=True, method="average")
-        s2 = xs.stack()
+        s2 = xs.stack().astype("float32")
         s2.index.set_names(["date", "ticker"], inplace=True)
         long_frames.append(s2.rename(f"f_{name}_xs"))
+        del fdf, rel, xs, s, s2                       # free per-field intermediates promptly
 
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])

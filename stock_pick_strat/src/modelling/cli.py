@@ -41,3 +41,24 @@ def train(config_path: str, train_start: str | None, train_end: str | None) -> N
         config.train.end_date = train_end
     context.log.info("Training window: %s -> %s", config.train.start_date, config.train.end_date)
     StepModelling(context=context, config=config).run()
+
+
+@cli.command(help="PRODUCTION train on ALL history up to the latest cube date (no train_end cutoff, "
+                  "no OOS holdout). Runs after the backtest; the fitted model feeds `predict`.",
+             help_priority=2)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+def full_train(config_path: str) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=True)
+    StepModelling(context=context, config=config).run(full_history=True)
+
+
+@cli.command(help="Predict the latest cube date(s) per horizon (pred_h<h>) + the blended signal -> "
+                  "`predictions_latest` (consumed by the allocation DAG). Loads the full-trained "
+                  "artifacts from disk; no retraining.",
+             help_priority=3)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option("--n-dates", default=1, show_default=True, type=int,
+              help="How many of the most recent cube dates to predict.")
+def predict(config_path: str, n_dates: int) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=True)
+    StepModelling(context=context, config=config).predict_latest(n_dates=n_dates)

@@ -121,6 +121,13 @@ HF_TRANSCRIPTS_PARQUET_URL = (
     "https://huggingface.co/datasets/kurry/sp500_earnings_transcripts/"
     "resolve/main/parquet_files/part-0.parquet")
 HF_TRANSCRIPTS_CACHE = "hf_sp500_transcripts.parquet"
+# The HF backbone is a ONE-TIME historical load (2005 .. ~2025Q1). Once earnings_call_sections
+# already spans that range, re-scanning the 1.8 GB parquet only to find every (ticker, quarter)
+# already ingested is pure waste (minutes of "nothing happens"). So ingest_hf_transcripts skips the
+# scan when the table's quarter coverage reaches back to EARLY and forward to LATE. Quarters are
+# fixed-width "YYYYQN", so a plain string MIN/MAX compares chronologically.
+HF_BACKBONE_EARLY_QUARTER = "2005Q4"   # table min quarter must be <= this (deep history is present)
+HF_BACKBONE_LATE_QUARTER = "2025Q1"    # table max quarter must be >= this (HF's ~2025 cut is reached)
 
 # Per-call sentiment / text-metrics cache (one row per ticker / quarter / tag). The
 # EXPENSIVE, call-intrinsic scores (FinBERT tone probs + word count + lexicon ratios)
@@ -384,3 +391,15 @@ DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = (
 FRESHNESS_SNAPSHOT_DIR = "freshness"
 FUNDAMENTALS_SNAPSHOT_FILE = "fundamentals_latest_by_ticker.json"
 FRESHNESS_FUNDAMENTALS_SOURCE = "fundamentals_history"
+
+
+# --------------------------------------------------------------------------- #
+# Incremental cube-part builds (Airflow data_aggregation DAG)                  #
+# --------------------------------------------------------------------------- #
+# Each cube_part_<group> is rebuilt INCREMENTALLY: read its latest date, recompute only the
+# trailing tail and append the new rows (instead of truncating + reloading 15y every run). The
+# rolling/peer-relative feature builders need history BEFORE the first new date, so the trailing
+# window is padded by this many trading days of warm-up. It MUST exceed the longest look-back any
+# feature uses (the fundamental peer-relative history window ~1260 trading days is the binding one),
+# else tail values would be computed on a truncated history. Bump it if a longer-window feature is added.
+CUBE_INCREMENTAL_WARMUP_TRADING_DAYS = 1400

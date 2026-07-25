@@ -1,10 +1,16 @@
 """
 dag_modelling.py  (src/dags/dag_modelling.py)
 ---------------------------------------------
-MODELLING & BACKTEST DAG — trains the cross-sectional long/short ensemble on the cube for the
-configured training window, then runs the unified portfolio backtest and saves the pictures.
+MODELLING & BACKTEST DAG — train the cross-sectional long/short ensemble for the configured window,
+backtest it, THEN retrain on all history and emit live predictions for the allocation.
 
-    train_model ──▶ backtest_portfolio
+    train_model ──▶ backtest_portfolio ──▶ full_train ──▶ predict
+
+  * full_train  — `python -m src modelling full-train`: PRODUCTION retrain on ALL history up to the
+                  latest cube date (no train_end cutoff, no OOS holdout).
+  * predict     — `python -m src modelling predict`: score the latest cube date per horizon
+                  (pred_h<h>) + the blended signal -> `predictions_latest`, the table the future
+                  allocation DAG consumes.
 
   * train_model       — `python -m src modelling train` : trains one per-horizon ensemble
                         (elasticnet + LightGBM + random_forest) on the cube for the
@@ -65,4 +71,10 @@ train_model = run("modelling train", task_id="train_model")
 # 2) once trained, run the portfolio backtest (reads the model artifacts) -> saves pictures
 backtest_portfolio = run("portfolio backtest", task_id="backtest_portfolio")
 
-train_model >> backtest_portfolio
+# 3) PRODUCTION retrain on ALL history up to the latest cube date (no OOS holdout)
+full_train = run("modelling full-train", task_id="full_train")
+
+# 4) predict the latest cube date per horizon + blended -> predictions_latest (for the allocation DAG)
+predict = run("modelling predict", task_id="predict")
+
+train_model >> backtest_portfolio >> full_train >> predict

@@ -11,9 +11,11 @@ parser (no download / DB) + a best-effort live check on real dataset rows.
 from __future__ import annotations
 
 import json
+import types
 
 import pytest
 
+from src.constants.constants import HF_BACKBONE_EARLY_QUARTER, HF_BACKBONE_LATE_QUARTER
 from src.data_extract.utils.behavioral import fetch_hf_transcripts as hf
 
 
@@ -106,6 +108,67 @@ def test_row_sections_on_real_dataset_rows():
           "backbone is source-compatible with the Motley Fool path. Validated.")
 
 
+# --------------------------------------------------------------------------- #
+# Backbone-present short-circuit (the "0 new calls" stall fix)                  #
+# --------------------------------------------------------------------------- #
+class _Res:
+    def __init__(self, value):
+        self._value = value
+
+    def first(self):
+        return self._value                               # (min_quarter, max_quarter) or (None, None)
+
+
+class _FakeConn:
+    def __init__(self, minmax):
+        self._minmax = minmax
+
+    def execute(self, clause, params=None):
+        return _Res(self._minmax)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _ctx(minmax):
+    engine = types.SimpleNamespace(connect=lambda: _FakeConn(minmax))
+    return types.SimpleNamespace(store=types.SimpleNamespace(engine=engine))
+
+
+def test_hf_backbone_presence_detection():
+    # full backbone (deep history + reaches the cut) -> present
+    present, lo, hi = hf._hf_backbone_already_ingested(_ctx(("2005Q1", "2026Q2")))
+    assert present is True and lo == "2005Q1" and hi == "2026Q2"
+    # only recent MF calls (no deep history) -> NOT present (must still ingest HF)
+    assert hf._hf_backbone_already_ingested(_ctx(("2023Q2", "2026Q4")))[0] is False
+    # deep history but not yet reaching the cut (interrupted ingest) -> NOT present
+    assert hf._hf_backbone_already_ingested(_ctx(("2005Q1", "2018Q4")))[0] is False
+    # empty table -> NOT present
+    assert hf._hf_backbone_already_ingested(_ctx((None, None)))[0] is False
+    print("\n=== SANITY CHECK: HF backbone presence detection ===")
+    print(f"  thresholds: min <= {HF_BACKBONE_EARLY_QUARTER}, max >= {HF_BACKBONE_LATE_QUARTER}")
+    print("  2005Q1..2026Q2 -> present; 2023Q2..2026Q4 -> absent; 2005Q1..2018Q4 -> absent; "
+          "empty -> absent. Validated.")
+
+
+def test_hf_ingest_short_circuits_when_present(monkeypatch):
+    # when the backbone is present, ingest must return 0 WITHOUT downloading/scanning the parquet
+    def boom(*a, **k):
+        raise AssertionError("download_hf_parquet must NOT be called when backbone is present")
+    monkeypatch.setattr(hf, "download_hf_parquet", boom)
+
+    saved = hf.ingest_hf_transcripts(_ctx(("2005Q1", "2026Q2")))
+    assert saved == 0
+
+    print("\n=== SANITY CHECK: HF ingest short-circuits on full backbone ===")
+    print("  table spans 2005Q1..2026Q2 -> ingest returned 0 and NEVER touched the 1.8GB parquet "
+          "(download_hf_parquet not called). No more multi-minute '0 new calls' stall. Validated.")
+
+
 if __name__ == "__main__":
     test_row_sections_and_participants()
     test_row_sections_on_real_dataset_rows()
+    test_hf_backbone_presence_detection()

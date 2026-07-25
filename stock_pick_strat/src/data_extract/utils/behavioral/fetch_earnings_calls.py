@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 from pathlib import Path
 from tqdm import tqdm
@@ -354,8 +355,13 @@ def build_transcript_index_by_ticker(
         have = _local_quarters(cache_dir, tk) | have_db.get(tk, set()) | have_json.get(tk, set())
         return required - have
 
+    # process tickers in RANDOM order (not universe/alphabetical): spreads the fool.com load and
+    # keeps an interrupted / throttled run from always dying on the same tail names.
+    order = list(universe)
+    random.shuffle(order)
+
     added_total, missing_page, skipped = 0, [], 0
-    for tkr in tqdm(universe, "quote-page transcript urls"):
+    for tkr in tqdm(order, "quote-page transcript urls"):
         need = _missing(tkr)
         if not need:                          # already complete -> NO request (the 429 fix)
             skipped += 1
@@ -492,6 +498,9 @@ def download_transcripts(context: Context, tickers: list[str] | None = None,
     todo = [r for r in index.values()
             if (keep is None or r["ticker"] in keep)
             and not (cache_dir / r["ticker"] / f"{r['quarter']}.html").exists()]
+    # RANDOM order (not index/alphabetical): spreads the load and, with `limit`, samples a random
+    # subset rather than always the same head of the index.
+    random.shuffle(todo)
     if limit is not None:
         todo = todo[:limit]
         

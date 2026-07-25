@@ -20,9 +20,12 @@ import re
 from pathlib import Path
 
 import pandas as pd
+from sqlalchemy import text
 
 from src.constants.constants import (
     EARNINGS_CALL_SECTIONS_TABLE,
+    HF_BACKBONE_EARLY_QUARTER,
+    HF_BACKBONE_LATE_QUARTER,
     HF_TRANSCRIPTS_CACHE,
     HF_TRANSCRIPTS_DATASET,
     HF_TRANSCRIPTS_PARQUET_URL,
@@ -148,6 +151,24 @@ def row_sections(content: str | None, structured) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 # Ingest: batched parquet read -> earnings_call_sections (incremental)          #
 # --------------------------------------------------------------------------- #
+def _hf_backbone_already_ingested(context: Context) -> tuple[bool, str | None, str | None]:
+    """Is the HF backbone already in earnings_call_sections? True when the table's quarter coverage
+    reaches back to HF_BACKBONE_EARLY_QUARTER and forward to HF_BACKBONE_LATE_QUARTER. Quarters are
+    fixed-width 'YYYYQN', so a plain string MIN/MAX is chronological -> one cheap aggregate, no
+    parquet load. Returns (present, min_quarter, max_quarter); False/None when the table is empty
+    or unavailable (so a fresh DB still triggers the full ingest)."""
+    try:
+        with context.store.engine.connect() as c:
+            row = c.execute(text(f'SELECT MIN(quarter), MAX(quarter) FROM "{_TABLE}"')).first()
+    except Exception:                                    # table absent / DB unreachable
+        return False, None, None
+    if not row or row[0] is None:
+        return False, None, None
+    min_q, max_q = str(row[0]), str(row[1])
+    present = (min_q <= HF_BACKBONE_EARLY_QUARTER and max_q >= HF_BACKBONE_LATE_QUARTER)
+    return present, min_q, max_q
+
+
 def _existing_keys(context: Context) -> set[tuple[str, str]]:
     """(ticker, quarter) already in the table — so a re-run skips them (from ANY source)."""
     try:
@@ -160,12 +181,26 @@ def _existing_keys(context: Context) -> set[tuple[str, str]]:
 
 
 def ingest_hf_transcripts(context: Context, tickers: list[str] | None = None,
-                          batch_size: int = 400, flush_rows: int = 8000) -> int:
+                          batch_size: int = 400, flush_rows: int = 8000,
+                          force: bool = False) -> int:
     """Download (once) + parse the HF backbone into `earnings_call_sections`. Reads the
     parquet in batches (bounded memory), keeps only universe tickers, skips (ticker,quarter)
     already ingested, and upserts full/prepared_remarks/qa/participants per call. Returns
-    rows upserted. `tickers` restricts to a subset (None = the full universe)."""
+    rows upserted. `tickers` restricts to a subset (None = the full universe).
+
+    Short-circuit: the HF backbone is a one-time historical load, so if the table ALREADY spans
+    the backbone range (see `_hf_backbone_already_ingested`) we skip the whole 1.8GB parquet scan
+    (which would otherwise re-read 33k calls only to find every one already present -> the "0 new
+    calls" no-op that stalls the ingest step). Pass `force=True` to re-ingest regardless."""
     import pyarrow.parquet as pq
+
+    if not force:
+        present, min_q, max_q = _hf_backbone_already_ingested(context)
+        if present:
+            logger.warning("HF backbone already ingested — '%s' spans %s..%s (>= %s..%s); skipping "
+                           "the 1.8GB parquet scan (pass force=True to re-ingest).", _TABLE,
+                           min_q, max_q, HF_BACKBONE_EARLY_QUARTER, HF_BACKBONE_LATE_QUARTER)
+            return 0
 
     path = download_hf_parquet(context)
     universe = set(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])

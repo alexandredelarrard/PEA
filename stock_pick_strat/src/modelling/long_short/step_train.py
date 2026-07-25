@@ -37,7 +37,11 @@ class StepModelling(Step):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
 
-    def run(self):
+    def run(self, full_history: bool = False):
+        """Train the per-horizon ensemble. `full_history=True` = the PRODUCTION train on ALL data up
+        to the latest cube date (no train_end cutoff, no OOS holdout) — used after the backtest to
+        fit the model that generates the live predictions for the allocation."""
+        self._full_history = full_history
         self.load_cube()
         self.build_panels()
         self.cross_validate_all_horizons()
@@ -260,10 +264,13 @@ class StepModelling(Step):
         """One modeling panel per horizon, restricted to the configured features."""
 
         start_date = None
+        end_date = None
         if self._config.get("train", None):
             start_date = self._config.get("train").start_date
-            end_date = self._config.get("train").end_date
-       
+            # full-history (production) train ignores the configured end_date -> trains up to the
+            # latest labelled cube date (no OOS holdout); normal train keeps the config cutoff.
+            end_date = None if getattr(self, "_full_history", False) else self._config.get("train").end_date
+
         available = feature_columns_from_cube(self.cube, self.label_column)
         avail = set(available)
         # each family trains on its OWN column list (linear_modelling.yml / lgbm_modelling.yml)
@@ -318,6 +325,8 @@ class StepModelling(Step):
         for h, panel in self.panels.items():
             self._log.info("  h=%s: %s rows, %s tickers, %s days",
                            h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
+        # the latest labelled date actually trained on (-> metadata train_end for full-history runs)
+        self._train_end_effective = max((p["date"].max() for p in self.panels.values()), default=None)
 
     def _monotone_constraints(self, feats: list[str] | None = None) -> list[int] | None:
         """Build LightGBM monotone_constraints from inputs.monotonic in config, aligned
@@ -687,7 +696,12 @@ class StepModelling(Step):
             "target_type": self.target_type,
             "model_types": list(self.model_types),
             "train_start": self._config.train.start_date,
-            "train_end": self._config.train.end_date,
+            # full-history run records the ACTUAL latest trained date; normal run keeps the config cutoff
+            "train_end": (pd.Timestamp(self._train_end_effective).strftime("%Y-%m-%d")
+                          if getattr(self, "_full_history", False)
+                          and getattr(self, "_train_end_effective", None) is not None
+                          else self._config.train.end_date),
+            "full_history": bool(getattr(self, "_full_history", False)),
             # blend weights for the backtest (IC_IR per horizon, floored at 0)
             "train_ic_ir": {int(h): (float(self.horizon_ic[h]["ic_ir"])
                                      if np.isfinite(self.horizon_ic[h]["ic_ir"]) else 0.0)
@@ -695,3 +709,110 @@ class StepModelling(Step):
         }
         (models_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
         self._log.info("Saved %d models + metadata.json to %s", len(self.models), models_dir)
+
+    # ================================================================== #
+    # Standalone PRODUCTION prediction (own DAG step after full-train)
+    # ================================================================== #
+    def _load_saved_ensemble(self) -> tuple[dict, dict]:
+        """Load metadata.json + each horizon's member models from MODELS_DIR (disk), so prediction
+        runs as its OWN process/DAG step without retraining. Returns (meta, {horizon: {kind: model}})."""
+        models_dir = self._context.paths["MODELS_DIR"]
+        meta_path = models_dir / "metadata.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"No metadata.json in {models_dir}; run full-train first.")
+        meta = json.loads(meta_path.read_text())
+        model_types = list(meta.get("model_types") or [meta.get("model_type", "lightgbm")])
+        models: dict[int, dict] = {}
+        for h in (int(x) for x in meta["horizons"]):
+            members: dict = {}
+            for kind in model_types:
+                p = ml.member_model_path(models_dir, h, kind)
+                if not p.exists():
+                    continue
+                if kind in ml.BOOSTER_MEMBER_KINDS:
+                    b = lgb.Booster(model_file=str(p)); b.feature_names = b.feature_name()
+                    members[kind] = b
+                else:
+                    with p.open("rb") as f:
+                        members[kind] = pickle.load(f)
+            if members:
+                models[h] = members
+        if not models:
+            raise FileNotFoundError(f"No saved model files in {models_dir}.")
+        return meta, models
+
+    def _latest_cube_dates(self, n_dates: int) -> list[pd.Timestamp]:
+        with self._context.store.engine.connect() as c:
+            rows = c.execute(text("SELECT DISTINCT date FROM cube ORDER BY date DESC LIMIT :n"),
+                             {"n": int(n_dates)}).fetchall()
+        return sorted(pd.Timestamp(r[0]).normalize() for r in rows)
+
+    def predict_latest(self, n_dates: int = 1) -> pd.DataFrame:
+        """PRODUCTION prediction for the allocation sleeve. Loads the (full-trained) ensemble
+        artifacts, scores the LATEST `n_dates` cube date(s) for EVERY horizon, blends the per-horizon
+        scores (IR-weighted, from metadata), and persists an allocation-ready `predictions_latest`
+        table: [date, ticker, pred_h<h>..., blended, rank].
+
+        Crucially it does NOT use panel_from_cube (which drops null-target rows) — the latest date's
+        forward target has not matured, so we build the feature panel DIRECTLY from the cube so the
+        newest date is actually predictable."""
+        meta, models = self._load_saved_ensemble()
+        feat_cols = list(meta["feature_cols"])
+        cat_cols = list(meta.get("categorical_cols", []))
+        train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
+
+        dates = self._latest_cube_dates(n_dates)
+        if not dates:
+            raise RuntimeError("cube is empty -> nothing to predict.")
+        start = min(dates)
+
+        cube_cols = self._cube_columns()
+        want = [c for c in dict.fromkeys(feat_cols + cat_cols) if c in cube_cols]
+        load_cols = list(dict.fromkeys(["date", "ticker", "target_horizon"] + want))
+        hlist = ", ".join(str(int(h)) for h in models)
+        q = text(f'SELECT {", ".join(chr(34)+c+chr(34) for c in load_cols)} FROM cube '
+                 f"WHERE target_horizon IN ({hlist}) AND date >= :d")
+        with self._context.store.engine.connect() as c:
+            cube = pd.read_sql(q, c, params={"d": str(start.date())}, parse_dates=["date"])
+        if cube.empty:
+            raise RuntimeError(f"No cube rows on/after {start.date()} for horizons {list(models)}.")
+
+        blended = None
+        for h, members in models.items():
+            sub = cube[cube["target_horizon"] == h]
+            if sub.empty:
+                continue
+            present = [c for c in (feat_cols + cat_cols) if c in sub.columns]
+            missing = [c for c in (feat_cols + cat_cols) if c not in sub.columns]
+            panel = sub[["date", "ticker"] + present].copy()
+            if missing:                                      # add any absent model feature as NaN (one concat)
+                panel = pd.concat(
+                    [panel, pd.DataFrame(np.nan, index=panel.index, columns=missing)], axis=1)
+            scores, _ = ml.ensemble_predict(members, panel, feat_cols)
+            df = panel[["date", "ticker"]].copy()
+            df[f"pred_h{h}"] = ml.per_day_zscore(scores.to_numpy(), df["date"].to_numpy())
+            blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
+        if blended is None:
+            raise RuntimeError("No horizon produced a prediction for the latest cube date(s).")
+
+        hs = [int(h) for h in models if f"pred_h{h}" in blended.columns]
+        irs = {h: max(0.0, train_ic.get(h, 0.0)) for h in hs}
+        tot = sum(irs.values())
+        w = {h: (irs[h] / tot if tot > 0 else 1.0 / len(hs)) for h in hs}
+        z = blended[[f"pred_h{h}" for h in hs]].to_numpy()
+        mask = ~np.isnan(z)
+        wv = np.array([w[h] for h in hs])
+        wsum = np.where(mask, wv, 0.0).sum(axis=1)
+        blended["blended"] = np.where(
+            wsum > 0, np.nansum(np.where(mask, z * wv, 0.0), axis=1) / np.where(wsum > 0, wsum, 1), np.nan)
+        blended["rank"] = blended.groupby("date")["blended"].rank(pct=True)
+        out = (blended.sort_values(["date", "rank"], ascending=[True, False]).reset_index(drop=True))
+
+        out.to_sql("predictions_latest", self._context.store.engine, if_exists="replace", index=False)
+        last = out[out["date"] == out["date"].max()]
+        self._log.info("predict_latest: %d rows for %s (blend weights %s); latest date %s -> %d names, "
+                       "blended range [%.3f, %.3f]", len(out),
+                       [str(d.date()) for d in dates], {h: round(w[h], 3) for h in hs},
+                       out["date"].max().date(), len(last),
+                       float(last["blended"].min()), float(last["blended"].max()))
+        return out

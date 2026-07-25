@@ -72,7 +72,10 @@ def test_quote_discovery_filters_and_merges(tmp_path, monkeypatch):
 
 
 def test_quote_discovery_live(tmp_path):
-    """Best-effort live check: real MF quote pages yield post-2025 transcript links."""
+    """Best-effort live check: real MF quote pages yield transcript links at/after the gap FLOOR.
+    (No HF parquet in tmp_path -> every ticker's gap starts at the `since` floor quarter. The filter
+    is by FISCAL quarter, not calendar call_date: a fiscal 2025Q1 call can be reported in calendar
+    2024, so we assert on the quarter floor, not the call date.)"""
     ctx = _ctx(["AAPL", "NVDA", "JPM"], tmp_path)
     try:
         idx = fe.build_transcript_index_by_ticker(ctx, since="2025-01-01", pause=0.8)
@@ -83,11 +86,14 @@ def test_quote_discovery_live(tmp_path):
     by_tkr = {}
     for r in idx.values():
         by_tkr.setdefault(r["ticker"], []).append(r["quarter"])
-    assert all(d["call_date"] >= "2025-01-01" for d in idx.values()), "since-filter leaked older calls"
+    floor = fe._since_floor_index("2025-01-01")
+    assert all(fe._quarter_index(*fe._parse_quarter(d["quarter"])) >= floor for d in idx.values()), \
+        "quarter-floor filter leaked pre-floor fiscal quarters"
     print("\n=== SANITY CHECK: quote-page discovery on REAL MF pages ===")
     for t, qs in sorted(by_tkr.items()):
         print(f"  {t}: {sorted(set(qs), reverse=True)}")
-    print(f"  {len(idx)} post-2025 transcript URLs across {len(by_tkr)} tickers, uncapped. Validated.")
+    print(f"  {len(idx)} transcript URLs >= {fe._index_to_quarter(floor)} across {len(by_tkr)} "
+          "tickers, uncapped. Validated.")
 
 
 def _idx_to_tuple(idx: int) -> tuple[int, int]:

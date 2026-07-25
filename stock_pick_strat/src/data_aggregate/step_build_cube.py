@@ -3,11 +3,12 @@ import json
 import numpy as np
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
+from sqlalchemy import text
 
 from src.utils.step import Step
 from src.context import Context
 from src.utils.universe import load_universe_tickers
-from src.constants.constants import SUPERINVESTORS_JSON
+from src.constants.constants import SUPERINVESTORS_JSON, CUBE_INCREMENTAL_WARMUP_TRADING_DAYS
 from src.data_aggregate.utils import data_utils as du
 from src.data_aggregate.utils.betas import estimate_all_betas
 from src.data_aggregate.utils.targets import build_targets_multi
@@ -761,14 +762,160 @@ class StepBuildCube(Step):
         df.head(0).to_sql(name, self._context.store.engine, if_exists="replace", index=False)
         return self._context.store.replace(name, df)
 
-    def run_feature_group(self, group: str) -> None:
-        """Standalone: build ONE feature group's panel and persist it as `cube_part_<group>`
-        (compact: only rows carrying >=1 of that group's features)."""
+    # ---- incremental part maintenance (read latest date -> recompute tail -> append) ---- #
+    # PER-PART warm-up (trading days): the LONGEST look-back each part computes ON THE DAILY PRICE
+    # GRID, + a safety buffer. `_trim_window` only trims the price-derived frames; SOURCE tables
+    # (fundamentals / 13F / insider / def14a / ...) are loaded FULL, so a builder that looks back in
+    # FILING/QUARTER space reads all its history regardless of the trim and needs ~no grid warm-up
+    # (floored at ~6 months for safety). This is the per-part sanity check — each part reads only as
+    # far back as its features actually need, so the light parts stay light.
+    _GROUP_WARMUP_TRADING_DAYS: dict[str, int] = {
+        # --- DAILY-grid look-backs (real warm-up required) ---
+        "price":          1320,   # seasonal_h*: close.shift(252 * seasonal_years=5) = 1260
+        "fundamental":    1320,   # _self_history_z rolling(1260) + Beneish shift(252)
+        "dividend":       1320,   # 5y payout growth: shift(5 * 252) = 1260
+        "employee":        320,   # YoY headcount / rev-per-employee: shift(252)
+        "short_interest":  160,   # short-vol rolling(63) + FTD shift(40) = 103
+        "attention":       130,   # spike rolling(63) / level rolling(21)
+        # --- FILING/QUARTER-space look-backs over the FULL source (grid warm-up ~0; 6mo floor) ---
+        "sector":          130,   # _yearly_lag over fundamentals (as_of order)
+        "earnings":        130,   # trailing-4Q rolling over REPORTED quarters
+        "governance":      130,   # YoY fiscal change over annual proxies
+        "institutional":   130,   # QoQ vs the prior 13F period
+        "superinvestor":   130,   # QoQ vs the prior 13F period
+        "insider":         130,   # rolling('180D') over the FULL transaction calendar
+        "earnings_call":   130,   # QoQ over reported quarters (+1d transcript lag)
+    }
+    # targets/betas: style momentum shift(252) + beta window(63); the forward horizon is added at
+    # the call site (targets look FORWARD to mature labels).
+    _TARGET_WARMUP_TRADING_DAYS = 320
+
+    def _warmup(self, group: str | None = None) -> int:
+        """Warm-up (trading days) to pad before the first new date, sized PER PART to the longest
+        daily look-back that part needs (`_GROUP_WARMUP_TRADING_DAYS`). A config
+        `build_cube.incremental.warmup_trading_days` overrides every part (escape hatch); an unknown
+        group falls back to the global constant."""
+        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
+        if override is not None:
+            return int(override)
+        if group is not None and group in self._GROUP_WARMUP_TRADING_DAYS:
+            return int(self._GROUP_WARMUP_TRADING_DAYS[group])
+        return CUBE_INCREMENTAL_WARMUP_TRADING_DAYS
+
+    def _part_max_date(self, name: str) -> pd.Timestamp | None:
+        """Latest `date` already stored in an ad-hoc part table (None if it is absent/empty)."""
+        if not self._context.store.exists(name):
+            return None
+        try:
+            with self._context.store.engine.connect() as c:
+                v = c.execute(text(f'SELECT MAX(date) FROM "{name}"')).scalar()
+        except Exception:                                # noqa: BLE001 (table shape unexpected)
+            return None
+        return None if v is None else pd.Timestamp(v).normalize()
+
+    def _part_columns(self, name: str) -> list[str] | None:
+        """Column names of an existing part table (None if absent) — to detect a feature-set change
+        that would break an append (-> caller falls back to a full rebuild)."""
+        if not self._context.store.exists(name):
+            return None
+        try:
+            with self._context.store.engine.connect() as c:
+                return list(c.execute(text(f'SELECT * FROM "{name}" LIMIT 0')).keys())
+        except Exception:                                # noqa: BLE001
+            return None
+
+    def _window_start(self, last: pd.Timestamp, n_back: int) -> pd.Timestamp:
+        """The date `n_back` trading days BEFORE `last` on the (untrimmed) price calendar."""
+        idx = self.stock_close.index
+        pos = int(idx.searchsorted(pd.Timestamp(last).normalize()))
+        return idx[max(0, pos - n_back)]
+
+    def _trim_window(self, since: pd.Timestamp) -> None:
+        """Slice every price-derived frame to `date >= since`, so the builders compute ONLY the
+        trailing window (the tail we keep has full warm-up; earlier window rows are discarded)."""
+        def cut(x):
+            return None if x is None else x.loc[x.index >= since]
+        for a in ("close", "open_", "high", "low", "volume", "returns", "mkt_ret", "market_close",
+                  "stock_ret", "stock_close", "stock_open", "stock_high", "stock_low",
+                  "stock_volume", "sector_ret"):
+            if hasattr(self, a):
+                setattr(self, a, cut(getattr(self, a)))
+
+    def _append_rows(self, name: str, df: pd.DataFrame, cutoff: pd.Timestamp,
+                     inclusive: bool = False) -> int:
+        """Idempotently replace the tail of a part: DELETE rows with date > cutoff (>= if
+        `inclusive`) then append `df`. Idempotent so a re-run of the same day never duplicates."""
+        op = ">=" if inclusive else ">"
+        cut = pd.Timestamp(cutoff).strftime("%Y-%m-%d")
+        with self._context.store.engine.begin() as c:
+            c.execute(text(f'DELETE FROM "{name}" WHERE date {op} :d'), {"d": cut})
+        if df is None or df.empty:
+            return 0
+        df.to_sql(name, self._context.store.engine, if_exists="append", index=False)
+        return len(df)
+
+    def cube_parts_status(self) -> dict:
+        """Report the latest date + row count of EVERY cube part (+ the cube / predictions), so the
+        DAG can push it to XCom and flag drift. `lag_vs_cube_days` = how far a part trails the cube's
+        max date; `behind` lists parts more than one build behind (a gap worth attention)."""
+        names = ([f"cube_part_{g}" for g in self._GROUP_SOURCES]
+                 + ["cube_part_targets", "cube_part_betas",
+                    "cube", "predictions", "cube_signal", "predictions_latest"])
+        parts: dict[str, dict] = {}
+        for name in names:
+            info = {"exists": False, "max_date": None, "rows": None}
+            if self._context.store.exists(name):
+                info["exists"] = True
+                mx = self._part_max_date(name)
+                info["max_date"] = mx.strftime("%Y-%m-%d") if mx is not None else None
+                with self._context.store.engine.connect() as c:
+                    info["rows"] = int(c.execute(text(f'SELECT COUNT(*) FROM "{name}"')).scalar())
+            parts[name] = info
+
+        cube_max = parts["cube"]["max_date"]
+        behind = []
+        if cube_max is not None:
+            cmax = pd.Timestamp(cube_max)
+            for name, info in parts.items():
+                if name in ("cube", "predictions", "cube_signal", "predictions_latest"):
+                    continue
+                if info["exists"] and info["max_date"] is not None:
+                    lag = int((cmax - pd.Timestamp(info["max_date"])).days)
+                    info["lag_vs_cube_days"] = lag
+                    if lag > 4:                          # more than ~one build behind the cube
+                        behind.append(name)
+                elif not info["exists"]:
+                    behind.append(name)
+        report = {"as_of": pd.Timestamp.today().normalize().strftime("%Y-%m-%d"),
+                  "cube_max_date": cube_max, "ok": not behind, "behind": behind, "parts": parts}
+        self._log.info("=== Cube parts status @ %s (cube max=%s, ok=%s) ===",
+                       report["as_of"], cube_max, report["ok"])
+        for name, info in parts.items():
+            self._log.info("  %-26s exists=%-5s max=%-11s rows=%-9s lag_vs_cube=%s",
+                           name, info["exists"], info["max_date"] or "-",
+                           info["rows"] if info["rows"] is not None else "-",
+                           info.get("lag_vs_cube_days", "-"))
+        if behind:
+            self._log.warning("Cube parts BEHIND / missing (%d): %s", len(behind), ", ".join(behind))
+        return report
+
+    def run_feature_group(self, group: str, full: bool = False) -> None:
+        """Standalone: build ONE feature group's panel and persist `cube_part_<group>`.
+
+        INCREMENTAL by default: read the part's latest date, recompute only a warm-up-padded
+        trailing window (the backward-looking features reproduce the tail exactly once the warm-up
+        covers their longest look-back), and APPEND the rows after that date — instead of
+        truncating + reloading the whole 15y part. `full=True` (or a missing / column-changed part)
+        forces a full rebuild + replace."""
         if group not in self._GROUP_SOURCES:
             raise ValueError(f"unknown feature group '{group}' "
                              f"(known: {sorted(self._GROUP_SOURCES)})")
         sources, method = self._GROUP_SOURCES[group]
+        part = f"cube_part_{group}"
         self._prereqs()
+        last = None if full else self._part_max_date(part)
+        if last is not None:
+            self._trim_window(self._window_start(last, self._warmup(group)))
         for t in sources:
             self._load_source(t)
         if method == "build_features":
@@ -780,23 +927,66 @@ class StepBuildCube(Step):
         if not fcols:
             self._log.warning("Feature group '%s' produced no features -> nothing persisted.", group)
             return
-        part = self.feature_panel[self.feature_panel[fcols].notna().any(axis=1)]
-        n = self._persist_part(f"cube_part_{group}", part)
-        self._log.info("Persisted cube_part_%s: %s rows x %s feature cols.", group, n, len(fcols))
+        rows = self.feature_panel[self.feature_panel[fcols].notna().any(axis=1)]
 
-    def run_target(self) -> None:
+        if last is None:                                 # first build (or forced) -> full replace
+            n = self._persist_part(part, rows)
+            self._log.info("Persisted cube_part_%s (FULL): %s rows x %s feature cols.",
+                           group, n, len(fcols))
+            return
+        # incremental append: only rows strictly after the stored max date
+        tail = rows[rows["date"] > last]
+        existing = self._part_columns(part)
+        if existing is not None and set(existing) != set(tail.columns):
+            self._log.warning("cube_part_%s feature set changed (%s vs %s) -> full rebuild.",
+                              group, len(existing), len(tail.columns))
+            return self.run_feature_group(group, full=True)
+        n = self._append_rows(part, tail, cutoff=last)
+        self._log.info("Appended cube_part_%s (INCREMENTAL): +%s rows after %s (x %s feature cols).",
+                       group, n, last.date(), len(fcols))
+
+    def run_target(self, full: bool = False) -> None:
         """Standalone: factor panel + betas + multi-horizon targets -> persist the LONG target &
-        beta tables (`cube_part_targets` / `cube_part_betas`) the assemble step joins. Needs no
-        feature sources, so it runs beside the feature groups."""
+        beta parts (`cube_part_targets` / `cube_part_betas`) the assemble step joins.
+
+        INCREMENTAL by default. Betas are backward-looking -> append dates after the stored max.
+        Targets are FORWARD-looking (a target at date d needs prices to d+horizon), so recent dates
+        that were NaN MATURE into values between runs: recompute + overwrite the trailing
+        `max_horizon` window (not just new dates) so those matured labels are refreshed."""
         self._prereqs()
+        horizons = list(self._cfg.targets.horizons)
+        max_h = int(max(horizons)) if horizons else 0
+        last_t = None if full else self._part_max_date("cube_part_targets")
+        last_b = None if full else self._part_max_date("cube_part_betas")
+        if last_t is not None:
+            # warm-up for the style-momentum(252)/beta(63) stats + the forward horizon (maturing labels)
+            override = self._cfg.get("incremental", {}).get("warmup_trading_days")
+            base = int(override) if override is not None else self._TARGET_WARMUP_TRADING_DAYS
+            self._trim_window(self._window_start(last_t, base + max_h))
         self._load_source("fundamentals_history")        # style factors + shares-out
         self.macro = self._load_or_none("macro")
         self.build_factor_panel()
         self.estimate_betas()
         self.build_targets()
-        nt = self._persist_part("cube_part_targets", _labels_to_long(self.labels))
-        nb = self._persist_part("cube_part_betas", _betas_to_long(self.betas))
-        self._log.info("Persisted cube_part_targets (%s rows) + cube_part_betas (%s rows).", nt, nb)
+        targets_long, betas_long = _labels_to_long(self.labels), _betas_to_long(self.betas)
+
+        if last_t is None:                               # first build (or forced) -> full replace
+            nt = self._persist_part("cube_part_targets", targets_long)
+            nb = self._persist_part("cube_part_betas", betas_long)
+            self._log.info("Persisted cube_part_targets (%s) + cube_part_betas (%s) (FULL).", nt, nb)
+            return
+        # targets: overwrite the trailing max_horizon window so matured labels refresh
+        refresh_from = self._window_start(last_t, max_h)
+        nt = self._append_rows("cube_part_targets",
+                               targets_long[targets_long["date"] >= refresh_from],
+                               cutoff=refresh_from, inclusive=True)
+        # betas: backward-looking -> just append dates after the stored max
+        cutoff_b = last_b if last_b is not None else last_t
+        nb = self._append_rows("cube_part_betas", betas_long[betas_long["date"] > cutoff_b],
+                               cutoff=cutoff_b)
+        self._log.info("Refreshed cube_part_targets (+%s rows from %s) + appended cube_part_betas "
+                       "(+%s rows after %s) (INCREMENTAL).", nt, refresh_from.date(), nb,
+                       pd.Timestamp(cutoff_b).date())
 
     def assemble_cube_from_parts(self) -> None:
         """Final step: read every persisted part, merge features + composites + betas + peers +

@@ -142,6 +142,21 @@ EXTRACT_TABLES: list[TableSpec] = [
     TableSpec("earnings_call_sentiment", "earnings_call_sentiment.parquet",
               ("ticker", "quarter", "tag"), "extract", date_col="as_of",
               date_type_cols=("as_of",)),
+    # 8-K material-event item codes: one row per 8-K filing, keyed (ticker, accession). `items` is
+    # the raw comma-separated code string from the EDGAR submissions JSON; incremental by filing_date.
+    TableSpec("sec_8k_items", "sec_8k_items.parquet",
+              ("ticker", "accession_number"), "extract", date_col="filing_date",
+              date_type_cols=("filing_date",)),
+    # SC 13D activist filings + amendments about the subject company (event-driven catalyst); one
+    # row per filing, keyed (ticker, accession); incremental by filing_date.
+    TableSpec("sec_13d", "sec_13d.parquet",
+              ("ticker", "accession_number"), "extract", date_col="filing_date",
+              date_type_cols=("filing_date",)),
+    # 10-K Item 1A (Risk Factors) + Item 7 (MD&A) raw text; one row per (ticker, accession, section);
+    # incremental by filed date. Feeds the embedding/drift feature layer.
+    TableSpec("filing_risk_text", "filing_risk_text.parquet",
+              ("ticker", "accession_number", "section"), "extract", date_col="filed",
+              date_type_cols=("filed", "period_of_report")),
 ]
 
 # --------------------------------------------------------------------------- #

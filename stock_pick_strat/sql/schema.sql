@@ -274,7 +274,44 @@ CREATE TABLE IF NOT EXISTS "ticker_embeddings" (
     PRIMARY KEY ("ticker")
 );
 
--- SKIPPED (source missing): earning_calls_embedding <- earning_calls_embedding.parquet
+-- [extract] earning_calls_embedding  (pk: ticker, quarter, seq; from live DB)
+
+CREATE TABLE IF NOT EXISTS "earning_calls_embedding" (
+    "ticker" TEXT NOT NULL,
+    "quarter" TEXT NOT NULL,
+    "seq" BIGINT NOT NULL,
+    "section" TEXT,
+    "tag" TEXT,
+    "exchange_idx" BIGINT,
+    "answer_idx" BIGINT,
+    "person" TEXT,
+    "text" TEXT,
+    "as_of" TEXT,
+    "model" TEXT,
+    "run_at" TEXT,
+    "embedding" ARRAY,
+    PRIMARY KEY ("ticker", "quarter", "seq")
+);
+
+-- [extract] notes_embedding  (pk: ticker, adsh, tag; from live DB)
+
+CREATE TABLE IF NOT EXISTS "notes_embedding" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "adsh" TEXT NOT NULL,
+    "tag" TEXT NOT NULL,
+    "theme" TEXT,
+    "as_of" TEXT,
+    "ddate" DATE,
+    "fy" TEXT,
+    "fp" TEXT,
+    "txtlen" BIGINT,
+    "n_chunks" BIGINT,
+    "model" TEXT,
+    "run_at" TEXT,
+    "embedding" ARRAY,
+    PRIMARY KEY ("ticker", "adsh", "tag")
+);
 
 -- [extract] cusip_ticker_map  (pk: cusip; from live DB)
 
@@ -459,9 +496,65 @@ CREATE TABLE IF NOT EXISTS "notes_text" (
 );
 CREATE INDEX IF NOT EXISTS ix_notes_text_ticker ON "notes_text" ("ticker");
 
--- SKIPPED (source missing): earnings_call_sections <- earnings_call_sections.parquet
+-- [extract] earnings_call_sections  (pk: ticker, quarter, tag; from live DB)
+
+CREATE TABLE IF NOT EXISTS "earnings_call_sections" (
+    "ticker" TEXT NOT NULL,
+    "quarter" TEXT NOT NULL,
+    "tag" TEXT NOT NULL,
+    "as_of" DATE,
+    "url" TEXT,
+    "text" TEXT,
+    PRIMARY KEY ("ticker", "quarter", "tag")
+);
+CREATE INDEX IF NOT EXISTS ix_earnings_call_sections_as_of ON "earnings_call_sections" ("as_of");
 
 -- SKIPPED (source missing): earnings_call_sentiment <- earnings_call_sentiment.parquet
+
+-- [extract] sec_8k_items  (pk: ticker, accession_number; from live DB)
+
+CREATE TABLE IF NOT EXISTS "sec_8k_items" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "filing_date" DATE,
+    "period_of_report" TEXT,
+    "items" TEXT,
+    "n_items" BIGINT,
+    "primary_document" TEXT,
+    PRIMARY KEY ("ticker", "accession_number")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_8k_items_filing_date ON "sec_8k_items" ("filing_date");
+
+-- [extract] sec_13d  (pk: ticker, accession_number; from live DB)
+
+CREATE TABLE IF NOT EXISTS "sec_13d" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "filing_date" DATE,
+    "primary_document" TEXT,
+    "doc_url" TEXT,
+    PRIMARY KEY ("ticker", "accession_number")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_13d_filing_date ON "sec_13d" ("filing_date");
+
+-- [extract] filing_risk_text  (pk: ticker, accession_number, section; from live DB)
+
+CREATE TABLE IF NOT EXISTS "filing_risk_text" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "filed" DATE,
+    "period_of_report" DATE,
+    "section" TEXT NOT NULL,
+    "text" TEXT,
+    "n_words" BIGINT,
+    PRIMARY KEY ("ticker", "accession_number", "section")
+);
+CREATE INDEX IF NOT EXISTS ix_filing_risk_text_filed ON "filing_risk_text" ("filed");
 
 -- [aggregate] cube  (pk: ticker, date, target_horizon; from live DB)
 

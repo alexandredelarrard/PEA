@@ -41,6 +41,9 @@ from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insid
 # --- structure -------------------------------------------------------------- #
 from src.data_extract.utils.structure.fetch_employees_edgar import fetch_employees_edgar
 from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
+from src.data_extract.utils.structure.fetch_8k_items import fetch_8k_items
+from src.data_extract.utils.structure.fetch_13d import fetch_13d
+from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text
 # --- behavioral ------------------------------------------------------------- #
 from src.data_extract.utils.behavioral.fetch_wiki_pageviews import fetch_wiki_pageviews
 from src.data_extract.utils.behavioral.fetch_google_trends import fetch_google_trends
@@ -204,6 +207,30 @@ def def14a(config_path: str, tickers: str | None) -> None:
     config, context = _ctx(config_path)
     fetch_def14a_llm(context, tickers=_tickers(context, tickers),
                      model=config.data_extract.llm_model)
+
+
+@cli.command(help="8-K material-event item codes (structured, EDGAR submissions JSON). SEC-api.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+def sec_8k_items(config_path: str, tickers: str | None) -> None:
+    _, context = _ctx(config_path)
+    fetch_8k_items(context, tickers=_tickers(context, tickers))
+
+
+@cli.command(help="SC 13D activist filings + amendments (EDGAR submissions JSON). SEC-api.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+def sec_13d(config_path: str, tickers: str | None) -> None:
+    _, context = _ctx(config_path)
+    fetch_13d(context, tickers=_tickers(context, tickers))
+
+
+@cli.command(help="Filing text: 10-K Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+def filing_text(config_path: str, tickers: str | None) -> None:
+    _, context = _ctx(config_path)
+    fetch_filing_text(context, tickers=_tickers(context, tickers))
 
 
 # --------------------------------------------------------------------------- #

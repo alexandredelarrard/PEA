@@ -26,7 +26,9 @@ from src.data_aggregate.utils.earnings_call_features import (
     build_earnings_call_embedding_panel,
     score_earnings_calls,
 )
-from src.data_aggregate.utils.earnings_call_embeddings import embed_earnings_calls
+from src.data_aggregate.utils.earnings_call_embeddings import (
+    embed_earnings_calls, embedding_kpis_streamed,
+)
 from src.data_aggregate.utils.institutional_features import build_institutional_feature_panel
 from src.data_aggregate.utils.superinvestor_features import build_superinvestor_feature_panel
 from src.data_aggregate.utils.insider_features import build_insider_feature_panel
@@ -644,13 +646,16 @@ class StepBuildCube(Step):
         """Earnings-call EMBEDDING features. Runs the OpenAI-embedding pass (cached/incremental;
         no-op without an API key) and derives the Q&A-coherence (cosine of a question vs its answer)
         + quarter-to-quarter narrative-drift `f_ec_*` KPIs. Independent of the sentiment pass (call
-        dates come from the sections), so it runs as its own step without the GPU tone model."""
-        sections = getattr(self, "earnings_call_sections", None)
-        if sections is None:
+        dates come from the embedding rows' own `as_of`), so it runs as its own step without the GPU
+        tone model. MEMORY-SAFE: never preloads the full sections/embeddings tables — embedding is
+        streamed per call, and the KPIs are streamed back per ticker (`embedding_kpis_streamed`)."""
+        embed_earnings_calls(self._context)                  # lazy, iterative, cache-incremental
+        ekpi, asof = embedding_kpis_streamed(self._context)  # per-ticker KPI stream (bounded memory)
+        if ekpi is None or ekpi.empty:
+            self._log.warning("No earnings-call embeddings -> embedding features skipped.")
             return
-        embeddings = embed_earnings_calls(self._context, sections=sections)
         panel = build_earnings_call_embedding_panel(
-            embeddings, self.peers, self.stock_close.index, sections=sections)
+            None, self.peers, self.stock_close.index, sections=asof, ekpi=ekpi)
         self._merge_ec_panel(panel, "earnings-call embedding")
 
     def build_earnings_call_features(self):
@@ -740,7 +745,9 @@ class StepBuildCube(Step):
         # earnings calls split into two independent parts (own DAG tasks): the FinBERT/LM sentiment
         # KPIs and the OpenAI-embedding Q&A-coherence/drift KPIs.
         "earnings_call_sentiment": (("earnings_call_sections",), "build_earnings_call_sentiment_features"),
-        "earnings_call_embedding": (("earnings_call_sections",), "build_earnings_call_embedding_features"),
+        # no preloaded source: embedding streams the sections per call + the KPI cache per ticker
+        # itself (loading the full sections/embeddings tables here is what OOM-crashed the task).
+        "earnings_call_embedding": ((), "build_earnings_call_embedding_features"),
     }
     # Per-source COLUMN PROJECTION for the exploded feature builds: load ONLY the columns each
     # builder reads (union across the groups that consume the table). Cuts memory on the TALL tables

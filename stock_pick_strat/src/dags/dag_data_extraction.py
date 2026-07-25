@@ -96,6 +96,9 @@ superinvestors = fetch("superinvestors")                              # light, n
 fundamentals = fetch("fundamentals", pool="sec_api")
 employees = fetch("employees", pool="sec_api")
 def14a = fetch("def14a", pool="sec_api")                              # + LLM
+sec_8k_items = fetch("sec-8k-items", pool="sec_api")                 # 8-K item codes (structured)
+sec_13d = fetch("sec-13d", pool="sec_api")                           # SC 13D activist filings
+filing_text = fetch("filing-text", pool="sec_api")                   # 10-K Item 1A + Item 7 text
 
 # 4) external scraping — capped to 2 (site rate limits)
 wiki_pageviews = fetch("wiki-pageviews", pool="scrape")
@@ -160,7 +163,8 @@ trigger_aggregation = TriggerDagRunOperator(
 # --- wiring ---
 all_fetchers = light + [price_history, fails_to_deliver, thirteen_f, financial_statements,
                         insider_transactions, financial_notes, fundamentals, employees, def14a,
-                        wiki_pageviews, google_trends, download_earnings_calls]
+                        sec_8k_items, sec_13d, filing_text, wiki_pageviews, google_trends,
+                        download_earnings_calls]
 seed_universe >> all_fetchers
 thirteen_f >> superinvestors                                         # roster reads the 13F holdings
 download_earnings_calls >> ingest_earnings_calls                     # ingest parses the downloaded files

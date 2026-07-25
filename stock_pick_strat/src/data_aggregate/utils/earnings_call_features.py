@@ -265,13 +265,17 @@ def build_earnings_call_embedding_panel(
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
     sections: pd.DataFrame | None = None,
+    ekpi: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """EMBEDDING-ONLY earnings-call feature panel (the OpenAI Q&A-coherence + quarter-to-quarter
     narrative-drift KPIs), as `f_ec_<kpi>_{xs,vs_peers}`. INDEPENDENT of the FinBERT/LM sentiment
     pass: the call date (`as_of`) each KPI is placed on comes from `sections`, not from scored
-    sentiment — so this runs as its own DAG task without a GPU tone pass. Empty when there are no
+    sentiment — so this runs as its own DAG task without a GPU tone pass. `ekpi` may be supplied
+    PRECOMPUTED (the memory-safe per-ticker stream, `embedding_kpis_streamed`) to avoid materialising
+    the whole 1536-dim cache here; otherwise it is derived from `embeddings`. Empty when there are no
     embeddings / sections."""
-    ekpi = build_embedding_kpis(embeddings)
+    if ekpi is None:
+        ekpi = build_embedding_kpis(embeddings)
     if ekpi is None or ekpi.empty or sections is None or sections.empty:
         return pd.DataFrame(columns=["date", "ticker"])
     asof = (sections[["ticker", "quarter", "as_of"]].dropna(subset=["as_of"])

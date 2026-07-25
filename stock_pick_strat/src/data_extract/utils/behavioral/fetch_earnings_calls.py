@@ -482,28 +482,52 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None) ->
     return saved
 
 
-def fetch_earnings_calls(context: Context, tickers: list[str] | None = None,
-                         limit: int | None = None, include_hf: bool = True,
-                         recent_since: str = "2025-01-01", use_global_crawl: bool = False,
-                         mf_history_years: float = 2.0) -> int:
-    """Full transcript pipeline, combining the best free sources:
-      1. HuggingFace `kurry/sp500_earnings_transcripts` = clean 2005->Q1'25 BACKBONE.
-      2. Per-ticker QUOTE-PAGE discovery = COMPLETE Motley Fool transcripts since
-         `recent_since` (default 2025-01-01): one request per ticker, NOT capped at MF's
-         ~500-page global feed, so it fills the whole recent gap.
-      3. (optional) the legacy global-feed crawl (`use_global_crawl=True`) -- capped/partial,
-         kept only as a fallback.
-    Then download + ingest. Every stage is incremental and deduped by (ticker, quarter).
-    `tickers` restricts to a subset (None = full universe); `limit` bounds the download for a
-    test; `include_hf=False` skips the backbone."""
-    saved = 0
+def download_earnings_calls(context: Context, tickers: list[str] | None = None,
+                            limit: int | None = None, include_hf: bool = True,
+                            recent_since: str = "2025-01-01", use_global_crawl: bool = False,
+                            mf_history_years: float = 2.0) -> None:
+    """DOWNLOAD / extract stage — writes only to DISK (no DB), so it can run as its own DAG task:
+      1. cache the HuggingFace backbone parquet (once; ~1.8 GB, skipped if present),
+      2. per-ticker QUOTE-PAGE discovery of the recent Motley Fool transcript URLs (since
+         `recent_since`; one request/ticker, uncapped),
+      3. (optional) the legacy global-feed crawl (`use_global_crawl=True`) fallback,
+      4. download each indexed MF transcript's HTML to the cache dir.
+    Incremental: the HF parquet + MF HTML are skipped when already on disk. `tickers` restricts the
+    subset (None = full universe); `limit` bounds the MF download for a test; `include_hf=False`
+    skips the backbone."""
     if include_hf:
         # deferred import: fetch_hf_transcripts imports helpers from THIS module
-        from src.data_extract.utils.behavioral.fetch_hf_transcripts import ingest_hf_transcripts
-        saved += ingest_hf_transcripts(context, tickers=tickers)
+        from src.data_extract.utils.behavioral.fetch_hf_transcripts import download_hf_parquet
+        download_hf_parquet(context)
     build_transcript_index_by_ticker(context, tickers=tickers, since=recent_since)
     if use_global_crawl:
         build_transcript_index(context, tickers=tickers, history_years=mf_history_years)
     download_transcripts(context, tickers=tickers, limit=limit)
-    saved += ingest_earnings_calls(context, tickers=tickers)
+
+
+def ingest_all_earnings_calls(context: Context, tickers: list[str] | None = None,
+                              include_hf: bool = True) -> int:
+    """INGEST stage — parse the already-downloaded transcripts into `earnings_call_sections`:
+      * the cached HuggingFace parquet (`ingest_hf_transcripts`; re-reads the cached file), and
+      * the cached Motley Fool HTML (`ingest_earnings_calls`).
+    Runs after `download_earnings_calls`. Incremental + deduped by (ticker, quarter). Returns the
+    number of section rows upserted."""
+    saved = 0
+    if include_hf:
+        from src.data_extract.utils.behavioral.fetch_hf_transcripts import ingest_hf_transcripts
+        saved += ingest_hf_transcripts(context, tickers=tickers)   # cached parquet -> sections
+    saved += ingest_earnings_calls(context, tickers=tickers)       # cached MF HTML -> sections
     return saved
+
+
+def fetch_earnings_calls(context: Context, tickers: list[str] | None = None,
+                         limit: int | None = None, include_hf: bool = True,
+                         recent_since: str = "2025-01-01", use_global_crawl: bool = False,
+                         mf_history_years: float = 2.0) -> int:
+    """Full transcript pipeline = download + ingest (kept for main.py / tests / the monolithic
+    extraction step). The Airflow DAG runs the two stages as SEPARATE tasks
+    (download_earnings_calls -> ingest_all_earnings_calls) instead."""
+    download_earnings_calls(context, tickers=tickers, limit=limit, include_hf=include_hf,
+                            recent_since=recent_since, use_global_crawl=use_global_crawl,
+                            mf_history_years=mf_history_years)
+    return ingest_all_earnings_calls(context, tickers=tickers, include_hf=include_hf)

@@ -14,22 +14,38 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, URL, create_engine
 
-# matches docker-compose.yml (service name `db`, or localhost from the host)
-def database_url() -> str:
-    string_url = f"postgresql+psycopg2://{os.environ.get("POSTGRES_USER", 'pea')}:{os.environ.get("POSTGRES_PASSWORD", 'pea')}@localhost:{os.environ.get("POSTGRES_PORT", '5432')}/{os.environ.get("POSTGRES_DB", 'pea')}"
-    return os.getenv("DATABASE_URL", string_url)
+
+def database_url() -> str | URL:
+    """Connection target, in priority order:
+      1. `DATABASE_URL` env (set explicitly, e.g. in CI),
+      2. a URL built from the POSTGRES_* env vars, with `POSTGRES_HOST` defaulting to `localhost`
+         (the host reaching the exposed container port) — set it to the compose SERVICE name
+         (`db`) inside a container. Built via `URL.create`, which URL-escapes the password, so
+         special characters (`!`, `@`, …) no longer break the connection string.
+    """
+    if os.getenv("DATABASE_URL"):
+        return os.environ["DATABASE_URL"]
+    return URL.create(
+        "postgresql+psycopg2",
+        username=os.environ.get("POSTGRES_USER", "pea"),
+        password=os.environ.get("POSTGRES_PASSWORD", "pea"),
+        host=os.environ.get("POSTGRES_HOST", "localhost"),
+        port=int(os.environ.get("POSTGRES_PORT", "5432")),
+        database=os.environ.get("POSTGRES_DB", "pea"),
+    )
+
 
 @lru_cache(maxsize=8)
-def get_engine(url: str | None = None) -> Engine:
+def get_engine(url: str | URL | None = None) -> Engine:
     """Return a cached SQLAlchemy Engine. `pool_pre_ping` avoids stale
     connections when the container restarts. For Postgres we batch executemany
     into multi-row VALUES (`values_plus_batch`) so wide upserts (e.g. the
     159-column cube) don't degrade to one round-trip per row."""
     resolved = url or database_url()
     kwargs: dict = {"pool_pre_ping": True, "future": True}
-    if resolved.startswith("postgresql"):
+    if str(resolved).startswith("postgresql"):
         kwargs["executemany_mode"] = "values_plus_batch"
         kwargs["insertmanyvalues_page_size"] = 1000
     return create_engine(resolved, **kwargs)

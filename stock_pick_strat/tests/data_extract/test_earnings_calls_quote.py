@@ -90,30 +90,58 @@ def test_quote_discovery_live(tmp_path):
     print(f"  {len(idx)} post-2025 transcript URLs across {len(by_tkr)} tickers, uncapped. Validated.")
 
 
-def test_quote_discovery_skips_covered_tickers(tmp_path, monkeypatch):
-    # with `_expected_quarter_count` forced to 1, a single post-cutoff link marks a ticker
-    # COMPLETE -> the SECOND run must skip it (no request), so re-runs don't redo work / hit 429s.
-    monkeypatch.setattr(fe, "_expected_quarter_count", lambda *a, **k: 1)
-    page = "x " + _t("2025/07/17", "aaa-q2-2025")
-    calls = {"n": 0}
+def _idx_to_tuple(idx: int) -> tuple[int, int]:
+    return idx // 4, idx % 4 + 1
+
+
+def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
+    """The 429 fix: only tickers with a REAL missing-quarter gap hit fool. A ticker whose HF
+    backbone already reaches the latest expected quarter is skipped; so is one whose gap is
+    already on disk. Only the genuinely-behind ticker spends a request."""
+    end_idx = fe._latest_expected_quarter_index()                 # newest quarter expected today
+    end_q = fe._index_to_quarter(end_idx)                         # e.g. "2026Q2"
+    y, q = _idx_to_tuple(end_idx)
+
+    # AAA: HF already covers up to the latest expected quarter -> no gap.
+    # BBB: HF is 2 quarters behind -> a gap -> must fetch its quote page.
+    # CCC: HF 1 quarter behind (gap = {end_q}) BUT that quarter is already on disk -> skip.
+    def fake_hf(context, tickers=None):
+        return {"AAA": _idx_to_tuple(end_idx), "BBB": _idx_to_tuple(end_idx - 2),
+                "CCC": _idx_to_tuple(end_idx - 1)}
+    monkeypatch.setattr(
+        "src.data_extract.utils.behavioral.fetch_hf_transcripts.hf_latest_quarter_by_ticker", fake_hf)
+
+    # pre-seed CCC's gap quarter on disk so it is already complete
+    ccc_dir = tmp_path / "call_transcripts" / "CCC"
+    ccc_dir.mkdir(parents=True)
+    (ccc_dir / f"{end_q}.html").write_text("cached", encoding="utf-8")
+
+    bbb_page = "x " + _t(f"{y}/06/01", f"bbb-q{q}-{y}")           # BBB's latest-quarter link
+    calls: list[str] = []
 
     def fake_get(url, *a, **k):
-        calls["n"] += 1
-        return page if "/quote/nasdaq/aaa/" in url else None      # AAA on nasdaq only
+        calls.append(url)
+        return bbb_page if "/quote/nasdaq/bbb/" in url else None
 
     monkeypatch.setattr(fe, "_get", fake_get)
-    ctx = _ctx(["AAA"], tmp_path)
+    ctx = _ctx(["AAA", "BBB", "CCC"], tmp_path)
 
-    fe.build_transcript_index_by_ticker(ctx, since="2025-01-01", pause=0.0)
-    first = calls["n"]
-    fe.build_transcript_index_by_ticker(ctx, since="2025-01-01", pause=0.0)     # re-run
-    second = calls["n"] - first
+    idx = fe.build_transcript_index_by_ticker(ctx, pause=0.0)
+    got = {(r["ticker"], r["quarter"]) for r in idx.values()}
 
-    assert first >= 1, "first run should have fetched AAA"
-    assert second == 0, f"re-run should SKIP already-complete AAA (made {second} requests)"
-    print("\n=== SANITY CHECK: skip already-complete tickers ===")
-    print(f"  run1 made {first} request(s); run2 made {second} (AAA complete in the JSON index -> "
-          "skipped). Re-runs don't redo extraction or re-hit the site.")
+    assert not any("/aaa/" in u for u in calls), "AAA (HF-complete) must NOT be requested"
+    assert not any("/ccc/" in u for u in calls), "CCC (gap already on disk) must NOT be requested"
+    assert any("/bbb/" in u for u in calls), "BBB (behind HF) must be requested"
+    assert ("BBB", end_q) in got, "BBB's latest-quarter link should be indexed"
+    assert not any(t == "AAA" for t, _ in got) and not any(t == "CCC" for t, _ in got)
+
+    print("\n=== SANITY CHECK: HF-aware + local-folder gap (429 fix) ===")
+    print(f"  latest expected quarter today = {end_q}")
+    print(f"  AAA HF@{end_q} (complete) -> skipped | CCC HF@{fe._index_to_quarter(end_idx-1)} but "
+          f"{end_q}.html on disk -> skipped | BBB HF@{fe._index_to_quarter(end_idx-2)} -> fetched")
+    print(f"  requests made: {[u.split('/quote/')[-1].rstrip('/') for u in calls]}")
+    print("  CONCLUSION: only the genuinely-behind ticker hits fool; HF horizon + local files + DB "
+          "coverage skip the rest -> far fewer requests, no 429 burst. Validated.")
 
 
 if __name__ == "__main__":

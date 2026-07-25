@@ -120,17 +120,20 @@ def _load_existing(context: Context):
 
 
 def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
-                         years_history: int = 10, pause: float = 0.1,
+                         years_history: int = 10, pause: float = 1.0,
                          refetch_window_days: int = 2) -> pd.DataFrame:
-    """Download daily pageviews for the S&P 500 names and cache to parquet.
+    """Download daily pageviews for the S&P 500 names and upsert to the DB.
 
-    Incremental: for a ticker already in the cache we only request days AFTER its
-    cached max date (the Wikimedia API takes an explicit start/end), so a re-run
-    downloads only the missing days. A ticker whose latest cached day is within
-    `refetch_window_days` of today is considered CURRENT and makes NO request at all
-    -- pageviews publish with a ~1-2 day lag, so without this tolerance the freshest
-    cached day never reaches `end_ts` (yesterday) and EVERY run fires ~500 empty API
-    calls (the "always redone" bug)."""
+    Incremental (point-in-time): the last-extracted day is read PER TICKER from the stored
+    `wiki_pageviews` table (max date per ticker), and we request only days AFTER it (the
+    Wikimedia API takes an explicit start/end), so a re-run downloads ONLY the missing tail.
+    A ticker whose latest stored day is within `refetch_window_days` of today is CURRENT and
+    makes NO request at all -- pageviews publish with a ~1-2 day lag, so without this tolerance
+    the freshest stored day never reaches `end_ts` (yesterday) and EVERY run fires ~500 empty
+    API calls (the "always redone" bug).
+
+    Pace: `pause` defaults to 1.0s so `sleep_pace` (base + 0.1-0.7 jitter, x any post-429
+    per-host slowdown) never issues more than ~1 request/second to the Wikimedia API."""
     names = context.store.load("sp500_tickers")
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]

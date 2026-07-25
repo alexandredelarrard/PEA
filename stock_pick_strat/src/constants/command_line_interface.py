@@ -2,7 +2,7 @@
 command_line_interface.py  (src/constants/command_line_interface.py)
 --------------------------------------------------------------------
 Shared click option specs for the per-package `cli.py` modules (data_extract, data_peers,
-data_aggregate). Each is a `(*ARGS, **KWARGS)` pair so a command declares an option with
+data_aggregate, modelling, portfolio). Each is a `(*ARGS, **KWARGS)` pair so a command declares an option with
 `@click.option(*X_ARGS, **X_KWARGS)`. The CLIs are the entry points the Airflow DAGs call via
 `python -m src <package> <command> [options]`.
 """

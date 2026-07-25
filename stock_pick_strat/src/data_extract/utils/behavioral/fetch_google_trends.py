@@ -259,6 +259,36 @@ def _scale_to_reference(new: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
     return new
 
 
+def _append_and_renormalize(ref: pd.DataFrame, recent: pd.DataFrame) -> pd.DataFrame:
+    """Reconcile a freshly-fetched OVERLAPPING window (`recent`) onto the stored per-ticker
+    series (`ref`) and return the FULL, coherent series to upsert:
+      1. chain-scale `recent` onto ref's level over their shared weeks (`_scale_to_reference`),
+      2. append only the weeks NEWER than ref's max (history is otherwise unchanged in shape),
+      3. RE-NORMALISE the whole concatenated series to 0-100.
+    Step 3 is what makes the rescale "make sense on the full trend": a recent spike above the old
+    historical max would otherwise push appended weeks past 100, leaving a patchwork of
+    window-local scales. Renormalising keeps ONE 0-100 scale across the entire per-ticker series
+    (the peak = 100 wherever in history it falls). Returns `ref` unchanged when there is nothing
+    new to append (so a stale-but-quiet ticker is not rewritten)."""
+    if ref is None or ref.empty:
+        return recent if recent is not None else _empty_series()
+    if recent is None or recent.empty:
+        return ref
+    scaled = _scale_to_reference(recent, ref)
+    mx = ref["date"].max()
+    new_weeks = scaled[scaled["date"] > mx]
+    if new_weeks.empty:
+        return ref
+    full = (pd.concat([ref[["date", "search_interest"]], new_weeks[["date", "search_interest"]]],
+                      ignore_index=True)
+            .drop_duplicates(subset=["date"], keep="last")
+            .sort_values("date").reset_index(drop=True))
+    m = full["search_interest"].max()
+    if m and m > 0:
+        full["search_interest"] = (full["search_interest"] / m * 100).round(2).clip(0, 100)
+    return full
+
+
 def _fetch_weekly_history(client: _TrendsClient, keyword: str, years: int,
                           pause: float) -> pd.DataFrame:
     """Fetch overlapping weekly windows across `years` and stitch them (see module
@@ -301,8 +331,10 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     the `google_trends` DB table, one ticker at a time.
 
     * WEEKLY / 15y: a ticker with no (or shallow) history gets a full chunked+stitched
-      backfill; a ticker already deep and current is skipped; otherwise only new weeks
-      after its stored max are appended (re-scaled onto the stored level).
+      backfill; a ticker already deep and current is skipped; otherwise a fresh overlapping
+      window is fetched, the new weeks are levelled onto the stored series and the FULL
+      per-ticker trend is re-normalised to a single coherent 0-100 scale
+      (`_append_and_renormalize`) before upsert.
     * ANTI-429: curl_cffi TLS impersonation + primed cookie + jitter + periodic session
       refresh + exponential backoff. Skips cleanly if curl_cffi is unavailable.
     """
@@ -348,23 +380,32 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
             if not deep: # full weekly backfill
                 logger.info(f"Redo full history extract for {tkr}")
                 series = _fetch_weekly_history(client, keyword, years, pause)
-            else: # deep but stale -> append new weeks
-                logger.info(f"Extract last month for {tkr}")
+                n_new = len(series)
+            else: # deep but stale -> fetch an overlapping recent window, reconcile onto history
+                # Explicit [mx - 1y, today] window: < 5y so Trends returns WEEKLY buckets, and it
+                # OVERLAPS the stored tail by ~1y so `_scale_to_reference` has real common weeks to
+                # level on. (The old "today 1-y" relative timeframe is not a valid Trends unit and
+                # errored out on every stale ticker.)
+                win_start = (mx - pd.DateOffset(years=1)).normalize()
+                timeframe = f"{win_start.date()} {today.date()}"
+                logger.info(f"Append recent weeks for {tkr} ({timeframe})")
                 recent = call_with_retries(
-                    lambda: client.interest_over_time(keyword, "today 1-y"),
+                    lambda tf=timeframe: client.interest_over_time(keyword, tf),
                     retries=4, base_wait=45.0, label=f"trends {tkr} recent")
                 ref = existing[existing["ticker"] == tkr][["date", "search_interest"]]
-                series = _scale_to_reference(recent, ref)
-                series = series[series["date"] > mx] if not series.empty else series
+                series = _append_and_renormalize(ref, recent)   # FULL coherent 0-100 series
+                n_new = max(0, len(series) - len(ref))          # weeks actually appended
         except Exception as e:                               # noqa: BLE001
             logger.warning("Trends fetch failed for %s (%s): %s", tkr, keyword, e)
             continue
 
-        if series is not None and not series.empty:
+        # save when there is genuinely new data: the full backfill, or the reconciled series with
+        # >=1 appended week (upsert on (ticker,date) overwrites the renormalised history in place).
+        if series is not None and not series.empty and n_new > 0:
             out = series.copy()
             out["ticker"] = tkr
             context.store.save("google_trends", out[["date", "ticker", "search_interest"]])
-            total_new += len(out)
+            total_new += n_new
             touched += 1
 
         if (i + 1) % 15 == 0:                                # periodic fresh fingerprint

@@ -104,6 +104,13 @@ MOTLEY_FOOL_HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 # raw transcript HTML + link-index cache, relative to DATA_STORE (non-tabular artifact)
 EARNINGS_CALL_CACHE_DIR = "call_transcripts"
 EARNINGS_CALL_SECTIONS_TABLE = "earnings_call_sections"
+# Motley Fool politeness: base inter-request pause (seconds) for the quote-page discovery
+# AND the transcript HTML download. Deliberately slow — fool.com sits behind Cloudflare and
+# throttles (429) after a short burst; the per-host slowdown in polite_http then ratchets
+# this up further. Reporting-lag grace (days): the just-ended calendar quarter is not required
+# until this many days after quarter-end, so a not-yet-reported quarter never forces a request.
+EARNINGS_CALL_REQUEST_PAUSE = 2.5
+EARNINGS_CALL_REPORT_GRACE_DAYS = 50
 
 # HuggingFace backbone: clean S&P 500 earnings-call transcripts 2005-2025 (MIT license,
 # 33k+ transcripts / 685 companies, full verbatim `content` + speaker-segmented
@@ -330,3 +337,50 @@ MACRO_ASSET_CORE_LEVEL_COLUMNS = ("equity_tr", "yield_10y", "cash_rate")
 TREND_ASSET_RETURNS_TABLE = "trend_asset_returns"
 # model artifact (params + vol-target calibration) under paths["MODELS_DIR"]
 TREND_ASSET_MODEL_FILE = "trend_asset_model.json"
+
+# --------------------------------------------------------------------------- #
+# Data-freshness / gap check (StepCheckFreshness) — runs at the tail of the    #
+# nightly extraction DAG, before triggering aggregation, so prediction never   #
+# runs on stale inputs. Each source maps to (table, observation-date column,   #
+# cadence); the cadence sets how old the latest observed date may be before it #
+# is flagged (RED). Thresholds are generous by design — they fold in weekends/ #
+# holidays (daily) and the normal reporting/filing lag (quarterly/yearly), so  #
+# only a genuine GAP beyond one extra cycle trips the warning. Where a filing  #
+# date exists (SEC notes/pension/insider) it is used instead of the period-end #
+# so freshness reflects WHEN data was published, not the period it covers.     #
+# --------------------------------------------------------------------------- #
+DATA_FRESHNESS_SOURCES: dict[str, tuple[str, str, str]] = {
+    # label:                 (table,                  date_col,           cadence)
+    "prices":                ("prices",               "date",             "daily"),
+    "macro":                 ("macro",                "date",             "daily"),
+    "macro_asset_prices":    ("macro_asset_prices",   "date",             "daily"),
+    "short_interest":        ("short_interest",       "date",             "daily"),
+    "wiki_pageviews":        ("wiki_pageviews",       "date",             "daily"),
+    "google_trends":         ("google_trends",        "date",             "weekly"),
+    "fails_to_deliver":      ("fails_to_deliver",     "date",             "biweekly"),
+    "notes_num":             ("notes_num",            "filed",            "biweekly"),
+    "notes_text":            ("notes_text",           "filed",            "biweekly"),
+    "insider_transactions":  ("insider_transactions", "filing_date",      "quarterly"),
+    "fundamentals_history":  ("fundamentals_history", "as_of",            "quarterly"),
+    "earnings_surprises":    ("earnings_surprises",   "earnings_date",    "quarterly"),
+    "institutional_holdings":("institutional_holdings","period",          "quarterly"),
+    "pension_facts":         ("pension_facts",        "filed",            "quarterly"),
+    "earnings_call_sections":("earnings_call_sections","as_of",           "quarterly"),
+    "employees_history":     ("employees_history",    "as_of",            "yearly"),
+    "def14a_llm":            ("def14a_llm",           "as_of",            "yearly"),
+}
+# how many days old the latest observed date may be, per cadence, before RED
+DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
+    "daily": 4, "weekly": 10, "biweekly": 20, "monthly": 45,
+    "quarterly": 140, "yearly": 460,
+}
+# cadence tiers in the order the freshness report walks them (daily -> yearly)
+DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = (
+    "daily", "weekly", "biweekly", "monthly", "quarterly", "yearly")
+# To report WHICH tickers got a new fundamentals filing (new earnings) since the last run, the
+# freshness gate snapshots the per-ticker latest fundamentals date to this JSON (under DATA_STORE,
+# so it persists on the host ./data mount) and diffs it next run. Keyed off the "fundamentals_history"
+# source in DATA_FRESHNESS_SOURCES above.
+FRESHNESS_SNAPSHOT_DIR = "freshness"
+FUNDAMENTALS_SNAPSHOT_FILE = "fundamentals_latest_by_ticker.json"
+FRESHNESS_FUNDAMENTALS_SOURCE = "fundamentals_history"

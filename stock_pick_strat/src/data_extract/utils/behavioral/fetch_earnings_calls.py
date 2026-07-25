@@ -33,6 +33,8 @@ from bs4 import BeautifulSoup
 
 from src.constants.constants import (
     EARNINGS_CALL_CACHE_DIR,
+    EARNINGS_CALL_REPORT_GRACE_DAYS,
+    EARNINGS_CALL_REQUEST_PAUSE,
     EARNINGS_CALL_SECTIONS_TABLE,
     MOTLEY_FOOL_BASE_URL,
     MOTLEY_FOOL_TRANSCRIPT_INDEX_URL,
@@ -239,37 +241,93 @@ def _quote_page(ticker: str, exchanges: tuple[str, ...]) -> tuple[str | None, st
     return None, None
 
 
-def _expected_quarter_count(since: str, grace_days: int = 50) -> int:
-    """How many quarterly calls we EXPECT per ticker since `since` — calendar quarters from
-    `since` up to ~today, minus a grace window so the just-ended (maybe not-yet-reported)
-    quarter isn't required. A ticker with at least this many post-`since` transcripts is
-    treated as COMPLETE and its quote page is skipped (fewer requests -> fewer 429s)."""
-    start = pd.Timestamp(since)
+# --- quarter arithmetic (a fiscal quarter as a monotone integer index YYYY*4 + (Q-1)) ---
+_QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$")
+
+
+def _parse_quarter(q: str) -> tuple[int, int] | None:
+    """'2025Q1' -> (2025, 1); None if malformed."""
+    m = _QUARTER_RE.match(str(q))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _quarter_index(year: int, quarter: int) -> int:
+    """Monotone quarter index so consecutive quarters differ by 1 (2024Q4 -> 2025Q1)."""
+    return year * 4 + (quarter - 1)
+
+
+def _index_to_quarter(idx: int) -> str:
+    return f"{idx // 4}Q{idx % 4 + 1}"
+
+
+def _quarters_between(start_idx: int, end_idx: int) -> list[str]:
+    """Every quarter label from `start_idx` to `end_idx` inclusive (empty if start > end)."""
+    return [_index_to_quarter(i) for i in range(start_idx, end_idx + 1)]
+
+
+def _latest_expected_quarter_index(grace_days: int = EARNINGS_CALL_REPORT_GRACE_DAYS) -> int:
+    """Quarter index of the newest call we EXPECT to exist today: the calendar quarter of
+    (today - grace), so a just-ended quarter that has not been reported yet is not required."""
     end = pd.Timestamp.today() - pd.Timedelta(days=grace_days)
-    if end < start:
-        return 1
-    return max(1, (end.year - start.year) * 4 + (end.quarter - start.quarter) + 1)
+    return _quarter_index(end.year, end.quarter)
 
 
-def _post_since_quarters(triples, since: str) -> dict[str, set]:
-    """{ticker: {quarters}} for rows whose call/as_of date is >= `since`."""
-    out: dict[str, set] = {}
-    for tk, q, d in triples:
-        if d and str(d)[:10] >= since:
-            out.setdefault(str(tk), set()).add(q)
-    return out
+def _since_floor_index(since: str) -> int:
+    """Quarter index of the `since` date floor — the fool gap start for a ticker HF doesn't cover."""
+    ts = pd.Timestamp(since)
+    return _quarter_index(ts.year, ts.quarter)
+
+
+def _local_quarters(cache_dir: Path, ticker: str) -> set[str]:
+    """Quarters ALREADY downloaded to disk for a ticker = the {quarter}.html files under
+    data/call_transcripts/{ticker}/ (so a re-run never re-requests a cached transcript)."""
+    d = cache_dir / ticker
+    return {p.stem for p in d.glob("*.html")} if d.exists() else set()
+
+
+def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
+    """{ticker: {quarters}} already in the sections table (ANY source, incl. HF). Empty when
+    the DB is unavailable / the table is not created yet -> resume on disk + JSON coverage."""
+    try:
+        db = context.store.load(_TABLE, columns=["ticker", "quarter"])
+        if db is None or db.empty:
+            return {}
+        out: dict[str, set] = {}
+        for tk, q in zip(db["ticker"], db["quarter"]):
+            out.setdefault(str(tk), set()).add(str(q))
+        return out
+    except Exception:
+        return {}
 
 
 def build_transcript_index_by_ticker(
     context: Context, tickers: list[str] | None = None, since: str = "2025-01-01",
-    exchanges: tuple[str, ...] = ("nasdaq", "nyse"), pause: float = 0.6,
+    exchanges: tuple[str, ...] = ("nasdaq", "nyse"), pause: float = EARNINGS_CALL_REQUEST_PAUSE,
+    grace_days: int = EARNINGS_CALL_REPORT_GRACE_DAYS,
 ) -> dict[str, dict]:
-    """TARGETED discovery for the RECENT gap: ONE request per ticker to its MF quote page
-    `fool.com/quote/{exchange}/{ticker}/`, which lists that name's recent transcript URLs
-    (exact date + slug already in them). Keeps links with `call_date >= since` and merges
-    them into the same big JSON. Unlike the global-feed crawl this is NOT capped at ~500
-    pages and is complete per ticker for the recent window -> use it to get EVERY S&P 500
-    call since `since` (default 2025-01-01). `tickers` restricts the universe (None = all)."""
+    """TARGETED, HF-aware discovery of the RECENT gap that the HuggingFace backbone does NOT cover.
+
+    For every ticker it computes the PRECISE set of quarters still missing, and ONLY then (if that
+    set is non-empty) spends ONE request on its MF quote page `fool.com/quote/{exchange}/{ticker}/`
+    (which lists that name's recent transcript URLs with the exact date+slug baked in). This is the
+    key to avoiding the 429: most names are already complete once HF + prior downloads are counted,
+    so their quote page is never fetched.
+
+    Per-ticker gap logic (bullets, in order):
+      1. HF horizon — read the backbone's LATEST quarter for the ticker; the fool gap starts at the
+         quarter AFTER it (or the `since` date floor when HF has nothing for the name).
+      2. required   — every quarter from that gap-start up to the latest expected quarter today
+         (calendar quarter of today - `grace_days`, so an unreported quarter isn't demanded).
+      3. have        — quarters already on DISK (data/call_transcripts/{ticker}/*.html) ∪ already in
+         the DB sections table (any source) ∪ already in the JSON index.
+      4. missing = required - have. Empty -> SKIP the ticker (no request). Else fetch the quote page
+         and keep only links whose quarter is in the gap (>= gap-start) and not already have.
+
+    Slow by design (`pause` defaults to the polite EARNINGS_CALL_REQUEST_PAUSE) and resume-safe: the
+    JSON index is saved after every ticker that adds links, so a 429/interrupt loses no progress.
+    `tickers` restricts the universe (None = all)."""
+    from src.data_extract.utils.behavioral.fetch_hf_transcripts import hf_latest_quarter_by_ticker
+
     universe = list(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
     if tickers is not None:
         keep = set(tickers)
@@ -277,59 +335,60 @@ def build_transcript_index_by_ticker(
     slug_map = _universe_slug_map(universe)
     path = _index_path(context)
     index = _load_index(path)
+    cache_dir = _cache_dir(context)
     since = str(since)
-    target = _expected_quarter_count(since)
 
-    # already-covered tickers are SKIPPED (no request) -> fewer hits, fewer 429s, resumable.
-    # A ticker is complete when it has >= `target` post-`since` quarters BOTH in the JSON index
-    # AND in the DB sections table (if the DB is reachable; else JSON coverage alone).
-    have_json = _post_since_quarters(
-        ((r["ticker"], r["quarter"], r.get("call_date")) for r in index.values()), since)
-    have_db = None
-    try:
-        db = context.store.load(_TABLE, columns=["ticker", "quarter", "as_of"])
-        if db is not None and not db.empty:
-            have_db = _post_since_quarters(
-                zip(db["ticker"], db["quarter"], db["as_of"].astype(str)), since)
-    except Exception:
-        have_db = None                        # DB unavailable -> resume on JSON coverage alone
+    end_idx = _latest_expected_quarter_index(grace_days)   # newest quarter expected to exist today
+    floor_idx = _since_floor_index(since)                  # gap start when HF has nothing for a name
+    hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)   # {ticker: (year, quarter)}
+    have_db = _db_quarters_by_ticker(context)
+    have_json: dict[str, set] = {}
+    for r in index.values():
+        have_json.setdefault(str(r["ticker"]), set()).add(str(r["quarter"]))
 
-    def _covered(tk: str) -> bool:
-        if len(have_json.get(tk, ())) < target:
-            return False
-        return have_db is None or len(have_db.get(tk, ())) >= target
+    def _missing(tk: str) -> set[str]:
+        """Quarters the fool quote page should still supply for `tk` (see the docstring bullets)."""
+        hf = hf_latest.get(tk)
+        gap_start = (_quarter_index(*hf) + 1) if hf else floor_idx
+        required = set(_quarters_between(gap_start, end_idx))
+        have = _local_quarters(cache_dir, tk) | have_db.get(tk, set()) | have_json.get(tk, set())
+        return required - have
 
-    added_total, missing, skipped = 0, [], 0
+    added_total, missing_page, skipped = 0, [], 0
     for tkr in tqdm(universe, "quote-page transcript urls"):
-        if _covered(tkr):
+        need = _missing(tkr)
+        if not need:                          # already complete -> NO request (the 429 fix)
             skipped += 1
             continue
+        gap_min = min(_quarter_index(*_parse_quarter(q)) for q in need)
         html, exch = _quote_page(tkr, exchanges)
         if html is None:
-            missing.append(tkr)
+            missing_page.append(tkr)
+            _sleep_pace(pause)                # still pace: a 404 probe cost 2 requests
             continue
-        recs = [r for r in _quote_links(html, slug_map)
-                if r["ticker"] == tkr and r["call_date"] >= since]
         added = 0
-        for r in recs:
-            if r["url"] not in index:
-                index[r["url"]] = r
-                have_json.setdefault(tkr, set()).add(r["quarter"])
-                added += 1
+        for r in _quote_links(html, slug_map):
+            pq = _parse_quarter(r["quarter"])
+            if (r["ticker"] != tkr or pq is None or _quarter_index(*pq) < gap_min
+                    or r["url"] in index):
+                continue
+            index[r["url"]] = r
+            have_json.setdefault(tkr, set()).add(r["quarter"])
+            added += 1
         added_total += added
-        logger.info("MF quote %s (%s): %d links >= %s, %d new (index total %d)",
-                    tkr, exch, len(recs), since, added, len(index))
+        logger.info("MF quote %s (%s): need %d quarters (%s..), %d new links (index total %d)",
+                    tkr, exch, len(need), _index_to_quarter(gap_min), added, len(index))
         if added:                             # DYNAMIC save -> progress survives a 429 / interrupt
             path.write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding="utf-8")
         _sleep_pace(pause)
 
     path.write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding="utf-8")
-    logger.warning("Quote-page discovery: +%d new links since %s | skipped %d already-complete "
-                   "| %d/%d had no quote page -> %s", added_total, since, skipped,
-                   len(missing), len(universe), path)
-    if missing:
+    logger.warning("Quote-page discovery: +%d new links | skipped %d already-complete (HF+disk+DB) "
+                   "| %d/%d had no quote page -> %s", added_total, skipped,
+                   len(missing_page), len(universe), path)
+    if missing_page:
         logger.info("No MF quote page (exchange miss / not covered) for %d tickers: %s",
-                    len(missing), missing[:40])
+                    len(missing_page), missing_page[:40])
     return index
 
 
@@ -422,7 +481,7 @@ def parse_transcript_sections(html: str) -> dict[str, str]:
 
 
 def download_transcripts(context: Context, tickers: list[str] | None = None,
-                         pause: float = 0.6, limit: int | None = None) -> int:
+                         pause: float = EARNINGS_CALL_REQUEST_PAUSE, limit: int | None = None) -> int:
     """Download each indexed transcript's HTML and cache the raw HTML to disk
     (data/call_transcripts/{ticker}/{quarter}.html). Skips already-downloaded files.
     Returns the number newly downloaded. `tickers` restricts to a subset (None = all);

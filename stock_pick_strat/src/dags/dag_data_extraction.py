@@ -13,22 +13,31 @@ Airflow POOLS (created in airflow-init):
   * default             — light / fast: market_prices, macro, macro_assets, short_interest,
                           earnings_surprises, superinvestors  (+ the one heavy yfinance pull: price_history)
 
-Flow: seed_universe -> (all fetchers in parallel, pool-throttled) -> extraction_complete -> trigger the
-data_aggregation DAG (so aggregation only starts once ALL extraction has finished).
+Flow: seed_universe -> (all fetchers in parallel, pool-throttled) -> extraction_complete ->
+check_data_freshness (data-drift/gap gate: verifies every source is up to date for its cadence
+daily..yearly, pushes the latest date per source to XCom, turns RED when not as expected) -> trigger
+the data_aggregation DAG. The gate is a visible WARNING, not a hard block (trigger_rule=ALL_DONE), so
+aggregation still runs on a red gate; flip to ALL_SUCCESS to hard-stop prediction on stale data.
 
 Every command is `/opt/pipeline/bin/python -m src data_extract <cmd>` (the pipeline's isolated venv),
 run from the mounted repo. Fetchers are incremental, so a nightly run only pulls new data.
 """
+import json
+import subprocess
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.exceptions import AirflowFailException
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
+from airflow.operators.python import PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.utils.trigger_rule import TriggerRule
 
 PROJECT = "/opt/airflow/project"                 # the repo, bind-mounted
 CONFIGS = f"{PROJECT}/configs"
-PIPE = "/opt/pipeline/bin/python -m src data_extract"   # pipeline's isolated venv
+PIPE_PY = "/opt/pipeline/bin/python"             # pipeline's isolated venv interpreter
+PIPE = f"{PIPE_PY} -m src data_extract"
 
 default_args = {
     "owner": "pea",
@@ -98,12 +107,53 @@ download_earnings_calls >> ingest_earnings_calls
 
 extraction_complete = EmptyOperator(task_id="extraction_complete", dag=dag)
 
-# only start aggregation once EVERY source has refreshed
+
+def _freshness_check(**context) -> None:
+    """Data-drift / gap gate. Shells to the pipeline venv (`check-freshness`), captures the JSON
+    report, pushes it to XCom (the whole report under `freshness` + the latest date per source under
+    `latest_<source>`), and RAISES when anything is not up to date so the task goes RED. XCom is
+    pushed BEFORE raising, so the per-source latest dates are visible even on a red run."""
+    proc = subprocess.run(
+        [PIPE_PY, "-m", "src", "data_extract", "check-freshness", "-c", CONFIGS],
+        cwd=PROJECT, capture_output=True, text=True)
+    report = None
+    for line in reversed((proc.stdout or "").strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                report = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+    ti = context["ti"]
+    if report is None:                            # the check itself failed to produce a report
+        ti.xcom_push(key="freshness", value={
+            "ok": False, "error": "no report parsed", "returncode": proc.returncode,
+            "stdout_tail": (proc.stdout or "")[-800:], "stderr_tail": (proc.stderr or "")[-800:]})
+        raise AirflowFailException(f"freshness check produced no report (rc={proc.returncode})")
+    ti.xcom_push(key="freshness", value=report)
+    for label, info in report.get("sources", {}).items():
+        ti.xcom_push(key=f"latest_{label}", value=info.get("latest"))
+    # which tickers got a new fundamentals filing (new earnings) since the last run
+    ti.xcom_push(key="new_fundamentals", value=report.get("new_fundamentals"))
+    if not report.get("ok", False):
+        raise AirflowFailException(
+            "Data NOT up to date (RED) — stale/gapped sources: "
+            + ", ".join(report.get("stale", [])))
+
+
+# RED when any source is not up to date; XCom carries the latest date per source either way.
+freshness_check = PythonOperator(
+    task_id="check_data_freshness", python_callable=_freshness_check, dag=dag)
+
+# aggregation still runs even if the freshness gate is RED (it is a visible WARNING, not a hard
+# block); flip this to TriggerRule.ALL_SUCCESS to make stale data hard-stop the prediction build.
 trigger_aggregation = TriggerDagRunOperator(
     task_id="trigger_data_aggregation",
     trigger_dag_id="data_aggregation",
     wait_for_completion=False,
     reset_dag_run=True,
+    trigger_rule=TriggerRule.ALL_DONE,
     dag=dag,
 )
 
@@ -114,4 +164,6 @@ all_fetchers = light + [price_history, fails_to_deliver, thirteen_f, financial_s
 seed_universe >> all_fetchers
 thirteen_f >> superinvestors                                         # roster reads the 13F holdings
 download_earnings_calls >> ingest_earnings_calls                     # ingest parses the downloaded files
-(all_fetchers + [superinvestors, ingest_earnings_calls]) >> extraction_complete >> trigger_aggregation
+# all sources refreshed -> freshness/gap gate (XCom + RED) -> trigger aggregation
+(all_fetchers + [superinvestors, ingest_earnings_calls]) >> extraction_complete
+extraction_complete >> freshness_check >> trigger_aggregation

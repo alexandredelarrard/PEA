@@ -92,6 +92,56 @@ def test_scale_to_reference_aligns_on_overlap():
     print(f"  appended window levelled onto stored history (overlap ratio {ratio:.3f}). Validated.")
 
 
+def test_append_and_renormalize_full_trend():
+    # A 3y weekly truth with a LATE spike well above the prior historical max.
+    idx = pd.date_range("2021-01-03", periods=156, freq="W")
+    true = 20 + np.linspace(0, 50, 156)
+    true[150:] += np.array([10, 20, 35, 55, 80, 110])[: len(true[150:])]   # spike in the new tail
+    # stored history = first 2y, normalised 0-100 within itself (peak at its own end)
+    ref_true = true[:104]
+    ref = pd.DataFrame({"date": idx[:104],
+                        "search_interest": np.round(ref_true / ref_true.max() * 100, 2)})
+    # a fresh OVERLAPPING window (weeks 80..156), independently normalised 0-100 within itself
+    rec_true = true[80:]
+    recent = pd.DataFrame({"date": idx[80:],
+                           "search_interest": np.round(rec_true / rec_true.max() * 100, 2)})
+
+    full = gt._append_and_renormalize(ref, recent)
+
+    steps = full["date"].diff().dt.days.dropna()
+    assert (steps == 7).all(), "reconciled series is not continuous weekly"
+    assert len(full) == 156, "full span (history + appended weeks) not preserved"
+    # ONE coherent 0-100 scale over the whole trend; the peak sits in the NEW (post-history) portion
+    assert abs(full["search_interest"].max() - 100) < 0.01
+    assert full.loc[full["search_interest"].idxmax(), "date"] > ref["date"].max()
+    # history shape untouched: full/ref over the stored dates is a single constant factor
+    ov = full[full["date"].isin(ref["date"])].set_index("date")["search_interest"]
+    rv = ref.set_index("date")["search_interest"].reindex(ov.index)
+    ratio = (ov / rv).replace([np.inf, -np.inf], np.nan).dropna()
+    # a single rescale factor -> ratio is constant up to 2-decimal storage rounding
+    assert ratio.std() / ratio.mean() < 1e-3, "history was not rescaled by a single factor (patchwork!)"
+    # the whole series still tracks the underlying truth
+    aligned = pd.Series(true, index=idx).reindex(full["date"].values)
+    corr = np.corrcoef(aligned.values, full["search_interest"].values)[0, 1]
+    assert corr > 0.99
+
+    print("\n=== SANITY CHECK: full-trend reconciliation (append + renormalise) ===")
+    print(f"  history {len(ref)}w + appended {len(full) - len(ref)}w -> {len(full)}w continuous weekly")
+    print(f"  new spike renormalised the WHOLE series to one 0-100 scale (peak={full['search_interest'].max():.1f} "
+          f"in the new tail), history rescaled by a single factor {float((ov/rv).mean()):.4f}, "
+          f"corr vs truth={corr:.4f}. Validated.")
+
+
+def test_append_noop_when_nothing_new():
+    idx = pd.date_range("2022-01-02", periods=60, freq="W")
+    ref = pd.DataFrame({"date": idx, "search_interest": np.linspace(10, 100, 60).round(2)})
+    recent = ref.iloc[-20:].copy()                          # entirely within stored history
+    out = gt._append_and_renormalize(ref, recent)
+    pd.testing.assert_frame_equal(out.reset_index(drop=True), ref.reset_index(drop=True))
+    print("\n=== SANITY CHECK: reconcile is a no-op with nothing new ===")
+    print("  recent window inside stored history -> history returned unchanged (no rewrite). Validated.")
+
+
 # --------------------------------------------------------------------------- #
 # Client parsing (mocked curl_cffi session — no network)                       #
 # --------------------------------------------------------------------------- #

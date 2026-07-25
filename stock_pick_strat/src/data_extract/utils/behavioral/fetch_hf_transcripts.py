@@ -57,6 +57,39 @@ def _stream_download(url: str, dest: Path) -> None:
                 f.write(chunk)
 
 
+def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = None,
+                                batch_size: int = 4000) -> dict[str, tuple[int, int]]:
+    """{ticker: (year, quarter)} for the LATEST call the HF backbone holds per ticker. Reads only
+    the (symbol, year, quarter) columns of the cached parquet (cheap), so the Motley Fool gap
+    fill knows, PER TICKER, the first quarter HF does NOT cover (everything after it must come
+    from fool). Returns {} when the parquet is not cached yet (caller falls back to a date floor).
+    `tickers` restricts to a subset (None = all)."""
+    import pyarrow.parquet as pq
+
+    dest = _cache_dir(context) / HF_TRANSCRIPTS_CACHE
+    if not dest.exists() or dest.stat().st_size < 1_000_000:
+        logger.info("HF parquet not cached yet -> no per-ticker HF horizon (fool gap uses the date floor)")
+        return {}
+    keep = {str(t).upper() for t in tickers} if tickers is not None else None
+    latest: dict[str, tuple[int, int]] = {}
+    pf = pq.ParquetFile(dest)
+    for batch in pf.iter_batches(batch_size=batch_size, columns=["symbol", "year", "quarter"]):
+        for r in batch.to_pylist():
+            tkr = str(r.get("symbol") or "").upper()
+            if not tkr or (keep is not None and tkr not in keep):
+                continue
+            try:
+                yq = (int(r["year"]), int(r["quarter"]))
+            except (TypeError, ValueError):
+                continue
+            cur = latest.get(tkr)
+            if cur is None or yq > cur:
+                latest[tkr] = yq
+    logger.info("HF backbone latest-quarter horizon for %d tickers (e.g. %s)", len(latest),
+                {k: f"{v[0]}Q{v[1]}" for k, v in list(latest.items())[:3]})
+    return latest
+
+
 def download_hf_parquet(context: Context, force: bool = False) -> Path:
     """Cache the dataset parquet under data/call_transcripts/. Skips if already present."""
     dest = _cache_dir(context) / HF_TRANSCRIPTS_CACHE

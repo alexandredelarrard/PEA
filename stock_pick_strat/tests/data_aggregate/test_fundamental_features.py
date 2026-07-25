@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamental_features import (
+    build_peer_relative_panel,
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
     _ratio,
@@ -723,3 +724,51 @@ def test_load_tagged_facts_reads_only_needed_tags():
 
 if __name__ == "__main__":
     test_load_tagged_facts_reads_only_needed_tags()
+
+
+# --------------------------------------------------------------------------- #
+# Regression: a None cell (object-dtype field frame) must NOT crash the peer   #
+# panel — it should be treated as a missing value (the earnings_call_embedding  #
+# "unsupported operand type(s): NoneType and float" bug at _peer_relative).     #
+# --------------------------------------------------------------------------- #
+def test_peer_panel_tolerates_none_cells():
+    from src.data_aggregate.utils.fundamental_features import _peer_relative
+
+    idx = pd.bdate_range("2024-01-01", periods=4)
+    tickers = ["A", "B", "C", "D"]
+    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
+
+    # OBJECT-dtype frame carrying a Python None (what reaches the panel on the full
+    # machine when a KPI is genuinely absent for a name) mixed with real floats.
+    fdf = pd.DataFrame(
+        [[1.0, 2.0, 3.0, 4.0],
+         [None, 2.5, 3.5, 4.5],          # <- None cell (ticker A missing on day 2)
+         [1.2, None, 3.2, 4.2],          # <- None cell (ticker B missing on day 3)
+         [1.3, 2.3, 3.3, 4.3]],
+        index=idx, columns=tickers, dtype="object",
+    )
+    assert fdf["A"].dtype == object and fdf.isin([None]).to_numpy().any()
+
+    # pre-fix, _peer_relative on the raw object frame raises the exact reported error
+    with pytest.raises(TypeError):
+        _peer_relative(fdf, peers)
+
+    # the shared entry point coerces None -> NaN, so the panel builds cleanly
+    panel = build_peer_relative_panel({"kpi": fdf}, peers)
+    assert not panel.empty
+    assert {"f_kpi_vs_peers", "f_kpi_xs"}.issubset(panel.columns)
+    panel = panel.set_index(["date", "ticker"])
+    # the None cells surface as NaN features (missing), NOT a crash
+    assert np.isnan(panel.loc[(idx[1], "A"), "f_kpi_xs"])
+    assert np.isnan(panel.loc[(idx[2], "B"), "f_kpi_xs"])
+    # a present cell still produces a finite percentile rank
+    assert np.isfinite(panel.loc[(idx[0], "A"), "f_kpi_xs"])
+
+    print("\n=== SANITY CHECK: peer panel tolerates None cells ===")
+    print("  raw _peer_relative raises TypeError('NoneType' vs float) on an object frame; "
+          "build_peer_relative_panel now coerces None -> NaN, builds f_kpi_{vs_peers,xs}, "
+          "and the missing cells are NaN (not a crash). earnings_call_embedding bug fixed.")
+
+
+if __name__ == "__main__":
+    test_peer_panel_tolerates_none_cells()

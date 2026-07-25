@@ -772,3 +772,43 @@ def test_peer_panel_tolerates_none_cells():
 
 if __name__ == "__main__":
     test_peer_panel_tolerates_none_cells()
+
+
+# --------------------------------------------------------------------------- #
+# Memory: the daily wide frames + long panels are float32 (halves the resident #
+# footprint that was OOM-killing the fundamental aggregation group, SIGKILL/-9).#
+# --------------------------------------------------------------------------- #
+def test_panel_features_are_float32_for_memory():
+    tickers = ["A", "B", "C", "D", "E", "F"]
+    quarters = pd.date_range("2018-02-01", periods=8, freq="2QS")     # 8 filings/ticker
+    rows = []
+    for i, t in enumerate(tickers):
+        for k, q in enumerate(quarters):
+            rows.append(dict(ticker=t, as_of=q.strftime("%Y-%m-%d"),
+                             totalRevenue=100.0 + 10 * i + 5 * k, netIncome=10.0 + i + k,
+                             stockholdersEquity=50.0 + 5 * i, freeCashflow=8.0 + i + k,
+                             ebitda=20.0 + 2 * i, debtToEquity=0.5 + 0.1 * i,
+                             grossMargins=0.30 + 0.02 * i, researchAndDevelopment=5.0 + i,
+                             sharesOutstanding=1000.0 + 100 * i))
+    fund = pd.DataFrame(rows)
+    idx = pd.bdate_range("2018-01-01", "2022-01-01")
+    close = pd.DataFrame({t: 10.0 + i for i, t in enumerate(tickers)}, index=idx)
+    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}   # 5 mutual peers >= min_peers
+
+    panel = build_fundamental_feature_panel(fund, peers, idx, stock_close=close)
+    feat_cols = [c for c in panel.columns if c not in ("date", "ticker")]
+    assert feat_cols, "no fundamental features produced"
+    non_f32 = {c: str(panel[c].dtype) for c in feat_cols if panel[c].dtype != np.float32}
+    assert not non_f32, f"feature columns must be float32, found: {non_f32}"
+
+    mem32 = panel[feat_cols].memory_usage(deep=True).sum()
+    mem64 = panel[feat_cols].astype("float64").memory_usage(deep=True).sum()
+    print("\n=== SANITY CHECK: fundamental panel memory (float32) ===")
+    print(f"  {len(feat_cols)} feature columns, all float32; panel {panel.shape[0]} rows.")
+    print(f"  feature-block memory {mem32/1e6:.2f} MB vs float64 {mem64/1e6:.2f} MB "
+          f"(~{mem64/mem32:.1f}x smaller) -> halves the resident footprint that SIGKILL/-9'd "
+          "the aggregation on the full-history rebuild.")
+
+
+if __name__ == "__main__":
+    test_panel_features_are_float32_for_memory()

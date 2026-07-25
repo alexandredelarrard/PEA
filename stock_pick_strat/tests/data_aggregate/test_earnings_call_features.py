@@ -15,9 +15,12 @@ import math
 import numpy as np
 import pandas as pd
 
+import logging
+
 from src.data_aggregate.utils.earnings_call_features import (
     _per_call_kpis,
     build_earnings_call_feature_panel,
+    sentiment_kpis_streamed,
 )
 
 _QDATE = {"2023Q1": "2023-02-01", "2023Q2": "2023-05-01", "2023Q3": "2023-08-01"}
@@ -84,6 +87,41 @@ def test_per_call_kpi_arithmetic():
     assert math.isnan(a.loc["2023Q1", "ec_vocab_novelty"])
     assert a.loc["2023Q2", "ec_vocab_novelty"] < a.loc["2023Q3", "ec_vocab_novelty"]
     assert a.loc["2023Q3", "ec_vocab_novelty"] > 0.5
+
+
+class _FakeStore:
+    """Minimal store: no `.engine` (forces the memory-safe in-memory streaming branch), no
+    `.exists` (guard is skipped via hasattr), `columns=` ignored (tiny data)."""
+    def __init__(self, tables): self.t = tables
+    def load(self, table, columns=None): return self.t.get(table, pd.DataFrame()).copy()
+
+
+class _FakeCtx:
+    def __init__(self, store): self.store = store; self.log = logging.getLogger("test")
+
+
+def test_sentiment_kpis_streamed_equals_batch():
+    """The per-ticker STREAMED KPIs (bounded memory) must exactly equal the whole-cache
+    computation — proving the streaming refactor preserves QoQ deltas + vocab novelty."""
+    sent, sec = _sentiment_frame(), _sections_frame()
+    ctx = _FakeCtx(_FakeStore({"earnings_call_sentiment": sent, "earnings_call_sections": sec}))
+    streamed = sentiment_kpis_streamed(ctx)
+    batch = _per_call_kpis(sent, sec)
+    m = streamed.merge(batch, on=["ticker", "quarter"], suffixes=("_s", "_b"))
+    assert len(m) == len(batch) == len(streamed), "row set changed under streaming"
+    kpi_cols = ["ec_tone", "ec_qa_gap", "ec_uncertainty", "ec_tone_delta", "ec_length_delta",
+                "ec_vocab_novelty", "ec_qa_tone_delta", "ec_prep_tone_delta"]
+    for col in kpi_cols:
+        s, b = m[f"{col}_s"].to_numpy(float), m[f"{col}_b"].to_numpy(float)
+        ok = (np.isnan(s) & np.isnan(b)) | np.isclose(s, b, equal_nan=True)
+        assert ok.all(), f"{col} differs streamed vs batch"
+    # A's Q3 topic-shift novelty is a cross-call KPI -> confirms per-ticker order survived streaming
+    a3 = streamed[(streamed.ticker == "A") & (streamed.quarter == "2023Q3")]["ec_vocab_novelty"]
+    assert float(a3.iloc[0]) > 0.5, "QoQ novelty lost under per-ticker streaming"
+    print("\n=== SANITY CHECK: sentiment KPI streaming ===")
+    print(f"  per-ticker streamed KPIs == whole-cache batch across {len(m)} calls x {len(kpi_cols)} "
+          f"KPIs (incl. QoQ tone/length deltas + vocab novelty). A 2023Q3 novelty "
+          f"{float(a3.iloc[0]):.3f} (>0.5 topic shift) -> cross-call order preserved.")
 
 
 def test_panel_columns_and_leak_free():

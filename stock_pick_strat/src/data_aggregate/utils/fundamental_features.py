@@ -110,9 +110,15 @@ skipped automatically.
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+from sqlalchemy import bindparam, text
 
+from src.context import Context
 from src.data_aggregate.utils.factors import fundamentals_to_daily, daily_market_cap
 from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
+
+_PENSION_FACTS_TABLE = "pension_facts"     # bulk Financial-Statement-Data-Sets pension facts (literal)
+_NOTES_NUM_TABLE = "notes_num"             # footnote NUMERIC facts (10 tags; the panel uses 2)
+_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed"]   # the only cols the pension builders read
 
 
 # Valuation yields that also get a self-history (mean-reversion) z-score, i.e.
@@ -473,6 +479,41 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str,
         return pd.DataFrame(index=idx)
     d = d.sort_values(["ticker", "as_of", "ddate"]).rename(columns={"value": tag})
     return fundamentals_to_daily(d, tag, idx)
+
+
+def load_tagged_facts(context: Context, table: str, tags: tuple[str, ...],
+                      columns: list[str] | None = None) -> pd.DataFrame | None:
+    """Read ONLY the rows whose `tag` the pension/footnote builders actually use — they touch just 2
+    tags of each facts table (`notes_num` has 10 tags; only ~16% of its rows are these two). Pulling
+    the whole table then filtering in-memory is the same waste pattern as the 13F/embedding tables.
+    Engine-side `WHERE tag IN (…)` when DB-backed, else a projected full read filtered in pandas.
+    None if the table is absent/empty or no row matches."""
+    cols = columns or _FACT_COLS
+    store = context.store
+    if hasattr(store, "exists") and not store.exists(table):
+        return None
+    engine = getattr(store, "engine", None)
+    if engine is not None:
+        sel = ", ".join(f'"{c}"' for c in cols)
+        sql = text(f'SELECT {sel} FROM "{table}" WHERE tag IN :tags'
+                   ).bindparams(bindparam("tags", expanding=True))
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params={"tags": list(tags)})
+    else:
+        df = store.load(table, columns=cols)
+        if df is not None and not df.empty and "tag" in df.columns:
+            df = df[df["tag"].isin(tags)]
+    return df.reset_index(drop=True) if df is not None and not df.empty else None
+
+
+def load_pension_facts_scoped(context: Context) -> pd.DataFrame | None:
+    """`pension_facts` restricted to the recognized net-liability tags the panel reads."""
+    return load_tagged_facts(context, _PENSION_FACTS_TABLE, _NET_PENSION_TAGS)
+
+
+def load_notes_num_scoped(context: Context) -> pd.DataFrame | None:
+    """`notes_num` restricted to the footnote PBO + plan-asset tags the panel reads."""
+    return load_tagged_facts(context, _NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG))
 
 
 def _forensic_fields(daily, idx: pd.DatetimeIndex,

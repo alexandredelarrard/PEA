@@ -1382,6 +1382,15 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict) -> pd.DataFrame:
     for name, fdf in fields.items():
         if fdf is None or fdf.empty:
             continue
+        # Guarantee a numeric frame: a stray Python `None` / object cell — a KPI genuinely
+        # absent for a name (e.g. sparse earnings-call coverage, "no value to compare with") —
+        # must be coerced to NaN. Otherwise the NaN-tolerant peer-z math (`_peer_relative`)
+        # AND the `_xs` rank below both raise "unsupported operand type(s): NoneType and float"
+        # the moment a single None reaches them. Coercion is the correct semantics here
+        # (absent = NaN), not a workaround, and a no-op on already-float frames.
+        fdf = fdf.apply(pd.to_numeric, errors="coerce")
+        if fdf.empty or not fdf.notna().any().any():
+            continue
         # peer z-score, then trim per-day cross-sectional 1%/99% outliers (the
         # percentile-rank `_xs` below is already outlier-proof, so it uses raw fdf).
         rel = _winsorize_xs(_peer_relative(fdf, peer_dict))

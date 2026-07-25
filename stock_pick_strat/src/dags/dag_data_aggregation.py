@@ -38,9 +38,11 @@ PIPE_PY = "/opt/pipeline/bin/python"
 AGG = f"{PIPE_PY} -m src data_aggregate"
 PEERS = f"{PIPE_PY} -m src data_peers"
 
-# feature groups (must match StepBuildCube._GROUP_SOURCES)
+# feature groups (must match StepBuildCube._GROUP_SOURCES). Earnings calls are TWO tasks:
+# FinBERT/LM sentiment vs OpenAI-embedding analysis.
 GROUPS = ["price", "fundamental", "sector", "earnings", "governance", "employee", "dividend",
-          "attention", "institutional", "superinvestor", "insider", "short_interest", "earnings_call"]
+          "attention", "institutional", "superinvestor", "insider", "short_interest",
+          "earnings_call_sentiment", "earnings_call_embedding"]
 
 default_args = {
     "owner": "pea",

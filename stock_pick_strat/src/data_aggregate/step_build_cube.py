@@ -23,6 +23,7 @@ from src.data_aggregate.utils.dividend_features import build_dividend_feature_pa
 from src.data_aggregate.utils.attention_features import build_combined_attention_panel
 from src.data_aggregate.utils.earnings_call_features import (
     build_earnings_call_feature_panel,
+    build_earnings_call_embedding_panel,
     score_earnings_calls,
 )
 from src.data_aggregate.utils.earnings_call_embeddings import embed_earnings_calls
@@ -604,37 +605,50 @@ class StepBuildCube(Step):
         self._log.info("Merged %s short-interest features (row coverage %.1f%%)",
                        added, 100 * cov)
 
-    def build_earnings_call_features(self):
-        """Earnings-call TEXT features. Scores each parsed transcript section with the
-        local FinBERT-tone model (cached + incremental in `earnings_call_sentiment`, so
-        the GPU pass runs once), then derives the smart per-call KPIs — tone level &
-        momentum, the Q&A-vs-scripted candor gap, the hedging (uncertainty) ratio, the
-        disclosure-length change, and vocabulary novelty — as peer-relative, point-in-
-        time features (a call at date d only affects features on d+1 onward). Skipped
-        cleanly when there are no transcripts or the ML stack/model is unavailable."""
+    def _merge_ec_panel(self, panel: pd.DataFrame, label: str) -> None:
+        """Left-merge an earnings-call feature panel into the working feature panel + log coverage."""
+        if panel is None or panel.empty:
+            self._log.warning("No %s features built (no transcripts / model or API key absent).", label)
+            return
+        before = len(self.feature_panel.columns) - 2
+        self.feature_panel = self.feature_panel.merge(panel, on=["date", "ticker"], how="left")
+        added = len(self.feature_panel.columns) - 2 - before
+        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
+        self._log.info("Merged %s %s features (row coverage %.1f%%)", added, label, 100 * cov)
+
+    def build_earnings_call_sentiment_features(self):
+        """Earnings-call SENTIMENT features. Scores each transcript section with the local
+        FinBERT-tone + Loughran-McDonald pass (cached/incremental in `earnings_call_sentiment`, so
+        the GPU pass runs once), then derives the per-call KPIs — tone level & momentum, the
+        Q&A-vs-scripted candor gap, the hedging (uncertainty) ratio, disclosure-length change and
+        vocabulary novelty — as peer-relative, point-in-time `f_ec_*` features."""
         sections = getattr(self, "earnings_call_sections", None)
         if sections is None:
             return
         sentiment = score_earnings_calls(self._context, sections=sections)
-        # OpenAI-embedding pass (cached/incremental; no-op without an API key): Q&A coherence
-        # cos(question, answer) + quarter-to-quarter embedding drift -> extra f_ec_* features.
-        embeddings = embed_earnings_calls(self._context, sections=sections)
         panel = build_earnings_call_feature_panel(
-            sentiment, self.peers, self.stock_close.index, sections=sections,
-            embeddings=embeddings,
-        )
-        if panel.empty:
-            self._log.warning("No earnings-call features built (unscored transcripts "
-                              "or sentiment model unavailable).")
+            sentiment, self.peers, self.stock_close.index, sections=sections, embeddings=None)
+        self._merge_ec_panel(panel, "earnings-call sentiment")
+
+    def build_earnings_call_embedding_features(self):
+        """Earnings-call EMBEDDING features. Runs the OpenAI-embedding pass (cached/incremental;
+        no-op without an API key) and derives the Q&A-coherence (cosine of a question vs its answer)
+        + quarter-to-quarter narrative-drift `f_ec_*` KPIs. Independent of the sentiment pass (call
+        dates come from the sections), so it runs as its own step without the GPU tone model."""
+        sections = getattr(self, "earnings_call_sections", None)
+        if sections is None:
             return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s earnings-call sentiment/text features (row coverage %.1f%%)",
-                       added, 100 * cov)
+        embeddings = embed_earnings_calls(self._context, sections=sections)
+        panel = build_earnings_call_embedding_panel(
+            embeddings, self.peers, self.stock_close.index, sections=sections)
+        self._merge_ec_panel(panel, "earnings-call embedding")
+
+    def build_earnings_call_features(self):
+        """Monolithic earnings-call features (main.py / tests): sentiment + embedding, merged into
+        the feature panel. The Airflow DAG runs the two as SEPARATE tasks
+        (earnings_call_sentiment ∥ earnings_call_embedding)."""
+        self.build_earnings_call_sentiment_features()
+        self.build_earnings_call_embedding_features()
 
     def build_composite_signals(self):
         """Append thematic COMPOSITE columns (comp_<theme>) to the feature panel:
@@ -713,7 +727,10 @@ class StepBuildCube(Step):
                            "build_superinvestor_features"),
         "insider":        (("insider_transactions", "fundamentals_history"), "build_insider_features"),
         "short_interest": (("short_interest", "fails_to_deliver"), "build_short_interest_features"),
-        "earnings_call":  (("earnings_call_sections",), "build_earnings_call_features"),
+        # earnings calls split into two independent parts (own DAG tasks): the FinBERT/LM sentiment
+        # KPIs and the OpenAI-embedding Q&A-coherence/drift KPIs.
+        "earnings_call_sentiment": (("earnings_call_sections",), "build_earnings_call_sentiment_features"),
+        "earnings_call_embedding": (("earnings_call_sections",), "build_earnings_call_embedding_features"),
     }
     _TABLE_TO_ATTR: dict[str, str] = {
         "fundamentals_history": "fundamentals", "earnings_surprises": "earnings",
@@ -784,7 +801,8 @@ class StepBuildCube(Step):
         "institutional":   130,   # QoQ vs the prior 13F period
         "superinvestor":   130,   # QoQ vs the prior 13F period
         "insider":         130,   # rolling('180D') over the FULL transaction calendar
-        "earnings_call":   130,   # QoQ over reported quarters (+1d transcript lag)
+        "earnings_call_sentiment": 130,   # QoQ over reported quarters (+1d transcript lag)
+        "earnings_call_embedding": 130,   # QoQ embedding drift over reported quarters
     }
     # targets/betas: style momentum shift(252) + beta window(63); the forward horizon is added at
     # the call site (targets look FORWARD to mature labels).

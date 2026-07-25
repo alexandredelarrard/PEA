@@ -149,10 +149,20 @@ class StepBuildCube(Step):
         n = sum(1 for p in self.peers.values() if p)
         self._log.info("Sector returns ready for %s / %s tickers", n, len(self.peers))
 
-    def _load_or_none(self, table: str) -> pd.DataFrame | None:
-        """Load a DB table, returning None when it is absent/empty (so every
-        downstream feature builder keeps its 'optional source' semantics)."""
-        df = self._context.store.load(table)
+    def _load_or_none(self, table: str, columns: list[str] | None = None) -> pd.DataFrame | None:
+        """Load a DB table, returning None when it is absent/empty (so every downstream feature
+        builder keeps its 'optional source' semantics). `columns` projects to only the needed
+        columns (a big memory saving on the tall tables — institutional_holdings ~20M rows, etc.);
+        absent columns are dropped from the projection so a schema gap never crashes the load."""
+        if columns:
+            try:                                      # keep only columns that actually exist
+                info = text("SELECT column_name FROM information_schema.columns WHERE table_name = :t")
+                with self._context.store.engine.connect() as c:
+                    have = set(pd.read_sql(info, c, params={"t": table})["column_name"])
+                columns = [col for col in columns if col in have] or None
+            except Exception:                         # noqa: BLE001 (fall back to a full load)
+                columns = None
+        df = self._context.store.load(table, columns=columns)
         return None if df.empty else df
 
     def load_fundamentals_and_macro(self):
@@ -732,6 +742,26 @@ class StepBuildCube(Step):
         "earnings_call_sentiment": (("earnings_call_sections",), "build_earnings_call_sentiment_features"),
         "earnings_call_embedding": (("earnings_call_sections",), "build_earnings_call_embedding_features"),
     }
+    # Per-source COLUMN PROJECTION for the exploded feature builds: load ONLY the columns each
+    # builder reads (union across the groups that consume the table). Cuts memory on the TALL tables
+    # so parallel builds don't OOM the DB/VM (institutional_holdings ~20M rows was the crasher). A
+    # table absent here loads in FULL — used for the SMALL tables (fundamentals_history 22k rows,
+    # pension/notes/def14a/employees/earnings, all tiny) where projection saves ~nothing, and for
+    # earnings_call_sections whose `text` column IS needed by the incremental scoring/embedding pass.
+    _SOURCE_COLUMNS: dict[str, list[str]] = {
+        # institutional_features + superinvestor_features
+        "institutional_holdings": ["cik", "period", "ticker", "shares", "value_usd",
+                                    "call_value", "put_value", "filing_date"],
+        # insider_features (its own required set: ticker/filing_date/transaction_code/value_usd)
+        "insider_transactions":   ["ticker", "filing_date", "transaction_code", "value_usd"],
+        # short_interest_features (RegSHO short/total volume + reported short interest / ADV)
+        "short_interest":         ["date", "ticker", "short_volume", "total_volume",
+                                   "short_interest", "avg_daily_volume"],
+        "fails_to_deliver":       ["date", "ticker", "fails_quantity"],
+        # attention_features
+        "wiki_pageviews":         ["date", "ticker", "pageviews"],
+        "google_trends":          ["date", "ticker", "search_interest"],
+    }
     _TABLE_TO_ATTR: dict[str, str] = {
         "fundamentals_history": "fundamentals", "earnings_surprises": "earnings",
         "def14a_llm": "def14a", "employees_history": "employees", "dividends": "dividends",
@@ -751,7 +781,10 @@ class StepBuildCube(Step):
         self.load_peers()
 
     def _load_source(self, table: str) -> None:
-        setattr(self, self._TABLE_TO_ATTR[table], self._load_or_none(table))
+        # project to only the columns the consuming builder(s) read (see _SOURCE_COLUMNS); tables
+        # absent from the map load in full.
+        setattr(self, self._TABLE_TO_ATTR[table],
+                self._load_or_none(table, columns=self._SOURCE_COLUMNS.get(table)))
         if table == "def14a_llm" and getattr(self, "def14a", None) is not None:
             self.def14a, _ = impute_def14a(self.def14a)
 

@@ -39,7 +39,7 @@ AGG = f"{PIPE_PY} -m src data_aggregate"
 PEERS = f"{PIPE_PY} -m src data_peers"
 
 # feature groups (must match StepBuildCube._GROUP_SOURCES)
-GROUPS = ["price", "fundamental", "sector", "earnings", "governance", "employee", "dividend",
+GROUPS = ["price", "sector", "earnings", "governance", "employee", "dividend",
           "attention", "institutional", "superinvestor", "insider", "short_interest", "earnings_call"]
 
 default_args = {
@@ -57,7 +57,7 @@ dag = DAG(
     schedule=None,                                   # triggered by the extraction DAG when it finishes
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_tasks=8,
+    max_active_tasks=3,
     tags=["pea", "aggregation"],
 )
 
@@ -78,6 +78,7 @@ deduce_peers = run("deduce-peers", base=PEERS, pool="default_pool", task_id="ded
 # 2) target + one task per feature group, in parallel (memory-capped by the `aggregate` pool)
 build_target = run("build-target", task_id="build_target")
 feature_tasks = [run(f"features -g {g}", task_id=f"features_{g}") for g in GROUPS]
+fundamental_task =  run("features -g fundamental", task_id="features_fundamental")
 
 # 3) assemble the cube from the persisted parts
 assemble_cube = run("assemble-cube", pool="default_pool", task_id="assemble_cube")
@@ -118,4 +119,4 @@ trigger_modelling = TriggerDagRunOperator(
     task_id="trigger_modelling", trigger_dag_id="modelling",
     wait_for_completion=False, reset_dag_run=True, trigger_rule=TriggerRule.ALL_DONE, dag=dag)
 
-deduce_peers >> [build_target, *feature_tasks] >> assemble_cube >> cube_status >> trigger_modelling
+deduce_peers >> [build_target, *feature_tasks] >> fundamental_task >> assemble_cube >> cube_status >> trigger_modelling

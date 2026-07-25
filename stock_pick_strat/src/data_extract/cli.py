@@ -235,12 +235,15 @@ def download_earnings_calls(config_path: str, tickers: str | None) -> None:
 
 
 @cli.command(help="INGEST cached earnings-call transcripts (HF parquet + MF HTML) -> "
-                  "earnings_call_sections. Runs after download-earnings-calls.")
+                  "earnings_call_sections. Incremental: skips (ticker,quarter) already ingested; "
+                  "--force re-parses everything. Runs after download-earnings-calls.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def ingest_earnings_calls(config_path: str, tickers: str | None) -> None:
+@click.option("-F", "--force", is_flag=True, default=False,
+              help="Re-ingest all cached transcripts (ignore what's already in the DB).")
+def ingest_earnings_calls(config_path: str, tickers: str | None, force: bool) -> None:
     _, context = _ctx(config_path)
-    _ingest_earnings_calls(context, tickers=_tickers(context, tickers))
+    _ingest_earnings_calls(context, tickers=_tickers(context, tickers), force=force)
 
 
 # --------------------------------------------------------------------------- #

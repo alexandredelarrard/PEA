@@ -10,11 +10,12 @@ schema, temperature=0, prompt caching on), then **immediately upserts that
 ticker's rows into the `def14a_llm` Postgres table** before moving to the next
 ticker — so an interrupted run never loses the (expensive) LLM calls already made.
 
-Year-incremental: the per-ticker cutoff is the latest `as_of` already stored in
-the DB for that ticker, so only filings AFTER it are sent to the LLM. Tickers
-with no rows yet are fetched over the full `years_history` window; tickers with
-shorter histories simply have fewer filings — each resumes from its own latest
-stored filing, never re-running the LLM on a year already saved.
+Per-filing incremental (gap-filling): each ticker's FULL `years_history` window of DEF 14A
+filings is listed, and the LLM is (re-)run ONLY on filings whose `accession_number` is NOT already
+in the `def14a_llm` table. So any MISSING year/filing — including a hole in the middle of the
+history, not just after the latest — is filled, while every already-extracted filing is skipped
+(no repeat LLM cost). Tickers with no rows yet get the whole window; already-complete tickers make
+no LLM calls at all.
 
 Requires OPENAI_API_KEY (or OPEN_AI_API_KEY) in the .env file.
 If the key is absent the function logs a warning and returns whatever exists.
@@ -521,17 +522,6 @@ def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
     return set(requested_tickers).issubset(have)
 
 
-def _last_asof_by_ticker(existing: pd.DataFrame | None) -> dict[str, pd.Timestamp]:
-    """Max `as_of` (filing date) already stored per ticker -> the per-ticker
-    incremental cutoff. Tickers absent here are fetched over the full window."""
-    if existing is None or existing.empty or "as_of" not in existing.columns:
-        return {}
-    s = existing[["ticker", "as_of"]].copy()
-    s["as_of"] = pd.to_datetime(s["as_of"], errors="coerce")
-    s = s.dropna(subset=["as_of"])
-    return s.groupby("ticker")["as_of"].max().to_dict()
-
-
 def _seen_accessions(existing: pd.DataFrame | None) -> set[str]:
     if existing is None or existing.empty or "accession_number" not in existing.columns:
         return set()
@@ -596,8 +586,7 @@ def fetch_def14a_llm(
 
     existing = context.store.load("def14a_llm")
     existing = None if existing.empty else existing
-    last_asof = _last_asof_by_ticker(existing)     # per-ticker year cutoff (from SQL)
-    seen = _seen_accessions(existing)
+    seen = _seen_accessions(existing)              # accessions already extracted -> never re-LLM
 
     try:
         extractor = LLMExtractor(model=model, max_chars=max_chars,
@@ -606,37 +595,43 @@ def fetch_def14a_llm(
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
         return existing if existing is not None else pd.DataFrame(columns=["ticker", "as_of"])
 
-    total_new, tickers_touched = 0, 0
+    total_new, tickers_touched, total_skipped = 0, 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
         ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
-        # only filings after this ticker's latest already in SQL (full window if none)
-        since = last_asof.get(ticker)
+        # list the FULL years_history window (NOT just after the latest stored filing) so a MISSING
+        # filing anywhere in the history is discovered; the accession skip below then sends ONLY the
+        # not-yet-stored filings to the LLM (gap-filling, per ticker / per date).
         try:
-            filings = list_filings(cik, _FORM, years, company, since=since)
+            filings = list_filings(cik, _FORM, years, company)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue
 
         ticker_rows: list[dict] = []
+        skipped = 0
         for _, f in filings.iterrows():
-            if f["accession_number"] in seen:
+            if f["accession_number"] in seen:      # already in the table -> skip this filing
+                skipped += 1
                 continue
             row = _process_filing(ticker, f, extractor)
             if row is not None:
                 ticker_rows.append(row)
                 seen.add(f["accession_number"])
+        total_skipped += skipped
 
         # persist THIS ticker before moving on (don't batch — LLM calls are costly)
         if ticker_rows:
             _save_ticker_rows(context, ticker_rows)
             total_new += len(ticker_rows)
             tickers_touched += 1
+            context.log.info("%s: +%d new DEF 14A filing(s) sent to the LLM (%d already in table)",
+                             ticker, len(ticker_rows), skipped)
 
     save_extract_meta(path, today_iso(), len(cik_map), len(cik_map))
     out = context.store.load("def14a_llm")
     context.log.info(
-        "DEF 14A LLM: +%d new rows across %d tickers; table now %d rows, %d tickers",
-        total_new, tickers_touched, len(out),
+        "DEF 14A LLM: +%d new rows across %d tickers (%d filings already present, skipped); "
+        "table now %d rows, %d tickers", total_new, tickers_touched, total_skipped, len(out),
         out["ticker"].nunique() if not out.empty else 0,
     )
     return out

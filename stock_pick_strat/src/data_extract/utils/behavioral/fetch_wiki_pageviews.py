@@ -20,11 +20,23 @@ from tqdm import tqdm
 
 from src.constants.constants import DATE_FORMAT_COMPACT
 from src.context import Context
-from src.utils import polite_http as ph
+from src.utils import polite_http as ph          # per-host paced inter-request sleep
+from src.utils.crawler import Crawler
 
 _API = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
         "en.wikipedia/all-access/user/{article}/daily/{start}/{end}")
 _HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; contact@example.com)"}
+
+# shared crawler for Wikimedia: impersonate=False (a FRIENDLY API — send our descriptive contact
+# UA, don't spoof a browser) + IP rotation over PEA_SCRAPE_PROXIES on a block + fast retry.
+_WIKI_CRAWLER: Crawler | None = None
+
+
+def _wiki_crawler() -> Crawler:
+    global _WIKI_CRAWLER
+    if _WIKI_CRAWLER is None:
+        _WIKI_CRAWLER = Crawler(retries=5, backoff=1.0, timeout=30, impersonate=False)
+    return _WIKI_CRAWLER
 _SUFFIXES = re.compile(
     r"\b(inc|inc\.|incorporated|corp|corp\.|corporation|company|co|co\.|ltd|"
     r"plc|holdings|group|the|class [abc]|&)\b", re.IGNORECASE)
@@ -67,14 +79,13 @@ def _wiki_search(query: str) -> str | None:
     """Top main-namespace Wikipedia article title for `query`, or None. Isolated for
     mocking. Searching the full (cleaned) COMPANY name biases the hit to the company
     article (e.g. 'The Coca-Cola Company') over the brand ('Coca-Cola')."""
-    # shared anti-429 transport (retry + backoff + Retry-After + per-host slowdown). Wikimedia
-    # wants a descriptive contact User-Agent (not a spoofed browser) -> impersonate=False.
-    r = ph.http_get(_SEARCH_API, headers=_HEADERS, timeout=30, impersonate=False, params={
+    # IP-rotating crawler with the descriptive contact UA (Wikimedia is a friendly API).
+    data = _wiki_crawler().get_json(_SEARCH_API, headers=_HEADERS, params={
         "action": "query", "list": "search", "srsearch": query,
         "srlimit": 1, "srnamespace": 0, "format": "json"})
-    if r is None:
+    if not data:
         return None
-    hits = r.json().get("query", {}).get("search", [])
+    hits = data.get("query", {}).get("search", [])
     return hits[0]["title"] if hits else None
 
 
@@ -105,10 +116,8 @@ def _json_to_long(items: list[dict], ticker: str) -> pd.DataFrame:
 def _fetch_article(article: str, start: str, end: str) -> list[dict]:
     """Network call, isolated for mocking. Returns the 'items' list ([] on miss)."""
     url = _API.format(article=requests.utils.quote(article, safe=""), start=start, end=end)
-    r = ph.http_get(url, headers=_HEADERS, timeout=30, impersonate=False)   # shared anti-429
-    if r is None:
-        return []
-    return r.json().get("items", [])
+    data = _wiki_crawler().get_json(url, headers=_HEADERS)     # IP-rotating crawler, contact UA
+    return data.get("items", []) if data else []
 
 
 def _load_existing(context: Context):

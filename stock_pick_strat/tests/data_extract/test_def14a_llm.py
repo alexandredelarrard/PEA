@@ -506,8 +506,9 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
 @pytest.mark.skipif(not os.getenv("DATABASE_URL"),
                     reason="DATABASE_URL not set — needs the Postgres DB")
 def test_fetch_def14a_llm_incremental(monkeypatch):
-    """A ticker with rows already in SQL only sends filings AFTER its latest stored
-    `as_of` to the LLM (year-incremental); the new row upserts without disturbing it."""
+    """Gap-filling per-filing incremental: the FULL window is listed (no `since` cutoff), and only
+    filings whose accession is NOT already in the table hit the LLM — so a MISSING year (a hole
+    between two present years) is filled while the present ones are never re-extracted."""
     from sqlalchemy import text
     from src.context import get_config_context
     from src.data_extract.utils.structure import fetch_def14a_llm as mod
@@ -518,7 +519,11 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
     except Exception as e:                                   # noqa: BLE001
         pytest.skip(f"DB not reachable: {e}")
 
-    TICKER, OLD_ACC, NEW_ACC = "ZZINC", "1111111111-11-111111", "2222222222-22-222222"
+    # 2022 + 2024 already stored; 2023 is a HOLE in the middle; a NEW 2025 also appears
+    TICKER = "ZZINC"
+    A22, A23, A24, A25 = (f"{y}{y}{y}{y}{y}{y}{y}{y}{y}{y}-{y%100}{y%100}-{y}11" for y in (1, 2, 3, 4))
+    have_years = {"2022": A22, "2024": A24}
+    gap_years = {"2023": A23, "2025": A25}                   # the two MISSING filings to fill
 
     def _cleanup():
         if ctx.store.exists("def14a_llm"):
@@ -527,8 +532,9 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
 
     _cleanup()
     try:
-        mod._save_ticker_rows(ctx, [_seed_row(TICKER, OLD_ACC, pd.Timestamp("2022-04-01"))])
-        captured: dict = {}
+        for yr, acc in have_years.items():
+            mod._save_ticker_rows(ctx, [_seed_row(TICKER, acc, pd.Timestamp(f"{yr}-04-01"))])
+        captured: dict = {"since_seen": [], "extracted": []}
 
         class _FakeExtractor:
             def __init__(self, **kwargs):
@@ -538,18 +544,27 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
                 return _make_expected()
 
         def _fake_list_filings(cik, forms, years, company="", since=None):
-            captured["since"] = since
+            captured["since_seen"].append(since)            # must be None now (full window)
+            rows = {**have_years, **gap_years}
             return pd.DataFrame([{
-                "accession_number": NEW_ACC, "doc_url": "http://x/new.htm",
-                "filing_date": pd.Timestamp("2024-04-01"),
-                "period_of_report": "2023-12-31", "form": "DEF 14A",
-            }])
+                "accession_number": acc, "doc_url": f"http://x/{yr}.htm",
+                "filing_date": pd.Timestamp(f"{yr}-04-01"),
+                "period_of_report": f"{int(yr)-1}-12-31", "form": "DEF 14A",
+            } for yr, acc in rows.items()])
 
         class _Resp:
             text = "<html>proxy</html>"
 
+        # count which accessions actually reach the LLM
+        orig_process = mod._process_filing
+
+        def _spy_process(ticker, filing, extractor):
+            captured["extracted"].append(filing["accession_number"])
+            return orig_process(ticker, filing, extractor)
+
         monkeypatch.setattr(mod, "LLMExtractor", _FakeExtractor)
         monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
+        monkeypatch.setattr(mod, "_process_filing", _spy_process)
         monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
         monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame(
             {"ticker": [TICKER], "cik": ["0000000001"], "company_name": ["Z"]}))
@@ -557,15 +572,17 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
 
         mod.fetch_def14a_llm(ctx, tickers=[TICKER])
 
-        assert captured["since"] is not None
-        assert pd.Timestamp(captured["since"]).normalize() == pd.Timestamp("2022-04-01")
+        # full window listed (no since cutoff), and ONLY the two missing years hit the LLM
+        assert captured["since_seen"] == [None]
+        assert set(captured["extracted"]) == set(gap_years.values()), captured["extracted"]
         back = ctx.store.load("def14a_llm")
         accs = set(back[back["ticker"] == TICKER]["accession_number"])
-        assert accs == {OLD_ACC, NEW_ACC}, accs
+        assert accs == set(have_years.values()) | set(gap_years.values()), accs
 
-        print("\n=== SANITY CHECK: DEF 14A year-incremental ===")
-        print(f"  2022 filing stored -> list_filings since={pd.Timestamp(captured['since']).date()} "
-              f"(only newer years hit the LLM); table now holds {sorted(accs)}. Validated.")
+        print("\n=== SANITY CHECK: DEF 14A gap-filling incremental ===")
+        print(f"  had 2022+2024; listed full window (since={captured['since_seen'][0]}); "
+              f"LLM ran ONLY on the missing {sorted(gap_years)} (2023 hole + new 2025), "
+              f"skipped the 2 present. Table now {len(accs)} filings. Validated.")
     finally:
         _cleanup()
 

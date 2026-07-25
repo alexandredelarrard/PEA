@@ -197,6 +197,45 @@ def test_client_parses_timeseries_and_drops_partial(monkeypatch):
           f"{df['date'].iloc[0].date()}={df['search_interest'].iloc[0]:.0f}. Validated.")
 
 
+def test_call_with_retries_rotates_ip_on_ratelimit():
+    """A 429 triggers the on_retry hook (rotate IP + re-prime session) before each retry."""
+    from src.data_extract.utils.common.rate_limit import call_with_retries
+    state = {"n": 0, "rotations": 0}
+
+    def fn():
+        state["n"] += 1
+        if state["n"] <= 2:                                  # blocked twice, then succeeds
+            raise gt.TrendsRateLimited("429 Too Many Requests")
+        return "OK"
+
+    out = call_with_retries(fn, retries=4, base_wait=0.0,
+                            on_retry=lambda: state.__setitem__("rotations", state["rotations"] + 1),
+                            label="trends-test")
+    assert out == "OK" and state["n"] == 3 and state["rotations"] == 2
+    print("\n=== SANITY CHECK: 429 -> IP rotation hook ===")
+    print(f"  {state['n']} attempts, on_retry (rotate IP) fired {state['rotations']}x -> succeeded. Validated.")
+
+
+def test_trends_client_refresh_rotates_proxy(monkeypatch):
+    """_TrendsClient.refresh() advances to the next authorized proxy (the on_retry mechanism)."""
+    guard = ")]}',\n"
+    explore = _FakeResp(200, guard + json.dumps({"widgets": []}))
+    fake_req, _ = _make_fake_module(explore, _FakeResp(200, ""))
+    monkeypatch.setattr(gt, "_cffi_requests", fake_req)
+
+    c = gt._TrendsClient(verify=False, proxies=["http://A:1", "http://B:2"])
+    assert c.n_proxies == 2
+    before = c._current_proxy()
+    c.refresh()                                              # rotate=True -> next IP
+    after = c._current_proxy()
+    assert before != after and {before, after} == {"http://A:1", "http://B:2"}
+    # a client with NO pool stays direct (proxy None) and never errors on refresh
+    c0 = gt._TrendsClient(verify=False, proxies=[])
+    assert c0.n_proxies == 0 and c0._current_proxy() is None
+    print("\n=== SANITY CHECK: Trends proxy rotation ===")
+    print(f"  refresh() moved IP {before} -> {after}; empty pool -> direct. Validated.")
+
+
 def test_client_raises_on_429(monkeypatch):
     explore_429 = _FakeResp(429, "rate limited")
     fake_req, _ = _make_fake_module(explore_429, _FakeResp(200, ""))

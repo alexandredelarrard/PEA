@@ -44,7 +44,7 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.utils import polite_http as ph          # shared BYO-proxy resolver (PEA_SCRAPE_PROXY)
+from src.utils import crawler                    # authorized proxy-pool loader (PEA_SCRAPE_PROXIES / PEA_SCRAPE_PROXY)
 
 try:                                            # TLS-impersonating transport (anti-429)
     from curl_cffi import requests as _cffi_requests
@@ -111,25 +111,43 @@ class _TrendsClient:
     """
 
     def __init__(self, verify: bool = True, impersonate: str = "chrome124",
-                 timeout: int = 30) -> None:
+                 timeout: int = 30, proxies: list[str] | None = None) -> None:
         if _cffi_requests is None:
             raise ImportError("curl_cffi is required for Google Trends extraction "
                               "(pip install curl_cffi)")
         self._verify = verify
         self._impersonate = impersonate
         self._timeout = timeout
+        # authorized proxy pool (PEA_SCRAPE_PROXIES): rotate to a fresh IP on each refresh/block, so
+        # a flagged exit IP is dropped. Empty -> direct (you can't rotate IPs you don't have).
+        self._pool = list(proxies) if proxies is not None else crawler.load_proxy_pool()
+        random.shuffle(self._pool)
+        self._pi = 0
         self._session = None
-        self.refresh()
+        self.refresh(rotate=False)
 
-    def refresh(self) -> None:
-        """Start a fresh impersonated session and re-prime the NID cookie (call
-        periodically so no single session fingerprint accumulates throttling)."""
+    @property
+    def n_proxies(self) -> int:
+        return len(self._pool)
+
+    def _current_proxy(self) -> str | None:
+        return self._pool[self._pi % len(self._pool)] if self._pool else None
+
+    def refresh(self, rotate: bool = True) -> None:
+        """Start a fresh impersonated session and re-prime the NID cookie. When `rotate` (the
+        default — this is the `call_with_retries` on_retry hook), MOVE to the next authorized proxy
+        first so the retry session goes out on a FRESH IP. Also called periodically so no single
+        session fingerprint accumulates throttling."""
+        if rotate and self._pool:
+            self._pi = (self._pi + 1) % len(self._pool)
+        prox = self._current_proxy()
+        proxies = {"http": prox, "https": prox} if prox else None
         self._session = _cffi_requests.Session(
             impersonate=self._impersonate, verify=self._verify, timeout=self._timeout,
-            proxies=ph.resolve_proxy())              # honour PEA_SCRAPE_PROXY / HTTPS_PROXY if set
+            proxies=proxies)
         self._session.headers.update(_random_header())
         try:
-            self._session.get(GOOGLE_TRENDS_HOME_URL)     # sets NID cookie
+            self._session.get(GOOGLE_TRENDS_HOME_URL)     # sets NID cookie (on the current IP)
         except Exception as e:                            # noqa: BLE001
             logger.debug("Trends cookie priming failed (continuing): %s", e)
 
@@ -293,13 +311,16 @@ def _fetch_weekly_history(client: _TrendsClient, keyword: str, years: int,
                           pause: float) -> pd.DataFrame:
     """Fetch overlapping weekly windows across `years` and stitch them (see module
     docstring). Each window retries with backoff on 429."""
+    # with an authorized proxy pool a 429 rotates IP (via on_retry) -> short waits; else stay polite
+    bw = 15.0 if client.n_proxies else 45.0
     chunks: list[pd.DataFrame] = []
     for start, end in _weekly_windows(years):
         timeframe = f"{start.date()} {end.date()}"
         try:
             df = call_with_retries(
                 lambda tf=timeframe: client.interest_over_time(keyword, tf),
-                retries=4, base_wait=45.0, label=f"trends {keyword} {timeframe}")
+                retries=4, base_wait=bw, on_retry=client.refresh,
+                label=f"trends {keyword} {timeframe}")
         except Exception as e:                  # noqa: BLE001 - skip a window, keep the rest
             logger.warning(f"trends {keyword} {timeframe}: window failed ({e})")
             df = None
@@ -391,7 +412,8 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
                 logger.info(f"Append recent weeks for {tkr} ({timeframe})")
                 recent = call_with_retries(
                     lambda tf=timeframe: client.interest_over_time(keyword, tf),
-                    retries=4, base_wait=45.0, label=f"trends {tkr} recent")
+                    retries=4, base_wait=(15.0 if client.n_proxies else 45.0),
+                    on_retry=client.refresh, label=f"trends {tkr} recent")
                 ref = existing[existing["ticker"] == tkr][["date", "search_interest"]]
                 series = _append_and_renormalize(ref, recent)   # FULL coherent 0-100 series
                 n_new = max(0, len(series) - len(ref))          # weeks actually appended

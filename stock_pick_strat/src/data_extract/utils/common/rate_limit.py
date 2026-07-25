@@ -19,12 +19,25 @@ def is_rate_limited(exc: BaseException) -> bool:
     return ("429" in s or "too many requests" in s or "toomanyrequests" in s
             or "rate limit" in s or "ratelimit" in s)
 
+def _on_retry(cb) -> None:
+    """Run an optional between-retries hook (e.g. rotate IP + re-prime the session) without letting
+    a hook failure abort the retry loop."""
+    if cb is None:
+        return
+    try:
+        cb()
+    except Exception as e:                          # noqa: BLE001
+        logger.debug("on_retry hook failed (continuing): %s", e)
+
+
 def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0,
-                      label: str = "", retry_empty=None):
+                      label: str = "", retry_empty=None, on_retry=None):
     """Call `fn()`; on a rate-limit error, WAIT (exponential backoff) and retry up
     to `retries` times before giving up. Non-rate-limit exceptions propagate
     immediately. If `retry_empty` is given (a predicate on the result), an "empty"
-    result is also retried (empties are often a soft throttle).
+    result is also retried (empties are often a soft throttle). `on_retry` (if given) runs
+    BEFORE each retry — e.g. to MOVE to the next authorized proxy and re-prime the session so the
+    retry goes out on a fresh IP.
 
     `retries=3` => up to 4 attempts total; waits base_wait, 2x, 4x, ...
     """
@@ -36,16 +49,18 @@ def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0,
             if is_rate_limited(e) and attempt < retries:
                 wait = base_wait * (2 ** attempt)
                 logger.warning(f"[{label}] rate-limited (429); attempt {attempt + 1}/{retries}"
-                        f" -> waiting {wait:.0f}s before retry")
+                        f" -> waiting {wait:.0f}s + rotating IP before retry")
                 time.sleep(wait)
                 attempt += 1
+                _on_retry(on_retry)
                 continue
             raise
         if retry_empty is not None and attempt < retries and retry_empty(result):
             wait = base_wait * (2 ** attempt)
             logger.warning(f"[{label}] empty response; attempt {attempt + 1}/{retries}"
-                    f" -> waiting {wait:.0f}s before retry")
+                    f" -> waiting {wait:.0f}s + rotating IP before retry")
             time.sleep(wait)
             attempt += 1
+            _on_retry(on_retry)
             continue
         return result

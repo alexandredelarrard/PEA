@@ -129,6 +129,15 @@ HF_TRANSCRIPTS_CACHE = "hf_sp500_transcripts.parquet"
 HF_BACKBONE_EARLY_QUARTER = "2005Q4"   # table min quarter must be <= this (deep history is present)
 HF_BACKBONE_LATE_QUARTER = "2025Q1"    # table max quarter must be >= this (HF's ~2025 cut is reached)
 
+# Roic AI earnings-call transcripts API — the PRIMARY recent-gap source (after the HF backbone,
+# before Motley Fool): a clean JSON API covering ~2y of history on the FREE tier (5 req/min). Auth
+# is the `apikey` QUERY param (not a header). `list` returns the available (year, quarter, date) per
+# ticker; `transcript` returns {symbol, year, quarter, date, content} for one fiscal quarter.
+ROIC_API_KEY_ENV = ("ROIC_API_KEY", "ROIC_AI_API_KEY")
+ROIC_EARNINGS_LIST_URL = "https://api.roic.ai/v2/company/earnings-calls/list/{ticker}"
+ROIC_EARNINGS_TRANSCRIPT_URL = "https://api.roic.ai/v2/company/earnings-calls/transcript/{ticker}"
+ROIC_REQUEST_PAUSE = 12.5              # free tier = 5 req/min -> >= 12s between calls
+
 # Per-call sentiment / text-metrics cache (one row per ticker / quarter / tag). The
 # EXPENSIVE, call-intrinsic scores (FinBERT tone probs + word count + lexicon ratios)
 # live here so the GPU pass runs once; the cross-call KPIs (tone delta, Q&A gap,

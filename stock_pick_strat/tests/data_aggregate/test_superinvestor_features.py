@@ -9,10 +9,12 @@ the net-accumulation sign, and (3) the same point-in-time 45-day filing lag hold
 """
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 
 from src.data_aggregate.utils.superinvestor_features import (
-    _weight_map, build_superinvestor_feature_panel,
+    _pad_cik, _weight_map, build_superinvestor_feature_panel, load_superinvestor_holdings,
 )
 
 # roster: M1 heavily weighted (0.7), M2 light (0.3); raw CIKs "1"/"2" (padded internally).
@@ -94,6 +96,44 @@ def test_weighted_accumulation_subset_and_leakfree():
           "2025-12-31 quarter invisible before its ~2026-02-14 filing (leak-free). Validated.")
 
 
+class _FakeStore:
+    """No `.engine` (forces the memory-safe in-memory fallback branch) and no `.exists`
+    (guard skipped via hasattr); `columns=` ignored (tiny data)."""
+    def __init__(self, df): self.df = df
+    def load(self, table, columns=None): return self.df.copy()
+
+
+class _FakeCtx:
+    def __init__(self, store): self.store = store; self.log = logging.getLogger("test")
+
+
+def test_load_superinvestor_holdings_reads_only_elite():
+    """The filtered read returns ONLY roster-manager rows, matching CIKs regardless of the stored
+    format (padded, unpadded, or '1234.0') exactly like _pad_cik — so the panel never sees the
+    ~20M-row all-filer table."""
+    rows = [
+        {"cik": "0000000001", "period": "2025-12-31", "ticker": "HOT", "shares": 100,
+         "value_usd": 1000, "filing_date": "2026-02-14"},              # roster, padded
+        {"cik": "2", "period": "2025-12-31", "ticker": "HOT", "shares": 50,
+         "value_usd": 500, "filing_date": "2026-02-14"},               # roster, UNPADDED
+        {"cik": "1067983.0", "period": "2025-12-31", "ticker": "COLD", "shares": 10,
+         "value_usd": 100, "filing_date": "2026-02-14"},               # NON-roster, float-text
+        {"cik": "0000000009", "period": "2025-12-31", "ticker": "X", "shares": 999,
+         "value_usd": 9990, "filing_date": "2026-02-14"},              # NON-roster
+    ]
+    ctx = _FakeCtx(_FakeStore(pd.DataFrame(rows)))
+    out = load_superinvestor_holdings(ctx, _ROSTER)
+    assert len(out) == 2, f"expected only the 2 roster rows, got {len(out)}"
+    assert set(out["cik"].map(_pad_cik)) == {"0000000001", "0000000002"}
+    assert set(out["ticker"]) == {"HOT"}, "non-roster tickers leaked in"
+    # empty roster -> nothing to read
+    assert load_superinvestor_holdings(ctx, {"managers": []}) is None
+    print("\n=== SANITY CHECK: elite-subset filtered read ===")
+    print("  only roster CIKs returned (padded '0000000001' + unpadded '2'); non-roster "
+          "'1067983.0'/'0000000009' dropped -> the 20M-row table is never fully loaded. Validated.")
+
+
 if __name__ == "__main__":
     test_weight_map_pads_and_sums()
     test_weighted_accumulation_subset_and_leakfree()
+    test_load_superinvestor_holdings_reads_only_elite()

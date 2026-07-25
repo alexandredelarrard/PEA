@@ -11,11 +11,15 @@ Two layers:
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamental_features import (
+    _FN_PBO_TAG,
+    _FN_PLAN_ASSETS_TAG,
     _ratio,
     _fiscal_change_to_daily,
     _peer_relative,
@@ -23,6 +27,8 @@ from src.data_aggregate.utils.fundamental_features import (
     _derived_fields,
     build_fundamental_feature_panel,
     build_state_panel,
+    load_notes_num_scoped,
+    load_tagged_facts,
 )
 
 
@@ -680,3 +686,40 @@ def test_true_enterprise_value_fully_diluted():
     print(f"  EV = 2200 FD-mcap + 50 debt + 10 leases + 5 minority - 25 cash - 15 STI = {ev:.0f}; "
           f"EBITDA/EV = 26/{ev:.0f} = {F['ebitda_to_ev'].loc[d,'AAA']:.5f}; "
           f"FCF/EV = 12/{ev:.0f}. Diluted (not basic) shares used; SBC excluded. Exact.")
+
+
+# --------------------------------------------------------------------------- #
+# Memory-safe scoped facts read: only the pension tags the builder uses         #
+# --------------------------------------------------------------------------- #
+class _FakeStore:
+    """No `.engine` (forces the in-memory fallback) and no `.exists` (guard skipped via hasattr)."""
+    def __init__(self, df): self.df = df
+    def load(self, table, columns=None): return self.df.copy()
+
+
+class _FakeCtx:
+    def __init__(self, store): self.store = store; self.log = logging.getLogger("test")
+
+
+def test_load_tagged_facts_reads_only_needed_tags():
+    """`load_notes_num_scoped` returns ONLY the 2 footnote pension tags the panel reads — the other
+    8 footnote tags are never materialised (the notes_num waste this optimization targets)."""
+    rows = []
+    for tag in (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, "SomeOtherFootnoteTag", "AnotherUnusedTag"):
+        rows.append({"ticker": "AAA", "tag": tag, "ddate": "2024-12-31", "qtrs": 0,
+                     "value": 100.0, "filed": "2025-02-14"})
+    ctx = _FakeCtx(_FakeStore(pd.DataFrame(rows)))
+    out = load_notes_num_scoped(ctx)
+    assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG}, "non-pension footnote tags leaked in"
+    assert len(out) == 2, f"expected only the 2 pension tags, got {len(out)}"
+    # no match / empty -> None (builder then treats pension as unavailable)
+    assert load_tagged_facts(ctx, "notes_num", ("NoSuchTag",)) is None
+    empty_ctx = _FakeCtx(_FakeStore(pd.DataFrame(columns=["ticker", "tag", "value"])))
+    assert load_notes_num_scoped(empty_ctx) is None
+    print("\n=== SANITY CHECK: scoped facts read ===")
+    print(f"  notes_num (10 tags in prod) -> only {_FN_PBO_TAG} + {_FN_PLAN_ASSETS_TAG} loaded "
+          "(2/4 synthetic rows); unused footnote tags dropped; no-match/empty -> None. Validated.")
+
+
+if __name__ == "__main__":
+    test_load_tagged_facts_reads_only_needed_tags()

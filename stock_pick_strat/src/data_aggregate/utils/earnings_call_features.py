@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import text
 
 from src.constants.constants import (
     EARNINGS_CALL_SCORED_TAGS,
@@ -75,52 +76,76 @@ def _score_rows(engine, rows: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
+def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame,
+                             sections: pd.DataFrame | None, tags: tuple[str, ...]):
+    """GENERATOR yielding (ticker, rows_to_score) ONE TICKER AT A TIME — reads the transcript text
+    per ticker (WHERE-filtered engine read when DB-backed, else an in-memory frame), keeping only
+    the sections still absent from the cache. Bounded memory: never the whole sections table."""
+    by_tkr: dict[str, set[tuple[str, str]]] = {}
+    for tkr, q, tag in todo_keys[["ticker", "quarter", "tag"]].to_numpy():
+        by_tkr.setdefault(tkr, set()).add((q, tag))
+    engine = None if sections is not None else getattr(context.store, "engine", None)
+    frame = sections
+    if engine is None and frame is None:                 # small / non-DB store: one projected read
+        frame = context.store.load(EARNINGS_CALL_SECTIONS_TABLE,
+                                   columns=["ticker", "quarter", "tag", "as_of", "text"])
+    taglist = ", ".join(f"'{t}'" for t in tags)
+    for tkr, pairs in by_tkr.items():
+        if engine is not None:                           # DB: pull just this ticker's sections
+            sql = text(f"SELECT ticker, quarter, tag, as_of, text FROM "
+                       f"{EARNINGS_CALL_SECTIONS_TABLE} WHERE ticker = :t AND tag IN ({taglist})")
+            with engine.connect() as conn:
+                g = pd.read_sql(sql, conn, params={"t": tkr})
+        else:
+            g = frame[(frame["ticker"] == tkr) & (frame["tag"].isin(tags))]
+        g = g[[(q, tag) in pairs for q, tag in zip(g["quarter"], g["tag"])]]
+        if not g.empty:
+            yield tkr, g
+
+
 def score_earnings_calls(context: Context,
                          sections: pd.DataFrame | None = None,
-                         tags: tuple[str, ...] = EARNINGS_CALL_SCORED_TAGS
-                         ) -> pd.DataFrame | None:
-    """Ensure every high-signal section has a cached FinBERT tone score; return the
-    full `earnings_call_sentiment` frame (None if there is nothing to score / no model).
-
-    Incremental: only (ticker, quarter, tag) absent from the cache are scored, and the
-    cache is upserted PER TICKER so an interrupted GPU run keeps its progress."""
-    store = context.store
-    log = context.log
-    if sections is None:
-        sections = store.load(EARNINGS_CALL_SECTIONS_TABLE)
-    if sections is None or sections.empty:
-        log.warning("No earnings_call_sections -> sentiment scoring skipped "
-                    "(run fetch_earnings_calls).")
-        return None
-
-    sections = sections[sections["tag"].isin(tags)].copy()
-    existing = store.load(EARNINGS_CALL_SENTIMENT_TABLE)
-    done = (set() if existing is None or existing.empty
-            else set(map(tuple, existing[["ticker", "quarter", "tag"]].to_numpy())))
-    key = list(zip(sections["ticker"], sections["quarter"], sections["tag"]))
-    todo = sections[[k not in done for k in key]]
-    if todo.empty:
-        log.info("Earnings-call sentiment cache already complete (%d rows).",
-                 0 if existing is None else len(existing))
-        return existing
+                         tags: tuple[str, ...] = EARNINGS_CALL_SCORED_TAGS) -> None:
+    """Ensure every high-signal section has a cached FinBERT tone score. MEMORY-SAFE + incremental:
+    the REMAINING sections are found by comparing two key-column-only reads (section keys vs. the
+    already-scored keys — never the transcript text), then each remaining ticker's text is read,
+    scored and SAVED ONE TICKER AT A TIME (a generator, nothing accumulated). An interrupted GPU run
+    keeps its progress; a re-run scores nothing. Returns None — the KPIs stream the cache back per
+    ticker (`sentiment_kpis_streamed`)."""
+    store, log = context.store, context.log
+    # section keys (no text) vs. already-scored keys (no probs) -> only what's left to score
+    if sections is not None:
+        keys = sections[sections["tag"].isin(tags)]
+    else:
+        keys = store.load(EARNINGS_CALL_SECTIONS_TABLE, columns=["ticker", "quarter", "tag"])
+        keys = keys[keys["tag"].isin(tags)] if keys is not None and not keys.empty else keys
+    if keys is None or keys.empty:
+        log.warning("No earnings_call_sections -> sentiment scoring skipped (run fetch_earnings_calls).")
+        return
+    sec_keys = keys[["ticker", "quarter", "tag"]].drop_duplicates()
+    done_df = store.load(EARNINGS_CALL_SENTIMENT_TABLE, columns=["ticker", "quarter", "tag"])
+    done = (set() if done_df is None or done_df.empty
+            else set(map(tuple, done_df.drop_duplicates().to_numpy())))
+    todo_keys = sec_keys[[tuple(k) not in done for k in sec_keys.to_numpy()]]
+    if todo_keys.empty:
+        log.info("Earnings-call sentiment cache already complete.")
+        return
 
     engine = get_sentiment_engine(log)
     if engine is None:                              # torch/transformers/model unavailable
-        log.warning("Sentiment model unavailable -> %d calls left unscored; "
-                    "earnings-call features will be skipped.", len(todo))
-        return existing if existing is not None and not existing.empty else None
+        log.warning("Sentiment model unavailable -> %d sections left unscored; "
+                    "earnings-call features will be skipped.", len(todo_keys))
+        return
 
-    log.info("Scoring %d earnings-call sections on %s (FinBERT-tone)...",
-             len(todo), engine.device)
+    log.info("Scoring %d earnings-call sections on %s (FinBERT-tone)...", len(todo_keys), engine.device)
     n_new = 0
-    for tkr, grp in todo.groupby("ticker", sort=False):
+    for _tkr, grp in _yield_sections_to_score(context, todo_keys, sections, tags):
         scored = _score_rows(engine, grp)
         if not scored.empty:
-            store.save(EARNINGS_CALL_SENTIMENT_TABLE, scored)   # upsert per ticker
+            store.save(EARNINGS_CALL_SENTIMENT_TABLE, scored)   # iterative per-ticker upsert
             n_new += len(scored)
     log.info("Earnings-call sentiment: +%d newly scored rows -> '%s'.",
              n_new, EARNINGS_CALL_SENTIMENT_TABLE)
-    return store.load(EARNINGS_CALL_SENTIMENT_TABLE)
 
 
 # --------------------------------------------------------------------------- #
@@ -225,21 +250,77 @@ _EMBEDDING_KPI_COLS = ["ec_qa_coherence_mean", "ec_qa_coherence_std", "ec_n_qa",
 _KPI_COLS = _SENTIMENT_KPI_COLS + _EMBEDDING_KPI_COLS
 
 
+def sentiment_kpis_streamed(context: Context) -> pd.DataFrame | None:
+    """Derive the per-call SENTIMENT KPIs from the cache PER TICKER (bounded memory: one ticker's
+    sentiment rows + its scripted-narrative text at a time, never the whole sections/sentiment
+    tables). QoQ deltas + vocab novelty stay correct because a ticker's every quarter loads
+    together. Returns the per-call KPI frame, or None if the cache is empty."""
+    store = context.store
+    if hasattr(store, "exists") and not store.exists(EARNINGS_CALL_SENTIMENT_TABLE):
+        return None
+    engine = getattr(store, "engine", None)
+    if engine is not None:
+        with engine.connect() as conn:
+            tickers = pd.read_sql(
+                text(f"SELECT DISTINCT ticker FROM {EARNINGS_CALL_SENTIMENT_TABLE}"), conn
+            )["ticker"].dropna().tolist()
+
+        def _sent(tk: str) -> pd.DataFrame:
+            with engine.connect() as conn:
+                return pd.read_sql(text(f"SELECT * FROM {EARNINGS_CALL_SENTIMENT_TABLE} "
+                                        f"WHERE ticker = :t"), conn, params={"t": tk})
+
+        def _vocab(tk: str) -> pd.DataFrame:
+            with engine.connect() as conn:
+                return pd.read_sql(text(f"SELECT ticker, quarter, tag, as_of, text FROM "
+                                        f"{EARNINGS_CALL_SECTIONS_TABLE} WHERE ticker = :t AND "
+                                        f"tag = :g"), conn, params={"t": tk, "g": _VOCAB_TAG})
+    else:
+        sent_all = store.load(EARNINGS_CALL_SENTIMENT_TABLE)
+        if sent_all is None or sent_all.empty:
+            return None
+        sec_all = store.load(EARNINGS_CALL_SECTIONS_TABLE,
+                             columns=["ticker", "quarter", "tag", "as_of", "text"])
+        tickers = sent_all["ticker"].dropna().unique().tolist()
+
+        def _sent(tk: str) -> pd.DataFrame:
+            return sent_all[sent_all["ticker"] == tk]
+
+        def _vocab(tk: str) -> pd.DataFrame | None:
+            if sec_all is None or sec_all.empty:
+                return None
+            return sec_all[(sec_all["ticker"] == tk) & (sec_all["tag"] == _VOCAB_TAG)]
+
+    parts = []
+    for tk in tickers:
+        s = _sent(tk)
+        if s is None or s.empty:
+            continue
+        parts.append(_per_call_kpis(s, _vocab(tk)))
+    if not parts:
+        return None
+    return pd.concat(parts, ignore_index=True)
+
+
 def build_earnings_call_feature_panel(
     sentiment: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
     sections: pd.DataFrame | None = None,
     embeddings: pd.DataFrame | None = None,
+    per_call: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format earnings-call feature panel (`f_ec_<kpi>_vs_peers`, `f_ec_<kpi>_xs`).
     Empty if the sentiment cache is unavailable/empty. When `embeddings` (the
     `earning_calls_embedding` cache) is provided, the Q&A-coherence + quarter-to-quarter
-    embedding-drift KPIs are merged in and expressed on the same daily, peer-relative basis."""
-    if sentiment is None or sentiment.empty or "sent_pos" not in sentiment.columns:
-        return pd.DataFrame(columns=["date", "ticker"])
-    per_call = _per_call_kpis(sentiment, sections)
-    if per_call.empty:
+    embedding-drift KPIs are merged in and expressed on the same daily, peer-relative basis.
+    `per_call` may be supplied PRECOMPUTED (the memory-safe per-ticker stream,
+    `sentiment_kpis_streamed`) to skip re-deriving the per-call KPIs from the full cache here."""
+    if per_call is None:
+        if sentiment is None or sentiment.empty or "sent_pos" not in sentiment.columns:
+            return pd.DataFrame(columns=["date", "ticker"])
+        per_call = _per_call_kpis(sentiment, sections)
+    if per_call is None or per_call.empty:
         return pd.DataFrame(columns=["date", "ticker"])
     ekpi = build_embedding_kpis(embeddings)
     if ekpi is not None and not ekpi.empty:

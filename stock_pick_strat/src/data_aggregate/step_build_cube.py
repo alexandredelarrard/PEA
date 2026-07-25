@@ -13,7 +13,9 @@ from src.data_aggregate.utils import data_utils as du
 from src.data_aggregate.utils.betas import estimate_all_betas
 from src.data_aggregate.utils.targets import build_targets_multi
 from src.data_aggregate.utils.features import build_feature_panel
-from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
+from src.data_aggregate.utils.fundamental_features import (
+    build_fundamental_feature_panel, load_notes_num_scoped, load_pension_facts_scoped,
+)
 from src.data_aggregate.utils.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.governance_features import build_governance_feature_panel
 from src.data_aggregate.utils.def14a_impute import impute_def14a
@@ -25,12 +27,15 @@ from src.data_aggregate.utils.earnings_call_features import (
     build_earnings_call_feature_panel,
     build_earnings_call_embedding_panel,
     score_earnings_calls,
+    sentiment_kpis_streamed,
 )
 from src.data_aggregate.utils.earnings_call_embeddings import (
     embed_earnings_calls, embedding_kpis_streamed,
 )
 from src.data_aggregate.utils.institutional_features import build_institutional_feature_panel
-from src.data_aggregate.utils.superinvestor_features import build_superinvestor_feature_panel
+from src.data_aggregate.utils.superinvestor_features import (
+    build_superinvestor_feature_panel, load_superinvestor_holdings,
+)
 from src.data_aggregate.utils.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.short_interest_features import build_short_interest_feature_panel
 from src.data_aggregate.utils.composites import build_composites as build_composite_signals
@@ -199,12 +204,13 @@ class StepBuildCube(Step):
             self._log.warning("No employee-count history -> workforce features skipped "
                               "(run fetch_employees; needs FMP_API_KEY).")
 
-        self.pension_facts = self._load_or_none("pension_facts")
+        # scoped reads: the panel uses only 2 tags of each -> never load the whole facts table
+        self.pension_facts = load_pension_facts_scoped(self._context)
         if self.pension_facts is None:
             self._log.warning("No pension_facts (Financial Statement Data Sets) -> the "
                               "companyfacts pensionDeficit is used for off-BS leverage.")
 
-        self.notes_num = self._load_or_none("notes_num")
+        self.notes_num = load_notes_num_scoped(self._context)
         if self.notes_num is None:
             self._log.warning("No notes_num (Financial Statement & Notes sets) -> footnote "
                               "pension detail (PBO/plan assets/funded ratio) skipped "
@@ -366,14 +372,22 @@ class StepBuildCube(Step):
         10-Q/10-K was already public on d -- never a not-yet-filed quarter.
         """
         hist = self._cfg.get("hist", {})
+        # scoped tag-filtered reads (DAG path leaves these unset -> read only the pension tags,
+        # never the whole notes_num/pension_facts tables); the monolithic path pre-scopes them.
+        pension_facts = getattr(self, "pension_facts", None)
+        if pension_facts is None:
+            pension_facts = load_pension_facts_scoped(self._context)
+        notes_num = getattr(self, "notes_num", None)
+        if notes_num is None:
+            notes_num = load_notes_num_scoped(self._context)
         fund_panel = build_fundamental_feature_panel(
             self.fundamentals, self.peers, self.stock_close.index,
             stock_close=self.stock_close, intrinsic_cfg=self._intrinsic_cfg(),
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
             earnings_history=getattr(self, "earnings", None),   # PEGY projected-growth term
-            pension_facts=getattr(self, "pension_facts", None), # bulk off-BS pension deficit
-            notes_num=getattr(self, "notes_num", None),         # footnote PBO / plan assets
+            pension_facts=pension_facts,                        # bulk off-BS pension deficit (2 tags)
+            notes_num=notes_num,                                # footnote PBO / plan assets (2 tags)
         )
         if fund_panel.empty:
             self._log.warning("No fundamental features built (missing fundamentals).")
@@ -552,14 +566,20 @@ class StepBuildCube(Step):
     def build_superinvestor_features(self):
         """Elite-manager 13F buy/sell-evolution features (Dataroma superinvestors),
         each weighted by its roster rank, layered ON TOP of the all-filer institutional
-        features. Reads the roster JSON; skipped if it has not been built."""
+        features. Reads the roster JSON; skipped if it has not been built. MEMORY-SAFE:
+        reads ONLY the roster managers' 13F rows (a handful of CIKs) via
+        `load_superinvestor_holdings`, never the whole ~20M-row institutional_holdings table."""
         roster = self._load_superinvestors()
         if not roster:
             self._log.warning("No superinvestors roster JSON -> elite 13F features "
                               "skipped (run fetch_superinvestors.build_superinvestors_json).")
             return
+        holdings = load_superinvestor_holdings(self._context, roster)   # elite subset only
+        if holdings is None or holdings.empty:
+            self._log.warning("No elite-manager 13F holdings -> superinvestor features skipped.")
+            return
         panel = build_superinvestor_feature_panel(
-            getattr(self, "institutional", None), roster, self.peers,
+            holdings, roster, self.peers,
             self.stock_close.index, shares_out_history=self.fundamentals,
             stock_close=self.stock_close,
         )
@@ -633,13 +653,16 @@ class StepBuildCube(Step):
         FinBERT-tone + Loughran-McDonald pass (cached/incremental in `earnings_call_sentiment`, so
         the GPU pass runs once), then derives the per-call KPIs — tone level & momentum, the
         Q&A-vs-scripted candor gap, the hedging (uncertainty) ratio, disclosure-length change and
-        vocabulary novelty — as peer-relative, point-in-time `f_ec_*` features."""
-        sections = getattr(self, "earnings_call_sections", None)
-        if sections is None:
+        vocabulary novelty — as peer-relative, point-in-time `f_ec_*` features. MEMORY-SAFE: never
+        preloads the full sections table — scoring streams the text per ticker, and the KPIs are
+        streamed back per ticker (`sentiment_kpis_streamed`)."""
+        score_earnings_calls(self._context)                     # lazy, iterative, cache-incremental
+        per_call = sentiment_kpis_streamed(self._context)       # per-ticker KPI stream (bounded memory)
+        if per_call is None or per_call.empty:
+            self._log.warning("No earnings-call sentiment cache -> sentiment features skipped.")
             return
-        sentiment = score_earnings_calls(self._context, sections=sections)
         panel = build_earnings_call_feature_panel(
-            sentiment, self.peers, self.stock_close.index, sections=sections, embeddings=None)
+            None, self.peers, self.stock_close.index, embeddings=None, per_call=per_call)
         self._merge_ec_panel(panel, "earnings-call sentiment")
 
     def build_earnings_call_embedding_features(self):
@@ -728,8 +751,10 @@ class StepBuildCube(Step):
     # feature group -> (source tables to load onto self, builder method)
     _GROUP_SOURCES: dict[str, tuple[tuple[str, ...], str]] = {
         "price":          ((), "build_features"),
-        "fundamental":    (("fundamentals_history", "pension_facts", "notes_num",
-                            "earnings_surprises"), "build_fundamental_features"),
+        # pension_facts/notes_num are NOT preloaded: the builder reads only the 2 pension tags of
+        # each (load_pension_facts_scoped / load_notes_num_scoped), never the whole facts tables.
+        "fundamental":    (("fundamentals_history", "earnings_surprises"),
+                           "build_fundamental_features"),
         "sector":         (("fundamentals_history",), "build_sector_features"),
         "earnings":       (("earnings_surprises",), "build_earnings_features"),
         "governance":     (("def14a_llm", "fundamentals_history"), "build_governance_features"),
@@ -738,13 +763,16 @@ class StepBuildCube(Step):
         "attention":      (("wiki_pageviews", "google_trends"), "build_attention_features"),
         "institutional":  (("institutional_holdings", "fundamentals_history"),
                            "build_institutional_features"),
-        "superinvestor":  (("institutional_holdings", "fundamentals_history"),
-                           "build_superinvestor_features"),
+        # only fundamentals_history preloaded: the elite 13F rows are read directly (roster CIKs
+        # only) by load_superinvestor_holdings — never the whole ~20M-row institutional_holdings.
+        "superinvestor":  (("fundamentals_history",), "build_superinvestor_features"),
         "insider":        (("insider_transactions", "fundamentals_history"), "build_insider_features"),
         "short_interest": (("short_interest", "fails_to_deliver"), "build_short_interest_features"),
         # earnings calls split into two independent parts (own DAG tasks): the FinBERT/LM sentiment
         # KPIs and the OpenAI-embedding Q&A-coherence/drift KPIs.
-        "earnings_call_sentiment": (("earnings_call_sections",), "build_earnings_call_sentiment_features"),
+        # no preloaded source: scoring streams the sections per ticker + the KPIs stream the cache
+        # per ticker itself (loading the full sections table here is what OOM-crashed the task).
+        "earnings_call_sentiment": ((), "build_earnings_call_sentiment_features"),
         # no preloaded source: embedding streams the sections per call + the KPI cache per ticker
         # itself (loading the full sections/embeddings tables here is what OOM-crashed the task).
         "earnings_call_embedding": ((), "build_earnings_call_embedding_features"),

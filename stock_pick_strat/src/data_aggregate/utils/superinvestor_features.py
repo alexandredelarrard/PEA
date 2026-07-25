@@ -32,11 +32,19 @@ import re
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import bindparam, text
 
+from src.context import Context
 from src.data_aggregate.utils.factors import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.fundamental_features import build_peer_relative_panel
 
 _FILING_LAG_DAYS = 45   # 13F filing deadline after quarter-end (leak-free floor)
+_HOLDINGS_TABLE = "institutional_holdings"     # the ~20M-row all-filer 13F table (literal, as elsewhere)
+_HOLDINGS_COLS = ["cik", "period", "ticker", "shares", "value_usd", "filing_date"]
+# normalize a stored TEXT cik the SAME way _pad_cik does (digits of the pre-decimal part, left-padded
+# to 10) so a Postgres WHERE matches the padded roster keys whether the DB stored it padded, unpadded
+# or as "1234.0". Postgres ARE supports the \D escape.
+_CIK_SQL_NORM = r"lpad(regexp_replace(split_part(cik, '.', 1), '\D', '', 'g'), 10, '0')"
 
 
 def _pad_cik(x: object) -> str:
@@ -72,6 +80,32 @@ def _weight_map(roster: dict | list | None) -> dict[str, float]:
         if cik and w is not None:
             out[cik] = out.get(cik, 0.0) + float(w)
     return out
+
+
+def load_superinvestor_holdings(context: Context, roster: dict | list | None) -> pd.DataFrame | None:
+    """Read ONLY the roster managers' rows from the ~20M-row `institutional_holdings` table — the
+    elite subset is a handful of CIKs, so pulling the whole table (then discarding 99% in
+    `_super_quarter_features`) is what made this OOM-crash. DB-backed stores push the filter down
+    with an engine-side `WHERE <normalized cik> IN (roster)` (cik text normalized exactly like
+    `_pad_cik`, so padded / unpadded / '1234.0' all match); non-DB / test stores fall back to a
+    projected full read filtered in pandas. None if the roster resolves to no manager."""
+    weights = _weight_map(roster)
+    if not weights:
+        return None
+    store = context.store
+    if hasattr(store, "exists") and not store.exists(_HOLDINGS_TABLE):
+        return None
+    engine = getattr(store, "engine", None)
+    if engine is not None:
+        cols = ", ".join(f'"{c}"' for c in _HOLDINGS_COLS)
+        sql = text(f'SELECT {cols} FROM "{_HOLDINGS_TABLE}" WHERE {_CIK_SQL_NORM} IN :ciks'
+                   ).bindparams(bindparam("ciks", expanding=True))
+        with engine.connect() as conn:
+            return pd.read_sql(sql, conn, params={"ciks": sorted(weights)})
+    df = store.load(_HOLDINGS_TABLE, columns=_HOLDINGS_COLS)      # fallback: full read, filter in memory
+    if df is None or df.empty:
+        return None
+    return df[df["cik"].map(_pad_cik).isin(weights)].reset_index(drop=True)
 
 
 def _super_quarter_features(holdings: pd.DataFrame, weights: dict[str, float]) -> pd.DataFrame:

@@ -75,7 +75,6 @@ lgbm:
     - f_goodwill_intangibles_to_assets_vs_peers: -1
     - f_fcf_to_ev_vs_hist: 1
     - f_ceo_tenure_vs_peers: 1
-    - f_attn_spike_xs : 1
   columns:
   - mom_12_1
   - rev_21
@@ -127,7 +126,6 @@ lgbm:
   - f_short_vol_ratio_xs
   - f_short_vol_ratio_chg_xs
   - f_fails_to_deliver_ratio_xs
-  - f_attn_spike_xs
   - f_ec_tone_xs
   - f_ec_tone_delta_xs
   - f_ec_qa_gap_xs

@@ -98,8 +98,8 @@ employees = fetch("employees", pool="sec_api")
 def14a = fetch("def14a", pool="sec_api")                              # + LLM
 
 # 4) external scraping — capped to 2 (site rate limits)
-wiki_pageviews = fetch("wiki-pageviews", pool="scrape")
-google_trends = fetch("google-trends", pool="scrape")                # slow
+# wiki_pageviews = fetch("wiki-pageviews", pool="scrape")
+# google_trends = fetch("google-trends", pool="scrape")                # slow
 # earnings calls split in two: DOWNLOAD to disk (HF 1.8GB one-time + MF HTML) -> INGEST to DB
 download_earnings_calls = fetch("download-earnings-calls", pool="scrape")
 ingest_earnings_calls = fetch("ingest-earnings-calls", pool="scrape")
@@ -160,7 +160,7 @@ trigger_aggregation = TriggerDagRunOperator(
 # --- wiring ---
 all_fetchers = light + [price_history, fails_to_deliver, thirteen_f, financial_statements,
                         insider_transactions, financial_notes, fundamentals, employees, def14a,
-                        wiki_pageviews, google_trends, download_earnings_calls]
+                        download_earnings_calls] # wiki_pageviews, google_trends,  removed
 seed_universe >> all_fetchers
 thirteen_f >> superinvestors                                         # roster reads the 13F holdings
 download_earnings_calls >> ingest_earnings_calls                     # ingest parses the downloaded files

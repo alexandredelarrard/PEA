@@ -144,7 +144,8 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     # ---- embed -> ONE ROW PER TURN, cached with every requested column ------------------------
     store = FakeStore(); store.t["earnings_call_sections"] = _sections()
     ctx = FakeCtx(store); stub = StubClient()
-    emb = embed_earnings_calls(ctx, client=stub)
+    embed_earnings_calls(ctx, client=stub)                             # populates the cache (returns None)
+    emb = store.load("earning_calls_embedding")
     qa_rows, prep_rows = emb[emb["section"] == "qa"], emb[emb["section"] == "prepared_remarks"]
     assert len(qa_rows) == 20, f"5 qa turns x 4 calls, got {len(qa_rows)}"
     assert len(prep_rows) == 4, f"1 prepared turn x 4 calls, got {len(prep_rows)}"

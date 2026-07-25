@@ -41,6 +41,7 @@ import re
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import text
 from tqdm import tqdm
 
 from src.constants.constants import (
@@ -358,43 +359,97 @@ def _drop_stale_turns(store, log, counts: dict[tuple[str, str], int]) -> None:
         log.info("Force re-embed reconcile: dropped %d stale turn rows.", int((~keep).sum()))
 
 
+# columns the KPI derivation needs — everything BUT the bulky `text` (and the audit columns): a
+# projected read keeps the per-ticker KPI streaming from pulling the turn text it never uses.
+_KPI_LOAD_COLS = ["ticker", "quarter", "as_of", "section", "tag", "exchange_idx", "embedding"]
+
+
+def _embedded_calls(store) -> set[tuple[str, str]]:
+    """(ticker, quarter) already embedded — reads ONLY the two key columns (never the 1536-dim
+    vectors), so the done-set check costs almost nothing even on a million-row cache."""
+    df = store.load(EARNINGS_CALL_EMBEDDING_TABLE, columns=["ticker", "quarter"])
+    if df is None or df.empty:
+        return set()
+    return set(map(tuple, df[["ticker", "quarter"]].drop_duplicates().to_numpy()))
+
+
+def _section_calls(store) -> list[tuple[str, str]]:
+    """Every (ticker, quarter) that HAS a qa/prepared section — key columns only, never the text."""
+    df = store.load(EARNINGS_CALL_SECTIONS_TABLE, columns=["ticker", "quarter", "tag"])
+    if df is None or df.empty:
+        return []
+    df = df[df["tag"].isin([_QA_TAG, _PREP_TAG])]
+    return [tuple(x) for x in df[["ticker", "quarter"]].drop_duplicates().to_numpy()]
+
+
+def _calls_from_frame(sections: pd.DataFrame) -> list[tuple[str, str]]:
+    sec = sections[sections["tag"].isin([_QA_TAG, _PREP_TAG])]
+    return [tuple(x) for x in sec[["ticker", "quarter"]].drop_duplicates().to_numpy()]
+
+
+def _yield_call_texts(context: Context, remaining: list[tuple[str, str]],
+                      sections: pd.DataFrame | None = None):
+    """GENERATOR yielding (ticker, quarter, qa_text, prep_text, as_of) for each remaining call,
+    reading the transcript text ONE TICKER AT A TIME (bounded memory: never the whole table). Uses
+    a WHERE-filtered engine read when the store is DB-backed, else an in-memory frame (a provided
+    `sections`, or a projected full read for the tiny test store)."""
+    by_tkr: dict[str, set[str]] = {}
+    for tkr, q in remaining:
+        by_tkr.setdefault(tkr, set()).add(q)
+    engine = None if sections is not None else getattr(context.store, "engine", None)
+    frame = sections
+    if engine is None and frame is None:                 # small / non-DB store: one projected read
+        frame = context.store.load(EARNINGS_CALL_SECTIONS_TABLE,
+                                   columns=["ticker", "quarter", "tag", "text", "as_of"])
+    for tkr, quarters in by_tkr.items():
+        if engine is not None:                           # DB: pull just this ticker's sections
+            sql = text(f"SELECT ticker, quarter, tag, text, as_of FROM "
+                       f"{EARNINGS_CALL_SECTIONS_TABLE} WHERE ticker = :t "
+                       f"AND tag IN ('{_QA_TAG}', '{_PREP_TAG}')")
+            with engine.connect() as conn:
+                g = pd.read_sql(sql, conn, params={"t": tkr})
+        else:
+            g = frame[(frame["ticker"] == tkr) & (frame["tag"].isin([_QA_TAG, _PREP_TAG]))]
+        g = g[g["quarter"].isin(quarters)]
+        for q, gg in g.groupby("quarter", sort=False):
+            qa = gg.loc[gg["tag"] == _QA_TAG, "text"]
+            prep = gg.loc[gg["tag"] == _PREP_TAG, "text"]
+            yield (tkr, q,
+                   qa.iloc[0] if len(qa) else None,
+                   prep.iloc[0] if len(prep) else None,
+                   gg["as_of"].iloc[0] if len(gg) else None)
+
+
 def embed_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
                          model: str = EARNINGS_CALL_EMBED_MODEL, force: bool = False,
-                         client=None) -> pd.DataFrame | None:
-    """Ensure every call's speaker turns are embedded + cached in `earning_calls_embedding`
-    (one row per turn). Incremental (skips ticker·quarter already embedded), per-call upsert.
-    `client` lets tests inject a stub embedder (no network / no spend). Returns the full table."""
-    
+                         client=None) -> None:
+    """Ensure every call's speaker turns are embedded + cached in `earning_calls_embedding` (one row
+    per turn). MEMORY-SAFE + incremental: first the REMAINING calls are found by comparing two
+    key-column-only reads (sections vs. already-embedded — never the vectors or the text), then each
+    remaining call's transcript is read, split, embedded and SAVED ONE CALL AT A TIME (a generator,
+    so nothing is accumulated and flushed at the end). An interrupted (billed) run keeps every saved
+    call and a re-run makes ZERO calls. `client` injects a stub embedder for tests. Returns None —
+    downstream KPIs stream the cache back per ticker (see `embedding_kpis_streamed`)."""
     store, log = context.store, context.log
-    if sections is None:
-        sections = store.load(EARNINGS_CALL_SECTIONS_TABLE)
-    if sections is None or sections.empty:
-        log.warning("No earnings_call_sections -> embedding skipped (run fetch_earnings_calls).")
-        return None
     if client is None and not openai_api_key():
         log.warning("OPENAI/OPEN_AI_API_KEY not set -> earnings-call embedding skipped.")
-        return store.load(EARNINGS_CALL_EMBEDDING_TABLE)
+        return
 
-    sec = sections[sections["tag"].isin([_QA_TAG, _PREP_TAG])].copy()
-    text = sec.pivot_table(index=["ticker", "quarter"], columns="tag", values="text", aggfunc="first")
-    as_of = sec.groupby(["ticker", "quarter"])["as_of"].first()
+    universe = _calls_from_frame(sections) if sections is not None else _section_calls(store)
+    if not universe:
+        log.warning("No earnings_call_sections -> embedding skipped (run fetch_earnings_calls).")
+        return
+    done = set() if force else _embedded_calls(store)
+    remaining = [k for k in universe if tuple(k) not in done]
+    if not remaining:
+        log.info("Earnings-call embedding cache already complete (%d calls).", len(universe))
+        return
 
-    existing = store.load(EARNINGS_CALL_EMBEDDING_TABLE)
-    done = (set() if existing is None or existing.empty
-            else set(map(tuple, existing[["ticker", "quarter"]].drop_duplicates().to_numpy())))
-    calls = [k for k in text.index if force or tuple(k) not in done]
-    if not calls:
-        log.info("Earnings-call embedding cache already complete (%d turn rows).",
-                 0 if existing is None else len(existing))
-        return existing
-
-    log.info("Embedding %d earnings calls per-turn (OpenAI %s)...", len(calls), model)
+    log.info("Embedding %d earnings calls per-turn (OpenAI %s)...", len(remaining), model)
     n_new, counts = 0, {}
-    for (tkr, q) in tqdm(calls, "EC EMbeddings calls"):
+    for tkr, q, qa_text, prep_text, aod in tqdm(
+            _yield_call_texts(context, remaining, sections), "EC embeddings", total=len(remaining)):
         run_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-        qa_text = text.loc[(tkr, q), _QA_TAG] if _QA_TAG in text.columns else None
-        prep_text = text.loc[(tkr, q), _PREP_TAG] if _PREP_TAG in text.columns else None
-        aod = as_of.get((tkr, q))
         prep_turns = (split_turns(prep_text, _PREP_TAG)
                       if isinstance(prep_text, str) and prep_text.strip() else [])
         mgmt = {t["person"].strip().lower() for t in prep_turns if t.get("person")}
@@ -409,13 +464,56 @@ def embed_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
                  "person": t["person"], "text": t["text"], "as_of": aod,
                  "embedding": [float(x) for x in V[i]], "model": model, "run_at": run_at}
                 for i, t in enumerate(turns)]
-        store.save(EARNINGS_CALL_EMBEDDING_TABLE, pd.DataFrame(rows))    # per-call upsert
+        store.save(EARNINGS_CALL_EMBEDDING_TABLE, pd.DataFrame(rows))    # iterative per-call upsert
         counts[(tkr, q)] = len(rows)
         n_new += len(rows)
     if force and counts:                     # re-embed may yield FEWER turns -> drop orphaned tail rows
         _drop_stale_turns(store, log, counts)
     log.info("Earnings-call embeddings: +%d turn rows -> '%s'.", n_new, EARNINGS_CALL_EMBEDDING_TABLE)
-    return store.load(EARNINGS_CALL_EMBEDDING_TABLE)
+
+
+def embedding_kpis_streamed(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """Derive the embedding KPIs from the cache PER TICKER (bounded memory: one ticker's vectors in
+    RAM at a time, never the whole 1536-dim table). Returns (kpi, as_of) small frames, or (None,
+    None) if the cache is empty. QoQ drift stays correct because a ticker's every quarter is loaded
+    together."""
+    store = context.store
+    if hasattr(store, "exists") and not store.exists(EARNINGS_CALL_EMBEDDING_TABLE):
+        return None, None                                # cache never created (e.g. no OpenAI key)
+    engine = getattr(store, "engine", None)
+    if engine is not None:
+        with engine.connect() as conn:
+            tickers = pd.read_sql(
+                text(f"SELECT DISTINCT ticker FROM {EARNINGS_CALL_EMBEDDING_TABLE}"), conn
+            )["ticker"].dropna().tolist()
+
+        def _load(tk: str) -> pd.DataFrame:
+            cols = ", ".join(_KPI_LOAD_COLS)
+            with engine.connect() as conn:
+                return pd.read_sql(
+                    text(f"SELECT {cols} FROM {EARNINGS_CALL_EMBEDDING_TABLE} WHERE ticker = :t"),
+                    conn, params={"t": tk})
+    else:
+        full = store.load(EARNINGS_CALL_EMBEDDING_TABLE, columns=_KPI_LOAD_COLS)
+        if full is None or full.empty:
+            return None, None
+        tickers = full["ticker"].dropna().unique().tolist()
+
+        def _load(tk: str) -> pd.DataFrame:
+            return full[full["ticker"] == tk]
+
+    kparts, aparts = [], []
+    for tk in tickers:
+        emb = _load(tk)
+        if emb is None or emb.empty:
+            continue
+        k = build_embedding_kpis(emb)
+        if k is not None and not k.empty:
+            kparts.append(k)
+        aparts.append(emb[["ticker", "quarter", "as_of"]].drop_duplicates())
+    if not kparts:
+        return None, None
+    return (pd.concat(kparts, ignore_index=True), pd.concat(aparts, ignore_index=True))
 
 
 # --------------------------------------------------------------------------- #

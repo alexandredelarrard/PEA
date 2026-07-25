@@ -79,6 +79,40 @@ SEC_FTD_LEGACY_URL_TEMPLATE = ("https://www.sec.gov/files/data/"
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"   # last period on the legacy path (>= 201706b uses the current path)
 SEC_FTD_FIRST_YEAR = 2009          # earliest FTD file overall (2009-07, legacy path) -> full 15y coverage
 
+# 8-K material-event item codes. Pulled STRUCTURED from the EDGAR submissions JSON (`filings.*.items`)
+# — no document parsing, ~100% fill for post-2004 8-Ks. Table keyed per filing; raw comma-separated
+# `items` stored + a count. The curated high-signal codes (leading distress/governance events) are
+# mapped for the downstream feature layer; item structure exists from 2004-08 onward.
+SEC_8K_ITEMS_TABLE = "sec_8k_items"
+SEC_8K_CACHE_DIR = "sec_8k_cache"        # raw submissions JSON, relative to DATA_STORE
+SEC_8K_FORMS = ["8-K", "8-K/A"]
+SEC_8K_HIGH_SIGNAL_ITEMS = {
+    "1.01": "material_agreement_entered", "1.02": "material_agreement_terminated",
+    "1.03": "bankruptcy", "2.05": "restructuring_costs", "2.06": "impairment",
+    "3.01": "delisting_or_covenant", "4.01": "auditor_change", "4.02": "non_reliance_restatement",
+    "5.02": "exec_or_director_change", "5.03": "bylaw_change", "8.01": "other_events",
+}
+
+# SC 13D activist filings (>5% stake WITH intent to influence) + amendments — the event-driven
+# catalyst signal. Pulled from the SUBJECT company's EDGAR submissions (SEC indexes 13D/13G under
+# the subject CIK, so the shared list_filings works), one row per filing at ~100% event fill.
+SEC_13D_TABLE = "sec_13d"
+SEC_13D_CACHE_DIR = "sec_13d_cache"      # raw submissions JSON, relative to DATA_STORE
+SEC_13D_FORMS = ["SC 13D", "SC 13D/A"]   # activist (13G = passive is deliberately excluded)
+
+# 10-K narrative sections: Item 1A (Risk Factors) + Item 7 (MD&A). Downloaded from the annual 10-K,
+# section-carved to raw text, stored for later embedding/drift features (YoY risk-factor additions,
+# MD&A tone drift — reusing the notes-embedding machinery). One row per (ticker, accession, section).
+FILING_TEXT_TABLE = "filing_risk_text"
+FILING_TEXT_CACHE_DIR = "sec_filings_text"   # raw 10-K/10-Q HTML, relative to DATA_STORE
+# MD&A lives in DIFFERENT items per form: 10-K Item 7 (annual) and 10-Q Item 2 (quarterly). Both are
+# extracted so the MD&A tone/drift signal is QUARTERLY. Risk Factors are taken from the 10-K (Item 1A,
+# the substantive annual set); 10-Q Part II Item 1A is usually "no material change" so it is skipped.
+FILING_TEXT_FORMS = ["10-K", "10-Q"]
+FILING_SECTION_RISK = "risk_factors"         # 10-K Item 1A
+FILING_SECTION_MDA = "mda"                   # 10-K Item 7 / 10-Q Item 2
+FILING_TEXT_MIN_CHARS = 1500                 # below this a "section" is a TOC/cross-ref stub, not the body
+
 # moves from LEGACY URLto NEW on second half of june 2017
 # NEW  href="https://www.sec.gov/files/data/fails-deliver-data/cnsfails202007b.zip"
 # LEGACY href= "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails201301a.zip"

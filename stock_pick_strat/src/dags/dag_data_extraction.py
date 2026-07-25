@@ -96,6 +96,9 @@ superinvestors = fetch("superinvestors")                              # light, n
 fundamentals = fetch("fundamentals", pool="sec_api")
 employees = fetch("employees", pool="sec_api")
 def14a = fetch("def14a", pool="sec_api")                              # + LLM
+sec_8k_items = fetch("sec-8k-items", pool="sec_api")                 # 8-K item codes (structured)
+sec_13d = fetch("sec-13d", pool="sec_api")                           # SC 13D activist filings
+filing_text = fetch("filing-text", pool="sec_api")                   # 10-K Item 1A + Item 7 text
 
 # 4) external scraping — capped to 2 (site rate limits)
 # wiki_pageviews = fetch("wiki-pageviews", pool="scrape")
@@ -103,10 +106,7 @@ def14a = fetch("def14a", pool="sec_api")                              # + LLM
 # earnings calls split in two: DOWNLOAD to disk (HF 1.8GB one-time + MF HTML) -> INGEST to DB
 download_earnings_calls = fetch("download-earnings-calls", pool="scrape")
 ingest_earnings_calls = fetch("ingest-earnings-calls", pool="scrape")
-download_earnings_calls >> ingest_earnings_calls
-
 extraction_complete = EmptyOperator(task_id="extraction_complete", dag=dag)
-
 
 def _freshness_check(**context) -> None:
     """Data-drift / gap gate. Shells to the pipeline venv (`check-freshness`), captures the JSON
@@ -160,7 +160,9 @@ trigger_aggregation = TriggerDagRunOperator(
 # --- wiring ---
 all_fetchers = light + [price_history, fails_to_deliver, thirteen_f, financial_statements,
                         insider_transactions, financial_notes, fundamentals, employees, def14a,
-                        download_earnings_calls] # wiki_pageviews, google_trends,  removed
+                        sec_8k_items, sec_13d, filing_text, 
+                        download_earnings_calls] #wiki_pageviews, google_trends,
+
 seed_universe >> all_fetchers
 thirteen_f >> superinvestors                                         # roster reads the 13F holdings
 download_earnings_calls >> ingest_earnings_calls                     # ingest parses the downloaded files

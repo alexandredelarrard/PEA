@@ -717,22 +717,38 @@ class StepBuildCube(Step):
                        len(self.cube), self.cube["target_horizon"].nunique(),
                        self.cube["ticker"].nunique())
 
-    def _add_categorical_codes(self):
-        """Attach GICS sector / industry_group as INTEGER category codes
+    def _apply_categorical_codes(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Attach GICS sector / industry_group as INTEGER category codes to `df`
         (deterministic sorted mapping; unknown -> -1) so LightGBM can make native
         non-linear categorical splits on them. Stored as ints so they flow through
         the numeric panel path unchanged; the linear ensemble member ignores them
-        (they are listed under inputs.categoricals, not inputs.columns)."""
+        (they are listed under inputs.categoricals, not inputs.columns). By ticker, so
+        it is horizon-independent and can be applied ONCE to the pre-horizon-merge base."""
         ref = self._context.store.load("sp500_tickers")
         for col in ("sector", "industry_group"):
-            if ref.empty or col not in ref.columns:
+            if ref is None or ref.empty or col not in ref.columns:
                 self._log.warning("sp500_tickers has no '%s' -> categorical skipped", col)
                 continue
             m = dict(zip(ref["ticker"].astype(str), ref[col].astype("string")))
-            cats = self.cube["ticker"].astype(str).map(m).astype("category")
-            self.cube[col] = cats.cat.codes.astype("int16")     # unknown / NaN -> -1
-            self._log.info("Added categorical '%s' (%d categories) to cube",
-                           col, cats.cat.categories.size)
+            cats = df["ticker"].astype(str).map(m).astype("category")
+            df[col] = cats.cat.codes.astype("int16")            # unknown / NaN -> -1
+            self._log.info("Added categorical '%s' (%d categories)", col, cats.cat.categories.size)
+        return df
+
+    def _add_categorical_codes(self):
+        self.cube = self._apply_categorical_codes(self.cube)
+
+    @staticmethod
+    def _downcast_float32(df: pd.DataFrame | None) -> pd.DataFrame | None:
+        """Downcast float64 columns to float32 (feature z-scores / ranks / returns need no float64
+        precision) -> halves the wide panel + every horizon slice below. Keys / ints / object cols
+        untouched."""
+        if df is None or df.empty:
+            return df
+        f64 = df.select_dtypes(include=["float64"]).columns
+        if len(f64):
+            df[f64] = df[f64].astype("float32")
+        return df
 
     def save_cube(self):
         # full rebuild each run -> replace the table (truncate + fast COPY)
@@ -1077,7 +1093,15 @@ class StepBuildCube(Step):
     def assemble_cube_from_parts(self) -> None:
         """Final step: read every persisted part, merge features + composites + betas + peers +
         targets into the cube, and save it. Loads NO raw source tables and recomputes NO features
-        (mirrors build_cube_dataframe on the persisted long forms)."""
+        (mirrors build_cube_dataframe on the persisted long forms).
+
+        MEMORY-LIGHT (this step was OOM-killing the DAG): the cube is LONG by target_horizon, so a
+        single `targets.merge(base)` broadcasts every feature column across all horizons at once =
+        dates x tickers x horizons x ~200 cols held in RAM, then replaced in one shot. Instead we
+        (1) float32 every feature part, (2) build the wide `base` (features + composites + betas +
+        peers + categoricals) ONCE, and (3) STREAM the write one target_horizon at a time -> peak
+        memory drops by the horizon factor (only one horizon slice resident) and there is no giant
+        final serialization spike."""
         self._prereqs()                                  # peers dict (for the `peers` column)
         panel = None
         for group in self._GROUP_SOURCES:
@@ -1085,8 +1109,8 @@ class StepBuildCube(Step):
             if not self._context.store.exists(t):
                 self._log.warning("Feature part '%s' missing -> skipped.", t)
                 continue
-            p = self._norm_date(self._context.store.load(t))
-            if p.empty:
+            p = self._downcast_float32(self._norm_date(self._context.store.load(t)))
+            if p is None or p.empty:
                 continue
             panel = p if panel is None else panel.merge(p, on=["date", "ticker"], how="outer")
         if panel is None or panel.empty:
@@ -1094,13 +1118,30 @@ class StepBuildCube(Step):
         self.feature_panel = panel
         self.build_composite_signals()                   # composites over the merged feature panel
 
-        betas_long = self._norm_date(self._context.store.load("cube_part_betas"))
-        targets_long = self._norm_date(self._context.store.load("cube_part_targets"))
+        # build the wide, horizon-INDEPENDENT base once (features + betas + peers + categoricals)
+        betas_long = self._downcast_float32(self._norm_date(self._context.store.load("cube_part_betas")))
         base = self.feature_panel.merge(betas_long, on=["date", "ticker"], how="left")
+        self.feature_panel = panel = betas_long = None   # free the wide intermediates
         base["peers"] = base["ticker"].map(
             lambda t: json.dumps(self.peers.get(t, {}), ensure_ascii=False))
-        self.cube = targets_long.merge(base, on=["date", "ticker"], how="inner")
-        self.cube = (self.cube.sort_values(["date", "ticker", "target_horizon"])
-                     .reset_index(drop=True))
-        self._add_categorical_codes()
-        self.save_cube()
+        base = self._apply_categorical_codes(base)       # by ticker -> broadcasts to every horizon
+
+        targets_long = self._downcast_float32(self._norm_date(self._context.store.load("cube_part_targets")))
+        if targets_long is None or targets_long.empty:
+            raise RuntimeError("cube_part_targets missing/empty -> run the target step first.")
+        horizons = sorted(pd.to_numeric(targets_long["target_horizon"], errors="coerce")
+                          .dropna().unique().tolist())
+        total = 0
+        for i, h in enumerate(horizons):
+            tg = targets_long[targets_long["target_horizon"] == h]
+            chunk = (tg.merge(base, on=["date", "ticker"], how="inner")
+                     .sort_values(["date", "ticker"]).reset_index(drop=True))
+            # first horizon truncates + creates the table; the rest APPEND (PK is
+            # (ticker,date,target_horizon), so horizon slices never collide).
+            n = (self._context.store.replace("cube", chunk) if i == 0
+                 else self._context.store.save("cube", chunk))
+            total += n
+            self._log.info("Cube horizon %s: wrote %s rows (%d/%d).", h, n, i + 1, len(horizons))
+            tg = chunk = None
+        self._log.info("Saved cube to DB table 'cube' (%s rows across %d horizons)",
+                       total, len(horizons))

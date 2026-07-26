@@ -8,14 +8,14 @@ from src.data_peers.step_deduce_peers import StepDeducePeers
 if __name__ == "__main__":
     config, context = get_config_context("./configs", use_cache=False, save=True)
     
-    self = StepExtractAllData(context=context, config=config)
-    self.run()
+    # self = StepExtractAllData(context=context, config=config)
+    # self.run()
 
     # self = StepDeducePeers(context=context, config=config)
     # self.run()ss
 
-    # self = StepBuildCube(context=context, config=config)
-    # self.run()
+    self = StepBuildCube(context=context, config=config)
+    self.run()
 
     # self = StepModelling(context=context, config=config)
     # self.run()
@@ -23,14 +23,10 @@ if __name__ == "__main__":
     # self = StepPortfolio(context=context, config=config)
     # self.run()
 
-# TODO ##################### biggeer work :
-# - Add News and deduce : geopolitics score per sector. Need to understand how a news impact a stock ... 
-# - Neutral currency pools: 
-#           - LLM text extract from form 8 to get geo weight to build currency basket
-#           - LLM to build commo pool impact  
-# - Earnings call transcript analysis 
-# - Add notes text & nums analysis to the cube 
-# - Impact of correlated, close peers financials arriving before with earnings -> peers compute will move with their earnings 
+##### data check 
+# TODO: why ec only for 467 ?? what about rest ?
+# TODO: sanity check table per table # tickers, filling rate of each featuer, relationship vs target, if this makes sense 
+# TODO: refine composer features 
 
 # docker run --rm -v stock_pick_strat_pgdata:/volume alpine tar czf - -C /volume . > stock_pick_strat_pgdata.tar.gz
 

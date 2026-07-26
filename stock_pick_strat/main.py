@@ -23,18 +23,10 @@ if __name__ == "__main__":
     # self = StepPortfolio(context=context, config=config)
     # self.run()
 
-# TODO: check how to rebase google trend week after week if pick is now ? 
-# TODO: check why those features are not computed 
-# TODO: check Configured features not in cube (skipped): ['f_gross_profitability_xs', 'f_interest_coverage_vs_peers', 'f_net_debt_to_ebitda_xs', 'f_ec_tone_xs', 'f_ec_tone_delta_xs', 'f_ec_qa_gap_xs', 'f_ec_uncertainty_xs', 'f_ec_vocab_novelty_xs', 'f_ec_length_delta_xs']
-
-# TODO ##################### biggeer work :
-# - Add News and deduce : geopolitics score per sector. Need to understand how a news impact a stock ... 
-# - Neutral currency pools: 
-#           - LLM text extract from form 8 to get geo weight to build currency basket
-#           - LLM to build commo pool impact  
-# - Earnings call transcript analysis 
-# - Add notes text & nums analysis to the cube 
-# - Impact of correlated, close peers financials arriving before with earnings -> peers compute will move with their earnings 
+##### data check 
+# TODO: why ec only for 467 ?? what about rest ?
+# TODO: sanity check table per table # tickers, filling rate of each featuer, relationship vs target, if this makes sense 
+# TODO: refine composer features 
 
 # docker run --rm -v stock_pick_strat_pgdata:/volume alpine tar czf - -C /volume . > stock_pick_strat_pgdata.tar.gz
 

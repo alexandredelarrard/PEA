@@ -1,3 +1,4 @@
+import gc
 import numpy as np
 import json
 import pickle
@@ -9,7 +10,7 @@ import lightgbm as lgb
 
 from src.utils.step import Step
 from src.context import Context
-from src.data_aggregate.utils.cube import panel_from_cube, feature_columns_from_cube
+from src.data_aggregate.utils.cube import panel_from_cube, CUBE_META_COLS
 from src.modelling.long_short.utils import model as ml
 from src.modelling.long_short.utils import baselines
 from src.modelling.long_short.utils import diagnostics
@@ -40,53 +41,107 @@ class StepModelling(Step):
     def run(self, full_history: bool = False):
         """Train the per-horizon ensemble. `full_history=True` = the PRODUCTION train on ALL data up
         to the latest cube date (no train_end cutoff, no OOS holdout) — used after the backtest to
-        fit the model that generates the live predictions for the allocation."""
+        fit the model that generates the live predictions for the allocation.
+
+        MEMORY-LIGHT: the cube is LONG by target_horizon and models are trained PER HORIZON, so we
+        never hold every horizon at once. `_setup` resolves columns/horizons with NO data load, then
+        `_process_horizons` reads ONLY one horizon's rows+cols at a time (float32), cross-validates,
+        trains, saves, scores it for the blend, and FREES it before the next -> peak memory ~ a
+        single horizon instead of the whole labelled cube (x its column-duplication across horizons)."""
         self._full_history = full_history
-        self.load_cube()
-        self.build_panels()
-        self.cross_validate_all_horizons()
-        self.train_final_models()
-        self.save_models()
-        self.blend_and_generate_signal()
+        self._setup()                        # columns + horizons; NO cube data loaded
+        self._process_horizons()             # per-horizon: load -> CV -> train -> save-score -> free
+        self.blend_and_generate_signal()     # blend the small per-horizon score frames
         self.log_feature_importance()
-        self.save_diagnostics()
+        self.save_models()
         self.save_outputs()
 
     # ------------------------------------------------------------------ #
-    def load_cube(self):
+    def _setup(self):
+        """Resolve the target column, horizons and per-member feature-column sets from the cube's
+        SCHEMA only (information_schema + a cheap DISTINCT) — no feature data is read here."""
         self.primary_horizon = self._cfg.targets.primary_horizon
         self.label_column = self._config.model.label_column
         self.target_type = self._config.model.get("target_type", "rank")
-        # ensemble: train EVERY listed model family and average their per-day
-        # standardized predictions. `model.ensemble` (list) wins; else fall back to
-        # the single `model.type`.
+        # ensemble: train EVERY listed model family and average their per-day standardized
+        # predictions. `model.ensemble` (list) wins; else fall back to the single `model.type`.
         ens = self._config.model.get("ensemble", None)
         self.model_types = list(ens) if ens else [self._config.model.get("type", "lightgbm")]
 
-        # Load ONLY what the model needs: the index/target columns plus the
-        # modelling.yml allow-list + categoricals that actually exist in the cube,
-        # and ONLY rows where the target is available. The cube's NULL-label rows
-        # (the beta-warmup head + the forward-return tail) are dropped downstream by
-        # panel_from_cube anyway, so pushing the filter into SQL yields the SAME
-        # panels (CV / training / blending / saved predictions unchanged) while
-        # avoiding a full 159-column x millions-of-rows load.
         cube_cols = self._cube_columns()
-        target_col = self._target_column(cube_cols)
-        load_cols, dropped = self._select_load_columns(cube_cols, target_col)
-        self.cube = self._load_cube_where_labelled(load_cols, target_col)
-        if self.cube.empty:
+        self._target_col = self._target_column(cube_cols)
+        self._load_cols, dropped = self._select_load_columns(cube_cols, self._target_col)
+        self.horizons = self._distinct_horizons(self._target_col)
+        if not self.horizons:
             raise FileNotFoundError(
-                f"No cube rows with a non-null target '{target_col}'. Run StepBuildCube "
-                "first (and confirm build_cube.targets.labels includes "
-                f"'{self.target_type}').")
+                f"No cube rows with a non-null target '{self._target_col}'. Run StepBuildCube "
+                f"first (and confirm build_cube.targets.labels includes '{self.target_type}').")
 
-        self.horizons = sorted(self.cube["target_horizon"].unique())
-        self._log.info("Loaded cube: %s labelled rows x %s cols (target=%s), horizons=%s, "
-                       "target_type=%s, models=%s", len(self.cube), len(load_cols),
-                       target_col, self.horizons, self.target_type, self.model_types)
+        # per-member column sets = configured allow-list INTERSECTED with what the cube actually has
+        # (from the schema; no data scan). Each member/horizon keeps its own (possibly leaner) set.
+        avail = {c for c in cube_cols if c not in CUBE_META_COLS and c != self.label_column}
+        self.linear_cols = [c for c in self._linear_columns() if c in avail]
+        self.lgbm_cols = [c for c in self._lgbm_columns() if c in avail]
+        self.rf_cols = [c for c in self._rf_columns() if c in avail]
+        self.categorical_cols = [c for c in self._lgbm_categoricals() if c in avail]
+        self.linear_cols_by_h = {h: [c for c in self._linear_columns(h) if c in avail] for h in self.horizons}
+        self.lgbm_cols_by_h = {h: [c for c in self._lgbm_columns(h) if c in avail] for h in self.horizons}
+        self.rf_cols_by_h = {h: [c for c in self._rf_columns(h) if c in avail] for h in self.horizons}
+        allcols = set(self.linear_cols) | set(self.lgbm_cols) | set(self.rf_cols)
+        for h in self.horizons:
+            allcols |= set(self.linear_cols_by_h[h]) | set(self.lgbm_cols_by_h[h]) | set(self.rf_cols_by_h[h])
+        self.feature_cols = sorted(allcols)
+        if not self.linear_cols and not self.lgbm_cols:
+            raise ValueError("No configured features present in the cube; check "
+                             "linear_modelling.yml / lgbm_modelling.yml `columns`.")
+        self._panel_cols = list(dict.fromkeys(self.feature_cols + self.categorical_cols))
+        self._log.info("Setup: target=%s horizons=%s target_type=%s models=%s | features -> "
+                       "linear:%d lgbm:%d (+%d cats) union:%d", self._target_col, self.horizons,
+                       self.target_type, self.model_types, len(self.linear_cols), len(self.lgbm_cols),
+                       len(self.categorical_cols), len(self.feature_cols))
         if dropped:
-            self._log.info("modelling.yml columns absent from the cube (not loaded, "
-                           "%d): %s", len(dropped), dropped)
+            self._log.info("modelling.yml columns absent from the cube (not loaded, %d): %s",
+                           len(dropped), dropped)
+
+    def _distinct_horizons(self, target_col: str) -> list:
+        """Sorted horizons that HAVE a non-null label — a cheap DISTINCT (no feature scan)."""
+        q = text(f'SELECT DISTINCT target_horizon FROM cube WHERE "{target_col}" IS NOT NULL '
+                 "ORDER BY target_horizon")
+        with self._context.store.engine.connect() as c:
+            return pd.read_sql(q, c)["target_horizon"].tolist()
+
+    @staticmethod
+    def _downcast_f32(df: pd.DataFrame) -> pd.DataFrame:
+        """float64 feature columns -> float32 (halve the loaded panel; labels/ranks need no float64)."""
+        f64 = df.select_dtypes(include=["float64"]).columns
+        if len(f64):
+            df[f64] = df[f64].astype("float32")
+        return df
+
+    def _load_horizon_panel(self, horizon) -> pd.DataFrame | None:
+        """Read ONLY this horizon's labelled rows (SQL WHERE target_horizon = h), projected to the
+        model's columns and float32, then shape into a modelling panel + apply the train window.
+        None if the horizon has no rows after filtering."""
+        projected = ", ".join(f'"{c}"' for c in self._load_cols)
+        q = text(f'SELECT {projected} FROM cube WHERE "{self._target_col}" IS NOT NULL '
+                 "AND target_horizon = :h")
+        with self._context.store.engine.connect() as c:
+            raw = pd.read_sql(q, c, params={"h": int(horizon)}, parse_dates=["date"])
+        if raw.empty:
+            return None
+        raw = self._downcast_f32(raw)
+        panel = panel_from_cube(raw, horizon=horizon, label_name=self.label_column,
+                                feature_cols=self._panel_cols, target_type=self.target_type)
+        raw = None
+        tr = self._config.get("train", None)
+        if tr:
+            start_date = tr.start_date
+            end_date = None if getattr(self, "_full_history", False) else tr.end_date
+            if start_date:
+                panel = panel.loc[panel["date"] >= start_date]
+            if end_date:
+                panel = panel.loc[panel["date"] <= end_date]
+        return panel if not panel.empty else None
 
     # ------------------------------------------------------------------ #
     def _cube_columns(self) -> set[str]:
@@ -260,74 +315,6 @@ class StepModelling(Step):
         cols = base if base is not None else getattr(self, "rf_cols", getattr(self, "lgbm_cols", self.feature_cols))
         return list(cols) + list(getattr(self, "categorical_cols", []))
 
-    def build_panels(self):
-        """One modeling panel per horizon, restricted to the configured features."""
-
-        start_date = None
-        end_date = None
-        if self._config.get("train", None):
-            start_date = self._config.get("train").start_date
-            # full-history (production) train ignores the configured end_date -> trains up to the
-            # latest labelled cube date (no OOS holdout); normal train keeps the config cutoff.
-            end_date = None if getattr(self, "_full_history", False) else self._config.get("train").end_date
-
-        available = feature_columns_from_cube(self.cube, self.label_column)
-        avail = set(available)
-        # each family trains on its OWN column list (linear_modelling.yml / lgbm_modelling.yml)
-        self.linear_cols = [c for c in self._linear_columns() if c in avail]   # horizon-agnostic default
-        self.lgbm_cols = [c for c in self._lgbm_columns() if c in avail]
-        self.rf_cols = [c for c in self._rf_columns() if c in avail]
-        self.categorical_cols = [c for c in self._lgbm_categoricals() if c in avail]  # tree members
-        # per-horizon resolved feature lists: a member uses its columns_by_horizon[h]
-        # override when present, else its default `columns` (see _by_horizon). Members
-        # with no override resolve to the same default list for every horizon.
-        self.linear_cols_by_h = {h: [c for c in self._linear_columns(h) if c in avail] for h in self.horizons}
-        self.lgbm_cols_by_h = {h: [c for c in self._lgbm_columns(h) if c in avail] for h in self.horizons}
-        self.rf_cols_by_h = {h: [c for c in self._rf_columns(h) if c in avail] for h in self.horizons}
-        # union across members AND horizons drives the cube projection + is the
-        # ensemble_predict fallback; each fitted model still stores + predicts on its
-        # OWN feature_names, so per-horizon members keep their own (leaner) column set.
-        allcols = set(self.linear_cols) | set(self.lgbm_cols) | set(self.rf_cols)
-        for h in self.horizons:
-            allcols |= set(self.linear_cols_by_h[h]) | set(self.lgbm_cols_by_h[h]) | set(self.rf_cols_by_h[h])
-        self.feature_cols = sorted(allcols)
-        for name, want, got in (("linear", self._linear_columns(), self.linear_cols),
-                                ("lgbm", self._lgbm_columns(), self.lgbm_cols)):
-            miss = [c for c in want if c not in avail]
-            if miss:
-                self._log.warning("%s: %d configured feature(s) absent from cube (skipped): %s",
-                                  name, len(miss), miss)
-        if not self.linear_cols and not self.lgbm_cols:
-            raise ValueError("No configured features present in the cube; check "
-                             "linear_modelling.yml / lgbm_modelling.yml `columns`.")
-        self._log.info("Feature sets -> linear:%d  lgbm:%d  (+%d categoricals)  union:%d",
-                       len(self.linear_cols), len(self.lgbm_cols),
-                       len(self.categorical_cols), len(self.feature_cols))
-        panel_cols = list(dict.fromkeys(self.feature_cols + self.categorical_cols))
-
-        self.panels = {}
-        for h in self.horizons:
-            panel = panel_from_cube(self.cube, horizon=h, label_name=self.label_column,
-                                    feature_cols=panel_cols,
-                                    target_type=self.target_type)
-
-            if start_date:
-                panel = panel.loc[panel["date"] >= start_date]
-
-            if end_date:
-                panel = panel.loc[panel["date"] <= end_date]
-
-            if not panel.empty:
-                self.panels[h] = panel
-        self._log.info("Built %s horizon panels, %s features",
-                       len(self.panels), len(self.feature_cols))
-
-        for h, panel in self.panels.items():
-            self._log.info("  h=%s: %s rows, %s tickers, %s days",
-                           h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
-        # the latest labelled date actually trained on (-> metadata train_end for full-history runs)
-        self._train_end_effective = max((p["date"].max() for p in self.panels.values()), default=None)
-
     def _monotone_constraints(self, feats: list[str] | None = None) -> list[int] | None:
         """Build LightGBM monotone_constraints from inputs.monotonic in config, aligned
         to `feats` (defaults to the LightGBM member's feature order). Passing the member's
@@ -450,147 +437,143 @@ class StepModelling(Step):
         predict time. Each member resolves its own horizon-specific column set."""
         return {kind: self._fit_one(kind, train, valid, horizon) for kind in self.model_types}
 
-    def cross_validate_all_horizons(self):
-        """Purged walk-forward CV per horizon; collect IC to weight the blend."""
-        
-        cfg = self._config.model
-        self.cv_results = {}
-        self.horizon_ic = {}
-        self.member_ic = {}         # {h: {member_name: {mean_ic, ic_ir}}}  per-model CV IC
-        self.oos_predictions = {}   # concatenated out-of-sample ENSEMBLE preds -> IC-over-time
-        
+    def _process_horizons(self):
+        """The per-horizon pipeline: for each horizon load ONLY its rows+cols, cross-validate,
+        train the final ensemble, save it, score it for the blend, run its diagnostics, then FREE
+        the panel before the next horizon. Peak memory is one horizon, not the whole cube."""
+        self.models, self.cv_results, self.horizon_ic = {}, {}, {}
+        self.member_ic = {}          # {h: {member_name: {mean_ic, ic_ir}}}  per-model CV IC
+        self.oos_predictions = {}    # {h: concatenated OOS ENSEMBLE preds}  -> IC-over-time diag
+        self._score_frames = []      # small per-horizon blend inputs (date,ticker,z_h,member cols)
+        train_ends = []
+        run_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") if self._context.save else None
         if self._half_life():
             self._log.info("Time-decay sample weights enabled (half_life=%.1f years)",
                            self._half_life())
 
-        for h, panel in self.panels.items():
-            embargo = (cfg.cv.embargo or h)      # embargo must be >= horizon
-            fold_results = []
-            member_folds: dict[str, list] = {}   # member_name -> [per-fold daily_ic dicts]
-            oos_frames = []
-            for train_days, test_days in ml.purged_wf_splits(
-                panel["date"], cfg.cv.n_splits, embargo
-            ):
-                train = panel[panel["date"].isin(train_days)]
-                test = panel[panel["date"].isin(test_days)]
-                if train.empty or test.empty:
-                    continue
-                sub_tr, sub_val = ml.temporal_valid_split(train)
-                models = self._fit_models(sub_tr, sub_val, h)
-                # ENSEMBLE preds + each member's per-day-standardized preds
-                preds, members = ml.ensemble_predict(
-                    models, test, self.feature_cols)
-                # annualize the IC IR by the horizon (overlapping labels), else it
-                # is inflated ~sqrt(horizon) and long horizons look artificially strong
-                fold_results.append(ml.daily_ic(test, preds, self.label_column, horizon=h))
-                # per-member IC on the SAME test fold -> compare ensemble vs each model
-                for name, mpred in members.items():
-                    member_folds.setdefault(name, []).append(
-                        ml.daily_ic(test, mpred, self.label_column, horizon=h))
-                oos_frames.append(pd.DataFrame({
-                    "date": test["date"].to_numpy(),
-                    "ticker": test["ticker"].to_numpy(),
-                    "pred": preds.to_numpy(),
-                    self.label_column: test[self.label_column].to_numpy(),
-                }))
+        for h in self.horizons:
+            panel = self._load_horizon_panel(h)
+            if panel is None or panel.empty:
+                self._log.warning("horizon %s: no labelled rows after the train window -> skipped", h)
+                continue
+            self._log.info("horizon %s: %s rows, %s tickers, %s days", h, len(panel),
+                           panel["ticker"].nunique(), panel["date"].nunique())
+            train_ends.append(panel["date"].max())
+            self._cv_one_horizon(h, panel)
+            self.models[h] = self._train_final_one(h, panel)
+            self._score_frames.append(self._score_one_horizon(h, self.models[h], panel))
+            if run_stamp:
+                self._horizon_diagnostics(h, panel, run_stamp)
+            panel = None
+            gc.collect()                        # hand this horizon's panel back before the next load
 
-            self.cv_results[h] = fold_results
-            if oos_frames:
-                self.oos_predictions[h] = pd.concat(oos_frames, ignore_index=True)
+        if not self.models:
+            raise RuntimeError("No horizon produced a model (empty cube / train window?).")
+        self._train_end_effective = max(train_ends, default=None)
+        self._log.info("Trained %s horizons x %s (%s)", len(self.models),
+                       len(self.model_types), self.model_types)
 
-            mean_ic = np.nanmean([r["mean_ic"] for r in fold_results]) if fold_results else np.nan
-            mean_ir = np.nanmean([r["ic_ir"] for r in fold_results]) if fold_results else np.nan
-            self.horizon_ic[h] = {"mean_ic": mean_ic, "ic_ir": mean_ir}
-            self._log.info("horizon %s: [ENSEMBLE] CV mean_IC=%+.4f  IC_IR=%+.2f",
-                           h, mean_ic, mean_ir)
+    def _cv_one_horizon(self, h, panel: pd.DataFrame):
+        """Purged walk-forward CV for ONE horizon; records IC (ensemble + per-member) + OOS preds."""
+        cfg = self._config.model
+        embargo = (cfg.cv.embargo or h)          # embargo must be >= horizon
+        fold_results = []
+        member_folds: dict[str, list] = {}       # member_name -> [per-fold daily_ic dicts]
+        oos_frames = []
+        for train_days, test_days in ml.purged_wf_splits(panel["date"], cfg.cv.n_splits, embargo):
+            train = panel[panel["date"].isin(train_days)]
+            test = panel[panel["date"].isin(test_days)]
+            if train.empty or test.empty:
+                continue
+            sub_tr, sub_val = ml.temporal_valid_split(train)
+            models = self._fit_models(sub_tr, sub_val, h)
+            preds, members = ml.ensemble_predict(models, test, self.feature_cols)
+            # annualize the IC IR by the horizon (overlapping labels), else it is inflated
+            # ~sqrt(horizon) and long horizons look artificially strong
+            fold_results.append(ml.daily_ic(test, preds, self.label_column, horizon=h))
+            for name, mpred in members.items():
+                member_folds.setdefault(name, []).append(
+                    ml.daily_ic(test, mpred, self.label_column, horizon=h))
+            oos_frames.append(pd.DataFrame({
+                "date": test["date"].to_numpy(), "ticker": test["ticker"].to_numpy(),
+                "pred": preds.to_numpy(), self.label_column: test[self.label_column].to_numpy(),
+            }))
 
-            # per-model IC / IC_IR so it is clear which member carries the ensemble
-            self.member_ic[h] = {}
-            for name, folds in member_folds.items():
-                m_ic = np.nanmean([r["mean_ic"] for r in folds]) if folds else np.nan
-                m_ir = np.nanmean([r["ic_ir"] for r in folds]) if folds else np.nan
-                self.member_ic[h][name] = {"mean_ic": m_ic, "ic_ir": m_ir}
-                self._log.info("horizon %s:   [%-10s] CV mean_IC=%+.4f  IC_IR=%+.2f",
-                               h, name, m_ic, m_ir)
+        self.cv_results[h] = fold_results
+        if oos_frames:
+            self.oos_predictions[h] = pd.concat(oos_frames, ignore_index=True)
+        mean_ic = np.nanmean([r["mean_ic"] for r in fold_results]) if fold_results else np.nan
+        mean_ir = np.nanmean([r["ic_ir"] for r in fold_results]) if fold_results else np.nan
+        self.horizon_ic[h] = {"mean_ic": mean_ic, "ic_ir": mean_ir}
+        self._log.info("horizon %s: [ENSEMBLE] CV mean_IC=%+.4f  IC_IR=%+.2f", h, mean_ic, mean_ir)
+        self.member_ic[h] = {}
+        for name, folds in member_folds.items():
+            m_ic = np.nanmean([r["mean_ic"] for r in folds]) if folds else np.nan
+            m_ir = np.nanmean([r["ic_ir"] for r in folds]) if folds else np.nan
+            self.member_ic[h][name] = {"mean_ic": m_ic, "ic_ir": m_ir}
+            self._log.info("horizon %s:   [%-10s] CV mean_IC=%+.4f  IC_IR=%+.2f",
+                           h, name, m_ic, m_ir)
 
-    def save_diagnostics(self):
-        """Per-run, per-horizon diagnosis folder under
-        <OUTPUT_DIR>/diagnostics/<run_stamp>/h<H>/: top-N individual partial-
-        dependence plots, SHAP importance (SHAP only), an Excel importance table,
-        and the out-of-sample IC-over-time curve (CV folds concatenated). See
-        utils_model/diagnostics.py. Optional deps (shap / xlsx engine) degrade
-        gracefully so this never fails the pipeline."""
-        if not self._context.save:
-            return
-        # SHAP / gain / PDP are tree-specific -> run them on the LightGBM MEMBER of
-        # each horizon's ensemble; the IC-over-time curve uses the ENSEMBLE OOS preds.
-        tree_models = {h: m["lightgbm"] for h, m in self.models.items() if "lightgbm" in m}
-        if not tree_models:
-            self._log.info("No LightGBM member in the ensemble -> tree diagnostics skipped")
+    def _train_final_one(self, h, panel: pd.DataFrame) -> dict:
+        """Fit the full ensemble ({kind: model}) for one horizon on its whole panel."""
+        sub_tr, sub_val = ml.temporal_valid_split(panel, train_frac=0.9)
+        return self._fit_models(sub_tr, sub_val, h)
+
+    def _score_one_horizon(self, h, models: dict, panel: pd.DataFrame) -> pd.DataFrame:
+        """Ensemble-score one horizon's panel -> a SMALL frame (date, ticker, z_<h>, member preds)
+        the blend consumes, so the wide panel can be freed immediately after."""
+        scores, members = ml.ensemble_predict(models, panel, self.feature_cols)
+        df = panel[["date", "ticker"]].copy()
+        df["score"] = scores.to_numpy()
+        # cross-sectional z per day so horizons are comparable (NaN-safe on <2-name days)
+        df["z"] = ml.per_day_zscore(df["score"].to_numpy(), df["date"].to_numpy())
+        member_cols = []
+        for name, mz in members.items():
+            col = f"pred_{name}_h{h}"
+            df[col] = mz.to_numpy()
+            member_cols.append(col)
+        return df[["date", "ticker", "z"] + member_cols].rename(columns={"z": f"z_{h}"})
+
+    def _horizon_diagnostics(self, h, panel: pd.DataFrame, run_stamp: str):
+        """Per-horizon SHAP / PDP / IC-over-time diagnostics (LightGBM member), written under one
+        shared run-stamp folder while the panel is still resident. Best-effort; never fails the run."""
+        tree = (self.models.get(h) or {}).get("lightgbm")
+        if tree is None:
             return
         diag = self._config.model.get("diagnostics", {}) or {}
         if not diag.get("enabled", True):
             return
-        top_n = int(diag.get("top_n_features", 15))
-        shap_sample = int(diag.get("shap_sample", 2000))
-        pdp_grid = int(diag.get("pdp_grid", 30))
-
-        run_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         run_dir = self._context.paths["OUTPUT_DIR"] / "diagnostics" / run_stamp
         try:
             diagnostics.save_run_diagnostics(
-                run_dir, tree_models, self.panels, self._lgb_feats(),
-                getattr(self, "oos_predictions", {}),
-                label_name=self.label_column, top_n=top_n,
-                shap_sample=shap_sample, pdp_grid=pdp_grid, logger=self._log,
+                run_dir, {h: tree}, {h: panel}, self._lgb_feats(h),
+                {h: self.oos_predictions[h]} if h in self.oos_predictions else {},
+                label_name=self.label_column, top_n=int(diag.get("top_n_features", 15)),
+                shap_sample=int(diag.get("shap_sample", 2000)),
+                pdp_grid=int(diag.get("pdp_grid", 30)), logger=self._log,
             )
-            self._log.info("Saved per-horizon model diagnostics to %s", run_dir)
-        except Exception as e:
-            self._log.warning("Diagnostics generation failed: %s", e)
+        except Exception as e:                       # noqa: BLE001 - diagnostics are best-effort
+            self._log.warning("horizon %s diagnostics failed: %s", h, e)
 
     def _horizon_weights(self) -> dict:
         """IR-weight horizons; floor negatives at 0, fall back to equal if all <=0."""
-        irs = {h: max(0.0, self.horizon_ic[h]["ic_ir"]) for h in self.panels
+        irs = {h: max(0.0, self.horizon_ic[h]["ic_ir"]) for h in self.models
                if np.isfinite(self.horizon_ic[h]["ic_ir"])}
         total = sum(irs.values())
         if total <= 0:
-            return {h: 1.0 / len(self.panels) for h in self.panels}
-        return {h: irs.get(h, 0.0) / total for h in self.panels}
-
-    def train_final_models(self):
-        """Fit the full ensemble ({kind: model}) per horizon on the full panel."""
-        self.models = {}
-        for h, panel in self.panels.items():
-            sub_tr, sub_val = ml.temporal_valid_split(panel, train_frac=0.9)
-            self.models[h] = self._fit_models(sub_tr, sub_val, h)
-        self._log.info("Trained final models for %s horizons x %s (%s)",
-                       len(self.models), len(self.model_types), self.model_types)
+            return {h: 1.0 / len(self.models) for h in self.models}
+        return {h: irs.get(h, 0.0) / total for h in self.models}
 
     def blend_and_generate_signal(self):
-        """Standardize each horizon's scores per day, IR-weight, blend, rank."""
+        """IR-weight the per-horizon z-scores (already computed in _score_one_horizon), blend, rank.
+        Consumes the SMALL per-horizon score frames (never re-touches the wide panels, which are
+        already freed)."""
         weights = self._horizon_weights()
         self.horizon_weights = weights
         self._log.info("Blend weights: %s", {h: round(w, 3) for h, w in weights.items()})
 
         blended = None
-        for h, models in self.models.items():
-            panel = self.panels[h]
-            # ensemble = per-day-standardized average of the trained families;
-            # also keep each member's standardized prediction for transparency
-            scores, members = ml.ensemble_predict(
-                models, panel, self.feature_cols)
-            df = panel[["date", "ticker"]].copy()
-            df["score"] = scores.to_numpy()
-            # cross-sectional z-score per day so horizons are comparable (warning-safe:
-            # NaN on <2-name days / a constant member, no DOF/empty-slice RuntimeWarnings)
-            df["z"] = ml.per_day_zscore(df["score"].to_numpy(), df["date"].to_numpy())
-            # per-model predictions (already per-day standardized in ensemble_predict)
-            member_cols = []
-            for name, mz in members.items():
-                col = f"pred_{name}_h{h}"
-                df[col] = mz.to_numpy()
-                member_cols.append(col)
-            df = df[["date", "ticker", "z"] + member_cols].rename(columns={"z": f"z_{h}"})
+        for df in self._score_frames:
             blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
 
         zcols = [f"z_{h}" for h in self.models]

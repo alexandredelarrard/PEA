@@ -1,3 +1,4 @@
+import gc
 import json
 
 import numpy as np
@@ -1122,26 +1123,42 @@ class StepBuildCube(Step):
         betas_long = self._downcast_float32(self._norm_date(self._context.store.load("cube_part_betas")))
         base = self.feature_panel.merge(betas_long, on=["date", "ticker"], how="left")
         self.feature_panel = panel = betas_long = None   # free the wide intermediates
-        base["peers"] = base["ticker"].map(
-            lambda t: json.dumps(self.peers.get(t, {}), ensure_ascii=False))
+        # peers JSON PRECOMPUTED per ticker (a few hundred unique strings SHARED across every row)
+        # -> the old per-row json.dumps built ~millions of DISTINCT strings, a large object-column
+        # memory hog broadcast into each horizon.
+        peer_json = {t: json.dumps(self.peers.get(t, {}), ensure_ascii=False)
+                     for t in base["ticker"].unique()}
+        base["peers"] = base["ticker"].map(peer_json)
         base = self._apply_categorical_codes(base)       # by ticker -> broadcasts to every horizon
+        base = base.set_index(["date", "ticker"]).sort_index()   # index once -> fast per-slice join
 
         targets_long = self._downcast_float32(self._norm_date(self._context.store.load("cube_part_targets")))
         if targets_long is None or targets_long.empty:
             raise RuntimeError("cube_part_targets missing/empty -> run the target step first.")
         horizons = sorted(pd.to_numeric(targets_long["target_horizon"], errors="coerce")
                           .dropna().unique().tolist())
-        total = 0
-        for i, h in enumerate(horizons):
-            tg = targets_long[targets_long["target_horizon"] == h]
-            chunk = (tg.merge(base, on=["date", "ticker"], how="inner")
-                     .sort_values(["date", "ticker"]).reset_index(drop=True))
-            # first horizon truncates + creates the table; the rest APPEND (PK is
-            # (ticker,date,target_horizon), so horizon slices never collide).
-            n = (self._context.store.replace("cube", chunk) if i == 0
-                 else self._context.store.save("cube", chunk))
-            total += n
-            self._log.info("Cube horizon %s: wrote %s rows (%d/%d).", h, n, i + 1, len(horizons))
-            tg = chunk = None
+        # STREAM the write in bounded ROW-CHUNKS: only ~chunk rows x cols (+ its COPY buffer) are
+        # ever materialised on top of `base`, and each horizon is a PK-disjoint plain COPY-append.
+        # The first chunk `replace`s (clears the table + creates the schema); the rest `bulk_seed`
+        # (chunked COPY-append, NO slow unchunked upsert — that was the horizon-2 OOM). gc.collect()
+        # after every chunk hands the freed arrays + CSV buffer back before the next allocation.
+        chunk_rows = 200_000
+        total, first = 0, True
+        for h in horizons:
+            tg = targets_long[targets_long["target_horizon"] == h].set_index(["date", "ticker"])
+            for j in range(0, len(tg), chunk_rows):
+                chunk = tg.iloc[j:j + chunk_rows].join(base, how="inner").reset_index()
+                if chunk.empty:
+                    continue
+                if first:
+                    self._context.store.replace("cube", chunk); first = False
+                else:
+                    self._context.store.bulk_seed("cube", chunk)
+                total += len(chunk)
+                chunk = None
+                gc.collect()
+            self._log.info("Cube horizon %s streamed (running total %s rows).", h, total)
+            tg = None
+            gc.collect()
         self._log.info("Saved cube to DB table 'cube' (%s rows across %d horizons)",
                        total, len(horizons))

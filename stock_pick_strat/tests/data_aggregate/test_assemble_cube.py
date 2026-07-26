@@ -39,6 +39,12 @@ class _FakeStore:
         self.t[name] = pd.concat([prev, df], ignore_index=True) if prev is not None else df.copy()
         return len(df)
 
+    def bulk_seed(self, name, df):                        # chunked COPY-append (no delete)
+        self.writes.append(("bulk_seed", df.copy()))
+        prev = self.t.get(name)
+        self.t[name] = pd.concat([prev, df], ignore_index=True) if prev is not None else df.copy()
+        return len(df)
+
 
 class _FakeCtx:
     def __init__(self, store): self.store = store; self.log = logging.getLogger("test")
@@ -81,9 +87,11 @@ def test_assemble_streams_per_horizon_and_matches_oneshot():
 
     step.assemble_cube_from_parts()
 
-    # ---- streaming shape: one write per horizon (replace, then save) --------------------------
+    # ---- streaming shape: chunked COPY per horizon (replace first, bulk_seed append) ----------
     ops = [op for op, _ in store.writes]
-    assert ops == ["replace", "save"], f"expected per-horizon streaming, got {ops}"
+    assert ops == ["replace", "bulk_seed"], f"expected chunked COPY streaming, got {ops}"
+    # every write is a bounded row-chunk (never the whole horizon-expanded cube at once)
+    assert all(len(df) <= 200_000 for _, df in store.writes)
     cube = store.t["cube"]
 
     # ---- correctness: equals a one-shot targets.merge(base) -----------------------------------

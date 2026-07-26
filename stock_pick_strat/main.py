@@ -23,10 +23,6 @@ if __name__ == "__main__":
     # self = StepPortfolio(context=context, config=config)
     # self.run()
 
-# TODO: check how to rebase google trend week after week if pick is now ? 
-# TODO: check why those features are not computed 
-# TODO: check Configured features not in cube (skipped): ['f_gross_profitability_xs', 'f_interest_coverage_vs_peers', 'f_net_debt_to_ebitda_xs', 'f_ec_tone_xs', 'f_ec_tone_delta_xs', 'f_ec_qa_gap_xs', 'f_ec_uncertainty_xs', 'f_ec_vocab_novelty_xs', 'f_ec_length_delta_xs']
-
 # TODO ##################### biggeer work :
 # - Add News and deduce : geopolitics score per sector. Need to understand how a news impact a stock ... 
 # - Neutral currency pools: 

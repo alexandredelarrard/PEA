@@ -147,3 +147,74 @@ def test_nee_not_truncated_real():
     print("\n=== SANITY CHECK: NEE real-data anti-truncation ===")
     print(f"  NEE history reaches {fe['fiscal_end'].max()} (was 2013); "
           f"regulatoryAssets populated {reg_recent.notna().mean():.0%} of post-2016 rows. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# Pure-play sector TOTAL revenue tags (added after a per-(ticker,quarter) audit  #
+# of no_tot_Rev_ticker.csv against cached companyfacts): VLO refiner, DTE/ETR/AES #
+# utility, NEM/FCX miner, TRGP midstream tagged their TOTAL top-line under these  #
+# instead of `Revenues`, so revenue was NaN. Fill-only -> `Revenues` still wins.  #
+# --------------------------------------------------------------------------- #
+from src.data_extract.utils.fundamentals.fetch_fundamentals import _extract_concept, FLOW_TAGS
+
+
+def _sec(tag_to_obs: dict) -> dict:
+    return {t: {"units": {"USD": obs}} for t, obs in tag_to_obs.items()}
+
+
+def test_pureplay_sector_total_revenue_tags_fill_only():
+    rev = FLOW_TAGS["totalRevenue"]
+    # (1) a pure-play tagging ONLY its sector total-revenue tag now RESOLVES (was NaN)
+    for tag, val in [("RefiningAndMarketingRevenue", 2.8e10), ("UtilityRevenue", 3.0e9),
+                     ("ElectricUtilityRevenue", 1.2e9), ("RevenueMineralSales", 2.1e9),
+                     ("GasGatheringTransportationMarketingAndProcessingRevenue", 4.0e9)]:
+        df = _extract_concept(_sec({tag: [_q("2016-06-30", "2016-04-01", val)]}), rev)
+        assert not df.empty and df["val"].iloc[0] == val, f"{tag} did not resolve as total revenue"
+    # (2) FILL-ONLY priority: a filer reporting BOTH `Revenues` and a sector tag keeps `Revenues`
+    both = _sec({"Revenues": [_q("2016-06-30", "2016-04-01", 3.0e10)],
+                 "RefiningAndMarketingRevenue": [_q("2016-06-30", "2016-04-01", 2.8e10)]})
+    v = _extract_concept(both, rev)
+    v = v.loc[v["end"] == pd.Timestamp("2016-06-30"), "val"].iloc[0]
+    assert v == 3.0e10, "general `Revenues` must win over the pure-play sector fill tag"
+    print("\n=== SANITY CHECK: pure-play sector total-revenue tags ===")
+    print("  RefiningAndMarketing / Utility / ElectricUtility / MineralSales / GasGathering resolve "
+          "as total revenue for pure-plays (VLO/DTE/AES/NEM/FCX/TRGP); `Revenues` still wins when "
+          "present (fill-only, no component corruption). Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# Zero-debt vs missing-debt (user directive): a filed balance sheet with no    #
+# debt line = 0, not NaN, so the two are dissociated. Per-period; non-financials.#
+# --------------------------------------------------------------------------- #
+def _bt(gaap: dict, ticker: str, sector=None) -> pd.DataFrame:
+    return build_ticker_history(ticker, {"facts": {"us-gaap": gaap, "dei": {}}}, sector=sector)
+
+
+def test_debt_zero_fill_dissociates_zero_from_missing():
+    bs = {"Revenues": {"units": {"USD": _year(1000.0, [2018, 2019, 2020])}},
+          "Assets": {"units": {"USD": _inst(5000.0, [2018, 2019, 2020])}},
+          "StockholdersEquity": {"units": {"USD": _inst(3000.0, [2018, 2019, 2020])}}}
+
+    # (1) non-financial that NEVER tags debt -> longTermDebt/shortTermDebt/totalDebt = 0 (not NaN)
+    h1 = _bt(dict(bs), "TECH", sector="Information Technology")
+    for c in ("longTermDebt", "shortTermDebt", "totalDebt"):
+        assert h1[c].notna().any() and (h1[c].dropna() == 0).all(), \
+            f"{c} must be 0 (not NaN) for a debt-free filer with a balance sheet: {h1[c].tolist()}"
+
+    # (2) non-financial with debt only in 2020 -> 0 in the earlier debt-free periods, value in 2020
+    g2 = dict(bs); g2["LongTermDebt"] = {"units": {"USD": _inst(2000.0, [2020])}}
+    h2 = _bt(g2, "IND", sector="Industrials")
+    td = h2["totalDebt"].dropna()
+    assert (td == 0).any(), "earlier debt-free periods must be 0 (per-period, not whole-history)"
+    assert (td == 2000.0).any(), "the period that tags debt must keep its value"
+
+    # (3) FINANCIAL that tags debt in some periods -> untagged periods stay NaN, NEVER force-zeroed
+    g3 = dict(bs); g3["LongTermDebt"] = {"units": {"USD": _inst(4000.0, [2019])}}
+    h3 = _bt(g3, "BANK", sector="Financials")
+    assert (h3["totalDebt"] == 0).sum() == 0, "financials must NOT be auto-zeroed (deposits/FHLB/repos)"
+    assert (h3["totalDebt"] == 4000.0).any() and h3["totalDebt"].isna().any()
+
+    print("\n=== SANITY CHECK: zero-debt vs missing-debt ===")
+    print("  debt-free non-financial -> longTermDebt/shortTermDebt/totalDebt all 0 (was NaN); "
+          "partial-history debt-free -> 0 in the debt-free periods + value where tagged; "
+          "financials with debt keep NaN where untagged (never force-zeroed). Validated.")

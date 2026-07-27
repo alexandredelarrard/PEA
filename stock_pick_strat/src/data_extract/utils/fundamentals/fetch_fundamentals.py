@@ -82,7 +82,16 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                      "HealthCareOrganizationRevenue",             # health care total (e.g. DVA pre-2015)
                      "HealthCareOrganizationPatientServiceRevenueLessProvisionForBadDebts",
                      "HealthCareOrganizationPatientServiceRevenue",
-                     "RealEstateRevenueNet"],                     # REIT total real-estate revenue
+                     "RealEstateRevenueNet",                      # REIT total real-estate revenue
+                     # pure-play sector TOTAL top-lines a filer tags INSTEAD of `Revenues` in some
+                     # eras (verified per (ticker, quarter) against companyfacts as the LARGEST
+                     # revenue line = de-facto total). Fill-only (lowest priority) so they only fire
+                     # for a pure-play that reports no general revenue tag (a diversified filer that
+                     # reports `Revenues` is untouched, and these never win as a component there):
+                     "RefiningAndMarketingRevenue",               # refiners (e.g. VLO)
+                     "UtilityRevenue", "ElectricUtilityRevenue",  # regulated utilities (e.g. DTE/ETR/AES)
+                     "RevenueMineralSales",                       # miners (e.g. NEM/FCX)
+                     "GasGatheringTransportationMarketingAndProcessingRevenue"],  # midstream (e.g. TRGP)
     # NetIncomeLoss (to parent) / ProfitLoss (incl. NCI) are the modern tags; many
     # filers used neither before ~2016 (e.g. WAT 2011-2015) and instead tagged only
     # continuing-ops-incl-NCI. That tag shares ProfitLoss's basis (incl. NCI), so
@@ -921,11 +930,19 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
     _lt_st = (ltd.fillna(0) + std_debt.fillna(0)).where(ltd.notna() | std_debt.notna())
     total_debt = _debt_combined.where(_debt_combined.notna(), _lt_st)
     total_debt = total_debt.where(total_debt.notna(), col("notesPayable"))
-    # a filer that reports a balance sheet but NO debt tag in ANY quarter is
-    # genuinely debt-free -> totalDebt = 0 (not "missing"). Filers that report debt in
-    # some quarters keep their values, so captive-finance names are never masked to 0.
-    if total_debt.notna().sum() == 0 and assets.notna().any():
-        total_debt = pd.Series(0.0, index=total_debt.index).where(assets.notna())
+    # ZERO debt vs MISSING debt — dissociate the two (they were both NaN before). When a filer
+    # reports a balance sheet for a period (total assets or equity present) but tags NO interest-
+    # bearing debt, debt is 0 on that date, not unknown. Applied PER PERIOD (so a name that is
+    # debt-free only part of its history is 0 there, not NaN) and to BOTH legs + the total so the
+    # stored columns stay consistent. EXCLUDED for Financials UNLESS debt-free across ALL history:
+    # banks / insurers fund via deposits / FHLB advances / repos tagged outside our debt concepts,
+    # so a missing debt tag there is not reliably zero and stays NaN.
+    bs_present = assets.notna() | eq.notna()
+    may_zero = (sector != "Financials") or (total_debt.notna().sum() == 0)
+    if may_zero:
+        total_debt = total_debt.where(~(bs_present & total_debt.isna()), 0.0)
+        ltd = ltd.where(~(bs_present & ltd.isna()), 0.0)
+        std_debt = std_debt.where(~(bs_present & std_debt.isna()), 0.0)
 
     gross_profit_ttm = gp_ttm.where(gp_ttm.notna(), rev_ttm - cor_ttm)
     # Gross margin, with an extraction-artifact guard: a value > 1 (negative COGS) or

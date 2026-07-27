@@ -28,6 +28,67 @@ DUAL_CLASS_SECONDARY_TO_PRIMARY: dict[str, str] = {
     "NWS": "NWSA",     # News Corp  class B -> class A
 }
 
+# Tickers EXCLUDED from the modelling universe for INSUFFICIENT HISTORY (< 4 years of price
+# data): recent IPOs / spin-offs that can't support the cube's multi-year look-backs (seasonal,
+# self-history z-scores, QoQ drift) or a walk-forward backtest. Filtered out in
+# `load_universe_tickers`. Point-in-time snapshot (as of 2026-07, latest price 2026-07-20) --
+# REFRESH periodically: a name crosses the 4y threshold and should be removed (GEHC ~= 3.6y is
+# closest), and new spin-offs appear. All are genuine separate entities, not dual-class twins.
+INSUFFICIENT_HISTORY_TICKERS: frozenset[str] = frozenset({
+    "HONA",   # Honeywell Aerospace spin-off (2026)
+    "FDXF",   # FedEx Freight spin-off (2026)
+    "Q",      # recent listing (2025)
+    "SNDK",   # Sandisk / Western Digital spin-off (2025)
+    "GEV",    # GE Vernova spin-off (2024)
+    "SOLV",   # Solventum / 3M spin-off (2024)
+    "VLTO",   # Veralto / Danaher spin-off (2023)
+    "KVUE",   # Kenvue / J&J spin-off (2023)
+    "GEHC",   # GE HealthCare spin-off (2022, ~3.6y -- closest to the 4y cutoff)
+})
+
+# Companies that LEFT the S&P 500 in the last ~15 years (removed 2011+ and not since re-added),
+# from the Wikipedia "Selected changes to the S&P 500 components" table. Held here so the universe
+# can be made SURVIVORSHIP-BIAS-FREE: a backtest that trains only on today's members overstates
+# returns because the losers that were delisted / acquired / demoted (BBBY, SIVB, FRC, SHLD, MON,
+# YHOO, TWTR, ...) are silently excluded. Union these into `sp500_tickers` to include them.
+# CAVEATS: (1) many are delisted/acquired -> yfinance has PRICES up to delisting but EDGAR
+# fundamentals need a CURRENT ticker->CIK match, so those resolve thinly; (2) some symbols were
+# later REUSED by a different company (ticker recycling); (3) truly bias-free use wants POINT-IN-TIME
+# membership (a name in the universe only WHILE it was in the index) -- a static union approximates.
+FORMER_SP500_TICKERS: frozenset[str] = frozenset({
+    "AA", "AAL", "AAP", "ABMD", "ACE", "ADS", "ADT", "AET", "AGN", "AIV",
+    "AKS", "ALK", "ALTR", "ALXN", "AMG", "AMTM", "AN", "ANDV", "ANF", "ANR",
+    "ANSS", "APC", "APOL", "ARG", "ARNC", "ATI", "ATVI", "AVP", "AYE", "AYI",
+    "BBBY", "BBWI", "BCR", "BEAM", "BHF", "BHI", "BIG", "BIO", "BMC", "BMS",
+    "BRCM", "BTU", "BWA", "BXLT", "CA", "CAG", "CAM", "CBE", "CCE", "CDAY",
+    "CE", "CELG", "CEPH", "CERN", "CFN", "CHK", "CLF", "CMA", "CMCSK", "CNX",
+    "COL", "COTY", "COV", "CPB", "CPGX", "CPRI", "CPWR", "CSC", "CSRA", "CTLT",
+    "CTRA", "CTXS", "CVC", "CVH", "CXO", "CZR", "DAY", "DF", "DFS", "DISCA",
+    "DISCK", "DISH", "DNB", "DNR", "DO", "DPS", "DRE", "DTV", "DV", "DWDP",
+    "DXC", "EMC", "EMN", "ENDP", "ENPH", "EP", "EPAM", "ESRX", "ESV", "ETFC",
+    "ETSY", "EVHC", "FBHS", "FDO", "FHN", "FII", "FL", "FLIR", "FLR", "FLS",
+    "FLT", "FMC", "FOSL", "FOX", "FRC", "FRX", "FTI", "FTR", "GAS", "GENZ",
+    "GGP", "GHC", "GMCR", "GME", "GNW", "GPS", "GR", "GT", "HAR", "HBI",
+    "HCBK", "HES", "HFC", "HNZ", "HOG", "HOLX", "HOT", "HP", "HRB", "HSP",
+    "IGT", "ILMN", "INFO", "IPG", "IPGP", "ITT", "JCP", "JDSU", "JEF", "JNPR",
+    "JNS", "JOY", "JWN", "K", "KFT", "KMX", "KRFT", "KSS", "KSU", "LEG",
+    "LIFE", "LKQ", "LLL", "LLTC", "LM", "LNC", "LO", "LSI", "LUMN", "LVLT",
+    "LW", "LXK", "M", "MAC", "MAT", "MBC", "MDP", "MEE", "MFE", "MHK",
+    "MHS", "MI", "MJN", "MKTX", "MMI", "MNK", "MOH", "MOLX", "MON", "MRO",
+    "MTCH", "MUR", "MWW", "MXIM", "NAVI", "NBL", "NBR", "NE", "NFX", "NKTR",
+    "NLSN", "NOV", "NOVL", "NSM", "NVLS", "NWL", "NYX", "OGN", "OI", "PAYC",
+    "PBCT", "PBI", "PCL", "PCP", "PCS", "PDCO", "PENN", "PETM", "PGN", "PLL",
+    "POM", "POOL", "PRGO", "PVH", "PXD", "QEP", "QRVO", "R", "RAI", "RDC",
+    "RE", "RHI", "RHT", "RIG", "RRC", "RRD", "RSH", "RTN", "S", "SAI",
+    "SBNY", "SCG", "SE", "SEDG", "SEE", "SHLD", "SIAL", "SIG", "SIVB", "SLE",
+    "SLG", "SLM", "SNI", "SOLS", "SPLS", "SRCL", "STI", "STJ", "SUN", "SVU",
+    "SWN", "SWY", "TDC", "TE", "TEG", "TFX", "TGNA", "THC", "TIE", "TIF",
+    "TLAB", "TRIP", "TSS", "TWC", "TWTR", "TWX", "TYC", "UA", "UAA", "UNM",
+    "URBN", "VAR", "VFC", "VIAB", "VNO", "VNT", "WBA", "WCG", "WFM", "WFR",
+    "WHR", "WIN", "WLTW", "WPX", "WU", "WYN", "X", "XEC", "XL", "XLNX",
+    "XRAY", "XRX", "YHOO", "ZION",
+})
+
 # --------------------------------------------------------------------------- #
 # SEC EDGAR endpoints (free, no key; require a descriptive User-Agent)         #
 # --------------------------------------------------------------------------- #
@@ -145,6 +206,16 @@ EARNINGS_CALL_SECTIONS_TABLE = "earnings_call_sections"
 # until this many days after quarter-end, so a not-yet-reported quarter never forces a request.
 EARNINGS_CALL_REQUEST_PAUSE = 2.5
 EARNINGS_CALL_REPORT_GRACE_DAYS = 50
+# Map an earnings REPORT date (from earnings_surprises) back into the fiscal quarter it reports:
+# a report lands ~4-8 weeks after quarter-end, so shifting the report date back this many days puts
+# it inside the reported quarter (Feb report -> prior Q4, late-Apr report -> Q1). Used to demand
+# only quarters a ticker has ACTUALLY released, instead of a blanket calendar guess.
+EARNINGS_REPORT_TO_QUARTER_LAG_DAYS = 45
+# Tickers that hold NO earnings call, so a transcript can never be downloaded -> skipped entirely by
+# the earnings-call gap logic (no wasted request, not flagged as "missing"). Berkshire Hathaway is
+# the classic case (Buffett publishes a letter + holds the annual meeting, but no quarterly call).
+# Extend as other no-call names surface.
+NO_EARNINGS_CALL_TICKERS: frozenset[str] = frozenset({"BRK-B", "BRK-A"})
 
 # HuggingFace backbone: clean S&P 500 earnings-call transcripts 2005-2025 (MIT license,
 # 33k+ transcripts / 685 companies, full verbatim `content` + speaker-segmented

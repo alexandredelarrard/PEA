@@ -20,15 +20,19 @@ as `sp500_tickers` for backward-compat regardless of which index actually fills 
 from __future__ import annotations
 
 from src.context import Context
+from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 
 UNIVERSE_TABLE = "sp500_tickers"
 
 
 def load_universe_tickers(context: Context) -> list[str]:
     """The analysis universe: sorted, de-duplicated, upper-cased tickers from the
-    `sp500_tickers` table. Returns [] when the table is absent or empty (not yet
-    seeded) so callers can fall back / warn rather than crash."""
+    `sp500_tickers` table, EXCLUDING names with insufficient history
+    (`INSUFFICIENT_HISTORY_TICKERS` -- recent IPOs / spin-offs with < 4 years of data
+    that can't support the multi-year look-backs / walk-forward backtest). Returns []
+    when the table is absent or empty (not yet seeded) so callers can fall back / warn."""
     df = context.store.load(UNIVERSE_TABLE, columns=["ticker"])
     if df is None or df.empty or "ticker" not in df.columns:
         return []
-    return sorted({str(t).strip().upper() for t in df["ticker"].dropna() if str(t).strip()})
+    return sorted({t for raw in df["ticker"].dropna()
+                   if (t := str(raw).strip().upper()) and t not in INSUFFICIENT_HISTORY_TICKERS})

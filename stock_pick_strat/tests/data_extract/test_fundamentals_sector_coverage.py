@@ -268,3 +268,26 @@ def test_cash_disc_ops_and_equivalents_variant_tags_fill_only():
     print("  cash resolves via the disc-ops variants (FISV/PCAR/MDLZ/GE) + REIT equivalents line (O); "
           "primary CashAndCashEquivalentsAtCarryingValue still wins where present (fill-only). "
           "M&A/dividend/restricted-only cash-flow tags correctly excluded.")
+
+
+def test_capex_global_adds_finance_lease_capacity():
+    """capexGlobal = cash capex + capacity funded via FINANCE leases (MSFT-style data-center
+    leasing). Adds where a filer uses leases; equals cash capex (0-filled, not NaN) where it
+    doesn't; `capex` itself is unchanged so FCF is untouched."""
+    base = {"Revenues": {"units": {"USD": _year(1000.0, [2020, 2021])}},
+            "PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": _year(100.0, [2020, 2021])}},
+            "Assets": {"units": {"USD": _inst(5000.0, [2020, 2021])}}}
+    # (1) finance-lease additions ADD to global capex, cash capex unchanged
+    g = dict(base)
+    g["RightOfUseAssetObtainedInExchangeForFinanceLeaseLiability"] = {"units": {"USD": _year(30.0, [2020, 2021])}}
+    r = _build(g).dropna(subset=["capex"]).iloc[-1]
+    assert r["financeLeaseAdditions"] > 0
+    assert abs(r["capexGlobal"] - (r["capex"] + r["financeLeaseAdditions"])) < 1e-6
+    assert r["capexGlobal"] > r["capex"]
+    # (2) no leases -> capexGlobal == cash capex (finance-lease term 0-filled, not NaN)
+    r2 = _build(base).dropna(subset=["capex"]).iloc[-1]
+    assert r2["financeLeaseAdditions"] == 0.0 and abs(r2["capexGlobal"] - r2["capex"]) < 1e-6
+    print("\n=== SANITY CHECK: capexGlobal (cash capex + finance leases) ===")
+    print(f"  with leases: capex {r['capex']:.0f} + finLease {r['financeLeaseAdditions']:.0f} "
+          f"= capexGlobal {r['capexGlobal']:.0f}; no leases: capexGlobal == capex (0-filled). "
+          "cash capex/FCF unchanged. (MSFT real: +$26B/yr capacity via finance leases.)")

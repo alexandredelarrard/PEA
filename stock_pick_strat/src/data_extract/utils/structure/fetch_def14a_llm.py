@@ -55,7 +55,10 @@ from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, load_extract_meta, save_extract_meta, sec_get, today_iso,
 )
 
-_FORM = ["DEF 14A"]
+# DEF 14A = the shareholder proxy; DEF 14C = the equivalent INFORMATION STATEMENT that
+# CONTROLLED companies file instead (no vote solicited because a controlling holder already has
+# the votes, e.g. ERIE = Hirt trusts). Same governance / exec-comp content, so both are extracted.
+_FORM = ["DEF 14A", "DEF 14C"]
 
 # flattened output columns that must be stored numeric (float) in the DB
 # (governance booleans are surfaced as 1.0/0.0 flags so they are usable features)
@@ -83,7 +86,8 @@ _NUMERIC_COLS = [
 # instructions on WHERE each field lives and how to normalise it materially lift the
 # fill rate versus a generic "extract structured data" prompt.
 _DEF14A_PROMPT = (
-    "You extract structured governance & compensation data from a SEC DEF 14A proxy. The "
+    "You extract structured governance & compensation data from a SEC DEF 14A proxy (or the "
+    "equivalent DEF 14C information statement filed by controlled companies). The "
     "input already contains the relevant sections (director nominees, Summary Compensation "
     "Table, corporate governance, say-on-pay, pay ratio, auditor fees, beneficial ownership).\n"
     "- CEO pay: take the CEO's row in the SUMMARY COMPENSATION TABLE for the MOST RECENT "

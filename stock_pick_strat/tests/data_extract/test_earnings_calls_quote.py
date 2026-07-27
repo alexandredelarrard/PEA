@@ -153,3 +153,38 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
 if __name__ == "__main__":
     import tempfile, pathlib
     test_quote_discovery_live(pathlib.Path(tempfile.mkdtemp()))
+
+
+def test_missing_for_uses_released_and_skips_no_call_tickers(tmp_path):
+    """Gap logic now (1) caps 'required' at the quarter a ticker has ACTUALLY reported
+    (earnings_surprises), never demanding an unreleased quarter, and (2) returns nothing for
+    no-earnings-call names (Berkshire) so they're never fetched or flagged missing."""
+    q = fe._quarter_index
+    floor = q(2024, 1)                     # since-floor Q1'24
+    end_idx = q(2025, 3)                    # calendar guess = Q3'25
+    hf, db, js = {}, {}, {}                 # no HF, nothing on disk/DB/JSON
+    # (1) a ticker that has only reported through Q1'25 -> required stops at Q1'25 (not the Q3'25 guess)
+    released = {"AAA": q(2025, 1)}
+    miss = fe._missing_for("AAA", hf, floor, end_idx, tmp_path, db, js, released)
+    assert "2025Q2" not in miss and "2025Q3" not in miss, miss
+    assert {"2024Q1", "2024Q4", "2025Q1"}.issubset(miss)
+    # a ticker absent from earnings_surprises -> falls back to the calendar end_idx (Q3'25 included)
+    miss_fb = fe._missing_for("ZZZ", hf, floor, end_idx, tmp_path, db, js, released)
+    assert "2025Q3" in miss_fb
+    # (2) Berkshire (no earnings call) -> nothing to fetch, regardless of dates
+    assert fe._missing_for("BRK-B", hf, floor, end_idx, tmp_path, db, js, released) == set()
+
+
+def test_released_quarter_idx_maps_report_date_to_reported_quarter(tmp_path):
+    """earnings_surprises report dates -> the fiscal quarter each ticker last REPORTED: a late-Apr
+    report is Q1, an early-Feb report is the prior Q4 (report date shifted back ~45d)."""
+    es = pd.DataFrame({"ticker": ["AAA", "AAA", "BBB"],
+                       "earnings_date": ["2025-01-30", "2025-04-25", "2025-02-05"]})
+    ctx = types.SimpleNamespace(store=types.SimpleNamespace(
+        load=lambda table, columns=None: es if table == "earnings_surprises" else pd.DataFrame()))
+    rel = fe._released_quarter_idx_by_ticker(ctx)
+    assert rel["AAA"] == fe._quarter_index(2025, 1)   # latest = Apr-25 report -> Q1'25
+    assert rel["BBB"] == fe._quarter_index(2024, 4)   # Feb-05 report -> prior Q4'24
+    print("\n=== SANITY CHECK: earnings-call gap uses real release dates + no-call skip ===")
+    print(f"  released map {{'AAA': Q1'25, 'BBB': Q4'24}}; required capped to the reported quarter "
+          "(no unreleased quarters demanded); BRK-B skipped (no earnings call). Validated.")

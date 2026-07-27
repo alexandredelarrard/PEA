@@ -37,6 +37,8 @@ from src.constants.constants import (
     EARNINGS_CALL_REPORT_GRACE_DAYS,
     EARNINGS_CALL_REQUEST_PAUSE,
     EARNINGS_CALL_SECTIONS_TABLE,
+    EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
+    NO_EARNINGS_CALL_TICKERS,
     MOTLEY_FOOL_BASE_URL,
     MOTLEY_FOOL_TRANSCRIPT_INDEX_URL,
 )
@@ -318,15 +320,51 @@ def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
         return {}
 
 
+def _released_quarter_idx_by_ticker(
+    context: Context, lag_days: int = EARNINGS_REPORT_TO_QUARTER_LAG_DAYS) -> dict[str, int]:
+    """{ticker: index of the latest quarter it has ACTUALLY REPORTED}, from `earnings_surprises`
+    (which carries the earnings report date per ticker). We take the most recent earnings_date that
+    is <= today and map it back into the quarter it reported (shift by `lag_days`, since a report
+    lands a few weeks after quarter-end). This replaces the blanket calendar guess with the real
+    per-ticker release, so the gap logic never demands a quarter a ticker hasn't reported yet — and
+    picks up an early reporter the calendar heuristic would miss. {} when the table is unavailable
+    (callers then fall back to the calendar `end_idx`)."""
+    try:
+        es = context.store.load("earnings_surprises", columns=["ticker", "earnings_date"])
+    except Exception:
+        return {}
+    if es is None or es.empty or not {"ticker", "earnings_date"}.issubset(es.columns):
+        return {}
+    d = pd.to_datetime(es["earnings_date"], errors="coerce")
+    today = pd.Timestamp.today().normalize()
+    m = d.notna() & (d <= today)
+    if not m.any():
+        return {}
+    rep = pd.DataFrame({"ticker": es["ticker"].astype(str)[m], "d": d[m]})
+    latest = rep.groupby("ticker")["d"].max()
+    out: dict[str, int] = {}
+    for tk, dt in latest.items():
+        q = (dt - pd.Timedelta(days=lag_days))            # shift into the reported quarter
+        out[tk] = _quarter_index(q.year, q.quarter)
+    return out
+
+
 def _missing_for(tk: str, hf_latest: dict, floor_idx: int, end_idx: int, cache_dir: Path,
-                 have_db: dict[str, set], have_json: dict[str, set]) -> set[str]:
+                 have_db: dict[str, set], have_json: dict[str, set],
+                 released: dict[str, int] | None = None) -> set[str]:
     """The quarters still needed for `tk`: everything from the fool gap-start (the quarter AFTER the
-    HF backbone's latest for `tk`, or the `since` floor when HF has none) up to the latest expected
-    quarter today, MINUS what's already on disk / in the DB / in the JSON index. Shared by the MF
-    quote-page discovery AND the Roic fallback so the 'what's missing' definition can't drift."""
+    HF backbone's latest for `tk`, or the `since` floor when HF has none) up to the latest quarter
+    the ticker has ACTUALLY REPORTED (`released[tk]` from earnings_surprises; falls back to the
+    calendar `end_idx` when unknown), MINUS what's already on disk / in the DB / in the JSON index.
+    Tickers that hold no earnings call (NO_EARNINGS_CALL_TICKERS, e.g. Berkshire) return {} so they
+    are never fetched or flagged as missing. Shared by the MF quote-page discovery AND the Roic
+    fallback so the 'what's missing' definition can't drift."""
+    if tk in NO_EARNINGS_CALL_TICKERS:
+        return set()
     hf = hf_latest.get(tk)
     gap_start = (_quarter_index(*hf) + 1) if hf else floor_idx
-    required = set(_quarters_between(gap_start, end_idx))
+    tk_end = released.get(tk, end_idx) if released is not None else end_idx   # actual release, per ticker
+    required = set(_quarters_between(gap_start, tk_end))
     have = _local_quarters(cache_dir, tk) | have_db.get(tk, set()) | have_json.get(tk, set())
     return required - have
 
@@ -350,6 +388,7 @@ def missing_quarters_by_ticker(context: Context, tickers: list[str] | None = Non
     floor_idx = _since_floor_index(str(since))
     hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)
     have_db = _db_quarters_by_ticker(context)
+    released = _released_quarter_idx_by_ticker(context)   # latest ACTUALLY-reported quarter per ticker
     index = _load_index(_index_path(context))
     have_json: dict[str, set] = {}
     for r in index.values():
@@ -357,7 +396,7 @@ def missing_quarters_by_ticker(context: Context, tickers: list[str] | None = Non
 
     out: dict[str, list[str]] = {}
     for tk in universe:
-        miss = _missing_for(tk, hf_latest, floor_idx, end_idx, cache_dir, have_db, have_json)
+        miss = _missing_for(tk, hf_latest, floor_idx, end_idx, cache_dir, have_db, have_json, released)
         if miss:
             out[tk] = sorted(miss, key=lambda q: _quarter_index(*_parse_quarter(q)))
     return out
@@ -405,13 +444,14 @@ def build_transcript_index_by_ticker(
     floor_idx = _since_floor_index(since)                  # gap start when HF has nothing for a name
     hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)   # {ticker: (year, quarter)}
     have_db = _db_quarters_by_ticker(context)
+    released = _released_quarter_idx_by_ticker(context)   # latest ACTUALLY-reported quarter per ticker
     have_json: dict[str, set] = {}
     for r in index.values():
         have_json.setdefault(str(r["ticker"]), set()).add(str(r["quarter"]))
 
     def _missing(tk: str) -> set[str]:
         """Quarters the fool quote page should still supply for `tk` (shared gap logic)."""
-        return _missing_for(tk, hf_latest, floor_idx, end_idx, cache_dir, have_db, have_json)
+        return _missing_for(tk, hf_latest, floor_idx, end_idx, cache_dir, have_db, have_json, released)
 
     # process tickers in RANDOM order (not universe/alphabetical): spreads the fool.com load and
     # keeps an interrupted / throttled run from always dying on the same tail names.

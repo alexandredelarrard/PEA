@@ -244,6 +244,13 @@ EXTRA_FLOW_TAGS = {
     "equityIssuance": ["ProceedsFromIssuanceOfCommonStock"],
     "debtIssued": ["ProceedsFromIssuanceOfLongTermDebt"],
     "debtRepaid": ["RepaymentsOfLongTermDebt"],
+    # NON-CASH capacity added via FINANCE / capital leases (data centers, equipment) -- absent from
+    # the cash-capex line but real capacity investment (huge for MSFT ~$3-9B/q, historically AMZN).
+    # ASC-842 `RightOfUseAsset...FinanceLease` (2019+) coalesced with the pre-2019 capital-lease
+    # element (era-separated, so no double count). 0-filled (CHARGE) -> 0 when a filer uses none, so
+    # `capexGlobal` = cash capex for non-lease filers and cash capex + leases where they do.
+    "financeLeaseAdditions": ["RightOfUseAssetObtainedInExchangeForFinanceLeaseLiability",
+                              "CapitalLeaseObligationsIncurred"],
     "investingCashFlow": ["NetCashProvidedByUsedInInvestingActivities",
                           "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations"],
     "financingCashFlow": ["NetCashProvidedByUsedInFinancingActivities",
@@ -423,7 +430,9 @@ CHARGE_FLOWS = {"impairment", "restructuring", "acquisitions", "buybacks",
                 # widened non-recurring pool (see EXTRA_FLOW_TAGS): 0 in a normal
                 # quarter, non-zero only when the event occurs.
                 "goodwillImpairment", "gainOnSaleGeneric", "litigationExpense",
-                "discontinuedOps", "unusualItems", "bargainPurchaseGain"}
+                "discontinuedOps", "unusualItems", "bargainPurchaseGain",
+                # 0 when a filer funds no capacity via finance leases -> capexGlobal = cash capex
+                "financeLeaseAdditions"}
 
 ANNUAL_MIN_DAYS, ANNUAL_MAX_DAYS = 340, 380   # accept a fiscal year as ~365d
 QUARTER_MIN_DAYS, QUARTER_MAX_DAYS = 80, 100   # accept a fiscal quarter as ~13 weeks
@@ -1036,6 +1045,12 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
         "operatingIncome": oi_ttm,
         "depAmort": da_ttm,
         "capex": capex_ttm,
+        # GLOBAL capacity investment = cash capex + capacity funded via FINANCE leases (non-cash).
+        # Captures how much a firm actually injects into capacity each period even when it leases
+        # rather than buys (data centers -> MSFT ~+$6-9B/q, historically AMZN). NaN where cash capex
+        # is unknown; = capex for non-lease filers (finance-lease term is 0-filled). NOTE `capex`
+        # (and thus FCF) is unchanged -- capexGlobal is an ADDITIVE capacity measure, not cash-flow.
+        "capexGlobal": capex_ttm + ttm_a("financeLeaseAdditions", charge=True),
         "freeCashflow": ocf_ttm - capex_ttm.fillna(0),
         "operatingCashFlow": ocf_ttm,
         "researchAndDevelopment": rnd_ttm,

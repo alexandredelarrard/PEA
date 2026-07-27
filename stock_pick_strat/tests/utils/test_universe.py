@@ -54,7 +54,22 @@ def test_swapping_the_table_swaps_the_universe():
           "changing only sp500_tickers reroutes extract/peers/cube/modelling. Validated.")
 
 
+def test_insufficient_history_tickers_excluded():
+    """Recent IPOs / spin-offs with < 4y history (INSUFFICIENT_HISTORY_TICKERS) are dropped from
+    the universe even when present in the table, so the cube's multi-year look-backs / backtest
+    only see names with enough history."""
+    from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
+    excl = sorted(INSUFFICIENT_HISTORY_TICKERS)
+    df = pd.DataFrame({"ticker": ["AAPL", "MSFT"] + excl + ["gev"]})   # incl. a lower-case dupe
+    out = load_universe_tickers(_ctx(df))
+    assert not (set(out) & INSUFFICIENT_HISTORY_TICKERS), f"excluded names leaked: {set(out) & INSUFFICIENT_HISTORY_TICKERS}"
+    assert out == ["AAPL", "MSFT"], out
+    print("\n=== SANITY CHECK: insufficient-history exclusion ===")
+    print(f"  dropped {len(excl)} <4y names {excl} (incl. lower-case) -> universe = {out}. Validated.")
+
+
 if __name__ == "__main__":
     test_loader_sorted_dedup_upper_and_clean()
     test_empty_or_missing_table_returns_empty()
     test_swapping_the_table_swaps_the_universe()
+    test_insufficient_history_tickers_excluded()

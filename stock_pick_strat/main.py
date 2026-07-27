@@ -15,7 +15,7 @@ if __name__ == "__main__":
     # self.run()ss
 
     self = StepBuildCube(context=context, config=config)
-    self.run()
+    # self.run()
 
     # self = StepModelling(context=context, config=config)
     # self.run()

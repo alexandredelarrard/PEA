@@ -29,8 +29,6 @@ dependencies = [
     "curl-cffi (>=0.7,<1.0)",
     "sqlalchemy (>=2.0,<3.0)",
     "psycopg2-binary (>=2.9,<3.0)",
-    # Local earnings-call sentiment (FinBERT-tone). CPU wheel installs from PyPI; for GPU
-    # reinstall the CUDA build: pip install torch --index-url https://download.pytorch.org/whl/cu124
     "torch (>=2.6)",
     "transformers (>=4.40,<5.0)"
 ]

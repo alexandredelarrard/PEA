@@ -51,12 +51,110 @@ from src.data_aggregate.utils.cube import build_cube_dataframe, _betas_to_long, 
 from src.data_peers.step_deduce_peers import StepDeducePeers
 from src.data_peers.utils.sector_peers import compute_sector_returns
 
-
 class StepBuildCube(Step):
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
+
+        # ---- incremental part maintenance (read latest date -> recompute tail -> append) ---- #
+        # PER-PART warm-up (trading days): the LONGEST look-back each part computes ON THE DAILY PRICE
+        # GRID, + a safety buffer. `_trim_window` only trims the price-derived frames; SOURCE tables
+        # (fundamentals / 13F / insider / def14a / ...) are loaded FULL, so a builder that looks back in
+        # FILING/QUARTER space reads all its history regardless of the trim and needs ~no grid warm-up
+        # (floored at ~6 months for safety). This is the per-part sanity check — each part reads only as
+        # far back as its features actually need, so the light parts stay light.
+        self._GROUP_WARMUP_TRADING_DAYS: dict[str, int] = {
+            # --- DAILY-grid look-backs (real warm-up required) ---
+            "price":          1320,   # seasonal_h*: close.shift(252 * seasonal_years=5) = 1260
+            "fundamental":    1320,   # _self_history_z rolling(1260) + Beneish shift(252)
+            "dividend":       1320,   # 5y payout growth: shift(5 * 252) = 1260
+            "employee":        320,   # YoY headcount / rev-per-employee: shift(252)
+            "short_interest":  160,   # short-vol rolling(63) + FTD shift(40) = 103
+            "attention":       130,   # spike rolling(63) / level rolling(21)
+            # --- FILING/QUARTER-space look-backs over the FULL source (grid warm-up ~0; 6mo floor) ---
+            "sector":          130,   # _yearly_lag over fundamentals (as_of order)
+            "earnings":        130,   # trailing-4Q rolling over REPORTED quarters
+            "governance":      130,   # YoY fiscal change over annual proxies
+            "institutional":   130,   # QoQ vs the prior 13F period
+            "superinvestor":   130,   # QoQ vs the prior 13F period
+            "insider":         130,   # rolling('180D') over the FULL transaction calendar
+            "earnings_call_sentiment": 130,   # QoQ over reported quarters (+1d transcript lag)
+            "earnings_call_embedding": 130,   # QoQ embedding drift over reported quarters
+        }
+
+        # targets/betas: style momentum shift(252) + beta window(63); the forward horizon is added at
+        # the call site (targets look FORWARD to mature labels).
+        self._TARGET_WARMUP_TRADING_DAYS = 320
+
+        # ================================================================== #
+        # EXPLODED, memory-light execution for the Airflow `data_aggregation` DAG.
+        # Each feature group (and the target) runs STANDALONE — loading only prices +
+        # peers + its OWN source table(s) — and persists a compact part to the DB. A
+        # final `assemble` step reads the parts and builds the cube. So no single run
+        # ever holds all source tables at once, and the parts compute in PARALLEL.
+        # The monolithic run() above is unchanged (still used by main.py / tests).
+        # ================================================================== #
+    
+        # feature group -> (source tables to load onto self, builder method)
+        self._GROUP_SOURCES: dict[str, tuple[tuple[str, ...], str]] = {
+            "price":          ((), "build_features"),
+            # pension_facts/notes_num are NOT preloaded: the builder reads only the 2 pension tags of
+            # each (load_pension_facts_scoped / load_notes_num_scoped), never the whole facts tables.
+            "fundamental":    (("fundamentals_history", "earnings_surprises"),
+                                "build_fundamental_features"),
+            "sector":         (("fundamentals_history",), "build_sector_features"),
+            "earnings":       (("earnings_surprises",), "build_earnings_features"),
+            "governance":     (("def14a_llm", "fundamentals_history"), "build_governance_features"),
+            "employee":       (("employees_history", "fundamentals_history"), "build_employee_features"),
+            "dividend":       (("dividends", "fundamentals_history"), "build_dividend_features"),
+            "attention":      (("wiki_pageviews", "google_trends"), "build_attention_features"),
+            "institutional":  (("institutional_holdings", "fundamentals_history"),
+                                "build_institutional_features"),
+            # only fundamentals_history preloaded: the elite 13F rows are read directly (roster CIKs
+            # only) by load_superinvestor_holdings — never the whole ~20M-row institutional_holdings.
+            "superinvestor":  (("fundamentals_history",), "build_superinvestor_features"),
+            "insider":        (("insider_transactions", "fundamentals_history"), "build_insider_features"),
+            "short_interest": (("short_interest", "fails_to_deliver"), "build_short_interest_features"),
+            # earnings calls split into two independent parts (own DAG tasks): the FinBERT/LM sentiment
+            # KPIs and the OpenAI-embedding Q&A-coherence/drift KPIs.
+            # no preloaded source: scoring streams the sections per ticker + the KPIs stream the cache
+            # per ticker itself (loading the full sections table here is what OOM-crashed the task).
+            "earnings_call_sentiment": ((), "build_earnings_call_sentiment_features"),
+            # no preloaded source: embedding streams the sections per call + the KPI cache per ticker
+            # itself (loading the full sections/embeddings tables here is what OOM-crashed the task).
+            "earnings_call_embedding": ((), "build_earnings_call_embedding_features"),
+        }
+        # Per-source COLUMN PROJECTION for the exploded feature builds: load ONLY the columns each
+        # builder reads (union across the groups that consume the table). Cuts memory on the TALL tables
+        # so parallel builds don't OOM the DB/VM (institutional_holdings ~20M rows was the crasher). A
+        # table absent here loads in FULL — used for the SMALL tables (fundamentals_history 22k rows,
+        # pension/notes/def14a/employees/earnings, all tiny) where projection saves ~nothing, and for
+        # earnings_call_sections whose `text` column IS needed by the incremental scoring/embedding pass.
+        self._SOURCE_COLUMNS: dict[str, list[str]] = {
+            # institutional_features + superinvestor_features
+            "institutional_holdings": ["cik", "period", "ticker", "shares", "value_usd",
+                                        "call_value", "put_value", "filing_date"],
+            # insider_features (its own required set: ticker/filing_date/transaction_code/value_usd)
+            "insider_transactions":   ["ticker", "filing_date", "transaction_code", "value_usd"],
+            # short_interest_features (RegSHO short/total volume + reported short interest / ADV)
+            "short_interest":         ["date", "ticker", "short_volume", "total_volume",
+                                        "short_interest", "avg_daily_volume"],
+            "fails_to_deliver":       ["date", "ticker", "fails_quantity"],
+            # attention_features
+            "wiki_pageviews":         ["date", "ticker", "pageviews"],
+            "google_trends":          ["date", "ticker", "search_interest"],
+        }
+
+        self._TABLE_TO_ATTR: dict[str, str] = {
+            "fundamentals_history": "fundamentals", "earnings_surprises": "earnings",
+            "def14a_llm": "def14a", "employees_history": "employees", "dividends": "dividends",
+            "wiki_pageviews": "wiki_pageviews", "google_trends": "google_trends",
+            "institutional_holdings": "institutional", "insider_transactions": "insider",
+            "short_interest": "short_interest", "fails_to_deliver": "fails_to_deliver",
+            "pension_facts": "pension_facts", "notes_num": "notes_num",
+            "earnings_call_sections": "earnings_call_sections",
+        }
 
     def run(self):
         self.load_prices()
@@ -756,74 +854,6 @@ class StepBuildCube(Step):
         n = self._context.store.replace("cube", self.cube)
         self._log.info("Saved cube to DB table 'cube' (%s rows)", n)
 
-    # ================================================================== #
-    # EXPLODED, memory-light execution for the Airflow `data_aggregation` DAG.
-    # Each feature group (and the target) runs STANDALONE — loading only prices +
-    # peers + its OWN source table(s) — and persists a compact part to the DB. A
-    # final `assemble` step reads the parts and builds the cube. So no single run
-    # ever holds all source tables at once, and the parts compute in PARALLEL.
-    # The monolithic run() above is unchanged (still used by main.py / tests).
-    # ================================================================== #
-
-    # feature group -> (source tables to load onto self, builder method)
-    _GROUP_SOURCES: dict[str, tuple[tuple[str, ...], str]] = {
-        "price":          ((), "build_features"),
-        # pension_facts/notes_num are NOT preloaded: the builder reads only the 2 pension tags of
-        # each (load_pension_facts_scoped / load_notes_num_scoped), never the whole facts tables.
-        "fundamental":    (("fundamentals_history", "earnings_surprises"),
-                           "build_fundamental_features"),
-        "sector":         (("fundamentals_history",), "build_sector_features"),
-        "earnings":       (("earnings_surprises",), "build_earnings_features"),
-        "governance":     (("def14a_llm", "fundamentals_history"), "build_governance_features"),
-        "employee":       (("employees_history", "fundamentals_history"), "build_employee_features"),
-        "dividend":       (("dividends", "fundamentals_history"), "build_dividend_features"),
-        "attention":      (("wiki_pageviews", "google_trends"), "build_attention_features"),
-        "institutional":  (("institutional_holdings", "fundamentals_history"),
-                           "build_institutional_features"),
-        # only fundamentals_history preloaded: the elite 13F rows are read directly (roster CIKs
-        # only) by load_superinvestor_holdings — never the whole ~20M-row institutional_holdings.
-        "superinvestor":  (("fundamentals_history",), "build_superinvestor_features"),
-        "insider":        (("insider_transactions", "fundamentals_history"), "build_insider_features"),
-        "short_interest": (("short_interest", "fails_to_deliver"), "build_short_interest_features"),
-        # earnings calls split into two independent parts (own DAG tasks): the FinBERT/LM sentiment
-        # KPIs and the OpenAI-embedding Q&A-coherence/drift KPIs.
-        # no preloaded source: scoring streams the sections per ticker + the KPIs stream the cache
-        # per ticker itself (loading the full sections table here is what OOM-crashed the task).
-        "earnings_call_sentiment": ((), "build_earnings_call_sentiment_features"),
-        # no preloaded source: embedding streams the sections per call + the KPI cache per ticker
-        # itself (loading the full sections/embeddings tables here is what OOM-crashed the task).
-        "earnings_call_embedding": ((), "build_earnings_call_embedding_features"),
-    }
-    # Per-source COLUMN PROJECTION for the exploded feature builds: load ONLY the columns each
-    # builder reads (union across the groups that consume the table). Cuts memory on the TALL tables
-    # so parallel builds don't OOM the DB/VM (institutional_holdings ~20M rows was the crasher). A
-    # table absent here loads in FULL — used for the SMALL tables (fundamentals_history 22k rows,
-    # pension/notes/def14a/employees/earnings, all tiny) where projection saves ~nothing, and for
-    # earnings_call_sections whose `text` column IS needed by the incremental scoring/embedding pass.
-    _SOURCE_COLUMNS: dict[str, list[str]] = {
-        # institutional_features + superinvestor_features
-        "institutional_holdings": ["cik", "period", "ticker", "shares", "value_usd",
-                                    "call_value", "put_value", "filing_date"],
-        # insider_features (its own required set: ticker/filing_date/transaction_code/value_usd)
-        "insider_transactions":   ["ticker", "filing_date", "transaction_code", "value_usd"],
-        # short_interest_features (RegSHO short/total volume + reported short interest / ADV)
-        "short_interest":         ["date", "ticker", "short_volume", "total_volume",
-                                   "short_interest", "avg_daily_volume"],
-        "fails_to_deliver":       ["date", "ticker", "fails_quantity"],
-        # attention_features
-        "wiki_pageviews":         ["date", "ticker", "pageviews"],
-        "google_trends":          ["date", "ticker", "search_interest"],
-    }
-    _TABLE_TO_ATTR: dict[str, str] = {
-        "fundamentals_history": "fundamentals", "earnings_surprises": "earnings",
-        "def14a_llm": "def14a", "employees_history": "employees", "dividends": "dividends",
-        "wiki_pageviews": "wiki_pageviews", "google_trends": "google_trends",
-        "institutional_holdings": "institutional", "insider_transactions": "insider",
-        "short_interest": "short_interest", "fails_to_deliver": "fails_to_deliver",
-        "pension_facts": "pension_facts", "notes_num": "notes_num",
-        "earnings_call_sections": "earnings_call_sections",
-    }
-
     def _prereqs(self) -> None:
         """Shared minimum for any standalone step: prices (trading calendar + returns) + peers
         (peer baskets + sector returns; read from the SECTOR_PEERS_PATH cache the deduce-peers step
@@ -863,35 +893,6 @@ class StepBuildCube(Step):
             return 0
         df.head(0).to_sql(name, self._context.store.engine, if_exists="replace", index=False)
         return self._context.store.replace(name, df)
-
-    # ---- incremental part maintenance (read latest date -> recompute tail -> append) ---- #
-    # PER-PART warm-up (trading days): the LONGEST look-back each part computes ON THE DAILY PRICE
-    # GRID, + a safety buffer. `_trim_window` only trims the price-derived frames; SOURCE tables
-    # (fundamentals / 13F / insider / def14a / ...) are loaded FULL, so a builder that looks back in
-    # FILING/QUARTER space reads all its history regardless of the trim and needs ~no grid warm-up
-    # (floored at ~6 months for safety). This is the per-part sanity check — each part reads only as
-    # far back as its features actually need, so the light parts stay light.
-    _GROUP_WARMUP_TRADING_DAYS: dict[str, int] = {
-        # --- DAILY-grid look-backs (real warm-up required) ---
-        "price":          1320,   # seasonal_h*: close.shift(252 * seasonal_years=5) = 1260
-        "fundamental":    1320,   # _self_history_z rolling(1260) + Beneish shift(252)
-        "dividend":       1320,   # 5y payout growth: shift(5 * 252) = 1260
-        "employee":        320,   # YoY headcount / rev-per-employee: shift(252)
-        "short_interest":  160,   # short-vol rolling(63) + FTD shift(40) = 103
-        "attention":       130,   # spike rolling(63) / level rolling(21)
-        # --- FILING/QUARTER-space look-backs over the FULL source (grid warm-up ~0; 6mo floor) ---
-        "sector":          130,   # _yearly_lag over fundamentals (as_of order)
-        "earnings":        130,   # trailing-4Q rolling over REPORTED quarters
-        "governance":      130,   # YoY fiscal change over annual proxies
-        "institutional":   130,   # QoQ vs the prior 13F period
-        "superinvestor":   130,   # QoQ vs the prior 13F period
-        "insider":         130,   # rolling('180D') over the FULL transaction calendar
-        "earnings_call_sentiment": 130,   # QoQ over reported quarters (+1d transcript lag)
-        "earnings_call_embedding": 130,   # QoQ embedding drift over reported quarters
-    }
-    # targets/betas: style momentum shift(252) + beta window(63); the forward horizon is added at
-    # the call site (targets look FORWARD to mature labels).
-    _TARGET_WARMUP_TRADING_DAYS = 320
 
     def _warmup(self, group: str | None = None) -> int:
         """Warm-up (trading days) to pad before the first new date, sized PER PART to the longest
@@ -1037,6 +1038,7 @@ class StepBuildCube(Step):
             self._log.info("Persisted cube_part_%s (FULL): %s rows x %s feature cols.",
                            group, n, len(fcols))
             return
+        
         # incremental append: only rows strictly after the stored max date
         tail = rows[rows["date"] > last]
         existing = self._part_columns(part)

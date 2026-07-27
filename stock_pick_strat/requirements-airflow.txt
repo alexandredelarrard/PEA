@@ -26,3 +26,6 @@ lightgbm>=4.2
 torch>=2.6
 transformers>=4.40,<5.0
 plotly>=5.22
+matplotlib>=3.8
+streamlit>=1.35
+openpyxl>=3.1

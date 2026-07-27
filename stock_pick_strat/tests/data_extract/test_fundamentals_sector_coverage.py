@@ -218,3 +218,53 @@ def test_debt_zero_fill_dissociates_zero_from_missing():
     print("  debt-free non-financial -> longTermDebt/shortTermDebt/totalDebt all 0 (was NaN); "
           "partial-history debt-free -> 0 in the debt-free periods + value where tagged; "
           "financials with debt keep NaN where untagged (never force-zeroed). Validated.")
+
+
+def test_capex_and_amort_sector_total_tags_fill_only():
+    """Capex 'Other PP&E' / machinery lines (ADP/EA/LLY/GRMN) and the utility/miner TOTAL D&A
+    tags (AEP/PPL/PEG/FCX) resolve when a filer uses them instead of the generic element; both
+    are fill-only so the standard tag still wins where present (verified TOTAL-scale on real data;
+    REIT growth capex + financial D&A components deliberately NOT added)."""
+    from src.data_extract.utils.fundamentals.fetch_fundamentals import _extract_concept, FLOW_TAGS
+    def _sec(m): return {t: {"units": {"USD": o}} for t, o in m.items()}
+    cap, am = FLOW_TAGS["capex"], FLOW_TAGS["depAmort"]
+    # (1) new tags resolve
+    for tag in ("PaymentsToAcquireOtherPropertyPlantAndEquipment", "PaymentsToAcquireMachineryAndEquipment"):
+        d = _extract_concept(_sec({tag: [_q("2018-06-30", "2018-04-01", 44.0)]}), cap)
+        assert not d.empty and d["val"].iloc[0] == 44.0, f"{tag} did not resolve as capex"
+    for tag in ("UtilitiesOperatingExpenseDepreciationAndAmortization",
+                "CostOfGoodsAndServicesSoldDepreciationAndAmortization",
+                "CostOfGoodsSoldDepreciationDepletionAndAmortization"):
+        d = _extract_concept(_sec({tag: [_q("2018-06-30", "2018-04-01", 500.0)]}), am)
+        assert not d.empty and d["val"].iloc[0] == 500.0, f"{tag} did not resolve as D&A"
+    # (2) fill-only priority: the generic element still wins over the new sector tags
+    both = _sec({"PaymentsToAcquirePropertyPlantAndEquipment": [_q("2018-06-30", "2018-04-01", 900.0)],
+                 "PaymentsToAcquireOtherPropertyPlantAndEquipment": [_q("2018-06-30", "2018-04-01", 44.0)]})
+    v = _extract_concept(both, cap); v = v.loc[v["end"] == pd.Timestamp("2018-06-30"), "val"].iloc[0]
+    assert v == 900.0, "generic capex element must win over the fill tag"
+    print("\n=== SANITY CHECK: capex/amort sector tags ===")
+    print("  Other-PP&E/machinery capex + utility/miner total D&A resolve (fill-only); generic "
+          "element still wins where present. REIT growth capex + financial D&A components excluded.")
+
+
+def test_cash_disc_ops_and_equivalents_variant_tags_fill_only():
+    """Cash resolves via the discontinued-ops variants of the primary/restricted cash lines
+    (FISV/PCAR/MDLZ/GE mid-divestiture) and the REIT cash-equivalents line (O); all fill-only so
+    the primary CashAndCashEquivalentsAtCarryingValue still wins where present."""
+    from src.data_extract.utils.fundamentals.fetch_fundamentals import _extract_concept, STOCK_TAGS
+    def _sec(m): return {t: {"units": {"USD": o}} for t, o in m.items()}
+    cash = STOCK_TAGS["cash"]
+    for tag, val in [("CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations", 358.0),
+                     ("CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations", 2049.0),
+                     ("CashEquivalentsAtCarryingValue", 19.0)]:
+        d = _extract_concept(_sec({tag: _inst(val, [2019])}), cash)
+        assert not d.empty and d["val"].iloc[0] == val, f"{tag} did not resolve as cash"
+    # fill-only priority: the primary cash line wins over the disc-ops variant
+    both = _sec({"CashAndCashEquivalentsAtCarryingValue": _inst(500.0, [2019]),
+                 "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations": _inst(358.0, [2019])})
+    v = _extract_concept(both, cash); v = v["val"].iloc[0]
+    assert v == 500.0, "primary cash line must win over the disc-ops fill variant"
+    print("\n=== SANITY CHECK: cash disc-ops / REIT-equivalents variants ===")
+    print("  cash resolves via the disc-ops variants (FISV/PCAR/MDLZ/GE) + REIT equivalents line (O); "
+          "primary CashAndCashEquivalentsAtCarryingValue still wins where present (fill-only). "
+          "M&A/dividend/restricted-only cash-flow tags correctly excluded.")

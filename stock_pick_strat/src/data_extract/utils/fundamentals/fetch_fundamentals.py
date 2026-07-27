@@ -135,7 +135,14 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                  "DepreciationAmortizationAndAccretionNet",
                  "DepreciationAndAmortization",
                  "DepreciationAndAmortizationRealEstate",
-                 "Depreciation"],   # many REITs (e.g. EQR) tag plain Depreciation only
+                 "Depreciation",   # many REITs (e.g. EQR) tag plain Depreciation only
+                 # sector TOTAL D&A embedded in operating expense / COGS — utilities & miners tag
+                 # their whole D&A here rather than the cash-flow element (fill-only, lowest
+                 # priority, so a filer with the standard tag is untouched): AEP/PPL utilities, PEG,
+                 # FCX (mine depletion in COGS ~ its total D&A). Verified as the filer's total D&A.
+                 "UtilitiesOperatingExpenseDepreciationAndAmortization",
+                 "CostOfGoodsAndServicesSoldDepreciationAndAmortization",
+                 "CostOfGoodsSoldDepreciationDepletionAndAmortization"],
     "operatingCashFlow": ["NetCashProvidedByUsedInOperatingActivities",
                           "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment",
@@ -146,7 +153,17 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
               "PaymentsToAcquireOilAndGasPropertyAndEquipment",
               # REITs tag recurring/maintenance capex here (not generic PP&E) -> AFFO =
               # FFO - recurring capex. Fill-only (growth capex acquire/develop excluded).
-              "PaymentsForCapitalImprovements"],
+              "PaymentsForCapitalImprovements",
+              # operating PP&E capex variants some non-REIT filers tag instead of the generic
+              # element (fill-only, verified TOTAL-scale on real data): the "Other PP&E" line
+              # (ADP ~$44M/q, EA, LLY ~$478M/q, GRMN) and the machinery line. Deliberately NOT
+              # added: REIT growth capex (PaymentsToAcquireRealEstate / ...DevelopRealEstateAssets)
+              # -- REITs stay maintenance-only for AFFO; the non-cash accrual
+              # `CapitalExpendituresIncurredButNotYetPaid`; insurer investment-real-estate; and
+              # `PaymentsForConstructionInProcess` -- a utility CWIP COMPONENT (~$85M vs AEP's true
+              # ~$1B+/q), so it would understate total capex.
+              "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+              "PaymentsToAcquireMachineryAndEquipment"],
     "researchAndDevelopment": ["ResearchAndDevelopmentExpense",
                                "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
     # ---- added for refined features (S&M efficiency, M&A, SBC, distress) ----
@@ -172,9 +189,18 @@ STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
     # clean unrestricted cash first; then bank / plain-`Cash` variants; the
     # restricted-inclusive and cash+ST-investment totals are last-resort fallbacks
     # for insurers / asset managers (e.g. AIG, ALL) that omit the clean tag.
-    "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashAndDueFromBanks", "Cash",
+    "cash": ["CashAndCashEquivalentsAtCarryingValue",
+             # disc-ops-inclusive variant of the primary cash line (e.g. FISV mid-divestiture) --
+             # same concept, so right after the primary.
+             "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations",
+             "CashAndDueFromBanks", "Cash",
              "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
-             "CashCashEquivalentsAndShortTermInvestments"],
+             # disc-ops variant of the restricted-inclusive fallback (e.g. PACCAR) -- kept next to it
+             # (last-resort, restricted-inclusive slightly overstates unrestricted cash).
+             "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+             "CashCashEquivalentsAndShortTermInvestments",
+             # cash-EQUIVALENTS-only line some REITs tag as their cash (e.g. O); fill-only last resort.
+             "CashEquivalentsAtCarryingValue"],
     # ---- added for refined features (distress / liquidity, M&A footprint) ----
     "shortTermDebt": ["DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings",
                       "CommercialPaper", "OtherShortTermBorrowings"],

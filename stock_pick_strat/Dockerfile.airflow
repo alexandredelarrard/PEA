@@ -14,11 +14,15 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
+
 # Isolated pipeline venv (SQLAlchemy 2.0) — independent of Airflow's own site-packages.
 RUN python -m venv /opt/pipeline
-COPY requirements-airflow.txt /tmp/requirements-airflow.txt
-RUN /opt/pipeline/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/pipeline/bin/pip install --no-cache-dir -r /tmp/requirements-airflow.txt \
-    && chmod -R a+rx /opt/pipeline
+COPY requirements-airflow.txt /requirements-airflow.txt
 
-USER airflow
+# Use the full path to the venv's pip to ensure packages install inside /opt/pipeline
+RUN /opt/pipeline/bin/pip install --upgrade pip && \
+    /opt/pipeline/bin/pip install -r /requirements-airflow.txt
+
+RUN chmod -R a+rx /opt/pipeline
+
+USER airflows

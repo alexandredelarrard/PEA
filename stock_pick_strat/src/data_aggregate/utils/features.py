@@ -212,10 +212,20 @@ def compute_raw_features(
     # Dec-31 year-ends); it flags names under selling pressure now that tend to
     # rebound in January. Leak-free: YTD uses only past prices, the calendar of t
     # is known. The model learns the sign.
+    #
+    # OUTSIDE the window the value is NaN, NOT 0. A 0 off-season would feed the
+    # per-day cross-sectional ranker a sea of equal zeros (9 of 12 months + every
+    # YTD-winner in-season), collapsing the standardized feature to a near-constant
+    # ~0.5 whose only variation is the rank's small-sample +1/(2N) bias -> as the
+    # universe N grows over the years that bias shrinks, giving a SPURIOUS downward
+    # trend linear in the year (a ranking artifact, not a stock signal). NaN makes
+    # the feature simply ABSENT off-season, so the rank only ever orders the
+    # in-window names (losers high vs non-losers) and the drift disappears.
     year_start = close.groupby(close.index.year).transform("first")
     ytd = _safe(close / year_start.where(year_start > 0) - 1.0)
-    tax_window = np.isin(close.index.month, [10, 11, 12]).astype(float)
-    tax_loss = (-ytd).clip(lower=0.0).mul(pd.Series(tax_window, index=close.index), axis=0)
+    tax_loss = (-ytd).clip(lower=0.0)                 # 0 for YTD winners, >0 for losers
+    off_window = ~np.isin(close.index.month, [10, 11, 12])
+    tax_loss.loc[off_window] = np.nan                 # NaN outside the Oct-Dec tax window (not 0)
     feats["tax_loss_pressure"] = _safe(tax_loss)
 
     # ---- Technical indicators, LAGGED one day (exclude t -> no leakage) ----

@@ -51,17 +51,54 @@ def test_tax_loss_pressure_is_seasonal_and_cross_sectional():
     dates, tickers, close, open_, volume, sector = _synth()
     tlp = compute_raw_features(close, open_, sector, volume=volume)["tax_loss_pressure"]
 
-    # off-season (e.g. June) -> zero for everyone
+    # off-season (e.g. June) -> NaN for everyone (NOT 0): a 0 here would feed the per-day
+    # ranker a sea of equal zeros -> a ~0.5-constant feature with a spurious universe-size drift.
     june = [d for d in dates if d.month == 6]
-    assert (tlp.loc[june].fillna(0) == 0).all().all(), "tax_loss should be 0 off-season"
+    assert tlp.loc[june].isna().all().all(), "tax_loss must be NaN off-season (not 0)"
     # in-season (Nov/Dec) -> non-zero and DISPERSED (S0 the loser highest)
     dsel = [d for d in dates if d.month == 12 and tlp.loc[d].notna().any()][-1]
     row = tlp.loc[dsel]
     assert row.max() > 0 and row.std() > 0, "tax_loss flat/zero in-season"
     assert row.idxmax() == "S0", (dsel, row.to_dict())
     print("\n=== SANITY CHECK: tax-loss pressure (year-end, cross-sectional) ===")
-    print(f"  zero in June; in {dsel.date()} the YTD loser S0 tops tax_loss_pressure "
-          f"(std={row.std():.3f}>0 -> dispersed, not a flat calendar dummy). Validated.")
+    print(f"  NaN in June (absent off-season); in {dsel.date()} the YTD loser S0 tops "
+          f"tax_loss_pressure (std={row.std():.3f}>0 -> dispersed, not a flat calendar dummy). Validated.")
+
+
+def test_tax_loss_pressure_absent_off_season_and_dispersed_in_season():
+    """Regression for the 'linear downward trend with the years' bug. Root cause: the feature was
+    0 for ~75% of cells (off-season + YTD winners), so the per-day ranker collapsed it to a
+    near-constant ~0.5 whose ONLY variation was the rank's universal +1/(2N) mean drift (which
+    grows a spurious year-trend as the universe expands). The fix makes it NaN off-season, so the
+    standardized feature is ABSENT off-season and carries a REAL loser-vs-winner spread in-season.
+    (The residual mean-level drift is the same benign artifact every rank feature has and is NOT
+    asserted here — the model uses within-day ordering, not the mean.)"""
+    dates = pd.bdate_range("2019-01-02", periods=4 * 252)
+    tickers = ["LOSER", "WINNER"] + [f"S{i}" for i in range(6)]
+    rng = np.random.default_rng(1)
+    ret = pd.DataFrame(rng.normal(0.0003, 0.015, (len(dates), len(tickers))),
+                       index=dates, columns=tickers)
+    ret["LOSER"] = -0.004                                  # persistent YTD loser
+    ret["WINNER"] = +0.004                                 # persistent YTD winner
+    close = 100 * (1 + ret).cumprod()
+    open_ = close.shift(1).bfill()
+    sector = pd.DataFrame(0.0, index=dates, columns=tickers)
+
+    panel = build_feature_panel(close, open_, sector, method="rank")
+    p = panel.assign(month=pd.to_datetime(panel["date"]).dt.month)
+    tlp = p["tax_loss_pressure"]
+    # (1) ABSENT off-season: all-NaN (was a ~0.5 constant that manufactured the year-trend)
+    assert tlp[~p["month"].isin([10, 11, 12])].notna().sum() == 0, "must be all-NaN off-season"
+    # (2) present + DISPERSED in-season, with the real signal: the YTD loser ranks ABOVE the winner
+    ins = p[p["month"].isin([10, 11, 12]) & tlp.notna()]
+    assert len(ins) > 0 and ins["tax_loss_pressure"].std() > 0, "in-season must be dispersed, not flat"
+    day = ins["date"].iloc[-1]
+    d = ins[ins["date"] == day].set_index("ticker")["tax_loss_pressure"]
+    assert d.get("LOSER", 0) > d.get("WINNER", 1), f"loser must rank above winner: {d.to_dict()}"
+    print("\n=== SANITY CHECK: tax-loss pressure absent off-season, real signal in-season ===")
+    print(f"  standardized feature all-NaN off-season (no more ~0.5 constant / year drift); "
+          f"in {pd.Timestamp(day).date()} LOSER rank {d.get('LOSER'):.2f} > WINNER {d.get('WINNER'):.2f} "
+          "-> real cross-sectional loser signal. Bug fixed.")
 
 
 def test_flow_is_leak_free_and_panel():

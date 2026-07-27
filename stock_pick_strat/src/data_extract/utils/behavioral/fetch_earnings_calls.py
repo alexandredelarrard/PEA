@@ -44,6 +44,10 @@ from src.context import Context
 from src.utils import polite_http as ph
 from src.utils.crawler import Crawler
 
+from src.data_extract.utils.behavioral.fetch_hf_transcripts import download_hf_parquet
+from src.data_extract.utils.behavioral.fetch_hf_transcripts import ingest_hf_transcripts
+from src.data_extract.utils.behavioral.fetch_roic_transcripts import fetch_roic_transcripts
+
 logger = logging.getLogger(__name__)
 
 # one shared crawler per process: headless, no cookies/JS/images, rolling browser fingerprint, and
@@ -648,11 +652,9 @@ def download_earnings_calls(context: Context, tickers: list[str] | None = None,
     `include_hf=False` skips the backbone; `use_roic=False` skips the Roic layer."""
     if include_hf:
         # deferred import: fetch_hf_transcripts imports helpers from THIS module
-        from src.data_extract.utils.behavioral.fetch_hf_transcripts import download_hf_parquet
         download_hf_parquet(context)
     if use_roic:
         # deferred import: fetch_roic_transcripts imports helpers from THIS module
-        from src.data_extract.utils.behavioral.fetch_roic_transcripts import fetch_roic_transcripts
         fetch_roic_transcripts(context, tickers=tickers, since=recent_since)
     build_transcript_index_by_ticker(context, tickers=tickers, since=recent_since)
     if use_global_crawl:
@@ -670,7 +672,6 @@ def ingest_all_earnings_calls(context: Context, tickers: list[str] | None = None
     so a re-run with nothing new returns fast. `force=True` re-ingests both regardless."""
     saved = 0
     if include_hf:
-        from src.data_extract.utils.behavioral.fetch_hf_transcripts import ingest_hf_transcripts
         saved += ingest_hf_transcripts(context, tickers=tickers, force=force)   # cached parquet -> sections
     saved += ingest_earnings_calls(context, tickers=tickers, force=force)       # cached MF HTML -> sections
     return saved

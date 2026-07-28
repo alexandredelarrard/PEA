@@ -24,6 +24,23 @@ Output schema (same `fundamentals_history.parquet` the cube reads):
     sellingGeneralAdmin, stockBasedComp, acquisitions, interestExpense  (TTM flows),
     revenue_q, netIncome_q, ebitda_q, freeCashflow_q  (discrete single-quarter)
 
+RESTATED (not just extracted) fields — GAAP as filed is not comparable for these, so the
+base column carries the corrected figure and the SIZE of each correction is emitted as its
+own column so nothing is hidden:
+    cash                  unrestricted and investment-free (the restricted-inclusive and
+                          cash+ST-investment totals are separate pools netted down here;
+                          ABSTAINS when the restricted amount is unknown) -> `restrictedCash`
+    inventory/costOfRevenue  LIFO -> FIFO (+ reserve on the balance sheet, - the reserve's
+                          annual increase in COGS)                        -> `lifoReserve`
+    operatingIncome       pre-FY2018 non-service pension cost added back, removing the
+                          ASU-2017-07 break in a filer's own margin series
+                                                                  -> `nonServicePensionCost`
+    totalRevenue          excise / sales taxes the filer merely collects netted off, but only
+                          where it tags no clean element     -> `exciseTaxAdjustment`
+    totalAssetsExLease    the assets base free of the ASC-842 ROU asset, so the FY2019
+                          adoption jump is not read as investment  -> `operatingLeaseRouAsset`
+    capexGlobal           now includes OPERATING-lease additions as well as finance-lease ones
+
 The raw levels / extra TTM flows above feed the refined feature families in
 fundamental_features.py: distress (net-debt/EBITDA, interest coverage, current
 ratio, cash/debt), S&M efficiency (SG&A intensity + operating leverage), M&A
@@ -130,11 +147,12 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                       # services elements (e.g. PNW/AES electric, DTE energy, PEG services).
                       "CostOfGoodsSoldElectric", "CostOfGoodsAndServicesEnergyCommoditiesAndServices",
                       "CostOfServicesEnergyServices", "CostOfDomesticRegulatedElectric"],
-    "operatingIncome": ["OperatingIncomeLoss", "OperatingAndNonoperatingRevenues", "OperatingLoss", "OperatingIncome"],
+    # `OperatingAndNonoperatingRevenues` / `OperatingLoss` / `OperatingIncome` were
+    # dropped: not us-gaap elements (0 of 498 S&P-500 filers report any of them).
+    "operatingIncome": ["OperatingIncomeLoss"],
     "depAmort": ["DepreciationDepletionAndAmortization",
                  "DepreciationAmortizationAndAccretionNet",
                  "DepreciationAndAmortization",
-                 "DepreciationAndAmortizationRealEstate",
                  "Depreciation",   # many REITs (e.g. EQR) tag plain Depreciation only
                  # sector TOTAL D&A embedded in operating expense / COGS — utilities & miners tag
                  # their whole D&A here rather than the cash-flow element (fill-only, lowest
@@ -186,19 +204,18 @@ STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
     # capital-lease-inclusive element — coalesce it so LTD isn't ~null for them.
     "longTermDebt": ["LongTermDebtNoncurrent", "LongTermDebt",
                      "LongTermDebtAndCapitalLeaseObligations"],
-    # clean unrestricted cash first; then bank / plain-`Cash` variants; the
-    # restricted-inclusive and cash+ST-investment totals are last-resort fallbacks
-    # for insurers / asset managers (e.g. AIG, ALL) that omit the clean tag.
+    # UNRESTRICTED cash only. The restricted-inclusive and cash+ST-investment totals
+    # used to be coalesced in here as last-resort fallbacks, which overstated cash for
+    # every filer that fell through to them (95.6% of filers report the restricted-
+    # inclusive total) and, because the EV also nets `shortTermInvestments`, DOUBLE-
+    # subtracted short-term investments wherever the cash+STI total won. They are now
+    # separate pools (`cashInclRestricted` / `cashAndShortTermInvestments`) that
+    # `_derive_history` nets down to clean cash before anything consumes it.
     "cash": ["CashAndCashEquivalentsAtCarryingValue",
              # disc-ops-inclusive variant of the primary cash line (e.g. FISV mid-divestiture) --
              # same concept, so right after the primary.
              "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations",
              "CashAndDueFromBanks", "Cash",
-             "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
-             # disc-ops variant of the restricted-inclusive fallback (e.g. PACCAR) -- kept next to it
-             # (last-resort, restricted-inclusive slightly overstates unrestricted cash).
-             "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
-             "CashCashEquivalentsAndShortTermInvestments",
              # cash-EQUIVALENTS-only line some REITs tag as their cash (e.g. O); fill-only last resort.
              "CashEquivalentsAtCarryingValue"],
     # ---- added for refined features (distress / liquidity, M&A footprint) ----
@@ -238,9 +255,60 @@ EXTRA_FLOW_TAGS = {
     "costsAndExpenses": ["CostsAndExpenses"],
     "interestIncome": ["InvestmentIncomeInterest"],
     "amortizationIntangibles": ["AmortizationOfIntangibleAssets"],
+    # ---- reported per-share + tax-cash + below-the-line items (§B tier-1 additions) ----
+    # Reported diluted/basic EPS (98.8% / 98.6%) is the cleanest per-share earnings: it is
+    # already net of preferred dividends and handles two-class structures, and it is the
+    # figure the analyst archive forecasts, so the surprise features reconcile to it.
+    # TTM-summed like any flow (4 quarters of EPS = trailing annual EPS).
+    "epsDiluted": ["EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted"],
+    "epsBasic": ["EarningsPerShareBasic", "EarningsPerShareBasicAndDiluted"],
+    "dividendsPerShare": ["CommonStockDividendsPerShareDeclared", "CommonStockDividendsPerShareCashPaid"],
+    # CASH taxes / interest actually paid (92.8% / 89.8%): the gap vs the accrual expense is
+    # the classic earnings-quality tell (a low cash tax rate on a high book rate = aggressive
+    # deferral), and cash interest is the true debt-service burden.
+    "incomeTaxesPaid": ["IncomeTaxesPaidNet", "IncomeTaxesPaid"],
+    "deferredIncomeTaxExpense": ["DeferredIncomeTaxExpenseBenefit"],
+    "interestPaid": ["InterestPaidNet", "InterestPaid"],
+    # equity-method income (61%) inflates pre-tax/net income with NO revenue and NO cash;
+    # other non-operating (74.7%) is where ASU-2017-07 parked non-service pension cost.
+    # Both must come OUT of core operating earnings.
+    "equityMethodIncome": ["IncomeLossFromEquityMethodInvestments"],
+    "otherNonoperating": ["OtherNonoperatingIncomeExpense"],
+    "debtExtinguishment": ["GainsLossesOnExtinguishmentOfDebt"],
+    # income attributable to NCI (67.3%): reconciles the incl-NCI (`ProfitLoss`) and
+    # excl-NCI (`NetIncomeLoss`) bases the netIncome coalesce mixes across eras.
+    "nciIncome": ["NetIncomeLossAttributableToNoncontrollingInterest"],
+    "comprehensiveIncome": ["ComprehensiveIncomeNetOfTax"],
+    "goodwillAcquired": ["GoodwillAcquiredDuringPeriod"],
+    # ---- ASC-842 operating-lease flows ----
+    # Operating-lease ADDITIONS (87.3%) are the operating-lease twin of the finance-lease
+    # additions already captured in `capexGlobal` -- the bigger number for retail /
+    # restaurants / airlines, so leaving it out made capacity investment asymmetric.
+    "operatingLeaseAdditions": ["RightOfUseAssetObtainedInExchangeForOperatingLeaseLiability"],
+    "operatingLeaseCost": ["OperatingLeaseCost", "LeaseAndRentalExpense"],
+    # ---- gross-to-net revenue correction ----
+    # Excise / sales taxes collected (6.2%): 19.5% of filers tag revenue under the
+    # INCLUDING-assessed-tax element, which overstates the top line vs peers (tobacco,
+    # beverages, fuel distribution). Netted off in `_derive_history` only for the periods
+    # where the EXCLUDING element is absent, so no double deduction.
+    "exciseTaxes": ["ExciseAndSalesTaxes"],
+    "revenueExcludingAssessedTax": ["RevenueFromContractWithCustomerExcludingAssessedTax"],
+    "revenueIncludingAssessedTax": ["RevenueFromContractWithCustomerIncludingAssessedTax"],
+    # ---- DB-pension net-periodic components (footnote, mostly annual) ----
+    # ASU 2017-07 (effective FY2018) forced every NON-service component out of the
+    # operating subtotal. Before that they sat inside SG&A / operating income, so a
+    # filer's own operating-margin series BREAKS at adoption. `_derive_history` restates
+    # the pre-2018 half using non-service = net periodic cost - service cost.
+    "pensionNetPeriodicCost": ["DefinedBenefitPlanNetPeriodicBenefitCost"],
+    "pensionServiceCost": ["DefinedBenefitPlanServiceCost"],
+    "pensionInterestCost": ["DefinedBenefitPlanInterestCost"],
+    "pensionExpectedReturn": ["DefinedBenefitPlanExpectedReturnOnPlanAssets"],
+    "pensionAmortPriorService": ["DefinedBenefitPlanAmortizationOfPriorServiceCostCredit"],
+    "pensionAmortGainsLosses": ["DefinedBenefitPlanAmortizationOfGainsLosses",
+                                "DefinedBenefitPlanAmortizationOfNetGainsLosses"],
     "dividendsPaid": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
-    "buybacks": ["PaymentsForRepurchaseOfCommonStock",
-                 "PaymentsForRepurchaseOfCommonStockAndEmployeeShareRepurchases"],
+    "buybacks": ["PaymentsForRepurchaseOfCommonStock"],   # 95.6% coverage; the
+    # `...AndEmployeeShareRepurchases` variant was dropped (0 of 498 filers).
     "equityIssuance": ["ProceedsFromIssuanceOfCommonStock"],
     "debtIssued": ["ProceedsFromIssuanceOfLongTermDebt"],
     "debtRepaid": ["RepaymentsOfLongTermDebt"],
@@ -278,8 +346,13 @@ EXTRA_FLOW_TAGS = {
     # net unusual are signed (gain +, removed from core); discontinued ops is net-of-tax
     # income (removed from core directly).
     "goodwillImpairment": ["GoodwillImpairmentLoss"],
+    # `GainLossOnDispositionOfAssets` (19.9%) is the GENERIC disposal line many filers
+    # tag instead of the business / PP&E specific ones -- coalesced here (one pool, so
+    # a filer reporting several never double-counts) rather than into the real-estate
+    # `gainOnDispositions` pool, which the core-earnings block sums alongside this one.
     "gainOnSaleGeneric": ["GainLossOnSaleOfBusiness",
-                          "GainLossOnSaleOfPropertyPlantEquipment"],
+                          "GainLossOnSaleOfPropertyPlantEquipment",
+                          "GainLossOnDispositionOfAssets"],
     "litigationExpense": ["LitigationSettlementExpense"],
     "discontinuedOps": ["IncomeLossFromDiscontinuedOperationsNetOfTax"],
     "unusualItems": ["UnusualOrInfrequentItemNetGainLoss"],
@@ -287,36 +360,71 @@ EXTRA_FLOW_TAGS = {
     # ---- Banks ----
     "interestIncomeBank": ["InterestAndDividendIncomeOperating"],
     "netInterestIncome": ["InterestIncomeExpenseNet", "InterestIncomeExpenseAfterProvisionForLoanLoss"],
+    # LENDING credit-loss provision only. `ProvisionForDoubtfulAccounts` was removed:
+    # it is the TRADE-receivable bad-debt expense (48% of filers, of which only 43 are
+    # Financials), so coalescing it here populated a "bank" provision for 178 non-banks
+    # and fed `bank_operating_margin`. It now has its own field below.
+    # `ProvisionForCreditLossExpenseReversal` is not an element (0 of 498) -> replaced
+    # by the real CECL-era name.
     "provisionForCreditLosses": ["ProvisionForLoanLossesExpensed",
-                                 "ProvisionForLoanLeaseAndOtherLosses", "ProvisionForDoubtfulAccounts",
-                                 # CECL-era element used by many banks from 2020
-                                 "ProvisionForLoanAndLeaseLosses", "ProvisionForCreditLossExpenseReversal"],
+                                 "ProvisionForLoanLeaseAndOtherLosses",
+                                 "ProvisionForLoanAndLeaseLosses",
+                                 "FinancingReceivableExcludingAccruedInterestCreditLossExpenseReversal"],
+    # trade-receivable bad-debt expense (NON-lending): a revenue-quality signal in its
+    # own right (rising = the firm is booking sales it cannot collect), kept OUT of the
+    # bank provision pool above.
+    "provisionDoubtfulAccounts": ["ProvisionForDoubtfulAccounts"],
     "noninterestIncome": ["NoninterestIncome"],
     "noninterestExpense": ["NoninterestExpense"],
     # net loan charge-offs (write-offs, net of recoveries) -> realized credit losses
-    # (B3). Duration flow -> TTM-summed. Net tag preferred, gross write-offs fallback.
-    "netChargeOffs": ["FinancingReceivableAllowanceForCreditLossesWriteoffAfterRecovery",
-                      "FinancingReceivableAllowanceForCreditLossesWriteoff",
-                      "AllowanceForLoanAndLeaseLossesWriteOffs",
-                      "AllowanceForLoanAndLeaseLossesWriteoffsNet"],
+    # (B3). Duration flow -> TTM-summed. NET-of-recovery tags first, gross write-offs
+    # as the fallback. The two names previously listed first do not exist in us-gaap
+    # (0 of 498 filers: `...CreditLossesWriteoffAfterRecovery`, `...CreditLossesWriteoff`),
+    # which left the column 0.6% populated -- 2.3% even within Financials. The live CECL
+    # element is `FinancingReceivableAllowanceForCreditLossesWriteOffs` (capital "Off",
+    # 62 filers).
+    "netChargeOffs": ["FinancingReceivableExcludingAccruedInterestAllowanceForCreditLossWriteoffAfterRecovery",
+                      "FinancingReceivableAllowanceForCreditLossWriteoffAfterRecovery",
+                      "AllowanceForLoanAndLeaseLossesWriteoffsNet",
+                      "FinancingReceivableAllowanceForCreditLossesWriteOffs",
+                      "FinancingReceivableExcludingAccruedInterestAllowanceForCreditLossWriteoff",
+                      "AllowanceForLoanAndLeaseLossesWriteOffs"],
     # ---- Insurance ----
     "premiumsEarned": ["PremiumsEarnedNet", "PremiumsEarnedNetPropertyAndCasualty"],
     "premiumsWritten": ["PremiumsWrittenNet"],
+    # `...IncurredHomeAndAutoAndOther` dropped (0 of 498 filers).
     "claimsIncurred": ["PolicyholderBenefitsAndClaimsIncurredNet",
-                       "IncurredClaimsPropertyCasualtyAndLiability",
-                       "PolicyholderBenefitsAndClaimsIncurredHomeAndAutoAndOther"],
+                       "IncurredClaimsPropertyCasualtyAndLiability"],
     "netInvestmentIncome": ["NetInvestmentIncome"],
     "dacAmortization": ["DeferredPolicyAcquisitionCostAmortizationExpense"],
+    # ---- Insurance ----
+    # Realized investment gains/losses: the third leg of an insurer's GAAP top line (the
+    # rule's `PremiumRevenueNet + NetInvestmentIncome + RealizedInvestmentGainsLosses`),
+    # and a management-TIMED item that must come out of CORE earnings for every sector
+    # (`GainLossOnInvestments` is tagged by 30% of filers, not just insurers).
+    "realizedInvestmentGains": ["RealizedInvestmentGainsLosses", "GainLossOnInvestments",
+                                "MarketableSecuritiesRealizedGainLoss"],
     # ---- REITs ----
     "rentalIncome": ["OperatingLeaseLeaseIncome", "OperatingLeasesIncomeStatementLeaseRevenue",
                      "RealEstateRevenueNet", "LeaseIncome"],
-    "gainOnDispositions": ["GainLossOnDispositionOfRealEstate",
-                           "GainLossOnSaleOfProperties",
+    # AFFO adjustments beyond capex: non-cash straight-line rent and above/below-market
+    # lease amortization (both sparse -- 3.0% / 2.8% -- so a no-op for most REITs, but
+    # correct where disclosed).
+    "straightLineRent": ["StraightLineRent"],
+    "aboveBelowMarketLeaseAmort": ["AmortizationOfAboveAndBelowMarketLeases"],
+    # `GainLossOnDispositionOfRealEstate` dropped (0 of 498 filers) -- the real-estate
+    # disposal gain REITs actually tag is `GainLossOnSaleOfProperties` (11.4%).
+    "gainOnDispositions": ["GainLossOnSaleOfProperties",
                            "GainLossOnDispositionOfProperty",
                            "GainsLossesOnSalesOfInvestmentRealEstate"],
+    # REAL-ESTATE impairment write-down: NAREIT FFO excludes it alongside real-estate
+    # D&A and sale gains, so FFO needs it as an ADD-BACK (a charge flow -> 0 in a normal
+    # quarter). Without it FFO was understated in every year a REIT wrote a property down.
+    "realEstateImpairment": ["ImpairmentOfRealEstate"],
     # ---- Energy (oil & gas) ----
     "oilGasRevenue": ["OilAndGasRevenue", "OilAndGasSalesRevenue"],  # E&P top line (pure players / pre-ASC-606)
-    "explorationExpense": ["ExplorationExpense", "ExplorationAbandonmentAndDryHoleCosts",
+    # `ExplorationAbandonmentAndDryHoleCosts` dropped (0 of 498 filers).
+    "explorationExpense": ["ExplorationExpense",
                            "ExplorationAbandonmentAndImpairmentExpense",   # DVN/EQT/OXY
                            "ResultsOfOperationsExplorationExpense"],
     # E&P filers report their depletion under the standard DD&A element rather than
@@ -331,10 +439,90 @@ EXTRA_STOCK_TAGS = {
     "debtCombined": ["DebtLongtermAndShorttermCombinedAmount"],   # single ST+LT total (banks/insurers)
     "notesPayable": ["NotesPayable"],                             # REIT total-debt fallback
     "commercialPaper": ["CommercialPaper"],
+    # ---- ASC-842 leases: BOTH legs of the liability + the offsetting ROU ASSET ----
+    # The current portion of the finance-lease liability (41.6%) was missing, understating
+    # debt / EV for lease-heavy names; the pre-2019 CAPITAL-lease elements were missing
+    # entirely, so there was NO lease debt at all before ASC-842 adoption. Totals are
+    # reconstructed in `_derive_history` (combined tag, else current + noncurrent, else
+    # the pre-2019 capital-lease legs -- era-separated, so never double counted).
     "operatingLeaseLiability": ["OperatingLeaseLiability"],
-    "financeLeaseLiability": ["FinanceLeaseLiabilityNoncurrent", "FinanceLeaseLiability"],
+    "operatingLeaseLiabilityCurrent": ["OperatingLeaseLiabilityCurrent"],
+    "operatingLeaseLiabilityNoncurrent": ["OperatingLeaseLiabilityNoncurrent"],
+    "financeLeaseLiability": ["FinanceLeaseLiability"],
+    "financeLeaseLiabilityCurrent": ["FinanceLeaseLiabilityCurrent"],
+    "financeLeaseLiabilityNoncurrent": ["FinanceLeaseLiabilityNoncurrent"],
+    "capitalLeaseObligationCurrent": ["CapitalLeaseObligationsCurrent"],
+    "capitalLeaseObligationNoncurrent": ["CapitalLeaseObligationsNoncurrent"],
+    # The right-of-use ASSET (97.6% -- the single highest-coverage element the extractor
+    # was missing). Two jobs: (a) the operating-side twin of the lease liability, which is
+    # already treated as debt in EV / leverage, and (b) it is what makes `totalAssets` JUMP
+    # at ASC-842 adoption (FY2019), a break that contaminated every assets-denominated
+    # ratio (asset growth = the FF CMA factor, asset turnover, gross profitability,
+    # accruals, Altman Z). `_derive_history` derives a break-free `totalAssetsExLease`.
+    "operatingLeaseRouAsset": ["OperatingLeaseRightOfUseAsset"],
+    "financeLeaseRouAsset": ["FinanceLeaseRightOfUseAsset"],
+    # ---- cash quality: the pools netted OUT of clean cash (see the `cash` note) ----
+    "restrictedCash": ["RestrictedCashAndCashEquivalents",
+                       "RestrictedCashAndCashEquivalentsAtCarryingValue", "RestrictedCash"],
+    "restrictedCashCurrent": ["RestrictedCashCurrent",
+                              "RestrictedCashAndCashEquivalentsAtCarryingValueCurrent"],
+    "restrictedCashNoncurrent": ["RestrictedCashAndCashEquivalentsNoncurrent",
+                                 "RestrictedCashNoncurrent"],
+    "cashInclRestricted": ["CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+                           "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations"],
+    "cashAndShortTermInvestments": ["CashCashEquivalentsAndShortTermInvestments"],
+    # CURRENT marketable securities -> part of the non-operating liquid pool netted in EV.
+    # Deliberately separate from `investmentSecurities` below: for a bank or insurer the
+    # AFS/HTM book is the CORE operating asset (50-80% of assets), not excess cash, so it
+    # must never be netted against enterprise value.
+    "marketableSecuritiesCurrent": ["MarketableSecuritiesCurrent",
+                                    "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
+                                    "AvailableForSaleSecuritiesCurrent",
+                                    "OtherShortTermInvestments"],
+    "investmentSecurities": ["AvailableForSaleSecuritiesDebtSecurities",
+                             "AvailableForSaleSecurities", "TradingSecurities",
+                             "EquitySecuritiesFvNiCurrentAndNoncurrent"],
+    # MEZZANINE equity: redeemable NCI / temporary equity sits between debt and common and
+    # belongs in EV alongside minority interest.
+    "redeemableNCI": ["RedeemableNoncontrollingInterestEquityCarryingAmount",
+                      "TemporaryEquityCarryingAmountAttributableToParent",
+                      "TemporaryEquityCarryingAmount"],
+    # ---- LIFO -> FIFO normalization (retail / industrial / refining) ----
+    # FIFO inventory = LIFO inventory + LIFO reserve; FIFO COGS = LIFO COGS - the reserve's
+    # increase. Without it a LIFO filer's inventory days, GMROI and gross margin are not
+    # comparable to its FIFO peers.
+    "lifoReserve": ["InventoryLIFOReserve", "ExcessOfReplacementOrCurrentCostsOverStatedLIFOValue"],
+    # ---- asset-retirement obligations (energy / utilities / mining) ----
+    # A debt-like decommissioning liability; added to the off-balance-sheet-inclusive
+    # leverage pool, not to interest-bearing debt.
+    "assetRetirementObligation": ["AssetRetirementObligation"],
+    "aroCurrent": ["AssetRetirementObligationCurrent"],
+    "aroNoncurrent": ["AssetRetirementObligationsNoncurrent"],
+    # ---- DEBT MATURITY WALL (instant facts, ~81% coverage per year) ----
+    # How much principal comes due each of the next five years. `refinancing_risk` used
+    # only `shortTermDebt`, which misses a wall sitting 2-3 years out.
+    "debtMaturity1y": ["LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths"],
+    "debtMaturity2y": ["LongTermDebtMaturitiesRepaymentsOfPrincipalInYearTwo"],
+    "debtMaturity3y": ["LongTermDebtMaturitiesRepaymentsOfPrincipalInYearThree"],
+    "debtMaturity4y": ["LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFour"],
+    "debtMaturity5y": ["LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFive"],
+    "debtMaturityAfter5y": ["LongTermDebtMaturitiesRepaymentsOfPrincipalAfterYearFive"],
+    # ---- deferred tax / tax-aggressiveness levels ----
+    "deferredTaxAssets": ["DeferredTaxAssetsNet", "DeferredIncomeTaxAssetsNet"],
+    "deferredTaxLiabilities": ["DeferredIncomeTaxLiabilitiesNet", "DeferredTaxLiabilities"],
+    "valuationAllowance": ["DeferredTaxAssetsValuationAllowance"],
+    "unrecognizedTaxBenefits": ["UnrecognizedTaxBenefits"],
+    "allowanceDoubtfulAccounts": ["AllowanceForDoubtfulAccountsReceivableCurrent"],
+    "intangiblesGross": ["FiniteLivedIntangibleAssetsGross"],
+    "intangiblesAccumAmort": ["FiniteLivedIntangibleAssetsAccumulatedAmortization"],
     "accountsReceivable": ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"],
-    "inventory": ["InventoryNet"],
+    # as-reported (LIFO-basis for a LIFO filer) inventory. `LIFOInventoryAmount` is the
+    # carrying value LIFO filers tag when they leave `InventoryNet` sparse -- Kroger tags
+    # InventoryNet in only 4 filings but the LIFO/FIFO pair in 140 each.
+    "inventory": ["InventoryNet", "LIFOInventoryAmount"],
+    # inventory already stated at FIFO by the filer -> the FIFO target directly, used to
+    # fill the normalization where the LIFO-basis line is missing.
+    "inventoryFifoReported": ["FIFOInventoryAmount"],
     "accountsPayable": ["AccountsPayableCurrent", "AccountsPayableAndAccruedLiabilitiesCurrent"],
     # net PP&E is the common balance-sheet line; gross is reconstructed as
     # net + accumulated depreciation in build_ticker_history for net-only filers.
@@ -373,22 +561,37 @@ EXTRA_STOCK_TAGS = {
                               "LoansAndLeasesReceivableAllowance"],
     # held-to-maturity book (amortized cost) + its footnote FAIR VALUE -> the OFF-
     # balance-sheet unrealized loss = amortized - fair value (B1, the SVB blow-up).
+    # The CECL-era amortized-cost elements are added because the pre-2020 name alone
+    # left the amortized-cost leg (15% of Financials) THINNER than the fair-value leg
+    # (32%), so the difference was NaN for most banks. `...AmortizedCostAfterAllowance-
+    # ForCreditLoss` without the `DebtSecurities` prefix is not an element (0 of 498).
     "htmSecurities": ["HeldToMaturitySecurities",
-                      "HeldToMaturitySecuritiesAmortizedCostAfterAllowanceForCreditLoss"],
+                      "DebtSecuritiesHeldToMaturityExcludingAccruedInterestAfterAllowanceForCreditLoss",
+                      "DebtSecuritiesHeldToMaturityAmortizedCostAfterAllowanceForCreditLoss"],
     "htmSecuritiesFairValue": ["HeldToMaturitySecuritiesFairValue"],
-    # non-performing (nonaccrual) loans -> forward credit-quality (B3)
+    # the unrecognized HTM holding LOSS as disclosed directly (42 filers) -- the same
+    # quantity as amortized-cost minus fair-value but available without needing both
+    # legs, so it fills the gap where only one of them is tagged.
+    "htmUnrealizedLoss": ["HeldToMaturitySecuritiesAccumulatedUnrecognizedHoldingLoss"],
+    # non-performing (nonaccrual) loans -> forward credit-quality (B3). The CECL-era
+    # name is `...ExcludingAccruedInterestNonaccrual`; the `...NonaccrualStatus` suffix
+    # variant previously listed is not an element (0 of 498 filers).
     "nonaccrualLoans": ["FinancingReceivableRecordedInvestmentNonaccrualStatus",
-                        "FinancingReceivableExcludingAccruedInterestNonaccrualStatus"],
-    # Tier-1 risk-based ratio; fall back to the modern CET1 ratio for banks that report
-    # only CET1 (post-2015). Both are capital-adequacy ratios (>11% = well-capitalised);
-    # CET1 <= Tier1, so the >11% screen stays conservative.
+                        "FinancingReceivableExcludingAccruedInterestNonaccrual"],
+    # Tier-1 risk-based ratio, falling back to the CET1 ratio (CET1 <= Tier1, so the
+    # ">11% = well-capitalised" screen stays conservative).
+    # NOTE `CommonEquityTierOneCapitalToRiskWeightedAssets` was dropped: 0 of 498. Modern
+    # CET1 is tagged with a legal-entity dimension (holdco vs bank sub) and companyfacts
+    # serves only UNDIMENSIONED facts, so it is structurally unavailable from this source
+    # -- the column stays ~8% of Financials until it is read from the Financial Statement
+    # Data Sets (num.tsv keeps `dimn`), which is tracked separately.
     "tier1CapitalRatio": ["TierOneRiskBasedCapitalToRiskWeightedAssets",
-                          "CommonEquityTierOneCapitalToRiskWeightedAssets",
                           "CommonEquityTierOneCapitalRatio"],
     # ---- Insurance ----
     "insuranceReserves": ["LiabilityForClaimsAndClaimsAdjustmentExpense",
                           "LiabilityForFuturePolicyBenefits"],
-    "deferredAcqCosts": ["DeferredPolicyAcquisitionCost", "DeferredPolicyAcquisitionCosts"],
+    # singular `DeferredPolicyAcquisitionCost` dropped (0 of 498 filers).
+    "deferredAcqCosts": ["DeferredPolicyAcquisitionCosts"],
     # ---- REITs ----
     "realEstateNet": ["RealEstateInvestmentPropertyNet"],
     "realEstateGross": ["RealEstateInvestmentPropertyAtCost"],
@@ -413,9 +616,23 @@ EXTRA_STOCK_TAGS = {
 }
 
 # diluted weighted-average shares (duration fact; we take the latest period's
-# value point-in-time) -> true per-share + net-issuance signals
-DILUTED_SHARES_TAGS = ["WeightedAverageNumberOfDilutedSharesOutstanding",
-                       "WeightedAverageNumberOfDilutedSharesOutstandingAdjustment"]
+# value point-in-time) -> true per-share + net-issuance signals.
+# The `...Adjustment` variant was dropped (0 of 498 filers).
+DILUTED_SHARES_TAGS = ["WeightedAverageNumberOfDilutedSharesOutstanding"]
+
+# DURATION facts that must be taken as the LATEST reported value, never TTM-SUMMED:
+# a weighted-average share count is already a period figure, and summing four quarters
+# of "3 reportable segments" would report 12. Handled by the same as-of path as the
+# cover-page share count.
+LATEST_DURATION_TAGS: dict[str, list[str]] = {
+    "dilutedShares": DILUTED_SHARES_TAGS,
+    # basic shares (98.6%): with diluted it gives the OPTION-OVERHANG wedge
+    # (diluted - basic) / basic, which net share count hides once buybacks offset SBC.
+    "basicShares": ["WeightedAverageNumberOfSharesOutstandingBasic",
+                    "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"],
+    # conglomerate complexity / breakup-value proxy (92.2%)
+    "reportableSegments": ["NumberOfReportableSegments"],
+}
 
 # Event / charge / financing flows where a quarter with NO reported tag means the
 # event did not occur (= 0), not "missing" — reported only in periods it happens,
@@ -427,13 +644,27 @@ DILUTED_SHARES_TAGS = ["WeightedAverageNumberOfDilutedSharesOutstanding",
 CHARGE_FLOWS = {"impairment", "restructuring", "acquisitions", "buybacks",
                 "equityIssuance", "debtIssued", "debtRepaid", "dividendsPaid",
                 "gainOnDispositions",
+                # 0 in a quarter with no property write-down -> FFO's impairment
+                # add-back is defined for every REIT quarter, not only the bad ones.
+                "realEstateImpairment",
                 # widened non-recurring pool (see EXTRA_FLOW_TAGS): 0 in a normal
                 # quarter, non-zero only when the event occurs.
                 "goodwillImpairment", "gainOnSaleGeneric", "litigationExpense",
                 "discontinuedOps", "unusualItems", "bargainPurchaseGain",
                 # 0 when a filer funds no capacity via finance leases -> capexGlobal = cash capex
-                "financeLeaseAdditions"}
+                "financeLeaseAdditions",
+                # operating-lease additions: 0 for a filer that signs none in the quarter
+                "operatingLeaseAdditions",
+                # event gains/charges reported only when they occur (0 otherwise), all of
+                # which the core-earnings normalization strips out
+                "debtExtinguishment", "realizedInvestmentGains", "goodwillAcquired",
+                # REIT AFFO adjustments: absent = no such non-cash item this quarter
+                "straightLineRent", "aboveBelowMarketLeaseAmort"}
 
+# ASU 2017-07 (non-service pension cost presented OUTSIDE operating income) is effective
+# for fiscal years beginning after 15-Dec-2017, i.e. FY2018. Fiscal ends before this date
+# still carry the non-service components inside operating income and are restated.
+ASU_2017_07_EFFECTIVE = "2018-01-01"
 ANNUAL_MIN_DAYS, ANNUAL_MAX_DAYS = 340, 380   # accept a fiscal year as ~365d
 QUARTER_MIN_DAYS, QUARTER_MAX_DAYS = 80, 100   # accept a fiscal quarter as ~13 weeks
 TTM_QUARTERS = 4                               # trailing-twelve-months = 4 quarters
@@ -563,8 +794,13 @@ def _extract_concept(section: dict, tag_candidates: list[str]) -> pd.DataFrame:
         if tag not in section:
             continue
         units = section[tag].get("units", {})
-        unit_key = next((u for u in ("USD", "shares") if u in units),
-                        next(iter(units), None))
+        # Preferred units first, then the unit with the MOST observations. The old
+        # fallback took the FIRST unit key, which silently picked a stray: CSCO reports
+        # EarningsPerShareDiluted under both 'pure' (4 facts) and 'USD/shares' (276), and
+        # 'pure' came first -> 13 of 74 quarters of EPS instead of 73.
+        unit_key = next((u for u in ("USD", "shares", "USD/shares") if u in units), None)
+        if unit_key is None and units:
+            unit_key = max(units, key=lambda u: len(units[u]))
         if unit_key is None:
             continue
         rows = [{"end": o.get("end"), "start": o.get("start"),
@@ -730,9 +966,10 @@ def _net_income_tags(gaap: dict) -> list[str]:
     return tags
 
 
-def _extract_all(gaap: dict, dei: dict) -> tuple[dict, dict, dict, pd.DataFrame, pd.DataFrame]:
+def _extract_all(gaap: dict, dei: dict) -> tuple[dict, dict, dict, pd.DataFrame, dict, pd.DataFrame]:
     """Raw us-gaap/dei -> per-concept quarterly flows, annual full-year fallbacks,
-    instant balance-sheet levels, plus cover-page shares (dei) and diluted shares."""
+    instant balance-sheet levels, cover-page shares (dei) and the LATEST-value duration
+    concepts (share counts, segment count) that must never be TTM-summed."""
     flow_tags = {**FLOW_TAGS, **EXTRA_FLOW_TAGS}
     flow_tags["netIncome"] = _net_income_tags(gaap)   # preferred-dividend-guarded fill
     raw = {k: _extract_concept(gaap, tags) for k, tags in flow_tags.items()}
@@ -743,8 +980,9 @@ def _extract_all(gaap: dict, dei: dict) -> tuple[dict, dict, dict, pd.DataFrame,
     _sh = SHARES_TAGS["sharesOutstanding"]
     shares = _instant_stock(_extract_concept(dei, _sh) if any(t in dei for t in _sh)
                             else _extract_concept(gaap, _sh))
-    diluted = _instant_stock(_extract_concept(gaap, DILUTED_SHARES_TAGS))
-    return flows, annuals, stocks, shares, diluted
+    latest = {k: _instant_stock(_extract_concept(gaap, tags))
+              for k, tags in LATEST_DURATION_TAGS.items()}
+    return flows, annuals, stocks, shares, latest, _option_overhang(gaap)
 
 
 def _spine_grid(flows: dict, stocks: dict) -> "pd.DatetimeIndex | None":
@@ -762,12 +1000,35 @@ def _spine_grid(flows: dict, stocks: dict) -> "pd.DatetimeIndex | None":
     return pd.DatetimeIndex(sorted(ends)) if ends else None
 
 
-def _assemble_base(ends, flows, annuals, stocks, shares, diluted) -> pd.DataFrame:
+def _option_overhang(gaap: dict) -> pd.DataFrame:
+    """(diluted - basic) / basic weighted-average share count, matched on the EXACT period
+    (start AND end) both counts were reported for -> [end, filed, val].
+
+    Matching on `end` alone is not enough: a filer tags both a three-month and a
+    year-to-date count ending on the same date, and taking each tag's earliest-filed fact
+    per `end` independently can pair a YTD basic against a quarterly diluted (BLDR). Matching
+    on the period makes the wedge structurally non-negative, since diluted shares are basic
+    plus dilutive potential (equal when antidilutive)."""
+    b = _extract_concept(gaap, LATEST_DURATION_TAGS["basicShares"])
+    d = _extract_concept(gaap, DILUTED_SHARES_TAGS)
+    if b.empty or d.empty:
+        return pd.DataFrame(columns=["end", "filed", "val"])
+    j = b.merge(d, on=["start", "end"], suffixes=("_b", "_d"))
+    j = j[(j["val_b"] > 0) & j["val_d"].notna()]
+    if j.empty:
+        return pd.DataFrame(columns=["end", "filed", "val"])
+    j = j.assign(val=(j["val_d"] - j["val_b"]) / j["val_b"],
+                 filed=j[["filed_b", "filed_d"]].max(axis=1))
+    return _instant_stock(j[["end", "filed", "val"]])
+
+
+def _assemble_base(ends, flows, annuals, stocks, shares, latest, overhang) -> pd.DataFrame:
     """Align every concept onto the quarter grid in ONE frame construction (a single
     dict -> one DataFrame, no repeated column inserts -> no pandas fragmentation).
     Exact-end join for flows/annuals/stocks; backward as-of (reindex-ffill) for the
-    cover-page shares; balance-sheet levels carried forward across interim quarters;
-    `as_of` = latest filing date among a row's concepts (point-in-time / leak-free)."""
+    cover-page shares and the LATEST-value duration concepts (`latest`); balance-sheet
+    levels carried forward across interim quarters; `as_of` = latest filing date among a
+    row's concepts (point-in-time / leak-free)."""
     cols: dict[str, object] = {}
 
     def exact(key, src, filed=True):
@@ -796,7 +1057,10 @@ def _assemble_base(ends, flows, annuals, stocks, shares, diluted) -> pd.DataFram
     for key in _CURATED_STOCKS + list(EXTRA_STOCK_TAGS):
         exact(key, stocks.get(key))
     asof("sharesOutstanding", shares, filed=True)
-    asof("dilutedShares", diluted)
+    for key in LATEST_DURATION_TAGS:
+        asof(key, latest.get(key))
+
+    asof("optionOverhang", overhang)
 
     base = pd.DataFrame(cols, index=ends)
     level_cols = [k for k in (list(STOCK_TAGS) + list(EXTRA_STOCK_TAGS)) if k in base.columns]
@@ -832,11 +1096,11 @@ class TickerFundamentalsBuilder:
         self._dei = facts.get("facts", {}).get("dei", {})
 
     def build(self) -> pd.DataFrame:
-        flows, annuals, stocks, shares, diluted = _extract_all(self._gaap, self._dei)
+        flows, annuals, stocks, shares, latest, overhang = _extract_all(self._gaap, self._dei)
         ends = _spine_grid(flows, stocks)
         if ends is None:
             return pd.DataFrame()
-        base = _assemble_base(ends, flows, annuals, stocks, shares, diluted)
+        base = _assemble_base(ends, flows, annuals, stocks, shares, latest, overhang)
         if base.empty:
             return pd.DataFrame()
         return _derive_history(base, self.ticker, self.sector, self.industry_group)
@@ -901,6 +1165,17 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
 
     rev_ttm = ttm_a("totalRevenue")
     ni_ttm = ttm_a("netIncome")
+    # EXCISE / SALES TAX collected: 19.5% of filers tag revenue under the INCLUDING-
+    # assessed-tax element, which reports the tax they merely collect as their own top line
+    # (tobacco, beverages, fuel distribution) -> revenue, margins and every price multiple
+    # are non-comparable to peers. Net it off ONLY for the periods where the EXCLUDING
+    # element is absent (i.e. the including-tag is what the coalesce used), so a filer that
+    # reports the clean element is untouched and nothing is deducted twice. The size of the
+    # adjustment is kept as `exciseTaxes` in its own right.
+    _excise = ttm_a("exciseTaxes", charge=True)
+    _rev_excl, _rev_incl = ttm_a("revenueExcludingAssessedTax"), ttm_a("revenueIncludingAssessedTax")
+    _excise_adj = _excise.where(_rev_excl.isna() & _rev_incl.notna()).fillna(0.0)
+    rev_ttm = rev_ttm - _excise_adj
     # Financials top line: the ASC-606 contract-revenue element tags only a FEE SLICE for
     # banks / insurers / asset managers, understating revenue many-fold (e.g. FITB $0.5B
     # vs true $8B, MET, AIG) -> nonsense margins. For the Financials sector ONLY, rebuild
@@ -912,7 +1187,12 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
         nii, noni = ttm_a("netInterestIncome"), ttm_a("noninterestIncome")
         prem, inv = ttm_a("premiumsEarned"), ttm_a("netInvestmentIncome")
         bank_rev = (nii.fillna(0) + noni.fillna(0)).where(nii.notna() | noni.notna())
-        insurer_rev = (prem.fillna(0) + inv.fillna(0)).where(prem.notna() | inv.notna())
+        # insurer GAAP top line = premiums earned + net investment income + REALIZED
+        # investment gains/losses (the third leg was missing). Gains are 0-filled, so a
+        # quarter with none is unchanged.
+        insurer_rev = ((prem.fillna(0) + inv.fillna(0)
+                        + ttm_a("realizedInvestmentGains", charge=True).fillna(0))
+                       .where(prem.notna() | inv.notna()))
         rev_ttm = pd.concat([rev_ttm, bank_rev, insurer_rev, ttm_a("revenuesTotal")],
                             axis=1).max(axis=1)
     elif sector == "Real Estate":
@@ -949,6 +1229,80 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
     cur_l = col("currentLiabilities")
     goodwill = col("goodwill")
     assets = col("totalAssets")
+
+    # ---- CLEAN (unrestricted, investment-free) CASH -------------------------------- #
+    # `cash` now coalesces only the unrestricted elements. Where a filer tags none of them
+    # we DERIVE it from the broader total instead of silently accepting the broader number:
+    #   cash = cash+restricted total - restricted     (95.6% of filers report the total)
+    #   cash = cash+ST-investments   - ST investments
+    # This is what stops EV from netting restricted cash, and stops short-term investments
+    # being subtracted TWICE (once inside the cash total, once as their own EV term).
+    # The CURRENT + NONCURRENT split is preferred over the single combined element: filers
+    # keep the balance-sheet split current while the combined tag is often reported once and
+    # then goes stale (TKO tags `RestrictedCash` four times ending 2024, but
+    # `RestrictedCashCurrent` every quarter -- and its restricted cash is 54% of the total).
+    _restr_split = (col("restrictedCashCurrent").fillna(0) + col("restrictedCashNoncurrent").fillna(0))
+    _restr_split = _restr_split.where(col("restrictedCashCurrent").notna()
+                                      | col("restrictedCashNoncurrent").notna())
+    restricted = _restr_split.where(_restr_split.notna(), col("restrictedCash"))
+    # Derive clean cash from the broad total ONLY when the restricted amount is known for
+    # that period, or when the filer discloses no restricted cash ANYWHERE in its history
+    # (then zero is safe). Netting an UNKNOWN restricted balance would silently reintroduce
+    # exactly the overstatement this change removes, so we leave cash missing instead --
+    # NaN is handled downstream, a wrong number is not.
+    _no_restricted_ever = restricted.notna().sum() == 0
+    _known = restricted.notna() | _no_restricted_ever
+    cash = cash.where(cash.notna(),
+                      (col("cashInclRestricted") - restricted.fillna(0.0)).where(_known))
+    _sti = col("shortTermInvestments")
+    cash = cash.where(cash.notna(),
+                      (col("cashAndShortTermInvestments") - _sti.fillna(0.0)).where(_sti.notna()))
+    cash = cash.clip(lower=0.0)             # a mis-tagged restricted amount can't make cash negative
+
+    # ---- ASC-842 lease liabilities: BOTH legs, all three eras --------------------- #
+    # total = the combined element when tagged, else current + noncurrent, else (pre-2019)
+    # the capital-lease legs. The eras never overlap, so nothing is double counted.
+    def _total_or_split(total_key: str, current_key: str, noncurrent_key: str) -> pd.Series:
+        tot, cur, nc = col(total_key), col(current_key), col(noncurrent_key)
+        split = (cur.fillna(0) + nc.fillna(0)).where(cur.notna() | nc.notna())
+        return tot.where(tot.notna(), split)
+
+    op_lease_liab = _total_or_split("operatingLeaseLiability", "operatingLeaseLiabilityCurrent",
+                                   "operatingLeaseLiabilityNoncurrent")
+    fin_lease_liab = _total_or_split("financeLeaseLiability", "financeLeaseLiabilityCurrent",
+                                     "financeLeaseLiabilityNoncurrent")
+    _cap_lease = (col("capitalLeaseObligationCurrent").fillna(0)
+                  + col("capitalLeaseObligationNoncurrent").fillna(0))
+    _cap_lease = _cap_lease.where(col("capitalLeaseObligationCurrent").notna()
+                                 | col("capitalLeaseObligationNoncurrent").notna())
+    fin_lease_liab = fin_lease_liab.where(fin_lease_liab.notna(), _cap_lease)
+
+    # ---- the ASC-842 TOTAL-ASSETS break ------------------------------------------- #
+    # Adopting ASC 842 in FY2019 put the operating-lease ROU asset ON the balance sheet, so
+    # `totalAssets` jumps once for every lease-heavy filer with no change in the business.
+    # Every assets-denominated ratio inherited that jump: asset growth (the Fama-French CMA
+    # investment factor), asset turnover, gross profitability, accruals, Altman Z. The
+    # break-free base removes the ROU asset in the post-adoption era (it is simply absent
+    # before), and `operatingLeaseRouAsset` stays available as the lease-intensity signal.
+    rou = col("operatingLeaseRouAsset")
+    assets_ex_lease = assets - rou.fillna(0.0)
+
+    # ---- LIFO -> FIFO normalization ----------------------------------------------- #
+    # FIFO inventory = LIFO inventory + reserve; FIFO COGS = LIFO COGS - the reserve's
+    # INCREASE over the year (a rising reserve means LIFO charged more than FIFO would).
+    # Restated in place so a LIFO filer's inventory days / GMROI / gross margin sit on the
+    # same basis as its FIFO peers; `lifoReserve` keeps the size of the adjustment.
+    lifo = col("lifoReserve")
+    inventory = col("inventory") + lifo.fillna(0.0)
+    # a filer that discloses FIFO inventory directly needs no reconstruction
+    inventory = inventory.where(inventory.notna(), col("inventoryFifoReported"))
+    cor_ttm = cor_ttm - (lifo - lifo.shift(TTM_QUARTERS)).fillna(0.0)
+
+    # ---- asset-retirement obligation total ---------------------------------------- #
+    aro = col("assetRetirementObligation")
+    _aro_split = (col("aroCurrent").fillna(0) + col("aroNoncurrent").fillna(0))
+    _aro_split = _aro_split.where(col("aroCurrent").notna() | col("aroNoncurrent").notna())
+    aro = aro.where(aro.notna(), _aro_split)
 
     # Derive total liabilities when a filer doesn't tag `Liabilities` as a single
     # element (e.g. LLY, AMD report only Assets + Equity + LiabilitiesAnd-
@@ -1016,6 +1370,27 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
         # last resort: bottom-up EBIT = pre-tax income + interest expense.
         oi_ttm = oi_ttm.where(oi_ttm.notna(), ttm_a("pretaxIncome") + int_ttm.fillna(0))
 
+    # ---- ASU 2017-07: NON-SERVICE pension cost out of operating income ------------- #
+    # Only SERVICE cost is compensation; interest cost, expected return on plan assets and
+    # the amortizations are financing/actuarial items. From FY2018 the standard forces them
+    # OUT of the operating subtotal — but the pre-2018 half of the history has them INSIDE
+    # it, so a filer's own operating-margin series breaks at adoption (and cross-sectionally,
+    # a big-pension industrial looks structurally less profitable than a peer with none).
+    # Restated by ADDING the non-service cost back to pre-adoption operating income; from
+    # FY2018 on there is nothing to add back, so the series is continuous either side.
+    # Non-service = net periodic cost - service cost (the most robust form: one subtraction
+    # of two well-tagged totals), falling back to the component build-up.
+    non_service_pension = ttm_a("pensionNetPeriodicCost") - ttm_a("pensionServiceCost")
+    _components = (ttm_a("pensionInterestCost").fillna(0)
+                   - ttm_a("pensionExpectedReturn").fillna(0)
+                   + ttm_a("pensionAmortPriorService").fillna(0)
+                   + ttm_a("pensionAmortGainsLosses").fillna(0))
+    _has_components = (ttm_a("pensionInterestCost").notna() | ttm_a("pensionExpectedReturn").notna())
+    non_service_pension = non_service_pension.where(non_service_pension.notna(),
+                                                    _components.where(_has_components))
+    _pre_asu = base["end"] < pd.Timestamp(ASU_2017_07_EFFECTIVE)
+    oi_ttm = oi_ttm + non_service_pension.fillna(0.0).where(_pre_asu, 0.0)
+
     # EBITDA = operating income + D&A, with a bottom-up fallback (net income + taxes
     # + interest + D&A) for filers that report no operating-income line, e.g.
     # integrated oil (XOM). All four inputs exist even when OI/gross profit don't.
@@ -1050,7 +1425,12 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
         # rather than buys (data centers -> MSFT ~+$6-9B/q, historically AMZN). NaN where cash capex
         # is unknown; = capex for non-lease filers (finance-lease term is 0-filled). NOTE `capex`
         # (and thus FCF) is unchanged -- capexGlobal is an ADDITIVE capacity measure, not cash-flow.
-        "capexGlobal": capex_ttm + ttm_a("financeLeaseAdditions", charge=True),
+        # Now includes OPERATING-lease additions too (87.3% coverage). Previously only the
+        # finance-lease leg was added, which made the measure asymmetric: a retailer or
+        # airline that adds capacity through operating leases showed none of it, while a
+        # hyperscaler leasing data centres under finance leases showed all of it.
+        "capexGlobal": (capex_ttm + ttm_a("financeLeaseAdditions", charge=True)
+                        + ttm_a("operatingLeaseAdditions", charge=True)),
         "freeCashflow": ocf_ttm - capex_ttm.fillna(0),
         "operatingCashFlow": ocf_ttm,
         "researchAndDevelopment": rnd_ttm,
@@ -1088,7 +1468,8 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
     # flows -> TTM (seasonality-free); balance-sheet items -> point-in-time level.
     # Assemble all extra columns at once (avoids DataFrame fragmentation).
     extra = {"costOfRevenue": cor_ttm, "grossProfit": gross_profit_ttm,
-             "dilutedShares": col("dilutedShares")}
+             "optionOverhang": col("optionOverhang"),
+             **{k: col(k) for k in LATEST_DURATION_TAGS}}
     for key in EXTRA_FLOW_TAGS:
         extra[key] = ttm_a(key, charge=(key in CHARGE_FLOWS))
     for key in EXTRA_STOCK_TAGS:
@@ -1116,6 +1497,28 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
         _sp = extra[_cur].fillna(0) + extra[_nc].fillna(0)
         _sp = _sp.where(extra[_cur].notna() | extra[_nc].notna())
         extra[_tot] = extra[_tot].where(extra[_tot].notna(), _sp)
+
+    # --- RESTATED / RECONSTRUCTED levels win over the raw single-tag reads above ---
+    # (the `for key in EXTRA_STOCK_TAGS` loop assigned the raw tag value; these are the
+    #  corrected versions built earlier in this function)
+    extra["restrictedCash"] = restricted
+    extra["operatingLeaseLiability"] = op_lease_liab      # combined | current+noncurrent
+    extra["financeLeaseLiability"] = fin_lease_liab       # + pre-2019 capital-lease legs
+    extra["inventory"] = inventory                        # FIFO-normalized (+ LIFO reserve)
+    extra["assetRetirementObligation"] = aro              # combined | current+noncurrent
+    # break-free asset base + the two lease/pension adjustment SIZES as their own signals
+    extra["totalAssetsExLease"] = assets_ex_lease
+    extra["nonServicePensionCost"] = non_service_pension
+    extra["exciseTaxAdjustment"] = _excise_adj
+    # gross finite-lived intangibles for filers that tag only net + accumulated amortization
+    extra["intangiblesGross"] = extra["intangiblesGross"].where(
+        extra["intangiblesGross"].notna(),
+        extra["intangiblesExGoodwill"] + extra["intangiblesAccumAmort"])
+    # total principal coming due within five years (the refinancing WALL)
+    extra["debtMaturity5yTotal"] = sum(
+        (extra[f"debtMaturity{y}y"].fillna(0.0) for y in range(1, 6)),
+        start=pd.Series(0.0, index=out.index),
+    ).where(pd.concat([extra[f"debtMaturity{y}y"].notna() for y in range(1, 6)], axis=1).any(axis=1))
 
     out = pd.concat([out, pd.DataFrame(extra, index=out.index)], axis=1)
 

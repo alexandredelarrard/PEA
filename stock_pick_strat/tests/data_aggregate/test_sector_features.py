@@ -3,8 +3,13 @@ Sector-specific KPI math (src/data_aggregate/utils/sector_features.py).
 
 Synthetic, known-truth fundamentals rows (one per sector) with hand-computed
 expected ratios — the right tool to prove each KPI formula and, crucially, that
-KPIs are AVAILABILITY-GATED (a sector's KPI is NaN when its inputs weren't
-reported, so a bank never gets a loss_ratio, an industrial never gets NIM).
+KPIs are SCOPED (a sector's KPI is NaN outside its GICS scope or when its inputs
+weren't reported, so a bank never gets a loss_ratio, an industrial never gets NIM).
+
+Every row carries `sector` + `industry_group`: the GICS labels are what
+`sector_gates.py` scopes on, and production rows always have them (the extractor
+stamps them from `sp500_tickers`). A row without them is deliberately unclassifiable
+and gets NO sector KPI at all — see `test_unclassified_rows_get_no_sector_kpi`.
 """
 from __future__ import annotations
 
@@ -18,22 +23,23 @@ from src.data_aggregate.utils.sector_features import compute_sector_kpis
 def _fundamentals() -> pd.DataFrame:
     rows = [
         # ---- Bank ---- (+ new: allowance / tier1 / domestic deposits / total liabs)
-        {"ticker": "BANK", "sector": "Financials", "totalAssets": 1000.0, "netIncome": 20.0,
+        {"ticker": "BANK", "sector": "Financials", "industry_group": "Banks", "totalAssets": 1000.0, "netIncome": 20.0,
          "netInterestIncome": 40.0, "noninterestIncome": 10.0, "noninterestExpense": 30.0,
          "loans": 800.0, "deposits": 900.0, "provisionForCreditLosses": 8.0,
          "allowanceCreditLosses": 16.0, "tier1CapitalRatio": 0.12, "depositsDomestic": 700.0,
          "totalLiabilities": 920.0},
         # ---- Insurer ---- (+ net investment income)
-        {"ticker": "INSR", "sector": "Financials", "premiumsEarned": 500.0,
+        {"ticker": "INSR", "sector": "Financials", "industry_group": "Insurance", "premiumsEarned": 500.0,
          "claimsIncurred": 350.0, "sellingGeneralAdmin": 100.0, "dacAmortization": 20.0,
          "netInvestmentIncome": 60.0},
         # ---- REIT ---- (+ operatingIncome / debt / cash / capex for AFFO & EBITDAre)
-        {"ticker": "REIT", "sector": "Real Estate", "netIncome": 50.0, "depAmort": 100.0,
+        {"ticker": "REIT", "sector": "Real Estate",
+         "industry_group": "Equity Real Estate Investment Trusts (REITs)", "netIncome": 50.0, "depAmort": 100.0,
          "gainOnDispositions": 10.0, "totalRevenue": 300.0, "rentalIncome": 280.0,
          "dividendsPaid": 120.0, "realEstateNet": 2000.0, "operatingIncome": 90.0,
          "longTermDebt": 800.0, "shortTermDebt": 100.0, "cash": 50.0, "capex": 40.0},
         # ---- Industrial (universal KPIs) ----
-        {"ticker": "INDU", "sector": "Industrials", "totalRevenue": 1000.0, "costOfRevenue": 600.0,
+        {"ticker": "INDU", "sector": "Industrials", "industry_group": "Capital Goods", "totalRevenue": 1000.0, "costOfRevenue": 600.0,
          "grossProfit": 400.0, "accountsReceivable": 200.0, "inventory": 150.0,
          "accountsPayable": 100.0, "totalAssets": 2000.0, "ebitda": 250.0, "interestExpense": 25.0,
          "netIncome": 120.0, "operatingCashFlow": 180.0, "incomeTaxExpense": 30.0,
@@ -42,14 +48,15 @@ def _fundamentals() -> pd.DataFrame:
          "shortTermInvestments": 50.0, "operatingIncome": 180.0, "stockholdersEquity": 900.0,
          "returnOnEquity": 0.13},
         # ---- Utility ---- (rate-base growth proxy)
-        {"ticker": "UTIL", "sector": "Utilities", "totalAssets": 5000.0, "capex": 400.0,
+        {"ticker": "UTIL", "sector": "Utilities", "industry_group": "Utilities", "totalAssets": 5000.0, "capex": 400.0,
          "regulatoryAssets": 600.0, "goodwill": 200.0},
         # ---- Pharma (single period; capitalized-R&D has no history here) ----
-        {"ticker": "PHRM", "sector": "Health Care", "researchAndDevelopment": 250.0,
+        {"ticker": "PHRM", "sector": "Health Care",
+         "industry_group": "Pharmaceuticals, Biotechnology & Life Sciences", "researchAndDevelopment": 250.0,
          "amortizationIntangibles": 80.0, "operatingCashFlow": 200.0, "operatingIncome": 300.0,
          "stockholdersEquity": 1000.0, "longTermDebt": 400.0, "shortTermDebt": 100.0, "cash": 150.0},
         # ---- Oil & gas ----
-        {"ticker": "OILX", "sector": "Energy", "oilGasPropertyNet": 5000.0, "explorationExpense": 70.0,
+        {"ticker": "OILX", "sector": "Energy", "industry_group": "Energy", "oilGasPropertyNet": 5000.0, "explorationExpense": 70.0,
          "operatingIncome": 180.0, "depAmort": 110.0, "operatingCashFlow": 250.0, "totalRevenue": 1000.0},
     ]
     return pd.DataFrame(rows)
@@ -58,11 +65,12 @@ def _fundamentals() -> pd.DataFrame:
 def test_universal_kpis():
     k = compute_sector_kpis(_fundamentals()).set_index("ticker")
     r = k.loc["INDU"]
+    # interest_coverage / net_debt_to_ebitda / gross_profitability / cash_conversion_cycle
+    # are NO LONGER emitted here -- fundamental_features.py owns those feature names (both
+    # panels used to emit them under different formulas, which the cube merge turned into
+    # `_x` / `_y` columns). See test_sector_gates_and_tags.py::test_panels_share_no_feature_name.
     assert r["effective_tax_rate"] == pytest.approx(0.20)
-    assert r["interest_coverage"] == pytest.approx(10.0)
-    assert r["net_debt_to_ebitda"] == pytest.approx((500 + 50 - 100 - 50) / 250)   # 1.6
     assert r["accruals_ratio"] == pytest.approx((120 - 180) / 2000)                 # -0.03
-    assert r["gross_profitability"] == pytest.approx(400 / 2000)                    # 0.20
     assert r["asset_turnover"] == pytest.approx(0.50)
     assert r["capex_intensity"] == pytest.approx(0.08)
     assert r["capex_to_dep"] == pytest.approx(80 / 60)
@@ -71,13 +79,16 @@ def test_universal_kpis():
     assert r["days_sales_outstanding"] == pytest.approx(200 * 365 / 1000)           # 73
     assert r["days_inventory_outstanding"] == pytest.approx(150 * 365 / 600)        # 91.25
     assert r["days_payable_outstanding"] == pytest.approx(100 * 365 / 600)          # 60.833
-    assert r["cash_conversion_cycle"] == pytest.approx(73 + 91.25 - (100 * 365 / 600))
+    for moved in ("interest_coverage", "net_debt_to_ebitda", "gross_profitability",
+                  "cash_conversion_cycle", "sbc_intensity"):
+        assert moved not in k.columns, f"{moved} must be owned by the fundamental panel"
 
     print("\n=== SANITY CHECK: universal KPIs (industrial) ===")
-    print(f"  tax={r['effective_tax_rate']:.2f} int_cov={r['interest_coverage']:.1f} "
-          f"netdebt/EBITDA={r['net_debt_to_ebitda']:.2f} accruals={r['accruals_ratio']:.3f}")
-    print(f"  CCC={r['cash_conversion_cycle']:.1f}d (DSO {r['days_sales_outstanding']:.0f} + "
-          f"DIO {r['days_inventory_outstanding']:.1f} - DPO {r['days_payable_outstanding']:.1f}). Validated.")
+    print(f"  tax={r['effective_tax_rate']:.2f} accruals={r['accruals_ratio']:.3f} "
+          f"asset_turnover={r['asset_turnover']:.2f} capex_int={r['capex_intensity']:.2f}")
+    print(f"  working-capital days: DSO {r['days_sales_outstanding']:.0f} + "
+          f"DIO {r['days_inventory_outstanding']:.1f} - DPO {r['days_payable_outstanding']:.1f}; "
+          "the 5 collided names are gone from this panel. Validated.")
 
 
 def test_bank_kpis():
@@ -212,7 +223,8 @@ def test_multiperiod_reserve_velocity_and_capitalized_rd():
     (QoQ provision change / allowance) and the 5-year capitalized-R&D pool."""
     # bank: 4 quarterly filings, provisions stepping up
     bank = pd.DataFrame([
-        {"ticker": "BK2", "as_of": q, "netInterestIncome": 40.0, "loans": 800.0,
+        {"ticker": "BK2", "sector": "Financials", "industry_group": "Banks",
+         "as_of": q, "netInterestIncome": 40.0, "loans": 800.0,
          "provisionForCreditLosses": p, "allowanceCreditLosses": 20.0}
         for q, p in zip(pd.date_range("2024-03-31", periods=4, freq="QE"), [8.0, 9.0, 12.0, 13.0])
     ])
@@ -225,7 +237,9 @@ def test_multiperiod_reserve_velocity_and_capitalized_rd():
     # amort = 100*0.2*5 = 100 (5 prior layers) at the last filing.
     yrs = pd.date_range("2021-12-31", periods=6, freq="YE")
     ph = pd.DataFrame([
-        {"ticker": "PH2", "as_of": y, "researchAndDevelopment": 100.0, "operatingIncome": 300.0,
+        {"ticker": "PH2", "sector": "Health Care",
+         "industry_group": "Pharmaceuticals, Biotechnology & Life Sciences",
+         "as_of": y, "researchAndDevelopment": 100.0, "operatingIncome": 300.0,
          "stockholdersEquity": 1000.0, "longTermDebt": 0.0, "shortTermDebt": 0.0, "cash": 0.0}
         for y in yrs
     ])
@@ -240,31 +254,50 @@ def test_multiperiod_reserve_velocity_and_capitalized_rd():
           f"| rd_capitalized_roic(5y flat R&D)={last['rd_capitalized_roic']:.4f} (asset 300, amort 100). Validated.")
 
 
-def test_kpis_are_availability_gated():
-    """A sector KPI must be NaN when its inputs weren't reported (the sector gate)."""
+def test_kpis_are_gics_scoped():
+    """A sector KPI must be NaN outside its GICS scope — including for a name that DOES
+    report the inputs. `INSR` is Financials/Insurance, so it never gets a bank KPI even
+    though it is in the same sector as `BANK`; the split needs the industry group."""
     k = compute_sector_kpis(_fundamentals()).set_index("ticker")
-    # bank/industrial never report premiums -> no loss ratio
-    assert np.isnan(k.loc["BANK", "loss_ratio"])
-    assert np.isnan(k.loc["INDU", "loss_ratio"])
-    # industrial/insurer never report net interest income -> no NIM / bank_roa
-    assert np.isnan(k.loc["INDU", "net_interest_margin"])
-    assert np.isnan(k.loc["INDU", "bank_roa"])
-    # non-REIT rows without real estate -> no FFO margin
-    assert np.isnan(k.loc["BANK", "ffo_margin"])
-    # insurer gets its loss ratio
+    # insurance KPIs only for the insurer
     assert not np.isnan(k.loc["INSR", "loss_ratio"])
-    # NEW KPIs are gated too: rate-base only for the utility (reports regulatory assets)
+    assert not np.isnan(k.loc["INSR", "investment_income_ratio"])
+    for t in ("BANK", "INDU", "REIT", "UTIL", "OILX", "PHRM"):
+        assert np.isnan(k.loc[t, "loss_ratio"]), f"{t} got a loss ratio"
+        assert np.isnan(k.loc[t, "investment_income_ratio"])
+    # bank KPIs only for the bank -- INSR is Financials too, so `sector` alone is not enough
+    assert not np.isnan(k.loc["BANK", "net_interest_margin"])
+    for t in ("INSR", "INDU", "REIT", "UTIL", "OILX", "PHRM"):
+        assert np.isnan(k.loc[t, "net_interest_margin"]), f"{t} got NIM"
+        assert np.isnan(k.loc[t, "bank_roa"]), f"{t} got bank_roa"
+    # REIT KPIs only for the REIT
+    assert not np.isnan(k.loc["REIT", "net_debt_to_ebitdare"])
+    for t in ("BANK", "INSR", "INDU", "UTIL", "OILX", "PHRM"):
+        assert np.isnan(k.loc[t, "ffo_margin"]), f"{t} got an FFO margin"
+        assert np.isnan(k.loc[t, "net_debt_to_ebitdare"])
+    # utility rate base only for the utility, EBITDAX only for energy
     assert not np.isnan(k.loc["UTIL", "capex_to_rate_base"])
     assert np.isnan(k.loc["INDU", "capex_to_rate_base"])
-    # EBITDAX only for the oil & gas name (reports oil-gas property)
     assert not np.isnan(k.loc["OILX", "ebitdax_margin"])
     assert np.isnan(k.loc["INDU", "ebitdax_margin"])
-    # AFFO / EBITDAre leverage only for the REIT
-    assert not np.isnan(k.loc["REIT", "net_debt_to_ebitdare"])
-    assert np.isnan(k.loc["BANK", "net_debt_to_ebitdare"])
-    # investment-income ratio only for the insurer (reports premiums)
-    assert not np.isnan(k.loc["INSR", "investment_income_ratio"])
-    assert np.isnan(k.loc["INDU", "investment_income_ratio"])
-    print("\n=== SANITY CHECK: availability gating ===")
-    print("  loss_ratio only for insurer; NIM/bank_roa only for bank; FFO/AFFO only for REIT; "
-          "rate-base only for utility; EBITDAX only for oil&gas. Validated.")
+    print("\n=== SANITY CHECK: GICS scoping ===")
+    print("  loss_ratio only for insurer; NIM/bank_roa only for the BANK (not the "
+          "same-sector insurer); FFO/AFFO only for the REIT; rate-base only for the "
+          "utility; EBITDAX only for energy. Validated.")
+
+
+def test_unclassified_rows_get_no_sector_kpi():
+    """No GICS labels -> fail CLOSED: a name we cannot classify gets no sector KPI, even
+    with every input present. Prevents a mis-mapped ticker being scored on the wrong
+    business model."""
+    df = _fundamentals().drop(columns=["sector", "industry_group"])
+    k = compute_sector_kpis(df).set_index("ticker")
+    for col in ("net_interest_margin", "loss_ratio", "ffo_margin", "ebitdax_margin",
+                "capex_to_rate_base", "patent_cliff"):
+        assert k[col].isna().all(), f"{col} emitted for unclassified rows"
+    # the UNIVERSAL KPIs are unaffected -- they need no sector
+    assert not np.isnan(k.loc["INDU", "asset_turnover"])
+    assert not np.isnan(k.loc["INDU", "effective_tax_rate"])
+    print("\n=== SANITY CHECK: unclassified rows ===")
+    print("  sector/industry_group dropped -> every sector KPI NaN, universal KPIs "
+          "(asset_turnover, effective_tax_rate) still computed. Validated.")

@@ -32,6 +32,11 @@ stock_pick_strat/
 │   │   └── utils/{prices,fundamentals,structure,behavioral,common}/   # fetchers
 │   ├── data_peers/             # step_deduce_peers  (return-corr + OpenAI-embedding peers)
 │   ├── data_aggregate/         # step_build_cube — peer-relative feature panels → `cube`
+│   │                           #   utils/sector_gates.py: GICS scope per sector-KPI family
+│   │                           #   (SECTOR_KPI_SCOPE); _merge_panel raises on duplicate
+│   │                           #   feature names instead of emitting `_x`/`_y` columns
+│   │                           #   utils/capital.py: THE definition of borrowings / total &
+│   │                           #   net debt / invested capital (leases in, CP counted once)
 │   ├── modelling/              # per-STRATEGY model/signal: long_short/ (step_train=StepModelling + utils/),
 │   │                           #   trend/ (signal.py::trend_book + utils/), long_book/ (allocation.py)
 │   ├── strategies/             # self-contained per-strategy STEPS (base.Strategy.run(PortfolioInputs)):

@@ -40,48 +40,184 @@ build_cube:
                              # skipped. See utils/composites.py.
     enabled: true
     method: zscore           # zscore | rank (per-day cross-sectional standardization)
+    #
+    # THREE RULES every group follows (see utils/composites.py for the machinery):
+    #
+    #  1. ONE VIEW PER CONCEPT. `_xs` is the UNIVERSE percentile of the LEVEL,
+    #     `_vs_peers` the peer-basket z, `_vs_hist` the firm's own 1260d history.
+    #     Never put two views of the same underlying in one group -- `value` used to
+    #     carry five yields as both `_xs` and `_vs_hist`, so half its weight was a
+    #     time-series re-rating bet wearing the cross-sectional value label. The
+    #     re-rating view now has its own group.
+    #  2. SECTOR-VARYING metrics use `_vs_peers`, sector-neutral ones use `_xs`.
+    #     A universe percentile of gross margin or revenue-per-employee ranks
+    #     INDUSTRIES, not firms; accruals, issuance, surprise and momentum are
+    #     comparable across the whole universe and stay on `_xs`.
+    #  3. HOMOGENEOUS COVERAGE. The composite is a NaN-tolerant mean, so a member
+    #     that is populated for only one sector would silently change what the score
+    #     MEANS for those names. Sparse / sector-only metrics therefore live in their
+    #     own groups (pension_risk, bank_*, insurance_*, reit_*, energy_*) instead of
+    #     diluting the universal ones.
     groups:
-      value: [f_sales_yield_xs, f_book_yield_xs, f_fcf_yield_xs, f_ebitda_to_ev_xs,
-              f_intrinsic_yield_xs, f_core_earnings_yield_xs, f_sales_yield_vs_hist,
-              f_book_yield_vs_hist, f_ebitda_to_ev_vs_hist, f_intrinsic_yield_vs_hist,
-              f_core_earnings_yield_vs_hist]   # core_earnings_yield = one-off-adjusted E/P
-      quality: [f_grossMargins_xs, f_operatingMargins_xs, f_profitMargins_xs,
-                f_returnOnEquity_xs, f_gross_profitability_xs, f_fcf_margin_xs,
-                "-f_accruals_vs_peers", f_rd_intensity_xs]
-      growth: [f_revenueGrowth_xs, f_earningsGrowth_xs, f_y_rev_growth_xs,
-               f_y_earnings_growth_xs, f_operating_leverage_xs, f_gross_margin_chg_xs]
-      distress: ["-f_net_debt_to_ebitda_xs", "-f_net_debt_incl_offbs_to_ebitda_xs",
-                 "-f_pension_overhang_leverage_xs",          # pension/OPEB deficit / market cap
-                 f_interest_coverage_xs, f_current_ratio_xs,
-                 f_cash_to_debt_xs, "-f_debtToEquity_xs"]   # off-BS = +leases +pension deficit
-      capital_allocation: ["-f_sbc_intensity_xs", "-f_sbc_to_ocf_xs", "-f_shares_growth_xs",
-                           "-f_acquisition_intensity_xs", "-f_goodwill_growth_xs"]
-      expectations: [f_fwd_eps_yield_xs, f_eps_expectation_growth_xs]
-      governance: [f_pct_independent_directors_xs, f_insider_ownership_pct_xs,
-                   f_ceo_equity_pay_pct_xs, "-f_ceo_pay_ratio_xs",
-                   "-f_ceo_pay_vs_revenue_growth_xs"]
-      workforce: [f_revenue_per_employee_xs, f_employee_growth_xs]
-      eps_beat: [f_eps_surprise_4q_avg_xs, "-f_accruals_xs", f_earnings_quality_xs,
-                 f_y_rev_growth_xs, f_margin_expansion_delta_xs,
-                 "-f_eps_expectation_growth_xs"]   # beat-propensity: surprise persistence +
-                                                   # quality + top-line/margin momentum, less the bar
-      # ---- business-quality themes (higher = cleaner books / better digestion /
-      #      better AI-adoption position). Members absent until re-fetch (goodwill
-      #      impairment, capitalized software) are skipped automatically. ----
-      accounting_quality: ["-f_beneish_m_score_xs", "-f_nonrecurring_pretax_share_xs",
+      # ---- VALUE: cross-sectional cheapness. Multi-metric on purpose: a composite of
+      #      several yields beats any single ratio (O'Shaughnessy VC2, AQR). ----
+      value: [f_ebitda_to_ev_xs, f_fcf_to_ev_xs, f_fcf_yield_xs, f_core_earnings_yield_xs,
+              f_earnings_yield_xs, f_sales_yield_xs, f_book_yield_xs,
+              f_intrinsic_yield_xs, f_eps_yield_xs, "-f_pegy_xs"]   # low PEGY = cheap vs growth
+      # ---- VALUE RE-RATING: the SAME yields vs the firm's own past (split out of value) ----
+      value_rerating: [f_ebitda_to_ev_vs_hist, f_fcf_to_ev_vs_hist, f_fcf_yield_vs_hist,
+                       f_core_earnings_yield_vs_hist, f_earnings_yield_vs_hist,
+                       f_sales_yield_vs_hist, f_book_yield_vs_hist, f_intrinsic_yield_vs_hist]
+
+      # ---- QUALITY: profitability OUTPUTS. Margins are sector-bound -> _vs_peers.
+      #      R&D intensity removed: it is an INPUT and mechanically depresses the very
+      #      margins this group rewards (it lives in ai_capability instead). ----
+      quality: [f_gross_profitability_vs_peers, f_grossMargins_vs_peers,
+                f_operatingMargins_vs_peers, f_profitMargins_vs_peers,
+                f_core_operating_margin_vs_peers, f_core_profit_margin_vs_peers,
+                f_returnOnEquity_xs, f_roic_xs, f_roic_ex_goodwill_xs,
+                f_fcf_margin_vs_peers, f_earnings_quality_xs,
+                f_piotroski_f_score_xs]              # 9-point fundamental-health score
+
+      # ---- GROWTH: top line, bottom line, margin trend, forward bookings ----
+      growth: [f_y_rev_growth_xs, f_y_earnings_growth_xs, f_revenueGrowth_xs,
+               f_earningsGrowth_xs, f_q_rev_growth_xs, f_rev_growth_accel_xs,
+               f_fcf_growth_xs, f_gross_margin_chg_xs, f_operating_margin_5y_chg_xs,
+               f_operating_leverage_xs, f_operating_leverage_elasticity_xs,
+               f_rule_of_40_xs, f_rpo_growth_xs, f_sustainable_growth_rate_xs]
+
+      # ---- DISTRESS: ONE leverage measure (the off-BS-inclusive one already contains
+      #      leases + pension + ARO), then coverage, liquidity and the maturity wall.
+      #      Was 3/7 leverage, two of them sharing a numerator. ----
+      distress: ["-f_net_debt_incl_offbs_to_ebitda_xs",
+                 f_altman_z_xs, f_ebit_interest_coverage_xs, f_interest_coverage_xs,
+                 f_current_ratio_xs, f_cash_to_debt_xs,
+                 "-f_debt_maturity_wall_1y_xs", "-f_debt_maturity_wall_5y_xs",
+                 "-f_debt_maturity_front_loading_xs", "-f_refinancing_risk_xs",
+                 "-f_negative_equity"]              # raw 0/1 state flag
+
+      # ---- PENSION / RETIREMENT OVERHANG: its own group because it is populated only
+      #      for DB-plan sponsors (~20-30% of the universe); inside `distress` it would
+      #      change what that score means for exactly those names. ----
+      pension_risk: [f_pension_funded_ratio_xs, "-f_pension_overhang_leverage_xs",
+                     "-f_pension_underfunding_to_mcap_xs", "-f_pbo_to_mcap_xs",
+                     "-f_non_service_pension_to_revenue_xs"]
+
+      # ---- CAPITAL ALLOCATION: investment discipline. Share issuance moved to
+      #      shareholder_return so the two stop double-counting the same dilution. ----
+      capital_allocation: ["-f_asset_growth_xs",          # Cooper-Gulen-Schill (CMA)
+                           "-f_acquisition_intensity_xs", "-f_goodwill_growth_xs",
+                           "-f_goodwill_acquired_intensity_xs",
+                           "-f_sbc_intensity_vs_peers", "-f_sbc_to_ocf_xs",
+                           "-f_da_to_capex_xs",           # D&A > capex = under-investing
+                           "-f_reportable_segments_xs"]   # conglomerate discount
+
+      # ---- SHAREHOLDER RETURN: yield, its safety, and NET issuance ----
+      shareholder_return: [f_shareholder_yield_xs, f_dividend_yield_xs,
+                           f_dividend_coverage_xs, f_dividend_growth_5y_xs,
+                           f_dps_growth_xs, f_buyback_intensity_xs,
+                           "-f_shares_growth_xs", "-f_diluted_shares_growth_xs",
+                           "-f_option_overhang_xs"]
+
+      # ---- ACCOUNTING QUALITY: statement integrity. Accruals were counted in THREE
+      #      groups (quality, accounting_quality, eps_beat); dropped from `quality`,
+      #      which now measures profitability outputs only. Still shared with eps_beat
+      #      by design -- see the note there. ----
+      accounting_quality: ["-f_beneish_m_score_xs", "-f_accruals_xs",
+                           "-f_nonrecurring_pretax_share_xs", "-f_special_items_intensity_xs",
                            "-f_dso_change_xs", "-f_dpo_change_xs",
-                           "-f_useful_life_change_xs", "-f_sbc_to_buyback_xs"]
-      ma_digestion: [f_roic_incl_goodwill_xs, f_goodwill_roic_drag_xs,
+                           "-f_useful_life_change_xs", "-f_sbc_to_buyback_xs",
+                           "-f_cash_book_tax_gap_xs",     # book charge >> cash tax paid
+                           "-f_unrecognized_tax_benefits_ratio_xs",
+                           "-f_nci_income_share_xs",      # profit the parent does not own
+                           "-f_equity_method_income_share_xs",   # no revenue, no cash
+                           f_oci_to_net_income_xs]        # OCI drag on book value
+
+      ma_digestion: [f_roic_incl_goodwill_xs,
+                     f_goodwill_roic_drag_xs,       # drag = roic_incl - roic_ex is NEGATIVE;
+                                                    # higher (nearer 0) = less dilution -> '+'
                      "-f_goodwill_intangibles_to_assets_xs", "-f_goodwill_to_equity_xs",
+                     "-f_goodwill_impairment_intensity_xs",
                      "-f_sga_elasticity_xs", "-f_headcount_elasticity_xs",
-                     "-f_goodwill_impairment_intensity_xs"]
-      ai_leverage: [f_sga_intensity_vs_peers, "-f_revenue_per_employee_vs_peers",
-                    f_rd_intensity_vs_peers, f_capitalized_software_intensity_vs_peers]
-      # insider open-market buying (Forms 3/4/5): net buying + cluster breadth = bullish
+                     "-f_intangible_asset_age_xs"]
+
+      # ---- AI: SPLIT IN TWO. These are OPPOSITE theses and were being averaged into
+      #      one number, so they partially cancelled. `capability` = already efficient
+      #      and tech-heavy (best placed to deploy); `opportunity` = labour- and
+      #      overhead-heavy (most to gain). Keep both and let the model choose. ----
+      ai_capability: [f_revenue_per_employee_vs_peers, "-f_sga_intensity_vs_peers",
+                      f_capitalized_software_intensity_vs_peers, f_software_to_revenue_vs_peers,
+                      f_rd_intensity_vs_peers]
+      ai_opportunity: ["-f_revenue_per_employee_vs_peers", f_sga_intensity_vs_peers,
+                       f_headcount_elasticity_vs_peers, f_dso_xs]
+
+      expectations: [f_fwd_eps_yield_xs, f_forward_earnings_yield_xs,
+                     f_eps_expectation_growth_xs, f_eps_surprise_last_xs]
+      # `-f_accruals_xs` is KEPT here (it also sits in accounting_quality): low accruals
+      # genuinely belong to a beat-propensity thesis, and this membership was agreed
+      # explicitly -- see tests/data_aggregate/test_composites.py. The only addition is
+      # q_margin_vs_ttm (latest-quarter margin vs the TTM margin = margin inflecting up).
+      eps_beat: [f_eps_surprise_4q_avg_xs, "-f_accruals_xs", f_earnings_quality_xs,
+                 f_y_rev_growth_xs, f_margin_expansion_delta_xs, f_q_margin_vs_ttm_xs,
+                 "-f_eps_expectation_growth_xs"]    # a low consensus bar is easier to clear
+                                                    # (deliberately the opposite sign to
+                                                    #  `expectations` -- the two are meant to
+                                                    #  disagree, not to be averaged together)
+
+      governance: [f_pct_independent_directors_xs, f_insider_ownership_pct_xs,
+                   f_ceo_equity_pay_pct_xs, f_say_on_pay_support_xs, f_founder_ceo_xs,
+                   "-f_ceo_pay_ratio_xs", "-f_ceo_pay_vs_revenue_growth_xs",
+                   "-f_ceo_pay_growth_xs"]
+      workforce: [f_revenue_per_employee_vs_peers, f_revenue_per_employee_growth_xs,
+                  f_employee_growth_xs]
+
+      # ---- OWNERSHIP FLOW: who is buying. Three separate groups because insiders,
+      #      elite 13F managers and the all-filer 13F crowd are different signals. ----
       insider: [f_insider_net_buy_ratio_xs, f_insider_buy_sell_count_ratio_xs,
                 f_insider_buy_count_xs, f_insider_net_buy_to_mcap_xs]
+      superinvestor: [f_super_flow_to_mcap_xs, f_super_value_to_mcap_xs,
+                      f_super_breadth_chg_xs, f_super_cluster_buying_xs,
+                      f_super_new_buyer_ratio_xs, f_super_shares_chg_xs]
+      institutional: [f_inst_flow_to_mcap_xs, f_inst_breadth_chg_xs,
+                      f_inst_shares_chg_xs, f_new_buyer_ratio_xs, "-f_exiters_xs",
+                      "-f_inst_concentration_xs"]   # concentrated holders = fragile ownership
+
+      # ---- SHORT / SETTLEMENT PRESSURE: heavy shorting and rising fails are bearish ----
+      short_pressure: ["-f_short_vol_ratio_xs", "-f_short_vol_ratio_chg_xs",
+                       "-f_fails_to_deliver_ratio_xs", "-f_fails_to_deliver_chg_xs"]
+
+      # ---- EARNINGS-CALL TONE (f_ec_*): positive, confident, coherent, unchanged
+      #      narrative = bullish. Populated only once transcripts are ingested and
+      #      scored -- currently 217 sections, so these are skipped and WARNED about. ----
+      earnings_call: [f_ec_tone_xs, f_ec_tone_delta_xs, f_ec_prep_tone_delta_xs,
+                      f_ec_qa_tone_delta_xs, "-f_ec_uncertainty_xs", "-f_ec_qa_gap_xs",
+                      f_ec_qa_coherence_mean_xs, "-f_ec_qa_coherence_std_xs",
+                      f_ec_qa_qq_sim_xs, f_ec_prep_qq_sim_xs,
+                      "-f_ec_vocab_novelty_xs", "-f_ec_length_delta_xs"]
+
+      # ---- ATTENTION: a retail-attention spike is a short-horizon reversal signal ----
+      attention: ["-f_attn_spike_xs"]
+
       technical: [mom_12_1, ma_ratio_50, "-vol_63", "-max_21", "-ret_skew_126",
                   "-idio_vol_63", "-downside_vol_63"]
+
+      # ---- SECTOR-ONLY HEALTH SCORES. Deliberately separate groups: these members are
+      #      NaN outside their sector, so folding them into the universal composites
+      #      would make those scores mean something different for banks/insurers/REITs. ----
+      bank_health: [f_net_interest_margin_vs_peers, "-f_efficiency_ratio_vs_peers",
+                    f_bank_operating_margin_vs_peers, f_tier1_capital_ratio_xs,
+                    "-f_npl_ratio_xs", "-f_net_charge_off_rate_xs", "-f_provision_rate_xs",
+                    "-f_reserve_coverage_velocity_xs", "-f_htm_unrealized_loss_ratio_xs",
+                    f_aoci_to_equity_xs, f_deposit_stickiness_xs, "-f_loan_to_deposit_xs"]
+      insurance_health: ["-f_combined_ratio_xs", "-f_loss_ratio_xs", "-f_expense_ratio_xs",
+                         f_investment_income_ratio_xs, f_premium_growth_xs,
+                         f_float_growth_xs, f_book_value_growth_xs]
+      reit_health: [f_ffo_yield_xs, f_ffo_margin_vs_peers, f_affo_margin_vs_peers,
+                    f_affo_dividend_coverage_xs, f_implied_cap_rate_xs,
+                    "-f_ffo_payout_xs", "-f_net_debt_to_ebitdare_xs"]
+      energy_health: [f_ebitdax_to_ev_xs, f_ebitdax_margin_vs_peers,
+                      "-f_property_overvaluation_cushion_xs", "-f_ddna_intensity_vs_peers",
+                      "-f_aro_to_mcap_xs"]
 
   output:
     save_cube: true

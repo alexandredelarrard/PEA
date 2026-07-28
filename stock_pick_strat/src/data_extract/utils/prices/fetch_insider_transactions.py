@@ -33,18 +33,19 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
-import requests
 from tqdm import tqdm
 
 from src.constants.constants import SEC_INSIDER_URL_TEMPLATE, SEC_INSIDER_FIRST_YEAR
 from src.context import Context
+from src.data_extract.utils.common.bulk_cache import (
+    cache_dir, ensure_zip, quarter_periods,
+)
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, bulk_ingested_quarters, load_processed_universe,
     save_processed_universe)
 
 logger = logging.getLogger(__name__)
 
-_HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; valar_analytics@gmail.com)"}
 _TABLE = "insider_transactions"
 _OUT_COLS = [
     "accession_number", "security_type", "transaction_sk", "ticker", "issuer_cik",
@@ -64,17 +65,6 @@ def _col(df: pd.DataFrame, name: str) -> pd.Series:
 
 def _num(df: pd.DataFrame, name: str) -> pd.Series:
     return pd.to_numeric(_col(df, name), errors="coerce")
-
-
-def _quarters(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
-    """'YYYYqQ' tags for every quarter in range whose data set exists. Pure/
-    deterministic (pass `today` in tests)."""
-    today = (today or pd.Timestamp.today()).normalize()
-    out: list[str] = []
-    for y in range(today.year - years_history, today.year + 1):
-        if y >= SEC_INSIDER_FIRST_YEAR:
-            out += [f"{y}q{q}" for q in range(1, 5)]
-    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -160,35 +150,6 @@ def _filter_universe(df: pd.DataFrame, universe: set[str], cik2tkr: dict) -> pd.
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
-def _cache_dir(context: Context) -> Path:
-    # dedicated dir (NOT data/sec_bulk_cache, which holds the companyfacts CIK JSONs)
-    # so the quarterly zips stay separate from the JSON cache.
-    d = context.paths["DATA_STORE"] / "sec_insider_transactions"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _ensure_zip(quarter: str, cache_dir: Path) -> Path | None:
-    """Local path to this quarter's zip, downloaded once if absent (stream to a
-    .part then rename so a partial download is never mistaken for a cached one)."""
-    path = cache_dir / f"{quarter}_form345.zip"
-    if path.exists() and path.stat().st_size > 0:
-        return path
-    url = SEC_INSIDER_URL_TEMPLATE.format(quarter=quarter)
-    try:
-        r = requests.get(url, headers=_HEADERS, timeout=180, stream=True)
-    except Exception as e:
-        logger.warning("insider %s download failed: %s", quarter, e)
-        return None
-    if r.status_code != 200:                              # e.g. current quarter not posted yet
-        logger.info("insider %s not available (HTTP %s)", quarter, r.status_code)
-        return None
-    tmp = path.with_suffix(".part")
-    with open(tmp, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1 << 20):
-            f.write(chunk)
-    tmp.replace(path)
-    return path
 
 
 def _read_tables(path: Path):
@@ -221,7 +182,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     cik2tkr = ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
                if not cikmap.empty and "ticker" in cikmap.columns else {})
     years_history = context.config.data_extract.years_history + 1
-    cache_dir = _cache_dir(context)
+    cache = cache_dir(context, "sec_insider_transactions")
 
     tickers = {str(t).upper() for t in tickers}          # universe as an uppercased set
     done_q = bulk_ingested_quarters(store, _TABLE)
@@ -231,10 +192,12 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
                     len(new_tickers))
 
     saved = 0
-    for q in tqdm(_quarters(years_history), desc="insider data sets"):
+    for q in tqdm(quarter_periods(years_history, SEC_INSIDER_FIRST_YEAR), desc="insider data sets"):
         if q in done_q and not new_tickers:
             continue                          # complete quarter already ingested
-        path = _ensure_zip(q, cache_dir)
+        path = ensure_zip(cache / f"{q}.zip",
+                          SEC_INSIDER_URL_TEMPLATE.format(quarter=q),
+                          label=f"insider {q}", log=logger)
         if path is None:
             continue
         tables = _read_tables(path)
@@ -248,5 +211,5 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
 
     save_processed_universe(cache_dir, _TABLE, tickers)   # so a converged re-run skips
     logger.info("insider_transactions: upserted %d rows (%d quarters scanned)",
-                   saved, len(_quarters(years_history)))
+                   saved, len(quarter_periods(years_history, SEC_INSIDER_FIRST_YEAR)))
     return saved

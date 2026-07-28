@@ -21,8 +21,16 @@ over no info"):
     opposing-signed members cancel and the composite loses its information).
   * Each member is cross-sectionally re-standardized per day first, so members on
     different scales (percentile _xs, peer-z _vs_peers, 0/1 flags) combine fairly.
+  * Missing members are skipped but REPORTED (`missing_members` / the `log` warning).
+    Skipping silently hid real damage: four members -- gross_profitability,
+    net_debt_to_ebitda, interest_coverage and sbc_intensity -- were absent from the
+    cube for as long as the panel merge was renaming them to `_x`/`_y`, so quality,
+    distress and capital_allocation each ran a member short with no signal that
+    anything was wrong.
 """
 from __future__ import annotations
+
+import logging
 
 import numpy as np
 import pandas as pd
@@ -44,21 +52,47 @@ def _xs_standardize(panel: pd.DataFrame, cols: list[str], method: str,
     return z.clip(-clip, clip)
 
 
+def missing_members(panel: pd.DataFrame, groups: dict) -> dict[str, list[str]]:
+    """`{theme: [member, ...]}` for every configured member absent from `panel`.
+
+    A composite quietly built from half its members still looks healthy, so the
+    caller is expected to surface this rather than discover it months later."""
+    out: dict[str, list[str]] = {}
+    for theme, members in (groups or {}).items():
+        gone = sorted({col for _, col in map(_parse_member, members)
+                       if col not in panel.columns})
+        if gone:
+            out[theme] = gone
+    return out
+
+
 def build_composites(panel: pd.DataFrame, groups: dict, method: str = "zscore",
-                     clip: float = 4.0) -> pd.DataFrame:
+                     clip: float = 4.0, log: logging.Logger | None = None) -> pd.DataFrame:
     """Append `comp_<theme>` columns to a long feature panel.
 
     `groups` maps theme -> list of member feature names (each optionally '-'-
-    prefixed to invert). Members absent from the panel are skipped. Returns the
-    SAME panel with the composite columns added (raw features untouched)."""
+    prefixed to invert). Members absent from the panel are skipped AND warned about
+    via `log`. Returns the SAME panel with the composite columns added (raw features
+    untouched)."""
     if not groups:
         return panel
 
     parsed = {theme: [_parse_member(m) for m in members]
               for theme, members in groups.items()}
+    gaps = missing_members(panel, groups)
+    if gaps and log is not None:
+        total = sum(len(v) for v in gaps.values())
+        log.warning(
+            "Composites: %d configured member(s) absent from the panel and skipped -- "
+            "%s. A theme whose members are missing is built from the remainder, so "
+            "check whether the feature was renamed, or its source table is empty.",
+            total, "; ".join(f"{t}: {', '.join(m)}" for t, m in sorted(gaps.items())),
+        )
     present = sorted({col for members in parsed.values()
                       for _, col in members if col in panel.columns})
     if not present:
+        if log is not None:
+            log.warning("Composites: NO configured member is present -- none built.")
         return panel
 
     z = _xs_standardize(panel, present, method, clip)

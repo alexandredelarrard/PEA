@@ -33,25 +33,16 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import (
-    sec_get, load_cik_mapping, load_extract_meta, save_extract_meta, today_iso,
+    sec_get, load_cik_mapping, load_extract_meta, save_extract_meta, seen_accessions,
+    today_iso,
 )
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.edgar_extract import html_to_text, extract_employee_count
+from src.data_extract.utils.common.incremental import load_existing
 
 _DATA_COLUMNS = ["ticker", "as_of", "period", "employees", "form_type"]
 _FORMS = ["10-K"]                     # add "10-Q" for quarterly headcount refreshes
 _MAX_WORKERS = 8                      # concurrent tickers (rate-limited in sec_get)
-
-
-def _load_existing(context: Context) -> pd.DataFrame | None:
-    df = context.store.load("employees_history")
-    return None if df.empty else df
-
-
-def _seen_accessions(existing: pd.DataFrame | None) -> set:
-    if existing is None or existing.empty or "accession_number" not in existing.columns:
-        return set()
-    return set(existing["accession_number"].dropna())
 
 
 def _last_asof_by_ticker(existing: pd.DataFrame | None) -> dict:
@@ -121,13 +112,13 @@ def fetch_employees_edgar(context: Context, tickers: list[str],
     cik_map = load_cik_mapping(context)
     cik_map = cik_map[cik_map["ticker"].isin(tickers)]
 
-    existing = _load_existing(context)
+    existing = load_existing(context, "employees_history", date_col=None)
     if _is_up_to_date(context, cik_map):
         context.log.info("EDGAR employees already up to date for %s — skipping (%d rows)",
                          today_iso(), 0 if existing is None else len(existing))
         return existing if existing is not None else pd.DataFrame(columns=_DATA_COLUMNS)
 
-    seen = _seen_accessions(existing)
+    seen = seen_accessions(existing)
     last_asof = _last_asof_by_ticker(existing)
 
     new_rows: list[dict] = []

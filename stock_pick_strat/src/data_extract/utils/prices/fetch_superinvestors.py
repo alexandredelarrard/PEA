@@ -42,6 +42,7 @@ from src.constants.constants import (
     SUPERINVESTOR_CIK_OVERRIDES, SUPERINVESTORS_JSON)
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
+from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +59,6 @@ _STOP_TOKENS = {
 # --------------------------------------------------------------------------- #
 # Pure helpers (unit-tested)                                                    #
 # --------------------------------------------------------------------------- #
-def _pad_cik(x: object) -> str:
-    """Canonical 10-digit zero-padded CIK (matches sp500_tickers / institutional_holdings).
-    Tolerates ints, '123', '123.0', already-padded strings; '' if no digits."""
-    s = re.sub(r"\D", "", str(x).strip().split(".")[0])
-    return s.zfill(10) if s else ""
-
-
 def _name_tokens(name: str) -> frozenset[str]:
     """Significant upper-case tokens of a manager/fund name (boilerplate dropped)."""
     words = re.sub(r"[^A-Za-z0-9 ]", " ", str(name).upper()).split()
@@ -108,7 +102,7 @@ def _parse_edgar_matches(atom_text: str) -> list[tuple[str, str]]:
         if not cik_m:
             continue
         name_m = re.search(r"<conformed-name>([^<]*)", block)
-        out.append((_pad_cik(cik_m.group(1)), name_m.group(1).strip() if name_m else ""))
+        out.append((pad_cik(cik_m.group(1)), name_m.group(1).strip() if name_m else ""))
     return out
 
 
@@ -184,7 +178,7 @@ def build_superinvestors_json(
     for r in roster:
         code, name = r["code"], r["name"]
         if code in SUPERINVESTOR_CIK_OVERRIDES:
-            cik_to_name[_pad_cik(SUPERINVESTOR_CIK_OVERRIDES[code])] = name
+            cik_to_name[pad_cik(SUPERINVESTOR_CIK_OVERRIDES[code])] = name
             continue
         cik, _filer = _edgar_cik_for_name(name, get_fn=get_fn)
         if cik:

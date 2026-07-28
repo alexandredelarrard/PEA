@@ -25,8 +25,6 @@ from __future__ import annotations
 
 import io
 import logging
-import zipfile
-from pathlib import Path
 
 import pandas as pd
 from tqdm import tqdm
@@ -36,7 +34,7 @@ from src.constants.constants import (
     SEC_FTD_LEGACY_LAST_PERIOD, SEC_FTD_FIRST_YEAR)
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
-    cache_dir, ensure_zip, ingested_periods,
+    cache_dir, ensure_zip, ingested_periods, read_zip_text,
 )
 from src.data_extract.utils.common.sec_utils import (
     load_processed_universe, save_processed_universe)
@@ -108,17 +106,6 @@ def _period_urls(period: str) -> tuple[str, ...]:
     return (legacy, modern) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy)
 
 
-def _read_zip(path: Path) -> str | None:
-    try:
-        with zipfile.ZipFile(path) as z:
-            names = z.namelist()
-            return z.open(names[0]).read().decode("latin-1", errors="replace") if names else None
-    except zipfile.BadZipFile:
-        logger.warning("FTD %s: corrupt zip -> deleting so it re-downloads", path.name)
-        path.unlink(missing_ok=True)
-        return None
-
-
 def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
     """Download (cached) the semi-monthly SEC Fails-to-Deliver files over
     `years_history`, keep the universe, upsert to `fails_to_deliver`. Returns rows
@@ -142,7 +129,7 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
                           label=f"FTD {period}", timeout=180, log=logger)
         if path is None:
             continue
-        raw = _read_zip(path)
+        raw = read_zip_text(path, log=logger)
         if raw is None:
             continue
         df = _parse_ftd(raw)

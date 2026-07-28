@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.factors import fundamentals_to_daily
-from src.data_aggregate.utils.fundamental_features import build_peer_relative_panel
+from src.data_aggregate.utils.panel import build_peer_relative_panel
 
 _YOY = 252       # ~1 trading year
 _FIVE_Y = 5 * 252  # ~5 trading years

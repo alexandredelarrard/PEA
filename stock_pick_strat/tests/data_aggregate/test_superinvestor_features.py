@@ -14,7 +14,7 @@ import logging
 import pandas as pd
 
 from src.data_aggregate.utils.superinvestor_features import (
-    _pad_cik, _weight_map, build_superinvestor_feature_panel, load_superinvestor_holdings,
+    pad_cik, _weight_map, build_superinvestor_feature_panel, load_superinvestor_holdings,
 )
 
 # roster: M1 heavily weighted (0.7), M2 light (0.3); raw CIKs "1"/"2" (padded internally).
@@ -109,7 +109,7 @@ class _FakeCtx:
 
 def test_load_superinvestor_holdings_reads_only_elite():
     """The filtered read returns ONLY roster-manager rows, matching CIKs regardless of the stored
-    format (padded, unpadded, or '1234.0') exactly like _pad_cik — so the panel never sees the
+    format (padded, unpadded, or '1234.0') exactly like pad_cik — so the panel never sees the
     ~20M-row all-filer table."""
     rows = [
         {"cik": "0000000001", "period": "2025-12-31", "ticker": "HOT", "shares": 100,
@@ -124,7 +124,7 @@ def test_load_superinvestor_holdings_reads_only_elite():
     ctx = _FakeCtx(_FakeStore(pd.DataFrame(rows)))
     out = load_superinvestor_holdings(ctx, _ROSTER)
     assert len(out) == 2, f"expected only the 2 roster rows, got {len(out)}"
-    assert set(out["cik"].map(_pad_cik)) == {"0000000001", "0000000002"}
+    assert set(out["cik"].map(pad_cik)) == {"0000000001", "0000000002"}
     assert set(out["ticker"]) == {"HOT"}, "non-roster tickers leaked in"
     # empty roster -> nothing to read
     assert load_superinvestor_holdings(ctx, {"managers": []}) is None

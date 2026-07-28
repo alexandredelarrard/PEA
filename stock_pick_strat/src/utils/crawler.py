@@ -30,6 +30,9 @@ import random
 import time
 from urllib.parse import urlsplit, urlunsplit
 
+import requests
+from curl_cffi import requests as cr
+
 from src.utils import polite_http as ph
 
 logger = logging.getLogger(__name__)
@@ -112,7 +115,6 @@ class Crawler:
         proxies = {"http": proxy, "https": proxy} if proxy else None
         if self._impersonate:
             try:
-                from curl_cffi import requests as cr
                 prof = random.choice(ph.IMPERSONATE_POOL)
                 try:
                     return cr.get(url, params=params, headers=headers, impersonate=prof,
@@ -121,9 +123,8 @@ class Crawler:
                     return cr.get(url, params=params, headers=headers, impersonate="chrome",
                                   timeout=self._timeout, proxies=proxies, allow_redirects=True)
             except Exception:
-                pass                                  # curl_cffi missing -> requests fallback
+                pass                                  # curl_cffi transport error -> requests fallback
         try:
-            import requests
             return requests.get(url, params=params, headers=headers, timeout=self._timeout,
                                 proxies=proxies, allow_redirects=True)
         except Exception:

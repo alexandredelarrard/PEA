@@ -22,6 +22,7 @@ import requests
 
 from src.constants.constants import DATE_FORMAT_COMPACT
 from src.context import Context
+from src.data_extract.utils.common.incremental import load_existing
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 _HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; contact@example.com)"}
@@ -53,18 +54,10 @@ def _fetch_day(day: pd.Timestamp) -> str | None:
     return r.text if r.status_code == 200 else None
 
 
-def _load_existing(context: Context):
-    df = context.store.load("short_interest")
-    if df.empty:
-        return None
-    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-    return df
-
-
 def fetch_short_interest(context: Context, tickers: list[str] | None = None,
                          years_history: int = 10, pause: float = 0.05) -> pd.DataFrame:
     """Download RegSHO daily short-volume files incrementally; cache to parquet."""
-    existing = _load_existing(context)
+    existing = load_existing(context, "short_interest")
     start = (existing["date"].max() + pd.Timedelta(days=1)) if existing is not None \
         else pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     days = pd.bdate_range(start, pd.Timestamp.today().normalize())

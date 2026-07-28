@@ -22,26 +22,11 @@ from tqdm import tqdm
 from src.constants.constants import SEC_13D_CACHE_DIR, SEC_13D_FORMS, SEC_13D_TABLE
 from src.context import Context
 from src.data_extract.utils.common.edgar_fillings import list_filings
-from src.data_extract.utils.common.sec_utils import load_cik_mapping
+from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
 
 logger = logging.getLogger(__name__)
 _TABLE = SEC_13D_TABLE
 _COLS = ["ticker", "cik", "accession_number", "form", "filing_date", "primary_document", "doc_url"]
-
-
-def _existing(context: Context) -> tuple[set[str], dict[str, pd.Timestamp]]:
-    """(accessions already stored, per-ticker max filing_date) — dedup + incremental cutoff."""
-    try:
-        df = context.store.load(_TABLE, columns=["ticker", "accession_number", "filing_date"])
-    except Exception:
-        return set(), {}
-    if df is None or df.empty:
-        return set(), {}
-    seen = set(df["accession_number"].dropna().astype(str))
-    d = df.copy()
-    d["filing_date"] = pd.to_datetime(d["filing_date"], errors="coerce")
-    last = d.dropna(subset=["filing_date"]).groupby("ticker")["filing_date"].max().to_dict()
-    return seen, last
 
 
 def fetch_13d(context: Context, tickers: list[str], years: int | None = None) -> pd.DataFrame:
@@ -52,7 +37,7 @@ def fetch_13d(context: Context, tickers: list[str], years: int | None = None) ->
     cik_map = load_cik_mapping(context)
     cik_map = cik_map[cik_map["ticker"].isin(tickers)]
 
-    seen, last_by_ticker = _existing(context)
+    seen, last_by_ticker = existing_filings(context, _TABLE)
     total_new, touched, none_found = 0, 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="SC 13D"):
         ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")

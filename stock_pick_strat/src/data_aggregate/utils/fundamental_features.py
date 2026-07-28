@@ -113,8 +113,15 @@ import pandas as pd
 from sqlalchemy import bindparam, text
 
 from src.context import Context
+from src.data_aggregate.utils.earnings_features import ntm_ttm_eps
 from src.data_aggregate.utils.factors import fundamentals_to_daily, daily_market_cap
 from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
+from src.data_aggregate.utils.panel import (
+    _peer_relative,
+    _ratio,
+    _winsorize_xs,
+    build_peer_relative_panel,
+)
 from src.data_aggregate.utils.sector_gates import family_tickers, mask_columns
 from src.data_aggregate.utils import capital
 
@@ -138,18 +145,7 @@ _HIST_MIN_PERIODS = 252  # require >= 1y of history before emitting a z-score
 # clip each day's distribution to its [1%, 99%] percentiles so a few extreme names
 # can't dominate the standardized value -> better generalization. The percentile-
 # RANK features (`_xs`) are already outlier-proof and are left untouched.
-_WINSOR_LO, _WINSOR_HI = 0.01, 0.99
 
-
-def _winsorize_xs(df: pd.DataFrame, lo: float = _WINSOR_LO,
-                  hi: float = _WINSOR_HI) -> pd.DataFrame:
-    """Clip each ROW (date) to its cross-sectional [lo, hi] quantiles across tickers.
-    NaN-safe: an all-NaN row yields NaN bounds -> clip is a no-op there."""
-    if df is None or df.empty:
-        return df
-    lo_q = df.quantile(lo, axis=1)
-    hi_q = df.quantile(hi, axis=1)
-    return df.clip(lower=lo_q, upper=hi_q, axis=0)
 
 # Company-regime STATE flags. These are absolute 0/1 indicators (is the firm
 # profitable? cash-generative? in negative equity? growing fast?) emitted RAW
@@ -163,18 +159,6 @@ _HYPER_GROWTH = 0.25     # YoY revenue growth above which a name is "hyper-growt
 # --------------------------------------------------------------------------- #
 # Helpers                                                                      #
 # --------------------------------------------------------------------------- #
-def _ratio(num: pd.DataFrame, den: pd.DataFrame, positive_den: bool = False) -> pd.DataFrame:
-    """Column-aligned num/den on the common tickers, inf -> NaN. When
-    `positive_den` the denominator is masked to strictly-positive values."""
-    if num.empty or den.empty:
-        return pd.DataFrame()
-    cols = num.columns.intersection(den.columns)
-    if len(cols) == 0:
-        return pd.DataFrame()
-    d = den[cols]
-    d = d.where(d > 0) if positive_den else d.where(d != 0)
-    out = num[cols] / d
-    return out.replace([np.inf, -np.inf], np.nan)
 
 
 def _combine_debt(long_debt: pd.DataFrame, short_debt: pd.DataFrame,
@@ -1012,7 +996,6 @@ def _derived_fields(
         pe = _ratio(mcap, net_income.where(net_income > 0), positive_den=True)
         growth_pct = None
         if earnings_history is not None and not earnings_history.empty:
-            from src.data_aggregate.utils.earnings_features import ntm_ttm_eps  # lazy: avoid cycle
             ntm_e, ttm_e = ntm_ttm_eps(earnings_history, idx)
             if not ntm_e.empty and not ttm_e.empty:
                 proj = _ratio(ntm_e, ttm_e.where(ttm_e > 0)) - 1.0        # projected EPS growth
@@ -1395,49 +1378,6 @@ def _derived_fields(
     return F
 
 
-def _peer_relative(
-    field_df: pd.DataFrame,
-    peer_dict: dict,
-    min_peers: int = 3,
-    clip: float = 8.0,
-) -> pd.DataFrame:
-    """
-    (stock - peer_weighted_mean) / peer_weighted_std, per date, per stock.
-    Self excluded by construction of the peer dict. NaN-tolerant: peer stats use
-    whichever peers have data on the date (weights renormalized).
-
-    Robustness (critical): when only a couple of peers report or their values
-    nearly coincide, the peer std collapses toward zero and the raw z-score
-    explodes to ~1e13. We therefore (a) require at least `min_peers` peers with
-    data on the date, (b) drop dates where the peer std is not strictly positive,
-    and (c) winsorize the result to +-`clip` so a near-degenerate peer group can
-    never dominate the model.
-    """
-    rel = pd.DataFrame(index=field_df.index, columns=field_df.columns, dtype="float64")
-    for ticker, peers in peer_dict.items():
-        if not peers or ticker not in field_df.columns:
-            continue
-        cols = [p for p in peers if p in field_df.columns]
-        if len(cols) < min_peers:
-            continue
-        w = pd.Series({p: float(peers[p]) for p in cols}, dtype="float64")
-        w = w / w.sum()
-        peer_vals = field_df[cols]
-        present = peer_vals.notna()
-        n_present = present.sum(axis=1)
-        wsum = present.mul(w, axis=1).sum(axis=1)
-        valid = (n_present >= min_peers) & (wsum > 0)
-
-        pmean = peer_vals.mul(w, axis=1).sum(axis=1, min_count=1).div(wsum.where(valid))
-        var = (peer_vals.sub(pmean, axis=0) ** 2).mul(w, axis=1).sum(axis=1, min_count=1)
-        pstd = np.sqrt(var.div(wsum.where(valid)))
-
-        z = (field_df[ticker] - pmean) / pstd.where(pstd > 0)
-        z = z.where(valid)
-        rel[ticker] = z.clip(-clip, clip)
-    return rel.replace([np.inf, -np.inf], np.nan)
-
-
 def build_fundamental_feature_panel(
     fundamentals_history: pd.DataFrame | None,
     peer_dict: dict,
@@ -1553,46 +1493,3 @@ def build_self_history_panel(fields: dict) -> pd.DataFrame:
     return pd.concat(long_frames, axis=1).copy().reset_index()
 
 
-def build_peer_relative_panel(fields: dict, peer_dict: dict) -> pd.DataFrame:
-    """Turn a {name: daily wide frame} dict into the long feature panel, each
-    characteristic expressed as `f_<name>_vs_peers` (peer-standardized) and
-    `f_<name>_xs` (universe percentile). Shared by the fundamental and analyst
-    feature builders."""
-    if not fields:
-        return pd.DataFrame(columns=["date", "ticker"])
-
-    long_frames = []
-    for name, fdf in fields.items():
-        if fdf is None or fdf.empty:
-            continue
-        # Guarantee a numeric frame: a stray Python `None` / object cell — a KPI genuinely
-        # absent for a name (e.g. sparse earnings-call coverage, "no value to compare with") —
-        # must be coerced to NaN. Otherwise the NaN-tolerant peer-z math (`_peer_relative`)
-        # AND the `_xs` rank below both raise "unsupported operand type(s): NoneType and float"
-        # the moment a single None reaches them. Coercion is the correct semantics here
-        # (absent = NaN), not a workaround, and a no-op on already-float frames.
-        fdf = fdf.apply(pd.to_numeric, errors="coerce")
-        if fdf.empty or not fdf.notna().any().any():
-            continue
-        # peer z-score, then trim per-day cross-sectional 1%/99% outliers (the
-        # percentile-rank `_xs` below is already outlier-proof, so it uses raw fdf).
-        # The stacked long columns are cast to float32: these are z-scores / percentile ranks
-        # bounded to O(1), so float64 storage is wasted — halving them (and the concat +
-        # defrag copy below) is what keeps the many-feature panels off the OOM killer.
-        rel = _winsorize_xs(_peer_relative(fdf, peer_dict))
-        s = rel.stack().astype("float32")
-        s.index.set_names(["date", "ticker"], inplace=True)
-        long_frames.append(s.rename(f"f_{name}_vs_peers"))
-
-        xs = fdf.rank(axis=1, pct=True, method="average")
-        s2 = xs.stack().astype("float32")
-        s2.index.set_names(["date", "ticker"], inplace=True)
-        long_frames.append(s2.rename(f"f_{name}_xs"))
-        del fdf, rel, xs, s, s2                       # free per-field intermediates promptly
-
-    if not long_frames:
-        return pd.DataFrame(columns=["date", "ticker"])
-    # .copy() consolidates the many single-column blocks that concat(axis=1) leaves
-    # behind, so the reset_index() column insert doesn't trip the "highly fragmented
-    # DataFrame" PerformanceWarning once the panel has 100+ feature columns.
-    return pd.concat(long_frames, axis=1).copy().reset_index()

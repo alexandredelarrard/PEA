@@ -53,6 +53,14 @@ from src.constants.constants import (
 from src.utils.ssl_setup import configure_corporate_ca
 from src.data_extract.utils.fundamentals.fetch_macro import fill_short_gaps
 
+# ORDERING, not a side-effect to tidy away: yfinance imports curl_cffi at module load and
+# freezes its CA bundle then, so the combined corporate bundle must exist BEFORE that import.
+# Doing it here (rather than inside the fetch function) is what lets `import yfinance` sit at
+# the top of the file like it does in fetch_prices / fetch_dividends / fetch_earnings_surprises.
+# Idempotent -- a no-op when main.py already ran it.
+configure_corporate_ca()
+import yfinance as yf                                           # noqa: E402 (after CA setup)
+
 _TRADING_DAYS = 252
 
 
@@ -96,10 +104,7 @@ def _fetch_fred(start: pd.Timestamp) -> pd.DataFrame:
 
 def _fetch_yfinance(start: pd.Timestamp, context: Context) -> pd.DataFrame:
     """yfinance equity + gold legs -> date-indexed frame with the mapped column names.
-    Auto-adjusted daily close (equity total-return proxy). SSL is configured for the
-    corporate proxy before curl_cffi is imported (no-op if already set by main.py)."""
-    configure_corporate_ca()
-    import yfinance as yf                                       # lazy: after SSL setup
+    Auto-adjusted daily close (equity total-return proxy)."""
     cols: dict[str, pd.Series] = {}
     for sym, name in MACRO_ASSET_YF_SERIES.items():
         try:

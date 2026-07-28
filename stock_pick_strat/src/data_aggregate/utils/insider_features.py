@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.factors import daily_market_cap
-from src.data_aggregate.utils.fundamental_features import build_peer_relative_panel
+from src.data_aggregate.utils.panel import build_peer_relative_panel
 
 _WINDOW_DAYS = 180   # ~6-month trailing window (insider signals work at 3-12m horizons)
 

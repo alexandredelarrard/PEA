@@ -4,6 +4,8 @@ Roic AI earnings-call fallback (src/data_extract/utils/behavioral/fetch_roic_tra
 Priority: HF backbone -> Roic AI (recent gap) -> Motley Fool (last resort). These tests prove:
   * Roic fills ONLY the missing quarters it actually covers, parses to sections, saves per ticker;
   * a ticker Roic doesn't cover is left for the fool fallback (nothing saved);
+  * the gap is computed ONCE and handed down: Roic reports what it filled, `remaining_after`
+    subtracts it, and only the remainder reaches the fool quote-page discovery;
   * once a quarter is in the DB, the SHARED gap logic excludes it -> fool skips it;
   * a best-effort LIVE check that FRT / PM / MTD all have their recent quarters on Roic.
 Transport is mocked; the live test skips without a ROIC API key.
@@ -19,7 +21,11 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.behavioral import fetch_roic_transcripts as roic
-from src.data_extract.utils.behavioral.fetch_earnings_calls import _missing_for, _quarter_index
+from src.data_extract.utils.behavioral.utils_missing_quarters import (
+    _missing_for,
+    _quarter_index,
+    remaining_after,
+)
 
 
 def _ctx(saved: list):
@@ -46,27 +52,63 @@ def test_roic_fills_missing_covered_only(monkeypatch):
     monkeypatch.setattr(roic, "roic_transcript_sections", _fake_tx)
 
     saved: list[pd.DataFrame] = []
-    n = roic.fetch_roic_transcripts(_ctx(saved), tickers=["FRT", "ZZZ"], pause=0.0)
+    result = roic.fetch_roic_transcripts(_ctx(saved), tickers=["FRT", "ZZZ"], pause=0.0)
 
-    assert n > 0 and saved, "Roic should have saved FRT's covered quarters"
+    assert result.saved > 0 and saved, "Roic should have saved FRT's covered quarters"
     rows = pd.concat(saved, ignore_index=True)
     got = set(map(tuple, rows[["ticker", "quarter"]].drop_duplicates().to_numpy()))
     assert got == {("FRT", "2025Q2"), ("FRT", "2025Q3")}, got     # ZZZ left for fool
     assert set(rows["tag"]).issubset({"full", "prepared_remarks", "qa", "participants"})
+    # what it FILLED is reported back, so the caller can subtract it from the shared gap
+    assert result.filled == {"FRT": {"2025Q2", "2025Q3"}}, result.filled
 
     print("\n=== SANITY CHECK: Roic fills missing (covered) quarters ===")
     print(f"  FRT missing 2025Q2/Q3 & on Roic -> saved {sorted(got)}; "
           "ZZZ missing but NOT on Roic -> nothing saved (falls through to fool). Validated.")
 
 
+def test_shared_gap_is_computed_once_and_handed_down(monkeypatch):
+    """The user-facing contract of the refactor: ONE gap computation, then roic, then fool.
+
+    `missing` is INJECTED into Roic (it must not re-derive it -- that scan reads the 1.8 GB HF
+    parquet), Roic reports `filled`, and `remaining_after` leaves the fool step exactly the
+    quarters Roic could not supply."""
+    monkeypatch.setenv("ROIC_API_KEY", "test-key")
+
+    # a sentinel that FAILS the test if Roic recomputes the gap instead of using the injected one
+    def _must_not_be_called(*a, **k):
+        raise AssertionError("fetch_roic_transcripts re-derived the gap instead of using `missing`")
+
+    monkeypatch.setattr(roic, "missing_quarters_by_ticker", _must_not_be_called)
+    # Roic covers FRT's Q2 only; ZZZ not at all
+    monkeypatch.setattr(roic, "roic_list_quarters",
+                        lambda t, k: {"2025Q2": "2025-05-01"} if t == "FRT" else {})
+    monkeypatch.setattr(roic, "roic_transcript_sections",
+                        lambda t, q, k: ({"full": "operator " * 80}, "2025-05-01"))
+
+    missing = {"FRT": ["2025Q2", "2025Q3"], "ZZZ": ["2025Q2"]}
+    result = roic.fetch_roic_transcripts(_ctx([]), missing=missing, pause=0.0)
+    left = remaining_after(missing, result.filled)
+
+    assert result.filled == {"FRT": {"2025Q2"}}, result.filled
+    assert left == {"FRT": ["2025Q3"], "ZZZ": ["2025Q2"]}, left
+    assert missing == {"FRT": ["2025Q2", "2025Q3"], "ZZZ": ["2025Q2"]}, "input must not be mutated"
+
+    print("\n=== SANITY CHECK: one gap, computed once, handed down ===")
+    print(f"  gap in            : {missing}")
+    print(f"  Roic filled       : {result.filled}  (its own gap derivation was never called)")
+    print(f"  -> left for fool  : {left}")
+    print("  FRT 2025Q2 dropped (Roic got it), FRT 2025Q3 + ZZZ 2025Q2 remain. Validated.")
+
+
 def test_no_key_is_noop(monkeypatch):
-    for k in roic.ROIC_API_KEY_ENV:
-        monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("ROIC_API_KEY", raising=False)
     saved: list = []
-    assert roic.fetch_roic_transcripts(_ctx(saved), tickers=["FRT"], pause=0.0) == 0
+    result = roic.fetch_roic_transcripts(_ctx(saved), tickers=["FRT"], pause=0.0)
+    assert result.saved == 0 and result.filled == {}
     assert saved == []
     print("\n=== SANITY CHECK: no Roic key -> no-op ===")
-    print("  missing key -> returns 0, saves nothing, pipeline falls back to fool. Validated.")
+    print("  missing key -> saved=0, filled={}, pipeline falls back to fool. Validated.")
 
 
 def test_db_covered_quarter_excluded_from_fool_gap():
@@ -92,6 +134,12 @@ def test_roic_live_frt_pm_mtd():
         avail = roic.roic_list_quarters(t, key)
         recent = sorted(q for q in avail if q >= "2025Q1")
         coverage[t] = recent
+        # SKIP, don't fail, on an empty first response: `roic_list_quarters` returns {} for a
+        # transport error as well as for genuinely-absent coverage, and the corporate TLS proxy
+        # drops a connection often enough that a hard assert reads as "Roic lost these names"
+        # when it is really a network hiccup (the same convention as the live MF test).
+        if not recent and t == "FRT":
+            pytest.skip("Roic unreachable (empty response for FRT) -> live check skipped")
         assert recent, f"{t}: Roic returned no 2025+ quarters"
         time.sleep(13)                                     # respect 5 req/min
     # fetch + parse one recent transcript end-to-end

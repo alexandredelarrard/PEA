@@ -8,6 +8,11 @@ built from (ticker, quarter). Instead we hit each ticker's quote page
 slug baked in) — one request/ticker, not capped at MF's ~500-page global feed. This gives
 COMPLETE coverage since a cutoff (default 2025-01-01). Tests: exchange fallback, since-filter,
 foreign-ticker filter, JSON merge — plus a best-effort live check on real quote pages.
+
+The GAP itself is not computed here any more: `missing_quarters_by_ticker` (utils_missing_quarters)
+owns that one definition and the pipeline injects the result, so these tests import the gap helpers
+from their real home and exercise the discovery with `missing=None` (the standalone path) or with an
+explicit `missing=` dict.
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.behavioral import fetch_earnings_calls as fe
+from src.data_extract.utils.behavioral import utils_missing_quarters as mq
 
 
 def _ctx(tickers, tmp_path):
@@ -86,13 +92,13 @@ def test_quote_discovery_live(tmp_path):
     by_tkr = {}
     for r in idx.values():
         by_tkr.setdefault(r["ticker"], []).append(r["quarter"])
-    floor = fe._since_floor_index("2025-01-01")
-    assert all(fe._quarter_index(*fe._parse_quarter(d["quarter"])) >= floor for d in idx.values()), \
+    floor = mq._since_floor_index("2025-01-01")
+    assert all(mq._quarter_index(*mq._parse_quarter(d["quarter"])) >= floor for d in idx.values()), \
         "quarter-floor filter leaked pre-floor fiscal quarters"
     print("\n=== SANITY CHECK: quote-page discovery on REAL MF pages ===")
     for t, qs in sorted(by_tkr.items()):
         print(f"  {t}: {sorted(set(qs), reverse=True)}")
-    print(f"  {len(idx)} transcript URLs >= {fe._index_to_quarter(floor)} across {len(by_tkr)} "
+    print(f"  {len(idx)} transcript URLs >= {mq._index_to_quarter(floor)} across {len(by_tkr)} "
           "tickers, uncapped. Validated.")
 
 
@@ -104,8 +110,8 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
     """The 429 fix: only tickers with a REAL missing-quarter gap hit fool. A ticker whose HF
     backbone already reaches the latest expected quarter is skipped; so is one whose gap is
     already on disk. Only the genuinely-behind ticker spends a request."""
-    end_idx = fe._latest_expected_quarter_index()                 # newest quarter expected today
-    end_q = fe._index_to_quarter(end_idx)                         # e.g. "2026Q2"
+    end_idx = mq._latest_expected_quarter_index()                 # newest quarter expected today
+    end_q = mq._index_to_quarter(end_idx)                         # e.g. "2026Q2"
     y, q = _idx_to_tuple(end_idx)
 
     # AAA: HF already covers up to the latest expected quarter -> no gap.
@@ -114,8 +120,11 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
     def fake_hf(context, tickers=None):
         return {"AAA": _idx_to_tuple(end_idx), "BBB": _idx_to_tuple(end_idx - 2),
                 "CCC": _idx_to_tuple(end_idx - 1)}
-    monkeypatch.setattr(
-        "src.data_extract.utils.behavioral.fetch_hf_transcripts.hf_latest_quarter_by_ticker", fake_hf)
+
+    # patch the name where the gap builder RESOLVES it. `utils_missing_quarters` imports
+    # `hf_latest_quarter_by_ticker` at the top of the file (no lazy in-function import any
+    # more), so the binding to patch is the one in that module, not in fetch_hf_transcripts.
+    monkeypatch.setattr(mq, "hf_latest_quarter_by_ticker", fake_hf)
 
     # pre-seed CCC's gap quarter on disk so it is already complete
     ccc_dir = tmp_path / "call_transcripts" / "CCC"
@@ -143,8 +152,8 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
 
     print("\n=== SANITY CHECK: HF-aware + local-folder gap (429 fix) ===")
     print(f"  latest expected quarter today = {end_q}")
-    print(f"  AAA HF@{end_q} (complete) -> skipped | CCC HF@{fe._index_to_quarter(end_idx-1)} but "
-          f"{end_q}.html on disk -> skipped | BBB HF@{fe._index_to_quarter(end_idx-2)} -> fetched")
+    print(f"  AAA HF@{end_q} (complete) -> skipped | CCC HF@{mq._index_to_quarter(end_idx-1)} but "
+          f"{end_q}.html on disk -> skipped | BBB HF@{mq._index_to_quarter(end_idx-2)} -> fetched")
     print(f"  requests made: {[u.split('/quote/')[-1].rstrip('/') for u in calls]}")
     print("  CONCLUSION: only the genuinely-behind ticker hits fool; HF horizon + local files + DB "
           "coverage skip the rest -> far fewer requests, no 429 burst. Validated.")
@@ -159,20 +168,20 @@ def test_missing_for_uses_released_and_skips_no_call_tickers(tmp_path):
     """Gap logic now (1) caps 'required' at the quarter a ticker has ACTUALLY reported
     (earnings_surprises), never demanding an unreleased quarter, and (2) returns nothing for
     no-earnings-call names (Berkshire) so they're never fetched or flagged missing."""
-    q = fe._quarter_index
+    q = mq._quarter_index
     floor = q(2024, 1)                     # since-floor Q1'24
     end_idx = q(2025, 3)                    # calendar guess = Q3'25
     hf, db, js = {}, {}, {}                 # no HF, nothing on disk/DB/JSON
     # (1) a ticker that has only reported through Q1'25 -> required stops at Q1'25 (not the Q3'25 guess)
     released = {"AAA": q(2025, 1)}
-    miss = fe._missing_for("AAA", hf, floor, end_idx, tmp_path, db, js, released)
+    miss = mq._missing_for("AAA", hf, floor, end_idx, tmp_path, db, js, released)
     assert "2025Q2" not in miss and "2025Q3" not in miss, miss
     assert {"2024Q1", "2024Q4", "2025Q1"}.issubset(miss)
     # a ticker absent from earnings_surprises -> falls back to the calendar end_idx (Q3'25 included)
-    miss_fb = fe._missing_for("ZZZ", hf, floor, end_idx, tmp_path, db, js, released)
+    miss_fb = mq._missing_for("ZZZ", hf, floor, end_idx, tmp_path, db, js, released)
     assert "2025Q3" in miss_fb
     # (2) Berkshire (no earnings call) -> nothing to fetch, regardless of dates
-    assert fe._missing_for("BRK-B", hf, floor, end_idx, tmp_path, db, js, released) == set()
+    assert mq._missing_for("BRK-B", hf, floor, end_idx, tmp_path, db, js, released) == set()
 
 
 def test_released_quarter_idx_maps_report_date_to_reported_quarter(tmp_path):
@@ -182,9 +191,9 @@ def test_released_quarter_idx_maps_report_date_to_reported_quarter(tmp_path):
                        "earnings_date": ["2025-01-30", "2025-04-25", "2025-02-05"]})
     ctx = types.SimpleNamespace(store=types.SimpleNamespace(
         load=lambda table, columns=None: es if table == "earnings_surprises" else pd.DataFrame()))
-    rel = fe._released_quarter_idx_by_ticker(ctx)
-    assert rel["AAA"] == fe._quarter_index(2025, 1)   # latest = Apr-25 report -> Q1'25
-    assert rel["BBB"] == fe._quarter_index(2024, 4)   # Feb-05 report -> prior Q4'24
+    rel = mq._released_quarter_idx_by_ticker(ctx)
+    assert rel["AAA"] == mq._quarter_index(2025, 1)   # latest = Apr-25 report -> Q1'25
+    assert rel["BBB"] == mq._quarter_index(2024, 4)   # Feb-05 report -> prior Q4'24
     print("\n=== SANITY CHECK: earnings-call gap uses real release dates + no-call skip ===")
     print(f"  released map {{'AAA': Q1'25, 'BBB': Q4'24}}; required capped to the reported quarter "
           "(no unreleased quarters demanded); BRK-B skipped (no earnings call). Validated.")

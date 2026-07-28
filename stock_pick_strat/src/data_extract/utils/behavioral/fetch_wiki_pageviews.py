@@ -22,6 +22,7 @@ from src.constants.constants import DATE_FORMAT_COMPACT
 from src.context import Context
 from src.utils import polite_http as ph          # per-host paced inter-request sleep
 from src.utils.crawler import Crawler
+from src.data_extract.utils.common.incremental import load_existing
 
 _API = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
         "en.wikipedia/all-access/user/{article}/daily/{start}/{end}")
@@ -120,14 +121,6 @@ def _fetch_article(article: str, start: str, end: str) -> list[dict]:
     return data.get("items", []) if data else []
 
 
-def _load_existing(context: Context):
-    df = context.store.load("wiki_pageviews")
-    if df.empty:
-        return None
-    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-    return df
-
-
 def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
                          years_history: int = 10, pause: float = 1.0,
                          refetch_window_days: int = 2) -> pd.DataFrame:
@@ -147,7 +140,7 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
 
-    existing = _load_existing(context)
+    existing = load_existing(context, "wiki_pageviews")
     last_by_ticker = ({} if existing is None
                       else existing.groupby("ticker")["date"].max().to_dict())
     today = pd.Timestamp.today().normalize()

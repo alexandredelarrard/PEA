@@ -11,6 +11,7 @@ seeded via the S&P 500 scraper only when empty) — and hands it to each sub-ste
   4. behavioral    — Wikipedia pageviews (+Google Trends, news)
 """
 
+import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
@@ -66,8 +67,6 @@ class StepExtractAllData(Step):
         
 
     def analysis(self) -> None:
-        import pandas as pd
-        
         df = pd.read_sql('fundamentals_history', self._context.store.engine)
         x = df.isnull().groupby(df['ticker']).sum()
         x['max'] = x.max(axis=1)

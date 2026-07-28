@@ -27,7 +27,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.fundamental_features import build_peer_relative_panel
+from src.data_aggregate.utils.panel import build_peer_relative_panel
 
 _FTD_PUB_LAG = 40   # ~2 months of trading days: SEC FTD files are published well after the
                     # settlement period, so lag the signal to its (conservative) availability.

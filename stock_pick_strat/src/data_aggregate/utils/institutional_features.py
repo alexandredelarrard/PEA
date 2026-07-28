@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.factors import daily_market_cap, fundamentals_to_daily
-from src.data_aggregate.utils.fundamental_features import build_peer_relative_panel
+from src.data_aggregate.utils.panel import build_peer_relative_panel
 
 _FILING_LAG_DAYS = 45   # 13F must be filed within 45 days of quarter-end (leak-free floor)
 

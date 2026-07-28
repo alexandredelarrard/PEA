@@ -56,14 +56,16 @@ Run:
     python -m data.fetch_fundamentals
 """
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pandas as pd
 from tqdm import tqdm
 
 from src.constants.constants import SEC_COMPANYFACTS_URL
 from src.context import Context
-from src.data_extract.utils.common.sec_utils import sec_get, load_cik_mapping
+from src.data_extract.utils.common.sec_utils import (
+    load_cik_mapping, load_extract_meta, meta_path, sec_get, today_iso,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -675,38 +677,18 @@ TTM_QUARTERS = 4                               # trailing-twelve-months = 4 quar
 GROSS_MARGIN_MIN, GROSS_MARGIN_MAX = -2.0, 1.0
 
 
-def _today_iso() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
-
-
-def _history_meta_path(context: Context):
-    return context.paths["FUNDAMENTALS_HISTORY_PATH"].with_name(
-        "fundamentals_history_meta.json",
-    )
-
-
-def _load_history_meta(context: Context) -> dict | None:
-    path = _history_meta_path(context)
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
 def _save_history_meta(
     context: Context,
     history: pd.DataFrame,
     universe_size: int,
 ) -> None:
     meta = {
-        "last_built": _today_iso(),
+        "last_built": today_iso(),
         "row_count": len(history),
         "ticker_count": int(history["ticker"].nunique()),
         "universe_size": universe_size,
     }
-    _history_meta_path(context).write_text(
+    meta_path(context.paths["FUNDAMENTALS_HISTORY_PATH"]).write_text(
         json.dumps(meta, indent=2),
         encoding="utf-8",
     )
@@ -719,8 +701,8 @@ def _load_existing_history(context: Context) -> pd.DataFrame | None:
 
 def _is_sec_history_up_to_date(context: Context, cik_mapping: pd.DataFrame) -> bool:
     """True when today's run already attempted the full CIK universe."""
-    meta = _load_history_meta(context)
-    if meta is None or meta.get("last_built") != _today_iso():
+    meta = load_extract_meta(context.paths["FUNDAMENTALS_HISTORY_PATH"])
+    if meta is None or meta.get("last_built") != today_iso():
         return False
     if not context.store.exists("fundamentals_history"):
         return False
@@ -736,8 +718,8 @@ def _tickers_to_process(
     if existing is None or existing.empty:
         return cik_mapping
 
-    meta = _load_history_meta(context)
-    if meta and meta.get("last_built") == _today_iso():
+    meta = load_extract_meta(context.paths["FUNDAMENTALS_HISTORY_PATH"])
+    if meta and meta.get("last_built") == today_iso():
         have = set(existing["ticker"].unique())
         return cik_mapping[~cik_mapping["ticker"].isin(have)]
 
@@ -1547,7 +1529,7 @@ def build_fundamentals_history_sec(context: Context,
     if _is_sec_history_up_to_date(context, cik_mapping):
         hist = context.store.load("fundamentals_history")
         print(
-            f"SEC fundamentals history already up to date for {_today_iso()} "
+            f"SEC fundamentals history already up to date for {today_iso()} "
             f"— skipping ({len(hist)} rows, {hist['ticker'].nunique()} tickers)"
         )
         return hist
@@ -1558,7 +1540,7 @@ def build_fundamentals_history_sec(context: Context,
     if to_process.empty and existing is not None and not existing.empty:
         _save_history_meta(context, existing, len(cik_mapping))
         print(
-            f"SEC fundamentals history already up to date for {_today_iso()} "
+            f"SEC fundamentals history already up to date for {today_iso()} "
             f"— skipping ({len(existing)} rows)"
         )
         return existing

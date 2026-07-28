@@ -37,8 +37,8 @@ from sqlalchemy import inspect, text
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import _sec_headers
 
-__all__ = ["cache_dir", "ensure_zip", "read_zip_member", "ingested_periods",
-           "quarter_periods"]
+__all__ = ["cache_dir", "ensure_zip", "read_zip_member", "read_zip_members",
+           "read_zip_text", "ingested_periods", "quarter_periods"]
 
 _CHUNK = 1 << 20                 # 1 MiB streaming chunks
 _DEFAULT_TIMEOUT = 300           # seconds; the notes zips are ~380 MB
@@ -91,6 +91,17 @@ def ensure_zip(path: Path, urls: str | tuple[str, ...] | list[str], *, label: st
     return None
 
 
+def _drop_corrupt(path: Path, exc: Exception, log: logging.Logger | None) -> None:
+    """A truncated / corrupt archive is DELETED so the next run re-downloads it.
+
+    Without this a bad cache entry is permanent: `ensure_zip` treats any non-empty file
+    as a cache hit, so the period silently returns None for ever. Two of the six bulk
+    fetchers had already grown this self-heal privately; all of them get it now."""
+    (log or logging.getLogger(__name__)).warning(
+        "%s: corrupt zip (%s) -> deleting so it re-downloads next run", path.name, exc)
+    path.unlink(missing_ok=True)
+
+
 def read_zip_member(path: Path, member: str, *, log: logging.Logger | None = None,
                     **read_csv_kwargs) -> pd.DataFrame | None:
     """One member of a zip read as a DataFrame (tab-separated by default -- every SEC
@@ -105,9 +116,60 @@ def read_zip_member(path: Path, member: str, *, log: logging.Logger | None = Non
                 return None
             with archive.open(actual) as handle:
                 return pd.read_csv(handle, **kwargs)
+    except zipfile.BadZipFile as exc:
+        _drop_corrupt(path, exc, log)
+        return None
     except Exception as exc:                                        # noqa: BLE001
         (log or logging.getLogger(__name__)).warning(
             "%s: unreadable member %s (%s)", path.name, member, exc)
+        return None
+
+
+def read_zip_members(path: Path, members: Sequence[str], *,
+                     log: logging.Logger | None = None,
+                     **read_csv_kwargs) -> dict[str, pd.DataFrame] | None:
+    """Several members of ONE archive, keyed by the requested name -- opened once rather
+    than once per member. All-or-nothing: None when the archive is unreadable OR any
+    requested member is absent, because a caller that joins two tsvs (13F
+    SUBMISSION + INFOTABLE) cannot do anything useful with just one of them."""
+    kwargs = {"sep": "\t", "dtype": str, "low_memory": False, **read_csv_kwargs}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = {n.lower(): n for n in archive.namelist()}
+            if any(m.lower() not in names for m in members):
+                return None
+            out: dict[str, pd.DataFrame] = {}
+            for m in members:
+                with archive.open(names[m.lower()]) as handle:
+                    out[m] = pd.read_csv(handle, **kwargs)
+            return out
+    except zipfile.BadZipFile as exc:
+        _drop_corrupt(path, exc, log)
+        return None
+    except Exception as exc:                                        # noqa: BLE001
+        (log or logging.getLogger(__name__)).warning(
+            "%s: unreadable members %s (%s)", path.name, list(members), exc)
+        return None
+
+
+def read_zip_text(path: Path, *, encoding: str = "latin-1",
+                  log: logging.Logger | None = None) -> str | None:
+    """The FIRST member of a zip as decoded text -- for the archives that hold one
+    unnamed pipe/CSV file (fails-to-deliver). Undecodable bytes are replaced rather than
+    raising: a single bad character must not drop a whole period."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            if not names:
+                return None
+            with archive.open(names[0]) as handle:
+                return handle.read().decode(encoding, errors="replace")
+    except zipfile.BadZipFile as exc:
+        _drop_corrupt(path, exc, log)
+        return None
+    except Exception as exc:                                        # noqa: BLE001
+        (log or logging.getLogger(__name__)).warning(
+            "%s: unreadable archive (%s)", path.name, exc)
         return None
 
 

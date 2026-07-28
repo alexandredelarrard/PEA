@@ -30,8 +30,16 @@ stock_pick_strat/
 │   ├── data_store/             # DB layer: DataStore (store.py), schema_registry, schema_sql, io
 │   ├── data_extract/           # step_extract_* : super-step + prices/fundamentals/structure/behavioral
 │   │   └── utils/{prices,fundamentals,structure,behavioral,common}/   # fetchers
+│   │                           #   common/bulk_cache.py: cache_dir / ensure_zip / read_zip_*
+│   │                           #   (corrupt archive is deleted so it re-downloads)
+│   │                           #   common/sec_utils.py: sec_get + rate limit, extract meta,
+│   │                           #   seen_accessions, existing_filings, load_cik_mapping
+│   │                           #   behavioral/utils_missing_quarters.py: THE earnings-call gap
+│   │                           #   (computed once, handed to Roic then to fool)
 │   ├── data_peers/             # step_deduce_peers  (return-corr + OpenAI-embedding peers)
 │   ├── data_aggregate/         # step_build_cube — peer-relative feature panels → `cube`
+│   │                           #   utils/panel.py: THE panel primitives (_ratio, _winsorize_xs,
+│   │                           #   _peer_relative, build_peer_relative_panel) — leaf, no cycle
 │   │                           #   utils/sector_gates.py: GICS scope per sector-KPI family
 │   │                           #   (SECTOR_KPI_SCOPE); _merge_panel raises on duplicate
 │   │                           #   feature names instead of emitting `_x`/`_y` columns
@@ -44,7 +52,9 @@ stock_pick_strat/
 │   │                           #   plot_analysis, accuracy) + analysis/ (per-sleeve IC/neutrality/corr plots)
 │   ├── portfolio/              # step_portfolio — runs the configured sleeves, blends by risk-parity/ERC
 │   │                           #   (dynamic $-allocation) + global vol/leverage; analysis.py (sleeve corr)
-│   ├── utils/                  # shared cross-folder helpers: db, step, config, trend.py, risk_parity.py, …
+│   ├── utils/                  # shared cross-folder helpers: db, step, config, trend.py, risk_parity.py,
+│   │                           #   polite_http/crawler (anti-429 transport), ssl_setup,
+│   │                           #   string.py::pad_cik (ONE CIK padding for writer + reader) …
 │   └── cli.py
 ├── tests/                  # mirrors src/ ; conftest.py holds shared real-data fixtures
 ├── app/                    # Streamlit app

@@ -26,8 +26,6 @@ missing. Network/zip IO is isolated in `_ensure_zip`/`_read_zip`; the parse/join
 """
 from __future__ import annotations
 
-import zipfile
-from pathlib import Path
 import logging
 
 import numpy as np
@@ -37,7 +35,7 @@ from tqdm import tqdm
 from src.constants.constants import SEC_FORM13F_URL_DICT
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
-    cache_dir, ensure_zip, ingested_periods,
+    cache_dir, ensure_zip, ingested_periods, read_zip_members,
 )
 from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map
 from src.data_extract.utils.common.sec_utils import (
@@ -143,22 +141,6 @@ def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list
 # --------------------------------------------------------------------------- #
 
 
-def _read_zip(path: Path) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Read SUBMISSION + INFOTABLE tsvs from a cached zip on disk."""
-    try:
-        with zipfile.ZipFile(path) as z:
-            names = {n.upper(): n for n in z.namelist()}
-            if "SUBMISSION.TSV" not in names or "INFOTABLE.TSV" not in names:
-                return None
-            sub = pd.read_csv(z.open(names["SUBMISSION.TSV"]), sep="\t", dtype=str, low_memory=False)
-            info = pd.read_csv(z.open(names["INFOTABLE.TSV"]), sep="\t", dtype=str, low_memory=False)
-        return sub, info
-    except zipfile.BadZipFile:
-        logger.warning(f"13F {path.name}: corrupt zip — deleting so it re-downloads next run")
-        path.unlink(missing_ok=True)
-        return None
-
-
 def fetch_13f(context: Context) -> pd.DataFrame:
     """Download (once, cached) the 13F data sets, split by holding type, map to
     tickers, keep the universe, and store.
@@ -188,10 +170,10 @@ def fetch_13f(context: Context) -> pd.DataFrame:
                           label=f"13F {tag}", timeout=180, log=logger)
         if path is None:
             continue
-        got = _read_zip(path)
+        got = read_zip_members(path, ("SUBMISSION.tsv", "INFOTABLE.tsv"), log=logger)
         if got is None:
             continue
-        h = _join_13f(*got)
+        h = _join_13f(got["SUBMISSION.tsv"], got["INFOTABLE.tsv"])
         if not h.empty:
             h["quarter"] = tag
             quarter_frames[tag] = h

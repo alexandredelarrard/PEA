@@ -11,18 +11,21 @@ Flow (per ticker, only the quarters STILL missing after HF + whatever's already 
   2. keep the intersection of {missing quarters} and {Roic has}.
   3. TRANSCRIPT `…/earnings-calls/transcript/{ticker}?year=&quarter=` -> {..., content} per quarter,
      parsed into the SAME sections the HF/MF paths produce (via `split_prepared_qa`) and upserted to
-     `earnings_call_sections`. Because Roic writes to the DB here, the later fool discovery sees those
-     quarters as present and skips them.
+     `earnings_call_sections`.
+
+The gap it works from is NOT computed here: `download_earnings_calls` derives it once with
+`missing_quarters_by_ticker` and passes it in, and this pass returns the quarters it actually
+stored so the caller can subtract them before handing the rest to fool (see
+`utils_missing_quarters`).
 
 Auth is the `apikey` QUERY param (ROIC_API_KEY / ROIC_AI_API_KEY). No key -> logs a warning and is a
 no-op (the pipeline continues to the fool fallback). Free tier is 5 req/min, so requests are paced.
-Incremental: `missing_quarters_by_ticker` already excludes anything stored, so a re-run only fetches
-genuinely new quarters.
 """
 from __future__ import annotations
 
 import logging
 import os
+from typing import NamedTuple
 
 import pandas as pd
 from tqdm import tqdm
@@ -46,6 +49,17 @@ from src.data_extract.utils.behavioral.utils_missing_quarters import (
 
 logger = logging.getLogger(__name__)
 _TABLE = EARNINGS_CALL_SECTIONS_TABLE
+
+
+class RoicResult(NamedTuple):
+    """What the Roic pass achieved, so the caller can hand the REST to the fool fallback.
+
+    `saved` is the section-row count (what this used to return as a bare int); `filled` is
+    `{ticker: {quarters actually stored}}` -> feed it to `remaining_after(missing, filled)`.
+    Reporting the quarters explicitly is what lets the gap be computed ONCE per run: the
+    fool step no longer has to re-read the DB to discover what Roic just wrote."""
+    saved: int
+    filled: dict[str, set[str]]
 
 
 def _api_key() -> str | None:
@@ -85,26 +99,38 @@ def roic_transcript_sections(ticker: str, quarter: str, apikey: str) -> tuple[di
 
 
 def fetch_roic_transcripts(context: Context, tickers: list[str] | None = None,
-                           since: str = "2025-01-01", pause: float = ROIC_REQUEST_PAUSE) -> int:
-    """Fill each ticker's MISSING recent quarters from Roic AI and upsert to `earnings_call_sections`.
-    Returns the number of section rows saved. No-op (returns 0) without a ROIC API key.
+                           missing: dict[str, list[str]] | None = None,
+                           since: str = "2025-01-01",
+                           pause: float = ROIC_REQUEST_PAUSE) -> RoicResult:
+    """Fill each ticker's MISSING recent quarters from Roic AI and upsert to
+    `earnings_call_sections`. Returns a `RoicResult(saved, filled)`; a no-op without a
+    ROIC API key.
 
-    Per ticker: LIST once (what Roic has), fetch only the missing quarters Roic actually covers,
-    parse -> sections -> save immediately (so a throttle/interrupt loses no work and the later fool
-    step sees them). `since` is the recent-gap floor for names the HF backbone doesn't cover."""
+    `missing` is the shared `{ticker: [quarters]}` gap from `missing_quarters_by_ticker`,
+    computed ONCE per run by the orchestrator and passed to every source. `missing=None`
+    computes it here so the function stays usable standalone (CLI / tests). `since` is
+    only the recent-gap floor for that fallback computation.
+
+    Per ticker: LIST once (what Roic has), fetch only the missing quarters Roic actually
+    covers, parse -> sections -> save immediately (so a throttle/interrupt loses no work),
+    and record the stored quarters in `filled` so the fool step can skip them."""
 
     apikey = _api_key()
     if not apikey:
-        context.log.warning("Roic AI transcripts skipped: no API key (set ROIC_API_KEY_ENV in .env). "
-                            "Earnings calls will fall back to Motley Fool only.", " / ")
-        return 0
+        # no `%`-args: a stray extra argument here raised TypeError("not all arguments
+        # converted") inside logging, turning a benign "no key" path into a crash.
+        context.log.warning("Roic AI transcripts skipped: no API key (set ROIC_API_KEY in .env). "
+                            "Earnings calls will fall back to Motley Fool only.")
+        return RoicResult(0, {})
 
-    missing = missing_quarters_by_ticker(context, tickers=tickers, since=since)
+    if missing is None:
+        missing = missing_quarters_by_ticker(context, tickers=tickers, since=since)
     if not missing:
         context.log.info("Roic AI: no missing recent quarters to fill (HF backbone + DB current).")
-        return 0
+        return RoicResult(0, {})
 
-    total_saved, tickers_touched, no_roic = 0, 0, []
+    total_saved, no_roic = 0, []
+    filled: dict[str, set[str]] = {}
     for ticker in tqdm(sorted(missing), desc="Roic AI transcripts"):
         need = set(missing[ticker])
         avail = roic_list_quarters(ticker, apikey)               # 1 request
@@ -116,6 +142,7 @@ def fetch_roic_transcripts(context: Context, tickers: list[str] | None = None,
             continue
 
         rows: list[dict] = []
+        got: set[str] = set()
         url = ROIC_EARNINGS_TRANSCRIPT_URL.format(ticker=ticker)
         for q in to_fetch:
             sections, as_of = roic_transcript_sections(ticker, q, apikey)
@@ -125,13 +152,14 @@ def fetch_roic_transcripts(context: Context, tickers: list[str] | None = None,
                     continue
                 rows.append({"ticker": ticker, "quarter": q, "tag": tag,
                              "as_of": as_of or avail.get(q), "url": url, "text": text})
+                got.add(q)                      # only a quarter with real text counts as filled
         if rows:                                                 # persist per ticker (resume-safe)
             saved = context.store.save(_TABLE, pd.DataFrame(rows))
             total_saved += saved
-            tickers_touched += 1
+            filled[ticker] = got
             logger.info("Roic AI %s: +%d sections across %d quarter(s) %s",
-                        ticker, saved, len(to_fetch), to_fetch)
+                        ticker, saved, len(got), sorted(got))
 
     context.log.info("Roic AI transcripts: +%d sections across %d tickers; %d ticker(s) had no Roic "
-                     "coverage for their gap (-> fool fallback).", total_saved, tickers_touched, len(no_roic))
-    return total_saved
+                     "coverage for their gap (-> fool fallback).", total_saved, len(filled), len(no_roic))
+    return RoicResult(total_saved, filled)

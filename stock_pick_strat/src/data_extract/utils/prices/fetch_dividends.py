@@ -20,6 +20,7 @@ from tqdm import tqdm
 import logging
 
 from src.context import Context
+from src.data_extract.utils.common.incremental import load_existing
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +48,6 @@ def _ticker_dividends(ticker: str) -> pd.Series:
     return yf.Ticker(ticker).dividends
 
 
-def _load_existing(context: Context) -> pd.DataFrame | None:
-    df = context.store.load("dividends")
-    if df.empty:
-        return None
-    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-    return df
-
-
 def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3,
                     refetch_window_days: int = 80) -> pd.DataFrame:
     """Download (incrementally) cash-dividend history for `tickers` and cache it.
@@ -66,7 +59,7 @@ def fetch_dividends(context: Context, tickers: list[str], pause: float = 0.3,
     date-range API, so we skip current tickers rather than request a sub-range,
     and only the ex-dates after the cached max are appended.
     """
-    existing = _load_existing(context)
+    existing = load_existing(context, "dividends")
     last_by_ticker = ({} if existing is None
                       else existing.groupby("ticker")["date"].max().to_dict())
     today = pd.Timestamp.today().normalize()

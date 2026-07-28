@@ -52,7 +52,8 @@ from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.llm_extractor import LLMExtractor
 from src.data_extract.utils.common.sec_utils import (
-    load_cik_mapping, load_extract_meta, save_extract_meta, sec_get, today_iso,
+    load_cik_mapping, load_extract_meta, save_extract_meta, sec_get, seen_accessions,
+    today_iso,
 )
 
 # DEF 14A = the shareholder proxy; DEF 14C = the equivalent INFORMATION STATEMENT that
@@ -526,12 +527,6 @@ def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
     return set(requested_tickers).issubset(have)
 
 
-def _seen_accessions(existing: pd.DataFrame | None) -> set[str]:
-    if existing is None or existing.empty or "accession_number" not in existing.columns:
-        return set()
-    return set(existing["accession_number"].dropna())
-
-
 def _strip_nul(df: pd.DataFrame) -> pd.DataFrame:
     """Remove NUL (`\\x00`) characters from every string cell. Postgres TEXT columns
     cannot store NUL (psycopg2 raises 'a string literal cannot contain NUL characters'),
@@ -590,7 +585,7 @@ def fetch_def14a_llm(
 
     existing = context.store.load("def14a_llm")
     existing = None if existing.empty else existing
-    seen = _seen_accessions(existing)              # accessions already extracted -> never re-LLM
+    seen = seen_accessions(existing)              # accessions already extracted -> never re-LLM
 
     try:
         extractor = LLMExtractor(model=model, max_chars=max_chars,

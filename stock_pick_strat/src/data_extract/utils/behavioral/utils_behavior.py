@@ -10,6 +10,7 @@ from src.constants.constants import (
     EARNINGS_CALL_CACHE_DIR,
     MOTLEY_FOOL_BASE_URL
     )
+from src.data_extract.utils.common.bulk_cache import cache_dir
 
 # --------------------------------------------------------------------------- #
 # IO helpers                                                                    #
@@ -22,14 +23,10 @@ def _crawler() -> Crawler:
         _CRAWLER = Crawler(retries=5, backoff=1.5, timeout=30, impersonate=True)
     return _CRAWLER
 
-def _cache_dir(context: Context) -> Path:
-    d = context.paths["DATA_STORE"] / EARNINGS_CALL_CACHE_DIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
 
 def _index_path(context: Context) -> Path:
-    return _cache_dir(context) / "transcript_index.json"
+    """The fool link index inside the transcript cache (data/call_transcripts/)."""
+    return cache_dir(context, EARNINGS_CALL_CACHE_DIR) / "transcript_index.json"
 
 
 def _load_index(path: Path) -> dict[str, dict]:

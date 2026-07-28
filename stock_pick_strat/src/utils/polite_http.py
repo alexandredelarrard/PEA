@@ -19,11 +19,16 @@ keeps its bespoke cookie/token session client but shares `resolve_proxy`.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import os
 import random
 import time
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
+
+import requests
+from curl_cffi import requests as cr
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +79,6 @@ def retry_after_seconds(resp) -> float | None:
         return float(ra)
     except (TypeError, ValueError):
         try:
-            import datetime as _dt
-            from email.utils import parsedate_to_datetime
             return max(0.0, (parsedate_to_datetime(ra)
                              - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
         except Exception:
@@ -115,7 +118,6 @@ def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
     proxies = resolve_proxy()
     if impersonate:
         try:
-            from curl_cffi import requests as cr
             prof = random.choice(IMPERSONATE_POOL)
             try:
                 return cr.get(url, params=params, headers=headers, impersonate=prof,
@@ -124,12 +126,15 @@ def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
                 return cr.get(url, params=params, headers=headers, impersonate="chrome",
                               timeout=timeout, proxies=proxies)
         except Exception:
-            pass                                    # curl_cffi missing -> requests fallback
+            pass                                    # curl_cffi transport error -> requests fallback
     try:
-        import requests
         return requests.get(url, params=params, headers=headers or random_headers(),
                             timeout=timeout, proxies=proxies)
-    except Exception:
+    except Exception as exc:                            # noqa: BLE001
+        # Log the CAUSE. Swallowing it silently left callers with only "GET failed
+        # (transport)", which cannot distinguish an SSL/CA problem from DNS, a dead
+        # proxy or a timeout -- the retry loop then burns its 4 attempts on it.
+        logger.debug("transport error on %s: %s: %s", url, type(exc).__name__, exc)
         return None
 
 

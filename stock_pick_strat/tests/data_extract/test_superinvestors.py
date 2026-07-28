@@ -24,10 +24,10 @@ _MULTI_ATOM = ('<?xml version="1.0"?><feed>'
 
 
 def test_pad_cik_canonical_10_digit():
-    assert si._pad_cik("1067983") == "0001067983"
-    assert si._pad_cik("1067983.0") == "0001067983"        # float artifact tolerated
-    assert si._pad_cik(1067983) == "0001067983"
-    assert si._pad_cik("") == "" and si._pad_cik("N/A") == ""
+    assert si.pad_cik("1067983") == "0001067983"
+    assert si.pad_cik("1067983.0") == "0001067983"        # float artifact tolerated
+    assert si.pad_cik(1067983) == "0001067983"
+    assert si.pad_cik("") == "" and si.pad_cik("N/A") == ""
     print("\n=== SANITY: CIK canonicalization ===")
     print("  '1067983' / '1067983.0' / int -> '0001067983'; junk -> ''. Validated.")
 

@@ -36,22 +36,16 @@ from sqlalchemy import bindparam, text
 
 from src.context import Context
 from src.data_aggregate.utils.factors import daily_market_cap, fundamentals_to_daily
-from src.data_aggregate.utils.fundamental_features import build_peer_relative_panel
+from src.data_aggregate.utils.panel import build_peer_relative_panel
+from src.utils.string import pad_cik
 
 _FILING_LAG_DAYS = 45   # 13F filing deadline after quarter-end (leak-free floor)
 _HOLDINGS_TABLE = "institutional_holdings"     # the ~20M-row all-filer 13F table (literal, as elsewhere)
 _HOLDINGS_COLS = ["cik", "period", "ticker", "shares", "value_usd", "filing_date"]
-# normalize a stored TEXT cik the SAME way _pad_cik does (digits of the pre-decimal part, left-padded
+# normalize a stored TEXT cik the SAME way pad_cik does (digits of the pre-decimal part, left-padded
 # to 10) so a Postgres WHERE matches the padded roster keys whether the DB stored it padded, unpadded
 # or as "1234.0". Postgres ARE supports the \D escape.
 _CIK_SQL_NORM = r"lpad(regexp_replace(split_part(cik, '.', 1), '\D', '', 'g'), 10, '0')"
-
-
-def _pad_cik(x: object) -> str:
-    """Canonical 10-digit CIK (matches the roster JSON); '' if no digits. Local copy
-    so data_aggregate does not import from data_extract (cross-subfolder rule)."""
-    s = re.sub(r"\D", "", str(x).strip().split(".")[0])
-    return s.zfill(10) if s else ""
 
 
 def _weight_map(roster: dict | list | None) -> dict[str, float]:
@@ -67,15 +61,15 @@ def _weight_map(roster: dict | list | None) -> dict[str, float]:
     if isinstance(roster, dict):
         mapping = roster.get("cik_to_name")
         if mapping is None and "managers" not in roster:      # a bare {cik: name} dict
-            mapping = {k: v for k, v in roster.items() if isinstance(v, str) and _pad_cik(k)}
+            mapping = {k: v for k, v in roster.items() if isinstance(v, str) and pad_cik(k)}
         if mapping:
-            return {c: 1.0 for cik in mapping if (c := _pad_cik(cik))}
+            return {c: 1.0 for cik in mapping if (c := pad_cik(cik))}
         managers = roster.get("managers", [])
     else:
         managers = roster or []
     out: dict[str, float] = {}
     for m in managers:
-        cik = _pad_cik(m.get("cik"))
+        cik = pad_cik(m.get("cik"))
         w = m.get("weight")
         if cik and w is not None:
             out[cik] = out.get(cik, 0.0) + float(w)
@@ -87,7 +81,7 @@ def load_superinvestor_holdings(context: Context, roster: dict | list | None) ->
     elite subset is a handful of CIKs, so pulling the whole table (then discarding 99% in
     `_super_quarter_features`) is what made this OOM-crash. DB-backed stores push the filter down
     with an engine-side `WHERE <normalized cik> IN (roster)` (cik text normalized exactly like
-    `_pad_cik`, so padded / unpadded / '1234.0' all match); non-DB / test stores fall back to a
+    `pad_cik`, so padded / unpadded / '1234.0' all match); non-DB / test stores fall back to a
     projected full read filtered in pandas. None if the roster resolves to no manager."""
     weights = _weight_map(roster)
     if not weights:
@@ -105,14 +99,14 @@ def load_superinvestor_holdings(context: Context, roster: dict | list | None) ->
     df = store.load(_HOLDINGS_TABLE, columns=_HOLDINGS_COLS)      # fallback: full read, filter in memory
     if df is None or df.empty:
         return None
-    return df[df["cik"].map(_pad_cik).isin(weights)].reset_index(drop=True)
+    return df[df["cik"].map(pad_cik).isin(weights)].reset_index(drop=True)
 
 
 def _super_quarter_features(holdings: pd.DataFrame, weights: dict[str, float]) -> pd.DataFrame:
     """Roster-manager-grain 13F -> one row per (ticker, quarter) with the WEIGHTED
     QoQ elite features, stamped `as_of = quarter-end + 45 days`."""
     h = holdings.copy()
-    h["cik"] = h["cik"].map(_pad_cik)
+    h["cik"] = h["cik"].map(pad_cik)
     h = h[h["cik"].isin(weights)]
     if h.empty:
         return pd.DataFrame()

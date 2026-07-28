@@ -45,6 +45,7 @@ from src.constants.constants import (
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.utils import crawler                    # authorized proxy-pool loader (PEA_SCRAPE_PROXIES / PEA_SCRAPE_PROXY)
+from src.data_extract.utils.common.incremental import load_existing
 
 try:                                            # TLS-impersonating transport (anti-429)
     from curl_cffi import requests as _cffi_requests
@@ -330,17 +331,8 @@ def _fetch_weekly_history(client: _TrendsClient, keyword: str, years: int,
     return _stitch_chunks(chunks)
 
 
-def _load_existing(context: Context) -> pd.DataFrame | None:
-    df = context.store.load("google_trends")
-    if df.empty:
-        return None
-    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-    return df
-
-
 def _clean_name(raw: str) -> str:
     """Company display name -> search keyword: drop parenthetical suffixes/qualifiers."""
-    import re
     return re.sub(r"\s*\([^)]*\)", "", str(raw)).strip()
 
 
@@ -368,7 +360,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
 
-    existing = _load_existing(context)
+    existing = load_existing(context, "google_trends")
     if existing is None:
         span: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
     else:

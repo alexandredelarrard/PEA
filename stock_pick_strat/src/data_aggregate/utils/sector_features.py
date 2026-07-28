@@ -58,9 +58,8 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.factors import fundamentals_to_daily
-from src.data_aggregate.utils.fundamental_features import (
-    _infer_yoy_periods, build_peer_relative_panel,
-)
+from src.data_aggregate.utils.fundamental_features import _infer_yoy_periods
+from src.data_aggregate.utils.panel import build_peer_relative_panel
 from src.data_aggregate.utils.sector_gates import row_gate
 from src.data_aggregate.utils import capital
 

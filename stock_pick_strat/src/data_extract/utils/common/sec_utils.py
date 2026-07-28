@@ -73,13 +73,14 @@ def today_iso() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
-def _meta_path(parquet_path: Path) -> Path:
-    return parquet_path.with_name(parquet_path.stem + "_meta.json")
+def meta_path(artifact_path: Path) -> Path:
+    """`<artifact>_meta.json` next to the artifact it describes."""
+    return artifact_path.with_name(artifact_path.stem + "_meta.json")
 
 
 def load_extract_meta(parquet_path: Path) -> dict | None:
     """Sidecar metadata for an incremental extract (or None if never built)."""
-    p = _meta_path(parquet_path)
+    p = meta_path(parquet_path)
     if not p.exists():
         return None
     try:
@@ -92,7 +93,7 @@ def save_extract_meta(parquet_path: Path, last_filing_date: str | None,
                       ticker_count: int, universe_size: int) -> None:
     """Record today's build so a same-day re-run can skip, and the max filing
     date parsed (`D`) so the next run only fetches filings after it."""
-    _meta_path(parquet_path).write_text(
+    meta_path(parquet_path).write_text(
         json.dumps({
             "last_built": today_iso(),
             "last_filing_date": last_filing_date,
@@ -101,6 +102,34 @@ def save_extract_meta(parquet_path: Path, last_filing_date: str | None,
         }, indent=2),
         encoding="utf-8",
     )
+
+
+def seen_accessions(existing: pd.DataFrame | None) -> set[str]:
+    """Accession numbers already parsed, from an already-loaded table -> the dedup set
+    that stops a filing being re-parsed (and, for DEF 14A, re-sent to the LLM)."""
+    if existing is None or existing.empty or "accession_number" not in existing.columns:
+        return set()
+    return set(existing["accession_number"].dropna())
+
+
+def existing_filings(context: Context, table: str) -> tuple[set[str], dict[str, pd.Timestamp]]:
+    """(accessions already stored, per-ticker max filing_date) for a filing table --
+    the dedup set + the per-ticker incremental cutoff, in ONE read.
+
+    Shared by every per-filing fetcher (13D, 8-K, ...): they each need exactly this pair
+    to resume, and each had grown a byte-identical private `_existing`. Returns empty
+    when the table does not exist yet, so a first run fetches full history."""
+    try:
+        df = context.store.load(table, columns=["ticker", "accession_number", "filing_date"])
+    except Exception:                                   # noqa: BLE001 (table not created yet)
+        return set(), {}
+    if df is None or df.empty:
+        return set(), {}
+    seen = set(df["accession_number"].dropna().astype(str))
+    d = df.copy()
+    d["filing_date"] = pd.to_datetime(d["filing_date"], errors="coerce")
+    last = d.dropna(subset=["filing_date"]).groupby("ticker")["filing_date"].max().to_dict()
+    return seen, last
 
 
 def bulk_ingested_quarters(store, table: str) -> set[str]:

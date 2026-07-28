@@ -18,19 +18,16 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamental_features import (
-    build_peer_relative_panel,
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
-    _ratio,
     _fiscal_change_to_daily,
-    _peer_relative,
     _self_history_z,
     _derived_fields,
     build_fundamental_feature_panel,
     build_state_panel,
     load_notes_num_scoped,
-    load_tagged_facts,
-)
+    load_tagged_facts)
+from src.data_aggregate.utils.panel import build_peer_relative_panel, _ratio, _peer_relative
 
 
 # --------------------------------------------------------------------------- #
@@ -736,7 +733,7 @@ if __name__ == "__main__":
 # "unsupported operand type(s): NoneType and float" bug at _peer_relative).     #
 # --------------------------------------------------------------------------- #
 def test_peer_panel_tolerates_none_cells():
-    from src.data_aggregate.utils.fundamental_features import _peer_relative
+    from src.data_aggregate.utils.panel import _peer_relative
 
     idx = pd.bdate_range("2024-01-01", periods=4)
     tickers = ["A", "B", "C", "D"]

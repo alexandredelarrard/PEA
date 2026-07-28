@@ -18,6 +18,9 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from curl_cffi import requests as cr
+import pyarrow.parquet as pq
+import requests
 
 import pandas as pd
 from sqlalchemy import text
@@ -31,19 +34,19 @@ from src.constants.constants import (
     HF_TRANSCRIPTS_PARQUET_URL,
 )
 from src.context import Context
-from src.data_extract.utils.behavioral.fetch_earnings_calls import _cache_dir, split_prepared_qa
+from src.data_extract.utils.behavioral.utils_behavior import _cache_dir
+from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 
 logger = logging.getLogger(__name__)
 _TABLE = EARNINGS_CALL_SECTIONS_TABLE
 _ROLE_PREFIX = re.compile(r"^[A-Za-z]\s*-\s*")            # "A - Jane Doe" / "E - John Roe" role tags
-
 
 # --------------------------------------------------------------------------- #
 # One-time parquet download (streamed; curl_cffi fallback for the corporate proxy CA)
 # --------------------------------------------------------------------------- #
 def _stream_download(url: str, dest: Path) -> None:
     try:
-        import requests
+        
         with requests.get(url, stream=True, timeout=120) as r:
             r.raise_for_status()
             with dest.open("wb") as f:
@@ -53,12 +56,11 @@ def _stream_download(url: str, dest: Path) -> None:
     except Exception as e:                              # noqa: BLE001
         logger.warning("HF parquet via requests failed (%s); retrying with curl_cffi "
                        "(unverified TLS — the corporate proxy rejects the HF CA)", e)
-    from curl_cffi import requests as cr
+    
     with cr.get(url, stream=True, timeout=120, impersonate="chrome", verify=False) as r:
         with dest.open("wb") as f:
             for chunk in r.iter_content(1 << 20):
                 f.write(chunk)
-
 
 def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = None,
                                 batch_size: int = 4000) -> dict[str, tuple[int, int]]:
@@ -67,7 +69,6 @@ def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = No
     fill knows, PER TICKER, the first quarter HF does NOT cover (everything after it must come
     from fool). Returns {} when the parquet is not cached yet (caller falls back to a date floor).
     `tickers` restricts to a subset (None = all)."""
-    import pyarrow.parquet as pq
 
     dest = _cache_dir(context) / HF_TRANSCRIPTS_CACHE
     if not dest.exists() or dest.stat().st_size < 1_000_000:
@@ -192,7 +193,6 @@ def ingest_hf_transcripts(context: Context, tickers: list[str] | None = None,
     the backbone range (see `_hf_backbone_already_ingested`) we skip the whole 1.8GB parquet scan
     (which would otherwise re-read 33k calls only to find every one already present -> the "0 new
     calls" no-op that stalls the ingest step). Pass `force=True` to re-ingest regardless."""
-    import pyarrow.parquet as pq
 
     if not force:
         present, min_q, max_q = _hf_backbone_already_ingested(context)

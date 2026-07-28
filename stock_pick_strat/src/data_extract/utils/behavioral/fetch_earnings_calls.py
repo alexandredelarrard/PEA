@@ -26,43 +26,47 @@ import json
 import logging
 import random
 import re
-from pathlib import Path
 from tqdm import tqdm
 
 import pandas as pd
 from bs4 import BeautifulSoup
 
 from src.constants.constants import (
-    EARNINGS_CALL_CACHE_DIR,
     EARNINGS_CALL_REPORT_GRACE_DAYS,
     EARNINGS_CALL_REQUEST_PAUSE,
     EARNINGS_CALL_SECTIONS_TABLE,
-    EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
-    NO_EARNINGS_CALL_TICKERS,
     MOTLEY_FOOL_BASE_URL,
     MOTLEY_FOOL_TRANSCRIPT_INDEX_URL,
 )
 from src.context import Context
-from src.utils import polite_http as ph
-from src.utils.crawler import Crawler
 
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import download_hf_parquet
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import ingest_hf_transcripts
 from src.data_extract.utils.behavioral.fetch_roic_transcripts import fetch_roic_transcripts
+from src.data_extract.utils.behavioral.utils_behavior import (
+    _cache_dir, 
+    _index_path,
+    _load_index,
+    _get,
+    _sleep_pace)
+from src.data_extract.utils.behavioral.utils_missing_quarters import (
+    _quarter_index,
+    _parse_quarter,
+    _missing_for,
+    _released_quarter_idx_by_ticker,
+    _db_quarters_by_ticker,
+    _since_floor_index,
+    _latest_expected_quarter_index,
+    _index_to_quarter,
+    _quarter_index
+)
+from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 
 logger = logging.getLogger(__name__)
 
 # one shared crawler per process: headless, no cookies/JS/images, rolling browser fingerprint, and
 # MOVING IPs over PEA_SCRAPE_PROXIES on a Cloudflare block. Shared so a rotated (good) IP persists
 # across the whole crawl instead of resetting to a flagged one on every request.
-_CRAWLER: Crawler | None = None
-
-
-def _crawler() -> Crawler:
-    global _CRAWLER
-    if _CRAWLER is None:
-        _CRAWLER = Crawler(retries=5, backoff=1.5, timeout=30, impersonate=True)
-    return _CRAWLER
 
 _BASE = MOTLEY_FOOL_BASE_URL
 _INDEX = MOTLEY_FOOL_TRANSCRIPT_INDEX_URL
@@ -72,43 +76,6 @@ _TABLE = EARNINGS_CALL_SECTIONS_TABLE
 _LINK_RE = re.compile(
     r"/earnings/call-transcripts/(\d{4})/(\d{2})/(\d{2})/(.+?)-q([1-4])-(\d{4})-earnings-call-transcript")
 _HREF_RE = re.compile(r'href="(/earnings/call-transcripts/\d{4}/\d{2}/\d{2}/[^"?#]+)"')
-
-
-# --------------------------------------------------------------------------- #
-# IO helpers                                                                    #
-# --------------------------------------------------------------------------- #
-def _cache_dir(context: Context) -> Path:
-    d = context.paths["DATA_STORE"] / EARNINGS_CALL_CACHE_DIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _index_path(context: Context) -> Path:
-    return _cache_dir(context) / "transcript_index.json"
-
-
-def _load_index(path: Path) -> dict[str, dict]:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _get(url: str, timeout: int = 30, retries: int = 4, backoff: float = 3.0,
-         log_missing: bool = True) -> str | None:
-    """MF transcript GET -> HTML text on 200 (else None), via the shared IP-rotating `Crawler`
-    (headless, no cookies/JS/images, rolling real-browser fingerprint, moving IPs over
-    PEA_SCRAPE_PROXIES on a Cloudflare block, fast retry). `log_missing=False` silences the expected
-    wrong-exchange 404 when probing quote pages. (timeout/retries/backoff are set on the shared
-    crawler; kept in the signature for call-site compatibility.)"""
-    return _crawler().get_text(url, log_missing=log_missing)
-
-
-def _sleep_pace(base: float) -> None:
-    """Paced inter-request sleep for fool.com (shared per-host slowdown + jitter)."""
-    ph.sleep_pace(base, _BASE)
 
 
 # --------------------------------------------------------------------------- #
@@ -261,147 +228,6 @@ def _quote_page(ticker: str, exchanges: tuple[str, ...]) -> tuple[str | None, st
     return None, None
 
 
-# --- quarter arithmetic (a fiscal quarter as a monotone integer index YYYY*4 + (Q-1)) ---
-_QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$")
-
-
-def _parse_quarter(q: str) -> tuple[int, int] | None:
-    """'2025Q1' -> (2025, 1); None if malformed."""
-    m = _QUARTER_RE.match(str(q))
-    return (int(m.group(1)), int(m.group(2))) if m else None
-
-
-def _quarter_index(year: int, quarter: int) -> int:
-    """Monotone quarter index so consecutive quarters differ by 1 (2024Q4 -> 2025Q1)."""
-    return year * 4 + (quarter - 1)
-
-
-def _index_to_quarter(idx: int) -> str:
-    return f"{idx // 4}Q{idx % 4 + 1}"
-
-
-def _quarters_between(start_idx: int, end_idx: int) -> list[str]:
-    """Every quarter label from `start_idx` to `end_idx` inclusive (empty if start > end)."""
-    return [_index_to_quarter(i) for i in range(start_idx, end_idx + 1)]
-
-
-def _latest_expected_quarter_index(grace_days: int = EARNINGS_CALL_REPORT_GRACE_DAYS) -> int:
-    """Quarter index of the newest call we EXPECT to exist today: the calendar quarter of
-    (today - grace), so a just-ended quarter that has not been reported yet is not required."""
-    end = pd.Timestamp.today() - pd.Timedelta(days=grace_days)
-    return _quarter_index(end.year, end.quarter)
-
-
-def _since_floor_index(since: str) -> int:
-    """Quarter index of the `since` date floor — the fool gap start for a ticker HF doesn't cover."""
-    ts = pd.Timestamp(since)
-    return _quarter_index(ts.year, ts.quarter)
-
-
-def _local_quarters(cache_dir: Path, ticker: str) -> set[str]:
-    """Quarters ALREADY downloaded to disk for a ticker = the {quarter}.html files under
-    data/call_transcripts/{ticker}/ (so a re-run never re-requests a cached transcript)."""
-    d = cache_dir / ticker
-    return {p.stem for p in d.glob("*.html")} if d.exists() else set()
-
-
-def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
-    """{ticker: {quarters}} already in the sections table (ANY source, incl. HF). Empty when
-    the DB is unavailable / the table is not created yet -> resume on disk + JSON coverage."""
-    try:
-        db = context.store.load(_TABLE, columns=["ticker", "quarter"])
-        if db is None or db.empty:
-            return {}
-        out: dict[str, set] = {}
-        for tk, q in zip(db["ticker"], db["quarter"]):
-            out.setdefault(str(tk), set()).add(str(q))
-        return out
-    except Exception:
-        return {}
-
-
-def _released_quarter_idx_by_ticker(
-    context: Context, lag_days: int = EARNINGS_REPORT_TO_QUARTER_LAG_DAYS) -> dict[str, int]:
-    """{ticker: index of the latest quarter it has ACTUALLY REPORTED}, from `earnings_surprises`
-    (which carries the earnings report date per ticker). We take the most recent earnings_date that
-    is <= today and map it back into the quarter it reported (shift by `lag_days`, since a report
-    lands a few weeks after quarter-end). This replaces the blanket calendar guess with the real
-    per-ticker release, so the gap logic never demands a quarter a ticker hasn't reported yet — and
-    picks up an early reporter the calendar heuristic would miss. {} when the table is unavailable
-    (callers then fall back to the calendar `end_idx`)."""
-    try:
-        es = context.store.load("earnings_surprises", columns=["ticker", "earnings_date"])
-    except Exception:
-        return {}
-    if es is None or es.empty or not {"ticker", "earnings_date"}.issubset(es.columns):
-        return {}
-    d = pd.to_datetime(es["earnings_date"], errors="coerce")
-    today = pd.Timestamp.today().normalize()
-    m = d.notna() & (d <= today)
-    if not m.any():
-        return {}
-    rep = pd.DataFrame({"ticker": es["ticker"].astype(str)[m], "d": d[m]})
-    latest = rep.groupby("ticker")["d"].max()
-    out: dict[str, int] = {}
-    for tk, dt in latest.items():
-        q = (dt - pd.Timedelta(days=lag_days))            # shift into the reported quarter
-        out[tk] = _quarter_index(q.year, q.quarter)
-    return out
-
-
-def _missing_for(tk: str, hf_latest: dict, floor_idx: int, end_idx: int, cache_dir: Path,
-                 have_db: dict[str, set], have_json: dict[str, set],
-                 released: dict[str, int] | None = None) -> set[str]:
-    """The quarters still needed for `tk`: everything from the fool gap-start (the quarter AFTER the
-    HF backbone's latest for `tk`, or the `since` floor when HF has none) up to the latest quarter
-    the ticker has ACTUALLY REPORTED (`released[tk]` from earnings_surprises; falls back to the
-    calendar `end_idx` when unknown), MINUS what's already on disk / in the DB / in the JSON index.
-    Tickers that hold no earnings call (NO_EARNINGS_CALL_TICKERS, e.g. Berkshire) return {} so they
-    are never fetched or flagged as missing. Shared by the MF quote-page discovery AND the Roic
-    fallback so the 'what's missing' definition can't drift."""
-    if tk in NO_EARNINGS_CALL_TICKERS:
-        return set()
-    hf = hf_latest.get(tk)
-    gap_start = (_quarter_index(*hf) + 1) if hf else floor_idx
-    tk_end = released.get(tk, end_idx) if released is not None else end_idx   # actual release, per ticker
-    required = set(_quarters_between(gap_start, tk_end))
-    have = _local_quarters(cache_dir, tk) | have_db.get(tk, set()) | have_json.get(tk, set())
-    return required - have
-
-
-def missing_quarters_by_ticker(context: Context, tickers: list[str] | None = None,
-                               since: str = "2025-01-01",
-                               grace_days: int = EARNINGS_CALL_REPORT_GRACE_DAYS,
-                               ) -> dict[str, list[str]]:
-    """{ticker: [missing quarter labels, oldest-first]} — the recent-gap quarters each ticker still
-    needs after the HF backbone + whatever is already on disk / in the DB / JSON index. Empty entries
-    are dropped. This is the SINGLE source of truth for 'what to fetch' shared by the Roic fallback
-    and the Motley Fool discovery."""
-    from src.data_extract.utils.behavioral.fetch_hf_transcripts import hf_latest_quarter_by_ticker
-
-    universe = list(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
-    if tickers is not None:
-        keep = set(tickers)
-        universe = [t for t in universe if t in keep]
-    cache_dir = _cache_dir(context)
-    end_idx = _latest_expected_quarter_index(grace_days)
-    floor_idx = _since_floor_index(str(since))
-    hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)
-    have_db = _db_quarters_by_ticker(context)
-    released = _released_quarter_idx_by_ticker(context)   # latest ACTUALLY-reported quarter per ticker
-    index = _load_index(_index_path(context))
-    have_json: dict[str, set] = {}
-    for r in index.values():
-        have_json.setdefault(str(r["ticker"]), set()).add(str(r["quarter"]))
-
-    out: dict[str, list[str]] = {}
-    for tk in universe:
-        miss = _missing_for(tk, hf_latest, floor_idx, end_idx, cache_dir, have_db, have_json, released)
-        if miss:
-            out[tk] = sorted(miss, key=lambda q: _quarter_index(*_parse_quarter(q)))
-    return out
-
-
 def build_transcript_index_by_ticker(
     context: Context, tickers: list[str] | None = None, since: str = "2025-01-01",
     exchanges: tuple[str, ...] = ("nasdaq", "nyse"), pause: float = EARNINGS_CALL_REQUEST_PAUSE,
@@ -504,58 +330,6 @@ def _is_caps_header(line: str) -> bool:
     s = line.strip().rstrip(":")
     return (2 <= len(s) <= 45 and s == s.upper() and any(c.isalpha() for c in s)
             and len(s.split()) <= 5)
-
-
-# the operator's phrase that opens the analyst Q&A (splits prepared remarks from Q&A).
-# Broadened across 2005-2025 transcript phrasings: the classic "question-and-answer session",
-# operator-instructions, "(first) question comes/is/will be from" hand-off, "go to the line of X",
-# "for our first question, we'll go/take", "we'll (now) take/go to our first question", the generic
-# "we'll now begin/open/take/turn ... to questions", and "open the floor/line for questions".
-_QA_MARKER = re.compile(
-    r"(?i)"
-    r"question[-\s]and[-\s]answer session|"
-    r"questions?\s*(?:and|&)\s*answers?|"                 # standalone Q&A heading (no 'session')
-    r"(?:first|next|final)\s+question\s+(?:comes?|is|will\s+come|will\s+be)\s+from|"
-    r"(?:go|turn|move)\s+(?:ahead\s+)?to\s+(?:the\s+)?line\s+of\b|"          # "go to the line of X"
-    r"(?:for\s+)?(?:our|your)\s+(?:first|next)\s+question,?\s+"              # "for our first question, we'll go"
-    r"(?:we(?:'ll| will)|let's|i(?:'ll| will)|please)\b|"
-    r"we(?:'ll| will)\s+(?:now\s+)?(?:go|move|turn|take)\s+(?:ahead\s+)?to\s+"  # "we'll take our first question"
-    r"(?:our\s+)?(?:first|next)\s+(?:question|caller|line)|"
-    r"(?:we(?:'ll| will| are going to| would like to)|now|let's|i(?:'ll| will))\b"
-    r"[^.]{0,45}?(?:begin|open|take|start|conduct|move\s+to|go\s+to|turn[^.]{0,20}?to)"
-    r"[^.]{0,30}?questions?|"
-    r"open\s+(?:up\s+)?(?:the\s+)?(?:floor|line|lines|call)\b[^.]{0,25}?questions?|"
-    r"\[?operator instructions\]?")
-
-
-def split_prepared_qa(text: str) -> dict[str, str]:
-    """Source-agnostic split of a full transcript TEXT into the high-signal sections funds
-    analyse: `full` (ALWAYS kept -> format-proof), `prepared_remarks` (scripted management
-    comments from call-open to the Q&A) and `qa` (the analyst Q&A, after the operator's
-    hand-off). Used for BOTH the Motley Fool HTML-extracted text AND the HuggingFace
-    `content` field. Call prose starts at the first 'Operator' line (skips logo/date/
-    takeaways preamble); the Q&A hand-off is searched past the first ~2000 chars first
-    (operators PREVIEW the Q&A in the intro), then anywhere. If NO phrase matches, fall back to the
-    SECOND 'Operator' turn (the first opens the call, the second hands off to the Q&A) so a call with
-    an unusual hand-off phrasing still yields a Q&A section. prepared/qa only when confidently split
-    (>300 chars each)."""
-    out: dict[str, str] = {"full": text}
-    op = re.search(r"(?im)^\s*operator\b", text)
-    prose = text[op.start():] if op else text
-    m = _QA_MARKER.search(prose, 2000) or _QA_MARKER.search(prose)
-    if m is None:                                        # no phrase matched -> second 'Operator' turn
-        ops = list(re.finditer(r"(?im)^\s*operator\b", prose))
-        m = ops[1] if len(ops) >= 2 else None
-    if m:
-        pre, post = prose[:m.start()].strip(), prose[m.start():].strip()
-        if len(pre) > 300:
-            out["prepared_remarks"] = pre
-        if len(post) > 300:
-            out["qa"] = post
-    elif op:
-        out["prepared_remarks"] = prose.strip()          # no Q&A hand-off found -> all remarks
-    return out
-
 
 def parse_transcript_sections(html: str) -> dict[str, str]:
     """Motley Fool transcript HTML -> sections. Extracts the nested transcript body, adds

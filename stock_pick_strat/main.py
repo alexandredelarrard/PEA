@@ -14,7 +14,7 @@ if __name__ == "__main__":
     # self = StepDeducePeers(context=context, config=config)
     # self.run()ss
 
-    self = StepBuildCube(context=context, config=config)
+    # self = StepBuildCube(context=context, config=config)
     # self.run()
 
     # self = StepModelling(context=context, config=config)

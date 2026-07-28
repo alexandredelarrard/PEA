@@ -238,7 +238,6 @@ HF_BACKBONE_LATE_QUARTER = "2025Q1"    # table max quarter must be >= this (HF's
 # before Motley Fool): a clean JSON API covering ~2y of history on the FREE tier (5 req/min). Auth
 # is the `apikey` QUERY param (not a header). `list` returns the available (year, quarter, date) per
 # ticker; `transcript` returns {symbol, year, quarter, date, content} for one fiscal quarter.
-ROIC_API_KEY_ENV = ("ROIC_API_KEY", "ROIC_AI_API_KEY")
 ROIC_EARNINGS_LIST_URL = "https://api.roic.ai/v2/company/earnings-calls/list/{ticker}"
 ROIC_EARNINGS_TRANSCRIPT_URL = "https://api.roic.ai/v2/company/earnings-calls/transcript/{ticker}"
 ROIC_REQUEST_PAUSE = 12.5              # free tier = 5 req/min -> >= 12s between calls

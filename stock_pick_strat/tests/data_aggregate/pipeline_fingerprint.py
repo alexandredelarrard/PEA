@@ -103,7 +103,8 @@ def compute() -> dict:
 
     from src.data_aggregate.utils.betas import estimate_all_betas
     from src.data_aggregate.utils.composites import build_composites
-    from src.data_aggregate.utils.factors import build_characteristics
+    from src.data_aggregate.utils.factors import build_characteristics, momentum_characteristic
+    from src.data_aggregate.utils.targets import build_targets_multi
     from src.data_aggregate.utils.features import build_feature_panel, compute_raw_features
     from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
     from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
@@ -164,11 +165,34 @@ def compute() -> dict:
                                                + sorted(c for c in comp.columns
                                                         if c.startswith("comp_"))])
 
-    factor_panel = pd.DataFrame({"MKT": returns.mean(axis=1)}).dropna()
+    # Market (available immediately) PLUS the momentum style factor, whose
+    # close.shift(21)/close.shift(252) definition is NaN for its first 252 trading days.
+    # That combination is deliberate: a single no-warm-up factor never exercised the
+    # regressor-join path where one slow factor used to blank every other beta, so the
+    # fingerprint was blind to it.
+    factor_panel = pd.DataFrame({
+        "market": returns.mean(axis=1),
+        "momentum": momentum_characteristic(close).mean(axis=1),
+    })
     betas = estimate_all_betas(returns, factor_panel, sector_ret)
     out["aggregate.betas"] = frame_digest(
         pd.concat({k: v for k, v in betas.items() if isinstance(v, pd.DataFrame)}, axis=1)
         if isinstance(betas, dict) else betas)
+
+    # The LABEL itself, per horizon -- it was not fingerprinted at all, which left the
+    # one output the model actually trains on unprotected.
+    # `min_names` is lowered from the production 20 because this harness runs a
+    # 12-name cross-section: at the default, `_apply_label` blanks every day for having
+    # too few names and the label fingerprint would be a uniformly-empty frame that
+    # silently proves nothing. The value only gates which DAYS survive, not how the
+    # residual is computed, so the computation under test is unaffected.
+    targets = build_targets_multi(
+        close, returns, peers, betas, factor_panel, macro_cols=[],
+        horizons=(30, 60, 90), labels=("rank", "zscore"), min_names=5,
+        sector_groups={"sector": {t: "S" for t in tickers}})
+    for horizon, by_label in targets.items():
+        for label, frame in by_label.items():
+            out[f"aggregate.target_{label}_h{horizon}"] = frame_digest(frame)
 
     out["_meta"] = {"tickers": tickers, "seed": SEED, "start": START, "end": END}
     return out

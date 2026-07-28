@@ -77,12 +77,18 @@ def test_baseline_covers_both_modules(baseline):
     aggregate = [k for k in keys if k.startswith("aggregate.")]
     assert len(extract) >= 10, f"extraction barely covered: {extract}"
     assert len(aggregate) >= 8, f"aggregation barely covered: {aggregate}"
-    # the four functions the refactor splits must each be represented
+    # the four functions the refactor splits must each be represented, PLUS the label --
+    # targets were originally not fingerprinted at all, leaving the one output the model
+    # actually trains on unprotected.
     for must in ("extract.fundamentals_history",        # _derive_history
                  "aggregate.fundamental_panel",         # _derived_fields
                  "aggregate.compute_sector_kpis",       # compute_sector_kpis
-                 "aggregate.compute_raw_features"):     # compute_raw_features
+                 "aggregate.compute_raw_features",      # compute_raw_features
+                 "aggregate.betas",                     # the rolling regressor join
+                 "aggregate.target_rank_h30"):          # the label itself
         assert must in baseline, f"{must} is not fingerprinted"
         assert baseline[must]["rows"] > 0, f"{must} fingerprinted as empty"
-    print(f"\n[coverage] {len(extract)} extraction + {len(aggregate)} aggregation outputs; "
-          "all four split targets are fingerprinted and non-empty")
+    labels = [k for k in keys if k.startswith("aggregate.target_")]
+    assert len(labels) >= 3, f"only {len(labels)} target variants fingerprinted"
+    print(f"\n[coverage] {len(extract)} extraction + {len(aggregate)} aggregation outputs "
+          f"(incl. {len(labels)} target variants); all split targets non-empty")

@@ -31,7 +31,19 @@ def estimate_betas_for_stock(
 ) -> pd.DataFrame:
     """Rolling ridge betas for one stock. Regressors = shared factors + sector."""
     X = pd.concat([shared, sector.rename("sector")], axis=1)
-    data = pd.concat([y.rename("y"), X], axis=1).dropna()
+    # Drop rows only where the DEPENDENT variable is missing. Dropping rows where ANY
+    # regressor was NaN (the previous `.dropna()`) made one slow-warming factor delay
+    # EVERY beta: the momentum style factor is close.shift(21)/close.shift(252), so its
+    # first 252 trading days are NaN, and that discarded the whole head of the sample for
+    # the market and sector betas too -- which need only `min_obs` (40) observations. The
+    # first beta therefore landed at ~252 + 40 = ~291 trading days instead of ~44, and
+    # since `compute_epsilon` propagates a NaN beta, the TARGET was undefined for the
+    # first ~14 months of the sample (2011-07-18 -> 2012-09-12 on the live cube) for no
+    # reason other than this join. Per-window usability is already handled below by the
+    # `ok` mask, which excludes any factor that is NaN or degenerate inside the window
+    # and leaves its beta at 0.0 (i.e. simply not neutralized there) -- the same
+    # convention `compute_epsilon` uses when it fills a missing forward factor with 0.
+    data = pd.concat([y.rename("y"), X], axis=1).dropna(subset=["y"])
     if len(data) < min_obs:
         return pd.DataFrame(index=y.index, columns=[f"beta_{c}" for c in X.columns])
 

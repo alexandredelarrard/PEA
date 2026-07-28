@@ -71,6 +71,7 @@ _EPS_BEAT_RAW: dict[str, list[float]] = {
     "f_earnings_quality_xs":       [  0.5,  0.75,  1.0,  1.25,   1.5],  # +  cash-backed earnings
     "f_y_rev_growth_xs":           [ -0.1,   0.0, 0.05,  0.10,   0.2],  # +  top-line momentum
     "f_margin_expansion_delta_xs": [-0.03, -0.01,  0.0,  0.01,  0.03],  # +  operating leverage
+    "f_q_margin_vs_ttm_xs":        [-0.02, -0.01,  0.0,  0.01,  0.02],  # +  margin inflecting up
     "f_eps_expectation_growth_xs": [ 0.30,  0.20, 0.10,  0.05,   0.0],  # -  the bar (low = easy beat)
 }
 
@@ -81,22 +82,27 @@ def _load_eps_beat_group() -> list[str]:
 
 
 def test_eps_beat_group_membership_and_sign_priors():
-    """The config must carry exactly the six agreed members with the two
-    'lower = better' members (accruals, the expectation bar) inverted."""
+    """The config must carry exactly the agreed members with the two
+    'lower = better' ones (accruals, the expectation bar) inverted.
+
+    Membership grew from six to seven with `q_margin_vs_ttm` (latest-quarter margin
+    minus the TTM margin = margin inflecting up, a direct beat tell). `accruals` stays
+    despite also sitting in accounting_quality: low accruals genuinely belong to a
+    beat-propensity thesis, and this membership was agreed explicitly."""
     group = _load_eps_beat_group()
     signs = {col: sign for sign, col in (_parse_member(m) for m in group)}
 
-    assert set(signs) == set(_EPS_BEAT_RAW), "eps_beat membership drifted from the agreed 6"
+    assert set(signs) == set(_EPS_BEAT_RAW), "eps_beat membership drifted from the agreed set"
     # orientation priors: higher raw value -> more beat-prone
     assert signs["f_accruals_xs"] == -1.0                # high accruals -> disappoint
     assert signs["f_eps_expectation_growth_xs"] == -1.0  # high bar -> harder to beat
-    for pos in ("f_eps_surprise_4q_avg_xs", "f_earnings_quality_xs",
-                "f_y_rev_growth_xs", "f_margin_expansion_delta_xs"):
+    for pos in ("f_eps_surprise_4q_avg_xs", "f_earnings_quality_xs", "f_y_rev_growth_xs",
+                "f_margin_expansion_delta_xs", "f_q_margin_vs_ttm_xs"):
         assert signs[pos] == 1.0
 
     print("\n=== SANITY CHECK: eps_beat membership & sign priors ===")
-    print(f"  6 members present; inverted = {[c for c,s in signs.items() if s < 0]}")
-    print("  accruals & expectation-bar inverted, the other four positive. Validated.")
+    print(f"  {len(signs)} members present; inverted = {[c for c,s in signs.items() if s < 0]}")
+    print("  accruals & expectation-bar inverted, the other five positive. Validated.")
 
 
 def test_eps_beat_score_orientation_is_monotonic():

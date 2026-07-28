@@ -60,12 +60,14 @@ from sqlalchemy import text
 from src.constants.constants import (
     SEC_FINNOTES_URL_TEMPLATE, SEC_FINNOTES_FIRST_YEAR)
 from src.context import Context
+from src.data_extract.utils.common.bulk_cache import (
+    cache_dir, ensure_zip, ingested_periods,
+)
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, load_processed_universe, save_processed_universe)
 
 logger = logging.getLogger(__name__)
 
-_HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; valar_analytics@gmail.com)"}
 _NUM_TABLE = "notes_num"
 _TXT_TABLE = "notes_text"
 _CHUNK = 500_000
@@ -139,7 +141,7 @@ def _scrape_available_periods() -> list[str] | None:
     rolling quarterly<->monthly boundary). None on any failure -> caller falls
     back to the deterministic generator."""
     try:
-        r = requests.get(_LANDING_URL, headers=_HEADERS, timeout=60)
+        r = requests.get(_LANDING_URL, headers=_sec_headers(), timeout=60)
         if r.status_code != 200:
             return None
         tags = re.findall(r"/(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip", r.text)
@@ -229,33 +231,6 @@ def _join_notes_text(txt: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
-def _cache_dir(context: Context) -> Path:
-    # dedicated dir (NOT sec_bulk_cache / sec_financial_statements) so the huge
-    # notes zips don't clutter or get confused with the other caches.
-    d = context.paths["DATA_STORE"] / "sec_financial_notes"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _ensure_zip(period: str, cache_dir: Path) -> Path | None:
-    path = cache_dir / f"{period}_notes.zip"
-    if path.exists() and path.stat().st_size > 0:
-        return path
-    url = SEC_FINNOTES_URL_TEMPLATE.format(period=period)
-    try:
-        r = requests.get(url, headers=_HEADERS, timeout=600, stream=True)
-    except Exception as e:                              # noqa: BLE001
-        logger.warning("notes %s download failed: %s", period, e)
-        return None
-    if r.status_code != 200:                            # not-yet-published / consolidated away
-        logger.info("notes %s not available (HTTP %s)", period, r.status_code)
-        return None
-    tmp = path.with_suffix(".part")
-    with open(tmp, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1 << 20):
-            f.write(chunk)
-    tmp.replace(path)
-    return path
 
 
 def _chunk_filter(z: zipfile.ZipFile, name: str, adsh_set: set[str],
@@ -300,18 +275,6 @@ def _read_notes(path: Path, cik2tkr: dict[str, str],
     return _join_notes_num(num, sub_meta), _join_notes_text(txt, sub_meta)
 
 
-def _ingested_periods(store) -> set[str]:
-    """Distinct source-zip `period` tags already stored (union across both notes
-    tables) -> the set an incremental re-run can SKIP."""
-    done: set[str] = set()
-    for tbl in (_NUM_TABLE, _TXT_TABLE):
-        if store.exists(tbl):
-            with store.engine.connect() as c:
-                done |= set(pd.read_sql(text(f'SELECT DISTINCT period FROM "{tbl}"'), c)
-                            ["period"].dropna())
-    return done
-
-
 def fetch_financial_notes(context: Context, tickers: list[str]) -> int:
     """Download (cached) the SEC Financial Statement & Notes data sets over
     `notes_years_history`, extract footnote pension NUMERICS -> `notes_num` and
@@ -325,10 +288,10 @@ def fetch_financial_notes(context: Context, tickers: list[str]) -> int:
                if not cikmap.empty and "ticker" in cikmap.columns else {})
     de = context.config.data_extract
     years_history = getattr(de, "notes_years_history", de.years_history) + 1
-    cache_dir = _cache_dir(context)
+    cache = cache_dir(context, "sec_financial_notes")
     universe = {str(t).upper() for t in tickers}
 
-    done = _ingested_periods(store)
+    done = ingested_periods(context, (_NUM_TABLE, _TXT_TABLE))
     new_tickers = universe - load_processed_universe(cache_dir, _NUM_TABLE)   # empty once converged
     if new_tickers:
         logger.info("notes: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
@@ -338,7 +301,9 @@ def fetch_financial_notes(context: Context, tickers: list[str]) -> int:
     for period in tqdm(periods, desc="SEC financial-statement notes"):
         if period in done and not new_tickers:
             continue
-        path = _ensure_zip(period, cache_dir)
+        path = ensure_zip(cache / f"{period}_notes.zip",
+                          SEC_FINNOTES_URL_TEMPLATE.format(period=period),
+                          label=f"notes {period}", timeout=600, log=logger)
         if path is None:
             continue
         num, txt = _read_notes(path, cik2tkr, universe)

@@ -29,18 +29,19 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
-import requests
 from tqdm import tqdm
 
 from src.constants.constants import SEC_FINSTMT_URL_TEMPLATE, SEC_FINSTMT_FIRST_YEAR
 from src.context import Context
+from src.data_extract.utils.common.bulk_cache import (
+    cache_dir, ensure_zip, quarter_periods,
+)
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, bulk_ingested_quarters, load_processed_universe,
     save_processed_universe)
 
 logger = logging.getLogger(__name__)
 
-_HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; valar_analytics@gmail.com)"}
 _TABLE = "pension_facts"
 _CHUNK = 500_000
 
@@ -60,15 +61,6 @@ _PENSION_TAGS = frozenset({
 })
 _OUT_COLS = ["cik", "ticker", "tag", "ddate", "qtrs", "uom", "value",
              "adsh", "filed", "form", "fy", "fp", "quarter"]
-
-
-def _quarters(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
-    today = (today or pd.Timestamp.today()).normalize()
-    out: list[str] = []
-    for y in range(today.year - years_history, today.year + 1):
-        if y >= SEC_FINSTMT_FIRST_YEAR:
-            out += [f"{y}q{q}" for q in range(1, 5)]
-    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -108,33 +100,6 @@ def _join_pension(num: pd.DataFrame, sub: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
-def _cache_dir(context: Context) -> Path:
-    # dedicated dir (NOT data/sec_bulk_cache, which holds the companyfacts CIK JSONs)
-    # so the big quarterly zips don't clutter / get confused with the JSON cache.
-    d = context.paths["DATA_STORE"] / "sec_financial_statements"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _ensure_zip(quarter: str, cache_dir: Path) -> Path | None:
-    path = cache_dir / f"{quarter}.zip"
-    if path.exists() and path.stat().st_size > 0:
-        return path
-    url = SEC_FINSTMT_URL_TEMPLATE.format(quarter=quarter)
-    try:
-        r = requests.get(url, headers=_HEADERS, timeout=300, stream=True)
-    except Exception as e:
-        logger.warning("finstmt %s download failed: %s", quarter, e)
-        return None
-    if r.status_code != 200:
-        logger.info("finstmt %s not available (HTTP %s)", quarter, r.status_code)
-        return None
-    tmp = path.with_suffix(".part")
-    with open(tmp, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1 << 20):
-            f.write(chunk)
-    tmp.replace(path)
-    return path
 
 
 def _read_pension_facts(path: Path) -> pd.DataFrame | None:
@@ -173,7 +138,7 @@ def fetch_financial_statements(context: Context, tickers: list[str]) -> int:
     cik2tkr = ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
                if not cikmap.empty and "ticker" in cikmap.columns else {})
     years_history = context.config.data_extract.years_history + 1
-    cache_dir = _cache_dir(context)
+    cache = cache_dir(context, "sec_financial_statements")
 
     tickers = {str(t).upper() for t in tickers}          # universe as an uppercased set
     done_q = bulk_ingested_quarters(store, _TABLE)
@@ -183,10 +148,12 @@ def fetch_financial_statements(context: Context, tickers: list[str]) -> int:
                     len(new_tickers))
 
     saved = 0
-    for q in tqdm(_quarters(years_history), desc="financial-statement data sets"):
+    for q in tqdm(quarter_periods(years_history, SEC_FINSTMT_FIRST_YEAR), desc="financial-statement data sets"):
         if q in done_q and not new_tickers:
             continue
-        path = _ensure_zip(q, cache_dir)
+        path = ensure_zip(cache / f"{q}.zip",
+                          SEC_FINSTMT_URL_TEMPLATE.format(quarter=q),
+                          label=f"finstmt {q}", log=logger)
         if path is None:
             continue
         facts = _read_pension_facts(path)
@@ -204,5 +171,5 @@ def fetch_financial_statements(context: Context, tickers: list[str]) -> int:
 
     save_processed_universe(cache_dir, _TABLE, tickers)   # so a converged re-run skips
     logger.info("pension_facts: upserted %d rows (%d quarters scanned)",
-                   saved, len(_quarters(years_history)))
+                   saved, len(quarter_periods(years_history, SEC_FINSTMT_FIRST_YEAR)))
     return saved

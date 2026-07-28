@@ -17,16 +17,20 @@ def test_sector_quick_wins_and_B_kpis():
     rows = []
     for yr, m in [(2022, 1.0), (2023, 1.2)]:                    # +20% YoY on growth items
         rows += [
-            {"ticker": "BANK", "as_of": f"{yr}-12-31", "netInterestIncome": 100 * m,
+            {"ticker": "BANK", "sector": "Financials", "industry_group": "Banks",
+             "as_of": f"{yr}-12-31", "netInterestIncome": 100 * m,
              "loans": 1000 * m, "deposits": 1200.0, "stockholdersEquity": 300.0,
              "totalAssets": 2000.0, "netIncome": 50.0, "accumulatedOCI": -30.0,
              "htmSecurities": 500.0, "htmSecuritiesFairValue": 450.0,
              "nonaccrualLoans": 20.0, "netChargeOffs": 10.0},
-            {"ticker": "INS", "as_of": f"{yr}-12-31", "premiumsEarned": 200.0,
+            {"ticker": "INS", "sector": "Financials", "industry_group": "Insurance",
+             "as_of": f"{yr}-12-31", "premiumsEarned": 200.0,
              "premiumsWritten": 210 * m, "insuranceReserves": 800 * m,
              "stockholdersEquity": 400 * m, "claimsIncurred": 120.0,
              "sellingGeneralAdmin": 40.0, "totalAssets": 1500.0, "netIncome": 60.0},
-            {"ticker": "REIT", "as_of": f"{yr}-12-31", "realEstateNet": 5000.0,
+            {"ticker": "REIT", "sector": "Real Estate",
+             "industry_group": "Equity Real Estate Investment Trusts (REITs)",
+             "as_of": f"{yr}-12-31", "realEstateNet": 5000.0,
              "rentalIncome": 400.0, "netIncome": 100.0, "depAmort": 150.0,
              "gainOnDispositions": 10.0, "capex": 40.0, "dividendsPaid": 180.0,
              "totalRevenue": 420.0, "operatingIncome": 200.0},

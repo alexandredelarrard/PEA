@@ -51,6 +51,15 @@ from src.data_aggregate.utils.cube import build_cube_dataframe, _betas_to_long, 
 from src.data_peers.step_deduce_peers import StepDeducePeers
 from src.data_peers.utils.sector_peers import compute_sector_returns
 
+# join keys every feature panel carries; everything else in a panel is a feature column
+PANEL_KEYS = ["date", "ticker"]
+
+
+class FeatureCollisionError(ValueError):
+    """Two feature panels emit the same feature name -- merging would split it into
+    pandas `_x` / `_y` columns instead of failing loudly."""
+
+
 class StepBuildCube(Step):
 
     def __init__(self, context: Context, config: DictConfig):
@@ -155,6 +164,46 @@ class StepBuildCube(Step):
             "pension_facts": "pension_facts", "notes_num": "notes_num",
             "earnings_call_sections": "earnings_call_sections",
         }
+
+    def _merge_panel(self, panel: pd.DataFrame) -> int:
+        """Left-merge one feature panel onto the working panel; return how many columns
+        it added.
+
+        Raises `FeatureCollisionError` when the panel re-uses a feature name already in
+        the working panel. A plain `merge` on the keys silently renames BOTH sides to
+        `<name>_x` / `<name>_y`, which is how 20 such columns reached the live cube: the
+        fundamental and sector panels each emitted `interest_coverage`,
+        `net_debt_to_ebitda`, `gross_profitability`, `cash_conversion_cycle` and
+        `sbc_intensity` under DIFFERENT formulas, so which one a model saw depended on
+        merge order. Exactly one panel must own each feature name.
+        """
+        clash = sorted((set(panel.columns) & set(self.feature_panel.columns))
+                       - set(PANEL_KEYS))
+        if clash:
+            raise FeatureCollisionError(
+                f"feature name(s) already in the cube panel: {clash}. "
+                "Give the feature a single owning panel (or rename it) -- merging would "
+                "silently split it into _x / _y columns."
+            )
+        before = len(self.feature_panel.columns) - len(PANEL_KEYS)
+        self.feature_panel = self.feature_panel.merge(panel, on=PANEL_KEYS, how="left")
+        return len(self.feature_panel.columns) - len(PANEL_KEYS) - before
+
+
+    def _attach_panel(self, panel: pd.DataFrame, label: str,
+                      empty_msg: str | None = None) -> None:
+        """Merge one feature panel and log what it contributed.
+
+        Every `build_*_features` method ended in the same four steps -- bail out when the
+        panel is empty, merge through the collision guard, compute row coverage, log it.
+        Ten copies of that tail meant ten places to keep in step, and the only thing that
+        ever differed was the wording."""
+        if panel is None or panel.empty:
+            self._log.warning(empty_msg or f"No {label} features built.")
+            return
+        added = self._merge_panel(panel)
+        cov = panel.drop(columns=PANEL_KEYS).notna().any(axis=1).mean()
+        self._log.info("Merged %s %s features (row coverage %.1f%%)", added, label, 100 * cov)
 
     def run(self):
         self.load_prices()
@@ -491,11 +540,7 @@ class StepBuildCube(Step):
         if fund_panel.empty:
             self._log.warning("No fundamental features built (missing fundamentals).")
             return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            fund_panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
+        added = self._merge_panel(fund_panel)
         self._log.info("Merged %s peer-relative fundamental features", added)
 
     def build_sector_features(self):
@@ -506,17 +551,7 @@ class StepBuildCube(Step):
         panel = build_sector_feature_panel(
             self.fundamentals, self.peers, self.stock_close.index,
         )
-        if panel.empty:
-            self._log.warning("No sector KPI features built (missing fundamentals).")
-            return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s sector-KPI features (row coverage %.1f%%)",
-                       added, 100 * cov)
+        self._attach_panel(panel, "sector-KPI", empty_msg="No sector KPI features built (missing fundamentals).")
 
     def build_earnings_features(self):
         """Historical earnings-expectation features: forward EPS yield, expected
@@ -528,17 +563,7 @@ class StepBuildCube(Step):
             self.earnings, self.peers, self.stock_close.index,
             stock_close=self.stock_close,
         )
-        if panel.empty:
-            self._log.warning("No earnings-expectation features built.")
-            return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s earnings-expectation features (row coverage %.1f%%)",
-                       added, 100 * cov)
+        self._attach_panel(panel, "earnings-expectation", empty_msg="No earnings-expectation features built.")
 
     def build_governance_features(self):
         """Executive-pay & board features from the LLM-extracted DEF 14A archive
@@ -549,18 +574,7 @@ class StepBuildCube(Step):
             self.def14a, self.peers, self.stock_close.index,
             fundamentals_history=self.fundamentals,
         )
-        if panel.empty:
-            self._log.warning("No governance/executive-pay features built "
-                              "(def14a_llm empty — accrues as fetch_def14a_llm runs).")
-            return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s governance/executive-pay features (row coverage %.1f%%)",
-                       added, 100 * cov)
+        self._attach_panel(panel, "governance/executive-pay", empty_msg="No governance/executive-pay features built " "(def14a_llm empty — accrues as fetch_def14a_llm runs).")
 
     def build_employee_features(self):
         """Workforce features (revenue per employee, YoY headcount growth) from the
@@ -570,17 +584,7 @@ class StepBuildCube(Step):
             self.employees, self.peers, self.stock_close.index,
             fundamentals_history=self.fundamentals,
         )
-        if panel.empty:
-            self._log.warning("No workforce features built.")
-            return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s workforce features (row coverage %.1f%%)",
-                       added, 100 * cov)
+        self._attach_panel(panel, "workforce", empty_msg="No workforce features built.")
 
     def build_dividend_features(self):
         """Dividend / shareholder-yield features (TTM yield, 1y + 5y payout growth,
@@ -593,17 +597,7 @@ class StepBuildCube(Step):
             getattr(self, "dividends", None), self.peers, self.stock_close.index,
             stock_close=self.stock_close, fundamentals_history=self.fundamentals,
         )
-        if panel.empty:
-            self._log.warning("No dividend features built (missing dividend history).")
-            return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s dividend features (row coverage %.1f%%)",
-                       added, 100 * cov)
+        self._attach_panel(panel, "dividend", empty_msg="No dividend features built (missing dividend history).")
 
     def build_attention_features(self):
         """Retail-attention features: Wikipedia pageviews and Google Trends search
@@ -619,11 +613,7 @@ class StepBuildCube(Step):
         )
         if panel.empty:
             return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
+        added = self._merge_panel(panel)
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s combined-attention features (wiki+Google Trends "
                        "rank-blend; row coverage %.1f%%)", added, 100 * cov)
@@ -638,17 +628,7 @@ class StepBuildCube(Step):
             getattr(self, "institutional", None), self.peers, self.stock_close.index,
             shares_out_history=self.fundamentals, stock_close=self.stock_close,
         )
-        if panel.empty:
-            self._log.warning("No institutional (13F) features built.")
-            return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s institutional (13F) features (row coverage %.1f%%)",
-                       added, 100 * cov)
+        self._attach_panel(panel, "institutional (13F)", empty_msg="No institutional (13F) features built.")
 
     def _load_superinvestors(self) -> dict | None:
         """Read the persisted superinvestors roster JSON (built by
@@ -685,11 +665,7 @@ class StepBuildCube(Step):
         if panel.empty:
             self._log.warning("No superinvestor (elite 13F) features built.")
             return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
+        added = self._merge_panel(panel)
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         n_mgrs = len(roster.get("cik_to_name") or roster.get("managers", []))
         self._log.info("Merged %s superinvestor (elite 13F) features "
@@ -703,17 +679,7 @@ class StepBuildCube(Step):
             getattr(self, "insider", None), self.peers, self.stock_close.index,
             shares_out_history=self.fundamentals, stock_close=self.stock_close,
         )
-        if panel.empty:
-            self._log.warning("No insider-trading features built.")
-            return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s insider-trading features (row coverage %.1f%%)",
-                       added, 100 * cov)
+        self._attach_panel(panel, "insider-trading", empty_msg="No insider-trading features built.")
 
     def build_short_interest_features(self):
         """Short-selling-pressure features (RegSHO short-volume ratio + its change) plus
@@ -724,26 +690,14 @@ class StepBuildCube(Step):
             fails_history=getattr(self, "fails_to_deliver", None),
             volume=getattr(self, "stock_volume", None),
         )
-        if panel.empty:
-            self._log.warning("No short-interest features built.")
-            return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(
-            panel, on=["date", "ticker"], how="left"
-        )
-        added = len(self.feature_panel.columns) - 2 - before
-        cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
-        self._log.info("Merged %s short-interest features (row coverage %.1f%%)",
-                       added, 100 * cov)
+        self._attach_panel(panel, "short-interest", empty_msg="No short-interest features built.")
 
     def _merge_ec_panel(self, panel: pd.DataFrame, label: str) -> None:
         """Left-merge an earnings-call feature panel into the working feature panel + log coverage."""
         if panel is None or panel.empty:
             self._log.warning("No %s features built (no transcripts / model or API key absent).", label)
             return
-        before = len(self.feature_panel.columns) - 2
-        self.feature_panel = self.feature_panel.merge(panel, on=["date", "ticker"], how="left")
-        added = len(self.feature_panel.columns) - 2 - before
+        added = self._merge_panel(panel)
         cov = panel.drop(columns=["date", "ticker"]).notna().any(axis=1).mean()
         self._log.info("Merged %s %s features (row coverage %.1f%%)", added, label, 100 * cov)
 
@@ -802,6 +756,7 @@ class StepBuildCube(Step):
         before = len(self.feature_panel.columns) - 2
         self.feature_panel = build_composite_signals(
             self.feature_panel, groups, method=cfg.get("method", "zscore"),
+            log=self._log,          # warns about configured members absent from the panel
         )
         added = len(self.feature_panel.columns) - 2 - before
         self._log.info("Built %s composite signals: %s", added,

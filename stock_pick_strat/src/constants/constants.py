@@ -516,3 +516,43 @@ FRESHNESS_FUNDAMENTALS_SOURCE = "fundamentals_history"
 # feature uses (the fundamental peer-relative history window ~1260 trading days is the binding one),
 # else tail values would be computed on a truncated history. Bump it if a longer-window feature is added.
 CUBE_INCREMENTAL_WARMUP_TRADING_DAYS = 1400
+
+
+# --------------------------------------------------------------------------- #
+# GICS sectors / industry groups (values as stored in `sp500_tickers`, carried  #
+# onto every `fundamentals_history` row by the extractor)                      #
+# --------------------------------------------------------------------------- #
+GICS_SECTOR_ENERGY = "Energy"
+GICS_SECTOR_FINANCIALS = "Financials"
+GICS_SECTOR_REAL_ESTATE = "Real Estate"
+GICS_SECTOR_UTILITIES = "Utilities"
+
+GICS_GROUP_BANKS = "Banks"
+GICS_GROUP_FINANCIAL_SERVICES = "Financial Services"
+GICS_GROUP_INSURANCE = "Insurance"
+GICS_GROUP_EQUITY_REITS = "Equity Real Estate Investment Trusts (REITs)"
+GICS_GROUP_REAL_ESTATE_MGMT = "Real Estate Management & Development"
+GICS_GROUP_PHARMA_BIOTECH = "Pharmaceuticals, Biotechnology & Life Sciences"
+
+# The GICS scope each sector-KPI FAMILY is DEFINED for, as (level, accepted values).
+# `sector_gates.py` masks every sector KPI with this instead of asking "did the filer
+# report tag X", which mis-fired in BOTH directions:
+#   * a tag that is not sector-exclusive leaked the KPI into the wrong sector --
+#     `InterestIncomeExpenseNet` is used by 59 non-Financials, so bank NIM / ROA /
+#     operating margin were computed for industrials & health care; `OperatingLease-
+#     LeaseIncome` did the same for FFO on utilities and IT names;
+#   * a tag that IS sector-exclusive but rarely tagged starved it -- only 3 of 21
+#     Energy names tag `OilAndGasProperty*`, so EBITDAX / DD&A intensity were empty
+#     for 86% of the sector.
+# `fundamentals_history` carries sector + industry_group only (no sub-industry), so
+# `energy` is scoped at sector level: services / refiners simply report no exploration
+# expense or oil&gas property, leaving those KPIs NaN as before.
+SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
+    "bank":       ("industry_group", (GICS_GROUP_BANKS,)),
+    "insurance":  ("industry_group", (GICS_GROUP_INSURANCE,)),
+    "financials": ("sector",         (GICS_SECTOR_FINANCIALS,)),
+    "reit":       ("industry_group", (GICS_GROUP_EQUITY_REITS,)),
+    "energy":     ("sector",         (GICS_SECTOR_ENERGY,)),
+    "utilities":  ("sector",         (GICS_SECTOR_UTILITIES,)),
+    "pharma":     ("industry_group", (GICS_GROUP_PHARMA_BIOTECH,)),
+}

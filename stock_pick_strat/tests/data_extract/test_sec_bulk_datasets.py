@@ -26,16 +26,25 @@ FINSTMT_ZIP = REPO / "data" / "sec_financial_statements" / "2024q1.zip"
 # --------------------------------------------------------------------------- #
 # Insider transactions                                                          #
 # --------------------------------------------------------------------------- #
-def test_insider_quarters_are_deterministic_and_bounded():
-    qs = ins._quarters(3, today=pd.Timestamp("2024-05-01"))
+def test_bulk_quarter_periods_are_deterministic_and_bounded():
+    """`quarter_periods` is the SHARED period generator (utils/common/bulk_cache.py).
+    The insider and financial-statement fetchers each had their own identical `_quarters`
+    before the refactor; both now call this one, so the first-year bound is enforced in a
+    single place."""
+    from src.data_extract.utils.common.bulk_cache import quarter_periods
+
+    qs = quarter_periods(3, ins.SEC_INSIDER_FIRST_YEAR, today=pd.Timestamp("2024-05-01"))
     assert qs == ["2021q1", "2021q2", "2021q3", "2021q4", "2022q1", "2022q2",
                   "2022q3", "2022q4", "2023q1", "2023q2", "2023q3", "2023q4",
                   "2024q1", "2024q2", "2024q3", "2024q4"]
-    # never emits before the data set exists
-    assert all(int(q[:4]) >= ins.SEC_INSIDER_FIRST_YEAR
-               for q in ins._quarters(50, today=pd.Timestamp("2024-05-01")))
-    print("\n=== SANITY: insider _quarters bounded to data-set era ===")
-    print(f"  years_history=3 @2024 -> {len(qs)} quarters 2021q1..2024q4. Validated.")
+    # never emits before the data set exists, whichever data set asks
+    for first_year in (ins.SEC_INSIDER_FIRST_YEAR, fin.SEC_FINSTMT_FIRST_YEAR):
+        assert all(int(q[:4]) >= first_year
+                   for q in quarter_periods(50, first_year, today=pd.Timestamp("2024-05-01")))
+    print("\n=== SANITY: shared quarter_periods bounded to each data-set era ===")
+    print(f"  years_history=3 @2024 -> {len(qs)} quarters 2021q1..2024q4; "
+          f"first-year floor honoured for insider ({ins.SEC_INSIDER_FIRST_YEAR}) and "
+          f"finstmt ({fin.SEC_FINSTMT_FIRST_YEAR}). Validated.")
 
 
 def test_insider_parse_and_universe_filter_synthetic():

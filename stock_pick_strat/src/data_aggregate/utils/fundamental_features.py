@@ -115,6 +115,8 @@ from sqlalchemy import bindparam, text
 from src.context import Context
 from src.data_aggregate.utils.factors import fundamentals_to_daily, daily_market_cap
 from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
+from src.data_aggregate.utils.sector_gates import family_tickers, mask_columns
+from src.data_aggregate.utils import capital
 
 _PENSION_FACTS_TABLE = "pension_facts"     # bulk Financial-Statement-Data-Sets pension facts (literal)
 _NOTES_NUM_TABLE = "notes_num"             # footnote NUMERIC facts (10 tags; the panel uses 2)
@@ -369,7 +371,7 @@ def _beneish_m_score(daily, idx: pd.DatetimeIndex) -> pd.DataFrame:
     as this year vs one year ago (trailing 252 trading days). Higher M = more
     likely a manipulator (the classic screen is M > -1.78). Missing index ->
     neutral (1.0; TATA -> 0), so M is defined wherever revenue+assets exist."""
-    rev, assets = daily("totalRevenue"), daily("totalAssets")
+    rev, assets = daily("totalRevenue"), capital.assets_ex_lease(daily)
     if rev.empty or assets.empty:
         return pd.DataFrame()
     ar, gp = daily("accountsReceivable"), daily("grossProfit")
@@ -543,24 +545,14 @@ def _forensic_fields(daily, idx: pd.DatetimeIndex,
         if ccc.notna().any().any():
             F["cash_conversion_cycle"] = ccc
 
-    # off-BS-inclusive net leverage = (total debt + lease liabilities + pension deficit
-    # - cash) / EBITDA. Pension deficit = underfunding only (negative funded status);
-    # pension is absent until the tag is extracted, so this reduces to debt+leases then.
-    debt = _combine_debt(daily("longTermDebt"), daily("shortTermDebt"), daily("totalLiabilities"))
-    leases = daily("operatingLeaseLiability").add(daily("financeLeaseLiability"), fill_value=0.0)
-    cash, ebitda = daily("cash"), daily("ebitda")
-    if not debt.empty and not ebitda.empty:
-        net_od = debt.add(leases, fill_value=0.0)
-        # bulk Financial-Statement-Data-Sets pension deficit preferred (universe-wide);
-        # the companyfacts `pensionDeficit` column fills any remaining gaps.
-        pension = daily("pensionDeficit")
-        if pension_deficit is not None and not pension_deficit.empty:
-            pension = (pension_deficit.combine_first(pension) if not pension.empty
-                       else pension_deficit)
-        if not pension.empty:
-            net_od = net_od.add(pension.clip(lower=0.0), fill_value=0.0)
-        if not cash.empty:
-            net_od = net_od.sub(cash, fill_value=0.0)
+    # Off-balance-sheet-INCLUSIVE net leverage, from the single shared definition in
+    # `capital.py`: borrowings + capitalized leases + pension/OPEB deficit + asset-
+    # retirement obligations - non-operating liquid assets, over EBITDA. The bulk
+    # Financial-Statement-Data-Sets deficit is passed in (universe-wide) and the
+    # companyfacts tag fills its gaps inside the helper.
+    ebitda = daily("ebitda")
+    net_od = capital.net_debt(daily, off_balance_sheet=True, pension=pension_deficit)
+    if net_od is not None and not ebitda.empty:
         nlev = _ratio(net_od, ebitda, positive_den=True)
         if nlev.notna().any().any():
             F["net_debt_incl_offbs_to_ebitda"] = nlev
@@ -578,20 +570,19 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     sheet weight (writedown exposure), and SG&A elasticity to revenue (<1 =
     synergies captured, ~1 = bolt-on with no integration)."""
     F: dict[str, pd.DataFrame] = {}
-    oi, assets = daily("operatingIncome"), daily("totalAssets")
-    equity, cash = daily("stockholdersEquity"), daily("cash")
+    # asset base EX the ASC-842 ROU asset, so the FY2019 adoption jump does not read as
+    # balance-sheet growth (see `totalAssetsExLease` in the extractor).
+    oi, assets = daily("operatingIncome"), capital.assets_ex_lease(daily)
+    equity = daily("stockholdersEquity")
     goodwill, intang = daily("goodwill"), daily("intangiblesExGoodwill")
     tax = _effective_tax_rate(daily)
-    debt = _combine_debt(daily("longTermDebt"), daily("shortTermDebt"), pd.DataFrame())
 
     if not oi.empty and not equity.empty:
         nopat = oi * (1.0 - tax) if not tax.empty else oi
-        ic = equity.copy()
-        if not debt.empty:
-            ic = ic.add(debt, fill_value=0.0)
-        if not cash.empty:
-            ic = ic.sub(cash, fill_value=0.0)
-        roic_incl = _ratio(nopat, ic, positive_den=True)
+        # invested capital now INCLUDES capitalized leases (shared definition), matching
+        # how leases are already treated as debt in EV and in the leverage ratios.
+        ic = capital.invested_capital(daily)
+        roic_incl = _ratio(nopat, ic, positive_den=True) if ic is not None else pd.DataFrame()
         if roic_incl.notna().any().any():
             F["roic_incl_goodwill"] = roic_incl
             ic_ex = ic
@@ -647,7 +638,12 @@ def _core_earnings_fields(daily, mcap: pd.DataFrame) -> dict:
     if not litig.empty:
         charges = charges.add(litig, fill_value=0.0)
     # signed gains removed from core (gain +, loss -): disposals, bargain purchase, net unusual
-    for extra in ("gainOnSaleGeneric", "bargainPurchaseGain", "unusualItems"):
+    # equity-method income has no revenue and no cash; realized investment gains and debt
+    # extinguishment are management-timed; `otherNonoperating` is where ASU 2017-07 parked
+    # non-service pension cost. None of them belong in CORE operating earnings.
+    for extra in ("gainOnSaleGeneric", "bargainPurchaseGain", "unusualItems",
+                  "equityMethodIncome", "realizedInvestmentGains", "debtExtinguishment",
+                  "otherNonoperating"):
         g = daily(extra)
         if not g.empty:
             gains = gains.add(g, fill_value=0.0) if not gains.empty else g
@@ -679,6 +675,158 @@ def _core_earnings_fields(daily, mcap: pd.DataFrame) -> dict:
     if not ebitda.empty:
         F["adjusted_ebitda_margin"] = _ratio(
             ebitda.add(charges, fill_value=0.0).sub(gains, fill_value=0.0), rev_pos)
+    return F
+
+
+def _credit_tax_and_pershare_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
+                                    yoy_periods: int, mcap: pd.DataFrame,
+                                    close: pd.DataFrame | None) -> dict:
+    """The §B tier-1 families the extractor previously ignored despite 80-99% coverage.
+
+    Credit    the DEBT MATURITY WALL vs the liquidity available to meet it. `refinancing_risk`
+              only ever saw `shortTermDebt`, so a wall sitting two or three years out was
+              invisible; the 1y and 5y ladders are disclosed by ~81% of filers.
+    Tax       CASH taxes actually paid vs the accrual charge. A persistently low cash rate on
+              a normal book rate is deferral / aggressive positions catching up later, and a
+              valuation-allowance release flatters EPS with no cash behind it.
+    Per share reported diluted EPS (98.8%) and the OPTION OVERHANG (diluted - basic) / basic,
+              which net share count hides once buybacks offset the SBC issuance.
+    """
+    F: dict[str, pd.DataFrame] = {}
+    cash, fcf = daily("cash"), daily("freeCashflow")
+    # self-fundable liquidity: cash on hand plus one year of positive free cash flow
+    liquidity = cash.add(fcf.where(fcf > 0), fill_value=0.0)
+
+    wall_1y = daily("debtMaturity1y")
+    if not wall_1y.empty and not liquidity.empty:
+        w1 = _ratio(wall_1y, liquidity, positive_den=True)
+        if w1.notna().any().any():
+            F["debt_maturity_wall_1y"] = w1        # >1 => must refinance, cannot self-fund
+    wall_5y = daily("debtMaturity5yTotal")
+    if not wall_5y.empty and not cash.empty:
+        five_yr_liquidity = cash.add(fcf.where(fcf > 0) * 5.0, fill_value=0.0)
+        w5 = _ratio(wall_5y, five_yr_liquidity, positive_den=True)
+        if w5.notna().any().any():
+            F["debt_maturity_wall_5y"] = w5
+    # how FRONT-LOADED the ladder is: a big share due next year is the acute risk
+    if not wall_1y.empty and not wall_5y.empty:
+        front = _ratio(wall_1y, wall_5y, positive_den=True)
+        if front.notna().any().any():
+            F["debt_maturity_front_loading"] = front
+
+    taxes_paid, pretax = daily("incomeTaxesPaid"), daily("pretaxIncome")
+    if not taxes_paid.empty and not pretax.empty:
+        cash_rate = _ratio(taxes_paid, pretax.where(pretax > 0)).clip(-0.5, 1.0)
+        if cash_rate.notna().any().any():
+            F["cash_tax_rate"] = cash_rate
+            book_rate = _effective_tax_rate(daily)
+            if not book_rate.empty:
+                cols = book_rate.columns.intersection(cash_rate.columns)
+                # >0 => book charge exceeds cash paid (deferral); <0 => paying more than booked
+                F["cash_book_tax_gap"] = book_rate[cols] - cash_rate[cols]
+    va, dta = daily("valuationAllowance"), daily("deferredTaxAssets")
+    if not va.empty and not dta.empty:
+        vr = _ratio(va, dta, positive_den=True)
+        if vr.notna().any().any():
+            F["valuation_allowance_ratio"] = vr   # a fall = a release = non-cash EPS boost
+    utb, assets_xl = daily("unrecognizedTaxBenefits"), capital.assets_ex_lease(daily)
+    if not utb.empty and not assets_xl.empty:
+        ur = _ratio(utb, assets_xl, positive_den=True)
+        if ur.notna().any().any():
+            F["unrecognized_tax_benefits_ratio"] = ur    # tax aggressiveness
+
+    # (diluted - basic) / basic, already computed by the extractor on the periods where BOTH
+    # counts are reported -- dividing the two independently forward-filled columns here would
+    # compare a stale diluted count against a fresh basic one.
+    overhang = daily("optionOverhang")
+    if not overhang.empty and overhang.notna().any().any():
+        F["option_overhang"] = overhang
+    eps = daily("epsDiluted")
+    if not eps.empty and close is not None:
+        cols = eps.columns.intersection(close.columns)
+        ey = _ratio(eps[cols].where(eps[cols] > 0), close[cols], positive_den=True)
+        if ey.notna().any().any():
+            F["eps_yield"] = ey        # reported diluted EPS / price: E/P net of preferred
+    dps_growth = _fiscal_change_to_daily(fund_hist, "dividendsPerShare", idx,
+                                         kind="pct", periods=yoy_periods)
+    if dps_growth.notna().any().any():
+        F["dps_growth"] = dps_growth
+
+    # non-cash / non-controlled slices of reported profit
+    ni = daily("netIncome")
+    for name, field in (("nci_income_share", "nciIncome"),
+                        ("equity_method_income_share", "equityMethodIncome")):
+        src = daily(field)
+        if not src.empty and not ni.empty:
+            share = _ratio(src, ni.abs().where(ni.abs() > 0))
+            if share.notna().any().any():
+                F[name] = share
+    ci = daily("comprehensiveIncome")
+    if not ci.empty and not ni.empty:
+        # OCI drag: comprehensive income far below net income = FX / pension / AFS marks
+        # eroding book value that the income statement never showed.
+        oci = _ratio(ci.sub(ni, fill_value=np.nan), ni.abs().where(ni.abs() > 0))
+        if oci.notna().any().any():
+            F["oci_to_net_income"] = oci
+
+    ar, allow = daily("accountsReceivable"), daily("allowanceDoubtfulAccounts")
+    if not ar.empty and not allow.empty:
+        rr = _ratio(allow, ar.add(allow, fill_value=0.0), positive_den=True)
+        if rr.notna().any().any():
+            F["receivable_allowance_ratio"] = rr      # rising = collectability doubts
+    seg = daily("reportableSegments")
+    if not seg.empty and seg.notna().any().any():
+        F["reportable_segments"] = seg                # conglomerate complexity
+    return F
+
+
+def _adjustment_size_fields(daily, mcap: pd.DataFrame) -> dict:
+    """The SIZE of each analyst restatement, kept as a feature in its own right.
+
+    The base fields are restated in the extractor (FIFO inventory, pre-2018 operating income
+    ex non-service pension cost, excise-tax-free revenue, an asset base free of the ASC-842
+    ROU asset) so every series is internally comparable. The magnitude of each adjustment is
+    itself informative -- a large LIFO reserve is an inflation-hidden inventory gain, a large
+    non-service pension charge is a legacy-workforce drag, a large ROU asset is an
+    off-balance-sheet-financed operating model -- so it is exposed rather than discarded."""
+    F: dict[str, pd.DataFrame] = {}
+    assets_xl, revenue = capital.assets_ex_lease(daily), daily("totalRevenue")
+
+    rou = daily("operatingLeaseRouAsset")
+    if not rou.empty and not assets_xl.empty:
+        li = _ratio(rou, assets_xl, positive_den=True)
+        if li.notna().any().any():
+            F["lease_asset_intensity"] = li           # how lease-financed the asset base is
+    lifo, inventory = daily("lifoReserve"), daily("inventory")
+    if not lifo.empty and not inventory.empty:
+        lr = _ratio(lifo, inventory, positive_den=True)
+        if lr.notna().any().any():
+            F["lifo_reserve_ratio"] = lr
+    nsp = daily("nonServicePensionCost")
+    if not nsp.empty and not revenue.empty:
+        nr = _ratio(nsp, revenue.where(revenue > 0))
+        if nr.notna().any().any():
+            F["non_service_pension_to_revenue"] = nr
+    excise = daily("exciseTaxAdjustment")
+    if not excise.empty and not revenue.empty:
+        er = _ratio(excise, revenue.where(revenue > 0))
+        if er.notna().any().any():
+            F["excise_tax_to_revenue"] = er
+    aro = daily("assetRetirementObligation")
+    if not aro.empty and mcap is not None and not mcap.empty:
+        ar = _ratio(aro, mcap, positive_den=True)
+        if ar.notna().any().any():
+            F["aro_to_mcap"] = ar                     # decommissioning overhang
+    ig, iaa = daily("intangiblesGross"), daily("intangiblesAccumAmort")
+    if not ig.empty and not iaa.empty:
+        age = _ratio(iaa, ig, positive_den=True)
+        if age.notna().any().any():
+            F["intangible_asset_age"] = age           # mirrors the PP&E `asset_age`
+    gwa = daily("goodwillAcquired")
+    if not gwa.empty and not assets_xl.empty:
+        gi = _ratio(gwa, assets_xl, positive_den=True)
+        if gi.notna().any().any():
+            F["goodwill_acquired_intensity"] = gi
     return F
 
 
@@ -788,8 +936,11 @@ def _derived_fields(
         F["book_yield"] = _ratio(equity.where(equity > 0), mcap, positive_den=True)
         F["fcf_yield"] = _ratio(fcf.where(fcf > 0), mcap, positive_den=True)
         # ---- True (fully-diluted) enterprise value; feeds every EV yield ----
-        #   EV = fully-diluted mcap + total debt + leases + minority interest
-        #        + pension/OPEB net deficit - cash - short-term investments
+        #   EV = fully-diluted mcap
+        #        + total debt (borrowings + capitalized leases, shared `capital` definition)
+        #        + minority interest + redeemable NCI / temporary equity + PREFERRED equity
+        #        + pension/OPEB net deficit
+        #        - non-operating liquid assets (cash + ST investments + current marketables)
         # Prefer diluted shares x price for the equity claim (falls back to basic
         # mcap when diluted shares are absent); real debt columns preferred, with
         # debtToEquity*equity as a last-resort fallback.
@@ -799,12 +950,20 @@ def _derived_fields(
             cols = diluted.columns.intersection(close.columns)
             fd = (close[cols] * diluted[cols]).where(lambda x: x > 0)
             fd_mcap = fd.combine_first(mcap)          # diluted where available, else basic
-        debt = _combine_debt(long_debt, short_debt, fallback=pd.DataFrame())
-        if debt.empty and not d2e.empty and not equity.empty:
-            debt = d2e.clip(lower=0.0) * equity.where(equity > 0)
-        leases = daily("operatingLeaseLiability").add(daily("financeLeaseLiability"), fill_value=0.0)
-        ev = _enterprise_value(fd_mcap, [debt, leases, daily("minorityInterest"), pension_ret],
-                               [cash, daily("shortTermInvestments")])
+        debt = capital.total_debt(daily)
+        if debt is None or debt.empty:
+            debt = (d2e.clip(lower=0.0) * equity.where(equity > 0)
+                    if not d2e.empty and not equity.empty else pd.DataFrame())
+        # PREFERRED stock and redeemable NCI rank ahead of / alongside common and were
+        # simply missing. `preferredEquity` is the balance-sheet carrying amount, which for
+        # a par-value-only filer understates the claim -- but never overstates it, so
+        # including it is strictly closer to the true EV than omitting it.
+        liquid = capital.liquid_assets(daily)
+        ev = _enterprise_value(
+            fd_mcap,
+            [debt, daily("minorityInterest"), daily("redeemableNCI"),
+             daily("preferredEquity"), pension_ret],
+            [liquid if liquid is not None else cash])
         # Pension Overhang Leverage = pension/OPEB deficit / market cap (debt-like burden on
         # the equity value); higher = a bigger retirement obligation overhanging the stock.
         if not pension_ret.empty:
@@ -834,7 +993,9 @@ def _derived_fields(
 
         # ---- Altman Z (market-value variant): standard bankruptcy-risk screen ----
         #   Z = 1.2*WC/TA + 1.4*RE/TA + 3.3*EBIT/TA + 0.6*mcap/TL + 1.0*Sales/TA
-        assets_z = daily("totalAssets")
+        # ASC-842-adoption-free asset base (see `totalAssetsExLease`): the FY2019 ROU
+        # jump otherwise pushes every lease-heavy name toward "distressed" on Z.
+        assets_z = capital.assets_ex_lease(daily)
         if not assets_z.empty:
             ta = assets_z.where(assets_z > 0)
             wc = daily("currentAssets").sub(daily("currentLiabilities"), fill_value=np.nan)
@@ -871,27 +1032,36 @@ def _derived_fields(
         if not pegy.empty and pegy.notna().any().any():
             F["pegy"] = pegy.replace([np.inf, -np.inf], np.nan)
 
-        # ---- REIT price multiples (gated on real-estate signature) ----
-        re_gate = daily("realEstateNet").notna() | daily("rentalIncome").notna()
+        # ---- REIT price multiples (scoped to the GICS equity-REIT group) ----
+        # Previously gated on `realEstateNet | rentalIncome` being tagged, which handed
+        # FFO / implied cap rate to ~56 non-real-estate names (utilities, IT and
+        # industrial lessors tag `OperatingLeaseLeaseIncome`) while missing 9 of 31 REITs.
         depamort_ev = daily("depAmort")
-        ffo = net_income.add(depamort_ev, fill_value=0.0).sub(
-            daily("gainOnDispositions"), fill_value=0.0)
+        # NAREIT FFO: + real-estate D&A, - gains on property sales, + impairment write-downs
+        ffo = (net_income.add(depamort_ev, fill_value=0.0)
+               .sub(daily("gainOnDispositions"), fill_value=0.0)
+               .add(daily("realEstateImpairment"), fill_value=0.0))
         ffo_yield = _ratio(ffo, mcap, positive_den=True)
-        if not re_gate.empty:
-            fy = ffo_yield.where(re_gate)
+        if family_tickers(fund_hist, "reit"):
+            fy = mask_columns(ffo_yield, fund_hist, "reit")
             if fy.notna().any().any():
                 F["ffo_yield"] = fy                                   # FFO/price = 1 / P-FFO
-            icr = _ratio(daily("operatingIncome").add(depamort_ev, fill_value=0.0), ev,
-                         positive_den=True).where(re_gate)            # NOI(≈EBITDAre) / EV
+            icr = mask_columns(                                       # NOI(≈EBITDAre) / EV
+                _ratio(daily("operatingIncome").add(depamort_ev, fill_value=0.0)
+                       .add(daily("realEstateImpairment"), fill_value=0.0), ev,
+                       positive_den=True), fund_hist, "reit")
             if icr.notna().any().any():
                 F["implied_cap_rate"] = icr
 
-        # ---- Energy EV/EBITDAX yield (gated on oil-gas property) ----
-        energy_gate = daily("oilGasPropertyNet").notna()
-        if not energy_gate.empty and energy_gate.any().any():
+        # ---- Energy EV/EBITDAX yield (scoped to the GICS Energy sector) ----
+        # Was gated on `oilGasPropertyNet` being tagged: only 3 of 21 Energy names do,
+        # so this covered 14% of the sector. Services / refiners report no exploration
+        # expense, so for them EBITDAX collapses to EBITDA -- which is correct.
+        if family_tickers(fund_hist, "energy"):
             ebitdax = (daily("operatingIncome").add(depamort_ev, fill_value=0.0)
                        .add(daily("explorationExpense"), fill_value=0.0))
-            ex = _ratio(ebitdax.where(ebitdax > 0), ev, positive_den=True).where(energy_gate)
+            ex = mask_columns(_ratio(ebitdax.where(ebitdax > 0), ev, positive_den=True),
+                              fund_hist, "energy")
             if ex.notna().any().any():
                 F["ebitdax_to_ev"] = ex
 
@@ -961,7 +1131,7 @@ def _derived_fields(
     # gross profitability (Novy-Marx) = gross profit / total assets. Defined and
     # monotone even for a net-loss-making firm, so it scores the growth /
     # unprofitable cohort where the earnings-based yields above are masked out.
-    assets = daily("totalAssets")
+    assets = capital.assets_ex_lease(daily)
     gm_lvl = F.get("grossMargins")
     if gm_lvl is not None and not revenue.empty and not assets.empty:
         cols = gm_lvl.columns.intersection(revenue.columns)
@@ -973,7 +1143,10 @@ def _derived_fields(
     # ---- A2: asset growth (Fama-French CMA "investment" factor). Firms that expand
     # the asset base aggressively subsequently UNDERperform (empire-building / over-
     # investment); sign is -1 in the model. ----
-    asset_growth = _fiscal_change_to_daily(fund_hist, "totalAssets", idx,
+    # on the ex-lease base, so the FY2019 ASC-842 adoption jump is not read as investment
+    _assets_field = ("totalAssetsExLease" if "totalAssetsExLease" in fund_hist.columns
+                     else "totalAssets")
+    asset_growth = _fiscal_change_to_daily(fund_hist, _assets_field, idx,
                                            kind="pct", periods=yoy_periods)
     if asset_growth.notna().any().any():
         F["asset_growth"] = asset_growth
@@ -996,7 +1169,7 @@ def _derived_fields(
     # (ROA>0, CFO>0, ΔROA>0, CFO/assets>ROA), lower leverage / better liquidity / no
     # dilution, and rising gross margin / asset turnover. Higher = stronger; scored only
     # where the core inputs (assets, NI, CFO) exist so a data-less name isn't a false 0. ----
-    _oa = daily("totalAssets"); _ocf = daily("operatingCashFlow"); _sh = daily("sharesOutstanding")
+    _oa = capital.assets_ex_lease(daily); _ocf = daily("operatingCashFlow"); _sh = daily("sharesOutstanding")
     _roa = _ratio(net_income, _oa, positive_den=True)
     _cr = _ratio(daily("currentAssets"), daily("currentLiabilities"), positive_den=True)
     _lev = _ratio(long_debt, _oa, positive_den=True)
@@ -1136,7 +1309,7 @@ def _derived_fields(
 
     # ---- M&A footprint (organic vs inorganic growth; impairment risk) ----
     acq = daily("acquisitions")
-    assets = daily("totalAssets")
+    assets = capital.assets_ex_lease(daily)
     acq_den = assets if not assets.empty else revenue
     acq_intensity = _ratio(acq.abs() if not acq.empty else acq, acq_den, positive_den=True)
     if not acq_intensity.empty and acq_intensity.notna().any().any():
@@ -1216,6 +1389,8 @@ def _derived_fields(
     F.update(_digestion_fields(daily, fund_hist, idx, yoy_periods))
     F.update(_core_earnings_fields(daily, mcap))
     F.update(_ai_leverage_fields(daily))
+    F.update(_credit_tax_and_pershare_fields(daily, fund_hist, idx, yoy_periods, mcap, close))
+    F.update(_adjustment_size_fields(daily, mcap))
 
     return F
 

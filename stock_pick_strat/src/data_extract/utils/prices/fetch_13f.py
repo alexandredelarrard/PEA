@@ -32,12 +32,13 @@ import logging
 
 import numpy as np
 import pandas as pd
-import requests
-from sqlalchemy import inspect, text
 from tqdm import tqdm
 
 from src.constants.constants import SEC_FORM13F_URL_DICT
 from src.context import Context
+from src.data_extract.utils.common.bulk_cache import (
+    cache_dir, ensure_zip, ingested_periods,
+)
 from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map
 from src.data_extract.utils.common.sec_utils import (
     load_processed_universe, save_processed_universe)
@@ -140,34 +141,6 @@ def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list
 # --------------------------------------------------------------------------- #
 # Zip cache: download once to disk, reuse thereafter                           #
 # --------------------------------------------------------------------------- #
-def _cache_dir(context: Context) -> Path:
-    d = context.paths["SEC_13F_INSIDERS_DIR"]
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _ensure_zip(name: str, cache_dir: Path) -> Path | None:
-    """Return the local path to this window's zip, downloading it once if absent.
-    Streams to a .part file and renames on success so a partial download is never
-    mistaken for a cached one."""
-    path = cache_dir / f"{name}_form13f.zip"
-    if path.exists() and path.stat().st_size > 0:
-        return path
-    try:
-        r = requests.get(SEC_FORM13F_URL_DICT.get(name), headers=_HEADERS,
-                         timeout=180, stream=True)
-    except Exception as e:
-        logger.warning(f"13F {name} download failed: {e}")
-        return None
-    if r.status_code != 200:
-        logger.warning(f"13F {name} download failed: {r.status_code}")
-        return None
-    tmp = path.with_suffix(".part")
-    with open(tmp, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1 << 20):
-            f.write(chunk)
-    tmp.replace(path)
-    return path
 
 
 def _read_zip(path: Path) -> tuple[pd.DataFrame, pd.DataFrame] | None:
@@ -186,20 +159,6 @@ def _read_zip(path: Path) -> tuple[pd.DataFrame, pd.DataFrame] | None:
         return None
 
 
-def _ingested_quarters(store) -> set[str]:
-    """Zip-tag quarters already ingested into institutional_holdings (skippable). A
-    published quarter's 13F set is final, so a re-run needn't re-parse/re-ingest it.
-    Empty when the table or the `quarter` column is absent (re-ingest once to add it)."""
-    if not store.exists("institutional_holdings"):
-        return set()
-    cols = {c["name"] for c in inspect(store.engine).get_columns("institutional_holdings")}
-    if "quarter" not in cols:
-        return set()
-    with store.engine.connect() as c:
-        return set(pd.read_sql(text('SELECT DISTINCT quarter FROM institutional_holdings'), c)
-                   ["quarter"].dropna())
-
-
 def fetch_13f(context: Context) -> pd.DataFrame:
     """Download (once, cached) the 13F data sets, split by holding type, map to
     tickers, keep the universe, and store.
@@ -213,9 +172,9 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     store = context.store
     universe = set(store.load("sp500_tickers", columns=["ticker"])["ticker"])
     years_history = context.config.data_extract.years_history + 1
-    cache_dir = _cache_dir(context)
+    cache = cache_dir(context, "SEC_13F_INSIDERS_DIR")
 
-    done = _ingested_quarters(store)
+    done = ingested_periods(context, "institutional_holdings", "quarter")
     new_tickers = universe - load_processed_universe(cache_dir, "institutional_holdings")
     if new_tickers:
         logger.info("13F: %d new/changed tickers -> re-parsing cached quarters", len(new_tickers))
@@ -224,7 +183,9 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     for tag in tqdm(_period_names(years_history), desc="13F data sets"):
         if tag in done and not new_tickers:
             continue                                   # downloaded + ingested already -> skip
-        path = _ensure_zip(tag, cache_dir)
+        path = ensure_zip(cache / f"{tag}_form13f.zip",
+                          SEC_FORM13F_URL_DICT.get(tag),
+                          label=f"13F {tag}", timeout=180, log=logger)
         if path is None:
             continue
         got = _read_zip(path)

@@ -248,32 +248,50 @@ def test_capex_and_amort_sector_total_tags_fill_only():
 
 
 def test_cash_disc_ops_and_equivalents_variant_tags_fill_only():
-    """Cash resolves via the discontinued-ops variants of the primary/restricted cash lines
-    (FISV/PCAR/MDLZ/GE mid-divestiture) and the REIT cash-equivalents line (O); all fill-only so
-    the primary CashAndCashEquivalentsAtCarryingValue still wins where present."""
-    from src.data_extract.utils.fundamentals.fetch_fundamentals import _extract_concept, STOCK_TAGS
+    """Cash resolves via the discontinued-ops variant of the primary line (FISV/PCAR/MDLZ/GE
+    mid-divestiture) and the REIT cash-equivalents line (O), both fill-only so the primary
+    CashAndCashEquivalentsAtCarryingValue still wins where present.
+
+    The RESTRICTED-inclusive totals are deliberately NOT in this pool any more: coalescing
+    them here treated restricted cash as spare cash for the 95.6% of filers that report the
+    combined element. They now feed `cashInclRestricted`, which `_derive_history` nets down
+    to clean cash (and abstains when the restricted amount is unknown)."""
+    from src.data_extract.utils.fundamentals.fetch_fundamentals import _extract_concept, EXTRA_STOCK_TAGS, STOCK_TAGS
     def _sec(m): return {t: {"units": {"USD": o}} for t, o in m.items()}
     cash = STOCK_TAGS["cash"]
     for tag, val in [("CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations", 358.0),
-                     ("CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations", 2049.0),
                      ("CashEquivalentsAtCarryingValue", 19.0)]:
         d = _extract_concept(_sec({tag: _inst(val, [2019])}), cash)
         assert not d.empty and d["val"].iloc[0] == val, f"{tag} did not resolve as cash"
+    # the restricted-inclusive totals must NOT resolve as cash, and must resolve as their own pool
+    for tag in ("CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+                "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations"):
+        assert _extract_concept(_sec({tag: _inst(2049.0, [2019])}), cash).empty, \
+            f"{tag} must not resolve as unrestricted cash"
+        d = _extract_concept(_sec({tag: _inst(2049.0, [2019])}), EXTRA_STOCK_TAGS["cashInclRestricted"])
+        assert not d.empty and d["val"].iloc[0] == 2049.0, f"{tag} did not resolve as cashInclRestricted"
     # fill-only priority: the primary cash line wins over the disc-ops variant
     both = _sec({"CashAndCashEquivalentsAtCarryingValue": _inst(500.0, [2019]),
                  "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations": _inst(358.0, [2019])})
     v = _extract_concept(both, cash); v = v["val"].iloc[0]
     assert v == 500.0, "primary cash line must win over the disc-ops fill variant"
-    print("\n=== SANITY CHECK: cash disc-ops / REIT-equivalents variants ===")
-    print("  cash resolves via the disc-ops variants (FISV/PCAR/MDLZ/GE) + REIT equivalents line (O); "
-          "primary CashAndCashEquivalentsAtCarryingValue still wins where present (fill-only). "
-          "M&A/dividend/restricted-only cash-flow tags correctly excluded.")
+    print("\n=== SANITY CHECK: cash pools ===")
+    print("  cash resolves via the disc-ops variant (FISV/PCAR/MDLZ/GE) + REIT equivalents line (O), "
+          "primary CashAndCashEquivalentsAtCarryingValue still winning (fill-only).")
+    print("  the two restricted-INCLUSIVE totals no longer resolve as cash at all -- they feed "
+          "`cashInclRestricted` and are netted down in _derive_history, so EV stops treating "
+          "restricted cash as spare cash.")
 
 
-def test_capex_global_adds_finance_lease_capacity():
-    """capexGlobal = cash capex + capacity funded via FINANCE leases (MSFT-style data-center
-    leasing). Adds where a filer uses leases; equals cash capex (0-filled, not NaN) where it
-    doesn't; `capex` itself is unchanged so FCF is untouched."""
+def test_capex_global_adds_lease_funded_capacity():
+    """capexGlobal = cash capex + capacity funded via FINANCE leases (MSFT-style data-centre
+    leasing) + capacity funded via OPERATING leases (the bigger leg for retail / restaurants
+    / airlines, 87.3% of filers tag it). Both are 0-filled, so capexGlobal equals cash capex
+    for a filer that leases nothing; `capex` itself is unchanged so FCF is untouched.
+
+    Counting only the finance leg made the measure asymmetric: a hyperscaler leasing servers
+    under finance leases showed all its capacity growth, a retailer opening stores under
+    operating leases showed none of it."""
     base = {"Revenues": {"units": {"USD": _year(1000.0, [2020, 2021])}},
             "PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": _year(100.0, [2020, 2021])}},
             "Assets": {"units": {"USD": _inst(5000.0, [2020, 2021])}}}
@@ -284,10 +302,28 @@ def test_capex_global_adds_finance_lease_capacity():
     assert r["financeLeaseAdditions"] > 0
     assert abs(r["capexGlobal"] - (r["capex"] + r["financeLeaseAdditions"])) < 1e-6
     assert r["capexGlobal"] > r["capex"]
-    # (2) no leases -> capexGlobal == cash capex (finance-lease term 0-filled, not NaN)
+    # (2) no leases -> capexGlobal == cash capex (both lease terms 0-filled, not NaN)
     r2 = _build(base).dropna(subset=["capex"]).iloc[-1]
     assert r2["financeLeaseAdditions"] == 0.0 and abs(r2["capexGlobal"] - r2["capex"]) < 1e-6
-    print("\n=== SANITY CHECK: capexGlobal (cash capex + finance leases) ===")
-    print(f"  with leases: capex {r['capex']:.0f} + finLease {r['financeLeaseAdditions']:.0f} "
-          f"= capexGlobal {r['capexGlobal']:.0f}; no leases: capexGlobal == capex (0-filled). "
-          "cash capex/FCF unchanged. (MSFT real: +$26B/yr capacity via finance leases.)")
+    # (3) OPERATING-lease additions also add, and both legs add together
+    g3 = dict(base)
+    g3["RightOfUseAssetObtainedInExchangeForOperatingLeaseLiability"] = {
+        "units": {"USD": _year(45.0, [2020, 2021])}}
+    r3 = _build(g3).dropna(subset=["capex"]).iloc[-1]
+    assert r3["operatingLeaseAdditions"] > 0
+    assert abs(r3["capexGlobal"] - (r3["capex"] + r3["operatingLeaseAdditions"])) < 1e-6
+    g4 = dict(g3)
+    g4["RightOfUseAssetObtainedInExchangeForFinanceLeaseLiability"] = {
+        "units": {"USD": _year(30.0, [2020, 2021])}}
+    r4 = _build(g4).dropna(subset=["capex"]).iloc[-1]
+    assert abs(r4["capexGlobal"] - (r4["capex"] + r4["financeLeaseAdditions"]
+                                    + r4["operatingLeaseAdditions"])) < 1e-6
+    assert abs(r4["capex"] - r["capex"]) < 1e-6      # cash capex (and so FCF) untouched
+    print("\n=== SANITY CHECK: capexGlobal (cash capex + finance + operating leases) ===")
+    print(f"  finance only: capex {r['capex']:.0f} + finLease {r['financeLeaseAdditions']:.0f} "
+          f"= {r['capexGlobal']:.0f}")
+    print(f"  operating only: capex {r3['capex']:.0f} + opLease "
+          f"{r3['operatingLeaseAdditions']:.0f} = {r3['capexGlobal']:.0f}")
+    print(f"  both: capex {r4['capex']:.0f} + finLease {r4['financeLeaseAdditions']:.0f} + "
+          f"opLease {r4['operatingLeaseAdditions']:.0f} = {r4['capexGlobal']:.0f}; "
+          f"no leases: capexGlobal == capex ({r2['capexGlobal']:.0f}). cash capex/FCF unchanged.")

@@ -29,20 +29,20 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
-import requests
-from sqlalchemy import text
 from tqdm import tqdm
 
 from src.constants.constants import (
     SEC_FTD_URL_TEMPLATE, SEC_FTD_LEGACY_URL_TEMPLATE,
     SEC_FTD_LEGACY_LAST_PERIOD, SEC_FTD_FIRST_YEAR)
 from src.context import Context
+from src.data_extract.utils.common.bulk_cache import (
+    cache_dir, ensure_zip, ingested_periods,
+)
 from src.data_extract.utils.common.sec_utils import (
     load_processed_universe, save_processed_universe)
 
 logger = logging.getLogger(__name__)
 
-_HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; valar_analytics@gmail.com)"}
 _TABLE = "fails_to_deliver"
 _OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
 
@@ -96,10 +96,6 @@ def _parse_ftd(raw: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
-def _cache_dir(context: Context) -> Path:
-    d = context.paths["DATA_STORE"] / "sec_fails_to_deliver"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 def _period_urls(period: str) -> tuple[str, ...]:
@@ -110,28 +106,6 @@ def _period_urls(period: str) -> tuple[str, ...]:
     modern = SEC_FTD_URL_TEMPLATE.format(period=period)
     legacy = SEC_FTD_LEGACY_URL_TEMPLATE.format(period=period)
     return (legacy, modern) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy)
-
-
-def _ensure_zip(period: str, cache_dir: Path) -> Path | None:
-    path = cache_dir / f"cnsfails{period}.zip"
-    if path.exists() and path.stat().st_size > 0:
-        return path
-    for url in _period_urls(period):               # period-appropriate path first, then fallback
-        try:
-            r = requests.get(url, headers=_HEADERS, timeout=180, stream=True)
-        except Exception as e:
-            logger.warning("FTD %s download failed (%s): %s", period, url, e)
-            continue
-        if r.status_code != 200:                   # not on this path -> try the other
-            continue
-        tmp = path.with_suffix(".part")
-        with open(tmp, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1 << 20):
-                f.write(chunk)
-        tmp.replace(path)
-        return path
-    logger.info("FTD %s not available on either path (not yet published / missing)", period)
-    return None
 
 
 def _read_zip(path: Path) -> str | None:
@@ -145,14 +119,6 @@ def _read_zip(path: Path) -> str | None:
         return None
 
 
-def _ingested_periods(store) -> set[str]:
-    if not store.exists(_TABLE):
-        return set()
-    with store.engine.connect() as c:
-        return set(pd.read_sql(text(f'SELECT DISTINCT period FROM "{_TABLE}"'), c)
-                   ["period"].dropna())
-
-
 def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
     """Download (cached) the semi-monthly SEC Fails-to-Deliver files over
     `years_history`, keep the universe, upsert to `fails_to_deliver`. Returns rows
@@ -161,9 +127,9 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
     store = context.store
     universe = {str(t).upper() for t in tickers}
     years_history = context.config.data_extract.years_history + 1
-    cache_dir = _cache_dir(context)
+    cache = cache_dir(context, "sec_fails_to_deliver")
 
-    done = _ingested_periods(store)
+    done = ingested_periods(context, "fails_to_deliver")
     new_tickers = universe - load_processed_universe(cache_dir, _TABLE)   # empty once converged
     if new_tickers:
         logger.info("FTD: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
@@ -172,7 +138,8 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
     for period in tqdm(_periods(years_history), desc="SEC fails-to-deliver"):
         if period in done and not new_tickers:
             continue
-        path = _ensure_zip(period, cache_dir)
+        path = ensure_zip(cache / f"cnsfails{period}.zip", _period_urls(period),
+                          label=f"FTD {period}", timeout=180, log=logger)
         if path is None:
             continue
         raw = _read_zip(path)

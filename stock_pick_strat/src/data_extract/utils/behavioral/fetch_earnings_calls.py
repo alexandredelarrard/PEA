@@ -26,40 +26,55 @@ import json
 import logging
 import random
 import re
-from pathlib import Path
 from tqdm import tqdm
+from pathlib import Path
 
 import pandas as pd
 from bs4 import BeautifulSoup
 
 from src.constants.constants import (
-    EARNINGS_CALL_CACHE_DIR,
     EARNINGS_CALL_REPORT_GRACE_DAYS,
     EARNINGS_CALL_REQUEST_PAUSE,
     EARNINGS_CALL_SECTIONS_TABLE,
-    EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
-    NO_EARNINGS_CALL_TICKERS,
     MOTLEY_FOOL_BASE_URL,
     MOTLEY_FOOL_TRANSCRIPT_INDEX_URL,
+    EARNINGS_CALL_CACHE_DIR,
+    EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
+    NO_EARNINGS_CALL_TICKERS
 )
 from src.context import Context
+
+from src.data_extract.utils.behavioral.fetch_hf_transcripts import (
+    download_hf_parquet,
+    hf_latest_quarter_by_ticker,
+    ingest_hf_transcripts)
+from src.data_extract.utils.behavioral.fetch_roic_transcripts import fetch_roic_transcripts
+from src.data_extract.utils.behavioral.utils_behavior import (
+    _index_path,
+    _load_index,
+    _get,
+    _crawler,
+    _sleep_pace)
+from src.data_extract.utils.behavioral.utils_missing_quarters import (
+    _quarter_index,
+    _parse_quarter,
+    _missing_for,
+    _released_quarter_idx_by_ticker,
+    _db_quarters_by_ticker,
+    _since_floor_index,
+    _latest_expected_quarter_index,
+    _index_to_quarter,
+    _quarter_index
+)
+from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.utils import polite_http as ph
-from src.utils.crawler import Crawler
 
 logger = logging.getLogger(__name__)
 
 # one shared crawler per process: headless, no cookies/JS/images, rolling browser fingerprint, and
 # MOVING IPs over PEA_SCRAPE_PROXIES on a Cloudflare block. Shared so a rotated (good) IP persists
 # across the whole crawl instead of resetting to a flagged one on every request.
-_CRAWLER: Crawler | None = None
-
-
-def _crawler() -> Crawler:
-    global _CRAWLER
-    if _CRAWLER is None:
-        _CRAWLER = Crawler(retries=5, backoff=1.5, timeout=30, impersonate=True)
-    return _CRAWLER
 
 _BASE = MOTLEY_FOOL_BASE_URL
 _INDEX = MOTLEY_FOOL_TRANSCRIPT_INDEX_URL
@@ -180,7 +195,7 @@ def build_transcript_index(context: Context, tickers: list[str] | None = None,
     path = _index_path(context)
     index = _load_index(path)
     before = len(index)
-    min_date = ((pd.Timestamp.today().normalize() - pd.DateOffset(years=history_years))
+    min_date = ((pd.Timestamp.today().normalize() - pd.DateOffset(years=int(history_years)))
                 .strftime("%Y-%m-%d"))
 
     empty_streak = 0
@@ -419,7 +434,6 @@ def build_transcript_index_by_ticker(
     Slow by design (`pause` defaults to the polite EARNINGS_CALL_REQUEST_PAUSE) and resume-safe: the
     JSON index is saved after every ticker that adds links, so a 429/interrupt loses no progress.
     `tickers` restricts the universe (None = all)."""
-    from src.data_extract.utils.behavioral.fetch_hf_transcripts import hf_latest_quarter_by_ticker
 
     universe = list(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
     if tickers is not None:
@@ -496,58 +510,6 @@ def _is_caps_header(line: str) -> bool:
     return (2 <= len(s) <= 45 and s == s.upper() and any(c.isalpha() for c in s)
             and len(s.split()) <= 5)
 
-
-# the operator's phrase that opens the analyst Q&A (splits prepared remarks from Q&A).
-# Broadened across 2005-2025 transcript phrasings: the classic "question-and-answer session",
-# operator-instructions, "(first) question comes/is/will be from" hand-off, "go to the line of X",
-# "for our first question, we'll go/take", "we'll (now) take/go to our first question", the generic
-# "we'll now begin/open/take/turn ... to questions", and "open the floor/line for questions".
-_QA_MARKER = re.compile(
-    r"(?i)"
-    r"question[-\s]and[-\s]answer session|"
-    r"questions?\s*(?:and|&)\s*answers?|"                 # standalone Q&A heading (no 'session')
-    r"(?:first|next|final)\s+question\s+(?:comes?|is|will\s+come|will\s+be)\s+from|"
-    r"(?:go|turn|move)\s+(?:ahead\s+)?to\s+(?:the\s+)?line\s+of\b|"          # "go to the line of X"
-    r"(?:for\s+)?(?:our|your)\s+(?:first|next)\s+question,?\s+"              # "for our first question, we'll go"
-    r"(?:we(?:'ll| will)|let's|i(?:'ll| will)|please)\b|"
-    r"we(?:'ll| will)\s+(?:now\s+)?(?:go|move|turn|take)\s+(?:ahead\s+)?to\s+"  # "we'll take our first question"
-    r"(?:our\s+)?(?:first|next)\s+(?:question|caller|line)|"
-    r"(?:we(?:'ll| will| are going to| would like to)|now|let's|i(?:'ll| will))\b"
-    r"[^.]{0,45}?(?:begin|open|take|start|conduct|move\s+to|go\s+to|turn[^.]{0,20}?to)"
-    r"[^.]{0,30}?questions?|"
-    r"open\s+(?:up\s+)?(?:the\s+)?(?:floor|line|lines|call)\b[^.]{0,25}?questions?|"
-    r"\[?operator instructions\]?")
-
-
-def split_prepared_qa(text: str) -> dict[str, str]:
-    """Source-agnostic split of a full transcript TEXT into the high-signal sections funds
-    analyse: `full` (ALWAYS kept -> format-proof), `prepared_remarks` (scripted management
-    comments from call-open to the Q&A) and `qa` (the analyst Q&A, after the operator's
-    hand-off). Used for BOTH the Motley Fool HTML-extracted text AND the HuggingFace
-    `content` field. Call prose starts at the first 'Operator' line (skips logo/date/
-    takeaways preamble); the Q&A hand-off is searched past the first ~2000 chars first
-    (operators PREVIEW the Q&A in the intro), then anywhere. If NO phrase matches, fall back to the
-    SECOND 'Operator' turn (the first opens the call, the second hands off to the Q&A) so a call with
-    an unusual hand-off phrasing still yields a Q&A section. prepared/qa only when confidently split
-    (>300 chars each)."""
-    out: dict[str, str] = {"full": text}
-    op = re.search(r"(?im)^\s*operator\b", text)
-    prose = text[op.start():] if op else text
-    m = _QA_MARKER.search(prose, 2000) or _QA_MARKER.search(prose)
-    if m is None:                                        # no phrase matched -> second 'Operator' turn
-        ops = list(re.finditer(r"(?im)^\s*operator\b", prose))
-        m = ops[1] if len(ops) >= 2 else None
-    if m:
-        pre, post = prose[:m.start()].strip(), prose[m.start():].strip()
-        if len(pre) > 300:
-            out["prepared_remarks"] = pre
-        if len(post) > 300:
-            out["qa"] = post
-    elif op:
-        out["prepared_remarks"] = prose.strip()          # no Q&A hand-off found -> all remarks
-    return out
-
-
 def parse_transcript_sections(html: str) -> dict[str, str]:
     """Motley Fool transcript HTML -> sections. Extracts the nested transcript body, adds
     the caps-headed `participants` block, then defers to `split_prepared_qa` for
@@ -581,12 +543,14 @@ def download_transcripts(context: Context, tickers: list[str] | None = None,
     (data/call_transcripts/{ticker}/{quarter}.html). Skips already-downloaded files.
     Returns the number newly downloaded. `tickers` restricts to a subset (None = all);
     `limit` bounds a test run."""
+
     cache = cache_dir(context, EARNINGS_CALL_CACHE_DIR)
     index = _load_index(_index_path(context))
     keep = set(tickers) if tickers is not None else None
     todo = [r for r in index.values()
             if (keep is None or r["ticker"] in keep)
             and not (cache / r["ticker"] / f"{r['quarter']}.html").exists()]
+    
     # RANDOM order (not index/alphabetical): spreads the load and, with `limit`, samples a random
     # subset rather than always the same head of the index.
     random.shuffle(todo)
@@ -668,7 +632,7 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None,
 
 
 def download_earnings_calls(context: Context, tickers: list[str] | None = None,
-                            limit: int | None = None, include_hf: bool = True,
+                            limit: int | None = None,
                             recent_since: str = "2025-01-01", use_global_crawl: bool = False,
                             mf_history_years: float = 2.0, use_roic: bool = True) -> None:
     """DOWNLOAD / extract stage. Recent-gap sources are tried in PRIORITY order:
@@ -681,44 +645,38 @@ def download_earnings_calls(context: Context, tickers: list[str] | None = None,
     Incremental throughout (HF parquet + MF HTML skipped when on disk; Roic/MF gap excludes anything
     already stored). `tickers` restricts the subset; `limit` bounds the MF download for a test;
     `include_hf=False` skips the backbone; `use_roic=False` skips the Roic layer."""
-    if include_hf:
-        # deferred import: fetch_hf_transcripts imports helpers from THIS module
-        from src.data_extract.utils.behavioral.fetch_hf_transcripts import download_hf_parquet
-        download_hf_parquet(context)
+
+    download_hf_parquet(context)
+
     if use_roic:
         # deferred import: fetch_roic_transcripts imports helpers from THIS module
-        from src.data_extract.utils.behavioral.fetch_roic_transcripts import fetch_roic_transcripts
         fetch_roic_transcripts(context, tickers=tickers, since=recent_since)
     build_transcript_index_by_ticker(context, tickers=tickers, since=recent_since)
+
     if use_global_crawl:
         build_transcript_index(context, tickers=tickers, history_years=mf_history_years)
+
     download_transcripts(context, tickers=tickers, limit=limit)
 
 
-def ingest_all_earnings_calls(context: Context, tickers: list[str] | None = None,
-                              include_hf: bool = True, force: bool = False) -> int:
-    """INGEST stage — parse the already-downloaded transcripts into `earnings_call_sections`:
-      * the cached HuggingFace parquet (`ingest_hf_transcripts`; skips when the backbone is already
-        ingested), and
-      * the cached Motley Fool HTML (`ingest_earnings_calls`; skips (ticker,quarter) already ingested).
-    Runs after `download_earnings_calls`. Both stages are INCREMENTAL + deduped by (ticker, quarter),
-    so a re-run with nothing new returns fast. `force=True` re-ingests both regardless."""
-    saved = 0
-    if include_hf:
-        from src.data_extract.utils.behavioral.fetch_hf_transcripts import ingest_hf_transcripts
-        saved += ingest_hf_transcripts(context, tickers=tickers, force=force)   # cached parquet -> sections
-    saved += ingest_earnings_calls(context, tickers=tickers, force=force)       # cached MF HTML -> sections
-    return saved
-
-
 def fetch_earnings_calls(context: Context, tickers: list[str] | None = None,
-                         limit: int | None = None, include_hf: bool = True,
+                         limit: int | None = None,
                          recent_since: str = "2025-01-01", use_global_crawl: bool = False,
                          mf_history_years: float = 2.0) -> int:
     """Full transcript pipeline = download + ingest (kept for main.py / tests / the monolithic
     extraction step). The Airflow DAG runs the two stages as SEPARATE tasks
     (download_earnings_calls -> ingest_all_earnings_calls) instead."""
-    download_earnings_calls(context, tickers=tickers, limit=limit, include_hf=include_hf,
+
+    force: bool = False
+    saved = 0
+
+    # 1. download all EC
+    download_earnings_calls(context, tickers=tickers, limit=limit,
                             recent_since=recent_since, use_global_crawl=use_global_crawl,
                             mf_history_years=mf_history_years)
-    return ingest_all_earnings_calls(context, tickers=tickers, include_hf=include_hf)
+
+    # 2. Ingest them into DB 
+    saved += ingest_hf_transcripts(context, tickers=tickers, force=force)   # cached parquet -> sections
+    saved += ingest_earnings_calls(context, tickers=tickers, force=force)   # cached MF HTML -> sections
+
+    return saved

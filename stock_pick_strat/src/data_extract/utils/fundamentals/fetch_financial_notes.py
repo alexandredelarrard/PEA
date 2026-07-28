@@ -64,8 +64,7 @@ from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, ingested_periods,
 )
 from src.data_extract.utils.common.sec_utils import (
-    load_cik_mapping, load_processed_universe, save_processed_universe)
-
+    load_cik_mapping, load_processed_universe, save_processed_universe, _sec_headers)
 logger = logging.getLogger(__name__)
 
 _NUM_TABLE = "notes_num"

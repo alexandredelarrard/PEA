@@ -54,7 +54,7 @@ dag = DAG(
     schedule="0 1 * * *",                        # 01:00 daily
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_tasks=8,
+    max_active_tasks=4,
     tags=["pea", "extraction"],
 )
 

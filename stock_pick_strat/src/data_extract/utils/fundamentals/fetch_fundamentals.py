@@ -1614,5 +1614,3 @@ def fetch_fundamentals(context: Context, tickers: list[str]):
     cik_mapping = load_cik_mapping(context)
     return build_fundamentals_history_sec(context, cik_mapping)
 
-
-# docker run --rm -v stock_pick_strat_pgdata:/volume -v ./:/backup alpine tar -czf /backup/volume_backup.tar.gz -C /volume .

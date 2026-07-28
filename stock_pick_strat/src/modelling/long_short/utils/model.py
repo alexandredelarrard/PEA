@@ -23,6 +23,7 @@ import pandas as pd
 import lightgbm as lgb
 
 from omegaconf import ListConfig, OmegaConf
+from pandas.api.types import is_numeric_dtype
 from scipy.stats import spearmanr
 
 EARLY_STOPPING_ROUNDS = 40
@@ -149,6 +150,39 @@ def _graded_labels(panel: pd.DataFrame, label_name: str) -> np.ndarray:
     return np.clip((panel[label_name].to_numpy() * 30).round().astype(int), 0, 30)
 
 
+CATEGORICAL_NA_CODE = -1        # LightGBM categorical code standing for "missing"
+
+
+def coerce_categoricals(frame: pd.DataFrame, categorical_features: list[str] | None
+                        ) -> pd.DataFrame:
+    """Copy of `frame` with each categorical column coerced to a NUMERIC code
+    (unparseable / missing -> `CATEGORICAL_NA_CODE`).
+
+    THE one coercion rule for categoricals, shared by training (`_build_datasets`, which
+    then casts to int32 for native categorical splits) and by the diagnostics design
+    matrix (SHAP / PDP, which needs float32). Two copies would mean SHAP could be
+    explaining a different encoding than the model was fitted on -- or, when a
+    categorical arrives as text, crash on `to_numpy(dtype="float32")` where training
+    quietly coerced it."""
+    out = frame.copy()
+    for c in (categorical_features or []):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(CATEGORICAL_NA_CODE)
+    return out
+
+
+def design_matrix(panel: pd.DataFrame, feats: list[str],
+                  categorical_features: list[str] | None = None) -> np.ndarray:
+    """`panel[feats]` as a float32 matrix in `feats` order, categoricals coerced to their
+    numeric codes -- what `booster.predict` and SHAP consume. Any non-numeric column is
+    treated as a categorical, so a text column can never raise here."""
+    cats = list(categorical_features or [])
+    non_numeric = [c for c in feats
+                   if c in panel.columns and not is_numeric_dtype(panel[c])]
+    return (coerce_categoricals(panel[feats], list(dict.fromkeys(cats + non_numeric)))
+            .to_numpy(dtype="float32"))
+
+
 def _build_datasets(
     params: dict,
     panel: pd.DataFrame,
@@ -161,12 +195,12 @@ def _build_datasets(
     # LightGBM makes native categorical splits); else the fast all-float numpy path.
     if categorical_features:
         cat = set(categorical_features)
-        x = panel[feats].copy()
+        x = coerce_categoricals(panel[feats], categorical_features)
         num = [f for f in feats if f not in cat]
         if num:
             x[num] = x[num].astype("float32")
         for c in categorical_features:
-            x[c] = pd.to_numeric(x[c], errors="coerce").fillna(-1).astype("int32")
+            x[c] = x[c].astype("int32")
         kw: dict = {"feature_name": feats, "categorical_feature": list(categorical_features)}
     else:
         x = panel[feats].to_numpy(dtype="float32")

@@ -459,6 +459,22 @@ TREND_ASSET_RETURNS_TABLE = "trend_asset_returns"
 TREND_ASSET_MODEL_FILE = "trend_asset_model.json"
 
 # --------------------------------------------------------------------------- #
+# Daily prediction + live trading ledger (the `strat_prediction` DAG)          #
+# --------------------------------------------------------------------------- #
+# LONG-format live predictions: one row per (as-of date, ticker, horizon, model), so each
+# row can carry its OWN `predicts_for` -- the h30 and h90 predictions made on the same day
+# target different future dates, which a wide pred_h30/pred_h60 layout cannot express.
+PREDICTIONS_LATEST_TABLE = "predictions_latest"
+# `model` values: one per ensemble member, plus these two aggregates.
+PREDICTION_MODEL_ENSEMBLE = "ensemble"      # the per-horizon average of that horizon's members
+PREDICTION_MODEL_BLENDED = "blended"        # the IR-weighted blend ACROSS horizons
+# The trading ledger: one row per (trading day, sleeve, ticker) move, with the FIFO-matched
+# entry/exit price and realized P&L of each round trip.
+STRATEGY_TABLE = "strategy"
+STRATEGY_SIDE_BUY = "BUY"
+STRATEGY_SIDE_SELL = "SELL"
+
+# --------------------------------------------------------------------------- #
 # Data-freshness / gap check (StepCheckFreshness) — runs at the tail of the    #
 # nightly extraction DAG, before triggering aggregation, so prediction never   #
 # runs on stale inputs. Each source maps to (table, observation-date column,   #

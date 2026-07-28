@@ -16,6 +16,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.strategies.base import Strategy, PortfolioInputs, StrategyResult
+from src.strategies.utils.blotter import trade_blotter
 from src.strategies.utils.ls_model import build_signal
 from src.strategies.utils.strategies_opt import simulate_portfolio_opt, simulate_integer_ls
 from src.utils.risk_parity import series_metrics
@@ -23,10 +24,11 @@ from src.utils.risk_parity import series_metrics
 
 class LongShortStrategy(Strategy):
     name = "ls_equity"
+    config_key = "strategy_ls"
 
     def run(self, inputs: PortfolioInputs) -> StrategyResult:
         self._inputs = inputs
-        self._cfg = self._config.strategy_ls
+        self._cfg = self.config
         self._cube_cfg = self._config.build_cube
         b = build_signal(self._context, self._config, end=inputs.end)
         self.signal, self.stock_ret, self.spy_ret, self.close = b.signal, b.stock_ret, b.spy_ret, b.close
@@ -46,10 +48,12 @@ class LongShortStrategy(Strategy):
         extra = {"signal_shape": tuple(self.signal.shape)}
         if inputs.analysis:
             extra["analysis"] = self._analyze(ret)
-        trades = self._blotter(daily, inputs)
+        book = self._book_weights(daily, inputs)
+        trades = self._blotter(book, inputs)
         return StrategyResult(name=self.name, returns=ret,
                               metrics=series_metrics(ret, inputs.risk_free_rate),
-                              positions=None, trades=trades, extra=extra)
+                              positions=None, trades=trades, extra=extra,
+                              book_weights=book, book_prices=getattr(self, "close", None))
 
     def _sector_map(self) -> dict:
         tk = self._context.store.load("sp500_tickers")
@@ -94,16 +98,20 @@ class LongShortStrategy(Strategy):
             risk_model=str(c.get("risk_model", "diagonal")), cov_shrink=float(c.get("cov_shrink", 0.5)),
             market_weight=0.0, vol_scaling=False, collect_weights=True)
 
-    def _blotter(self, daily: pd.DataFrame, inputs: PortfolioInputs):
-        """Per-(day, ticker) SHARE-accurate trade blotter from the optimizer's captured weights."""
+    def _book_weights(self, daily: pd.DataFrame, inputs: PortfolioInputs):
+        """The optimizer's captured date x ticker weight panel, windowed. Exposed on the result
+        (`book_weights`) so the daily ledger can re-price the same book at another capital."""
         w = daily.attrs.get("weights") if daily is not None else None
         if w is None or w.empty:
             return None
-        from src.strategies.utils.blotter import trade_blotter
-        if inputs.start is not None:
-            w = w[w.index >= inputs.start]
+        return w[w.index >= inputs.start] if inputs.start is not None else w
+
+    def _blotter(self, book: pd.DataFrame | None, inputs: PortfolioInputs):
+        """Per-(day, ticker) SHARE-accurate trade blotter from the optimizer's captured weights."""
+        if book is None or book.empty:
+            return None
         c = self._cfg
-        return trade_blotter(w, inputs.capital, float(c.get("fee_bps", inputs.fee_bps)),
+        return trade_blotter(book, inputs.capital, float(c.get("fee_bps", inputs.fee_bps)),
                              float(c.get("spread_bps", inputs.spread_bps)), self.name,
                              prices=getattr(self, "close", None))
 

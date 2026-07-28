@@ -25,10 +25,17 @@ model:
     n_splits: 5
     embargo: null              # defaults to primary_horizon when null
 
-  diagnostics:                 # per-run, per-horizon model-diagnosis artifacts (LightGBM member)
+  diagnostics:                 # per-run, per-horizon model-diagnosis artifacts, written to
+                               # data/output/diagnostics/<run_stamp>/h<H>/ for EVERY booster
+                               # member of `ensemble` (lgbm, random_forest -- linear members
+                               # have no SHAP/PDP): pdp/, shap_values.parquet (the raw per-row
+                               # matrix, keyed by date+ticker), shap_importance.png/.csv,
+                               # feature_importance.xlsx, plus kpis.json per horizon and a flat
+                               # kpis.csv for the run.
     enabled: true
     top_n_features: 50         # top features rendered as individual PDPs + SHAP bar
-    shap_sample: 12000         # rows sampled for SHAP / partial dependence (speed)
+    shap_sample: 12000         # rows sampled for SHAP / partial dependence (speed). Also the
+                               # row count of shap_values.parquet, per member per horizon.
     pdp_grid: 30               # partial-dependence grid resolution
 
 train:

@@ -16,9 +16,10 @@ from src.utils.risk_parity import series_metrics
 
 class TrendCTAStrategy(Strategy):
     name = "trend_cta"
+    config_key = "strategy_trend"
 
     def run(self, inputs: PortfolioInputs) -> StrategyResult:
-        c = self._config.strategy_trend
+        c = self.config
         close = load_close(self._context.store, include_fx=bool(c.get("include_fx", True)))
         book = trend_book(
             close,
@@ -49,7 +50,8 @@ class TrendCTAStrategy(Strategy):
                                prices=close)                # share-accurate on the asset levels
         return StrategyResult(name=self.name, returns=ret,
                               metrics=series_metrics(ret, inputs.risk_free_rate),
-                              positions=positions, trades=trades, extra=extra)
+                              positions=positions, trades=trades, extra=extra,
+                              book_weights=positions, book_prices=close)
 
 
 def _slice(obj, start, end):

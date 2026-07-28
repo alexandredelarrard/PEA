@@ -17,9 +17,10 @@ from src.utils.risk_parity import series_metrics
 
 class LongBookStrategy(Strategy):
     name = "long_book"
+    config_key = "strategy_long_book"
 
     def run(self, inputs: PortfolioInputs) -> StrategyResult:
-        c = self._config.strategy_long_book
+        c = self.config
         df = self._context.store.load(MACRO_ASSET_PRICES_TABLE)
         if df is None or df.empty:
             raise RuntimeError(f"'{MACRO_ASSET_PRICES_TABLE}' empty — run fetch_macro_assets.")
@@ -72,14 +73,16 @@ class LongBookStrategy(Strategy):
         dd = df.copy(); dd["date"] = pd.to_datetime(dd["date"]); dd = dd.sort_values("date").set_index("date")
         levels = pd.DataFrame({k: dd[v].astype(float) for k, v in _lvl.items() if v in dd.columns})
         wl = res["weights"].copy(); wl["cash"] = res["alloc_cash"]
-        trades = trade_blotter(_slice(wl, inputs.start, inputs.end), inputs.capital,
+        book = _slice(wl, inputs.start, inputs.end)
+        trades = trade_blotter(book, inputs.capital,
                                float(c.get("fee_bps", inputs.fee_bps)),
                                float(c.get("spread_bps", inputs.spread_bps)), self.name,
                                prices=levels)
         return StrategyResult(name=self.name, returns=ret,
                               metrics=series_metrics(ret, inputs.risk_free_rate),
                               positions=_slice(alloc, inputs.start, inputs.end),
-                              trades=trades, extra=extra)
+                              trades=trades, extra=extra,
+                              book_weights=book, book_prices=levels)
 
 
 def _slice(obj, start, end):

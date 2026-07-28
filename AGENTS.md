@@ -52,6 +52,11 @@ stock_pick_strat/
 │   │                           #   plot_analysis, accuracy) + analysis/ (per-sleeve IC/neutrality/corr plots)
 │   ├── portfolio/              # step_portfolio — runs the configured sleeves, blends by risk-parity/ERC
 │   │                           #   (dynamic $-allocation) + global vol/leverage; analysis.py (sleeve corr)
+│   │                           #   step_strategy_moves — the DAILY trading ledger -> `strategy`:
+│   │                           #   each sleeve re-sized to erc_weight x leverage, blotter rebuilt on
+│   │                           #   the scaled panel, FIFO-matched into round trips (entry/exit/PNL)
+│   ├── dags/                   # Airflow: data_extraction -> data_aggregation -> strat_prediction
+│   │                           #   (DAILY: predict + strategy ledger); modelling is WEEKLY (Sat)
 │   ├── utils/                  # shared cross-folder helpers: db, step, config, trend.py, risk_parity.py,
 │   │                           #   polite_http/crawler (anti-429 transport), ssl_setup,
 │   │                           #   string.py::pad_cik (ONE CIK padding for writer + reader) …

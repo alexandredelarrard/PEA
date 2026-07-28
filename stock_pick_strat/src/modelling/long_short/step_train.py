@@ -10,6 +10,11 @@ import lightgbm as lgb
 
 from src.utils.step import Step
 from src.context import Context
+from src.constants.constants import (
+    PREDICTION_MODEL_BLENDED,
+    PREDICTION_MODEL_ENSEMBLE,
+    PREDICTIONS_LATEST_TABLE,
+)
 from src.data_aggregate.utils.cube import panel_from_cube, CUBE_META_COLS
 from src.modelling.long_short.utils import model as ml
 from src.modelling.long_short.utils import baselines
@@ -55,6 +60,7 @@ class StepModelling(Step):
         self.log_feature_importance()
         self.save_models()
         self.save_outputs()
+        self._save_run_diagnostics_kpis()    # run-level kpis (needs the blend weights)
 
     # ------------------------------------------------------------------ #
     def _setup(self):
@@ -445,8 +451,10 @@ class StepModelling(Step):
         self.member_ic = {}          # {h: {member_name: {mean_ic, ic_ir}}}  per-model CV IC
         self.oos_predictions = {}    # {h: concatenated OOS ENSEMBLE preds}  -> IC-over-time diag
         self._score_frames = []      # small per-horizon blend inputs (date,ticker,z_h,member cols)
+        self._diag_summaries = {}    # {h: diagnostics summary} -> the run-level kpis.{json,csv}
         train_ends = []
         run_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") if self._context.save else None
+        self._run_stamp = run_stamp
         if self._half_life():
             self._log.info("Time-decay sample weights enabled (half_life=%.1f years)",
                            self._half_life())
@@ -534,26 +542,94 @@ class StepModelling(Step):
             member_cols.append(col)
         return df[["date", "ticker", "z"] + member_cols].rename(columns={"z": f"z_{h}"})
 
+    def _booster_members(self, h) -> dict:
+        """This horizon's tree members as `{member_name: booster}`, resolved by TYPE.
+
+        Never by member NAME: this hook used to hardcode `.get("lightgbm")`, so it silently
+        returned nothing the moment `model.ensemble` was rewritten to `[elasticnet, lgbm,
+        random_forest]` -- no PDP, no SHAP, no KPIs, and no error either. `isinstance` is the
+        honest test (random_forest is also an `lgb.Booster`, via `boosting='rf'`), so renaming
+        or adding a tree member can never switch the diagnostics off again."""
+        return {name: m for name, m in (self.models.get(h) or {}).items()
+                if isinstance(m, lgb.Booster)}
+
+    def _member_feature_cols(self, h) -> dict:
+        """`{member_name: feature list}` for this horizon's boosters, taken from the booster
+        ITSELF (`feature_name()`) rather than re-deriving it from config -- that is the exact
+        column order it was trained on, so SHAP / PDP can never be mis-aligned."""
+        return {name: list(b.feature_name()) for name, b in self._booster_members(h).items()}
+
+    def _horizon_kpis(self, h) -> dict:
+        """CV KPIs the diagnostics writer cannot know: ensemble + per-member IC / IC_IR."""
+        ens = self.horizon_ic.get(h, {})
+        return {
+            "cv_mean_ic": ens.get("mean_ic"),
+            "cv_ic_ir": ens.get("ic_ir"),
+            "target_type": self.target_type,
+            "label_column": self.label_column,
+            "train_start": self._config.train.start_date,
+            "train_end": (None if getattr(self, "_full_history", False)
+                          else self._config.train.end_date),
+            "full_history": bool(getattr(self, "_full_history", False)),
+            "members": {name: {"cv_mean_ic": m.get("mean_ic"), "cv_ic_ir": m.get("ic_ir")}
+                        for name, m in (self.member_ic.get(h) or {}).items()},
+        }
+
     def _horizon_diagnostics(self, h, panel: pd.DataFrame, run_stamp: str):
-        """Per-horizon SHAP / PDP / IC-over-time diagnostics (LightGBM member), written under one
-        shared run-stamp folder while the panel is still resident. Best-effort; never fails the run."""
-        tree = (self.models.get(h) or {}).get("lightgbm")
-        if tree is None:
-            return
+        """Per-horizon SHAP values / PDP / IC-over-time / KPIs for EVERY booster member,
+        written under one shared run-stamp folder while the panel is still resident.
+        Best-effort; never fails the run."""
         diag = self._config.model.get("diagnostics", {}) or {}
         if not diag.get("enabled", True):
             return
+        boosters = self._booster_members(h)
+        if not boosters:
+            # LOUD, not silent: an ensemble of linear members only has no PDP/SHAP to give,
+            # and the previous silence is exactly why the missing artifacts went unnoticed.
+            self._log.warning("horizon %s diagnostics: no tree member in the ensemble %s -> "
+                              "no SHAP/PDP possible (add 'lgbm' or 'random_forest' to "
+                              "model.ensemble)", h, self.model_types)
+            return
         run_dir = self._context.paths["OUTPUT_DIR"] / "diagnostics" / run_stamp
         try:
-            diagnostics.save_run_diagnostics(
-                run_dir, {h: tree}, {h: panel}, self._lgb_feats(h),
-                {h: self.oos_predictions[h]} if h in self.oos_predictions else {},
+            summary = diagnostics.save_horizon_diagnostics(
+                horizon=h, booster=None, panel=panel,
+                feature_cols=self._lgb_feats(h), out_dir=run_dir / f"h{h}",
+                oos_predictions=self.oos_predictions.get(h),
+                boosters=boosters, feature_cols_by_member=self._member_feature_cols(h),
+                kpis=self._horizon_kpis(h),
                 label_name=self.label_column, top_n=int(diag.get("top_n_features", 15)),
                 shap_sample=int(diag.get("shap_sample", 2000)),
                 pdp_grid=int(diag.get("pdp_grid", 30)), logger=self._log,
             )
+            self._diag_summaries[int(h)] = summary
+            self._log.info("horizon %s diagnostics -> %s | %s | OOS IC %+.4f over %d days", h,
+                           run_dir / f"h{h}",
+                           ", ".join(f"{n}: {m['n_pdp']} PDPs, shap={m['shap_available']}"
+                                     f"({m['shap_rows']} rows)"
+                                     for n, m in summary["members"].items()),
+                           summary["ic_mean"], summary["ic_days"])
         except Exception as e:                       # noqa: BLE001 - diagnostics are best-effort
             self._log.warning("horizon %s diagnostics failed: %s", h, e)
+
+    def _save_run_diagnostics_kpis(self):
+        """Run-level `kpis.json` + flat `kpis.csv` across horizons -- written after the blend so
+        each horizon's IR weight is known. Best-effort; never fails the run."""
+        if not getattr(self, "_diag_summaries", None) or not self._run_stamp:
+            return
+        weights = getattr(self, "horizon_weights", {}) or {}
+        for h, summary in self._diag_summaries.items():
+            summary["blend_weight"] = float(weights.get(h, float("nan")))
+        run_dir = self._context.paths["OUTPUT_DIR"] / "diagnostics" / self._run_stamp
+        try:
+            diagnostics.save_run_kpis(
+                run_dir,
+                {"run_stamp": self._run_stamp, "model_types": list(self.model_types),
+                 "target_type": self.target_type,
+                 "horizons": self._diag_summaries},
+                logger=self._log)
+        except Exception as e:                       # noqa: BLE001
+            self._log.warning("run-level diagnostics KPIs failed: %s", e)
 
     def _horizon_weights(self) -> dict:
         """IR-weight horizons; floor negatives at 0, fall back to equal if all <=0."""
@@ -730,11 +806,28 @@ class StepModelling(Step):
                              {"n": int(n_dates)}).fetchall()
         return sorted(pd.Timestamp(r[0]).normalize() for r in rows)
 
+    @staticmethod
+    def predicts_for(as_of, horizon) -> pd.Timestamp:
+        """The date a horizon-`h` prediction is ABOUT: `as_of` + h business days.
+
+        The cube target is a forward return over h ROWS of the daily price panel, i.e. h TRADING
+        days -- so a business-day offset is the right arithmetic, not a calendar one. It still
+        ignores market holidays, so treat this as the target date +/- a few sessions rather than
+        a settlement date."""
+        return pd.Timestamp(as_of) + pd.tseries.offsets.BDay(int(round(float(horizon))))
+
     def predict_latest(self, n_dates: int = 1) -> pd.DataFrame:
-        """PRODUCTION prediction for the allocation sleeve. Loads the (full-trained) ensemble
-        artifacts, scores the LATEST `n_dates` cube date(s) for EVERY horizon, blends the per-horizon
-        scores (IR-weighted, from metadata), and persists an allocation-ready `predictions_latest`
-        table: [date, ticker, pred_h<h>..., blended, rank].
+        """PRODUCTION prediction. Loads the (full-trained) ensemble artifacts, scores the LATEST
+        `n_dates` cube date(s) for EVERY horizon, and persists `predictions_latest` in LONG form:
+
+            predicted_at | date | ticker | horizon | model | predicts_for | pred | rank
+
+        one row per (as-of date, ticker, horizon, model), where `model` is each ensemble member,
+        `ensemble` for that horizon's member average, and `blended` for the IR-weighted blend
+        ACROSS horizons. Long rather than wide because `predicts_for` is per horizon: the h30 and
+        h90 predictions made today are about different future dates, which one column cannot hold.
+        `predicted_at` is when this run produced the row -- distinct from `date`, the as-of date of
+        the FEATURES it was computed from.
 
         Crucially it does NOT use panel_from_cube (which drops null-target rows) — the latest date's
         forward target has not matured, so we build the feature panel DIRECTLY from the cube so the
@@ -743,6 +836,7 @@ class StepModelling(Step):
         feat_cols = list(meta["feature_cols"])
         cat_cols = list(meta.get("categorical_cols", []))
         train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
+        predicted_at = pd.Timestamp.now().floor("s")
 
         dates = self._latest_cube_dates(n_dates)
         if not dates:
@@ -760,7 +854,8 @@ class StepModelling(Step):
         if cube.empty:
             raise RuntimeError(f"No cube rows on/after {start.date()} for horizons {list(models)}.")
 
-        blended = None
+        long_rows: list[pd.DataFrame] = []
+        ens_wide = None                       # per-horizon ensemble z, for the cross-horizon blend
         for h, members in models.items():
             sub = cube[cube["target_horizon"] == h]
             if sub.empty:
@@ -771,31 +866,65 @@ class StepModelling(Step):
             if missing:                                      # add any absent model feature as NaN (one concat)
                 panel = pd.concat(
                     [panel, pd.DataFrame(np.nan, index=panel.index, columns=missing)], axis=1)
-            scores, _ = ml.ensemble_predict(members, panel, feat_cols)
-            df = panel[["date", "ticker"]].copy()
-            df[f"pred_h{h}"] = ml.per_day_zscore(scores.to_numpy(), df["date"].to_numpy())
-            blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
-        if blended is None:
+            scores, member_preds = ml.ensemble_predict(members, panel, feat_cols)
+            keys = panel[["date", "ticker"]]
+            # every MEMBER, then the horizon's ENSEMBLE — all per-day z-scored so they are
+            # comparable across horizons and members
+            per_model = {**{name: p.to_numpy() for name, p in member_preds.items()},
+                         PREDICTION_MODEL_ENSEMBLE: scores.to_numpy()}
+            for name, raw in per_model.items():
+                long_rows.append(self._prediction_rows(keys, raw, h, name, predicted_at))
+            ez = keys.copy()
+            ez[f"z{h}"] = ml.per_day_zscore(scores.to_numpy(), keys["date"].to_numpy())
+            ens_wide = ez if ens_wide is None else ens_wide.merge(ez, on=["date", "ticker"], how="outer")
+        if ens_wide is None:
             raise RuntimeError("No horizon produced a prediction for the latest cube date(s).")
 
-        hs = [int(h) for h in models if f"pred_h{h}" in blended.columns]
+        # cross-horizon blend: IR-weighted mean of the per-horizon ensembles (from metadata)
+        hs = [int(h) for h in models if f"z{h}" in ens_wide.columns]
         irs = {h: max(0.0, train_ic.get(h, 0.0)) for h in hs}
         tot = sum(irs.values())
         w = {h: (irs[h] / tot if tot > 0 else 1.0 / len(hs)) for h in hs}
-        z = blended[[f"pred_h{h}" for h in hs]].to_numpy()
+        z = ens_wide[[f"z{h}" for h in hs]].to_numpy()
         mask = ~np.isnan(z)
         wv = np.array([w[h] for h in hs])
         wsum = np.where(mask, wv, 0.0).sum(axis=1)
-        blended["blended"] = np.where(
-            wsum > 0, np.nansum(np.where(mask, z * wv, 0.0), axis=1) / np.where(wsum > 0, wsum, 1), np.nan)
-        blended["rank"] = blended.groupby("date")["blended"].rank(pct=True)
-        out = (blended.sort_values(["date", "rank"], ascending=[True, False]).reset_index(drop=True))
+        blend = np.where(wsum > 0,
+                         np.nansum(np.where(mask, z * wv, 0.0), axis=1) / np.where(wsum > 0, wsum, 1),
+                         np.nan)
+        # the blend has no single horizon, so it is stamped with the IR-WEIGHTED AVERAGE horizon
+        # (rounded) -- the average distance into the future the signal is actually about.
+        blend_h = int(round(sum(w[h] * h for h in hs))) if hs else 0
+        long_rows.append(self._prediction_rows(ens_wide[["date", "ticker"]], blend, blend_h,
+                                               PREDICTION_MODEL_BLENDED, predicted_at))
 
-        out.to_sql("predictions_latest", self._context.store.engine, if_exists="replace", index=False)
-        last = out[out["date"] == out["date"].max()]
-        self._log.info("predict_latest: %d rows for %s (blend weights %s); latest date %s -> %d names, "
-                       "blended range [%.3f, %.3f]", len(out),
-                       [str(d.date()) for d in dates], {h: round(w[h], 3) for h in hs},
-                       out["date"].max().date(), len(last),
-                       float(last["blended"].min()), float(last["blended"].max()))
+        out = pd.concat(long_rows, ignore_index=True)
+        out = out.sort_values(["date", "model", "horizon", "rank"],
+                             ascending=[True, True, True, False]).reset_index(drop=True)
+        self._context.store.replace(PREDICTIONS_LATEST_TABLE, out)
+
+        last = out[(out["date"] == out["date"].max())
+                   & (out["model"] == PREDICTION_MODEL_BLENDED)]
+        self._log.info("predict_latest: %d row(s) -> '%s' | as-of %s | horizons %s x models %s | "
+                       "blend weights %s", len(out), PREDICTIONS_LATEST_TABLE,
+                       [str(d.date()) for d in dates], sorted(out["horizon"].unique()),
+                       sorted(out["model"].unique()), {h: round(w[h], 3) for h in hs})
+        self._log.info("blended (h~%d) on %s: %d names, predicts_for %s, pred range [%.3f, %.3f]",
+                       blend_h, out["date"].max().date(), len(last),
+                       last["predicts_for"].max().date() if not last.empty else None,
+                       float(last["pred"].min()), float(last["pred"].max()))
         return out
+
+    def _prediction_rows(self, keys: pd.DataFrame, raw: np.ndarray, horizon, model: str,
+                         predicted_at: pd.Timestamp) -> pd.DataFrame:
+        """One (horizon, model) slice as long rows: per-day z-scored `pred` + its cross-sectional
+        `rank`, stamped with when it was predicted and which date it is about."""
+        df = keys.copy()
+        df["horizon"] = int(horizon)
+        df["model"] = str(model)
+        df["predicted_at"] = predicted_at
+        df["predicts_for"] = df["date"].map(lambda d: self.predicts_for(d, horizon))
+        df["pred"] = ml.per_day_zscore(np.asarray(raw, dtype="float64"), df["date"].to_numpy())
+        df["rank"] = df.groupby("date")["pred"].rank(pct=True)
+        return df[["predicted_at", "date", "ticker", "horizon", "model", "predicts_for",
+                   "pred", "rank"]]

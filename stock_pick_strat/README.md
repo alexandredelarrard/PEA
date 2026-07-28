@@ -23,7 +23,20 @@ StepDeducePeers             # 2. peer baskets (return-corr + OpenAI embeddings)
 StepBuildCube               # 3. peer-relative feature panels → `cube` table
 StepModelling               # 4. train the L/S ensemble (src/modelling/long_short) → `predictions`, `cube_signal`
 StepPortfolio               # 5. run + blend the strategy sleeves into one book vs SP-hold
+StepStrategyMoves           # 6. the trades to actually place → `strategy` (entry/exit price + PNL per position)
 ```
+
+### Airflow schedule
+| DAG | When | Tasks |
+|---|---|---|
+| `data_extraction` | nightly | per-source fetchers → freshness gate → triggers `data_aggregation` |
+| `data_aggregation` | after extraction | peers → feature parts → `assemble_cube` → triggers `strat_prediction` |
+| `strat_prediction` | **daily** 06:00 | `predict` (long-format `predictions_latest`) → `strategy_moves` (the `strategy` ledger) |
+| `modelling` | **weekly**, Sat 02:00 | `train_model` (holdout) → `backtest_portfolio` (OOS) → `full_train` (ALL history, no holdout) |
+
+Training is weekly and prediction is daily, so a freshly rebuilt cube is scored every night
+without waiting for a retrain; `strat_prediction` reads back the artifacts from the last weekly
+`full_train`.
 
 ### Strategies & portfolio
 The backtest layer is a set of **self-contained strategy sleeves** (`src/strategies/`, each a

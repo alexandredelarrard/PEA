@@ -48,17 +48,36 @@ class StrategyResult:
     positions: pd.DataFrame | None = None  # per-instrument / per-asset weights (optional)
     trades: pd.DataFrame | None = None     # per-(day, instrument) trade blotter ($ traded/fee/spread)
     extra: dict = field(default_factory=dict)   # sleeve-specific diagnostics (leverage, cash, ...)
+    # The EXACT panels `trades` was built from, so a caller can rebuild the blotter at a
+    # different capital. `positions` is not a substitute: long_book reports its pre-leverage
+    # allocation there while trading the levered panel, and ls_equity reports None. The daily
+    # `strategy` ledger needs the traded panel re-sized by the portfolio's per-sleeve ERC
+    # weight x leverage, which is time-varying -- so it must re-run the blotter on
+    # `book_weights * factor(t)` rather than scale the resulting $ figures (share counts are
+    # a non-linear function of a time-varying capital).
+    book_weights: pd.DataFrame | None = None   # date x instrument FRACTIONAL weights, as traded
+    book_prices: pd.DataFrame | None = None    # date x instrument price/level panel used to price it
 
 
 class Strategy(ABC):
     """Base class for a self-contained strategy sleeve."""
 
     name: str = "strategy"
+    # Key of this sleeve's own block in the merged config (configs/strategy/<config_key>.yml).
+    # Declared here rather than hardcoded inside each `run` so a caller that needs a sleeve's
+    # settings without instantiating it -- the daily ledger reads each sleeve's fee/spread --
+    # can find them: the name ("ls_equity") does not map mechanically to the key ("strategy_ls").
+    config_key: str = "strategy"
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         self._context = context
         self._config = config
         self._log = logging.getLogger(__name__)
+
+    @property
+    def config(self):
+        """This sleeve's own config block."""
+        return self._config[self.config_key]
 
     @abstractmethod
     def run(self, inputs: PortfolioInputs) -> StrategyResult:

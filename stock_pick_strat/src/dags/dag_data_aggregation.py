@@ -11,7 +11,8 @@ Triggered by the extraction DAG once ALL sources have refreshed (schedule=None).
                                        │
                                        ▼
                                  assemble_cube  ──▶ cube_status (XCom: max date/rows per part; RED if
-                                       │             a part is missing / behind) ──▶ trigger `modelling`
+                                       │             a part is missing / behind)
+                                       │                     └──▶ trigger `strat_prediction` (daily)
                                        ▼
                                  writes the `cube` table
 
@@ -117,9 +118,11 @@ def _cube_status(**context) -> None:
 # 4) status gate: latest date per cube part -> XCom (RED if a part is behind); visible, not blocking
 cube_status = PythonOperator(task_id="cube_status", python_callable=_cube_status, dag=dag)
 
-# 5) kick off the modelling DAG (train -> backtest -> full-train -> predict) once the cube is fresh
-trigger_modelling = TriggerDagRunOperator(
-    task_id="trigger_modelling", trigger_dag_id="modelling",
+# 5) kick off the DAILY prediction DAG (predict -> strategy ledger) once the cube is fresh.
+#    NOT `modelling`: (re)training is weekly (Saturday, see dag_modelling.py) while a freshly
+#    rebuilt cube should be SCORED every night, so the nightly downstream is prediction only.
+trigger_strat_prediction = TriggerDagRunOperator(
+    task_id="trigger_strat_prediction", trigger_dag_id="strat_prediction",
     wait_for_completion=False, reset_dag_run=True, trigger_rule=TriggerRule.ALL_DONE, dag=dag)
 
-deduce_peers >> [build_target, *feature_tasks] >> institutional_task >> superinvestor_task >> fundamental_task >> assemble_cube >> cube_status >> trigger_modelling
+deduce_peers >> [build_target, *feature_tasks] >> institutional_task >> superinvestor_task >> fundamental_task >> assemble_cube >> cube_status >> trigger_strat_prediction

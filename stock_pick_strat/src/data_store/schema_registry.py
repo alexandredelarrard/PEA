@@ -173,6 +173,23 @@ AGGREGATE_TABLES: list[TableSpec] = [
     # cross-asset time-series-momentum book blended with the equity alpha + SPY in the backtest.
     TableSpec("trend_asset_returns", "output/trend_asset_returns.parquet",
               ("date",), "aggregate", date_col="date", ticker_col=None),
+    # LIVE predictions in LONG form, one row per (as-of date, ticker, horizon, model): each row
+    # carries its OWN `predicts_for` (as-of + horizon business days), because the h30 and h90
+    # predictions made on the same day are about different future dates. `model` is an ensemble
+    # member name, or 'ensemble' (that horizon's member average) / 'blended' (the IR-weighted
+    # blend across horizons, stamped with the IR-weighted average horizon). `predicted_at` is
+    # when the run produced the row — deliberately distinct from `date`, the as-of date of the
+    # features. Written by StepModelling.predict_latest (full replace each run).
+    TableSpec("predictions_latest", "output/predictions_latest.parquet",
+              ("date", "ticker", "horizon", "model"), "aggregate", date_col="date",
+              date_type_cols=("date", "predicts_for")),
+    # The TRADING LEDGER: one row per (trading day, sleeve, ticker) move the portfolio would
+    # place, with its FIFO-matched entry/exit price and realized P&L. Upserted (not replaced) so
+    # a BUY row written weeks ago gains its `price_sold` / `pnl` on the day its position closes.
+    # Written by StepStrategyMoves in the daily `strat_prediction` DAG.
+    TableSpec("strategy", "output/strategy.parquet",
+              ("trading_day", "sleeve", "ticker"), "aggregate", date_col="trading_day",
+              date_type_cols=("trading_day", "closed_on")),
 ]
 
 ALL_TABLES: list[TableSpec] = REFERENCE_TABLES + EXTRACT_TABLES + AGGREGATE_TABLES

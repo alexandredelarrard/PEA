@@ -20,9 +20,10 @@ from src.utils.risk_parity import series_metrics
 
 class EqLongOnlyStrategy(Strategy):
     name = "eq_long_only"
+    config_key = "strategy_eq_long_only"
 
     def run(self, inputs: PortfolioInputs) -> StrategyResult:
-        c = self._config.strategy_eq_long_only
+        c = self.config
         b = build_signal(self._context, self._config, end=inputs.end)
         book = long_only_book(
             b.signal, b.stock_ret, float(inputs.capital),
@@ -60,4 +61,5 @@ class EqLongOnlyStrategy(Strategy):
                                float(c.get("spread_bps", inputs.spread_bps)), self.name, prices=b.close)
         return StrategyResult(name=self.name, returns=ret,
                               metrics=series_metrics(ret, inputs.risk_free_rate),
-                              positions=w, trades=trades, extra=extra)
+                              positions=w, trades=trades, extra=extra,
+                              book_weights=w, book_prices=b.close)

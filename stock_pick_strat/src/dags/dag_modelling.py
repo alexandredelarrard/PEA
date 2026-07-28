@@ -1,31 +1,39 @@
 """
 dag_modelling.py  (src/dags/dag_modelling.py)
 ---------------------------------------------
-MODELLING & BACKTEST DAG — train the cross-sectional long/short ensemble for the configured window,
-backtest it, THEN retrain on all history and emit live predictions for the allocation.
+MODELLING & BACKTEST DAG — the WEEKLY (weekend) retrain. Fit the cross-sectional long/short
+ensemble on the holdout window, backtest the portfolio over that out-of-sample period, then refit
+on ALL history so the production model has learnt from every available observation.
 
-    train_model ──▶ backtest_portfolio ──▶ full_train ──▶ predict
-
-  * full_train  — `python -m src modelling full-train`: PRODUCTION retrain on ALL history up to the
-                  latest cube date (no train_end cutoff, no OOS holdout).
-  * predict     — `python -m src modelling predict`: score the latest cube date per horizon
-                  (pred_h<h>) + the blended signal -> `predictions_latest`, the table the future
-                  allocation DAG consumes.
+    train_model ──▶ backtest_portfolio ──▶ full_train
 
   * train_model       — `python -m src modelling train` : trains one per-horizon ensemble
-                        (elasticnet + LightGBM + random_forest) on the cube for the
+                        (elasticnet + LightGBM `lgbm` + random_forest) on the cube for the
                         modellling.yml `train.start_date`/`train.end_date` window, saves the model
                         artifacts + metadata.json (the backtest reads them back), the
-                        `predictions` / `cube_signal` tables and the per-run diagnostics pictures.
+                        `predictions` / `cube_signal` tables and the per-run diagnostics
+                        (per horizon: SHAP values, PDPs and kpis.json per booster member).
   * backtest_portfolio — `python -m src portfolio backtest` : blends the configured sleeves
                         (portfolio.yml; the L/S sleeve is OOS from the model's train_end),
                         risk-parity/ERC-weights them to the global vol target, reports
                         per-strategy vs global Sharpe and saves the backtest pictures
                         (equity vs SP500, dynamic sleeve weights, per-sleeve analysis) + tables
-                        under data/output/portfolio/ (the ./data bind mount -> host disk).
+                        under data/output/portfolio/.
+  * full_train        — `python -m src modelling full-train` : PRODUCTION refit on ALL history up
+                        to the latest cube date (NO train_end cutoff, NO holdout), so nothing is
+                        withheld from the model that actually trades. This is the artifact the
+                        daily prediction reads back.
 
-schedule=None: trigger manually, or chain after the nightly aggregation once the cube has been
-rebuilt. Each command runs in the pipeline's isolated venv (/opt/pipeline) from the mounted repo.
+The holdout `train_model` + `backtest_portfolio` deliberately run BEFORE the full refit: the
+per-horizon IR blend weights and the backtest are only meaningful measured out-of-sample. Fitting
+on everything first would leave both in-sample, inflating the reported Sharpe and mis-weighting
+the horizon blend that production then uses.
+
+WEEKLY, Saturday 02:00 — a retrain is a weekly concern and the weekend has the machine to itself.
+PREDICTION IS NOT IN THIS DAG: the daily `strat_prediction` DAG owns it (and is what the nightly
+`data_aggregation` DAG triggers), so `predictions_latest` has exactly one writer and a fresh cube
+is scored every day without waiting for a retrain. Each command runs in the pipeline's isolated
+venv (/opt/pipeline) from the mounted repo.
 """
 from datetime import datetime, timedelta
 
@@ -46,12 +54,14 @@ default_args = {
 dag = DAG(
     dag_id="modelling",
     default_args=default_args,
-    description="Train the long/short ensemble (config train window) then run the portfolio backtest.",
-    schedule=None,                               # triggered manually or after the cube rebuild
+    description="WEEKLY (Sat): train the long/short ensemble on the holdout window, backtest the "
+                "portfolio OOS, then refit on ALL history for production.",
+    schedule="0 2 * * 6",                        # Saturday 02:00 — weekend retrain
     start_date=datetime(2024, 1, 1),
-    catchup=False,
+    catchup=False,                               # a missed week is covered by the next run
+    max_active_runs=1,                           # never two trains writing the same artifacts
     max_active_tasks=1,                          # train then backtest, strictly sequential
-    tags=["pea", "modelling", "backtest"],
+    tags=["pea", "modelling", "backtest", "weekly"],
 )
 
 
@@ -65,16 +75,14 @@ def run(pkg_cmd: str, task_id: str) -> BashOperator:
     )
 
 
-# 1) train the ensemble on the configured train window -> saves models + metadata.json
+# 1) train the ensemble on the configured HOLDOUT window -> models + metadata.json + diagnostics
 train_model = run("modelling train", task_id="train_model")
 
-# 2) once trained, run the portfolio backtest (reads the model artifacts) -> saves pictures
+# 2) backtest the sleeve blend over that out-of-sample window (reads the model artifacts)
 backtest_portfolio = run("portfolio backtest", task_id="backtest_portfolio")
 
-# 3) PRODUCTION retrain on ALL history up to the latest cube date (no OOS holdout)
+# 3) PRODUCTION refit on ALL history up to the latest cube date — no holdout, nothing withheld.
+#    The daily `strat_prediction` DAG scores with these artifacts.
 full_train = run("modelling full-train", task_id="full_train")
 
-# 4) predict the latest cube date per horizon + blended -> predictions_latest (for the allocation DAG)
-predict = run("modelling predict", task_id="predict")
-
-train_model >> backtest_portfolio >> full_train >> predict
+train_model >> backtest_portfolio >> full_train

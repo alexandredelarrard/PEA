@@ -26,6 +26,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from src.constants.constants import (
+    EARNINGS_CALL_CACHE_DIR,
     EARNINGS_CALL_SECTIONS_TABLE,
     HF_BACKBONE_EARLY_QUARTER,
     HF_BACKBONE_LATE_QUARTER,
@@ -34,8 +35,8 @@ from src.constants.constants import (
     HF_TRANSCRIPTS_PARQUET_URL,
 )
 from src.context import Context
-from src.data_extract.utils.behavioral.utils_behavior import _cache_dir
 from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
+from src.data_extract.utils.common.bulk_cache import cache_dir
 
 logger = logging.getLogger(__name__)
 _TABLE = EARNINGS_CALL_SECTIONS_TABLE
@@ -70,7 +71,7 @@ def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = No
     from fool). Returns {} when the parquet is not cached yet (caller falls back to a date floor).
     `tickers` restricts to a subset (None = all)."""
 
-    dest = _cache_dir(context) / HF_TRANSCRIPTS_CACHE
+    dest = cache_dir(context, EARNINGS_CALL_CACHE_DIR) / HF_TRANSCRIPTS_CACHE
     if not dest.exists() or dest.stat().st_size < 1_000_000:
         logger.info("HF parquet not cached yet -> no per-ticker HF horizon (fool gap uses the date floor)")
         return {}
@@ -96,7 +97,7 @@ def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = No
 
 def download_hf_parquet(context: Context, force: bool = False) -> Path:
     """Cache the dataset parquet under data/call_transcripts/. Skips if already present."""
-    dest = _cache_dir(context) / HF_TRANSCRIPTS_CACHE
+    dest = cache_dir(context, EARNINGS_CALL_CACHE_DIR) / HF_TRANSCRIPTS_CACHE
     if dest.exists() and not force and dest.stat().st_size > 1_000_000:
         logger.info("HF transcripts parquet already cached (%.0f MB) -> %s",
                     dest.stat().st_size / 1e6, dest)

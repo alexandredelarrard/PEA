@@ -92,6 +92,7 @@ def fetch_roic_transcripts(context: Context, tickers: list[str] | None = None,
     Per ticker: LIST once (what Roic has), fetch only the missing quarters Roic actually covers,
     parse -> sections -> save immediately (so a throttle/interrupt loses no work and the later fool
     step sees them). `since` is the recent-gap floor for names the HF backbone doesn't cover."""
+
     apikey = _api_key()
     if not apikey:
         context.log.warning("Roic AI transcripts skipped: no API key (set ROIC_API_KEY_ENV in .env). "

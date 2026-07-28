@@ -19,7 +19,7 @@ _QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$")
 
 
 def _parse_quarter(q: str) -> tuple[int, int] | None:
-    """'2025Q1' -> (2025, 1); None if malformed."""
+    """'2025Q1' -> (2025, 1); None if malformed._missing_for"""
     m = _QUARTER_RE.match(str(q))
     return (int(m.group(1)), int(m.group(2))) if m else None
 

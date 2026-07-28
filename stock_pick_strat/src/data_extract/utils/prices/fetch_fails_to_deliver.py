@@ -130,7 +130,7 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
     cache = cache_dir(context, "sec_fails_to_deliver")
 
     done = ingested_periods(context, "fails_to_deliver")
-    new_tickers = universe - load_processed_universe(cache_dir, _TABLE)   # empty once converged
+    new_tickers = universe - load_processed_universe(cache, _TABLE)   # empty once converged
     if new_tickers:
         logger.info("FTD: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
 
@@ -152,7 +152,7 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
         df["period"] = period
         saved += store.save(_TABLE, df[[c for c in _OUT_COLS if c in df.columns]])
 
-    save_processed_universe(cache_dir, _TABLE, universe)   # so a converged re-run skips
+    save_processed_universe(cache, _TABLE, universe)   # so a converged re-run skips
     logger.warning("fails_to_deliver: upserted %d rows (%d files scanned)",
                    saved, len(_periods(years_history)))
     return saved

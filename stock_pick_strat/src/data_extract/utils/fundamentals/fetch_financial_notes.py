@@ -292,7 +292,7 @@ def fetch_financial_notes(context: Context, tickers: list[str]) -> int:
     universe = {str(t).upper() for t in tickers}
 
     done = ingested_periods(context, (_NUM_TABLE, _TXT_TABLE))
-    new_tickers = universe - load_processed_universe(cache_dir, _NUM_TABLE)   # empty once converged
+    new_tickers = universe - load_processed_universe(cache, _NUM_TABLE)   # empty once converged
     if new_tickers:
         logger.info("notes: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
 
@@ -316,7 +316,7 @@ def fetch_financial_notes(context: Context, tickers: list[str]) -> int:
             txt["period"] = period
             n_txt += store.save(_TXT_TABLE, txt[[c for c in _TXT_OUT if c in txt.columns]])
 
-    save_processed_universe(cache_dir, _NUM_TABLE, universe)   # so a converged re-run skips
+    save_processed_universe(cache, _NUM_TABLE, universe)   # so a converged re-run skips
     logger.info("notes: upserted %d num + %d text rows (%d periods scanned)",
                    n_num, n_txt, len(periods))
     return n_num + n_txt

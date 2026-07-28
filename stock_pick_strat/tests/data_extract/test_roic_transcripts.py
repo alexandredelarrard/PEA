@@ -75,7 +75,7 @@ def test_db_covered_quarter_excluded_from_fool_gap():
     floor = _quarter_index(2025, 1)            # gap floor (no HF for this name)
     have_db = {"FRT": {"2025Q2"}}              # Roic already saved 2025Q2
     miss = _missing_for("FRT", hf_latest={}, floor_idx=floor, end_idx=end,
-                        cache_dir=Path("/does/not/exist"), have_db=have_db, have_json={})
+                        cache=Path("/does/not/exist"), have_db=have_db, have_json={})
     assert "2025Q2" not in miss, "a DB-covered (Roic) quarter must NOT be in the fool gap"
     assert "2025Q1" in miss, "an uncovered quarter stays in the gap"
     print("\n=== SANITY CHECK: Roic-covered quarter excluded from fool gap ===")

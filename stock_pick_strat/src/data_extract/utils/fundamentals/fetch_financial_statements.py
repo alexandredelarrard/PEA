@@ -142,7 +142,7 @@ def fetch_financial_statements(context: Context, tickers: list[str]) -> int:
 
     tickers = {str(t).upper() for t in tickers}          # universe as an uppercased set
     done_q = bulk_ingested_quarters(store, _TABLE)
-    new_tickers = tickers - load_processed_universe(cache_dir, _TABLE)   # empty once converged
+    new_tickers = tickers - load_processed_universe(cache, _TABLE)   # empty once converged
     if new_tickers:
         logger.info("finstmt: %d new/changed tickers -> re-parsing cached quarters",
                     len(new_tickers))
@@ -169,7 +169,7 @@ def fetch_financial_statements(context: Context, tickers: list[str]) -> int:
         facts["quarter"] = q
         saved += store.save(_TABLE, facts[[c for c in _OUT_COLS if c in facts.columns]])
 
-    save_processed_universe(cache_dir, _TABLE, tickers)   # so a converged re-run skips
+    save_processed_universe(cache, _TABLE, tickers)   # so a converged re-run skips
     logger.info("pension_facts: upserted %d rows (%d quarters scanned)",
                    saved, len(quarter_periods(years_history, SEC_FINSTMT_FIRST_YEAR)))
     return saved

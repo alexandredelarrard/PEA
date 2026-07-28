@@ -43,6 +43,7 @@ from src.constants.constants import (
     MOTLEY_FOOL_TRANSCRIPT_INDEX_URL,
 )
 from src.context import Context
+from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.utils import polite_http as ph
 from src.utils.crawler import Crawler
 
@@ -73,14 +74,8 @@ _HREF_RE = re.compile(r'href="(/earnings/call-transcripts/\d{4}/\d{2}/\d{2}/[^"?
 # --------------------------------------------------------------------------- #
 # IO helpers                                                                    #
 # --------------------------------------------------------------------------- #
-def _cache_dir(context: Context) -> Path:
-    d = context.paths["DATA_STORE"] / EARNINGS_CALL_CACHE_DIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
 def _index_path(context: Context) -> Path:
-    return _cache_dir(context) / "transcript_index.json"
+    return cache_dir(context, EARNINGS_CALL_CACHE_DIR) / "transcript_index.json"
 
 
 def _load_index(path: Path) -> dict[str, dict]:
@@ -294,10 +289,10 @@ def _since_floor_index(since: str) -> int:
     return _quarter_index(ts.year, ts.quarter)
 
 
-def _local_quarters(cache_dir: Path, ticker: str) -> set[str]:
+def _local_quarters(cache: Path, ticker: str) -> set[str]:
     """Quarters ALREADY downloaded to disk for a ticker = the {quarter}.html files under
     data/call_transcripts/{ticker}/ (so a re-run never re-requests a cached transcript)."""
-    d = cache_dir / ticker
+    d = cache / ticker
     return {p.stem for p in d.glob("*.html")} if d.exists() else set()
 
 
@@ -345,7 +340,7 @@ def _released_quarter_idx_by_ticker(
     return out
 
 
-def _missing_for(tk: str, hf_latest: dict, floor_idx: int, end_idx: int, cache_dir: Path,
+def _missing_for(tk: str, hf_latest: dict, floor_idx: int, end_idx: int, cache: Path,
                  have_db: dict[str, set], have_json: dict[str, set],
                  released: dict[str, int] | None = None) -> set[str]:
     """The quarters still needed for `tk`: everything from the fool gap-start (the quarter AFTER the
@@ -361,7 +356,7 @@ def _missing_for(tk: str, hf_latest: dict, floor_idx: int, end_idx: int, cache_d
     gap_start = (_quarter_index(*hf) + 1) if hf else floor_idx
     tk_end = released.get(tk, end_idx) if released is not None else end_idx   # actual release, per ticker
     required = set(_quarters_between(gap_start, tk_end))
-    have = _local_quarters(cache_dir, tk) | have_db.get(tk, set()) | have_json.get(tk, set())
+    have = _local_quarters(cache, tk) | have_db.get(tk, set()) | have_json.get(tk, set())
     return required - have
 
 
@@ -379,7 +374,7 @@ def missing_quarters_by_ticker(context: Context, tickers: list[str] | None = Non
     if tickers is not None:
         keep = set(tickers)
         universe = [t for t in universe if t in keep]
-    cache_dir = _cache_dir(context)
+    cache = cache_dir(context, EARNINGS_CALL_CACHE_DIR)
     end_idx = _latest_expected_quarter_index(grace_days)
     floor_idx = _since_floor_index(str(since))
     hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)
@@ -392,7 +387,7 @@ def missing_quarters_by_ticker(context: Context, tickers: list[str] | None = Non
 
     out: dict[str, list[str]] = {}
     for tk in universe:
-        miss = _missing_for(tk, hf_latest, floor_idx, end_idx, cache_dir, have_db, have_json, released)
+        miss = _missing_for(tk, hf_latest, floor_idx, end_idx, cache, have_db, have_json, released)
         if miss:
             out[tk] = sorted(miss, key=lambda q: _quarter_index(*_parse_quarter(q)))
     return out
@@ -433,7 +428,7 @@ def build_transcript_index_by_ticker(
     slug_map = _universe_slug_map(universe)
     path = _index_path(context)
     index = _load_index(path)
-    cache_dir = _cache_dir(context)
+    cache = cache_dir(context, EARNINGS_CALL_CACHE_DIR)
     since = str(since)
 
     end_idx = _latest_expected_quarter_index(grace_days)   # newest quarter expected to exist today
@@ -447,7 +442,7 @@ def build_transcript_index_by_ticker(
 
     def _missing(tk: str) -> set[str]:
         """Quarters the fool quote page should still supply for `tk` (shared gap logic)."""
-        return _missing_for(tk, hf_latest, floor_idx, end_idx, cache_dir, have_db, have_json, released)
+        return _missing_for(tk, hf_latest, floor_idx, end_idx, cache, have_db, have_json, released)
 
     # process tickers in RANDOM order (not universe/alphabetical): spreads the fool.com load and
     # keeps an interrupted / throttled run from always dying on the same tail names.
@@ -586,30 +581,30 @@ def download_transcripts(context: Context, tickers: list[str] | None = None,
     (data/call_transcripts/{ticker}/{quarter}.html). Skips already-downloaded files.
     Returns the number newly downloaded. `tickers` restricts to a subset (None = all);
     `limit` bounds a test run."""
-    cache_dir = _cache_dir(context)
+    cache = cache_dir(context, EARNINGS_CALL_CACHE_DIR)
     index = _load_index(_index_path(context))
     keep = set(tickers) if tickers is not None else None
     todo = [r for r in index.values()
             if (keep is None or r["ticker"] in keep)
-            and not (cache_dir / r["ticker"] / f"{r['quarter']}.html").exists()]
+            and not (cache / r["ticker"] / f"{r['quarter']}.html").exists()]
     # RANDOM order (not index/alphabetical): spreads the load and, with `limit`, samples a random
     # subset rather than always the same head of the index.
     random.shuffle(todo)
     if limit is not None:
         todo = todo[:limit]
-        
+
     n = 0
     for rec in tqdm(todo, "EC download"):
         html = _get(rec["url"])
         if not html or "call-transcripts" not in html.lower():
             continue
-        out = cache_dir / rec["ticker"] / f"{rec['quarter']}.html"
+        out = cache / rec["ticker"] / f"{rec['quarter']}.html"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(html, encoding="utf-8")
         n += 1
         _sleep_pace(pause)
     logger.info("Downloaded %d new transcripts (%d already cached) -> %s",
-                   n, len(index) - n, cache_dir)
+                   n, len(index) - n, cache)
     return n
 
 
@@ -635,14 +630,14 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None,
     BeautifulSoup parse) — so a re-run on a full cache is instant instead of silently re-parsing
     thousands of files (the "nothing happens" stall). `force=True` re-parses everything; `tickers`
     restricts to a subset (None = every cached transcript)."""
-    cache_dir = _cache_dir(context)
+    cache = cache_dir(context, EARNINGS_CALL_CACHE_DIR)
     index = {(r["ticker"], r["quarter"]): r for r in _load_index(_index_path(context)).values()}
     keep = set(tickers) if tickers is not None else None
     existing = set() if force else _existing_section_keys(context)
 
     rows: list[dict] = []
     parsed = skipped = 0
-    for html_path in tqdm(sorted(cache_dir.glob("*/*.html")), "EC ingestion db"):
+    for html_path in tqdm(sorted(cache.glob("*/*.html")), "EC ingestion db"):
         ticker, quarter = html_path.parent.name, html_path.stem
         if keep is not None and ticker not in keep:
             continue

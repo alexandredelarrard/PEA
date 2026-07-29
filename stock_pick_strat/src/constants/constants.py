@@ -631,3 +631,120 @@ SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
     "utilities":  ("sector",         (GICS_SECTOR_UTILITIES,)),
     "pharma":     ("industry_group", (GICS_GROUP_PHARMA_BIOTECH,)),
 }
+
+
+# --------------------------------------------------------------------------- #
+# DATA-PLAUSIBILITY BANDS                                                      #
+# --------------------------------------------------------------------------- #
+# Added after the source-table sanity audit (2026-07-28). Every band below was
+# calibrated on the LIVE table, and each one separates a proven extraction defect
+# from legitimate data — none of them clips a real value. See the per-constant
+# notes for the observed evidence.
+
+# `sharesOutstanding` for an S&P 500 name. 1.3% of fundamentals_history rows sat
+# outside this: 57 rows above 2e10 (ORCL 2012 stored 4.819e15 vs a true 4.819e9 —
+# exactly 1e6x), 147 rows in 1..1e6 and 166 zeros. The real maximum in the table
+# among plausible rows is ~1.6e10 (BAC/T era), so 2e10 is a safe ceiling and 1e6 a
+# safe floor (no S&P 500 constituent has fewer than a million shares outstanding).
+SHARES_OUTSTANDING_MIN = 1_000_000.0
+SHARES_OUTSTANDING_MAX = 2e10
+
+# Per-share figures. Diluted EPS outside ±10,000 is never real (BRK.A, the largest
+# legitimate EPS in the universe, is ~4,000). 21 rows breached it, e.g. ICE 2016
+# eps = 1.2e8 = the diluted SHARE COUNT captured into the EPS field.
+EPS_ABS_MAX = 10_000.0
+# Dividends per share: 19 rows exceeded 100 (ROK 3.88e6, STX 2.8e6 = the dollar
+# dividend TOTAL, 1e6x the per-share figure). The largest real DPS here is ~35.
+DIVIDEND_PER_SHARE_ABS_MAX = 1_000.0
+
+# Derived ratios. `grossMargins` already had GROSS_MARGIN_MIN/MAX; these are its
+# missing siblings, all blown up by a near-zero denominator rather than by a bad
+# input: returnOnEquity reached 5.52e7 (168 rows |ROE|>10), debtToEquity 9.69e7
+# (39 rows >100), operatingMargins -209..81.7 (63 rows), profitMargins -148.7..45.
+# Bands are wide enough to keep genuine distress (negative equity, loss-making
+# quarters) and only null arithmetic artefacts.
+RETURN_ON_EQUITY_ABS_MAX = 10.0
+DEBT_TO_EQUITY_ABS_MAX = 100.0
+OPERATING_MARGIN_ABS_MAX = 5.0
+PROFIT_MARGIN_ABS_MAX = 5.0
+# A ratio is only trustworthy when its denominator is a meaningful fraction of the
+# firm's scale; below this share of |totalRevenue| (or |totalAssets| for equity)
+# the quotient is noise and the ratio is nulled instead of clipped.
+RATIO_DENOMINATOR_MIN_FRACTION = 1e-3
+
+# Balance-sheet scale check. Stub/registration-era filings (spin-off S-4s, a first
+# 10-Q) carry an internally consistent but wrongly-scaled balance sheet — LUV 2011
+# totalAssets 1.788e4 for a real $17.88bn, KMB 1.9e4, SW 108, AMCR 130. A real
+# operating company never reports total assets smaller than this fraction of its
+# own revenue, so the balance-sheet block is dropped for those rows.
+BALANCE_SHEET_MIN_ASSETS_TO_REVENUE = 1e-3
+# |TA - (TL + SE)| / |TA| above this means the totals did not come from one statement.
+# Deliberately LOOSE. Two effects make a tight bound wrong here:
+#   * filers split non-controlling interests either inside or outside
+#     `stockholdersEquity`, so the identity is tested BOTH ways and the better fit wins
+#     (adding NCI unconditionally breaks rows it should not -- ERIE's `minorityInterest`
+#     is the Erie Insurance Exchange's equity, larger than Erie Indemnity's own assets);
+#   * `_assemble_base` carries balance-sheet LEVELS forward up to 4 quarters, so two
+#     totals on one row can legitimately come from different quarter-ends.
+# Measured on the live table: 3,060 rows breach 2% but only 1,928 survive the NCI
+# alternative, and of those 1,479 sit in 2-10% -- ffill drift, not a broken statement.
+# The genuine breaks (SW 7.3e7, ARES 2.3e7, AMCR 5.3e5, LIN 1,613, ICE 24.8, ERIE 5.5)
+# are orders of magnitude away, so 0.5 separates them with room to spare.
+BALANCE_SHEET_IDENTITY_TOLERANCE = 0.5
+
+# --------------------------------------------------------------------------- #
+# PRICE PRE-LISTING TRIM                                                       #
+# --------------------------------------------------------------------------- #
+# yfinance back-fills a US ticker with its predecessor line (AMCR's ASX quote
+# pre-2019, SW's Smurfit Kappa quote pre-2024) or its SPAC trust (VRT before the
+# Feb-2020 merger). Those bars are flat and mostly zero-volume, so they inject
+# zero realised vol and fake zero returns into beta / correlation / momentum.
+# Two independent tells, either of which marks the pre-window as synthetic:
+#   * zero-volume share in [first_bar .. last_zero_volume_bar] >= 20%
+#     (AMCR 77.1%, SW 62.7%, HWM 94.6% vs PFG/AMD/XEL/IBKR/... all <= 2.7%),
+#   * first-year median volume < 1% of the ticker's full-history median volume
+#     (VRT 0.17% vs the tightest true listing, NCLH 2.9% / ARES 2.85% / SMCI 3.9%).
+# Both thresholds sit an order of magnitude away from the nearest false positive.
+PRELISTING_ZERO_VOLUME_SHARE = 0.20
+PRELISTING_VOLUME_RATIO = 0.01
+# Tickers whose volume is legitimately zero (FX has no exchange volume) must never
+# be trimmed; they are not in the equity universe anyway.
+NO_VOLUME_TICKERS: frozenset[str] = frozenset({"USDEUR=X"})
+
+# --------------------------------------------------------------------------- #
+# EMBEDDING INPUT LIMITS                                                       #
+# --------------------------------------------------------------------------- #
+# text-embedding-3-small accepts 8,191 TOKENS. English prose runs ~3.6 chars per
+# token, so ~29,000 chars is the real ceiling; 28,000 keeps a safety margin for
+# token-dense text (tables, tickers). The previous 8,000-CHAR cap truncated 22.4%
+# of prepared-remarks turns (max 74,550 chars), so the quarter-to-quarter drift
+# feature only ever compared each turn's opening fragment.
+EMBEDDING_MAX_CHARS = 28_000
+# A turn shorter than this is boilerplate ("Thank you.", "Yes.") — 17,281 Q&A turns
+# qualify. Embedding them and taking a cosine against the question is pure noise,
+# so they are excluded from the coherence KPI (they stay in the cache).
+EMBEDDING_MIN_TURN_CHARS = 30
+
+# --------------------------------------------------------------------------- #
+# HEADCOUNT CONTINUITY                                                         #
+# --------------------------------------------------------------------------- #
+# Employee counts come from 10-K PROSE, so a residue of mis-picked numbers survives
+# every in-document heuristic. Headcount is a slow-moving series, which makes a
+# ticker's own history the strongest remaining check: no real company multiplies or
+# divides its workforce by five between two annual filings. The 2026-07 audit measured
+# 6.3% of year-over-year transitions at >2x or <0.5x, and the 30-ticker verification
+# caught CoStar picking up a "2.3 million" phrase (2,300,000) against a stored 1,155.
+# The band is deliberately generous so a genuine transformative merger still passes;
+# it is anchored on the MEDIAN of accepted values, so one bad reading cannot reject the
+# correct ones that follow it.
+HEADCOUNT_CONTINUITY_MIN = 0.2
+HEADCOUNT_CONTINUITY_MAX = 5.0
+
+# Say-on-pay support below this is dropped by `def14a_impute` (see
+# `_drop_implausible_say_on_pay`). Real votes cluster 0.85-0.99; the 2026-07 audit found
+# 125 of 4,785 values (2.6%) under 0.60, steady at 1-4% every year since 2011, with
+# spot-checks proving them wrong (JPM 2023 stored 0.31 against ~89% actual, SPG 2024
+# 0.111 against ~93%, INTC 2023 0.34). Set at 0.50 rather than 0.60 to keep the genuine
+# shareholder revolts, which do reach the low 50s, while clearing the clear errors. NOTE
+# the field holds a FRACTION (0-1) despite the `_pct` name -- the live max is exactly 1.0.
+SAY_ON_PAY_MIN_SUPPORT = 0.50

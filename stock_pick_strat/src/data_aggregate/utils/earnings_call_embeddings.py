@@ -203,9 +203,17 @@ def _clean(text: str) -> str:
 
 
 def _is_informative_question(text: str) -> bool:
-    """A cleaned analyst turn that is a real question (not 'do you have questions', pure thanks)."""
+    """A cleaned analyst turn that is a real question (not 'do you have questions', pure thanks).
+
+    The length bar is `_MIN_TURN`, the SAME one answers and prepared turns must clear. It
+    used to be a looser 20 chars, which let 4,309 non-content turns through — "Can you
+    hear me now?", "I will turn it over.", "So I had a question.", "You know, long tail."
+    Those matter more than their count suggests: the question vector is the ANCHOR of
+    every cosine in `ec_qa_coherence`, so a meaningless question corrupts the whole
+    exchange's score rather than just adding one noisy sample.
+    """
     t = text.strip()
-    return len(t) >= 20 and len(t.split()) >= 4 and not _NONINFO_Q.match(t)
+    return len(t) >= _MIN_TURN and len(t.split()) >= 4 and not _NONINFO_Q.match(t)
 
 
 def split_turns(text: str, section: str, min_len: int = _MIN_TURN,

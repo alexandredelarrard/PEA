@@ -24,7 +24,10 @@ import yfinance as yf
 from tqdm import tqdm
 
 from src.data_extract.utils.common.gics import industry_group
-from src.constants.constants import DATE_FORMAT
+from src.constants.constants import (
+    DATE_FORMAT, NO_VOLUME_TICKERS, PRELISTING_VOLUME_RATIO,
+    PRELISTING_ZERO_VOLUME_SHARE,
+)
 from src.context import Context
 
 _WIKI_HEADERS = {
@@ -92,6 +95,72 @@ def _normalize_prices(df: pd.DataFrame) -> pd.DataFrame:
     out = out.rename(columns={"index": "date"})
     out["date"] = pd.to_datetime(out["date"]).dt.normalize()
     return out
+
+
+def _prelisting_cutoff(frame: pd.DataFrame) -> pd.Timestamp | None:
+    """Last date of a ticker's SYNTHETIC pre-listing block, or None when it has none.
+
+    yfinance back-fills a US symbol with whatever line preceded it: AMCR carries Amcor's
+    ASX quote before the June-2019 NYSE listing, SW carries Smurfit Kappa's before
+    July 2024, VRT carries the GS Acquisition SPAC trust (~$9.9 flat) before the
+    Feb-2020 merger. Those bars are flat and mostly zero-volume, so they inject zero
+    realised volatility and fake zero returns into vol / beta / correlation / momentum.
+    Measured on the live table: AMCR 1,371 of 3,569 rows zero-volume (all <= 2019-06-10),
+    SW 2,041 of 3,771 (all <= 2024-07-05, i.e. 86% of its stored history).
+
+    Two independent tells, either sufficient, both an order of magnitude clear of the
+    nearest false positive:
+      * the zero-volume SHARE of [first bar .. last zero-volume bar] is high -- AMCR
+        77.1%, SW 62.7%, HWM 94.6%, versus PFG / AMD / XEL / IBKR / DXCM / HUBB / SBAC /
+        WTW / DOC / CNC / GEN / CHD / ERIE / VST at <= 2.7% (isolated vendor glitches,
+        which must NOT be trimmed),
+      * the first-year median VOLUME is a negligible fraction of the ticker's own
+        full-history median -- VRT 0.17%, whose zero-volume share is only 3.6%, versus
+        the tightest genuine listings NCLH 2.9% / ARES 2.85% / SMCI 3.9% / CRH 4.2%.
+
+    Only a contiguous PREFIX is ever returned, so trimming can never punch an interior
+    hole for `_interior_gap_start` to chase in a re-download loop.
+    """
+    if frame.empty or "volume" not in frame.columns:
+        return None
+    f = frame.sort_values("date")
+    volume = pd.to_numeric(f["volume"], errors="coerce")
+    zero = volume.fillna(0) <= 0
+    if not zero.any():
+        return None
+
+    last_zero = f.loc[zero, "date"].max()
+    window = f["date"] <= last_zero
+    if window.sum() and zero[window].mean() >= PRELISTING_ZERO_VOLUME_SHARE:
+        return last_zero
+
+    # Flat SPAC-trust / stub regime that still records token volume: compare the first
+    # year against the ticker's own long-run level, so the test is scale-free.
+    first_year = f["date"] <= f["date"].min() + pd.DateOffset(years=1)
+    early, overall = volume[first_year].median(), volume.median()
+    if overall and overall > 0 and early / overall < PRELISTING_VOLUME_RATIO:
+        return last_zero
+    return None
+
+
+def trim_prelisting_bars(prices: pd.DataFrame) -> pd.DataFrame:
+    """Drop each equity ticker's synthetic pre-listing prefix (see `_prelisting_cutoff`).
+
+    Tickers whose volume is legitimately always zero are exempt: FX has no exchange
+    volume, so `USDEUR=X` is 100% zero-volume and would otherwise be erased entirely.
+    Pure; safe to re-apply (a trimmed frame has no qualifying prefix left)."""
+    if prices is None or prices.empty or "ticker" not in prices.columns:
+        return prices
+    drop = pd.Series(False, index=prices.index)
+    for ticker, group in prices.groupby("ticker", sort=False):
+        if str(ticker).upper() in NO_VOLUME_TICKERS:
+            continue
+        cutoff = _prelisting_cutoff(group)
+        if cutoff is not None:
+            drop.loc[group.index[group["date"] <= cutoff]] = True
+    if not drop.any():
+        return prices
+    return prices.loc[~drop].reset_index(drop=True)
 
 
 def _load_existing_prices(context: Context) -> pd.DataFrame | None:
@@ -370,6 +439,12 @@ def fetch_price_history(
     # keep the prices table a clean OHLCV frame (drop the action columns)
     if not new.empty:
         new = new.drop(columns=_ACTION_COLS, errors="ignore")
+        # Drop the synthetic pre-listing prefix BEFORE the upsert, so a full-history
+        # pull never writes another ticker's predecessor line into `prices`. Applied to
+        # the freshly-downloaded frame only: an incremental tail carries no prefix, and
+        # the dividend extraction above already ran on the untrimmed frame (a dividend
+        # paid by the predecessor entity is still a real ex-date for this symbol).
+        new = trim_prelisting_bars(new)
     out = _merge_prices(existing, new, years_history)
     # upsert only the freshly-downloaded delta; the DB merges on (ticker, date)
     if not new.empty:

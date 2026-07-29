@@ -62,7 +62,13 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import SEC_COMPANYFACTS_URL
+from src.constants.constants import (
+    BALANCE_SHEET_IDENTITY_TOLERANCE, BALANCE_SHEET_MIN_ASSETS_TO_REVENUE,
+    DEBT_TO_EQUITY_ABS_MAX, DIVIDEND_PER_SHARE_ABS_MAX, EPS_ABS_MAX,
+    OPERATING_MARGIN_ABS_MAX, PROFIT_MARGIN_ABS_MAX, RATIO_DENOMINATOR_MIN_FRACTION,
+    RETURN_ON_EQUITY_ABS_MAX, SEC_COMPANYFACTS_URL, SHARES_OUTSTANDING_MAX,
+    SHARES_OUTSTANDING_MIN,
+)
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, load_extract_meta, meta_path, sec_get, today_iso,
@@ -1559,7 +1565,112 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
     out["sector"] = sector
     out["industry_group"] = industry_group
 
+    out = apply_plausibility_guards(out)
     return out.copy().reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------- #
+# Row-level plausibility guards                                               #
+# --------------------------------------------------------------------------- #
+def _null_where(frame: pd.DataFrame, column: str, bad: pd.Series) -> int:
+    """NULL `column` on the `bad` rows; returns how many were cleared. NULL, never
+    clipped: a clipped value still asserts a magnitude we know to be wrong, and the
+    downstream winsorizers would then treat the boundary as a real observation."""
+    if column not in frame.columns:
+        return 0
+    mask = bad.reindex(frame.index, fill_value=False).fillna(False) & frame[column].notna()
+    n = int(mask.sum())
+    if n:
+        frame.loc[mask, column] = np.nan
+    return n
+
+
+def apply_plausibility_guards(out: pd.DataFrame) -> pd.DataFrame:
+    """Null values that are accounting-impossible or arithmetic artifacts.
+
+    `grossMargins` already had such a guard (GROSS_MARGIN_MIN/MAX) and was consequently
+    the only clean ratio in the table; this gives its siblings the same treatment and
+    adds the scale checks the 2026-07 audit surfaced. Measured on the live table
+    (30,133 rows / 498 tickers), the defects this clears are:
+
+      * SCALE, both directions -- `sharesOutstanding` 370 rows outside 1e6..2e10
+        (ORCL 2012 stored 4.819e15 against a true 4.819e9, exactly 1e6x; 166 zeros),
+        and the mirror image on the balance sheet where a stub / registration-era
+        filing reports an internally consistent but 1e6x-too-small statement
+        (LUV 2011 totalAssets 1.788e4 for a real $17.88bn, KMB 1.9e4, SW 108).
+      * WRONG TAG in a per-share field -- `epsDiluted` 21 rows |eps| > 500 (ICE 2016
+        captured the diluted SHARE COUNT, 1.2e8, as EPS), `dividendsPerShare` 19 rows
+        > 100 (ROK 3.88e6, STX 2.8e6 = the dollar dividend TOTAL).
+      * NEAR-ZERO DENOMINATOR -- returnOnEquity reached 5.52e7, debtToEquity 9.69e7,
+        operatingMargins -209, profitMargins -148.7. The inputs are fine; the quotient
+        is not, so the RATIO is nulled while its numerator/denominator are kept.
+
+    Pure and idempotent, so it is unit-testable and safe to re-apply on a rebuild.
+    """
+    if out is None or out.empty:
+        return out
+    out = out.copy()
+
+    def num(name: str) -> pd.Series:
+        if name not in out.columns:
+            return pd.Series(np.nan, index=out.index, dtype="float64")
+        return pd.to_numeric(out[name], errors="coerce")
+
+    revenue, assets = num("totalRevenue"), num("totalAssets")
+    liabilities, equity = num("totalLiabilities"), num("stockholdersEquity")
+    scale = revenue.abs().where(revenue.notna(), assets.abs())
+
+    # ---- 1. share count / per-share fields ------------------------------------
+    shares = num("sharesOutstanding")
+    _null_where(out, "sharesOutstanding",
+                (shares < SHARES_OUTSTANDING_MIN) | (shares > SHARES_OUTSTANDING_MAX))
+    _null_where(out, "epsDiluted", num("epsDiluted").abs() > EPS_ABS_MAX)
+    _null_where(out, "epsBasic", num("epsBasic").abs() > EPS_ABS_MAX)
+    _null_where(out, "dividendsPerShare",
+                num("dividendsPerShare").abs() > DIVIDEND_PER_SHARE_ABS_MAX)
+
+    # ---- 2. wrongly-scaled balance sheet --------------------------------------
+    # An operating company never reports total assets at a thousandth of its own
+    # revenue. When it does, the whole statement came in at the wrong scale, so the
+    # BLOCK goes -- keeping one member would leave a self-consistent-looking lie.
+    bad_scale = (revenue.notna() & assets.notna() & (revenue.abs() > 0)
+                 & (assets.abs() < revenue.abs() * BALANCE_SHEET_MIN_ASSETS_TO_REVENUE))
+    # ... and a balance sheet whose totals do not reconcile did not come from one
+    # statement. Tested BOTH ways because filers place non-controlling interests either
+    # inside or outside `stockholdersEquity`; the better fit wins, since adding NCI
+    # unconditionally would break rows where `minorityInterest` is not a component of
+    # this entity's equity at all (ERIE).
+    nci = num("minorityInterest").fillna(0.0) + num("redeemableNCI").fillna(0.0)
+    denom = assets.abs().replace(0, np.nan)
+    gap_ex_nci = (assets - (liabilities + equity)).abs() / denom
+    gap_inc_nci = (assets - (liabilities + equity + nci)).abs() / denom
+    identity_gap = pd.concat([gap_ex_nci, gap_inc_nci], axis=1).min(axis=1)
+    bad_identity = (assets.notna() & liabilities.notna() & equity.notna()
+                    & (identity_gap > BALANCE_SHEET_IDENTITY_TOLERANCE))
+    bad_bs = bad_scale | bad_identity | (assets <= 0)
+    for c in ("totalAssets", "totalLiabilities", "stockholdersEquity"):
+        _null_where(out, c, bad_bs)
+
+    # ---- 3. ratios whose denominator is too small to divide by ----------------
+    # Recomputed against the ORIGINAL denominators: a ratio is unusable both when the
+    # denominator is negligible relative to firm scale and when the quotient lands
+    # outside a band no real company reaches.
+    thin_rev = revenue.abs() < scale * RATIO_DENOMINATOR_MIN_FRACTION
+    thin_eq = equity.abs() < scale * RATIO_DENOMINATOR_MIN_FRACTION
+    for column, denom_thin, cap in (
+        ("returnOnEquity", thin_eq, RETURN_ON_EQUITY_ABS_MAX),
+        ("debtToEquity", thin_eq, DEBT_TO_EQUITY_ABS_MAX),
+        ("operatingMargins", thin_rev, OPERATING_MARGIN_ABS_MAX),
+        ("profitMargins", thin_rev, PROFIT_MARGIN_ABS_MAX),
+    ):
+        _null_where(out, column, denom_thin | (num(column).abs() > cap))
+
+    # ---- 4. quantities that cannot be negative --------------------------------
+    for column in ("totalRevenue", "cash", "inventory", "goodwill", "ppeNet",
+                   "currentAssets", "totalLiabilities", "totalDebt"):
+        _null_where(out, column, num(column) < 0)
+
+    return out
 
 
 # --------------------------------------------------------------------------- #

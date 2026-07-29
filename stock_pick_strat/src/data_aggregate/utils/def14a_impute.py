@@ -24,11 +24,19 @@ Deductions:
      flags -- via `limit_area='inside'`, so leading/trailing gaps and special-meeting
      proxies at the edges are left untouched.
 
+ONE exception to "only ever writes where NaN": `_drop_implausible_say_on_pay` NULLS
+say-on-pay support below `SAY_ON_PAY_MIN_SUPPORT` first, because 2.6% of those values are
+a different percentage the LLM picked off the proxy. It runs BEFORE the gap-fill, so a
+cleared cell is recoverable from the ticker's neighbouring years.
+
 `impute_def14a(df) -> (df, stats)` is pure (returns a copy + per-rule fill counts).
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+
+from src.constants.constants import SAY_ON_PAY_MIN_SUPPORT
 
 CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards",
             "ceo_non_equity_incentive", "ceo_all_other_comp"]
@@ -104,6 +112,35 @@ def _temporal_fill(df: pd.DataFrame, stats: dict) -> None:
                 stats[f"carry: {col}"] = n
 
 
+def _drop_implausible_say_on_pay(df: pd.DataFrame, stats: dict) -> None:
+    """NULL say-on-pay support below `SAY_ON_PAY_MIN_SUPPORT` before anything is imputed.
+
+    The 2026-07 audit found 125 of 4,785 values (2.6%) below 0.60, steady at 1-4% in every
+    year since 2011 — an extraction ambiguity, not a model regression. Spot-checked against
+    the public record: JPM 2023 stored 0.31 (actual ~89%), SPG 2024 stored 0.111 (~93%),
+    INTC 2023 stored 0.34. The LLM is reading a different percentage off the proxy (an
+    against-vote share, a quorum figure, an ownership stake).
+
+    This is deliberately LOSSY and is a judgement call: a genuinely failed say-on-pay vote
+    is real governance signal, and roughly 0.5% of S&P 500 companies per year do fall below
+    50%. But those true failures are rarer than the extraction errors at the same levels, so
+    a low value carries more noise than signal and is dropped rather than fed to the model.
+    NULLING happens BEFORE the temporal gap-fill, so a dropped cell can still be recovered
+    from the ticker's neighbouring years instead of leaving a hole.
+
+    The proper fix is a re-extraction with a prompt that pins the field to the
+    say-on-pay ballot result; until then this bounds the damage.
+    """
+    col = "say_on_pay_support_pct"
+    if col not in df.columns:
+        return
+    bad = df[col].notna() & (df[col] < SAY_ON_PAY_MIN_SUPPORT)
+    n = int(bad.sum())
+    if n:
+        df.loc[bad, col] = np.nan
+        stats[f"dropped implausible: {col}"] = n
+
+
 def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Return (imputed copy, stats) — fills only NaNs via the identities + temporal gap-fill."""
     if df is None or df.empty:
@@ -112,6 +149,7 @@ def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     df["as_of"] = pd.to_datetime(df["as_of"], errors="coerce")
     was_na = {c: df[c].isna() for c in INT_COLS if c in df.columns}  # to round ONLY what we fill
     stats: dict[str, int] = {}
+    _drop_implausible_say_on_pay(df, stats)   # clear known-bad cells BEFORE filling
     _reconcile_rows(df, stats)          # within-row identities
     _temporal_fill(df, stats)           # cross-year interior gaps
     _reconcile_rows(df, stats)          # reconcile values the temporal fill unlocked

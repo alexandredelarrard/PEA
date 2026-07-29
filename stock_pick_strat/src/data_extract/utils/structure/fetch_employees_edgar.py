@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 from tqdm import tqdm
 
+from src.constants.constants import HEADCOUNT_CONTINUITY_MAX, HEADCOUNT_CONTINUITY_MIN
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import (
     sec_get, load_cik_mapping, load_extract_meta, save_extract_meta, seen_accessions,
@@ -56,6 +57,19 @@ def _last_asof_by_ticker(existing: pd.DataFrame | None) -> dict:
     return s.groupby("ticker")["as_of"].max().to_dict()
 
 
+def _history_by_ticker(existing: pd.DataFrame | None) -> dict[str, list[int]]:
+    """Already-accepted headcounts per ticker -> the anchor `_is_continuous` compares a
+    newly-parsed value against. Sorted by filing date so the median reflects the series,
+    not the row order the DB happened to return."""
+    if existing is None or existing.empty or "employees" not in existing.columns:
+        return {}
+    s = existing[["ticker", "as_of", "employees"]].copy()
+    s["as_of"] = pd.to_datetime(s["as_of"], errors="coerce")
+    s["employees"] = pd.to_numeric(s["employees"], errors="coerce")
+    s = s.dropna(subset=["as_of", "employees"]).sort_values("as_of")
+    return {t: g["employees"].astype(int).tolist() for t, g in s.groupby("ticker")}
+
+
 def _is_up_to_date(context: Context, cik_map: pd.DataFrame) -> bool:
     """True when the history was already built today for the full universe."""
     path = context.paths["EMPLOYEES_HISTORY_PATH"]
@@ -66,9 +80,32 @@ def _is_up_to_date(context: Context, cik_map: pd.DataFrame) -> bool:
     return meta.get("universe_size", 0) >= len(cik_map)
 
 
+def _is_continuous(count: int, history: list[int]) -> bool:
+    """Is `count` continuous with a ticker's own headcount history?
+
+    Headcount is a SLOW-MOVING series: a real company does not multiply or divide its
+    workforce by five between two annual filings, so this catches the text-extraction
+    misses that survive every in-document heuristic. The 2026-07 audit measured 6.3% of
+    year-over-year transitions at >2x or <0.5x, and the verification run caught CSGP
+    picking up "2.3 million" (2,300,000) against a stored 1,155.
+
+    Anchored on the MEDIAN of the accepted history, not the previous value: a median
+    cannot be dragged by one bad reading, so a single wrong row does not then reject the
+    correct ones after it (WRB's 4,502,942 would have done exactly that). A ticker's
+    first filing has no anchor and is always accepted.
+    """
+    if not history:
+        return True
+    anchor = float(sorted(history)[len(history) // 2])
+    if anchor <= 0:
+        return True
+    return HEADCOUNT_CONTINUITY_MIN <= count / anchor <= HEADCOUNT_CONTINUITY_MAX
+
+
 def _employee_rows_for_ticker(context: Context, ticker: str, cik: str, company: str,
                               forms: list[str], years: int,
-                              since: pd.Timestamp | None, seen: set) -> list[dict]:
+                              since: pd.Timestamp | None, seen: set,
+                              history: list[int] | None = None) -> list[dict]:
     """One ticker's NEW employee-count rows (runs in a worker thread)."""
     try:
         filings = list_filings(cik, forms, years, company, since=since)
@@ -77,6 +114,7 @@ def _employee_rows_for_ticker(context: Context, ticker: str, cik: str, company: 
         return []
 
     rows = []
+    accepted = list(history or [])
     for _, f in filings.iterrows():
         if f["accession_number"] in seen:
             continue
@@ -89,6 +127,13 @@ def _employee_rows_for_ticker(context: Context, ticker: str, cik: str, company: 
             continue
         if count is None:
             continue
+        if not _is_continuous(count, accepted):
+            context.log.warning(
+                "%s %s: headcount %d is discontinuous with its own history "
+                "(median %d) — dropped as a parse artifact", ticker,
+                f["filing_date"].date(), count, sorted(accepted)[len(accepted) // 2])
+            continue
+        accepted.append(count)
         rows.append({
             "ticker": ticker,
             "as_of": f["filing_date"],
@@ -120,13 +165,15 @@ def fetch_employees_edgar(context: Context, tickers: list[str],
 
     seen = seen_accessions(existing)
     last_asof = _last_asof_by_ticker(existing)
+    history = _history_by_ticker(existing)
 
     new_rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures = {
             ex.submit(_employee_rows_for_ticker, context, r["ticker"], r["cik"],
                       r.get("company_name", ""), forms, years,
-                      last_asof.get(r["ticker"]), seen): r["ticker"]
+                      last_asof.get(r["ticker"]), seen,
+                      history.get(r["ticker"], [])): r["ticker"]
             for _, r in cik_map.iterrows()
         }
         for fut in tqdm(as_completed(futures), total=len(futures), desc="EDGAR employee counts"):

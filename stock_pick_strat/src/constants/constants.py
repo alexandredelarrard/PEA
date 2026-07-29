@@ -748,3 +748,30 @@ HEADCOUNT_CONTINUITY_MAX = 5.0
 # shareholder revolts, which do reach the low 50s, while clearing the clear errors. NOTE
 # the field holds a FRACTION (0-1) despite the `_pct` name -- the live max is exactly 1.0.
 SAY_ON_PAY_MIN_SUPPORT = 0.50
+
+# Effective tax rate (`EffectiveIncomeTaxRateContinuingOperations`, 481 of 500 tickers).
+# A RATIO, so a near-zero pre-tax income makes it explode: the raw field spans -56.6 to
+# +43.1 while 89.4% of values sit inside 0..0.60 and the median is 0.218 (correct for
+# post-TCJA US corporates). The band is asymmetric on purpose -- a genuine tax BENEFIT
+# year (loss carry-back, valuation-allowance release) is real signal and goes negative,
+# but not by 50x.
+EFFECTIVE_TAX_RATE_MIN = -1.0
+EFFECTIVE_TAX_RATE_MAX = 1.0
+
+# `ppeNet` is rebuilt from (ppeGross - accumulatedDepreciation) when it falls below this
+# share of that roll-forward. Utilities tag their rate base as
+# `PublicUtilitiesPropertyPlantAndEquipment{Transmission,Distribution,GenerationOrProcessing}`
+# and leave `PropertyPlantAndEquipmentNet` holding only a minor non-utility component --
+# AEP reports $0.71bn there against $120bn of gross PP&E and $114bn of total assets, a 99%
+# understatement of the asset base behind asset turnover, capex intensity and Altman Z.
+# 0.20 is far below any real net/gross ratio (even a fully-depreciated base stays well
+# above it), so a genuine old asset base is never rewritten.
+PPE_NET_MIN_SHARE_OF_ROLLFORWARD = 0.20
+
+# Diluted weighted-average shares may never fall below basic -- dilution only adds shares.
+# 415 of 31,580 rows (1.31%) broke this because the diluted count arrived in a different
+# UNIT (T 2010: basic 5.908e9 vs diluted 5,938; GLW: 1.568e9 vs 1,591; ICE: diluted 0),
+# confirmed by `epsDiluted > epsBasic` on only 10.7% of them. The tolerance absorbs genuine
+# rounding (14.2% of the violations are under 0.1% of basic) while catching the unit errors,
+# which are all >= 90% shortfalls.
+DILUTED_SHARES_MIN_SHARE_OF_BASIC = 0.99

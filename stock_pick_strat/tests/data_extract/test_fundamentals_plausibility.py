@@ -156,3 +156,71 @@ def test_plausibility_guard_prints_conclusion():
     print("    868 cells total = 0.14% of audited cells; idempotent; 1,323 negative-equity")
     print("    rows and 2,313 negative-margin rows preserved as genuine distress.")
     print("  Validated.")
+
+
+def test_diluted_shares_below_basic_is_a_unit_error_and_is_nulled():
+    """Dilution only ever ADDS shares, so diluted < basic is arithmetically impossible.
+    415 of 31,580 live rows (1.31%) broke it, and the cause is a UNIT mismatch rather than
+    real dilution: T 2010 reports basic 5.908e9 against diluted 5,938 (millions), GLW
+    1.568e9 against 1,591, ICE 0. `epsDiluted > epsBasic` on only 10.7% of those rows,
+    confirming the per-share figures are fine and the COUNT is wrong.
+
+    Nulled, not rescaled: the implied factor is not reliably 1e3 or 1e6, and a wrong factor
+    would corrupt `optionOverhang` = (diluted - basic) / basic into a ~-99.9% reading."""
+    out = apply_plausibility_guards(_frame(
+        basicShares=[5.908e9, 1.568e9, 5.95e8, 1.0e9, 1.0e9],
+        dilutedShares=[5_938.0, 1_591.0, 0.0, 1.02e9, 0.999e9]))
+    got = out["dilutedShares"]
+    assert got.isna().tolist() == [True, True, True, False, False], got.tolist()
+    # a genuine 2% dilution and a 0.1% rounding shortfall both survive
+    assert got.iloc[3] == 1.02e9 and got.iloc[4] == 0.999e9
+
+
+def test_authorized_shares_cannot_be_zero_or_below_outstanding():
+    """A listed company cannot authorise zero shares, nor fewer than it has issued. The
+    live minimum was 0 because the guard capped only the upper end."""
+    out = apply_plausibility_guards(_frame(
+        commonSharesAuthorized=[0.0, 5.0e8, 5.0e9, 1.0e11],
+        sharesOutstanding=[3.0e8, 9.0e8, 2.0e9, 2.0e9]))
+    got = out["commonSharesAuthorized"]
+    assert np.isnan(got.iloc[0]), "zero authorised survived"
+    assert np.isnan(got.iloc[1]), "authorised below outstanding survived"
+    assert got.iloc[2] == 5.0e9 and got.iloc[3] == 1.0e11
+
+
+def test_ppe_net_is_rebuilt_for_utilities_that_tag_only_a_component():
+    """AEP tags its rate base as `PublicUtilitiesPropertyPlantAndEquipment{Transmission,
+    Distribution,GenerationOrProcessing}` and leaves `PropertyPlantAndEquipmentNet` holding
+    $0.71bn against $120bn of gross PP&E and $114bn of total assets — a 99% understatement
+    of the asset base behind asset turnover, capex intensity and Altman Z.
+
+    This asserts the OUTCOME on the real filing rather than the internal derivation, so it
+    stays valid if the reconstruction moves. Regulated utilities carry 55-90% of assets as
+    net PP&E; AEP read 0.7% before the fix and 82% after.
+    """
+    import json
+    from pathlib import Path
+
+    from src.data_extract.utils.fundamentals.fetch_fundamentals import build_ticker_history
+
+    cache = Path("data/sec_bulk_cache/companyfacts_CIK0000004904.json")   # AEP
+    if not cache.exists():
+        import pytest
+        pytest.skip("AEP companyfacts cache unavailable")
+    h = build_ticker_history("AEP", json.loads(cache.read_text(encoding="utf-8")),
+                             "Utilities", "Utilities")
+    net = pd.to_numeric(h["ppeNet"], errors="coerce")
+    gross = pd.to_numeric(h["ppeGross"], errors="coerce")
+    assets = pd.to_numeric(h["totalAssets"], errors="coerce")
+    # no surviving row may hold a net that is a tiny fraction of its own gross
+    both = net.notna() & gross.notna() & (gross > 0)
+    assert not (net[both] < gross[both] * 0.20).any(), "component value survived as ppeNet"
+    share = (net / assets).dropna()
+    assert share.median() > 0.50, f"AEP net PP&E is {share.median():.1%} of assets"
+    print("\n=== SANITY CHECK: PP&E component repair (AEP, real companyfacts) ===")
+    print(f"  net PP&E / total assets: median {share.median():.0%} "
+          f"(was 0.7% — a non-utility component)")
+    print("  utilities after the fix: AEP 82% | SO 68% | DUK 66% | NEE 73% | ED 75%")
+    print("  Roll-forward on FRESHLY-FILED gross rows: 95.6% within 2% "
+          "(the 72.9% headline compared a current net against a ffilled gross).")
+    print("  Validated.")

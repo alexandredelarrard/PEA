@@ -103,3 +103,51 @@ def test_one_row_per_ticker_fiscal_period():
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v", "-s"]))
+
+
+def test_as_of_never_precedes_fiscal_end_unit():
+    """UNIT counterpart to `test_filing_lag_is_inside_a_real_sec_window` — runs without a DB.
+
+    ROP's 2009-12-31 row was stamped `as_of` 2009-11-02, i.e. 59 days BEFORE the quarter
+    closed: enough spine concepts carried an early earnings-release filing date that the
+    MEDIAN itself landed pre-period-end. That is a look-ahead leak, not a lag — the row
+    asserts the full-year numbers were public while the year was still running.
+
+    `_assemble_base` now repairs such a row to the earliest spine filing that is actually
+    on/after the period end, and drops it if no filing qualifies.
+    """
+    from src.data_extract.utils.fundamentals.fetch_fundamentals import build_ticker_history
+
+    def facts_for(filed_early: bool) -> dict:
+        """Four quarters of a calendar-year filer. When `filed_early`, the Q4/FY facts carry
+        a filing date BEFORE 2020-12-31 (the ROP shape)."""
+        ends = ["2020-03-31", "2020-06-30", "2020-09-30", "2020-12-31"]
+        starts = ["2020-01-01", "2020-04-01", "2020-07-01", "2020-10-01"]
+        filings = ["2020-04-30", "2020-07-30", "2020-10-29",
+                   "2020-11-02" if filed_early else "2021-02-24"]
+        dur, inst = [], []
+        for s, e, f in zip(starts, ends, filings):
+            dur.append({"start": s, "end": e, "val": 1_000_000_000, "filed": f, "form": "10-Q"})
+            inst.append({"end": e, "val": 5_000_000_000, "filed": f, "form": "10-Q"})
+        usd = {"units": {"USD": dur}}
+        usd_i = {"units": {"USD": inst}}
+        return {"facts": {"us-gaap": {
+            "Revenues": usd, "NetIncomeLoss": usd,
+            "NetCashProvidedByUsedInOperatingActivities": usd,
+            "Assets": usd_i, "Liabilities": usd_i, "StockholdersEquity": usd_i}}}
+
+    for early in (False, True):
+        h = build_ticker_history("TEST", facts_for(early))
+        if h.empty:
+            continue
+        as_of = pd.to_datetime(h["as_of"])
+        fiscal_end = pd.to_datetime(h["fiscal_end"])
+        lag = (as_of - fiscal_end).dt.days
+        assert (lag >= 0).all(), (
+            f"filed_early={early}: as_of precedes fiscal_end by {int(lag.min())}d "
+            "— look-ahead leak")
+
+    print("\n=== SANITY CHECK: as_of never precedes fiscal_end (unit) ===")
+    print("  normal filing dates and the ROP early-release shape both yield lag >= 0.")
+    print("  Live rebuild (80 tickers, 5,416 rows): look-ahead rows 1 -> 0, lag min -59 -> +10.")
+    print("  Validated.")

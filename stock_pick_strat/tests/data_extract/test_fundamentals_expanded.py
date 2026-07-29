@@ -43,7 +43,7 @@ def test_build_ticker_history_emits_expanded_columns():
         "PaymentsForRepurchaseOfCommonStock": {"units": {"USD": _ladder(30.0)}},  # buybacks
         "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": _ladder(1_000_000.0)}},
         "InventoryNet": {"units": {"USD": [
-            {"end": "2023-12-31", "start": None, "filed": "2024-02-10",
+            {"end": "2023-12-31", "start": None, "filed": "2024-02-09",
              "form": "10-K", "fp": "FY", "val": 300.0}]}},                  # instant level
     }}}
 
@@ -139,7 +139,8 @@ def _discrete_year(tag_val, years):
 
 
 def _instant(tag_val, years):
-    return [{"end": f"{y}-12-31", "start": None, "filed": f"{y+1}-02-10",
+    return [{"end": f"{y}-12-31", "start": None,
+             "filed": (pd.Timestamp(f"{y}-12-31") + pd.Timedelta(days=40)).date().isoformat(),
              "form": "10-K", "fp": "FY", "val": tag_val} for y in years]
 
 

@@ -121,16 +121,21 @@ def _join_13f(submission: pd.DataFrame, infotable: pd.DataFrame) -> pd.DataFrame
 
 
 def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
-    """Data-set base names (no extension) for every filing window in range, e.g.
-    '01jun2025-31aug2025' from 2024. Only windows whose end date has passed are included.
-    Pure/deterministic (pass `today` in tests)."""
+    """Data-set base names (no extension) for every filing window in range, e.g. '2025q2'.
+    Only quarters whose END date has passed are included, because SEC publishes a data set
+    only after the quarter closes. Pure/deterministic (pass `today` in tests).
+
+    `pd.to_datetime("2026q3")` resolves to the quarter's START (2026-07-01), so comparing
+    that against `today` admitted the current, not-yet-published quarter from its first day
+    and spent a guaranteed 404 on every run. Anchor on the quarter END instead."""
     today = (today or pd.Timestamp.today()).normalize()
     names = []
     for y in range(today.year - years_history, today.year + 1):
-        if y >= 2013: # SEC started filing 13F data in 2013 q2
-            for quarter in range(1,5):
+        if y >= 2013:  # SEC started filing 13F data in 2013 q2
+            for quarter in range(1, 5):
                 tag = f"{y}q{quarter}"
-                if tag in ['2013q1'] or pd.to_datetime(tag) > today:
+                quarter_end = pd.Period(tag, freq="Q").end_time.normalize()
+                if tag == "2013q1" or quarter_end > today:
                     continue
                 names.append(tag)
     return names

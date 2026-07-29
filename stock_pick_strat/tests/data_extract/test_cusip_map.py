@@ -12,9 +12,20 @@ import types
 import pandas as pd
 
 import src.data_extract.utils.prices.fetch_cusip_map as cm
+from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.data_extract.utils.prices.fetch_cusip_map import (
     normalize_cusip, build_cusip_ticker_map,
 )
+
+# `build_cusip_ticker_map` now always merges the curated CINS overrides
+# (CUSIP_TICKER_OVERRIDES) into its result, so the returned frame is a SUPERSET of what
+# was requested. These helpers assert on the LOOKED-UP part, which is what the
+# incremental-skip behaviour is actually about.
+_OVERRIDES = {normalize_cusip(c) for c in CUSIP_TICKER_OVERRIDES}
+
+
+def _looked_up(df):
+    return set(df["cusip"]) - _OVERRIDES
 
 
 class _FakeStore:
@@ -61,12 +72,13 @@ def test_build_cusip_map_skips_across_zfill(monkeypatch):
     # run 1: unmapped -> ONE OpenFIGI call; stores the canonical '037833100'
     out1 = build_cusip_ticker_map(ctx, ["037833100"], pause=0.0)
     assert calls["n"] == 1
-    assert set(out1["cusip"]) == {"037833100"} and out1.iloc[0]["ticker"] == "AAPL"
+    assert _looked_up(out1) == {"037833100"}
+    assert out1.loc[out1["cusip"] == "037833100", "ticker"].iloc[0] == "AAPL"
 
     # run 2: SAME security, but the filer dropped the leading zero -> must SKIP (no call)
     out2 = build_cusip_ticker_map(ctx, ["37833100"], pause=0.0)
     assert calls["n"] == 1, "re-looked-up an already-mapped CUSIP (zfill mismatch -> redo every run)"
-    assert set(out2["cusip"]) == {"037833100"}
+    assert _looked_up(out2) == {"037833100"}
 
     # run 3: a genuinely new CUSIP still gets looked up (skip isn't over-eager)
     build_cusip_ticker_map(ctx, ["37833100", "594918104"], pause=0.0)
@@ -92,11 +104,11 @@ def test_unmapped_cusip_recorded_not_requeried(monkeypatch):
     ctx = _ctx()
     out1 = build_cusip_ticker_map(ctx, ["037833100", "999999999"], pause=0.0)
     assert calls["n"] == 1
-    assert set(out1["cusip"]) == {"037833100"}         # only the real mapping is returned
+    assert _looked_up(out1) == {"037833100"}           # only the real mapping is returned
     # the unmappable cusip was recorded -> NOT re-queried on the next run
     out2 = build_cusip_ticker_map(ctx, ["037833100", "999999999"], pause=0.0)
     assert calls["n"] == 1, "unmapped CUSIP was re-queried (the 'takes ages' bug is not fixed)"
-    assert set(out2["cusip"]) == {"037833100"}
+    assert _looked_up(out2) == {"037833100"}
 
     print("\n=== SANITY: unmapped CUSIP recorded, not re-queried ===")
     print("  '999999999' (no OpenFIGI match) recorded as attempted -> run2 makes 0 new calls; "

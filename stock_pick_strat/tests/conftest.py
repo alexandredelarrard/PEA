@@ -32,16 +32,36 @@ from src.utils.ssl_setup import configure_corporate_ca  # noqa: E402
 
 configure_corporate_ca()
 
+# The DB credentials live in `.env`, which the pipeline loads via `Context._load_env`. Tests
+# build the engine directly (no Context), so without this `database_url()` fell back to its
+# `pea`/`pea` defaults and every real-data fixture died with
+# `FATAL: password authentication failed for user "pea"` — an ERROR that looked like a
+# feature bug rather than a missing credential. Loaded by explicit path so it works whatever
+# directory pytest is invoked from.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(ROOT / ".env")
+
 DATA = ROOT / "data"
 
 
 def _store():
     """DB-backed data store for the real-data fixtures (DB is the source of
     truth now that the pipeline is DB-only). Skips a fixture when its table is
-    empty — mirrors the old 'skip if parquet absent' behaviour."""
+    empty — mirrors the old 'skip if parquet absent' behaviour.
+
+    An UNREACHABLE database also skips rather than errors: these are integration tests, and
+    a machine without the Postgres container should report 'skipped', not a wall of
+    connection tracebacks that hides real failures."""
     from src.utils.db import get_engine
     from src.data_store.store import DataStore
-    return DataStore(get_engine())
+    engine = get_engine()
+    try:
+        with engine.connect():
+            pass
+    except Exception as exc:                                        # noqa: BLE001
+        pytest.skip(f"database unavailable: {type(exc).__name__}")
+    return DataStore(engine)
 
 MARKET = "SPY"
 OTHER_TICKERS = ["SPY", "^VIX"]

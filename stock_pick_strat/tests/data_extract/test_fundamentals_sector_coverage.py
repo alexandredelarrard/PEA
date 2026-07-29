@@ -40,7 +40,8 @@ def _year(val: float, years: list[int]) -> list[dict]:
 
 
 def _inst(val: float, years: list[int]) -> list[dict]:
-    return [{"end": f"{y}-12-31", "start": None, "filed": f"{y + 1}-02-10",
+    return [{"end": f"{y}-12-31", "start": None,
+             "filed": (pd.Timestamp(f"{y}-12-31") + pd.Timedelta(days=40)).date().isoformat(),
              "form": "10-K", "fp": "FY", "val": val} for y in years]
 
 

@@ -24,10 +24,11 @@ Deductions:
      flags -- via `limit_area='inside'`, so leading/trailing gaps and special-meeting
      proxies at the edges are left untouched.
 
-ONE exception to "only ever writes where NaN": `_drop_implausible_say_on_pay` NULLS
-say-on-pay support below `SAY_ON_PAY_MIN_SUPPORT` first, because 2.6% of those values are
-a different percentage the LLM picked off the proxy. It runs BEFORE the gap-fill, so a
-cleared cell is recoverable from the ticker's neighbouring years.
+`impute_def14a` never overwrites a present value — that invariant is enforced by
+`test_impute_real_data_nondestructive`. The separate `drop_implausible_def14a` handles the
+opposite job (nulling present-but-known-wrong cells, currently say-on-pay support below
+`SAY_ON_PAY_MIN_SUPPORT`). Callers run drop -> impute, so a cleared cell is still
+recoverable from the ticker's neighbouring years.
 
 `impute_def14a(df) -> (df, stats)` is pure (returns a copy + per-rule fill counts).
 """
@@ -112,8 +113,24 @@ def _temporal_fill(df: pd.DataFrame, stats: dict) -> None:
                 stats[f"carry: {col}"] = n
 
 
+def drop_implausible_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """VALIDATION pass: null cells that are present but known-wrong. Returns (copy, stats).
+
+    Kept SEPARATE from `impute_def14a`, which is strictly non-destructive by contract (it
+    only ever writes where a value is NaN) and is unit-tested for exactly that. Folding a
+    nulling step into it broke that invariant on 59 live cells. Callers run this FIRST, so
+    a cleared cell is still recoverable by the gap-fill that follows.
+    """
+    if df is None or df.empty:
+        return df, {}
+    df = df.copy()
+    stats: dict[str, int] = {}
+    _drop_implausible_say_on_pay(df, stats)
+    return df, stats
+
+
 def _drop_implausible_say_on_pay(df: pd.DataFrame, stats: dict) -> None:
-    """NULL say-on-pay support below `SAY_ON_PAY_MIN_SUPPORT` before anything is imputed.
+    """NULL say-on-pay support below `SAY_ON_PAY_MIN_SUPPORT`.
 
     The 2026-07 audit found 125 of 4,785 values (2.6%) below 0.60, steady at 1-4% in every
     year since 2011 — an extraction ambiguity, not a model regression. Spot-checked against
@@ -149,7 +166,6 @@ def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     df["as_of"] = pd.to_datetime(df["as_of"], errors="coerce")
     was_na = {c: df[c].isna() for c in INT_COLS if c in df.columns}  # to round ONLY what we fill
     stats: dict[str, int] = {}
-    _drop_implausible_say_on_pay(df, stats)   # clear known-bad cells BEFORE filling
     _reconcile_rows(df, stats)          # within-row identities
     _temporal_fill(df, stats)           # cross-year interior gaps
     _reconcile_rows(df, stats)          # reconcile values the temporal fill unlocked

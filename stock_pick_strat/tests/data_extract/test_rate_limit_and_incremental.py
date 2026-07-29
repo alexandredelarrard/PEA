@@ -25,7 +25,7 @@ def test_retry_waits_then_succeeds_and_reraises_other():
             raise RuntimeError("HTTP 429 Too Many Requests")
         return "ok"
 
-    out = call_with_retries(flaky, retries=3, base_wait=0.001, label="t", printer=lambda *_: None)
+    out = call_with_retries(flaky, retries=3, base_wait=0.001, label="t")
     assert out == "ok" and calls["n"] == 3
 
     assert is_rate_limited(RuntimeError("429"))
@@ -37,7 +37,7 @@ def test_retry_waits_then_succeeds_and_reraises_other():
         hits["n"] += 1
         raise ValueError("bad symbol")
     try:
-        call_with_retries(boom, retries=3, base_wait=0.001, printer=lambda *_: None)
+        call_with_retries(boom, retries=3, base_wait=0.001)
         raised = False
     except ValueError:
         raised = True
@@ -67,8 +67,7 @@ def test_earnings_download_one_retries_rate_limit(monkeypatch):
     monkeypatch.setattr(fe.yf, "Ticker", _Tk)
     # fast backoff for the test
     monkeypatch.setattr(fe, "call_with_retries",
-                        lambda fn, **k: call_with_retries(fn, retries=3, base_wait=0.001,
-                                                          printer=lambda *_: None))
+                        lambda fn, **k: call_with_retries(fn, retries=3, base_wait=0.001))
     out = fe._download_one("AAPL", 8)
     assert out is not None and out["eps_actual"].iloc[0] == 1.1 and state["n"] == 2
     print("\n=== SANITY CHECK: earnings retries the throttled call ===")

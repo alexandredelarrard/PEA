@@ -6,6 +6,7 @@ where the target is available. These tests pin the pure column/target resolution
 """
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -16,11 +17,17 @@ from src.modelling.long_short.step_train import StepModelling
 
 def _fake(target_type="rank", columns=None, cats=None):
     """Minimal stand-in exposing just what the two pure helpers read."""
-    return SimpleNamespace(
-        target_type=target_type,
-        _config=OmegaConf.create({"inputs": {"columns": columns or [],
-                                              "categoricals": cats or []}}),
-    )
+    # A real but UNINITIALISED StepModelling, not a SimpleNamespace: `_select_load_columns`
+    # resolves its feature set through a chain of per-member config helpers
+    # (`_union_all_columns` -> `_lgbm_categoricals` -> ...) that grows with the config
+    # schema, and a namespace stub has to be re-patched every time one is added — which is
+    # exactly how this test broke. Stubbing only the config keeps every real resolver live.
+    ns = object.__new__(StepModelling)
+    ns.target_type = target_type
+    ns._log = logging.getLogger("load_cube_projection_test")
+    ns._config = OmegaConf.create({"inputs": {"columns": columns or [],
+                                              "categoricals": cats or []}})
+    return ns
 
 
 def test_target_column_resolution_and_fallback():

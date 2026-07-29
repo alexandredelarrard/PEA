@@ -58,6 +58,7 @@ Run:
 import json
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -1049,8 +1050,58 @@ def _assemble_base(ends, flows, annuals, stocks, shares, latest, overhang) -> pd
     if level_cols:                       # carry point-in-time levels forward (~1y cap)
         base[level_cols] = base[level_cols].ffill(limit=4)
     filed_cols = [c for c in base.columns if c.endswith("_filed")]
-    base["as_of"] = base[filed_cols].max(axis=1) if filed_cols else pd.NaT
+
+    # ---- `as_of` = when this fiscal period's CORE financials became public -------------
+    # It used to be MAX(filed) over ALL ~300 concepts on the row, which let ONE peripheral
+    # straggler date the whole row. A filer routinely first tags a minor concept for an old
+    # period only in the NEXT year's filing, as a prior-year comparative: measured on ATO's
+    # 2024-06-30 row, 44 of 45 concepts were filed 2024-08-07 (+38d, the real 10-Q) while
+    # `CommonStockDividendsPerShareDeclared` first appeared 2025-08-06 (+402d) -- and max()
+    # handed the row that date. Across the table that produced a MEDIAN as_of lag of 383 days,
+    # 52% of rows stamped >200d after their period end, and -- because the table is keyed
+    # (ticker, as_of) -- 13.8% of rows out of chronological order for 493 of 498 tickers, so
+    # every QoQ / TTM feature differenced non-adjacent quarters.
+    #
+    # The SPINE concepts are the right anchor: the row grid is built from their period-ends
+    # (see `_spine_grid`), so the row exists precisely because they exist, and it is knowable
+    # once they are all public. Per-row fallback to the old all-column max keeps a row that
+    # somehow has no spine `filed` (never silently drops one).
+    # `as_of` must equal THE FILING DATE of the periodic report that disclosed this period,
+    # because that is exactly the condition prediction runs under: the daily job scores with
+    # whatever a filing contains on the day it lands, and re-runs later when more is filed. Train
+    # and serve therefore have to be built the same way -- anything that arrived AFTER the filing
+    # is blanked below rather than back-dated into the row.
+    #
+    # The estimator is the MEDIAN of the spine concepts' filing dates, not the max or the min:
+    #   * max  -> one straggler dates the whole row (ATO 2024-06-30: five spine concepts filed
+    #             2024-08-07, `operatingCashFlow` first filed 2025-08-06 -> max = +402d),
+    #   * min  -> an early earnings-release 8-K (these exist: 17 on ATO's core tags) dates the row
+    #             before the 10-Q, so the leak guard would blank everything the 10-Q brought,
+    #   * median over 6 concepts survives BOTH at once and lands on the real filing date.
+    spine_filed = [f"{k}_filed" for k in (_SPINE_FLOWS + _SPINE_STOCKS)
+                   if f"{k}_filed" in base.columns]
+    if spine_filed:
+        # median of datetimes: rank-based, so no interpolation between two dates
+        core = base[spine_filed].apply(
+            lambda r: r.dropna().sort_values().iloc[(r.notna().sum() - 1) // 2]
+            if r.notna().any() else pd.NaT, axis=1)
+        base["as_of"] = core.fillna(base[filed_cols].max(axis=1)) if filed_cols else core
+    else:
+        base["as_of"] = base[filed_cols].max(axis=1) if filed_cols else pd.NaT
     base = base[base["as_of"].notna()]
+
+    # ---- leak guard -------------------------------------------------------------------
+    # Dating the row from the spine alone would otherwise expose a value that was NOT yet
+    # public at `as_of` (exactly the straggler above). A concept filed after `as_of` is
+    # blanked for THIS period; it is unaffected in later periods, whose as_of is past its
+    # filing. So the row is both correctly dated AND still strictly point-in-time.
+    for col in filed_cols:
+        value_col = col[: -len("_filed")]
+        if value_col in base.columns:
+            not_yet = base[col].notna() & (base[col] > base["as_of"])
+            if not_yet.any():
+                base.loc[not_yet, value_col] = np.nan
+
     return base.rename_axis("end").reset_index().sort_values("end").reset_index(drop=True)
 
 

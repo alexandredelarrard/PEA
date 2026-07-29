@@ -348,6 +348,65 @@ SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
     "oa" : "0000885665"
 }
 
+# --------------------------------------------------------------------------- #
+# CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #
+# --------------------------------------------------------------------------- #
+# 13F reports holdings by CUSIP, so a name whose identifier we cannot resolve is INVISIBLE in
+# `institutional_holdings` (and therefore in the superinvestor sleeve too). `cusip_ticker_map`
+# is built from OpenFIGI and records a miss PERMANENTLY, so an unresolved identifier is never
+# retried -- measured on the live DB: 15,404 letter-prefixed rows in the map, ZERO resolved to
+# a ticker, and 34 of the 500 universe names entirely absent from institutional_holdings.
+#
+# The cause is domicile, not fuzzy matching: a foreign-domiciled issuer is identified by a CINS
+# (a CUSIP whose first character is a LETTER encoding the country -- G Ireland/UK, H Switzerland,
+# N Netherlands, V Liberia, Y Singapore), and OpenFIGI does not resolve these from the 13F feed.
+# Nearly every S&P 500 name registered in Ireland / Bermuda / Jersey / Switzerland lands here.
+#
+# Every entry below was RECOVERED FROM THE DATA -- the `NAMEOFISSUER` + `CUSIP` pair in the
+# cached 13F INFOTABLE, ranked by how many filers report it -- never typed from memory: a wrong
+# identifier silently attributes another issuer's holdings to your ticker. Applied as an
+# override so it also corrects a miss already cached in `cusip_ticker_map`.
+CUSIP_TICKER_OVERRIDES: dict[str, str] = {
+    "G0450A105": "ACGL",    # ARCH CAPITAL GROUP LTD          (Bermuda)
+    "G1151C101": "ACN",     # ACCENTURE PLC                   (Ireland)
+    "G0176J109": "ALLE",    # ALLEGION PLC                    (Ireland)
+    "G0250X107": "AMCR",    # AMCOR PLC                       (Jersey)
+    "G0403H108": "AON",     # AON PLC                         (Ireland)
+    "G3265R107": "APTV",    # APTIV PLC                       (Jersey)
+    "H11356104": "BG",      # BUNGE GLOBAL SA                 (Switzerland)
+    "H1467J104": "CB",      # CHUBB LIMITED                   (Switzerland)
+    "143658300": "CCL",     # CARNIVAL CORP                   (US-listed pair of Carnival plc)
+    "G25508105": "CRH",     # CRH PLC                         (Ireland)
+    "26614N102": "DD",      # DUPONT DE NEMOURS INC           (US - absent from the map, not a CINS)
+    "G3223R108": "EG",      # EVEREST GROUP LTD               (Bermuda)
+    "G29183103": "ETN",     # EATON CORP PLC                  (Ireland)
+    "Y2573F102": "FLEX",    # FLEX LTD                        (Singapore)
+    "H2906T109": "GRMN",    # GARMIN LTD                      (Switzerland)
+    "438516106": "HON",     # HONEYWELL INTL INC              (US - absent from the map)
+    "G51502105": "JCI",     # JOHNSON CONTROLS INTERNATIONAL  (Ireland)
+    "G54950103": "LIN",     # LINDE PLC                       (Ireland)
+    "N53745100": "LYB",     # LYONDELLBASELL INDUSTRIES NV    (Netherlands)
+    "G5960L103": "MDT",     # MEDTRONIC PLC                   (Ireland)
+    "G66721104": "NCLH",    # NORWEGIAN CRUISE LINE HLDGS     (Bermuda)
+    "N6596X109": "NXPI",    # NXP SEMICONDUCTORS NV           (Netherlands)
+    "G7S00T104": "PNR",     # PENTAIR PLC                     (Ireland)
+    "V7780T103": "RCL",     # ROYAL CARIBBEAN GROUP           (Liberia)
+    "G8473T100": "STE",     # STERIS PLC                      (Ireland)
+    "G7997R103": "STX",     # SEAGATE TECHNOLOGY HLDGS PLC    (Ireland)
+    "G8267P108": "SW",      # SMURFIT WESTROCK PLC            (Ireland)
+    "G87052109": "TEL",     # TE CONNECTIVITY PLC             (Switzerland/Ireland)
+    "G8994E103": "TT",      # TRANE TECHNOLOGIES PLC          (Ireland)
+    "G96629103": "WTW",     # WILLIS TOWERS WATSON PLC        (Ireland)
+    "30231G102": "XOM",     # EXXON MOBIL CORP                (US - absent from the map)
+    # DELIBERATELY NOT MAPPED — resolve these before adding:
+    #  * IVZ  — the recovery scan's top hit for "INVESCO" was 46090E103 = the INVESCO QQQ TRUST
+    #    ETF, not Invesco Ltd the asset manager. 13F filers hold QQQ enormously, so filer-count
+    #    ranking prefers the ETF; mapping it to IVZ would book QQQ's holdings as Invesco Ltd.
+    #    Invesco Ltd is Bermuda-domiciled, so its identifier is a G-prefixed CINS.
+    #  * FDXF / HONA — not real tickers (FedEx is FDX, Honeywell is HON, both already present).
+    #    These look like corrupt rows in `sp500_tickers`, not a mapping gap.
+}
+
 SEC_FORM13F_URL_DICT = {
     "2013q2": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2013q2_form13f.zip",
     "2013q3": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2013q3_form13f.zip",

@@ -50,10 +50,10 @@ class StepExtractAllData(Step):
     def run(self) -> None:
         tickers = self._resolve_tickers()
 
-        # self._prices.run(tickers=tickers)s
-        # self._fundamentals.run(tickers=tickers)
+        self._prices.run(tickers=tickers)
+        self._fundamentals.run(tickers=tickers)
         self._structure.run(tickers=tickers)
-        self._behavioral.run(tickers=tickers)
+        # self._behavioral.run(tickers=tickers)
 
         ####### very strong driver, need data feed / LLM
         # TODO: map furnishers and sellers in a graph to adjust each stock financials with each stock earnings 

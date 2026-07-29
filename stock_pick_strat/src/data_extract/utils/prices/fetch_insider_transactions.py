@@ -129,8 +129,52 @@ def _parse_insider(sub: pd.DataFrame, own: pd.DataFrame,
         return pd.DataFrame()
     out = (trans.merge(submission, on="accession_number", how="inner")
                 .merge(owner, on="accession_number", how="left"))
+    out = _repair_transaction_dates(out)
     # a transaction with no SK can't be keyed (PK) -> drop
     return out.dropna(subset=["transaction_sk"])
+
+
+def _repair_transaction_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """A Form 3/4/5 reports a COMPLETED transaction, so `transaction_date` can never be after
+    the `filing_date` that discloses it. That makes the field self-validating, and the live table
+    showed 14 rows breaking it in two distinct ways:
+
+      * LOST CENTURY -- `0015-11-23` filed 2015-11-25, `0024-02-01` filed 2024-02-05: a 2-digit
+        source year parsed as year 15 / 24 AD. Repaired by lifting the year into the filing's
+        century, which is unambiguous because the transaction must precede the filing.
+      * FILER TYPO -- `2028-05-24` filed 2024-05-28 (day/year digits transposed), `2031-01-29`
+        filed 2021-02-02, `2029-08-12` filed 2019-08-13. Bad at source, with no safe reading, so
+        the date is NULLED rather than guessed; the row's amounts still count, only its timing is
+        unknown.
+
+    Only 14 of 1.39M rows, but a transaction stamped 2031 poisons any recency-weighted insider
+    feature far out of proportion to its count."""
+    if df.empty or not {"transaction_date", "filing_date"}.issubset(df.columns):
+        return df
+    td, fd = df["transaction_date"], df["filing_date"]
+    known = td.notna() & fd.notna()
+
+    # lost century: shift the year into the filing's century and keep it only if that lands
+    # at or before the filing date (so a genuine old transaction is never rewritten)
+    lost = known & (td.dt.year < 1900)
+    if lost.any():
+        shifted = td.where(~lost).copy()
+        for i in df.index[lost]:
+            century = (fd[i].year // 100) * 100
+            try:
+                cand = td[i].replace(year=century + td[i].year % 100)
+            except ValueError:                      # 29 Feb in a non-leap target year
+                continue
+            if cand <= fd[i]:
+                shifted[i] = cand
+        df = df.assign(transaction_date=shifted)
+        td = df["transaction_date"]
+
+    # still after its own filing -> unusable timing, blank it
+    impossible = td.notna() & fd.notna() & (td > fd)
+    if impossible.any():
+        df = df.assign(transaction_date=td.mask(impossible))
+    return df
 
 
 def _filter_universe(df: pd.DataFrame, universe: set[str], cik2tkr: dict) -> pd.DataFrame:

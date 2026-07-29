@@ -18,6 +18,7 @@ import requests
 from tqdm import tqdm
 import logging 
 
+from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.context import Context
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,26 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
         cached = (cached.assign(cusip=cached["cusip"].map(normalize_cusip))
                   .dropna(subset=["cusip"]).drop_duplicates("cusip", keep="last"))
 
+    # Curated CINS overrides, applied to the cache IMMEDIATELY -- before the `todo` short-circuit
+    # below, which returns early when every requested cusip is already known. A miss is cached as
+    # a NULL ticker and never retried, so an identifier OpenFIGI cannot resolve stays broken for
+    # ever: measured on the live DB, 15,404 letter-prefixed rows mapped to ZERO tickers, hiding
+    # ~30 Irish / Bermudan / Swiss / Dutch S&P 500 names from institutional_holdings and the
+    # superinvestor sleeve. `keep="last"` puts the override ahead of any cached row for the same
+    # identifier. See CUSIP_TICKER_OVERRIDES for how each was recovered from the 13F INFOTABLE.
+    overrides = pd.DataFrame({"cusip": [normalize_cusip(c) for c in CUSIP_TICKER_OVERRIDES],
+                              "ticker": list(CUSIP_TICKER_OVERRIDES.values())})
+    overrides = overrides.dropna(subset=["cusip"])
+    if not overrides.empty:
+        corrected = overrides.merge(cached, on="cusip", how="left", suffixes=("", "_cached"))
+        stale = corrected[corrected["ticker_cached"].isna()]["cusip"].tolist()
+        cached = (pd.concat([cached, overrides], ignore_index=True)
+                    .drop_duplicates("cusip", keep="last"))
+        if stale:
+            context.store.save("cusip_ticker_map", overrides)   # repair the cached misses
+            logger.info(f"CUSIP overrides: {len(overrides)} curated identifiers applied "
+                        f"({len(stale)} were unmapped in the cache, e.g. {stale[:5]})")
+
     def _mapped_only(df: pd.DataFrame) -> pd.DataFrame:
         """Real mappings only (drop the recorded misses) -> feeds the ticker merge."""
         return df[df["ticker"].notna() & (df["ticker"].astype("string").str.strip() != "")]
@@ -113,7 +134,9 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
     new = pd.DataFrame({"cusip": attempted, "ticker": [mapped.get(c) for c in attempted]})
     if not new.empty:
         context.store.save("cusip_ticker_map", new)
-    out = pd.concat([cached, new], ignore_index=True).drop_duplicates("cusip", keep="last")
+    # overrides last again, so a fresh OpenFIGI no-match cannot re-bury a curated identifier
+    out = (pd.concat([cached, new, overrides], ignore_index=True)
+             .drop_duplicates("cusip", keep="last"))
     n_mapped = int(out["ticker"].notna().sum())
     logger.info(f"CUSIP->ticker map: {n_mapped} mapped / {len(out)} attempted "
           f"({len(mapped)} newly mapped of {len(attempted)} attempted) -> DB 'cusip_ticker_map'")

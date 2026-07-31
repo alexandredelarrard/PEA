@@ -4,6 +4,13 @@ openai_embeddings.py  (src/utils/openai_embeddings.py)
 Thin, shared OpenAI-embedding helper so any folder can embed text without cross-importing
 data_peers. Batches inputs, truncates over-long texts, preserves order. Reads the API key from
 OPEN_AI_API_KEY (the .env spelling) or OPENAI_API_KEY.
+
+The truncation limit is `EMBEDDING_MAX_CHARS` (28,000). It used to be a hardcoded 8,000,
+which is ~4x stricter than the model actually requires: text-embedding-3-small accepts
+8,191 TOKENS and English prose runs ~3.6 chars/token. The 2026-07 audit measured the cost
+on `earning_calls_embedding` — 22,730 of 101,373 prepared-remarks turns (22.4%) and 1,411
+Q&A turns are longer than 8,000 chars, the longest being 74,550 — so the quarter-to-quarter
+drift features were comparing only each turn's opening fragment.
 """
 from __future__ import annotations
 
@@ -11,13 +18,15 @@ import os
 
 import numpy as np
 
+from src.constants.constants import EMBEDDING_MAX_CHARS
+
 
 def openai_api_key() -> str | None:
     return os.getenv("OPEN_AI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
 
 def embed_texts(texts: list[str], model: str = "text-embedding-3-small", batch_size: int = 128,
-                max_chars: int = 8000, client=None) -> np.ndarray:
+                max_chars: int = EMBEDDING_MAX_CHARS, client=None) -> np.ndarray:
     """Embed `texts` -> (n, dim) float64 array, order preserved. `client` lets tests inject a stub
     (any object with `.embeddings.create(model=, input=)` returning `.data[i].embedding`)."""
     if not texts:

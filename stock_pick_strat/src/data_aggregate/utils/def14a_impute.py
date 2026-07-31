@@ -24,11 +24,20 @@ Deductions:
      flags -- via `limit_area='inside'`, so leading/trailing gaps and special-meeting
      proxies at the edges are left untouched.
 
+`impute_def14a` never overwrites a present value — that invariant is enforced by
+`test_impute_real_data_nondestructive`. The separate `drop_implausible_def14a` handles the
+opposite job (nulling present-but-known-wrong cells, currently say-on-pay support below
+`SAY_ON_PAY_MIN_SUPPORT`). Callers run drop -> impute, so a cleared cell is still
+recoverable from the ticker's neighbouring years.
+
 `impute_def14a(df) -> (df, stats)` is pure (returns a copy + per-rule fill counts).
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+
+from src.constants.constants import SAY_ON_PAY_MIN_SUPPORT
 
 CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards",
             "ceo_non_equity_incentive", "ceo_all_other_comp"]
@@ -102,6 +111,51 @@ def _temporal_fill(df: pd.DataFrame, stats: dict) -> None:
             if n:
                 df.loc[inside, col] = fwd[inside]
                 stats[f"carry: {col}"] = n
+
+
+def drop_implausible_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """VALIDATION pass: null cells that are present but known-wrong. Returns (copy, stats).
+
+    Kept SEPARATE from `impute_def14a`, which is strictly non-destructive by contract (it
+    only ever writes where a value is NaN) and is unit-tested for exactly that. Folding a
+    nulling step into it broke that invariant on 59 live cells. Callers run this FIRST, so
+    a cleared cell is still recoverable by the gap-fill that follows.
+    """
+    if df is None or df.empty:
+        return df, {}
+    df = df.copy()
+    stats: dict[str, int] = {}
+    _drop_implausible_say_on_pay(df, stats)
+    return df, stats
+
+
+def _drop_implausible_say_on_pay(df: pd.DataFrame, stats: dict) -> None:
+    """NULL say-on-pay support below `SAY_ON_PAY_MIN_SUPPORT`.
+
+    The 2026-07 audit found 125 of 4,785 values (2.6%) below 0.60, steady at 1-4% in every
+    year since 2011 — an extraction ambiguity, not a model regression. Spot-checked against
+    the public record: JPM 2023 stored 0.31 (actual ~89%), SPG 2024 stored 0.111 (~93%),
+    INTC 2023 stored 0.34. The LLM is reading a different percentage off the proxy (an
+    against-vote share, a quorum figure, an ownership stake).
+
+    This is deliberately LOSSY and is a judgement call: a genuinely failed say-on-pay vote
+    is real governance signal, and roughly 0.5% of S&P 500 companies per year do fall below
+    50%. But those true failures are rarer than the extraction errors at the same levels, so
+    a low value carries more noise than signal and is dropped rather than fed to the model.
+    NULLING happens BEFORE the temporal gap-fill, so a dropped cell can still be recovered
+    from the ticker's neighbouring years instead of leaving a hole.
+
+    The proper fix is a re-extraction with a prompt that pins the field to the
+    say-on-pay ballot result; until then this bounds the damage.
+    """
+    col = "say_on_pay_support_pct"
+    if col not in df.columns:
+        return
+    bad = df[col].notna() & (df[col] < SAY_ON_PAY_MIN_SUPPORT)
+    n = int(bad.sum())
+    if n:
+        df.loc[bad, col] = np.nan
+        stats[f"dropped implausible: {col}"] = n
 
 
 def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:

@@ -12,21 +12,34 @@ import pandas as pd
 
 # ---- 1. 13F filenames --------------------------------------------------------
 def test_13f_period_names_format():
+    """SEC moved its 13F data sets from DDMMMYYYY-DDMMMYYYY windows to QUARTER tags
+    ('2025q2'), so the names are asserted in that shape now. The invariant this test was
+    written to protect is unchanged and still the point: a quarter whose END has not passed
+    must be excluded, because SEC publishes the set only after the quarter closes.
+    `pd.to_datetime("2026q3")` resolves to the quarter START (2026-07-01), which admitted
+    the current quarter from its first day and spent a guaranteed 404 every run."""
+    import re
+
     from src.data_extract.utils.prices.fetch_13f import _period_names
     today = pd.Timestamp("2026-07-15")
     names = _period_names(years_history=2, today=today)
-    # user's example window must be produced, and the Jun-Aug 2025 one
-    assert "01dec2025-28feb2026" in names, names
-    assert "01jun2025-31aug2025" in names, names
-    # windows whose end is in the future are excluded
-    assert all(not n.startswith("01dec2026") for n in names)
-    # every name matches DDMMMYYYY-DDMMMYYYY (lowercase)
-    import re
-    pat = re.compile(r"^\d{2}[a-z]{3}\d{4}-\d{2}[a-z]{3}\d{4}$")
+
+    # every name is a lowercase quarter tag
+    pat = re.compile(r"^\d{4}q[1-4]$")
     assert all(pat.match(n) for n in names), names
-    print("\n=== SANITY CHECK: 13F data-set filename windows ===")
-    print(f"  {len(names)} windows incl 01dec2025-28feb2026 & 01jun2025-31aug2025; "
-          f"all DDMMMYYYY-DDMMMYYYY; future windows excluded. Validated.")
+    # the quarter that CLOSED before `today` is present ...
+    assert "2026q2" in names, names          # ends 2026-06-30
+    assert "2025q2" in names, names
+    # ... and the quarter still OPEN on `today` is not (ends 2026-09-30)
+    assert "2026q3" not in names, names
+    assert "2026q4" not in names, names
+    # no name may end after today
+    assert all(pd.Period(n, freq="Q").end_time.normalize() <= today for n in names), names
+    # the pre-2013q2 window SEC never published stays excluded
+    assert "2013q1" not in names
+    print("\n=== SANITY CHECK: 13F data-set quarter tags ===")
+    print(f"  {len(names)} quarters {names[0]}..{names[-1]}; 2026q2 included (closed), "
+          f"2026q3 excluded (still open); all end <= {today.date()}. Validated.")
 
 
 # ---- 3. dual-class dedup + GICS industry group ------------------------------

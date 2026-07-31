@@ -57,10 +57,19 @@ Run:
 """
 import json
 
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import SEC_COMPANYFACTS_URL
+from src.constants.constants import (
+    BALANCE_SHEET_IDENTITY_TOLERANCE, BALANCE_SHEET_MIN_ASSETS_TO_REVENUE,
+    DEBT_TO_EQUITY_ABS_MAX, DILUTED_SHARES_MIN_SHARE_OF_BASIC,
+    DIVIDEND_PER_SHARE_ABS_MAX, EPS_ABS_MAX, PPE_NET_MIN_SHARE_OF_ROLLFORWARD,
+    OPERATING_MARGIN_ABS_MAX, PROFIT_MARGIN_ABS_MAX, RATIO_DENOMINATOR_MIN_FRACTION,
+    EFFECTIVE_TAX_RATE_MAX, EFFECTIVE_TAX_RATE_MIN,
+    RETURN_ON_EQUITY_ABS_MAX, SEC_COMPANYFACTS_URL, SHARES_OUTSTANDING_MAX,
+    SHARES_OUTSTANDING_MIN,
+)
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, load_extract_meta, meta_path, sec_get, today_iso,
@@ -269,6 +278,28 @@ EXTRA_FLOW_TAGS = {
     "incomeTaxesPaid": ["IncomeTaxesPaidNet", "IncomeTaxesPaid"],
     "deferredIncomeTaxExpense": ["DeferredIncomeTaxExpenseBenefit"],
     "interestPaid": ["InterestPaidNet", "InterestPaid"],
+    # ---- CASH-FLOW FOOTING: the reported net change in cash --------------------------
+    # Lets the statement be checked as published (operating + investing + financing + FX ==
+    # net change) instead of trusting three independently-coalesced subtotals. Coalesces
+    # BOTH eras: the ASU-2016-18 restricted-cash-inclusive tag (474 tickers, 2015-2026) and
+    # the pre-2018 cash-only one (456 tickers, 2006-2022).
+    "cashPeriodChange": [
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecrease"
+        "IncludingExchangeRateEffect",
+        "CashAndCashEquivalentsPeriodIncreaseDecrease"],
+    "otherInvestingCashFlow": ["PaymentsForProceedsFromOtherInvestingActivities"],
+    "otherFinancingCashFlow": ["ProceedsFromPaymentsForOtherFinancingActivities"],
+    # cash rent actually PAID on operating leases -- the cash cost behind the ROU asset
+    "operatingLeasePayments": ["OperatingLeasePayments"],
+    # ---- TAX components (currency flows -> correctly TTM-summed) ----------------------
+    # NOTE the effective RATE lives in LATEST_DURATION_TAGS, not here: it is a ratio, and
+    # anything in EXTRA_FLOW_TAGS is TTM-summed (`ttm_a`), which would turn a 21% rate into
+    # ~84% by adding four quarters together.
+    "currentTaxExpense": ["CurrentIncomeTaxExpenseBenefit"],
+    "currentFederalTax": ["CurrentFederalTaxExpenseBenefit"],
+    "currentForeignTax": ["CurrentForeignTaxExpenseBenefit"],
+    "deferredFederalTax": ["DeferredFederalIncomeTaxExpenseBenefit"],
+    "otherComprehensiveIncome": ["OtherComprehensiveIncomeLossNetOfTax"],
     # equity-method income (61%) inflates pre-tax/net income with NO revenue and NO cash;
     # other non-operating (74.7%) is where ASU-2017-07 parked non-service pension cost.
     # Both must come OUT of core operating earnings.
@@ -507,6 +538,63 @@ EXTRA_STOCK_TAGS = {
     "debtMaturity4y": ["LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFour"],
     "debtMaturity5y": ["LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFive"],
     "debtMaturityAfter5y": ["LongTermDebtMaturitiesRepaymentsOfPrincipalAfterYearFive"],
+    # ---- OPERATING-LEASE maturity ladder: the missing half of the refinancing wall ----
+    # `utils/capital.py` already counts leases as DEBT, but only the lease LIABILITY was
+    # extracted -- never its maturity profile. So for a retailer, airline or restaurant
+    # chain, where the operating-lease ladder IS the wall, `debtMaturity*` described only
+    # the bond half. Each rung coalesces BOTH accounting eras, which the tag scan measured
+    # as cleanly DISJOINT: `OperatingLeasesFutureMinimumPayments*` runs 2009-2021 (406-451
+    # tickers) and the ASC-842 `LesseeOperatingLeaseLiabilityPaymentsDue*` runs 2017-2026
+    # (468-478 tickers), overlapping only in the 4-5 transition years. Mapping one era
+    # alone would put a structural break in every lease-wall feature at FY2019 adoption --
+    # exactly the like-for-like failure this pass was looking for. Union-coalesced per
+    # period (never first-present), so the transition years take whichever era the filer
+    # actually used.
+    "leaseMaturity1y": ["LesseeOperatingLeaseLiabilityPaymentsDueNextTwelveMonths",
+                        "OperatingLeasesFutureMinimumPaymentsDueCurrent"],
+    "leaseMaturity2y": ["LesseeOperatingLeaseLiabilityPaymentsDueYearTwo",
+                        "OperatingLeasesFutureMinimumPaymentsDueInTwoYears"],
+    "leaseMaturity3y": ["LesseeOperatingLeaseLiabilityPaymentsDueYearThree",
+                        "OperatingLeasesFutureMinimumPaymentsDueInThreeYears"],
+    "leaseMaturity4y": ["LesseeOperatingLeaseLiabilityPaymentsDueYearFour",
+                        "OperatingLeasesFutureMinimumPaymentsDueInFourYears"],
+    "leaseMaturity5y": ["LesseeOperatingLeaseLiabilityPaymentsDueYearFive",
+                        "OperatingLeasesFutureMinimumPaymentsDueInFiveYears"],
+    "leaseMaturityAfter5y": ["LesseeOperatingLeaseLiabilityPaymentsDueAfterYearFive",
+                             "OperatingLeasesFutureMinimumPaymentsDueThereafter"],
+    "leaseMaturityTotal": ["LesseeOperatingLeaseLiabilityPaymentsDue",
+                           "OperatingLeasesFutureMinimumPaymentsDue"],
+    # undiscounted total minus the recognised liability = the imputed lease INTEREST
+    "leaseUndiscountedExcess": ["LesseeOperatingLeaseLiabilityUndiscountedExcessAmount"],
+    # ---- balance-sheet FOOTING: the reported other side of the identity ----
+    # `LiabilitiesAndStockholdersEquity` is tagged by ALL 498 tickers over 2007-2026 and was
+    # unmapped. It is what the filer PUBLISHED as the footing, so it turns the balance-sheet
+    # identity from an inference over three separately-coalesced columns into a check
+    # against the statement itself -- and it is a fallback for `totalAssets` on the stub
+    # filings that report one side only.
+    "balanceSheetFooting": ["LiabilitiesAndStockholdersEquity"],
+    # the residual buckets a balance sheet needs to foot
+    "otherAssetsNoncurrent": ["OtherAssetsNoncurrent"],
+    "otherLiabilitiesNoncurrent": ["OtherLiabilitiesNoncurrent"],
+    # ---- OUTSTANDING ITEMS (share count is a level, not a flow) ----
+    # `sharesOutstanding` alone cannot distinguish a buyback from a share-count restatement;
+    # issued vs authorised gives the headroom, and the antidilutive count is the overhang
+    # that never reaches diluted EPS.
+    "commonSharesIssued": ["CommonStockSharesIssued"],
+    "commonSharesAuthorized": ["CommonStockSharesAuthorized"],
+    "commonStockValue": ["CommonStockValue"],
+    "preferredSharesAuthorized": ["PreferredStockSharesAuthorized"],
+    "antidilutiveShares": [
+        "AntidilutiveSecuritiesExcludedFromComputationOfEarningsPerShareAmount"],
+    # ---- deferred-tax detail (near-universal, previously unmapped) ----
+    "deferredTaxAssetsGross": ["DeferredTaxAssetsGross"],
+    "deferredTaxNet": ["DeferredTaxAssetsLiabilitiesNet"],
+    # ---- forward INTANGIBLE-amortisation ladder (a known future earnings drag) ----
+    "intangibleAmort1y": ["FiniteLivedIntangibleAssetsAmortizationExpenseNextTwelveMonths"],
+    "intangibleAmort2y": ["FiniteLivedIntangibleAssetsAmortizationExpenseYearTwo"],
+    "intangibleAmort3y": ["FiniteLivedIntangibleAssetsAmortizationExpenseYearThree"],
+    "intangibleAmort4y": ["FiniteLivedIntangibleAssetsAmortizationExpenseYearFour"],
+    "intangibleAmort5y": ["FiniteLivedIntangibleAssetsAmortizationExpenseYearFive"],
     # ---- deferred tax / tax-aggressiveness levels ----
     "deferredTaxAssets": ["DeferredTaxAssetsNet", "DeferredIncomeTaxAssetsNet"],
     "deferredTaxLiabilities": ["DeferredIncomeTaxLiabilitiesNet", "DeferredTaxLiabilities"],
@@ -526,8 +614,16 @@ EXTRA_STOCK_TAGS = {
     "accountsPayable": ["AccountsPayableCurrent", "AccountsPayableAndAccruedLiabilitiesCurrent"],
     # net PP&E is the common balance-sheet line; gross is reconstructed as
     # net + accumulated depreciation in build_ticker_history for net-only filers.
-    "ppeNet": ["PropertyPlantAndEquipmentNet"],
-    "ppeGross": ["PropertyPlantAndEquipmentGross"],
+    # ASC-842 combined PP&E + finance-lease ROU tags (103-133 tickers) are the post-2019
+    # presentation for filers that fold the finance-lease asset into the PP&E line. Without
+    # them those names read a PP&E base that excludes leased capacity, while `capital.py`
+    # counts the lease liability as debt -- an asymmetry in leverage and asset-turnover.
+    "ppeNet": ["PropertyPlantAndEquipmentNet",
+               "PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulated"
+               "DepreciationAndAmortization"],
+    "ppeGross": ["PropertyPlantAndEquipmentGross",
+                 "PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetBeforeAccumulated"
+                 "DepreciationAndAmortization"],
     "accumulatedDepreciation": ["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"],
     "intangiblesExGoodwill": ["IntangibleAssetsNetExcludingGoodwill", "FiniteLivedIntangibleAssetsNet"],
     # capitalized internal-use / product software -> IT-investment proxy (AI-leverage #4)
@@ -632,6 +728,12 @@ LATEST_DURATION_TAGS: dict[str, list[str]] = {
                     "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"],
     # conglomerate complexity / breakup-value proxy (92.2%)
     "reportableSegments": ["NumberOfReportableSegments"],
+    # Effective tax rate on continuing operations -- tagged by 481 of 500 tickers with
+    # 52,268 facts, and previously unmapped entirely. It belongs HERE, not in
+    # EXTRA_FLOW_TAGS: it is a RATIO, and every EXTRA_FLOW field is TTM-summed by `ttm_a`,
+    # which would add four quarterly rates into a nonsense ~0.84 "rate". Taking the latest
+    # reported duration fact keeps it point-in-time and on its natural scale.
+    "effectiveTaxRate": ["EffectiveIncomeTaxRateContinuingOperations"],
 }
 
 # Event / charge / financing flows where a quarter with NO reported tag means the
@@ -1037,8 +1139,75 @@ def _assemble_base(ends, flows, annuals, stocks, shares, latest, overhang) -> pd
     if level_cols:                       # carry point-in-time levels forward (~1y cap)
         base[level_cols] = base[level_cols].ffill(limit=4)
     filed_cols = [c for c in base.columns if c.endswith("_filed")]
-    base["as_of"] = base[filed_cols].max(axis=1) if filed_cols else pd.NaT
+
+    # ---- `as_of` = when this fiscal period's CORE financials became public -------------
+    # It used to be MAX(filed) over ALL ~300 concepts on the row, which let ONE peripheral
+    # straggler date the whole row. A filer routinely first tags a minor concept for an old
+    # period only in the NEXT year's filing, as a prior-year comparative: measured on ATO's
+    # 2024-06-30 row, 44 of 45 concepts were filed 2024-08-07 (+38d, the real 10-Q) while
+    # `CommonStockDividendsPerShareDeclared` first appeared 2025-08-06 (+402d) -- and max()
+    # handed the row that date. Across the table that produced a MEDIAN as_of lag of 383 days,
+    # 52% of rows stamped >200d after their period end, and -- because the table is keyed
+    # (ticker, as_of) -- 13.8% of rows out of chronological order for 493 of 498 tickers, so
+    # every QoQ / TTM feature differenced non-adjacent quarters.
+    #
+    # The SPINE concepts are the right anchor: the row grid is built from their period-ends
+    # (see `_spine_grid`), so the row exists precisely because they exist, and it is knowable
+    # once they are all public. Per-row fallback to the old all-column max keeps a row that
+    # somehow has no spine `filed` (never silently drops one).
+    # `as_of` must equal THE FILING DATE of the periodic report that disclosed this period,
+    # because that is exactly the condition prediction runs under: the daily job scores with
+    # whatever a filing contains on the day it lands, and re-runs later when more is filed. Train
+    # and serve therefore have to be built the same way -- anything that arrived AFTER the filing
+    # is blanked below rather than back-dated into the row.
+    #
+    # The estimator is the MEDIAN of the spine concepts' filing dates, not the max or the min:
+    #   * max  -> one straggler dates the whole row (ATO 2024-06-30: five spine concepts filed
+    #             2024-08-07, `operatingCashFlow` first filed 2025-08-06 -> max = +402d),
+    #   * min  -> an early earnings-release 8-K (these exist: 17 on ATO's core tags) dates the row
+    #             before the 10-Q, so the leak guard would blank everything the 10-Q brought,
+    #   * median over 6 concepts survives BOTH at once and lands on the real filing date.
+    spine_filed = [f"{k}_filed" for k in (_SPINE_FLOWS + _SPINE_STOCKS)
+                   if f"{k}_filed" in base.columns]
+    if spine_filed:
+        # median of datetimes: rank-based, so no interpolation between two dates
+        core = base[spine_filed].apply(
+            lambda r: r.dropna().sort_values().iloc[(r.notna().sum() - 1) // 2]
+            if r.notna().any() else pd.NaT, axis=1)
+        base["as_of"] = core.fillna(base[filed_cols].max(axis=1)) if filed_cols else core
+    else:
+        base["as_of"] = base[filed_cols].max(axis=1) if filed_cols else pd.NaT
     base = base[base["as_of"].notna()]
+
+    # ---- no as_of may PRECEDE its own period end ---------------------------------------
+    # The median survives one early earnings-release 8-K, but not several: ROP's 2009-12-31
+    # row had enough spine concepts filed early that the MEDIAN itself landed 2009-11-02 --
+    # 59 days BEFORE the quarter closed. That is a look-ahead leak, not a lag: the row
+    # claims the full-year numbers were public while the year was still running.
+    # Repair with the earliest spine filing that is actually >= the period end (the first
+    # filing that COULD have disclosed a completed period); if a row has none, it is
+    # dropped, because nothing in it is datable without inventing a disclosure date.
+    if spine_filed:
+        too_early = base["as_of"] < base.index.to_series()
+        if too_early.any():
+            ends = base.index.to_series()
+            valid = base[spine_filed].where(base[spine_filed].ge(ends, axis=0))
+            repaired = valid.min(axis=1)
+            base.loc[too_early, "as_of"] = repaired[too_early]
+            base = base[base["as_of"].notna() & (base["as_of"] >= base.index.to_series())]
+
+    # ---- leak guard -------------------------------------------------------------------
+    # Dating the row from the spine alone would otherwise expose a value that was NOT yet
+    # public at `as_of` (exactly the straggler above). A concept filed after `as_of` is
+    # blanked for THIS period; it is unaffected in later periods, whose as_of is past its
+    # filing. So the row is both correctly dated AND still strictly point-in-time.
+    for col in filed_cols:
+        value_col = col[: -len("_filed")]
+        if value_col in base.columns:
+            not_yet = base[col].notna() & (base[col] > base["as_of"])
+            if not_yet.any():
+                base.loc[not_yet, value_col] = np.nan
+
     return base.rename_axis("end").reset_index().sort_values("end").reset_index(drop=True)
 
 
@@ -1451,6 +1620,27 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
     # gross PP&E for net-only filers:  gross = net + accumulated depreciation
     extra["ppeGross"] = extra["ppeGross"].where(extra["ppeGross"].notna(),
                                                 extra["ppeNet"] + _accum)
+    # ... and the SYMMETRIC repair, for gross-only filers and for the utilities whose
+    # `PropertyPlantAndEquipmentNet` is only a minor non-utility COMPONENT. AEP tags its
+    # rate base as `PublicUtilitiesPropertyPlantAndEquipment{Transmission,Distribution,
+    # GenerationOrProcessing}` and leaves `PropertyPlantAndEquipmentNet` at $0.71bn against
+    # $114bn of total assets and $120bn of gross PP&E -- a 99% understatement of the asset
+    # base that feeds asset turnover, capex intensity and Altman Z. Rebuild net from the
+    # roll-forward whenever it is missing, or implausibly small next to (gross - accum).
+    _ppe_derived = extra["ppeGross"] - _accum
+    _net_too_small = (extra["ppeNet"].notna() & _ppe_derived.notna() & (_ppe_derived > 0)
+                      & (extra["ppeNet"] < _ppe_derived * PPE_NET_MIN_SHARE_OF_ROLLFORWARD))
+    extra["ppeNet"] = extra["ppeNet"].where(extra["ppeNet"].notna() & ~_net_too_small,
+                                            _ppe_derived)
+    # When accumulated depreciation is unavailable (AEP stops tagging it after 2025, so the
+    # 4-quarter ffill runs out) the roll-forward cannot be rebuilt -- but the component value
+    # is still known-wrong. NULL it rather than ship a 99%-understated asset base: a missing
+    # PP&E is handled by every downstream ratio, a wrong one silently is not.
+    _net_vs_gross_only = (extra["ppeNet"].notna() & extra["ppeGross"].notna()
+                          & (extra["ppeGross"] > 0)
+                          & (extra["ppeNet"]
+                             < extra["ppeGross"] * PPE_NET_MIN_SHARE_OF_ROLLFORWARD))
+    extra["ppeNet"] = extra["ppeNet"].where(~_net_vs_gross_only)
     # net oil&gas property for E&P filers that tag only gross:  net = gross - accumulated
     extra["oilGasPropertyNet"] = extra["oilGasPropertyNet"].where(
         extra["oilGasPropertyNet"].notna(), extra["oilGasPropertyGross"] - _accum)
@@ -1496,7 +1686,148 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
     out["sector"] = sector
     out["industry_group"] = industry_group
 
+    out = apply_plausibility_guards(out)
     return out.copy().reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------- #
+# Row-level plausibility guards                                               #
+# --------------------------------------------------------------------------- #
+def _null_where(frame: pd.DataFrame, column: str, bad: pd.Series) -> int:
+    """NULL `column` on the `bad` rows; returns how many were cleared. NULL, never
+    clipped: a clipped value still asserts a magnitude we know to be wrong, and the
+    downstream winsorizers would then treat the boundary as a real observation."""
+    if column not in frame.columns:
+        return 0
+    mask = bad.reindex(frame.index, fill_value=False).fillna(False) & frame[column].notna()
+    n = int(mask.sum())
+    if n:
+        frame.loc[mask, column] = np.nan
+    return n
+
+
+def apply_plausibility_guards(out: pd.DataFrame) -> pd.DataFrame:
+    """Null values that are accounting-impossible or arithmetic artifacts.
+
+    `grossMargins` already had such a guard (GROSS_MARGIN_MIN/MAX) and was consequently
+    the only clean ratio in the table; this gives its siblings the same treatment and
+    adds the scale checks the 2026-07 audit surfaced. Measured on the live table
+    (30,133 rows / 498 tickers), the defects this clears are:
+
+      * SCALE, both directions -- `sharesOutstanding` 370 rows outside 1e6..2e10
+        (ORCL 2012 stored 4.819e15 against a true 4.819e9, exactly 1e6x; 166 zeros),
+        and the mirror image on the balance sheet where a stub / registration-era
+        filing reports an internally consistent but 1e6x-too-small statement
+        (LUV 2011 totalAssets 1.788e4 for a real $17.88bn, KMB 1.9e4, SW 108).
+      * WRONG TAG in a per-share field -- `epsDiluted` 21 rows |eps| > 500 (ICE 2016
+        captured the diluted SHARE COUNT, 1.2e8, as EPS), `dividendsPerShare` 19 rows
+        > 100 (ROK 3.88e6, STX 2.8e6 = the dollar dividend TOTAL).
+      * NEAR-ZERO DENOMINATOR -- returnOnEquity reached 5.52e7, debtToEquity 9.69e7,
+        operatingMargins -209, profitMargins -148.7. The inputs are fine; the quotient
+        is not, so the RATIO is nulled while its numerator/denominator are kept.
+
+    Pure and idempotent, so it is unit-testable and safe to re-apply on a rebuild.
+    """
+    if out is None or out.empty:
+        return out
+    out = out.copy()
+
+    def num(name: str) -> pd.Series:
+        if name not in out.columns:
+            return pd.Series(np.nan, index=out.index, dtype="float64")
+        return pd.to_numeric(out[name], errors="coerce")
+
+    revenue, assets = num("totalRevenue"), num("totalAssets")
+    liabilities, equity = num("totalLiabilities"), num("stockholdersEquity")
+    scale = revenue.abs().where(revenue.notna(), assets.abs())
+
+    # ---- 1. share count / per-share fields ------------------------------------
+    shares = num("sharesOutstanding")
+    _null_where(out, "sharesOutstanding",
+                (shares < SHARES_OUTSTANDING_MIN) | (shares > SHARES_OUTSTANDING_MAX))
+    # The same 1e6x scale defect affects every share COUNT, not just the outstanding one:
+    # the newly-mapped fields showed commonSharesIssued up to 3.4e14 and
+    # commonSharesAuthorized up to 8e14. `issued` tracks `outstanding` so it shares that
+    # band; authorised/preferred counts are a multiple of it (a board may authorise far
+    # more than it issues), so they get a decade of extra headroom.
+    _null_where(out, "commonSharesIssued",
+                (num("commonSharesIssued") < SHARES_OUTSTANDING_MIN)
+                | (num("commonSharesIssued") > SHARES_OUTSTANDING_MAX))
+    for col in ("commonSharesAuthorized", "preferredSharesAuthorized", "antidilutiveShares"):
+        _null_where(out, col, num(col) > SHARES_OUTSTANDING_MAX * 10)
+    # An authorised count of ZERO is impossible for a listed company, and a count BELOW the
+    # shares actually outstanding is an accounting contradiction (you cannot issue more than
+    # the board authorised). The guard previously capped only the upper end, so the live
+    # minimum was 0.
+    authorized = num("commonSharesAuthorized")
+    _null_where(out, "commonSharesAuthorized",
+                (authorized <= 0) | (authorized < num("sharesOutstanding")))
+    # DILUTED can never be BELOW BASIC: dilution only ever adds shares. 415 of 31,580 rows
+    # (1.31%) broke this, and the cause is a UNIT mismatch, not real dilution -- T 2010 has
+    # basic 5.908e9 against diluted 5,938 (i.e. millions), GLW 1.568e9 against 1,591, and
+    # ICE has diluted = 0. EPS confirms it: `epsDiluted > epsBasic` on only 10.7% of those
+    # rows, so the per-share figures are fine and it is the share COUNT that is wrong.
+    # Nulling rather than rescaling: the implied factor is not always a clean 1e3/1e6, and a
+    # wrong factor would silently corrupt `optionOverhang` = (diluted - basic) / basic, which
+    # is precisely the feature this defect distorts (it would read a -99.9% overhang).
+    basic, diluted = num("basicShares"), num("dilutedShares")
+    _null_where(out, "dilutedShares",
+                (diluted <= 0)
+                | (basic.notna() & (diluted < basic * DILUTED_SHARES_MIN_SHARE_OF_BASIC)))
+    # Effective tax rate: a ratio, so a near-zero pre-tax income makes the quotient
+    # meaningless (the raw field reached -56.6 and +43.1). 89.4% of values already sit in
+    # 0..0.60; the band keeps genuine benefit/valuation-allowance years without shipping
+    # arithmetic artefacts.
+    _null_where(out, "effectiveTaxRate",
+                (num("effectiveTaxRate") < EFFECTIVE_TAX_RATE_MIN)
+                | (num("effectiveTaxRate") > EFFECTIVE_TAX_RATE_MAX))
+    _null_where(out, "epsDiluted", num("epsDiluted").abs() > EPS_ABS_MAX)
+    _null_where(out, "epsBasic", num("epsBasic").abs() > EPS_ABS_MAX)
+    _null_where(out, "dividendsPerShare",
+                num("dividendsPerShare").abs() > DIVIDEND_PER_SHARE_ABS_MAX)
+
+    # ---- 2. wrongly-scaled balance sheet --------------------------------------
+    # An operating company never reports total assets at a thousandth of its own
+    # revenue. When it does, the whole statement came in at the wrong scale, so the
+    # BLOCK goes -- keeping one member would leave a self-consistent-looking lie.
+    bad_scale = (revenue.notna() & assets.notna() & (revenue.abs() > 0)
+                 & (assets.abs() < revenue.abs() * BALANCE_SHEET_MIN_ASSETS_TO_REVENUE))
+    # ... and a balance sheet whose totals do not reconcile did not come from one
+    # statement. Tested BOTH ways because filers place non-controlling interests either
+    # inside or outside `stockholdersEquity`; the better fit wins, since adding NCI
+    # unconditionally would break rows where `minorityInterest` is not a component of
+    # this entity's equity at all (ERIE).
+    nci = num("minorityInterest").fillna(0.0) + num("redeemableNCI").fillna(0.0)
+    denom = assets.abs().replace(0, np.nan)
+    gap_ex_nci = (assets - (liabilities + equity)).abs() / denom
+    gap_inc_nci = (assets - (liabilities + equity + nci)).abs() / denom
+    identity_gap = pd.concat([gap_ex_nci, gap_inc_nci], axis=1).min(axis=1)
+    bad_identity = (assets.notna() & liabilities.notna() & equity.notna()
+                    & (identity_gap > BALANCE_SHEET_IDENTITY_TOLERANCE))
+    bad_bs = bad_scale | bad_identity | (assets <= 0)
+    for c in ("totalAssets", "totalLiabilities", "stockholdersEquity"):
+        _null_where(out, c, bad_bs)
+
+    # ---- 3. ratios whose denominator is too small to divide by ----------------
+    # Recomputed against the ORIGINAL denominators: a ratio is unusable both when the
+    # denominator is negligible relative to firm scale and when the quotient lands
+    # outside a band no real company reaches.
+    thin_rev = revenue.abs() < scale * RATIO_DENOMINATOR_MIN_FRACTION
+    thin_eq = equity.abs() < scale * RATIO_DENOMINATOR_MIN_FRACTION
+    for column, denom_thin, cap in (
+        ("returnOnEquity", thin_eq, RETURN_ON_EQUITY_ABS_MAX),
+        ("debtToEquity", thin_eq, DEBT_TO_EQUITY_ABS_MAX),
+        ("operatingMargins", thin_rev, OPERATING_MARGIN_ABS_MAX),
+        ("profitMargins", thin_rev, PROFIT_MARGIN_ABS_MAX),
+    ):
+        _null_where(out, column, denom_thin | (num(column).abs() > cap))
+
+    # ---- 4. quantities that cannot be negative --------------------------------
+    for column in ("totalRevenue", "cash", "inventory", "goodwill", "ppeNet",
+                   "currentAssets", "totalLiabilities", "totalDebt"):
+        _null_where(out, column, num(column) < 0)
+
+    return out
 
 
 # --------------------------------------------------------------------------- #

@@ -86,8 +86,15 @@ def test_monotone_warns_only_on_unlisted_typo(caplog):
         "columns": ["f_a", "f_b", "f_c"],            # f_b: allow-listed but absent from cube
         "monotonic": {"enabled": True,
                       "features": [{"f_a": 1}, {"f_b": -1}, {"f_typo": 1}]}}})
-    fake = SimpleNamespace(_config=cfg, _log=logging.getLogger("mono_test"),
-                           _lgb_feats=lambda: ["f_a"])            # only f_a is trained
+    # A real but UNINITIALISED StepModelling, not a SimpleNamespace: `_monotone_constraints`
+    # resolves the monotone block and the allow-list through per-member config helpers
+    # (`_lgbm_monotonic`, `_lgbm_columns`) that grow with the config schema, and a namespace
+    # stub has to be re-patched each time one appears — which is how this test broke. Only
+    # the config and the trained-feature list are stubbed.
+    fake = object.__new__(StepModelling)
+    fake._config = cfg
+    fake._log = logging.getLogger("mono_test")
+    fake._lgb_feats = lambda: ["f_a"]                             # only f_a is trained
     with caplog.at_level(logging.WARNING, logger="mono_test"):
         cons = StepModelling._monotone_constraints(fake)
     assert cons == [1]                                            # aligned to lgb_feats=[f_a]

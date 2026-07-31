@@ -348,6 +348,65 @@ SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
     "oa" : "0000885665"
 }
 
+# --------------------------------------------------------------------------- #
+# CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #
+# --------------------------------------------------------------------------- #
+# 13F reports holdings by CUSIP, so a name whose identifier we cannot resolve is INVISIBLE in
+# `institutional_holdings` (and therefore in the superinvestor sleeve too). `cusip_ticker_map`
+# is built from OpenFIGI and records a miss PERMANENTLY, so an unresolved identifier is never
+# retried -- measured on the live DB: 15,404 letter-prefixed rows in the map, ZERO resolved to
+# a ticker, and 34 of the 500 universe names entirely absent from institutional_holdings.
+#
+# The cause is domicile, not fuzzy matching: a foreign-domiciled issuer is identified by a CINS
+# (a CUSIP whose first character is a LETTER encoding the country -- G Ireland/UK, H Switzerland,
+# N Netherlands, V Liberia, Y Singapore), and OpenFIGI does not resolve these from the 13F feed.
+# Nearly every S&P 500 name registered in Ireland / Bermuda / Jersey / Switzerland lands here.
+#
+# Every entry below was RECOVERED FROM THE DATA -- the `NAMEOFISSUER` + `CUSIP` pair in the
+# cached 13F INFOTABLE, ranked by how many filers report it -- never typed from memory: a wrong
+# identifier silently attributes another issuer's holdings to your ticker. Applied as an
+# override so it also corrects a miss already cached in `cusip_ticker_map`.
+CUSIP_TICKER_OVERRIDES: dict[str, str] = {
+    "G0450A105": "ACGL",    # ARCH CAPITAL GROUP LTD          (Bermuda)
+    "G1151C101": "ACN",     # ACCENTURE PLC                   (Ireland)
+    "G0176J109": "ALLE",    # ALLEGION PLC                    (Ireland)
+    "G0250X107": "AMCR",    # AMCOR PLC                       (Jersey)
+    "G0403H108": "AON",     # AON PLC                         (Ireland)
+    "G3265R107": "APTV",    # APTIV PLC                       (Jersey)
+    "H11356104": "BG",      # BUNGE GLOBAL SA                 (Switzerland)
+    "H1467J104": "CB",      # CHUBB LIMITED                   (Switzerland)
+    "143658300": "CCL",     # CARNIVAL CORP                   (US-listed pair of Carnival plc)
+    "G25508105": "CRH",     # CRH PLC                         (Ireland)
+    "26614N102": "DD",      # DUPONT DE NEMOURS INC           (US - absent from the map, not a CINS)
+    "G3223R108": "EG",      # EVEREST GROUP LTD               (Bermuda)
+    "G29183103": "ETN",     # EATON CORP PLC                  (Ireland)
+    "Y2573F102": "FLEX",    # FLEX LTD                        (Singapore)
+    "H2906T109": "GRMN",    # GARMIN LTD                      (Switzerland)
+    "438516106": "HON",     # HONEYWELL INTL INC              (US - absent from the map)
+    "G51502105": "JCI",     # JOHNSON CONTROLS INTERNATIONAL  (Ireland)
+    "G54950103": "LIN",     # LINDE PLC                       (Ireland)
+    "N53745100": "LYB",     # LYONDELLBASELL INDUSTRIES NV    (Netherlands)
+    "G5960L103": "MDT",     # MEDTRONIC PLC                   (Ireland)
+    "G66721104": "NCLH",    # NORWEGIAN CRUISE LINE HLDGS     (Bermuda)
+    "N6596X109": "NXPI",    # NXP SEMICONDUCTORS NV           (Netherlands)
+    "G7S00T104": "PNR",     # PENTAIR PLC                     (Ireland)
+    "V7780T103": "RCL",     # ROYAL CARIBBEAN GROUP           (Liberia)
+    "G8473T100": "STE",     # STERIS PLC                      (Ireland)
+    "G7997R103": "STX",     # SEAGATE TECHNOLOGY HLDGS PLC    (Ireland)
+    "G8267P108": "SW",      # SMURFIT WESTROCK PLC            (Ireland)
+    "G87052109": "TEL",     # TE CONNECTIVITY PLC             (Switzerland/Ireland)
+    "G8994E103": "TT",      # TRANE TECHNOLOGIES PLC          (Ireland)
+    "G96629103": "WTW",     # WILLIS TOWERS WATSON PLC        (Ireland)
+    "30231G102": "XOM",     # EXXON MOBIL CORP                (US - absent from the map)
+    # DELIBERATELY NOT MAPPED — resolve these before adding:
+    #  * IVZ  — the recovery scan's top hit for "INVESCO" was 46090E103 = the INVESCO QQQ TRUST
+    #    ETF, not Invesco Ltd the asset manager. 13F filers hold QQQ enormously, so filer-count
+    #    ranking prefers the ETF; mapping it to IVZ would book QQQ's holdings as Invesco Ltd.
+    #    Invesco Ltd is Bermuda-domiciled, so its identifier is a G-prefixed CINS.
+    #  * FDXF / HONA — not real tickers (FedEx is FDX, Honeywell is HON, both already present).
+    #    These look like corrupt rows in `sp500_tickers`, not a mapping gap.
+}
+
 SEC_FORM13F_URL_DICT = {
     "2013q2": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2013q2_form13f.zip",
     "2013q3": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2013q3_form13f.zip",
@@ -572,3 +631,147 @@ SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
     "utilities":  ("sector",         (GICS_SECTOR_UTILITIES,)),
     "pharma":     ("industry_group", (GICS_GROUP_PHARMA_BIOTECH,)),
 }
+
+
+# --------------------------------------------------------------------------- #
+# DATA-PLAUSIBILITY BANDS                                                      #
+# --------------------------------------------------------------------------- #
+# Added after the source-table sanity audit (2026-07-28). Every band below was
+# calibrated on the LIVE table, and each one separates a proven extraction defect
+# from legitimate data — none of them clips a real value. See the per-constant
+# notes for the observed evidence.
+
+# `sharesOutstanding` for an S&P 500 name. 1.3% of fundamentals_history rows sat
+# outside this: 57 rows above 2e10 (ORCL 2012 stored 4.819e15 vs a true 4.819e9 —
+# exactly 1e6x), 147 rows in 1..1e6 and 166 zeros. The real maximum in the table
+# among plausible rows is ~1.6e10 (BAC/T era), so 2e10 is a safe ceiling and 1e6 a
+# safe floor (no S&P 500 constituent has fewer than a million shares outstanding).
+SHARES_OUTSTANDING_MIN = 1_000_000.0
+SHARES_OUTSTANDING_MAX = 2e10
+
+# Per-share figures. Diluted EPS outside ±10,000 is never real (BRK.A, the largest
+# legitimate EPS in the universe, is ~4,000). 21 rows breached it, e.g. ICE 2016
+# eps = 1.2e8 = the diluted SHARE COUNT captured into the EPS field.
+EPS_ABS_MAX = 10_000.0
+# Dividends per share: 19 rows exceeded 100 (ROK 3.88e6, STX 2.8e6 = the dollar
+# dividend TOTAL, 1e6x the per-share figure). The largest real DPS here is ~35.
+DIVIDEND_PER_SHARE_ABS_MAX = 1_000.0
+
+# Derived ratios. `grossMargins` already had GROSS_MARGIN_MIN/MAX; these are its
+# missing siblings, all blown up by a near-zero denominator rather than by a bad
+# input: returnOnEquity reached 5.52e7 (168 rows |ROE|>10), debtToEquity 9.69e7
+# (39 rows >100), operatingMargins -209..81.7 (63 rows), profitMargins -148.7..45.
+# Bands are wide enough to keep genuine distress (negative equity, loss-making
+# quarters) and only null arithmetic artefacts.
+RETURN_ON_EQUITY_ABS_MAX = 10.0
+DEBT_TO_EQUITY_ABS_MAX = 100.0
+OPERATING_MARGIN_ABS_MAX = 5.0
+PROFIT_MARGIN_ABS_MAX = 5.0
+# A ratio is only trustworthy when its denominator is a meaningful fraction of the
+# firm's scale; below this share of |totalRevenue| (or |totalAssets| for equity)
+# the quotient is noise and the ratio is nulled instead of clipped.
+RATIO_DENOMINATOR_MIN_FRACTION = 1e-3
+
+# Balance-sheet scale check. Stub/registration-era filings (spin-off S-4s, a first
+# 10-Q) carry an internally consistent but wrongly-scaled balance sheet — LUV 2011
+# totalAssets 1.788e4 for a real $17.88bn, KMB 1.9e4, SW 108, AMCR 130. A real
+# operating company never reports total assets smaller than this fraction of its
+# own revenue, so the balance-sheet block is dropped for those rows.
+BALANCE_SHEET_MIN_ASSETS_TO_REVENUE = 1e-3
+# |TA - (TL + SE)| / |TA| above this means the totals did not come from one statement.
+# Deliberately LOOSE. Two effects make a tight bound wrong here:
+#   * filers split non-controlling interests either inside or outside
+#     `stockholdersEquity`, so the identity is tested BOTH ways and the better fit wins
+#     (adding NCI unconditionally breaks rows it should not -- ERIE's `minorityInterest`
+#     is the Erie Insurance Exchange's equity, larger than Erie Indemnity's own assets);
+#   * `_assemble_base` carries balance-sheet LEVELS forward up to 4 quarters, so two
+#     totals on one row can legitimately come from different quarter-ends.
+# Measured on the live table: 3,060 rows breach 2% but only 1,928 survive the NCI
+# alternative, and of those 1,479 sit in 2-10% -- ffill drift, not a broken statement.
+# The genuine breaks (SW 7.3e7, ARES 2.3e7, AMCR 5.3e5, LIN 1,613, ICE 24.8, ERIE 5.5)
+# are orders of magnitude away, so 0.5 separates them with room to spare.
+BALANCE_SHEET_IDENTITY_TOLERANCE = 0.5
+
+# --------------------------------------------------------------------------- #
+# PRICE PRE-LISTING TRIM                                                       #
+# --------------------------------------------------------------------------- #
+# yfinance back-fills a US ticker with its predecessor line (AMCR's ASX quote
+# pre-2019, SW's Smurfit Kappa quote pre-2024) or its SPAC trust (VRT before the
+# Feb-2020 merger). Those bars are flat and mostly zero-volume, so they inject
+# zero realised vol and fake zero returns into beta / correlation / momentum.
+# Two independent tells, either of which marks the pre-window as synthetic:
+#   * zero-volume share in [first_bar .. last_zero_volume_bar] >= 20%
+#     (AMCR 77.1%, SW 62.7%, HWM 94.6% vs PFG/AMD/XEL/IBKR/... all <= 2.7%),
+#   * first-year median volume < 1% of the ticker's full-history median volume
+#     (VRT 0.17% vs the tightest true listing, NCLH 2.9% / ARES 2.85% / SMCI 3.9%).
+# Both thresholds sit an order of magnitude away from the nearest false positive.
+PRELISTING_ZERO_VOLUME_SHARE = 0.20
+PRELISTING_VOLUME_RATIO = 0.01
+# Tickers whose volume is legitimately zero (FX has no exchange volume) must never
+# be trimmed; they are not in the equity universe anyway.
+NO_VOLUME_TICKERS: frozenset[str] = frozenset({"USDEUR=X"})
+
+# --------------------------------------------------------------------------- #
+# EMBEDDING INPUT LIMITS                                                       #
+# --------------------------------------------------------------------------- #
+# text-embedding-3-small accepts 8,191 TOKENS. English prose runs ~3.6 chars per
+# token, so ~29,000 chars is the real ceiling; 28,000 keeps a safety margin for
+# token-dense text (tables, tickers). The previous 8,000-CHAR cap truncated 22.4%
+# of prepared-remarks turns (max 74,550 chars), so the quarter-to-quarter drift
+# feature only ever compared each turn's opening fragment.
+EMBEDDING_MAX_CHARS = 28_000
+# A turn shorter than this is boilerplate ("Thank you.", "Yes.") — 17,281 Q&A turns
+# qualify. Embedding them and taking a cosine against the question is pure noise,
+# so they are excluded from the coherence KPI (they stay in the cache).
+EMBEDDING_MIN_TURN_CHARS = 30
+
+# --------------------------------------------------------------------------- #
+# HEADCOUNT CONTINUITY                                                         #
+# --------------------------------------------------------------------------- #
+# Employee counts come from 10-K PROSE, so a residue of mis-picked numbers survives
+# every in-document heuristic. Headcount is a slow-moving series, which makes a
+# ticker's own history the strongest remaining check: no real company multiplies or
+# divides its workforce by five between two annual filings. The 2026-07 audit measured
+# 6.3% of year-over-year transitions at >2x or <0.5x, and the 30-ticker verification
+# caught CoStar picking up a "2.3 million" phrase (2,300,000) against a stored 1,155.
+# The band is deliberately generous so a genuine transformative merger still passes;
+# it is anchored on the MEDIAN of accepted values, so one bad reading cannot reject the
+# correct ones that follow it.
+HEADCOUNT_CONTINUITY_MIN = 0.2
+HEADCOUNT_CONTINUITY_MAX = 5.0
+
+# Say-on-pay support below this is dropped by `def14a_impute` (see
+# `_drop_implausible_say_on_pay`). Real votes cluster 0.85-0.99; the 2026-07 audit found
+# 125 of 4,785 values (2.6%) under 0.60, steady at 1-4% every year since 2011, with
+# spot-checks proving them wrong (JPM 2023 stored 0.31 against ~89% actual, SPG 2024
+# 0.111 against ~93%, INTC 2023 0.34). Set at 0.50 rather than 0.60 to keep the genuine
+# shareholder revolts, which do reach the low 50s, while clearing the clear errors. NOTE
+# the field holds a FRACTION (0-1) despite the `_pct` name -- the live max is exactly 1.0.
+SAY_ON_PAY_MIN_SUPPORT = 0.50
+
+# Effective tax rate (`EffectiveIncomeTaxRateContinuingOperations`, 481 of 500 tickers).
+# A RATIO, so a near-zero pre-tax income makes it explode: the raw field spans -56.6 to
+# +43.1 while 89.4% of values sit inside 0..0.60 and the median is 0.218 (correct for
+# post-TCJA US corporates). The band is asymmetric on purpose -- a genuine tax BENEFIT
+# year (loss carry-back, valuation-allowance release) is real signal and goes negative,
+# but not by 50x.
+EFFECTIVE_TAX_RATE_MIN = -1.0
+EFFECTIVE_TAX_RATE_MAX = 1.0
+
+# `ppeNet` is rebuilt from (ppeGross - accumulatedDepreciation) when it falls below this
+# share of that roll-forward. Utilities tag their rate base as
+# `PublicUtilitiesPropertyPlantAndEquipment{Transmission,Distribution,GenerationOrProcessing}`
+# and leave `PropertyPlantAndEquipmentNet` holding only a minor non-utility component --
+# AEP reports $0.71bn there against $120bn of gross PP&E and $114bn of total assets, a 99%
+# understatement of the asset base behind asset turnover, capex intensity and Altman Z.
+# 0.20 is far below any real net/gross ratio (even a fully-depreciated base stays well
+# above it), so a genuine old asset base is never rewritten.
+PPE_NET_MIN_SHARE_OF_ROLLFORWARD = 0.20
+
+# Diluted weighted-average shares may never fall below basic -- dilution only adds shares.
+# 415 of 31,580 rows (1.31%) broke this because the diluted count arrived in a different
+# UNIT (T 2010: basic 5.908e9 vs diluted 5,938; GLW: 1.568e9 vs 1,591; ICE: diluted 0),
+# confirmed by `epsDiluted > epsBasic` on only 10.7% of them. The tolerance absorbs genuine
+# rounding (14.2% of the violations are under 0.1% of basic) while catching the unit errors,
+# which are all >= 90% shortfalls.
+DILUTED_SHARES_MIN_SHARE_OF_BASIC = 0.99

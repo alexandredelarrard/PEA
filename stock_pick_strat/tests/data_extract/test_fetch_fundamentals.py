@@ -133,7 +133,13 @@ def _make_facts():
         "PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": ytd(capex)}},
         "StockholdersEquity": {"units": {"USD": instants(200, 5)}},
     }
-    dei = {"EntityCommonStockSharesOutstanding": {"units": {"shares": instants(1000, 10)}}}
+    # A REALISTIC share count. `apply_plausibility_guards` nulls anything under
+    # SHARES_OUTSTANDING_MIN (1e6), which is what catches the 147 sub-million and 166 zero
+    # rows the 2026-07 audit found in the live table; an S&P 500 name cannot have fewer
+    # (even BRK.A, the extreme, has ~1.4M A-shares). The old 1,000 was below that floor,
+    # so this fixture was asserting a magnitude no constituent ever reports.
+    dei = {"EntityCommonStockSharesOutstanding":
+           {"units": {"shares": instants(1_000_000_000, 10_000_000)}}}
     return {"facts": {"us-gaap": usg, "dei": dei}}
 
 

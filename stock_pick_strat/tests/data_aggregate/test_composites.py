@@ -130,19 +130,48 @@ def test_eps_beat_score_orientation_is_monotonic():
           f"top {score['T4']:+.2f} > 0 > bottom {score['T0']:+.2f}, even with a NaN member. Validated.")
 
 
-def test_eps_beat_is_wired_into_the_model():
-    """comp_eps_beat must be an actual model input and monotone-constrained +1
-    (so the tree can't invert the beat-propensity prior)."""
-    cfg = OmegaConf.load(_CONFIG_DIR / "modellling.yml")
-    columns = list(cfg.inputs.columns)
-    mono = {k: v for d in cfg.inputs.monotonic.features for k, v in dict(d).items()}
+def test_composite_model_inputs_are_never_sign_inverted():
+    """A composite fed to the model must not carry an INVERTED monotone constraint — the
+    tree must never be free to flip a prior the composite already encodes (comp_eps_beat is
+    built so that higher = more beat-prone, so a -1 there would invert the signal).
 
-    assert "comp_eps_beat" in columns, "comp_eps_beat not fed to the model"
-    assert mono.get("comp_eps_beat") == 1, "comp_eps_beat must be monotone +1"
+    This used to assert `comp_eps_beat in cfg.inputs.columns` against `modellling.yml`, but
+    the feature set moved to per-member blocks (`configs/models/{lgbm,linear,
+    random_forest}_modelling.yml`) and `inputs:` no longer exists — so the test failed on a
+    missing config key rather than on anything about eps_beat.
 
-    print("\n=== SANITY CHECK: eps_beat wired into the model ===")
-    print(f"  comp_eps_beat in inputs.columns: True; monotonic constraint = "
-          f"{mono.get('comp_eps_beat')} (higher beat-propensity -> higher signal). Validated.")
+    It now checks the WIRING INVARIANT rather than the SELECTION decision: which features
+    the model trains on is a modelling choice that legitimately changes with every
+    feature-pruning experiment, and as of this config NO `comp_*` composite is an input at
+    all (the members run purely on `f_*` columns). Pinning selection here would just break
+    on the next experiment; pinning the sign catches a genuine mistake if one is re-added.
+    """
+    models = _CONFIG_DIR / "models"
+    positive_priors = {"comp_eps_beat"}          # built so higher = stronger signal
+    wired: dict[str, dict] = {}
+    for member, fname in (("lgbm", "lgbm_modelling.yml"),
+                          ("linear", "linear_modelling.yml"),
+                          ("random_forest", "random_forest_modelling.yml")):
+        path = models / fname
+        if not path.exists():
+            continue
+        blk = OmegaConf.load(path)[member]
+        cols = [c for c in list(blk.get("columns") or []) if c.startswith("comp_")]
+        mono_cfg = blk.get("monotonic")
+        mono = ({k: v for d in (mono_cfg.get("features") or []) for k, v in dict(d).items()}
+                if mono_cfg is not None else {})
+        for col in cols:
+            if col in positive_priors:
+                assert mono.get(col, 1) == 1, (
+                    f"{member}: {col} carries monotone {mono.get(col)}; the composite is "
+                    "built so higher = stronger, so an inverted constraint flips it")
+        if cols:
+            wired[member] = {c: mono.get(c) for c in cols}
+
+    print("\n=== SANITY CHECK: composite model-input sign priors ===")
+    print(f"  composites wired into a member: {wired or 'none (members use f_* only)'}")
+    print("  no positively-oriented composite carries an inverted monotone constraint. "
+          "Validated.")
 
 
 def test_composites_disabled_and_missing_members_are_safe():

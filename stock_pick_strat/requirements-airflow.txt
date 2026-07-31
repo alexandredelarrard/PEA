@@ -1,10 +1,3 @@
-# Pipeline runtime deps for the ISOLATED venv (/opt/pipeline) inside the Airflow image.
-# Kept separate from Airflow's own environment so the pipeline's SQLAlchemy 2.0 never clashes with
-# Airflow 2.x's SQLAlchemy 1.4. The Airflow extraction + aggregation(cube) DAGs only need these;
-# the heavy ML libs (torch/transformers for FinBERT tone, lightgbm for modelling, streamlit/plotly
-# for the app) are intentionally omitted to keep the image lean and the build fast — the cube step
-# skips FinBERT cleanly when torch is absent. Add `torch --index-url .../whl/cpu` + `transformers`
-# here to enable the FinBERT tone features in the nightly cube.
 pandas>=2.2
 numpy>=1.26,<2.5
 scipy>=1.11
@@ -23,8 +16,7 @@ openai>=2.45.0,<3.0.0
 pytrends>=4.9.2,<5.0.0
 click>=8.1
 lightgbm>=4.2
-shap>=0.44          # per-run model diagnostics: SHAP values + importance per horizon.
-                    # Absent here, the modelling DAG silently produced no SHAP artifact.
+shap>=0.44          
 torch>=2.6
 transformers>=4.40,<5.0
 plotly>=5.22

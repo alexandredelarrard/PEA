@@ -30,7 +30,9 @@ class LongShortStrategy(Strategy):
         self._inputs = inputs
         self._cfg = self.config
         self._cube_cfg = self._config.build_cube
+
         b = build_signal(self._context, self._config, end=inputs.end)
+        
         self.signal, self.stock_ret, self.spy_ret, self.close = b.signal, b.stock_ret, b.spy_ret, b.close
         self.backtest_start, self.horizons = b.backtest_start, b.horizons
         self._log.info("ls_equity: signal %s days x %s tickers; OOS from %s",

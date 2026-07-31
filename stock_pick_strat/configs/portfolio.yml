@@ -6,7 +6,7 @@
 portfolio:
   # subset of strategies to blend. Options: ls_equity (market-neutral L/S), eq_long_only
   # (long-only top-N, no shorts — retail-viable), long_book (multi-asset ERC), trend_cta.
-  sleeves: [ls_equity, eq_long_only, long_book, trend_cta]
+  sleeves: [ls_equity, eq_long_only, long_book] #, trend_cta
   # window applied to ALL sub-strategies (L/S is additionally OOS from its model train_end)
   start: "2022-01-01"
   end: null                    # null -> last common date
@@ -15,7 +15,7 @@ portfolio:
   sleeve_target_vol: 0.10      # per-sleeve reference vol each sleeve targets before blending
   fee_bps: 2.0                 # default sleeve trading cost (a sleeve may override in its own file)
   spread_bps: 8.0
-  risk_free_rate: 0.02
+  risk_free_rate: 0.03
   # blend across sleeves (this IS the dynamic capital allocation) + global sizing
   scheme: erc                  # erc (correlation-aware) | inverse_vol
   cov_mode: ewma               # ewma | std

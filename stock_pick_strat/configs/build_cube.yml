@@ -196,7 +196,7 @@ build_cube:
                       "-f_ec_vocab_novelty_xs", "-f_ec_length_delta_xs"]
 
       # ---- ATTENTION: a retail-attention spike is a short-horizon reversal signal ----
-      attention: ["-f_attn_spike_xs"]
+      # attention: ["-f_attn_spike_xs"]
 
       technical: [mom_12_1, ma_ratio_50, "-vol_63", "-max_21", "-ret_skew_126",
                   "-idio_vol_63", "-downside_vol_63"]

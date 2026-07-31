@@ -1,0 +1,125 @@
+# random_forest_modelling.yml -- Random Forest member (merged via read_config, key `random_forest`).
+# Implemented as LightGBM in `boosting: rf` mode: bagged, INDEPENDENT trees (no boosting) --
+# so it handles the cube's NaNs + native categoricals + monotone constraints, unlike sklearn's
+# RandomForest (which needs imputation + one-hot). REUSES the LightGBM feature set, categoricals
+# and monotone map (no `columns:` here) -- add a `columns:` list to give RF its own variables.
+# Add "random_forest" to model.ensemble in modellling.yml to include it in the blend.
+random_forest:
+  boosting: rf
+  num_boost_round: 500         # number of bagged trees (RF: more trees lower variance, no overfit)
+  bagging_fraction: 0.6        # row subsample per tree (REQUIRED for rf mode, with bagging_freq>0)
+  bagging_freq: 1
+  feature_fraction: 0.5        # column subsample per tree -> decorrelates the trees
+  max_depth: 8                 # fuller trees than the GBDT; variance averaged out by bagging
+  num_leaves: 127
+  min_child_samples: 50
+  lambda_l1: 0.0
+  lambda_l2: 1.0
+
+  # DEFAULT feature list (horizon-agnostic) = h60 50-feature RF set (Boruta+SHAP,
+  # orthogonal). Used for ANY horizon that has no entry under columns_by_horizon.
+  columns:
+  - f_pegy_vs_peers
+  - f_new_buyer_ratio_vs_peers
+  - f_goodwill_intangibles_to_assets_vs_peers
+  - f_current_ratio_xs
+  - f_pegy_xs
+  - f_inst_holders_vs_peers
+  - f_goodwill_intangibles_to_assets_xs
+  - f_refinancing_risk_xs
+  - f_current_ratio_vs_peers
+  - f_fixed_cost_coverage_margin_vs_peers
+  - f_book_yield_xs
+  - f_inst_value_chg_xs
+  - f_intrinsic_yield_xs
+  - f_intangible_amortization_share_vs_peers
+  - f_fwd_eps_yield_xs
+  - f_da_to_capex_xs
+  - f_sbc_intensity_vs_peers
+  - f_implied_useful_life_vs_peers
+  - f_implied_useful_life_xs
+  - f_new_buyer_ratio_xs
+  - f_inst_ownership_pct_xs
+  - f_insider_buy_sell_count_ratio_xs
+  - f_dividend_growth_xs
+  - f_sales_yield_xs
+  - f_inst_shares_chg_xs
+  - f_debtToEquity_vs_peers
+  - amihud_63
+  - f_gross_profitability_vs_peers
+  - f_capex_intensity_xs
+  - f_sga_intensity_xs
+  - f_dso_change_xs
+  - f_intangible_amortization_share_xs
+  - f_y_margin_vs_ttm_xs
+  - f_asset_growth_vs_peers
+  - f_asset_age_vs_peers
+  - f_super_value_chg_xs
+  - f_inst_concentration_vs_peers
+  - f_acquisition_intensity_vs_peers
+  - f_aoci_to_equity_vs_peers
+  - f_eps_surprise_last_xs
+  - f_fixed_cost_coverage_margin_xs
+  - f_debtToEquity_xs
+  - f_effective_tax_rate_xs
+  - f_employee_growth_vs_peers
+  - f_effective_tax_rate_vs_peers
+  - f_dso_xs
+  - f_dividend_payer_vs_peers
+  - volume_trend_63
+  - f_earningsGrowth_xs
+  - f_diluted_shares_growth_xs
+  # Per-horizon OVERRIDES: the model uses the list for the horizon it is training
+  # (target_horizon) if present here, else falls back to  above.
+  columns_by_horizon:
+    30:   # 30-day RF 50-feature set (earnings-surprise / growth / distress tilted)
+    - f_pegy_vs_peers
+    - f_pegy_xs
+    - f_net_options_ratio_chg_xs
+    - f_refinancing_risk_xs
+    - f_goodwill_intangibles_to_assets_vs_peers
+    - f_current_ratio_xs
+    - f_goodwill_intangibles_to_assets_xs
+    - f_book_yield_xs
+    - f_inst_ownership_pct_xs
+    - f_aoci_to_equity_xs
+    - f_roic_ex_goodwill_xs
+    - f_dividend_growth_xs
+    - f_current_ratio_vs_peers
+    - f_inst_holders_vs_peers
+    - f_days_inventory_outstanding_vs_peers
+    - f_sbc_intensity_xs
+    - f_sga_intensity_xs
+    - f_exiters_vs_peers
+    - f_employee_growth_xs
+    - f_fwd_eps_yield_xs
+    - f_inst_value_chg_vs_peers
+    - f_gmroi_xs
+    - f_insider_buy_sell_count_ratio_xs
+    - f_eps_expectation_growth_xs
+    - f_inst_value_chg_xs
+    - volume_trend_63
+    - f_q_margin_vs_ttm_xs
+    - f_y_earnings_growth_xs
+    - f_capex_intensity_xs
+    - f_effective_tax_rate_vs_peers
+    - f_fixed_cost_coverage_margin_vs_peers
+    - f_new_buyer_ratio_vs_peers
+    - f_dio_xs
+    - f_fcf_yield_vs_peers
+    - f_eps_surprise_last_xs
+    - f_debtToEquity_vs_peers
+    - f_intrinsic_yield_xs
+    - f_revenueGrowth_xs
+    - f_inst_shares_chg_xs
+    - f_eps_surprise_4q_avg_xs
+    - f_dividend_growth_vs_peers
+    - f_capex_to_dep_xs
+    - f_operating_margin_5y_chg_vs_peers
+    - f_shares_growth_xs
+    - f_net_options_ratio_chg_vs_peers
+    - f_diluted_shares_growth_vs_peers
+    - f_q_earnings_growth_vs_peers
+    - f_asset_growth_vs_peers
+    - f_sbc_to_buyback_vs_peers
+    - f_dso_change_xs

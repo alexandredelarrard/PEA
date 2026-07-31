@@ -775,3 +775,48 @@ PPE_NET_MIN_SHARE_OF_ROLLFORWARD = 0.20
 # rounding (14.2% of the violations are under 0.1% of basic) while catching the unit errors,
 # which are all >= 90% shortfalls.
 DILUTED_SHARES_MIN_SHARE_OF_BASIC = 0.99
+
+# --------------------------------------------------------------------------- #
+# COMPANYFACTS CACHE FRESHNESS                                                 #
+# --------------------------------------------------------------------------- #
+# `_fetch_companyfacts` caches each CIK's companyfacts JSON (~2GB for the S&P 500) but
+# only READ it when `context.use_cache` was set -- and no caller ever sets it, so the
+# cache was write-only and every rebuild re-downloaded all 500 payloads.
+#
+# The window has to stay SUB-DAILY. The extraction DAG runs at 01:00 daily, so anything
+# >= 24h lets a run skip its refresh entirely and delays a new filing. Measured on the
+# live filing calendar (782 business days): filings land on 74% of business days, median
+# 3 per day, p90 32, max 71 -- and they are heavily seasonal (Feb 20.9%, May 14.3%,
+# Aug 14.1%, Nov 12.0%, Oct 11.6% = 73% of all filings in five months, with 14% of
+# business days carrying >= 20 filings). A 2-day window would therefore cost a MEAN 1.0
+# business day of filing visibility, concentrated precisely on the heaviest news days,
+# where post-earnings drift decays fastest.
+#
+# 20h keeps the daily 01:00 run fully fresh (it always sees a ~24h-old cache) while making
+# an ad-hoc rebuild in the same session free.
+COMPANYFACTS_CACHE_MAX_AGE_HOURS = 20
+
+# --------------------------------------------------------------------------- #
+# ANNUAL-FILING CADENCE GATE (10-K)                                            #
+# --------------------------------------------------------------------------- #
+# A 10-K arrives ONCE per fiscal year, so on a daily DAG run almost no ticker can have a
+# new one — yet `fetch_employees_edgar` listed filings for all 498 every run (one EDGAR
+# submissions request each, ~493 of them guaranteed to return nothing).
+#
+# The gate anchors on the ticker's own FISCAL YEAR END rather than on a gap from its last
+# filing, because a gap floor is unstable: once a ticker crosses it, it is re-fetched every
+# day until it files (~195 days for a February filer). Measured on `employees_history`
+# (6,766 filings): the lag from fiscal year end to filing is median 52d, p95 60d, p99 63d
+# (the 60-day large-accelerated-filer deadline), and 99.85% land within [FYE+15, FYE+270].
+# Consecutive filing gaps are min 184d / p1 351d / median 364d, with the only sub-300d cases
+# being genuine fiscal-year changes (SMCI 184d, GEN 210d, KHC 252d, ADSK 269d).
+#
+# So: start looking the day the fiscal year ENDS (a filer cannot report a year before it
+# closes) and keep looking until the filing lands. Eligible tickers today: 38 of 498.
+# The window has NO upper bound on purpose — an overdue filer (SMCI filed 686 days after
+# its FYE) must keep being polled, and being late is the safe direction to err in.
+TENK_WINDOW_OPENS_DAYS_AFTER_FYE = 0
+# Fallback for a ticker whose fiscal period end is unknown: a plain gap floor, set 14 days
+# below the smallest consecutive gap ever observed (184d) so a transition-year 10-K is still
+# caught. Rarely used — `period` is populated on every row today.
+TENK_FILING_GAP_FALLBACK_DAYS = 170

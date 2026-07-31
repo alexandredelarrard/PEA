@@ -23,10 +23,15 @@ if __name__ == "__main__":
     # self = StepPortfolio(context=context, config=config)
     # self.run()
 
-##### data check 
-# TODO: why ec only for 467 ?? what about rest ?
-# TODO: sanity check table per table # tickers, filling rate of each featuer, relationship vs target, if this makes sense 
-# TODO: refine composer features 
+##### TODO
+# TODO: check data is consistent over time, even for latest 2026 month ? 
+# TODO: what happens when new data pops between quarters on financials 
+# TODO: include move from peers when new results are avilable -> move all peers info
+# TODO: refine modelling to be as stable as possible
+# TODO: review periods when IC drops for few weeks / months
+# TODO: check if all neutrality is correctly done on target 
+# TODO: add other strats decorrelated : - Super investors replica ? 
+# TODO: put horizons to 21,42,63 since we are in open days, not calendar days
 
 # docker run --rm -v stock_pick_strat_pgdata:/volume alpine tar czf - -C /volume . > stock_pick_strat_pgdata.tar.gz
 

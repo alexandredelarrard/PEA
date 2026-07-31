@@ -57,6 +57,49 @@ def _last_asof_by_ticker(existing: pd.DataFrame | None) -> dict:
     return s.groupby("ticker")["as_of"].max().to_dict()
 
 
+def _fiscal_state(existing: pd.DataFrame | None) -> dict[str, tuple[pd.Timestamp | None,
+                                                                    pd.Timestamp]]:
+    """Per ticker: (latest fiscal PERIOD end, latest FILING date) — the two anchors the
+    cadence gate needs. `period` may be NaT for a legacy row, hence the Optional."""
+    if existing is None or existing.empty:
+        return {}
+    s = existing[["ticker", "as_of", "period"]].copy()
+    s["as_of"] = pd.to_datetime(s["as_of"], errors="coerce")
+    s["period"] = pd.to_datetime(s["period"], errors="coerce")
+    s = s.dropna(subset=["as_of"])
+    out: dict[str, tuple[pd.Timestamp | None, pd.Timestamp]] = {}
+    for ticker, g in s.groupby("ticker"):
+        periods = g["period"].dropna()
+        out[ticker] = (periods.max() if not periods.empty else None, g["as_of"].max())
+    return out
+
+
+def is_10k_due(state: tuple[pd.Timestamp | None, pd.Timestamp] | None,
+               today: pd.Timestamp) -> bool:
+    """Could this ticker plausibly have a 10-K we have not seen?
+
+    A 10-K arrives ONCE per fiscal year, so on any given day almost no ticker can have a
+    new one — but the fetcher used to list filings for all 498 every run, ~493 of those
+    EDGAR requests guaranteed to return nothing.
+
+    Anchored on the ticker's own FISCAL YEAR END, not on a gap since its last filing: a gap
+    floor is unstable because once a ticker crosses it, it is polled daily until it files
+    (~195 days for a February filer). We start looking the day the next fiscal year closes
+    (a company cannot report a year before it ends) and keep looking until the filing lands.
+
+    Deliberately NO upper bound: an overdue filer must keep being polled (SMCI once filed
+    686 days after its fiscal year end), and being late is the safe direction to err in.
+    A ticker with no history at all is always due.
+    """
+    if state is None:
+        return True                                   # never seen -> full pull
+    last_period, last_filed = state
+    if last_period is None or pd.isna(last_period):   # legacy row without a period
+        return (today - last_filed).days >= TENK_FILING_GAP_FALLBACK_DAYS
+    next_fye = last_period + pd.DateOffset(years=1)
+    return today >= next_fye + pd.Timedelta(days=TENK_WINDOW_OPENS_DAYS_AFTER_FYE)
+
+
 def _history_by_ticker(existing: pd.DataFrame | None) -> dict[str, list[int]]:
     """Already-accepted headcounts per ticker -> the anchor `_is_continuous` compares a
     newly-parsed value against. Sorted by filing date so the median reflects the series,
@@ -166,6 +209,20 @@ def fetch_employees_edgar(context: Context, tickers: list[str],
     seen = seen_accessions(existing)
     last_asof = _last_asof_by_ticker(existing)
     history = _history_by_ticker(existing)
+
+    # CADENCE GATE: skip the tickers whose next 10-K cannot exist yet, so a daily run spends
+    # EDGAR requests only on names that could actually have filed (38 of 498 measured).
+    fiscal = _fiscal_state(existing)
+    today = pd.Timestamp.today().normalize()
+    due = cik_map[[is_10k_due(fiscal.get(t), today) for t in cik_map["ticker"]]]
+    context.log.info(
+        "EDGAR employees: %d/%d tickers could have a new 10-K (annual cadence gate); "
+        "skipping %d whose fiscal year has not closed since their last filing",
+        len(due), len(cik_map), len(cik_map) - len(due))
+    if due.empty:
+        save_extract_meta(path, None, 0 if existing is None else len(existing), len(cik_map))
+        return existing if existing is not None else pd.DataFrame(columns=_DATA_COLUMNS)
+    cik_map = due
 
     new_rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:

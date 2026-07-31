@@ -56,7 +56,10 @@ Run:
     python -m data.fetch_fundamentals
 """
 import json
+import logging
+import time
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -64,6 +67,7 @@ from tqdm import tqdm
 
 from src.constants.constants import (
     BALANCE_SHEET_IDENTITY_TOLERANCE, BALANCE_SHEET_MIN_ASSETS_TO_REVENUE,
+    COMPANYFACTS_CACHE_MAX_AGE_HOURS,
     DEBT_TO_EQUITY_ABS_MAX, DILUTED_SHARES_MIN_SHARE_OF_BASIC,
     DIVIDEND_PER_SHARE_ABS_MAX, EPS_ABS_MAX, PPE_NET_MIN_SHARE_OF_ROLLFORWARD,
     OPERATING_MARGIN_ABS_MAX, PROFIT_MARGIN_ABS_MAX, RATIO_DENOMINATOR_MIN_FRACTION,
@@ -75,6 +79,8 @@ from src.context import Context
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, load_extract_meta, meta_path, sec_get, today_iso,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -832,15 +838,43 @@ def _tickers_to_process(
 # --------------------------------------------------------------------------- #
 # SEC companyfacts fetch (cached)                                             #
 # --------------------------------------------------------------------------- #
-def _fetch_companyfacts(context: Context, cik: str) -> dict | None:
+def _cache_age_hours(path: Path) -> float:
+    """Hours since the cached payload was last written, or +inf when absent."""
+    try:
+        return (time.time() - path.stat().st_mtime) / 3600.0
+    except OSError:
+        return float("inf")
+
+
+def _fetch_companyfacts(context: Context, cik: str,
+                        max_age_hours: float | None = None) -> dict | None:
+    """One CIK's SEC companyfacts payload, re-using the on-disk cache when it is FRESH.
+
+    The cache is written on every download but used to be readable only when
+    `context.use_cache` was set -- which no caller does -- so ~2GB of cached payloads sat
+    unread and every rebuild re-downloaded all 500. Now a payload younger than
+    `max_age_hours` (default `COMPANYFACTS_CACHE_MAX_AGE_HOURS`) is reused.
+
+    The default is deliberately SUB-DAILY. The extraction DAG runs at 01:00 daily, so any
+    window >= 24h would let a run skip its refresh and delay a new filing; measured on the
+    live filing calendar a 2-day window costs a mean 1.0 business day of filing visibility,
+    concentrated on the heaviest filing days (five months carry 73% of all filings). At 20h
+    the daily run always sees a ~24h-old cache and refreshes, while an ad-hoc rebuild
+    minutes or hours later is free.
+
+    `context.use_cache` still forces the cache unconditionally (offline / dev runs), and a
+    caller can widen the window explicitly for a deliberate backfill.
+    """
     cache_dir = context.paths["SEC_BULK_CACHE_DIR"]
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = cache_dir / f"companyfacts_CIK{cik}.json"
+    window = (COMPANYFACTS_CACHE_MAX_AGE_HOURS if max_age_hours is None
+              else float(max_age_hours))
 
-    if context.use_cache and cache.exists():
+    if cache.exists() and (context.use_cache or _cache_age_hours(cache) <= window):
         try:
             return json.loads(cache.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception:              # truncated/corrupt -> fall through and re-download
             pass
     try:
         resp = sec_get(SEC_COMPANYFACTS_URL.format(cik=cik))
@@ -848,7 +882,18 @@ def _fetch_companyfacts(context: Context, cik: str) -> dict | None:
         cache.write_text(json.dumps(data), encoding="utf-8")
         return data
     except Exception as e:
-        print(f"companyfacts CIK{cik}: failed ({e})")
+        # A STALE cache still beats no data at all: without this a transient SEC outage or
+        # a 403 dropped the ticker from the rebuild entirely (returning None), silently
+        # shrinking the universe for that run.
+        if cache.exists():
+            try:
+                logger.warning("companyfacts CIK%s: download failed (%s) — falling back to "
+                               "the cached payload (%.0fh old)", cik, e,
+                               _cache_age_hours(cache))
+                return json.loads(cache.read_text(encoding="utf-8"))
+            except Exception:                                       # noqa: BLE001
+                pass
+        logger.warning("companyfacts CIK%s: failed (%s)", cik, e)
         return None
 
 

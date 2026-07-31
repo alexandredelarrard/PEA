@@ -1,15 +1,19 @@
 from src.context import get_config_context
-from src.data_extract.step_extract_all_data import StepExtractAllData
-from src.data_aggregate.step_build_cube import StepBuildCube
-from src.modelling.long_short.step_train import StepModelling
-from src.portfolio import StepPortfolio
-from src.data_peers.step_deduce_peers import StepDeducePeers
+# from src.data_extract.step_extract_all_data import StepExtractAllData
+# from src.data_aggregate.step_build_cube import StepBuildCube
+# from src.modelling.long_short.step_train import StepModelling
+# from src.portfolio import StepPortfolio
+# from src.data_peers.step_deduce_peers import StepDeducePeers
+
+from src.data_extract.utils.fundamentals.fetch_fundamentals_edgartool import FetchFundamentals
 
 if __name__ == "__main__":
     config, context = get_config_context("./configs", use_cache=False, save=True)
+
+    self = FetchFundamentals(context=context, tickers=['MAA', 'A', 'AEE', 'ODFL', 'JPM'])
     
-    self = StepExtractAllData(context=context, config=config)
-    self.run()
+    # self = StepExtractAllData(context=context, config=config)
+    # self.run()
 
     # self = StepDeducePeers(context=context, config=config)
     # self.run()ss
@@ -33,7 +37,7 @@ if __name__ == "__main__":
 # TODO: add other strats decorrelated : - Super investors replica ? 
 # TODO: put horizons to 21,42,63 since we are in open days, not calendar days
 
-# docker run --rm -v stock_pick_strat_pgdata:/volume alpine tar czf - -C /volume . > stock_pick_strat_pgdata.tar.gz
+# docker run --rm -v database_pgdata:/volume alpine tar czf - -C /volume . > D:/database_pgdata.tar.gz
 
 ##### timeline 
 # sec insider = + 45days after as_of +1 16august for 30 june 
@@ -69,3 +73,5 @@ if __name__ == "__main__":
 # [2026-07-26, 23:58:20 UTC] {subprocess.py:106} INFO - 2026-07-26 23:58:20 - src.utils.step - INFO - step_train.py - horizon 30:   [elasticnet] CV mean_IC=+0.0325  IC_IR=+1.59
 # [2026-07-26, 23:58:20 UTC] {subprocess.py:106} INFO - 2026-07-26 23:58:20 - src.utils.step - INFO - step_train.py - horizon 30:   [lgbm      ] CV mean_IC=+0.0272  IC_IR=+1.42
 # [2026-07-26, 23:58:20 UTC] {subprocess.py:106} INFO - 2026-07-26 23:58:20 - src.utils.step - INFO - step_train.py - horizon 30:   [random_forest] CV mean_IC=+0.0333  IC_IR=+1.94
+
+# docker exec -it pea_db vacuumdb -U alexandre -d pea --full

@@ -807,16 +807,6 @@ def _load_existing_history(context: Context) -> pd.DataFrame | None:
     return None if df.empty else df
 
 
-def _is_sec_history_up_to_date(context: Context, cik_mapping: pd.DataFrame) -> bool:
-    """True when today's run already attempted the full CIK universe."""
-    meta = load_extract_meta(context.paths["FUNDAMENTALS_HISTORY_PATH"])
-    if meta is None or meta.get("last_built") != today_iso():
-        return False
-    if not context.store.exists("fundamentals_history"):
-        return False
-    return meta.get("universe_size", 0) >= len(cik_mapping)
-
-
 def _tickers_to_process(
     context: Context,
     cik_mapping: pd.DataFrame,
@@ -1901,14 +1891,6 @@ def build_fundamentals_history_sec(context: Context,
       - If history exists from today but new tickers appeared, fetch only those.
       - On a new calendar day, refresh all tickers and merge with existing rows.
     """
-
-    if _is_sec_history_up_to_date(context, cik_mapping):
-        hist = context.store.load("fundamentals_history")
-        print(
-            f"SEC fundamentals history already up to date for {today_iso()} "
-            f"— skipping ({len(hist)} rows, {hist['ticker'].nunique()} tickers)"
-        )
-        return hist
 
     existing = _load_existing_history(context)
     to_process = _tickers_to_process(context, cik_mapping, existing)

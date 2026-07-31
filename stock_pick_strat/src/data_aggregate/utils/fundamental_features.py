@@ -117,7 +117,6 @@ from src.data_aggregate.utils.earnings_features import ntm_ttm_eps
 from src.data_aggregate.utils.factors import fundamentals_to_daily, daily_market_cap
 from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
 from src.data_aggregate.utils.panel import (
-    _peer_relative,
     _ratio,
     _winsorize_xs,
     build_peer_relative_panel,
@@ -873,6 +872,7 @@ def _derived_fields(
     ebitda = daily("ebitda")
     d2e = daily("debtToEquity")
     rnd = daily("researchAndDevelopment")
+    
     # balance-sheet levels reused by BOTH the EV valuation and the distress block
     cash = daily("cash")
     long_debt = daily("longTermDebt")
@@ -1411,7 +1411,9 @@ def build_fundamental_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
 
     yoy_periods = _infer_yoy_periods(fundamentals_history)
-    fields = _derived_fields(fundamentals_history, trading_index, stock_close,
+    fields = _derived_fields(fund_hist=fundamentals_history, 
+                             idx=trading_index, 
+                             close=stock_close,
                              yoy_periods=yoy_periods, intrinsic_cfg=intrinsic_cfg,
                              earnings_history=earnings_history, pension_facts=pension_facts,
                              notes_num=notes_num)

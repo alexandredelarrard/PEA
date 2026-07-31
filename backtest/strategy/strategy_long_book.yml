@@ -1,0 +1,37 @@
+# strategy_long_book.yml -- multi-asset LONG BOOK sleeve (merged as top-level key `strategy_long_book`).
+# Long-only % allocation across equity / gold / energy / 10Y-bond-TR / FX + CASH residual, on the
+# long-history `macro_asset_prices` table. Risk-parity (ERC/inverse-vol) + long-only trend overlay
+# + VIX risk-on regime tilt + responsive leverage. See src/modelling/long_book/allocation.py.
+# portfolio_vol_target (the sleeve's vol target), starting_capital, risk_free_rate and the window
+# come DOWN from the portfolio (PortfolioInputs).
+strategy_long_book:
+  include_fx: true
+  # weighting
+  scheme: erc                  # erc (equal risk contribution) | inverse_vol
+  vol_window: 63
+  rebalance_freq: 21
+  cov_mode: ewma               # ewma | std
+  cov_halflife: 42
+  vol_mode: ewma               # ewma | std  (portfolio-vol estimator for the leverage target)
+  lever_on: base               # base (trend->cash truly de-risks) | scaled
+  # long-only trend overlay (best DD control from the since-2000 sweep: binary 3/6/12m)
+  trend_enabled: true
+  trend_scheme: binary         # binary (on/off) | linear (smooth downside-only)
+  trend_lookbacks: [63, 126, 252]
+  trend_vol_window: 63
+  trend_floor: 0.0
+  trend_cap: 2.0
+  # VIX-aware risk-on tilt (more equity/energy when calm, less in stress)
+  risk_on_tilt: true
+  use_vix: true
+  offensive: [equity, energy]
+  off_share_min: 0.15
+  off_share_max: 0.85
+  # sizing (sleeve-level leverage ceiling; the sleeve vol target comes from the portfolio)
+  max_leverage: 2.0
+  lev_responsive: true         # ceiling scales 1x (stress) -> 2x (calm) with the risk-on score
+  lev_min: 1.0
+  lev_max: 2.0
+  # costs (conservative ~10 bps one-way per unit turnover)
+  fee_bps: 2.0
+  spread_bps: 8.0

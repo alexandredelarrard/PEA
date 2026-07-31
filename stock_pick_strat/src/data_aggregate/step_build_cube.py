@@ -268,6 +268,7 @@ class StepBuildCube(Step):
                 "Re-run price extraction to backfill %s (interior-gap heal in "
                 "fetch_prices).", cfg.market_ticker, len(holes),
                 holes.min().date(), holes.max().date(), cfg.market_ticker)
+
         self.close = self.close.loc[trading_days]
         self.open_ = self.open_.loc[trading_days]
         if self.high is not None:
@@ -528,17 +529,24 @@ class StepBuildCube(Step):
         10-Q/10-K was already public on d -- never a not-yet-filed quarter.
         """
         hist = self._cfg.get("hist", {})
+
         # scoped tag-filtered reads (DAG path leaves these unset -> read only the pension tags,
         # never the whole notes_num/pension_facts tables); the monolithic path pre-scopes them.
         pension_facts = getattr(self, "pension_facts", None)
         if pension_facts is None:
             pension_facts = load_pension_facts_scoped(self._context)
+
+        # NOTES NUMS
         notes_num = getattr(self, "notes_num", None)
         if notes_num is None:
             notes_num = load_notes_num_scoped(self._context)
+
         fund_panel = build_fundamental_feature_panel(
-            self.fundamentals, self.peers, self.stock_close.index,
-            stock_close=self.stock_close, intrinsic_cfg=self._intrinsic_cfg(),
+            fundamentals_history=self.fundamentals, 
+            peer_dict=self.peers, 
+            trading_index=self.stock_close.index,
+            stock_close=self.stock_close, 
+            intrinsic_cfg=self._intrinsic_cfg(),
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
             earnings_history=getattr(self, "earnings", None),   # PEGY projected-growth term

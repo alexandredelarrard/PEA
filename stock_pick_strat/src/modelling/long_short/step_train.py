@@ -3,7 +3,7 @@ import numpy as np
 import json
 import pickle
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from omegaconf import DictConfig
 from sqlalchemy import text
 import lightgbm as lgb
@@ -562,14 +562,19 @@ class StepModelling(Step):
     def _horizon_kpis(self, h) -> dict:
         """CV KPIs the diagnostics writer cannot know: ensemble + per-member IC / IC_IR."""
         ens = self.horizon_ic.get(h, {})
+
+        full_train_end = datetime.today() - timedelta(days=30 + 30)
+        train_end = (full_train_end.strftime("%Y-%m-%d") if getattr(self, "_full_history", False)
+                          else self._config.train.end_date)
+        self._context.log.info(f"Train from {self._config.train.start_date} to {train_end} ")
+
         return {
             "cv_mean_ic": ens.get("mean_ic"),
             "cv_ic_ir": ens.get("ic_ir"),
             "target_type": self.target_type,
             "label_column": self.label_column,
             "train_start": self._config.train.start_date,
-            "train_end": (None if getattr(self, "_full_history", False)
-                          else self._config.train.end_date),
+            "train_end": train_end,
             "full_history": bool(getattr(self, "_full_history", False)),
             "members": {name: {"cv_mean_ic": m.get("mean_ic"), "cv_ic_ir": m.get("ic_ir")}
                         for name, m in (self.member_ic.get(h) or {}).items()},

@@ -74,11 +74,13 @@ def _cube_columns(context: Context) -> set[str]:
 
 def _project_cube(context: Context, meta: dict, models: dict, target_type: str,
                   start: pd.Timestamp, end) -> tuple[pd.DataFrame, str]:
+    
     cube_cols = _cube_columns(context)
     target_col = (f"target_{target_type}" if f"target_{target_type}" in cube_cols
                   else "target" if "target" in cube_cols else None)
     if target_col is None:
         raise KeyError(f"Target column 'target_{target_type}' not in cube; rebuild the cube.")
+
     want = list(dict.fromkeys(meta["feature_cols"] + meta.get("categorical_cols", [])))
     load_cols = list(dict.fromkeys(["date", "ticker", "target_horizon", target_col]
                                    + [c for c in want if c in cube_cols]))
@@ -124,7 +126,7 @@ def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle
                                 target_type=target_type)
         panel = panel[(panel["date"] >= start) & (panel["date"] <= end_ts)]
         if panel.empty:
-            continue
+            continuev
         scores, _ = ml.ensemble_predict(members, panel, meta["feature_cols"])
         df = panel[["date", "ticker"]].copy()
         df["z"] = pd.Series(scores.to_numpy(), index=panel.index)

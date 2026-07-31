@@ -1,0 +1,51 @@
+# linear_modelling.yml -- elastic-net member: hyperparameters + its OWN (leaner) feature
+# set. Merged via read_config (top-level key `linear`). alpha .001/l1 .3 (alpha .05 zeroed
+# all coefs -> NaN). Drops the sparse sector-specific features (NaN->0 for a linear model)
+# and the f_ec_* (not in the cube yet).
+linear:
+  kind: elasticnet
+  alpha: 0.001
+  l1_ratio: 0.6
+  max_iter: 1000
+  tol: 1.0e-06
+  columns:
+  - f_short_vol_ratio_vs_peers
+  - f_goodwill_impairment_intensity_vs_peers
+  - f_rd_capitalized_roic_xs
+  - f_current_ratio_xs
+  - f_pegy_vs_peers
+  - f_pegy_xs
+  - f_current_ratio_vs_peers
+  - f_negative_equity
+  - f_patent_cliff_xs
+  - f_pension_overhang_leverage_vs_peers
+  - f_intangible_amortization_share_vs_peers
+  - volume_trend_63
+  - f_nwc_elasticity_vs_peers
+  - f_dio_vs_peers
+  - f_gross_profitability_vs_peers
+  - f_insider_net_buy_ratio_xs
+  - f_gmroi_xs
+  - tax_loss_pressure
+  - f_deferred_rev_intensity_xs
+  - f_patent_cliff_vs_peers
+  - f_gross_profitability_xs
+  - f_deferred_rev_intensity_vs_peers
+  - f_gmroi_vs_peers
+  - f_debtToEquity_vs_peers
+  - f_dividend_growth_xs
+  - f_days_payable_outstanding_xs
+  - f_fcf_yield_vs_peers
+  - f_dio_xs
+  - f_acquisition_intensity_vs_peers
+  - f_debtToEquity_xs
+  - f_refinancing_risk_xs
+  - f_fixed_cost_coverage_margin_vs_peers
+  - f_goodwill_intangibles_to_assets_vs_peers
+  - f_gross_margin_chg_vs_peers
+  - f_diluted_shares_growth_xs
+  - volume_cv_63
+  - f_insider_net_buy_ratio_vs_peers
+  - f_super_new_buyer_ratio_xs
+  - f_pension_overhang_leverage_xs
+  - f_fixed_cost_coverage_margin_xs

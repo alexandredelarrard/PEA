@@ -33,7 +33,8 @@ from src.data_extract.utils.prices.fetch_superinvestors import build_superinvest
 from src.data_extract.utils.prices.fetch_macro_assets import fetch_macro_assets
 from src.data_extract.utils.fundamentals.fetch_macro import fetch_macro
 # --- fundamentals ----------------------------------------------------------- #
-from src.data_extract.utils.fundamentals.fetch_fundamentals import fetch_fundamentals
+from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import fetch_fundamentals_edgartools
+from src.data_extract.utils.fundamentals.fundamentals_derive import rebuild_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
@@ -41,8 +42,8 @@ from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insid
 # --- structure -------------------------------------------------------------- #
 from src.data_extract.utils.structure.fetch_employees_edgar import fetch_employees_edgar
 from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
-from src.data_extract.utils.structure.fetch_8k_items import fetch_8k_items
-from src.data_extract.utils.structure.fetch_13d import fetch_13d
+from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
+from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
 from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text
 # --- behavioral ------------------------------------------------------------- #
 from src.data_extract.utils.behavioral.fetch_wiki_pageviews import fetch_wiki_pageviews
@@ -149,12 +150,14 @@ def superinvestors(config_path: str) -> None:
 # --------------------------------------------------------------------------- #
 # Fundamentals                                                                  #
 # --------------------------------------------------------------------------- #
-@cli.command(help="SEC companyfacts fundamentals (balance sheet / income / cash flow). HEAVY.")
+@cli.command(help="SEC fundamentals (balance sheet / income / cash flow), edgartools per-filing. HEAVY.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def fundamentals(config_path: str, tickers: str | None) -> None:
     _, context = _ctx(config_path)
-    fetch_fundamentals(context, tickers=_tickers(context, tickers))
+    resolved = _tickers(context, tickers)
+    fetch_fundamentals_edgartools(context, tickers=resolved)
+    rebuild_fundamentals_history(context, resolved)
 
 
 @cli.command(help="Earnings surprises -> historical forward P/E.")
@@ -209,20 +212,20 @@ def def14a(config_path: str, tickers: str | None) -> None:
                      model=config.data_extract.llm_model)
 
 
-@cli.command(help="8-K material-event item codes (structured, EDGAR submissions JSON). SEC-api.")
+@cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_items(config_path: str, tickers: str | None) -> None:
     _, context = _ctx(config_path)
-    fetch_8k_items(context, tickers=_tickers(context, tickers))
+    fetch_8k_edgar(context, tickers=_tickers(context, tickers))
 
 
-@cli.command(help="SC 13D activist filings + amendments (EDGAR submissions JSON). SEC-api.")
+@cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_13d(config_path: str, tickers: str | None) -> None:
     _, context = _ctx(config_path)
-    fetch_13d(context, tickers=_tickers(context, tickers))
+    fetch_13d_edgar(context, tickers=_tickers(context, tickers))
 
 
 @cli.command(help="Filing text: 10-K Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")

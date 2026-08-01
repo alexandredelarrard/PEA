@@ -140,12 +140,11 @@ SEC_FTD_LEGACY_URL_TEMPLATE = ("https://www.sec.gov/files/data/"
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"   # last period on the legacy path (>= 201706b uses the current path)
 SEC_FTD_FIRST_YEAR = 2009          # earliest FTD file overall (2009-07, legacy path) -> full 15y coverage
 
-# 8-K material-event item codes. Pulled STRUCTURED from the EDGAR submissions JSON (`filings.*.items`)
-# — no document parsing, ~100% fill for post-2004 8-Ks. Table keyed per filing; raw comma-separated
-# `items` stored + a count. The curated high-signal codes (leading distress/governance events) are
-# mapped for the downstream feature layer; item structure exists from 2004-08 onward.
-SEC_8K_ITEMS_TABLE = "sec_8k_items"
-SEC_8K_CACHE_DIR = "sec_8k_cache"        # raw submissions JSON, relative to DATA_STORE
+# 8-K events: item codes (structured, ~100% fill for post-2004 8-Ks) + edgartools' typed
+# CurrentReport flags (has_earnings/has_press_release). Table keyed per (ticker, accession);
+# raw comma-separated `items` stored + a count. The curated high-signal codes (leading
+# distress/governance events) are mapped for the downstream feature layer.
+SEC_8K_TABLE = "sec_8k"   # renamed from sec_8k_items to match the form-dispatch registry's logical name
 SEC_8K_FORMS = ["8-K", "8-K/A"]
 SEC_8K_HIGH_SIGNAL_ITEMS = {
     "1.01": "material_agreement_entered", "1.02": "material_agreement_terminated",
@@ -155,11 +154,21 @@ SEC_8K_HIGH_SIGNAL_ITEMS = {
 }
 
 # SC 13D activist filings (>5% stake WITH intent to influence) + amendments — the event-driven
-# catalyst signal. Pulled from the SUBJECT company's EDGAR submissions (SEC indexes 13D/13G under
-# the subject CIK, so the shared list_filings works), one row per filing at ~100% event fill.
+# catalyst signal, read via edgartools' typed Schedule13D object (reporting persons, CUSIP,
+# ownership -- see fetch_13d_edgar.py). One row PER REPORTING PERSON per filing.
 SEC_13D_TABLE = "sec_13d"
-SEC_13D_CACHE_DIR = "sec_13d_cache"      # raw submissions JSON, relative to DATA_STORE
 SEC_13D_FORMS = ["SC 13D", "SC 13D/A"]   # activist (13G = passive is deliberately excluded)
+
+# Fundamentals (financial-statement) forms walked per-filing via edgartools -> `fundamentals_facts`
+# / `fundamentals_history`. Amendments included explicitly (never inferred from a form-filter
+# default) so a 10-K/A or 10-Q/A restatement is always discovered as its own accession.
+FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
+
+# DEF 14A proxy + the DEF 14C information-statement equivalent that CONTROLLED companies file
+# instead. Centralized here (was a private `_FORM` constant inside fetch_def14a_llm.py) so the
+# form-dispatch registry (form_registry.py) has one source of truth, matching SEC_8K_FORMS /
+# SEC_13D_FORMS / FILING_TEXT_FORMS above.
+DEF14A_FORMS = ["DEF 14A", "DEF 14C"]
 
 # 10-K narrative sections: Item 1A (Risk Factors) + Item 7 (MD&A). Downloaded from the annual 10-K,
 # section-carved to raw text, stored for later embedding/drift features (YoY risk-factor additions,
@@ -352,10 +361,10 @@ SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
 # CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #
 # --------------------------------------------------------------------------- #
 # 13F reports holdings by CUSIP, so a name whose identifier we cannot resolve is INVISIBLE in
-# `institutional_holdings` (and therefore in the superinvestor sleeve too). `cusip_ticker_map`
+# `sec13f_hr` (and therefore in the superinvestor sleeve too). `cusip_ticker_map`
 # is built from OpenFIGI and records a miss PERMANENTLY, so an unresolved identifier is never
 # retried -- measured on the live DB: 15,404 letter-prefixed rows in the map, ZERO resolved to
-# a ticker, and 34 of the 500 universe names entirely absent from institutional_holdings.
+# a ticker, and 34 of the 500 universe names entirely absent from sec13f_hr.
 #
 # The cause is domicile, not fuzzy matching: a foreign-domiciled issuer is identified by a CINS
 # (a CUSIP whose first character is a LETTER encoding the country -- G Ireland/UK, H Switzerland,
@@ -557,8 +566,12 @@ DATA_FRESHNESS_SOURCES: dict[str, tuple[str, str, str]] = {
     "notes_text":            ("notes_text",           "filed",            "biweekly"),
     "insider_transactions":  ("insider_transactions", "filing_date",      "quarterly"),
     "fundamentals_history":  ("fundamentals_history", "as_of",            "quarterly"),
+    # Raw accession-grain fundamentals facts (edgartools); fundamentals_history above is
+    # derived from this. Separate entry so a lag here (vs. fundamentals_history) localizes
+    # a defect to the derivation step rather than extraction itself.
+    "fundamentals_facts":    ("fundamentals_facts",   "filing_date",      "quarterly"),
     "earnings_surprises":    ("earnings_surprises",   "earnings_date",    "quarterly"),
-    "institutional_holdings":("institutional_holdings","period",          "quarterly"),
+    "sec13f_hr":             ("sec13f_hr",            "period",           "quarterly"),
     "pension_facts":         ("pension_facts",        "filed",            "quarterly"),
     "earnings_call_sections":("earnings_call_sections","as_of",           "quarterly"),
     "employees_history":     ("employees_history",    "as_of",            "yearly"),
@@ -693,6 +706,18 @@ BALANCE_SHEET_MIN_ASSETS_TO_REVENUE = 1e-3
 BALANCE_SHEET_IDENTITY_TOLERANCE = 0.5
 
 # --------------------------------------------------------------------------- #
+# FUNDAMENTALS_FACTS RECONCILIATION (edgartools per-filing pipeline)          #
+# --------------------------------------------------------------------------- #
+# Q4 = FY - (Q1+Q2+Q3) is a SAME-TAG arithmetic identity (four pieces of one filer's own
+# reported number), not a three-concept accounting identity with genuine classification
+# ambiguity like BALANCE_SHEET_IDENTITY_TOLERANCE above -- so it must be far tighter.
+# Anchored on `_TO_COMMON_TOL` (0.02, fetch_fundamentals.py) -- the existing precedent in
+# this codebase for "these two numbers should agree" over a period. Calibrate empirically
+# once real edgartools data is flowing; a genuine reconciliation failure should be FLAGGED
+# (see fundamentals_validation.reconcile_fundamentals_facts), never silently corrected.
+Q4_RECONCILIATION_TOLERANCE = 0.02
+
+# --------------------------------------------------------------------------- #
 # PRICE PRE-LISTING TRIM                                                       #
 # --------------------------------------------------------------------------- #
 # yfinance back-fills a US ticker with its predecessor line (AMCR's ASX quote
@@ -739,6 +764,17 @@ EMBEDDING_MIN_TURN_CHARS = 30
 # correct ones that follow it.
 HEADCOUNT_CONTINUITY_MIN = 0.2
 HEADCOUNT_CONTINUITY_MAX = 5.0
+
+# --------------------------------------------------------------------------- #
+# FUNDAMENTALS QoQ DISCONTINUITY (flag, never auto-fix)                        #
+# --------------------------------------------------------------------------- #
+# Same shape/reasoning as HEADCOUNT_CONTINUITY_MIN/MAX above: a >5x or <0.2x quarter-
+# over-quarter move is unusual enough to flag for review (a large M&A, a genuine
+# one-off, or a mis-mapped concept/period), but NOT automatically wrong -- a real
+# transformative event legitimately produces one. `reconcile_fundamentals_facts`
+# reports it as a diagnostic; it never nulls or rescales the underlying value.
+FUNDAMENTALS_DISCONTINUITY_MIN = 0.2
+FUNDAMENTALS_DISCONTINUITY_MAX = 5.0
 
 # Say-on-pay support below this is dropped by `def14a_impute` (see
 # `_drop_implausible_say_on_pay`). Real votes cluster 0.85-0.99; the 2026-07 audit found

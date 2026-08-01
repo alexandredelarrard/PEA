@@ -26,7 +26,7 @@ _ROSTER = {"managers": [
 
 
 def _holdings():
-    """Two quarters, raw (unpadded) CIKs as stored in institutional_holdings.
+    """Two quarters, raw (unpadded) CIKs as stored in sec13f_hr.
       HOT : M1 BUYS (100->200), M2 SELLS (100->50)  -> heavy manager accumulating
       COLD: M1 SELLS (100->50), M2 BUYS (100->200)  -> heavy manager distributing
       ONLYM3: held only by the non-roster manager   -> must not appear

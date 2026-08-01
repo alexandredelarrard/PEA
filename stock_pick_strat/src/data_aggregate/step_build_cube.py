@@ -87,10 +87,10 @@ class StepBuildCube(Step):
         "employee":       (("employees_history", "fundamentals_history"), "build_employee_features"),
         "dividend":       (("dividends", "fundamentals_history"), "build_dividend_features"),
         "attention":      (("wiki_pageviews", "google_trends"), "build_attention_features"),
-        "institutional":  (("institutional_holdings", "fundamentals_history"),
+        "institutional":  (("sec13f_hr", "fundamentals_history"),
                             "build_institutional_features"),
         # only fundamentals_history preloaded: the elite 13F rows are read directly (roster CIKs
-        # only) by load_superinvestor_holdings — never the whole ~20M-row institutional_holdings.
+        # only) by load_superinvestor_holdings — never the whole ~20M-row sec13f_hr table.
         "superinvestor":  (("fundamentals_history",), "build_superinvestor_features"),
         "insider":        (("insider_transactions", "fundamentals_history"), "build_insider_features"),
         "short_interest": (("short_interest", "fails_to_deliver"), "build_short_interest_features"),
@@ -107,7 +107,7 @@ class StepBuildCube(Step):
         "fundamentals_history": "fundamentals", "earnings_surprises": "earnings",
         "def14a_llm": "def14a", "employees_history": "employees", "dividends": "dividends",
         "wiki_pageviews": "wiki_pageviews", "google_trends": "google_trends",
-        "institutional_holdings": "institutional", "insider_transactions": "insider",
+        "sec13f_hr": "institutional", "insider_transactions": "insider",
         "short_interest": "short_interest", "fails_to_deliver": "fails_to_deliver",
         "pension_facts": "pension_facts", "notes_num": "notes_num",
         "earnings_call_sections": "earnings_call_sections",
@@ -132,14 +132,14 @@ class StepBuildCube(Step):
     }
     # Per-source COLUMN PROJECTION for the exploded feature builds: load ONLY the columns each
     # builder reads (union across the groups that consume the table). Cuts memory on the TALL tables
-    # so parallel builds don't OOM the DB/VM (institutional_holdings ~20M rows was the crasher). A
+    # so parallel builds don't OOM the DB/VM (sec13f_hr ~20M rows was the crasher). A
     # table absent here loads in FULL — used for the SMALL tables (fundamentals_history 22k rows,
     # pension/notes/def14a/employees/earnings, all tiny) where projection saves ~nothing, and for
     # earnings_call_sections whose `text` column IS needed by the incremental scoring/embedding pass.
     _SOURCE_COLUMNS: dict[str, list[str]] = {
         # institutional_features + superinvestor_features
-        "institutional_holdings": ["cik", "period", "ticker", "shares", "value_usd",
-                                    "call_value", "put_value", "filing_date"],
+        "sec13f_hr": ["cik", "period", "ticker", "shares", "value_usd",
+                      "call_value", "put_value", "filing_date"],
         # insider_features (its own required set: ticker/filing_date/transaction_code/value_usd)
         "insider_transactions":   ["ticker", "filing_date", "transaction_code", "value_usd"],
         # short_interest_features (RegSHO short/total volume + reported short interest / ADV)
@@ -314,7 +314,7 @@ class StepBuildCube(Step):
     def _load_or_none(self, table: str, columns: list[str] | None = None) -> pd.DataFrame | None:
         """Load a DB table, returning None when it is absent/empty (so every downstream feature
         builder keeps its 'optional source' semantics). `columns` projects to only the needed
-        columns (a big memory saving on the tall tables — institutional_holdings ~20M rows, etc.);
+        columns (a big memory saving on the tall tables — sec13f_hr ~20M rows, etc.);
         absent columns are dropped from the projection so a schema gap never crashes the load."""
         if columns:
             try:                                      # keep only columns that actually exist
@@ -390,7 +390,7 @@ class StepBuildCube(Step):
             self._log.warning("No attention data -> Wikipedia/Google-Trends features "
                               "skipped (run fetch_wiki_pageviews / fetch_google_trends).")
 
-        self.institutional = self._load_or_none("institutional_holdings")
+        self.institutional = self._load_or_none("sec13f_hr")
         if self.institutional is None:
             self._log.warning("No 13F holdings -> institutional-ownership features "
                               "skipped (run fetch_13f).")
@@ -663,7 +663,7 @@ class StepBuildCube(Step):
         each weighted by its roster rank, layered ON TOP of the all-filer institutional
         features. Reads the roster JSON; skipped if it has not been built. MEMORY-SAFE:
         reads ONLY the roster managers' 13F rows (a handful of CIKs) via
-        `load_superinvestor_holdings`, never the whole ~20M-row institutional_holdings table."""
+        `load_superinvestor_holdings`, never the whole ~20M-row sec13f_hr table."""
         roster = self._load_superinvestors()
         if not roster:
             self._log.warning("No superinvestors roster JSON -> elite 13F features "

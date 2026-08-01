@@ -1,104 +1,115 @@
-## Risk zones — ask before editing
+# CLAUDE.md
 
-| File / directory | Why it's a risk zone |
+## Risk Zones (Ask Before Editing)
+
+| File / Directory | Risk Reason |
 |---|---|
-| `src/context.py` | Imported by every step class — changes cascade everywhere |
-| `src/utils/step.py` | Base class for all steps — changes break all inheritors |
-| `src/constants/*.py` | Renaming any constant breaks all downstream references |
-| `configs/*.yaml` | Structural changes must be mirrored in all consuming code |
-| `src/data_store/*`, `sql/schema.sql` | DB access layer + DDL — a table/PK rename cascades to every read/write |
-| `data/` artifacts & the Postgres volume | Model/plot files, `sec_bulk_cache/` JSON, and the DB volume — overwriting or dropping is not recoverable |
+| `src/context.py` | Global pipeline context — changes cascade everywhere |
+| `src/utils/step.py` | Base class for all steps — breaks all inheritors |
+| `src/constants/*.py` | Global literals — breaking renames cascade downstream |
+| `configs/*.yaml` | Schema changes must be mirrored in consuming code |
+| `src/data_store/*`, `sql/schema.sql` | DB layer & DDL — schema renames affect all reads/writes |
+| `data/` & Postgres Volume | Non-recoverable model artifacts, caches, and DB volume |
 
-For any of the above: propose the change and wait for approval before editing.
-
----
-
-## Code structure (`stock_pick_strat/`)
-
-The pipeline is a chain of `Step` classes (base: `src/utils/step.py`), each with a
-`run()`; `main.py` wires them. **All tabular data lives in PostgreSQL** (docker-compose
-+ named volume) and is accessed via `context.store` (`DataStore`) — parquet is retired.
-
-- `src/context.py` — `Context`: config, logging, env, `.store` (DB), `.paths` (non-tabular artifacts only).
-- **Ticker universe = single entry point.** Every step resolves which names to analyse from the `sp500_tickers` table via `src/utils/universe.py::load_universe_tickers(context)`. Extraction seeds it via the S&P 500 scraper only when empty (or `data_extract.refresh_universe: true`), then fetches ONLY those names; peers and the cube build **only** for the universe; modelling/backtest inherit it through the cube. To switch index (e.g. Russell 1000) just `store.replace("sp500_tickers", new_df)` — no step code changes. Table name stays `sp500_tickers` regardless of what fills it.
-- **`other_tickers` are market/macro price series, NOT the universe** (SPY benchmark + ^VIX/oil/gold/FX). They are fetched OHLCV-only via `fetch_market_prices` (no dividends/fundamentals/behavioral) into `prices` in the market/macro pull, purely so the cube can read the market-beta benchmark + commodity/currency factors. They are never in the equity universe, so no sub-step builds features on them (VIX also comes from FRED `macro`).
-- `src/constants/constants.py` — global literals (date formats, SEC URLs).
-- `src/data_store/` — DB layer: `store.py` (`DataStore`: `load` / `save` upsert / `replace` / `ensure_columns` / `existing_dates`), `schema_registry.py` (logical table → PK + incremental date col), `schema_sql.py` (generates `sql/schema.sql`), `io.py`.
-- `src/data_extract/` — `StepExtractAllData` super-step → 4 sub-steps: **prices** (prices+dividends, short interest, fails-to-deliver [SEC FTD → `fails_to_deliver`], 13F), **fundamentals** (SEC companyfacts history, earnings surprises → historical forward P/E, macro), **structure** (employees, DEF 14A LLM governance/executive-pay; both discover filings on demand via `edgar_fillings.list_filings`), **behavioral** (Wikipedia, Google Trends, earnings-call transcripts [→ `earnings_call_sections`, via `fetch_earnings_calls`: the FREE MIT HuggingFace dataset `kurry/sp500_earnings_transcripts` (2005-2025, 33k calls / 685 cos, full `content` + speaker-segmented `structured_content`) is the deep-history BACKBONE (`fetch_hf_transcripts.py`: one-time ~1.8GB parquet download cached under `call_transcripts/`, read in batches → sections via the shared `split_prepared_qa`, participants from `structured_content`); the RECENT gap (past the dataset's ~2025 cut) is filled by a CHAIN of sources, cheapest first, off **ONE gap definition**: `utils_missing_quarters.py::missing_quarters_by_ticker` is the single source of truth for `{ticker: [missing quarters]}` (required = the quarter after the HF horizon → the latest quarter the ticker has ACTUALLY reported per `earnings_surprises`, minus what is on disk / in `earnings_call_sections` / in the fool JSON index; `NO_EARNINGS_CALL_TICKERS` always empty). `download_earnings_calls` derives it ONCE — it scans the 1.8GB HF parquet, so re-deriving per source is both slow and a chance for two sources to disagree — then: (1) **Roic AI** `fetch_roic_transcripts(context, missing=…)` (clean JSON API, free tier 5 req/min) returns `RoicResult(saved, filled)`; (2) `remaining_after(missing, filled)` subtracts what Roic stored; (3) **Motley Fool LAST RESORT** per-ticker QUOTE-PAGE discovery `build_transcript_index_by_ticker(context, missing=…)` (`fool.com/quote/{exchange}/{ticker}/` lists a name's recent transcript URLs with exact date+slug baked in — MF 404s on any constructed URL, so URLs can't be derived from (ticker,quarter); tries nasdaq→nyse; ONE request per ticker WITH a gap and none at all for a complete name — that targeting is the 429 fix; UNCAPPED, complete since `recent_since`=2025-01-01). Both source functions accept `missing=None` to compute it themselves, so each stays usable standalone (CLI / tests). The legacy global-feed crawl `build_transcript_index` is kept as an optional fallback (`use_global_crawl=True`) — capped ~500 pages, so partial; it stops on true convergence or the `history_years` horizon. Anti-429 transport is the SHARED `src/utils/polite_http.py` (`http_get`/`get_text`/`get_json`): rotates a REAL browser impersonation (curl_cffi `impersonate`, coherent UA+TLS+headers) per request, honours `Retry-After`, backs off w/ jitter and ratchets a PER-HOST slowdown after each 429 (one host's throttle never slows another), optional bring-your-own proxy via `PEA_SCRAPE_PROXY`/`HTTPS_PROXY` (no anonymous-proxy pools — cooperate with the rate limit, don't evade). Used by the MF fetcher AND `fetch_wiki_pageviews` (which was previously unprotected); `fetch_google_trends` keeps its bespoke cookie/token client but shares `resolve_proxy`. Quote-page discovery saves `transcript_index.json` DYNAMICALLY per ticker (resume-safe across throttling). All sources parse into the SAME sections (full/prepared_remarks/qa/participants) via `split_prepared_qa`; incremental + deduped by (ticker,quarter). `ingest_all_earnings_calls` is the ingest-stage entry point for EVERY downloaded source (HF parquet + MF HTML) — what the DAG's `ingest-earnings-calls` task and the CLI both call]). Fetchers live under `utils/{prices,fundamentals,structure,behavioral,common}/`. **Shared extraction plumbing lives in `utils/common/`, one definition each:** `bulk_cache.py` (`cache_dir` — the module owns that name, so every caller stores the result in a variable called `cache`; `ensure_zip` streams to `.part` and renames only on success; `read_zip_member` / `read_zip_members` / `read_zip_text` all self-heal by DELETING a corrupt archive so it re-downloads; `ingested_periods`, `quarter_periods`) and `sec_utils.py` (`sec_get` + the thread-safe ≤10 req/s limiter, `today_iso`, `meta_path` / `load_extract_meta` / `save_extract_meta`, `seen_accessions`, `existing_filings` — the (accessions, per-ticker max filing_date) pair every per-filing fetcher needs to resume, `load_cik_mapping`, `load_/save_processed_universe`). Plus three **SEC bulk data sets** (entry points `fetch_insider_transactions` / `fetch_financial_statements` / `fetch_financial_notes`, all `(context, tickers)`): **insider transactions** (Forms 3/4/5 → `insider_transactions`), **Financial Statement Data Sets** (primary-statement num/sub XBRL → `pension_facts`), and **Financial Statement & Notes Data Sets** (adds the FOOTNOTE facts: numeric → `notes_num` [undimensioned `dimn==0` pension detail: PBO, plan assets, ABO, service cost, contributions, discount rate], and narrative TEXT → `notes_text` [high-signal notes, stored raw for later embedding/sentiment]). Each caches its zips under `data/sec_{financial_statements,financial_notes}/` (insider under `sec_bulk_cache/`) and is incremental by source period (skip periods already in the DB; re-parse cached zips only when the ticker universe grows, tracked via a `<table>_universe.json` sidecar). The notes sets are ~380MB/file (rolling quarterly `YYYYqQ` ↔ monthly `YYYY_MM`), scoped by the dedicated `data_extract.notes_years_history` knob (~26GB at 15y). Downstream: `pension_facts` + `notes_num` feed the off-BS pension leverage / footnote funded-status features, `insider_transactions` feeds the insider-trading cube signal (`insider_features.py` → `comp_insider`). Also in **prices**, after 13F: `fetch_superinvestors.build_superinvestors_json(context, top_n=…)` scrapes the curated Dataroma superinvestor roster, resolves each manager to its 13F CIK (fuzzy-matched against cached `SUBMISSION.tsv` filer names + `SUPERINVESTOR_CIK_OVERRIDES`), ranks the top-N by 13F AUM, rank-weights them, and writes the reproducible subset JSON `data/superinvestors/superinvestors.json` (best-effort; a Dataroma failure never breaks extraction). Also in **prices**: `fetch_macro_assets` (`utils/prices/fetch_macro_assets.py`) pulls the LONG-HISTORY (since ~1995) multi-asset **allocation** series into the `macro_asset_prices` table (one row per date, no ticker) — a HYBRID source because FRED's API no longer serves a broad daily S&P or gold: **FRED** for `yield_10y` (DGS10 → reconstructed `bond_10y_tr` total-return index), `cash_rate` (DTB3), `fx_usdeur` (DEXUSEU) and the `vix` **regime signal** (VIXCLS); **yfinance** for `equity_tr` (SPY, total-return), `gold` (GC=F) and `energy` (XLE energy-equity ETF — the no-futures commodity/inflation-shock sleeve). Scoped by its own `data_extract.macro_asset_years_history` knob; feeds the long-book + trend strategy sleeves (`src/modelling/{long_book,trend}` + `src/strategies`) only, never the equity universe or cube.
-- `src/data_peers/` — `StepDeducePeers` (return-correlation + OpenAI-embedding peers).
-- `src/data_aggregate/` — `StepBuildCube`: peer-relative feature panels. **The four primitives every panel builder needs live in `utils/panel.py`** (`_ratio`, `_winsorize_xs`, `_peer_relative`, `build_peer_relative_panel`) — a pandas/numpy-only LEAF module. They used to sit in `fundamental_features.py`, which made that 1500-line module a dependency of all eleven other builders and created a real import cycle (`earnings_features` imported `_ratio` from it at module level while it imported `ntm_ttm_eps` back *inside a function body* to dodge the cycle). New shared panel maths goes in `panel.py`; fundamentals-specific maths stays in `fundamental_features.py`. **Every panel is merged through `StepBuildCube._merge_panel`, which raises `FeatureCollisionError` if two panels emit the same feature name** — a plain key-merge silently renamed both sides to `<name>_x` / `<name>_y` (20 such columns reached the live cube), so exactly ONE panel owns each feature name (`interest_coverage`, `net_debt_to_ebitda`, `gross_profitability`, `cash_conversion_cycle`, `sbc_intensity` belong to `fundamental_features.py`, not `sector_features.py`). **Sector-specific KPIs are scoped by GICS, not by tag presence** — `utils/sector_gates.py` (`row_gate` / `family_tickers` / `mask_columns`) reads `SECTOR_KPI_SCOPE` in `src/constants/constants.py` and fails CLOSED for a row with no `sector` / `industry_group`; tag presence is only an availability test on top. **ONE definition of debt / net debt / invested capital** lives in `utils/capital.py` (`borrowings` / `capitalized_leases` / `liquid_assets` / `total_debt` / `net_debt` / `invested_capital` / `off_balance_sheet_obligations`); both the row-level and the daily layer call it through a `get(field)` accessor, so a leverage or ROIC figure can never differ between panels again. Leases count as debt AND raise invested capital; `commercialPaper` is never added on top of `shortTermDebt` (it is one of its candidates). Panels: fundamental [incl. footnote pension: `pension_funded_ratio`, `pbo_to_mcap`, `pension_underfunding_to_mcap` from `notes_num`], sector KPIs, forward valuation, earnings, governance/executive-pay [from `def14a_llm`, which is first passed through `def14a_impute.py::impute_def14a` clean-on-read: deduces MISSING cells only — CEO total-comp↔6 SCT components, `pct_technology_directors`↔`n_technology_directors`/`board_size`, `n_directors`↔`board_size`, `median_employee_pay`↔`ceo_total_comp`/`ceo_pay_ratio`, and per-ticker temporal gap-fill between two filled years — never overwriting an extracted value; the raw table is untouched], employee, dividend, attention, institutional [all-filer 13F], superinvestor [`superinvestor_features.py`: the elite Dataroma-roster subset of 13F, each manager weighted, → weighted buy/sell-evolution features `f_super_*`], short-interest, earnings-call sentiment/text [`earnings_call_features.py`: local FinBERT-tone (`src/utils/nlp_sentiment.py`, GPU-capable, curl_cffi model mirror for the corporate proxy) + Loughran-McDonald uncertainty (`src/utils/text_metrics.py`) over `earnings_call_sections`, scored once per call into the `earnings_call_sentiment` cache → point-in-time `f_ec_*` tone / tone-Δ / Q&A-gap / uncertainty / vocab-novelty / length-Δ. PLUS `earnings_call_embeddings.py`: an OpenAI-embedding layer (`src/utils/openai_embeddings.py`, cheap `text-embedding-3-small`, incremental cache `earning_calls_embedding` keyed PER SPEAKER TURN [ticker·quarter·seq] — each question/answer/prepared turn's text+person+tag+exchange_idx+embedding+model+run-timestamp; the Q&A-coherence + drift KPIs are derived from the turns at build time) that splits the Q&A into (question, answer) exchanges → `f_ec_qa_coherence_mean`/`_std` (cosine of question vs answer — answer directness), `f_ec_n_qa`, and quarter-to-quarter embedding drift `f_ec_qa_qq_sim` / `f_ec_prep_qq_sim` (narrative repetition vs shift); no-op without an OpenAI key]) → `cube` table.
-- `src/modelling/` — one subfolder PER STRATEGY (the model / signal generation), each with its own `utils/`:
-  - `long_short/` — `step_train.py` (`StepModelling`): trains the per-horizon cross-sectional ensemble (`elasticnet` + LightGBM `lgbm` + `random_forest`; config `model:` / `train:` + hyperparams in `configs/models/`) → saves model artifacts + `predictions`, `cube_signal`. Its `utils/` (was `utils_model/`: `model.py`, `baselines.py`, `diagnostics.py`, `shap_analysis.py`) holds `ensemble_predict`, `member_model_path`, `BOOSTER_MEMBER_KINDS`, etc. **Per-run diagnostics** (`model.diagnostics` in `modellling.yml`, on by default) go to `data/output/diagnostics/<run_stamp>/`: per horizon `h<H>/` = `kpis.json` (CV mean_IC / IC_IR ensemble + per member, blend weight, rows/tickers/days, OOS IC mean + hit-rate) + `ic_over_time.png/.csv`, and per BOOSTER member a folder with `pdp/`, `shap_values.parquet` (the RAW per-row SHAP matrix keyed by date+ticker — the mean|SHAP| ranking cannot answer "why is this name long today"), `shap_importance.png/.csv` and `feature_importance.xlsx`; plus a run-level `kpis.json` + flat `kpis.csv` (one row per horizon x member). **Tree members are resolved by TYPE (`isinstance(m, lgb.Booster)`), never by name** — `_horizon_diagnostics` used to hardcode `.get("lightgbm")`, so renaming the member to `lgbm` in `model.ensemble` silently disabled every diagnostic with no error; `random_forest` is a Booster too (`boosting='rf'`) and is now diagnosed as well. `shap` is a DECLARED dependency (pyproject + `requirements-airflow.txt`) because its absence in the Airflow venv silently dropped the SHAP artifacts.
-  - `trend/` — `signal.py::trend_book`: the DIRECTIONAL long/short vol-scaled time-series-momentum book on the `macro_asset_prices` universe (equity/gold/energy/bond/fx) — the positive-skew "crisis-alpha" diversifier; `utils/trend_signal.py` keeps the value/carry/combine/class-budget blocks.
-  - `long_book/` — `allocation.py`: the long-only multi-asset ERC/inverse-vol allocation + long-only trend overlay + VIX risk-on tilt + responsive leverage (the "model" is the risk-parity target weights; no ML).
-  Shared, cross-package-safe building blocks live in `src/utils/`: `trend.py` (`daily_vol`, `combined_forecast`, `vol_scaled_positions`, `sleeve_returns`, `trend_scale_long_only`) and `risk_parity.py` (`erc_weights`, `risk_contributions`, `cov_window`/`ewma_cov`, `base_weights`, `risk_on_score`, `series_metrics`, `daily_frame`) — so modelling / strategies / portfolio reuse ONE definition without cross-importing each other's packages.
-- `src/strategies/` (was `post_processing/`) — one SELF-CONTAINED strategy STEP per sleeve, all sharing the `base.Strategy` interface `run(inputs: PortfolioInputs) -> StrategyResult`. Every step follows the SAME flow: read its `configs/strategy/strategy_*.yml` → read the `PortfolioInputs` handed down by the portfolio (capital, target vol, window, fees) → read data → **predict** the underlying signal → **construct**/optimize the book per config → per-day P&L / positions / metrics. No strategy depends on another step.
-  - `step_ls.py` (`LongShortStrategy`, `"ls_equity"`): market-neutral equity L/S. Loads the trained ensemble artifacts + a **projected** cube read (feature cols + target, `date >= train_end` OOS window), scores each horizon's ensemble → per-name combined z-signal, then the dollar/beta/sector-neutral inverse-variance optimizer (`utils/strategies_opt.py`, `market_weight=0` → pure alpha). OOS-only (starts at the model `train_end`).
-  - `step_long_book.py` (`LongBookStrategy`, `"long_book"`) → `modelling/long_book/allocation.py`.
-  - `step_trend.py` (`TrendCTAStrategy`, `"trend_cta"`) → `modelling/trend/signal.py` (trailing-vol-scaled to the portfolio's sleeve target).
-  - `utils/` — `strategies_opt.py` (L/S optimizer + `regime_vol_scale`), `metrics.py`, `plot_analysis.py`, `accuracy.py`, `strategies.py` (legacy decile baseline).
-  - `analysis/` — per-strategy analysis/plots (gated by `portfolio.plot_analysis`, saved under `data/output/<sleeve>/analysis/`): `ls_analysis` (day-by-day cross-sectional IC + IC_IR, rolling Sharpe/maxDD, **market-neutrality**: rolling beta-to-SP & corr-to-energy), `long_book_analysis` (asset-class correlation over time + overall), `trend_analysis` (crisis-alpha vs SP, net long/short exposure, rolling Sharpe/DD). Shared analytics in `analysis/common.py`.
-- `src/portfolio/` — two steps over the SAME sleeve blend:
-  - `StepPortfolio` (`step_portfolio.py`): reads `configs/portfolio.yml`, runs each configured sleeve via `Strategy.run(PortfolioInputs)`, blends their daily return streams by risk-parity/ERC across sleeves (= **dynamic $-allocation** per sleeve, via `src/utils/risk_parity.base_weights`) + one GLOBAL vol target / leverage (`utils/blend.py::blend_to_vol_target`), and reports return/vol/**Sharpe PER STRATEGY vs the global portfolio** + a simple SP-hold. `analysis.py` plots the sleeve-correlation evolution (per pair + overall). **Replaces the retired `StepBacktest` / `StepAllocationBacktest` / `StepTrendAssetClass` / `StepPortfolioBacktest`.**
-  - `StepStrategyMoves` (`step_strategy_moves.py`, CLI `portfolio strategy-moves`): the **live trading ledger** → the `strategy` table. Reuses `StepPortfolio.load_sleeves()` + `blend()` (so the ledger's $ allocation is the same one the backtest reports), then per sleeve RE-SIZES its traded weight panel by `erc_weight(t) × leverage(t)` and rebuilds the share-accurate blotter on the scaled panel. **Re-size the PANEL, never the resulting dollars** — shares are `weight·capital/price`, so with a time-varying multiplier the shares TRADED (a difference of share counts) are not proportional to it, and scaling $ would misreport both shares and fees. Each sleeve's own fee/spread is charged, resolved via `Strategy.config_key` (the sleeve name doesn't map mechanically to the config key: `ls_equity` → `strategy_ls`). Recomputes the WHOLE ledger each run and upserts on `(trading_day, sleeve, ticker)` — a BUY row only learns its exit price + P&L on the day its position closes, so past rows must be rewritten; that also makes the step self-healing after a missed day or a retrain.
-- **The trading ledger's round-trip matching** lives in `src/strategies/utils/positions.py::round_trip_ledger`: FIFO lot matching over the blotter, signed so shorts (opened by a SELL, closed by a BUY) and position FLIPS (a sell that closes longs and opens a short in one move) are handled by the same code. Two independently-summable P&L views — `pnl` = realized net P&L of the position OPENED by that row (NULL while open, filled the day it closes; `SUM` = total realized) and `pnl_closed_today` = P&L booked BY that move (`SUM` = the same total, attributed to the day the money was made). Summing BOTH double-counts. Fees are charged pro-rata to the closed share of each leg; price-less legs (long_book's `cash` residual) are dropped — they are an accounting residual, not an order.
-- **Config layout for the strategy/portfolio stack:** `configs/strategy/{strategy_ls,strategy_trend,strategy_long_book}.yml` (per-sleeve run params) + `configs/portfolio.yml` (sleeve set + global vol/leverage/capital/fees/cov_mode/window). Model hyperparams stay in `configs/models/`; training window in `modellling.yml` (`model:`/`train:`).
-- Infra: `docker-compose.yml` (Postgres 16 + volume), `Dockerfile`, `sql/schema.sql`, `scripts/` (schema generator, parquet→DB migrator).
+> **Rule:** Always propose changes and obtain approval before editing risk zone files.
 
 ---
 
-## Data / DB conventions
+## Architecture & Code Structure (`stock_pick_strat/`)
 
-- **DB-only I/O.** Read/write tabular data through `context.store` (`load` / `save` / `replace` / `existing_dates`), never parquet. New DataFrame columns auto-add to the table via `ensure_columns`. Only non-tabular artifacts (models, plots, `sec_bulk_cache/*.json`, filing text) stay on disk under `context.paths`.
-- **Point-in-time + incremental.** Fetchers resume from the DB's max date per entity, save **per entity** (an interrupted run must never lose expensive work — LLM / 13F / API calls), and lag by filing date so features are leak-free.
-- **Cache large downloads** to disk (companyfacts JSON, 13F zips) and only re-download when missing.
-- **Coalesce alternative XBRL tags** — union across candidate tags per period, don't take the first present (filers split concepts by era/scope: `Revenues`↔`RevenueFromContractWithCustomer`, `NetIncomeLoss`↔`ProfitLoss`, equity with/without NCI).
-- **Booleans → numeric flags** (1.0/0.0) so they are usable as model features.
+Pipeline executes sequential `Step` classes (base: `src/utils/step.py`) wired by `main.py`. **All tabular data lives in PostgreSQL** accessed via `context.store` (`DataStore`).
+
+### Core Infrastructure
+- `src/context.py` — `Context`: configs, logging, `.store` (DB access), `.paths` (artifact paths).
+- `src/constants/constants.py` — Global literals (dates, SEC URLs, sector scope thresholds).
+- `src/data_store/` — `store.py` (`DataStore`: `load`, `save`, `replace`, `ensure_columns`, `existing_dates`), `schema_registry.py` (PKs & date cols), `schema_sql.py` (`sql/schema.sql`), `io.py`.
+
+### Universe & Macro Assets
+- **Equity Universe (`sp500_tickers`):** Resolved via `src/utils/universe.py::load_universe_tickers(context)`. Seeded by S&P 500 scraper if empty or `refresh_universe: true`. All peer/cube/modeling steps consume this universe. Index changes only require updating rows in `sp500_tickers`.
+- **Market/Macro Series (`other_tickers`):** SPY, VIX, oil, gold, FX fetched as OHLCV into `prices` via `fetch_market_prices`. Never added to the equity universe.
+
+### Pipeline Steps (`src/`)
+
+#### 1. Data Extraction (`src/data_extract/` via `StepExtractAllData`)
+- **Prices (`utils/prices/`):** Prices, dividends, short interest, SEC FTD (`fails_to_deliver`), 13F, superinvestors (`fetch_superinvestors` → `data/superinvestors/superinvestors.json`), multi-asset macro series (`fetch_macro_assets` → `macro_asset_prices`).
+- **Fundamentals (`utils/fundamentals/`):** `fetch_fundamentals_edgar.py` → `fundamentals_facts` (accession-grain raw facts) → `fundamentals_derive.py::rebuild_fundamentals_history` → `fundamentals_history` (PK: `ticker, as_of`). Period resolution in `fundamentals_periods.py`; diagnostics in `fundamentals_validation.py`.
+- **Structure (`utils/structure/`):** DEF 14A governance/executive pay (`def14a_llm`), 8-K events (`fetch_8k_edgar.py` → `sec_8k`), 13D filings (`fetch_13d_edgar.py` → `sec_13d`, PK: `ticker, accession_number, rp_seq`).
+- **Behavioral (`utils/behavioral/`):** Wikipedia, Google Trends, earnings call transcripts (`earnings_call_sections`). Deep history backbone: HuggingFace `kurry/sp500_earnings_transcripts`. Recent gap filler: `utils_missing_quarters.py` → Roic AI → Motley Fool quote pages. HTTP transport: `src/utils/polite_http.py` (`curl_cffi` rotation, rate limiting).
+- **Shared Plumbing & Bulk SEC (`utils/common/`):** `bulk_cache.py` (zip caching & self-healing), `sec_utils.py` (rate limiting, state), `form_registry.py` (`FORM_REGISTRY`). Bulk datasets: insider (`insider_transactions`), financial statements (`pension_facts`), notes (`notes_num`, `notes_text`).
+
+#### 2. Peer Deduction (`src/data_peers/`)
+- `StepDeducePeers`: Return correlation and OpenAI embedding-based peer groups.
+
+#### 3. Feature Aggregation (`src/data_aggregate/`)
+- `StepBuildCube`: Merges feature panels into the `cube` table.
+- **Primitives (`utils/panel.py`):** `_ratio`, `_winsorize_xs`, `_peer_relative`, `build_peer_relative_panel`.
+- **Collision Protection:** `_merge_panel` raises `FeatureCollisionError` on duplicate feature names across panels.
+- **Sector Gating:** Sector KPIs scoped by GICS via `utils/sector_gates.py` (`SECTOR_KPI_SCOPE` in `constants.py`).
+- **Capital Standardization:** Debt/net-debt/invested-capital calculations centralized in `utils/capital.py`.
+- **Panels:** Fundamental, sector, forward valuation, earnings, governance (`def14a_impute.py`), employee, dividend, attention, institutional 13F, superinvestors (`superinvestor_features.py`), short interest, earnings call sentiment & embeddings (`earnings_call_features.py`, `nlp_sentiment.py`, `openai_embeddings.py`).
+
+#### 4. Modelling (`src/modelling/`)
+- **Long/Short (`long_short/`):** `step_train.py` (`StepModelling`) trains cross-sectional ensembles (ElasticNet + LightGBM + RandomForest). Output diagnostics to `data/output/diagnostics/<run_stamp>/`. Tree boosters resolved via `isinstance(m, lgb.Booster)`.
+- **Trend (`trend/`):** `signal.py` (`trend_book`) computes directional time-series momentum on `macro_asset_prices`.
+- **Long Book (`long_book/`):** `allocation.py` executes multi-asset ERC/risk-parity allocation with trend & VIX overlays.
+- **Shared Utilities:** Reusable signal/math modules in `src/utils/trend.py` and `src/utils/risk_parity.py`.
+
+#### 5. Strategies (`src/strategies/`)
+Self-contained steps implementing `base.Strategy` interface (`run(inputs: PortfolioInputs) -> StrategyResult`):
+- `step_ls.py` (`LongShortStrategy`, `"ls_equity"`): Out-of-sample prediction + dollar/beta/sector-neutral optimization (`utils/strategies_opt.py`).
+- `step_long_book.py` (`LongBookStrategy`, `"long_book"`): Long-only allocation strategy.
+- `step_trend.py` (`TrendCTAStrategy`, `"trend_cta"`): Vol-scaled trend strategy.
+- **Analytics (`analysis/`):** Strategy-specific performance plots in `data/output/<sleeve>/analysis/`.
+
+#### 6. Portfolio & Execution (`src/portfolio/`)
+- `StepPortfolio` (`step_portfolio.py`): Blends sleeve return streams using risk-parity (ERC) weights (`utils/blend.py`) with a global volatility target.
+- `StepStrategyMoves` (`step_strategy_moves.py`): Generates the live trading ledger (`strategy` table). Re-sizes the traded weight panel (`erc_weight × leverage`) before calculating share quantities. FIFO lot matching in `src/strategies/utils/positions.py::round_trip_ledger`.
+
+### Config Hierarchy
+- Strategy configs: `configs/strategy/{strategy_ls,strategy_trend,strategy_long_book}.yml`
+- Portfolio config: `configs/portfolio.yml`
+- Model hyperparams: `configs/models/` & `modellling.yml`
 
 ---
 
-## Workflow for new features
+## Data & DB Conventions
 
-1. Check `src/constants/*.py` before naming anything — add there first if missing
-2. Check `src/utils/` for existing helpers before writing a new one
-3. Implement the feature
-4. Write the test alongside the implementation — not after
-5. Sanity-check real-data edge cases before submitting — not just synthetic tests: missing / sparse / NaN inputs, TTM warmup, metrics that are N/A for a sector, alternative XBRL tags. Prove data vs extraction issues against the actual source when values look missing.
-6. Run `pytest tests/path/to/new_test.py::test_function -v -s`
-7. Show me **only the output of the new test**, not the full pytest summary
-8. The test output must include the printed sanity check conclusion — if it doesn't, the work is not done
+- **Database I/O:** Read/write tabular data exclusively via `context.store` (`load`/`save`/`replace`/`existing_dates`). Schema auto-expands via `ensure_columns`. Keep non-tabular artifacts (models, plots, raw JSONs) in `context.paths`.
+- **Point-In-Time & Incremental:** Save work per entity to prevent data loss. Lag features by filing date to prevent forward-looking bias.
+- **SEC & XBRL Handling:** Coalesce alternative XBRL tags across candidate lists per period instead of picking the first present. Convert boolean flags to float indicators (`1.0`/`0.0`).
 
 ---
 
-## How to communicate results
+## Development Workflow & Rules
 
-- When a task is done: show the new test output + the printed sanity check conclusion
-- Do not show the full list of all passing tests — only the new ones
-- If a refactor touches existing tests, tell me which ones and why, but don't dump all output
-- For multi-step work: confirm each step before moving to the next
+### Workflow for New Features
+1. Check `src/constants/*.py` for existing literal definitions before introducing new keys/columns.
+2. Check `src/utils/` for existing helpers.
+3. Implement feature and place cross-module utilities in `src/utils/`.
+4. Write unit test alongside the implementation.
+5. Sanity-check edge cases against real data (NaNs, sparse feeds, TTM warmups, sector exclusions).
+6. Run targeted test: `pytest tests/path/to/test.py::test_func -v -s`.
 
----
+### How to Communicate Results
+- Output ONLY the new test results along with the explicit printed sanity check conclusion.
+- Do NOT output full test suite summaries unless asked.
+- On refactorings, state affected tests and reasons concisely.
+- For multi-step tasks, confirm each step prior to proceeding.
 
-## What to do automatically
+### Guidelines & Directives
 
-- Always check `src/constants/*.py` before introducing a new column name or string key
-- Put global literals (date formats, SEC/API URLs, env-var keys, magic thresholds) in `src/constants/constants.py` — never hardcode them inline
-- After implementing a feature, propose the unit test before marking done
-- Log via `self._context.logger`, never `print()`
-- When writing a new config key, add it to the appropriate `configs/*.yaml`
-- When a helper is useful across folders, place it in `src/utils/` not inline
-- When a generic, reusable convention emerges from a request, **propose it and ask before adding it to this CLAUDE.md** — don't edit CLAUDE.md unprompted
-- Keep `CLAUDE.md`, `AGENTS.md`, and `README.md` in sync with the code: review them regularly and update them **in the same change** whenever the structure or conventions evolve (new step / table / package, moved module, new data source) — the `Code structure` section above must not drift
-- Always import packages at the start of the python file
-- When a function is used through different parts of the code, refactor and put the reusable function in utils
----
+#### MUST DO
+- Put all global literals (date formats, URLs, thresholds) in `src/constants/constants.py`.
+- Log strictly using `self._context.logger` (never `print()`).
+- Keep import statements at the top of Python files.
+- Place reusable functions in `src/utils/`.
+- Maintain synchronization between `CLAUDE.md`, `AGENTS.md`, and `README.md`.
+- Propose new conventions before updating `CLAUDE.md`.
 
-## What NOT to do
-
-- Do not replace OmegaConf with another config system
-- Do not restructure the Step inheritance pattern
-- Do not print, use logger.info from logging 
-- Do not cross-import between `src/` subfolders (e.g. data_extraction importing from modelling)
-- Do not hardcode strings or paths that belong in `src/constants/`
-- Do not reformat code unrelated to the current task
-- Do not say work is done without the printed sanity check conclusion in the test output
+#### MUST NOT DO
+- Do NOT replace OmegaConf.
+- Do NOT alter the `Step` inheritance architecture.
+- Do NOT cross-import between `src/` subfolders (e.g., `data_extract` importing from `modelling`).
+- Do NOT hardcode inline strings or file paths.
+- Do NOT reformat unrelated code.
+- Do NOT mark work as complete without including the printed sanity check conclusion in the test output.

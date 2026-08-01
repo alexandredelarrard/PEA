@@ -129,8 +129,8 @@ def test_source_column_projection_covers_builder_needs():
     for the parallel OOM). The projection MUST cover every column the builder requires — this test
     is the contract that guards against a projection dropping a needed column."""
     required = {  # columns each builder actually consumes from the table (the contract)
-        "institutional_holdings": {"cik", "period", "ticker", "shares", "value_usd",
-                                   "call_value", "put_value", "filing_date"},
+        "sec13f_hr": {"cik", "period", "ticker", "shares", "value_usd",
+                      "call_value", "put_value", "filing_date"},
         "insider_transactions":   {"ticker", "filing_date", "transaction_code", "value_usd"},
         "short_interest":         {"date", "ticker", "short_volume", "total_volume",
                                    "short_interest", "avg_daily_volume"},
@@ -146,15 +146,15 @@ def test_source_column_projection_covers_builder_needs():
     step = object.__new__(StepBuildCube)
     seen: dict[str, list | None] = {}
     step._load_or_none = lambda table, columns=None: seen.__setitem__(table, columns) or None
-    step._load_source("institutional_holdings")
+    step._load_source("sec13f_hr")
     step._load_source("fundamentals_history")             # not in the projection map
-    assert seen["institutional_holdings"] == StepBuildCube._SOURCE_COLUMNS["institutional_holdings"]
+    assert seen["sec13f_hr"] == StepBuildCube._SOURCE_COLUMNS["sec13f_hr"]
     assert seen["fundamentals_history"] is None            # small table -> loaded in full
 
     print("\n=== SANITY: source-column projection ===")
     for tbl in required:
         print(f"  {tbl:<24} -> {len(StepBuildCube._SOURCE_COLUMNS[tbl])} cols (covers builder needs)")
-    print("  institutional_holdings (~20M rows) drops call/put/cusip-era bloat; small tables load full. Validated.")
+    print("  sec13f_hr (~20M rows) drops call/put/cusip-era bloat; small tables load full. Validated.")
 
 
 if __name__ == "__main__":

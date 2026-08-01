@@ -101,7 +101,7 @@ an existing DB from legacy parquet (one-off): `python -m scripts.migrate_parquet
 Key tables (PK): `prices` (ticker,date) · `dividends` · `short_interest` ·
 `fundamentals_history` (ticker,as_of) ·
 `earnings_surprises` · `macro` (date) · `employees_history` ·
-`def14a_llm` (ticker,accession_number) · `institutional_holdings` · `cusip_ticker_map` ·
+`def14a_llm` (ticker,accession_number) · `sec13f_hr` · `cusip_ticker_map` ·
 `sp500_tickers` (ticker, + name/cik/sector/industry — also the ticker→CIK source) · `google_trends` ·
 `wiki_pageviews` · `ticker_embeddings` · `cube` (ticker,date,target_horizon) ·
 `predictions` · `cube_signal` · `macro_asset_prices` (date — long-history multi-asset

@@ -60,6 +60,17 @@ EXTRACT_TABLES: list[TableSpec] = [
     TableSpec("fundamentals_history", "fundamentals_history.parquet",
               ("ticker", "as_of"), "extract", date_col="as_of",
               date_type_cols=("as_of", "fiscal_end")),
+    # Accession-grain, amendment-aware raw fundamentals facts (edgartools per-filing
+    # XBRL walk). One row per (ticker, accession, field, fiscal period, duration
+    # shape); ORIGINAL and AMENDED (10-K/A, 10-Q/A) filings coexist as separate rows
+    # -- never overwritten -- so `fundamentals_derive.derive_fundamentals_history()`
+    # can answer "what was known as of date D" without ever exposing an amendment's
+    # value before its own filing date. `fundamentals_history` above is DERIVED from
+    # this table (unchanged shape/PK, so no existing consumer needs to change).
+    TableSpec("fundamentals_facts", "fundamentals_facts.parquet",
+              ("ticker", "accession_number", "field", "fiscal_year", "fiscal_period",
+               "duration_type"), "extract", date_col="filing_date",
+              date_type_cols=("filing_date", "period_start", "period_end")),
     TableSpec("earnings_surprises", "earnings_surprises.parquet",
               ("ticker", "earnings_date"), "extract", date_col="earnings_date"),
     TableSpec("macro", "macro.parquet", ("date",), "extract",
@@ -98,7 +109,11 @@ EXTRACT_TABLES: list[TableSpec] = [
     # tables with no seed file yet (created on first fetcher write via ensure_table)
     TableSpec("cusip_ticker_map", "cusip_ticker_map.parquet", ("cusip",), "extract",
               date_col=None, ticker_col="ticker"),
-    TableSpec("institutional_holdings", "institutional_holdings.parquet",
+    # Renamed from `institutional_holdings` to match the form-dispatch registry's
+    # logical name for 13F-HR (src/data_extract/utils/common/form_registry.py).
+    # Same bulk-quarterly grain/PK as before -- the rename is name-only, not a
+    # schema/grain change (13F is an all-filers bulk pull, no accession_number).
+    TableSpec("sec13f_hr", "sec13f_hr.parquet",
               ("cik", "period", "ticker", "cusip"), "extract", date_col="period"),
     TableSpec("def14a_llm", "def14a_llm.parquet", ("ticker", "accession_number"),
               "extract", date_col="as_of"),
@@ -142,16 +157,28 @@ EXTRACT_TABLES: list[TableSpec] = [
     TableSpec("earnings_call_sentiment", "earnings_call_sentiment.parquet",
               ("ticker", "quarter", "tag"), "extract", date_col="as_of",
               date_type_cols=("as_of",)),
-    # 8-K material-event item codes: one row per 8-K filing, keyed (ticker, accession). `items` is
-    # the raw comma-separated code string from the EDGAR submissions JSON; incremental by filing_date.
-    TableSpec("sec_8k_items", "sec_8k_items.parquet",
+    # 8-K events: one row per 8-K filing, keyed (ticker, accession). `items` is the raw
+    # comma-separated item-code string (structured, ~100% fill); `has_earnings`/
+    # `has_press_release` come from edgartools' typed `CurrentReport` (best-effort --
+    # null, not False, when that parse fails). Incremental by filing_date. Rebuilt on
+    # edgartools per-filing retrieval (fetch_8k_edgar.py) -- was fetch_8k_items.py's
+    # submissions-JSON-only approach (item codes, no CurrentReport flags).
+    TableSpec("sec_8k", "sec_8k.parquet",
               ("ticker", "accession_number"), "extract", date_col="filing_date",
-              date_type_cols=("filing_date",)),
-    # SC 13D activist filings + amendments about the subject company (event-driven catalyst); one
-    # row per filing, keyed (ticker, accession); incremental by filing_date.
+              date_type_cols=("filing_date", "period_of_report")),
+    # SC 13D activist filings + amendments: one row PER REPORTING PERSON per filing,
+    # keyed (ticker, accession, rp_seq) -- a single 13D can have multiple co-filers (e.g.
+    # a fund + its GP), and `rp_seq` (0-based position in the filing) is used rather than
+    # CIK since a reporting person without an assigned CIK is common. Rebuilt on
+    # edgartools' typed `Schedule13D` object (fetch_13d_edgar.py) -- was fetch_13d.py's
+    # event/date-only approach (filer name and % owned were an unbuilt "later
+    # enhancement"). Numeric ownership fields (voting/dispositive power, percent_of_class)
+    # are NULL, not 0, whenever `has_structured_data` is false (SC 13D has no XBRL-grade
+    # schema; the underlying parser defaults those fields to 0 when it can't find
+    # structured content, and publishing that as if real would claim false 0% stakes).
     TableSpec("sec_13d", "sec_13d.parquet",
-              ("ticker", "accession_number"), "extract", date_col="filing_date",
-              date_type_cols=("filing_date",)),
+              ("ticker", "accession_number", "rp_seq"), "extract", date_col="filing_date",
+              date_type_cols=("filing_date", "date_of_event")),
     # 10-K Item 1A (Risk Factors) + Item 7 (MD&A) raw text; one row per (ticker, accession, section);
     # incremental by filed date. Feeds the embedding/drift feature layer.
     TableSpec("filing_risk_text", "filing_risk_text.parquet",

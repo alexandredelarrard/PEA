@@ -74,8 +74,9 @@ def test_freshness_flags_stale_daily_and_tolerates_lagged_quarterly():
         "notes_text":           {"filed": today - pd.Timedelta(days=16)},
         "insider_transactions": {"filing_date": today - pd.Timedelta(days=30)},
         "fundamentals_history": {"as_of": today - pd.Timedelta(days=80)},
+        "fundamentals_facts":   {"filing_date": today - pd.Timedelta(days=80)},
         "earnings_surprises":   {"earnings_date": today - pd.Timedelta(days=80)},
-        "institutional_holdings": {"period": today - pd.Timedelta(days=120)},
+        "sec13f_hr":            {"period": today - pd.Timedelta(days=120)},
         "pension_facts":        {"filed": today - pd.Timedelta(days=80)},
         "earnings_call_sections": {"as_of": today - pd.Timedelta(days=40)},
         "employees_history":    {"as_of": today - pd.Timedelta(days=300)},
@@ -88,6 +89,7 @@ def test_freshness_flags_stale_daily_and_tolerates_lagged_quarterly():
     assert report["sources"]["prices"]["age_days"] == 1
     assert report["sources"]["macro"]["status"] == "stale"
     assert report["sources"]["fundamentals_history"]["status"] == "ok"      # 80d < 140 quarterly
+    assert report["sources"]["fundamentals_facts"]["status"] == "ok"        # 80d < 140 quarterly
     assert report["sources"]["employees_history"]["status"] == "ok"         # 300d < 460 yearly
     assert report["sources"]["def14a_llm"]["status"] == "missing_table"
     assert set(report["stale"]) == {"macro", "def14a_llm"}

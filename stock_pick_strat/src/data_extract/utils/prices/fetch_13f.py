@@ -150,7 +150,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     """Download (once, cached) the 13F data sets, split by holding type, map to
     tickers, keep the universe, and store.
 
-    INCREMENTAL: a quarter already ingested into `institutional_holdings` is skipped
+    INCREMENTAL: a quarter already ingested into `sec13f_hr` is skipped
     ENTIRELY (no re-download, no re-parse of the cached zip, no re-ingest) unless the
     ticker universe grew (then cached zips are re-parsed to back-fill new names). The
     CUSIP->ticker map is built only over the NEW quarters' cusips (and itself skips
@@ -161,8 +161,8 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     years_history = context.config.data_extract.years_history + 1
     cache = cache_dir(context, "SEC_13F_INSIDERS_DIR")
 
-    done = ingested_periods(context, "institutional_holdings", "quarter")
-    new_tickers = universe - load_processed_universe(cache, "institutional_holdings")
+    done = ingested_periods(context, "sec13f_hr", "quarter")
+    new_tickers = universe - load_processed_universe(cache, "sec13f_hr")
     if new_tickers:
         logger.info("13F: %d new/changed tickers -> re-parsing cached quarters", len(new_tickers))
 
@@ -187,8 +187,8 @@ def fetch_13f(context: Context) -> pd.DataFrame:
             "call_shares", "call_value", "put_shares", "put_value",
             "debt_prn", "debt_value", "other_value", "quarter"]
     if not quarter_frames:
-        save_processed_universe(cache, "institutional_holdings", universe)
-        logger.info("13F institutional_holdings already up to date (no new quarters).")
+        save_processed_universe(cache, "sec13f_hr", universe)
+        logger.info("13F sec13f_hr already up to date (no new quarters).")
         return pd.DataFrame(columns=cols)
 
     all_cusips = sorted(set().union(*(set(h["cusip"].unique()) for h in quarter_frames.values())))
@@ -200,9 +200,9 @@ def fetch_13f(context: Context) -> pd.DataFrame:
         out = out[out["ticker"].isin(universe)]
         if not out.empty:
             keep = out[[c for c in cols if c in out.columns]]
-            saved += store.save("institutional_holdings", keep)
+            saved += store.save("sec13f_hr", keep)
             saved_frames.append(keep)
-    save_processed_universe(cache, "institutional_holdings", universe)
-    logger.warning("Saved %d 13F holding rows across %d new quarter(s) to 'institutional_holdings'",
+    save_processed_universe(cache, "sec13f_hr", universe)
+    logger.warning("Saved %d 13F holding rows across %d new quarter(s) to 'sec13f_hr'",
                    saved, len(quarter_frames))
     return pd.concat(saved_frames, ignore_index=True) if saved_frames else pd.DataFrame(columns=cols)

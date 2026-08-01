@@ -2,11 +2,11 @@
 (src/constants/constants.py::CUSIP_TICKER_OVERRIDES + fetch_cusip_map).
 
 13F reports holdings by CUSIP, so an unresolved identifier makes a name INVISIBLE in
-`institutional_holdings` and in the superinvestor sleeve. `cusip_ticker_map` is built from
+`sec13f_hr` and in the superinvestor sleeve. `cusip_ticker_map` is built from
 OpenFIGI and records a miss PERMANENTLY, and OpenFIGI does not resolve CINS (a CUSIP whose
 first character is a LETTER encoding a foreign domicile) from the 13F feed. Measured on the
 live DB: 15,404 letter-prefixed rows in the map, ZERO resolved, and 34 of 500 universe names
-absent from institutional_holdings.
+absent from sec13f_hr.
 
 These tests pin the override table's integrity and that it wins over a cached miss.
 """
@@ -94,7 +94,7 @@ def test_overrides_win_over_a_cached_miss(monkeypatch, tmp_path):
     print(f"  map pre-seeded with {sample} as NULL misses (OpenFIGI returning nothing)")
     print(f"  after the build: {got}")
     print("  the ~30 foreign-domiciled S&P 500 names now resolve, so their 13F holdings reach "
-          "institutional_holdings and the superinvestor sleeve. Validated.")
+          "sec13f_hr and the superinvestor sleeve. Validated.")
 
 
 if __name__ == "__main__":

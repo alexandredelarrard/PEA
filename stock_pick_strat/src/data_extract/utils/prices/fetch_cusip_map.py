@@ -84,7 +84,7 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
     # below, which returns early when every requested cusip is already known. A miss is cached as
     # a NULL ticker and never retried, so an identifier OpenFIGI cannot resolve stays broken for
     # ever: measured on the live DB, 15,404 letter-prefixed rows mapped to ZERO tickers, hiding
-    # ~30 Irish / Bermudan / Swiss / Dutch S&P 500 names from institutional_holdings and the
+    # ~30 Irish / Bermudan / Swiss / Dutch S&P 500 names from sec13f_hr and the
     # superinvestor sleeve. `keep="last"` puts the override ahead of any cached row for the same
     # identifier. See CUSIP_TICKER_OVERRIDES for how each was recovered from the 13F INFOTABLE.
     overrides = pd.DataFrame({"cusip": [normalize_cusip(c) for c in CUSIP_TICKER_OVERRIDES],

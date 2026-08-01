@@ -15,7 +15,7 @@ def camel_to_snake(x: str) -> str:
 
 def pad_cik(x: object) -> str:
     """Canonical 10-digit zero-padded CIK (as stored in sp500_tickers /
-    institutional_holdings / the superinvestor roster JSON). Tolerates ints, '123',
+    sec13f_hr / the superinvestor roster JSON). Tolerates ints, '123',
     '123.0' and already-padded strings; '' when there is no digit at all."""
     s = re.sub(r"\D", "", str(x).strip().split(".")[0])
     return s.zfill(10) if s else ""

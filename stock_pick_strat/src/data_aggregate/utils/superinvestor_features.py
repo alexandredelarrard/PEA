@@ -40,7 +40,7 @@ from src.data_aggregate.utils.panel import build_peer_relative_panel
 from src.utils.string import pad_cik
 
 _FILING_LAG_DAYS = 45   # 13F filing deadline after quarter-end (leak-free floor)
-_HOLDINGS_TABLE = "institutional_holdings"     # the ~20M-row all-filer 13F table (literal, as elsewhere)
+_HOLDINGS_TABLE = "sec13f_hr"     # the ~20M-row all-filer 13F table (literal, as elsewhere)
 _HOLDINGS_COLS = ["cik", "period", "ticker", "shares", "value_usd", "filing_date"]
 # normalize a stored TEXT cik the SAME way pad_cik does (digits of the pre-decimal part, left-padded
 # to 10) so a Postgres WHERE matches the padded roster keys whether the DB stored it padded, unpadded
@@ -77,7 +77,7 @@ def _weight_map(roster: dict | list | None) -> dict[str, float]:
 
 
 def load_superinvestor_holdings(context: Context, roster: dict | list | None) -> pd.DataFrame | None:
-    """Read ONLY the roster managers' rows from the ~20M-row `institutional_holdings` table — the
+    """Read ONLY the roster managers' rows from the ~20M-row `sec13f_hr` table — the
     elite subset is a handful of CIKs, so pulling the whole table (then discarding 99% in
     `_super_quarter_features`) is what made this OOM-crash. DB-backed stores push the filter down
     with an engine-side `WHERE <normalized cik> IN (roster)` (cik text normalized exactly like

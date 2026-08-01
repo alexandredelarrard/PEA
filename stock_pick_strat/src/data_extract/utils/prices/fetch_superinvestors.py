@@ -18,7 +18,7 @@ TWO internet sources, combined:
 Output JSON (`data/superinvestors/superinvestors.json`):
     {"generated_at": ..., "n_roster": 84, "n_resolved": 80,
      "cik_to_name": {"0001067983": "Warren Buffett - Berkshire Hathaway", ...}}
-The CIK is the join key into `institutional_holdings`; the name is for readability.
+The CIK is the join key into `sec13f_hr`; the name is for readability.
 Fund names EDGAR can't resolve are logged; force one via SUPERINVESTOR_CIK_OVERRIDES
 (keyed by the Dataroma manager code). The pure pieces (roster parse, EDGAR-match
 parse, name->CIK pick) are unit-tested; only the HTTP GETs touch the world.

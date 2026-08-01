@@ -1,5 +1,6 @@
 
 ## Project overview
+
 `stock_pick_strat` — Python quant long/short stock-picking pipeline: extract market /
 fundamental / governance / alt-data into **PostgreSQL**, engineer point-in-time peer-relative
 features (the "cube"), train ML models with time-series CV, run portfolio backtests, expose
@@ -15,134 +16,80 @@ OpenAI (DEF 14A extraction + embeddings), pytest.
 ## Directory layout
 ```
 stock_pick_strat/
-├── configs/*.yml           # OmegaConf configs (merged by top-level key): configs.yml, build_cube.yml,
-│                           #   modellling.yml (model:/train:), models/{lgbm,linear,random_forest},
-│                           #   strategy/{strategy_ls,strategy_trend,strategy_long_book}.yml, portfolio.yml
-├── data/                   # NON-tabular artifacts ONLY: sec_bulk_cache/ (companyfacts JSON + 13F zips),
-│                           #   sec_{financial_statements,financial_notes,fails_to_deliver}/ (bulk-set zips;
-│                           #   notes sets ~26GB @ 15y), output/{models,diagnostics}, sector_peers.json
-├── sql/schema.sql          # generated DDL (CREATE TABLE IF NOT EXISTS + PKs), run on DB init
-├── docker-compose.yml      # Postgres 16 + persistent volume   (+ Dockerfile)
-├── scripts/                # schema generator, parquet→DB migrator
+├── configs/                # OmegaConf configs: configs.yml, build_cube.yml, modellling.yml, models/, strategy/, portfolio.yml
+├── data/                   # NON-tabular artifacts ONLY: sec_bulk_cache/, sec_*/ zips, models/, diagnostics/, sector_peers.json
+├── sql/schema.sql          # Auto-generated DDL executed on DB initialization
+├── docker-compose.yml      # PostgreSQL 16 service & persistent storage
+├── scripts/                # Schema generator & migration utilities
 ├── src/
-│   ├── constants/constants.py  # global literals (date formats, SEC URLs) — SINGLE source of truth
-│   ├── context.py              # Context: config, logging, env, `.store` (DB), `.paths` (artifacts only)
-│   ├── data_store/             # DB layer: DataStore (store.py), schema_registry, schema_sql, io
-│   ├── data_extract/           # step_extract_* : super-step + prices/fundamentals/structure/behavioral
-│   │   └── utils/{prices,fundamentals,structure,behavioral,common}/   # fetchers
-│   │                           #   common/bulk_cache.py: cache_dir / ensure_zip / read_zip_*
-│   │                           #   (corrupt archive is deleted so it re-downloads)
-│   │                           #   common/sec_utils.py: sec_get + rate limit, extract meta,
-│   │                           #   seen_accessions, existing_filings, load_cik_mapping
-│   │                           #   behavioral/utils_missing_quarters.py: THE earnings-call gap
-│   │                           #   (computed once, handed to Roic then to fool)
-│   ├── data_peers/             # step_deduce_peers  (return-corr + OpenAI-embedding peers)
-│   ├── data_aggregate/         # step_build_cube — peer-relative feature panels → `cube`
-│   │                           #   utils/panel.py: THE panel primitives (_ratio, _winsorize_xs,
-│   │                           #   _peer_relative, build_peer_relative_panel) — leaf, no cycle
-│   │                           #   utils/sector_gates.py: GICS scope per sector-KPI family
-│   │                           #   (SECTOR_KPI_SCOPE); _merge_panel raises on duplicate
-│   │                           #   feature names instead of emitting `_x`/`_y` columns
-│   │                           #   utils/capital.py: THE definition of borrowings / total &
-│   │                           #   net debt / invested capital (leases in, CP counted once)
-│   ├── modelling/              # per-STRATEGY model/signal: long_short/ (step_train=StepModelling + utils/),
-│   │                           #   trend/ (signal.py::trend_book + utils/), long_book/ (allocation.py)
-│   ├── strategies/             # self-contained per-strategy STEPS (base.Strategy.run(PortfolioInputs)):
-│   │                           #   step_ls / step_long_book / step_trend + utils/ (strategies_opt, metrics,
-│   │                           #   plot_analysis, accuracy) + analysis/ (per-sleeve IC/neutrality/corr plots)
-│   ├── portfolio/              # step_portfolio — runs the configured sleeves, blends by risk-parity/ERC
-│   │                           #   (dynamic $-allocation) + global vol/leverage; analysis.py (sleeve corr)
-│   │                           #   step_strategy_moves — the DAILY trading ledger -> `strategy`:
-│   │                           #   each sleeve re-sized to erc_weight x leverage, blotter rebuilt on
-│   │                           #   the scaled panel, FIFO-matched into round trips (entry/exit/PNL)
-│   ├── dags/                   # Airflow: data_extraction -> data_aggregation -> strat_prediction
-│   │                           #   (DAILY: predict + strategy ledger); modelling is WEEKLY (Sat)
-│   ├── utils/                  # shared cross-folder helpers: db, step, config, trend.py, risk_parity.py,
-│   │                           #   polite_http/crawler (anti-429 transport), ssl_setup,
-│   │                           #   string.py::pad_cik (ONE CIK padding for writer + reader) …
-│   └── cli.py
-├── tests/                  # mirrors src/ ; conftest.py holds shared real-data fixtures
-├── app/                    # Streamlit app
+│   ├── constants/constants.py  # Global literals (date formats, URLs, thresholds) — SINGLE source of truth
+│   ├── context.py              # Context initialization (configs, logger, DB .store, artifact .paths)
+│   ├── data_store/             # DataStore (store.py), schema_registry.py, schema_sql.py, io.py
+│   ├── data_extract/           # StepExtractAllData & fetchers (utils/{prices,fundamentals,structure,behavioral,common}/)
+│   ├── data_peers/             # StepDeducePeers (return correlation & OpenAI embedding-based peers)
+│   ├── data_aggregate/         # StepBuildCube (utils/panel.py primitives, utils/sector_gates.py, utils/capital.py)
+│   ├── modelling/              # Model/signal engines per strategy: long_short/, trend/, long_book/
+│   ├── strategies/             # Self-contained strategy steps (step_ls, step_long_book, step_trend) & analytics
+│   ├── portfolio/              # StepPortfolio (ERC blending & global vol scaling), StepStrategyMoves (live trading ledger)
+│   ├── dags/                   # Airflow DAGs (data_extraction -> data_aggregation -> strat_prediction)
+│   └── utils/                  # Cross-package shared utilities (db, step, config, trend, risk_parity, polite_http, string)
+├── tests/                  # Mirrors src/ layout; conftest.py contains shared DB fixtures
+├── app/                    # Streamlit visual dashboard
 ├── main.py, README.md, pyproject.toml
 ```
 
 ---
 
-## The Step pattern
+## The Step Pattern
 
-Every `src/` subfolder owns a `step_*.py` orchestrator (a super-step may compose sub-steps
-in the same folder, as `data_extract/` does). This is the project's most important structural
-convention — never deviate from it.
+Every `src/` subfolder owns a `step_*.py` orchestrator. This is the project's primary structural convention.
 
-**Rules:**
-- Inherits from `Step` (`src.utils.step`) to get `self._context` and `self._config`
-- `__init__` always calls `super().__init__(context=context, config=config)`
-- `run()` is the only public entry point — it calls helpers from the same folder
-- Never call functions from another `src/` subfolder inside a step — use `src/utils/` instead
-- Fetchers **save to the DB** via `self._context.store` and return the frame (they no longer write parquet)
-- A super-step composes sub-steps and resolves shared inputs once (e.g. the ticker universe)
+### Execution Rules
+1. Inherit from `Step` (`src.utils.step`) to access `self._context` and `self._config`.
+2. Always call `super().__init__(context=context, config=config)` inside `__init__`.
+3. Expose `run()` as the sole public entry point.
+4. **No cross-folder imports between `src/` subfolders** except through `src/utils/`.
+5. Fetchers read/write tabular data via `self._context.store` (never write parquet files).
+6. Super-steps compose child steps and resolve shared inputs once (e.g., universe tickers).
 
 ```python
 from omegaconf import DictConfig
-
 from src.context import Context
 from src.utils.step import Step
-from src.data_extract.utils.prices.fetch_prices import get_sp500_tickers
-from src.data_extract.step_extract_prices import StepExtractPrices
-from src.data_extract.step_extract_fundamentals import StepExtractFundamentals
-# … structure, behavioral
 
-class StepExtractAllData(Step):
-
+class StepExample(Step):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
-        self._prices = StepExtractPrices(context=context, config=config)
-        self._fundamentals = StepExtractFundamentals(context=context, config=config)
-        # … structure, behavioral
+        self._child_step = ChildStep(context=context, config=config)
 
-    def run(self) -> None:
-        tickers = get_sp500_tickers(self._context) + self._config.data_extract.other_tickers
-        self._prices.run(tickers=tickers)
-        self._fundamentals.run(tickers=tickers)
-        # … structure, behavioral
-```
+    def run(self, tickers: list[str]) -> None:
+        self._child_step.run(tickers=tickers)
 
 ---
 
-## Naming — constants before anything else
+## Code & Naming Conventions
+Constants First: Check src/constants/constants.py before defining new column names, keys, or URLs. Add missing literals to constants.py before referencing them in code.
 
-Before naming a column, DataFrame key, file path constant, or config key:
-1. Check `src/constants/*.py`
-2. If it exists → import and use it, never hardcode
-3. If it doesn't exist → add it to the right constants file first, then import
+Logging: Use self._context.logger for all output (never use print() or raw logging.getLogger()).
 
----
+Configuration: Access configuration values strictly via self._config.<section>.<key>.
 
-## Code conventions
+Typing: Provide complete type annotations for every function signature.
 
-- `self._context.logger` for all logging — never `print()` or `logging.getLogger()` directly
-- `self._config.<section>.<key>` for all config values — never hardcode
-- Env is loaded by `Context`; business logic reads it through the context (infra like `utils/db.py` / the LLM extractor may read `os.getenv` for secret keys)
-- Full type annotations on every function signature
-- No cross-folder imports between `src/` subfolders except via `src/utils/`
-- Global literals (date formats, SEC/API URLs, env-var keys, thresholds) live in `src/constants/constants.py` — never hardcode inline
+Imports: Place all import statements at the top of the Python file.
 
 ---
 
-## Data / DB conventions
+## Data & Database Conventions
+Database I/O: Read and write tabular data exclusively via self._context.store (DataStore: load, save, replace, existing_dates).
 
-- **DB-only I/O.** All tabular data reads/writes go through `self._context.store` (`DataStore`):
-  `load` / `save` (upsert on PK) / `replace` (full rebuild) / `existing_dates`. Never read/write
-  parquet for tables. New DataFrame columns auto-add to the table via `ensure_columns`.
-- `context.paths` holds ONLY non-tabular artifacts (models, plots, `sec_bulk_cache/*.json`, filing text).
-- **Point-in-time + incremental.** Fetchers resume from the DB's max date per entity and save
-  **per entity**, so an interrupted run never loses expensive work (LLM / 13F / API calls); lag
-  by filing date so features are leak-free.
-- **Cache large downloads** to disk (companyfacts JSON, 13F zips); re-download only when missing.
-- **Coalesce alternative XBRL tags** — union candidate tags per period, don't take the first present
-  (`Revenues`↔`RevenueFromContractWithCustomer`, `NetIncomeLoss`↔`ProfitLoss`, equity ±NCI).
-- **Booleans → numeric 1.0/0.0 flags** so they're usable as model features.
-- New logical tables are declared in `src/data_store/schema_registry.py` (name → PK + incremental date col).
+Artifacts: Store non-tabular data (models, plots, raw JSONs) in paths defined by context.paths.
+
+Point-in-Time Integrity: Resume extraction using the maximum entity date stored in the DB. Save progress per entity. Lag features by filing date to prevent forward-looking bias.
+
+XBRL Processing: Union candidate XBRL tags per period rather than relying on the first match. Cast boolean values to numeric flags (1.0/0.0).
+
+Schema Registration: Register new logical tables in src/data_store/schema_registry.py.
 
 ---
 
@@ -161,37 +108,34 @@ math): use synthetic **known-truth** fixtures, because you can only assert a val
 you know the true inputs. Pair these with a real-data coverage check against the cached source
 (e.g. build a real ticker's history and confirm the previously-missing field now populates).
 
-### Write sanity checks, not just assertions
-Every new feature test must include checks that validate economic or logical validity,
-not just structure:
+### Mandatory Sanity Checks
+Unit tests must validate logical/financial sense in addition to structural integrity, ending with a printed summary:
+
 ```python
 def test_momentum_feature(sample_prices):
     result = compute_momentum(sample_prices, window=20)
 
-    # Structural
+    # Structural assertion
     assert "momentum_20d" in result.columns
     assert result["momentum_20d"].isna().mean() < 0.1
 
-    # Sanity — does the value make financial sense?
+    # Financial logic sanity check
     winners = result.nlargest(5, "momentum_20d")
-    losers  = result.nsmallest(5, "momentum_20d")
-    assert (winners["momentum_20d"] > 0).all(), "Top momentum stocks must have positive returns"
-    assert (losers["momentum_20d"]  < 0).all(), "Bottom momentum stocks must have negative returns"
+    losers = result.nsmallest(5, "momentum_20d")
+    assert (winners["momentum_20d"] > 0).all()
+    assert (losers["momentum_20d"] < 0).all()
 
-    # Conclusion — printed at test end, always
+    # Mandatory printed conclusion
     print("\n=== SANITY CHECK: momentum_20d ===")
     print(f"  Range : [{result['momentum_20d'].min():.4f}, {result['momentum_20d'].max():.4f}]")
-    print(f"  NaN % : {result['momentum_20d'].isna().mean():.1%}  (expected ~{20/len(result):.1%} for window=20)")
-    print(f"  ✓ Winners positive, losers negative — direction is correct")
+    print(f"  NaN % : {result['momentum_20d'].isna().mean():.1%}")
+    print("  ✓ Winners positive, losers negative — direction is correct")
 ```
 
-The printed conclusion is mandatory. It states what was checked and why the result is valid.
-Work is not done until this conclusion is written and passes.
-
-### Run commands
+### Test Commands
 ```bash
-pytest tests/path/to/test_file.py                        # whole file
-pytest tests/path/to/test_file.py::test_function -v -s   # single test, -s to see print output
+pytest tests/path/to/test_file.py                       # whole file
+pytest tests/path/to/test_file.py::test_function -v -s   
 ```
 
 ### Fixtures
@@ -230,15 +174,9 @@ All numeric hyperparameters, window sizes, and thresholds live in config — nev
 
 ---
 
-## Keep the docs current
+## Documentation Synchronization
+Maintain strict consistency across documentation files:
 
-`AGENTS.md` and `CLAUDE.md` are the source of truth for how this repo is built — they must
-track the code, not drift from it.
+- Keep AGENTS.md, CLAUDE.md, and README.md updated in the same change whenever system architecture, data models, or conventions evolve.
 
-- **Review both regularly** and whenever the structure or conventions change (a new step / table /
-  package, a moved or renamed module, a new data source, a changed data-flow), update them in the
-  **same change** so they never go stale. `README.md` too when the pipeline stages change.
-- When a **generic, reusable convention** emerges from a request, **propose it and ask for
-  confirmation before writing it** into `AGENTS.md` / `CLAUDE.md` — don't edit these docs unprompted.
-- Keep the two consistent: `CLAUDE.md` is the concise rulebook, `AGENTS.md` the fuller guide with
-  examples; a convention added to one should be reflected in the other.
+- Propose any new shared convention and obtain approval before editing AGENTS.md or CLAUDE.md.

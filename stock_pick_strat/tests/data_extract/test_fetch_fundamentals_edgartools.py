@@ -1,0 +1,416 @@
+"""
+Unit tests for the edgartools-based fundamentals retrieval adapter
+(fetch_fundamentals_edgar.py) and its dimension-aware tag coalescing.
+
+Pure-synthetic, no network / no DB (except the idempotency test, which uses a
+throwaway SQLite DataStore, mirroring
+tests/data_extract/test_sec_bulk_datasets.py::test_insider_incremental_state_converges).
+"""
+from __future__ import annotations
+
+import logging
+from types import SimpleNamespace
+
+import pandas as pd
+from sqlalchemy import create_engine
+
+from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import (
+    backfill_fiscal_period_from_filing, build_tag_frames,
+)
+from src.data_extract.utils.fundamentals.fundamentals_periods import decumulate_quarterly_flow
+from src.data_store.store import DataStore
+
+
+def _fact(concept, value, period_start, period_end, period_type, fiscal_year, fiscal_period,
+         is_dimensioned=False, unit_ref="U_USD", numeric_value=None, period_instant=None):
+    return {
+        "concept": concept, "value": str(value), "numeric_value": numeric_value if numeric_value is not None else float(value),
+        "unit_ref": unit_ref, "period_type": period_type, "period_start": period_start,
+        "period_end": period_end, "period_instant": period_instant,
+        "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+        "is_dimensioned": is_dimensioned,
+    }
+
+
+def test_build_tag_frames_excludes_dimensioned_duplicate():
+    """A concept reported BOTH consolidated (is_dimensioned=False) and per-segment
+    (is_dimensioned=True) for the same period must resolve to only the consolidated
+    value -- replaces the WIP's `iloc[-1]` (non-deterministic, could pick the segment)."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:NetIncomeLoss", 100.0, "2024-01-01", "2024-03-31", "duration", 2024, "Q1",
+             is_dimensioned=False),
+        _fact("us-gaap:NetIncomeLoss", 40.0, "2024-01-01", "2024-03-31", "duration", 2024, "Q1",
+             is_dimensioned=True),   # segment slice -- must be excluded
+    ])
+    out = build_tag_frames(facts_df, {"netIncome": ["NetIncomeLoss"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 100.0
+
+
+def test_build_tag_frames_admits_dimensioned_fact_when_all_members_agree():
+    """A concept tagged ONLY under a dimension, where every dimensioned instance for
+    that (concept, period) reports the IDENTICAL value, must still be admitted as
+    "the total" -- confirmed empirically against real MAA filings: a dual-registrant
+    10-Q/10-K (REIT + its operating partnership) tags consolidated `Revenues` once
+    per dei:LegalEntityAxis member (ParentCompanyMember / LimitedPartnerMember),
+    BOTH reporting the same figure, with NO undimensioned duplicate at all for
+    2014-2019 -- the WIP's blanket is_dimensioned==False filter dropped 5 fiscal
+    years of revenue entirely."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:Revenues", 272236000.0, "2016-04-01", "2016-06-30", "duration", 2016, "Q2",
+             is_dimensioned=True),   # Parent Company member
+        _fact("us-gaap:Revenues", 272236000.0, "2016-04-01", "2016-06-30", "duration", 2016, "Q2",
+             is_dimensioned=True),   # Limited Partner member -- same figure
+    ])
+    out = build_tag_frames(facts_df, {"totalRevenue": ["Revenues"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 272236000.0
+
+
+def test_build_tag_frames_prefers_parent_company_member_on_dual_registrant_disagreement():
+    """A dual-registrant filer (REIT + its operating partnership) can tag a concept
+    ONLY under dei:LegalEntityAxis with GENUINELY DIFFERENT values per registrant --
+    confirmed empirically: MAA's FY2013 10-K tags `PaymentsForCapitalImprovements`
+    exclusively dimensioned that year, Parent Company $53.439M vs Limited Partner
+    $53.357M, no undimensioned duplicate. The single-distinct-value admission rule
+    (previous test) correctly excludes genuine per-member disagreement, but that
+    silently dropped the WHOLE period here. Since the ticker universe is always the
+    parent entity (the publicly-traded security, never its LP), the member whose
+    label identifies it as the parent must be preferred over dropping both."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:PaymentsForCapitalImprovements", 53439000.0, "2013-01-01", "2013-12-31",
+             "duration", 2013, "FY", is_dimensioned=True),
+        _fact("us-gaap:PaymentsForCapitalImprovements", 53357000.0, "2013-01-01", "2013-12-31",
+             "duration", 2013, "FY", is_dimensioned=True),
+    ])
+    facts_df["dimension"] = ["dei:LegalEntityAxis", "dei:LegalEntityAxis"]
+    facts_df["dimension_member_label"] = ["Parent Company", "Limited Partner"]
+    out = build_tag_frames(facts_df, {"capex": ["PaymentsForCapitalImprovements"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 53439000.0
+
+
+def test_build_tag_frames_recognizes_consolidated_entities_axis_as_a_parent_identifying_axis():
+    """Real bug found via live data: MAA's `dividendsPaid` (PaymentsOfDividends-
+    CommonStock) is tagged dimensioned under `us-gaap:ConsolidatedEntitiesAxis`
+    (member label "Parent Company"), NOT `dei:LegalEntityAxis` -- a different axis
+    name for the same parent-vs-combining-entity concept. With only
+    `dei:LegalEntityAxis` recognized, this fact had no undimensioned duplicate and
+    no repeats (sole candidate), so it was excluded entirely: FY2015-2017
+    dividendsPaid vanished from MAA's FY2018 10-K filing. The parent-identifying
+    axis check must recognize `us-gaap:ConsolidatedEntitiesAxis` (and
+    `srt:ConsolidatedEntitiesAxis`) exactly like `dei:LegalEntityAxis`."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:PaymentsOfDividendsCommonStock", 395294000.0, "2017-01-01", "2017-12-31",
+             "duration", 2017, "FY", is_dimensioned=True),
+    ])
+    facts_df["dimension"] = ["us-gaap:ConsolidatedEntitiesAxis"]
+    facts_df["dimension_member_label"] = ["Parent Company"]
+    out = build_tag_frames(facts_df, {"dividendsPaid": ["PaymentsOfDividendsCommonStock"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 395294000.0
+
+
+def test_build_tag_frames_prefers_the_repeated_value_over_other_parent_labeled_slices():
+    """Real bug found via live data: MAA's FY2014 10-K tags `Assets` with SIX
+    dimensioned rows for one (concept, period) -- $6.83B appears TWICE (Limited
+    Partner + Parent Company, the true consolidated total) while FOUR OTHER
+    rows, from a hidden SECOND axis our generic dimension columns don't
+    capture, are ALSO labeled "Parent Company" ($1.25B, $4.51B, $1.00B,
+    $66.6M -- components of a consolidating breakdown). The prior version's
+    "prefer the Parent-labeled member" rule admitted all five Parent-labeled
+    rows and a later `keep='last'` reduction picked one ARBITRARILY -- which
+    is how $66.6M got stored as if it were total assets. The value with the
+    HIGHEST REPEAT COUNT ($6.83B, appearing twice) must be preferred over any
+    single-occurrence "Parent Company"-labeled value, even though there are
+    MULTIPLE rows sharing that label."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:Assets", 6831028000.0, None, None, "instant", 2014, "FY",
+             is_dimensioned=True, period_instant="2014-12-31"),   # Limited Partner
+        _fact("us-gaap:Assets", 6831028000.0, None, None, "instant", 2014, "FY",
+             is_dimensioned=True, period_instant="2014-12-31"),   # Parent Company -- agrees
+        _fact("us-gaap:Assets", 1253995000.0, None, None, "instant", 2014, "FY",
+             is_dimensioned=True, period_instant="2014-12-31"),   # Parent Company -- component
+        _fact("us-gaap:Assets", 4506951000.0, None, None, "instant", 2014, "FY",
+             is_dimensioned=True, period_instant="2014-12-31"),   # Parent Company -- component
+        _fact("us-gaap:Assets", 1003426000.0, None, None, "instant", 2014, "FY",
+             is_dimensioned=True, period_instant="2014-12-31"),   # Parent Company -- component
+        _fact("us-gaap:Assets", 66656000.0, None, None, "instant", 2014, "FY",
+             is_dimensioned=True, period_instant="2014-12-31"),   # Parent Company -- component
+    ])
+    facts_df["dimension"] = ["dei:LegalEntityAxis"] * 6
+    facts_df["dimension_member_label"] = (
+        ["Limited Partner", "Parent Company"] + ["Parent Company"] * 4)
+    out = build_tag_frames(facts_df, {"totalAssets": ["Assets"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 6831028000.0
+
+
+def test_build_tag_frames_undimensioned_total_wins_even_if_a_dimensioned_zero_repeats_more():
+    """Real bug found via live data: ADP's FY2019 Q1 10-Q tags
+    `RevenueFromContractWithCustomerExcludingAssessedTax` with ONE undimensioned
+    fact ($3.3232B, the true quarterly revenue) PLUS a `ProductOrServiceAxis`/
+    `StatementBusinessSegmentsAxis` product/segment breakdown where SEVERAL
+    lines are legitimately $0 that quarter (a discontinued/immaterial product
+    line) -- $0 ends up the most-repeated DIMENSIONED value (more repeats than
+    any real, non-zero product figure). The repeat-count rule alone would
+    prefer $0 over the true total -- it must never even be CONSULTED when an
+    undimensioned fact already answers the question; the undimensioned total
+    wins outright, full stop, regardless of what any dimensioned value repeats."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 3323200000.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=False),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 118500000.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 0.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 473500000.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 0.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 0.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 1520300000.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 0.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 653400000.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 0.0,
+             "2018-07-01", "2018-09-30", "duration", 2019, "Q1", is_dimensioned=True),
+    ])
+    out = build_tag_frames(facts_df, {"totalRevenue": ["RevenueFromContractWithCustomerExcludingAssessedTax"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 3323200000.0
+
+
+def test_build_tag_frames_excludes_dimensioned_facts_when_members_disagree():
+    """A true multi-value business-segment slice (each member reporting a DIFFERENT
+    number) must stay excluded -- no single member there represents the whole
+    company, and admitting one at random would silently understate the total. This
+    is the key safety property of the single-distinct-value admission rule: it only
+    ever admits a number that is UNAMBIGUOUSLY the same as every other tagged
+    variant, never a guess at which member is "the total"."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:Revenues", 100.0, "2024-01-01", "2024-03-31", "duration", 2024, "Q1",
+             is_dimensioned=True),   # segment A
+        _fact("us-gaap:Revenues", 250.0, "2024-01-01", "2024-03-31", "duration", 2024, "Q1",
+             is_dimensioned=True),   # segment B -- genuinely different value
+    ])
+    out = build_tag_frames(facts_df, {"totalRevenue": ["Revenues"]})
+    assert out.empty
+
+
+def test_build_tag_frames_reads_instant_facts_from_period_instant_column():
+    """INSTANT (balance-sheet) facts carry their date in a SEPARATE
+    `period_instant` column, not `period_end` (both NaN for them in edgartools'
+    own to_dataframe() output) -- confirmed empirically against a real MAA 10-K.
+    Without this normalization, every STOCK field (totalAssets, ...) silently
+    vanished: grouped into one NaN/NaN bucket and later excluded entirely by the
+    current-period filter (period_end == filing.period_of_report)."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:Assets", 11975383000.0, None, None, "instant", None, None,
+             period_instant="2025-12-31"),
+    ])
+    out = build_tag_frames(facts_df, {"totalAssets": ["Assets"]})
+    assert len(out) == 1
+    assert pd.Timestamp(out.iloc[0]["period_end"]) == pd.Timestamp("2025-12-31")
+    assert out.iloc[0]["value"] == 11975383000.0
+
+
+def test_build_tag_frames_normalizes_ytd_labels_before_backfill_can_propagate_them():
+    """fiscal_period is normalized ('YTD6' -> 'Q2') at the EARLIEST capture point in
+    build_tag_frames, not just inside decumulate_quarterly_flow -- otherwise
+    backfill_fiscal_period_from_filing (which borrows whichever OTHER row in the
+    same filing has native fy/fp to fill an instant fact's blank one) could borrow
+    a raw 'YTD6' from a cash-flow duration fact and stamp it onto a balance-sheet
+    field, which then flows through instant_stock() unmodified. Real bug: MAA's
+    totalAssets showed literal 'YTD6'/'YTD9' fiscal_period values in
+    fundamentals_facts before this fix."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:NetCashProvidedByUsedInOperatingActivities", 463907000.0,
+             "2022-01-01", "2022-06-30", "duration", 2022, "YTD6"),
+    ])
+    out = build_tag_frames(facts_df, {"operatingCashFlow": ["NetCashProvidedByUsedInOperatingActivities"]})
+    assert len(out) == 1
+    assert out.iloc[0]["fiscal_period"] == "Q2"
+
+
+def test_backfill_fiscal_period_from_filing_fills_instant_facts_from_duration_facts():
+    """A filing's instant facts (no native fiscal_year/fiscal_period) must inherit
+    the (fiscal_year, fiscal_period) carried by any duration fact from the SAME
+    filing (e.g. the dei cover-page tags, which always have it)."""
+    tagged = pd.DataFrame([
+        {"field": "totalAssets", "fiscal_year": None, "fiscal_period": None, "value": 100.0},
+        {"field": "netIncome", "fiscal_year": 2025, "fiscal_period": "FY", "value": 50.0},
+    ])
+    out = backfill_fiscal_period_from_filing(tagged)
+    row = out[out["field"] == "totalAssets"].iloc[0]
+    assert row["fiscal_year"] == 2025 and row["fiscal_period"] == "FY"
+
+
+def test_backfill_fiscal_period_from_filing_noop_when_nothing_native():
+    """If NOTHING in the frame carries a native fiscal_year/fiscal_period (should
+    not happen in practice -- every filing has cover-page dei facts -- but must not
+    crash), the frame is returned unchanged rather than raising."""
+    tagged = pd.DataFrame([{"field": "totalAssets", "fiscal_year": None, "fiscal_period": None, "value": 100.0}])
+    out = backfill_fiscal_period_from_filing(tagged)
+    assert out.iloc[0]["fiscal_year"] is None
+
+
+def test_build_tag_frames_coalesces_by_candidate_priority():
+    """When two DIFFERENT candidate tags both report the same period, the
+    higher-priority (earlier-listed) candidate wins -- the same coalescing rule as
+    fetch_fundamentals.py::_extract_concept, generalized to run per-filing."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:SalesRevenueNet", 50.0, "2024-01-01", "2024-03-31", "duration", 2024, "Q1"),
+        _fact("us-gaap:Revenues", 100.0, "2024-01-01", "2024-03-31", "duration", 2024, "Q1"),
+    ])
+    tag_map = {"totalRevenue": ["Revenues", "SalesRevenueNet"]}   # Revenues = higher priority
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 100.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:Revenues"
+
+
+def test_build_tag_frames_drops_non_numeric_values():
+    """A mis-matched or text-valued fact (empty string / non-numeric) must be
+    dropped rather than crash downstream period-decumulation math -- the exact
+    real-data bug this test pins (ValueError: could not convert string to float)."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:NetIncomeLoss", "", "2024-01-01", "2024-03-31", "duration", 2024, "Q1",
+             numeric_value=float("nan")),
+        _fact("us-gaap:NetIncomeLoss", 100.0, "2024-04-01", "2024-06-30", "duration", 2024, "Q2"),
+    ])
+    out = build_tag_frames(facts_df, {"netIncome": ["NetIncomeLoss"]})
+    assert len(out) == 1
+    assert out.iloc[0]["fiscal_period"] == "Q2"
+
+
+def test_lease_maturity_1y_maps_rolling_twelve_month_tag():
+    """MAA's operating-lease maturity ladder tags the FIRST rung under
+    `LesseeOperatingLeaseLiabilityPaymentsDueNextRollingTwelveMonths`, a distinct
+    2019+ us-gaap concept for filers disclosing the schedule "rolling" forward from
+    the balance-sheet date -- NOT an alternate name for `...NextTwelveMonths`. This
+    tag was entirely absent from the candidate list, silently zeroing out
+    leaseMaturity1y (and, combined with the debt-maturity variant, most of the
+    refinancing-wall feature) for every filer using this convention."""
+    from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import INSTANT_FIELD_TAGS
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:LesseeOperatingLeaseLiabilityPaymentsDueNextRollingTwelveMonths", 5000000.0,
+             None, None, "instant", 2025, "FY", period_instant="2025-12-31"),
+    ])
+    out = build_tag_frames(facts_df, {"leaseMaturity1y": INSTANT_FIELD_TAGS["leaseMaturity1y"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 5000000.0
+
+
+def test_capex_maps_reit_maintenance_tag_maa_style():
+    """MAA (REIT) reports capex under PaymentsForCapitalImprovements, not the
+    generic PP&E tag -- the confirmed root cause of the WIP file's capex gap.
+    Ported tag list (fundamentals_tags.py) must resolve it."""
+    from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import FLOW_FIELD_TAGS
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:PaymentsForCapitalImprovements", 360238000.0, "2025-01-01", "2025-12-31",
+             "duration", 2025, "FY"),
+    ])
+    out = build_tag_frames(facts_df, {"capex": FLOW_FIELD_TAGS["capex"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 360238000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:PaymentsForCapitalImprovements"
+
+
+def test_quarterly_derivation_backs_out_q4():
+    """End-to-end: raw quarterly facts -> decumulate_quarterly_flow -> Q4 derived
+    and reconciles exactly to FY."""
+    facts = pd.DataFrame([
+        {"fiscal_year": 2024, "fiscal_period": "Q1", "period_start": "2024-01-01", "period_end": "2024-03-31",
+         "value": 100.0, "filing_date": "2024-04-20", "accession_number": "a1", "form": "10-Q"},
+        {"fiscal_year": 2024, "fiscal_period": "Q2", "period_start": "2024-01-01", "period_end": "2024-06-30",
+         "value": 220.0, "filing_date": "2024-07-20", "accession_number": "a2", "form": "10-Q"},
+        {"fiscal_year": 2024, "fiscal_period": "Q3", "period_start": "2024-01-01", "period_end": "2024-09-30",
+         "value": 345.0, "filing_date": "2024-10-20", "accession_number": "a3", "form": "10-Q"},
+        {"fiscal_year": 2024, "fiscal_period": "FY", "period_start": "2024-01-01", "period_end": "2024-12-31",
+         "value": 460.0, "filing_date": "2025-02-15", "accession_number": "a4", "form": "10-K"},
+    ])
+    for c in ("period_start", "period_end", "filing_date"):
+        facts[c] = pd.to_datetime(facts[c])
+    out = decumulate_quarterly_flow(facts)
+    q = {r.fiscal_period: r.value for r in out.itertuples()}
+    assert q["Q1"] == 100.0 and q["Q2"] == 120.0 and q["Q3"] == 125.0 and q["Q4"] == 115.0
+    assert abs(sum(q.values()) - 460.0) < 1e-9
+    q4_row = out[out.fiscal_period == "Q4"].iloc[0]
+    assert bool(q4_row["derived"]) is True
+    assert set(q4_row["derived_from_accessions"]) == {"a1", "a2", "a3", "a4"}
+
+
+def test_fetch_fundamentals_edgartools_saves_incrementally_per_ticker(tmp_path, monkeypatch):
+    """Each ticker's rows are persisted immediately after its OWN extraction
+    finishes -- not accumulated in memory and saved once at the end. A large
+    filer can take minutes; a later ticker's failure must never lose an
+    earlier ticker's already-extracted work."""
+    import src.data_extract.utils.fundamentals.fetch_fundamentals_edgar as mod
+
+    def _fake_build(ticker, *, done_accessions=frozenset(), since=None):
+        if ticker == "BAD":
+            raise RuntimeError("simulated failure for BAD ticker")
+        return pd.DataFrame([{
+            "ticker": ticker, "cik": None, "accession_number": f"acc-{ticker}", "field": "netIncome",
+            "fiscal_year": 2024, "fiscal_period": "Q1", "duration_type": "quarterly", "form": "10-Q",
+            "filing_date": pd.Timestamp("2024-04-20"), "period_start": pd.Timestamp("2024-01-01"),
+            "period_end": pd.Timestamp("2024-03-31"), "value": 100.0, "unit": "USD",
+            "source_tag": "us-gaap:NetIncomeLoss", "is_amendment": 0.0, "amends_accession": None,
+            "derived": 0.0, "derived_from_accessions": None, "fiscal_period_source": "native",
+        }])
+
+    monkeypatch.setattr(mod, "_configure_identity", lambda: None)
+    monkeypatch.setattr(mod, "build_ticker_facts_edgar", _fake_build)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 't.db'}")
+    store = DataStore(engine)
+    context = SimpleNamespace(
+        config=SimpleNamespace(data_extract=SimpleNamespace(years_history=15)),
+        store=store, log=logging.getLogger("test"))
+
+    out = mod.fetch_fundamentals_edgartools(context, ["GOOD", "BAD"])
+
+    # GOOD's row is already persisted even though BAD (processed afterward) failed.
+    persisted = store.load("fundamentals_facts")
+    assert len(persisted) == 1 and persisted.iloc[0]["ticker"] == "GOOD"
+    assert len(out) == 1 and out.iloc[0]["ticker"] == "GOOD"
+    engine.dispose()
+
+
+def test_fundamentals_facts_upsert_is_idempotent(tmp_path):
+    """Saving the same fundamentals_facts frame twice must not duplicate rows or
+    change values (registry PK: ticker, accession_number, field, fiscal_year,
+    fiscal_period, duration_type). Mirrors test_sec_bulk_datasets.py's throwaway-
+    SQLite pattern (pytest's `tmp_path` fixture, not `tempfile.TemporaryDirectory`
+    -- the latter's cleanup races SQLAlchemy's file handle release on Windows)."""
+    df = pd.DataFrame([
+        {"ticker": "ZZZ", "cik": "0000000001", "accession_number": "acc-1", "field": "netIncome",
+         "fiscal_year": 2024, "fiscal_period": "Q1", "duration_type": "quarterly", "form": "10-Q",
+         "filing_date": pd.Timestamp("2024-04-20"), "period_start": pd.Timestamp("2024-01-01"),
+         "period_end": pd.Timestamp("2024-03-31"), "value": 100.0, "unit": "USD",
+         "source_tag": "us-gaap:NetIncomeLoss", "is_amendment": 0.0, "amends_accession": None,
+         "derived": 0.0, "derived_from_accessions": None, "fiscal_period_source": "native"},
+    ])
+    engine = create_engine(f"sqlite:///{tmp_path / 't.db'}")
+    store = DataStore(engine)
+    n1 = store.save("fundamentals_facts", df)
+    n2 = store.save("fundamentals_facts", df)
+    loaded = store.load("fundamentals_facts")
+    assert n1 == 1 and n2 == 1
+    assert len(loaded) == 1
+    assert loaded.iloc[0]["value"] == 100.0
+    engine.dispose()
+
+    print("\n=== SANITY CHECK: fundamentals_facts retrieval + persistence ===")
+    print("  dimensioned duplicates excluded; candidate-priority coalescing correct;")
+    print("  non-numeric facts dropped (not crashed); MAA-style REIT capex tag resolves;")
+    print("  instant (balance-sheet) facts correctly read from period_instant and")
+    print("  backfilled with their filing's fiscal_year/fiscal_period (real bug found and")
+    print("  fixed against live MAA data -- totalAssets/stockholdersEquity/totalLiabilities")
+    print("  were silently empty before this fix);")
+    print("  Q1-Q4 decumulation reconciles exactly to FY; repeated save is idempotent (no dupes).")
+    print("  Validated.")

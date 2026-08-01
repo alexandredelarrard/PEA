@@ -50,9 +50,9 @@ class StepExtractAllData(Step):
     def run(self) -> None:
         tickers = self._resolve_tickers()
 
-        self._prices.run(tickers=tickers)
+        # self._prices.run(tickers=tickers)
         self._fundamentals.run(tickers=tickers)
-        self._structure.run(tickers=tickers)
+        # self._structure.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
 
         ####### very strong driver, need data feed / LLM
@@ -64,13 +64,3 @@ class StepExtractAllData(Step):
         # TODO: Job posting ??? source to find 
         # TODO: track stocks of indutries (reconcilitation of stocks with industries)
         # TODO: flux & flows of airlines & boats 
-        
-
-    def analysis(self) -> None:
-        df = pd.read_sql('fundamentals_history', self._context.store.engine)
-        x = df.isnull().groupby(df['ticker']).sum()
-        x['max'] = x.max(axis=1)
-        for col in x.columns : 
-            x[col] /= (0.001+ x['max'])
-        print(x.mean(axis=1).mean())
-        x.to_csv('sanity_check_financials_missing_infos.csv')

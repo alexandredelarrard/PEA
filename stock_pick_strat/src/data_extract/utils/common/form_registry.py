@@ -1,0 +1,96 @@
+"""
+form_registry.py
+------------------
+Form-dispatch registry: a data-first lookup table (mirrors `schema_registry.
+TableSpec`'s shape, not `STRATEGY_REGISTRY`'s call interface) mapping a
+normalized SEC form-dispatch key to its discovery mechanism, extraction
+handler, and destination table.
+
+Deliberately NOT a generic `run_handler(name, context, tickers)` dispatcher: the
+five handlers have genuinely different call signatures (`fetch_13f(context)`
+takes no `tickers` at all -- it is a bulk, all-filers pull; `fetch_def14a_llm`
+takes an extra `model` kwarg) -- forcing a uniform interface would mean
+touching 4 already-working, DAG-scheduled pipelines for no functional gain.
+This registry exists to centralize ROUTING/documentation (which form -> which
+handler -> which table), consulted by tests and future orchestration work, not
+to replace each pipeline's existing call site.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable
+
+from src.constants.constants import (
+    DEF14A_FORMS, FUNDAMENTALS_FORMS, SEC_8K_FORMS, SEC_13D_FORMS,
+)
+from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import (
+    fetch_fundamentals_edgartools,
+)
+from src.data_extract.utils.prices.fetch_13f import fetch_13f
+from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
+from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
+
+
+@dataclass(frozen=True)
+class FormHandlerSpec:
+    name: str
+    sec_forms: tuple[str, ...]
+    discovery: str            # "per_cik_accession" | "bulk_quarterly"
+    table: str
+    handler: Callable
+    call_shape: str
+    years_config_key: str | None = None
+    step_chain_wired: bool = False
+    notes: str = ""
+
+
+FORM_REGISTRY: dict[str, FormHandlerSpec] = {
+    "fundamentals": FormHandlerSpec(
+        name="fundamentals", sec_forms=tuple(FUNDAMENTALS_FORMS),
+        discovery="per_cik_accession", table="fundamentals_facts",
+        handler=fetch_fundamentals_edgartools, call_shape="(context, tickers)",
+        years_config_key="fundamentals_years_history", step_chain_wired=True,
+        notes="derives fundamentals_history (unchanged shape/PK) from this raw table "
+             "via fundamentals_derive.rebuild_fundamentals_history"),
+    "sec_8k": FormHandlerSpec(
+        name="sec_8k", sec_forms=tuple(SEC_8K_FORMS),
+        discovery="per_cik_accession", table="sec_8k",
+        handler=fetch_8k_edgar, call_shape="(context, tickers, years=None)",
+        step_chain_wired=False,
+        notes="edgartools per-filing retrieval (fetch_8k_edgar.py), replacing the "
+             "submissions-JSON-only fetch_8k_items.py -- adds has_earnings/has_press_release "
+             "from the typed CurrentReport object alongside the existing item codes. Table "
+             "itself was already renamed from sec_8k_items (DB-level ALTER TABLE RENAME, see "
+             "scripts/rename_form_dispatch_tables.py)"),
+    "sec_13d": FormHandlerSpec(
+        name="sec_13d", sec_forms=tuple(SEC_13D_FORMS),
+        discovery="per_cik_accession", table="sec_13d",
+        handler=fetch_13d_edgar, call_shape="(context, tickers, years=None)",
+        step_chain_wired=False,
+        notes="edgartools per-filing retrieval (fetch_13d_edgar.py) reading the typed "
+             "Schedule13D object, replacing fetch_13d.py's event/date-only extraction -- adds "
+             "reporting-person name/CIK/voting-power + CUSIP + amendment metadata. Grain "
+             "changed to (ticker, accession_number, rp_seq): one row PER REPORTING PERSON, "
+             "since a single 13D can have multiple co-filers"),
+    "def_14": FormHandlerSpec(
+        name="def_14", sec_forms=tuple(DEF14A_FORMS),
+        discovery="per_cik_accession", table="def14a_llm",
+        handler=fetch_def14a_llm,
+        call_shape="(context, tickers, model=config.data_extract.llm_model)",
+        step_chain_wired=True,
+        notes="logical key 'def_14' maps to the EXISTING def14a_llm table -- kept per "
+             "the task's own instruction ('keep the def14a_llm table and process as a "
+             "complementary one'), not renamed"),
+    "sec13f_hr": FormHandlerSpec(
+        name="sec13f_hr", sec_forms=("13F-HR", "13F-HR/A", "13F-NT", "13F-NT/A"),
+        discovery="bulk_quarterly", table="sec13f_hr",
+        handler=fetch_13f, call_shape="(context)  # NO tickers -- ALL filers, whole-quarter grain",
+        step_chain_wired=False,
+        notes="renamed from institutional_holdings (DB-level ALTER TABLE RENAME); sec_forms "
+             "is documentation only -- fetch_13f.py does not filter by form string (SEC's own "
+             "bulk 'Form 13F Data Sets' are pre-joined across all filers/forms); keep its "
+             "existing bulk-grain contract (cik, period, ticker, cusip) -- do not force "
+             "per-accession grain onto it, that would require abandoning the pre-joined bulk "
+             "files SEC already provides"),
+}

@@ -46,6 +46,7 @@ import re
 import pandas as pd
 from tqdm import tqdm
 
+from src.constants.constants import DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.structure.def14a_schema import Def14AExtract
 from src.data_extract.utils.common.edgar_extract import html_to_text
@@ -59,7 +60,8 @@ from src.data_extract.utils.common.sec_utils import (
 # DEF 14A = the shareholder proxy; DEF 14C = the equivalent INFORMATION STATEMENT that
 # CONTROLLED companies file instead (no vote solicited because a controlling holder already has
 # the votes, e.g. ERIE = Hirt trusts). Same governance / exec-comp content, so both are extracted.
-_FORM = ["DEF 14A", "DEF 14C"]
+# Centralized in constants.py as DEF14A_FORMS (form_registry.py's single source of truth).
+_FORM = DEF14A_FORMS
 
 # flattened output columns that must be stored numeric (float) in the DB
 # (governance booleans are surfaced as 1.0/0.0 flags so they are usable features)

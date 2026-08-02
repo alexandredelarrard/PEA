@@ -6,6 +6,12 @@ columns -- see `schema_registry.py`) FROM the new accession-grain, amendment-
 aware `fundamentals_facts` table, so every existing test and `data_aggregate`
 consumer of `fundamentals_history` needs zero changes.
 
+The one ADDED column is `employees`: the workforce headcount now arrives as a
+`fundamentals_facts` field like any other (parsed from 10-K text by
+`fundamentals_employees.py`), which is what retired the separate
+`employees_history` table -- `data_aggregate`'s workforce panel reads it from
+here now.
+
 Reuses `fetch_fundamentals.py`'s proven `_spine_grid` / `_assemble_base` /
 `_derive_history` UNCHANGED (they operate on a generic dict-of-[end, filed, val]
 DataFrames shape that doesn't care whether the source was the companyfacts JSON
@@ -17,6 +23,7 @@ its two leak-guard passes run exactly as before.
 from __future__ import annotations
 
 import pandas as pd
+from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
@@ -33,14 +40,8 @@ _STOCK_FIELDS: dict[str, list[str]] = {**STOCK_TAGS, **EXTRA_STOCK_TAGS}
 
 
 def _load_facts_for_ticker(context: Context, ticker: str) -> pd.DataFrame:
-    """All `fundamentals_facts` rows for one ticker. `DataStore.load` has no
-    server-side WHERE filter, so this loads the table then filters client-side --
-    acceptable at this table's scale (per-filing grain, not per-day); revisit if
-    the table grows large enough to need a scoped query."""
-    df = context.store.load("fundamentals_facts")
-    if df.empty:
-        return df
-    return df[df["ticker"] == ticker].copy()
+    """All `fundamentals_facts` rows for one ticker, filtered SERVER-SIDE."""
+    return context.store.load("fundamentals_facts", where={"ticker": ticker})
 
 
 def _resolve_latest_per_period(
@@ -149,6 +150,13 @@ def derive_fundamentals_history(
     annuals = {f: _to_concept_series(resolved, f, ("annual",)) for f in _FLOW_FIELDS}
     stocks = {f: _to_concept_series(resolved, f, ("instant",)) for f in _STOCK_FIELDS}
     shares = _to_concept_series(resolved, "sharesOutstanding", ("instant",))
+    # `LATEST_DURATION_TAGS` includes `employees` (the 10-K body-text headcount --
+    # see its entry in `fundamentals_tags.py`), so the workforce series is built,
+    # aligned and emitted as its own `fundamentals_history` column by exactly the
+    # same code path as dilutedShares/effectiveTaxRate, with no special case here.
+    # The `asof` alignment in `_assemble_base` is the reason it belongs in this
+    # dict: a headcount is disclosed once a year and must carry forward into the
+    # interim quarters rather than populate only the Q4 row.
     latest = {f: _to_concept_series(resolved, f, ("instant",)) for f in LATEST_DURATION_TAGS}
     overhang = _option_overhang_from_facts(resolved)
 
@@ -170,7 +178,7 @@ def rebuild_fundamentals_history(context: Context, tickers: list[str]) -> pd.Dat
                        for _, r in mapping.iterrows()} if not mapping.empty else {}
 
     frames = []
-    for ticker in tickers:
+    for ticker in tqdm(tickers, "Reshape to large format, fundamentals"):
         sector, industry_group = sector_by_ticker.get(ticker, (None, None))
         hist = derive_fundamentals_history(context, ticker, sector=sector, industry_group=industry_group)
         if not hist.empty:

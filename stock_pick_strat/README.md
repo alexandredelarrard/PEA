@@ -16,8 +16,8 @@ A chain of `Step` classes (`src/utils/step.py`), each with a `run()`, wired from
 ```
 StepExtractAllData          # 1. extract  (super-step → 4 sub-steps)
   ├─ StepExtractPrices        prices (+dividends), short interest, 13F holdings
-  ├─ StepExtractFundamentals  SEC companyfacts history, forward-P/E snapshot, earnings, macro
-  ├─ StepExtractStructure     employees, management, DEF 14A governance (LLM), SEC filings index
+  ├─ StepExtractFundamentals  SEC per-filing XBRL history (+ 10-K employee headcount), forward-P/E snapshot, earnings, macro
+  ├─ StepExtractStructure     management, DEF 14A governance (LLM), SEC filings index
   └─ StepExtractBehavioral    Wikipedia pageviews, Google Trends, earnings-call transcripts
 StepDeducePeers             # 2. peer baskets (return-corr + OpenAI embeddings)
 StepBuildCube               # 3. peer-relative feature panels → `cube` table
@@ -100,7 +100,7 @@ an existing DB from legacy parquet (one-off): `python -m scripts.migrate_parquet
 
 Key tables (PK): `prices` (ticker,date) · `dividends` · `short_interest` ·
 `fundamentals_history` (ticker,as_of) ·
-`earnings_surprises` · `macro` (date) · `employees_history` ·
+`earnings_surprises` · `macro` (date) ·
 `def14a_llm` (ticker,accession_number) · `sec13f_hr` · `cusip_ticker_map` ·
 `sp500_tickers` (ticker, + name/cik/sector/industry — also the ticker→CIK source) · `google_trends` ·
 `wiki_pageviews` · `ticker_embeddings` · `cube` (ticker,date,target_horizon) ·

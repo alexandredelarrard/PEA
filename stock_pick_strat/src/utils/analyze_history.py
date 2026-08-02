@@ -254,12 +254,12 @@ if __name__ == "__main__":
     # otherwise in this list; flag/replace if a different field was meant.
     FIELDS = ["totalRevenue", "pretaxIncome", "netIncome", "depAmort", "operatingIncome",
              "costOfRevenue", "sellingGeneralAdmin", "totalAssets", "totalLiabilities", "cash",
-             "ebitda"]
+             "epsDiluted"]
 
     import matplotlib.pyplot as plt 
     for field in FIELDS:
-        _check_table(facts, TICKERS[7], ["Q1","Q2","Q3","Q4"], field)
-        plt.title(field)
+        _check_table(facts, TICKERS[5], ["Q1","Q2","Q3","Q4"], field)
+        plt.title(field + TICKERS[5])
         plt.show()
 
     audit = run_audit(facts, TICKERS, FIELDS)
@@ -270,6 +270,11 @@ if __name__ == "__main__":
     print(f"tag_misalignment: {len(audit['tag_misalignment'])} rows across "
          f"{audit['tag_misalignment'][['ticker', 'field']].drop_duplicates().shape[0] if not audit['tag_misalignment'].empty else 0} (ticker, field) pairs")
 
-# ABBV -> revenue post 2019 completely wrong, review all key metrics 
-# ABNB -> netIncome wrong for Q3 2023 , SG&A wrong for Q3 
-# ACN no data for total liabilities 
+# AFL, no depAmort, no CostOfRevenue, no operatingIncome after 2024, revenue and Income up and downs since 2023 ?? 
+# CB -> no depAmort, no operatingIncome, no costOfRevenue
+# DTE -> cash pickes at 2021 Quarter ?? -> weird , no values for SellingGeneralAdmin
+# MCD, no totalLiabilities, depAmort huge drop early 2021 ? No pretaxIncome
+# RF -> totalRevenue = 0 for all quarters, preTax income missing betwween 2-2- and 2024-Q2, no operatingIncome, no CostofRevenue, no SellingGeneralAdmin,
+# MET -> no costOfRevenue, OperatingIncome only since 2025-05, depAmort only since 2024-04, huge drop in Revenue in 2019 -> almost 0 since ??
+# REG -> drop of Revenue 2018-2019 ? operatingIncome, only since 2025-05, No CostOfRevenue, cash only up to 2019, epsDiluted only until 2015
+

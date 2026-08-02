@@ -55,152 +55,24 @@ change to factors.py). Store equity so book/price is available too.
 Run:
     python -m data.fetch_fundamentals
 """
-import json
 import logging
-import time
-from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-
-from src.constants.constants import (
-    BALANCE_SHEET_IDENTITY_TOLERANCE, BALANCE_SHEET_MIN_ASSETS_TO_REVENUE,
-    COMPANYFACTS_CACHE_MAX_AGE_HOURS,
-    DEBT_TO_EQUITY_ABS_MAX, DILUTED_SHARES_MIN_SHARE_OF_BASIC,
-    DIVIDEND_PER_SHARE_ABS_MAX, EPS_ABS_MAX, PPE_NET_MIN_SHARE_OF_ROLLFORWARD,
-    OPERATING_MARGIN_ABS_MAX, PROFIT_MARGIN_ABS_MAX, RATIO_DENOMINATOR_MIN_FRACTION,
-    EFFECTIVE_TAX_RATE_MAX, EFFECTIVE_TAX_RATE_MIN,
-    RETURN_ON_EQUITY_ABS_MAX, SEC_COMPANYFACTS_URL, SHARES_OUTSTANDING_MAX,
-    SHARES_OUTSTANDING_MIN,
-)
-from src.context import Context
-from src.data_extract.utils.common.sec_utils import (
-    load_cik_mapping, load_extract_meta, meta_path, sec_get, today_iso,
-)
+from src.constants.constants import PPE_NET_MIN_SHARE_OF_ROLLFORWARD
+   
 from src.data_extract.utils.fundamentals.fundamentals_tags import (
     ANNUAL_MAX_DAYS, ANNUAL_MIN_DAYS, ASU_2017_07_EFFECTIVE, CHARGE_FLOWS,
     DILUTED_SHARES_TAGS, EXTRA_FLOW_TAGS, EXTRA_STOCK_TAGS, FLOW_TAGS,
-    GROSS_MARGIN_MAX, GROSS_MARGIN_MIN, IMPLIED_QUARTER_MAX_DAYS,
-    IMPLIED_QUARTER_MIN_DAYS, LATEST_DURATION_TAGS, QUARTER_MAX_DAYS,
-    QUARTER_MIN_DAYS, SHARES_TAGS, STOCK_TAGS, TTM_QUARTERS,
+    GROSS_MARGIN_MAX, GROSS_MARGIN_MIN, 
+    LATEST_DURATION_TAGS,
+    SHARES_TAGS, STOCK_TAGS, TTM_QUARTERS,
 )
 from src.data_extract.utils.fundamentals.fundamentals_validation import (
     apply_plausibility_guards,
 )
 
 logger = logging.getLogger(__name__)
-
-# --------------------------------------------------------------------------- #
-# SEC XBRL concept tags -- moved to fundamentals_tags.py (single source of truth
-# shared with fetch_fundamentals_edgar.py). Kept as module-level names here via
-# the import above so every existing test/downstream import of this module's
-# FLOW_TAGS / STOCK_TAGS / etc. keeps working unchanged.
-# --------------------------------------------------------------------------- #
-
-
-def _save_history_meta(
-    context: Context,
-    history: pd.DataFrame,
-    universe_size: int,
-) -> None:
-    meta = {
-        "last_built": today_iso(),
-        "row_count": len(history),
-        "ticker_count": int(history["ticker"].nunique()),
-        "universe_size": universe_size,
-    }
-    meta_path(context.paths["FUNDAMENTALS_HISTORY_PATH"]).write_text(
-        json.dumps(meta, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _load_existing_history(context: Context) -> pd.DataFrame | None:
-    df = context.store.load("fundamentals_history")
-    return None if df.empty else df
-
-
-def _tickers_to_process(
-    context: Context,
-    cik_mapping: pd.DataFrame,
-    existing: pd.DataFrame | None,
-) -> pd.DataFrame:
-    """Return CIK rows that still need SEC history fetched."""
-    if existing is None or existing.empty:
-        return cik_mapping
-
-    meta = load_extract_meta(context.paths["FUNDAMENTALS_HISTORY_PATH"])
-    if meta and meta.get("last_built") == today_iso():
-        have = set(existing["ticker"].unique())
-        return cik_mapping[~cik_mapping["ticker"].isin(have)]
-
-    # New calendar day (or no meta): refresh all tickers for new filings.
-    return cik_mapping
-
-
-# --------------------------------------------------------------------------- #
-# SEC companyfacts fetch (cached)                                             #
-# --------------------------------------------------------------------------- #
-def _cache_age_hours(path: Path) -> float:
-    """Hours since the cached payload was last written, or +inf when absent."""
-    try:
-        return (time.time() - path.stat().st_mtime) / 3600.0
-    except OSError:
-        return float("inf")
-
-
-def _fetch_companyfacts(context: Context, cik: str,
-                        max_age_hours: float | None = None) -> dict | None:
-    """One CIK's SEC companyfacts payload, re-using the on-disk cache when it is FRESH.
-
-    The cache is written on every download but used to be readable only when
-    `context.use_cache` was set -- which no caller does -- so ~2GB of cached payloads sat
-    unread and every rebuild re-downloaded all 500. Now a payload younger than
-    `max_age_hours` (default `COMPANYFACTS_CACHE_MAX_AGE_HOURS`) is reused.
-
-    The default is deliberately SUB-DAILY. The extraction DAG runs at 01:00 daily, so any
-    window >= 24h would let a run skip its refresh and delay a new filing; measured on the
-    live filing calendar a 2-day window costs a mean 1.0 business day of filing visibility,
-    concentrated on the heaviest filing days (five months carry 73% of all filings). At 20h
-    the daily run always sees a ~24h-old cache and refreshes, while an ad-hoc rebuild
-    minutes or hours later is free.
-
-    `context.use_cache` still forces the cache unconditionally (offline / dev runs), and a
-    caller can widen the window explicitly for a deliberate backfill.
-    """
-    cache_dir = context.paths["SEC_BULK_CACHE_DIR"]
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache = cache_dir / f"companyfacts_CIK{cik}.json"
-    window = (COMPANYFACTS_CACHE_MAX_AGE_HOURS if max_age_hours is None
-              else float(max_age_hours))
-
-    if cache.exists() and (context.use_cache or _cache_age_hours(cache) <= window):
-        try:
-            return json.loads(cache.read_text(encoding="utf-8"))
-        except Exception:              # truncated/corrupt -> fall through and re-download
-            pass
-    try:
-        resp = sec_get(SEC_COMPANYFACTS_URL.format(cik=cik))
-        data = resp.json()
-        cache.write_text(json.dumps(data), encoding="utf-8")
-        return data
-    except Exception as e:
-        # A STALE cache still beats no data at all: without this a transient SEC outage or
-        # a 403 dropped the ticker from the rebuild entirely (returning None), silently
-        # shrinking the universe for that run.
-        if cache.exists():
-            try:
-                logger.warning("companyfacts CIK%s: download failed (%s) — falling back to "
-                               "the cached payload (%.0fh old)", cik, e,
-                               _cache_age_hours(cache))
-                return json.loads(cache.read_text(encoding="utf-8"))
-            except Exception:                                       # noqa: BLE001
-                pass
-        logger.warning("companyfacts CIK%s: failed (%s)", cik, e)
-        return None
-
 
 # --------------------------------------------------------------------------- #
 # Concept extraction                                                          #
@@ -1050,85 +922,3 @@ def _derive_history(base: pd.DataFrame, ticker: str, sector, industry_group) -> 
 
     out = apply_plausibility_guards(out)
     return out.copy().reset_index(drop=True)
-
-
-# --------------------------------------------------------------------------- #
-# Row-level plausibility guards                                               #
-# --------------------------------------------------------------------------- #
-# --------------------------------------------------------------------------- #
-# Full universe historical build                                             #
-# --------------------------------------------------------------------------- #
-def build_fundamentals_history_sec(context: Context,
-                                   cik_mapping: pd.DataFrame | None = None) -> pd.DataFrame:
-    """
-    Build the ~10-year point-in-time fundamentals history for the universe from
-    SEC companyfacts and write it to FUNDAMENTALS_HISTORY_PATH.
-
-    Incremental behaviour:
-      - If history was already built today for the full universe, load and return.
-      - If history exists from today but new tickers appeared, fetch only those.
-      - On a new calendar day, refresh all tickers and merge with existing rows.
-    """
-
-    existing = _load_existing_history(context)
-    to_process = _tickers_to_process(context, cik_mapping, existing)
-
-    if to_process.empty and existing is not None and not existing.empty:
-        _save_history_meta(context, existing, len(cik_mapping))
-        print(
-            f"SEC fundamentals history already up to date for {today_iso()} "
-            f"— skipping ({len(existing)} rows)"
-        )
-        return existing
-
-    years = context.config.data_extract.years_history
-    cutoff = pd.Timestamp.today() - pd.DateOffset(years=years)
-
-    new_frames = []
-    for _, r in tqdm(to_process.iterrows(), total=len(to_process),
-                     desc="Building SEC fundamentals history"):
-        cik, ticker = r["cik"], r["ticker"]
-        facts = _fetch_companyfacts(context, cik)
-        if not facts:
-            continue
-        hist = build_ticker_history(ticker, facts, r.get("sector"), r.get("industry_group"))
-        if not hist.empty:
-            new_frames.append(hist)
-
-    parts = [df for df in (existing, *new_frames) if df is not None and not df.empty]
-    if not parts:
-        raise RuntimeError("No SEC fundamentals built — check CIK mapping / network.")
-
-    out = pd.concat(parts, ignore_index=True)
-    out["as_of_dt"] = pd.to_datetime(out["as_of"])
-    out = out[out["as_of_dt"] >= cutoff].drop(columns=["as_of_dt"])
-    out = out.drop_duplicates(subset=["ticker", "as_of"], keep="last")
-    out = out.sort_values(["ticker", "as_of"]).reset_index(drop=True)
-
-    # persist only the newly-built rows; the DB merges on (ticker, as_of)
-    new = pd.concat(new_frames, ignore_index=True) if new_frames else pd.DataFrame()
-    if not new.empty:
-        context.store.save("fundamentals_history", new)
-    _save_history_meta(context, out, len(cik_mapping))
-    print(f"Saved {len(new)} new SEC fundamental rows "
-          f"({out['ticker'].nunique()} tickers) to DB table 'fundamentals_history'")
-    return out
-
-
-# --------------------------------------------------------------------------- #
-# Entry point (called by StepExtractAllData)                                  #
-# --------------------------------------------------------------------------- #
-def fetch_fundamentals(context: Context, tickers: list[str]):
-    """
-    Build the SEC 10-year fundamentals history (incremental: skips when already
-    built today for the full universe; companyfacts JSONs are cached per CIK
-    between runs).
-
-    Forward P/E is no longer scraped as a today-only yfinance snapshot -- it is
-    reconstructed HISTORICALLY in the feature layer (earnings_features:
-    forward_earnings_yield) from the earnings-surprise archive, and market cap is
-    shares x daily close in the factor layer.
-    """
-    cik_mapping = load_cik_mapping(context)
-    return build_fundamentals_history_sec(context, cik_mapping)
-

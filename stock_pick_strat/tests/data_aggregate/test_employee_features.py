@@ -1,9 +1,10 @@
 """Tests for the workforce features
 (src/data_aggregate/utils/employee_features.py).
 
-The FMP employee series IS historical, so we check: (a) point-in-time stepwise
-application from each filing `as_of`, (b) year-over-year headcount growth math,
-and (c) revenue-per-employee combining TTM revenue with the headcount.
+The headcount series (fundamentals_history."employees", parsed from 10-K text)
+IS historical, so we check: (a) point-in-time stepwise application from each
+filing `as_of`, (b) year-over-year headcount growth math, and (c)
+revenue-per-employee combining TTM revenue with the headcount.
 """
 from __future__ import annotations
 
@@ -51,7 +52,7 @@ def test_employee_fields_pit_growth_and_rev_per_employee():
     # ---- revenue per employee = 600,000 / 1,200 = 500 ----
     assert abs(F["revenue_per_employee"].loc[after_second, "AAA"] - 500.0) < 1e-9
 
-    print("\n=== SANITY CHECK: workforce features (FMP historical) ===")
+    print("\n=== SANITY CHECK: workforce features (10-K headcount history) ===")
     print(f"  headcount 1,000 -> 1,200: YoY growth = {growth:+.1%} (expected +20%)")
     print(f"  revenue/employee = 600,000/1,200 = "
           f"{F['revenue_per_employee'].loc[after_second,'AAA']:.0f}")

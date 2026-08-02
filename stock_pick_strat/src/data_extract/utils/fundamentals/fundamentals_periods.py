@@ -19,12 +19,10 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.constants.constants import (
-    FUNDAMENTALS_DISCONTINUITY_MIN,
-)
 from src.data_extract.utils.fundamentals.fundamentals_tags import (
     ANNUAL_MAX_DAYS, ANNUAL_MIN_DAYS, IMPLIED_QUARTER_MAX_DAYS,
-    IMPLIED_QUARTER_MIN_DAYS,
+    IMPLIED_QUARTER_MIN_DAYS, MAX_OPPOSITE_SIGN_Q4_RATIO, MIN_PARTIAL_FY_FIELDS,
+    NON_NEGATIVE_FLOW_FIELDS, PARTIAL_FY_TOLERANCE, Q4_TAG_MISMATCH_FY_MAX,
 )
 
 # Ordinal position of each fiscal-period label within its fiscal year. SEC's own
@@ -154,32 +152,78 @@ def _relabel_by_chronological_rank(candidates: pd.DataFrame, start_col: str) -> 
            if rank < len(_REASSIGN_LABELS)}
 
 
-def _q4_is_coherent(q4_val: float, q1: float, q2: float, q3: float) -> bool:
+def _q4_is_coherent(q4_val: float, q1: float, q2: float, q3: float,
+                    *, field: str | None = None) -> bool:
     """A derived Q4 must be broadly consistent with Q1/Q2/Q3 -- a signal that
     catches an upstream data problem (mismatched XBRL concepts across periods,
     a corrupted quarter or FY value) rather than a genuine, if unusual, Q4.
     Deliberately permissive about MAGNITUDE alone: a real business can have a
     legitimately much-larger-or-smaller quarter (retail holiday seasonality, a
-    one-off gain), and same-sign Q4s are always accepted regardless of size.
-    Only rejects Q4 when it is a DIFFERENT SIGN than EVERY one of Q1/Q2/Q3 AND
-    not comparatively small -- a real business's flow fields are consistently
-    one sign quarter to quarter, so a sign flip is only innocuous (e.g. a rare
-    small rebate/write-off in an otherwise-profitable year) when its magnitude
-    is minor; a LARGE opposite-sign value is almost always a data error, not a
-    real reversal (reuses `FUNDAMENTALS_DISCONTINUITY_MIN`, the same "how small
-    counts as negligible" threshold `reconcile_fundamentals_facts` already
-    uses elsewhere for its QoQ-discontinuity check). Confirmed real failures
-    this is designed to catch as a final safety net (both also addressed at
-    the root by the same-source_tag requirement and the dimension-mode fix in
-    `fetch_fundamentals_edgar.build_tag_frames`): JPM (Q1/Q2/Q3 all +$22-27B, a
-    mismatched-tag FY produced a derived Q4 of -$63B) and MAA (Q1-Q3 all
-    +$127-134M, a wrongly-picked dimensioned FY value produced a derived Q4 of
-    -$384M)."""
+    one-off gain), so a Q4 sharing its sign with ANY of Q1/Q2/Q3 is accepted
+    regardless of size. Only when the sign matches NONE of them does magnitude
+    decide, and then the bar is the largest quarter already observed that year
+    (`MAX_OPPOSITE_SIGN_Q4_RATIO`).
+
+    Both of those rules were wrong before, and between them silently nulled
+    745 of the 950 missing Q4s measured across a 10-ticker audit:
+
+      * the sign test was `all(...)`, i.e. "reject unless Q4 matches EVERY
+        quarter's sign" -- not what this docstring described, and it meant ONE
+        loss-making quarter anywhere in the year destroyed that year's Q4 for
+        every income-statement field at once. Confirmed: GLW fiscal 2016
+        (Q1 -$368M, Q2 +$2,207M, Q3 +$284M, FY $3,695M) has a perfectly
+        correct derived Q4 of +$1,572M that was thrown away, taking
+        netIncome/epsDiluted/pretaxIncome/operatingIncome with it -- the same
+        pattern hit CB 2017/2020, AFL 2024, MET 2016/2017, REG 2012/2016/2017/
+        2020 and GLW 2016/2017/2018/2020/2024.
+      * the opposite-sign magnitude bar was `FUNDAMENTALS_DISCONTINUITY_MIN`
+        (0.2), which rejects genuine loss quarters: Citigroup's fiscal 2023 Q4
+        was a REAL -$1.84B against +$2.9-4.6B quarters (0.4x the largest), and
+        Atmos Energy's fiscal 2012 Q4 a real -$36.9M summer-quarter pretax loss
+        (0.21x) -- both as-filed, both nulled.
+
+    The SHARPEST test runs first and needs no threshold at all: for a field that
+    cannot be negative (`NON_NEGATIVE_FLOW_FIELDS` -- a top line, a cost line, a
+    cash amount paid), a negative derived Q4 is arithmetically impossible, so it
+    is proof the FY and the quarters measured different things. That single rule
+    subsumes both confirmed mismatched-concept failures this guard was built for
+    -- JPM (Q1/Q2/Q3 all +$22-27B of `RevenuesNetOfInterestExpense`, a
+    mismatched-tag `Revenues` FY produced a derived Q4 of -$63B) and CBRE fiscal
+    2016 (cost of revenue ~$2.2B/quarter against a $78.5M FY, -$6.4B) -- and
+    catches cases the magnitude bar missed entirely (KeyCorp's D&A, -$152M in
+    each of eight consecutive years).
+
+    Only for a genuinely SIGNED field does magnitude decide, and then the bar is
+    `MAX_OPPOSITE_SIGN_Q4_RATIO` times the largest quarter already observed --
+    deliberately loose, because a charge-driven loss quarter routinely dwarfs the
+    run-rate and nulling it is the more expensive error (see that constant's note
+    for the seven confirmed real quarters the old 1.0 bar threw away)."""
+    if field in NON_NEGATIVE_FLOW_FIELDS and q4_val < 0:
+        return False
+
     quarters = (q1, q2, q3)
-    if all((q4_val >= 0) == (q >= 0) for q in quarters):
+    if any((q4_val >= 0) == (q >= 0) for q in quarters):
         return True
+
+    # The one case where a LARGE opposite-sign Q4 is not just plausible but
+    # arithmetically forced: the fiscal year's own total came out the opposite
+    # sign from its first nine months, which can only happen if the fourth
+    # quarter outweighed all three. Confirmed real quarters this rescues, both
+    # otherwise indistinguishable from a data error on magnitude alone:
+    # Citigroup fiscal 2017 (nine months +$12.1B, FY -$6.8B -> a -$18.9B Q4,
+    # 4.6x the largest quarter) and Corning fiscal 2017 (+$0.9B, FY -$0.5B ->
+    # -$1.4B, 3.2x) -- both the December-2017 Tax Cuts and Jobs Act deferred-tax
+    # writedown, an event that hit a large share of the index in the SAME
+    # quarter, so this is a systematic fiscal-2017 hole, not two outliers.
+    # Neither confirmed failure mode shows the flip: JPM's mismatched-concept FY
+    # (+$16.0B) and MAA's dimensioned-slice FY (+$14.4M) both keep their nine-
+    # month sign and are simply too SMALL, which is what makes them detectable.
+    q123_sum = q1 + q2 + q3
+    if ((q4_val + q123_sum) >= 0) != (q123_sum >= 0):
+        return True
+
     max_abs = max(abs(q) for q in quarters)
-    return max_abs == 0 or abs(q4_val) <= max_abs * FUNDAMENTALS_DISCONTINUITY_MIN
+    return max_abs == 0 or abs(q4_val) <= max_abs * MAX_OPPOSITE_SIGN_Q4_RATIO
 
 
 def _reassign_misordered_native_q4(grp: pd.DataFrame) -> pd.DataFrame:
@@ -219,6 +263,72 @@ def _reassign_misordered_native_q4(grp: pd.DataFrame) -> pd.DataFrame:
     return grp
 
 
+def _fy_matches_quarterly_run_rate(fy_value: float, quarters: tuple[float, float, float]) -> bool:
+    """Whether an FY fact is plausibly the SAME economic line as the Q1-Q3
+    facts it will be differenced against, judged purely on scale.
+
+    Filers rename the concept behind a line item mid-history far more often
+    than they change what the line MEANS -- confirmed across the audit:
+    ATO tagged D&A as `DepreciationAndAmortization` in its 10-Qs and
+    `DepreciationDepletionAndAmortization` in its 10-K for NINE consecutive
+    years; AFL/DTE/ATO/C alternate between the two `IncomeLossFromContinuing-
+    OperationsBeforeIncomeTaxes...` variants; DTE/ATO/GLW/MET/REG switch
+    revenue concept at the ASC-606 cutover. Requiring Q1/Q2/Q3/FY to share one
+    source_tag outright (the original rule) made every such year's Q4
+    permanently underivable -- 107 cases across 10 tickers -- even though the
+    subtraction was perfectly valid.
+
+    The scale is the quarters' SUMMED MAGNITUDES, annualized -- NOT the
+    magnitude of their sum, which was a real bug: `abs(q1 + q2 + q3)` collapses
+    toward zero whenever a year contains offsetting quarters, and every FY value
+    then looks wildly out of scale against it. That rejected four confirmed,
+    perfectly derivable quarters where the only problem was one loss quarter in
+    the year -- Cboe fiscal 2022 (+110/-185/+150, FY 235 read as 2.34x its
+    "run-rate" of 100), Dow fiscal 2020 (+239/-225/-25, FY 1,294 read as 88x),
+    PG&E fiscal 2021 (0.12x) and EA fiscal 2012 (0.17x) -- none of which
+    involved a concept mismatch at all.
+
+    Only an UPPER bound is applied. A lower bound cannot be made to work: a year
+    of offsetting quarters legitimately foots to a small annual figure (PG&E
+    above), so "FY is much smaller than the quarters" is not evidence of
+    anything. The case it was meant to catch -- an FY on a different, smaller
+    concept, e.g. JPM's `Revenues` against `RevenuesNetOfInterestExpense`
+    quarters -- yields a NEGATIVE derived Q4, which `_q4_is_coherent` now
+    rejects outright on sign for any non-negative field."""
+    run_rate = sum(abs(float(q)) for q in quarters) * 4 / 3
+    if run_rate == 0:
+        return False
+    return abs(float(fy_value)) / run_rate <= Q4_TAG_MISMATCH_FY_MAX
+
+
+def _annual_shaped(grp: pd.DataFrame) -> pd.Series:
+    """Mask of rows whose OWN duration is a full fiscal year (~340-380d), i.e. the
+    same shape filter `annual_flow` applies. A native fiscal_period label of 'FY'
+    does NOT imply it: SEC's `fp` labels a fact by the FILING's period focus, so a
+    10-K's discrete fourth-quarter column is natively labeled 'FY' too."""
+    return grp["duration_days"].apply(classify_duration_shape) == "annual"
+
+
+def _annual_anchor_tag(grp: pd.DataFrame) -> str | None:
+    """The XBRL concept this fiscal year's figures should all be read from: the one
+    the filer used for its ANNUAL total, which is the line it reports as the headline
+    for this field (and the value Q4 is derived against, so agreeing with it is what
+    makes the subtraction valid).
+
+    Falls back to the most frequently occurring concept in the year when no
+    annual-shaped fact exists (a fiscal year seen only through its 10-Qs), and to
+    None when the year carries no `source_tag` at all -- in which case the tie-break
+    it feeds is a no-op (`source_tag` is optional on this frame, exactly as the
+    per-row `r.get("source_tag")` reads below assume)."""
+    if "source_tag" not in grp.columns:
+        return None
+    annual = grp[_annual_shaped(grp) & grp["source_tag"].notna()]
+    if not annual.empty:
+        return str(annual.sort_values("filing_date").iloc[0]["source_tag"])
+    tags = grp["source_tag"].dropna()
+    return str(tags.mode().iloc[0]) if not tags.empty else None
+
+
 def decumulate_quarterly_flow(facts: pd.DataFrame) -> pd.DataFrame:
     """Turn one (ticker, field)'s raw duration facts into discrete-quarter rows,
     generalizing `fetch_fundamentals.py::_quarterly_flow`'s YTD-decumulation + Q4
@@ -251,16 +361,19 @@ def decumulate_quarterly_flow(facts: pd.DataFrame) -> pd.DataFrame:
         Q4 fact directly -- native Q4 labels have proven unreliable in
         multiple, unrelated ways this session (a Q4-shaped context carrying
         the FY-sized value; a genuinely-earlier-quarter fact mislabeled 'Q4').
-        Derivation additionally requires: (a) Q1/Q2/Q3/FY all resolved from
-        the SAME underlying XBRL concept (`source_tag`) -- confirmed real bug:
-        JPM's FY sometimes resolves via a DIFFERENT candidate tag than its
-        quarters (`Revenues` vs `RevenuesNetOfInterestExpense`, JPM's actual
-        bank-revenue concept), so FY-(Q1+Q2+Q3) mixed two unrelated numbers
-        and produced a wildly negative "Q4"; mismatched tags make that
-        fiscal-year's Q4 unresolvable for this field rather than a fabricated
-        number. (b) the result passes `_q4_is_coherent` against Q1/Q2/Q3 --
-        catches whatever a tag-mismatch wouldn't (e.g. a corrupted individual
-        quarter value). Either failure means NO Q4 row for that fiscal year --
+        Derivation additionally requires: (a) when Q1/Q2/Q3/FY did NOT all
+        resolve from the same underlying XBRL concept (`source_tag`), the FY
+        value must still sit on the quarters' own scale
+        (`_fy_matches_quarterly_run_rate`) -- filers rename a line's concept
+        far more often than they change what it measures, so a mismatch alone
+        is not evidence of a bad subtraction, but a scale gap is (confirmed
+        real bug: JPM's FY sometimes resolves via a DIFFERENT candidate tag
+        than its quarters -- `Revenues` vs `RevenuesNetOfInterestExpense`,
+        JPM's actual bank-revenue concept -- so FY-(Q1+Q2+Q3) mixed two
+        unrelated numbers and produced a wildly negative "Q4"). (b) the result
+        passes `_q4_is_coherent` against Q1/Q2/Q3 -- catches whatever a scale
+        check wouldn't (e.g. a corrupted individual quarter value). Either
+        failure means NO Q4 row for that fiscal year --
         Q1/Q2/Q3 remain available, matching this pipeline's "null, never guess
         wrong" convention (`apply_plausibility_guards`). `filing_date` on the
         derived row = max(filing_date) across its four inputs (never stamped
@@ -287,17 +400,41 @@ def decumulate_quarterly_flow(facts: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=out_cols)
     d["fiscal_period"] = d["fiscal_period"].map(normalize_fiscal_period_label)
     d["duration_days"] = [duration_days(s, e) for s, e in zip(d["period_start"], d["period_end"])]
+    # This frame is always ONE logical field (the caller slices `raw` by field before
+    # calling); `_q4_is_coherent` needs its name to know whether the field can go
+    # negative. Absent when a caller passes a bare frame -- then the sign test simply
+    # does not apply.
+    field_name = str(d["field"].iloc[0]) if "field" in d.columns and not d.empty else None
 
     rows: list[dict] = []
     for fy, grp in d.groupby("fiscal_year", sort=True):
         # Canonical-selection order within a shared fiscal_period: earliest
-        # filing_date first (original before amendment), and -- for facts
-        # sharing the SAME filing_date (i.e. the SAME accession tagged both a
-        # quarter-shaped AND a YTD-shaped context for this concept) -- the
-        # quarter-shaped one first, so it is picked over the YTD one instead
-        # of an arbitrary tie-break.
+        # filing_date first (original before amendment); then, among facts
+        # sharing that filing_date (i.e. the SAME accession tagged this field
+        # more than once), the fiscal year's ANCHOR CONCEPT (see
+        # `_annual_anchor_tag`); then the quarter-shaped context over the
+        # YTD-shaped one, so the as-filed discrete quarter is preferred over
+        # arithmetic instead of an arbitrary tie-break.
+        #
+        # The anchor-concept key sits BETWEEN those two, and its absence was a
+        # confirmed bug worth ~200x on real data. The quarter-shaped preference
+        # is a rule about a fact's SHAPE, and it was being applied across facts
+        # that resolved DIFFERENT source concepts -- so within one filing it
+        # could pick a discrete-quarter fact belonging to a small, unrelated
+        # line over the YTD fact of the line the rest of the year actually uses.
+        # Confirmed on Valero for TEN consecutive years: its true D&A is
+        # `DepreciationAmortizationAndAccretionNet` (2021: $2,405M/yr, tagged
+        # YTD-only), but it ALSO tags a $47M/yr `DepreciationAndAmortization`
+        # line WITH a discrete-quarter context -- so every fiscal Q2/Q3 picked
+        # the ~$11M discrete fact and the stored series collapsed from ~$500M to
+        # ~$12M and back, every single year. Keying on filing_date FIRST leaves
+        # the amendment-coexistence ordering (and therefore point-in-time
+        # reconstruction) exactly as it was.
         grp = grp.assign(_quarterly_shaped=grp["duration_days"].apply(classify_duration_shape) == "quarterly")
-        grp = grp.sort_values(["filing_date", "_quarterly_shaped"], ascending=[True, False])
+        anchor_tag = _annual_anchor_tag(grp)
+        grp = grp.assign(_is_anchor_tag=grp["source_tag"].eq(anchor_tag) if anchor_tag else False)
+        grp = grp.sort_values(["filing_date", "_is_anchor_tag", "_quarterly_shaped"],
+                              ascending=[True, False, False])
         grp = _reassign_misordered_native_q4(grp)
         seen_keys: set[tuple] = set()
 
@@ -351,7 +488,26 @@ def decumulate_quarterly_flow(facts: pd.DataFrame) -> pd.DataFrame:
 
         # Q4: ALWAYS derived as FY - (Q1+Q2+Q3) -- see the module/function
         # docstrings for why a native Q4 fact is never trusted directly.
-        fy_rows = grp[grp["fiscal_period"] == "FY"]
+        #
+        # The FY anchor must be ANNUAL-SHAPED, not merely labeled 'FY'. SEC's
+        # native `fp` labels a fact by the FILING's period focus, so a 10-K that
+        # publishes a fourth-quarter column tags THAT ~91-day fact 'FY' as well
+        # -- and the quarter-shaped tie-break above then sorted it AHEAD of the
+        # real ~365-day annual figure, so `iloc[0]` used one quarter as if it
+        # were the whole year. Confirmed on Skyworks fiscal 2020, whose 10-K
+        # carries both 3,355.7M (370d) and 956.8M (97d) under fp='FY': the
+        # derivation computed 956.8 - 2,399.0 = -1,442.2M, which
+        # `_q4_is_coherent` then (correctly) threw away -- so the quarter was
+        # LOST even though the filer had published it outright. Where the guard
+        # happened to pass instead, the bad value was STORED: 77 (ticker, field,
+        # year) cells fail the Q1+Q2+Q3+Q4 == FY footing, concentrated in
+        # 53-week fiscal years (Cisco 2017 alone accounts for 41 fields, Skyworks
+        # 2014 for 3), because a 53rd week is what pushes a filer to publish the
+        # extra quarterly column. Applying the same shape filter `annual_flow`
+        # already uses removes both failure modes -- and Skyworks 2020 then
+        # derives 3,355.7 - 2,399.0 = 956.7M, matching the filer's own published
+        # 956.8M to rounding.
+        fy_rows = grp[(grp["fiscal_period"] == "FY") & _annual_shaped(grp)]
         can_derive = not fy_rows.empty and all(k in discrete for k in _QUARTER_LABELS)
         if not can_derive:
             continue
@@ -360,12 +516,14 @@ def decumulate_quarterly_flow(facts: pd.DataFrame) -> pd.DataFrame:
         q1, q2, q3 = by_fp_all["Q1"].iloc[0], by_fp_all["Q2"].iloc[0], by_fp_all["Q3"].iloc[0]
         inputs = [fy_r, q1, q2, q3]
 
+        q123_sum = sum(discrete[k] for k in _QUARTER_LABELS)
+        q123 = (discrete["Q1"], discrete["Q2"], discrete["Q3"])
         source_tags = {r.get("source_tag") for r in inputs if r.get("source_tag")}
-        if len(source_tags) > 1:
-            continue   # Q1/Q2/Q3/FY resolved from different XBRL concepts -- unresolvable
+        if len(source_tags) > 1 and not _fy_matches_quarterly_run_rate(fy_r["value"], q123):
+            continue   # Q1/Q2/Q3/FY on genuinely different concepts -- unresolvable
 
-        derived_val = float(fy_r["value"]) - sum(discrete[k] for k in _QUARTER_LABELS)
-        if not _q4_is_coherent(derived_val, discrete["Q1"], discrete["Q2"], discrete["Q3"]):
+        derived_val = float(fy_r["value"]) - q123_sum
+        if not _q4_is_coherent(derived_val, *q123, field=field_name):
             continue   # wildly incoherent vs Q1-Q3 -- null rather than store a bad number
 
         _append("Q4", fy_r, derived_val, derived=True,
@@ -401,6 +559,64 @@ def annual_flow(facts: pd.DataFrame) -> pd.DataFrame:
         if c not in d.columns:
             d[c] = None
     return d[out_cols].sort_values(["fiscal_year", "filing_date"]).reset_index(drop=True)
+
+
+def drop_derived_q4_for_partial_fiscal_years(facts: pd.DataFrame) -> pd.DataFrame:
+    """Discard every DERIVED Q4 for a fiscal year whose FY anchor is demonstrably
+    NOT the whole year -- detected CROSS-FIELD, which is the only way to see it.
+
+    `_q4_is_coherent`'s sign test catches a partial FY anchor one field at a time,
+    but only for a field that cannot go negative. When the FY row is partial for the
+    WHOLE YEAR, the signed fields (netIncome, operatingIncome, pretaxIncome, EPS)
+    have no such tell and silently take a garbage Q4. Confirmed on Johnson Controls
+    fiscal 2012, where the 10-K's annual row is roughly one quarter's worth of every
+    line: revenue FY $10,403M against $13,022M already booked in Q1-Q3 (true FY
+    ~$42B), cost of revenue $6,626M vs $7,916M, SG&A $2,903M vs $3,525M. Revenue
+    cannot shrink, so those three were correctly nulled on sign -- but the same bad
+    anchor also produced a -$430M netIncome and -$638M operatingIncome Q4 that
+    looked like an ordinary restructuring quarter and would have been stored.
+    S&P Global fiscal 2012 fails the same way across 5 fields.
+
+    The test is deliberately CROSS-FIELD and needs `MIN_PARTIAL_FY_FIELDS`
+    independent non-negative fields to agree, because a SINGLE field failing it
+    means something different and much more common: that one field's FY resolved a
+    different concept than its quarters (KeyCorp's D&A does this in eight separate
+    years, Valero's and United Rentals' in one each). Those are already handled per
+    field by the sign test, and vetoing a whole year on that evidence would throw
+    away every other field's perfectly good Q4.
+
+    As-reported rows are never touched -- only rows this pipeline itself computed."""
+    required = {"field", "duration_type", "fiscal_period", "fiscal_year", "value", "derived"}
+    if facts is None or facts.empty or not required.issubset(facts.columns):
+        return facts
+
+    non_negative = facts["field"].isin(NON_NEGATIVE_FLOW_FIELDS)
+    q123 = facts[non_negative & (facts["duration_type"] == "quarterly")
+                 & facts["fiscal_period"].isin(_QUARTER_LABELS)]
+    annual = facts[non_negative & (facts["duration_type"] == "annual")]
+    if q123.empty or annual.empty:
+        return facts
+
+    # only a COMPLETE Q1-Q3 set proves anything -- a missing quarter makes the
+    # cumulative smaller for an innocent reason
+    cum = q123.groupby(["field", "fiscal_year"])["value"].agg(["size", "sum"])
+    cum = cum[cum["size"] == len(_QUARTER_LABELS)]
+    fy = annual.groupby(["field", "fiscal_year"])["value"].first()
+    joined = cum.join(fy.rename("fy_value"), how="inner")
+    if joined.empty:
+        return facts
+
+    partial = joined[joined["fy_value"] < joined["sum"] * PARTIAL_FY_TOLERANCE]
+    if partial.empty:
+        return facts
+    suspect_years = {y for _f, y in partial.index
+                     if sum(1 for _f2, y2 in partial.index if y2 == y) >= MIN_PARTIAL_FY_FIELDS}
+    if not suspect_years:
+        return facts
+
+    drop = (facts["fiscal_period"] == "Q4") & (facts["duration_type"] == "quarterly") \
+        & (facts["derived"].astype(float) == 1.0) & facts["fiscal_year"].isin(suspect_years)
+    return facts[~drop].reset_index(drop=True)
 
 
 def reassign_misordered_instant_facts(facts: pd.DataFrame) -> pd.DataFrame:
@@ -451,7 +667,34 @@ def reassign_misordered_instant_facts(facts: pd.DataFrame) -> pd.DataFrame:
 def instant_stock(facts: pd.DataFrame) -> pd.DataFrame:
     """Point-in-time balance-sheet items, native-(fiscal_year, fiscal_period)-
     keyed. One row PER ACCESSION -- see `annual_flow`'s docstring for the
-    amendment-coexistence rationale (identical here)."""
+    amendment-coexistence rationale (identical here).
+
+    An instant fact's fiscal_period is BORROWED from a duration fact in the
+    same filing (`fetch_fundamentals_edgar.backfill_fiscal_period_from_filing`
+    -- instant facts carry no native fy/fp of their own), so a 10-K's
+    balance-sheet snapshot inherits that filing's 'FY' label. But a fiscal
+    year has no separate "FY balance sheet": the year-end snapshot IS the Q4
+    one, and labelling it 'FY' left every instant field with a hole at Q4 in
+    all four quarters of coverage -- 14 of 59 quarters per field on all 10
+    tickers audited (9,387 rows table-wide against just 130 genuine 'Q4'
+    instants). Normalized to 'Q4' here so `fundamentals_facts` carries one
+    consistent quarter grid for flow and instant fields alike. Safe as a
+    blanket rule: 'FY' is only ever assigned from a 10-K, and
+    `_filing_current_period_rows` has already restricted every fact to
+    period_end == that filing's period_of_report, so an instant labeled 'FY'
+    is by construction the fiscal-year-end snapshot. `fundamentals_derive`
+    keys instant series on period_end, not fiscal_period, so nothing
+    downstream changes.
+
+    Restricted to facts with NO period_start, which is what distinguishes a
+    genuine instant from the `LATEST_DURATION_TAGS` fields routed through this
+    same function (dilutedShares, basicShares, effectiveTaxRate,
+    reportableSegments -- duration facts merely TAKEN point-in-time). For those
+    'FY' and 'Q4' are two DIFFERENT measures that a 10-K legitimately tags side
+    by side: confirmed on CBRE fiscal 2011, whose 10-K reports a 318,454,191
+    full-year weighted-average basic share count AND a 320,638,316 Q4-only one,
+    both dated 2011-12-31. Renaming those would collapse the pair onto one
+    primary key and keep an arbitrary one of the two."""
     out_cols = ["fiscal_year", "fiscal_period", "value", "filing_date", "accession_number", "form",
                "period_start", "period_end", "source_tag", "is_amendment", "fiscal_period_source"]
     if facts is None or facts.empty:
@@ -459,6 +702,8 @@ def instant_stock(facts: pd.DataFrame) -> pd.DataFrame:
     d = facts.dropna(subset=["fiscal_year", "fiscal_period", "value", "filing_date"]).copy()
     if "period_start" not in d.columns:
         d["period_start"] = pd.NaT
+    year_end_snapshot = (d["fiscal_period"] == "FY") & d["period_start"].isna()
+    d.loc[year_end_snapshot, "fiscal_period"] = "Q4"
     if "period_end" not in d.columns:
         d["period_end"] = pd.NaT
     d = d.sort_values(["fiscal_year", "fiscal_period", "filing_date"]).drop_duplicates(
@@ -533,3 +778,244 @@ def backfill_fiscal_period_by_filing_order(raw: pd.DataFrame) -> pd.DataFrame:
                     & (pd.to_datetime(raw["period_end"], errors="coerce") == period_end))
             raw.loc[match, "fiscal_period"] = label
     return raw
+
+
+_SNAPSHOT_KEY = ["fiscal_year", "fiscal_period", "accession_number"]
+_SNAPSHOT_VALUE_COLS = ["value", "filing_date", "period_start", "period_end", "form",
+                        "is_amendment", "fiscal_period_source"]
+# the `stockholdersEquity` candidate that ALREADY includes noncontrolling
+# interests -- when it is the resolved tag, `minorityInterest` must not be
+# added on top or NCI is counted twice.
+_EQUITY_INCL_NCI_TAG = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+
+
+def _snapshot_values(facts: pd.DataFrame, field: str) -> pd.DataFrame:
+    """One instant field's value per balance-sheet snapshot (fiscal_year,
+    fiscal_period, accession_number). Only the KEY + value-bearing columns are
+    returned, never the whole row -- `ticker`/`cik` are constant across this
+    single-ticker frame and would otherwise collide under merge suffixes."""
+    cols = _SNAPSHOT_KEY + _SNAPSHOT_VALUE_COLS
+    sub = facts.loc[facts["field"] == field, [c for c in cols if c in facts.columns]]
+    return sub.drop_duplicates(subset=_SNAPSHOT_KEY)
+
+
+def _as_derived_liabilities(facts: pd.DataFrame, merged: pd.DataFrame,
+                            value: pd.Series, suffix: str) -> pd.DataFrame:
+    """Shape a computed total-liabilities series into `fundamentals_facts` rows,
+    taking provenance from the `suffix`-suffixed leg of `merged` (the balance-
+    sheet line the derivation is anchored on) and the LATEST filing_date across
+    every leg that fed it."""
+    constant_cols = {c: facts[c].iloc[0] for c in ("ticker", "cik") if c in facts.columns}
+    filed_cols = [c for c in merged.columns if c.startswith("filing_date")]
+    rows = merged.assign(
+        field="totalLiabilities", duration_type="instant", value=value,
+        filing_date=merged[filed_cols].max(axis=1),
+        period_start=merged[f"period_start{suffix}"], period_end=merged[f"period_end{suffix}"],
+        form=merged[f"form{suffix}"], source_tag=None,
+        is_amendment=merged[f"is_amendment{suffix}"],
+        fiscal_period_source=merged[f"fiscal_period_source{suffix}"],
+        derived=1.0, derived_from_accessions=merged["accession_number"],
+        **constant_cols,
+    )
+    # `reindex`, not `rows[facts.columns]`: these derivations build only the
+    # columns they know about, so any OTHER column present on the incoming frame
+    # (`unit`/`amends_accession` are added later in the pipeline, but a caller
+    # passing already-persisted rows has them from the start) must come through
+    # as null rather than raising KeyError.
+    return rows.reindex(columns=facts.columns)
+
+
+def _liabilities_from_current_split(facts: pd.DataFrame) -> pd.DataFrame | None:
+    """`totalLiabilities = currentLiabilities + totalLiabilitiesNoncurrent`, for
+    filers (confirmed: ACN, ADI, ADM) that tag only the split, never the
+    combined `us-gaap:Liabilities`."""
+    current = _snapshot_values(facts, "currentLiabilities")
+    noncurrent = _snapshot_values(facts, "totalLiabilitiesNoncurrent")
+    if current.empty or noncurrent.empty:
+        return None
+    merged = current.merge(noncurrent, on=_SNAPSHOT_KEY, suffixes=("_cur", "_ncur"))
+    if merged.empty:
+        return None
+    return _as_derived_liabilities(facts, merged,
+                                   merged["value_cur"] + merged["value_ncur"], "_cur")
+
+
+def _liabilities_from_footing(facts: pd.DataFrame) -> pd.DataFrame | None:
+    """`totalLiabilities = LiabilitiesAndStockholdersEquity - equity(incl NCI)
+    - redeemable NCI`, rearranging the balance-sheet identity the filer itself
+    published.
+
+    Needed because the current/noncurrent split above only helps a filer that
+    tags BOTH halves. Confirmed on live data: McDonald's and Atmos Energy never
+    tag `Liabilities` OR `LiabilitiesNoncurrent` in ANY filing, so
+    `totalLiabilities` was absent for their entire history; DTE Energy tagged
+    `LiabilitiesNoncurrent` only through fiscal 2019 and nothing after, cutting
+    its series off mid-history. All three tag `LiabilitiesAndStockholdersEquity`
+    in every filing (it is the balance sheet's footing, universal across the
+    S&P 500), so the identity closes exactly.
+
+    Mezzanine/temporary equity (`redeemableNCI`) sits BETWEEN liabilities and
+    equity in that footing and so must come out too; it is absent for most
+    filers, in which case it contributes nothing."""
+    footing = _snapshot_values(facts, "balanceSheetFooting")
+    equity = _snapshot_values(facts, "stockholdersEquity")
+    if footing.empty or equity.empty:
+        return None
+    merged = footing.merge(equity, on=_SNAPSHOT_KEY, suffixes=("_foot", "_eq"))
+    if merged.empty:
+        return None
+
+    # `stockholdersEquity` coalesces a parent-only and an incl-NCI candidate;
+    # only the parent-only one needs `minorityInterest` added back.
+    equity_tags = (facts.loc[facts["field"] == "stockholdersEquity", _SNAPSHOT_KEY + ["source_tag"]]
+                  .drop_duplicates(subset=_SNAPSHOT_KEY))
+    merged = merged.merge(equity_tags, on=_SNAPSHOT_KEY, how="left")
+    equity_is_parent_only = ~merged["source_tag"].astype(str).str.endswith(_EQUITY_INCL_NCI_TAG)
+
+    def _addend(field: str, mask: pd.Series | None = None) -> pd.Series:
+        """One optional balance-sheet leg aligned to `merged`, 0 where the filer
+        does not report it (most do not) or where `mask` excludes it."""
+        zeros = pd.Series(0.0, index=merged.index)
+        part = _snapshot_values(facts, field)
+        if part.empty:
+            return zeros
+        vals = merged.merge(part[_SNAPSHOT_KEY + ["value"]].rename(columns={"value": "_v"}),
+                            on=_SNAPSHOT_KEY, how="left")["_v"].fillna(0.0)
+        vals.index = merged.index
+        return vals if mask is None else vals.where(mask, 0.0)
+
+    total_equity = merged["value_eq"] + _addend("minorityInterest", equity_is_parent_only)
+    value = merged["value_foot"] - total_equity - _addend("redeemableNCI")
+    return _as_derived_liabilities(facts, merged.drop(columns="source_tag"), value, "_foot")
+
+
+# `CashAndDueFromBanks` is a bank balance sheet's FIRST cash line, not its cash
+# TOTAL -- the rest sits in `InterestBearingDepositsInBanks` (reserves at the
+# central bank, balances at correspondents).
+_PARTIAL_BANK_CASH_TAG = "CashAndDueFromBanks"
+
+
+def derive_bank_cash(facts: pd.DataFrame) -> pd.DataFrame:
+    """Complete `cash` wherever it resolved to the PARTIAL bank line
+    `CashAndDueFromBanks`, by adding the interest-bearing balances the filer
+    reports beside it.
+
+    Banks tag `CashAndCashEquivalentsAtCarryingValue` inconsistently, and the
+    `cash` coalesce falls through to `CashAndDueFromBanks` whenever they don't
+    -- which silently swaps in a number several times smaller. Confirmed on
+    live data: Citigroup's series ALTERNATES between the two concepts every
+    couple of years, so stored cash jumps $22.6B -> $202.7B -> $24.4B with no
+    business event behind it; Regions Financial stopped tagging the total after
+    2021-Q3 and the series stepped down from $27.5B to $2.2B.
+
+    The reconstruction is exact, not an estimate -- verified against the years
+    where the filer tags all three: Citigroup 2018-Q3 $25.727B + $173.559B ==
+    $199.286B, Regions 2018-Q3 $1.911B + $1.584B == $3.495B, both equal to the
+    filer's own `CashAndCashEquivalentsAtCarryingValue` to the dollar. The
+    partial value is REPLACED rather than kept alongside, for the same reason
+    the ASC-606 revenue slice is excluded in `fetch_fundamentals_edgar.
+    build_tag_frames`: a correctly-tagged component is still the wrong answer
+    for a field that means "total cash", and the PK
+    (ticker, accession, field, fiscal_year, fiscal_period, duration_type)
+    admits only one `cash` row per snapshot anyway."""
+    if facts is None or facts.empty or "field" not in facts.columns:
+        return facts
+    partial = ((facts["field"] == "cash")
+              & facts["source_tag"].astype(str).str.endswith(_PARTIAL_BANK_CASH_TAG))
+    if not partial.any():
+        return facts
+    deposits = _snapshot_values(facts, "interestBearingDepositsInBanks")[_SNAPSHOT_KEY + ["value"]]
+    if deposits.empty:
+        return facts
+
+    matched = (facts.loc[partial, _SNAPSHOT_KEY]
+              .merge(deposits.rename(columns={"value": "_deposits"}), on=_SNAPSHOT_KEY, how="left")
+              .set_index(facts.index[partial])["_deposits"])
+    idx = matched.index[matched.notna()]
+    if idx.empty:
+        return facts
+    facts = facts.copy()
+    facts.loc[idx, "value"] = facts.loc[idx, "value"] + matched[idx]
+    facts.loc[idx, "source_tag"] = None
+    facts.loc[idx, "derived"] = 1.0
+    facts.loc[idx, "derived_from_accessions"] = facts.loc[idx, "accession_number"]
+    return facts
+
+
+def derive_missing_pretax_income(facts: pd.DataFrame) -> pd.DataFrame:
+    """`pretaxIncome = netIncome + incomeTaxExpense (+ nciIncome)`, for filers
+    that tag no pre-tax income concept at all.
+
+    Both `IncomeLossFromContinuingOperationsBeforeIncomeTaxes...` variants are
+    genuinely absent from some filers' entire XBRL history -- confirmed:
+    McDonald's tags neither in any filing (only the Domestic/Foreign tax-
+    footnote split, which is annual-only), and Chubb tags neither before fiscal
+    2015. The identity closes exactly: `nciIncome` is added back only when the
+    resolved `netIncome` is the parent-only `NetIncomeLoss`, since the
+    alternative candidate (`ProfitLoss`) already includes noncontrolling
+    interests and would otherwise double-count them. Filers with no NCI at all
+    (McDonald's, Atmos) contribute nothing from that leg.
+
+    Fill-only: a snapshot that already carries an as-reported `pretaxIncome`
+    is never touched. Runs per duration_type, so quarterly and annual rows are
+    each derived from their own basis and never mixed."""
+    if facts is None or facts.empty or "field" not in facts.columns:
+        return facts
+    key = _SNAPSHOT_KEY + ["duration_type"]
+    net = facts.loc[facts["field"] == "netIncome",
+                   key + _SNAPSHOT_VALUE_COLS + ["source_tag"]].drop_duplicates(subset=key)
+    tax = facts.loc[facts["field"] == "incomeTaxExpense", key + ["value"]].drop_duplicates(subset=key)
+    if net.empty or tax.empty:
+        return facts
+    merged = net.merge(tax.rename(columns={"value": "_tax"}), on=key)
+    if merged.empty:
+        return facts
+
+    nci = facts.loc[facts["field"] == "nciIncome", key + ["value"]].drop_duplicates(subset=key)
+    if nci.empty:
+        merged["_nci"] = 0.0
+    else:
+        merged = merged.merge(nci.rename(columns={"value": "_nci"}), on=key, how="left")
+        parent_only = merged["source_tag"].astype(str).str.endswith("NetIncomeLoss")
+        merged["_nci"] = merged["_nci"].fillna(0.0).where(parent_only, 0.0)
+
+    covered = set(map(tuple, facts.loc[facts["field"] == "pretaxIncome", key].to_numpy()))
+    merged = merged[~merged[key].apply(tuple, axis=1).isin(covered)]
+    if merged.empty:
+        return facts
+
+    constant_cols = {c: facts[c].iloc[0] for c in ("ticker", "cik") if c in facts.columns}
+    derived_rows = merged.assign(
+        field="pretaxIncome", source_tag=None, derived=1.0,
+        value=merged["value"] + merged["_tax"] + merged["_nci"],
+        derived_from_accessions=merged["accession_number"], **constant_cols)
+    # see `_as_derived_liabilities` for why this reindexes rather than subscripts
+    return pd.concat([facts, derived_rows.reindex(columns=facts.columns)], ignore_index=True)
+
+
+def derive_missing_total_liabilities(facts: pd.DataFrame) -> pd.DataFrame:
+    """Fill `totalLiabilities` for the snapshots where the filer tagged no
+    combined `us-gaap:Liabilities` total, trying each derivation in turn and
+    only ever for a (fiscal_year, fiscal_period, accession_number) that is
+    still uncovered -- an as-reported total, when present, is always preferred
+    and never overridden, matching this pipeline's "as-filed beats derived"
+    convention already used for Q4 (`decumulate_quarterly_flow`). The same
+    precedence applies BETWEEN derivations: the current/noncurrent split is
+    the filer's own subtotalling, so it outranks rearranging the footing.
+
+    Operates on the FULL per-ticker frame (all fields already resolved,
+    `field`/`duration_type` columns present) since this is a CROSS-field
+    derivation, unlike the single-field `instant_stock`/`decumulate_quarterly_flow`.
+    """
+    if facts is None or facts.empty or "field" not in facts.columns:
+        return facts
+    for build in (_liabilities_from_current_split, _liabilities_from_footing):
+        derived = build(facts)
+        if derived is None or derived.empty:
+            continue
+        covered = set(map(tuple, facts.loc[facts["field"] == "totalLiabilities",
+                                           _SNAPSHOT_KEY].to_numpy()))
+        derived = derived[~derived[_SNAPSHOT_KEY].apply(tuple, axis=1).isin(covered)]
+        if not derived.empty:
+            facts = pd.concat([facts, derived], ignore_index=True)
+    return facts

@@ -9,10 +9,12 @@ Pure-synthetic, no network / no DB.
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from src.data_extract.utils.fundamentals.fundamentals_periods import (
     backfill_fiscal_period_by_filing_order, classify_duration_shape, decumulate_quarterly_flow,
-    normalize_fiscal_period_label, reassign_misordered_instant_facts, resolve_fiscal_period,
+    derive_missing_total_liabilities, normalize_fiscal_period_label,
+    reassign_misordered_instant_facts, resolve_fiscal_period,
 )
 
 
@@ -21,6 +23,15 @@ def _q(fiscal_year, fiscal_period, start, end, value, filed, accn="a", form="10-
            "period_start": pd.Timestamp(start), "period_end": pd.Timestamp(end),
            "value": value, "filing_date": pd.Timestamp(filed),
            "accession_number": accn, "form": form}
+
+
+def _stock(field, fiscal_year, fiscal_period, value, filed, accn="a", form="10-K"):
+    return {"ticker": "T", "cik": "1", "field": field, "duration_type": "instant",
+           "fiscal_year": fiscal_year, "fiscal_period": fiscal_period, "value": value,
+           "filing_date": pd.Timestamp(filed), "accession_number": accn, "form": form,
+           "period_start": pd.NaT, "period_end": pd.Timestamp(filed),
+           "source_tag": "us-gaap:Whatever", "is_amendment": 0.0,
+           "fiscal_period_source": "native", "derived": 0.0, "derived_from_accessions": None}
 
 
 def test_non_calendar_fye_accumulates_correct_ytd():
@@ -304,12 +315,20 @@ def test_q4_not_derived_when_inputs_use_different_source_tags():
     `us-gaap:RevenuesNetOfInterestExpense` (JPM's actual ~$23-26B/quarter bank-
     revenue concept) in several fiscal years -- FY-(Q1+Q2+Q3) across two
     DIFFERENT XBRL concepts is not a valid subtraction and produced wildly
-    negative "Q4" values (e.g. -$63B). Q4 must not be derived at all when
-    Q1/Q2/Q3/FY don't all share the same source_tag -- Q1/Q2/Q3 remain
-    available, the fiscal year's Q4 is simply unresolvable for this field."""
+    negative "Q4" values (e.g. -$63B). Q4 must not be derived -- Q1/Q2/Q3 remain
+    available, the fiscal year's Q4 is simply unresolvable for this field.
+
+    What now REJECTS it is the sign test: `totalRevenue` is in
+    `NON_NEGATIVE_FLOW_FIELDS`, so a negative derived Q4 is arithmetically
+    impossible and needs no threshold. The frame therefore carries the `field`
+    column, exactly as the production caller passes it (`build_ticker_facts_edgar`
+    slices `raw` by field before calling). The magnitude bar this test used to
+    rely on was measured throwing away real, as-filed loss quarters and has been
+    loosened for SIGNED fields -- see `MAX_OPPOSITE_SIGN_Q4_RATIO`."""
     def _q_tagged(fiscal_period, start, end, value, filed, accn, tag, form="10-Q"):
         row = _q(2016, fiscal_period, start, end, value, filed, accn, form)
         row["source_tag"] = tag
+        row["field"] = "totalRevenue"
         return row
 
     facts = pd.DataFrame([
@@ -328,11 +347,13 @@ def test_q4_not_derived_when_inputs_use_different_source_tags():
 
 
 def test_q4_nulled_when_derived_value_is_incoherent_with_other_quarters():
-    """Even when Q1/Q2/Q3/FY all share the same source_tag, a wildly incoherent
-    derived Q4 (opposite sign AND far outside Q1-Q3's magnitude range) must be
-    nulled rather than stored -- a final safety net alongside the same-tag
-    requirement, for whatever residual case produces a bad FY or quarter
-    value. Q1/Q2/Q3 remain available."""
+    """Even when Q1/Q2/Q3/FY all share the same source_tag, an impossible derived
+    Q4 must be nulled rather than stored -- a final safety net for whatever
+    residual case produces a bad FY or quarter value. Q1/Q2/Q3 remain available.
+
+    The MAA figures below are a NON-NEGATIVE field (rental income), so the
+    corrupted FY makes the subtraction produce a negative top line, which cannot
+    happen and is rejected on sign alone."""
     facts = pd.DataFrame([
         _q(2013, "Q1", "2013-01-01", "2013-03-31", 133367000.0, "2013-05-03", "a1"),
         _q(2013, "Q2", "2013-01-01", "2013-06-30", 267479000.0, "2013-08-02", "a2"),   # YTD6
@@ -340,10 +361,34 @@ def test_q4_nulled_when_derived_value_is_incoherent_with_other_quarters():
         # a corrupted/wrongly-picked FY value (a dimensioned slice, per the
         # confirmed MAA bug) -- FY-(Q1+Q2+Q3) would be wildly negative
         _q(2013, "FY", "2013-01-01", "2013-12-31", 14444000.0, "2014-02-21", "a-fy", "10-K"),
-    ])
+    ]).assign(field="rentalIncome")
     out = decumulate_quarterly_flow(facts)
     assert set(out["fiscal_period"]) == {"Q1", "Q2", "Q3"}   # Q4 nulled, not a garbage negative
     assert (out[out["fiscal_period"] == "Q1"]["value"] == 133367000.0).all()
+
+
+def test_q4_kept_when_a_signed_field_has_a_genuine_charge_driven_loss_quarter():
+    """The counterpart the old, tighter magnitude bar got WRONG: for a SIGNED
+    field a fourth quarter that flips sign and dwarfs the run-rate is ordinary --
+    an impairment, a legal settlement, a tax-reform writedown -- and nulling it
+    silently deletes the single most informative quarter of the year.
+
+    Allstate fiscal 2023 as filed: three catastrophe-loss quarters (-$320M,
+    -$1,352M, -$5M) and a real +$1,489M fourth quarter, FY -$188M. The derived Q4
+    is 1.10x the largest quarter, which the previous 1.0 bar rejected. Six more
+    confirmed cases behaved the same way (Gilead 2017, S&P Global 2014, Genuine
+    Parts 2025, Zimmer Biomet 2018, Johnson Controls 2012, J.M. Smucker 2023) --
+    see `MAX_OPPOSITE_SIGN_Q4_RATIO`."""
+    facts = pd.DataFrame([
+        _q(2023, "Q1", "2023-01-01", "2023-03-31", -320e6, "2023-05-03", "a1"),
+        _q(2023, "Q2", "2023-01-01", "2023-06-30", -1672e6, "2023-08-02", "a2"),   # YTD6
+        _q(2023, "Q3", "2023-01-01", "2023-09-30", -1677e6, "2023-11-02", "a3"),   # YTD9
+        _q(2023, "FY", "2023-01-01", "2023-12-31", -188e6, "2024-02-21", "a-fy", "10-K"),
+    ]).assign(field="netIncome")
+    out = decumulate_quarterly_flow(facts)
+    q4 = out[out["fiscal_period"] == "Q4"]
+    assert len(q4) == 1
+    assert q4["value"].iloc[0] == pytest.approx(1489e6)
 
 
 def test_native_q4_mislabeled_quarter_reassigned_when_it_starts_with_the_fiscal_year():
@@ -506,4 +551,60 @@ def test_reassign_misordered_instant_facts_repairs_filing_wide_mislabel():
     print("  realEstateGross all as 'Q4') is now relabeled using the fiscal year's own")
     print("  start (borrowed from any 'annual' row) + its own period_end -- genuinely")
     print("  correct Q2/Q3/Q4 instant facts for the same field are left untouched.")
+    print("  Validated.")
+
+
+def test_derive_missing_total_liabilities_sums_current_and_noncurrent_when_total_absent():
+    """Real bug found via live data: ACN, ADI, and ADM never tag a combined
+    `us-gaap:Liabilities` total anywhere in their filings -- only the
+    `LiabilitiesCurrent`/`LiabilitiesNoncurrent` split -- so `totalLiabilities`
+    was silently absent for their ENTIRE history even though both halves are
+    fully populated every period. `currentLiabilities` + `totalLiabilitiesNoncurrent`
+    (the SAME accession's balance-sheet snapshot) must be summed into a derived
+    `totalLiabilities` row."""
+    facts = pd.DataFrame([
+        _stock("currentLiabilities", 2025, "FY", 18768840000.0, "2025-10-10", "acc1"),
+        _stock("totalLiabilitiesNoncurrent", 2025, "FY", 6992806000.0, "2025-10-10", "acc1"),
+    ])
+    out = derive_missing_total_liabilities(facts)
+    total = out[out["field"] == "totalLiabilities"]
+    assert len(total) == 1
+    row = total.iloc[0]
+    assert abs(row["value"] - (18768840000.0 + 6992806000.0)) < 1e-6
+    assert row["derived"] == 1.0
+    assert row["source_tag"] is None
+    assert row["accession_number"] == "acc1"
+
+
+def test_derive_missing_total_liabilities_never_overrides_an_as_reported_total():
+    """An as-reported `totalLiabilities` (a filer that DOES tag the combined
+    `Liabilities` concept) must never be overridden by the derived sum, even if
+    both parts are also present for the same period -- as-filed beats derived,
+    matching this pipeline's convention already used for Q4."""
+    facts = pd.DataFrame([
+        _stock("currentLiabilities", 2025, "FY", 100.0, "2025-10-10", "acc1"),
+        _stock("totalLiabilitiesNoncurrent", 2025, "FY", 50.0, "2025-10-10", "acc1"),
+        _stock("totalLiabilities", 2025, "FY", 999.0, "2025-10-10", "acc1"),   # as-reported, different from the sum
+    ])
+    out = derive_missing_total_liabilities(facts)
+    total = out[out["field"] == "totalLiabilities"]
+    assert len(total) == 1   # no second, derived row appended
+    assert total.iloc[0]["value"] == 999.0
+
+
+def test_derive_missing_total_liabilities_noop_without_both_parts():
+    """When only ONE of the two halves is present, nothing is derived -- summing
+    a single known part would silently understate total liabilities rather
+    than leaving it correctly absent."""
+    facts = pd.DataFrame([
+        _stock("currentLiabilities", 2025, "FY", 100.0, "2025-10-10", "acc1"),
+    ])
+    out = derive_missing_total_liabilities(facts)
+    assert "totalLiabilities" not in set(out["field"])
+
+    print("\n=== SANITY CHECK: derived totalLiabilities from current+noncurrent parts ===")
+    print("  ACN/ADI/ADM never tag a combined us-gaap:Liabilities total -- only the")
+    print("  current/noncurrent split -- so totalLiabilities is now derived as their sum")
+    print("  per accession when the as-reported total is absent, never overriding a real")
+    print("  as-reported total, and never derived from a single known half.")
     print("  Validated.")

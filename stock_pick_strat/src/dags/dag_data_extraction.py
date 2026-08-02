@@ -7,7 +7,8 @@ Airflow POOLS (created in airflow-init):
 
   * sec_bulk (2 slots)  — big SEC zip downloads: fails_to_deliver, thirteen_f, financial_statements,
                           insider_transactions, financial_notes  (disk + SEC bandwidth bound)
-  * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s): fundamentals, employees, def14a
+  * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s): fundamentals (incl.
+    10-K headcount), def14a
   * scrape   (2 slots)  — external rate-limited scraping: wiki_pageviews, google_trends,
                           download_earnings_calls -> ingest_earnings_calls
   * default             — light / fast: market_prices, macro, macro_assets, short_interest,
@@ -93,8 +94,7 @@ financial_notes = fetch("financial-notes", pool="sec_bulk")           # VERY hea
 superinvestors = fetch("superinvestors")                              # light, needs 13F
 
 # 3) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
-fundamentals = fetch("fundamentals", pool="sec_api")
-employees = fetch("employees", pool="sec_api")
+fundamentals = fetch("fundamentals", pool="sec_api")                  # incl. 10-K headcount
 def14a = fetch("def14a", pool="sec_api")                              # + LLM
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")                 # 8-K item codes (structured)
 sec_13d = fetch("sec-13d", pool="sec_api")                           # SC 13D activist filings
@@ -159,7 +159,7 @@ trigger_aggregation = TriggerDagRunOperator(
 
 # --- wiring ---
 all_fetchers = light + [price_history, fails_to_deliver, thirteen_f, financial_statements,
-                        insider_transactions, financial_notes, fundamentals, employees, def14a,
+                        insider_transactions, financial_notes, fundamentals, def14a,
                         sec_8k_items, sec_13d, filing_text, 
                         download_earnings_calls] #wiki_pageviews, google_trends,
 

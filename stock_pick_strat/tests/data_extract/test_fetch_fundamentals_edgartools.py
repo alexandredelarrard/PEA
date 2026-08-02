@@ -184,6 +184,66 @@ def test_build_tag_frames_undimensioned_total_wins_even_if_a_dimensioned_zero_re
     assert out.iloc[0]["value"] == 3323200000.0
 
 
+def test_build_tag_frames_prefers_a_lower_priority_undimensioned_fact_over_a_shaky_repeat():
+    """Real bug found via live data: ABBV's Q1-2019 10-Q tags the priority-0
+    candidate `RevenueFromContractWithCustomerExcludingAssessedTax` with ~30
+    purely-DIMENSIONED product/geography facts (no undimensioned duplicate for
+    THIS tag at all) where TWO of them coincidentally share the same value
+    ($25M out of dozens of otherwise-distinct slices) -- a repeat count of 2 is
+    enough to pass the tag-LOCAL modal-repeat guard (`test_build_tag_frames_
+    admits_dimensioned_fact_when_all_members_agree`'s rule), which has no
+    visibility into the fact that a DIFFERENT, lower-priority candidate
+    (`Revenues`) has a clean UNDIMENSIONED fact for the exact same period --
+    the true total ($7.828B). The field-level override must prefer that
+    undimensioned value over the higher-priority tag's shaky dimensioned
+    admission, regardless of raw tag priority."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 848000000.0,
+             "2019-01-01", "2019-03-31", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 340000000.0,
+             "2019-01-01", "2019-03-31", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 25000000.0,
+             "2019-01-01", "2019-03-31", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 25000000.0,
+             "2019-01-01", "2019-03-31", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 1022000000.0,
+             "2019-01-01", "2019-03-31", "duration", 2019, "Q1", is_dimensioned=True),
+        _fact("us-gaap:Revenues", 7828000000.0,
+             "2019-01-01", "2019-03-31", "duration", 2019, "Q1", is_dimensioned=False),
+    ])
+    tag_map = {"totalRevenue": ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 7828000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:Revenues"
+
+
+def test_build_tag_frames_excludes_partial_revenue_concept_when_companion_present():
+    """Real bug found via live data: ADM splits total revenue between an
+    ASC-606 in-scope concept (`RevenueFromContractWithCustomerExcludingAssessed
+    Tax`, $24.956B) and an ASC-606 out-of-scope companion
+    (`RevenueNotFromContractWithCustomer`, e.g. commodity trading/merchandising
+    revenue, $55.313B) -- BOTH tagged undimensioned, BOTH genuinely correct,
+    but each only PART of total revenue; they sum exactly to the filer's own
+    `Revenues` total ($80.269B). Since both the priority-0 candidate and
+    `Revenues` are undimensioned, the plain field-level-undimensioned override
+    alone cannot tell them apart -- the companion's presence must specifically
+    exclude the partial concept so the true whole-company total wins."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", 24956000000.0,
+             "2025-01-01", "2025-12-31", "duration", 2025, "FY", is_dimensioned=False),
+        _fact("us-gaap:RevenueNotFromContractWithCustomer", 55313000000.0,
+             "2025-01-01", "2025-12-31", "duration", 2025, "FY", is_dimensioned=False),
+        _fact("us-gaap:Revenues", 80269000000.0,
+             "2025-01-01", "2025-12-31", "duration", 2025, "FY", is_dimensioned=False),
+    ])
+    tag_map = {"totalRevenue": ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 80269000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:Revenues"
+
+
 def test_build_tag_frames_excludes_dimensioned_facts_when_members_disagree():
     """A true multi-value business-segment slice (each member reporting a DIFFERENT
     number) must stay excluded -- no single member there represents the whole
@@ -351,7 +411,9 @@ def test_fetch_fundamentals_edgartools_saves_incrementally_per_ticker(tmp_path, 
     earlier ticker's already-extracted work."""
     import src.data_extract.utils.fundamentals.fetch_fundamentals_edgar as mod
 
-    def _fake_build(ticker, *, done_accessions=frozenset(), since=None):
+    # **_ absorbs the per-ticker extras the real signature takes (employee_history,
+    # log) -- this test is about the SAVE cadence, not about what is extracted
+    def _fake_build(ticker, *, done_accessions=frozenset(), since=None, **_):
         if ticker == "BAD":
             raise RuntimeError("simulated failure for BAD ticker")
         return pd.DataFrame([{

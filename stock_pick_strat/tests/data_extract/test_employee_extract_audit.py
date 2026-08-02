@@ -120,8 +120,8 @@ def test_headcount_continuity_guard():
 
     Anchored on the MEDIAN so one bad reading cannot reject the correct rows after it —
     WRB's stored 4,502,942 would otherwise have poisoned every later year."""
-    from src.data_extract.utils.structure.fetch_employees_edgar import (
-        _history_by_ticker, _is_continuous,
+    from src.data_extract.utils.fundamentals.fundamentals_employees import (
+        history_by_ticker, is_continuous,
     )
     import pandas as pd
 
@@ -139,14 +139,15 @@ def test_headcount_continuity_guard():
     ]
     print("\n=== SANITY CHECK: headcount continuity guard ===")
     for label, count, history, expected in cases:
-        got = _is_continuous(count, history)
+        got = is_continuous(count, history)
         assert got == expected, f"{label}: keep={got}, expected {expected}"
         print(f"  {label:34s} {count:>9,} -> {'keep' if got else 'DROP'}")
 
-    # the anchor is built in FILING-DATE order, not DB row order
+    # the anchor is built in FILING-DATE order, not DB row order, and is now seeded
+    # from the `employees` rows of `fundamentals_facts` (ticker/filing_date/value)
     df = pd.DataFrame({"ticker": ["A", "A", "B"],
-                       "as_of": ["2022-01-01", "2021-01-01", "2020-01-01"],
-                       "employees": [200, 100, 50]})
-    assert _history_by_ticker(df) == {"A": [100, 200], "B": [50]}
-    assert _history_by_ticker(None) == {} and _history_by_ticker(pd.DataFrame()) == {}
+                       "filing_date": ["2022-01-01", "2021-01-01", "2020-01-01"],
+                       "value": [200.0, 100.0, 50.0]})
+    assert history_by_ticker(df) == {"A": [100, 200], "B": [50]}
+    assert history_by_ticker(None) == {} and history_by_ticker(pd.DataFrame()) == {}
     print("  History anchor is filing-date ordered; empty input is safe. Validated.")

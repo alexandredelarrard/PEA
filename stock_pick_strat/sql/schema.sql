@@ -263,6 +263,9 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "sector" TEXT,
     "industry_group" TEXT,
     "effectiveTaxRate" DOUBLE PRECISION,
+    -- workforce headcount, parsed from 10-K body text (no XBRL concept exists);
+    -- replaces the retired employees_history table
+    "employees" DOUBLE PRECISION,
     "cashPeriodChange" DOUBLE PRECISION,
     "otherInvestingCashFlow" DOUBLE PRECISION,
     "otherFinancingCashFlow" DOUBLE PRECISION,
@@ -366,17 +369,9 @@ CREATE TABLE IF NOT EXISTS "macro_asset_prices" (
     PRIMARY KEY ("date")
 );
 
--- [extract] employees_history  (pk: ticker, as_of; from live DB)
-
-CREATE TABLE IF NOT EXISTS "employees_history" (
-    "ticker" TEXT NOT NULL,
-    "as_of" TIMESTAMP NOT NULL,
-    "period" TIMESTAMP,
-    "employees" BIGINT,
-    "form_type" TEXT,
-    "accession_number" TEXT,
-    PRIMARY KEY ("ticker", "as_of")
-);
+-- [extract] employees_history  -- RETIRED. Employee headcount is now a
+-- `fundamentals_facts` field (parsed from 10-K body text by
+-- fundamentals_employees.py) and surfaces as fundamentals_history."employees".
 
 -- [extract] google_trends  (pk: ticker, date; from live DB)
 

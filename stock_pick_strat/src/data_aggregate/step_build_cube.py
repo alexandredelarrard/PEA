@@ -84,7 +84,9 @@ class StepBuildCube(Step):
         "sector":         (("fundamentals_history",), "build_sector_features"),
         "earnings":       (("earnings_surprises",), "build_earnings_features"),
         "governance":     (("def14a_llm", "fundamentals_history"), "build_governance_features"),
-        "employee":       (("employees_history", "fundamentals_history"), "build_employee_features"),
+        # headcount now lives in fundamentals_history's `employees` column (the
+        # separate employees_history table is retired) -> one source, not two
+        "employee":       (("fundamentals_history",), "build_employee_features"),
         "dividend":       (("dividends", "fundamentals_history"), "build_dividend_features"),
         "attention":      (("wiki_pageviews", "google_trends"), "build_attention_features"),
         "institutional":  (("sec13f_hr", "fundamentals_history"),
@@ -105,7 +107,7 @@ class StepBuildCube(Step):
     }
     _TABLE_TO_ATTR: dict[str, str] = {
         "fundamentals_history": "fundamentals", "earnings_surprises": "earnings",
-        "def14a_llm": "def14a", "employees_history": "employees", "dividends": "dividends",
+        "def14a_llm": "def14a", "dividends": "dividends",
         "wiki_pageviews": "wiki_pageviews", "google_trends": "google_trends",
         "sec13f_hr": "institutional", "insider_transactions": "insider",
         "short_interest": "short_interest", "fails_to_deliver": "fails_to_deliver",
@@ -356,11 +358,6 @@ class StepBuildCube(Step):
                                "%d rules (raw table untouched).", sum(imp_stats.values()),
                                len(imp_stats))
 
-        self.employees = self._load_or_none("employees_history")
-        if self.employees is None:
-            self._log.warning("No employee-count history -> workforce features skipped "
-                              "(run fetch_employees; needs FMP_API_KEY).")
-
         # scoped reads: the panel uses only 2 tags of each -> never load the whole facts table
         self.pension_facts = load_pension_facts_scoped(self._context)
         if self.pension_facts is None:
@@ -594,10 +591,13 @@ class StepBuildCube(Step):
 
     def build_employee_features(self):
         """Workforce features (revenue per employee, YoY headcount growth) from the
-        FMP historical employee-count archive. Genuinely historical and point-in-
-        time (stepwise from each filing's `as_of`), so backtestable."""
+        `employees` column of `fundamentals_history` (10-K body-text headcount, see
+        `fundamentals_employees.py`). Genuinely historical and point-in-time
+        (stepwise from each filing's `as_of`), so backtestable. Headcount and the
+        revenue it is divided by now come from the SAME frame and the same `as_of`,
+        which is also why one source is passed twice here."""
         panel = build_employee_feature_panel(
-            self.employees, self.peers, self.stock_close.index,
+            self.fundamentals, self.peers, self.stock_close.index,
             fundamentals_history=self.fundamentals,
         )
         self._attach_panel(panel, "workforce", empty_msg="No workforce features built.")

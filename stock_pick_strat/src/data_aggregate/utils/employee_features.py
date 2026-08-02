@@ -1,10 +1,12 @@
 """
 employee_features.py  (src/data_aggregate/utils/employee_features.py)
 ---------------------------------------------------------------------
-Peer-relative WORKFORCE features built from the genuinely-historical FMP
-employee-count archive (fetch_employees). Because each count carries its SEC
-filing date as `as_of`, these are point-in-time and backtestable (unlike the
-yfinance snapshot, which only knows today's headcount):
+Peer-relative WORKFORCE features built from the `employees` column of
+`fundamentals_history` -- the headcount parsed out of each 10-K's body text by
+`fundamentals_employees.py` (this used to be a separate `employees_history`
+table). Because each count carries its SEC filing date as `as_of`, these are
+point-in-time and backtestable (unlike the yfinance snapshot, which only knows
+today's headcount):
 
     revenue_per_employee   TTM revenue / employees   (operational efficiency / moat)
     employee_growth        year-over-year change in headcount (expansion / retrenchment)
@@ -70,16 +72,22 @@ def _employee_fields(
 
 
 def build_employee_feature_panel(
-    employees_history: pd.DataFrame | None,
+    headcount_history: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
     fundamentals_history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format workforce feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
-    Empty if the employee-count history is unavailable."""
-    if (employees_history is None or employees_history.empty
-            or "as_of" not in employees_history.columns):
+    Empty if the employee-count history is unavailable.
+
+    `headcount_history` needs only (ticker, as_of, employees) -- today that IS
+    `fundamentals_history`, so callers pass the same frame twice; the two
+    parameters stay separate because the headcount and the revenue it is divided
+    by are conceptually independent inputs (and were separate tables until the
+    `employees_history` table was retired)."""
+    if (headcount_history is None or headcount_history.empty
+            or "as_of" not in headcount_history.columns):
         return pd.DataFrame(columns=["date", "ticker"])
 
-    fields = _employee_fields(employees_history, trading_index, fundamentals_history)
+    fields = _employee_fields(headcount_history, trading_index, fundamentals_history)
     return build_peer_relative_panel(fields, peer_dict)

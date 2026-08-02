@@ -91,7 +91,14 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                       # complete electric/energy cost line filers tag instead of the goods/
                       # services elements (e.g. PNW/AES electric, DTE energy, PEG services).
                       "CostOfGoodsSoldElectric", "CostOfGoodsAndServicesEnergyCommoditiesAndServices",
-                      "CostOfServicesEnergyServices", "CostOfDomesticRegulatedElectric"],
+                      "CostOfServicesEnergyServices", "CostOfDomesticRegulatedElectric",
+                      # the post-2016 name for the same regulated-utility cost line
+                      # (fuel + purchased power + gas): DTE tagged
+                      # `CostOfGoodsAndServicesEnergyCommoditiesAndServices` only
+                      # through 2015-Q3 and this element from 2017-Q2, so without it
+                      # the cost line -- and every margin built on it -- simply ended
+                      # mid-history.
+                      "UtilitiesOperatingExpenseProductsAndServices"],
     # `OperatingAndNonoperatingRevenues` / `OperatingLoss` / `OperatingIncome` were
     # dropped: not us-gaap elements (0 of 498 S&P-500 filers report any of them).
     "operatingIncome": ["OperatingIncomeLoss"],
@@ -105,7 +112,17 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                  # FCX (mine depletion in COGS ~ its total D&A). Verified as the filer's total D&A.
                  "UtilitiesOperatingExpenseDepreciationAndAmortization",
                  "CostOfGoodsAndServicesSoldDepreciationAndAmortization",
-                 "CostOfGoodsSoldDepreciationDepletionAndAmortization"],
+                 "CostOfGoodsSoldDepreciationDepletionAndAmortization",
+                 # the D&A line INSURERS and BANKS tag instead of any of the above
+                 # ("other" only in the sense that it sits outside their interest /
+                 # benefits lines -- it IS their total D&A). Fill-only, so a filer
+                 # using a standard tag is untouched. Without it these filers had no
+                 # quarterly D&A at all: MetLife tags it 53 times over 2011-2025
+                 # (median $693M/period) and had depAmort only from 2024, Travelers
+                 # 25 times over 2011-2015 (median $642M) and had it only from 2018,
+                 # M&T 33 times over 2011-2023 (median $165M) and had it only from
+                 # 2015.
+                 "OtherDepreciationAndAmortization"],
     "operatingCashFlow": ["NetCashProvidedByUsedInOperatingActivities",
                           "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment",
@@ -130,10 +147,17 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
     "researchAndDevelopment": ["ResearchAndDevelopmentExpense",
                                "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
     # ---- added for refined features (S&M efficiency, M&A, SBC, distress) ----
+    # `MarketingAndAdvertisingExpense` was REMOVED from this coalesce and given
+    # its own field (`marketingExpense`, below): advertising spend is a
+    # COMPONENT of SG&A, never the whole line, so as a last-resort fallback it
+    # populated a tiny "SG&A" for filers that report no SG&A line at all.
+    # Confirmed on Citigroup, whose entire 59-quarter `sellingGeneralAdmin`
+    # series resolved from it -- a bank reports noninterest expense, not SG&A,
+    # so the correct value there is NULL (and `noninterestExpense` already
+    # carries the real figure).
     "sellingGeneralAdmin": ["SellingGeneralAndAdministrativeExpense",
                             "GeneralAndAdministrativeExpense",
-                            "SellingAndMarketingExpense",
-                            "MarketingAndAdvertisingExpense"],
+                            "SellingAndMarketingExpense"],
     "stockBasedComp": ["ShareBasedCompensation",
                        "AllocatedShareBasedCompensationExpense"],
     "acquisitions": ["PaymentsToAcquireBusinessesNetOfCashAcquired",
@@ -169,6 +193,11 @@ STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
                       "CommercialPaper", "OtherShortTermBorrowings"],
     "currentAssets": ["AssetsCurrent"],
     "currentLiabilities": ["LiabilitiesCurrent"],
+    # total (not "other") noncurrent liabilities -- some filers (confirmed: ACN, ADI,
+    # ADM) never tag a combined `Liabilities` total at all, only this + currentLiabilities;
+    # `fundamentals_periods.derive_missing_total_liabilities` sums the two into
+    # `totalLiabilities` whenever the as-reported total is absent for a period.
+    "totalLiabilitiesNoncurrent": ["LiabilitiesNoncurrent"],
     "goodwill": ["Goodwill"],
     "totalAssets": ["Assets"],
 }
@@ -197,8 +226,14 @@ EXTRA_FLOW_TAGS = {
         "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"],
     # "Total costs and expenses" (incl. DD&A): lets us derive operating income as
     # revenue - this for non-financials that report no OperatingIncomeLoss line
-    # (integrated oil pre-restructuring, e.g. COP 2012-2016).
-    "costsAndExpenses": ["CostsAndExpenses"],
+    # (integrated oil pre-restructuring, e.g. COP 2012-2016). `OperatingCosts-
+    # AndExpenses` is the same subtotal under the name REITs use (confirmed:
+    # REG, 2017 onward) -- REITs almost never tag `OperatingIncomeLoss`, so
+    # without it their operating line is underivable.
+    "costsAndExpenses": ["CostsAndExpenses", "OperatingCostsAndExpenses"],
+    # advertising / marketing spend in its own right -- a COMPONENT of SG&A, not
+    # a substitute for it (see the `sellingGeneralAdmin` note above).
+    "marketingExpense": ["MarketingAndAdvertisingExpense"],
     "interestIncome": ["InvestmentIncomeInterest"],
     "amortizationIntangibles": ["AmortizationOfIntangibleAssets"],
     # ---- reported per-share + tax-cash + below-the-line items (§B tier-1 additions) ----
@@ -595,6 +630,12 @@ EXTRA_STOCK_TAGS = {
     "loans": ["LoansAndLeasesReceivableNetReportedAmount",
               "FinancingReceivableExcludingAccruedInterestBeforeAllowanceForCreditLoss"],
     "deposits": ["Deposits", "InterestBearingDepositLiabilities"],
+    # a bank's OWN deposits held AT other banks (an ASSET -- not the `deposits`
+    # liability above). Together with `CashAndDueFromBanks` it reconstructs the
+    # cash-and-equivalents total exactly (see
+    # `fundamentals_periods.derive_bank_cash`), which is what several banks stop
+    # tagging directly mid-history.
+    "interestBearingDepositsInBanks": ["InterestBearingDepositsInBanks"],
     "depositsDomestic": ["DepositsDomestic"],   # deposit-stickiness metric (sparsely tagged)
     "allowanceCreditLosses": ["FinancingReceivableAllowanceForCreditLosses",
                               "LoansAndLeasesReceivableAllowance"],
@@ -654,10 +695,73 @@ EXTRA_STOCK_TAGS = {
     "regulatoryLiabilitiesNoncurrent": ["RegulatoryLiabilityNoncurrent"],
 }
 
+# --------------------------------------------------------------------------- #
+# PARTIAL-TOP-LINE GUARDS. The ASC-606 contract-revenue elements are the highest-
+# priority `totalRevenue` candidates because they ARE the whole top line for a
+# modern product/services filer -- but they are only a SLICE of it for anyone
+# whose revenue mostly falls outside ASC 606, and the fact itself looks perfectly
+# valid (undimensioned, correctly tagged, right period). Consumed by
+# `fetch_fundamentals_edgar.build_tag_frames`, which excludes the slice so the
+# candidate list falls through to the filer's real total.
+# --------------------------------------------------------------------------- #
+PARTIAL_REVENUE_TAGS = {"RevenueFromContractWithCustomerExcludingAssessedTax",
+                        "RevenueFromContractWithCustomerIncludingAssessedTax"}
+# the us-gaap whole-company top line the slice is measured against
+TOTAL_REVENUE_TAG = "Revenues"
+# How many times bigger `Revenues` must be before the contract element is judged
+# a fee SLICE rather than the same top line under a different name. Set from the
+# measured distribution over 180 extracted tickers, which is cleanly bimodal:
+# 253 quarters across 15 tickers sit ABOVE 3x (REITs and insurers whose revenue
+# is almost entirely outside ASC 606 -- UDR 210x, MET 37x, HUM 31x, WRB 25x,
+# CCI 16x, SBAC 14x), while 113 quarters across 12 tickers sit between 1.05x and
+# 1.5x (energy/utility filers -- DVN, OXY, TRGP, D, SRE, DTE, RSG -- where the
+# two totals genuinely differ only by a reconciling item). Only the first group
+# is a mis-mapping; re-basing the second would change a defensible number and,
+# because the ratio there drifts period to period, could switch concept
+# mid-history and put a step in the series.
+PARTIAL_REVENUE_MATERIALITY = 3.0
+# Concepts a bank or insurer tags for its interest/premium top line. When one of
+# these DOMINATES the filing (see `FINANCIALS_TOPLINE_DOMINANCE` below), the filer's
+# revenue is interest/premium income, so an ASC-606 contract element in the same
+# filing is fee income at best -- and, confirmed on RF, sometimes literally $0.
+#
+# PRESENCE ALONE IS NOT ENOUGH, and assuming it was is a confirmed, severe bug: the
+# original rule nulled `totalRevenue` for any filer tagging any of these ANYWHERE in
+# a filing, on the stated assumption that they have "NO non-financial usage". Two of
+# them plainly do. `InterestIncomeExpenseNet` is tagged by 12 of the 22 non-financial
+# filers measured (ZBH, PKG, WAB, BKR, SPGI, ATO, MPC, NWSA, PFE, SJM, SYK, TJX,
+# ECHO) -- for an industrial it is NET INTEREST EXPENSE, a small NEGATIVE number
+# (Zimmer Biomet 2022-Q2: -$38.8M against $1,781.8M of real revenue) -- and
+# `InterestAndDividendIncomeOperating` by EA and O'Reilly. The result was silent
+# total loss of the top line for every such filer that tags ONLY the ASC-606 element
+# (nothing to fall through to): ZBH and PKG lost 2019+, BKR 2018+, SPGI 2019-2022,
+# and WAB lost 2019-2023 and then SPONTANEOUSLY REAPPEARED in 2024 when it stopped
+# tagging the marker -- exactly the ticker-by-ticker instability that makes a feature
+# unusable in production.
+FINANCIALS_TOPLINE_MARKERS = {"InterestAndDividendIncomeOperating", "NoninterestIncome",
+                              "InterestIncomeExpenseNet", "PremiumsEarnedNet",
+                              "PremiumsEarnedNetPropertyAndCasualty"}
+# How many times bigger a marker line must be than the ASC-606 contract element, FOR
+# THE SAME PERIOD, before the filer counts as a bank/insurer whose contract element is
+# a mere fee slice. Mirrors `PARTIAL_REVENUE_MATERIALITY` (and the `Revenues`-outranks
+# test it powers) so both halves of the partial-revenue guard ask the same economic
+# question -- "is this element dwarfed by the filer's real top line?" -- instead of
+# one asking a question about element NAMES, which is what broke. A genuine bank
+# clears it easily (Regions tags the contract element as $0.00 against ~$1.7B of
+# quarterly net interest income); an industrial's small, usually negative net
+# interest line never does.
+FINANCIALS_TOPLINE_DOMINANCE = PARTIAL_REVENUE_MATERIALITY
+
 # diluted weighted-average shares (duration fact; we take the latest period's
 # value point-in-time) -> true per-share + net-issuance signals.
 # The `...Adjustment` variant was dropped (0 of 498 filers).
 DILUTED_SHARES_TAGS = ["WeightedAverageNumberOfDilutedSharesOutstanding"]
+
+# Logical field name for the workforce headcount. Named here, beside every other
+# field name, because it is referenced from BOTH halves of the split described on
+# its entry below (`fundamentals_employees.py` produces the fact,
+# `fundamentals_derive.py` consumes it) and must never drift between them.
+EMPLOYEES_FIELD = "employees"
 
 # DURATION facts that must be taken as the LATEST reported value, never TTM-SUMMED:
 # a weighted-average share count is already a period figure, and summing four quarters
@@ -677,6 +781,20 @@ LATEST_DURATION_TAGS: dict[str, list[str]] = {
     # which would add four quarterly rates into a nonsense ~0.84 "rate". Taking the latest
     # reported duration fact keeps it point-in-time and on its natural scale.
     "effectiveTaxRate": ["EffectiveIncomeTaxRateContinuingOperations"],
+    # WORKFORCE HEADCOUNT -- the one field here with NO XBRL tag at all, hence the
+    # deliberately EMPTY candidate list. There is no GAAP concept for headcount
+    # (`dei:EntityNumberOfEmployees` exists but US filers essentially never tag it),
+    # so it is parsed out of the 10-K BODY TEXT by `fundamentals_employees.py` and
+    # appended as a ready-made fact row. The empty list is what keeps the two halves
+    # apart: `fetch_fundamentals_edgar.build_tag_frames` contributes no candidate tag
+    # for this field and never looks for one, while EVERY consumer that iterates this
+    # dict by KEY picks `employees` up for free -- `_assemble_base`'s latest-value
+    # ffill (right for an annually-disclosed level: it carries into the interim
+    # quarters instead of leaving them blank), `_derive_history`'s output column, and
+    # `fundamentals_derive`'s per-field series. It belongs in THIS dict rather than
+    # EXTRA_STOCK_TAGS for exactly that ffill: a stock field is joined on the exact
+    # period end, which would leave headcount populated only on Q4 rows.
+    EMPLOYEES_FIELD: [],
 }
 
 # Event / charge / financing flows where a quarter with NO reported tag means the
@@ -705,6 +823,73 @@ CHARGE_FLOWS = {"impairment", "restructuring", "acquisitions", "buybacks",
                 "debtExtinguishment", "realizedInvestmentGains", "goodwillAcquired",
                 # REIT AFFO adjustments: absent = no such non-cash item this quarter
                 "straightLineRent", "aboveBelowMarketLeaseAmort"}
+
+# Flow fields whose quarterly value is economically incapable of being NEGATIVE: a
+# top line, a cost/expense line, or a cash amount PAID (all reported as positive
+# magnitudes). Used by `fundamentals_periods._q4_is_coherent` as the sharpest
+# available test of a derived Q4 -- a negative here is arithmetically impossible, so
+# it always means the FY and the quarters measured different things, no magnitude
+# heuristic required. Deliberately EXCLUDES every genuinely signed concept (income,
+# EPS, cash-flow subtotals, gains/losses, working-capital movements, other
+# comprehensive income): a real loss-making or charge-laden fourth quarter is common
+# and must never be nulled -- that over-strictness is exactly what this pass fixed.
+NON_NEGATIVE_FLOW_FIELDS = {
+    # top lines
+    "totalRevenue", "revenuesTotal", "revenueExcludingAssessedTax",
+    "revenueIncludingAssessedTax", "oilGasRevenue", "rentalIncome", "premiumsEarned",
+    "premiumsWritten", "interestIncomeBank", "noninterestIncome",
+    # ACCRUAL expense lines -- cumulative by construction, so a negative discrete
+    # quarter is not a business event but a concept mismatch
+    "costOfRevenue", "sellingGeneralAdmin", "researchAndDevelopment", "marketingExpense",
+    "depAmort", "depletionDDA", "amortizationIntangibles", "noninterestExpense",
+    "operatingLeaseCost", "capex",
+}
+# Deliberately EXCLUDED after checking the rebuilt tickers for negatives: CASH and
+# event flows go negative for real reasons, so nulling them would delete good data.
+# Confirmed as-reported (derived=0) negatives on live filings: `incomeTaxesPaid` (a
+# net refund -- VLO 2021-Q2 -$918M, MTB 2016-Q1, TRV 2023-Q1, MET 2020-Q1),
+# `acquisitions` (cash acquired exceeding consideration -- MTB 2011-Q2, SPGI 2022-Q1,
+# PKG, VLO), `stockBasedComp` (forfeiture reversal -- WAB 2020-Q2), `interestExpense`
+# (WAB 2011-2012) and `dacAmortization` (MET 2023 under LDTI). Every financing flow
+# (buybacks / dividendsPaid / debtIssued / debtRepaid / equityIssuance) is likewise
+# excluded: they are YTD-cumulative and net, so a quarter can legitimately reverse.
+# How far a derived Q4 whose sign matches NONE of Q1/Q2/Q3 may exceed the largest
+# quarter already observed that year, for a SIGNED field. Raised from 1.0 after the
+# 1.0 bar was measured rejecting real, as-filed quarters at 1.03-2.6x -- Allstate
+# fiscal 2023 (three catastrophe-loss quarters then a +$1,489M Q4, 1.10x), Gilead
+# fiscal 2017 (-$3,865M Q4 on the Tax Cuts and Jobs Act writedown, 1.26x), S&P Global
+# fiscal 2014 (-$1,169M Q4 on the $1.6B legal settlement, 2.41x), Genuine Parts 2025
+# (2.39x), Zimmer Biomet 2018 (2.59x), Johnson Controls 2012 (2.59x), J.M. Smucker
+# 2023 (1.99x). A charge-driven quarter is normal and legitimately dwarfs the
+# run-rate; magnitude alone cannot distinguish it from a data error, so the
+# NON_NEGATIVE_FLOW_FIELDS sign test above is what now does the real work and this
+# bar only backstops the signed fields.
+MAX_OPPOSITE_SIGN_Q4_RATIO = 3.0
+# Ceiling on |FY| / (the quarters' own annualized scale) before a fiscal year whose FY
+# fact resolved a DIFFERENT concept than its quarters is treated as two unrelated
+# lines. Only an UPPER bound: a lower bound cannot work, because a year of offsetting
+# quarters legitimately foots to a small annual figure (see
+# `_fy_matches_quarterly_run_rate`), and an FY that is too SMALL because it is the
+# wrong concept produces a negative Q4 that the sign test above already rejects.
+Q4_TAG_MISMATCH_FY_MAX = 2.0
+# A fiscal year's FY anchor is treated as PARTIAL (not the whole year) once this many
+# independent non-negative fields report an annual figure BELOW their own Q1-Q3
+# cumulative -- see `fundamentals_periods.drop_derived_q4_for_partial_fiscal_years`.
+# Set from the measured distribution over the 20 re-extracted tickers, which is
+# cleanly separated: the two genuine year-wide cases fail on FIVE fields (S&P Global
+# 2012) and SEVEN (Johnson Controls 2012) -- both 2012 divestitures, where the 10-K
+# restates the year to continuing operations while the quarters stand as originally
+# filed, so no Q4 subtraction is valid. Every other flagged year fails on exactly ONE
+# field, which means something different and much more common: that field's FY
+# resolved a different concept than its quarters (KeyCorp's D&A in eight separate
+# years, United Rentals 2017, Echo 2019/2022) -- already handled per field by the
+# sign test. A threshold of 2 was measured catching KeyCorp fiscal 2024 (D&A plus
+# noninterest income, both concept mismatches) and needlessly destroying five good
+# Q4s that year.
+MIN_PARTIAL_FY_FIELDS = 3
+# Slack on the FY-vs-nine-months comparison, so ordinary restatement/rounding noise
+# between a 10-Q and the later 10-K is not read as a partial anchor.
+PARTIAL_FY_TOLERANCE = 0.98
 
 # ASU 2017-07 (non-service pension cost presented OUTSIDE operating income) is effective
 # for fiscal years beginning after 15-Dec-2017, i.e. FY2018. Fiscal ends before this date

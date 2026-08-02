@@ -40,7 +40,6 @@ from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 # --- structure -------------------------------------------------------------- #
-from src.data_extract.utils.structure.fetch_employees_edgar import fetch_employees_edgar
 from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
 from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
 from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
@@ -193,16 +192,11 @@ def financial_notes(config_path: str, tickers: str | None) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Structure (workforce / governance)                                            #
+# Structure (governance)                                                        #
 # --------------------------------------------------------------------------- #
-@cli.command(help="Employee counts from SEC 10-K text (EDGAR). SEC-api.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def employees(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
-    fetch_employees_edgar(context, tickers=_tickers(context, tickers))
-
-
+# NOTE: there is no `employees` command any more. Employee counts are extracted
+# from the same 10-K as the fundamentals (`fundamentals_employees.py`), so the
+# `fundamentals` command above now covers them.
 @cli.command(help="DEF 14A governance / executive pay (LLM-parsed). SEC-api + LLM.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

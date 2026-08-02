@@ -6,7 +6,7 @@ the parquet->DB migrator now and (Phase 2) by the fetchers for dual-write and
 incremental "only fetch missing dates" logic.
 
   * table_exists(engine, name)                 -> bool
-  * read_table(engine, name, ...)              -> DataFrame
+  * read_table(engine, name, ..., where=...)   -> DataFrame (server-side filter)
   * upsert_dataframe(engine, df, name, pk)     -> rows written (INSERT .. ON CONFLICT)
   * existing_dates(engine, name, date_col, ..) -> {ticker: max_date} (incremental cutoff)
 
@@ -103,10 +103,30 @@ def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
 
 
 def read_table(engine: Engine, name: str, columns: list[str] | None = None,
-               limit: int | None = None) -> pd.DataFrame:
+               limit: int | None = None,
+               where: dict[str, object] | None = None) -> pd.DataFrame:
+    """`where` pushes an equality / IN filter into SQL instead of returning the
+    whole table for the caller to filter in pandas: {"ticker": "AAPL"} ->
+    `WHERE ticker = 'AAPL'`, {"ticker": ["AAPL", "MSFT"]} -> `WHERE ticker IN (...)`.
+    Several keys are ANDed.
+
+    Built from reflected Column objects and bound parameters (never string
+    interpolation), so a value cannot inject SQL and an unknown column raises
+    KeyError here rather than reaching the database.
+
+    Matters at this repo's table sizes: `fundamentals_facts` is 2.33M rows across
+    491 tickers, and `fundamentals_derive` reads it ONCE PER TICKER -- 27.5s and
+    2.33M x 19 cells per call, ~3.7 hours over a full rebuild, against 0.042s per
+    scoped read (the registry PK is `btree (ticker, accession_number, ...)`, so a
+    ticker filter is already an index seek -- no new index needed)."""
     tbl = _reflect(engine, name)
     cols = [tbl.c[c] for c in columns] if columns else [tbl]
     stmt = select(*cols)
+    for col, value in (where or {}).items():
+        column = tbl.c[col]
+        stmt = stmt.where(column.in_(list(value))
+                          if isinstance(value, (list, tuple, set, frozenset))
+                          else column == value)
     if limit is not None:
         stmt = stmt.limit(limit)
     with engine.connect() as conn:
@@ -199,10 +219,13 @@ class DataStore:
         return table_exists(self.engine, name)
 
     def load(self, name: str, columns: list[str] | None = None,
-             limit: int | None = None) -> pd.DataFrame:
+             limit: int | None = None,
+             where: dict[str, object] | None = None) -> pd.DataFrame:
+        """`where` scopes the read server-side -- see `read_table`. Omitted (the
+        default) reads the whole table exactly as before."""
         if not self.exists(name):
             return pd.DataFrame(columns=columns or [])
-        return read_table(self.engine, name, columns=columns, limit=limit)
+        return read_table(self.engine, name, columns=columns, limit=limit, where=where)
 
     def row_count(self, name: str) -> int:
         return row_count(self.engine, name) if self.exists(name) else 0

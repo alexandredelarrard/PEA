@@ -16,11 +16,20 @@ it naturally gives accession-level provenance for amendment tracking.
 Reuses `fundamentals_tags.py` (the same tag-candidate lists as `fetch_fundamentals.py`
 -- this is what closes the confirmed MAA `capex` gap) and `fundamentals_periods.py`
 (fiscal-period resolution + Q1-Q4 decumulation, native-fiscal-year-keyed).
+
+One field is NOT XBRL-sourced: `employees`. Headcount has no GAAP concept, so it
+is parsed out of each 10-K's body text by `fundamentals_employees.py` and
+appended to that filing's tagged facts as an ordinary instant row (see the loop
+in `build_ticker_facts_edgar`). This replaces the separate
+`structure/fetch_employees_edgar.py` fetcher and its `employees_history` table:
+the 10-K is already open here, so listing and downloading those filings a second
+time bought nothing.
 """
 from __future__ import annotations
 
+import logging
 import os
-
+import random
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -28,13 +37,20 @@ from edgar import Company, set_identity
 
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
+from src.data_extract.utils.fundamentals.fundamentals_employees import (
+    employee_fact_frame, history_by_ticker,
+)
 from src.data_extract.utils.fundamentals.fundamentals_periods import (
     annual_flow, backfill_fiscal_period_by_filing_order, decumulate_quarterly_flow,
-    instant_stock, normalize_fiscal_period_label, reassign_misordered_instant_facts,
+    derive_bank_cash, derive_missing_pretax_income, derive_missing_total_liabilities,
+    drop_derived_q4_for_partial_fiscal_years, instant_stock,
+    normalize_fiscal_period_label, reassign_misordered_instant_facts,
 )
 from src.data_extract.utils.fundamentals.fundamentals_tags import (
-    EXTRA_FLOW_TAGS, EXTRA_STOCK_TAGS, FLOW_TAGS, LATEST_DURATION_TAGS,
-    SHARES_TAGS, STOCK_TAGS,
+    EMPLOYEES_FIELD, EXTRA_FLOW_TAGS, EXTRA_STOCK_TAGS, FINANCIALS_TOPLINE_DOMINANCE,
+    FINANCIALS_TOPLINE_MARKERS, FLOW_TAGS, LATEST_DURATION_TAGS,
+    PARTIAL_REVENUE_MATERIALITY, PARTIAL_REVENUE_TAGS, SHARES_TAGS, STOCK_TAGS,
+    TOTAL_REVENUE_TAG,
 )
 
 FLOW_FIELD_TAGS: dict[str, list[str]] = {**FLOW_TAGS, **EXTRA_FLOW_TAGS}
@@ -124,11 +140,12 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]]) -> p
     if "period_instant" in df.columns:
         df["period_end"] = df["period_end"].where(df["period_end"].notna(), df["period_instant"])
 
+    probe = pd.to_numeric(df.get("numeric_value"), errors="coerce")
+    probe = probe.where(probe.notna(), pd.to_numeric(df.get("value"), errors="coerce"))
+    df = df.assign(_probe=probe)
+
     if "is_dimensioned" in df.columns:
         dimensioned = df["is_dimensioned"] == True  # noqa: E712
-        probe = pd.to_numeric(df.get("numeric_value"), errors="coerce")
-        probe = probe.where(probe.notna(), pd.to_numeric(df.get("value"), errors="coerce"))
-        df = df.assign(_probe=probe)
         group_keys = ["_bare", "period_start", "period_end"]
 
         # An UNDIMENSIONED fact, when present at all for this (concept, period),
@@ -209,9 +226,91 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]]) -> p
         is_sole_parent_fallback = (dimensioned & no_repeats & is_parent_member
                                   & (parent_count == 1) & (~has_undimensioned))
 
-        admissible = (~dimensioned) | is_modal_repeat | is_sole_parent_fallback
-        df = df[admissible]
-        
+        # NOT filtered here (deferred past the tag_map merge below) -- see the
+        # field-level override right after the merge for why.
+        df = df.assign(_dimensioned=dimensioned,
+                       _admissible=(~dimensioned) | is_modal_repeat | is_sole_parent_fallback)
+    else:
+        df = df.assign(_dimensioned=False, _admissible=True)
+
+    # Some filers (confirmed: ADM) split total revenue between an ASC-606
+    # IN-scope concept (`RevenueFromContractWithCustomer(Excluding|Including)
+    # AssessedTax`) and an ASC-606 OUT-of-scope companion
+    # (`RevenueNotFromContractWithCustomer`, e.g. commodity trading/
+    # merchandising revenue that falls outside ASC 606) -- BOTH tagged
+    # undimensioned, BOTH genuinely correct, but EACH only PART of total
+    # revenue (summing them equals the filer's own `Revenues` total exactly:
+    # ADM FY2025, $24.956B + $55.313B == $80.269B). Since both are
+    # undimensioned, neither the priority ordering nor the field-level
+    # undimensioned-override below (which only guards against a shaky
+    # DIMENSIONED admission) has any way to know the priority-0 candidate is
+    # only a slice -- picking it as if it were 100% of revenue is wrong even
+    # though it is a real, correctly-tagged fact. When the companion
+    # co-exists for the EXACT SAME period, the in-scope-only concept is
+    # excluded so `totalRevenue`'s candidate list falls through to
+    # `Revenues`/`SalesRevenueNet` (the true whole-company total) instead.
+    is_partial_revenue = df["_bare"].isin(PARTIAL_REVENUE_TAGS)
+    has_revenue_companion = (
+        df.assign(_is_companion=(df["_bare"] == "RevenueNotFromContractWithCustomer") & (~df["_dimensioned"]))
+        .groupby(["period_start", "period_end"], dropna=False)["_is_companion"].transform("any"))
+
+    # The SAME "correctly tagged, but only a SLICE" failure, in the two forms
+    # that dwarf the ADM case above -- confirmed on live data and both silent,
+    # since the number looks perfectly well-formed:
+    #
+    #  (a) `Revenues` co-exists undimensioned for the same period and is
+    #      MATERIALLY LARGER. For any filer whose business sits mostly OUTSIDE
+    #      ASC 606 -- an insurer (premiums are ASC 944), a REIT (rents are
+    #      ASC 842) -- the contract element captures only fee income while
+    #      `Revenues` is the real top line. MetLife fiscal 2019-2020: the
+    #      priority-0 contract tag reported $313-354M/quarter against a true
+    #      $16.3-19.4B, so stored revenue was ~48x too SMALL from 2019 onward
+    #      (the "revenue falls off a cliff in 2019" the audit started from);
+    #      Regency Centers Q2/Q3-2018: $64.5M/$66.1M against $281.4M/$278.3M.
+    #      "Materially" is `PARTIAL_REVENUE_MATERIALITY`, set from the measured
+    #      bimodal distribution -- see its note in `fundamentals_tags.py`. An
+    #      ASC-606-native filer tagging both at the same value (e.g. GLW), and
+    #      an energy/utility filer whose two totals differ only by a reconciling
+    #      item, both keep the priority ordering untouched.
+    #  (b) NO `Revenues` anywhere, but an interest/premium line
+    #      (`FINANCIALS_TOPLINE_MARKERS`) DWARFS the contract element for the
+    #      same period. Regions Financial tags the contract element as literally
+    #      $0.00 every quarter, so `totalRevenue` was 0 for its ENTIRE history
+    #      while real quarterly revenue ran ~$1.7B. There is no whole-company
+    #      revenue concept to fall through to for such a filer, so the field is
+    #      left NULL -- correct here rather than a guess, because
+    #      `fetch_fundamentals._derive_history` already rebuilds the Financials
+    #      top line from net interest + noninterest income (banks) or premiums
+    #      + net investment income (insurers), which a bogus 0 would only
+    #      corrupt.
+    #
+    #      The DOMINANCE test is what makes this safe, and its absence was a
+    #      confirmed bug: the rule used to fire on the mere PRESENCE of a marker
+    #      concept anywhere in the filing, but `InterestIncomeExpenseNet` is
+    #      also how an ordinary industrial tags NET INTEREST EXPENSE (ZBH
+    #      2022-Q2: -$38.8M beside $1,781.8M of revenue). That nulled the whole
+    #      top line for ZBH/PKG/BKR/SPGI/WAB -- see the note on
+    #      `FINANCIALS_TOPLINE_MARKERS`. Comparing MAGNITUDES per period, rather
+    #      than trusting element names to be sector-exclusive, keeps every real
+    #      bank/insurer classified while leaving industrials untouched.
+    period_keys = ["period_start", "period_end"]
+    undimensioned_probe = df["_probe"].abs().where(~df["_dimensioned"])
+    revenues_total = (undimensioned_probe.where(df["_bare"] == TOTAL_REVENUE_TAG)
+                     .groupby([df[c] for c in period_keys], dropna=False).transform("max"))
+    outranked_by_total = (revenues_total.notna()
+                         & (df["_probe"].abs() * PARTIAL_REVENUE_MATERIALITY < revenues_total))
+    # Largest undimensioned marker value in the SAME period. Only POSITIVE values
+    # count: an industrial's marker is a net interest EXPENSE (negative), which is
+    # evidence AGAINST it being a top line, never for it.
+    marker_probe = df["_probe"].where(~df["_dimensioned"] & df["_bare"].isin(FINANCIALS_TOPLINE_MARKERS))
+    marker_total = (marker_probe.where(marker_probe > 0)
+                   .groupby([df[c] for c in period_keys], dropna=False).transform("max"))
+    outranked_by_marker = (marker_total.notna()
+                          & (df["_probe"].abs() * FINANCIALS_TOPLINE_DOMINANCE < marker_total))
+
+    df["_admissible"] = df["_admissible"] & ~(is_partial_revenue & (
+        has_revenue_companion | outranked_by_total | outranked_by_marker))
+
     if df.empty:
         return pd.DataFrame(columns=out_cols)
 
@@ -238,8 +337,36 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]]) -> p
         return pd.DataFrame(columns=out_cols)
     merged = df.merge(tag_lookup, on="_bare", how="inner")
 
-    merged["_min_prio"] = merged.groupby(
-        ["field", "period_start", "period_end"], dropna=False)["_prio"].transform("min")
+    # A field's candidate tags are checked in priority order, but the
+    # per-TAG admissibility above (`_admissible`, computed independently per
+    # bare concept) has no visibility into a DIFFERENT, lower-priority
+    # candidate tag for the SAME field. If any candidate tag reports an
+    # undimensioned fact for this exact (field, period) -- the unambiguous
+    # as-reported total -- that must win outright for the WHOLE field, even
+    # when a higher-priority candidate was otherwise let through only by the
+    # modal-repeat/parent-fallback heuristics. Confirmed empirically (ABBV
+    # Q1-2019 totalRevenue): priority-0 `RevenueFromContractWithCustomer-
+    # ExcludingAssessedTax` has 31 purely-dimensioned facts where two
+    # (out of ~30 unrelated product/geography slices) coincidentally share
+    # the value $25M -- a repeat count of 2 is enough to pass the tag-local
+    # modal-repeat guard -- while the true total ($7.828B) sits right there,
+    # undimensioned, under priority-2 `Revenues`. Without this override the
+    # shaky priority-0 admission wins outright and the real value is never
+    # even considered.
+    field_group_keys = ["field", "period_start", "period_end"]
+    field_has_undimensioned = (merged.assign(_undim=~merged["_dimensioned"])
+                               .groupby(field_group_keys, dropna=False)["_undim"].transform("any"))
+    # `_admissible` is ANDed in even in the undimensioned branch so the
+    # revenue-companion exclusion above (a real, undimensioned, but
+    # PARTIAL-revenue fact) is still honored -- being undimensioned is
+    # necessary but not sufficient once a known-partial companion is present.
+    merged = merged[np.where(field_has_undimensioned,
+                             merged["_admissible"] & ~merged["_dimensioned"],
+                             merged["_admissible"])]
+    if merged.empty:
+        return pd.DataFrame(columns=out_cols)
+
+    merged["_min_prio"] = merged.groupby(field_group_keys, dropna=False)["_prio"].transform("min")
     merged = merged[merged["_prio"] == merged["_min_prio"]]
     merged = merged.drop_duplicates(subset=["field", "period_start", "period_end"], keep="last")
 
@@ -344,6 +471,8 @@ def build_ticker_facts_edgar(
     done_accessions: frozenset[str] = frozenset(),
     tag_map: dict[str, list[str]] | None = None,
     since: pd.Timestamp | None = None,
+    employee_history: list[int] | None = None,
+    log: logging.Logger | None = None,
 ) -> pd.DataFrame:
     """Walks `Company(ticker).get_filings(form=list(forms))`, skips accessions
     already in `done_accessions` or filed before `since`, extracts each filing's
@@ -353,17 +482,27 @@ def build_ticker_facts_edgar(
 
     `since=None` (default) pulls the issuer's ENTIRE available filing history --
     callers wanting the repo's usual `years_history` scoping should pass an
-    explicit cutoff (see `fetch_fundamentals_edgartools`)."""
+    explicit cutoff (see `fetch_fundamentals_edgartools`).
+
+    `employee_history` seeds the headcount continuity guard with the values
+    already stored for this ticker (see `fundamentals_employees.history_by_ticker`)
+    -- without it an incremental run, which re-parses only the single new 10-K,
+    would judge that filing against an empty history and so not guard it at all."""
 
     tag_map = tag_map or ALL_FIELD_TAGS
     flow_fields = set(FLOW_FIELD_TAGS) & set(tag_map)
-    instant_fields = set(INSTANT_FIELD_TAGS) & set(tag_map) 
+    instant_fields = set(INSTANT_FIELD_TAGS) & set(tag_map)
 
     company = Company(ticker)
     filings = company.get_filings(form=list(forms))
     sorted_filings = sorted(filings, key=lambda f: f.filing_date)
     if since is not None:
         sorted_filings = [f for f in sorted_filings if pd.Timestamp(f.filing_date) >= since]
+
+    # Grows as the (chronologically ordered) filings are parsed, so each 10-K's
+    # headcount is checked against every value accepted before it -- the stored
+    # history plus this run's own earlier years.
+    accepted_headcounts = list(employee_history or [])
 
     raw_frames: list[pd.DataFrame] = []
     for filing in sorted_filings:
@@ -372,6 +511,29 @@ def build_ticker_facts_edgar(
         tagged = _filing_current_period_rows(filing, tag_map)
         if tagged.empty:
             continue
+        # HEADCOUNT: no XBRL concept exists, so it is parsed out of this filing's
+        # body text (10-K only) and appended as a ready-made instant fact -- from
+        # here on it is indistinguishable from a tagged field and rides the same
+        # period-resolution, amendment and persistence machinery. Appending it
+        # AFTER `_filing_current_period_rows` (rather than inside `build_tag_frames`)
+        # is what keeps the XBRL path free of a special case; re-running
+        # `backfill_fiscal_period_from_filing` is what gives the new row this
+        # filing's fiscal_year/fiscal_period, borrowed from the duration facts
+        # above it exactly as every genuine instant fact does. That function is
+        # idempotent -- rows it already filled carry native values now and are
+        # left alone.
+        #
+        # A filing whose XBRL yielded NOTHING (`tagged.empty`, i.e. a pre-2009
+        # 10-K or a Part-III-only 10-K/A) is skipped before this point on
+        # purpose: with no duration fact anywhere in it there is nothing to
+        # borrow a fiscal period FROM, and a headcount that cannot be placed in a
+        # fiscal year is unusable -- "null, never guess wrong", as elsewhere.
+        if EMPLOYEES_FIELD in tag_map:
+            employees = employee_fact_frame(filing, accepted_headcounts, log=log)
+            if employees is not None:
+                tagged = backfill_fiscal_period_from_filing(
+                    pd.concat([tagged, employees], ignore_index=True))
+                accepted_headcounts.append(int(employees["value"].iloc[0]))
         tagged["accession_number"] = filing.accession_number
         tagged["form"] = filing.form
         tagged["filing_date"] = pd.Timestamp(filing.filing_date)
@@ -441,6 +603,12 @@ def build_ticker_facts_edgar(
         lambda v: ",".join(v) if isinstance(v, list) else (None if pd.isna(v) else v))
     facts["is_amendment"] = facts["is_amendment"].fillna(0.0)
     facts["fiscal_period_source"] = facts["fiscal_period_source"].fillna("native")
+    # BEFORE the cross-field derivations, so nothing is built on a Q4 that came
+    # from an FY anchor the year's other fields already prove is partial.
+    facts = drop_derived_q4_for_partial_fiscal_years(facts)
+    facts = derive_missing_total_liabilities(facts)
+    facts = derive_missing_pretax_income(facts)
+    facts = derive_bank_cash(facts)
     facts = reassign_misordered_instant_facts(facts)
     facts = populate_amends_accession(facts)
     for c in _FACTS_COLS:
@@ -483,11 +651,25 @@ def fetch_fundamentals_edgartools(context: Context, tickers: list[str]) -> pd.Da
     except Exception:                              # noqa: BLE001 - table may not exist yet
         existing_accessions = {}
 
+    # Stored headcounts, so the continuity guard has a per-ticker anchor even on an
+    # incremental run that re-parses a single 10-K (see `build_ticker_facts_edgar`).
+    try:
+        stored_employees = context.store.load(
+            "fundamentals_facts", columns=["ticker", "filing_date", "value"],
+            where={"field": EMPLOYEES_FIELD})
+        employee_histories = history_by_ticker(stored_employees)
+    except Exception:                              # noqa: BLE001 - table may not exist yet
+        employee_histories = {}
+
+    random.shuffle(tickers)
+
     all_frames: list[pd.DataFrame] = []
     for ticker in tqdm(tickers, "Extract filings edgartools"):
         try:
             done = existing_accessions.get(ticker, frozenset())
-            ticker_facts = build_ticker_facts_edgar(ticker, done_accessions=done, since=since)
+            ticker_facts = build_ticker_facts_edgar(
+                ticker, done_accessions=done, since=since,
+                employee_history=employee_histories.get(ticker), log=context.log)
         except Exception as e:                      # noqa: BLE001
             context.log.warning("fetch_fundamentals_edgartools: %s failed (%s)", ticker, e)
             continue

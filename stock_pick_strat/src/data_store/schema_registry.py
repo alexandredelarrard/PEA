@@ -81,8 +81,9 @@ EXTRACT_TABLES: list[TableSpec] = [
     # risk-parity + trend allocation sleeve. See fetch_macro_assets.py.
     TableSpec("macro_asset_prices", "macro_asset_prices.parquet", ("date",), "extract",
               date_col="date", ticker_col=None, date_type_cols=("date",)),
-    TableSpec("employees_history", "employees_history.parquet",
-              ("ticker", "as_of"), "extract", date_col="as_of"),
+    # NOTE: `employees_history` was RETIRED here. Employee headcount is a
+    # `fundamentals_facts` field now (10-K body text, see fundamentals_employees.py)
+    # and is read as fundamentals_history."employees".
     TableSpec("google_trends", "google_trends.parquet", ("ticker", "date"), "extract",
               date_col="date"),
     TableSpec("wiki_pageviews", "wiki_pageviews.parquet", ("ticker", "date"), "extract",

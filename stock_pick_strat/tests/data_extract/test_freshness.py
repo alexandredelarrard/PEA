@@ -79,7 +79,6 @@ def test_freshness_flags_stale_daily_and_tolerates_lagged_quarterly():
         "sec13f_hr":            {"period": today - pd.Timedelta(days=120)},
         "pension_facts":        {"filed": today - pd.Timedelta(days=80)},
         "earnings_call_sections": {"as_of": today - pd.Timedelta(days=40)},
-        "employees_history":    {"as_of": today - pd.Timedelta(days=300)},
         # def14a_llm table intentionally ABSENT -> missing_table
     }
     report = fr.check_data_freshness(_ctx(data), today=today, track_new_fundamentals=False)
@@ -90,13 +89,12 @@ def test_freshness_flags_stale_daily_and_tolerates_lagged_quarterly():
     assert report["sources"]["macro"]["status"] == "stale"
     assert report["sources"]["fundamentals_history"]["status"] == "ok"      # 80d < 140 quarterly
     assert report["sources"]["fundamentals_facts"]["status"] == "ok"        # 80d < 140 quarterly
-    assert report["sources"]["employees_history"]["status"] == "ok"         # 300d < 460 yearly
     assert report["sources"]["def14a_llm"]["status"] == "missing_table"
     assert set(report["stale"]) == {"macro", "def14a_llm"}
 
     print("\n=== SANITY CHECK: data-freshness / gap gate ===")
     print(f"  as_of {report['as_of']} overall_ok={report['ok']}")
-    for label in ("prices", "macro", "fundamentals_history", "employees_history", "def14a_llm"):
+    for label in ("prices", "macro", "fundamentals_history", "fundamentals_facts", "def14a_llm"):
         s = report["sources"][label]
         print(f"    {label:<22} cadence={s['cadence']:<9} latest={s['latest']} "
               f"age={s['age_days']} (<= {s['max_age_days']}) -> {s['status']}")

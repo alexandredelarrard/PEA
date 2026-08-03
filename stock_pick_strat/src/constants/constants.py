@@ -231,6 +231,19 @@ DEF14A_EDGAR_DIRECTOR_COMP_TABLE = "def14a_edgar_director_comp"
 DEF14A_EDGAR_OWNERSHIP_TABLE = "def14a_edgar_ownership"
 DEF14A_EDGAR_VOTES_TABLE = "def14a_edgar_votes"
 
+# Sanity bounds for the DEF 14A repair layer (def14a_validate.py). edgartools' proxy HTML parser
+# emits values that are silently WRONG rather than absent: unit-scaled fee/net-income blocks whose
+# "(in thousands)" header it missed, a hardcoded 0.5 placeholder for the "*" (= "less than 1%")
+# ownership footnote, and Total-column values duplicated into a neighbouring component column.
+# These thresholds separate "implausible for an S&P 500 issuer, therefore mis-scaled/fabricated"
+# from "small but real", so the repair layer only ever fires on the former.
+DEF14A_AUDIT_FEE_MIN_PLAUSIBLE = 1e5     # a sub-$100k TOTAL auditor fee => block is in thousands
+DEF14A_NET_INCOME_MIN_PLAUSIBLE = 1e4    # a sub-$10k net income => figure is in millions/billions
+DEF14A_FISCAL_YEAR_MIN = 1990            # fee-table year labels outside [min, today+1] are junk
+DEF14A_PAY_RATIO_TOLERANCE = 0.02        # ceo_comp / median_comp must reproduce ratio within 2%
+DEF14A_COMP_RECONCILE_TOLERANCE = 1.0    # comp components must sum to `total` within $1 (rounding)
+DEF14A_PLACEHOLDER_PERCENT = 0.5         # edgartools' fabricated stand-in for a "*" percent cell
+
 # 10-K narrative sections: Item 1A (Risk Factors) + Item 7 (MD&A). Extracted via edgartools
 # (`fetch_filing_text.py`), section-carved to raw text, stored for later embedding/drift features
 # (YoY risk-factor additions, MD&A tone drift — reusing the notes-embedding machinery). One row per
@@ -833,6 +846,38 @@ HEADCOUNT_CONTINUITY_MAX = 5.0
 # reports it as a diagnostic; it never nulls or rescales the underlying value.
 FUNDAMENTALS_DISCONTINUITY_MIN = 0.2
 FUNDAMENTALS_DISCONTINUITY_MAX = 5.0
+
+# --------------------------------------------------------------------------- #
+# XBRL TAG-SWITCH LEDGER (flag, never auto-fix)                                #
+# --------------------------------------------------------------------------- #
+# A field's resolved `source_tag` CHANGING mid-history is normal and expected, so the mere
+# switch is not the signal. Measured on the live `fundamentals_facts`, 84.4% of
+# (ticker, field) pairs use exactly ONE tag across 15 years, and nearly every switch in the
+# remaining 15.6% is a US-GAAP TAXONOMY MIGRATION that moved every filer in the same window:
+# `leaseMaturity*` OperatingLeasesFutureMinimumPaymentsDue* -> LesseeOperatingLease-
+# LiabilityPaymentsDue* (ASC 842, old tag through 2020-12-31 and new from 2019-03-31 across
+# all tickers), `cashPeriodChange` (ASU 2016-18 restricted cash), `interestPaid` /
+# `incomeTaxesPaid` (X -> XNet deprecations), `netChargeOffs` / `provisionForCreditLosses` /
+# `allowanceCreditLosses` (CECL, all banks at once). Those are the SAME measure under a new
+# element name and the series is continuous across them.
+#
+# What is NOT benign is a switch where the LEVEL jumps at the boundary: the two tags are then
+# two different MEASURES spliced into one series, which fabricates a regime break for a
+# cross-sectional model. Calibrated on DTE `shortTermDebt`, which shows both shapes: its
+# benign fiscal-2015 -> 2016 switch moves the level $465M -> $499M (1.07x) while the harmful
+# fiscal-2012 -> 2013 switch moves it $240M -> $694M (2.9x) because the second tag is the
+# long-term-debt FOOTNOTE deduction row, not a balance-sheet line. 1.5 sits between the two
+# with room on both sides.
+TAG_SWITCH_LEVEL_BREAK_RATIO = 1.5
+# Periods pooled either side of a boundary before comparing levels. Comparing the two
+# BOUNDARY values alone is unusable on a volatile balance -- DTE's short-term borrowings
+# legitimately swing $0 -> $1,131M quarter-over-quarter WITHIN one tag -- so each side is
+# reduced to a median over up to this many periods (4 = one fiscal year).
+TAG_SWITCH_BASELINE_PERIODS = 4
+# Maximum hole (in days) between the end of one tag era and the start of the next before the
+# level comparison is abandoned. Across a longer gap the two levels are separated by missing
+# periods as well as by the tag change, so a break cannot be attributed to the switch.
+TAG_SWITCH_MAX_BOUNDARY_GAP_DAYS = 100
 
 # Say-on-pay support below this is dropped by `def14a_impute` (see
 # `_drop_implausible_say_on_pay`). Real votes cluster 0.85-0.99; the 2026-07 audit found

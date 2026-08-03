@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import time
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -45,12 +46,16 @@ from src.data_extract.utils.fundamentals.fundamentals_periods import (
     derive_bank_cash, derive_missing_pretax_income, derive_missing_total_liabilities,
     drop_derived_q4_for_partial_fiscal_years, instant_stock,
     normalize_fiscal_period_label, reassign_misordered_instant_facts,
+    resolve_fiscal_year_by_filing_calendar,
 )
 from src.data_extract.utils.fundamentals.fundamentals_tags import (
-    EMPLOYEES_FIELD, EXTRA_FLOW_TAGS, EXTRA_STOCK_TAGS, FINANCIALS_TOPLINE_DOMINANCE,
-    FINANCIALS_TOPLINE_MARKERS, FLOW_TAGS, LATEST_DURATION_TAGS,
-    PARTIAL_REVENUE_MATERIALITY, PARTIAL_REVENUE_TAGS, SHARES_TAGS, STOCK_TAGS,
-    TOTAL_REVENUE_TAG,
+    COVER_PAGE_SHARES_MAX_LAG_DAYS, COVER_PAGE_SHARES_TAG, EMPLOYEES_FIELD,
+    EXTRA_FLOW_TAGS, EXTRA_STOCK_TAGS, FIELD_TAG_DENYLIST,
+    FINANCIALS_TOPLINE_DOMINANCE,
+    FINANCIALS_TOPLINE_MARKERS, FISCAL_YEAR_CONTEXT_DAYS, FLOW_TAGS,
+    LATEST_DURATION_TAGS, NON_NEGATIVE_STOCK_FIELDS, PARTIAL_REVENUE_MATERIALITY,
+    PARTIAL_REVENUE_TAGS, SHARES_OUTSTANDING_FIELD, SHARES_TAGS, STOCK_TAGS,
+    TOTAL_REVENUE_TAG, XBRL_PARSE_ATTEMPTS, XBRL_RETRY_BACKOFF_SECONDS,
 )
 
 FLOW_FIELD_TAGS: dict[str, list[str]] = {**FLOW_TAGS, **EXTRA_FLOW_TAGS}
@@ -79,7 +84,8 @@ def _configure_identity() -> None:
     set_identity(ua)
 
 
-def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]]) -> pd.DataFrame:
+def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]],
+                     *, ticker: str | None = None) -> pd.DataFrame:
     """Per FILING: for each logical field, union candidate tags (by bare concept
     name, namespace-agnostic) restricted to UNDIMENSIONED (or effectively-total
     dimensioned, see below) facts, then per exact (period_start, period_end) keep
@@ -113,6 +119,11 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]]) -> p
     admits a number that is either cross-validated by repetition or uniquely
     identifiable as the parent entity, never a guess among genuinely
     disagreeing, unlabeled segment slices.
+
+    `ticker` is optional and consulted ONLY for `FIELD_TAG_DENYLIST`, the per-issuer
+    escape hatch for a concept this one filer misuses (see that constant). Omitting it
+    resolves purely on the global candidate lists, which is what every caller that has
+    no ticker in hand (and every unit test) gets.
 
     `facts_df` columns expected (edgartools `XBRL.facts.to_dataframe()`): concept,
     value, numeric_value, unit_ref, period_type, period_start, period_end,
@@ -337,6 +348,32 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]]) -> p
         return pd.DataFrame(columns=out_cols)
     merged = df.merge(tag_lookup, on="_bare", how="inner")
 
+    # A balance-sheet MAGNITUDE (a debt, an asset, a share count -- see
+    # `NON_NEGATIVE_STOCK_FIELDS`) reported NEGATIVE is a filer tagging defect, so the
+    # fact is made inadmissible and the field's coalesce falls through to its next
+    # candidate tag. Must be applied HERE, after the tag_map merge: the sign is only
+    # disqualifying relative to the logical FIELD the concept was mapped onto, which
+    # the per-concept `_admissible` above cannot see. Confirmed on DTE, whose FY2011/
+    # FY2012 10-Ks tag the priority-0 `shortTermDebt` candidate `us-gaap:DebtCurrent`
+    # as -$355M / -$634M (the negated "Less amount due within one year" deduction row
+    # of the long-term-debt footnote) -- both undimensioned, so nothing else here could
+    # reject them, and stored short-term debt came out negative for both years.
+    negative_stock = merged["field"].isin(NON_NEGATIVE_STOCK_FIELDS) & (merged["_probe"] < 0)
+    merged["_admissible"] = merged["_admissible"] & ~negative_stock
+
+    # Per-issuer deny-list (`FIELD_TAG_DENYLIST`): a concept THIS filer misuses for a
+    # different measure, removed from its field's candidates so the coalesce continues to
+    # the next one. Same placement rationale as the sign guard above -- the verdict is on
+    # a (field, concept) pair, which only exists after the merge. A ticker with no entry
+    # (and `ticker=None`) is untouched, so this can never change global resolution.
+    denied_pairs = {(field, tag)
+                    for field, tags in FIELD_TAG_DENYLIST.get(ticker or "", {}).items()
+                    for tag in tags}
+    if denied_pairs:
+        is_denied = pd.Series(list(zip(merged["field"], merged["_bare"])),
+                              index=merged.index).isin(denied_pairs)
+        merged["_admissible"] = merged["_admissible"] & ~is_denied
+
     # A field's candidate tags are checked in priority order, but the
     # per-TAG admissibility above (`_admissible`, computed independently per
     # bare concept) has no visibility into a DIFFERENT, lower-priority
@@ -421,28 +458,184 @@ def backfill_fiscal_period_from_filing(tagged: pd.DataFrame) -> pd.DataFrame:
     return tagged
 
 
-def _filing_current_period_rows(filing, tag_map: dict[str, list[str]]) -> pd.DataFrame:
+def _header_period_of_report(filing) -> pd.Timestamp | None:
+    """The EDGAR submission header's period-of-report, as a LAST-RESORT fallback
+    behind the XBRL cover page (see `_resolve_period_of_report`). Wrapped because
+    it is not a plain attribute: it lazily fetches the filing homepage and has been
+    observed raising (`TypeError` out of `edgar.attachments.get_filing_dates`) --
+    which, on the bare-attribute read this replaces, propagated all the way out of
+    `build_ticker_facts_edgar` and cost the ENTIRE ticker its extraction via the
+    per-ticker handler in `fetch_fundamentals_edgartools`."""
+    try:
+        por = filing.period_of_report
+    except Exception:                              # noqa: BLE001 - homepage fetch/parse
+        return None
+    return pd.Timestamp(por).normalize() if por else None
+
+
+def _resolve_period_of_report(filing, xb) -> pd.Timestamp | None:
+    """The filing's OWN reporting-period end, preferring the XBRL cover page's
+    `dei:DocumentPeriodEndDate` over the EDGAR submission header.
+
+    The header value is filer-keyed metadata and is sometimes simply wrong, while
+    the cover-page tag is part of the audited instance document and was correct in
+    every disagreement found on live data. Because the caller filters facts to
+    `period_end == this date` EXACTLY, a wrong date does not degrade the result --
+    it discards the entire filing, or worse keeps the prior-year comparatives:
+
+      * KeyCorp Q1-2013 10-Q: header 2013-03-**15**, cover page 2013-03-31
+        -> 0 of 63 current-period rows kept, fiscal 2013 Q1 missing outright.
+      * Packaging Corp fiscal-2016 10-K: header **2017-02-28** (its own FILING
+        date), cover page 2016-12-31 -> whole fiscal year lost.
+      * Cboe Q3-2013 10-Q: header 2013-11-**04**, cover page 2013-09-30.
+      * Baker Hughes Q1-2018 10-Q: header **2017**-03-31, cover page 2018-03-31
+        -> the 36 rows that matched were the PRIOR-YEAR comparatives, stored as if
+        they were fiscal 2017 Q1 while the real Q1-2018 was dropped. The only one
+        of the four where a wrong header produced data rather than none.
+    """
+    cover = None
+    try:
+        cover = (xb.entity_info or {}).get("document_period_end_date")
+    except Exception:                              # noqa: BLE001 - malformed instance
+        cover = None
+    if cover:
+        try:
+            return pd.Timestamp(cover).normalize()
+        except (ValueError, TypeError):
+            pass
+    return _header_period_of_report(filing)
+
+
+def _filing_xbrl(filing, *, log: logging.Logger | None = None):
+    """This filing's parsed XBRL instance, or None when it genuinely has none.
+
+    Retries `XBRL_PARSE_ATTEMPTS` times because the previous single bare
+    `except Exception: return empty` conflated the two outcomes it must NOT
+    conflate -- "this filing has no XBRL" (a pre-2009 filing, or a Part-III-only
+    10-K/A: nothing to do, silence is right) and "the fetch/parse failed this
+    time" (retryable, and if it is not retried the filing is silently absent from
+    the table forever). Measured on the live table: 8 filings carrying XBRL
+    (`isXBRL=1`) had contributed ZERO rows -- AEP fiscal 2021, AFL Q3-2013, AIZ
+    fiscal 2018, C Q1-2023, ORLY fiscal 2013, PKG Q3-2013, REG fiscal 2011, SYK
+    fiscal 2013 -- yet all 8 re-parse cleanly today (78-107 tagged rows each), so
+    each was a transient failure that no log line anywhere recorded."""
+    for attempt in range(1, XBRL_PARSE_ATTEMPTS + 1):
+        try:
+            return filing.xbrl()
+        except Exception as e:                     # noqa: BLE001 - network or parse
+            if attempt == XBRL_PARSE_ATTEMPTS:
+                if log is not None:
+                    log.warning(
+                        "fundamentals: %s %s (%s) XBRL unavailable after %d attempts (%s)",
+                        getattr(filing, "form", "?"), getattr(filing, "accession_number", "?"),
+                        getattr(filing, "filing_date", "?"), XBRL_PARSE_ATTEMPTS, e)
+                return None
+            time.sleep(XBRL_RETRY_BACKOFF_SECONDS * attempt)
+    return None
+
+
+def _filing_current_period_rows(filing, tag_map: dict[str, list[str]],
+                                *, ticker: str | None = None,
+                                log: logging.Logger | None = None) -> pd.DataFrame:
     """One filing's tagged facts, restricted to its OWN current period (period_end
     == the filing's period_of_report) -- excludes multi-year comparatives a filing
     routinely re-discloses (a 10-K shows 3 years of income-statement history; those
     prior years were already captured as THEIR OWN filing's current period). Both
     the discrete-quarter and YTD-cumulative variant of a duration concept share the
-    same period_end (only period_start differs), so this filter keeps both."""
-    try:
-        xb = filing.xbrl()
-        facts_df = xb.facts.to_dataframe()
-    except Exception:
+    same period_end (only period_start differs), so this filter keeps both.
+
+    Also attaches the filing's cover-page `dei:DocumentFiscalYearFocus` as
+    `cover_fiscal_year` -- one of the two labels
+    `fundamentals_periods.resolve_fiscal_year_by_filing_calendar` votes on to
+    reconstruct the issuer's fiscal calendar (edgartools' per-fact `fiscal_year`
+    being the other, and both carrying typos).
+
+    `ticker` is optional and used only to look up `FIELD_TAG_DENYLIST` -- passing None
+    resolves purely on the global candidate lists."""
+    xb = _filing_xbrl(filing, log=log)
+    if xb is None:
         return pd.DataFrame()
-    tagged = build_tag_frames(facts_df, tag_map)
+    try:
+        facts_df = xb.facts.to_dataframe()
+    except Exception as e:                         # noqa: BLE001 - malformed instance
+        if log is not None:
+            log.warning("fundamentals: %s facts unreadable (%s)",
+                        getattr(filing, "accession_number", "?"), e)
+        return pd.DataFrame()
+    tagged = build_tag_frames(facts_df, tag_map, ticker=ticker)
     if tagged.empty:
         return tagged
-    por = filing.period_of_report
-    if not por:
+    por_ts = _resolve_period_of_report(filing, xb)
+    if por_ts is None:
         return pd.DataFrame()
-    por_ts = pd.Timestamp(por).normalize()
     period_end = pd.to_datetime(tagged["period_end"], errors="coerce").dt.normalize()
-    tagged = tagged[period_end == por_ts]
+    current = tagged[period_end == por_ts]
+    current = _cover_page_shares_fallback(tagged, current, por_ts)
+    tagged = current
+    if tagged.empty:
+        # XBRL parsed and matched candidate tags, yet NOTHING sits on the filing's
+        # own reporting period -- the signature of a period_of_report that is still
+        # wrong (see `_resolve_period_of_report`). Never silent: this is the one
+        # failure that looks identical to a legitimately empty filing.
+        if log is not None:
+            log.warning("fundamentals: %s has no facts at period_of_report %s (%d tagged)",
+                        getattr(filing, "accession_number", "?"), por_ts.date(), len(period_end))
+        return tagged
+    tagged = tagged.assign(cover_fiscal_year=_cover_fiscal_year(xb))
     return backfill_fiscal_period_from_filing(tagged)
+
+
+def _cover_page_shares_fallback(all_periods: pd.DataFrame, current: pd.DataFrame,
+                                por_ts: pd.Timestamp) -> pd.DataFrame:
+    """Recover `sharesOutstanding` from the filing's COVER PAGE for the filers that
+    tag no balance-sheet share count, re-stamped onto the filing's own period.
+
+    `dei:EntityCommonStockSharesOutstanding` is stated as of a date AFTER the period
+    it reports on -- the date the cover page was signed -- so the current-period
+    filter above discards it every time. Confirmed on live filings: GPC
+    137,622,108 @ 2026-02-17, Chubb 390,156,552 @ 2026-02-20 and J.B. Hunt
+    94,604,083 @ 2026-02-17, all against a 2025-12-31 period of report. With the
+    diluted-average concept no longer standing in for it (see `SHARES_TAGS`), those
+    filings would simply have no share count at all -- hence this recovery rather
+    than a null.
+
+    FILL-ONLY: an as-reported balance-sheet count for the period is always
+    preferred and never overridden, so the two concepts can never both produce a
+    row and be picked between arbitrarily (which is the defect `SHARES_TAGS`
+    documents). Only the EARLIEST qualifying cover date is used -- an amended or
+    re-filed cover page can carry more than one -- and only within
+    `COVER_PAGE_SHARES_MAX_LAG_DAYS`, so a stray fact from an unrelated period
+    cannot be pulled in.
+
+    `period_end` is re-stamped to the period of report, deliberately: it is the
+    period this filing reports on, it is how every other instant fact in the frame
+    is keyed, and `fundamentals_derive` keys instant series on period_end. The true
+    as-of date is a few weeks later, i.e. the value is marginally FRESHER than
+    period_end claims -- immaterial for a panel that is lagged by filing_date
+    anyway, and the alternative (a share count keyed to a date no other field in
+    the filing shares) would not join to anything."""
+    if all_periods.empty or (not current.empty
+                             and (current["field"] == SHARES_OUTSTANDING_FIELD).any()):
+        return current
+    dates = pd.to_datetime(all_periods["period_end"], errors="coerce").dt.normalize()
+    lag = (dates - por_ts).dt.days
+    candidates = all_periods[
+        (all_periods["field"] == SHARES_OUTSTANDING_FIELD)
+        & all_periods["source_tag"].astype(str).str.endswith(COVER_PAGE_SHARES_TAG)
+        & lag.between(0, COVER_PAGE_SHARES_MAX_LAG_DAYS)
+    ]
+    if candidates.empty:
+        return current
+    recovered = candidates.loc[[dates[candidates.index].idxmin()]].assign(period_end=por_ts)
+    return pd.concat([current, recovered], ignore_index=True)
+
+
+def _cover_fiscal_year(xb) -> int | None:
+    """`dei:DocumentFiscalYearFocus` off the filing's cover page, as an int."""
+    try:
+        return int((xb.entity_info or {}).get("fiscal_year"))
+    except (TypeError, ValueError):
+        return None
 
 
 def populate_amends_accession(facts: pd.DataFrame) -> pd.DataFrame:
@@ -461,6 +654,47 @@ def populate_amends_accession(facts: pd.DataFrame) -> pd.DataFrame:
         facts.groupby(key)["accession_number"].shift(1).where(facts["is_amendment"] == 1.0)
     )
     return facts
+
+
+def _apply_fiscal_year_calendar(raw: pd.DataFrame, ticker: str,
+                                *, log: logging.Logger | None = None) -> pd.DataFrame:
+    """`resolve_fiscal_year_by_filing_calendar`, plus a log line naming how many
+    facts it re-keyed and drop of the `cover_fiscal_year` helper column (a
+    per-filing label used only to vote, never persisted)."""
+    resolved = resolve_fiscal_year_by_filing_calendar(raw)
+    if log is not None:
+        before = pd.to_numeric(raw["fiscal_year"], errors="coerce")
+        after = pd.to_numeric(resolved["fiscal_year"], errors="coerce")
+        changed = int((before != after).sum())
+        if changed:
+            log.info("fundamentals: %s re-keyed %d facts onto its own fiscal calendar "
+                     "(years %s -> %s)", ticker, changed,
+                     sorted(before[before != after].dropna().unique().astype(int).tolist()),
+                     sorted(after[before != after].dropna().unique().astype(int).tolist()))
+    return resolved.drop(columns="cover_fiscal_year", errors="ignore")
+
+
+def _filings_to_parse(sorted_filings: list, done_accessions: frozenset[str]) -> list:
+    """The filings to actually open: every not-yet-extracted one, PLUS the
+    already-extracted filings reporting within `FISCAL_YEAR_CONTEXT_DAYS` of one --
+    i.e. the rest of the same fiscal year.
+
+    A fiscal year's facts are not independent. `decumulate_quarterly_flow` derives
+    Q4 as FY - (Q1 + Q2 + Q3), `drop_derived_q4_for_partial_fiscal_years` votes on
+    a year cross-field, and `resolve_fiscal_year_by_filing_calendar` needs 10-K
+    period ends to place a quarter -- all off the ONE in-memory frame this
+    function builds. So an incremental run that opened only the new filing could
+    never produce a Q4 at all: the year's other three quarters were already in the
+    DB and therefore absent from the frame. Re-opening the siblings costs at most
+    a handful of extra parses (a routine run adds one filing and re-reads its own
+    year), and every re-emitted row upserts onto its own unchanged primary key."""
+    pending = [f for f in sorted_filings if f.accession_number not in done_accessions]
+    if not pending or len(pending) == len(sorted_filings):
+        return sorted_filings if pending else []
+    window = pd.Timedelta(days=FISCAL_YEAR_CONTEXT_DAYS)
+    pending_dates = [pd.Timestamp(f.filing_date) for f in pending]
+    return [f for f in sorted_filings
+            if any(abs(pd.Timestamp(f.filing_date) - d) <= window for d in pending_dates)]
 
 
 def build_ticker_facts_edgar(
@@ -498,6 +732,7 @@ def build_ticker_facts_edgar(
     sorted_filings = sorted(filings, key=lambda f: f.filing_date)
     if since is not None:
         sorted_filings = [f for f in sorted_filings if pd.Timestamp(f.filing_date) >= since]
+    to_parse = _filings_to_parse(sorted_filings, done_accessions)
 
     # Grows as the (chronologically ordered) filings are parsed, so each 10-K's
     # headcount is checked against every value accepted before it -- the stored
@@ -505,10 +740,8 @@ def build_ticker_facts_edgar(
     accepted_headcounts = list(employee_history or [])
 
     raw_frames: list[pd.DataFrame] = []
-    for filing in sorted_filings:
-        if filing.accession_number in done_accessions:
-            continue
-        tagged = _filing_current_period_rows(filing, tag_map)
+    for filing in to_parse:
+        tagged = _filing_current_period_rows(filing, tag_map, ticker=ticker, log=log)
         if tagged.empty:
             continue
         # HEADCOUNT: no XBRL concept exists, so it is parsed out of this filing's
@@ -555,6 +788,10 @@ def build_ticker_facts_edgar(
     # call so fiscal_period_source below still reflects the true origin tier.
     raw = backfill_fiscal_period_by_filing_order(raw)
     raw["fiscal_period_source"] = np.where(native_mask, "native", "date_arithmetic_fallback")
+    # BEFORE any period grouping: a wrong fiscal_year silently merges two different
+    # fiscal years' facts into one bucket (see the function's docstring for the
+    # confirmed CSCO/JCI/SJM cases), which no later step can undo.
+    raw = _apply_fiscal_year_calendar(raw, ticker, log=log)
 
     out_rows: list[pd.DataFrame] = []
     for field in sorted(set(raw["field"])):

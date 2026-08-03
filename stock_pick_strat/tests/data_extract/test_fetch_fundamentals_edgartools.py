@@ -218,6 +218,117 @@ def test_build_tag_frames_prefers_a_lower_priority_undimensioned_fact_over_a_sha
     assert out.iloc[0]["source_tag"] == "us-gaap:Revenues"
 
 
+def test_build_tag_frames_rejects_a_negative_balance_sheet_magnitude():
+    """Real bug found via live data (the case `NON_NEGATIVE_STOCK_FIELDS` was added
+    for): DTE's FY2012 10-K tags the priority-0 `shortTermDebt` candidate
+    `us-gaap:DebtCurrent` with -$634M, because it uses that concept for the "Less
+    amount due within one year" DEDUCTION row of its long-term-debt footnote and
+    baked the presentation sign into the instance document. Both that fact and the
+    real balance-sheet `ShortTermBorrowings` ($240M) are UNDIMENSIONED, so no
+    dimension rule could reject it and raw tag priority handed a NEGATIVE short-term
+    debt to the panel. A debt balance cannot be negative, so the fact is inadmissible
+    and the coalesce must fall through to the next candidate."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:DebtCurrent", -634000000.0, None, None, "instant", 2012, "FY",
+             period_instant="2012-12-31"),
+        _fact("us-gaap:ShortTermBorrowings", 240000000.0, None, None, "instant", 2012, "FY",
+             period_instant="2012-12-31"),
+    ])
+    tag_map = {"shortTermDebt": ["DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 240000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:ShortTermBorrowings"
+
+
+def test_build_tag_frames_leaves_a_negative_stock_field_null_with_no_other_candidate():
+    """The rejection must NULL the field rather than fall back to `abs()`: flipping the
+    sign would rewrite the filer's own number on a guess. DTE's FY2011 10-K is the live
+    case for the fall-through (a `ShortTermBorrowings` sibling exists); this pins the
+    no-sibling case, where NULL is the only honest answer."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:DebtCurrent", -355000000.0, None, None, "instant", 2011, "FY",
+             period_instant="2011-12-31"),
+    ])
+    out = build_tag_frames(facts_df, {"shortTermDebt": ["DebtCurrent"]})
+    assert out.empty
+
+
+def test_build_tag_frames_denies_a_concept_the_listed_filer_misuses():
+    """`FIELD_TAG_DENYLIST` is the per-issuer escape hatch for a defect no global rule
+    can express. DTE tags `us-gaap:DebtCurrent` on the "Less amount due within one year"
+    row of its long-term-debt FOOTNOTE, and from FY2013 that value is POSITIVE ($694M) --
+    so the sign guard cannot see it, even though DTE's own balance sheet reports $131M
+    short-term borrowings and $898M current-portion for the same date. Denying the concept
+    for this ticker makes the coalesce continue to the balance-sheet line."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:DebtCurrent", 694000000.0, None, None, "instant", 2013, "FY",
+             period_instant="2013-12-31"),
+        _fact("us-gaap:ShortTermBorrowings", 131000000.0, None, None, "instant", 2013, "FY",
+             period_instant="2013-12-31"),
+    ])
+    tag_map = {"shortTermDebt": ["DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings"]}
+    out = build_tag_frames(facts_df, tag_map, ticker="DTE")
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 131000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:ShortTermBorrowings"
+
+
+def test_build_tag_frames_denylist_is_scoped_to_its_own_ticker():
+    """Deny, never pin, and never global: an unlisted ticker -- and the `ticker=None`
+    default every other caller and test uses -- must resolve exactly as before, so the
+    escape hatch can never silently change resolution for the other 499 names."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:DebtCurrent", 694000000.0, None, None, "instant", 2013, "FY",
+             period_instant="2013-12-31"),
+        _fact("us-gaap:ShortTermBorrowings", 131000000.0, None, None, "instant", 2013, "FY",
+             period_instant="2013-12-31"),
+    ])
+    tag_map = {"shortTermDebt": ["DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings"]}
+    for ticker in (None, "AEP"):
+        out = build_tag_frames(facts_df, tag_map, ticker=ticker)
+        assert len(out) == 1
+        assert out.iloc[0]["source_tag"] == "us-gaap:DebtCurrent", ticker
+
+
+def test_build_tag_frames_denies_aep_costofrevenue_misuse():
+    """Real bug found via `fundamentals_tag_ledger`: AEP tags the priority-0
+    `costOfRevenue` candidate `us-gaap:CostOfGoodsAndServicesSold` with $0 to
+    -$223M every quarter FY2018-FY2023 -- impossible for a utility with
+    ~$17-19B/year of revenue and a fuel/purchased-power cost line that
+    dominates it. The ledger scores AEP's FY2024 cutover to
+    `CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization` (its
+    real, billions-scale cost line) at a 38,331x pooled-level jump unique to
+    AEP -- not a taxonomy migration, AEP's own mis-tagging. Denying the bad
+    tag must fall through to the correct excl-D&A candidate."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:CostOfGoodsAndServicesSold", -172000000.0,
+             "2021-01-01", "2021-03-31", "duration", 2021, "Q1"),
+        _fact("us-gaap:CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+             1852900000.0, "2025-01-01", "2025-03-31", "duration", 2025, "Q1"),
+    ])
+    tag_map = {"costOfRevenue": ["CostOfGoodsAndServicesSold",
+                                 "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization"]}
+    out = build_tag_frames(facts_df, tag_map, ticker="AEP")
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 1852900000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization"
+
+
+def test_build_tag_frames_keeps_a_negative_value_on_a_genuinely_signed_field():
+    """The guard is scoped to `NON_NEGATIVE_STOCK_FIELDS` only. A negative value is a
+    REAL business fact for a signed balance-sheet field -- a buyback-driven equity
+    deficit, a contra-account -- and must survive untouched, or the guard would delete
+    good data (the over-strictness that the `NON_NEGATIVE_FLOW_FIELDS` pass fixed)."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:StockholdersEquity", -1500000000.0, None, None, "instant", 2024, "FY",
+             period_instant="2024-12-31"),
+    ])
+    out = build_tag_frames(facts_df, {"stockholdersEquity": ["StockholdersEquity"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == -1500000000.0
+
+
 def test_build_tag_frames_excludes_partial_revenue_concept_when_companion_present():
     """Real bug found via live data: ADM splits total revenue between an
     ASC-606 in-scope concept (`RevenueFromContractWithCustomerExcludingAssessed

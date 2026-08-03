@@ -122,7 +122,17 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                  # 25 times over 2011-2015 (median $642M) and had it only from 2018,
                  # M&T 33 times over 2011-2023 (median $165M) and had it only from
                  # 2015.
-                 "OtherDepreciationAndAmortization"],
+                 "OtherDepreciationAndAmortization",
+                 # Cisco's cash-flow D&A line ($1,902M in its 2026-Q3 10-Q): it tags
+                 # `DepreciationDepletionAndAmortization` ANNUALLY in the 10-K but only
+                 # this element in its 10-Qs, so depAmort existed as an `annual` row and
+                 # was null on every single quarter. A filer EXTENSION rather than a
+                 # us-gaap element (`csco:DepreciationAmortizationAndOther`), which
+                 # matches because resolution is by bare concept name, namespace-agnostic
+                 # (see `build_tag_frames`) -- safe here because the name is specific
+                 # enough that another filer coining it means the same line.
+                 # Fill-only, lowest priority.
+                 "DepreciationAmortizationAndOther"],
     "operatingCashFlow": ["NetCashProvidedByUsedInOperatingActivities",
                           "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment",
@@ -143,7 +153,15 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
               # `PaymentsForConstructionInProcess` -- a utility CWIP COMPONENT (~$85M vs AEP's true
               # ~$1B+/q), so it would understate total capex.
               "PaymentsToAcquireOtherPropertyPlantAndEquipment",
-              "PaymentsToAcquireMachineryAndEquipment"],
+              "PaymentsToAcquireMachineryAndEquipment",
+              # BANKS tag premises-and-equipment spend under the productive-assets
+              # elements rather than the generic PP&E one, and only these two appear
+              # in their 10-Qs -- so capex was `annual`-only (M&T: 11 annual rows,
+              # zero quarters) or entirely absent (Regions). Both carry the standard
+              # outflow-positive convention, matching the elements above. Confirmed:
+              # M&T $96M and Regions in their 2026-Q1 10-Qs.
+              "PaymentsForProceedsFromProductiveAssets",
+              "PaymentsToAcquireOtherProductiveAssets"],
     "researchAndDevelopment": ["ResearchAndDevelopmentExpense",
                                "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
     # ---- added for refined features (S&M efficiency, M&A, SBC, distress) ----
@@ -163,7 +181,17 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
     "acquisitions": ["PaymentsToAcquireBusinessesNetOfCashAcquired",
                      "PaymentsToAcquireBusinessesAndInterestInAffiliates"],
     "interestExpense": ["InterestExpense", "InterestAndDebtExpense",
-                        "InterestExpenseNonoperating"],
+                        "InterestExpenseNonoperating",
+                        # the GROSS interest-on-debt element some filers tag instead of the
+                        # generic one (confirmed: ORLY, $62.7M in its 2026-Q1 10-Q, which had
+                        # no `InterestExpense` anywhere -> interestExpense was null for its
+                        # ENTIRE quarterly history). Deliberately NOT added: the NET elements
+                        # (`InterestIncomeExpenseNet`, `InterestIncomeExpense-
+                        # NonoperatingNet`), which is all NWSA/PKG/TJX/URI/ZBH tag quarterly
+                        # -- they net interest INCOME off and carry the opposite sign
+                        # convention, so filling this field from them would silently mix two
+                        # different measures across the panel.
+                        "InterestExpenseDebt"],
 }
 STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
     "stockholdersEquity": ["StockholdersEquity",
@@ -201,10 +229,44 @@ STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
     "goodwill": ["Goodwill"],
     "totalAssets": ["Assets"],
 }
-SHARES_TAGS = {  # tried under dei first, then us-gaap
-    "sharesOutstanding": ["EntityCommonStockSharesOutstanding",
-                          "CommonStockSharesOutstanding", "WeightedAverageNumberOfDilutedSharesOutstanding"],
+# Logical field name for the point-in-time share count, named here beside its tag
+# list (same convention as EMPLOYEES_FIELD) because `fetch_fundamentals_edgar.
+# _cover_page_shares_fallback` looks the field up by name and must never drift
+# from the key below.
+SHARES_OUTSTANDING_FIELD = "sharesOutstanding"
+SHARES_TAGS = {
+    # STRICTLY POINT-IN-TIME. `WeightedAverageNumberOfDilutedSharesOutstanding` was
+    # removed: it is a period AVERAGE on a DILUTED basis -- a different quantity from
+    # the share count outstanding on a date -- and it already has its own field
+    # (`dilutedShares`, via DILUTED_SHARES_TAGS), so its presence here only ever
+    # duplicated it under a name that means something else.
+    #
+    # It was not a harmless last-resort fallback either. Being a DURATION fact it
+    # carries a period_start, while the two counts below are INSTANT facts and do
+    # not -- so `build_tag_frames`' priority coalesce, which groups by (field,
+    # period_start, period_end), never compared them and emitted BOTH (three rows
+    # for one field in a 10-Q: instant + discrete-quarter + YTD). `instant_stock`'s
+    # drop_duplicates then kept whichever came first, so the stored measure was
+    # decided by frame ordering: 2,452 rows table-wide resolved to the diluted
+    # AVERAGE against 2,056 to a genuine point-in-time count, alternating within
+    # single tickers' histories. Since market capitalisation is computed from this
+    # field, that is a systematic cross-sectional bias, not noise.
+    #
+    # `CommonStockSharesOutstanding` (balance sheet, dated exactly at period end) is
+    # preferred over the cover-page count so the measurement DATE is consistent with
+    # every other instant field. The cover-page count backs it up for the filers that
+    # tag no balance-sheet share count -- see `_cover_page_shares_fallback`, which is
+    # what makes it reachable at all (its context date is the FILING date, so the
+    # current-period filter drops it).
+    SHARES_OUTSTANDING_FIELD: ["CommonStockSharesOutstanding",
+                               "EntityCommonStockSharesOutstanding"],
 }
+# The cover-page share count is stated "as of" a date a few weeks AFTER the period it
+# reports on (SEC filing deadlines: 40 days after quarter end, 60-90 after fiscal year
+# end, plus late filings), never before it. Facts outside that forward window are a
+# different filing's and are ignored.
+COVER_PAGE_SHARES_TAG = "EntityCommonStockSharesOutstanding"
+COVER_PAGE_SHARES_MAX_LAG_DAYS = 150
 
 # --------------------------------------------------------------------------- #
 # EXPANDED coverage. companyfacts already returns every tag a filer reports, so
@@ -579,7 +641,11 @@ EXTRA_STOCK_TAGS = {
     "valuationAllowance": ["DeferredTaxAssetsValuationAllowance"],
     "unrecognizedTaxBenefits": ["UnrecognizedTaxBenefits"],
     "allowanceDoubtfulAccounts": ["AllowanceForDoubtfulAccountsReceivableCurrent"],
-    "intangiblesGross": ["FiniteLivedIntangibleAssetsGross"],
+    "intangiblesGross": ["FiniteLivedIntangibleAssetsGross",
+                         # the equivalent total for a filer that does not split its
+                         # intangibles by useful life (confirmed: JPM, whose
+                         # intangiblesGross was null for its whole history)
+                         "IntangibleAssetsGrossExcludingGoodwill"],
     "intangiblesAccumAmort": ["FiniteLivedIntangibleAssetsAccumulatedAmortization"],
     "accountsReceivable": ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"],
     # as-reported (LIFO-basis for a LIFO filer) inventory. `LIFOInventoryAmount` is the
@@ -617,7 +683,22 @@ EXTRA_STOCK_TAGS = {
     # NEGATIVE value = unrealized securities losses eroding tangible capital
     # (B1 / the 2023 SVB signal). Near-universal tag.
     "accumulatedOCI": ["AccumulatedOtherComprehensiveIncomeLossNetOfTax"],
-    "shortTermInvestments": ["ShortTermInvestments"],
+    # `ShortTermInvestments` alone left this field null for 18 of 42 audited
+    # tickers. The variants below are the SAME balance-sheet line under the name
+    # the filer happens to use, all explicitly scoped to CURRENT (or "short-term")
+    # so a long-term securities portfolio can never leak in -- confirmed in live
+    # 10-Qs: SYK `AvailableForSaleSecuritiesDebtSecuritiesCurrent` $85M (+ its
+    # `OtherShortTermInvestments`), CBOE `MarketableSecuritiesCurrent` $114.5M, PKG
+    # $146.6M. Deliberately NOT added: bare `MarketableSecurities` (the only element
+    # ATO tags, and the only one with no current/noncurrent scope) -- it can equally
+    # be a long-term portfolio, and DTE/GLW/JCI/VLO/ORLY tag no short-term
+    # securities line at ALL quarterly, so those stay null rather than guessed.
+    "shortTermInvestments": ["ShortTermInvestments",
+                             "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
+                             "AvailableForSaleSecuritiesCurrent",
+                             "MarketableSecuritiesCurrent",
+                             "ShortTermMarketableDebtSecurities",
+                             "OtherShortTermInvestments"],
     "longTermInvestments": ["LongTermInvestments"],
     # deferred revenue -> a consistent TOTAL pool: the combined tag when present,
     # else current + noncurrent (filers such as CRM report only the split parts) --
@@ -853,6 +934,104 @@ NON_NEGATIVE_FLOW_FIELDS = {
 # (WAB 2011-2012) and `dacAmortization` (MET 2023 under LDTI). Every financing flow
 # (buybacks / dividendsPaid / debtIssued / debtRepaid / equityIssuance) is likewise
 # excluded: they are YTD-cumulative and net, so a quarter can legitimately reverse.
+
+# Balance-sheet STOCK fields that are MAGNITUDES, never signed quantities: an amount
+# owed, an amount owned, a count of shares. A negative as-reported value for one of
+# these is always a filer tagging defect, never a business fact -- so
+# `fetch_fundamentals_edgar.build_tag_frames` treats such a fact as INADMISSIBLE,
+# which lets the field's candidate coalesce fall through to the next tag (and leaves
+# the field NULL when no other candidate reported it). Rejecting rather than
+# sign-flipping is deliberate: `abs()` would silently rewrite the filer's number, and
+# the negation is not always the whole story (see below).
+#
+# Confirmed on DTE (the case this set was added for): its FY2011 and FY2012 10-Ks tag
+# `us-gaap:DebtCurrent` with a NEGATIVE value (-$355M, -$634M) because the concept is
+# used for the "Less amount due within one year" DEDUCTION row of the long-term-debt
+# footnote, and the filer baked the presentation sign into the instance document. As
+# priority-0 candidate for `shortTermDebt` it won outright, so DTE's stored short-term
+# debt was negative for those two years. Both are undimensioned, so no dimension rule
+# could catch it, and from FY2013 on the SAME line is tagged positive, so no
+# per-filer rule could either -- the sign is the only signal available.
+#
+# Deliberately EXCLUDED, because a negative is REAL for them and nulling it would
+# delete good data: `stockholdersEquity` / `retainedEarnings` / `accumulatedOCI`
+# (buyback- or loss-driven deficits), `treasuryStock` and `accumulatedDepreciation`
+# (contra-accounts filers commonly tag negative on purpose), `deferredTaxNet`,
+# `pensionDeficit`, `lifoReserve`, `leaseUndiscountedExcess` and the `allowance*`
+# contra-asset lines.
+NON_NEGATIVE_STOCK_FIELDS = {
+    # debt & lease obligations
+    "shortTermDebt", "longTermDebt", "longTermDebtTotal", "debtCombined", "commercialPaper",
+    "notesPayable", "capitalLeaseObligationCurrent", "capitalLeaseObligationNoncurrent",
+    "financeLeaseLiability", "financeLeaseLiabilityCurrent", "financeLeaseLiabilityNoncurrent",
+    "operatingLeaseLiability", "operatingLeaseLiabilityCurrent", "operatingLeaseLiabilityNoncurrent",
+    "debtMaturity1y", "debtMaturity2y", "debtMaturity3y", "debtMaturity4y", "debtMaturity5y",
+    "debtMaturityAfter5y",
+    # assets
+    "totalAssets", "currentAssets", "cash", "cashInclRestricted", "cashAndShortTermInvestments",
+    "restrictedCash", "restrictedCashCurrent", "restrictedCashNoncurrent",
+    "shortTermInvestments", "longTermInvestments", "marketableSecuritiesCurrent",
+    "investmentSecurities", "htmSecurities", "loans", "accountsReceivable", "inventory",
+    "goodwill", "intangiblesGross", "intangiblesExGoodwill", "capitalizedSoftware",
+    "ppeGross", "ppeNet", "realEstateGross", "realEstateNet",
+    "oilGasPropertyGross", "oilGasPropertyNet",
+    # liabilities
+    "totalLiabilities", "currentLiabilities", "totalLiabilitiesNoncurrent", "accountsPayable",
+    "deferredRevenue", "deferredRevenueCurrent", "deferredRevenueNoncurrent",
+    "deposits", "depositsDomestic", "insuranceReserves",
+    "aroCurrent", "aroNoncurrent", "assetRetirementObligation",
+    # share counts
+    "sharesOutstanding", "commonSharesIssued", "commonSharesAuthorized",
+    "preferredSharesAuthorized", "antidilutiveShares",
+}
+
+# Per-(ticker, field) tag DENY-LIST: bare concept names that must NEVER be admitted for
+# that one filer, applied as a pre-filter in `fetch_fundamentals_edgar.build_tag_frames`.
+# The escape hatch for a defect that is genuinely one issuer's own, where no global rule
+# can express the right answer -- the same role `def14a_validate.py` plays for the proxy
+# parser.
+#
+# DENY, never PIN, and the distinction is the whole design. A pin ("ticker X's field Y is
+# always concept Z") freezes the resolution: the moment that filer follows a taxonomy
+# migration -- and they all do, measured on the live table 15.6% of (ticker, field) pairs
+# already switch concept mid-history for benign reasons (ASC 842, ASU 2016-18 cash, CECL)
+# -- the pinned concept stops being reported and the field goes silently NULL. A deny
+# only removes a candidate, so everything else still flows through the global priority
+# order, and a filer not listed here is untouched.
+#
+# Add an entry ONLY with the evidence written down beside it (ticker, fiscal years, the
+# actual figures), and only after `fundamentals_tag_ledger` has ranked the case -- an
+# entry here is the CONCLUSION of a diagnosis, never a shortcut around one.
+FIELD_TAG_DENYLIST: dict[str, dict[str, frozenset[str]]] = {
+    # DTE never tags `us-gaap:DebtCurrent` on its balance sheet. It uses that concept for
+    # the "Less amount due within one year" DEDUCTION row of its LONG-TERM-DEBT FOOTNOTE
+    # (statement_role .../LongTermDebtDetails), which is a different measure AND was filed
+    # with the presentation sign baked in: -$355M (FY2011) and -$634M (FY2012). As the
+    # priority-0 `shortTermDebt` candidate it won outright and stored short-term debt was
+    # NEGATIVE for both years. `NON_NEGATIVE_STOCK_FIELDS` already rejects those two on
+    # sign, but from FY2013 the SAME footnote row is tagged POSITIVE ($694M / $161M /
+    # $465M) and no sign rule can see it -- while DTE's actual balance sheet reports
+    # `ShortTermBorrowings` $131M and `LongTermDebtAndCapitalLeaseObligationsCurrent`
+    # $898M for that same 2013-12-31 date. The footnote figure is neither line and matches
+    # neither leg, so it is denied: every period then resolves the balance-sheet
+    # `ShortTermBorrowings`, ending the annual 10-K-vs-10-Q measure swap that made this
+    # series alternate concepts every single year from 2011 to 2015.
+    "DTE": {"shortTermDebt": frozenset({"DebtCurrent"})},
+    # AEP tags `us-gaap:CostOfGoodsAndServicesSold` -- priority-0 in `costOfRevenue`'s
+    # candidate list -- with a value that is NOT its consolidated cost of energy: $0 to
+    # -$223M every quarter FY2018-FY2023 (e.g. FY2021 Q1 -$172M, FY2022 Q3 -$223M, FY2023
+    # Q1-Q3 all under $47M), impossible for a utility with ~$17-19B/year of revenue and a
+    # fuel/purchased-power cost line that dominates it. `fundamentals_tag_ledger` scores
+    # the FY2024 cutover (this tag -> `CostOfGoodsAndServiceExcludingDepreciationDepletion
+    # AndAmortization`, AEP's real cost line per the candidate-list comment above) at a
+    # 38,331x pooled-level jump, unique to AEP (n_tickers_same_switch=1) -- not a taxonomy
+    # migration, AEP's own mis-tagging. Denying restores the intended fill-only excl-D&A
+    # tag from FY2024 on and leaves FY2018-FY2023 correctly NaN (no other candidate in the
+    # list is present for AEP those years) rather than the near-zero garbage that was
+    # there before.
+    "AEP": {"costOfRevenue": frozenset({"CostOfGoodsAndServicesSold"})},
+}
+
 # How far a derived Q4 whose sign matches NONE of Q1/Q2/Q3 may exceed the largest
 # quarter already observed that year, for a SIGNED field. Raised from 1.0 after the
 # 1.0 bar was measured rejecting real, as-filed quarters at 1.03-2.6x -- Allstate
@@ -904,6 +1083,41 @@ QUARTER_MIN_DAYS, QUARTER_MAX_DAYS = 80, 100   # accept a fiscal quarter as ~13 
 # excluded either way.
 IMPLIED_QUARTER_MIN_DAYS, IMPLIED_QUARTER_MAX_DAYS = 75, 120
 TTM_QUARTERS = 4                               # trailing-twelve-months = 4 quarters
+
+# --- fiscal-year calendar reconstruction (fundamentals_periods.
+# resolve_fiscal_year_by_filing_calendar) -----------------------------------
+# Mean length of a fiscal year in days, used ONLY to extrapolate one step beyond
+# the observed 10-K period-end dates (the in-progress fiscal year, which has no
+# 10-K yet, and any quarter preceding the earliest 10-K in the history window).
+# Inside the observed range the ACTUAL 10-K period ends are used, so a 52/53-week
+# filer's drift never accumulates.
+FISCAL_YEAR_MEAN_DAYS = 365.25
+# Absorbs that drift on the single extrapolated step: a 53-week fiscal year is
+# 371d, so "one year later" can overshoot FISCAL_YEAR_MEAN_DAYS by ~6d and must
+# still resolve to +1 fiscal year, not +2.
+FISCAL_YEAR_EXTRAPOLATION_GRACE_DAYS = 10
+# A 10-K's cover page (dei:DocumentFiscalYearFocus) and edgartools' per-fact
+# fiscal_year BOTH carry occasional filer typos (confirmed: Cisco's fiscal-2016
+# 10-K facts say 2017; J.M. Smucker's fiscal-2015 Q1 cover page says 2014), so the
+# fiscal-year LABEL for the whole calendar is voted on across every 10-K rather
+# than read off any single one. Below this many independent votes the vote is not
+# meaningful and native labels are left untouched ("null, never guess wrong").
+MIN_FISCAL_YEAR_LABEL_VOTES = 2
+
+# --- per-filing XBRL retrieval (fetch_fundamentals_edgar._filing_xbrl) ------
+# A filing's XBRL instance is fetched over the network and parsed; a failure is
+# usually transient (SEC throttling, a truncated download) but was previously
+# indistinguishable from "this filing has no XBRL" and so never retried, which
+# silently and permanently dropped whole filings (8 of 2,482 measured).
+XBRL_PARSE_ATTEMPTS = 3
+XBRL_RETRY_BACKOFF_SECONDS = 2.0
+# A newly-seen filing does not carry its own fiscal year's OTHER filings, but the
+# derived Q4 (FY - Q1 - Q2 - Q3) and the cross-field derivations need them, so
+# already-extracted filings reporting within this many days of a new one are
+# re-parsed alongside it. Wider than a fiscal year (a 53-week year is 371d) so the
+# whole year is always covered, and narrow enough that a routine incremental run
+# re-reads only its own year.
+FISCAL_YEAR_CONTEXT_DAYS = 400
 # Gross margin is mathematically <= 1 (a value > 1 implies negative COGS); a value
 # below -200% only arises when revenue is truncated / period-mismatched vs the cost
 # line (e.g. a REIT whose rental income moved to the ASC-842 lease-income tag). Values

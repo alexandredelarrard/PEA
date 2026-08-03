@@ -240,41 +240,142 @@ def _check_table(df, ticker, fiscal_period, field) -> list[str]:
         .plot()
     )
 
+def identify_missing_quarters(facts):
+    all_quarters = {'Q1', 'Q2', 'Q3', 'Q4'}
+    
+    # 1. Filter unique existing records
+    df_unique = facts.loc[
+        facts['fiscal_period'].isin(all_quarters), 
+        ['ticker', 'fiscal_year', 'fiscal_period']
+    ].drop_duplicates()
+
+    # 2. Define function to evaluate missing quarters per (ticker, year)
+    def get_missing_quarters(series):
+        _, fiscal_year = series.name
+        # 2026 only expects Q1 and Q2; other years expect Q1-Q4
+        expected = {'Q1', 'Q2', 'Q3', 'Q4'}
+        if fiscal_year == '2026': ##### no later than today
+            expected = {'Q1', 'Q2'}
+        if fiscal_year == '2011': #### 15 years extraction so Q1 skipped, might also need to skip Q2
+            expected = {'Q2', 'Q3', 'Q4'}
+        return sorted(set(expected) - set(series))
+
+    # 3. Apply missing logic
+    missing = (
+        df_unique.groupby(['ticker', 'fiscal_year'])['fiscal_period']
+        .apply(get_missing_quarters)
+        .reset_index(name='missing_quarters')
+    )
+
+    # 4. Keep only rows where at least one expected quarter is missing
+    missing_quarters_df = missing[missing['missing_quarters'].str.len() > 0]
+
+    # per ticker 
+    missing_quarters_df = missing_quarters_df.explode('missing_quarters')
+    missing_quarters_df['time_q'] = missing_quarters_df['missing_quarters'].astype(str) + '-' + missing_quarters_df['fiscal_year'].astype(str)
+    agg = missing_quarters_df.groupby('ticker')['time_q'].apply(set)
+
+    return agg 
+
+def identify_missing_fields(facts, FIELDS):
+    quarters = ['Q1', 'Q2', 'Q3', 'Q4']
+    years = list(range(2011, 2026 + 1))
+    tickers = facts['ticker'].unique()
+
+    # 1. Generate full Cartesian Product (Years x Quarters x Fields x Tickers)
+    multi_idx = pd.MultiIndex.from_product(
+        [tickers, years, quarters, FIELDS], 
+        names=['ticker', 'fiscal_year', 'fiscal_period', 'field']
+    )
+    df_grid = pd.DataFrame(index=multi_idx).reset_index()
+    df_grid['fiscal_year'] = df_grid['fiscal_year'].astype(str)
+
+    # 2. Filter raw facts for target FIELDS and non-null values
+    df_facts = facts.loc[
+        facts['field'].isin(FIELDS) & facts['value'].notna(), 
+        ['ticker', 'fiscal_year', 'fiscal_period', 'field', 'value']
+    ]
+
+    # 3. Merge the Cartesian Grid with extracted facts
+    merged = pd.merge(
+        df_grid, 
+        df_facts, 
+        on=['ticker', 'fiscal_year', 'fiscal_period', 'field'], 
+        how='left'
+    )
+
+    # 4. Count missing quarters per (ticker, field) pair
+    # Total expected quarters per field per ticker = len(years) * len(quarters)
+    total_quarters = len(years) * len(quarters)
+    
+    missing_counts = (
+        merged['value']
+        .isna()
+        .groupby([merged['ticker'], merged['field']])
+        .sum()
+        .reset_index(name='missing_quarter_count')
+    )
+
+    # 5. Filter for fields where ALL quarters are missing (missing_count == total_quarters)
+    completely_missing = missing_counts[
+        missing_counts['missing_quarter_count'] == total_quarters
+    ]
+
+    # 6. Group by ticker and aggregate missing fields into a set
+    result = (
+        completely_missing
+        .groupby('ticker')['field']
+        .apply(set)
+        .reset_index(name='field_missing')
+    )
+
+    return result
 
 if __name__ == "__main__":
     from src.context import get_config_context
+    from src.utils.fundamentals_tag_ledger import write_tag_ledger
 
     _, context = get_config_context(config_path="./configs", use_cache=True, save=False)
     facts = context.store.load("fundamentals_facts")
-
     TICKERS = sorted(facts["ticker"].unique().tolist())
-    # "totalIncome" isn't a literal field name in fundamentals_tags.py (no
-    # exact match) -- interpreted as `pretaxIncome` (income before tax), the
-    # one income-statement concept between totalRevenue and netIncome not
-    # otherwise in this list; flag/replace if a different field was meant.
-    FIELDS = ["totalRevenue", "pretaxIncome", "netIncome", "depAmort", "operatingIncome",
-             "costOfRevenue", "sellingGeneralAdmin", "totalAssets", "totalLiabilities", "cash",
-             "epsDiluted"]
+    FIELDS = ['totalRevenue', 'costOfRevenue', 'sellingGeneralAdmin',
+            'operatingIncome', 'pretaxIncome', 'netIncome', 'incomeTaxExpense',
+            'interestExpense', 'epsBasic', 'epsDiluted', 'cash',
+            'cashInclRestricted', 'shortTermInvestments', 'currentAssets',
+            'totalAssets', 'ppeNet', 'goodwill', 'intangiblesGross',
+            'currentLiabilities', 'totalLiabilities', 'shortTermDebt',
+            'longTermDebt', 'longTermDebtTotal', 'stockholdersEquity',
+            'operatingCashFlow', 'capex', 'depAmort', 'stockBasedComp',
+            'changeInInventory', 'changeInReceivables', 'changeInPayables',
+            'sharesOutstanding', 'basicShares', 'dilutedShares',
+            'dividendsPerShare']
 
-    import matplotlib.pyplot as plt 
-    for field in FIELDS:
-        _check_table(facts, TICKERS[5], ["Q1","Q2","Q3","Q4"], field)
-        plt.title(field + TICKERS[5])
-        plt.show()
+    #############################################
+    ##################  1. identify missing quarters
+    missing_quarters = identify_missing_quarters(facts)
+    missing_quarters.to_csv("data/gaps/missing_quarters.csv")
 
+    #############################################
+    ##################  2. identify missing variables -> expected or not
+    missing_fields = identify_missing_fields(facts, FIELDS)
+    missing_fields.to_csv("data/gaps/missing_fields.csv")
+
+    #############################################
+    ##################  3. identify outlier values
     audit = run_audit(facts, TICKERS, FIELDS)
-    audit["outliers"].to_csv("data/output/diagnostics/fundamentals_facts_outliers.csv", index=False)
-    audit["tag_misalignment"].to_csv("data/output/diagnostics/fundamentals_facts_tag_misalignment.csv", index=False)
-    print(f"outliers: {len(audit['outliers'])} rows across "
-         f"{audit['outliers'][['ticker', 'field']].drop_duplicates().shape[0] if not audit['outliers'].empty else 0} (ticker, field) pairs")
-    print(f"tag_misalignment: {len(audit['tag_misalignment'])} rows across "
-         f"{audit['tag_misalignment'][['ticker', 'field']].drop_duplicates().shape[0] if not audit['tag_misalignment'].empty else 0} (ticker, field) pairs")
+    audit["outliers"].to_csv("data/gaps/fundamentals_facts_outliers.csv", index=False)
+    audit["tag_misalignment"].to_csv("data/gaps/fundamentals_facts_tag_misalignment.csv", index=False)
 
-# AFL, no depAmort, no CostOfRevenue, no operatingIncome after 2024, revenue and Income up and downs since 2023 ?? 
-# CB -> no depAmort, no operatingIncome, no costOfRevenue
-# DTE -> cash pickes at 2021 Quarter ?? -> weird , no values for SellingGeneralAdmin
-# MCD, no totalLiabilities, depAmort huge drop early 2021 ? No pretaxIncome
-# RF -> totalRevenue = 0 for all quarters, preTax income missing betwween 2-2- and 2024-Q2, no operatingIncome, no CostofRevenue, no SellingGeneralAdmin,
-# MET -> no costOfRevenue, OperatingIncome only since 2025-05, depAmort only since 2024-04, huge drop in Revenue in 2019 -> almost 0 since ??
-# REG -> drop of Revenue 2018-2019 ? operatingIncome, only since 2025-05, No CostOfRevenue, cash only up to 2019, epsDiluted only until 2015
-
+    #############################################
+    ##################  4. tag-era ledger + cross-year measure splices
+    # Complements check 3: `detect_source_tag_misalignment` compares a fiscal year's
+    # period-end tag against its own interim quarters and deliberately ignores a clean
+    # CROSS-YEAR cutover, which is where a permanent measure change hides.
+    write_tag_ledger(context, facts)
+   
+    # import matplotlib.pyplot as plt 
+    # for field in FIELDS:
+    #     _check_table(facts, TICKERS[1], ["Q1","Q2","Q3","Q4"], field)
+    #     plt.title(field + TICKERS[1])
+    #     plt.show()
+    

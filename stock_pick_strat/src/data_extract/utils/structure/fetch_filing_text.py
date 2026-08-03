@@ -45,7 +45,6 @@ from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
 
 logger = logging.getLogger(__name__)
-_TABLE = FILING_TEXT_TABLE
 _MAX_CHARS = 300_000                       # cap a stored section (risk factors can be enormous)
 _COLS = ["ticker", "cik", "accession_number", "form", "filed", "period_of_report",
         "section", "text", "n_words"]
@@ -196,7 +195,7 @@ def _filing_sections(filing) -> dict[str, str]:
 
 def _seen(context: Context) -> tuple[set[str], dict[str, pd.Timestamp]]:
     try:
-        df = context.store.load(_TABLE, columns=["ticker", "accession_number", "filed"])
+        df = context.store.load(FILING_TEXT_TABLE, columns=["ticker", "accession_number", "filed"])
     except Exception:
         return set(), {}
     if df is None or df.empty:
@@ -255,7 +254,7 @@ def fetch_filing_text(context: Context, tickers: list[str], years: int | None = 
             context.log.warning("fetch_filing_text: %s failed (%s)", ticker, e)
             return 0, False
         if not out.empty:
-            context.store.save(_TABLE, out)
+            context.store.save(FILING_TEXT_TABLE, out)
         return len(out), True
 
     results = run_per_ticker(cik_map, _worker, desc="10-K/10-Q text (edgartools)")
@@ -263,5 +262,5 @@ def fetch_filing_text(context: Context, tickers: list[str], years: int | None = 
     failed = sum(1 for _, ok in results if not ok)
 
     context.log.info("fetch_filing_text: +%d section rows across %d/%d ticker(s) (%d failed) -> '%s'",
-                     total_rows, len(results), len(cik_map), failed, _TABLE)
-    return context.store.load(_TABLE)
+                     total_rows, len(results), len(cik_map), failed, FILING_TEXT_TABLE)
+    return context.store.load(FILING_TEXT_TABLE)

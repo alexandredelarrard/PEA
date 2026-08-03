@@ -28,12 +28,25 @@ Key Guardrails:
   falls back to a regex section-carve (`_extract_13d_item_sections`, same anchor
   style as `fetch_filing_text.py`'s 10-K/10-Q carving) whenever the structured
   parse is empty.
-- 60-Day Transaction Log: Item 5(c)'s trade-by-trade log is usually NOT inline
-  narrative text -- it is filed as a separate exhibit (e.g. `EX-99.2`, a
-  "TRADING DATA" table: reporting person, trade date, buy/sell, quantity, unit
-  cost). `_extract_transaction_rows` scans every filing attachment's HTML tables
-  for one with a "Trade Date" header and role-maps its columns generically
-  (works regardless of exhibit number or exact column order/count).
+- 60-Day Transaction Log: Item 5(c)'s trade-by-trade log is either a separate
+  exhibit (e.g. `EX-99.2`, a "TRADING DATA" table) OR embedded directly inside
+  the main SC 13D document as an internal "Schedule I"/"Schedule 1" appendix
+  (e.g. Elliott's 2024 LUV filing) -- `_extract_transaction_rows` scans EVERY
+  attachment (the main document included) for an HTML table with a "Trade
+  Date" header and role-maps its columns generically (works regardless of
+  exhibit number or exact column order/count). Two real bugs found via a
+  live-DB audit (`sec_13d_transactions` coverage dying out entirely after
+  ~2020, only 7 tickers ever populated): (1) the non-HTML skip called
+  `getattr(att, "is_html", False)` instead of `att.is_html()` -- since
+  `is_html` is a METHOD on edgartools' `Attachment`, this fetched the
+  always-truthy bound method itself, so image/GRAPHIC attachments (routine on
+  modern activist letters) were never skipped, and their raw-bytes `.content`
+  crashed the header-cue regex, silently zeroing the ENTIRE filing's
+  transactions via the caller's blanket `except`; (2) some filers (e.g.
+  Elliott) drop the separate Buy/Sell column and encode direction IN the
+  quantity header instead ("Shares Purchased (Sold)": parens == sold) --
+  `_SIGNED_QUANTITY_RE` recognizes that pattern and derives `transaction_type`
+  per-row from the parens rather than requiring a distinct Buy/Sell column.
 """
 
 from __future__ import annotations
@@ -128,6 +141,12 @@ _ROLE_KEYWORDS = [
     ("quantity", ("shares", "quantity")),
     ("price_per_share", ("unit cost", "price", "cost")),
 ]
+# Some filers (e.g. Elliott's 2024 SC 13D on LUV) drop the separate Buy/Sell
+# column entirely and encode direction IN the quantity header instead --
+# "Shares Purchased (Sold)": a plain number is a buy, a parenthesized one is a
+# sell. Recognized separately since it maps to BOTH a quantity value AND a
+# transaction_type (derived per-row from the parens, never from a header).
+_SIGNED_QUANTITY_RE = re.compile(r"(purchased|acquired|bought).{0,20}\(\s*(sold|disposed)\s*\)", re.I)
 
 
 def _header_roles(header_cells: list[str]) -> list[str | None]:
@@ -136,11 +155,15 @@ def _header_roles(header_cells: list[str]) -> list[str | None]:
     for cell in header_cells:
         low = cell.lower()
         role = None
-        for r, keywords in _ROLE_KEYWORDS:
-            if r not in used and any(k in low for k in keywords):
-                role = r
-                used.add(r)
-                break
+        if "quantity" not in used and _SIGNED_QUANTITY_RE.search(low):
+            role = "quantity_signed"
+            used.add("quantity")
+        else:
+            for r, keywords in _ROLE_KEYWORDS:
+                if r not in used and any(k in low for k in keywords):
+                    role = r
+                    used.add(r)
+                    break
         roles.append(role)
     return roles
 
@@ -156,7 +179,12 @@ def _row_values(cells: list[str], roles: list[str | None]) -> dict[str, str]:
         if val == "$" and idx < len(cells):     # currency symbol split into its own cell
             val = cells[idx]
             idx += 1
-        if role and val:
+        if not role or not val:
+            continue
+        if role == "quantity_signed":
+            out["quantity"] = val
+            out["transaction_type"] = "Sell" if val.strip().startswith("(") else "Buy"
+        else:
             out[role] = val
     return out
 
@@ -209,13 +237,24 @@ def _extract_transaction_rows(filing, fallback_person: str | None,
     rows: list[dict] = []
     attachments = getattr(filing, "attachments", None) or []
     for att in attachments:
-        if not getattr(att, "is_html", False):
+        # `is_html` is a METHOD, not a property -- `getattr(att, "is_html", False)`
+        # (no call) previously fetched the always-truthy bound method itself, so
+        # non-HTML attachments (GRAPHIC/.jpg letter images, routine on modern
+        # activist letters) were never actually skipped. `.content` on one of
+        # those returns raw bytes, which crashed the regex search below and, via
+        # the caller's blanket except, silently zeroed out the WHOLE filing's
+        # transaction rows -- the real cause of transaction coverage dying out
+        # for any filing with an image attachment (i.e. most post-2020 ones).
+        try:
+            if not att.is_html():
+                continue
+        except Exception:                       # noqa: BLE001 -- best-effort only
             continue
         try:
             html = att.content
         except Exception:                       # noqa: BLE001 -- best-effort only
             continue
-        if not html or not _TRADE_HEADER_CUE.search(html):
+        if not isinstance(html, str) or not _TRADE_HEADER_CUE.search(html):
             continue
         soup = BeautifulSoup(html, "html.parser")
         for table in soup.find_all("table"):
@@ -246,7 +285,13 @@ def _extract_transaction_rows(filing, fallback_person: str | None,
 
 def _cik_num(value) -> int | None:
     """Normalize a CIK for comparison (zero-padding/type varies by source --
-    '0000070858' from a filing header vs '70858' from the ticker universe)."""
+    '0000070858' from a filing header vs '70858' from the ticker universe).
+    A blank/empty value means "unknown", not CIK 0 -- treating it as 0 would
+    make the issuer/filer guard in `build_ticker_13d_edgar` wrongly DROP a
+    genuine subject-company filing whenever the header's issuer CIK failed to
+    parse (empty string), since 0 would never equal the ticker's real CIK."""
+    if not value:
+        return None
     try:
         return int(str(value).lstrip("0") or "0")
     except (TypeError, ValueError):

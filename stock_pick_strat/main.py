@@ -5,12 +5,8 @@ from src.data_extract.step_extract_all_data import StepExtractAllData
 # from src.portfolio import StepPortfolio
 # from src.data_peers.step_deduce_peers import StepDeducePeers
 
-# from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import fetch_fundamentals_edgartools
-
 if __name__ == "__main__":
     config, context = get_config_context("./configs", use_cache=False, save=True)
-
-    # fetch_fundamentals_edgartools(context, tickers=['MAA', 'A', 'AEE', 'ODFL', 'JPM'])
 
     self = StepExtractAllData(context=context, config=config)
     self.run()

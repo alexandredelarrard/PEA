@@ -257,8 +257,11 @@ def test_item_sections_missing_item_is_absent_not_empty():
     assert "item4_purpose_of_transaction" not in sections
 
 
-def _fake_attachment(html: str, is_html: bool = True):
-    return SimpleNamespace(is_html=is_html, content=html)
+def _fake_attachment(html, is_html: bool = True):
+    """`is_html` is a METHOD on edgartools' real `Attachment` (not a property) --
+    modeled as a callable here so the fixture matches production and would have
+    caught the real `getattr(att, "is_html", False)` (no call) bug."""
+    return SimpleNamespace(is_html=lambda: is_html, content=html)
 
 
 def test_transaction_exhibit_parses_trade_rows_with_split_currency_cells():
@@ -307,6 +310,53 @@ def test_transaction_exhibit_ignored_when_no_trade_date_header():
     html = "<table><tr><td>Name</td><td>Address</td></tr></table>"
     filing = SimpleNamespace(attachments=[_fake_attachment(html)])
     assert _extract_transaction_rows(filing, fallback_person=None) == []
+
+
+def test_transaction_exhibit_skips_non_html_attachment_without_crashing():
+    """Real bug found via a live-DB audit: `sec_13d_transactions` coverage died
+    out entirely after ~2020 across the whole universe. Root cause -- the
+    non-HTML skip called `getattr(att, "is_html", False)` instead of
+    `att.is_html()`; since `is_html` is a method, that fetched the
+    always-truthy bound method itself, so image/GRAPHIC attachments (routine
+    on modern activist letters, e.g. Elliott's 2024 LUV filing) were never
+    skipped. `.content` on an image returns raw bytes, which crashed the
+    header-cue regex and, via the caller's blanket except, silently zeroed
+    out the WHOLE filing's transactions -- even though a real trade-log table
+    existed later in the SAME filing's attachments."""
+    image_attachment = _fake_attachment(b"\xff\xd8\xff\xe0binaryjpegdata", is_html=False)
+    trade_html = """
+    <table>
+      <tr><td>Trade Date</td><td>Buy/Sell</td><td>Quantity</td><td>Price</td></tr>
+      <tr><td>May 1, 2024</td><td>Sell</td><td>1,000</td><td>$</td><td>12.50</td></tr>
+    </table>
+    """
+    filing = SimpleNamespace(attachments=[image_attachment, _fake_attachment(trade_html)])
+    rows = _extract_transaction_rows(filing, fallback_person="Icahn Carl C")
+    assert len(rows) == 1
+    assert rows[0]["quantity"] == 1000.0
+
+
+def test_transaction_exhibit_parses_combined_purchased_sold_column():
+    """Real bug: some filers (e.g. Elliott) drop the separate Buy/Sell column
+    and encode direction IN the quantity header instead ("Shares Purchased
+    (Sold)": a plain number is a buy, a parenthesized one is a sell). The old
+    row-acceptance rule required an explicit transaction_type column to exist
+    at all, so every row of this (increasingly common, real) table layout was
+    silently dropped as "not a data row"."""
+    html = """
+    <table>
+      <tr><td>Trade Date</td><td>Shares Purchased (Sold)</td><td>Price Per Share ($)</td></tr>
+      <tr><td>7/11/2024</td><td>1,050,000</td><td>26.94</td></tr>
+      <tr><td>7/16/2024</td><td>(400,000)</td><td>28.71</td></tr>
+    </table>
+    """
+    filing = SimpleNamespace(attachments=[_fake_attachment(html)])
+    rows = _extract_transaction_rows(filing, fallback_person="Elliott Investment Management L.P.")
+    assert len(rows) == 2
+    assert rows[0]["transaction_type"] == "Buy"
+    assert rows[0]["quantity"] == 1050000.0
+    assert rows[1]["transaction_type"] == "Sell"
+    assert rows[1]["quantity"] == 400000.0
 
 
 # --- Real-data bug fixes (found via a live-DB audit of sec_13d_transactions) -- #

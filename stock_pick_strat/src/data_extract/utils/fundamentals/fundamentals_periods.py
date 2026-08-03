@@ -17,11 +17,14 @@ in the next).
 """
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 
 from src.data_extract.utils.fundamentals.fundamentals_tags import (
-    ANNUAL_MAX_DAYS, ANNUAL_MIN_DAYS, IMPLIED_QUARTER_MAX_DAYS,
-    IMPLIED_QUARTER_MIN_DAYS, MAX_OPPOSITE_SIGN_Q4_RATIO, MIN_PARTIAL_FY_FIELDS,
+    ANNUAL_MAX_DAYS, ANNUAL_MIN_DAYS, FISCAL_YEAR_EXTRAPOLATION_GRACE_DAYS,
+    FISCAL_YEAR_MEAN_DAYS, IMPLIED_QUARTER_MAX_DAYS, IMPLIED_QUARTER_MIN_DAYS,
+    MAX_OPPOSITE_SIGN_Q4_RATIO, MIN_FISCAL_YEAR_LABEL_VOTES, MIN_PARTIAL_FY_FIELDS,
     NON_NEGATIVE_FLOW_FIELDS, PARTIAL_FY_TOLERANCE, Q4_TAG_MISMATCH_FY_MAX,
 )
 
@@ -778,6 +781,122 @@ def backfill_fiscal_period_by_filing_order(raw: pd.DataFrame) -> pd.DataFrame:
                     & (pd.to_datetime(raw["period_end"], errors="coerce") == period_end))
             raw.loc[match, "fiscal_period"] = label
     return raw
+
+
+def _fiscal_year_end_dates(raw: pd.DataFrame) -> list[pd.Timestamp]:
+    """The ticker's ACTUAL fiscal-year-end dates, read off its 10-K filings: the
+    period_end of every annual-shaped (~340-380d) duration fact a 10-K reported
+    for its own current period. Sorted, de-duplicated. These are exact -- no
+    month/day rule is assumed -- which is what makes the calendar below immune to
+    a 52/53-week filer's drift (Cisco's fiscal year ends 07-30, 07-28, 07-27,
+    07-26, ... so any fixed anniversary rule misplaces a quarter at the boundary)."""
+    is_10k = raw["form"].astype(str).str.upper().str.startswith("10-K")
+    days = pd.Series([duration_days(s, e) for s, e in zip(raw["period_start"], raw["period_end"])],
+                     index=raw.index)
+    ends = raw.loc[is_10k & days.between(ANNUAL_MIN_DAYS, ANNUAL_MAX_DAYS), "period_end"]
+    return sorted(pd.to_datetime(ends, errors="coerce").dropna().unique())
+
+
+def _fiscal_year_index(period_end: pd.Timestamp, fye_dates: list[pd.Timestamp]) -> int:
+    """Ordinal of the fiscal year a `period_end` belongs to, counting from
+    `fye_dates[0]`'s fiscal year as 0: the index of the FIRST fiscal-year end at
+    or after it. A quarter end always sits ~1-9 months BEFORE its own fiscal-year
+    end, and a fiscal-year end matches its own entry exactly, so no tolerance is
+    needed inside the observed range.
+
+    Outside that range the ordinal is extrapolated off `fye_dates[0]` at
+    `FISCAL_YEAR_MEAN_DAYS` per year -- forward for the in-progress fiscal year
+    (whose 10-K does not exist yet) and backward for the quarters preceding the
+    earliest 10-K in the history window. Normally a single step either way, so the
+    ~6d a 53-week year adds cannot accumulate; `FISCAL_YEAR_EXTRAPOLATION_GRACE_
+    DAYS` absorbs it on that step."""
+    for i, fye in enumerate(fye_dates):
+        if period_end <= fye:
+            if i > 0 or (fye - period_end).days <= FISCAL_YEAR_MEAN_DAYS:
+                return i
+            break                       # >1 year before the earliest -- extrapolate
+    offset_days = (period_end - fye_dates[0]).days - FISCAL_YEAR_EXTRAPOLATION_GRACE_DAYS
+    return math.ceil(offset_days / FISCAL_YEAR_MEAN_DAYS)
+
+
+def resolve_fiscal_year_by_filing_calendar(raw: pd.DataFrame) -> pd.DataFrame:
+    """Re-key every raw fact's `fiscal_year` to the ticker's OWN fiscal calendar,
+    reconstructed from its 10-K period ends, instead of trusting a per-fact or
+    per-filing label that carries filer/parser typos.
+
+    Both available labels are individually unreliable, in DIFFERENT filings, and
+    both failures are silent because the wrong year is a perfectly well-formed
+    one -- it simply collides with a real fiscal year and destroys BOTH:
+
+      * edgartools' PER-FACT `fiscal_year`: Cisco's fiscal-2016 10-K (accession
+        0000858877-16-000117, period_end 2016-07-30) tags every current-period
+        fact `fiscal_year=2017`, so its annual + Q4 rows landed on fiscal 2017
+        beside the real fiscal-2017 10-K. Cisco fiscal 2016 ended up with NO
+        annual row and no Q4 at all, and fiscal 2017 with two filings' worth
+        (98 FY rows against the ~49 every other year has). Johnson Controls'
+        fiscal-2016 Q1 10-Q (period_end 2015-12-31) fails the same way, labeled
+        `fiscal_year=2015`.
+      * the FILING's cover page (`dei:DocumentFiscalYearFocus`): J.M. Smucker's
+        fiscal-2015 Q1 10-Q (period_end 2014-07-31) says 2014, one year early --
+        its own neighbours (Q1 2013-07-31 -> 2014, Q2 2014-10-31 -> 2015) prove
+        2015. So "prefer the cover page" is not a fix either.
+
+    What IS reliable is the SHAPE of a fiscal calendar: consecutive 10-K period
+    ends are ~1 year apart, and every quarter belongs to the fiscal year whose
+    end comes next. So the DATES come from the 10-Ks (exact, `_fiscal_year_end_
+    dates`) and only the starting LABEL is voted on -- across every filing and
+    both label sources at once (`_fiscal_year_label_offset`), which is what makes
+    a single typo on either side get outvoted rather than propagate.
+
+    Requires a `cover_fiscal_year` column (the filing-level cover-page focus,
+    attached by `fetch_fundamentals_edgar._filing_current_period_rows`); absent
+    it, only the native labels vote. Leaves `fiscal_year` untouched when there is
+    no 10-K to anchor on or too few votes to be meaningful
+    (`MIN_FISCAL_YEAR_LABEL_VOTES`) -- this pipeline's "null, never guess wrong"
+    default, which also keeps a thin incremental run from re-labelling a ticker
+    off one filing."""
+    required = {"form", "period_start", "period_end", "fiscal_year"}
+    if raw is None or raw.empty or not required.issubset(raw.columns):
+        return raw
+    fye_dates = _fiscal_year_end_dates(raw)
+    if not fye_dates:
+        return raw
+
+    period_end = pd.to_datetime(raw["period_end"], errors="coerce")
+    resolvable = period_end.notna()
+    if not resolvable.any():
+        return raw
+    index = period_end[resolvable].map(lambda p: _fiscal_year_index(p, fye_dates))
+
+    offset = _fiscal_year_label_offset(raw.loc[resolvable], index)
+    if offset is None:
+        return raw
+    raw = raw.copy()
+    raw.loc[resolvable, "fiscal_year"] = (index + offset).astype("int64")
+    return raw
+
+
+def _fiscal_year_label_offset(raw: pd.DataFrame, index: pd.Series) -> int | None:
+    """The single integer that turns a fiscal-year ORDINAL (`_fiscal_year_index`)
+    into the issuer's own fiscal-year NUMBER, chosen as the most common value of
+    `label - ordinal` across every labelled row and both label sources
+    (edgartools' per-fact `fiscal_year` and the filing's cover-page
+    `cover_fiscal_year`).
+
+    Voting rather than reading one filing is the whole point: a correct label
+    source agrees with the calendar on every row, so it contributes one identical
+    vote per row, while a typo contributes a different one on the handful of rows
+    it affects. Returns None when there are fewer than
+    `MIN_FISCAL_YEAR_LABEL_VOTES` votes -- too thin to overrule anything."""
+    votes: list[int] = []
+    for col in ("cover_fiscal_year", "fiscal_year"):
+        if col not in raw.columns:
+            continue
+        labels = pd.to_numeric(raw[col], errors="coerce")
+        votes.extend((labels - index).dropna().astype(int).tolist())
+    if len(votes) < MIN_FISCAL_YEAR_LABEL_VOTES:
+        return None
+    return int(pd.Series(votes).mode().iloc[0])
 
 
 _SNAPSHOT_KEY = ["fiscal_year", "fiscal_period", "accession_number"]

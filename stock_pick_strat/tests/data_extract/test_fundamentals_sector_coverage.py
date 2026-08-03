@@ -135,7 +135,10 @@ def test_nee_not_truncated_real():
     row = cik[cik["ticker"] == "NEE"]
     if row.empty:
         pytest.skip("NEE not in cik_mapping")
-    p = ctx.paths["SEC_BULK_CACHE_DIR"] / f"companyfacts_CIK{row.iloc[0]['cik']}.json"
+    cache_dir = ctx.paths.get("SEC_BULK_CACHE_DIR")
+    if cache_dir is None:
+        pytest.skip("SEC_BULK_CACHE_DIR no longer provisioned (companyfacts JSON cache retired)")
+    p = cache_dir / f"companyfacts_CIK{row.iloc[0]['cik']}.json"
     if not p.exists():
         pytest.skip("NEE companyfacts not cached")
 

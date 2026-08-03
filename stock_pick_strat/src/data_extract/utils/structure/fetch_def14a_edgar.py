@@ -41,6 +41,10 @@ from src.context import Context
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
+from src.data_extract.utils.structure.def14a_validate import (
+    clean_person_name, repair_director_comp_rows, repair_exec_comp_rows, repair_main_row,
+    repair_ownership_rows,
+)
 
 _MAIN_COLS = [
     "ticker", "cik", "accession_number", "form", "filing_date", "period_of_report",
@@ -52,7 +56,7 @@ _MAIN_COLS = [
     "insider_trading_policy_adopted", "award_timing_mnpi_considered",
     "award_dates_predetermined", "mnpi_disclosure_timed_for_comp_value",
     "ceo_pay_ratio_ceo_comp", "ceo_pay_ratio_median_employee_comp", "ceo_pay_ratio",
-    "auditor_name", "audit_fee_current_year", "audit_fee_prior_year",
+    "auditor_name", "audit_fiscal_year_current", "audit_fiscal_year_prior",
     "audit_fees_current", "audit_fees_prior",
     "audit_related_fees_current", "audit_related_fees_prior",
     "tax_fees_current", "tax_fees_prior", "other_fees_current", "other_fees_prior",
@@ -158,8 +162,11 @@ def _main_row(ticker: str, cik: str, filing, proxy) -> dict:
         "ceo_pay_ratio_median_employee_comp": _num(ratio.median_employee_compensation) if ratio else float("nan"),
         "ceo_pay_ratio": _num(ratio.ratio) if ratio else float("nan"),
         "auditor_name": (audit.auditor_name or None) if audit else None,
-        "audit_fee_current_year": _num(audit.current_year) if (audit and audit.current_year) else float("nan"),
-        "audit_fee_prior_year": _num(audit.prior_year) if (audit and audit.prior_year) else float("nan"),
+        # NOTE: edgartools' `AuditFees.current_year` / `.prior_year` are the fee table's YEAR
+        # LABELS (2025, 2024) -- not fees. The dollar amounts are `audit_fees_current/_prior`
+        # below. These columns were previously named `audit_fee_*_year`, which read as a fee.
+        "audit_fiscal_year_current": _num(audit.current_year) if (audit and audit.current_year) else float("nan"),
+        "audit_fiscal_year_prior": _num(audit.prior_year) if (audit and audit.prior_year) else float("nan"),
         "audit_fees_current": _num(audit.audit_fees_current) if audit else float("nan"),
         "audit_fees_prior": _num(audit.audit_fees_prior) if audit else float("nan"),
         "audit_related_fees_current": _num(audit.audit_related_current) if audit else float("nan"),
@@ -288,10 +295,20 @@ def build_ticker_def14a_edgar(
         if proxy is None or not hasattr(proxy, "voting_proposals"):
             continue                                         # not a ProxyStatement (see docstring)
 
-        main_rows.append(_main_row(ticker, cik, f, proxy))
-        exec_rows.extend(_exec_comp_rows(ticker, cik, f, proxy))
-        dir_rows.extend(_director_comp_rows(ticker, cik, f, proxy))
-        own_rows.extend(_ownership_rows(ticker, cik, f, proxy))
+        # Repair PER FILING (not per table): re-typing an ownership row needs that same filing's
+        # comp tables to know who its insiders are. See def14a_validate.py's module docstring.
+        main = repair_main_row(_main_row(ticker, cik, f, proxy))
+        execs = repair_exec_comp_rows(_exec_comp_rows(ticker, cik, f, proxy))
+        directors = repair_director_comp_rows(_director_comp_rows(ticker, cik, f, proxy))
+        insiders = {n for n in (
+            [clean_person_name(main.get("peo_name"))]
+            + [r["name"] for r in execs] + [r["name"] for r in directors]
+        ) if n}
+
+        main_rows.append(main)
+        exec_rows.extend(execs)
+        dir_rows.extend(directors)
+        own_rows.extend(repair_ownership_rows(_ownership_rows(ticker, cik, f, proxy), insiders))
         vote_rows.extend(_votes_rows(ticker, cik, f, proxy))
 
     return (pd.DataFrame(main_rows, columns=_MAIN_COLS),

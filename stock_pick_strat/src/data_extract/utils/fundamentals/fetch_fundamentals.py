@@ -1,60 +1,38 @@
 """
-Fetch fundamental data per ticker.
+fetch_fundamentals.py (src/data_extract/utils/fundamentals/fetch_fundamentals.py)
+--------------------------------------------------------------------------------
+Extracts ~10-year point-in-time quarterly fundamental history via SEC EDGAR 
+`companyfacts` (`build_fundamentals_history_sec()`). Keyed on SEC filing date 
+(`as_of`) to eliminate look-ahead bias in backtesting.
 
-SEC EDGAR `companyfacts` (free, no key) -> genuine ~10-year point-in-time history
-at QUARTERLY cadence. This is the one that lets you make size / value / quality
-risk-neutral over a real backtest, because every value comes with the FILING DATE
-(`filed`), so we key each row on the date the number actually became public -- no
-look-ahead. Flow items are stored as trailing-twelve-month (TTM) sums of discrete
-quarters (Q1-Q3 from the 10-Qs, Q4 derived as FY - Q1 - Q2 - Q3), refreshed every
-quarter. Built by `build_fundamentals_history_sec()`.
+Core Data Logic:
+- TTM Flows: Sums discrete Q1–Q3 and derived Q4 (FY - Q1 - Q2 - Q3).
+- Market Cap & Valuation: Emits `sharesOutstanding` and `stockholdersEquity`. 
+  Market Cap (`sharesOutstanding` * daily close) and B/P are calculated in factors layer.
 
-(Forward P/E is NOT scraped as a today-only yfinance snapshot any more; it is
-reconstructed historically from the earnings-surprise archive in
-earnings_features.forward_earnings_yield, and market cap = shares x daily close.)
+Output Schema :
+- Keys: `ticker`, `as_of` (filing date), `fiscal_end`
+- Financial Ratios & Growth: `revenueGrowth`, `earningsGrowth`, `grossMargins`, `operatingMargins`, 
+  `profitMargins`, `returnOnEquity`, `debtToEquity`
+- Financial Levels: `cash`, `shortTermDebt`, `longTermDebt`, `totalLiabilities`, `currentAssets`, 
+  `currentLiabilities`, `goodwill`, `totalAssets`, `stockholdersEquity`, `sharesOutstanding`
+- TTM & Discrete Flows: `revenue(_q)`, `netIncome(_q)`, `ebitda(_q)`, `freeCashflow(_q)`, 
+  `operatingCashFlow`, `researchAndDevelopment`, `sellingGeneralAdmin`, `stockBasedComp`, 
+  `acquisitions`, `interestExpense`
 
-Output schema (same `fundamentals_history.parquet` the cube reads):
-    ticker, as_of (= filing date), fiscal_end,
-    totalRevenue, netIncome, grossMargins, operatingMargins, profitMargins,
-    returnOnEquity, debtToEquity, ebitda, freeCashflow, operatingCashFlow,
-    researchAndDevelopment, revenueGrowth, earningsGrowth, sharesOutstanding,
-    stockholdersEquity,
-    cash, longTermDebt, shortTermDebt, totalLiabilities, currentAssets,
-    currentLiabilities, goodwill, totalAssets           (raw balance-sheet levels),
-    sellingGeneralAdmin, stockBasedComp, acquisitions, interestExpense  (TTM flows),
-    revenue_q, netIncome_q, ebitda_q, freeCashflow_q  (discrete single-quarter)
+Standardized GAAP Restatements (Emits Raw Metric + Adjustment Size):
+- `cash`: Netted to unrestricted cash (tracks `restrictedCash`).
+- `inventory` / `costOfRevenue`: Standardized from LIFO to FIFO (tracks `lifoReserve`).
+- `operatingIncome`: Restores pre-2018 non-service pension costs to maintain ASU-2017-07 comparability (tracks `nonServicePensionCost`).
+- `totalRevenue`: Nets pass-through excise/sales taxes (tracks `exciseTaxAdjustment`).
+- `totalAssetsExLease`: Excludes ASC-842 ROU assets to prevent 2019 balance sheet distortion (tracks `operatingLeaseRouAsset`).
+- `capexGlobal`: Includes both operating- and finance-lease additions.
 
-RESTATED (not just extracted) fields — GAAP as filed is not comparable for these, so the
-base column carries the corrected figure and the SIZE of each correction is emitted as its
-own column so nothing is hidden:
-    cash                  unrestricted and investment-free (the restricted-inclusive and
-                          cash+ST-investment totals are separate pools netted down here;
-                          ABSTAINS when the restricted amount is unknown) -> `restrictedCash`
-    inventory/costOfRevenue  LIFO -> FIFO (+ reserve on the balance sheet, - the reserve's
-                          annual increase in COGS)                        -> `lifoReserve`
-    operatingIncome       pre-FY2018 non-service pension cost added back, removing the
-                          ASU-2017-07 break in a filer's own margin series
-                                                                  -> `nonServicePensionCost`
-    totalRevenue          excise / sales taxes the filer merely collects netted off, but only
-                          where it tags no clean element     -> `exciseTaxAdjustment`
-    totalAssetsExLease    the assets base free of the ASC-842 ROU asset, so the FY2019
-                          adoption jump is not read as investment  -> `operatingLeaseRouAsset`
-    capexGlobal           now includes OPERATING-lease additions as well as finance-lease ones
-
-The raw levels / extra TTM flows above feed the refined feature families in
-fundamental_features.py: distress (net-debt/EBITDA, interest coverage, current
-ratio, cash/debt), S&M efficiency (SG&A intensity + operating leverage), M&A
-(acquisition intensity, goodwill growth) and stock-based-comp (SBC intensity,
-SBC/OCF). All are TTM/point-in-time, keyed on the SEC filing date.
-
-IMPORTANT for size / value: SEC gives shares and equity, not market cap
-(market cap needs price). We store `sharesOutstanding`; compute
-marketCap = sharesOutstanding * close in the factor layer (see the companion
-change to factors.py). Store equity so book/price is available too.
-
-Run:
-    python -m data.fetch_fundamentals
+Downstream Consumption:
+Feeds `fundamental_features.py` (distress metrics, S&M efficiency, M&A growth, SBC intensity) 
+and risk-neutral factor computations.
 """
+
 import logging
 
 import numpy as np

@@ -532,8 +532,9 @@ CREATE TABLE IF NOT EXISTS "def14a_edgar" (
     "ceo_pay_ratio_median_employee_comp" DOUBLE PRECISION,
     "ceo_pay_ratio" DOUBLE PRECISION,
     "auditor_name" TEXT,
-    "audit_fee_current_year" DOUBLE PRECISION,
-    "audit_fee_prior_year" DOUBLE PRECISION,
+    -- Fee-table YEAR LABELS (2025, 2024), not fees; the dollar amounts are audit_fees_*.
+    "audit_fiscal_year_current" DOUBLE PRECISION,
+    "audit_fiscal_year_prior" DOUBLE PRECISION,
     "audit_fees_current" DOUBLE PRECISION,
     "audit_fees_prior" DOUBLE PRECISION,
     "audit_related_fees_current" DOUBLE PRECISION,

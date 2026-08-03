@@ -2,7 +2,7 @@
 StepExtractFundamentals wiring test: `run()` calls its sources directly, in
 order, with no per-source error isolation -- a failure in any one of them
 propagates immediately (no _run_source wrapper). `fetch_financial_statements`
-is currently commented out in `run()`, so it is never called (not exercised
+is no longer imported by this module, so it is never called (not exercised
 here); the active sequence is fundamentals -> fundamentals_derive ->
 earnings_surprises -> insider_transactions -> financial_notes.
 """
@@ -20,7 +20,6 @@ def test_run_calls_its_active_sources_directly_in_order(monkeypatch):
         return _fn
 
     import src.data_extract.transformers.step_extract_fundamentals as mod
-    monkeypatch.setattr(mod, "fetch_financial_statements", _ok("financial_statements"))
     monkeypatch.setattr(mod, "fetch_fundamentals_edgartools", _ok("fundamentals"))
     monkeypatch.setattr(mod, "rebuild_fundamentals_history", _ok("fundamentals_derive"))
     monkeypatch.setattr(mod, "fetch_earnings_surprises", _ok("earnings_surprises"))
@@ -33,8 +32,8 @@ def test_run_calls_its_active_sources_directly_in_order(monkeypatch):
 
     step.run(tickers=["AAPL"])
 
-    # "financial_statements" is NOT in this list -- that call is currently
-    # commented out in run().
+    # "financial_statements" is NOT in this list -- fetch_financial_statements
+    # is no longer imported/called by run().
     assert calls == ["fundamentals", "fundamentals_derive",
                      "earnings_surprises", "insider_transactions", "financial_notes"]
 
@@ -54,7 +53,6 @@ def test_a_failing_source_aborts_the_rest(monkeypatch):
         raise RuntimeError("simulated fundamentals fetch failure")
 
     import src.data_extract.transformers.step_extract_fundamentals as mod
-    monkeypatch.setattr(mod, "fetch_financial_statements", _ok("financial_statements"))
     monkeypatch.setattr(mod, "fetch_fundamentals_edgartools", _boom)
     monkeypatch.setattr(mod, "rebuild_fundamentals_history", _ok("fundamentals_derive"))
     monkeypatch.setattr(mod, "fetch_earnings_surprises", _ok("earnings_surprises"))

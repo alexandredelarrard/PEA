@@ -502,6 +502,130 @@ CREATE TABLE IF NOT EXISTS "def14a_llm" (
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_llm_as_of ON "def14a_llm" ("as_of");
 
+-- [extract] def14a_edgar  (pk: ticker, accession_number; from live DB)
+
+CREATE TABLE IF NOT EXISTS "def14a_edgar" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "filing_date" DATE,
+    "period_of_report" DATE,
+    "company_name" TEXT,
+    "has_xbrl" DOUBLE PRECISION,
+    "has_individual_executive_data" DOUBLE PRECISION,
+    "peo_name" TEXT,
+    "peo_total_comp" DOUBLE PRECISION,
+    "peo_actually_paid_comp" DOUBLE PRECISION,
+    "neo_avg_total_comp" DOUBLE PRECISION,
+    "neo_avg_actually_paid_comp" DOUBLE PRECISION,
+    "total_shareholder_return" DOUBLE PRECISION,
+    "peer_group_tsr" DOUBLE PRECISION,
+    "net_income" DOUBLE PRECISION,
+    "company_selected_measure_name" TEXT,
+    "company_selected_measure_value" DOUBLE PRECISION,
+    "insider_trading_policy_adopted" DOUBLE PRECISION,
+    "award_timing_mnpi_considered" DOUBLE PRECISION,
+    "award_dates_predetermined" DOUBLE PRECISION,
+    "mnpi_disclosure_timed_for_comp_value" DOUBLE PRECISION,
+    "ceo_pay_ratio_ceo_comp" DOUBLE PRECISION,
+    "ceo_pay_ratio_median_employee_comp" DOUBLE PRECISION,
+    "ceo_pay_ratio" DOUBLE PRECISION,
+    "auditor_name" TEXT,
+    "audit_fee_current_year" DOUBLE PRECISION,
+    "audit_fee_prior_year" DOUBLE PRECISION,
+    "audit_fees_current" DOUBLE PRECISION,
+    "audit_fees_prior" DOUBLE PRECISION,
+    "audit_related_fees_current" DOUBLE PRECISION,
+    "audit_related_fees_prior" DOUBLE PRECISION,
+    "tax_fees_current" DOUBLE PRECISION,
+    "tax_fees_prior" DOUBLE PRECISION,
+    "other_fees_current" DOUBLE PRECISION,
+    "other_fees_prior" DOUBLE PRECISION,
+    "total_fees_current" DOUBLE PRECISION,
+    "total_fees_prior" DOUBLE PRECISION,
+    "n_voting_proposals" DOUBLE PRECISION,
+    "n_say_on_pay_proposals" DOUBLE PRECISION,
+    "n_director_election_proposals" DOUBLE PRECISION,
+    "n_auditor_ratification_proposals" DOUBLE PRECISION,
+    "n_equity_plan_proposals" DOUBLE PRECISION,
+    "n_shareholder_proposals" DOUBLE PRECISION,
+    "n_board_against_recommendations" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_edgar_filing_date ON "def14a_edgar" ("filing_date");
+
+-- [extract] def14a_edgar_executive_comp  (pk: ticker, accession_number, name, year; from live DB)
+
+CREATE TABLE IF NOT EXISTS "def14a_edgar_executive_comp" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "filing_date" DATE,
+    "name" TEXT NOT NULL,
+    "title" TEXT,
+    "year" DOUBLE PRECISION NOT NULL,
+    "salary" DOUBLE PRECISION,
+    "bonus" DOUBLE PRECISION,
+    "stock_awards" DOUBLE PRECISION,
+    "option_awards" DOUBLE PRECISION,
+    "non_equity_incentive" DOUBLE PRECISION,
+    "pension_change" DOUBLE PRECISION,
+    "other_compensation" DOUBLE PRECISION,
+    "total" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number", "name", "year")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_edgar_executive_comp_filing_date ON "def14a_edgar_executive_comp" ("filing_date");
+
+-- [extract] def14a_edgar_director_comp  (pk: ticker, accession_number, name; from live DB)
+
+CREATE TABLE IF NOT EXISTS "def14a_edgar_director_comp" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "filing_date" DATE,
+    "name" TEXT NOT NULL,
+    "fees_earned" DOUBLE PRECISION,
+    "stock_awards" DOUBLE PRECISION,
+    "option_awards" DOUBLE PRECISION,
+    "non_equity_incentive" DOUBLE PRECISION,
+    "pension_change" DOUBLE PRECISION,
+    "other_compensation" DOUBLE PRECISION,
+    "total" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number", "name")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_edgar_director_comp_filing_date ON "def14a_edgar_director_comp" ("filing_date");
+
+-- [extract] def14a_edgar_ownership  (pk: ticker, accession_number, holder_name, holder_type; from live DB)
+
+CREATE TABLE IF NOT EXISTS "def14a_edgar_ownership" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "filing_date" DATE,
+    "holder_name" TEXT NOT NULL,
+    "holder_type" TEXT NOT NULL,
+    "shares" DOUBLE PRECISION,
+    "percent_of_class" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number", "holder_name", "holder_type")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_edgar_ownership_filing_date ON "def14a_edgar_ownership" ("filing_date");
+
+-- [extract] def14a_edgar_votes  (pk: ticker, accession_number, proposal_number; from live DB)
+
+CREATE TABLE IF NOT EXISTS "def14a_edgar_votes" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "filing_date" DATE,
+    "proposal_number" DOUBLE PRECISION NOT NULL,
+    "description" TEXT,
+    "board_recommendation" TEXT,
+    "proposal_type" TEXT,
+    PRIMARY KEY ("ticker", "accession_number", "proposal_number")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_edgar_votes_filing_date ON "def14a_edgar_votes" ("filing_date");
+
 -- SKIPPED (source missing): ticker_descriptions <- ticker_descriptions.parquet
 
 -- [extract] insider_transactions  (pk: accession_number, security_type, transaction_sk; from live DB)

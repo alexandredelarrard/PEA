@@ -118,6 +118,33 @@ EXTRACT_TABLES: list[TableSpec] = [
               ("cik", "period", "ticker", "cusip"), "extract", date_col="period"),
     TableSpec("def14a_llm", "def14a_llm.parquet", ("ticker", "accession_number"),
               "extract", date_col="as_of"),
+    # Deterministic complement to def14a_llm: structured DEF 14A data via edgartools' typed
+    # ProxyStatement (SEC XBRL ECD taxonomy + deterministic HTML-table parsing), zero LLM cost.
+    # Main filing-level row (PEO/NEO pay-vs-performance, CEO pay ratio, audit fee breakdown,
+    # governance flags, voting-proposal counts by type) + four one-to-many detail tables below.
+    # See fetch_def14a_edgar.py.
+    TableSpec("def14a_edgar", "def14a_edgar.parquet", ("ticker", "accession_number"),
+              "extract", date_col="filing_date",
+              date_type_cols=("filing_date", "period_of_report")),
+    # Summary Compensation Table: one row per NEO per fiscal year (edgartools' HTML extractor
+    # typically recovers 3 years per filing) -- richer multi-year history than def14a_llm's
+    # single most-recent-year CEO fields.
+    TableSpec("def14a_edgar_executive_comp", "def14a_edgar_executive_comp.parquet",
+              ("ticker", "accession_number", "name", "year"), "extract",
+              date_col="filing_date", date_type_cols=("filing_date",)),
+    # Non-employee Director Compensation Table (Item 402(k)): one row per director per filing.
+    TableSpec("def14a_edgar_director_comp", "def14a_edgar_director_comp.parquet",
+              ("ticker", "accession_number", "name"), "extract",
+              date_col="filing_date", date_type_cols=("filing_date",)),
+    # Beneficial ownership table (5%+ holders + insiders, Reg S-K Item 403): one row per holder.
+    TableSpec("def14a_edgar_ownership", "def14a_edgar_ownership.parquet",
+              ("ticker", "accession_number", "holder_name", "holder_type"), "extract",
+              date_col="filing_date", date_type_cols=("filing_date",)),
+    # Ballot items: one row per proposal, carrying the BOARD's recommendation (not the
+    # shareholder vote OUTCOME -- see fetch_def14a_edgar.py module docstring) + classified type.
+    TableSpec("def14a_edgar_votes", "def14a_edgar_votes.parquet",
+              ("ticker", "accession_number", "proposal_number"), "extract",
+              date_col="filing_date", date_type_cols=("filing_date",)),
     TableSpec("ticker_descriptions", "ticker_descriptions.parquet", ("ticker",),
               "extract", date_col=None),
     # SEC Insider Transactions Data Sets (Forms 3/4/5): one row per reported
@@ -180,6 +207,14 @@ EXTRACT_TABLES: list[TableSpec] = [
     TableSpec("sec_13d", "sec_13d.parquet",
               ("ticker", "accession_number", "rp_seq"), "extract", date_col="filing_date",
               date_type_cols=("filing_date", "date_of_event")),
+    # Item 5(c) 60-day transaction log: one row PER DISCLOSED TRADE, keyed (ticker,
+    # accession, trade_seq) -- an independent grain from `sec_13d` (no rp_seq
+    # relationship). Parsed from each filing's "TRADING DATA" exhibit (fetch_13d_edgar.py
+    # `_extract_transaction_rows`); exhibit number varies by filer so it's identified by
+    # table content ("Trade Date" header), not a fixed EX-99.N number.
+    TableSpec("sec_13d_transactions", "sec_13d_transactions.parquet",
+              ("ticker", "accession_number", "trade_seq"), "extract", date_col="filing_date",
+              date_type_cols=("filing_date", "trade_date")),
     # 10-K Item 1A (Risk Factors) + Item 7 (MD&A) raw text; one row per (ticker, accession, section);
     # incremental by filed date. Feeds the embedding/drift feature layer.
     TableSpec("filing_risk_text", "filing_risk_text.parquet",

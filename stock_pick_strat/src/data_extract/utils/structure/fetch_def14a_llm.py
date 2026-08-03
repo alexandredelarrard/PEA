@@ -53,7 +53,7 @@ from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.llm_extractor import LLMExtractor
 from src.data_extract.utils.common.sec_utils import (
-    load_cik_mapping, load_extract_meta, save_extract_meta, sec_get, seen_accessions,
+    existing_filings, load_cik_mapping, load_extract_meta, save_extract_meta, sec_get,
     today_iso,
 )
 
@@ -585,16 +585,19 @@ def fetch_def14a_llm(
                          "(%d rows) — skipping", len(existing))
         return existing
 
-    existing = context.store.load("def14a_llm")
-    existing = None if existing.empty else existing
-    seen = seen_accessions(existing)              # accessions already extracted -> never re-LLM
+    # accessions already extracted -> never re-LLM (accession-only dedup, same convention as
+    # fetch_8k_edgar.py / fetch_13d_edgar.py / fetch_def14a_edgar.py's `existing_filings`: every
+    # ticker's FULL `years` window is re-listed below, gap-filling instead of resuming from a
+    # max-date cutoff)
+    seen = existing_filings(context, "def14a_llm")
 
     try:
         extractor = LLMExtractor(model=model, max_chars=max_chars,
                                  temperature=temperature, cache=cache)
     except EnvironmentError as e:
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
-        return existing if existing is not None else pd.DataFrame(columns=["ticker", "as_of"])
+        existing = context.store.load("def14a_llm")
+        return existing if not existing.empty else pd.DataFrame(columns=["ticker", "as_of"])
 
     total_new, tickers_touched, total_skipped = 0, 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):

@@ -5,7 +5,6 @@ __pycache__
 .pytest_cache
 tests
 data/sec_bulk_cache
-data/sec_filings_text
 data/output/models
 data/output/diagnostics
 data/output/backtest

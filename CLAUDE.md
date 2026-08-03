@@ -23,6 +23,7 @@ Pipeline executes sequential `Step` classes (base: `src/utils/step.py`) wired by
 - `src/context.py` — `Context`: configs, logging, `.store` (DB access), `.paths` (artifact paths).
 - `src/constants/constants.py` — Global literals (dates, SEC URLs, sector scope thresholds).
 - `src/data_store/` — `store.py` (`DataStore`: `load`, `save`, `replace`, `ensure_columns`, `existing_dates`), `schema_registry.py` (PKs & date cols), `schema_sql.py` (`sql/schema.sql`), `io.py`.
+- `src/sql/` - `database.md` and `schemas.sql` to understand data sources, fields, refreshing pace and structure
 
 ### Universe & Macro Assets
 - **Equity Universe (`sp500_tickers`):** Resolved via `src/utils/universe.py::load_universe_tickers(context)`. Seeded by S&P 500 scraper if empty or `refresh_universe: true`. All peer/cube/modeling steps consume this universe. Index changes only require updating rows in `sp500_tickers`.

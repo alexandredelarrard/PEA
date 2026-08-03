@@ -18,9 +18,6 @@ map to our tickers, and upsert to `pension_facts` (one row per company / tag /
 period-end / duration). The tag list is easily extended (e.g. to add the footnote
 PBO / plan-asset detail once the Financial Statement AND Notes sets are wired).
 
-Incremental: zips cached under data/sec_bulk_cache/financial_statements/ and only
-downloaded when missing; a quarter already in the DB is skipped unless the universe
-gained tickers (then cached zips are re-parsed, no re-download). Upsert de-dupes.
 """
 from __future__ import annotations
 

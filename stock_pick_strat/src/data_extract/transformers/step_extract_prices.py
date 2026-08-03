@@ -14,10 +14,10 @@ from src.utils.step import Step
 from src.data_extract.utils.prices.fetch_prices import fetch_price_history, fetch_market_prices
 from src.data_extract.utils.prices.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.prices.fetch_fails_to_deliver import fetch_fails_to_deliver
-from src.data_extract.utils.prices.fetch_13f import fetch_13f
 from src.data_extract.utils.prices.fetch_superinvestors import build_superinvestors_json
 from src.data_extract.utils.fundamentals.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_macro_assets import fetch_macro_assets
+from src.data_extract.utils.prices.fetch_13f import fetch_13f
 
 
 class StepExtractPrices(Step):
@@ -26,8 +26,6 @@ class StepExtractPrices(Step):
         super().__init__(context=context, config=config)
 
     def run(self, tickers: list[str]) -> None:
-        # `tickers` is the EQUITY universe (sp500_tickers) only — the benchmark/macro
-        # price series (other_tickers) are handled in the market/macro pull below.
 
         # prices + dividends come from ONE yfinance download (actions=True):
         # fetch_price_history writes both the prices and dividends tables.
@@ -46,7 +44,7 @@ class StepExtractPrices(Step):
         fetch_macro_assets(self._context)
 
         # 13F institutional holdings (SEC bulk + OpenFIGI cusip map; slow one-off)
-        # fetch_13f(self._context)
+        fetch_13f(self._context)
 
         # Superinvestors roster: curated top managers (Dataroma) -> CIK subset JSON,
         # ranked by 13F AUM, for the elite "smart-money" features. Best-effort: an

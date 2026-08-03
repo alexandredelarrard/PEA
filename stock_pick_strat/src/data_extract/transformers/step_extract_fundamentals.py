@@ -17,7 +17,6 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import fetch_f
 from src.data_extract.utils.fundamentals.fundamentals_derive import rebuild_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
-from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 
 
@@ -28,12 +27,8 @@ class StepExtractFundamentals(Step):
 
     def run(self, tickers: list[str]) -> None:
 
-        # Pension facts from the Financial Statement Data Sets (num/sub XBRL):
-        # fetch_financial_statements(self._context, tickers=tickers)
-
         # Fundamentals via edgartools: raw per-filing facts -> fundamentals_facts,
-        # then derived into fundamentals_history (unchanged shape/PK, so no
-        # downstream consumer needs to change).
+        # then derived into fundamentals_history
         fetch_fundamentals_edgartools(self._context, tickers=tickers)
         rebuild_fundamentals_history(self._context, tickers)
 

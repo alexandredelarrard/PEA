@@ -1,39 +1,54 @@
 """
 fetch_filing_text.py  (src/data_extract/utils/structure/fetch_filing_text.py)
 -----------------------------------------------------------------------------
-10-K narrative sections — Item 1A (Risk Factors) + Item 7 (MD&A) — extracted to raw text in
-`filing_risk_text`, for the downstream embedding/drift feature layer (YoY risk-factor additions,
-MD&A tone drift — reusing the notes-embedding machinery).
+10-K narrative sections — Item 1A (Risk Factors) + Item 7 (MD&A) — and 10-Q MD&A
+(Item 2), extracted to raw text in `filing_risk_text` via `edgartools` (mirrors
+`fetch_8k_edgar.py` / `fetch_13d_edgar.py`), for the downstream embedding/drift
+feature layer (YoY risk-factor additions, MD&A tone drift — reusing the
+notes-embedding machinery).
 
-Per ticker: list 10-Ks via the shared `list_filings` (per-ticker `since` -> DAG-fast incremental),
-download each 10-K's primary HTML (cached to data/sec_filings_text/ BEFORE the DB), section-carve
-Item 1A + Item 7 (`extract_item_sections`), and upsert one row per (ticker, accession, section).
-Deduped by accession so a re-run never re-downloads a stored 10-K.
+Data Grain:
+- One row per (ticker, accession_number, section).
 
-Section carving (the fiddly part, like the DEF 14A finder): each item's BODY is the LONGEST text
-span between its start heading and the next section marker — TOC entries are skipped because the
-next marker sits only a few chars away (span < FILING_TEXT_MIN_CHARS).
+Extraction strategy (PRIMARY + fallback, same pattern as `fetch_13d_edgar.py`'s
+Item 3/4/5/6 narrative):
+  * PRIMARY — edgartools' own `TenK`/`TenQ` structured section parser
+    (`filing.obj()`): `.risk_factors` / `.management_discussion` for 10-K,
+    `["Part I, Item 2"]` for 10-Q. Already handles cross-reference-index filings
+    (GE-style), bold-paragraph headings and table-cell layouts.
+  * FALLBACK — a hardened regex carve (`extract_item_sections`) over the
+    filing's plain text (`filing.text()`), used only when the structured parse
+    returns nothing (or a bare heading/cross-reference stub under
+    `FILING_TEXT_MIN_CHARS`). Covers edge cases found empirically across the
+    archive: apostrophe encoding variants (U+2019 / Win-1252 / mojibake),
+    filers that print the MD&A title without the item prefix, filers missing
+    Item 1B/1C.
+
+Deduped by accession so a re-run never re-parses a stored 10-K/10-Q.
 """
+
 from __future__ import annotations
 
 import logging
 import re
 
 import pandas as pd
-from tqdm import tqdm
+from edgar import Company
 
 from src.constants.constants import (
-    FILING_SECTION_MDA, FILING_SECTION_RISK, FILING_TEXT_CACHE_DIR, FILING_TEXT_FORMS,
-    FILING_TEXT_MIN_CHARS, FILING_TEXT_TABLE,
+    FILING_SECTION_MDA, FILING_SECTION_RISK, FILING_TEXT_FORMS, FILING_TEXT_MIN_CHARS,
+    FILING_TEXT_TABLE,
 )
 from src.context import Context
-from src.data_extract.utils.common.edgar_extract import html_to_text
-from src.data_extract.utils.common.edgar_fillings import list_filings
-from src.data_extract.utils.common.sec_utils import load_cik_mapping, sec_get
+from src.data_extract.utils.common.parallel_fetch import run_per_ticker
+from src.data_extract.utils.common.sec_utils import load_cik_mapping
+from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
 
 logger = logging.getLogger(__name__)
 _TABLE = FILING_TEXT_TABLE
 _MAX_CHARS = 300_000                       # cap a stored section (risk factors can be enormous)
+_COLS = ["ticker", "cik", "accession_number", "form", "filed", "period_of_report",
+        "section", "text", "n_words"]
 
 # --- Item markers (content-anchored; `N\b` never matches "NA" — no word boundary in "7a"/"1a").
 # The apostrophe in "management's" is matched with \W (any non-word), NOT a literal quote: EDGAR HTML
@@ -106,9 +121,11 @@ def extract_item_sections(text: str, form: str) -> dict[str, str]:
     """{section: body_text} for the sections in a filing's plain text, FORM-AWARE:
       * 10-K -> Risk Factors (Item 1A) + MD&A (Item 7).
       * 10-Q -> MD&A (Item 2) only (Part II Item 1A risk factors are usually 'no material change').
-    MD&A uses a two-tier strategy: the primary item anchor for the form, then — if that yields
-    nothing (a filer that prints the MD&A title without the item prefix) — a FALLBACK on the
-    standalone 'Management's Discussion and Analysis' title. The end prefers the true next section
+    FALLBACK path only (see module docstring) — called when edgartools' own structured
+    parse (`.risk_factors` / `.management_discussion`) returns nothing or a stub. MD&A uses a
+    two-tier strategy: the primary item anchor for the form, then — if that yields nothing (a
+    filer that prints the MD&A title without the item prefix) — a FALLBACK on the standalone
+    'Management's Discussion and Analysis' title. The end prefers the true next section
     (Item 7A / Item 3, Quantitative & Qualitative) over the financial-statements item."""
     if not text or len(text) < FILING_TEXT_MIN_CHARS:
         return {}
@@ -131,6 +148,52 @@ def extract_item_sections(text: str, form: str) -> dict[str, str]:
     return out
 
 
+def _structured_sections(obj, form: str) -> dict[str, str]:
+    """Section text from edgartools' own `TenK`/`TenQ` parser (PRIMARY path — see module
+    docstring). A result under `FILING_TEXT_MIN_CHARS` is a bare heading/cross-reference stub,
+    discarded so the caller falls through to the regex carve."""
+    out: dict[str, str] = {}
+    is_10k = str(form).upper().startswith("10-K")
+    try:
+        if is_10k:
+            rf = obj.risk_factors
+            if rf and len(rf) >= FILING_TEXT_MIN_CHARS:
+                out[FILING_SECTION_RISK] = rf[:_MAX_CHARS]
+            mda = obj.management_discussion
+        else:
+            mda = obj["Part I, Item 2"]
+    except Exception:                                   # noqa: BLE001 -- best-effort only
+        return out
+    if mda and len(mda) >= FILING_TEXT_MIN_CHARS:
+        out[FILING_SECTION_MDA] = mda[:_MAX_CHARS]
+    return out
+
+
+def _filing_sections(filing) -> dict[str, str]:
+    """PRIMARY (structured `filing.obj()`) + FALLBACK (regex carve over `filing.text()` for
+    whichever section the structured parse missed) — see module docstring."""
+    form = filing.form
+    needed = {FILING_SECTION_RISK, FILING_SECTION_MDA} if str(form).upper().startswith("10-K") \
+        else {FILING_SECTION_MDA}
+    try:
+        obj = filing.obj()
+    except Exception:                                   # noqa: BLE001 -- best-effort only
+        obj = None
+    sections = _structured_sections(obj, form) if obj is not None else {}
+    missing = needed - sections.keys()
+    if missing:
+        try:
+            text = filing.text()
+        except Exception:                               # noqa: BLE001 -- best-effort only
+            text = None
+        if text:
+            fallback = extract_item_sections(text, form)
+            for k in missing:
+                if k in fallback:
+                    sections[k] = fallback[k]
+    return sections
+
+
 def _seen(context: Context) -> tuple[set[str], dict[str, pd.Timestamp]]:
     try:
         df = context.store.load(_TABLE, columns=["ticker", "accession_number", "filed"])
@@ -145,67 +208,60 @@ def _seen(context: Context) -> tuple[set[str], dict[str, pd.Timestamp]]:
     return seen, last
 
 
+def build_ticker_filing_text(ticker: str, cik: str, since: pd.Timestamp | None = None,
+                             done_accessions: frozenset[str] = frozenset()) -> pd.DataFrame:
+    """Walks `Company(ticker).get_filings(form=FILING_TEXT_FORMS)`, skips accessions already in
+    `done_accessions` or filed before `since`, and builds one row per (filing, section) via
+    `_filing_sections`."""
+    company = Company(ticker)
+    filings = company.get_filings(form=list(FILING_TEXT_FORMS))
+    sorted_filings = sorted(filings, key=lambda f: f.filing_date)
+    if since is not None:
+        sorted_filings = [f for f in sorted_filings if pd.Timestamp(f.filing_date) >= since]
+
+    rows: list[dict] = []
+    for f in sorted_filings:
+        if f.accession_number in done_accessions:
+            continue
+        for section, body in _filing_sections(f).items():
+            rows.append({
+                "ticker": ticker, "cik": cik, "accession_number": f.accession_number,
+                "form": str(f.form), "filed": pd.Timestamp(f.filing_date).normalize(),
+                "period_of_report": f.period_of_report,
+                "section": section, "text": body, "n_words": len(body.split()),
+            })
+    return pd.DataFrame(rows, columns=_COLS)
+
+
 def fetch_filing_text(context: Context, tickers: list[str], years: int | None = None) -> pd.DataFrame:
-    """Build/refresh the filing-text table (10-K Item 1A + Item 7, 10-Q Item 2 MD&A), one ticker at
-    a time (upsert per ticker). Returns the full table."""
+    """Public entry point (mirrors `fetch_8k_edgar`'s conventions): per-ticker try/except so one
+    bad ticker cannot abort the batch, incremental via `_seen` (dedup by accession + per-ticker
+    resume cutoff), scoped by `years` (falls back to `data_extract.years_history`). Tickers are
+    walked CONCURRENTLY on a thread pool (`run_per_ticker`) -- see parallel_fetch.py's module
+    docstring."""
+    _configure_identity()
     years = int(years if years is not None else context.config.data_extract.years_history)
-    cache_dir = context.paths["DATA_STORE"] / FILING_TEXT_CACHE_DIR
+    since = pd.Timestamp.today() - pd.DateOffset(years=years)
     cik_map = load_cik_mapping(context)
     cik_map = cik_map[cik_map["ticker"].isin(tickers)]
 
     seen, last_by_ticker = _seen(context)
-    total_rows, touched, no_sections = 0, 0, 0
-    for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="10-K/10-Q text"):
-        ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
+
+    def _worker(ticker: str, cik: str) -> tuple[int, bool]:
         try:
-            filings = list_filings(cik, FILING_TEXT_FORMS, years, company,
-                                   since=last_by_ticker.get(ticker))
+            ticker_since = max(since, last_by_ticker[ticker]) if ticker in last_by_ticker else since
+            out = build_ticker_filing_text(ticker, cik, since=ticker_since, done_accessions=seen)
         except Exception as e:                          # noqa: BLE001
-            context.log.warning("%s: 10-K list failed (%s)", ticker, e)
-            continue
-        new = filings[~filings["accession_number"].astype(str).isin(seen)] if not filings.empty \
-            else filings
-        rows: list[dict] = []
-        for _, f in new.iterrows():
-            acc = str(f["accession_number"])
-            html = _download_cached(context, cache_dir, cik, acc, f["doc_url"])
-            if not html:
-                continue
-            sections = extract_item_sections(html_to_text(html), f.get("form", ""))
-            if not sections:
-                no_sections += 1
-            for section, body in sections.items():
-                rows.append({
-                    "ticker": ticker, "cik": cik, "accession_number": acc,
-                    "form": str(f.get("form", "")),
-                    "filed": pd.Timestamp(f["filing_date"]).normalize(),
-                    "period_of_report": f.get("period_of_report"),
-                    "section": section, "text": body, "n_words": len(body.split()),
-                })
-            seen.add(acc)
-        if rows:
-            total_rows += context.store.save(_TABLE, pd.DataFrame(rows))
-            touched += 1
+            context.log.warning("fetch_filing_text: %s failed (%s)", ticker, e)
+            return 0, False
+        if not out.empty:
+            context.store.save(_TABLE, out)
+        return len(out), True
 
-    context.log.info("10-K/10-Q text: +%d section rows across %d tickers (%d filings yielded no "
-                     "section) -> '%s'", total_rows, touched, no_sections, _TABLE)
+    results = run_per_ticker(cik_map, _worker, desc="10-K/10-Q text (edgartools)")
+    total_rows = sum(n for n, _ in results)
+    failed = sum(1 for _, ok in results if not ok)
+
+    context.log.info("fetch_filing_text: +%d section rows across %d/%d ticker(s) (%d failed) -> '%s'",
+                     total_rows, len(results), len(cik_map), failed, _TABLE)
     return context.store.load(_TABLE)
-
-
-def _download_cached(context: Context, cache_dir, cik: str, accession: str, url: str) -> str | None:
-    """Fetch a 10-K's primary HTML, caching the RAW file to disk before parsing (reproducible /
-    offline re-parse). Returns the HTML text (None on failure)."""
-    dest = cache_dir / str(cik) / f"{accession}.html"
-    if dest.exists() and dest.stat().st_size > 1000:
-        return dest.read_text(encoding="utf-8", errors="replace")
-    try:
-        html = sec_get(url).text
-    except Exception as e:                              # noqa: BLE001
-        context.log.warning("10-K doc fetch failed %s (%s)", url, e)
-        return None
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(html, encoding="utf-8")
-    except Exception:                                   # caching best-effort
-        pass
-    return html

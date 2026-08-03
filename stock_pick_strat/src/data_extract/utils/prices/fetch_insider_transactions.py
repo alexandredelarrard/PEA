@@ -26,6 +26,7 @@ Incremental (both dimensions the brief asks for):
     the universe gained tickers, in which case cached zips are re-parsed (no
     re-download) to back-fill the new names. The upsert de-duplicates on the PK.
 """
+
 from __future__ import annotations
 
 import logging

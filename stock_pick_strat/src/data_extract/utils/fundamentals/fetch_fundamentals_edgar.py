@@ -631,11 +631,8 @@ def fetch_fundamentals_edgartools(context: Context, tickers: list[str]) -> pd.Da
     interrupted run (or one bad ticker further down the list) must never lose
     the already-extracted tickers' work (this repo's "save per entity"
     incremental convention).
-
-    Scoped by `data_extract.fundamentals_years_history` if set, else the global
-    `data_extract.years_history` (same `getattr(..., default)` idiom as
-    `fetch_financial_notes.py`'s `notes_years_history`) -- the WIP file had no
-    years scoping at all, re-pulling an issuer's ENTIRE history every run."""
+    """
+    
     _configure_identity()
     de = context.config.data_extract
     years = int(getattr(de, "fundamentals_years_history", de.years_history))

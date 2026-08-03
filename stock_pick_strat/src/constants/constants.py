@@ -144,13 +144,58 @@ SEC_FTD_FIRST_YEAR = 2009          # earliest FTD file overall (2009-07, legacy 
 # CurrentReport flags (has_earnings/has_press_release). Table keyed per (ticker, accession);
 # raw comma-separated `items` stored + a count. The curated high-signal codes (leading
 # distress/governance events) are mapped for the downstream feature layer.
-SEC_8K_TABLE = "sec_8k"   # renamed from sec_8k_items to match the form-dispatch registry's logical name
+SEC_8K_TABLE = "sec_8k"   
 SEC_8K_FORMS = ["8-K", "8-K/A"]
 SEC_8K_HIGH_SIGNAL_ITEMS = {
-    "1.01": "material_agreement_entered", "1.02": "material_agreement_terminated",
-    "1.03": "bankruptcy", "2.05": "restructuring_costs", "2.06": "impairment",
-    "3.01": "delisting_or_covenant", "4.01": "auditor_change", "4.02": "non_reliance_restatement",
-    "5.02": "exec_or_director_change", "5.03": "bylaw_change", "8.01": "other_events",
+    # Section 1: Registrant's Business and Operations
+    "1.01": "material_agreement_entered",
+    "1.02": "material_agreement_terminated",
+    "1.03": "bankruptcy_or_receivership",
+    "1.04": "mine_safety_reporting",
+    "1.05": "cybersecurity_incidents",
+
+    # Section 2: Financial Information
+    "2.01": "completion_acquisition_or_disposition",
+    "2.02": "results_of_operations_and_financial_condition",
+    "2.03": "creation_of_direct_financial_obligation",
+    "2.04": "triggering_events_accelerating_financial_obligation",
+    "2.05": "restructuring_costs",
+    "2.06": "impairment",
+
+    # Section 3: Securities and Trading Markets
+    "3.01": "delisting_or_covenant",
+    "3.02": "unregistered_sales_of_equity",
+    "3.03": "material_modification_to_security_rights",
+
+    # Section 4: Matters Related to Accountants and Financial Statements
+    "4.01": "auditor_change",
+    "4.02": "non_reliance_restatement",
+
+    # Section 5: Corporate Governance and Management
+    "5.01": "change_in_control",
+    "5.02": "exec_or_director_change",
+    "5.03": "bylaw_change",
+    "5.04": "employee_benefit_plan_trading_suspension",
+    "5.05": "code_of_ethics_amendment_or_waiver",
+    "5.06": "change_in_shell_company_status",
+    "5.07": "vote_of_security_holders",
+    "5.08": "shareholder_director_nominations",
+
+    # Section 6: Asset-Backed Securities
+    "6.01": "abs_informational_computational_material",
+    "6.02": "change_of_servicer_or_trustee",
+    "6.03": "change_in_credit_enhancement",
+    "6.04": "failure_to_make_required_distribution",
+    "6.05": "securities_act_updating_disclosure",
+
+    # Section 7: Regulation FD
+    "7.01": "regulation_fd_disclosure",
+
+    # Section 8: Other Events
+    "8.01": "other_events",
+
+    # Section 9: Financial Statements and Exhibits
+    "9.01": "financial_statements_and_exhibits"
 }
 
 # SC 13D activist filings (>5% stake WITH intent to influence) + amendments — the event-driven
@@ -158,6 +203,10 @@ SEC_8K_HIGH_SIGNAL_ITEMS = {
 # ownership -- see fetch_13d_edgar.py). One row PER REPORTING PERSON per filing.
 SEC_13D_TABLE = "sec_13d"
 SEC_13D_FORMS = ["SC 13D", "SC 13D/A"]   # activist (13G = passive is deliberately excluded)
+# Item 5(c) 60-day transaction log, parsed from each filing's "TRADING DATA" exhibit
+# (e.g. EX-99.2 -- exhibit NUMBER varies by filer, identified by table content instead).
+# One row PER DISCLOSED TRADE; independent grain from `sec_13d` (no rp_seq relationship).
+SEC_13D_TRANSACTIONS_TABLE = "sec_13d_transactions"
 
 # Fundamentals (financial-statement) forms walked per-filing via edgartools -> `fundamentals_facts`
 # / `fundamentals_history`. Amendments included explicitly (never inferred from a form-filter
@@ -170,11 +219,23 @@ FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
 # SEC_13D_FORMS / FILING_TEXT_FORMS above.
 DEF14A_FORMS = ["DEF 14A", "DEF 14C"]
 
-# 10-K narrative sections: Item 1A (Risk Factors) + Item 7 (MD&A). Downloaded from the annual 10-K,
-# section-carved to raw text, stored for later embedding/drift features (YoY risk-factor additions,
-# MD&A tone drift — reusing the notes-embedding machinery). One row per (ticker, accession, section).
+# Deterministic, structured DEF 14A extraction (fetch_def14a_edgar.py) via edgartools' typed
+# `ProxyStatement` (SEC XBRL ECD taxonomy + deterministic HTML-table parsing) -- COMPLEMENTARY to
+# the LLM-based `def14a_llm` table (board bios / governance provisions / say-on-pay SUPPORT %,
+# none of which edgartools exposes structurally), not a replacement. One row per (ticker,
+# accession_number) in the main table; one-to-many detail carried in four child tables (see
+# fetch_def14a_edgar.py's module docstring for the exact grain of each).
+DEF14A_EDGAR_TABLE = "def14a_edgar"
+DEF14A_EDGAR_EXEC_COMP_TABLE = "def14a_edgar_executive_comp"
+DEF14A_EDGAR_DIRECTOR_COMP_TABLE = "def14a_edgar_director_comp"
+DEF14A_EDGAR_OWNERSHIP_TABLE = "def14a_edgar_ownership"
+DEF14A_EDGAR_VOTES_TABLE = "def14a_edgar_votes"
+
+# 10-K narrative sections: Item 1A (Risk Factors) + Item 7 (MD&A). Extracted via edgartools
+# (`fetch_filing_text.py`), section-carved to raw text, stored for later embedding/drift features
+# (YoY risk-factor additions, MD&A tone drift — reusing the notes-embedding machinery). One row per
+# (ticker, accession, section).
 FILING_TEXT_TABLE = "filing_risk_text"
-FILING_TEXT_CACHE_DIR = "sec_filings_text"   # raw 10-K/10-Q HTML, relative to DATA_STORE
 # MD&A lives in DIFFERENT items per form: 10-K Item 7 (annual) and 10-Q Item 2 (quarterly). Both are
 # extracted so the MD&A tone/drift signal is QUARTERLY. Risk Factors are taken from the 10-K (Item 1A,
 # the substantive annual set); 10-Q Part II Item 1A is usually "no material change" so it is skipped.
@@ -182,10 +243,6 @@ FILING_TEXT_FORMS = ["10-K", "10-Q"]
 FILING_SECTION_RISK = "risk_factors"         # 10-K Item 1A
 FILING_SECTION_MDA = "mda"                   # 10-K Item 7 / 10-Q Item 2
 FILING_TEXT_MIN_CHARS = 1500                 # below this a "section" is a TOC/cross-ref stub, not the body
-
-# moves from LEGACY URLto NEW on second half of june 2017
-# NEW  href="https://www.sec.gov/files/data/fails-deliver-data/cnsfails202007b.zip"
-# LEGACY href= "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails201301a.zip"
 
 # --------------------------------------------------------------------------- #
 # Google Trends (unofficial API — retail-attention proxy). The explore call    #

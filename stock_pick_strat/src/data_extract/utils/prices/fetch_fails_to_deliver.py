@@ -1,26 +1,22 @@
 """
-fetch_fails_to_deliver.py  (src/data_extract/utils/prices/fetch_fails_to_deliver.py)
+fetch_fails_to_deliver.py (src/data_extract/utils/prices/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
-SEC Fails-to-Deliver (FTD) settlement-fails signal. When a trade doesn't settle
-on time (the seller fails to deliver shares by T+1/T+2), the CNS position is a
-"fail to deliver" — persistently high fails are a well-known signal of settlement
-stress / naked-short pressure and correlate with squeeze risk. Complements the
-FINRA RegSHO short-VOLUME signal (`short_interest`); combined at the feature layer.
+Extracts SEC Fails-to-Deliver (FTD) settlement-fail data from semi-monthly SEC 
+text releases (`YYYYMMa` / `YYYYMMb`). Serves as a key signal for settlement 
+stress and short-squeeze risk, complementing FINRA RegSHO short-volume data.
 
-Source: semi-monthly text files (free, no auth), each ~2 weeks of DAILY fails:
-    SETTLEMENT DATE | CUSIP | SYMBOL | QUANTITY (FAILS) | DESCRIPTION | PRICE
-`{period}` = "YYYYMMa" (settlement dates 1-15) / "YYYYMMb" (16-end). Grain is
-ticker x settlement date -> stored long [date, ticker, fails_quantity, fails_value].
+Data Grain:
+- Daily records stored long as (date, ticker, fails_quantity, fails_value).
 
-POINT-IN-TIME: FTD files are published with a lag (~1-2 months), so a backtest that
-forward-fills from the settlement date is conservative (the data is only public later).
-
-Kept in its OWN table (not merged into `short_interest`): FTD's lagged, semi-monthly
-files would pollute short_interest's global-max-date incremental and break its
-backfill. Incremental here is FILE-level: a semi-monthly file already in the DB is
-skipped (no re-download) unless the ticker universe grew (then cached files are
-re-parsed, no re-download). Zips cached under data/sec_fails_to_deliver/.
+Key Guardrails & Architecture:
+- Point-in-Time Lag: Released with a 1–2 month publication delay; backtests 
+  must account for reporting lag to avoid look-ahead bias.
+- Isolated Table: Stored in its own table separate from `short_interest` to 
+  prevent lagged semi-monthly releases from corrupting incremental sync dates.
+- File-Level Incremental Sync: Caches raw files in `data/sec_fails_to_deliver/` 
+  and skips re-downloading existing files unless the ticker universe expands.
 """
+
 from __future__ import annotations
 
 import io
@@ -94,7 +90,6 @@ def _parse_ftd(raw: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
-
 
 def _period_urls(period: str) -> tuple[str, ...]:
     """Download URL(s) for a semi-monthly period, path chosen by date: the FOIA

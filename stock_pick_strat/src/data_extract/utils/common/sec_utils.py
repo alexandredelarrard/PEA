@@ -104,32 +104,26 @@ def save_extract_meta(parquet_path: Path, last_filing_date: str | None,
     )
 
 
-def seen_accessions(existing: pd.DataFrame | None) -> set[str]:
-    """Accession numbers already parsed, from an already-loaded table -> the dedup set
-    that stops a filing being re-parsed (and, for DEF 14A, re-sent to the LLM)."""
-    if existing is None or existing.empty or "accession_number" not in existing.columns:
-        return set()
-    return set(existing["accession_number"].dropna())
+def existing_filings(context: Context, table: str) -> set[str]:
+    """Accession numbers already stored in a filing table -- the dedup set every
+    per-filing fetcher (13D, 8-K, DEF 14A edgar, ...) uses to skip a filing it has
+    already extracted. Returns empty when the table does not exist yet, so a first
+    run fetches full history.
 
-
-def existing_filings(context: Context, table: str) -> tuple[set[str], dict[str, pd.Timestamp]]:
-    """(accessions already stored, per-ticker max filing_date) for a filing table --
-    the dedup set + the per-ticker incremental cutoff, in ONE read.
-
-    Shared by every per-filing fetcher (13D, 8-K, ...): they each need exactly this pair
-    to resume, and each had grown a byte-identical private `_existing`. Returns empty
-    when the table does not exist yet, so a first run fetches full history."""
+    Deliberately accession-only, NOT a per-ticker max-filing-date cutoff: an earlier
+    version also returned a `{ticker: max(filing_date)}` dict so each ticker's listing
+    window could start from its own last-seen date, but that silently never re-checks
+    any date range already scanned -- a filing missed by a prior bug, or one that
+    posts to EDGAR out of date order, stays missing forever. Every run now lists each
+    ticker's FULL `years_history` window and relies solely on this accession set to
+    avoid re-work, matching `fetch_def14a_llm.py`'s gap-filling convention."""
     try:
-        df = context.store.load(table, columns=["ticker", "accession_number", "filing_date"])
+        df = context.store.load(table, columns=["accession_number"])
     except Exception:                                   # noqa: BLE001 (table not created yet)
-        return set(), {}
+        return set()
     if df is None or df.empty:
-        return set(), {}
-    seen = set(df["accession_number"].dropna().astype(str))
-    d = df.copy()
-    d["filing_date"] = pd.to_datetime(d["filing_date"], errors="coerce")
-    last = d.dropna(subset=["filing_date"]).groupby("ticker")["filing_date"].max().to_dict()
-    return seen, last
+        return set()
+    return set(df["accession_number"].dropna().astype(str))
 
 
 def bulk_ingested_quarters(store, table: str) -> set[str]:

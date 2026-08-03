@@ -1,29 +1,23 @@
 """
-fetch_13f.py  (src/data_extract/utils/fetch_13f.py)
+fetch_13f.py (src/data_extract/utils/fetch_13f.py)
 ---------------------------------------------------
-Institutional 13F holdings from the SEC "Form 13F Data Sets" (free quarterly bulk
-TSV zips). Each quarter's zip has SUBMISSION (accession -> CIK, filing_date,
-period) and INFOTABLE (one row per holding: CUSIP, VALUE, SSHPRNAMT, plus the two
-columns that classify the holding: SSHPRNAMTTYPE = SH|PRN, PUTCALL = blank|Put|Call).
+Extracts institutional holdings from SEC Form 13F quarterly bulk TSV datasets
+(`SUBMISSION` and `INFOTABLE`). Reconciles holdings to tickers exclusively via 
+CUSIP (OpenFIGI mapping) rather than unstandardized issuer names.
 
-Reconciliation to a ticker is by **CUSIP** (via OpenFIGI, see fetch_cusip_map) —
-never the free-text NAMEOFISSUER, which varies by filer.
+Data Grain & Instrument Breakdown:
+- One record per (Manager, CUSIP, Quarter), categorized to isolate long equity 
+  from derivatives/debt:
+  • Long Stock: Standard equity (`SSHPRNAMTTYPE=SH`, no Put/Call)
+  • Options: Split into Call vs. Put exposure (`PUTCALL`)
+  • Debt / Principal: Fixed income holdings (`SSHPRNAMTTYPE=PRN`)
+  • Residual / Other: Unclassified or malformed rows
 
-Each manager x security x quarter holding is split by type so long equity is not
-contaminated by options / bonds:
-    shares / value_usd  -> LONG STOCK only (SSHPRNAMTTYPE=SH, no put/call)
-    call_shares / call_value
-    put_shares  / put_value        (the bearish / "sell-side" exposure)
-    debt_prn    / debt_value       (SSHPRNAMTTYPE=PRN)
-    other_value                    (residual / malformed rows)
-
-VALUE units: 13F reported VALUE in $THOUSANDS before the Jan-2023 SEC amendment,
-in whole DOLLARS after -> scaled per filing_date so magnitudes align across eras.
-
-Zips are cached under data/sec_bulk_cache/form13f/ and only re-downloaded when
-missing. Network/zip IO is isolated in `_ensure_zip`/`_read_zip`; the parse/join
-(`_classify_holdings`, `_join_13f`) is pure and unit-tested.
+Key Guardrails:
+- Dollar Value Scaling: Automatically normalizes reported `VALUE` magnitudes 
+  ($thousands pre-Jan 2023 vs. whole dollars post-Jan 2023) based on filing date.
 """
+
 from __future__ import annotations
 
 import logging
@@ -42,9 +36,6 @@ from src.data_extract.utils.common.sec_utils import (
     load_processed_universe, save_processed_universe)
 
 logger = logging.getLogger(__name__)
-
-_HEADERS = {
-    "User-Agent": "stock_pick_strat/1.0 (research; valar_analytics@gmail.com)"}
 
 # SEC changed the 13F VALUE unit from $thousands to $ones with the amendment
 # effective 2023-01-03; scale by filing_date so pre/post-2023 values are comparable.

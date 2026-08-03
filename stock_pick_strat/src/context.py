@@ -36,12 +36,10 @@ def define_global_paths(config: DictConfig):
     global_paths["DATA_STORE"] = global_paths["ROOT"] / data_store
 
     # Raw file caches (not tabular -> stay on disk)
-    global_paths["SEC_BULK_CACHE_DIR"] = global_paths["DATA_STORE"] / "sec_bulk_cache"
     global_paths["SEC_13F_INSIDERS_DIR"] = global_paths["DATA_STORE"] / "sec_13f_insiders"
 
     # Incremental meta-sidecar anchors (the parquet file itself is unused; only
     # its stem names the sibling "<stem>_meta.json" the fetcher reads/writes)
-    global_paths["FUNDAMENTALS_HISTORY_PATH"] = global_paths["DATA_STORE"] / "fundamentals_history.parquet"
     global_paths["DEF14A_LLM_PATH"] = global_paths["DATA_STORE"] / "def14a_llm.parquet"
 
     # Pipeline output artifacts (models, diagnostics, peer dict, CV results)

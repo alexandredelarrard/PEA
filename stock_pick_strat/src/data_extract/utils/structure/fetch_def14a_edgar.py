@@ -39,6 +39,7 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
+from src.data_extract.utils.common.run_manifest import manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
 from src.data_extract.utils.structure.def14a_validate import (
@@ -328,17 +329,24 @@ def _coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 
 def fetch_def14a_edgar(context: Context, tickers: list[str], years: int | None = None) -> pd.DataFrame:
     """Public entry point (mirrors `fetch_8k_edgar`'s conventions): per-ticker try/except so one
-    bad ticker cannot abort the batch, incremental via `existing_filings` (dedup by accession
-    ONLY, keyed off the main `def14a_edgar` table -- every ticker's FULL `years` window is
-    re-listed every run, gap-filling instead of resuming from a max-date cutoff), scoped by
-    `years` (falls back to `data_extract.years_history`). Saves the main row + all 4 child
-    tables per ticker. Tickers are walked CONCURRENTLY on a thread pool (`run_per_ticker`) --
-    see parallel_fetch.py's module docstring."""
+    bad ticker cannot abort the batch, incremental via `existing_filings` (dedup by accession,
+    keyed off the main `def14a_edgar` table) PLUS a `since` cutoff from the extraction manifest
+    (see `run_manifest.py`) -- a routine run only relists filings from the last run's date
+    onward, while a ticker-count change or the `manifest_full_rescan_days` self-heal window
+    falls back to the FULL `years` window (falls back to `data_extract.years_history`),
+    gap-filling instead of trusting the cutoff alone. Saves the main row + all 4 child tables
+    per ticker. Tickers are walked CONCURRENTLY on a thread pool (`run_per_ticker`) -- see
+    parallel_fetch.py's module docstring."""
     _configure_identity()
     years = int(years if years is not None else context.config.data_extract.years_history)
-    since = pd.Timestamp.today() - pd.DateOffset(years=years)
+    full_since = pd.Timestamp.today() - pd.DateOffset(years=years)
     cik_map = load_cik_mapping(context)
     cik_map = cik_map[cik_map["ticker"].isin(tickers)]
+
+    rescan_days = int(getattr(context.config.data_extract, "manifest_full_rescan_days", 30))
+    since, is_full_rescan = manifest_window(
+        context, DEF14A_EDGAR_TABLE, len(cik_map), fallback_since=full_since,
+        full_rescan_days=rescan_days)
 
     seen = existing_filings(context, DEF14A_EDGAR_TABLE)
 
@@ -393,4 +401,5 @@ def fetch_def14a_edgar(context: Context, tickers: list[str], years: int | None =
         "+%d vote rows across %d/%d ticker(s) (%d failed) -> '%s'",
         totals["main"], totals["exec_comp"], totals["director_comp"], totals["ownership"],
         totals["votes"], len(results), len(cik_map), failed, DEF14A_EDGAR_TABLE)
+    record_run(context, DEF14A_EDGAR_TABLE, len(cik_map), totals["main"], is_full_rescan=is_full_rescan)
     return context.store.load(DEF14A_EDGAR_TABLE)

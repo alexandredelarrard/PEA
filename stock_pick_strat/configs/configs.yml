@@ -21,3 +21,10 @@ data_extract:
   # table (e.g. Russell 1000 via store.replace) is never clobbered on re-runs.
   refresh_universe: false
   llm_model: "gpt-5-mini"
+  # Self-heal cadence for the EDGAR filing-listing fetchers (13D, 8-K, DEF 14A
+  # edgar + LLM, fundamentals edgartools): each uses the extraction manifest's
+  # last-run date as its `since` cutoff on routine runs, but forces a full
+  # years_history relist every N days so a filing missed by a bug, or one EDGAR
+  # posts out of date order, cannot stay silently unseen forever. See
+  # src/data_extract/utils/common/run_manifest.py.
+  manifest_full_rescan_days: 30

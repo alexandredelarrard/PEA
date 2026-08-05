@@ -67,41 +67,10 @@ def sec_get(url: str, **kwargs) -> requests.Response:
 
 
 # --------------------------------------------------------------------------- #
-# Incremental-extraction meta sidecar (D = last filing date already parsed)    #
+# Incremental-extraction helpers                                              #
 # --------------------------------------------------------------------------- #
 def today_iso() -> str:
     return datetime.now(timezone.utc).date().isoformat()
-
-
-def meta_path(artifact_path: Path) -> Path:
-    """`<artifact>_meta.json` next to the artifact it describes."""
-    return artifact_path.with_name(artifact_path.stem + "_meta.json")
-
-
-def load_extract_meta(parquet_path: Path) -> dict | None:
-    """Sidecar metadata for an incremental extract (or None if never built)."""
-    p = meta_path(parquet_path)
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def save_extract_meta(parquet_path: Path, last_filing_date: str | None,
-                      ticker_count: int, universe_size: int) -> None:
-    """Record today's build so a same-day re-run can skip, and the max filing
-    date parsed (`D`) so the next run only fetches filings after it."""
-    meta_path(parquet_path).write_text(
-        json.dumps({
-            "last_built": today_iso(),
-            "last_filing_date": last_filing_date,
-            "ticker_count": int(ticker_count),
-            "universe_size": int(universe_size),
-        }, indent=2),
-        encoding="utf-8",
-    )
 
 
 def existing_filings(context: Context, table: str) -> set[str]:

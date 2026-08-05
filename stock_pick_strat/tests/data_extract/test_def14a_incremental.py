@@ -10,7 +10,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 from src.data_store.store import DataStore
-from src.data_extract.utils.common.sec_utils import save_extract_meta, today_iso
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.structure.fetch_def14a_llm import _is_up_to_date, _flatten
 from src.data_extract.utils.structure.def14a_schema import Def14AExtract, GovernanceProfile
 
@@ -21,10 +21,10 @@ def _ctx(tmp_path: Path, tickers: list[str], write_meta_today: bool = True):
     ds.save("def14a_llm", pd.DataFrame([
         {"ticker": t, "accession_number": f"acc-{t}", "as_of": "2024-04-01"} for t in tickers
     ]))
-    path = tmp_path / "def14a_llm.parquet"
+    ctx = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path})
     if write_meta_today:
-        save_extract_meta(path, today_iso(), len(tickers), len(tickers))
-    return types.SimpleNamespace(store=ds, paths={"DEF14A_LLM_PATH": path})
+        record_run(ctx, "def14a_llm", len(tickers), 0, is_full_rescan=True)
+    return ctx
 
 
 def test_up_to_date_is_per_ticker_not_date_count(tmp_path):
@@ -45,9 +45,11 @@ def test_up_to_date_is_per_ticker_not_date_count(tmp_path):
 
 
 def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
-    """Gap-filling: the FULL window is listed (no `since` cutoff) and the LLM runs ONLY on filings
-    whose accession is not already in the table — so a HOLE in the middle (2023 here) is filled while
-    the present years (2022, 2024) are skipped. Uses an in-memory SQLite store (no Postgres)."""
+    """Gap-filling on a FRESH manifest (no recorded run yet -> full rescan, per
+    `run_manifest.manifest_window`): the FULL window is listed (no `since` cutoff)
+    and the LLM runs ONLY on filings whose accession is not already in the table —
+    so a HOLE in the middle (2023 here) is filled while the present years (2022,
+    2024) are skipped. Uses an in-memory SQLite store (no Postgres)."""
     import logging
     from omegaconf import OmegaConf
     from src.data_extract.utils.structure import fetch_def14a_llm as mod
@@ -58,7 +60,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
         {"ticker": "ZZ", "accession_number": "a2024", "as_of": "2024-04-01"},
     ]))
     ctx = types.SimpleNamespace(store=ds, log=logging.getLogger("t"),
-                                paths={"DEF14A_LLM_PATH": tmp_path / "m.parquet"},
+                                paths={"DATA_STORE": tmp_path},
                                 config=OmegaConf.create({"data_extract": {"years_history": 15}}))
 
     listed_since, extracted = [], []
@@ -103,6 +105,60 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
     print("\n=== SANITY: DEF 14A gap-filling incremental ===")
     print(f"  had 2022+2024, listed full window (since={listed_since[0]}) -> LLM ran ONLY on the "
           f"missing {sorted(set(extracted))} (2023 hole + new 2025); 2 present skipped. Validated.")
+
+
+def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
+    """A ROUTINE re-run (manifest already has a recent run for this table, same
+    ticker count, rescan not due) must list only from the manifest's last run date
+    onward -- not the full `years_history` window -- per `run_manifest.manifest_window`.
+    This is the narrow-window counterpart to the full-rescan case exercised by
+    `test_gap_fill_lists_full_window_and_skips_present` above."""
+    import logging
+    from omegaconf import OmegaConf
+    from src.data_extract.utils.common.run_manifest import record_run
+    from src.data_extract.utils.structure import fetch_def14a_llm as mod
+
+    ds = DataStore(create_engine(f"sqlite:///{tmp_path/'d.db'}"))
+    ds.save("def14a_llm", pd.DataFrame([
+        {"ticker": "ZZ", "accession_number": "a2024", "as_of": "2024-04-01"},
+    ]))
+    ctx = types.SimpleNamespace(store=ds, log=logging.getLogger("t"),
+                                paths={"DATA_STORE": tmp_path},
+                                config=OmegaConf.create({"data_extract": {"years_history": 15}}))
+    # A prior run 10 days ago, one ticker -- same ticker count as this run, and well
+    # inside the (default 30-day) self-heal window, so `manifest_window` must return
+    # the narrow cutoff, not the full-rescan fallback.
+    last_run = pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
+    record_run(ctx, "def14a_llm", ticker_count=1, rows_added=1, is_full_rescan=True,
+               run_date=last_run)
+
+    listed_since = []
+
+    def _fake_list(cik, forms, years, company="", since=None):
+        listed_since.append(since)
+        return pd.DataFrame(columns=["accession_number", "doc_url", "filing_date",
+                                     "period_of_report", "form"])
+
+    class _FakeLLM:
+        def __init__(self, **kw):
+            pass
+
+    monkeypatch.setattr(mod, "list_filings", _fake_list)
+    monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c: pd.DataFrame(
+        {"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
+    monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
+
+    mod.fetch_def14a_llm(ctx, tickers=["ZZ"])
+
+    # list_filings' own `since` is STRICTLY AFTER the date passed, so the manifest's
+    # last run date (inclusive) is passed as (last_run - 1 day).
+    assert listed_since == [last_run - pd.Timedelta(days=1)], (
+        f"routine rerun must narrow to the manifest cutoff, got {listed_since}")
+
+    print("\n=== SANITY: DEF 14A manifest narrows the window on a routine rerun ===")
+    print(f"  prior run {last_run.date()}, same ticker count, rescan not due -> "
+          f"listed since={listed_since[0]} (inclusive of the prior run date). Validated.")
 
 
 def test_flatten_surfaces_board_technology_maturity():

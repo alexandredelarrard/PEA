@@ -46,6 +46,7 @@ from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.utils import crawler                    # authorized proxy-pool loader (PEA_SCRAPE_PROXIES / PEA_SCRAPE_PROXY)
 from src.data_extract.utils.common.incremental import load_existing
+from src.data_extract.utils.common.run_manifest import record_run
 
 try:                                            # TLS-impersonating transport (anti-429)
     from curl_cffi import requests as _cffi_requests
@@ -374,6 +375,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
         client = _TrendsClient(verify=verify, impersonate=impersonate)
     except ImportError as e:
         context.log.warning("Google Trends extraction skipped: %s", e)
+        record_run(context, "google_trends", len(names), 0)
         return existing if existing is not None else _empty_long()
 
     total_new, touched, skipped = 0, 0, 0
@@ -428,6 +430,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
 
     context.log.info("Google Trends: +%d rows across %d tickers (%d already current).",
                      total_new, touched, skipped)
+    record_run(context, "google_trends", len(names), total_new)
     out = context.store.load("google_trends")
     return out if not out.empty else _empty_long()
 

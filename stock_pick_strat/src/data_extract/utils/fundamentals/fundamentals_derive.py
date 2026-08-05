@@ -26,6 +26,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.context import Context
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals.fetch_fundamentals import (
     _assemble_base, _derive_history, _spine_grid,
@@ -186,10 +187,12 @@ def rebuild_fundamentals_history(context: Context, tickers: list[str]) -> pd.Dat
 
     if not frames:
         context.log.info("rebuild_fundamentals_history: no rows derived for %d ticker(s).", len(tickers))
+        record_run(context, "fundamentals_history", len(tickers), 0)
         return pd.DataFrame()
 
     out = pd.concat(frames, ignore_index=True)
     context.store.save("fundamentals_history", out)
     context.log.info("rebuild_fundamentals_history: saved %d fundamentals_history rows for %d ticker(s).",
                      len(out), out["ticker"].nunique())
+    record_run(context, "fundamentals_history", len(tickers), len(out))
     return out

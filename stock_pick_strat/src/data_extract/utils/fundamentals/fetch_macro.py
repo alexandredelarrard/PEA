@@ -22,6 +22,7 @@ import pandas as pd
 from fredapi import Fred
 
 from src.context import Context
+from src.data_extract.utils.common.run_manifest import record_run
 
 SERIES = {
     # Risk-free rate
@@ -110,6 +111,7 @@ def _refresh_macro(context: Context) -> None:
     # keeps the table consistent and never leaves stale rows if a series/definition changes.
     context.store.replace("macro", macro)
     context.log.info("Saved %d rows of macro data to DB table 'macro' (short gaps filled)", len(macro))
+    record_run(context, "macro", 0, len(macro))
 
 
 def fetch_macro(context: Context):
@@ -121,5 +123,6 @@ def fetch_macro(context: Context):
         )
     if _macro_is_up_to_date(context):
         context.log.info("Macro data already up to date - skipping (DB table 'macro')")
+        record_run(context, "macro", 0, 0)
         return
     _refresh_macro(context)

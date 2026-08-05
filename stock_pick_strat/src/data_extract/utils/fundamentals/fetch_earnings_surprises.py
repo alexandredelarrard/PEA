@@ -32,6 +32,7 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
+from src.data_extract.utils.common.run_manifest import record_run
 
 _RENAME = {
     "EPS Estimate": "eps_estimate",
@@ -154,6 +155,7 @@ def fetch_earnings_surprises(
     parts = [df for df in (existing, *new_frames) if df is not None and not df.empty]
     if not parts:
         log.warning("No earnings-surprise data available (nothing fetched, no cache).")
+        record_run(context, "earnings_surprises", len(tickers), 0)
         return existing if existing is not None else pd.DataFrame(columns=_COLUMNS)
 
     out = pd.concat(parts, ignore_index=True)[_COLUMNS]
@@ -171,4 +173,5 @@ def fetch_earnings_surprises(
     reported = int(out["eps_actual"].notna().sum())
     log.info("Saved %d new earnings rows (history %d rows, %d reported) for %d tickers to DB",
              len(new), len(out), reported, out["ticker"].nunique())
+    record_run(context, "earnings_surprises", len(tickers), len(new))
     return out

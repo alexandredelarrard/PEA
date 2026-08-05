@@ -44,6 +44,7 @@ from src.data_extract.utils.behavioral.fetch_hf_transcripts import (
     download_hf_parquet,
     ingest_hf_transcripts)
 from src.data_extract.utils.behavioral.fetch_roic_transcripts import fetch_roic_transcripts
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.behavioral.utils_behavior import (
     _get,
     _index_path,
@@ -501,4 +502,6 @@ def fetch_earnings_calls(context: Context, tickers: list[str] | None = None,
     download_earnings_calls(context, tickers=tickers, limit=limit,
                             recent_since=recent_since, use_global_crawl=use_global_crawl,
                             mf_history_years=mf_history_years)
-    return ingest_all_earnings_calls(context, tickers=tickers)
+    saved = ingest_all_earnings_calls(context, tickers=tickers)
+    record_run(context, EARNINGS_CALL_SECTIONS_TABLE, len(tickers) if tickers else 0, saved)
+    return saved

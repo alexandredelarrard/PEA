@@ -23,6 +23,7 @@ from src.context import Context
 from src.utils import polite_http as ph          # per-host paced inter-request sleep
 from src.utils.crawler import Crawler
 from src.data_extract.utils.common.incremental import load_existing
+from src.data_extract.utils.common.run_manifest import record_run
 
 _API = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
         "en.wikipedia/all-access/user/{article}/daily/{start}/{end}")
@@ -179,6 +180,7 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
     parts = [df for df in (existing, *frames) if df is not None and not df.empty]
     if not parts:
         print("No Wikipedia pageview data available.")
+        record_run(context, "wiki_pageviews", len(names), 0)
         return existing if existing is not None else pd.DataFrame(columns=["date", "ticker", "pageviews"])
     out = (pd.concat(parts, ignore_index=True)
            .drop_duplicates(subset=["ticker", "date"], keep="last")
@@ -187,4 +189,5 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
     if not new.empty:
         context.store.save("wiki_pageviews", new)
     print(f"Saved {len(new)} new Wikipedia pageview rows to DB table 'wiki_pageviews'")
+    record_run(context, "wiki_pageviews", len(names), len(new))
     return out

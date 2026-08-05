@@ -51,6 +51,7 @@ from src.constants.constants import (
     DATE_FORMAT,
 )
 from src.utils.ssl_setup import configure_corporate_ca
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals.fetch_macro import fill_short_gaps
 
 # ORDERING, not a side-effect to tidy away: yfinance imports curl_cffi at module load and
@@ -162,6 +163,7 @@ def _refresh_macro_assets(context: Context) -> None:
     context.log.info("Saved %d rows of macro-asset series to DB table '%s' (%d-year history; "
                      "FRED rates/cash/fx + yfinance equity/gold)",
                      len(assets), MACRO_ASSET_PRICES_TABLE, years)
+    record_run(context, MACRO_ASSET_PRICES_TABLE, 0, len(assets))
 
 
 def fetch_macro_assets(context: Context) -> None:
@@ -172,5 +174,6 @@ def fetch_macro_assets(context: Context) -> None:
     if _macro_assets_up_to_date(context):
         context.log.info("Macro-asset series already up to date - skipping (DB table '%s')",
                          MACRO_ASSET_PRICES_TABLE)
+        record_run(context, MACRO_ASSET_PRICES_TABLE, 0, 0)
         return
     _refresh_macro_assets(context)

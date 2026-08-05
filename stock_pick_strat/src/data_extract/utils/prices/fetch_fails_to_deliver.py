@@ -32,6 +32,7 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, ingested_periods, read_zip_text,
 )
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
     load_processed_universe, save_processed_universe)
 
@@ -137,4 +138,5 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
     save_processed_universe(cache, _TABLE, universe)   # so a converged re-run skips
     logger.warning("fails_to_deliver: upserted %d rows (%d files scanned)",
                    saved, len(_periods(years_history)))
+    record_run(context, _TABLE, len(universe), saved)
     return saved

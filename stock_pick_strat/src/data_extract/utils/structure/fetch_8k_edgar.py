@@ -24,6 +24,7 @@ import itertools
 from src.constants.constants import SEC_8K_FORMS, SEC_8K_TABLE, SEC_8K_HIGH_SIGNAL_ITEMS
 from src.context import Context
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
+from src.data_extract.utils.common.run_manifest import manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
 
@@ -110,18 +111,26 @@ def build_ticker_8k_edgar(ticker: str, cik :str, since: pd.Timestamp | None = No
 def fetch_8k_edgar(context: Context, tickers: list[str], years: int | None = None) -> pd.DataFrame:
     """Public entry point (mirrors `fetch_fundamentals_edgartools`'s conventions):
     per-ticker try/except so one bad ticker cannot abort the batch, incremental via
-    `existing_filings` (dedup by accession ONLY -- every ticker's FULL `years`
-    window is re-listed every run, gap-filling instead of resuming from a max-date
-    cutoff), scoped by `years` (falls back to `data_extract.years_history`, matching
-    every sibling fetcher's default window). Tickers are walked CONCURRENTLY on a
-    thread pool (`run_per_ticker`) -- the walk is network I/O bound (SEC filing
-    downloads via edgartools), not CPU bound, so this is a pure speed win with no
-    change to the extracted rows (see parallel_fetch.py's module docstring)."""
+    `existing_filings` (dedup by accession) PLUS a `since` cutoff from the
+    extraction manifest (see `run_manifest.py`) -- a routine run only relists
+    filings from the last run's date onward, while a ticker-count change or the
+    `manifest_full_rescan_days` self-heal window falls back to the FULL `years`
+    window (falls back to `data_extract.years_history`, matching every sibling
+    fetcher's default window), gap-filling instead of trusting the cutoff alone.
+    Tickers are walked CONCURRENTLY on a thread pool (`run_per_ticker`) -- the walk
+    is network I/O bound (SEC filing downloads via edgartools), not CPU bound, so
+    this is a pure speed win with no change to the extracted rows (see
+    parallel_fetch.py's module docstring)."""
     _configure_identity()
     years = int(years if years is not None else context.config.data_extract.years_history)
-    since = pd.Timestamp.today() - pd.DateOffset(years=years)
+    full_since = pd.Timestamp.today() - pd.DateOffset(years=years)
     cik_map = load_cik_mapping(context)
     cik_map = cik_map[cik_map["ticker"].isin(tickers)]
+
+    rescan_days = int(getattr(context.config.data_extract, "manifest_full_rescan_days", 30))
+    since, is_full_rescan = manifest_window(
+        context, SEC_8K_TABLE, len(cik_map), fallback_since=full_since,
+        full_rescan_days=rescan_days)
 
     seen = existing_filings(context, SEC_8K_TABLE)
 
@@ -141,4 +150,5 @@ def fetch_8k_edgar(context: Context, tickers: list[str], years: int | None = Non
 
     context.log.info("fetch_8k_edgar: +%d filings across %d/%d ticker(s) (%d failed) -> '%s'",
                      total_rows, len(results), len(cik_map), failed, SEC_8K_TABLE)
+    record_run(context, SEC_8K_TABLE, len(cik_map), total_rows, is_full_rescan=is_full_rescan)
     return context.store.load(SEC_8K_TABLE)

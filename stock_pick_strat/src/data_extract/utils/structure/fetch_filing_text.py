@@ -41,6 +41,7 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
 
@@ -263,4 +264,5 @@ def fetch_filing_text(context: Context, tickers: list[str], years: int | None = 
 
     context.log.info("fetch_filing_text: +%d section rows across %d/%d ticker(s) (%d failed) -> '%s'",
                      total_rows, len(results), len(cik_map), failed, FILING_TEXT_TABLE)
+    record_run(context, FILING_TEXT_TABLE, len(cik_map), total_rows)
     return context.store.load(FILING_TEXT_TABLE)

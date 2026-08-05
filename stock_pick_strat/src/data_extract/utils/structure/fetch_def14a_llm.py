@@ -46,16 +46,14 @@ import re
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import DEF14A_FORMS
+from src.constants.constants import DATE_FORMAT, DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.structure.def14a_schema import Def14AExtract
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.llm_extractor import LLMExtractor
-from src.data_extract.utils.common.sec_utils import (
-    existing_filings, load_cik_mapping, load_extract_meta, save_extract_meta, sec_get,
-    today_iso,
-)
+from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
+from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping, sec_get
 
 # DEF 14A = the shareholder proxy; DEF 14C = the equivalent INFORMATION STATEMENT that
 # CONTROLLED companies file instead (no vote solicited because a controlling holder already has
@@ -515,15 +513,16 @@ def _process_filing(
 
 def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
     """Up to date only when EVERY requested ticker already has rows in the DB AND
-    the index was refreshed today. The old check compared a DATE + a stored COUNT
-    (`universe_size`), so a same-day rerun skipped tickers that were never actually
-    extracted -- the '~15 tickers then it stops' bug. Checking per-ticker coverage
-    (tickers x date) makes a rerun pick up the still-missing names; the per-ticker
-    loop then skips already-done filings via `last_asof`/`seen` (no re-LLM)."""
+    the shared extraction manifest (`run_manifest.py`) was refreshed today. The old
+    check compared a DATE + a stored COUNT (`universe_size`), so a same-day rerun
+    skipped tickers that were never actually extracted -- the '~15 tickers then it
+    stops' bug. Checking per-ticker coverage (tickers x date) makes a rerun pick up
+    the still-missing names; the per-ticker loop then skips already-done filings
+    via `seen` (no re-LLM)."""
     if not context.store.exists("def14a_llm"):
         return False
-    meta = load_extract_meta(context.paths["DEF14A_LLM_PATH"])
-    if meta is None or meta.get("last_built") != today_iso():
+    entry = get_entry(context, "def14a_llm")
+    if entry is None or entry.get("last_run_date") != pd.Timestamp.today().strftime(DATE_FORMAT):
         return False
     have = set(context.store.load("def14a_llm", columns=["ticker"])["ticker"].dropna())
     return set(requested_tickers).issubset(have)
@@ -574,7 +573,7 @@ def fetch_def14a_llm(
     immediately. Skips gracefully when OPENAI_API_KEY is absent.
     """
     years = context.config.data_extract.years_history
-    path = context.paths["DEF14A_LLM_PATH"]
+    de = context.config.data_extract
 
     cik_map = load_cik_mapping(context)
     cik_map = cik_map[cik_map["ticker"].isin(tickers)]
@@ -586,10 +585,21 @@ def fetch_def14a_llm(
         return existing
 
     # accessions already extracted -> never re-LLM (accession-only dedup, same convention as
-    # fetch_8k_edgar.py / fetch_13d_edgar.py / fetch_def14a_edgar.py's `existing_filings`: every
-    # ticker's FULL `years` window is re-listed below, gap-filling instead of resuming from a
-    # max-date cutoff)
+    # fetch_8k_edgar.py / fetch_13d_edgar.py / fetch_def14a_edgar.py's `existing_filings`)
     seen = existing_filings(context, "def14a_llm")
+
+    # Manifest-driven listing window (see run_manifest.py): a routine run only lists
+    # filings from the last run's date onward; a ticker-count change or the
+    # `manifest_full_rescan_days` self-heal window falls back to the FULL `years`
+    # window (gap-filling, same self-heal rationale as the other 4 EDGAR fetchers).
+    # `list_filings`'s own `since` cutoff is STRICTLY AFTER the date passed, so we
+    # step back one day to keep the last run's date itself inclusive.
+    rescan_days = int(getattr(de, "manifest_full_rescan_days", 30))
+    manifest_since, is_full_rescan = manifest_window(
+        context, "def14a_llm", len(cik_map),
+        fallback_since=pd.Timestamp.today() - pd.DateOffset(years=years),
+        full_rescan_days=rescan_days)
+    list_since = None if is_full_rescan else (manifest_since - pd.Timedelta(days=1))
 
     try:
         extractor = LLMExtractor(model=model, max_chars=max_chars,
@@ -602,11 +612,12 @@ def fetch_def14a_llm(
     total_new, tickers_touched, total_skipped = 0, 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
         ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
-        # list the FULL years_history window (NOT just after the latest stored filing) so a MISSING
-        # filing anywhere in the history is discovered; the accession skip below then sends ONLY the
+        # `list_since=None` (full-rescan runs) lists the FULL years_history window so a MISSING
+        # filing anywhere in the history is discovered; otherwise only filings from the manifest's
+        # last run date onward are listed. The accession skip below then sends ONLY the
         # not-yet-stored filings to the LLM (gap-filling, per ticker / per date).
         try:
-            filings = list_filings(cik, _FORM, years, company)
+            filings = list_filings(cik, _FORM, years, company, since=list_since)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue
@@ -631,7 +642,7 @@ def fetch_def14a_llm(
             context.log.info("%s: +%d new DEF 14A filing(s) sent to the LLM (%d already in table)",
                              ticker, len(ticker_rows), skipped)
 
-    save_extract_meta(path, today_iso(), len(cik_map), len(cik_map))
+    record_run(context, "def14a_llm", len(cik_map), total_new, is_full_rescan=is_full_rescan)
     out = context.store.load("def14a_llm")
     context.log.info(
         "DEF 14A LLM: +%d new rows across %d tickers (%d filings already present, skipped); "

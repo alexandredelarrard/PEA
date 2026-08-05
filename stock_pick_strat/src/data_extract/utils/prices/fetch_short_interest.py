@@ -23,6 +23,7 @@ import requests
 from src.constants.constants import DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.incremental import load_existing
+from src.data_extract.utils.common.run_manifest import record_run
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 _HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; contact@example.com)"}
@@ -79,9 +80,11 @@ def fetch_short_interest(context: Context, tickers: list[str] | None = None,
             frames.append(day_df)
         time.sleep(pause)
 
+    ticker_count = len(universe) if universe is not None else 0
     parts = [df for df in (existing, *frames) if df is not None and not df.empty]
     if not parts:
         print("No short-volume data available.")
+        record_run(context, "short_interest", ticker_count, 0)
         return pd.DataFrame(columns=["date", "ticker", "short_volume", "total_volume"])
     out = (pd.concat(parts, ignore_index=True)
            .drop_duplicates(["ticker", "date"], keep="last")
@@ -91,4 +94,5 @@ def fetch_short_interest(context: Context, tickers: list[str] | None = None,
     if not new.empty:
         context.store.save("short_interest", new)
     print(f"Saved {len(new)} new short-volume rows to DB table 'short_interest'")
+    record_run(context, "short_interest", ticker_count, len(new))
     return out

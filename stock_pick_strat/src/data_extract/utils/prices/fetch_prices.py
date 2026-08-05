@@ -24,6 +24,7 @@ import yfinance as yf
 from tqdm import tqdm
 
 from src.data_extract.utils.common.gics import industry_group
+from src.data_extract.utils.common.run_manifest import record_run
 from src.constants.constants import (
     DATE_FORMAT, NO_VOLUME_TICKERS, PRELISTING_VOLUME_RATIO,
     PRELISTING_ZERO_VOLUME_SHARE,
@@ -423,6 +424,7 @@ def fetch_price_history(
     if not tickers_to_fetch:
         n = 0 if existing is None else len(existing)
         print(f"Price history already up to date ({n} rows) — DB table 'prices'")
+        record_run(context, "prices", len(tickers), 0)
         return existing
 
     print(
@@ -451,6 +453,7 @@ def fetch_price_history(
         context.store.save("prices", new)
     print(f"Saved {len(new)} new price rows to DB table 'prices' "
           f"(table now spans {len(out)} rows in memory)")
+    record_run(context, "prices", len(tickers), len(new))
 
     return out
 

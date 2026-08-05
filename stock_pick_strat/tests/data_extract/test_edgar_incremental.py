@@ -1,17 +1,14 @@
-"""Tests for the EDGAR incremental-extraction machinery
-(sec_utils meta sidecar, list_filings `since` cutoff, per-ticker cutoffs, and the
-skip-if-fresh guard). All network access is mocked, so these are fast and offline.
+"""Tests for the EDGAR incremental-extraction machinery (`list_filings`'s `since`
+cutoff -- the mechanism the manifest-driven EDGAR fetchers reuse, see
+`run_manifest.py` and `tests/data_extract/utils/common/test_run_manifest.py` for
+the manifest side). All network access is mocked, so these are fast and offline.
 
 What matters: a re-run must fetch ONLY filings after the last date already parsed
-(`D`), and must skip entirely when already built today.
+(`D`).
 """
 from __future__ import annotations
 
 import pandas as pd
-
-from src.data_extract.utils.common.sec_utils import (
-    load_extract_meta, save_extract_meta, today_iso,
-)
 
 
 # --------------------------------------------------------------------------- #
@@ -70,29 +67,14 @@ def test_list_filings_since_filters_to_after_D(monkeypatch):
     print(f"  full window -> {len(allf)} 10-Ks;  since 2021-02-15 -> {len(inc)} "
           f"(only 2022-02-15, strictly after D). Validated.")
 
-
-# --------------------------------------------------------------------------- #
-# 2. Meta sidecar round-trip + freshness/universe skip guard                   #
-# --------------------------------------------------------------------------- #
-def test_extract_meta_roundtrip(tmp_path):
-    pq = tmp_path / "fundamentals_history.parquet"
-    assert load_extract_meta(pq) is None                     # nothing built yet
-
-    save_extract_meta(pq, "2026-05-01", ticker_count=3, universe_size=5)
-    meta = load_extract_meta(pq)
-
-    assert (tmp_path / "fundamentals_history_meta.json").exists()
-    assert meta["last_built"] == today_iso()
-    assert meta["last_filing_date"] == "2026-05-01"
-    assert meta["universe_size"] == 5
-
-    print("\n=== SANITY CHECK: extract meta sidecar ===")
-    print(f"  wrote/read fundamentals_history_meta.json: last_built={meta['last_built']}, "
-          f"D={meta['last_filing_date']}, universe={meta['universe_size']}. Validated.")
-
-# NOTE: the employee-specific skip-if-fresh guard (`_is_up_to_date`) and per-ticker
-# `as_of` cutoff (`_last_asof_by_ticker`) tests were REMOVED with the machinery they
-# covered. Employee headcount is now a `fundamentals_facts` field parsed from the
-# same 10-K as the fundamentals (`fundamentals_employees.py`), so its incremental
-# behaviour is `fetch_fundamentals_edgar`'s `done_accessions` skip -- one mechanism
-# for every field, exercised by tests/data_extract/test_fundamentals_employees.py.
+# NOTE: the bespoke `sec_utils` meta-sidecar (`meta_path`/`load_extract_meta`/
+# `save_extract_meta`) was RETIRED -- `fetch_def14a_llm.py` was its only caller and
+# now reads/writes the shared `run_manifest.py` checkpoint instead (see
+# tests/data_extract/utils/common/test_run_manifest.py and
+# test_def14a_incremental.py's manifest-driven window tests). The employee-specific
+# skip-if-fresh guard (`_is_up_to_date`) and per-ticker `as_of` cutoff
+# (`_last_asof_by_ticker`) tests were REMOVED with the machinery they covered.
+# Employee headcount is now a `fundamentals_facts` field parsed from the same 10-K
+# as the fundamentals (`fundamentals_employees.py`), so its incremental behaviour is
+# `fetch_fundamentals_edgar`'s `done_accessions` skip -- one mechanism for every
+# field, exercised by tests/data_extract/test_fundamentals_employees.py.

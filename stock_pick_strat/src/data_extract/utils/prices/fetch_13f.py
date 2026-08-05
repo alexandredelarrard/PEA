@@ -32,6 +32,7 @@ from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, ingested_periods, read_zip_members,
 )
 from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
     load_processed_universe, save_processed_universe)
 
@@ -180,6 +181,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     if not quarter_frames:
         save_processed_universe(cache, "sec13f_hr", universe)
         logger.info("13F sec13f_hr already up to date (no new quarters).")
+        record_run(context, "sec13f_hr", len(universe), 0)
         return pd.DataFrame(columns=cols)
 
     all_cusips = sorted(set().union(*(set(h["cusip"].unique()) for h in quarter_frames.values())))
@@ -196,4 +198,5 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     save_processed_universe(cache, "sec13f_hr", universe)
     logger.warning("Saved %d 13F holding rows across %d new quarter(s) to 'sec13f_hr'",
                    saved, len(quarter_frames))
+    record_run(context, "sec13f_hr", len(universe), saved)
     return pd.concat(saved_frames, ignore_index=True) if saved_frames else pd.DataFrame(columns=cols)

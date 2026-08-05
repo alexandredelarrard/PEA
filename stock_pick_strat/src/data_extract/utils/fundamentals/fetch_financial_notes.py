@@ -63,6 +63,7 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, ingested_periods,
 )
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, load_processed_universe, save_processed_universe, _sec_headers)
 logger = logging.getLogger(__name__)
@@ -318,4 +319,6 @@ def fetch_financial_notes(context: Context, tickers: list[str]) -> int:
     save_processed_universe(cache, _NUM_TABLE, universe)   # so a converged re-run skips
     logger.info("notes: upserted %d num + %d text rows (%d periods scanned)",
                    n_num, n_txt, len(periods))
+    record_run(context, _NUM_TABLE, len(tickers), n_num)
+    record_run(context, _TXT_TABLE, len(tickers), n_txt)
     return n_num + n_txt

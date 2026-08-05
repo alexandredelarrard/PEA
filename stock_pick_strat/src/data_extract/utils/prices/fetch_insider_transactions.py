@@ -41,6 +41,7 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, quarter_periods,
 )
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, bulk_ingested_quarters, load_processed_universe,
     save_processed_universe)
@@ -257,4 +258,5 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     save_processed_universe(cache, _TABLE, tickers)   # so a converged re-run skips
     logger.info("insider_transactions: upserted %d rows (%d quarters scanned)",
                    saved, len(quarter_periods(years_history, SEC_INSIDER_FIRST_YEAR)))
+    record_run(context, _TABLE, len(tickers), saved)
     return saved

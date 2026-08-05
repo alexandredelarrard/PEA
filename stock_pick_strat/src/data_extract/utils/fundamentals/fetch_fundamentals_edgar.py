@@ -37,6 +37,7 @@ from edgar import Company, set_identity
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
+from src.data_extract.utils.common.run_manifest import manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals.fundamentals_employees import (
     employee_fact_frame, history_by_ticker,
@@ -913,7 +914,7 @@ def fetch_fundamentals_edgartools(context: Context, tickers: list[str]) -> pd.Da
     _configure_identity()
     de = context.config.data_extract
     years = int(getattr(de, "fundamentals_years_history", de.years_history))
-    since = pd.Timestamp.today() - pd.DateOffset(years=years)
+    full_since = pd.Timestamp.today() - pd.DateOffset(years=years)
 
     pk = ["ticker", "accession_number", "field", "fiscal_year", "fiscal_period", "duration_type"]
     existing_accessions: dict[str, frozenset[str]] = {}
@@ -946,6 +947,11 @@ def fetch_fundamentals_edgartools(context: Context, tickers: list[str]) -> pd.Da
         cik_by_ticker = {}
     cik_map = pd.DataFrame({"ticker": tickers, "cik": [cik_by_ticker.get(t) for t in tickers]})
 
+    rescan_days = int(getattr(de, "manifest_full_rescan_days", 30))
+    since, is_full_rescan = manifest_window(
+        context, "fundamentals_facts", len(cik_map), fallback_since=full_since,
+        full_rescan_days=rescan_days)
+
     def _worker(ticker: str, cik: str | None) -> pd.DataFrame:
         try:
             done = existing_accessions.get(ticker, frozenset())
@@ -964,9 +970,13 @@ def fetch_fundamentals_edgartools(context: Context, tickers: list[str]) -> pd.Da
 
     results = run_per_ticker(cik_map, _worker, desc="Fundamentals (edgartools)")
     all_frames = [f for f in results if not f.empty]
+    total_rows = sum(len(f) for f in all_frames)
 
     if not all_frames:
         context.log.info("fetch_fundamentals_edgartools: no new fundamentals_facts rows.")
-        return pd.DataFrame(columns=_FACTS_COLS)
+        out = pd.DataFrame(columns=_FACTS_COLS)
+    else:
+        out = pd.concat(all_frames, ignore_index=True)
 
-    return pd.concat(all_frames, ignore_index=True)
+    record_run(context, "fundamentals_facts", len(cik_map), total_rows, is_full_rescan=is_full_rescan)
+    return out

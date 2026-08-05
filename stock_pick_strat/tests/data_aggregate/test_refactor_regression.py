@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.data_aggregate.pipeline_fingerprint import BASELINE, compute
+from tests.data_aggregate.pipeline_fingerprint import (
+    BASELINE, MissingCompanyFactsCache, compute,
+)
 
 
 @pytest.fixture(scope="module")
@@ -29,7 +31,12 @@ def baseline() -> dict:
 
 @pytest.fixture(scope="module")
 def current() -> dict:
-    return compute()
+    try:
+        return compute()
+    except MissingCompanyFactsCache as exc:
+        # this guard needs the raw SEC companyfacts download; the AGGREGATION half is
+        # covered without it by test_aggregate_regression.py
+        pytest.skip(f"{exc} -> see tests/data_aggregate/test_aggregate_regression.py")
 
 
 def test_pipeline_output_is_unchanged_by_the_refactor(baseline, current):

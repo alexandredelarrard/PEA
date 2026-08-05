@@ -37,6 +37,15 @@ START, END = "2019-01-02", "2026-06-30"
 # --------------------------------------------------------------------------- #
 # fixed inputs                                                                 #
 # --------------------------------------------------------------------------- #
+class MissingCompanyFactsCache(RuntimeError):
+    """`data/sec_bulk_cache/companyfacts_CIK*.json` holds fewer than `N_TICKERS` filers, so
+    this fingerprint's fixed inputs cannot be reconstructed. The cache is a multi-GB SEC
+    download and is absent on most machines; `random.sample` used to raise a bare
+    `ValueError: Sample larger than population` from deep inside the stdlib, which read as a
+    broken test rather than a missing input. `test_refactor_regression.py` skips on this.
+    The aggregation half is covered without the cache by `aggregate_fingerprint.py`."""
+
+
 def sample_tickers() -> list[tuple[str, str, str, str]]:
     """(ticker, cik, sector, industry_group) for a seeded draw over the cached filers."""
     from src.data_store.store import DataStore
@@ -45,6 +54,9 @@ def sample_tickers() -> list[tuple[str, str, str, str]]:
     meta = {r.ticker: (r.cik, r.sector, r.industry_group) for r in uni.itertuples()}
     avail = sorted(t for t, (cik, _, _) in meta.items()
                    if (CACHE / f"companyfacts_CIK{cik}.json").exists())
+    if len(avail) < N_TICKERS:
+        raise MissingCompanyFactsCache(
+            f"{len(avail)} cached companyfacts filers under {CACHE}, need {N_TICKERS}")
     picked = sorted(random.Random(SEED).sample(avail, N_TICKERS))
     return [(t, *meta[t]) for t in picked]
 

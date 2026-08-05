@@ -12,7 +12,6 @@ data_extract:
   # sources (~380MB / quarterly zip). Kept on its own knob so this pull can be
   # scoped independently of the global years_history. 15 -> ~26GB of cached zips.
   notes_years_history: 15
-  benchmark_ticker: SPY
   other_tickers: ["SPY", "CL=F", "GC=F", "USDEUR=X"]
   redundant_ticks: ["GOOG", "FOX", "NWS"]
   # The analysis universe is the `sp500_tickers` table (single entry point, read by

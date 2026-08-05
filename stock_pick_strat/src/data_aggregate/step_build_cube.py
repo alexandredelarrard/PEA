@@ -157,67 +157,29 @@ class StepBuildCube(Step):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
 
-
         # targets/betas: style momentum shift(252) + beta window(63); the forward horizon is added at
         # the call site (targets look FORWARD to mature labels).
         self._TARGET_WARMUP_TRADING_DAYS = 320
 
-        # ================================================================== #
-        # EXPLODED, memory-light execution for the Airflow `data_aggregation` DAG.
-        # Each feature group (and the target) runs STANDALONE — loading only prices +
-        # peers + its OWN source table(s) — and persists a compact part to the DB. A
-        # final `assemble` step reads the parts and builds the cube. So no single run
-        # ever holds all source tables at once, and the parts compute in PARALLEL.
-        # The monolithic run() above is unchanged (still used by main.py / tests).
-        # ================================================================== #
+        # ticker 
+        self.market_ticker = config.build_cube.market_ticker
+        self.tickers = load_universe_tickers(self._context)
+        self._log.info(f"Ticker universe built for {len(self.tickers)} tickers")
+
     
-
-
-    def _merge_panel(self, panel: pd.DataFrame) -> int:
-        """Left-merge one feature panel onto the working panel; return how many columns
-        it added.
-
-        Raises `FeatureCollisionError` when the panel re-uses a feature name already in
-        the working panel. A plain `merge` on the keys silently renames BOTH sides to
-        `<name>_x` / `<name>_y`, which is how 20 such columns reached the live cube: the
-        fundamental and sector panels each emitted `interest_coverage`,
-        `net_debt_to_ebitda`, `gross_profitability`, `cash_conversion_cycle` and
-        `sbc_intensity` under DIFFERENT formulas, so which one a model saw depended on
-        merge order. Exactly one panel must own each feature name.
-        """
-        clash = sorted((set(panel.columns) & set(self.feature_panel.columns))
-                       - set(PANEL_KEYS))
-        if clash:
-            raise FeatureCollisionError(
-                f"feature name(s) already in the cube panel: {clash}. "
-                "Give the feature a single owning panel (or rename it) -- merging would "
-                "silently split it into _x / _y columns."
-            )
-        before = len(self.feature_panel.columns) - len(PANEL_KEYS)
-        self.feature_panel = self.feature_panel.merge(panel, on=PANEL_KEYS, how="left")
-        return len(self.feature_panel.columns) - len(PANEL_KEYS) - before
-
-
-    def _attach_panel(self, panel: pd.DataFrame, label: str,
-                      empty_msg: str | None = None) -> None:
-        """Merge one feature panel and log what it contributed.
-
-        Every `build_*_features` method ended in the same four steps -- bail out when the
-        panel is empty, merge through the collision guard, compute row coverage, log it.
-        Ten copies of that tail meant ten places to keep in step, and the only thing that
-        ever differed was the wording."""
-        if panel is None or panel.empty:
-            self._log.warning(empty_msg or f"No {label} features built.")
-            return
-        added = self._merge_panel(panel)
-        cov = panel.drop(columns=PANEL_KEYS).notna().any(axis=1).mean()
-        self._log.info("Merged %s %s features (row coverage %.1f%%)", added, label, 100 * cov)
-
     def run(self):
+
+        # load prices 
         self.load_prices()
         self.normalize_prices()
+
+        # peers 
         self.load_peers()
+
+        # load it all
         self.load_fundamentals_and_macro()
+
+        # 
         self.build_factor_panel()
         self.estimate_betas()
         self.build_targets()
@@ -238,74 +200,89 @@ class StepBuildCube(Step):
         self.aggregate_cube()
         self.save_cube()
 
-    # ------------------------------------------------------------------ #
+    def _merge_panel(self, panel: pd.DataFrame) -> int:
+        """Left-merge one feature panel onto the working panel; return how many columns
+        it added.
+
+        Raises `FeatureCollisionError` when the panel re-uses a feature name already in
+        the working panel. A plain `merge` on the keys silently renames BOTH sides to
+        `<name>_x` / `<name>_y`, which is how 20 such columns reached the live cube: the
+        fundamental and sector panels each emitted `interest_coverage`,
+        `net_debt_to_ebitda`, `gross_profitability`, `cash_conversion_cycle` and
+        `sbc_intensity` under DIFFERENT formulas, so which one a model saw depended on
+        merge order. Exactly one panel must own each feature name.
+        """
+        clash = sorted((set(panel.columns) & set(self.feature_panel.columns))
+                        - set(PANEL_KEYS))
+        if clash:
+            raise FeatureCollisionError(
+                f"feature name(s) already in the cube panel: {clash}. "
+                "Give the feature a single owning panel (or rename it) -- merging would "
+                "silently split it into _x / _y columns."
+            )
+        before = len(self.feature_panel.columns) - len(PANEL_KEYS)
+        self.feature_panel = self.feature_panel.merge(panel, on=PANEL_KEYS, how="left")
+        return len(self.feature_panel.columns) - len(PANEL_KEYS) - before
+
+
+    def _attach_panel(self, panel: pd.DataFrame, label: str,
+                        empty_msg: str | None = None) -> None:
+        """Merge one feature panel and log what it contributed.
+
+        Every `build_*_features` method ended in the same four steps -- bail out when the
+        panel is empty, merge through the collision guard, compute row coverage, log it.
+        Ten copies of that tail meant ten places to keep in step, and the only thing that
+        ever differed was the wording."""
+        if panel is None or panel.empty:
+            self._log.warning(empty_msg or f"No {label} features built.")
+            return
+        added = self._merge_panel(panel)
+        cov = panel.drop(columns=PANEL_KEYS).notna().any(axis=1).mean()
+        self._log.info("Merged %s %s features (row coverage %.1f%%)", added, label, 100 * cov)
+
+    # 1. ------------------------------------------------------------------ #
     def load_prices(self):
         self._log.info("Loading prices from DB table 'prices'")
         self.prices_long = self._context.store.load("prices")
 
-      
     def normalize_prices(self):
-        cfg = self._cfg
-        raw = du.prices_long_to_multiindex(self.prices_long)
 
-        self.close = du.extract_field(raw, "Close")
-        self.open_ = du.extract_field(raw, "Open")
-        self.high = du.extract_field(raw, "High") if "High" in raw.columns.get_level_values(0) else None
-        self.low = du.extract_field(raw, "Low") if "Low" in raw.columns.get_level_values(0) else None
-        self.volume = du.extract_field(raw, "Volume") if "Volume" in raw.columns.get_level_values(0) else None
+        # pivot table 
+        pivot_price = du.prices_long_to_multiindex(self.prices_long)
 
-        trading_days = self.close[cfg.market_ticker].notna()
+        # get sub tables from price
+        self.close = du.extract_field(pivot_price, "Close")
+        self.open = du.extract_field(pivot_price, "Open")
+        self.high = du.extract_field(pivot_price, "High") 
+        self.low = du.extract_field(pivot_price, "Low") 
+        self.volume = du.extract_field(pivot_price, "Volume") 
+
         # Surface interior calendar holes BEFORE dropping: dates where a quorum of
         # stocks trade but the market_ticker (which defines the calendar) is
-        # missing get dropped for the WHOLE universe -> the classic "no stock for
-        # month X" cube symptom. Warn so it is not silent; heal via price extraction.
-        stock_cov = (self.close.drop(columns=[cfg.market_ticker], errors="ignore")
-                     .notna().sum(axis=1))
-        quorum = 0.5 * max(1, self.close.shape[1] - 1)
-        holes = self.close.index[(~trading_days) & (stock_cov >= quorum)]
-        if len(holes):
-            self._log.warning(
-                "%s (market_ticker) missing on %d date(s) where >=50%% of stocks "
-                "trade (%s .. %s) -> these dates are dropped for the ENTIRE universe. "
-                "Re-run price extraction to backfill %s (interior-gap heal in "
-                "fetch_prices).", cfg.market_ticker, len(holes),
-                holes.min().date(), holes.max().date(), cfg.market_ticker)
+        trading_days = du.get_trading_days(self.close, self.market_ticker)
 
         self.close = self.close.loc[trading_days]
-        self.open_ = self.open_.loc[trading_days]
-        if self.high is not None:
-            self.high = self.high.reindex(self.close.index)
-            self.low = self.low.reindex(self.close.index)
+        self.open = self.open.loc[trading_days]
+        self.high = self.high.loc[trading_days]
+        self.low = self.low.loc[trading_days]
 
         self.returns = du.daily_returns(self.close)
-        self.mkt_ret = self.returns[cfg.market_ticker]
-        self.market_close = self.close[cfg.market_ticker]
+        self.mkt_ret = self.returns[self.market_ticker]
+        self.market_close = self.close[self.market_ticker]
 
         # Analysis universe = the `sp500_tickers` table (single entry point). Restrict
-        # every stock_* frame to it so the cube is built ONLY for the analysed names —
-        # swap that table (e.g. Russell 1000) and the whole cube reroutes. Fall back to
-        # "all priced names minus benchmark/macro" if the table is not yet seeded.
-        avail = set(self.close.columns)
-        universe = [t for t in load_universe_tickers(self._context) if t in avail]
+        # every stock_* frame to it so the cube is built ONLY for the analysed names
+        universe = set(self.tickers).intersection(set(self.close.columns))
         if not universe:
-            drop_cols = set(self._config.data_extract.other_tickers)
-            universe = [c for c in self.close.columns if c not in drop_cols]
-            self._log.warning("sp500_tickers empty/unseeded -> cube universe = all priced "
-                              "names minus benchmark/macro; seed it to scope the cube")
+            raise Exception("sp500_tickers empty/unseeded -> cube universe is empty")
 
-        def _sub(f):
-            return f[[c for c in universe if c in f.columns]] if f is not None else None
-
-        self.stock_ret = _sub(self.returns)
-        self.stock_close = _sub(self.close)
-        self.stock_open = _sub(self.open_)
-        self.stock_high = _sub(self.high)
-        self.stock_low = _sub(self.low)
-        self.stock_volume = _sub(self.volume.reindex(self.close.index)
-                                 if self.volume is not None else None)
-
-        self._log.info("Normalized prices: %s dates, %s stocks",
-                       self.close.shape[0], self.stock_ret.shape[1])
+        self.stock_ret = du._sub(self.returns, universe)
+        self.stock_close = du._sub(self.close, universe)
+        self.stock_open = du._sub(self.open, universe)
+        self.stock_high = du._sub(self.high, universe)
+        self.stock_low = du._sub(self.low, universe)
+        self.stock_volume = du._sub(self.volume.reindex(self.close.index), universe)
+        self._log.info(f"Normalized prices: {self.close.shape[0]} dates, {len(universe)} stocks")
 
     def load_peers(self):
         self.peers = StepDeducePeers(context=self._context, config=self._config).run()
@@ -313,28 +290,43 @@ class StepBuildCube(Step):
         n = sum(1 for p in self.peers.values() if p)
         self._log.info("Sector returns ready for %s / %s tickers", n, len(self.peers))
 
+    def build_factor_panel(self):
+        """Style (price + fundamentals) + macro (changes) -> shared factor panel."""
+
+        # first load fundamental history
+        self.fundamentals = self._load_or_none("fundamentals_history")
+        if self.fundamentals is None:
+            self._log.warning("No fundamentals history -> value/quality factors "
+                                "and peer-relative fundamentals will be skipped.")
+
+        style = build_style_factor_returns(
+            self.stock_close, self.stock_ret, self.fundamentals, resvol_window=63
+        )
+
+        if self.macro is not None:
+            macro_chg = macro_change_factors(self.macro, self.stock_close.index)
+        else:
+            macro_chg = pd.DataFrame(index=self.stock_close.index)
+        self.macro_cols = list(macro_chg.columns)
+
+        #retreive commo info
+        commodity_returns = commodity_factor_returns(self.close, tickers={"oil": "CL=F", "gold": "GC=F"})
+        currency_returns = currency_factor_returns(self.close, tickers={"USD/EUR": "USDEUR=X"})
+
+        self.factor_panel, self.macro_cols = assemble_factor_panel(self.mkt_ret, style, commodity_returns, currency_returns, macro_chg)
+        self._log.info(
+            "Factor panel: %s factors (%s style/market, %s macro)",
+            self.factor_panel.shape[1],
+            self.factor_panel.shape[1] - len(self.macro_cols),
+            len(self.macro_cols),
+        )
+
     def _load_or_none(self, table: str, columns: list[str] | None = None) -> pd.DataFrame | None:
-        """Load a DB table, returning None when it is absent/empty (so every downstream feature
-        builder keeps its 'optional source' semantics). `columns` projects to only the needed
-        columns (a big memory saving on the tall tables — sec13f_hr ~20M rows, etc.);
-        absent columns are dropped from the projection so a schema gap never crashes the load."""
-        if columns:
-            try:                                      # keep only columns that actually exist
-                info = text("SELECT column_name FROM information_schema.columns WHERE table_name = :t")
-                with self._context.store.engine.connect() as c:
-                    have = set(pd.read_sql(info, c, params={"t": table})["column_name"])
-                columns = [col for col in columns if col in have] or None
-            except Exception:                         # noqa: BLE001 (fall back to a full load)
-                columns = None
         df = self._context.store.load(table, columns=columns)
         return None if df.empty else df
 
     def load_fundamentals_and_macro(self):
         """Load fundamentals history and macro; both optional but recommended."""
-        self.fundamentals = self._load_or_none("fundamentals_history")
-        if self.fundamentals is None:
-            self._log.warning("No fundamentals history -> value/quality factors "
-                              "and peer-relative fundamentals will be skipped.")
 
         self.macro = self._load_or_none("macro")
         if self.macro is None:
@@ -411,32 +403,6 @@ class StepBuildCube(Step):
         cfg = self._cfg.get("intrinsic", {})
         return OmegaConf.to_container(cfg, resolve=True) if cfg else {}
 
-    def build_factor_panel(self):
-        """Style (price + fundamentals) + macro (changes) -> shared factor panel."""
-        cfg = self._cfg.get("factors", {})
-        resvol_window = cfg.get("resvol_window", 63)
-
-        style = build_style_factor_returns(
-            self.stock_close, self.stock_ret, self.fundamentals, resvol_window
-        )
-
-        if self.macro is not None:
-            macro_chg = macro_change_factors(self.macro, self.stock_close.index)
-        else:
-            macro_chg = pd.DataFrame(index=self.stock_close.index)
-        self.macro_cols = list(macro_chg.columns)
-
-        #retreive commo info
-        commodity_returns = commodity_factor_returns(self.close, tickers={"oil": "CL=F", "gold": "GC=F"})
-        currency_returns = currency_factor_returns(self.close, tickers={"USD/EUR": "USDEUR=X"})
-
-        self.factor_panel, self.macro_cols = assemble_factor_panel(self.mkt_ret, style, commodity_returns, currency_returns, macro_chg)
-        self._log.info(
-            "Factor panel: %s factors (%s style/market, %s macro)",
-            self.factor_panel.shape[1],
-            self.factor_panel.shape[1] - len(self.macro_cols),
-            len(self.macro_cols),
-        )
 
     def estimate_betas(self):
         cfg = self._cfg.betas

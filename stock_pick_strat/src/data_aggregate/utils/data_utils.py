@@ -11,6 +11,9 @@ This module flattens that into per-field wide frames.
 
 from __future__ import annotations
 import pandas as pd
+import logging 
+
+logger = logging.getLogger(__name__)
 
 
 def extract_field(df: pd.DataFrame, field: str = "Close") -> pd.DataFrame:
@@ -38,8 +41,10 @@ def extract_field(df: pd.DataFrame, field: str = "Close") -> pd.DataFrame:
 
     out = out.sort_index()
     out.index = pd.to_datetime(out.index)
+
     # Drop tickers that are entirely empty.
     out = out.dropna(axis=1, how="all")
+    
     return out.astype("float64")
 
 
@@ -53,8 +58,9 @@ def prices_long_to_multiindex(prices: pd.DataFrame) -> pd.DataFrame:
     Convert the long-format prices parquet (date, ticker, open, close, ...)
     into a yfinance-style MultiIndex frame: ('Close', ticker), ('Open', ticker).
     """
+
     prices = prices.copy()
-    prices["date"] = pd.to_datetime(prices["date"])
+    prices["date"] = pd.to_datetime(prices["date"], format="%Y-%m-%d")
     colmap = {c: c.lower() for c in prices.columns}
     prices = prices.rename(columns=colmap)
 
@@ -62,6 +68,28 @@ def prices_long_to_multiindex(prices: pd.DataFrame) -> pd.DataFrame:
     for cap, low in (("High", "high"), ("Low", "low"), ("Volume", "volume")):
         if low in prices.columns:
             fields[cap] = low
+
     wide = {cap: prices.pivot(index="date", columns="ticker", values=low)
             for cap, low in fields.items()}
+    
     return pd.concat(wide, axis=1)
+
+
+def get_trading_days(close, market_ticker) -> pd.Series:
+    quorum = 0.5 *close.shape[1]
+    trading_days = close[market_ticker].notna()
+    stock_cov = (close.drop(columns=[market_ticker], errors="ignore")
+                    .notna().sum(axis=1))
+    holes = close.index[(~trading_days) & (stock_cov >= quorum)]
+    if len(holes):
+        logger.warning(
+            "%s (market_ticker) missing on %d date(s) where >=50%% of stocks "
+            "trade (%s .. %s) -> these dates are dropped for the ENTIRE universe. "
+            "Re-run price extraction to backfill %s (interior-gap heal in "
+            "fetch_prices).", market_ticker, len(holes),
+            holes.min().date(), holes.max().date(), market_ticker)
+
+    return trading_days
+
+def _sub(f, universe):
+    return f[[c for c in universe if c in f.columns]] if f is not None else None

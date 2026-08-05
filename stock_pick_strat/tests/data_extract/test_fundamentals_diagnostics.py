@@ -11,7 +11,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import Q4_RECONCILIATION_TOLERANCE
+from src.constants.constants import (
+    Q4_RECONCILIATION_TOLERANCE, SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO,
+)
 from src.data_extract.utils.fundamentals.fundamentals_validation import (
     AMBIGUOUS_MULTIPLE_MATCHES, FILTERED_BY_QUALITY_RULE, MAPPED_BUT_ABSENT,
     NO_FACT_IN_SOURCE, apply_plausibility_guards, diagnose_missing_field,
@@ -20,11 +22,12 @@ from src.data_extract.utils.fundamentals.fundamentals_validation import (
 
 
 def _facts_row(ticker, field, fiscal_year, fiscal_period, duration_type, value,
-              is_amendment=0.0, period_start=None, period_end=None, accession="a1"):
+              is_amendment=0.0, period_start=None, period_end=None, accession="a1",
+              derived=0.0):
     return {"ticker": ticker, "field": field, "fiscal_year": fiscal_year,
            "fiscal_period": fiscal_period, "duration_type": duration_type,
            "value": value, "is_amendment": is_amendment, "period_start": period_start,
-           "period_end": period_end, "accession_number": accession}
+           "period_end": period_end, "accession_number": accession, "derived": derived}
 
 
 def test_q4_reconciliation_within_tolerance_passes_and_fails():
@@ -73,6 +76,53 @@ def test_large_discontinuity_is_flagged_not_nulled():
     assert disc.iloc[0]["severity"] == "info"
     # the underlying value itself must be untouched by this check
     assert facts.loc[facts["fiscal_period"] == "Q2", "value"].iloc[0] == 700.0
+
+
+def test_signed_q4_dominates_fiscal_year_flags_ba_operating_income():
+    """Characterization test (not a fix regression -- this check is advisory-only by
+    design, see SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO's docstring). Real figures found via
+    the Tiingo cross-check: BA's FY2025 `us-gaap:OperatingIncomeLoss` = +$4.281B, but
+    its OWN Q3-2025 quarterly fact under the IDENTICAL tag = -$4.781B; the derived Q4
+    (`FY - Q1 - Q2 - Q3`) comes out to +$8.777B -- 2.05x the FY total. `operatingIncome`
+    is a signed field (not in NON_NEGATIVE_FLOW_FIELDS), so `_q4_is_coherent`'s hard sign
+    rule never applied here, and this is the new, narrower flag meant to surface it for
+    manual/Tiingo-cross-checked review."""
+    facts = pd.DataFrame([
+        _facts_row("BA", "operatingIncome", 2025, "Q4", "quarterly", 8_777_000_000.0,
+                  derived=1.0),
+        _facts_row("BA", "operatingIncome", 2025, "FY", "annual", 4_281_000_000.0),
+    ])
+    out = reconcile_fundamentals_facts(facts)
+    flagged = out[out["check"] == "signed_q4_dominates_fiscal_year"]
+    assert len(flagged) == 1
+    assert flagged.iloc[0]["severity"] == "info"
+    assert flagged.iloc[0]["ticker"] == "BA"
+
+
+def test_signed_q4_dominates_fiscal_year_stays_quiet_on_an_ordinary_quarter():
+    """A ratio comfortably under SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO (an ordinary,
+    slightly-larger-than-average Q4) must not be flagged -- the check exists to catch
+    dominance, not any nonzero Q4."""
+    ratio = 1.1
+    assert ratio < SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO
+    facts = pd.DataFrame([
+        _facts_row("ZZZ", "operatingIncome", 2024, "Q4", "quarterly", 110.0, derived=1.0),
+        _facts_row("ZZZ", "operatingIncome", 2024, "FY", "annual", 100.0),
+    ])
+    out = reconcile_fundamentals_facts(facts)
+    assert out[out["check"] == "signed_q4_dominates_fiscal_year"].empty
+
+
+def test_signed_q4_dominates_fiscal_year_ignores_non_negative_flow_fields():
+    """`totalRevenue` (NON_NEGATIVE_FLOW_FIELDS) already gets a hard sign rule in
+    `_q4_is_coherent` -- this advisory check is scoped to SIGNED fields only, so an
+    equally dominant derived Q4 on a non-negative field must not double-flag."""
+    facts = pd.DataFrame([
+        _facts_row("ZZZ", "totalRevenue", 2024, "Q4", "quarterly", 900.0, derived=1.0),
+        _facts_row("ZZZ", "totalRevenue", 2024, "FY", "annual", 100.0),
+    ])
+    out = reconcile_fundamentals_facts(facts)
+    assert out[out["check"] == "signed_q4_dominates_fiscal_year"].empty
 
 
 def test_duplicate_fiscal_period_is_flagged():

@@ -254,6 +254,52 @@ def test_build_tag_frames_leaves_a_negative_stock_field_null_with_no_other_candi
     assert out.empty
 
 
+def test_build_tag_frames_rejects_an_implausibly_small_share_count():
+    """Real bug found via the Tiingo cross-check: MCD's FY2024 10-Qs tag
+    `us-gaap:WeightedAverageNumberOfSharesOutstandingBasic`/`...Diluted` as `721.8`/
+    `725.9` where the true counts are `721,800,000`/`725,900,000` -- a 1,000,000x scale
+    defect baked into the raw XBRL instance (edgartools' `numeric_value` is never
+    rescaled by decimals/scale, confirmed against the installed package). No S&P/Dow
+    constituent has a weighted-average share count under a million, so with no other
+    candidate reporting the period, NULL is the only honest answer -- never `abs()` or a
+    blind x1e6 rescale."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:WeightedAverageNumberOfSharesOutstandingBasic", 721.8,
+             "2024-01-01", "2024-03-31", "duration", 2024, "Q1"),
+    ])
+    out = build_tag_frames(facts_df, {"basicShares": ["WeightedAverageNumberOfSharesOutstandingBasic"]})
+    assert out.empty
+
+
+def test_build_tag_frames_falls_through_to_a_correctly_scaled_share_count_candidate():
+    """The rejection must fall through the coalesce like any other inadmissible fact --
+    a genuine, correctly-scaled sibling candidate for the same period must still win."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:WeightedAverageNumberOfSharesOutstandingBasic", 721.8,
+             "2024-01-01", "2024-03-31", "duration", 2024, "Q1"),
+        _fact("us-gaap:WeightedAverageNumberOfShareOutstandingBasicAndDiluted", 721_800_000.0,
+             "2024-01-01", "2024-03-31", "duration", 2024, "Q1"),
+    ])
+    tag_map = {"basicShares": ["WeightedAverageNumberOfSharesOutstandingBasic",
+                               "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 721_800_000.0
+
+
+def test_build_tag_frames_share_count_magnitude_guard_is_scoped_to_its_own_fields():
+    """A small value is only implausible for a SHARE-COUNT-shaped field. `epsDiluted`
+    legitimately sits well under the 1,000,000 floor and must survive untouched, or the
+    guard would delete good data far outside its intended scope."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:EarningsPerShareDiluted", 2.02, "2024-01-01", "2024-03-31",
+             "duration", 2024, "Q1"),
+    ])
+    out = build_tag_frames(facts_df, {"epsDiluted": ["EarningsPerShareDiluted"]})
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 2.02
+
+
 def test_build_tag_frames_denies_a_concept_the_listed_filer_misuses():
     """`FIELD_TAG_DENYLIST` is the per-issuer escape hatch for a defect no global rule
     can express. DTE tags `us-gaap:DebtCurrent` on the "Less amount due within one year"
@@ -313,6 +359,122 @@ def test_build_tag_frames_denies_aep_costofrevenue_misuse():
     assert len(out) == 1
     assert out.iloc[0]["value"] == 1852900000.0
     assert out.iloc[0]["source_tag"] == "us-gaap:CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization"
+
+
+def test_build_tag_frames_sums_sga_companion_when_ga_only_wins():
+    """Real gap found via the Tiingo cross-check: CRM (Salesforce) tags ONLY
+    `GeneralAndAdministrativeExpense` (a component) and `SellingAndMarketingExpense`
+    (a genuinely additive companion) for the same period, never the combined
+    `SellingGeneralAndAdministrativeExpense` concept. The priority coalesce picks G&A
+    alone and would otherwise understate sellingGeneralAdmin by ~5x -- Tiingo's own
+    normalized figure matched G&A + S&M summed to the dollar."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:GeneralAndAdministrativeExpense", 711000000.0,
+             "2024-08-01", "2024-10-31", "duration", 2025, "Q3"),
+        _fact("us-gaap:SellingAndMarketingExpense", 3224000000.0,
+             "2024-08-01", "2024-10-31", "duration", 2025, "Q3"),
+    ])
+    tag_map = {"sellingGeneralAdmin": ["SellingGeneralAndAdministrativeExpense",
+                                       "GeneralAndAdministrativeExpense",
+                                       "SellingAndMarketingExpense"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 711000000.0 + 3224000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:GeneralAndAdministrativeExpense"
+
+
+def test_build_tag_frames_sga_ga_only_untouched_with_no_companion():
+    """No `SellingAndMarketingExpense` fact for the period -> G&A stands alone,
+    unmodified (nothing to add)."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:GeneralAndAdministrativeExpense", 711000000.0,
+             "2024-08-01", "2024-10-31", "duration", 2025, "Q3"),
+    ])
+    tag_map = {"sellingGeneralAdmin": ["SellingGeneralAndAdministrativeExpense",
+                                       "GeneralAndAdministrativeExpense",
+                                       "SellingAndMarketingExpense"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 711000000.0
+
+
+def test_build_tag_frames_sga_combined_tag_never_gets_companion_added():
+    """When the filer tags the COMBINED `SellingGeneralAndAdministrativeExpense`
+    concept, it wins outright by priority and must NEVER be summed with a
+    companion -- that would double-count a filer who also separately discloses a
+    Selling-and-marketing sub-line within its combined SG&A."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:SellingGeneralAndAdministrativeExpense", 4000000000.0,
+             "2024-08-01", "2024-10-31", "duration", 2025, "Q3"),
+        _fact("us-gaap:SellingAndMarketingExpense", 3224000000.0,
+             "2024-08-01", "2024-10-31", "duration", 2025, "Q3"),
+    ])
+    tag_map = {"sellingGeneralAdmin": ["SellingGeneralAndAdministrativeExpense",
+                                       "GeneralAndAdministrativeExpense",
+                                       "SellingAndMarketingExpense"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 4000000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:SellingGeneralAndAdministrativeExpense"
+
+
+def test_build_tag_frames_sga_companion_summing_is_scoped_to_its_own_field():
+    """The G&A-only-plus-companion rule must never touch any OTHER field that
+    happens to resolve `GeneralAndAdministrativeExpense` for some other purpose --
+    scoped strictly to `field == 'sellingGeneralAdmin'`."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:GeneralAndAdministrativeExpense", 711000000.0,
+             "2024-08-01", "2024-10-31", "duration", 2025, "Q3"),
+        _fact("us-gaap:SellingAndMarketingExpense", 3224000000.0,
+             "2024-08-01", "2024-10-31", "duration", 2025, "Q3"),
+    ])
+    tag_map = {"someOtherField": ["GeneralAndAdministrativeExpense"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 711000000.0
+
+
+def test_build_tag_frames_denies_cat_costofrevenue_misuse():
+    """Real bug found via the Tiingo cross-check: CAT tags `us-gaap:CostOfRevenue`
+    correctly and consistently every quarter from 2018 on (~$9-11B/quarter, matching
+    its own ~$40B/year revenue), but FY2024/FY2025 it ALSO tags the priority-0
+    `costOfRevenue` candidate `us-gaap:CostOfGoodsAndServicesSold` at $33M -- a ~300x
+    understatement, both undimensioned so no dimension rule catches it. Denying the
+    bad tag for CAT must fall through to the correct, and far larger, CostOfRevenue."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:CostOfGoodsAndServicesSold", 33000000.0,
+             "2024-01-01", "2024-12-31", "duration", 2024, "FY"),
+        _fact("us-gaap:CostOfRevenue", 41485000000.0,
+             "2024-01-01", "2024-12-31", "duration", 2024, "FY"),
+    ])
+    tag_map = {"costOfRevenue": ["CostOfGoodsAndServicesSold", "CostOfRevenue"]}
+    out = build_tag_frames(facts_df, tag_map, ticker="CAT")
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 41485000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:CostOfRevenue"
+
+
+def test_build_tag_frames_denies_mcd_depamort_misuse():
+    """Real bug found via the Tiingo cross-check, same shape as the CAT entry: MCD
+    tags BOTH `us-gaap:DepreciationDepletionAndAmortization` (priority-0, $99M -- a
+    small, wrong figure repeating quarter to quarter) AND
+    `us-gaap:DepreciationAndAmortization` (priority-2, $510M) undimensioned, for the
+    same period. Confirmed against Tiingo's `depamor`: $510M, matching the
+    lower-priority tag exactly. Denying the small tag for MCD must fall through to
+    the correct, much larger D&A figure."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:DepreciationDepletionAndAmortization", 99000000.0,
+             "2024-01-01", "2024-03-31", "duration", 2024, "Q1"),
+        _fact("us-gaap:DepreciationAndAmortization", 510000000.0,
+             "2024-01-01", "2024-03-31", "duration", 2024, "Q1"),
+    ])
+    tag_map = {"depAmort": ["DepreciationDepletionAndAmortization",
+                            "DepreciationAmortizationAndAccretionNet",
+                            "DepreciationAndAmortization"]}
+    out = build_tag_frames(facts_df, tag_map, ticker="MCD")
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 510000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:DepreciationAndAmortization"
 
 
 def test_build_tag_frames_keeps_a_negative_value_on_a_genuinely_signed_field():

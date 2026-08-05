@@ -176,6 +176,22 @@ def test_diluted_shares_below_basic_is_a_unit_error_and_is_nulled():
     assert got.iloc[3] == 1.02e9 and got.iloc[4] == 0.999e9
 
 
+def test_basic_and_diluted_shares_scaled_together_are_nulled_not_just_relative():
+    """MCD's FY2024 10-Qs tag `WeightedAverageNumberOfSharesOutstandingBasic`/`...Diluted`
+    as 721.8 / 725.9 where the true counts are 721,800,000 / 725,900,000 -- a 1,000,000x
+    scale defect baked into the raw XBRL instance. Because BOTH fields are scaled
+    identically, the pre-existing `diluted < basic * DILUTED_SHARES_MIN_SHARE_OF_BASIC`
+    relative check alone cannot see it (the ratio between them is untouched) -- an
+    absolute floor/ceiling, matching `sharesOutstanding`'s own band, is what catches it."""
+    out = apply_plausibility_guards(_frame(
+        basicShares=[721.8, 721_800_000.0],
+        dilutedShares=[725.9, 725_900_000.0]))
+    assert out["basicShares"].isna().tolist() == [True, False]
+    assert out["dilutedShares"].isna().tolist() == [True, False]
+    assert out["basicShares"].iloc[1] == 721_800_000.0
+    assert out["dilutedShares"].iloc[1] == 725_900_000.0
+
+
 def test_authorized_shares_cannot_be_zero_or_below_outstanding():
     """A listed company cannot authorise zero shares, nor fewer than it has issued. The
     live minimum was 0 because the guard capped only the upper end."""

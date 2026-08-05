@@ -833,6 +833,25 @@ FINANCIALS_TOPLINE_MARKERS = {"InterestAndDividendIncomeOperating", "Noninterest
 # interest line never does.
 FINANCIALS_TOPLINE_DOMINANCE = PARTIAL_REVENUE_MATERIALITY
 
+# Some filers report "Selling and marketing" and "General and administrative" as two
+# SEPARATE, ADDITIVE income-statement lines rather than one combined SG&A concept --
+# confirmed via the Tiingo cross-check: CRM (Salesforce) tags ONLY
+# `GeneralAndAdministrativeExpense` ($632-767M/quarter) and `SellingAndMarketingExpense`
+# ($3.1-3.3B/quarter) simultaneously, both undimensioned, for the SAME period, and never
+# tags the combined `SellingGeneralAndAdministrativeExpense` concept at all. The normal
+# priority coalesce in `fetch_fundamentals_edgar.build_tag_frames` picks G&A alone
+# (priority 1 in `sellingGeneralAdmin`'s candidate list below) and never looks at the
+# companion (priority 2) once ONE candidate has already answered the period -- correctly
+# reproducing "keep the higher-priority candidate" for every OTHER field, but
+# understating `sellingGeneralAdmin` by ~5x here (Tiingo's normalized `sga` matched CRM's
+# own G&A + S&M SUM to the dollar). Consumed by `build_tag_frames` to ADD the companion
+# ONLY when the winning fact is G&A-ONLY -- the combined tag, when present, already wins
+# outright via priority and must never be added to twice. Only the confirmed direction
+# (G&A wins, S&M companion) is handled; the untested reverse (S&M wins, G&A companion)
+# is deliberately left alone until evidence surfaces for it too.
+SGA_GA_ONLY_TAG = "GeneralAndAdministrativeExpense"
+SGA_SM_COMPANION_TAG = "SellingAndMarketingExpense"
+
 # diluted weighted-average shares (duration fact; we take the latest period's
 # value point-in-time) -> true per-share + net-issuance signals.
 # The `...Adjustment` variant was dropped (0 of 498 filers).
@@ -985,6 +1004,32 @@ NON_NEGATIVE_STOCK_FIELDS = {
     "preferredSharesAuthorized", "antidilutiveShares",
 }
 
+# A share-count-shaped field reporting a MAGNITUDE below `SHARE_COUNT_MIN_ABS` is a filer
+# scale defect, never a real business fact -- no S&P/Dow constituent has a weighted-average
+# or point-in-time share count under a million. Confirmed on MCD: its FY2024 10-Qs tag
+# `us-gaap:WeightedAverageNumberOfSharesOutstandingBasic`/`...Diluted` as `721.8`/`725.9`
+# where the true counts are `721,800,000`/`725,900,000` -- a 1,000,000x scale error baked
+# into the raw XBRL instance (the known SEC DQC "shares reported in millions" defect class,
+# not an edgartools or extraction parsing bug -- `numeric_value` is never rescaled by
+# decimals/scale anywhere in the installed edgartools package). `NON_NEGATIVE_STOCK_FIELDS`
+# above only catches the WRONG SIGN, so a positive-but-1,000,000x-too-small fact sails
+# through untouched -- and since both `basicShares` and `dilutedShares` are miss-tagged
+# identically here, `apply_plausibility_guards`' relative diluted-vs-basic check also never
+# fires. `sharesOutstanding` is already in `NON_NEGATIVE_STOCK_FIELDS`, but gets no magnitude
+# check at this layer either -- included here too so a same-shaped scale defect on the
+# point-in-time count is caught at the same place, not just downstream in
+# `apply_plausibility_guards`. `commonSharesIssued` is share-count-shaped for the same reason.
+# Applied the same way as `NON_NEGATIVE_STOCK_FIELDS`: reject (never rescale) so the field's
+# candidate coalesce falls through -- with exactly one candidate tag each for `basicShares`/
+# `dilutedShares` today, a rejected fact correctly ends up NaN rather than a wrong number
+# ("null, never guess wrong"). Kept numerically in sync with
+# `src/constants/constants.py::SHARES_OUTSTANDING_MIN` (both express the same real-world
+# floor; duplicated rather than imported because this module has zero imports by design).
+SHARE_COUNT_MAGNITUDE_FIELDS = {
+    "basicShares", "dilutedShares", SHARES_OUTSTANDING_FIELD, "commonSharesIssued",
+}
+SHARE_COUNT_MIN_ABS = 1_000_000.0
+
 # Per-(ticker, field) tag DENY-LIST: bare concept names that must NEVER be admitted for
 # that one filer, applied as a pre-filter in `fetch_fundamentals_edgar.build_tag_frames`.
 # The escape hatch for a defect that is genuinely one issuer's own, where no global rule
@@ -1030,6 +1075,27 @@ FIELD_TAG_DENYLIST: dict[str, dict[str, frozenset[str]]] = {
     # list is present for AEP those years) rather than the near-zero garbage that was
     # there before.
     "AEP": {"costOfRevenue": frozenset({"CostOfGoodsAndServicesSold"})},
+    # Found via the Tiingo cross-check: CAT tags `us-gaap:CostOfRevenue` consistently and
+    # correctly EVERY quarter from 2018 on (~$9-11B/quarter, matching its own ~$40B/year
+    # revenue) -- except FY2024, FY2025 and FY2025-Q1, where it ALSO tags the priority-0
+    # candidate `us-gaap:CostOfGoodsAndServicesSold` at $33M / $27M / $49M, a ~300x
+    # understatement that wins the coalesce outright and corrupts the derived Q4 (and
+    # every TTM window that includes it) with a huge, wrong swing. Both facts are
+    # undimensioned, so no dimension rule could reject the small one, and CAT's own
+    # `CostOfRevenue` value for the SAME periods is right there, just lower priority.
+    # Denying restores it for exactly the years CAT double-tags, leaving every other
+    # year (which never carries `CostOfGoodsAndServicesSold` at all) untouched.
+    "CAT": {"costOfRevenue": frozenset({"CostOfGoodsAndServicesSold"})},
+    # Found via the Tiingo cross-check, same shape as the CAT entry above: MCD tags
+    # BOTH `us-gaap:DepreciationDepletionAndAmortization` (priority-0 in `depAmort`'s
+    # candidate list, $99M for 2024-Q1, $99M for 2023-Q1 -- a small, WRONG figure
+    # repeating quarter to quarter) AND `us-gaap:DepreciationAndAmortization`
+    # (priority-2, $510M for 2024-Q1, $490M for 2023-Q1) undimensioned, for the exact
+    # same period. Confirmed against Tiingo's own `depamor`: $510M for 2024-Q1,
+    # matching the LOWER-priority tag exactly, not the one that currently wins.
+    # McDonald's real total D&A (a company with ~$40B+ gross PP&E) is the ~$500M/
+    # quarter figure, not $99M. Denying the small tag falls through to the correct one.
+    "MCD": {"depAmort": frozenset({"DepreciationDepletionAndAmortization"})},
 }
 
 # How far a derived Q4 whose sign matches NONE of Q1/Q2/Q3 may exceed the largest

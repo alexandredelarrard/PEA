@@ -19,7 +19,9 @@ from src.constants.constants import (
     OPERATING_MARGIN_ABS_MAX, PROFIT_MARGIN_ABS_MAX, Q4_RECONCILIATION_TOLERANCE,
     RATIO_DENOMINATOR_MIN_FRACTION, RETURN_ON_EQUITY_ABS_MAX,
     SHARES_OUTSTANDING_MAX, SHARES_OUTSTANDING_MIN,
+    SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO,
 )
+from src.data_extract.utils.fundamentals.fundamentals_tags import NON_NEGATIVE_FLOW_FIELDS
 
 
 def _null_where(frame: pd.DataFrame, column: str, bad: pd.Series) -> int:
@@ -107,10 +109,19 @@ def apply_plausibility_guards(
           (authorized <= 0) | (authorized < num("sharesOutstanding")),
           "shares_authorized_below_outstanding")
     basic, diluted = num("basicShares"), num("dilutedShares")
+    # Absolute floor/ceiling, same bounds as `sharesOutstanding` above -- catches a filer
+    # scale defect that scales `basicShares`/`dilutedShares` IDENTICALLY (confirmed: MCD
+    # tags both as `721.8`/`725.9` instead of `721,800,000`/`725,900,000`, a 1,000,000x
+    # error), which the pre-existing diluted-vs-basic RATIO check below cannot see since a
+    # matched scale error leaves that ratio untouched.
+    guard("basicShares",
+          (basic < SHARES_OUTSTANDING_MIN) | (basic > SHARES_OUTSTANDING_MAX),
+          "shares_scale")
     guard("dilutedShares",
           (diluted <= 0)
+          | (diluted < SHARES_OUTSTANDING_MIN) | (diluted > SHARES_OUTSTANDING_MAX)
           | (basic.notna() & (diluted < basic * DILUTED_SHARES_MIN_SHARE_OF_BASIC)),
-          "diluted_below_basic")
+          "diluted_below_basic_or_scale")
     guard("effectiveTaxRate",
           (num("effectiveTaxRate") < EFFECTIVE_TAX_RATE_MIN)
           | (num("effectiveTaxRate") > EFFECTIVE_TAX_RATE_MAX),
@@ -251,6 +262,40 @@ def reconcile_fundamentals_facts(facts: pd.DataFrame) -> pd.DataFrame:
                              "fiscal_period": r["fiscal_period"], "check": "large_discontinuity",
                              "detail": f"QoQ ratio={r['_ratio']:.3f} outside "
                                        f"[{FUNDAMENTALS_DISCONTINUITY_MIN}, {FUNDAMENTALS_DISCONTINUITY_MAX}]",
+                             "severity": "info"})
+
+    # 6. signed_q4_dominates_fiscal_year: a DERIVED Q4 (blank source_tag) is arithmetically
+    #    forced to satisfy check 4's Q1..Q4-vs-FY identity BY CONSTRUCTION, so
+    #    q4_reconciliation_gap can never catch the case where the ANNUAL fact it was derived
+    #    against is itself wrong (e.g. a dimensioned/non-consolidated slice slipping through
+    #    as if it were the whole-company total). Confirmed live: BA's FY2025
+    #    `OperatingIncomeLoss` (+$4.28B) against its own Q3-2025 quarterly fact under the
+    #    IDENTICAL tag (-$4.78B) derives a Q4 of +$8.78B, 2.05x the FY total. Scoped to
+    #    SIGNED fields only (NON_NEGATIVE_FLOW_FIELDS excluded -- those already get a hard
+    #    sign rule in `_q4_is_coherent`). Deliberately advisory-only, never a rejection: see
+    #    `SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO`'s docstring for why no ratio can cleanly
+    #    separate a bug from a confirmed-real, similarly extreme case (Citigroup/Corning
+    #    FY2017, which this also flags) -- the point is to surface a NEW case for manual /
+    #    Tiingo-cross-checked review, not to auto-classify one.
+    if {"fiscal_period", "value", "duration_type", "derived"}.issubset(facts.columns):
+        signed = originals[~originals["field"].isin(NON_NEGATIVE_FLOW_FIELDS)]
+        q4_rows = signed[(signed["fiscal_period"] == "Q4") & (signed["duration_type"] == "quarterly")
+                         & (signed["derived"] == 1.0)]
+        fy_rows = signed[(signed["fiscal_period"] == "FY") & (signed["duration_type"] == "annual")]
+        fy_by_key = fy_rows.drop_duplicates(subset=["ticker", "field", "fiscal_year"], keep=False) \
+            .set_index(["ticker", "field", "fiscal_year"])["value"]
+        for _, r in q4_rows.iterrows():
+            fy_key = (r["ticker"], r["field"], r["fiscal_year"])
+            if fy_key not in fy_by_key.index:
+                continue
+            fy_val = fy_by_key.loc[fy_key]
+            if pd.isna(fy_val) or fy_val == 0 or pd.isna(r["value"]):
+                continue
+            ratio = abs(r["value"]) / abs(fy_val)
+            if ratio > SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO:
+                rows.append({"ticker": r["ticker"], "field": r["field"], "fiscal_year": r["fiscal_year"],
+                             "fiscal_period": "Q4", "check": "signed_q4_dominates_fiscal_year",
+                             "detail": f"|Q4|/|FY| = {ratio:.3f} > {SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO}",
                              "severity": "info"})
 
     return pd.DataFrame(rows, columns=cols)

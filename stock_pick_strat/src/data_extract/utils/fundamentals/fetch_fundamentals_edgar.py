@@ -29,15 +29,15 @@ from __future__ import annotations
 
 import logging
 import os
-import random
 import time
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 from edgar import Company, set_identity
 
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
+from src.data_extract.utils.common.parallel_fetch import run_per_ticker
+from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals.fundamentals_employees import (
     employee_fact_frame, history_by_ticker,
 )
@@ -54,7 +54,9 @@ from src.data_extract.utils.fundamentals.fundamentals_tags import (
     FINANCIALS_TOPLINE_DOMINANCE,
     FINANCIALS_TOPLINE_MARKERS, FISCAL_YEAR_CONTEXT_DAYS, FLOW_TAGS,
     LATEST_DURATION_TAGS, NON_NEGATIVE_STOCK_FIELDS, PARTIAL_REVENUE_MATERIALITY,
-    PARTIAL_REVENUE_TAGS, SHARES_OUTSTANDING_FIELD, SHARES_TAGS, STOCK_TAGS,
+    PARTIAL_REVENUE_TAGS, SGA_GA_ONLY_TAG, SGA_SM_COMPANION_TAG,
+    SHARE_COUNT_MAGNITUDE_FIELDS, SHARE_COUNT_MIN_ABS,
+    SHARES_OUTSTANDING_FIELD, SHARES_TAGS, STOCK_TAGS,
     TOTAL_REVENUE_TAG, XBRL_PARSE_ATTEMPTS, XBRL_RETRY_BACKOFF_SECONDS,
 )
 
@@ -361,6 +363,19 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]],
     negative_stock = merged["field"].isin(NON_NEGATIVE_STOCK_FIELDS) & (merged["_probe"] < 0)
     merged["_admissible"] = merged["_admissible"] & ~negative_stock
 
+    # A share-count-shaped field (`SHARE_COUNT_MAGNITUDE_FIELDS`) reporting a magnitude
+    # below `SHARE_COUNT_MIN_ABS` is a filer scale defect (confirmed: MCD tags its weighted-
+    # average share count as `721.8` instead of `721,800,000`, a 1,000,000x error baked into
+    # the raw XBRL instance -- see that constant's docstring in `fundamentals_tags.py`), never
+    # a real business fact. Same mechanism as the sign guard above -- reject so the field's
+    # candidate coalesce falls through, never rescale (no way to distinguish a genuine
+    # 1e3x-vs-1e6x scale error from here, and silently multiplying would be exactly the
+    # "silently rewrite the filer's number" risk `NON_NEGATIVE_STOCK_FIELDS`'s own docstring
+    # rejects for the sign case).
+    implausible_share_scale = (merged["field"].isin(SHARE_COUNT_MAGNITUDE_FIELDS)
+                               & (merged["_probe"].abs() < SHARE_COUNT_MIN_ABS))
+    merged["_admissible"] = merged["_admissible"] & ~implausible_share_scale
+
     # Per-issuer deny-list (`FIELD_TAG_DENYLIST`): a concept THIS filer misuses for a
     # different measure, removed from its field's candidates so the coalesce continues to
     # the next one. Same placement rationale as the sign guard above -- the verdict is on
@@ -417,6 +432,23 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]],
     merged = merged[merged["_val"].notna()]
     if merged.empty:
         return pd.DataFrame(columns=out_cols)
+
+    # SG&A companion-tag summing (see `SGA_GA_ONLY_TAG`/`SGA_SM_COMPANION_TAG`'s
+    # docstring in fundamentals_tags.py): a filer that tags ONLY
+    # `GeneralAndAdministrativeExpense` for `sellingGeneralAdmin` -- i.e. the combined
+    # tag was absent, so G&A won by priority alone -- may ALSO tag a genuinely
+    # additive `SellingAndMarketingExpense` companion for the exact same period. Add
+    # it in, undimensioned-only, so the field reflects the filer's FULL SG&A rather
+    # than just its G&A component.
+    is_ga_only = (merged["field"] == "sellingGeneralAdmin") & (merged["_bare"] == SGA_GA_ONLY_TAG)
+    if is_ga_only.any():
+        companion = df[(df["_bare"] == SGA_SM_COMPANION_TAG) & (~df["_dimensioned"])]
+        companion_by_period = (companion.drop_duplicates(subset=["period_start", "period_end"], keep="last")
+                               .set_index(["period_start", "period_end"])["_probe"])
+        keys = pd.MultiIndex.from_arrays(
+            [merged.loc[is_ga_only, "period_start"], merged.loc[is_ga_only, "period_end"]])
+        addend = pd.Series(companion_by_period.reindex(keys).values, index=merged.index[is_ga_only]).fillna(0.0)
+        merged.loc[is_ga_only, "_val"] = merged.loc[is_ga_only, "_val"] + addend
 
     out = pd.DataFrame({
         "field": merged["field"], "value": merged["_val"],
@@ -868,8 +900,16 @@ def fetch_fundamentals_edgartools(context: Context, tickers: list[str]) -> pd.Da
     interrupted run (or one bad ticker further down the list) must never lose
     the already-extracted tickers' work (this repo's "save per entity"
     incremental convention).
+
+    Tickers are walked CONCURRENTLY on a thread pool (`run_per_ticker`), same as
+    every other edgartools per-filing fetcher (8-K, 13D, DEF 14A -- see
+    `parallel_fetch.py`'s module docstring). This one was the sole holdout still
+    walking tickers one at a time, which is the confirmed reason a from-scratch
+    pull took ~24h: the per-filing walk is network-I/O bound (SEC XBRL downloads),
+    and edgartools' own client already rate-limits *request starts* globally
+    (thread-safe, ~9 req/sec) -- a sequential loop never has more than one request
+    in flight and so never comes close to saturating that budget.
     """
-    
     _configure_identity()
     de = context.config.data_extract
     years = int(getattr(de, "fundamentals_years_history", de.years_history))
@@ -895,24 +935,35 @@ def fetch_fundamentals_edgartools(context: Context, tickers: list[str]) -> pd.Da
     except Exception:                              # noqa: BLE001 - table may not exist yet
         employee_histories = {}
 
-    random.shuffle(tickers)
+    # `run_per_ticker` needs a (ticker, cik) frame, but this fetcher's contract is
+    # "process every ticker it's given" regardless of `sp500_tickers` coverage --
+    # unlike the sibling fetchers that filter to `load_cik_mapping`'s rows, so a
+    # ticker missing a resolved CIK (still None here, matching this function's
+    # pre-existing behavior) is never silently dropped from the run.
+    try:
+        cik_by_ticker = load_cik_mapping(context).set_index("ticker")["cik"].to_dict()
+    except Exception:                              # noqa: BLE001 - table may not exist yet
+        cik_by_ticker = {}
+    cik_map = pd.DataFrame({"ticker": tickers, "cik": [cik_by_ticker.get(t) for t in tickers]})
 
-    all_frames: list[pd.DataFrame] = []
-    for ticker in tqdm(tickers, "Extract filings edgartools"):
+    def _worker(ticker: str, cik: str | None) -> pd.DataFrame:
         try:
             done = existing_accessions.get(ticker, frozenset())
             ticker_facts = build_ticker_facts_edgar(
-                ticker, done_accessions=done, since=since,
+                ticker, cik=cik, done_accessions=done, since=since,
                 employee_history=employee_histories.get(ticker), log=context.log)
         except Exception as e:                      # noqa: BLE001
             context.log.warning("fetch_fundamentals_edgartools: %s failed (%s)", ticker, e)
-            continue
+            return pd.DataFrame(columns=_FACTS_COLS)
         if ticker_facts.empty:
-            continue
+            return ticker_facts
         context.store.save("fundamentals_facts", ticker_facts, pk=pk)
         context.log.info("fetch_fundamentals_edgartools: saved %d fundamentals_facts rows for %s.",
                          len(ticker_facts), ticker)
-        all_frames.append(ticker_facts)
+        return ticker_facts
+
+    results = run_per_ticker(cik_map, _worker, desc="Fundamentals (edgartools)")
+    all_frames = [f for f in results if not f.empty]
 
     if not all_frames:
         context.log.info("fetch_fundamentals_edgartools: no new fundamentals_facts rows.")

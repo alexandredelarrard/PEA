@@ -788,6 +788,22 @@ BALANCE_SHEET_IDENTITY_TOLERANCE = 0.5
 # (see fundamentals_validation.reconcile_fundamentals_facts), never silently corrected.
 Q4_RECONCILIATION_TOLERANCE = 0.02
 
+# A DERIVED Q4 (blank source_tag) is arithmetically forced to satisfy the identity above by
+# construction, so `q4_reconciliation_gap` can never catch the case where the ANNUAL fact it
+# was derived against is itself wrong (e.g. a dimensioned/non-consolidated slice slipping
+# through as if it were the whole-company total). This is a SEPARATE, flag-only signal for
+# that blind spot: how much of the derived Q4's own magnitude the fiscal-year total implies.
+# Confirmed live: BA's FY2025 `OperatingIncomeLoss` (+$4.28B) against its own Q3-2025
+# quarterly fact under the IDENTICAL tag (-$4.78B) derives a Q4 of +$8.78B -- 2.05x the FY
+# total. Deliberately loose (not a rejection threshold): `_q4_is_coherent`'s own
+# "arithmetically forced sign-flip" branch (fundamentals_periods.py) already accepts an
+# UNCONDITIONAL magnitude for two confirmed-real cases pinned by a regression test
+# (Citigroup FY2017, Corning FY2017), both of which this ratio would also flag at 2.78x and
+# ~3x respectively -- so this constant can only ever ADVISE (severity="info" in
+# `reconcile_fundamentals_facts`), never null or reject, matching that function's existing
+# "surface, never silently correct" philosophy.
+SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO = 1.5
+
 # --------------------------------------------------------------------------- #
 # PRICE PRE-LISTING TRIM                                                       #
 # --------------------------------------------------------------------------- #
@@ -914,3 +930,30 @@ PPE_NET_MIN_SHARE_OF_ROLLFORWARD = 0.20
 # rounding (14.2% of the violations are under 0.1% of basic) while catching the unit errors,
 # which are all >= 90% shortfalls.
 DILUTED_SHARES_MIN_SHARE_OF_BASIC = 0.99
+
+# --------------------------------------------------------------------------- #
+# TIINGO CROSS-VALIDATION (src/utils/tiingo_comparison.py)                    #
+# --------------------------------------------------------------------------- #
+# External ground-truth check for `fundamentals_history`/`fundamentals_facts`. The
+# `.env` key's plan is capped to the Dow 30 (confirmed live: any other ticker returns
+# HTTP 400 "Free and Power plans are limited to the DOW 30") -- this is only today's
+# DEFAULT ticker argument, never hardcoded into the fetch itself, so widening it later
+# (a Tiingo plan upgrade) needs no other code change.
+TIINGO_STATEMENTS_URL_TEMPLATE = "https://api.tiingo.com/tiingo/fundamentals/{ticker}/statements"
+DOW_30_TICKERS = (
+    "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
+    "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
+    "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT",
+)
+TIINGO_CACHE_DIRNAME = "tiingo_cache"
+TIINGO_COMPARISON_FILENAME = "tiingo_comparison.csv"
+TIINGO_RATIO_OUTLIERS_FILENAME = "tiingo_ratio_outliers.csv"
+
+# "95%+ aligned" tolerance bands for fields whose DEFINITION matches Tiingo's exactly
+# (bucket (a) in the field classification -- see tiingo_comparison.py's module
+# docstring). Wider for TTM-summed flows than instant/level fields: our figure sums 4
+# TRAILING TIINGO QUARTERS to approximate the same TTM window `fetch_fundamentals.
+# _derive_history`'s `ttm_a` computes, so a few basis points of fiscal-calendar/rounding
+# drift is expected even when both sides agree on the underlying concept.
+TIINGO_EXACT_MATCH_TOLERANCE_FLOW = 0.02
+TIINGO_EXACT_MATCH_TOLERANCE_LEVEL = 0.01

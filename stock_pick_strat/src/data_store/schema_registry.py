@@ -101,9 +101,9 @@ EXTRACT_TABLES: list[TableSpec] = [
               vector_col="embedding", vector_prefix="e"),
     # OpenAI embeddings of SEC footnote NARRATIVE (`notes_text`): one mean-pooled vector PER
     # (ticker, filing `adsh`, TextBlock `tag`), with its `theme`, `filed`/`ddate` for point-in-time
-    # ordering, `txtlen` and chunk count. The narrative-drift / risk-anchor / disclosure-length
-    # cube features are DERIVED from these per filing at build time. See
-    # src/data_aggregate/utils/notes_features.py.
+    # ordering, `txtlen` and chunk count. Populated by extraction, but NOT yet consumed by the
+    # cube: the narrative-drift / risk-anchor / disclosure-length builder was never wired into
+    # a panel and has been removed, so these rows currently have no downstream reader.
     TableSpec("notes_embedding", "notes_embedding.parquet",
               ("ticker", "adsh", "tag"), "extract", date_col=None, ticker_col="ticker",
               date_type_cols=("as_of", "ddate"), vector_col="embedding", vector_prefix="e"),

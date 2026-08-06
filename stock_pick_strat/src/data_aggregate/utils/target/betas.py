@@ -14,10 +14,14 @@ Timing rule unchanged: betas at t use only data up to t; applied to FORWARD
 factor returns in targets.py.
 """
 from __future__ import annotations
+import logging
+
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.target.factors import filter_daily_factors
+
+logger = logging.getLogger(__name__)
 
 
 def estimate_betas_for_stock(
@@ -109,7 +113,7 @@ def estimate_all_betas(
     if filter_factors:
         factor_panel, dropped = filter_daily_factors(factor_panel)
         if dropped:
-            print(f"[estimate_all_betas] excluded stale factors from regression: {dropped}")
+            logger.warning("excluded stale factors from regression: %s", dropped)
 
     betas = {}
     for ticker in stock_returns.columns:

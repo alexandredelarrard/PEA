@@ -9,7 +9,7 @@ name.
 POINT-IN-TIME (critical): a 13F reports positions as of the quarter-END but is
 only public up to the SEC filing deadline ~45 days later (a March-31 position set
 is not knowable until ~mid-May). Every quarter's aggregate is therefore stamped
-`as_of = quarter-end + _FILING_LAG_DAYS` and only forward-filled onto trading days
+`as_of = quarter-end + SEC_13F_FILING_LAG_DAYS` and only forward-filled onto trading days
 FROM that date — so a backtest never sees a quarter's 13F before it was public.
 
 Input `holdings` is manager-grain long (one row per manager x security x quarter):
@@ -40,8 +40,8 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 
-_FILING_LAG_DAYS = 45   # 13F must be filed within 45 days of quarter-end (leak-free floor)
 
 
 def _quarter_features(holdings: pd.DataFrame) -> pd.DataFrame:
@@ -87,7 +87,7 @@ def _quarter_features(holdings: pd.DataFrame) -> pd.DataFrame:
 
             rows.append({
                 "ticker": ticker,
-                "as_of": pd.Timestamp(p) + pd.Timedelta(days=_FILING_LAG_DAYS),
+                "as_of": pd.Timestamp(p) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS),
                 "inst_holders": float(holders),
                 "inst_shares": inst_shares,
                 "inst_value": inst_value,

@@ -220,49 +220,6 @@ def _neutralize_sector_industry(
     return eps
 
 
-def build_targets(
-    close: pd.DataFrame,
-    stock_returns: pd.DataFrame,
-    peer_dict: dict,
-    betas: dict,
-    factor_panel: pd.DataFrame,
-    macro_cols: list,
-    horizons=(5, 10, 20, 60),
-    label: str = "rank",
-    min_names: int = 20,
-    neutralize_momentum: bool = True,
-    sector_groups: dict[str, dict[str, str]] | None = None,
-) -> dict:
-    """
-    NOTE signature change vs the old (close, market_close, ...): market is now
-    inside factor_panel, and we pass macro_cols so forward macro factors are
-    treated as cumulative CHANGES not compounded returns. Update
-    step_build_cube.build_targets accordingly.
-
-    `neutralize_momentum`: after computing the multi-factor residual epsilon,
-    cross-sectionally orthogonalize it against the 12-1 momentum characteristic
-    each day (makes the target orthogonal to momentum by construction).
-
-    `sector_groups` = {"sector": {ticker: gics_sector}, "industry_group": {...}}.
-    When given, the target is neutralized to the ACTUAL GICS sector + industry
-    (per-day within-group demeaning, applied LAST) INSTEAD of the peer-basket
-    "neighbor sector" — so sector / industry membership can no longer predict the
-    target (else they dominate the model, a sign the target was not sector-neutral).
-    """
-    mom_char = momentum_characteristic(close) if neutralize_momentum else None
-    use_peer_sector = sector_groups is None
-
-    out = {}
-    for h in horizons:
-        eps = compute_epsilon(close, stock_returns, peer_dict, betas,
-                              factor_panel, macro_cols, h, use_peer_sector=use_peer_sector)
-        if neutralize_momentum:
-            eps = cross_sectional_neutralize(eps, mom_char)
-        eps = _neutralize_sector_industry(eps, sector_groups)      # last -> neutral to both
-        out[h] = _apply_label(eps, label, min_names)
-    return out
-
-
 def build_targets_multi(
     close: pd.DataFrame,
     stock_returns: pd.DataFrame,
@@ -276,16 +233,26 @@ def build_targets_multi(
     neutralize_momentum: bool = True,
     sector_groups: dict[str, dict[str, str]] | None = None,
 ) -> dict:
-    """Like `build_targets`, but computes the (expensive) factor-neutral residual
-    ONCE per horizon and emits SEVERAL target versions from it, so the cube can
-    store e.g. both the rank and the z-score target and the modelling step can
-    pick which one to train on without a cube rebuild.
+    """Compute the (expensive) factor-neutral residual ONCE per horizon and emit
+    SEVERAL target versions from it, so the cube can store e.g. both the rank and the
+    z-score target and the modelling step can pick which one to train on without a
+    cube rebuild.
 
-    `sector_groups` neutralizes the residual to the ACTUAL GICS sector +
-    industry_group (per-day within-group demeaning, applied last) INSTEAD of the
-    peer-basket "neighbor sector" — see `build_targets`.
+    `neutralize_momentum`: after computing the multi-factor residual epsilon,
+    cross-sectionally orthogonalize it against the 12-1 momentum characteristic each
+    day (makes the target orthogonal to momentum by construction).
+
+    `sector_groups` = {"sector": {ticker: gics_sector}, "industry_group": {...}}. When
+    given, the residual is neutralized to the ACTUAL GICS sector + industry_group
+    (per-day within-group demeaning, applied LAST) INSTEAD of the peer-basket
+    "neighbor sector" — so sector / industry membership can no longer predict the
+    target (else they dominate the model, a sign the target was not sector-neutral).
 
     Returns {horizon: {label: DataFrame(date x ticker)}}.
+
+    (A single-label `build_targets` twin used to sit alongside this, duplicating the
+    whole epsilon -> neutralize -> label loop for one label. Nothing in `src/` called
+    it; pass `labels=("rank",)` instead.)
     """
     mom_char = momentum_characteristic(close) if neutralize_momentum else None
     use_peer_sector = sector_groups is None

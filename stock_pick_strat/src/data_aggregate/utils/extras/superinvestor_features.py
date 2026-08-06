@@ -38,8 +38,8 @@ from src.context import Context
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.utils.string import pad_cik
+from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 
-_FILING_LAG_DAYS = 45   # 13F filing deadline after quarter-end (leak-free floor)
 _HOLDINGS_TABLE = "sec13f_hr"     # the ~20M-row all-filer 13F table (literal, as elsewhere)
 _HOLDINGS_COLS = ["cik", "period", "ticker", "shares", "value_usd", "filing_date"]
 # normalize a stored TEXT cik the SAME way pad_cik does (digits of the pre-decimal part, left-padded
@@ -145,7 +145,7 @@ def _super_quarter_features(holdings: pd.DataFrame, weights: dict[str, float]) -
 
             rows.append({
                 "ticker": ticker,
-                "as_of": pd.Timestamp(p) + pd.Timedelta(days=_FILING_LAG_DAYS),
+                "as_of": pd.Timestamp(p) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS),
                 "super_holders": w_hold,
                 "super_value": w_value,
                 "super_value_flow": (w_value - prev_val)

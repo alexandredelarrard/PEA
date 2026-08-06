@@ -96,6 +96,12 @@ SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_SUBMISSIONS_PAGE_URL = "https://data.sec.gov/submissions/{name}"
 SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+
+# A 13F-HR must be filed within 45 days of quarter-end, so a quarter's positions only
+# become knowable ~45 days later. Both 13F feature builders stamp
+# `as_of = quarter_end + this` to stay leak-free; it was duplicated as a private
+# `_FILING_LAG_DAYS = 45` in each of them.
+SEC_13F_FILING_LAG_DAYS = 45
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 # EDGAR company-name search (atom): the authoritative NAME -> CIK lookup. Filtered to
 # 13F-HR filers so a fund name resolves to its institutional-manager CIK. {company}
@@ -351,9 +357,10 @@ FINBERT_MAX_TOKENS = 512
 # --------------------------------------------------------------------------- #
 # SEC footnote NARRATIVE (`notes_text`) -> risk/compliance features (data_aggregate).
 # The raw high-signal TextBlocks are embedded (OpenAI) + NLP-scored into per-filing,
-# per-theme features (narrative drift, risk-anchor similarity, tone/litigious density,
-# disclosure-length dynamics), then made peer-relative for the cube. See
-# src/data_aggregate/utils/notes_features.py.
+# per-theme rows. These tables ARE extracted and populated, but nothing in the cube reads
+# them yet: the module that was meant to turn them into peer-relative features (narrative
+# drift, risk-anchor similarity, tone/litigious density, disclosure-length dynamics) was
+# never wired into any panel and has been removed, so no cube consumer exists today.
 # --------------------------------------------------------------------------- #
 NOTES_TEXT_TABLE = "notes_text"
 NOTES_EMBEDDING_TABLE = "notes_embedding"          # cache: 1 row per (ticker, adsh, tag), pooled vector

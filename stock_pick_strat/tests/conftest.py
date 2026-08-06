@@ -105,7 +105,7 @@ def real_pipeline(real_frames):
     """End-to-end real-data aggregate pieces computed once: peers, sector
     returns, factor panel, rolling betas and multi-horizon targets."""
     from src.data_aggregate.utils.target.betas import estimate_all_betas
-    from src.data_aggregate.utils.target.targets import build_targets
+    from src.data_aggregate.utils.target.targets import build_targets_multi
     from src.data_aggregate.utils.common.prices import price_column_returns
     from src.data_aggregate.utils.target.factors import (
         build_style_factor_returns,
@@ -148,10 +148,14 @@ def real_pipeline(real_frames):
     )
 
     horizons = (5, 20, 60)
-    labels_rank = build_targets(
+    # one label via the multi-label builder (the single-label `build_targets` twin was
+    # deleted); unwrap {h: {"rank": df}} -> {h: df} so the fixture's shape is unchanged
+    # and its five consumer tests need no edits.
+    _multi = build_targets_multi(
         stock_close, stock_ret, peers, betas, factor_panel, macro_cols,
-        horizons=horizons, label="rank", min_names=20,
+        horizons=horizons, labels=("rank",), min_names=20,
     )
+    labels_rank = {h: by_label["rank"] for h, by_label in _multi.items()}
 
     return {
         "peers": peers,

@@ -231,10 +231,14 @@ _YEAR = 252   # trailing trading days ~= one calendar year (year-ago comparison)
 _FIVE_YEARS = 5 * _YEAR   # ~5 trading years (multi-year trend comparison)
 
 
-def _effective_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
+def _nopat_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
     """Point-in-time effective tax rate = tax / pretax, clipped to [0, 0.5] and
-    defaulted to the US statutory ~21% where missing/nonsensical. Used to tax-
-    adjust special items (core earnings) and to build NOPAT (ROIC)."""
+    defaulted to the US statutory ~21% where missing/nonsensical. INTERNAL ONLY: used to
+    tax-adjust special items (core earnings) and to build NOPAT (ROIC).
+
+    Named `_nopat_tax_rate`, not `_effective_tax_rate`, because `sector_features` emits a
+    cube FEATURE called `effective_tax_rate` which is the RAW, unclipped, un-defaulted
+    ratio. Two different numbers for two different jobs -- the shared name was a trap."""
     tax, pre = daily("incomeTaxExpense"), daily("pretaxIncome")
     if tax.empty or pre.empty:
         return pd.DataFrame()
@@ -488,7 +492,7 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     oi, assets = daily("operatingIncome"), capital.assets_ex_lease(daily)
     equity = daily("stockholdersEquity")
     goodwill, intang = daily("goodwill"), daily("intangiblesExGoodwill")
-    tax = _effective_tax_rate(daily)
+    tax = _nopat_tax_rate(daily)
 
     if not oi.empty and not equity.empty:
         nopat = oi * (1.0 - tax) if not tax.empty else oi
@@ -563,7 +567,7 @@ def _core_earnings_fields(daily, mcap: pd.DataFrame) -> dict:
     special = charges.sub(gains, fill_value=0.0)         # +net charges (reported depressed) / -net gains
     if special.empty or not special.notna().any().any():
         return F
-    tax = _effective_tax_rate(daily)
+    tax = _nopat_tax_rate(daily)
     rev_pos = rev.where(rev > 0)
 
     if not pretax.empty:
@@ -632,7 +636,7 @@ def _credit_tax_and_pershare_fields(daily, fund_hist: pd.DataFrame, idx: pd.Date
         cash_rate = ratio(taxes_paid, pretax.where(pretax > 0)).clip(-0.5, 1.0)
         if cash_rate.notna().any().any():
             F["cash_tax_rate"] = cash_rate
-            book_rate = _effective_tax_rate(daily)
+            book_rate = _nopat_tax_rate(daily)
             if not book_rate.empty:
                 cols = book_rate.columns.intersection(cash_rate.columns)
                 # >0 => book charge exceeds cash paid (deferral); <0 => paying more than booked

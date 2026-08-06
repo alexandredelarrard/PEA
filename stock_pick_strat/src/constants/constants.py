@@ -683,6 +683,21 @@ FRESHNESS_FUNDAMENTALS_SOURCE = "fundamentals_history"
 # else tail values would be computed on a truncated history. Bump it if a longer-window feature is added.
 CUBE_INCREMENTAL_WARMUP_TRADING_DAYS = 1400
 
+# The join keys every feature panel carries; everything else in a panel is a feature column.
+PANEL_KEYS = ["date", "ticker"]
+
+# The ad-hoc intermediate tables the cube sub-steps hand to each other. Deliberately NOT in
+# schema_registry.py: they are rebuilt from scratch by their owning step and carry no PK, so
+# `PartStore` pre-creates each from its frame's own dtypes (see utils/common/part_io.py).
+CUBE_PART_PRICES = "cube_part_prices"           # normalized OHLCV+returns grid, analysis universe
+CUBE_PART_MARKET = "cube_part_market"           # market ticker + commodity/FX close & returns
+CUBE_PART_TARGETS = "cube_part_targets"         # long multi-horizon labels
+CUBE_PART_BETAS = "cube_part_betas"             # long per-ticker factor loadings
+CUBE_PART_FUNDAMENTALS = "cube_part_fundamentals"
+CUBE_PART_MOMENTUM = "cube_part_momentum"
+CUBE_PART_TEXT = "cube_part_text"
+CUBE_PART_EXTRAS = "cube_part_extras"
+
 
 # --------------------------------------------------------------------------- #
 # GICS sectors / industry groups (values as stored in `sp500_tickers`, carried  #

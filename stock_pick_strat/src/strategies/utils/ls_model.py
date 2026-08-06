@@ -20,8 +20,8 @@ from omegaconf import DictConfig
 from sqlalchemy import text
 
 from src.context import Context
-from src.data_aggregate.utils import data_utils as du
-from src.data_aggregate.utils.cube import panel_from_cube
+from src.data_aggregate.utils.common import data_utils as du
+from src.data_aggregate.utils.assemble.cube import panel_from_cube
 from src.modelling.long_short.utils import model as ml
 
 

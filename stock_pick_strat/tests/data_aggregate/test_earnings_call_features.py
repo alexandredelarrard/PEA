@@ -17,7 +17,7 @@ import pandas as pd
 
 import logging
 
-from src.data_aggregate.utils.earnings_call_features import (
+from src.data_aggregate.utils.text.earnings_call_features import (
     _per_call_kpis,
     build_earnings_call_feature_panel,
     sentiment_kpis_streamed,

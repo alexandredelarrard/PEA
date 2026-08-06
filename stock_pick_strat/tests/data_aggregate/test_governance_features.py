@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.governance_features import (
+from src.data_aggregate.utils.extras.governance_features import (
     _governance_fields,
     build_governance_feature_panel,
 )

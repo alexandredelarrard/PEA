@@ -298,36 +298,36 @@ def primitive_fixtures(rng: np.random.Generator) -> dict[str, pd.DataFrame]:
 # the fingerprint                                                              #
 # --------------------------------------------------------------------------- #
 def compute() -> dict:
-    from src.data_aggregate.utils.attention_features import build_combined_attention_panel
-    from src.data_aggregate.utils.betas import estimate_all_betas
-    from src.data_aggregate.utils.composites import build_composites
-    from src.data_aggregate.utils.dividend_features import _clean_ratio, build_dividend_feature_panel
-    from src.data_aggregate.utils.earnings_features import build_earnings_feature_panel
-    from src.data_aggregate.utils.employee_features import build_employee_feature_panel
-    from src.data_aggregate.utils.factors import (
+    from src.data_aggregate.utils.extras.attention_features import build_combined_attention_panel
+    from src.data_aggregate.utils.target.betas import estimate_all_betas
+    from src.data_aggregate.utils.assemble.composites import build_composites
+    from src.data_aggregate.utils.fundamentals.dividend_features import _clean_ratio, build_dividend_feature_panel
+    from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel
+    from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
+    from src.data_aggregate.utils.target.factors import (
         commodity_factor_returns, currency_factor_returns, daily_market_cap,
         fundamentals_to_daily, momentum_characteristic, _xs_z,
     )
-    from src.data_aggregate.utils.features import (
+    from src.data_aggregate.utils.momentum.features import (
         build_feature_panel, compute_raw_features, cross_sectional_standardize, _safe,
     )
-    from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
-    from src.data_aggregate.utils.governance_features import build_governance_feature_panel
-    from src.data_aggregate.utils.insider_features import build_insider_feature_panel
-    from src.data_aggregate.utils.institutional_features import (
+    from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
+    from src.data_aggregate.utils.extras.governance_features import build_governance_feature_panel
+    from src.data_aggregate.utils.extras.insider_features import build_insider_feature_panel
+    from src.data_aggregate.utils.extras.institutional_features import (
         _quarter_features, build_institutional_feature_panel,
     )
-    from src.data_aggregate.utils.panel import (
+    from src.data_aggregate.utils.common.panel import (
         _ratio, _winsorize_xs, build_peer_relative_panel,
     )
-    from src.data_aggregate.utils.sector_features import _safe_div, build_sector_feature_panel
-    from src.data_aggregate.utils.short_interest_features import (
+    from src.data_aggregate.utils.fundamentals.sector_features import _safe_div, build_sector_feature_panel
+    from src.data_aggregate.utils.extras.short_interest_features import (
         build_short_interest_feature_panel,
     )
-    from src.data_aggregate.utils.superinvestor_features import (
+    from src.data_aggregate.utils.extras.superinvestor_features import (
         _super_quarter_features, _weight_map, build_superinvestor_feature_panel,
     )
-    from src.data_aggregate.utils.targets import (
+    from src.data_aggregate.utils.target.targets import (
         build_targets_multi, cross_sectional_rank, cross_sectional_zscore,
         forward_compound, forward_cumchange, forward_return,
     )

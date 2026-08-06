@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.betas import estimate_betas_for_stock
+from src.data_aggregate.utils.target.betas import estimate_betas_for_stock
 
 
 # --------------------------------------------------------------------------- #

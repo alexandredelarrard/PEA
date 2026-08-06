@@ -24,11 +24,11 @@ import pandas as pd
 import pytest
 import yaml
 
-from src.data_aggregate.utils.composites import (
+from src.data_aggregate.utils.assemble.composites import (
     _parse_member, build_composites, missing_members,
 )
-from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
-from src.data_aggregate.utils.sector_features import build_sector_feature_panel
+from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
+from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
 from src.data_extract.utils.fundamentals.fetch_fundamentals import build_ticker_history
 
 ROOT = Path(__file__).resolve().parents[2]

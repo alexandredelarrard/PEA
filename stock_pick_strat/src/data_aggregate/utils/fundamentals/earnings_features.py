@@ -35,7 +35,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.panel import _ratio, build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import _ratio, build_peer_relative_panel
 
 # how many trading days before a report the forward estimate is allowed to apply
 FWD_FILL_LIMIT = 95

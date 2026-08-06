@@ -18,8 +18,8 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals import (
     _extract_concept,
     build_ticker_history,
 )
-from src.data_aggregate.utils.factors import fundamentals_to_daily
-from src.data_aggregate.utils.fundamental_features import _infer_yoy_periods
+from src.data_aggregate.utils.target.factors import fundamentals_to_daily
+from src.data_aggregate.utils.fundamentals.fundamental_features import _infer_yoy_periods
 
 
 # --------------------------------------------------------------------------- #

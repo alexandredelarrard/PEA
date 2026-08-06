@@ -113,16 +113,16 @@ import pandas as pd
 from sqlalchemy import bindparam, text
 
 from src.context import Context
-from src.data_aggregate.utils.earnings_features import ntm_ttm_eps
-from src.data_aggregate.utils.factors import fundamentals_to_daily, daily_market_cap
-from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
-from src.data_aggregate.utils.panel import (
+from src.data_aggregate.utils.fundamentals.earnings_features import ntm_ttm_eps
+from src.data_aggregate.utils.target.factors import fundamentals_to_daily, daily_market_cap
+from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
+from src.data_aggregate.utils.common.panel import (
     _ratio,
     _winsorize_xs,
     build_peer_relative_panel,
 )
-from src.data_aggregate.utils.sector_gates import family_tickers, mask_columns
-from src.data_aggregate.utils import capital
+from src.data_aggregate.utils.common.sector_gates import family_tickers, mask_columns
+from src.data_aggregate.utils.common import capital
 
 _PENSION_FACTS_TABLE = "pension_facts"     # bulk Financial-Statement-Data-Sets pension facts (literal)
 _NOTES_NUM_TABLE = "notes_num"             # footnote NUMERIC facts (10 tags; the panel uses 2)

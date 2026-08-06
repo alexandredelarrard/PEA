@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_extract.utils.prices.fetch_short_interest import _parse_regsho
-from src.data_aggregate.utils.short_interest_features import (
+from src.data_aggregate.utils.extras.short_interest_features import (
     _short_fields, build_short_interest_feature_panel,
 )
 

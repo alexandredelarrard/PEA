@@ -113,14 +113,14 @@ def frame_digest(df: pd.DataFrame | None) -> dict:
 def compute() -> dict:
     import json as _json
 
-    from src.data_aggregate.utils.betas import estimate_all_betas
-    from src.data_aggregate.utils.composites import build_composites
-    from src.data_aggregate.utils.factors import build_characteristics, momentum_characteristic
-    from src.data_aggregate.utils.targets import build_targets_multi
-    from src.data_aggregate.utils.features import build_feature_panel, compute_raw_features
-    from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
-    from src.data_aggregate.utils.intrinsic import intrinsic_value_daily
-    from src.data_aggregate.utils.sector_features import (
+    from src.data_aggregate.utils.target.betas import estimate_all_betas
+    from src.data_aggregate.utils.assemble.composites import build_composites
+    from src.data_aggregate.utils.target.factors import build_characteristics, momentum_characteristic
+    from src.data_aggregate.utils.target.targets import build_targets_multi
+    from src.data_aggregate.utils.momentum.features import build_feature_panel, compute_raw_features
+    from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
+    from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
+    from src.data_aggregate.utils.fundamentals.sector_features import (
         build_sector_feature_panel, compute_sector_kpis,
     )
     from src.data_extract.utils.fundamentals.fetch_fundamentals import build_ticker_history

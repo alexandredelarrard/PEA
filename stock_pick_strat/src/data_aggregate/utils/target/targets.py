@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.factors import momentum_characteristic
+from src.data_aggregate.utils.target.factors import momentum_characteristic
 
 
 def forward_return(prices: pd.DataFrame, horizon: int) -> pd.DataFrame:

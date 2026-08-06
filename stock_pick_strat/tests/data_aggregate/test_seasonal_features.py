@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.features import compute_raw_features, build_feature_panel
+from src.data_aggregate.utils.momentum.features import compute_raw_features, build_feature_panel
 
 
 def _synth(years=6, N=12, seed=0, season_start=120, season_len=40, boost=0.004):

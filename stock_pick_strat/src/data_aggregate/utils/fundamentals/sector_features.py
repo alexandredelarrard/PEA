@@ -57,11 +57,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.factors import fundamentals_to_daily
-from src.data_aggregate.utils.fundamental_features import _infer_yoy_periods
-from src.data_aggregate.utils.panel import build_peer_relative_panel
-from src.data_aggregate.utils.sector_gates import row_gate
-from src.data_aggregate.utils import capital
+from src.data_aggregate.utils.target.factors import fundamentals_to_daily
+from src.data_aggregate.utils.fundamentals.fundamental_features import _infer_yoy_periods
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.sector_gates import row_gate
+from src.data_aggregate.utils.common import capital
 
 # KPI columns produced by compute_sector_kpis (the panel builder iterates these).
 # interest_coverage / net_debt_to_ebitda / gross_profitability / cash_conversion_cycle /

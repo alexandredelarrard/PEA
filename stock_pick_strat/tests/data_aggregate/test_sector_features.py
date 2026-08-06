@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.sector_features import compute_sector_kpis
+from src.data_aggregate.utils.fundamentals.sector_features import compute_sector_kpis
 
 
 def _fundamentals() -> pd.DataFrame:

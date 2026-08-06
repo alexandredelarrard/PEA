@@ -35,11 +35,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_aggregate.utils.factors import fundamentals_to_daily
-from src.data_aggregate.utils.fundamental_features import (
+from src.data_aggregate.utils.target.factors import fundamentals_to_daily
+from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _fiscal_change_to_daily,
     _infer_yoy_periods)
-from src.data_aggregate.utils.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 
 # def14a_llm level columns surfaced directly as peer-relative features
 _LEVEL_FIELDS: list[tuple[str, str]] = [

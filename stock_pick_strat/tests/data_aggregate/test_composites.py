@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
-from src.data_aggregate.utils.composites import build_composites, _parse_member
+from src.data_aggregate.utils.assemble.composites import build_composites, _parse_member
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
 

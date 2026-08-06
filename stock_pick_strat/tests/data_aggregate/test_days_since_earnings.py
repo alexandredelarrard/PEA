@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.earnings_features import (
+from src.data_aggregate.utils.fundamentals.earnings_features import (
     build_earnings_feature_panel, days_since_earnings,
 )
 

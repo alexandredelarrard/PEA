@@ -43,8 +43,8 @@ from src.constants.constants import (
     FINBERT_TONE_MODEL,
 )
 from src.context import Context
-from src.data_aggregate.utils.earnings_call_embeddings import build_embedding_kpis
-from src.data_aggregate.utils.panel import build_peer_relative_panel
+from src.data_aggregate.utils.text.earnings_call_embeddings import build_embedding_kpis
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.utils.nlp_sentiment import get_sentiment_engine
 from src.utils.text_metrics import content_frequency, cosine_similarity, uncertainty_ratio, word_count
 

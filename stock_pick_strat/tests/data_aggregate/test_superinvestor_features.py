@@ -13,7 +13,7 @@ import logging
 
 import pandas as pd
 
-from src.data_aggregate.utils.superinvestor_features import (
+from src.data_aggregate.utils.extras.superinvestor_features import (
     pad_cik, _weight_map, build_superinvestor_feature_panel, load_superinvestor_holdings,
 )
 

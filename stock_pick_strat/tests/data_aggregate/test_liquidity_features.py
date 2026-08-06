@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.features import compute_raw_features, build_feature_panel
+from src.data_aggregate.utils.momentum.features import compute_raw_features, build_feature_panel
 
 _LIQ = ["dollar_volume_63", "amihud_63", "rel_volume_5_63"]
 

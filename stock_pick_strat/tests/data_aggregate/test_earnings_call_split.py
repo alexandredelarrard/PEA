@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils import earnings_call_features as ec
+from src.data_aggregate.utils.text import earnings_call_features as ec
 
 
 def test_kpi_sets_are_a_clean_partition():

@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 import pandas as pd
 
 from src.context import get_config_context
-from src.data_aggregate.utils import data_utils as du
+from src.data_aggregate.utils.common import data_utils as du
 
 
 def _window(a, b):

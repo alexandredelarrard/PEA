@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.panel import _winsorize_xs, _peer_relative, build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import _winsorize_xs, _peer_relative, build_peer_relative_panel
 
 
 def test_peer_panel_no_fragmentation_warning():

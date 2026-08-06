@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.earnings_call_embeddings import (
+from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
     embed_earnings_calls,
     split_qa_exchanges,

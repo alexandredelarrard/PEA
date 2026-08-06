@@ -4,7 +4,7 @@ from omegaconf import DictConfig
 from src.utils.step import Step
 from src.context import Context
 from src.utils.universe import load_universe_tickers
-from src.data_aggregate.utils import data_utils as du
+from src.data_aggregate.utils.common import data_utils as du
 from src.data_peers.utils.embeddings import (
     fetch_business_descriptions,
     get_openai_embeddings,

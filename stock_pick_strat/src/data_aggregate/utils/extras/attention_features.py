@@ -31,7 +31,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 
 
 def _attention_fields(attn_hist: pd.DataFrame, idx: pd.DatetimeIndex,

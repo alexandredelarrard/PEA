@@ -11,10 +11,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.targets import (
+from src.data_aggregate.utils.target.targets import (
     _apply_label, build_targets_multi, cross_sectional_zscore,
 )
-from src.data_aggregate.utils.cube import _labels_to_long, panel_from_cube
+from src.data_aggregate.utils.assemble.cube import _labels_to_long, panel_from_cube
 
 
 def test_zscore_target_is_winsorized():

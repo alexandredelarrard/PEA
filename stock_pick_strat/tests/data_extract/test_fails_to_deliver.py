@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.data_extract.utils.prices import fetch_fails_to_deliver as ftd
-from src.data_aggregate.utils.short_interest_features import (
+from src.data_aggregate.utils.extras.short_interest_features import (
     build_short_interest_feature_panel, _FTD_PUB_LAG)
 
 

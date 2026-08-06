@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.targets import (
+from src.data_aggregate.utils.target.targets import (
     cross_sectional_group_neutralize, cross_sectional_rank, _neutralize_sector_industry,
 )
 

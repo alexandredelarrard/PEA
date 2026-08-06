@@ -34,8 +34,8 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.step_build_cube import FeatureCollisionError, StepBuildCube
-from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
-from src.data_aggregate.utils.sector_features import (
+from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
+from src.data_aggregate.utils.fundamentals.sector_features import (
     SECTOR_KPI_COLS, build_sector_feature_panel, compute_sector_kpis,
 )
 from src.data_extract.utils.fundamentals.fetch_fundamentals import (

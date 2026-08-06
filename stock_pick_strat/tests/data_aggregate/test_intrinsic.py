@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.intrinsic import two_stage_dcf, intrinsic_value_daily
+from src.data_aggregate.utils.fundamentals.intrinsic import two_stage_dcf, intrinsic_value_daily
 
 
 def _closed_form(fcf, g, r, gt, n):

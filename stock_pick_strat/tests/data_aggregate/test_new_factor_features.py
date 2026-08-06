@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_aggregate.utils.sector_features import compute_sector_kpis
-from src.data_aggregate.utils.fundamental_features import _derived_fields
+from src.data_aggregate.utils.fundamentals.sector_features import compute_sector_kpis
+from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
 
 
 def test_sector_quick_wins_and_B_kpis():

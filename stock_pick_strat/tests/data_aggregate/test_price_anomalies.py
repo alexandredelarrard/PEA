@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.features import compute_raw_features
+from src.data_aggregate.utils.momentum.features import compute_raw_features
 
 
 def _prices(n_days=200, seed=0):

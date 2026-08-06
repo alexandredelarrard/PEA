@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.fundamental_features import (
+from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _da_realism_fields, _forensic_fields, _digestion_fields,
     _core_earnings_fields, _beneish_m_score, _ai_leverage_fields, _derived_fields,
 )

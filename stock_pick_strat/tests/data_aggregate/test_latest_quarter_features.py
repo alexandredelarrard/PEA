@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.fundamental_features import (
+from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _fiscal_apply_to_daily,
     _derived_fields,
 )

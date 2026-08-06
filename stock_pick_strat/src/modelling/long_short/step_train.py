@@ -15,7 +15,7 @@ from src.constants.constants import (
     PREDICTION_MODEL_ENSEMBLE,
     PREDICTIONS_LATEST_TABLE,
 )
-from src.data_aggregate.utils.cube import panel_from_cube, CUBE_META_COLS
+from src.data_aggregate.utils.assemble.cube import panel_from_cube, CUBE_META_COLS
 from src.modelling.long_short.utils import model as ml
 from src.modelling.long_short.utils import baselines
 from src.modelling.long_short.utils import diagnostics

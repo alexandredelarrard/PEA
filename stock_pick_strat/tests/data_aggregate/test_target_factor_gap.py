@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.targets import compute_epsilon, forward_compound
+from src.data_aggregate.utils.target.targets import compute_epsilon, forward_compound
 
 
 def _setup(horizon=20, gap_at=100, T=150):

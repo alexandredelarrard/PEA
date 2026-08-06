@@ -29,9 +29,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils import capital
-from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
-from src.data_aggregate.utils.sector_features import build_sector_feature_panel
+from src.data_aggregate.utils.common import capital
+from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
+from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
 from src.data_extract.utils.fundamentals.fetch_fundamentals import (
     ASU_2017_07_EFFECTIVE, build_ticker_history,
 )

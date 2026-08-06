@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_extract.utils.behavioral.fetch_wiki_pageviews import _company_to_article, _json_to_long
-from src.data_aggregate.utils.attention_features import (
+from src.data_aggregate.utils.extras.attention_features import (
     _attention_fields, build_combined_attention_panel,
 )
 

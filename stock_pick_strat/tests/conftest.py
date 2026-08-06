@@ -75,7 +75,7 @@ SUBSET_SIZE = 100  # keep the real-data pipeline fast but keep a real cross-sect
 def real_frames():
     """Wide close / returns matrices from the real price parquet, subset for
     speed but guaranteed to contain AMD (the ticker under investigation)."""
-    from src.data_aggregate.utils import data_utils as du
+    from src.data_aggregate.utils.common import data_utils as du
 
     prices = _store().load("prices")
     if prices.empty:
@@ -104,9 +104,9 @@ def real_frames():
 def real_pipeline(real_frames):
     """End-to-end real-data aggregate pieces computed once: peers, sector
     returns, factor panel, rolling betas and multi-horizon targets."""
-    from src.data_aggregate.utils.betas import estimate_all_betas
-    from src.data_aggregate.utils.targets import build_targets
-    from src.data_aggregate.utils.factors import (
+    from src.data_aggregate.utils.target.betas import estimate_all_betas
+    from src.data_aggregate.utils.target.targets import build_targets
+    from src.data_aggregate.utils.target.factors import (
         build_style_factor_returns,
         macro_change_factors,
         commodity_factor_returns,
@@ -171,7 +171,7 @@ def real_pipeline(real_frames):
 def fundamental_panel(real_frames):
     """Peer-relative fundamental feature panel on the real (canonical) history,
     plus the inputs needed to sanity-check it against the target."""
-    from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
+    from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_peers.utils.sector_peers import build_peer_dict
 
     fundamentals = _store().load("fundamentals_history")

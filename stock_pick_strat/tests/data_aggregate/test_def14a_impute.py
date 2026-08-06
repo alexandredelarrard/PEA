@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.def14a_impute import impute_def14a
+from src.data_aggregate.utils.extras.def14a_impute import impute_def14a
 
 
 def _row(ticker: str, as_of: str, **kw) -> dict:

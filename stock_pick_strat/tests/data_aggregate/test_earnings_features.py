@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.earnings_features import _derived_earnings_fields, ntm_ttm_eps
+from src.data_aggregate.utils.fundamentals.earnings_features import _derived_earnings_fields, ntm_ttm_eps
 
 
 def _synth_earnings():

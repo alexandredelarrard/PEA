@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.features import (
+from src.data_aggregate.utils.momentum.features import (
     _rsi, _macd, _atr, compute_raw_features,
 )
 

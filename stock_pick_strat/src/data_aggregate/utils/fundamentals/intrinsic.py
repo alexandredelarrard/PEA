@@ -24,7 +24,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.factors import fundamentals_to_daily, daily_market_cap
+from src.data_aggregate.utils.target.factors import fundamentals_to_daily, daily_market_cap
 
 
 def two_stage_dcf(

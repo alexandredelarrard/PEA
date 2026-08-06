@@ -22,8 +22,8 @@ import pytest
 
 import warnings
 
-from src.data_aggregate.utils.factors import momentum_characteristic
-from src.data_aggregate.utils.targets import cross_sectional_neutralize, forward_compound
+from src.data_aggregate.utils.target.factors import momentum_characteristic
+from src.data_aggregate.utils.target.targets import cross_sectional_neutralize, forward_compound
 
 
 def test_forward_compound_no_log1p_warning_on_sub_minus1_return():

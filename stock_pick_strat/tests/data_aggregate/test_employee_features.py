@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.employee_features import (
+from src.data_aggregate.utils.fundamentals.employee_features import (
     _employee_fields, build_employee_feature_panel,
 )
 

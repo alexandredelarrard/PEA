@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_extract.utils.prices.fetch_prices import _extract_dividends
-from src.data_aggregate.utils.fundamental_features import build_fundamental_feature_panel
+from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
 
 
 def test_dividends_extracted_from_price_frame():

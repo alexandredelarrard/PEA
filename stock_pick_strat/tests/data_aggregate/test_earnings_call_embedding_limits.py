@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from src.constants.constants import EMBEDDING_MAX_CHARS
-from src.data_aggregate.utils.earnings_call_embeddings import (
+from src.data_aggregate.utils.text.earnings_call_embeddings import (
     _MIN_TURN, _is_informative_question,
 )
 from src.utils.openai_embeddings import cosine, embed_texts

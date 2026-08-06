@@ -80,13 +80,13 @@ class StepCubePrices(Step):
 
     # ---- load + normalize ---- #
     def _load_prices(self, since: pd.Timestamp | None) -> pd.DataFrame:
+        """The one read of the raw ~1.9M-row `prices` table. `since` is pushed into SQL
+        (`PartStore.read` is not restricted to the part tables), so an incremental run
+        transfers a few hundred trading days instead of fifteen years and then discarding
+        90% of them -- which is what the old `_trim_window` did."""
         where = f" since {pd.Timestamp(since).date()}" if since is not None else " (full)"
         self._log.info("Loading %s%s", _PRICES_TABLE, where)
-        if since is None:
-            raw = self._context.store.load(_PRICES_TABLE)
-        else:
-            raw = self._context.store.load(_PRICES_TABLE)
-            raw = raw[pd.to_datetime(raw["date"]) >= pd.Timestamp(since)]
+        raw = self._parts.read(_PRICES_TABLE, since=since)
         if raw.empty:
             raise RuntimeError(f"{_PRICES_TABLE} is empty -> run the extraction step first")
         return raw

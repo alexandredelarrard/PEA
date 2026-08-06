@@ -72,9 +72,30 @@ def plan_window(parts: PartStore, part: str, *, warmup: int, full: bool,
     return PartWindow(last, window_start(trading_index, last, warmup + extra_back))
 
 
+def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str],
+                            log: logging.Logger, part: str) -> pd.DataFrame:
+    """Drop (date, ticker) rows where EVERY feature is NaN.
+
+    The merge-based builders left-join onto the full universe grid, so a name with no
+    coverage at all — before its IPO, outside a sector gate, or simply absent from a source
+    — still gets a row. Persisting those would store the whole 1.85M-cell grid per part
+    regardless of how sparse the features are, and then carry it through the assemble merge.
+    """
+    fcols = [c for c in rows.columns if c not in set(keys)]
+    if not fcols:
+        return rows.iloc[0:0]
+    keep = rows[fcols].notna().any(axis=1)
+    dropped = int((~keep).sum())
+    if dropped:
+        log.info("%s: dropped %s all-NaN grid rows (%.1f%% of %s)", part, dropped,
+                 100 * dropped / len(rows), len(rows))
+    return rows[keep]
+
+
 def write_part(parts: PartStore, part: str, rows: pd.DataFrame, window: PartWindow,
                log: logging.Logger, *, keys: Sequence[str] = tuple(PANEL_KEYS),
-               refresh_from: pd.Timestamp | None = None) -> int:
+               refresh_from: pd.Timestamp | None = None,
+               drop_empty: bool = False) -> int:
     """Persist a part according to `window`.
 
     FULL -> replace. INCREMENTAL -> compare the stored column set against `rows` and
@@ -82,7 +103,11 @@ def write_part(parts: PartStore, part: str, rows: pd.DataFrame, window: PartWind
     since an append into a changed schema would silently misalign); otherwise append the
     tail after `refresh_from or window.last`, inclusive when `refresh_from` is given
     (that is the maturing-label overwrite).
+
+    `drop_empty` (feature parts) removes rows carrying no feature values at all.
     """
+    if rows is not None and not rows.empty and drop_empty:
+        rows = drop_empty_feature_rows(rows, keys, log, part)
     if rows is None or rows.empty:
         log.warning("%s produced no rows -> nothing persisted.", part)
         return 0

@@ -70,7 +70,7 @@ class StepCubeText(Step):
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames
-        n = write_part(self._parts, CUBE_PART_TEXT, panel, window, self._log)
+        n = write_part(self._parts, CUBE_PART_TEXT, panel, window, self._log, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 

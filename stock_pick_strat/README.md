@@ -20,7 +20,15 @@ StepExtractAllData          # 1. extract  (super-step → 4 sub-steps)
   ├─ StepExtractStructure     management, DEF 14A governance (LLM), SEC filings index
   └─ StepExtractBehavioral    Wikipedia pageviews, Google Trends, earnings-call transcripts
 StepDeducePeers             # 2. peer baskets (return-corr + OpenAI embeddings)
-StepBuildCube               # 3. peer-relative feature panels → `cube` table
+StepBuildCube               # 3. super-step → 7 sub-steps, one `cube_part_*` table each
+  ├─ StepCubePrices           normalized OHLCV + returns + peer sector returns (the only
+  │                           reader of raw `prices`; every later step reads the part back)
+  ├─ StepCubeTarget           factor panel → rolling betas → multi-horizon neutral labels
+  ├─ StepCubeFundamentals     fundamental, sector KPI, earnings, workforce, dividend
+  ├─ StepCubeMomentum         price-variation features (momentum, vol, MACD, liquidity)
+  ├─ StepCubeText             earnings-call sentiment + embedding KPIs
+  ├─ StepCubeExtras           governance, 13F, elite 13F, insider, short interest, attention
+  └─ StepAssembleCube         read the parts → composites → the `cube` table
 StepModelling               # 4. train the L/S ensemble (src/modelling/long_short) → `predictions`, `cube_signal`
 StepPortfolio               # 5. run + blend the strategy sleeves into one book vs SP-hold
 StepStrategyMoves           # 6. the trades to actually place → `strategy` (entry/exit price + PNL per position)
@@ -30,7 +38,7 @@ StepStrategyMoves           # 6. the trades to actually place → `strategy` (en
 | DAG | When | Tasks |
 |---|---|---|
 | `data_extraction` | nightly | per-source fetchers → freshness gate → triggers `data_aggregation` |
-| `data_aggregation` | after extraction | peers → feature parts → `assemble_cube` → triggers `strat_prediction` |
+| `data_aggregation` | after extraction | peers → 6 sequential build steps → `assemble_cube` → `cube_status` → triggers `strat_prediction` |
 | `strat_prediction` | **daily** 06:00 | `predict` (long-format `predictions_latest`) → `strategy_moves` (the `strategy` ledger) |
 | `modelling` | **weekly**, Sat 02:00 | `train_model` (holdout) → `backtest_portfolio` (OOS) → `full_train` (ALL history, no holdout) |
 

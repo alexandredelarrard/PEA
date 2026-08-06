@@ -95,7 +95,7 @@ def test_up_to_date_keys_on_core_level_block():
 # 3. opt-in real FRED sanity check                                             #
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(not os.getenv("FRED_API_KEY"), reason="needs FRED_API_KEY for the live pull")
-def test_real_fred_pull_ranges():
+def test_real_fred_pull_ranges(tmp_path):
     captured: dict[str, pd.DataFrame] = {}
     ctx = SimpleNamespace(
         store=SimpleNamespace(
@@ -104,6 +104,7 @@ def test_real_fred_pull_ranges():
         ),
         config=SimpleNamespace(data_extract=SimpleNamespace(macro_asset_years_history=2)),
         log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        paths={"DATA_STORE": tmp_path},
     )
     fma._refresh_macro_assets(ctx)
     df = next(iter(captured.values()))

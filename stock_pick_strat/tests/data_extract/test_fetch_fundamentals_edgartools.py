@@ -705,7 +705,7 @@ def test_fetch_fundamentals_edgartools_saves_incrementally_per_ticker(tmp_path, 
     store = DataStore(engine)
     context = SimpleNamespace(
         config=SimpleNamespace(data_extract=SimpleNamespace(years_history=15)),
-        store=store, log=logging.getLogger("test"))
+        store=store, log=logging.getLogger("test"), paths={"DATA_STORE": tmp_path})
 
     out = mod.fetch_fundamentals_edgartools(context, ["GOOD", "BAD"])
 

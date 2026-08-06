@@ -52,7 +52,7 @@ class StepCubeMomentum(Step):
         frames = self._load_frames(window.since)
         panel = self._price_panel(frames)
         del frames
-        n = write_part(self._parts, CUBE_PART_MOMENTUM, panel, window, self._log)
+        n = write_part(self._parts, CUBE_PART_MOMENTUM, panel, window, self._log, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 

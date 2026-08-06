@@ -28,6 +28,7 @@ from src.data_aggregate.utils.common.parts import PART_BY_NAME
 from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.common.price_frames import frames_to_long, universe_columns
 from src.data_peers.utils.sector_peers import compute_sector_returns
+from src.data_aggregate.utils.common.price_frames import load_trading_calendar
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
@@ -53,7 +54,7 @@ class StepCubePrices(Step):
         del raw
         idx = self._trading_calendar(wide["close"])
         wide = self._on_calendar(wide, idx)
-        returns = self._daily_returns(wide["close"])
+        returns =  self._daily_returns(wide["close"])
         market = self._market_frames(wide["close"], returns)
         peers = self._peers()
         universe = self._universe_frames(wide, returns, peers)
@@ -69,14 +70,11 @@ class StepCubePrices(Step):
         warning is a diagnostic over history and wants a year of context."""
         idx = None
         if self._parts.exists(CUBE_PART_MARKET):
-            from src.data_aggregate.utils.common.price_frames import load_trading_calendar
             idx = load_trading_calendar(self._parts)
-        return plan_window(self._parts, CUBE_PART_PRICES, full=full,
-                           warmup=self._warmup(), trading_index=idx)
 
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
+        return plan_window(self._parts, CUBE_PART_PRICES, full=full,
+                           warmup=self._part.warmup_trading_days, 
+                           trading_index=idx)
 
     # ---- load + normalize ---- #
     def _load_prices(self, since: pd.Timestamp | None) -> pd.DataFrame:
@@ -165,16 +163,14 @@ class StepCubePrices(Step):
         persisting it means it runs once."""
         return compute_sector_returns(stock_ret, peers)
 
-    # ---- persist ---- #
     def _persist(self, universe: dict[str, pd.DataFrame],
                  market: tuple[pd.DataFrame, pd.DataFrame], window) -> int:
         prices_long, market_long = frames_to_long(universe, market[0], market[1])
         n = write_part(self._parts, CUBE_PART_PRICES, prices_long, window, self._log)
         if n == COLUMNS_CHANGED:
             return n
-        # the market table is ~15k rows and is the definition of the trading calendar, so it
-        # is always fully replaced rather than appended to
-        m = self._parts.replace(CUBE_PART_MARKET, market_long)
-        self._log.info("Persisted %s: %s rows (%s tickers, full replace).",
-                       CUBE_PART_MARKET, m, market_long["ticker"].nunique())
-        return n
+        # same window as cube_part_prices -- both are built from the same trimmed read, so
+        # FULL replaces the market table and INCREMENTAL appends only the tail after
+        # window.last (a plain `replace` here truncated history to the warm-up window)
+        m = write_part(self._parts, CUBE_PART_MARKET, market_long, window, self._log)
+        return COLUMNS_CHANGED if m == COLUMNS_CHANGED else n

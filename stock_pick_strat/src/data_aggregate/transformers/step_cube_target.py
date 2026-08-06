@@ -59,8 +59,9 @@ class StepCubeTarget(Step):
         self._parts = PartStore(context.store, self._log)
 
     def run(self, full: bool = False) -> None:
-        horizons = [int(h) for h in self._cfg.targets.horizons]
-        max_h = max(horizons, default=0)
+
+        horizons = self._cfg.targets.horizons
+        max_h = max(horizons)
         calendar = load_trading_calendar(self._parts)
         window = plan_window(self._parts, CUBE_PART_TARGETS, full=full,
                              warmup=self._warmup(), trading_index=calendar,
@@ -72,6 +73,7 @@ class StepCubeTarget(Step):
         betas = self._estimate_betas(frames, panel)
         labels = self._build_targets(frames, betas, panel, macro_cols, horizons)
         n = self._persist(labels, betas, window, calendar, max_h)
+        
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 

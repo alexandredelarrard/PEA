@@ -89,6 +89,8 @@ def compute_raw_features(
     volume: pd.DataFrame | None = None,
     seasonal_horizons: list[int] | None = None,
     seasonal_years: int = 5,
+    *,
+    returns: pd.DataFrame | None = None,
 ) -> dict:
     """
     Compute raw (un-standardized) feature frames. Returns dict:
@@ -100,8 +102,15 @@ def compute_raw_features(
     `seasonal_horizons` (e.g. the target horizons) enables the cross-sectional
     seasonality feature `seasonal_h<h>` per horizon (averaged over the last
     `seasonal_years` prior years); if absent it is skipped.
+
+    `returns` lets the caller pass daily returns it ALREADY has instead of having them
+    re-derived here -- `du.daily_returns` is literally `close.pct_change(fill_method=None)`,
+    and the cube's price step persists that frame, so recomputing it was pure duplication.
+    KEYWORD-ONLY so the existing positional call sites are untouched. On an incrementally
+    trimmed window the passed frame is also strictly better: a recompute would return NaN on
+    the window's first row where the full build had a value.
     """
-    ret = close.pct_change(fill_method=None)
+    ret = close.pct_change(fill_method=None) if returns is None else returns.reindex_like(close)
     feats = {}
 
     # 12-1 momentum: cumulative return from t-252 to t-21 (skip last month).
@@ -248,6 +257,8 @@ def build_feature_panel(
     low: pd.DataFrame | None = None,
     volume: pd.DataFrame | None = None,
     seasonal_horizons: list[int] | None = None,
+    *,
+    returns: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Build a long-format feature panel ready for modeling.
@@ -257,9 +268,13 @@ def build_feature_panel(
     Each feature already cross-sectionally standardized within its date.
     `high`/`low` enable the ATR(14) feature; `volume` enables the liquidity family;
     `seasonal_horizons` enables the per-horizon cross-sectional seasonality feature.
+    `returns` passes through daily returns the caller already holds (see
+    `compute_raw_features`); keyword-only, so the eight-positional-arg call sites are
+    unaffected.
     """
     raw = compute_raw_features(close, open_, sector_returns, high=high, low=low,
-                               volume=volume, seasonal_horizons=seasonal_horizons)
+                               volume=volume, seasonal_horizons=seasonal_horizons,
+                               returns=returns)
     std = {name: xs_standardize(f, method) for name, f in raw.items()}
 
     long_frames = []

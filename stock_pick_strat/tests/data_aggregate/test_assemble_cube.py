@@ -11,11 +11,13 @@ writes, proving:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.step_build_cube import StepBuildCube
+from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
+from src.data_aggregate.utils.common.parts import FEATURE_PARTS
 
 
 class _FakeStore:
@@ -46,8 +48,18 @@ class _FakeStore:
         return len(df)
 
 
+    @property
+    def engine(self):
+        raise AssertionError(
+            "StepAssembleCube must use the store facade (exists/load/replace/bulk_seed), not "
+            "raw SQL -- PartStore/engine access belongs to the part-BUILDING steps only")
+
+
 class _FakeCtx:
-    def __init__(self, store): self.store = store; self.log = logging.getLogger("test")
+    def __init__(self, store):
+        self.store = store
+        self.log = logging.getLogger("test")
+        self.paths = {"SECTOR_PEERS_PATH": Path("/nonexistent/peers.json")}
 
 
 def _parts():
@@ -66,26 +78,29 @@ def _parts():
         for (d, t), y in zip(grid, [0.01, 0.02, 0.03, 0.04]):
             trows.append({"date": d, "ticker": t, "target_horizon": h, "target_fwd_ret": y * h})
     targets = pd.DataFrame(trows)
-    return {"cube_part_price": price, "cube_part_fundamental": fund,
+    momentum_part, fundamentals_part = FEATURE_PARTS[0].name, FEATURE_PARTS[1].name
+    return {momentum_part: price, fundamentals_part: fund,
             "cube_part_betas": betas, "cube_part_targets": targets,
             "sp500_tickers": pd.DataFrame(columns=["ticker", "sector", "industry_group"])}
 
 
-def _make_step(store):
-    step = StepBuildCube.__new__(StepBuildCube)          # skip heavy __init__
+def _make_step(store, monkeypatch):
+    step = StepAssembleCube.__new__(StepAssembleCube)     # skip heavy __init__
     step._context = _FakeCtx(store)
+    step._config = None
     step._log = logging.getLogger("test")
-    step._cfg = {}                                       # composites disabled -> build_composite early-returns
-    step.peers = {"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}}
-    step._prereqs = lambda: None                         # peers already set
+    step._cfg = {}                                       # composites disabled -> _add_composites returns early
+    # the peer dict is read through utils/common/peers_io, so stub that rather than an attribute
+    monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube.load_peers_or_raise",
+                        lambda ctx, cfg=None: {"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}})
     return step
 
 
-def test_assemble_streams_per_horizon_and_matches_oneshot():
+def test_assemble_streams_per_horizon_and_matches_oneshot(monkeypatch):
     store = _FakeStore(_parts())
-    step = _make_step(store)
+    step = _make_step(store, monkeypatch)
 
-    step.assemble_cube_from_parts()
+    step.run()
 
     # ---- streaming shape: chunked COPY per horizon (replace first, bulk_seed append) ----------
     ops = [op for op, _ in store.writes]
@@ -96,7 +111,7 @@ def test_assemble_streams_per_horizon_and_matches_oneshot():
 
     # ---- correctness: equals a one-shot targets.merge(base) -----------------------------------
     p = _parts()
-    base_ref = (p["cube_part_price"].merge(p["cube_part_fundamental"], on=["date", "ticker"])
+    base_ref = (p[FEATURE_PARTS[0].name].merge(p[FEATURE_PARTS[1].name], on=["date", "ticker"])
                 .merge(p["cube_part_betas"], on=["date", "ticker"]))
     ref = p["cube_part_targets"].merge(base_ref, on=["date", "ticker"], how="inner")
     assert len(cube) == len(ref) == 8, f"rows {len(cube)} vs {len(ref)}"      # 2 dates x 2 tk x 2 horizons

@@ -27,7 +27,9 @@ stock_pick_strat/
 │   ├── data_store/             # DataStore (store.py), schema_registry.py, schema_sql.py, io.py
 │   ├── data_extract/           # StepExtractAllData & fetchers (utils/{prices,fundamentals,structure,behavioral,common}/)
 │   ├── data_peers/             # StepDeducePeers (return correlation & OpenAI embedding-based peers)
-│   ├── data_aggregate/         # StepBuildCube (utils/panel.py primitives, utils/sector_gates.py, utils/capital.py)
+│   ├── data_aggregate/         # StepBuildCube super-step -> 7 sub-steps in transformers/,
+│   │                           #   one cube_part_* table each; shared layer in utils/common/
+│   │                           #   (price_frames, pit, panel, xs, frames, prices, parts, part_io)
 │   ├── modelling/              # Model/signal engines per strategy: long_short/, trend/, long_book/
 │   ├── strategies/             # Self-contained strategy steps (step_ls, step_long_book, step_trend) & analytics
 │   ├── portfolio/              # StepPortfolio (ERC blending & global vol scaling), StepStrategyMoves (live trading ledger)

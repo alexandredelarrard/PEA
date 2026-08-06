@@ -27,13 +27,13 @@ What is asserted:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
-from src.data_aggregate.step_build_cube import FeatureCollisionError, StepBuildCube
+from src.data_aggregate.utils.common.panel_merge import FeatureCollisionError, PanelMerger
 from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
 from src.data_aggregate.utils.fundamentals.sector_features import (
     SECTOR_KPI_COLS, build_sector_feature_panel, compute_sector_kpis,
@@ -325,6 +325,9 @@ def test_panels_share_no_feature_name(fundamentals):
 
 
 def test_merge_panel_raises_on_collision():
+    """The collision guard, now owned by `PanelMerger` and applied to BOTH the per-step panel
+    merge and the cross-part merge in the assemble step (which used to be a bare
+    `how="outer"` merge outside any guard)."""
     keys = ["date", "ticker"]
     existing = pd.DataFrame({"date": [pd.Timestamp("2026-01-02")], "ticker": ["AAPL"],
                              "f_interest_coverage_vs_peers": [1.0]})
@@ -332,18 +335,23 @@ def test_merge_panel_raises_on_collision():
                              "f_interest_coverage_vs_peers": [2.0]})
     clean = pd.DataFrame({"date": [pd.Timestamp("2026-01-02")], "ticker": ["AAPL"],
                           "f_loss_ratio_vs_peers": [3.0]})
-    step = SimpleNamespace(feature_panel=existing.copy())
+
+    merger = PanelMerger(logging.getLogger("test"))
+    assert merger.add(existing.copy(), "peer-relative fundamental") == 1
 
     with pytest.raises(FeatureCollisionError) as err:
-        StepBuildCube._merge_panel(step, clashing)
+        merger.add(clashing, "sector-KPI")
     assert "f_interest_coverage_vs_peers" in str(err.value)
+    # the error names the panel that ALREADY owns the feature, not just the clashing name
+    assert "peer-relative fundamental" in str(err.value)
 
-    added = StepBuildCube._merge_panel(step, clean)
+    added = merger.add(clean, "earnings-expectation")
     assert added == 1
-    assert not [c for c in step.feature_panel.columns if c.endswith(("_x", "_y"))]
+    out = merger.to_long()
+    assert not [c for c in out.columns if c.endswith(("_x", "_y"))]
 
-    print("\n[5b] _merge_panel: collision -> FeatureCollisionError "
+    print("\n[5b] PanelMerger: collision -> FeatureCollisionError "
           f"({str(err.value)[:60]}...); clean panel -> +{added} column, no _x/_y")
-    print(f"    keys preserved: {keys} -> {list(step.feature_panel.columns)}")
-    print("    SANITY CHECK: a future duplicate feature name fails loudly instead "
-          "of being silently split in two.")
+    print(f"    keys preserved: {keys} -> {list(out.columns)}")
+    print("    SANITY CHECK: a duplicate feature name fails loudly, naming its current owner, "
+          "instead of being silently split in two.")

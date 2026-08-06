@@ -46,12 +46,43 @@ Pipeline executes sequential `Step` classes (base: `src/utils/step.py`) wired by
 - `StepDeducePeers`: Return correlation and OpenAI embedding-based peer groups.
 
 #### 3. Feature Aggregation (`src/data_aggregate/`)
-- `StepBuildCube`: Merges feature panels into the `cube` table.
-- **Primitives (`utils/panel.py`):** `_ratio`, `_winsorize_xs`, `_peer_relative`, `build_peer_relative_panel`.
-- **Collision Protection:** `_merge_panel` raises `FeatureCollisionError` on duplicate feature names across panels.
-- **Sector Gating:** Sector KPIs scoped by GICS via `utils/sector_gates.py` (`SECTOR_KPI_SCOPE` in `constants.py`).
-- **Capital Standardization:** Debt/net-debt/invested-capital calculations centralized in `utils/capital.py`.
-- **Panels:** Fundamental, sector, forward valuation, earnings, governance (`def14a_impute.py`), employee, dividend, attention, institutional 13F, superinvestors (`superinvestor_features.py`), short interest, earnings call sentiment & embeddings (`earnings_call_features.py`, `nlp_sentiment.py`, `openai_embeddings.py`).
+`StepBuildCube` is a SUPER STEP over seven sub-steps in `transformers/` (mirroring
+`StepExtractAllData`). Each persists one `cube_part_*` table and is ALSO a standalone CLI
+command / DAG task; `run()` drives the same seven objects in-process. One code path, two drivers.
+
+| sub-step | writes | contents |
+|---|---|---|
+| `StepCubePrices` | `cube_part_prices`, `cube_part_market` | the ONLY reader of raw `prices`: pivot, trading calendar, returns, universe restriction, peer sector returns |
+| `StepCubeTarget` | `cube_part_targets`, `cube_part_betas` | factor panel → rolling betas → multi-horizon factor-neutral labels |
+| `StepCubeFundamentals` | `cube_part_fundamentals` | fundamental, sector-KPI, earnings, workforce, dividend (one `fundamentals_history` read shared via `PitFrames`) |
+| `StepCubeMomentum` | `cube_part_momentum` | everything from price variation: momentum, vol, trend, lottery, liquidity, seasonality, MACD/RSI/ATR |
+| `StepCubeText` | `cube_part_text` | earnings-call FinBERT sentiment + OpenAI-embedding KPIs (both STREAM their sources) |
+| `StepCubeExtras` | `cube_part_extras` | governance, 13F, elite 13F, insider, short interest, attention |
+| `StepAssembleCube` | `cube` | read the parts → composites → per-horizon streamed write |
+
+- **Memory invariant:** each sub-step keeps its heavy frames LOCAL to `run()` and reads the price
+  grid back from `cube_part_prices` PROJECTED to the fields it declares (`_FIELDS`). Peak memory
+  is the largest single sub-step, not the sum. Never stash a frame on `self`.
+- **Part registry (`utils/common/parts.py`):** `CUBE_PARTS` is the single source of truth for part
+  names, CLI commands, incremental warm-ups and per-group binding look-backs. The CLI, the DAG
+  chain and `cube-status` all derive from it — do not hand-list parts anywhere.
+- **Shared layer (`utils/common/`):** `price_frames.py` (the `PriceFrames` contract),
+  `pit.py` (point-in-time accessors + the memoizing `PitFrames`), `panel.py` (peer-relative panel),
+  `frames.py` (`ratio`/`safe_div`/`sanitize`), `xs.py` (ONE cross-sectional z + rank — the 3.0/4.0/8.0
+  clips are three deliberate policies, `clip` is a required argument), `prices.py` (momentum,
+  trailing vol, forward windows, `price_column_returns`), `part_io.py` + `incremental.py`
+  (part lifecycle + the full-vs-incremental decision), `panel_merge.py`, `capital.py`,
+  `sector_gates.py`, `gics.py`, `peers_io.py`, `sources.py`, `data_utils.py`.
+- **Collision Protection:** `PanelMerger.add` raises `FeatureCollisionError` on a duplicate feature
+  name, naming the panel that already owns it. Applied to BOTH the per-step merge and the
+  cross-part merge in assemble.
+- **Domain utils:** `utils/{target,fundamentals,momentum,text,extras,assemble}/` hold the builders
+  each sub-step calls. `fundamental_features._derived_fields` is a thin composition over ~30
+  per-block `_*_fields(daily, …) -> dict` builders.
+- **Guard:** `tests/data_aggregate/test_aggregate_regression.py` hashes 35 aggregation outputs
+  (15 panels, 13 deduplicated primitives, 6 labels, the frozen input) against
+  `aggregate_fingerprint_baseline.json`. **The baseline may be regenerated only in a commit that
+  touches no `src/` file, or in a PR that is exclusively a declared numeric change.**
 
 #### 4. Modelling (`src/modelling/`)
 - **Long/Short (`long_short/`):** `step_train.py` (`StepModelling`) trains cross-sectional ensembles (ElasticNet + LightGBM + RandomForest). Output diagnostics to `data/output/diagnostics/<run_stamp>/`. Tree boosters resolved via `isinstance(m, lgb.Booster)`.

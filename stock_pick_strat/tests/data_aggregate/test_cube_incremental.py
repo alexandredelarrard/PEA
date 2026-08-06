@@ -10,11 +10,15 @@ idempotent tail-append helper.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.momentum.features import build_feature_panel
-from src.data_aggregate.step_build_cube import StepBuildCube
+from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
+from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
+from src.data_aggregate.utils.common.sources import SOURCE_COLUMNS
 
 
 def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
@@ -42,7 +46,7 @@ def test_windowed_build_reproduces_full_tail():
     # simulate an incremental run with the ACTUAL configured price-group warm-up: recompute only
     # [cutoff-warmup, end]. This must cover the longest daily look-back (the 5-year = 1260-day
     # seasonality feature) -> the test fails if the map value is ever set too low.
-    warmup = StepBuildCube._GROUP_WARMUP_TRADING_DAYS["price"]
+    warmup = PART_BY_NAME["cube_part_momentum"].warmup_trading_days
     cutoff_pos = 1900
     cutoff = dates[cutoff_pos]
     start = dates[cutoff_pos - warmup]
@@ -94,40 +98,46 @@ def test_incremental_horizon_arithmetic():
 
 
 def test_per_part_warmup_covers_binding_lookback():
-    """Per-part sanity check: each group's warm-up must cover the LONGEST daily-grid look-back its
-    features compute (else the incremental tail would be silently wrong). Filing/quarter-space parts
-    read the FULL source table, so their grid look-back is ~0 (a 6-month floor is plenty)."""
-    w = StepBuildCube._GROUP_WARMUP_TRADING_DAYS
-    binding = {                          # longest DAILY-grid look-back per part (trading days)
-        "price":          252 * 5,       # seasonal_h*: close.shift(252 * seasonal_years=5)
-        "fundamental":    1260,          # _self_history_z rolling(1260)
-        "dividend":       5 * 252,       # 5y payout growth shift(5*252)
-        "employee":       252,           # YoY shift(252)
-        "short_interest": 63 + 40,       # rolling(63) + FTD shift(40)
-        "attention":      63,            # rolling(63)
-        "sector": 0, "earnings": 0, "governance": 0, "institutional": 0,
-        "superinvestor": 0, "insider": 0,                       # source/filing-space -> ~0 grid
-        "earnings_call_sentiment": 0, "earnings_call_embedding": 0,
-    }
-    assert set(w) == set(StepBuildCube._GROUP_SOURCES), "every feature group needs a warm-up entry"
-    for g, need in binding.items():
-        assert w[g] >= need, f"{g}: warm-up {w[g]} < binding daily look-back {need}"
-    # the heavy parts read ~5y, the light/source-space parts read <=~1y -> genuinely lighter
-    heavy = {g for g, n in binding.items() if n >= 1260}
-    assert all(w[g] <= 400 for g in binding if g not in heavy), "light parts should stay light"
+    """Each part's warm-up must cover the LONGEST daily-grid look-back of EVERY feature group
+    merged into it, else the incremental tail would be silently wrong.
+
+    The binding look-backs now live on the registry entry (`CubePart.binding_lookbacks`)
+    rather than being a literal duplicated here, so the contract cannot drift out of sync
+    with the code that enforces it. Groups whose look-back is in FILING or QUARTER space read
+    the full source table, so their grid look-back is 0 and a ~6-month floor is plenty."""
+    covered: dict[str, int] = {}
+    for part in CUBE_PARTS:
+        for group, need in part.binding_lookbacks:
+            assert part.warmup_trading_days >= need, (
+                f"{part.name}: warm-up {part.warmup_trading_days} < binding daily look-back "
+                f"{need} of member group '{group}'")
+            covered[group] = part.warmup_trading_days
+
+    # the 14 feature groups the old exploded DAG ran as separate tasks are all still owned
+    assert set(covered) == {
+        "price", "fundamental", "sector", "earnings", "governance", "employee", "dividend",
+        "attention", "institutional", "superinvestor", "insider", "short_interest",
+        "earnings_call_sentiment", "earnings_call_embedding",
+    }, f"feature groups lost/added: {sorted(covered)}"
+
+    # heavy parts read ~5y; every other part stays light (this is where the memory win is)
+    heavy = {p.name for p in CUBE_PARTS if p.warmup_trading_days >= 1260}
+    light = [p for p in CUBE_PARTS if p.kind == "features" and p.name not in heavy]
+    assert all(p.warmup_trading_days <= 400 for p in light), "light parts should stay light"
 
     print("\n=== SANITY CHECK: per-part warm-up vs binding look-back ===")
-    for g in StepBuildCube._GROUP_SOURCES:
-        print(f"  {g:<15} warm-up={w[g]:>5}  binding={binding[g]:>5}  "
-              f"({'DAILY grid' if binding[g] else 'full source / filing-space'})")
-    print("  CONCLUSION: heavy parts (price/fundamental/dividend) read ~5y; the 10 others read "
-          "<=1y (7 read only ~6mo). Each reads only as far back as it needs. Validated.")
+    for part in CUBE_PARTS:
+        members = ", ".join(f"{g}({n})" for g, n in part.binding_lookbacks) or "-"
+        print(f"  {part.name:<26} warm-up={part.warmup_trading_days:>5}  members: {members}")
+    print(f"  CONCLUSION: all 14 feature groups are owned by {len(heavy)} heavy part(s) reading "
+          f"~5y and {len(light)} light part(s) reading <=400d. Each part reads only as far back "
+          "as its longest member needs. Validated.")
 
 
 def test_source_column_projection_covers_builder_needs():
-    """Each tall-table source load is projected to only the columns its builder reads (memory fix
-    for the parallel OOM). The projection MUST cover every column the builder requires — this test
-    is the contract that guards against a projection dropping a needed column."""
+    """Each tall-table source load is projected to only the columns its builder reads (the
+    memory fix for the OOM). The projection MUST cover every column the builder requires —
+    this test is the contract that guards against a projection dropping a needed column."""
     required = {  # columns each builder actually consumes from the table (the contract)
         "sec13f_hr": {"cik", "period", "ticker", "shares", "value_usd",
                       "call_value", "put_value", "filing_date"},
@@ -139,22 +149,33 @@ def test_source_column_projection_covers_builder_needs():
         "google_trends":          {"date", "ticker", "search_interest"},
     }
     for tbl, need in required.items():
-        proj = set(StepBuildCube._SOURCE_COLUMNS[tbl])
+        proj = set(SOURCE_COLUMNS[tbl])
         assert need <= proj, f"{tbl}: projection is MISSING required cols {need - proj}"
 
-    # _load_source must pass the projection to the loader; an unmapped table -> full load (None)
-    step = object.__new__(StepBuildCube)
+    # the extras step must FORWARD the projection to the store; an unmapped table -> full load
+    step = object.__new__(StepCubeExtras)
     seen: dict[str, list | None] = {}
-    step._load_or_none = lambda table, columns=None: seen.__setitem__(table, columns) or None
+
+    class _Store:
+        def load(self, name, columns=None):
+            seen[name] = columns
+            return pd.DataFrame()
+
+    class _Ctx:
+        store = _Store()
+
+    step._context = _Ctx()
+    step._log = logging.getLogger("test")
     step._load_source("sec13f_hr")
     step._load_source("fundamentals_history")             # not in the projection map
-    assert seen["sec13f_hr"] == StepBuildCube._SOURCE_COLUMNS["sec13f_hr"]
+    assert seen["sec13f_hr"] == SOURCE_COLUMNS["sec13f_hr"]
     assert seen["fundamentals_history"] is None            # small table -> loaded in full
 
     print("\n=== SANITY: source-column projection ===")
     for tbl in required:
-        print(f"  {tbl:<24} -> {len(StepBuildCube._SOURCE_COLUMNS[tbl])} cols (covers builder needs)")
-    print("  sec13f_hr (~20M rows) drops call/put/cusip-era bloat; small tables load full. Validated.")
+        print(f"  {tbl:<24} -> {len(SOURCE_COLUMNS[tbl])} cols (covers builder needs)")
+    print("  sec13f_hr (~21.7M rows) drops the call/put/cusip-era bloat; small tables load "
+          "full. StepCubeExtras forwards the projection to the store. Validated.")
 
 
 if __name__ == "__main__":

@@ -1,26 +1,29 @@
 """
 dag_data_aggregation.py  (src/dags/dag_data_aggregation.py)
 -----------------------------------------------------------
-Nightly DATA-AGGREGATION DAG — the cube build EXPLODED into small, memory-light, parallel steps.
+Nightly DATA-AGGREGATION DAG — the cube build as seven sequential, memory-bounded steps.
 Triggered by the extraction DAG once ALL sources have refreshed (schedule=None).
 
-    deduce_peers ──▶ ┌ build_target                    ┐
-                     ├ features:price                  │  (parallel, capped by the `aggregate` pool
-                     ├ features:fundamental             │   so peak memory stays bounded — each task
-                     ├ features:sector ... earnings_call┘   loads only prices + peers + its source)
-                                       │
-                                       ▼
-                                 assemble_cube  ──▶ cube_status (XCom: max date/rows per part; RED if
-                                       │             a part is missing / behind)
-                                       │                     └──▶ trigger `strat_prediction` (daily)
-                                       ▼
-                                 writes the `cube` table
+    deduce_peers ─▶ build_prices ─▶ build_target ─▶ build_fundamentals ─▶ build_momentum
+                         │                                                        │
+                         │  (normalizes `prices` ONCE into cube_part_prices /     ▼
+                         │   cube_part_market; every later step reads those    build_text
+                         │   back, projected to the fields it needs)              │
+                         │                                                        ▼
+                         │                                                   build_extras
+                         ▼                                                        │
+                    assemble_cube ◀────────────────────────────────────────────────┘
+                         │
+                         ├─▶ writes the `cube` table
+                         ▼
+                    cube_status (XCom: max date/rows per part; RED if a part is behind)
+                         └──▶ trigger `strat_prediction` (daily)
 
 Each step is `/opt/pipeline/bin/python -m src data_aggregate <cmd>` (the pipeline's isolated venv).
-No step loads all source tables at once; the heavy feature computation is split across the parallel
-`features:*` tasks, each of which persists a compact `cube_part_<group>`; `assemble_cube` merges the
-parts (+ composites + betas + peers + targets) into the cube. Peers are computed once up front and
-cached, so every downstream step reuses them.
+STRICTLY SEQUENTIAL, on purpose: peak memory is the largest single step rather than the sum of two
+parallel pool slots, and each step keeps its heavy frames local so they are freed when it returns.
+`assemble_cube` merges the parts (+ composites + betas + peers + targets) into the cube. Peers are
+computed once up front and cached; `build_prices` folds them into a persisted sector-return column.
 """
 import json
 import subprocess
@@ -31,6 +34,7 @@ from airflow.exceptions import AirflowFailException
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.models.baseoperator import chain
 from airflow.utils.trigger_rule import TriggerRule
 
 PROJECT = "/opt/airflow/project"
@@ -39,11 +43,14 @@ PIPE_PY = "/opt/pipeline/bin/python"
 AGG = f"{PIPE_PY} -m src data_aggregate"
 PEERS = f"{PIPE_PY} -m src data_peers"
 
-# feature groups (must match StepBuildCube._GROUP_SOURCES). Earnings calls are TWO tasks:
-# FinBERT/LM sentiment vs OpenAI-embedding analysis.
-GROUPS = ["price", "sector", "earnings", "governance", "employee", "dividend",
-          "insider", "short_interest", # "attention", 
-          "earnings_call_sentiment", "earnings_call_embedding"]
+# The ordered cube sub-steps. Imported from the part registry rather than hand-listed: the
+# old GROUPS literal was documented as "must match StepBuildCube._GROUP_SOURCES" and had
+# already drifted (`attention` was commented out here but still registered there, so the
+# status gate reported cube_part_attention missing on every run).
+# tests/dags/test_dag_matches_part_registry.py asserts the two stay in step.
+from src.data_aggregate.utils.common.parts import PART_COMMANDS  # noqa: E402
+
+CHAIN = list(PART_COMMANDS)
 
 default_args = {
     "owner": "pea",
@@ -56,11 +63,11 @@ default_args = {
 dag = DAG(
     dag_id="data_aggregation",
     default_args=default_args,
-    description="Build the cube from the DB in exploded, memory-light, parallel steps.",
+    description="Build the cube from the DB in seven sequential, memory-bounded steps.",
     schedule=None,                                   # triggered by the extraction DAG when it finishes
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_tasks=2,
+    max_active_tasks=1,               # sequential: peak memory = the largest single step
     tags=["pea", "aggregation"],
 )
 
@@ -75,15 +82,15 @@ def run(cmd: str, base: str = AGG, pool: str = "aggregate", task_id: str | None 
     )
 
 
-# 1) peers once (cached) — every feature/target step reads the peer dict it writes
+# 1) peers once (cached) — build-prices turns them into the persisted sector-return column
 deduce_peers = run("deduce-peers", base=PEERS, pool="default_pool", task_id="deduce_peers")
 
-# 2) target + one task per feature group, in parallel (memory-capped by the `aggregate` pool)
-build_target = run("build-target", task_id="build_target")
-feature_tasks = [run(f"features -g {g}", task_id=f"features_{g}") for g in GROUPS]
-fundamental_task =  run("features -g fundamental", task_id="features_fundamental")
-institutional_task =  run("features -g institutional", task_id="features_institutional")
-superinvestor_task =  run("features -g superinvestor", task_id="features_superinvestor")
+# 2) the seven sub-steps, STRICTLY SEQUENTIAL. Peak memory is now the largest single step
+#    rather than the sum of two parallel pool slots, so the `aggregate` pool is unnecessary
+#    and the old institutional -> superinvestor -> fundamental serialization (which existed
+#    only to keep those three off each other's memory) is gone: they are `build-extras` and
+#    `build-fundamentals`, sequential by construction.
+step_tasks = [run(cmd, pool="default_pool", task_id=cmd.replace("-", "_")) for cmd in CHAIN]
 
 # 3) assemble the cube from the persisted parts
 assemble_cube = run("assemble-cube", pool="default_pool", task_id="assemble_cube")
@@ -125,4 +132,4 @@ trigger_strat_prediction = TriggerDagRunOperator(
     task_id="trigger_strat_prediction", trigger_dag_id="strat_prediction",
     wait_for_completion=False, reset_dag_run=True, trigger_rule=TriggerRule.ALL_DONE, dag=dag)
 
-deduce_peers >> [build_target, *feature_tasks] >> institutional_task >> superinvestor_task >> fundamental_task >> assemble_cube >> cube_status >> trigger_strat_prediction
+chain(deduce_peers, *step_tasks, assemble_cube, cube_status, trigger_strat_prediction)

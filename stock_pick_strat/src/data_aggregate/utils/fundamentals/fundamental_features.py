@@ -1505,6 +1505,56 @@ def _derived_fields(
     return F
 
 
+def _merge_feature_panels(panels: list[pd.DataFrame]) -> pd.DataFrame:
+    """Outer-merge the non-empty long panels on ['date','ticker']."""
+    out = None
+    for p in panels:
+        if p is None or p.empty or list(p.columns) == ["date", "ticker"]:
+            continue
+        out = p if out is None else out.merge(p, on=["date", "ticker"], how="outer")
+    return out if out is not None else pd.DataFrame(columns=["date", "ticker"])
+
+
+def build_state_panel(fields: dict) -> pd.DataFrame:
+    """Stack raw 0/1 regime flags into long `f_<name>` columns -- absolute state
+    indicators the model conditions on, NOT peer-standardized."""
+    if not fields:
+        return pd.DataFrame(columns=["date", "ticker"])
+    long_frames = []
+    for name, fdf in fields.items():
+        if fdf is None or fdf.empty:
+            continue
+        s = fdf.stack().astype("float32")
+        s.index.set_names(["date", "ticker"], inplace=True)
+        long_frames.append(s.rename(f"f_{name}"))
+    if not long_frames:
+        return pd.DataFrame(columns=["date", "ticker"])
+    # .copy() consolidates the many single-column blocks that concat(axis=1) doesn't 
+        # trip the "highly fragmented DataFrame" PerformanceWarning
+    return pd.concat(long_frames, axis=1).copy().reset_index()
+
+
+def build_self_history_panel(fields: dict) -> pd.DataFrame:
+    """Stack already-z-scored self-history frames into long `f_<name>_vs_hist`
+    columns. The input frames are the OUTPUT of `_self_history_z` (final signal),
+    so they are NOT re-standardized cross-sectionally the way peer features are."""
+    if not fields:
+        return pd.DataFrame(columns=["date", "ticker"])
+    long_frames = []
+    for name, zdf in fields.items():
+        if zdf is None or zdf.empty:
+            continue
+        s = zdf.stack().astype("float32")
+        s.index.set_names(["date", "ticker"], inplace=True)
+        long_frames.append(s.rename(f"f_{name}_vs_hist"))
+    if not long_frames:
+        return pd.DataFrame(columns=["date", "ticker"])
+    
+    # .copy() consolidates the many single-column blocks that concat(axis=1) doesn't 
+    # trip the "highly fragmented DataFrame" PerformanceWarning
+    return pd.concat(long_frames, axis=1).copy().reset_index()
+
+
 def build_fundamental_feature_panel(
     fundamentals_history: pd.DataFrame | None,
     peer_dict: dict,
@@ -1534,6 +1584,7 @@ def build_fundamental_feature_panel(
     without it valuation is skipped but every other feature is still built.
     Empty frame if no fundamentals available.
     """
+    
     if fundamentals_history is None or fundamentals_history.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
@@ -1569,56 +1620,3 @@ def build_fundamental_feature_panel(
     state_panel = build_state_panel(state_fields)
 
     return _merge_feature_panels([peer_panel, hist_panel, state_panel])
-
-
-def _merge_feature_panels(panels: list[pd.DataFrame]) -> pd.DataFrame:
-    """Outer-merge the non-empty long panels on ['date','ticker']."""
-    out = None
-    for p in panels:
-        if p is None or p.empty or list(p.columns) == ["date", "ticker"]:
-            continue
-        out = p if out is None else out.merge(p, on=["date", "ticker"], how="outer")
-    return out if out is not None else pd.DataFrame(columns=["date", "ticker"])
-
-
-def build_state_panel(fields: dict) -> pd.DataFrame:
-    """Stack raw 0/1 regime flags into long `f_<name>` columns -- absolute state
-    indicators the model conditions on, NOT peer-standardized."""
-    if not fields:
-        return pd.DataFrame(columns=["date", "ticker"])
-    long_frames = []
-    for name, fdf in fields.items():
-        if fdf is None or fdf.empty:
-            continue
-        s = fdf.stack().astype("float32")
-        s.index.set_names(["date", "ticker"], inplace=True)
-        long_frames.append(s.rename(f"f_{name}"))
-    if not long_frames:
-        return pd.DataFrame(columns=["date", "ticker"])
-    # .copy() consolidates the many single-column blocks that concat(axis=1) leaves
-    # behind, so the reset_index() column insert doesn't trip the "highly fragmented
-    # DataFrame" PerformanceWarning once the panel has 100+ feature columns.
-    return pd.concat(long_frames, axis=1).copy().reset_index()
-
-
-def build_self_history_panel(fields: dict) -> pd.DataFrame:
-    """Stack already-z-scored self-history frames into long `f_<name>_vs_hist`
-    columns. The input frames are the OUTPUT of `_self_history_z` (final signal),
-    so they are NOT re-standardized cross-sectionally the way peer features are."""
-    if not fields:
-        return pd.DataFrame(columns=["date", "ticker"])
-    long_frames = []
-    for name, zdf in fields.items():
-        if zdf is None or zdf.empty:
-            continue
-        s = zdf.stack().astype("float32")
-        s.index.set_names(["date", "ticker"], inplace=True)
-        long_frames.append(s.rename(f"f_{name}_vs_hist"))
-    if not long_frames:
-        return pd.DataFrame(columns=["date", "ticker"])
-    # .copy() consolidates the many single-column blocks that concat(axis=1) leaves
-    # behind, so the reset_index() column insert doesn't trip the "highly fragmented
-    # DataFrame" PerformanceWarning once the panel has 100+ feature columns.
-    return pd.concat(long_frames, axis=1).copy().reset_index()
-
-

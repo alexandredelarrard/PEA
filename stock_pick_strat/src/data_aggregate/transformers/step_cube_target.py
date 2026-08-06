@@ -34,7 +34,8 @@ from src.data_aggregate.utils.common.price_frames import (
 from src.data_aggregate.utils.common.prices import price_column_returns
 from src.data_aggregate.utils.target.betas import estimate_all_betas
 from src.data_aggregate.utils.target.factors import (
-    assemble_factor_panel, build_style_factor_returns, macro_change_factors,
+    assemble_factor_panel, build_characteristics, characteristic_to_factor_return,
+    macro_change_factors,
 )
 from src.data_aggregate.utils.target.targets import build_targets_multi
 from src.utils.step import Step
@@ -94,12 +95,6 @@ class StepCubeTarget(Step):
         return df
 
     # ---- factor panel ---- #
-    def _style_factors(self, frames: PriceFrames,
-                       fundamentals: pd.DataFrame | None) -> pd.DataFrame:
-        frames.require("close", "ret")
-        return build_style_factor_returns(frames.close, frames.ret, fundamentals,
-                                          resvol_window=63)
-
     def _macro_changes(self, frames: PriceFrames) -> pd.DataFrame:
         macro = self._context.store.load(_MACRO)
         if macro.empty:
@@ -114,21 +109,36 @@ class StepCubeTarget(Step):
         if frames.other_close is None or frames.other_close.empty:
             empty = pd.DataFrame(index=frames.trading_index)
             return empty, empty
+        
         return (price_column_returns(frames.other_close, _COMMODITY_TICKERS),
                 price_column_returns(frames.other_close, _CURRENCY_TICKERS))
 
     def _factor_panel(self, frames: PriceFrames,
                       fundamentals: pd.DataFrame | None) -> tuple[pd.DataFrame, list[str]]:
-        style = self._style_factors(frames, fundamentals)
+        """Flat by design: style, macro, commodity/currency and market are each ONE call
+        away, so every factor family that goes into the panel is visible here instead of
+        behind another wrapper."""
+
+        frames.require("close", "ret")
+        chars = build_characteristics(frames.close, frames.ret, fundamentals, resvol_window=63)
         macro_chg = self._macro_changes(frames)
         commodity, currency = self._asset_factors(frames)
         if frames.mkt_ret is None:
             raise RuntimeError("market returns missing from cube_part_market -> re-run "
                                "`build-prices`")
+
+        style_cols = {}
+        for name, char in chars.items():
+            char.name = name
+            style_cols[name] = characteristic_to_factor_return(char, frames.ret)
+        style = pd.DataFrame(style_cols)
+
         panel, macro_cols = assemble_factor_panel(
             frames.mkt_ret, style, commodity, currency, macro_chg)
+
         self._log.info("Factor panel: %s factors (%s style/market, %s macro)",
                        panel.shape[1], panel.shape[1] - len(macro_cols), len(macro_cols))
+
         return panel, macro_cols
 
     # ---- betas ---- #

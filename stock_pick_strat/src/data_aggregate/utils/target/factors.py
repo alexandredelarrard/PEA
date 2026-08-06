@@ -11,7 +11,6 @@ STYLE factors (cross-sectional, one long-short return series each):
     size        -log(market cap)          small-minus-big
     value       earnings + fcf yield      cheap-minus-expensive
     momentum    12-1 price return         winners-minus-losers
-    quality     ROE+margins-leverage      quality-minus-junk
     resvol      -trailing vol             low-vol-minus-high-vol
   Built as CHARACTERISTIC-WEIGHTED portfolios: each day, cross-sectionally
   standardize the characteristic, use the LAGGED standardized score as the
@@ -52,6 +51,16 @@ from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, xs_z
 
 logger = logging.getLogger(__name__)
 
+# FRED level -> daily-change factor name. ONLY daily-moving series belong here.
+# NOTE: cpi_yoy_pct (monthly) and fed_balance_sheet (weekly) are deliberately
+# EXCLUDED -- their daily change is ~always zero. Inflation risk is captured by
+# the daily breakeven instead.
+DAILY_MACRO_LEVELS = {
+    "yield_10y": "d_yield_10y",
+    "yield_curve_10y2y": "d_yield_curve",
+    "vix": "d_vix",
+    "breakeven_10y": "d_breakeven_10y",   # FRED T10YIE (add to fetch_macro)
+}
 
 # --------------------------------------------------------------------------- #
 # Characteristics                                                              #
@@ -128,33 +137,6 @@ def characteristic_to_factor_return(char: pd.DataFrame, stock_ret: pd.DataFrame)
     return f.rename(char.name if char.name else "factor")
 
 
-def build_style_factor_returns(
-    stock_close: pd.DataFrame,
-    stock_ret: pd.DataFrame,
-    fundamentals_history: pd.DataFrame | None,
-    resvol_window: int = 63,
-) -> pd.DataFrame:
-    """Return DataFrame (date x factor) of daily style-factor returns."""
-    chars = build_characteristics(stock_close, stock_ret, fundamentals_history, resvol_window)
-    cols = {}
-    for name, c in chars.items():
-        c.name = name
-        cols[name] = characteristic_to_factor_return(c, stock_ret)
-    return pd.DataFrame(cols)
-
-
-# FRED level -> daily-change factor name. ONLY daily-moving series belong here.
-# NOTE: cpi_yoy_pct (monthly) and fed_balance_sheet (weekly) are deliberately
-# EXCLUDED -- their daily change is ~always zero. Inflation risk is captured by
-# the daily breakeven instead.
-DAILY_MACRO_LEVELS = {
-    "yield_10y": "d_yield_10y",
-    "yield_curve_10y2y": "d_yield_curve",
-    "vix": "d_vix",
-    "breakeven_10y": "d_breakeven_10y",   # FRED T10YIE (add to fetch_macro)
-}
-
-
 def macro_change_factors(
     macro_df: pd.DataFrame,
     trading_index: pd.DatetimeIndex,
@@ -176,15 +158,10 @@ def macro_change_factors(
     return pd.DataFrame(out, index=trading_index)
 
 
-# `commodity_factor_returns` / `currency_factor_returns` had byte-identical bodies and are
-# now the single `prices.price_column_returns(close, tickers)`; `assemble_factor_panel`
-# already treated them identically (both concatenated as returns, neither in `macro_cols`).
-
 def filter_daily_factors(
     panel: pd.DataFrame,
     max_zero_frac: float = 0.30,
     max_nan_frac: float = 0.50,
-    verbose: bool = True,
 ) -> tuple[pd.DataFrame, list[str]]:
     """
     Keep only columns that genuinely move at daily frequency. A return/change
@@ -194,6 +171,7 @@ def filter_daily_factors(
 
     Returns (clean_panel, dropped_columns).
     """
+
     keep, dropped = [], []
     for c in panel.columns:
         s = panel[c]
@@ -204,9 +182,11 @@ def filter_daily_factors(
             dropped.append(c)
         else:
             keep.append(c)
-    if verbose and dropped:
-        logger.warning("dropped non-daily-moving factors: %s", dropped)
-    return panel[keep], dropped
+
+    if dropped:
+        logger.warning("dropped non-daily-moving factors from target built neutrality: %s", dropped)
+
+    return panel[keep]
 
 
 def assemble_factor_panel(
@@ -227,6 +207,6 @@ def assemble_factor_panel(
         [market_ret.rename("market"), style_factors, commodity_returns, currency_returns, macro_changes],
         axis=1,
     )
-    panel, dropped = filter_daily_factors(panel)
+    panel = filter_daily_factors(panel)
     macro_cols = [c for c in macro_changes.columns if c in panel.columns]
     return panel, macro_cols

@@ -108,7 +108,8 @@ def real_pipeline(real_frames):
     from src.data_aggregate.utils.target.targets import build_targets_multi
     from src.data_aggregate.utils.common.prices import price_column_returns
     from src.data_aggregate.utils.target.factors import (
-        build_style_factor_returns,
+        build_characteristics,
+        characteristic_to_factor_return,
         macro_change_factors,
         assemble_factor_panel,
     )
@@ -131,8 +132,13 @@ def real_pipeline(real_frames):
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     sector_ret = compute_sector_returns(stock_ret, peers)
 
-    # mirror step_build_cube.build_factor_panel: market + style + commodity + currency + macro
-    style = build_style_factor_returns(stock_close, stock_ret, fundamentals, 63)
+    # mirror StepCubeTarget._factor_panel: market + style + commodity + currency + macro
+    chars = build_characteristics(stock_close, stock_ret, fundamentals, resvol_window=63)
+    style_cols = {}
+    for name, char in chars.items():
+        char.name = name
+        style_cols[name] = characteristic_to_factor_return(char, stock_ret)
+    style = pd.DataFrame(style_cols)
     if macro is not None:
         macro_chg = macro_change_factors(macro, stock_close.index)
     else:

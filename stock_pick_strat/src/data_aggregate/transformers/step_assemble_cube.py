@@ -67,7 +67,14 @@ class StepAssembleCube(Step):
     # ---- read the parts ---- #
     def _read_part(self, name: str) -> pd.DataFrame | None:
         if not self._context.store.exists(name):
-            self._log.warning("Feature part '%s' missing -> skipped.", name)
+            # NOT cosmetic: `store.replace` does not DROP the cube table, it DELETEs the rows
+            # and COPYs into the existing schema (and `ensure_columns` only ever ADDS). So a
+            # missing part leaves its columns in place, entirely NULL, and the cube's column
+            # set still looks perfect -- observed here as 574 == 574 columns with 0 added / 0
+            # removed while every f_inst_*/f_super_*/f_insider_*/f_ceo_* value was NULL.
+            self._log.warning("Feature part '%s' is MISSING -> its features will be ALL-NULL in "
+                              "the cube (the column set will still look unchanged). Run its "
+                              "build step, then re-run assemble-cube.", name)
             return None
         df = downcast_float32(normalize_date_col(self._context.store.load(name)))
         return None if df is None or df.empty else df
@@ -75,13 +82,19 @@ class StepAssembleCube(Step):
     def _merge_feature_parts(self) -> pd.DataFrame:
         """Outer-align every feature part on (date, ticker), through the collision guard."""
         merger = PanelMerger(self._log)
+        merged = 0
         for part in FEATURE_PARTS:
-            merger.add(self._read_part(part.name), part.name)
+            merged += 1 if merger.add(self._read_part(part.name), part.name) else 0
         panel = merger.to_long()
         if panel.empty or len(panel.columns) <= 2:
             raise RuntimeError("No feature parts found -> run the build-* feature steps first.")
-        self._log.info("Merged %d feature parts -> %s rows x %s feature columns",
-                       len(FEATURE_PARTS), len(panel), len(panel.columns) - 2)
+        # report what was ACTUALLY merged, not how many parts are registered: a missing part
+        # silently shrinks the cube's feature set, so the two numbers must not be conflated
+        if merged < len(FEATURE_PARTS):
+            self._log.warning("Only %d of %d registered feature parts were merged -> the cube "
+                              "is missing the others' features.", merged, len(FEATURE_PARTS))
+        self._log.info("Merged %d/%d feature parts -> %s rows x %s feature columns",
+                       merged, len(FEATURE_PARTS), len(panel), len(panel.columns) - 2)
         return panel
 
     # ---- composites ---- #
@@ -97,11 +110,18 @@ class StepAssembleCube(Step):
         if not groups:
             self._log.warning("composites.enabled but no groups configured.")
             return panel
-        before = len(panel.columns) - 2
+        cols_before = set(panel.columns)
         panel = build_composites(panel, groups, method=cfg.get("method", "zscore"),
                                  log=self._log)   # warns about configured members absent
-        self._log.info("Built %s composite signals: %s", len(panel.columns) - 2 - before,
-                       [f"comp_{t}" for t in groups])
+        # report the composites actually BUILT, not the configured themes: a theme whose
+        # members all came from a missing part is silently skipped, and printing the config
+        # list would claim it exists
+        built = sorted(c for c in set(panel.columns) - cols_before if c.startswith("comp_"))
+        skipped = sorted(f"comp_{t}" for t in groups if f"comp_{t}" not in built)
+        self._log.info("Built %s/%s composite signals: %s", len(built), len(groups), built)
+        if skipped:
+            self._log.warning("%s composite(s) NOT built (members absent from the panel): %s",
+                              len(skipped), skipped)
         return panel
 
     # ---- the horizon-independent base ---- #

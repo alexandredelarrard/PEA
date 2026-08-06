@@ -18,7 +18,7 @@ import json
 import logging
 
 from omegaconf import DictConfig
-
+from src.data_peers.step_deduce_peers import StepDeducePeers
 from src.context import Context
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,6 @@ def load_peers(context: Context, config: DictConfig | None = None) -> dict:
     if config is None:
         return {}
     # imported lazily: only the cache-miss path depends on the peers package
-    from src.data_peers.step_deduce_peers import StepDeducePeers
     return StepDeducePeers(context=context, config=config).run()
 
 

@@ -34,7 +34,6 @@ from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames, load_price_frames, load_trading_calendar,
 )
-from src.data_aggregate.utils.common.sources import SOURCE_COLUMNS
 from src.data_aggregate.utils.extras.attention_features import build_combined_attention_panel
 from src.data_aggregate.utils.extras.def14a_impute import drop_implausible_def14a, impute_def14a
 from src.data_aggregate.utils.extras.governance_features import build_governance_feature_panel
@@ -51,7 +50,19 @@ from src.data_aggregate.utils.extras.superinvestor_features import (
 from src.utils.step import Step
 
 _FUNDAMENTALS = "fundamentals_history"
-
+SOURCE_COLUMNS: dict[str, list[str]] = {
+    # institutional_features + superinvestor_features (the ~21.7M-row table)
+    "sec13f_hr": ["cik", "period", "ticker", "shares", "value_usd",
+                  "call_value", "put_value", "filing_date"],
+    # insider_features
+    "insider_transactions": ["ticker", "filing_date", "transaction_code", "value_usd"],
+    # short_interest_features: RegSHO short/total volume + reported short interest / ADV
+    "short_interest": ["date", "ticker", "short_volume", "total_volume"],
+    "fails_to_deliver": ["date", "ticker", "fails_quantity"],
+    # attention_features
+    "wiki_pageviews": ["date", "ticker", "pageviews"],
+    "google_trends": ["date", "ticker", "search_interest"],
+}
 
 class StepCubeExtras(Step):
 

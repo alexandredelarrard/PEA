@@ -36,12 +36,16 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.data_aggregate.utils.common.pit import FieldGetter
+
 __all__ = ["borrowings", "capitalized_leases", "liquid_assets", "total_debt",
            "net_debt", "invested_capital", "off_balance_sheet_obligations",
            "assets_ex_lease"]
 
-# accessor: field name -> numeric Series (row-level) or date x ticker frame (daily)
-Getter = "callable"
+# accessor: field name -> numeric Series (row-level) or date x ticker frame (daily).
+# Was the string literal `Getter = "callable"`, which described the protocol in a comment
+# instead of expressing it; `FieldGetter` is the real thing (see utils/common/pit.py).
+Getter = FieldGetter
 
 
 def _has(x) -> bool:

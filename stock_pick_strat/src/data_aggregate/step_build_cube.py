@@ -14,9 +14,7 @@ from src.data_aggregate.utils.common import data_utils as du
 from src.data_aggregate.utils.target.betas import estimate_all_betas
 from src.data_aggregate.utils.target.targets import build_targets_multi
 from src.data_aggregate.utils.momentum.features import build_feature_panel
-from src.data_aggregate.utils.fundamentals.fundamental_features import (
-    build_fundamental_feature_panel, load_notes_num_scoped, load_pension_facts_scoped,
-)
+from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel, load_notes_num_scoped, load_pension_facts_scoped
 from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.extras.governance_features import build_governance_feature_panel
 from src.data_aggregate.utils.extras.def14a_impute import drop_implausible_def14a, impute_def14a

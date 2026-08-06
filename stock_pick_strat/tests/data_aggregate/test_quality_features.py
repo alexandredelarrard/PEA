@@ -14,10 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.fundamentals.fundamental_features import (
-    _da_realism_fields, _forensic_fields, _digestion_fields,
-    _core_earnings_fields, _beneish_m_score, _ai_leverage_fields, _derived_fields,
-)
+from src.data_aggregate.utils.fundamentals.fundamental_features import _da_realism_fields, _forensic_fields, _digestion_fields, _core_earnings_fields, _beneish_m_score, _ai_leverage_fields, _derived_fields
 
 IDX = pd.bdate_range("2022-01-03", periods=300)     # >252 so shift(_YEAR) has a year-ago
 _SPLIT = 252                                          # rows [0:252) = "a year ago", [252:] = "now"

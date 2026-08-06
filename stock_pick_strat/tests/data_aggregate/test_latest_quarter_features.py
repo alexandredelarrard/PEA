@@ -1,5 +1,5 @@
 """Tests for the LATEST-QUARTER momentum features
-(src/data_aggregate/utils/fundamental_features.py: _fiscal_apply_to_daily and
+(src/data_aggregate/utils/fundamental_features.py: fiscal_apply_to_daily and
 the discrete single-quarter characteristics in _derived_fields).
 
 These capture the acceleration/inflection that the TTM series smooths away, and
@@ -10,10 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.fundamentals.fundamental_features import (
-    _fiscal_apply_to_daily,
-    _derived_fields,
-)
+from src.data_aggregate.utils.common.pit import fiscal_apply_to_daily
+from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
 
 
 def _synth_quarterly():
@@ -39,8 +37,8 @@ def test_fiscal_apply_yoy_and_acceleration():
     fund, ends, rev_q, _ = _synth_quarterly()
     idx = pd.bdate_range("2019-01-01", "2021-06-01")
 
-    yoy = _fiscal_apply_to_daily(fund, "revenue_q", idx, lambda s: s.pct_change(4))
-    accel = _fiscal_apply_to_daily(fund, "revenue_q", idx,
+    yoy = fiscal_apply_to_daily(fund, "revenue_q", idx, lambda s: s.pct_change(4))
+    accel = fiscal_apply_to_daily(fund, "revenue_q", idx,
                                    lambda s: s.pct_change(4).diff(1))
 
     after_q5 = ends[4] + pd.Timedelta(days=5)   # 5th quarter public

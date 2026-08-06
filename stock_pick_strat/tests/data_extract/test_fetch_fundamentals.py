@@ -18,8 +18,8 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals import (
     _extract_concept,
     build_ticker_history,
 )
-from src.data_aggregate.utils.target.factors import fundamentals_to_daily
-from src.data_aggregate.utils.fundamentals.fundamental_features import _infer_yoy_periods
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import infer_yoy_periods
 
 
 # --------------------------------------------------------------------------- #
@@ -180,8 +180,8 @@ def test_infer_yoy_periods():
                       "as_of": pd.date_range("2020-03-31", periods=8, freq="91D").astype(str)})
     a = pd.DataFrame({"ticker": "A",
                       "as_of": pd.date_range("2016-02-01", periods=6, freq="365D").astype(str)})
-    assert _infer_yoy_periods(q) == 4
-    assert _infer_yoy_periods(a) == 1
+    assert infer_yoy_periods(q) == 4
+    assert infer_yoy_periods(a) == 1
     print("\n=== SANITY CHECK: YoY cadence inference ===")
     print("  ~91d filings -> 4 periods/yr; ~365d filings -> 1. Growth stays true YoY.")
 

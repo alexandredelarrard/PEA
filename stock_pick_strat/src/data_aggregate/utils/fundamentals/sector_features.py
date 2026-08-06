@@ -57,8 +57,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.target.factors import fundamentals_to_daily
-from src.data_aggregate.utils.fundamentals.fundamental_features import _infer_yoy_periods
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily, infer_yoy_periods
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.sector_gates import row_gate
 from src.data_aggregate.utils.common import capital
@@ -157,7 +156,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
 
     df = fundamentals.copy()
     g = lambda n: _col(df, n)  # noqa: E731
-    yoy = _infer_yoy_periods(df)                     # filings per year (4 quarterly, 1 annual)
+    yoy = infer_yoy_periods(df)                     # filings per year (4 quarterly, 1 annual)
 
     revenue = g("totalRevenue")
     # ASC-842-adoption-free asset base (shared resolver: precomputed column, else derived,

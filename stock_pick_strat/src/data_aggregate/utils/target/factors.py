@@ -40,29 +40,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-
-# --------------------------------------------------------------------------- #
-# Point-in-time fundamentals -> daily frame                                    #
-# --------------------------------------------------------------------------- #
-def fundamentals_to_daily(
-    fundamentals_history: pd.DataFrame,
-    field: str,
-    trading_index: pd.DatetimeIndex,
-) -> pd.DataFrame:
-    """
-    Turn a (ticker, as_of, <fields>) history into a daily wide frame for one
-    field, forward-filled point-in-time: value on date d is the most recent
-    as_of <= d. No look-ahead.
-    """
-    if field not in fundamentals_history.columns:
-        return pd.DataFrame(index=trading_index)
-    df = fundamentals_history[["ticker", "as_of", field]].copy()
-    df["as_of"] = pd.to_datetime(df["as_of"])
-    wide = df.pivot_table(index="as_of", columns="ticker", values=field, aggfunc="last")
-    wide = wide.sort_index().reindex(
-        wide.index.union(trading_index)
-    ).ffill().reindex(trading_index)
-    return wide
+# the point-in-time pivot + daily market cap moved to utils/common/pit.py: they are
+# generic filing-history accessors, and keeping them here made this factor-RETURN module
+# a dependency of nine feature builders that only wanted a point-in-time frame.
+from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 
 
 def _xs_z(df: pd.DataFrame, clip: float = 4.0) -> pd.DataFrame:
@@ -81,23 +62,6 @@ def momentum_characteristic(stock_close: pd.DataFrame) -> pd.DataFrame:
     (uses only past prices), so it never leaks future information.
     """
     return stock_close.shift(21) / stock_close.shift(252) - 1.0
-
-
-def daily_market_cap(fundamentals_history: pd.DataFrame, close: pd.DataFrame) -> pd.DataFrame:
-    """
-    Historical daily market cap = point-in-time shares outstanding (from SEC,
-    forward-filled) * daily close. This is the correct historical mcap (moves
-    with price every day), replacing the old current-mcap*price-ratio proxy.
-    Requires a 'sharesOutstanding' column in the fundamentals history.
-    """
-    shares = fundamentals_to_daily(fundamentals_history, "sharesOutstanding", close.index)
-    if shares.empty:
-        return pd.DataFrame(index=close.index)
-    cols = [c for c in shares.columns if c in close.columns]
-    if not cols:
-        return pd.DataFrame(index=close.index)
-    mcap = close[cols].mul(shares[cols])
-    return mcap.where(mcap > 0)
 
 
 # --------------------------------------------------------------------------- #

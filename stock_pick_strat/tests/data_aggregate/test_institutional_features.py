@@ -53,7 +53,7 @@ def test_filing_lag_point_in_time():
     idx = pd.bdate_range("2022-01-03", "2023-06-30")
     panel = build_institutional_feature_panel(_holdings(), peer_dict={}, trading_index=idx)
     # rebuild the daily field directly to check the lag boundary
-    from src.data_aggregate.utils.target.factors import fundamentals_to_daily
+    from src.data_aggregate.utils.common.pit import fundamentals_to_daily
     qf = _quarter_features(_holdings())
     daily = fundamentals_to_daily(qf, "cluster_buying", idx)["A"]
     q2_asof = pd.Timestamp("2022-06-30") + pd.Timedelta(days=45)     # 2022-08-14
@@ -79,7 +79,7 @@ def test_panel_columns_and_ownership_pct():
               "f_inst_holders_xs", "f_inst_ownership_pct_xs"):
         assert c in panel.columns, f"{c} missing from panel"
     # A's ownership pct at a late date = 200 shares / 1000 = 0.2 (raw before xs-rank)
-    from src.data_aggregate.utils.target.factors import fundamentals_to_daily
+    from src.data_aggregate.utils.common.pit import fundamentals_to_daily
     qf = _quarter_features(_holdings())
     inst_sh = fundamentals_to_daily(qf, "inst_shares", idx)["A"].dropna().iloc[-1]
     assert abs(inst_sh - 200.0) < 1e-9
@@ -198,7 +198,7 @@ def test_value_to_mcap_and_flow_panel():
               "f_inst_value_to_mcap_xs", "f_inst_flow_to_mcap_xs"):
         assert c in panel.columns, f"{c} missing from panel"
     # A after its Q2 becomes public: long value 4.0M / mcap 10M = 0.40 (raw, pre xs-rank)
-    from src.data_aggregate.utils.target.factors import daily_market_cap, fundamentals_to_daily
+    from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
     qf = _quarter_features(_holdings_opts())
     iv = fundamentals_to_daily(qf, "inst_value", idx)["A"].dropna().iloc[-1]
     mc = daily_market_cap(fund, close)["A"].iloc[-1]

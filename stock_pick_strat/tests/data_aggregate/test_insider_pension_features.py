@@ -7,8 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.fundamentals.fundamental_features import (
-    _pension_deficit_daily, _NET_PENSION_TAGS)
+from src.data_aggregate.utils.fundamentals.fundamental_features import _pension_deficit_daily, _NET_PENSION_TAGS
 from src.data_aggregate.utils.extras.insider_features import build_insider_feature_panel
 
 PRIMARY, VARIANT = _NET_PENSION_TAGS

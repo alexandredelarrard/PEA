@@ -31,7 +31,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.target.factors import fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 
 _YOY = 252       # ~1 trading year

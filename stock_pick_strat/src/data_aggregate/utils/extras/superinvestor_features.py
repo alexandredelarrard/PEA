@@ -35,7 +35,7 @@ import pandas as pd
 from sqlalchemy import bindparam, text
 
 from src.context import Context
-from src.data_aggregate.utils.target.factors import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.utils.string import pad_cik
 

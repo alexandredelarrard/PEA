@@ -35,10 +35,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_aggregate.utils.target.factors import fundamentals_to_daily
-from src.data_aggregate.utils.fundamentals.fundamental_features import (
-    _fiscal_change_to_daily,
-    _infer_yoy_periods)
+from src.data_aggregate.utils.common.pit import (
+    fiscal_change_to_daily,
+    fundamentals_to_daily,
+    infer_yoy_periods,
+)
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 
 # def14a_llm level columns surfaced directly as peer-relative features
@@ -83,15 +84,15 @@ def _governance_fields(
             F["ceo_tenure"] = tenure
 
     # CEO total-comp growth (proxies are annual -> one filing per year -> periods=1)
-    pay_growth = _fiscal_change_to_daily(def14a_hist, "ceo_total_comp", idx,
+    pay_growth = fiscal_change_to_daily(def14a_hist, "ceo_total_comp", idx,
                                          kind="pct", periods=1)
     if pay_growth.notna().any().any():
         F["ceo_pay_growth"] = pay_growth
         # pay-for-performance misalignment: CEO pay growing faster than the business.
         if fundamentals is not None and not fundamentals.empty:
-            rev_growth = _fiscal_change_to_daily(
+            rev_growth = fiscal_change_to_daily(
                 fundamentals, "totalRevenue", idx,
-                kind="pct", periods=_infer_yoy_periods(fundamentals))
+                kind="pct", periods=infer_yoy_periods(fundamentals))
             if not rev_growth.empty and rev_growth.notna().any().any():
                 cols = pay_growth.columns.intersection(rev_growth.columns)
                 if len(cols) > 0:

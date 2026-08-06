@@ -114,7 +114,13 @@ from sqlalchemy import bindparam, text
 
 from src.context import Context
 from src.data_aggregate.utils.fundamentals.earnings_features import ntm_ttm_eps
-from src.data_aggregate.utils.target.factors import fundamentals_to_daily, daily_market_cap
+from src.data_aggregate.utils.common.pit import (
+    daily_market_cap,
+    fiscal_apply_to_daily,
+    fiscal_change_to_daily,
+    fundamentals_to_daily,
+    infer_yoy_periods,
+)
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 from src.data_aggregate.utils.common.panel import (
     _ratio,
@@ -214,80 +220,6 @@ def _self_history_z(field_df: pd.DataFrame, window: int = _HIST_WINDOW,
     z = (field_df - mean) / std.where(std > 0)
     z = z.clip(-clip, clip).replace([np.inf, -np.inf], np.nan)
     return _winsorize_xs(z)            # trim per-day cross-sectional 1%/99% outliers
-
-
-def _infer_yoy_periods(fund_hist: pd.DataFrame) -> int:
-    """Number of filing periods that make up one year, from the median gap
-    between consecutive `as_of` dates. Quarterly history -> 4, annual -> 1.
-    Used so growth is always a true year-over-year comparison (no seasonality)
-    regardless of the reporting cadence."""
-    if "as_of" not in fund_hist.columns or fund_hist.empty:
-        return 1
-    d = fund_hist[["ticker", "as_of"]].copy()
-    d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
-    gaps = d.sort_values(["ticker", "as_of"]).groupby("ticker")["as_of"].diff().dt.days
-    med = gaps.median()
-    if not np.isfinite(med) or med <= 0:
-        return 1
-    return int(min(4, max(1, round(365.0 / med))))
-
-
-def _fiscal_change_to_daily(
-    fund_hist: pd.DataFrame,
-    field: str,
-    idx: pd.DatetimeIndex,
-    kind: str = "pct",
-    periods: int = 1,
-) -> pd.DataFrame:
-    """Change of a fiscal field over `periods` filings, forward-filled onto
-    trading days. With `periods` = one year of filings this is a seasonality-free
-    year-over-year change.
-
-    Computed per ticker on ITS OWN fiscal series (ordered by filing date), then
-    ffilled point-in-time so the change lands on the day the new filing is
-    public. `kind='pct'` -> relative growth; `kind='diff'` -> absolute change
-    (use for ratios like margins).
-    """
-
-    if field not in fund_hist.columns:
-        return pd.DataFrame(index=idx)
-    df = fund_hist[["ticker", "as_of", field]].copy()
-    df["as_of"] = pd.to_datetime(df["as_of"])
-    df[field] = pd.to_numeric(df[field], errors="coerce")
-    df = df.dropna(subset=[field]).sort_values(["ticker", "as_of"])
-    if df.empty:
-        return pd.DataFrame(index=idx)
-
-    grp = df.groupby("ticker")[field]
-    if kind == "pct":
-        df["chg"] = grp.pct_change(periods=periods)
-    elif kind == "diff":
-        df["chg"] = grp.diff(periods=periods)
-    else:
-        raise ValueError("kind must be 'pct' or 'diff'")
-
-    wide = df.pivot_table(index="as_of", columns="ticker", values="chg", aggfunc="last")
-    wide = wide.replace([np.inf, -np.inf], np.nan).sort_index()
-    return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
-
-
-def _fiscal_apply_to_daily(fund_hist, field, idx, func) -> pd.DataFrame:
-    """Apply a per-ticker series transform (e.g. YoY growth, or acceleration =
-    change in YoY) to a fiscal field, forward-filled point-in-time onto trading
-    days. `func` receives one ticker's chronological series and returns a series
-    of the same length."""
-    if field not in fund_hist.columns:
-        return pd.DataFrame(index=idx)
-    df = fund_hist[["ticker", "as_of", field]].copy()
-    df["as_of"] = pd.to_datetime(df["as_of"])
-    df[field] = pd.to_numeric(df[field], errors="coerce")
-    df = df.dropna(subset=[field]).sort_values(["ticker", "as_of"])
-    if df.empty:
-        return pd.DataFrame(index=idx)
-    df["v"] = df.groupby("ticker")[field].transform(func)
-    wide = df.pivot_table(index="as_of", columns="ticker", values="v", aggfunc="last")
-    wide = wide.replace([np.inf, -np.inf], np.nan).sort_index()
-    return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
 
 
 # --------------------------------------------------------------------------- #
@@ -593,8 +525,8 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
             if gii.notna().any().any():
                 F["goodwill_impairment_intensity"] = gii   # writedown = overpayment admitted
 
-    sga_g = _fiscal_change_to_daily(fund_hist, "sellingGeneralAdmin", idx, kind="pct", periods=yoy_periods)
-    rev_g = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods)
+    sga_g = fiscal_change_to_daily(fund_hist, "sellingGeneralAdmin", idx, kind="pct", periods=yoy_periods)
+    rev_g = fiscal_change_to_daily(fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods)
     if sga_g.notna().any().any() and rev_g.notna().any().any():
         el = _ratio(sga_g, rev_g.where(rev_g.abs() >= 0.02))   # guard ~flat-revenue blow-ups
         if el.notna().any().any():
@@ -730,7 +662,7 @@ def _credit_tax_and_pershare_fields(daily, fund_hist: pd.DataFrame, idx: pd.Date
         ey = _ratio(eps[cols].where(eps[cols] > 0), close[cols], positive_den=True)
         if ey.notna().any().any():
             F["eps_yield"] = ey        # reported diluted EPS / price: E/P net of preferred
-    dps_growth = _fiscal_change_to_daily(fund_hist, "dividendsPerShare", idx,
+    dps_growth = fiscal_change_to_daily(fund_hist, "dividendsPerShare", idx,
                                          kind="pct", periods=yoy_periods)
     if dps_growth.notna().any().any():
         F["dps_growth"] = dps_growth
@@ -1002,7 +934,7 @@ def _derived_fields(
                 if proj.notna().any().any():
                     growth_pct = proj * 100.0
         if growth_pct is None:
-            growth_pct = _fiscal_change_to_daily(fund_hist, "netIncome", idx,
+            growth_pct = fiscal_change_to_daily(fund_hist, "netIncome", idx,
                                                  kind="pct", periods=yoy_periods) * 100.0
         # div yield fills to 0 for non-payers, but GROWTH must be known or PEGY is
         # undefined (don't silently treat unknown growth as 0). This is the SEC
@@ -1064,15 +996,15 @@ def _derived_fields(
         F["accruals"] = _ratio(accr_num, revenue, positive_den=True)
 
     # ---- Growth / trend / dilution from the fiscal series (year-over-year) ----
-    fcf_growth = _fiscal_change_to_daily(fund_hist, "freeCashflow", idx,
+    fcf_growth = fiscal_change_to_daily(fund_hist, "freeCashflow", idx,
                                          kind="pct", periods=yoy_periods)
     if fcf_growth.notna().any().any():
         F["fcf_growth"] = fcf_growth
-    shares_growth = _fiscal_change_to_daily(fund_hist, "sharesOutstanding", idx,
+    shares_growth = fiscal_change_to_daily(fund_hist, "sharesOutstanding", idx,
                                             kind="pct", periods=yoy_periods)
     if shares_growth.notna().any().any():
         F["shares_growth"] = shares_growth
-    gm_chg = _fiscal_change_to_daily(fund_hist, "grossMargins", idx,
+    gm_chg = fiscal_change_to_daily(fund_hist, "grossMargins", idx,
                                      kind="diff", periods=yoy_periods)
     if gm_chg.notna().any().any():
         F["gross_margin_chg"] = gm_chg
@@ -1103,9 +1035,9 @@ def _derived_fields(
         da_to_capex = _ratio(depamort.abs(), capex.abs(), positive_den=True)
         if da_to_capex.notna().any().any():
             F["da_to_capex"] = da_to_capex
-    da_growth = _fiscal_change_to_daily(fund_hist, "depAmort", idx,
+    da_growth = fiscal_change_to_daily(fund_hist, "depAmort", idx,
                                         kind="pct", periods=yoy_periods)
-    capex_growth = _fiscal_change_to_daily(fund_hist, "capex", idx,
+    capex_growth = fiscal_change_to_daily(fund_hist, "capex", idx,
                                            kind="pct", periods=yoy_periods)
     if da_growth.notna().any().any() and capex_growth.notna().any().any():
         F["da_minus_capex_growth"] = da_growth - capex_growth
@@ -1129,7 +1061,7 @@ def _derived_fields(
     # on the ex-lease base, so the FY2019 ASC-842 adoption jump is not read as investment
     _assets_field = ("totalAssetsExLease" if "totalAssetsExLease" in fund_hist.columns
                      else "totalAssets")
-    asset_growth = _fiscal_change_to_daily(fund_hist, _assets_field, idx,
+    asset_growth = fiscal_change_to_daily(fund_hist, _assets_field, idx,
                                            kind="pct", periods=yoy_periods)
     if asset_growth.notna().any().any():
         F["asset_growth"] = asset_growth
@@ -1137,13 +1069,13 @@ def _derived_fields(
     # ---- A5: Rule of 40 (growth+profitability health) = TTM revenue-growth% + FCF-
     # margin%; >40 is elite (a fast grower OR a cash cow). Plus RPO growth = forward
     # bookings momentum (only defined for filers that report RPO -> tech-gated). ----
-    rev_growth_pct = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
+    rev_growth_pct = fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
                                              kind="pct", periods=yoy_periods) * 100.0
     fcf_margin_pct = _ratio(fcf, revenue, positive_den=True) * 100.0
     rule40 = (rev_growth_pct + fcf_margin_pct).replace([np.inf, -np.inf], np.nan)
     if rule40.notna().any().any():
         F["rule_of_40"] = rule40
-    rpo_growth = _fiscal_change_to_daily(fund_hist, "remainingPerformanceObligation", idx,
+    rpo_growth = fiscal_change_to_daily(fund_hist, "remainingPerformanceObligation", idx,
                                          kind="pct", periods=yoy_periods)
     if rpo_growth.notna().any().any():
         F["rpo_growth"] = rpo_growth
@@ -1191,16 +1123,16 @@ def _derived_fields(
     # ---- LATEST-QUARTER momentum (discrete single quarter, not TTM) ----
     # captures acceleration/inflection that TTM smooths away. Needs the discrete
     # single-quarter columns emitted by the extractor.
-    q_rev_yoy = _fiscal_apply_to_daily(fund_hist, "revenue_q", idx,
+    q_rev_yoy = fiscal_apply_to_daily(fund_hist, "revenue_q", idx,
                                        lambda s: s.pct_change(yoy_periods))
     if q_rev_yoy.notna().any().any():
         F["q_rev_growth"] = q_rev_yoy
         # acceleration = this quarter's YoY minus the previous quarter's YoY
-        F["rev_growth_accel"] = _fiscal_apply_to_daily(
+        F["rev_growth_accel"] = fiscal_apply_to_daily(
             fund_hist, "revenue_q", idx,
             lambda s: s.pct_change(yoy_periods).diff(1))
 
-    q_ni_yoy = _fiscal_apply_to_daily(fund_hist, "netIncome_q", idx,
+    q_ni_yoy = fiscal_apply_to_daily(fund_hist, "netIncome_q", idx,
                                       lambda s: s.pct_change(yoy_periods))
     if q_ni_yoy.notna().any().any():
         F["q_earnings_growth"] = q_ni_yoy
@@ -1218,21 +1150,21 @@ def _derived_fields(
     # than the most-recent quarter jolt, which is less noisy and works at longer
     # horizons. Uses the fiscal history of level columns so seasonality is removed
     # by construction (same quarter each year -> yoy_periods filings back).
-    y_rev_growth = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
+    y_rev_growth = fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
                                            kind="pct", periods=yoy_periods)
     if y_rev_growth.notna().any().any():
         F["y_rev_growth"] = y_rev_growth
-        F["y_rev_growth_accel"] = _fiscal_apply_to_daily(
+        F["y_rev_growth_accel"] = fiscal_apply_to_daily(
             fund_hist, "totalRevenue", idx,
             lambda s, n=yoy_periods: s.pct_change(n).diff(1))
 
-    y_earnings_growth = _fiscal_change_to_daily(fund_hist, "netIncome", idx,
+    y_earnings_growth = fiscal_change_to_daily(fund_hist, "netIncome", idx,
                                                 kind="pct", periods=yoy_periods)
     if y_earnings_growth.notna().any().any():
         F["y_earnings_growth"] = y_earnings_growth
 
     # YoY change in TTM profit margin (margin expansion / contraction trend)
-    y_margin_chg = _fiscal_change_to_daily(fund_hist, "profitMargins", idx,
+    y_margin_chg = fiscal_change_to_daily(fund_hist, "profitMargins", idx,
                                            kind="diff", periods=yoy_periods)
     if y_margin_chg.notna().any().any():
         F["y_margin_vs_ttm"] = y_margin_chg
@@ -1278,9 +1210,9 @@ def _derived_fields(
     sga_intensity = _ratio(sga, revenue, positive_den=True)
     if not sga_intensity.empty and sga_intensity.notna().any().any():
         F["sga_intensity"] = sga_intensity
-    sga_growth = _fiscal_change_to_daily(fund_hist, "sellingGeneralAdmin", idx,
+    sga_growth = fiscal_change_to_daily(fund_hist, "sellingGeneralAdmin", idx,
                                          kind="pct", periods=yoy_periods)
-    rev_growth = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
+    rev_growth = fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
                                          kind="pct", periods=yoy_periods)
     if sga_growth.notna().any().any():
         F["sga_growth"] = sga_growth
@@ -1297,7 +1229,7 @@ def _derived_fields(
     acq_intensity = _ratio(acq.abs() if not acq.empty else acq, acq_den, positive_den=True)
     if not acq_intensity.empty and acq_intensity.notna().any().any():
         F["acquisition_intensity"] = acq_intensity
-    goodwill_growth = _fiscal_change_to_daily(fund_hist, "goodwill", idx,
+    goodwill_growth = fiscal_change_to_daily(fund_hist, "goodwill", idx,
                                               kind="pct", periods=yoy_periods)
     if goodwill_growth.notna().any().any():
         F["goodwill_growth"] = goodwill_growth
@@ -1319,8 +1251,8 @@ def _derived_fields(
     # Operating-leverage ELASTICITY = %ΔOperatingIncome / %ΔRevenue (>1 = scalable
     # model, exponential profit vs linear sales; <1 = diseconomies of scale). This is
     # the user's exact def, distinct from `operating_leverage` (revenue - SG&A growth).
-    oi_growth = _fiscal_change_to_daily(fund_hist, "operatingIncome", idx, kind="pct", periods=yoy_periods)
-    rev_growth_f = _fiscal_change_to_daily(fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods)
+    oi_growth = fiscal_change_to_daily(fund_hist, "operatingIncome", idx, kind="pct", periods=yoy_periods)
+    rev_growth_f = fiscal_change_to_daily(fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods)
     # guard: elasticity is meaningless (and explodes) when revenue is ~flat, so require
     # at least a 2% revenue move for the denominator.
     ol_el = _ratio(oi_growth, rev_growth_f.where(rev_growth_f.abs() >= 0.02))
@@ -1348,7 +1280,7 @@ def _derived_fields(
         if not nwc_el.empty and nwc_el.notna().any().any():
             F["nwc_elasticity"] = nwc_el
     # Fully-diluted shareholder dilution rate (YoY change in diluted shares).
-    dil_growth = _fiscal_change_to_daily(fund_hist, "dilutedShares", idx, kind="pct", periods=yoy_periods)
+    dil_growth = fiscal_change_to_daily(fund_hist, "dilutedShares", idx, kind="pct", periods=yoy_periods)
     if dil_growth.notna().any().any():
         F["diluted_shares_growth"] = dil_growth
     # EBIT interest coverage = EBIT / interest (the user's def; complements the
@@ -1410,7 +1342,7 @@ def build_fundamental_feature_panel(
     if fundamentals_history is None or fundamentals_history.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
-    yoy_periods = _infer_yoy_periods(fundamentals_history)
+    yoy_periods = infer_yoy_periods(fundamentals_history)
     fields = _derived_fields(fund_hist=fundamentals_history, 
                              idx=trading_index, 
                              close=stock_close,

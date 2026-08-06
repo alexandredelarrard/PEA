@@ -17,16 +17,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.fundamentals.fundamental_features import (
-    _FN_PBO_TAG,
-    _FN_PLAN_ASSETS_TAG,
-    _fiscal_change_to_daily,
-    _self_history_z,
-    _derived_fields,
-    build_fundamental_feature_panel,
-    build_state_panel,
-    load_notes_num_scoped,
-    load_tagged_facts)
+from src.data_aggregate.utils.common.pit import fiscal_change_to_daily
+from src.data_aggregate.utils.fundamentals.fundamental_features import _FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, _self_history_z, _derived_fields, build_fundamental_feature_panel, build_state_panel, load_notes_num_scoped, load_tagged_facts
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, _ratio, _peer_relative
 
 
@@ -133,7 +125,7 @@ def test_ratio_aligns_and_guards_denominator():
 
 
 # --------------------------------------------------------------------------- #
-# 2. _fiscal_change_to_daily                                                   #
+# 2. fiscal_change_to_daily                                                   #
 # --------------------------------------------------------------------------- #
 def test_fiscal_change_pct_and_diff():
     fund = pd.DataFrame({
@@ -144,8 +136,8 @@ def test_fiscal_change_pct_and_diff():
     })
     idx = pd.bdate_range("2019-01-01", "2020-06-01")
 
-    pct = _fiscal_change_to_daily(fund, "freeCashflow", idx, kind="pct")
-    diff = _fiscal_change_to_daily(fund, "grossMargins", idx, kind="diff")
+    pct = fiscal_change_to_daily(fund, "freeCashflow", idx, kind="pct")
+    diff = fiscal_change_to_daily(fund, "grossMargins", idx, kind="diff")
 
     # before the 2nd filing -> NaN; on/after -> YoY value, held forward.
     assert np.isnan(pct.loc[pd.Timestamp("2019-06-03"), "AAA"])
@@ -560,7 +552,7 @@ def test_pct_growth_signed_base_is_negative_when_losing_money():
         "netIncome": [-50.0, 50.0],
     })
     idx = pd.bdate_range("2019-01-01", "2020-06-01")
-    g = _fiscal_change_to_daily(fund, "netIncome", idx, kind="pct")
+    g = fiscal_change_to_daily(fund, "netIncome", idx, kind="pct")
     val = g.loc[pd.Timestamp("2020-03-02"), "AAA"]
 
     # (50 - (-50)) / (-50) = -2.0 -> negative growth off a loss base, as intended

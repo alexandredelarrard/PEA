@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.target.factors import fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.panel import _ratio, build_peer_relative_panel
 
 _YOY_TRADING_DAYS = 252   # ~1 year of trading days for the YoY headcount change

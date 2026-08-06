@@ -9,7 +9,6 @@ from logging.config import dictConfig
 from dotenv import load_dotenv, find_dotenv
 from omegaconf import DictConfig, OmegaConf
 
-from src.utils.utils_read_files import check_path_exist
 from src.utils.config import read_config
 from src.utils.seed import set_seed
 from src.utils.db import get_engine
@@ -18,6 +17,13 @@ from src.data_store.store import DataStore
 os.environ['LC_ALL'] = "C"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
+
+def check_path_exist(path):
+    path = Path(path)
+    if path.suffix:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        path.mkdir(parents=True, exist_ok=True)
 
 def define_global_paths(config: DictConfig):
     """Filesystem paths for NON-tabular artifacts only. All tabular data

@@ -22,33 +22,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.target.factors import momentum_characteristic
-
-
-def forward_return(prices: pd.DataFrame, horizon: int) -> pd.DataFrame:
-    return prices.shift(-horizon) / prices - 1.0
-
-
-def forward_compound(daily: pd.Series | pd.DataFrame, horizon: int):
-    """Compounded forward return over t+1..t+h from a daily-return series/frame.
-
-    A simple return <= -100% (1 + r <= 0) is undefined for log-compounding and
-    triggers `invalid value encountered in log1p`. That happens on bad ticks and,
-    notably, the April-2020 NEGATIVE oil-futures episode in the commodity factor.
-    We floor the return just above -1 so log1p stays finite -- a floored extreme
-    for a control factor, which keeps coverage (masking to NaN would blank a whole
-    ~horizon window of every stock's target, since factors are shared). NaNs are
-    preserved (they do not warn)."""
-    safe = daily.clip(lower=-0.999999)
-    log1p = np.log1p(safe)
-    fwd = np.expm1(log1p[::-1].rolling(horizon, min_periods=horizon).sum()[::-1].shift(-1))
-    return fwd
-
-
-def forward_cumchange(level_change: pd.Series | pd.DataFrame, horizon: int):
-    """Cumulative forward change over t+1..t+h from a daily-CHANGE series/frame."""
-    fwd = level_change[::-1].rolling(horizon, min_periods=horizon).sum()[::-1].shift(-1)
-    return fwd
+from src.data_aggregate.utils.common.prices import (
+    forward_compound,
+    forward_cumchange,
+    forward_return,
+    momentum_characteristic,
+)
+from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, XS_CLIP_LABEL, xs_rank_pct, xs_z
 
 
 def forward_sector_return(stock_returns, peer_dict, horizon):
@@ -133,21 +113,19 @@ def compute_epsilon(
 
 def cross_sectional_rank(eps: pd.DataFrame, min_names: int = 20) -> pd.DataFrame:
     valid = eps.notna().sum(axis=1) >= min_names
-    ranked = eps.rank(axis=1, pct=True, method="average")
+    ranked = xs_rank_pct(eps)
     ranked[~valid] = np.nan
     return ranked
 
 
 def cross_sectional_zscore(eps: pd.DataFrame, min_names: int = 20,
-                           clip: float | None = 3.0) -> pd.DataFrame:
+                           clip: float | None = XS_CLIP_LABEL) -> pd.DataFrame:
     """Cross-sectional z-score per day. Residual returns are fat-tailed, so the
     z-score is winsorized to +-`clip` (default 3): without it a handful of
     extreme names dominate an RMSE loss and make the target hard/unstable to fit.
     """
     valid = eps.notna().sum(axis=1) >= min_names
-    z = eps.sub(eps.mean(axis=1), axis=0).div(eps.std(axis=1), axis=0)
-    if clip is not None:
-        z = z.clip(-clip, clip)
+    z = xs_z(eps, clip=clip)
     z[~valid] = np.nan
     return z
 
@@ -182,10 +160,9 @@ def cross_sectional_neutralize(
     whose factor is missing (e.g. < 252 days of history) are left untouched so
     they still enter the cross-sectional ranking.
     """
-    f = factor.reindex_like(values)
-    mu = f.mean(axis=1)
-    sd = f.std(axis=1).replace(0.0, np.nan)
-    z = f.sub(mu, axis=0).div(sd, axis=0).clip(-4.0, 4.0)
+    # zero_sd_to_nan: on a day with no factor dispersion the slope is undefined, so this
+    # call site yields NaN rather than the fabricated +/-clip the unguarded sites produce.
+    z = xs_z(factor.reindex_like(values), clip=XS_CLIP_CHARACTERISTIC, zero_sd_to_nan=True)
 
     mask = values.notna() & z.notna()
     v = values.where(mask)

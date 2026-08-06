@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.common.frames import sanitize
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 
 _YOY = 252       # ~1 trading year
@@ -57,11 +58,6 @@ def _ttm_dividends(dividends_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     # full universe so non-payers are a real 0, aligned to trading days
     piv = piv.reindex(index=idx, columns=universe).fillna(0.0)
     return piv.rolling(_YOY, min_periods=1).sum()
-
-
-def _clean_ratio(num: pd.DataFrame, den: pd.DataFrame) -> pd.DataFrame:
-    """num / den with +/-inf -> NaN (den should already be masked to its valid sign)."""
-    return (num / den).replace([np.inf, -np.inf], np.nan)
 
 
 def _dividend_fields(dividends_hist: pd.DataFrame, close: pd.DataFrame,
@@ -95,17 +91,17 @@ def _dividend_fields(dividends_hist: pd.DataFrame, close: pd.DataFrame,
 
     # ---- dividend yield (reconciled): precise per-share/price where paid, source-B
     # fill for names the ex-date history misses, real 0 for true non-payers ----
-    yield_a = _clean_ratio(ttm_ps.where(ttm_ps > 0), close_pos)
+    yield_a = sanitize(ttm_ps.where(ttm_ps > 0) / close_pos)
     if not mcap.empty and not total.empty:
-        F["dividend_yield"] = yield_a.combine_first(_clean_ratio(total, mcap)).fillna(0.0)
+        F["dividend_yield"] = yield_a.combine_first(sanitize(total / mcap)).fillna(0.0)
     else:
-        F["dividend_yield"] = _clean_ratio(ttm_ps, close_pos).fillna(0.0)
+        F["dividend_yield"] = sanitize(ttm_ps / close_pos).fillna(0.0)
 
     # ---- growth (1y + 5y CAGR), per-share source A primary, source-B total fills ----
-    g1 = _clean_ratio(ttm_ps, ttm_ps.shift(_YOY).where(lambda x: x > 0)) - 1.0
+    g1 = sanitize(ttm_ps / ttm_ps.shift(_YOY).where(lambda x: x > 0)) - 1.0
     g5 = _cagr(ttm_ps, _FIVE_Y, 5.0)
     if not div_paid.empty:
-        g1 = g1.combine_first(_clean_ratio(div_paid, div_paid.shift(_YOY).where(lambda x: x > 0)) - 1.0)
+        g1 = g1.combine_first(sanitize(div_paid / div_paid.shift(_YOY).where(lambda x: x > 0)) - 1.0)
         g5 = g5.combine_first(_cagr(div_paid, _FIVE_Y, 5.0))
     F["dividend_growth"] = g1.replace([np.inf, -np.inf], np.nan)
     F["dividend_growth_5y"] = g5
@@ -118,11 +114,11 @@ def _dividend_fields(dividends_hist: pd.DataFrame, close: pd.DataFrame,
 
     # ---- payout ratio + FCF coverage (dividend safety) off the reconciled total ----
     if not total.empty and not net_income.empty:
-        F["dividend_payout_ratio"] = _clean_ratio(total, net_income.where(net_income > 0)
+        F["dividend_payout_ratio"] = sanitize(total / net_income.where(net_income > 0)
                                                    ).clip(lower=0.0, upper=3.0)
     if not total.empty and not fcf.empty:
         # FCF / dividends: >1 => free cash flow covers the payout (safe); <1 or <0 => not.
-        F["dividend_coverage"] = _clean_ratio(fcf, total.where(total > 0))
+        F["dividend_coverage"] = sanitize(fcf / total.where(total > 0))
 
     # ---- shareholder yield = dividend yield + buyback yield (- share issuance) ----
     if not shares.empty and shares.notna().any().any():

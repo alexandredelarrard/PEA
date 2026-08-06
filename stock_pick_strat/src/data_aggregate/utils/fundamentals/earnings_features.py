@@ -35,7 +35,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel import _ratio, build_peer_relative_panel
+from src.data_aggregate.utils.common.frames import ratio
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 
 # how many trading days before a report the forward estimate is allowed to apply
 FWD_FILL_LIMIT = 95
@@ -164,15 +165,15 @@ def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
     price = close.reindex(idx)
 
     if not fwd_eps.empty:
-        F["fwd_eps_yield"] = _ratio(fwd_eps, price)                 # next-quarter forward E/P
+        F["fwd_eps_yield"] = ratio(fwd_eps, price)                 # next-quarter forward E/P
         if not last_actual.empty:
-            F["eps_expectation_growth"] = _ratio(fwd_eps, last_actual, positive_den=True) - 1.0
+            F["eps_expectation_growth"] = ratio(fwd_eps, last_actual, positive_den=True) - 1.0
 
     # NTM (annual, forward-rolled) forward-earnings yield = 1 / forward P/E -- the
     # historical, backtestable replacement for the yfinance forwardPE snapshot.
     ntm_eps, _ = _ntm_ttm_from_prepped(df, idx)
     if not ntm_eps.empty and ntm_eps.notna().any().any():
-        F["forward_earnings_yield"] = _ratio(ntm_eps, price)        # NTM E/P (higher = cheaper)
+        F["forward_earnings_yield"] = ratio(ntm_eps, price)        # NTM E/P (higher = cheaper)
 
     last_surprise = _realized_to_daily(df, "surprise_pct", idx)
     if not last_surprise.empty:

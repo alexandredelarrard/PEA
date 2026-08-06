@@ -35,21 +35,13 @@ import logging
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.xs import long_xs_standardize
+
 
 def _parse_member(m: str) -> tuple[float, str]:
     """'-f_x' -> (-1, 'f_x'); 'f_x' -> (+1, 'f_x')."""
     m = str(m)
     return (-1.0, m[1:].strip()) if m.startswith("-") else (1.0, m.strip())
-
-
-def _xs_standardize(panel: pd.DataFrame, cols: list[str], method: str,
-                    clip: float) -> pd.DataFrame:
-    """Cross-sectionally standardize each column within each date."""
-    g = panel.groupby("date")[cols]
-    if method == "rank":
-        return (g.rank(pct=True) - 0.5) * 2.0            # -> ~[-1, 1], mean ~0
-    z = g.transform(lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
-    return z.clip(-clip, clip)
 
 
 def missing_members(panel: pd.DataFrame, groups: dict) -> dict[str, list[str]]:
@@ -95,7 +87,7 @@ def build_composites(panel: pd.DataFrame, groups: dict, method: str = "zscore",
             log.warning("Composites: NO configured member is present -- none built.")
         return panel
 
-    z = _xs_standardize(panel, present, method, clip)
+    z = long_xs_standardize(panel, present, method, clip)
 
     out = panel.copy()
     for theme, members in parsed.items():

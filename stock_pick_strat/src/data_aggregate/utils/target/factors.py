@@ -37,31 +37,20 @@ value / quality           -> need fundamentals HISTORY. With snapshot-only
 """
 
 from __future__ import annotations
+import logging
+
 import numpy as np
 import pandas as pd
 
-# the point-in-time pivot + daily market cap moved to utils/common/pit.py: they are
-# generic filing-history accessors, and keeping them here made this factor-RETURN module
-# a dependency of nine feature builders that only wanted a point-in-time frame.
+# the point-in-time pivot + daily market cap moved to utils/common/pit.py, and the
+# price-derived primitives to utils/common/prices.py: they are generic, and keeping them
+# here made this factor-RETURN module a dependency of nine feature builders that only
+# wanted a point-in-time frame or a rolling std.
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.common.prices import momentum_characteristic, trailing_vol
+from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, xs_z
 
-
-def _xs_z(df: pd.DataFrame, clip: float = 4.0) -> pd.DataFrame:
-    """Cross-sectional z-score per day, clipped."""
-    mu = df.mean(axis=1)
-    sd = df.std(axis=1)
-    z = df.sub(mu, axis=0).div(sd, axis=0)
-    return z.clip(-clip, clip)
-
-
-def momentum_characteristic(stock_close: pd.DataFrame) -> pd.DataFrame:
-    """12-1 price momentum characteristic (skip the most recent month).
-
-    Single source of truth: feeds the momentum style factor, the `mom_12_1`
-    model feature, AND the target's momentum neutralization. Point-in-time
-    (uses only past prices), so it never leaks future information.
-    """
-    return stock_close.shift(21) / stock_close.shift(252) - 1.0
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -85,7 +74,7 @@ def build_characteristics(
     chars["momentum"] = momentum_characteristic(stock_close)
 
     # Residual/low volatility: negative trailing vol (low vol = long side).
-    chars["resvol"] = -stock_ret.rolling(resvol_window).std()
+    chars["resvol"] = -trailing_vol(stock_ret, resvol_window)
 
     if fundamentals_history is not None and not fundamentals_history.empty:
         # Historical daily market cap from SEC shares * price (moves daily).
@@ -112,7 +101,7 @@ def build_characteristics(
                     common = [c for c in num.columns if c in mcap.columns]
                     if common:
                         yld = (num[common] / mcap[common]).replace([np.inf, -np.inf], np.nan)
-                        val_parts.append(_xs_z(yld))
+                        val_parts.append(xs_z(yld, clip=XS_CLIP_CHARACTERISTIC))
             if val_parts:
                 chars["value"] = sum(val_parts) / len(val_parts)
 
@@ -124,9 +113,9 @@ def build_characteristics(
         q_parts = []
         for f in (roe, gm, pm):
             if not f.empty:
-                q_parts.append(_xs_z(f))
+                q_parts.append(xs_z(f, clip=XS_CLIP_CHARACTERISTIC))
         if not de.empty:
-            q_parts.append(-_xs_z(de))
+            q_parts.append(-xs_z(de, clip=XS_CLIP_CHARACTERISTIC))
         if q_parts:
             chars["quality"] = sum(q_parts) / len(q_parts)
 
@@ -144,7 +133,7 @@ def characteristic_to_factor_return(char: pd.DataFrame, stock_ret: pd.DataFrame)
       f(t)     = sum_i w_i(t-1) * ret_i(t).
     Lagged weights => no look-ahead.
     """
-    z = _xs_z(char)
+    z = xs_z(char, clip=XS_CLIP_CHARACTERISTIC)
     z = z.sub(z.mean(axis=1), axis=0)                      # ensure long-short (mean 0)
     gross = z.abs().sum(axis=1).replace(0, np.nan)
     w = z.div(gross, axis=0)                               # unit gross exposure
@@ -201,38 +190,9 @@ def macro_change_factors(
     return pd.DataFrame(out, index=trading_index)
 
 
-def commodity_factor_returns(
-    close: pd.DataFrame,
-    tickers: dict | None = None,
-) -> pd.DataFrame:
-    """
-    Daily RETURNS of commodity proxies, taken from the price panel (fetched OHLCV-only
-    as `other_tickers` via fetch_market_prices; they live in `prices` but are never
-    part of the analysed universe / features).
-
-    tickers maps factor name -> price column, e.g.
-        {"oil": "CL=F", "gold": "GC=F"}   or   {"oil": "USO", "gold": "GLD"}
-    """
-    out = {}
-    for name, col in tickers.items():
-        if col in close.columns:
-            out[name] = close[col].pct_change()
-    return pd.DataFrame(out, index=close.index)
-
-
-def currency_factor_returns(
-    close: pd.DataFrame,
-    tickers: dict | None = None,
-) -> pd.DataFrame:
-    """
-    Daily RETURNS of currency proxies, taken from the price panel (fetched OHLCV-only
-    as `other_tickers` via fetch_market_prices; in `prices` but never a feature/peer).
-    """
-    out = {}
-    for name, col in tickers.items():
-        if col in close.columns:
-            out[name] = close[col].pct_change()
-    return pd.DataFrame(out, index=close.index)
+# `commodity_factor_returns` / `currency_factor_returns` had byte-identical bodies and are
+# now the single `prices.price_column_returns(close, tickers)`; `assemble_factor_panel`
+# already treated them identically (both concatenated as returns, neither in `macro_cols`).
 
 def filter_daily_factors(
     panel: pd.DataFrame,
@@ -259,7 +219,7 @@ def filter_daily_factors(
         else:
             keep.append(c)
     if verbose and dropped:
-        print(f"[filter_daily_factors] dropped non-daily-moving factors: {dropped}")
+        logger.warning("dropped non-daily-moving factors: %s", dropped)
     return panel[keep], dropped
 
 

@@ -1,59 +1,32 @@
 """
-panel.py  (src/data_aggregate/utils/panel.py)
----------------------------------------------
-The four primitives EVERY cube panel builder needs: safe division, cross-sectional
-winsorization, the peer-relative z-score, and the {name: wide frame} -> long
-`f_<name>_vs_peers` / `f_<name>_xs` assembler.
+panel.py  (src/data_aggregate/utils/common/panel.py)
+---------------------------------------------------
+The PEER-RELATIVE panel: turn a {name: daily wide frame} dict into the long feature
+panel every cube part is made of, each characteristic expressed as
 
-They used to live in `fundamental_features.py`, which made that 1600-line module a
-dependency of all eleven other panel builders just for two helpers -- and created a
-genuine import CYCLE: `earnings_features` imported `_ratio` from `fundamental_features`
-at module level, while `fundamental_features._derived_fields` imported `ntm_ttm_eps`
-back from `earnings_features` *inside the function body* to dodge it. Extracting the
-primitives into this leaf module (pandas/numpy only, no project imports) removes the
-cycle, so both sides import at the top of the file as normal.
+    f_<name>_vs_peers    z-score against the firm's direct competitors
+    f_<name>_xs          percentile against the whole universe
 
-Anything a second panel builder needs belongs here; anything specific to the
-fundamentals panel stays in `fundamental_features.py`.
+Shared by all thirteen panel builders -- the single hottest symbol in the package.
+
+The generic pieces this module used to also own now live beside it in `common/`: safe
+division and inf-sanitizing in `frames.py`, and every per-day cross-sectional transform in
+`xs.py` (which is where the five duplicate standardizers were merged). What is left here is
+the one thing that is genuinely about PEERS.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-_WINSOR_LO, _WINSOR_HI = 0.01, 0.99
+from src.data_aggregate.utils.common.xs import XS_CLIP_PEER, winsorize_xs, xs_rank_pct
 
 
-def _ratio(num: pd.DataFrame, den: pd.DataFrame, positive_den: bool = False) -> pd.DataFrame:
-    """Column-aligned num/den on the common tickers, inf -> NaN. When
-    `positive_den` the denominator is masked to strictly-positive values."""
-    if num.empty or den.empty:
-        return pd.DataFrame()
-    cols = num.columns.intersection(den.columns)
-    if len(cols) == 0:
-        return pd.DataFrame()
-    d = den[cols]
-    d = d.where(d > 0) if positive_den else d.where(d != 0)
-    out = num[cols] / d
-    return out.replace([np.inf, -np.inf], np.nan)
-
-
-def _winsorize_xs(df: pd.DataFrame, lo: float = _WINSOR_LO,
-                  hi: float = _WINSOR_HI) -> pd.DataFrame:
-    """Clip each ROW (date) to its cross-sectional [lo, hi] quantiles across tickers.
-    NaN-safe: an all-NaN row yields NaN bounds -> clip is a no-op there."""
-    if df is None or df.empty:
-        return df
-    lo_q = df.quantile(lo, axis=1)
-    hi_q = df.quantile(hi, axis=1)
-    return df.clip(lower=lo_q, upper=hi_q, axis=0)
-
-
-def _peer_relative(
+def peer_relative(
     field_df: pd.DataFrame,
     peer_dict: dict,
     min_peers: int = 3,
-    clip: float = 8.0,
+    clip: float = XS_CLIP_PEER,
 ) -> pd.DataFrame:
     """
     (stock - peer_weighted_mean) / peer_weighted_std, per date, per stock.
@@ -105,7 +78,7 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict) -> pd.DataFrame:
             continue
         # Guarantee a numeric frame: a stray Python `None` / object cell — a KPI genuinely
         # absent for a name (e.g. sparse earnings-call coverage, "no value to compare with") —
-        # must be coerced to NaN. Otherwise the NaN-tolerant peer-z math (`_peer_relative`)
+        # must be coerced to NaN. Otherwise the NaN-tolerant peer-z math (`peer_relative`)
         # AND the `_xs` rank below both raise "unsupported operand type(s): NoneType and float"
         # the moment a single None reaches them. Coercion is the correct semantics here
         # (absent = NaN), not a workaround, and a no-op on already-float frames.
@@ -117,12 +90,12 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict) -> pd.DataFrame:
         # The stacked long columns are cast to float32: these are z-scores / percentile ranks
         # bounded to O(1), so float64 storage is wasted — halving them (and the concat +
         # defrag copy below) is what keeps the many-feature panels off the OOM killer.
-        rel = _winsorize_xs(_peer_relative(fdf, peer_dict))
+        rel = winsorize_xs(peer_relative(fdf, peer_dict))
         s = rel.stack().astype("float32")
         s.index.set_names(["date", "ticker"], inplace=True)
         long_frames.append(s.rename(f"f_{name}_vs_peers"))
 
-        xs = fdf.rank(axis=1, pct=True, method="average")
+        xs = xs_rank_pct(fdf)
         s2 = xs.stack().astype("float32")
         s2.index.set_names(["date", "ticker"], inplace=True)
         long_frames.append(s2.rename(f"f_{name}_xs"))

@@ -106,11 +106,10 @@ def real_pipeline(real_frames):
     returns, factor panel, rolling betas and multi-horizon targets."""
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.targets import build_targets
+    from src.data_aggregate.utils.common.prices import price_column_returns
     from src.data_aggregate.utils.target.factors import (
         build_style_factor_returns,
         macro_change_factors,
-        commodity_factor_returns,
-        currency_factor_returns,
         assemble_factor_panel,
     )
     from src.data_peers.utils.sector_peers import (
@@ -138,8 +137,8 @@ def real_pipeline(real_frames):
         macro_chg = macro_change_factors(macro, stock_close.index)
     else:
         macro_chg = pd.DataFrame(index=stock_close.index)
-    commodity_returns = commodity_factor_returns(close_full, tickers={"oil": "CL=F", "gold": "GC=F"})
-    currency_returns = currency_factor_returns(close_full, tickers={"USD/EUR": "USDEUR=X"})
+    commodity_returns = price_column_returns(close_full, {"oil": "CL=F", "gold": "GC=F"})
+    currency_returns = price_column_returns(close_full, {"USD/EUR": "USDEUR=X"})
     factor_panel, macro_cols = assemble_factor_panel(
         mkt_ret, style, commodity_returns, currency_returns, macro_chg)
 

@@ -1,6 +1,6 @@
 """The z-score features are winsorized to a per-day cross-sectional [1%, 99%]
 band so a few extreme names can't dominate the standardized value / the model
-(src/data_aggregate/utils/fundamental_features.py::_winsorize_xs, applied to the
+(src/data_aggregate/utils/fundamental_features.py::winsorize_xs, applied to the
 peer-z `_vs_peers` and the self-history `_vs_hist` outputs). The rank `_xs`
 features are already outlier-proof and are left untouched.
 """
@@ -12,7 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.panel import _winsorize_xs, _peer_relative, build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
+from src.data_aggregate.utils.common.xs import winsorize_xs
 
 
 def test_peer_panel_no_fragmentation_warning():
@@ -44,7 +45,7 @@ def test_peer_panel_no_fragmentation_warning():
 def test_winsorize_xs_clips_each_row_to_1_99():
     # one date, 100 tickers with values 0..99; extremes must be pulled to the 1/99 pct
     row = pd.DataFrame([{f"t{i}": float(i) for i in range(100)}], index=[pd.Timestamp("2024-01-02")])
-    w = _winsorize_xs(row)
+    w = winsorize_xs(row)
     assert w.iloc[0].max() == pytest.approx(row.iloc[0].quantile(0.99))
     assert w.iloc[0].min() == pytest.approx(row.iloc[0].quantile(0.01))
     # interior values unchanged; only the 1% tails clipped
@@ -52,7 +53,7 @@ def test_winsorize_xs_clips_each_row_to_1_99():
             == pytest.approx(row.iloc[0].sort_values().iloc[1:-1].to_numpy()))
     # all-NaN row -> no crash, stays NaN
     nanrow = pd.DataFrame([{f"t{i}": np.nan for i in range(5)}])
-    assert _winsorize_xs(nanrow).isna().all().all()
+    assert winsorize_xs(nanrow).isna().all().all()
 
     print("\n=== SANITY CHECK: cross-sectional 1/99 winsorize ===")
     print(f"  values 0..99 -> max clipped {row.iloc[0].max():.0f} -> {w.iloc[0].max():.2f} "
@@ -69,8 +70,8 @@ def test_peer_z_outlier_is_trimmed_but_rank_untouched():
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
 
     d = dates[-1]
-    raw = _peer_relative(field, peers)                    # un-winsorized peer-z
-    wins = _winsorize_xs(raw)
+    raw = peer_relative(field, peers)                    # un-winsorized peer-z
+    wins = winsorize_xs(raw)
 
     # T0's raw peer-z is extreme (hits the internal +-8 clip); winsorize then pulls
     # it down to the row's cross-sectional 99th percentile (< raw -> trimmed).

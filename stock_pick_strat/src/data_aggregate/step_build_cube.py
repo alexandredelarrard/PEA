@@ -38,12 +38,11 @@ from src.data_aggregate.utils.extras.superinvestor_features import (
 from src.data_aggregate.utils.extras.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.extras.short_interest_features import build_short_interest_feature_panel
 from src.data_aggregate.utils.assemble.composites import build_composites as build_composite_signals
+from src.data_aggregate.utils.common.prices import price_column_returns
 from src.data_aggregate.utils.target.factors import (
     build_style_factor_returns,
     macro_change_factors,
     assemble_factor_panel,
-    commodity_factor_returns,
-    currency_factor_returns
 )
 from src.data_aggregate.utils.assemble.cube import build_cube_dataframe, _betas_to_long, _labels_to_long
 from src.data_peers.step_deduce_peers import StepDeducePeers
@@ -308,8 +307,8 @@ class StepBuildCube(Step):
         self.macro_cols = list(macro_chg.columns)
 
         #retreive commo info
-        commodity_returns = commodity_factor_returns(self.close, tickers={"oil": "CL=F", "gold": "GC=F"})
-        currency_returns = currency_factor_returns(self.close, tickers={"USD/EUR": "USDEUR=X"})
+        commodity_returns = price_column_returns(self.close, {"oil": "CL=F", "gold": "GC=F"})
+        currency_returns = price_column_returns(self.close, {"USD/EUR": "USDEUR=X"})
 
         self.factor_panel, self.macro_cols = assemble_factor_panel(self.mkt_ret, style, commodity_returns, currency_returns, macro_chg)
         self._log.info(

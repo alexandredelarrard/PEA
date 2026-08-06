@@ -23,7 +23,8 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.common.panel import _ratio, build_peer_relative_panel
+from src.data_aggregate.utils.common.frames import ratio
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 
 _YOY_TRADING_DAYS = 252   # ~1 year of trading days for the YoY headcount change
 
@@ -48,7 +49,7 @@ def _employee_fields(
     # revenue per employee = TTM revenue / employees (both historical, PIT)
     if fundamentals is not None:
         revenue = fundamentals_to_daily(fundamentals, "totalRevenue", idx)
-        rev_per_emp = _ratio(revenue, employees, positive_den=True)
+        rev_per_emp = ratio(revenue, employees, positive_den=True)
         if not rev_per_emp.empty and rev_per_emp.notna().any().any():
             F["revenue_per_employee"] = rev_per_emp
             # YoY GROWTH in revenue-per-employee: is revenue outgrowing headcount
@@ -65,7 +66,7 @@ def _employee_fields(
         # headcount scaling 1:1 with (often acquired) revenue -> integration not landing.
         if "employee_growth" in F:
             rev_growth = revenue / revenue.shift(_YOY_TRADING_DAYS) - 1.0
-            el = _ratio(F["employee_growth"], rev_growth.where(rev_growth.abs() >= 0.02))
+            el = ratio(F["employee_growth"], rev_growth.where(rev_growth.abs() >= 0.02))
             if not el.empty and el.notna().any().any():
                 F["headcount_elasticity"] = el
     return F

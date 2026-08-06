@@ -19,7 +19,8 @@ import pytest
 
 from src.data_aggregate.utils.common.pit import fiscal_change_to_daily
 from src.data_aggregate.utils.fundamentals.fundamental_features import _FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, _self_history_z, _derived_fields, build_fundamental_feature_panel, build_state_panel, load_notes_num_scoped, load_tagged_facts
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel, _ratio, _peer_relative
+from src.data_aggregate.utils.common.frames import ratio
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
 
 
 # --------------------------------------------------------------------------- #
@@ -107,20 +108,20 @@ def _synth_fundamentals():
 
 
 # --------------------------------------------------------------------------- #
-# 1. _ratio                                                                    #
+# 1. ratio                                                                    #
 # --------------------------------------------------------------------------- #
 def test_ratio_aligns_and_guards_denominator():
     idx = pd.bdate_range("2020-01-01", periods=3)
     num = pd.DataFrame({"A": [10.0, 10, 10], "B": [4.0, 4, 4]}, index=idx)
     den = pd.DataFrame({"A": [2.0, 0.0, -1.0], "B": [8.0, 8, 8]}, index=idx)
 
-    out = _ratio(num, den, positive_den=True)
+    out = ratio(num, den, positive_den=True)
     assert out.loc[idx[0], "A"] == 5.0            # 10/2
     assert np.isnan(out.loc[idx[1], "A"])         # /0 -> NaN
     assert np.isnan(out.loc[idx[2], "A"])         # negative den masked
     assert (out["B"] == 0.5).all()
 
-    print("\n=== SANITY CHECK: _ratio ===")
+    print("\n=== SANITY CHECK: ratio ===")
     print("  10/2=5, 10/0=NaN, 10/(-1)=NaN (positive_den), 4/8=0.5  -> all correct.")
 
 
@@ -151,14 +152,14 @@ def test_fiscal_change_pct_and_diff():
 
 
 # --------------------------------------------------------------------------- #
-# 3. _peer_relative: correct z + explosion guard                               #
+# 3. peer_relative: correct z + explosion guard                               #
 # --------------------------------------------------------------------------- #
 def test_peer_relative_zscore_correct():
     idx = pd.bdate_range("2020-01-01", periods=1)
     field = pd.DataFrame({"A": [4.0], "B": [1.0], "C": [2.0], "D": [3.0]}, index=idx)
     peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
 
-    rel = _peer_relative(field, peers)
+    rel = peer_relative(field, peers)
     # peer mean=2, population std=sqrt(2/3)=0.8165 -> (4-2)/0.8165 = 2.449
     assert abs(rel.loc[idx[0], "A"] - 2.449) < 1e-2
 
@@ -178,7 +179,7 @@ def test_peer_relative_does_not_explode_on_degenerate_peers():
     }, index=idx)
     peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
 
-    rel = _peer_relative(field, peers, clip=8.0)
+    rel = peer_relative(field, peers, clip=8.0)
     assert np.isnan(rel.loc[idx[0], "A"]), "identical peers (std 0) must give NaN"
     assert abs(rel.loc[idx[1], "A"]) <= 8.0 + 1e-9, "near-degenerate std must be clipped"
 
@@ -722,10 +723,10 @@ if __name__ == "__main__":
 # --------------------------------------------------------------------------- #
 # Regression: a None cell (object-dtype field frame) must NOT crash the peer   #
 # panel — it should be treated as a missing value (the earnings_call_embedding  #
-# "unsupported operand type(s): NoneType and float" bug at _peer_relative).     #
+# "unsupported operand type(s): NoneType and float" bug at peer_relative).     #
 # --------------------------------------------------------------------------- #
 def test_peer_panel_tolerates_none_cells():
-    from src.data_aggregate.utils.common.panel import _peer_relative
+    from src.data_aggregate.utils.common.panel import peer_relative
 
     idx = pd.bdate_range("2024-01-01", periods=4)
     tickers = ["A", "B", "C", "D"]
@@ -742,9 +743,9 @@ def test_peer_panel_tolerates_none_cells():
     )
     assert fdf["A"].dtype == object and fdf.isin([None]).to_numpy().any()
 
-    # pre-fix, _peer_relative on the raw object frame raises the exact reported error
+    # pre-fix, peer_relative on the raw object frame raises the exact reported error
     with pytest.raises(TypeError):
-        _peer_relative(fdf, peers)
+        peer_relative(fdf, peers)
 
     # the shared entry point coerces None -> NaN, so the panel builds cleanly
     panel = build_peer_relative_panel({"kpi": fdf}, peers)
@@ -758,7 +759,7 @@ def test_peer_panel_tolerates_none_cells():
     assert np.isfinite(panel.loc[(idx[0], "A"), "f_kpi_xs"])
 
     print("\n=== SANITY CHECK: peer panel tolerates None cells ===")
-    print("  raw _peer_relative raises TypeError('NoneType' vs float) on an object frame; "
+    print("  raw peer_relative raises TypeError('NoneType' vs float) on an object frame; "
           "build_peer_relative_panel now coerces None -> NaN, builds f_kpi_{vs_peers,xs}, "
           "and the missing cells are NaN (not a crash). earnings_call_embedding bug fixed.")
 

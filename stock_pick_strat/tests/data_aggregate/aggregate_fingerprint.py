@@ -301,15 +301,16 @@ def compute() -> dict:
     from src.data_aggregate.utils.extras.attention_features import build_combined_attention_panel
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.assemble.composites import build_composites
-    from src.data_aggregate.utils.fundamentals.dividend_features import _clean_ratio, build_dividend_feature_panel
+    from src.data_aggregate.utils.fundamentals.dividend_features import build_dividend_feature_panel
     from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel
     from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
-    from src.data_aggregate.utils.target.factors import (
-        commodity_factor_returns, currency_factor_returns, daily_market_cap,
-        fundamentals_to_daily, momentum_characteristic, _xs_z,
+    from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+    from src.data_aggregate.utils.common.prices import (
+        forward_compound, forward_cumchange, forward_return, momentum_characteristic,
+        price_column_returns, trailing_vol,
     )
     from src.data_aggregate.utils.momentum.features import (
-        build_feature_panel, compute_raw_features, cross_sectional_standardize, _safe,
+        build_feature_panel, compute_raw_features,
     )
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_aggregate.utils.extras.governance_features import build_governance_feature_panel
@@ -317,10 +318,12 @@ def compute() -> dict:
     from src.data_aggregate.utils.extras.institutional_features import (
         _quarter_features, build_institutional_feature_panel,
     )
-    from src.data_aggregate.utils.common.panel import (
-        _ratio, _winsorize_xs, build_peer_relative_panel,
+    from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
+    from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+    from src.data_aggregate.utils.common.xs import (
+        winsorize_xs, xs_rank_pct, xs_standardize, xs_z,
     )
-    from src.data_aggregate.utils.fundamentals.sector_features import _safe_div, build_sector_feature_panel
+    from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
     from src.data_aggregate.utils.extras.short_interest_features import (
         build_short_interest_feature_panel,
     )
@@ -329,7 +332,6 @@ def compute() -> dict:
     )
     from src.data_aggregate.utils.target.targets import (
         build_targets_multi, cross_sectional_rank, cross_sectional_zscore,
-        forward_compound, forward_cumchange, forward_return,
     )
 
     rng = _rng()
@@ -421,11 +423,14 @@ def compute() -> dict:
     ret_fx = fx["returns"]
 
     out["prim.momentum_characteristic"] = frame_digest(momentum_characteristic(close))
-    out["prim.mom_12_1_inline"] = frame_digest(_safe(close.shift(21) / close.shift(252) - 1.0))
+    # the inline copy that `features.mom_12_1` used to carry -- kept as an independent
+    # REFERENCE expression so the two can be asserted equal (see
+    # test_momentum_dedup_is_provably_identical); the feature now calls the shared helper.
+    out["prim.mom_12_1_inline"] = frame_digest(sanitize(close.shift(21) / close.shift(252) - 1.0))
     out["prim.trailing_vol"] = frame_digest(pd.concat({
-        "vol_21": _safe(returns.rolling(21).std()),
-        "vol_63": _safe(returns.rolling(63).std()),
-        "resvol_63": -returns.rolling(63).std(),
+        "vol_21": sanitize(trailing_vol(returns, 21)),
+        "vol_63": sanitize(trailing_vol(returns, 63)),
+        "resvol_63": -trailing_vol(returns, 63),
     }, axis=1))
     out["prim.daily_returns"] = frame_digest(close.pct_change(fill_method=None))
 
@@ -435,42 +440,44 @@ def compute() -> dict:
         "return_h20": forward_return(fx["other_close"].reindex(columns=["SPY"]), 20),
         # the seasonal feature's PARTIAL-window policy (min_periods = round(0.6h)),
         # which differs from the target's full-window policy above
-        "compound_h20_partial": np.expm1(
-            np.log1p(ret_fx.clip(lower=-0.999999))[::-1]
-            .rolling(20, min_periods=12).sum()[::-1].shift(-1)),
+        "compound_h20_partial": forward_compound(ret_fx, 20, min_periods=12),
     }, axis=1))
 
+    # one z + one rank implementation, each call site keeping ITS clip and ITS
+    # zero-dispersion policy (see utils/common/xs.py). The two raw `.rank` spellings stay
+    # as independent references that xs_rank_pct must reproduce.
     out["prim.xs_standardize"] = frame_digest(pd.concat({
-        "factors_xs_z_clip4": _xs_z(m),
-        "features_rank": cross_sectional_standardize(m, "rank"),
-        "features_zscore_clip3": cross_sectional_standardize(m, "zscore"),
+        "factors_xs_z_clip4": xs_z(m, clip=4.0),
+        "features_rank": xs_standardize(m, "rank"),
+        "features_zscore_clip3": xs_standardize(m, "zscore"),
         "targets_rank_min5": cross_sectional_rank(m, min_names=5),
         "targets_zscore_min5": cross_sectional_zscore(m, min_names=5),
-        "winsorize_xs": _winsorize_xs(m),
+        "winsorize_xs": winsorize_xs(m),
         "rank_pct_plain": m.rank(axis=1, pct=True),
         "rank_pct_average": m.rank(axis=1, pct=True, method="average"),
     }, axis=1))
 
     out["prim.ratio_helpers"] = frame_digest(pd.concat({
-        "ratio": _ratio(num, den),
-        "ratio_positive_den": _ratio(num, den, positive_den=True),
-        "ratio_mismatched_cols": _ratio(num, fx["den_short"]),
-        "clean_ratio": _clean_ratio(num, den),
-        "safe": _safe(num / den),
+        "ratio": ratio(num, den),
+        "ratio_positive_den": ratio(num, den, positive_den=True),
+        "ratio_mismatched_cols": ratio(num, fx["den_short"]),
+        "clean_ratio": sanitize(num / den),
+        "safe": sanitize(num / den),
     }, axis=1))
     out["prim.safe_div"] = frame_digest(pd.DataFrame({
-        "plain": _safe_div(num["P0"], den["P0"]),
-        "positive_den": _safe_div(num["P0"], den["P0"], True),
-        "none_den": _safe_div(num["P0"], None),
+        "plain": safe_div(num["P0"], den["P0"]),
+        "positive_den": safe_div(num["P0"], den["P0"], True),
+        "none_den": safe_div(num["P0"], None),
     }))
 
+    # commodity_factor_returns and currency_factor_returns had byte-identical bodies and are
+    # now one `price_column_returns`; the three keys keep their original meaning, and the
+    # third proves the "commodity" function applied to the FX column always agreed with the
+    # "currency" one -- which is why the merge is safe.
     out["prim.price_column_returns"] = frame_digest(pd.concat({
-        "commodity": commodity_factor_returns(fx["other_close"],
-                                              {"oil": "CL=F", "gold": "GC=F"}),
-        "currency": currency_factor_returns(fx["other_close"], {"USD/EUR": "USDEUR=X"}),
-        # the same function applied to the same column: the two are byte-identical today
-        "commodity_on_fx_col": commodity_factor_returns(fx["other_close"],
-                                                        {"USD/EUR": "USDEUR=X"}),
+        "commodity": price_column_returns(fx["other_close"], {"oil": "CL=F", "gold": "GC=F"}),
+        "currency": price_column_returns(fx["other_close"], {"USD/EUR": "USDEUR=X"}),
+        "commodity_on_fx_col": price_column_returns(fx["other_close"], {"USD/EUR": "USDEUR=X"}),
     }, axis=1))
 
     out["prim.quarter_features"] = frame_digest(

@@ -59,7 +59,7 @@ DAILY_MACRO_LEVELS = {
     "yield_10y": "d_yield_10y",
     "yield_curve_10y2y": "d_yield_curve",
     "vix": "d_vix",
-    "breakeven_10y": "d_breakeven_10y",   # FRED T10YIE (add to fetch_macro)
+    "breakeven_10y": "d_breakeven_10y",   # FRED T10YIE Inflation
 }
 
 # --------------------------------------------------------------------------- #
@@ -69,7 +69,7 @@ def build_characteristics(
     stock_close: pd.DataFrame,
     stock_ret: pd.DataFrame,
     fundamentals_history: pd.DataFrame | None,
-    resvol_window: int = 63,
+    resvol_window: int = 63, # 3 month stock
 ) -> dict:
     """
     Returns {factor_name: characteristic DataFrame (date x ticker)}, higher =
@@ -79,7 +79,7 @@ def build_characteristics(
     idx = stock_close.index
     chars: dict[str, pd.DataFrame] = {}
 
-    # Momentum 12-1 (skip most recent month).
+    # Momentum 12-1 (skip most recent month). max 75% of values missing
     chars["momentum"] = momentum_characteristic(stock_close)
 
     # Residual/low volatility: negative trailing vol (low vol = long side).

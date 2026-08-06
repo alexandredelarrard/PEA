@@ -61,6 +61,7 @@ class StepCubeTarget(Step):
 
     def run(self, full: bool = False) -> None:
 
+        # global variable definition 
         horizons = self._cfg.targets.horizons
         max_h = max(horizons)
         calendar = load_trading_calendar(self._parts)
@@ -69,9 +70,14 @@ class StepCubeTarget(Step):
                              trading_index=calendar,
                              extra_back=max_h)
 
+        # load inputs 
         frames = self._load_frames(window.since)
         fundamentals = self._load_fundamentals()
+
+        # aggregate and compute needed netral variables 
         panel, macro_cols = self._factor_panel(frames, fundamentals)
+
+        # fit betas and build target neutrals to betas 
         betas = self._estimate_betas(frames, panel)
         labels = self._build_targets(frames, betas, panel, macro_cols, horizons)
         n = self._persist(labels, betas, window, calendar, max_h)
@@ -120,7 +126,10 @@ class StepCubeTarget(Step):
         behind another wrapper."""
 
         frames.require("close", "ret")
-        chars = build_characteristics(frames.close, frames.ret, fundamentals, resvol_window=63)
+        chars = build_characteristics(stock_close=frames.close, 
+                                      stock_ret=frames.ret, 
+                                      fundamentals_history=fundamentals, 
+                                      resvol_window=63)
         macro_chg = self._macro_changes(frames)
         commodity, currency = self._asset_factors(frames)
         if frames.mkt_ret is None:

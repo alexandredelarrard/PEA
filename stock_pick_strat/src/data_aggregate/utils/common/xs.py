@@ -60,7 +60,8 @@ def xs_rank_pct(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def xs_z(df: pd.DataFrame, clip: float | None, *,
-         zero_sd_to_nan: bool = False) -> pd.DataFrame:
+         zero_sd_to_nan: bool = False,
+         eps: float = 1e-12) -> pd.DataFrame:
     """THE cross-sectional z-score, per date across tickers.
 
     `clip` is required (see the module docstring); pass `None` for unclipped.
@@ -72,6 +73,9 @@ def xs_z(df: pd.DataFrame, clip: float | None, *,
     sd = df.std(axis=1)
     if zero_sd_to_nan:
         sd = sd.replace(0.0, np.nan)
+    else:
+        # Guard against sd being zero or near-zero due to floating point precision
+        sd = sd.mask(sd < eps, np.nan)
     z = df.sub(mu, axis=0).div(sd, axis=0)
     return z if clip is None else z.clip(-clip, clip)
 

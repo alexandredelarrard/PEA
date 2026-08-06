@@ -106,9 +106,7 @@ def estimate_all_betas(
     Multi-factor rolling ridge betas for every stock.
 
     `filter_factors`: drop non-daily-moving factors (stale monthly/weekly macro)
-    ONCE, up front, so every stock regresses on the same clean factor set. This
-    replaces the old hardcoded try/except drop. If you already filtered the panel
-    in step_build_cube (via macro_factors.assemble_factor_panel), it's a no-op.
+    ONCE, up front, so every stock regresses on the same clean factor set. 
     """
     if filter_factors:
         factor_panel, dropped = filter_daily_factors(factor_panel)

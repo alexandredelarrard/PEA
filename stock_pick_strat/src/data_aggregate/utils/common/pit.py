@@ -77,12 +77,15 @@ def daily_market_cap(fundamentals_history: pd.DataFrame, close: pd.DataFrame) ->
     with price every day), replacing the old current-mcap*price-ratio proxy.
     Requires a 'sharesOutstanding' column in the fundamentals history.
     """
+
     shares = fundamentals_to_daily(fundamentals_history, "sharesOutstanding", close.index)
     if shares.empty:
         return pd.DataFrame(index=close.index)
+
     cols = [c for c in shares.columns if c in close.columns]
     if not cols:
         return pd.DataFrame(index=close.index)
+
     mcap = close[cols].mul(shares[cols])
     return mcap.where(mcap > 0)
 

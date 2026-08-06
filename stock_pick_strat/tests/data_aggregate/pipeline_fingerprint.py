@@ -186,7 +186,7 @@ def compute() -> dict:
         "market": returns.mean(axis=1),
         "momentum": momentum_characteristic(close).mean(axis=1),
     })
-    betas = estimate_all_betas(returns, factor_panel, sector_ret)
+    betas = estimate_all_betas(returns, factor_panel)
     out["aggregate.betas"] = frame_digest(
         pd.concat({k: v for k, v in betas.items() if isinstance(v, pd.DataFrame)}, axis=1)
         if isinstance(betas, dict) else betas)
@@ -199,7 +199,7 @@ def compute() -> dict:
     # silently proves nothing. The value only gates which DAYS survive, not how the
     # residual is computed, so the computation under test is unaffected.
     targets = build_targets_multi(
-        close, returns, peers, betas, factor_panel, macro_cols=[],
+        close, betas, factor_panel, macro_cols=[],
         horizons=(30, 60, 90), labels=("rank", "zscore"), min_names=5,
         sector_groups={"sector": {t: "S" for t in tickers}})
     for horizon, by_label in targets.items():

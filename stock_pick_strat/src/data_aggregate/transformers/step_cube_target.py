@@ -48,8 +48,8 @@ _CURRENCY_TICKERS = {"USD/EUR": "USDEUR=X"}
 
 class StepCubeTarget(Step):
 
-    # the style factors need close + returns; the beta regression needs the peer-basket return
-    _FIELDS = ("close", "ret", "sector_ret")
+    # the style factors need close + returns
+    _FIELDS = ("close", "ret")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -153,9 +153,9 @@ class StepCubeTarget(Step):
     # ---- betas ---- #
     def _estimate_betas(self, frames: PriceFrames, panel: pd.DataFrame) -> dict:
         cfg = self._cfg.betas
-        frames.require("ret", "sector_ret")
+        frames.require("ret")
         betas = estimate_all_betas(
-            frames.ret, panel, frames.sector_ret,
+            frames.ret, panel,
             window=cfg.window, min_obs=cfg.min_obs,
             ridge=cfg.get("ridge", 5.0), step=cfg.get("step", 5))
 
@@ -173,12 +173,10 @@ class StepCubeTarget(Step):
         return betas
 
     # ---- targets ---- #
-    def _gics_groups(self) -> dict[str, dict[str, str]] | None:
-        """Neutralize to the ACTUAL GICS sector + industry (per-day within-group demeaning)
-        INSTEAD of the return-correlation peer basket, so sector / industry membership
-        cannot predict the target -- if it could, it would dominate the model."""
-        if not self._cfg.targets.get("neutralize_sectors", True):
-            return None
+    def _gics_groups(self) -> dict[str, dict[str, str]]:
+        """The ACTUAL GICS sector + industry (per-day within-group demeaning), so
+        sector / industry membership cannot predict the target -- if it could, it
+        would dominate the model."""
         return load_gics_maps(self._context)
 
     def _build_targets(self, frames: PriceFrames, betas: dict, panel: pd.DataFrame,
@@ -189,7 +187,7 @@ class StepCubeTarget(Step):
         label_types = list(cfg.get("labels", [cfg.get("label", "rank")]))
         sector_groups = self._gics_groups()
         labels = build_targets_multi(
-            close=frames.close, stock_returns=frames.ret, peer_dict=frames.peers,
+            close=frames.close,
             betas=betas, factor_panel=panel, macro_cols=macro_cols,
             horizons=tuple(horizons), labels=tuple(label_types),
             min_names=cfg.min_names,
@@ -199,7 +197,7 @@ class StepCubeTarget(Step):
                        for per in labels.values() for df in per.values())
         self._log.info("Built factor-neutral targets %s for horizons %s "
                        "(GICS sector+industry-neutral=%s, non-null=%s)",
-                       label_types, horizons, sector_groups is not None, non_null)
+                       label_types, horizons, bool(sector_groups), non_null)
         return labels
 
     # ---- persist ---- #

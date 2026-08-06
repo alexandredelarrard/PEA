@@ -228,10 +228,15 @@ def test_the_diluted_period_average_is_no_longer_a_shares_outstanding_candidate(
     DURATION fact it also escaped the priority coalesce (which groups by period_start,
     NaT for the instant counts), so both were emitted and one was picked by frame
     ordering -- 2,452 rows table-wide resolved to the average, 2,056 to a true count."""
-    assert SHARES_TAGS[SHARES_OUTSTANDING_FIELD] == [
-        "CommonStockSharesOutstanding", "EntityCommonStockSharesOutstanding"]
+    candidates = SHARES_TAGS[SHARES_OUTSTANDING_FIELD]
     assert DILUTED_SHARES_TAGS == ["WeightedAverageNumberOfDilutedSharesOutstanding"]
-    assert not any("WeightedAverage" in t for t in SHARES_TAGS[SHARES_OUTSTANDING_FIELD])
+    assert not any("WeightedAverage" in t for t in candidates)
+    # Every candidate must be a POINT-IN-TIME count of shares outstanding -- the property
+    # this test exists to protect. `SharesOutstandingAsConvertedBasis` (added ahead of the
+    # two below for the multi-class filers that publish an already-converted total) is one:
+    # an instant fact dated at period end, not a period average.
+    assert candidates == ["SharesOutstandingAsConvertedBasis",
+                          "CommonStockSharesOutstanding", "EntityCommonStockSharesOutstanding"]
 
 
 def _shares_row(tag: str, period_end: str, value: float) -> dict:

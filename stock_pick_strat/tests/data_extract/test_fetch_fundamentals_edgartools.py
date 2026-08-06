@@ -12,13 +12,18 @@ import logging
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import (
-    backfill_fiscal_period_from_filing, build_tag_frames,
+    _cover_page_shares_fallback, backfill_fiscal_period_from_filing, build_tag_frames,
 )
 from src.data_extract.utils.fundamentals.fundamentals_periods import decumulate_quarterly_flow
+from src.data_extract.utils.fundamentals.fundamentals_tags import SHARES_TAGS
 from src.data_store.store import DataStore
+
+_CLASS_AXIS = "us-gaap:StatementClassOfStockAxis"
+_CLASS_AXIS_COL = "dim_us-gaap_StatementClassOfStockAxis"
 
 
 def _fact(concept, value, period_start, period_end, period_type, fiscal_year, fiscal_period,
@@ -30,6 +35,18 @@ def _fact(concept, value, period_start, period_end, period_type, fiscal_year, fi
         "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
         "is_dimensioned": is_dimensioned,
     }
+
+
+def _class_fact(concept, value, member, date, *, second_axis=None):
+    """An INSTANT share-count fact broken out by share class, shaped like edgartools'
+    `XBRL.facts.to_dataframe()` output: one `dim_<prefix>_<Axis>` column per axis plus
+    the flat `dimension`/`member` pair (which holds only the FIRST axis)."""
+    row = _fact(concept, value, None, None, "instant", None, None,
+               is_dimensioned=True, period_instant=date)
+    row |= {"dimension": _CLASS_AXIS, "member": member, _CLASS_AXIS_COL: member}
+    if second_axis is not None:
+        row[f"dim_{second_axis}"] = "member-x"
+    return row
 
 
 def test_build_tag_frames_excludes_dimensioned_duplicate():
@@ -534,6 +551,439 @@ def test_build_tag_frames_excludes_dimensioned_facts_when_members_disagree():
     assert out.empty
 
 
+def test_build_tag_frames_sums_cover_page_share_classes_into_the_company_total():
+    """A MULTI-CLASS filer tags NO undimensioned share count anywhere: every fact for
+    both candidate tags carries a `StatementClassOfStockAxis` member and the classes
+    report different numbers, so all of them are (correctly) refused as "the total" and
+    `sharesOutstanding` came out NULL -- 36 of 498 tickers were >=60% NULL on exactly
+    this. Real META Q2-2026 figures: cover page Class A 2,205,128,509 + Class B
+    342,377,716, balance sheet 2,206,000,000 + 342,000,000 (rounded to millions).
+    The cover page's per-class enumeration is exhaustive by SEC requirement, so its sum
+    is the company total."""
+    facts_df = pd.DataFrame([
+        _class_fact("us-gaap:CommonStockSharesOutstanding", 2_206_000_000.0,
+                   "us-gaap:CommonClassAMember", "2026-06-30"),
+        _class_fact("us-gaap:CommonStockSharesOutstanding", 342_000_000.0,
+                   "us-gaap:CommonClassBMember", "2026-06-30"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 2_205_128_509.0,
+                   "us-gaap:CommonClassAMember", "2026-07-24"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 342_377_716.0,
+                   "us-gaap:CommonClassBMember", "2026-07-24"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["value"] == 2_205_128_509.0 + 342_377_716.0
+    assert row["source_tag"] == "dei:EntityCommonStockSharesOutstanding"
+    assert pd.Timestamp(row["period_end"]) == pd.Timestamp("2026-07-24")
+
+
+def test_cover_page_class_total_reaches_the_filings_own_period():
+    """End-to-end contract with `_cover_page_shares_fallback`: the class sum is dated at
+    the COVER date (a few weeks after the period it reports on), so the current-period
+    filter drops it and only the fallback makes it reachable -- the same route the
+    single-class filers already take, re-stamped onto the period of report."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 101_432_177.0,
+                   "us-gaap:CommonClassAMember", "2026-07-17"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 749_349_405.0,
+                   "us-gaap:CommonClassBMember", "2026-07-17"),
+    ])
+    tagged = build_tag_frames(facts_df, SHARES_TAGS)
+    por = pd.Timestamp("2026-06-30")
+    current = tagged[pd.to_datetime(tagged["period_end"]).dt.normalize() == por]
+    assert current.empty                       # cover date is AFTER the period of report
+    out = _cover_page_shares_fallback(tagged, current, por)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 101_432_177.0 + 749_349_405.0   # real UPS Q2-2026
+    assert pd.Timestamp(out.iloc[0]["period_end"]) == por
+
+
+def test_build_tag_frames_never_admits_one_share_class_as_the_company_total():
+    """Confirmed on CME: each per-class balance-sheet fact is tagged TWICE (class axis
+    alone, then class + `StatementEquityComponentsAxis`), so BOTH Class A (359,275,000)
+    and Class B (3,000) reach a repeat count of 2 and pass the modal-repeat rule -- which
+    reads redundancy, not meaning. `drop_duplicates(keep="last")` then decided between
+    them on frame order alone. A class-dimensioned share count is a COMPONENT and must
+    never be admitted as the total, so the balance-sheet tag yields nothing here and the
+    cover-page sum (359,576,125 + 3,138) answers instead."""
+    facts_df = pd.DataFrame([
+        _class_fact("us-gaap:CommonStockSharesOutstanding", 359_275_000.0,
+                   "us-gaap:CommonClassAMember", "2026-06-30"),
+        _class_fact("us-gaap:CommonStockSharesOutstanding", 359_275_000.0,
+                   "us-gaap:CommonClassAMember", "2026-06-30",
+                   second_axis="us-gaap_StatementEquityComponentsAxis"),
+        _class_fact("us-gaap:CommonStockSharesOutstanding", 3_000.0,
+                   "us-gaap:CommonClassBMember", "2026-06-30"),
+        _class_fact("us-gaap:CommonStockSharesOutstanding", 3_000.0,
+                   "us-gaap:CommonClassBMember", "2026-06-30",
+                   second_axis="us-gaap_StatementEquityComponentsAxis"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 359_576_125.0,
+                   "us-gaap:CommonClassAMember", "2026-07-08"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 3_138.0,
+                   "cme:ClassBCommonStockClassB1Member", "2026-07-08"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 359_576_125.0 + 3_138.0
+    assert pd.Timestamp(out.iloc[0]["period_end"]) == pd.Timestamp("2026-07-08")
+
+
+def test_build_tag_frames_class_sum_counts_a_twice_tagged_class_once():
+    """The same class re-tagged under a SECOND axis must not be added twice. Only facts
+    whose ONLY dimension is the class axis are summed, and the flat `dimension` column
+    cannot see the second axis (edgartools stores only the FIRST) -- so the `dim_*`
+    columns are what makes this safe."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 100_000_000.0,
+                   "us-gaap:CommonClassAMember", "2026-07-24"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 100_000_000.0,
+                   "us-gaap:CommonClassAMember", "2026-07-24",
+                   second_axis="us-gaap_StatementEquityComponentsAxis"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 40_000_000.0,
+                   "us-gaap:CommonClassBMember", "2026-07-24"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 140_000_000.0
+
+
+def test_build_tag_frames_class_sum_takes_a_roll_up_member_alone():
+    """A member whose value equals the sum of all the others is a ROLL-UP of them, not a
+    sibling to add -- confirmed on V (`CommonClassB1B2AndB3` beside its own B-1/B-2/B-3)
+    and BRK-B (`EquivalentClassA`). Adding it would overstate the count by ~2x."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 100_000_000.0,
+                   "us-gaap:CommonClassAMember", "2026-07-21"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 50_000_000.0,
+                   "us-gaap:CommonClassBMember", "2026-07-21"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 150_000_000.0,
+                   "v:CommonClassAAndBMember", "2026-07-21"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 150_000_000.0
+
+
+def test_build_tag_frames_class_sum_keeps_two_equally_sized_classes():
+    """Two classes of EQUAL size each satisfy "my value is the sum of the others", so the
+    roll-up rule must only fire when EXACTLY ONE member does -- otherwise a legitimate
+    50/50 split would be halved."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 60_000_000.0,
+                   "us-gaap:CommonClassAMember", "2026-07-21"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 60_000_000.0,
+                   "us-gaap:CommonClassBMember", "2026-07-21"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 120_000_000.0
+
+
+def test_build_tag_frames_class_sum_includes_a_class_below_the_magnitude_floor():
+    """`SHARE_COUNT_MIN_ABS` screens the TOTAL, never the individual classes: a real
+    class routinely sits under a million shares on its own (BRK-B Class A 505,697, ERIE
+    Class B 2,542, SPG Class B 8,000), and screening components would drop exactly the
+    small classes the sum exists to add in."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 505_697.0,
+                   "us-gaap:CommonClassAMember", "2026-04-14"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 1_398_309_000.0,
+                   "us-gaap:CommonClassBMember", "2026-04-14"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 505_697.0 + 1_398_309_000.0   # real BRK-B Q1-2026
+
+
+def test_build_tag_frames_class_sum_still_obeys_the_magnitude_floor_on_the_total():
+    """The floor is applied to the total, so a filer whose whole class enumeration is
+    1,000,000x too small is still rejected rather than shipped."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 500.0,
+                   "us-gaap:CommonClassAMember", "2026-04-14"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 1_390.0,
+                   "us-gaap:CommonClassBMember", "2026-04-14"),
+    ])
+    assert build_tag_frames(facts_df, SHARES_TAGS).empty
+
+
+def test_build_tag_frames_never_sums_the_balance_sheet_share_classes():
+    """Only the COVER-PAGE enumeration is summable. The balance-sheet parenthetical is a
+    presentation footnote whose per-class facts are routinely INCOMPLETE -- confirmed on
+    EL, which tags `CommonStockSharesOutstanding` for Class B ONLY (114,507,344) against
+    a true 361,794,915, and on ACN, which tags only Class X (302,358 of 667,810,900).
+    Summing it would ship a silently wrong total, so the cover page answers instead."""
+    facts_df = pd.DataFrame([
+        _class_fact("us-gaap:CommonStockSharesOutstanding", 114_507_344.0,
+                   "us-gaap:CommonClassBMember", "2026-03-31"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 247_287_571.0,
+                   "us-gaap:CommonClassAMember", "2026-04-24"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 114_507_344.0,
+                   "us-gaap:CommonClassBMember", "2026-04-24"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 247_287_571.0 + 114_507_344.0   # real EL Q3-FY2026
+    assert pd.Timestamp(out.iloc[0]["period_end"]) == pd.Timestamp("2026-04-24")
+
+
+def _scalar_fact(concept, value, date, member=None):
+    """An undimensioned (or singly class-dimensioned) ratio/percentage fact."""
+    row = _fact(concept, value, None, None, "instant", None, None,
+               is_dimensioned=member is not None, period_instant=date, unit_ref="U_pure")
+    if member is not None:
+        row |= {"dimension": _CLASS_AXIS, "member": member, _CLASS_AXIS_COL: member}
+    return row
+
+
+def _ibkr_equity_evidence():
+    """IBKR's two equity bases: parent $5.363bn of a consolidated $20.472bn = 26.2%,
+    which is what corroborates its tagged 26.6% parent ownership as GROUP-level."""
+    return [
+        _fact("us-gaap:StockholdersEquity", 5_363_000_000.0, None, None,
+             "instant", None, None, period_instant="2026-06-30"),
+        _fact("us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+             20_472_000_000.0, None, None, "instant", None, None, period_instant="2026-06-30"),
+    ]
+
+
+def test_build_tag_frames_converts_a_class_by_its_own_tagged_conversion_ratio():
+    """Where classes do NOT convert 1:1 the raw sum is wrong, not merely imprecise -- and
+    the filer publishes the factor. Real ERIE Q2-2026: Class A 46,189,068 + Class B 2,542,
+    with `erie:CommonStockConversionRatio` = 2,400 on the Class B member. 46,189,068 +
+    2,542 x 2,400 = 52,289,868, which is Yahoo's all-classes figure to the share (the raw
+    sum, 46,191,610, is 12% light)."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 46_189_068.0,
+                   "us-gaap:CommonClassAMember", "2026-07-24"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 2_542.0,
+                   "us-gaap:CommonClassBMember", "2026-07-24"),
+        _scalar_fact("erie:CommonStockConversionRatio", 2_400.0, "2026-06-30",
+                    member="us-gaap:CommonClassBMember"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 52_289_868.0
+
+
+def test_build_tag_frames_ignores_a_conversion_ratio_at_or_below_one():
+    """A ratio <= 1 states the INVERSE direction (CVNA tags 0.8 = Class A shares per LLC
+    unit) or the identity. Applying it would SHRINK a class, so it is ignored and the
+    plain sum stands -- fill-only in both directions."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 719_916_415.0,
+                   "us-gaap:CommonClassAMember", "2026-07-27"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 380_547_355.0,
+                   "us-gaap:CommonClassBMember", "2026-07-27"),
+        _scalar_fact("cvna:CommonStockConversionRatio", 0.8, "2026-06-30",
+                    member="us-gaap:CommonClassAMember"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 719_916_415.0 + 380_547_355.0   # real CVNA Q2-2026
+
+
+def test_build_tag_frames_scales_the_senior_class_by_an_economic_equivalent_percentage():
+    """BRK states the relationship as a PERCENTAGE instead: `brka:EconomicEquivalent-
+    PercentageOfClassBCommonShareToClassACommonShare` = 6.67e-4, i.e. one Class A share is
+    worth ~1,500 Class B. Applied to the SMALLEST class (a share worth 1,500 of the other
+    is necessarily the rarer one), 505,697 x 1,499.25 + 1,398,309,000 = 2.156e9 -- Yahoo's
+    figure is 2,156,853,797, and the raw sum (1.399e9) is 35% light."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 505_697.0,
+                   "us-gaap:CommonClassAMember", "2026-04-14"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 1_398_309_000.0,
+                   "us-gaap:CommonClassBMember", "2026-04-14"),
+        _scalar_fact("brka:EconomicEquivalentPercentageOfClassBCommonShareToClassACommonShare",
+                    6.67e-4, "2026-03-31"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == pytest.approx(2_156_853_797.0, rel=5e-4)
+
+
+def test_build_tag_frames_grosses_an_up_c_count_up_to_the_consolidated_group():
+    """IBKR's Class B is 400 shares, so the IBG LLC members hold NO paired common stock --
+    the registered classes cover only the corporate slice. `MinorityInterestOwnership-
+    PercentageByParent` = 0.266 says so (Class A is 99.99998% of the sum against a tagged
+    26.6%), and grossing up puts the count on the same consolidated basis as netIncome and
+    equity: 453,078,171 / 0.266 = 1.703e9, against Yahoo's 1,701,309,599."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 453_077_771.0,
+                   "us-gaap:CommonClassAMember", "2026-08-05"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 400.0,
+                   "us-gaap:CommonClassBMember", "2026-08-05"),
+        _scalar_fact("us-gaap:MinorityInterestOwnershipPercentageByParent", 0.266,
+                    "2026-07-31"),
+        *_ibkr_equity_evidence(),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == pytest.approx(1_701_309_599.0, rel=3e-3)
+
+
+def test_build_tag_frames_leaves_an_up_c_count_alone_when_the_classes_already_cover_it():
+    """The mirror case, and the reason the gross-up is conditional rather than automatic.
+    Each CVNA Class B share is paired 1:1 with an exchangeable LLC unit, so Class A is
+    65.4% of the class sum against a tagged 65% -- the filing's own ownership disclosure
+    CONFIRMING that the sum is already the whole group in Class A units. Dividing by 0.65
+    would count the Garcia interest twice (1.100e9 -> 1.693e9)."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 719_916_415.0,
+                   "us-gaap:CommonClassAMember", "2026-07-27"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 380_547_355.0,
+                   "us-gaap:CommonClassBMember", "2026-07-27"),
+        _scalar_fact("us-gaap:MinorityInterestOwnershipPercentageByParent", 0.65,
+                    "2026-06-30"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 1_100_463_770.0
+
+
+def test_build_tag_frames_ignores_a_stale_ownership_percentage():
+    """IBKR's ownership footnote also restates the ORIGINAL 2007 IPO split (10%/90%)
+    alongside today's 26.6%. Taking the stale one would gross the count up ~10x, so the
+    LATEST-dated qualifying fact is the one used."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 453_077_771.0,
+                   "us-gaap:CommonClassAMember", "2026-08-05"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 400.0,
+                   "us-gaap:CommonClassBMember", "2026-08-05"),
+        _scalar_fact("us-gaap:MinorityInterestOwnershipPercentageByParent", 0.10,
+                    "2007-05-03"),
+        _scalar_fact("us-gaap:MinorityInterestOwnershipPercentageByParent", 0.266,
+                    "2026-07-31"),
+        *_ibkr_equity_evidence(),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == pytest.approx(1_701_309_599.0, rel=3e-3)
+
+
+def test_build_tag_frames_ignores_an_ownership_percentage_that_is_not_group_level():
+    """`MinorityInterestOwnershipPercentageByParent` is NOT self-identifying -- filers use
+    it just as readily for one SUBSIDIARY or joint venture, and believing it there
+    multiplies the share count. Both cases below are real and were caught only by the live
+    cross-check: CMCSA tags 0.30 and UHS 0.20 for holdings of theirs, which grossed their
+    counts up by 3.33x and 5.00x. The percentage must match the parent's share of
+    consolidated EQUITY (here ~0.98) before it is believed."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 3_546_404_000.0,
+                   "us-gaap:CommonClassAMember", "2026-07-23"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 2_232_573.0,
+                   "us-gaap:CommonClassBMember", "2026-07-23"),
+        _scalar_fact("us-gaap:MinorityInterestOwnershipPercentageByParent", 0.30,
+                    "2026-06-30"),
+        _fact("us-gaap:StockholdersEquity", 98_000_000_000.0, None, None,
+             "instant", None, None, period_instant="2026-06-30"),
+        _fact("us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+             100_000_000_000.0, None, None, "instant", None, None, period_instant="2026-06-30"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 3_546_404_000.0 + 2_232_573.0
+
+
+def test_build_tag_frames_no_gross_up_without_equity_evidence():
+    """Fails CLOSED: with no equity to corroborate it, a tagged ownership percentage is
+    not acted on at all, so the plain class sum stands."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 453_077_771.0,
+                   "us-gaap:CommonClassAMember", "2026-08-05"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 400.0,
+                   "us-gaap:CommonClassBMember", "2026-08-05"),
+        _scalar_fact("us-gaap:MinorityInterestOwnershipPercentageByParent", 0.266,
+                    "2026-07-31"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 453_077_771.0 + 400.0
+
+
+def test_build_tag_frames_prefers_a_tagged_as_converted_total_over_everything():
+    """V publishes the whole company already converted into Class A units, undimensioned
+    and dated at PERIOD END (1.880e9 at 2026-06-30, vs Yahoo's 1.867e9) -- so it needs
+    neither the class summing nor any conversion arithmetic, and being priority-0 it also
+    keeps the measurement date aligned with every other instant field."""
+    facts_df = pd.DataFrame([
+        _fact("v:SharesOutstandingAsConvertedBasis", 1_880_000_000.0, None, None,
+             "instant", None, None, period_instant="2026-06-30"),
+        _class_fact("us-gaap:CommonStockSharesOutstanding", 1_702_000_000.0,
+                   "us-gaap:CommonClassAMember", "2026-06-30"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 1_704_113_000.0,
+                   "us-gaap:CommonClassAMember", "2026-07-21"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    at_period_end = out[pd.to_datetime(out["period_end"]) == pd.Timestamp("2026-06-30")]
+    assert len(at_period_end) == 1
+    assert at_period_end.iloc[0]["value"] == 1_880_000_000.0
+    assert at_period_end.iloc[0]["source_tag"] == "v:SharesOutstandingAsConvertedBasis"
+
+
+def test_build_tag_frames_conversion_rules_do_not_touch_an_ordinary_filer():
+    """None of the three hooks exists for a filer with one basis, so the plain class sum
+    is returned unchanged -- the fill-only property that makes them safe to add."""
+    facts_df = pd.DataFrame([
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 2_205_128_509.0,
+                   "us-gaap:CommonClassAMember", "2026-07-24"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 342_377_716.0,
+                   "us-gaap:CommonClassBMember", "2026-07-24"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 2_205_128_509.0 + 342_377_716.0
+
+
+def test_build_tag_frames_reported_total_wins_over_the_class_sum():
+    """FILL-ONLY, like every other recovery in this module: a filer that DID report an
+    undimensioned cover-page total (confirmed: CRWD, VEEV, WBD) keeps it -- nothing is
+    summed for that date, so the two can never both produce a row and be picked between
+    arbitrarily."""
+    facts_df = pd.DataFrame([
+        _fact("dei:EntityCommonStockSharesOutstanding", 253_614_100.0, None, None,
+             "instant", None, None, period_instant="2026-02-27"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 250_000_000.0,
+                   "us-gaap:CommonClassAMember", "2026-02-27"),
+        _class_fact("dei:EntityCommonStockSharesOutstanding", 3_614_100.0,
+                   "us-gaap:CommonClassBMember", "2026-02-27"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 253_614_100.0
+
+
+def test_build_tag_frames_single_class_filer_is_untouched_by_the_class_rules():
+    """The overwhelming majority of filers tag an UNDIMENSIONED balance-sheet share
+    count. Nothing above may change them: the balance-sheet tag still wins on priority
+    and still carries the period-end date, so no measurement date shifts."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:CommonStockSharesOutstanding", 137_622_108.0, None, None,
+             "instant", None, None, period_instant="2025-12-31"),
+        _fact("dei:EntityCommonStockSharesOutstanding", 137_500_000.0, None, None,
+             "instant", None, None, period_instant="2026-02-17"),
+    ])
+    out = build_tag_frames(facts_df, SHARES_TAGS)
+    at_period_end = out[pd.to_datetime(out["period_end"]) == pd.Timestamp("2025-12-31")]
+    assert len(at_period_end) == 1
+    assert at_period_end.iloc[0]["value"] == 137_622_108.0
+    assert at_period_end.iloc[0]["source_tag"] == "us-gaap:CommonStockSharesOutstanding"
+
+
+def test_build_tag_frames_class_rules_are_scoped_to_the_share_count_field():
+    """The class-of-stock rules are scoped to `SHARE_CLASS_COMPONENT_FIELDS`. Any other
+    field dimensioned on that axis keeps the pre-existing behavior -- two disagreeing
+    members with no undimensioned duplicate stay EXCLUDED, never summed."""
+    facts_df = pd.DataFrame([
+        _class_fact("us-gaap:CommonStockValue", 100.0, "us-gaap:CommonClassAMember",
+                   "2026-06-30"),
+        _class_fact("us-gaap:CommonStockValue", 250.0, "us-gaap:CommonClassBMember",
+                   "2026-06-30"),
+    ])
+    assert build_tag_frames(facts_df, {"commonStockValue": ["CommonStockValue"]}).empty
+
+
 def test_build_tag_frames_reads_instant_facts_from_period_instant_column():
     """INSTANT (balance-sheet) facts carry their date in a SEPARATE
     `period_instant` column, not `period_end` (both NaN for them in edgartools'
@@ -748,4 +1198,18 @@ def test_fundamentals_facts_upsert_is_idempotent(tmp_path):
     print("  fixed against live MAA data -- totalAssets/stockholdersEquity/totalLiabilities")
     print("  were silently empty before this fix);")
     print("  Q1-Q4 decumulation reconciles exactly to FY; repeated save is idempotent (no dupes).")
+    print("  MULTI-CLASS share counts: a class-dimensioned fact is never admitted as the")
+    print("  company total (CME/CVNA used to store ONE class, chosen by frame order), and")
+    print("  the total is rebuilt by summing the COVER-PAGE classes only -- the balance-sheet")
+    print("  parenthetical is never summed (EL tags Class B only, ACN Class X only, V/BRK-B")
+    print("  add a roll-up member). Roll-ups taken alone, twice-tagged classes counted once,")
+    print("  sub-million classes kept in the sum while the floor screens the total, a reported")
+    print("  total always wins, and single-class filers resolve exactly as before.")
+    print("  NON-1:1 CLASSES and UP-C structures, all from factors the filers tag themselves:")
+    print("  ERIE x2400 on Class B -> 52,289,868 (exact vs Yahoo, raw sum was 12% light);")
+    print("  BRK-B economic-equivalent 6.67e-4 on the senior class -> 2.156e9 (was 35% light);")
+    print("  V's own as-converted total wins outright at period end; IBKR grossed up by its")
+    print("  tagged 26.6% parent ownership -> 1.703e9, while CVNA is LEFT ALONE because its")
+    print("  65.4% class split already agrees with the tagged 65% (paired LLC units).")
+    print("  An inverse ratio (<=1) and a stale 2007 ownership fact are both ignored.")
     print("  Validated.")

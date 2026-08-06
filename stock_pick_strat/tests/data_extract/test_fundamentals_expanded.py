@@ -181,9 +181,12 @@ def test_extract_concept_coalesces_split_tags():
     roe = fe[fe["returnOnEquity"].notna()]
     assert prof["fiscal_end"].min() <= "2017-12-31", "profitMargins truncated to recent tag"
     assert roe["fiscal_end"].min() <= "2017-12-31", "ROE truncated to recent tag"
-    # net income prefers NetIncomeLoss where present (150), else ProfitLoss (100)
+    # net income is on the CONSOLIDATED basis: `ProfitLoss` (100, incl. NCI) outranks
+    # `NetIncomeLoss` (150, parent only) so income covers the same entity as revenue and
+    # assets, which have no parent-only concept at all. The 50 difference IS this filer's
+    # noncontrolling interest, and including it is the point -- see `FLOW_TAGS`.
     last = fe.sort_values("fiscal_end").iloc[-1]
-    assert last["netIncome"] == pytest.approx(150 * 4)          # TTM of the recent quarters
+    assert last["netIncome"] == pytest.approx(100 * 4)          # TTM of the recent quarters
 
     print("\n=== SANITY CHECK: candidate-tag coalescing (CVX/AVGO regression) ===")
     print(f"  revenue span {span.min().date()}..{span.max().date()} (both era tags merged)")

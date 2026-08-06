@@ -30,6 +30,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+from typing import NamedTuple
+
 import numpy as np
 import pandas as pd
 from edgar import Company, set_identity
@@ -50,12 +52,17 @@ from src.data_extract.utils.fundamentals.fundamentals_periods import (
     resolve_fiscal_year_by_filing_calendar,
 )
 from src.data_extract.utils.fundamentals.fundamentals_tags import (
+    CLASS_OF_STOCK_AXIS_SUFFIX,
     COVER_PAGE_SHARES_MAX_LAG_DAYS, COVER_PAGE_SHARES_TAG, EMPLOYEES_FIELD,
+    PARENT_OWNERSHIP_EQUITY_TOLERANCE,
+    PARENT_OWNERSHIP_MISMATCH_MIN, PARENT_OWNERSHIP_PERCENTAGE_TAG,
+    SHARE_CLASS_CONVERSION_RATIO_TAG, SHARE_CLASS_EQUIVALENT_PERCENTAGE_MARKER,
     EXTRA_FLOW_TAGS, EXTRA_STOCK_TAGS, FIELD_TAG_DENYLIST,
     FINANCIALS_TOPLINE_DOMINANCE,
     FINANCIALS_TOPLINE_MARKERS, FISCAL_YEAR_CONTEXT_DAYS, FLOW_TAGS,
     LATEST_DURATION_TAGS, NON_NEGATIVE_STOCK_FIELDS, PARTIAL_REVENUE_MATERIALITY,
     PARTIAL_REVENUE_TAGS, SGA_GA_ONLY_TAG, SGA_SM_COMPANION_TAG,
+    SHARE_CLASS_COMPONENT_FIELDS,
     SHARE_COUNT_MAGNITUDE_FIELDS, SHARE_COUNT_MIN_ABS,
     SHARES_OUTSTANDING_FIELD, SHARES_TAGS, STOCK_TAGS,
     TOTAL_REVENUE_TAG, XBRL_PARSE_ATTEMPTS, XBRL_RETRY_BACKOFF_SECONDS,
@@ -85,6 +92,230 @@ def _configure_identity() -> None:
             '  SEC_USER_AGENT="Your Name your.email@example.com"'
         )
     set_identity(ua)
+
+
+def _class_of_stock_axis_flags(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """(fact carries a class-of-stock axis, fact carries it as its ONLY axis).
+
+    edgartools exposes a fact's dimensions TWICE: one `dim_<prefix>_<Axis>` column per
+    axis used anywhere in the filing (NaN for the facts that do not use it), plus a flat
+    `dimension`/`member` pair -- which holds only the FIRST axis, so on the flat pair a
+    fact dimensioned by share class AND something else is indistinguishable from a
+    single-axis one. Counting the `dim_*` columns is the only way to tell them apart,
+    and the distinction carries the whole safety property of the summing below:
+    confirmed on CME, whose per-class `CommonStockSharesOutstanding` appears BOTH on the
+    class axis alone and on (class axis + `StatementEquityComponentsAxis`), so a rule
+    reading only `dimension` would count every class twice.
+
+    Frames carrying no `dim_*` column at all (the synthetic unit-test fixtures) fall
+    back to the flat pair, where there is no hidden second axis to miss.
+    """
+    dim_cols = [c for c in df.columns if c.startswith("dim_")]
+    if dim_cols:
+        present = df[dim_cols].notna()
+        class_cols = [c for c in dim_cols if c[4:].endswith(CLASS_OF_STOCK_AXIS_SUFFIX)]
+        has_class = (present[class_cols].any(axis=1) if class_cols
+                     else pd.Series(False, index=df.index))
+        return has_class, has_class & (present.sum(axis=1) == 1)
+    axis = df.get("dimension", pd.Series(index=df.index, dtype=object)).astype(str)
+    has_class = df["_dimensioned"] & axis.str.endswith(CLASS_OF_STOCK_AXIS_SUFFIX)
+    return has_class, has_class
+
+
+class ShareClassBasis(NamedTuple):
+    """The factors a filing publishes for putting its own class counts onto ONE basis:
+    the units of the class the ticker trades as, over the whole consolidated group.
+
+    `multipliers`  member -> base-class shares per share of that class.
+    `equivalent_pct` the junior class's economic worth as a fraction of the senior one.
+    `parent_pct`   a tagged parent ownership percentage (NOT necessarily group-level --
+                   see `equity_parent_share`).
+    `equity_parent_share` parent equity / consolidated equity, the INDEPENDENT check that
+                   `parent_pct` really describes the whole consolidated group.
+
+    All optional -- every field is empty for the ordinary single-basis filer, which is
+    why applying them can only ever refine a total, never remove one. See
+    `SHARE_CLASS_CONVERSION_RATIO_TAG` / `PARENT_OWNERSHIP_PERCENTAGE_TAG` in
+    `fundamentals_tags.py` for the measured per-filer evidence behind each.
+    """
+    multipliers: dict[str, float]
+    equivalent_pct: float | None
+    parent_pct: float | None
+    equity_parent_share: float | None
+
+
+def _share_class_basis(df: pd.DataFrame, sole_class_axis: pd.Series) -> ShareClassBasis:
+    """Read the conversion / ownership factors out of a filing's OWN facts.
+
+    Must be called BEFORE the candidate-tag filter: none of these concepts is a candidate
+    for any logical field (they are ratios and percentages, not amounts), so they are gone
+    from the frame by the time the coalesce runs.
+    """
+    bare = df["_bare"].astype(str)
+    probe = pd.to_numeric(df["_probe"], errors="coerce")
+    member = next((df[c] for c in ("member", "dimension_member_label") if c in df.columns),
+                  pd.Series(index=df.index, dtype=object))
+
+    ratios = df[(bare == SHARE_CLASS_CONVERSION_RATIO_TAG) & sole_class_axis & (probe > 1.0)]
+    multipliers = {str(m): float(v) for m, v in
+                   zip(member[ratios.index], probe[ratios.index]) if pd.notna(m)}
+
+    def _scalar(mask: pd.Series) -> float | None:
+        """The LATEST-dated qualifying value. Latest, because these facts recur across a
+        filing's comparative periods and one of them is the current disclosure -- and, for
+        IBKR, because the ownership footnote also restates the ORIGINAL 2007 IPO split
+        (10%/90%), which as a stale fact would gross the count up by 10x."""
+        sub = df[mask & probe.between(0.0, 1.0, inclusive="neither")]
+        if sub.empty:
+            return None
+        dates = pd.to_datetime(sub["period_end"], errors="coerce")
+        # `idxmax` skips NaT; an undated fact only wins when nothing in the group is dated.
+        return float(probe[dates.idxmax() if dates.notna().any() else sub.index[-1]])
+
+    def _amount(tag: str) -> float | None:
+        """The latest undimensioned value of a balance-sheet concept, read directly rather
+        than through the coalesce (which returns only ONE of the two equity bases)."""
+        sub = df[(bare == tag) & ~df["_dimensioned"] & probe.notna()]
+        if sub.empty:
+            return None
+        dates = pd.to_datetime(sub["period_end"], errors="coerce")
+        return float(probe[dates.idxmax() if dates.notna().any() else sub.index[-1]])
+
+    parent_equity = _amount("StockholdersEquity")
+    total_equity = _amount("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest")
+    return ShareClassBasis(
+        multipliers=multipliers,
+        equivalent_pct=_scalar(bare.str.contains(SHARE_CLASS_EQUIVALENT_PERCENTAGE_MARKER)
+                               & ~df["_dimensioned"]),
+        parent_pct=_scalar(bare == PARENT_OWNERSHIP_PERCENTAGE_TAG),
+        equity_parent_share=(parent_equity / total_equity
+                             if parent_equity is not None and total_equity else None),
+    )
+
+
+def _to_traded_class_units(values: pd.Series, members: pd.Series,
+                           basis: ShareClassBasis) -> pd.Series:
+    """Per-class counts rescaled into the traded class's units.
+
+    An explicit per-class ratio wins. Absent one, an `equivalent_pct` scales the SMALLEST
+    class -- the senior one, since a share worth ~1,500 of the other is necessarily the
+    rarer. Everything else keeps its own units (x1)."""
+    mult = members.map(basis.multipliers).astype(float).fillna(1.0)
+    if basis.equivalent_pct and not (mult > 1.0).any() and len(values) > 1:
+        mult.loc[[values.idxmin()]] = 1.0 / basis.equivalent_pct
+    return values * mult
+
+
+def _grossed_up_to_consolidated(total: float, values: pd.Series,
+                                basis: ShareClassBasis) -> float:
+    """`total` divided by the parent's ownership percentage -- but only once the filing has
+    answered TWO questions about itself, because getting either wrong corrupts the count by
+    a multiple (see `PARENT_OWNERSHIP_PERCENTAGE_TAG`).
+
+    1. Does the percentage describe the WHOLE CONSOLIDATED GROUP? `MinorityInterest-
+       OwnershipPercentageByParent` is just as often used for one SUBSIDIARY or joint
+       venture, and that reading is catastrophic here -- caught on live data, where CMCSA
+       tags 0.30 and UHS 0.20 for holdings of theirs, which grossed their counts up by
+       3.33x and 5.00x respectively. The test is independent evidence from the same
+       filing: the percentage must match the parent's share of consolidated EQUITY. IBKR
+       0.266 against 5,363/20,472 = 0.262 agrees; CMCSA's 0.30 against ~0.98 does not.
+       No equity evidence at all -> no gross-up, deliberately failing closed.
+    2. Does the class sum ALREADY cover the non-controlling holders? CVNA's Class A is
+       65.4% of its class sum against a tagged 65%, because each Class B share is paired
+       1:1 with an exchangeable LLC unit -- dividing would count the Garcia interest
+       twice. IBKR's Class A is 99.99998% against a tagged 26.6%: its LLC members hold no
+       paired common stock at all, which is the Up-C signature this corrects.
+    """
+    if not basis.parent_pct or total <= 0:
+        return total
+    if basis.equity_parent_share is None or abs(
+            basis.equity_parent_share - basis.parent_pct) > PARENT_OWNERSHIP_EQUITY_TOLERANCE:
+        return total
+    if float(values.max()) / total - basis.parent_pct <= PARENT_OWNERSHIP_MISMATCH_MIN:
+        return total
+    return total / basis.parent_pct
+
+
+def _cover_page_class_total(merged: pd.DataFrame, sole_class_axis: pd.Series,
+                            component_ok: pd.Series,
+                            basis: ShareClassBasis) -> pd.DataFrame:
+    """ONE synthetic `sharesOutstanding` row per cover-page date, summing a MULTI-CLASS
+    filer's per-class cover-page counts into the company total (see
+    `CLASS_OF_STOCK_AXIS_SUFFIX` in `fundamentals_tags.py` for why the cover-page tag is
+    the only summable one, with the measured per-class figures).
+
+    Restricted to `COVER_PAGE_SHARES_TAG` facts whose ONLY dimension is the class axis
+    and that already pass the per-fact guards (`component_ok`: the sign rule and the
+    per-issuer deny-list). The share-count MAGNITUDE floor is deliberately NOT among
+    them and is applied by the caller to the TOTAL instead: a real class routinely sits
+    below it on its own (BRK-B Class A 505,697 shares, ERIE Class B 2,542, SPG Class B
+    8,000, CME Class B-1..B-4 a few hundred each), so screening components would drop
+    exactly the small classes the sum exists to add in.
+
+    Per-class counts are rescaled into the TRADED class's units before summing
+    (`_to_traded_class_units`) and the sum is put on the consolidated basis after
+    (`_grossed_up_to_consolidated`) -- both from factors the filer tags itself, both no-ops
+    for a filer that tags none.
+
+    Two ways a group is NOT simply summed:
+      * a member whose value equals the sum of all the others is a ROLL-UP of them, not
+        a sibling, so it is taken alone -- what stops V's `CommonClassB1B2AndB3` and
+        BRK-B's `EquivalentClassA` from double-counting. Two classes of EQUAL size both
+        satisfy that arithmetic, so the rule only fires when exactly ONE member does.
+      * an already-admitted undimensioned fact for the same (field, date) means the
+        filer DID report a total, which always wins -- nothing is summed there.
+
+    Emitted `_dimensioned=False` (it is a company-level total, not one member's slice)
+    so the field-level undimensioned override downstream prefers it over the very
+    components it was built from, and `source_tag` keeps the real concept name so
+    `fundamentals_tag_ledger` still sees where the number came from.
+    """
+    empty = merged.iloc[0:0]
+    eligible = ((merged["field"].isin(SHARE_CLASS_COMPONENT_FIELDS))
+                & (merged["_bare"] == COVER_PAGE_SHARES_TAG)
+                & sole_class_axis & component_ok)
+    if not eligible.any():
+        return empty
+    has_total = (merged["field"].isin(SHARE_CLASS_COMPONENT_FIELDS)
+                 & merged["_admissible"] & ~merged["_dimensioned"])
+    dated_totals = set(merged.loc[has_total, "period_end"].dropna())
+
+    rows = merged[eligible].copy()
+    member = next((rows[c] for c in ("member", "dimension_member_label") if c in rows.columns),
+                  rows["_probe"])
+    rows["_member_key"] = member.astype(str)
+    rows = rows.drop_duplicates(subset=["field", "period_end", "_member_key"])
+
+    blank = [c for c in rows.columns
+             if c.startswith("dim_") or c in ("dimension", "member", "dimension_member_label")]
+    out: list[pd.Series] = []
+    for (field, date), grp in rows.groupby(["field", "period_end"], dropna=False):
+        if date in dated_totals:
+            continue
+        values = pd.to_numeric(grp["_probe"], errors="coerce")
+        if values.isna().any():
+            continue
+        # Into the TRADED class's units BEFORE summing -- adding a class whose shares are
+        # worth 1,500 of the other's straight into the total is what makes a raw sum wrong
+        # rather than merely imprecise.
+        values = _to_traded_class_units(values, grp["_member_key"], basis)
+        total = float(values.sum())
+        rollup = grp[np.isclose(values * 2.0, total, rtol=1e-9)]
+        base, value = ((rollup.iloc[0], float(values.loc[rollup.index[0]]))
+                       if len(grp) > 1 and len(rollup) == 1
+                       else (grp.iloc[0], _grossed_up_to_consolidated(total, values, basis)))
+        row = base.copy()
+        if blank:
+            row[blank] = None
+        row["_probe"] = row["numeric_value"] = row["value"] = value
+        row["_dimensioned"] = False
+        row["_admissible"] = True
+        out.append(row)
+    if not out:
+        return empty
+    totals = pd.DataFrame(out).drop(columns="_member_key")
+    totals["_probe"] = pd.to_numeric(totals["_probe"], errors="coerce")
+    return totals
 
 
 def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]],
@@ -342,6 +573,12 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]],
         return pd.DataFrame(columns=out_cols)
     tag_lookup = pd.DataFrame(tag_rows)
 
+    # The conversion / ownership factors a multi-class or Up-C filer publishes for its OWN
+    # classes. Read HERE, while the frame still holds every concept: none of them is a
+    # candidate tag for any field (they are ratios and percentages, not amounts), so the
+    # filter on the next line would discard them.
+    share_class_basis = _share_class_basis(df, _class_of_stock_axis_flags(df)[1])
+
     # A single filter to the union of every field's candidate tags (not one
     # filter per field), then a single merge onto (field, priority) -- a bare
     # tag shared by multiple fields' candidate lists correctly produces one
@@ -364,6 +601,43 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]],
     negative_stock = merged["field"].isin(NON_NEGATIVE_STOCK_FIELDS) & (merged["_probe"] < 0)
     merged["_admissible"] = merged["_admissible"] & ~negative_stock
 
+    # Per-issuer deny-list (`FIELD_TAG_DENYLIST`): a concept THIS filer misuses for a
+    # different measure, removed from its field's candidates so the coalesce continues to
+    # the next one. Same placement rationale as the sign guard above -- the verdict is on
+    # a (field, concept) pair, which only exists after the merge. A ticker with no entry
+    # (and `ticker=None`) is untouched, so this can never change global resolution.
+    denied_pairs = {(field, tag)
+                    for field, tags in FIELD_TAG_DENYLIST.get(ticker or "", {}).items()
+                    for tag in tags}
+    is_denied = (pd.Series(list(zip(merged["field"], merged["_bare"])),
+                           index=merged.index).isin(denied_pairs) if denied_pairs
+                 else pd.Series(False, index=merged.index))
+    merged["_admissible"] = merged["_admissible"] & ~is_denied
+
+    # A share count broken out BY SHARE CLASS is one class's count -- a COMPONENT of the
+    # company total, never the total -- so for `SHARE_CLASS_COMPONENT_FIELDS` it is
+    # rejected outright, ahead of the repeat-count / parent-member heuristics above.
+    # Those heuristics have no way to know that (they read redundancy, not meaning) and
+    # were confirmed admitting a single class as if it were the whole company: CME's
+    # per-class facts are each tagged twice (class axis alone, then class + equity-
+    # components axis), so BOTH Class A and Class B reach a repeat count of 2 and
+    # `drop_duplicates(keep="last")` decides between 359,275,000 and 3,000 shares on
+    # frame order alone; CVNA resolves the same way. Rejecting is what lets the
+    # cover-page sum below become the answer instead.
+    has_class_axis, sole_class_axis = _class_of_stock_axis_flags(merged)
+    is_share_class_component = merged["field"].isin(SHARE_CLASS_COMPONENT_FIELDS) & has_class_axis
+    merged["_admissible"] = merged["_admissible"] & ~is_share_class_component
+
+    # ... and the total those components add up to, for the multi-class filers that
+    # report NO undimensioned share count anywhere (36 of 498 tickers were >=60% NULL on
+    # `shares_outstanding` for exactly this reason). Placed BEFORE the magnitude floor so
+    # the floor screens the TOTAL and not the individual classes -- see
+    # `_cover_page_class_total`.
+    class_totals = _cover_page_class_total(merged, sole_class_axis,
+                                           ~negative_stock & ~is_denied, share_class_basis)
+    if not class_totals.empty:
+        merged = pd.concat([merged, class_totals], ignore_index=True)
+
     # A share-count-shaped field (`SHARE_COUNT_MAGNITUDE_FIELDS`) reporting a magnitude
     # below `SHARE_COUNT_MIN_ABS` is a filer scale defect (confirmed: MCD tags its weighted-
     # average share count as `721.8` instead of `721,800,000`, a 1,000,000x error baked into
@@ -376,19 +650,6 @@ def build_tag_frames(facts_df: pd.DataFrame, tag_map: dict[str, list[str]],
     implausible_share_scale = (merged["field"].isin(SHARE_COUNT_MAGNITUDE_FIELDS)
                                & (merged["_probe"].abs() < SHARE_COUNT_MIN_ABS))
     merged["_admissible"] = merged["_admissible"] & ~implausible_share_scale
-
-    # Per-issuer deny-list (`FIELD_TAG_DENYLIST`): a concept THIS filer misuses for a
-    # different measure, removed from its field's candidates so the coalesce continues to
-    # the next one. Same placement rationale as the sign guard above -- the verdict is on
-    # a (field, concept) pair, which only exists after the merge. A ticker with no entry
-    # (and `ticker=None`) is untouched, so this can never change global resolution.
-    denied_pairs = {(field, tag)
-                    for field, tags in FIELD_TAG_DENYLIST.get(ticker or "", {}).items()
-                    for tag in tags}
-    if denied_pairs:
-        is_denied = pd.Series(list(zip(merged["field"], merged["_bare"])),
-                              index=merged.index).isin(denied_pairs)
-        merged["_admissible"] = merged["_admissible"] & ~is_denied
 
     # A field's candidate tags are checked in priority order, but the
     # per-TAG admissibility above (`_admissible`, computed independently per
@@ -621,7 +882,11 @@ def _filing_current_period_rows(filing, tag_map: dict[str, list[str]],
 def _cover_page_shares_fallback(all_periods: pd.DataFrame, current: pd.DataFrame,
                                 por_ts: pd.Timestamp) -> pd.DataFrame:
     """Recover `sharesOutstanding` from the filing's COVER PAGE for the filers that
-    tag no balance-sheet share count, re-stamped onto the filing's own period.
+    tag no balance-sheet share count, re-stamped onto the filing's own period. Serves
+    two populations: the single-class filers below, and every MULTI-CLASS filer, whose
+    total arrives here as the per-class cover-page sum `_cover_page_class_total` builds
+    (that function decides WHAT the value is; this one decides WHEN it applies, and the
+    fill-only rule below is the same for both).
 
     `dei:EntityCommonStockSharesOutstanding` is stated as of a date AFTER the period
     it reports on -- the date the cover page was signed -- so the current-period

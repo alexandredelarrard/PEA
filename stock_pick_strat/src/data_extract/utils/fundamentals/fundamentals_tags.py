@@ -62,8 +62,42 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
     # TO-COMMON tag is added conditionally per filer in `_extract_all` (see
     # `_net_income_tags`) because it is net of preferred dividends and would corrupt
     # preferred-paying REIT/bank/insurer history if coalesced unconditionally.
-    "netIncome": ["NetIncomeLoss", "ProfitLoss",
-                  "IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest"],
+    # CONSOLIDATED (incl-NCI) basis, deliberately: `ProfitLoss` outranks `NetIncomeLoss`
+    # so income is measured over the same entity as `totalRevenue`/`totalAssets` (always
+    # 100% of the consolidated group -- US-GAAP has no parent-only revenue or asset
+    # concept at all) and the same entity as the share count (see
+    # `PARENT_OWNERSHIP_PERCENTAGE_TAG`). Before this, `netIncome` was the PARENT's slice
+    # while revenue was the whole group's, so for a high-NCI filer the valuation ratios
+    # were built from two different companies: IBKR's parent takes 22.6% of income and
+    # 26.2% of equity, making `sales_yield` ~3.8x too high against a parent-basis market
+    # cap. Matches the basis every vendor publishes (verified: Yahoo's own P/E for IBKR
+    # re-derives as market cap / income INCL NCI to within 1.6%, and against PARENT income
+    # is out by 4.4x). Costs each filer the size of its own NCI, which for most of the
+    # index is nil (`ProfitLoss` == `NetIncomeLoss` when there is no NCI) and elsewhere is
+    # a few percent -- and that difference IS the correction, not an error.
+    #   Known artifact of consolidating: an Up-C's non-controlling income is not burdened
+    # by the corporate tax layer that the parent's slice is, so a consolidated P/E reads
+    # cheaper than what a buyer of the traded class actually gets (IBKR 33.6x vs 39.4x).
+    # Every vendor shares this artifact; the alternative needs a parent-level revenue that
+    # does not exist.
+    #   `derive_missing_pretax_income` already reads `source_tag` to decide whether to add
+    # the NCI leg back, so it stays correct under this ordering with no change.
+    # `NetIncomeLossAvailableToCommonStockholdersBasic` (net of preferred dividends) is
+    # LOWEST priority, fill-only: a filer with NO preferred stock has nothing to net off,
+    # so it tags ONLY this concept for its income-statement bottom line instead of also
+    # tagging `NetIncomeLoss`/`ProfitLoss` -- confirmed on live filings for BKNG, EW, ROL,
+    # SYY, TGT (e.g. TGT's FY2015 10-K tags no other net-income-shaped concept at all,
+    # which truncated its `netIncome` for FY2013 Q4 through FY2020 Q2, ~7 years). Safe
+    # unconditionally because a preferred payer always ALSO tags the un-netted primary
+    # concept for the SAME period (GAAP requires presenting the reconciliation, "net
+    # income" less "preferred dividends" = "available to common") -- confirmed live on
+    # three preferred-paying names the old companyfacts-JSON path's guard (`_net_income_
+    # tags`, `fetch_fundamentals.py`) was written to protect: USB, VTR and WELL all tag
+    # `ProfitLoss`/`NetIncomeLoss` in the SAME filing, so the higher-priority candidates
+    # above always win there and this fill-only addition never fires for them.
+    "netIncome": ["ProfitLoss", "NetIncomeLoss",
+                  "IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest",
+                  "NetIncomeLossAvailableToCommonStockholdersBasic"],
     "grossProfit": ["GrossProfit"],
     # Filers used CostOfGoodsSold / CostOfServices before the ASC-606-era
     # consolidation onto CostOfGoodsAndServicesSold (e.g. LLY tags the latter only
@@ -194,8 +228,23 @@ FLOW_TAGS = {   # income-statement / cash-flow items (duration facts, annual)
                         "InterestExpenseDebt"],
 }
 STOCK_TAGS = {  # balance-sheet items (instant facts, point-in-time)
-    "stockholdersEquity": ["StockholdersEquity",
-                           "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+    # CONSOLIDATED (incl-NCI) basis, for the same reason as `netIncome` above: book value
+    # must cover the same entity as the assets and the share count it is compared against.
+    # IBKR's parent equity is $5.363bn of a consolidated $20.472bn (26.2%), so a parent-only
+    # book against a consolidated asset base is two different companies. Identical to
+    # `StockholdersEquity` for any filer with no NCI.
+    # `PartnersCapital` (lowest priority, fill-only): a filer organized as an LP before
+    # converting to a corporation tags no `StockholdersEquity` concept at all for its
+    # pre-conversion years -- confirmed on KKR (LP through mid-2018) and BX (LP through
+    # mid-2019), whose entire pre-conversion history was NULL without it. Deliberately the
+    # PARENT-only partners'-capital concept, not `PartnersCapitalIncludingPortionAttributable
+    # ToNoncontrollingInterest`: for these two, the "NCI" leg is third-party capital in
+    # investment funds/vehicles KKR/BX manage but do not economically own (consolidated for
+    # control under ASC 810, not an operating-business minority stake), so it belongs beside
+    # `netIncome`/`stockholdersEquity`'s DENY entries for the same two tickers in
+    # `FIELD_TAG_DENYLIST` below, not folded into the global candidate list.
+    "stockholdersEquity": ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                           "StockholdersEquity", "PartnersCapital"],
     "totalLiabilities": ["Liabilities"],
     # many filers (e.g. HD, MU pre-2020) tag long-term debt only under the
     # capital-lease-inclusive element — coalesce it so LTD isn't ~null for them.
@@ -258,7 +307,20 @@ SHARES_TAGS = {
     # tag no balance-sheet share count -- see `_cover_page_shares_fallback`, which is
     # what makes it reachable at all (its context date is the FILING date, so the
     # current-period filter drops it).
-    SHARES_OUTSTANDING_FIELD: ["CommonStockSharesOutstanding",
+    #
+    # For a MULTI-CLASS filer NEITHER tag reports a total, only per-class components,
+    # and the priority above inverts: the cover-page classes are summable and the
+    # balance-sheet ones are not. See `CLASS_OF_STOCK_AXIS_SUFFIX` below for the
+    # measured evidence and for what `build_tag_frames` does about it.
+    # `SharesOutstandingAsConvertedBasis` outranks both: it is the filer's OWN
+    # whole-company count already converted into one class's units, undimensioned and
+    # dated at period end, so it needs neither the class summing nor the conversion
+    # arithmetic below. Confirmed on V, the only filer in the universe that tags it
+    # (1.880e9 at 2026-06-30, against 1.867e9 from Yahoo's all-classes figure) -- a
+    # company-namespace element, but matched by BARE name like every other candidate, so
+    # any filer adopting the same element benefits and no other filer is affected.
+    SHARES_OUTSTANDING_FIELD: ["SharesOutstandingAsConvertedBasis",
+                               "CommonStockSharesOutstanding",
                                "EntityCommonStockSharesOutstanding"],
 }
 # The cover-page share count is stated "as of" a date a few weeks AFTER the period it
@@ -267,6 +329,140 @@ SHARES_TAGS = {
 # different filing's and are ignored.
 COVER_PAGE_SHARES_TAG = "EntityCommonStockSharesOutstanding"
 COVER_PAGE_SHARES_MAX_LAG_DAYS = 150
+
+# --- MULTI-CLASS share counts ------------------------------------------------
+# A filer with more than one class of common stock (Class A/B/C, voting/non-voting,
+# common + Class B) tags NO undimensioned share count ANYWHERE: every fact for both
+# candidate tags above carries a `StatementClassOfStockAxis` member, and the classes
+# report genuinely DIFFERENT numbers. `build_tag_frames`' dimension rules admit a
+# dimensioned fact only when it is cross-validated by repetition or uniquely
+# parent-labeled -- neither holds for two disagreeing share classes -- so they are all
+# correctly refused and the field ends up NULL. Measured: 36 of 498 tickers were >=60%
+# NULL on `shares_outstanding` for exactly this reason, essentially the whole
+# multi-class cohort (META, BRK-B, V, MA, ACN, CMCSA, F, UPS, TSN, ...).
+#
+# The total is the SUM of the classes, but only ONE of the two candidate tags carries a
+# summable enumeration, and it is NOT the higher-priority one:
+#
+#  * `dei:EntityCommonStockSharesOutstanding` (cover page) IS summable. Item 5 of the
+#    10-Q / cover of the 10-K legally requires "the number of shares outstanding of
+#    each of the registrant's classes of common stock", so the members are by
+#    construction EXHAUSTIVE, NON-OVERLAPPING and all dated at ONE instant. Verified
+#    against the class counts in the live filings: F 3,916,744,xxx + 70,852,080 =
+#    3.988e9; UPS 101,432,177 + 749,349,405 = 8.508e8; MKC 14,796,402 + 254,055,150 =
+#    2.689e8; META 2,205,128,509 + 342,377,716 = 2.548e9; SPG 324,281,912 + 8,000 =
+#    3.243e8 -- each matching that filing's own weighted-average share count.
+#  * `us-gaap:CommonStockSharesOutstanding` (balance-sheet parenthetical) is NOT. It is
+#    a presentation footnote, and the per-class facts there are routinely incomplete or
+#    overlapping: EL tags ONLY Class B (114,507,344 against a true 361,794,915) and ACN
+#    only Class X (302,358 against 667,810,900); SPG and TAP tag the ISSUED count under
+#    the OUTSTANDING concept (343,060,687 vs 324,289,912; 219,200,000 vs 176,681,024);
+#    V and BRK-B ALSO tag a roll-up member beside its own components
+#    (`CommonClassB1B2AndB3`, `EquivalentClassA`), which double-counts. Summing this tag
+#    would ship a silently wrong total for six of the 36, so it is never summed.
+#
+# Hence the two rules `build_tag_frames` applies (see `_cover_page_class_total` and the
+# share-class-component guard there): a class-dimensioned fact is never admitted as the
+# company total, and the total is rebuilt by summing the COVER-PAGE classes only.
+# `_cover_page_shares_fallback` then re-stamps it onto the period exactly as it already
+# does for the single-class filers.
+#
+# TWO LIMITATIONS, stated rather than papered over. Both were measured by cross-checking
+# the recovered sum against an INDEPENDENT source (Yahoo `impliedSharesOutstanding`, its
+# all-classes figure), which the sum reproduces for 26 of the 31 tickers that have one --
+# exactly, to the share, for 14 of them (CMCSA, CME, F, HOOD, LEN, MA, META, MKC, TKO,
+# TSN, TTD, UHS, WBD, DDOG). The five that differ are the two cases below, plus CRWD,
+# where a 4-for-1 split fell between the filing read and the reference date.
+#
+#  1. NON-1:1 CLASSES. The sum is a count of shares AS REPORTED, which is the economic
+#     total only where the classes convert 1:1 -- true for all but three of the 36. It
+#     understates a primary-class-equivalent count for BRK-B (1.399e9 vs 2.157e9; Class A
+#     is 1,500 Class B), ERIE (46.2M vs 52.3M; Class B is 2,400 Class A) and V (1.784e9
+#     vs 1.867e9; Class B/C convert at ~1.6 and 4).
+#  2. UP-C STRUCTURES. The cover page enumerates classes of COMMON STOCK, so the
+#     exchangeable LLC/partnership units of an umbrella-partnership C-corp are outside it
+#     by construction: IBKR resolves its 453.1M Class A against a 1.701e9 economic unit
+#     count (Class A is ~27% of IBG LLC), CVNA 1.100e9 against 1.488e9. PRE-EXISTING and
+#     untouched by any of this -- IBKR already resolved its Class A count before -- and a
+#     different problem (finding a units-outstanding concept), not a class-summing one.
+#
+# No conversion ratio is derivable from XBRL for either, and a per-issuer one would be
+# exactly the kind of pin `FIELD_TAG_DENYLIST` warns against, so none is invented -- the
+# as-reported sum is a real number the filer published, which is what this module ships.
+CLASS_OF_STOCK_AXIS_SUFFIX = "ClassOfStockAxis"
+
+# --- converting a class sum into the TRADED class's units ---------------------
+# `market_cap = shares x close`, and `close` is quoted per share of the ONE class the
+# ticker trades as -- so the count must be in THAT class's units. Where classes convert
+# 1:1 the plain sum already is; where they do not, the filers publish the factor
+# themselves and these three hooks read it. All are FILL-ONLY: absent the hook, the plain
+# sum stands, so none of them can ever null a value that resolved before.
+#
+#  * `CommonStockConversionRatio`, dimensioned on the class it applies to: how many
+#    base-class shares one share of that class becomes. ERIE tags 2,400 on
+#    `CommonClassBMember`, giving 46,189,068 + 2,542 x 2,400 = 52,289,868 -- EXACTLY
+#    Yahoo's all-classes figure. Only ratios ABOVE 1 are applied: a ratio at or below 1
+#    is either the identity or the INVERSE direction (CVNA tags 0.8 = Class A shares per
+#    LLC unit), and applying an inverse would shrink a class rather than scale it up.
+#  * `EconomicEquivalentPercentage...`, undimensioned: the economic worth of one share of
+#    the junior class expressed as a fraction of the senior one. BRK tags 6.67e-4 (Class
+#    B to Class A), so the SENIOR class is scaled by 1/6.67e-4: 505,697 x 1,499.25 +
+#    1,398,309,000 = 2.156e9 against Yahoo's 2,156,853,797, 0.02% out. Applied to the
+#    SMALLEST class by count, which is what "senior" means here -- a share worth ~1,500
+#    of the other is necessarily the rarer one. Only consulted when no per-class ratio
+#    was found, so the explicit hook always wins.
+SHARE_CLASS_CONVERSION_RATIO_TAG = "CommonStockConversionRatio"
+SHARE_CLASS_EQUIVALENT_PERCENTAGE_MARKER = "EconomicEquivalentPercentage"
+
+#  * `MinorityInterestOwnershipPercentageByParent`: for an UMBRELLA-PARTNERSHIP C-CORP
+#    (Up-C), where the listed company consolidates an LLC it only partly owns, the
+#    registered common classes may represent just the corporate slice. Grossing up by
+#    this percentage puts the count on the same CONSOLIDATED basis as `netIncome`
+#    (`ProfitLoss`) and `stockholdersEquity` (incl-NCI), which is the basis Yahoo and the
+#    other vendors publish -- measured: Yahoo's `marketCap` divided by
+#    (price x `impliedSharesOutstanding`) is exactly 1.000 for IBKR and CVNA.
+#
+#    But it is applied ONLY when the class sum demonstrably does NOT already cover the
+#    non-controlling holders, and the filing itself says which case it is -- compare the
+#    LARGEST class's share of the sum against the tagged parent percentage:
+#      - IBKR: Class A is 99.99998% of the sum (Class B is 400 shares, so the IBG LLC
+#        members hold NO paired common stock at all) against a tagged 26.6% -> a 73pp
+#        mismatch, the count covers only the corporate slice -> gross up to 1.703e9
+#        (Yahoo 1.701e9, 0.12% out).
+#      - CVNA: Class A is 65.4% of the sum against a tagged 65% -> they AGREE, because
+#        each Class B share is paired 1:1 with an exchangeable LLC unit (719,916,415 x
+#        0.8 = 575,933,132 units held by Carvana Co. of 880,371,016 total = 65.4%). The
+#        sum is ALREADY the whole group in Class A units, so dividing by 0.65 would count
+#        the Garcia interest twice. Left alone at 1.100e9. (Yahoo shows 1.488e9 for CVNA;
+#        the extra ~388M is its convertible notes, which are not shares outstanding.)
+#    That agreement is a POSITIVE confirmation, not just an escape hatch: it is the
+#    filing cross-checking our own sum against its own ownership disclosure.
+#
+#    The threshold is a MATERIALITY bar, not a tolerance. An ordinary filer with a 2%
+#    NCI would show a 2pp "mismatch", and grossing its count up by 1/0.98 on the strength
+#    of a footnote element that most filers never tag would apply a small correction to a
+#    near-random subset -- worse than applying it to none. Only a structural gap of this
+#    size identifies an Up-C. Residual, stated: such a filer keeps a parent-basis share
+#    count while its `netIncome` is now incl-NCI, an inconsistency capped at its own NCI
+#    share (~0-3%, inside cross-sectional noise). `epsDiluted` stays per-traded-class by
+#    definition, so `epsDiluted x sharesOutstanding != netIncome` for a grossed-up filer.
+#    The concept is NOT self-identifying, and that is the trap: filers use it just as
+#    readily for ONE SUBSIDIARY or joint venture. Confirmed on live data -- CMCSA tags
+#    0.30 and UHS 0.20 for holdings of theirs, which on the ownership test alone grossed
+#    their share counts up by 3.33x and 5.00x. So the percentage is only believed once it
+#    matches the parent's share of consolidated EQUITY, independent evidence from the same
+#    filing: IBKR's 0.266 against 5,363/20,472 = 0.262 agrees, CMCSA's 0.30 against ~0.98
+#    does not. Absent equity evidence the gross-up does not run at all.
+PARENT_OWNERSHIP_PERCENTAGE_TAG = "MinorityInterestOwnershipPercentageByParent"
+PARENT_OWNERSHIP_MISMATCH_MIN = 0.10
+PARENT_OWNERSHIP_EQUITY_TOLERANCE = 0.05
+# Fields for which a fact dimensioned by share class is a per-class COMPONENT of the
+# company total, never the total itself. Scoped to the point-in-time count that market
+# capitalisation is computed from; the weighted-average counts (`basicShares`/
+# `dilutedShares`) are class-split for the same filers and left alone here, since a
+# per-class period AVERAGE is a different aggregation question (V and BRK-B publish
+# theirs already converted to a single class's equivalents).
+SHARE_CLASS_COMPONENT_FIELDS = frozenset({SHARES_OUTSTANDING_FIELD})
 
 # --------------------------------------------------------------------------- #
 # EXPANDED coverage. companyfacts already returns every tag a filer reports, so
@@ -1096,6 +1292,52 @@ FIELD_TAG_DENYLIST: dict[str, dict[str, frozenset[str]]] = {
     # McDonald's real total D&A (a company with ~$40B+ gross PP&E) is the ~$500M/
     # quarter figure, not $99M. Denying the small tag falls through to the correct one.
     "MCD": {"depAmort": frozenset({"DepreciationDepletionAndAmortization"})},
+    # KKR and BX consolidate investment vehicles (funds, CLOs, co-investment entities)
+    # they manage but do not economically own, under ASC 810 control -- not equity
+    # ownership -- so the "noncontrolling interest" on their `StockholdersEquityIncluding
+    # PortionAttributableToNoncontrollingInterest`/`ProfitLoss` facts is THIRD-PARTY FUND
+    # INVESTOR CAPITAL, structurally unlike an Up-C's minority public share class (the
+    # case `netIncome`/`stockholdersEquity`'s consolidated-basis ordering above was built
+    # for and validated against, e.g. IBKR). Confirmed live against Yahoo Finance, which
+    # KKR's 2026-Q1 10-Q: 1,404912 -- Total KKR & Co. Inc. Stockholders' Equity $30.496bn
+    # (`StockholdersEquity`) vs $80.806bn incl-NCI (`...IncludingPortionAttributable...`,
+    # NCI = $50.310bn of consolidated FUND capital) -- Yahoo's `bookValue` x
+    # `sharesOutstanding` reproduces the $30.496bn parent figure, not the $80.806bn total.
+    # Same shape on BX: $8.371bn parent vs $21.417bn incl-NCI, Yahoo again matches parent.
+    # `netIncome` shows the identical pattern: Yahoo's "Net Income" for both tickers
+    # matches `NetIncomeLoss` (parent), not `ProfitLoss`/the continuing-ops incl-NCI tag
+    # (KKR 2026-Q1: Yahoo/parent $405.229M vs incl-NCI $277.505M). Denying the incl-NCI
+    # candidates falls through to the parent-only tags -- `StockholdersEquity` (which
+    # then fills pre-conversion history from `PartnersCapital`, see that candidate list)
+    # and `NetIncomeLoss`.
+    "KKR": {"stockholdersEquity": frozenset({"StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"}),
+            "netIncome": frozenset({"ProfitLoss",
+                                    "IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest"})},
+    "BX": {"stockholdersEquity": frozenset({"StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"}),
+           "netIncome": frozenset({"ProfitLoss",
+                                   "IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest"})},
+    # AEE and ED are utility HOLDING companies whose 10-Ks include SEC Schedule I
+    # parent-only condensed financial statements (a regulatory disclosure for holding
+    # companies, required precisely because it is NOT the consolidated total) --
+    # confirmed live: AEE's FY2011 10-K tags `us-gaap:Liabilities` ONLY once, dimensioned
+    # `dei:LegalEntityAxis="us-gaap:ParentCompanyMember"`, value $721M, against a true
+    # consolidated ~$15.7bn (assets $23.645bn minus equity $7.919bn) -- every other fiscal
+    # year shows the same shape ($547M, $1.141bn, $853M, $1.22bn, ... vs $14-17bn of
+    # quarterly-derived liabilities). No undimensioned duplicate exists in the filing, so
+    # `build_tag_frames`' "sole parent fallback" (built for dual-registrant REIT/LP pairs
+    # where parent-vs-consolidated are close, e.g. MAA) wrongly admits it as if it were
+    # the whole-company total. That wrong value then satisfies `totalLiabilities.notna()`,
+    # which BLOCKS `derive_missing_total_liabilities`'s assets-minus-equity fallback (an
+    # as-reported value, even a wrong one, is never overridden) and trips
+    # `apply_plausibility_guards`' balance-sheet identity check, nulling `totalAssets`,
+    # `totalLiabilities` AND `stockholdersEquity` together for every fiscal-year-end row
+    # (15 of 61 rows for AEE, all of them 10-K/annual periods). Denying `Liabilities`
+    # removes the wrong as-reported value so the footing derivation fills it correctly,
+    # matching the already-correct Q1-Q3 quarters (same ticker, same field, no raw
+    # `Liabilities` tag there either -- utility balance sheets typically foot via "Total
+    # Capitalization and Liabilities" with no separate "Total Liabilities" subtotal line).
+    "AEE": {"totalLiabilities": frozenset({"Liabilities"})},
+    "ED": {"totalLiabilities": frozenset({"Liabilities"})},
 }
 
 # How far a derived Q4 whose sign matches NONE of Q1/Q2/Q3 may exceed the largest

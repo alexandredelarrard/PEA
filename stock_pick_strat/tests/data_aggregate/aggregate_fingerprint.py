@@ -404,14 +404,14 @@ def compute() -> dict:
         "market": returns.mean(axis=1),
         "momentum": momentum_characteristic(close).mean(axis=1),
     })
-    betas = estimate_all_betas(returns, factor_panel, sector_ret)
+    betas = estimate_all_betas(returns, factor_panel)
     out["panel.betas"] = frame_digest(pd.concat(
         {k: v for k, v in betas.items() if isinstance(v, pd.DataFrame)}, axis=1))
     # `min_names` is lowered from the production 20 because this harness runs a
     # 22-name cross-section; it gates which DAYS survive, not how the residual is
     # computed, so the code under test is unaffected.
     targets = build_targets_multi(
-        close, returns, peers, betas, factor_panel, macro_cols=[],
+        close, betas, factor_panel, macro_cols=[],
         horizons=(30, 60, 90), labels=("rank", "zscore"), min_names=5,
         sector_groups={"sector": dict(zip(fund["ticker"], fund["sector"].astype(str)))})
     for horizon, by_label in targets.items():

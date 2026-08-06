@@ -1,8 +1,8 @@
 """
 betas.py  (src/data_aggregate/utils/betas.py)  -- MULTI-FACTOR, ROBUST-FILTER
 -----------------------------------------------------------------------------
-Rolling ridge betas of each stock on market + sector + style + macro/commodity
-factors. Change vs the previous version: the hardcoded try/except that dropped
+Rolling ridge betas of each stock on market + style + macro/commodity factors.
+Change vs the previous version: the hardcoded try/except that dropped
 ['d_ig_spread','d_hy_spread','d_cpi_yoy','d_fed_balance_sheet'] is replaced by a
 PRINCIPLED filter (`filter_daily_factors`) that drops any factor which does not
 move at daily frequency (exact-zero on > max_zero_frac of days). This generically
@@ -27,14 +27,13 @@ logger = logging.getLogger(__name__)
 def estimate_betas_for_stock(
     y: pd.Series,                 # stock daily returns
     shared: pd.DataFrame,         # market + style + commodity + macro (already filtered)
-    sector: pd.Series,            # this stock's sector daily return
     window: int = 63,
     min_obs: int = 40,
     ridge: float = 5.0,
     step: int = 5,
 ) -> pd.DataFrame:
-    """Rolling ridge betas for one stock. Regressors = shared factors + sector."""
-    X = pd.concat([shared, sector.rename("sector")], axis=1)
+    """Rolling ridge betas for one stock. Regressors = shared factors."""
+    X = shared
     # Drop rows only where the DEPENDENT variable is missing. Dropping rows where ANY
     # regressor was NaN (the previous `.dropna()`) made one slow-warming factor delay
     # EVERY beta: the momentum style factor is close.shift(21)/close.shift(252), so its
@@ -95,7 +94,6 @@ def estimate_betas_for_stock(
 def estimate_all_betas(
     stock_returns: pd.DataFrame,      # date x ticker (stocks only)
     factor_panel: pd.DataFrame,       # date x factor (market + style + commodity + macro)
-    sector_returns: pd.DataFrame,     # date x ticker, per-stock sector return
     window: int = 63,
     min_obs: int = 40,
     ridge: float = 5.0,
@@ -106,7 +104,7 @@ def estimate_all_betas(
     Multi-factor rolling ridge betas for every stock.
 
     `filter_factors`: drop non-daily-moving factors (stale monthly/weekly macro)
-    ONCE, up front, so every stock regresses on the same clean factor set. 
+    ONCE, up front, so every stock regresses on the same clean factor set.
     """
     if filter_factors:
         factor_panel, dropped = filter_daily_factors(factor_panel)
@@ -115,12 +113,9 @@ def estimate_all_betas(
 
     betas = {}
     for ticker in stock_returns.columns:
-        if ticker not in sector_returns.columns:
-            continue
         betas[ticker] = estimate_betas_for_stock(
             y=stock_returns[ticker],
             shared=factor_panel,
-            sector=sector_returns[ticker],
             window=window,
             min_obs=min_obs,
             ridge=ridge,

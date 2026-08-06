@@ -3,17 +3,16 @@ targets.py  (src/data_aggregate/utils/targets.py)  -- MULTI-FACTOR REWRITE
 --------------------------------------------------------------------------
 epsilon_i(t) = fwd_ret_i(t->t+h)
                - beta_market_i  * fwd_market(t->t+h)
-               - beta_sector_i  * fwd_sector_i(t->t+h)
                - sum_style  beta_style_i  * fwd_style(t->t+h)
                - sum_macro  beta_macro_i  * fwd_macro_change(t->t+h)
 
-i.e. strip market, sector, AND every style + macro factor, leaving the pure
-firm-vs-factor-matched-peers move. Then rank cross-sectionally per day.
+i.e. strip market AND every style + macro factor, leaving the residual to be
+neutralized to the GICS sector + industry_group (`cross_sectional_group_neutralize`).
+Then rank cross-sectionally per day.
 
 Forward factor returns over the SAME t->t+h window:
   * market / style : compounded factor return over the window (one series each,
                      applied via each stock's loading)
-  * sector         : per-stock peer-basket forward return (as before)
   * macro          : cumulative CHANGE over the window (level[t+h]-level[t]),
                      matching how the macro beta was estimated on daily changes
 """
@@ -31,46 +30,19 @@ from src.data_aggregate.utils.common.prices import (
 from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, XS_CLIP_LABEL, xs_rank_pct, xs_z
 
 
-def forward_sector_return(stock_returns, peer_dict, horizon):
-    fwd_cum = forward_compound(stock_returns, horizon)
-    sector_fwd = pd.DataFrame(index=stock_returns.index,
-                              columns=stock_returns.columns, dtype="float64")
-    for ticker, peers in peer_dict.items():
-        if not peers or ticker not in fwd_cum.columns:
-            continue
-        cols = [p for p in peers if p in fwd_cum.columns]
-        if not cols:
-            continue
-        # NaN-tolerant weighted mean (see compute_sector_returns): a raw matrix
-        # product would drop the whole date if any single peer is missing.
-        w = pd.Series({p: float(peers[p]) for p in cols}, dtype="float64")
-        w = w / w.sum()
-        weighted = fwd_cum[cols].mul(w, axis=1).sum(axis=1, min_count=1)
-        denom = fwd_cum[cols].notna().mul(w, axis=1).sum(axis=1)
-        sector_fwd[ticker] = weighted.div(denom.where(denom > 0))
-    return sector_fwd
-
-
 def compute_epsilon(
     close: pd.DataFrame,             # stocks only
-    stock_returns: pd.DataFrame,     # stocks only, daily
-    peer_dict: dict,
     betas: dict,                     # {ticker: DataFrame beta_<factor>...}
     factor_panel: pd.DataFrame,      # market + style + macro daily
     macro_cols: list,                # which factor_panel columns are macro CHANGES
     horizon: int,
-    use_peer_sector: bool = True,    # subtract the peer-BASKET ("neighbor sector") return
 ) -> pd.DataFrame:
     """
-    Multi-factor forward residual for every stock at every date, one horizon.
-
-    `use_peer_sector` subtracts each stock's exposure to its return-correlation peer
-    basket (the "neighbor sector"). Set it False when the caller instead neutralizes
-    the residual to the GICS sector + industry_group cross-sectionally (see
-    `cross_sectional_group_neutralize`) — the two are alternative sector treatments.
+    Multi-factor forward residual for every stock at every date, one horizon. Sector /
+    industry_group neutralization happens separately, cross-sectionally, on the residual
+    this returns (see `cross_sectional_group_neutralize`), not inside this function.
     """
     fwd_stock = forward_return(close, horizon)
-    fwd_sector = forward_sector_return(stock_returns, peer_dict, horizon) if use_peer_sector else None
 
     # Precompute forward returns of every SHARED factor (same for all stocks).
     style_market_cols = [c for c in factor_panel.columns if c not in macro_cols]
@@ -102,11 +74,6 @@ def compute_epsilon(
             bc = f"beta_{c}"
             if bc in b.columns:
                 resid = resid - b[bc] * fwd_shared[c].fillna(0.0)
-        # subtract the peer-BASKET ("neighbor sector") return, unless the caller
-        # neutralizes to GICS sector/industry instead (use_peer_sector=False)
-        if use_peer_sector and fwd_sector is not None and "beta_sector" in b.columns \
-                and ticker in fwd_sector.columns:
-            resid = resid - b["beta_sector"] * fwd_sector[ticker].fillna(0.0)
         eps[ticker] = resid
     return eps
 
@@ -212,7 +179,7 @@ def _neutralize_sector_industry(
 ) -> pd.DataFrame:
     """Sequentially demean `eps` within GICS sector then industry_group (each level's
     {ticker: label} under `sector_groups[level]`). No-op when `sector_groups` is None
-    (the caller then keeps the peer-basket sector treatment instead)."""
+    (no sector/industry neutralization is applied at all)."""
     for level in ("sector", "industry_group"):
         gm = (sector_groups or {}).get(level)
         if gm:
@@ -222,8 +189,6 @@ def _neutralize_sector_industry(
 
 def build_targets_multi(
     close: pd.DataFrame,
-    stock_returns: pd.DataFrame,
-    peer_dict: dict,
     betas: dict,
     factor_panel: pd.DataFrame,
     macro_cols: list,
@@ -244,9 +209,9 @@ def build_targets_multi(
 
     `sector_groups` = {"sector": {ticker: gics_sector}, "industry_group": {...}}. When
     given, the residual is neutralized to the ACTUAL GICS sector + industry_group
-    (per-day within-group demeaning, applied LAST) INSTEAD of the peer-basket
-    "neighbor sector" — so sector / industry membership can no longer predict the
-    target (else they dominate the model, a sign the target was not sector-neutral).
+    (per-day within-group demeaning, applied LAST) so sector / industry membership can
+    no longer predict the target (else they'd dominate the model, a sign the target was
+    not sector-neutral). `None` means no group neutralization is applied at all.
 
     Returns {horizon: {label: DataFrame(date x ticker)}}.
 
@@ -255,11 +220,9 @@ def build_targets_multi(
     it; pass `labels=("rank",)` instead.)
     """
     mom_char = momentum_characteristic(close) if neutralize_momentum else None
-    use_peer_sector = sector_groups is None
     out: dict[int, dict[str, pd.DataFrame]] = {}
     for h in horizons:
-        eps = compute_epsilon(close, stock_returns, peer_dict, betas,
-                              factor_panel, macro_cols, h, use_peer_sector=use_peer_sector)
+        eps = compute_epsilon(close, betas, factor_panel, macro_cols, h)
         if neutralize_momentum:
             eps = cross_sectional_neutralize(eps, mom_char)
         eps = _neutralize_sector_industry(eps, sector_groups)      # last -> neutral to both

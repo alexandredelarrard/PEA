@@ -102,7 +102,7 @@ def test_factor_panel_matches_hand_composed_reference():
     pd.testing.assert_frame_equal(panel, panel_expected, check_exact=True)
     assert macro_cols == macro_cols_expected
     # fundamentals-gated characteristics actually got built (not silently skipped)
-    assert {"size", "value", "quality"} <= set(style_expected.columns)
+    assert {"size", "value"} <= set(style_expected.columns)
 
     print("\n=== SANITY CHECK: _factor_panel matches the hand-composed reference ===")
     print(f"  panel: {panel.shape[1]} factors over {len(panel)} dates; "

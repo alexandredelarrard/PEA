@@ -20,10 +20,11 @@ from src.data_aggregate.utils.target.betas import estimate_betas_for_stock
 # --------------------------------------------------------------------------- #
 def test_ridge_recovers_known_betas(synthetic_factor_model):
     y, shared, sector, true_betas = synthetic_factor_model
+    X = pd.concat([shared, sector.rename("sector")], axis=1)
 
     # near-OLS (tiny ridge) + long window => estimator should recover truth.
     out = estimate_betas_for_stock(
-        y, shared, sector, window=250, min_obs=200, ridge=0.05, step=1,
+        y, X, window=250, min_obs=200, ridge=0.05, step=1,
     )
     last = out.dropna().iloc[-1]
 
@@ -61,14 +62,14 @@ def test_ridge_more_stable_than_ols_under_collinearity():
     # sector strongly collinear with market (corr ~0.9)
     sector = pd.Series(0.9 * market.to_numpy() + rng.normal(0, 0.004, n),
                        index=dates, name="sector")
-    shared = market.to_frame()
+    shared = pd.concat([market, sector], axis=1)
 
     y = 0.8 * market + 0.5 * sector + pd.Series(rng.normal(0, 0.004, n), index=dates)
     y.name = "STOCK"
 
-    ols = estimate_betas_for_stock(y, shared, sector, window=63, min_obs=40,
+    ols = estimate_betas_for_stock(y, shared, window=63, min_obs=40,
                                    ridge=0.0, step=5)
-    rdg = estimate_betas_for_stock(y, shared, sector, window=63, min_obs=40,
+    rdg = estimate_betas_for_stock(y, shared, window=63, min_obs=40,
                                    ridge=5.0, step=5)
 
     ols_std = ols["beta_market"].std()
@@ -91,20 +92,18 @@ def test_ridge_more_stable_than_ols_under_collinearity():
 def test_betas_have_no_lookahead(synthetic_factor_model):
     """Betas dated <= t must not depend on any observation after t."""
     y, shared, sector, _ = synthetic_factor_model
+    X = pd.concat([shared, sector.rename("sector")], axis=1)
     cutoff = y.index[300]
 
-    base = estimate_betas_for_stock(y, shared, sector, window=120, min_obs=60, step=5)
+    base = estimate_betas_for_stock(y, X, window=120, min_obs=60, step=5)
 
     # Corrupt everything strictly AFTER the cutoff and recompute.
     y2 = y.copy()
     y2.loc[y2.index > cutoff] = y2.loc[y2.index > cutoff] * 5.0 + 1.0
-    shared2 = shared.copy()
-    shared2.loc[shared2.index > cutoff] += 3.0
-    sector2 = sector.copy()
-    sector2.loc[sector2.index > cutoff] += 3.0
+    X2 = X.copy()
+    X2.loc[X2.index > cutoff] += 3.0
 
-    corrupted = estimate_betas_for_stock(y2, shared2, sector2, window=120,
-                                         min_obs=60, step=5)
+    corrupted = estimate_betas_for_stock(y2, X2, window=120, min_obs=60, step=5)
 
     joint_cols = [c for c in base.columns if c != "beta_market_simple"]
     a = base.loc[base.index <= cutoff, joint_cols]
@@ -129,8 +128,9 @@ def test_sparse_sector_does_not_truncate_history(synthetic_factor_model):
 
     sparse = sector.copy()
     sparse.iloc[: int(0.6 * len(sparse))] = np.nan  # first 60% missing
+    X = pd.concat([shared, sparse.rename("sector")], axis=1)
 
-    out = estimate_betas_for_stock(y, shared, sparse, window=63, min_obs=40, step=5)
+    out = estimate_betas_for_stock(y, X, window=63, min_obs=40, step=5)
     valid = out["beta_sector"].notna()
 
     # ~40% of dates have a sector value; after warmup we expect a healthy chunk.

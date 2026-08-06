@@ -29,14 +29,14 @@ MIN_OBS = 40                  # estimate_betas_for_stock default
 SEED = 11
 
 
-def _market() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
+def _market() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     idx = pd.bdate_range(START, periods=N_DAYS)
     tickers = [f"T{i}" for i in range(40)]
     rng = np.random.default_rng(SEED)
     close = pd.DataFrame(
         100 * np.exp(np.cumsum(rng.normal(0.0003, 0.015, (len(idx), len(tickers))), axis=0)),
         index=idx, columns=tickers)
-    return close, close.pct_change(), close.pct_change().rolling(5).mean().bfill(), tickers
+    return close, close.pct_change(), tickers
 
 
 def _factor_panel(close: pd.DataFrame, rets: pd.DataFrame) -> pd.DataFrame:
@@ -52,13 +52,16 @@ def test_slow_warming_factor_does_not_delay_the_other_betas():
     """A regressor with a long warm-up must not postpone the betas that are already
     estimable. Market + sector need `min_obs` rows; momentum needs 252. Before the fix
     the presence of momentum in the shared block pushed ALL of them to ~291."""
-    close, rets, sector_ret, tickers = _market()
-    y, sector = rets[tickers[0]], sector_ret[tickers[0]]
-    market_only = pd.DataFrame({"market": rets.mean(axis=1)})
-    with_slow = _factor_panel(close, rets)
+    close, rets, tickers = _market()
+    y = rets[tickers[0]]
+    # a second, immediately-available regressor alongside market (any name would do;
+    # "sector" is kept only as a label, it is not a peer/GICS construct here)
+    sector = rets[tickers[0]].rolling(5).mean().bfill()
+    market_only = pd.DataFrame({"market": rets.mean(axis=1), "sector": sector})
+    with_slow = _factor_panel(close, rets).assign(sector=sector)
 
-    first_alone = estimate_betas_for_stock(y, market_only, sector)["beta_market"].dropna().index[0]
-    first_mixed = estimate_betas_for_stock(y, with_slow, sector)["beta_market"].dropna().index[0]
+    first_alone = estimate_betas_for_stock(y, market_only)["beta_market"].dropna().index[0]
+    first_mixed = estimate_betas_for_stock(y, with_slow)["beta_market"].dropna().index[0]
     idx = close.index
     pos_alone, pos_mixed = idx.get_loc(first_alone), idx.get_loc(first_mixed)
 
@@ -69,7 +72,7 @@ def test_slow_warming_factor_does_not_delay_the_other_betas():
 
     # and momentum's own beta is simply 0 (not neutralized) while it is unusable,
     # rather than poisoning the row
-    b = estimate_betas_for_stock(y, with_slow, sector)
+    b = estimate_betas_for_stock(y, with_slow)
     early = b.iloc[pos_mixed:pos_mixed + 5]
     assert early["beta_momentum"].abs().max() == 0.0, \
         "an unusable factor must get beta 0 (not neutralized), not NaN"
@@ -84,14 +87,13 @@ def test_slow_warming_factor_does_not_delay_the_other_betas():
 # 2. the user-visible contract                                                 #
 # --------------------------------------------------------------------------- #
 def test_target_is_defined_from_the_beta_warmup_and_missing_only_the_last_horizon():
-    close, rets, sector_ret, tickers = _market()
+    close, rets, tickers = _market()
     idx = close.index
     factor_panel = _factor_panel(close, rets)
-    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
-    betas = estimate_all_betas(rets, factor_panel, sector_ret)
+    betas = estimate_all_betas(rets, factor_panel)
     horizons = (30, 60, 90)
 
-    built = build_targets_multi(close, rets, peers, betas, factor_panel, macro_cols=[],
+    built = build_targets_multi(close, betas, factor_panel, macro_cols=[],
                                horizons=horizons, labels=("rank",),
                                sector_groups={"sector": {t: "S" for t in tickers}})
 

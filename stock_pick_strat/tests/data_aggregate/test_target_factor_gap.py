@@ -23,7 +23,6 @@ def _setup(horizon=20, gap_at=100, T=150):
 
     close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (T, 3)), axis=0),
                          index=dates, columns=tickers)
-    stock_ret = close.pct_change().fillna(0.0)
 
     # shared factor panel: market + oil; oil has an INTERIOR one-day gap
     factor = pd.DataFrame({
@@ -36,17 +35,16 @@ def _setup(horizon=20, gap_at=100, T=150):
     betas = {}
     for tk in tickers:
         betas[tk] = pd.DataFrame({
-            "beta_market": 1.0, "beta_oil": 0.3, "beta_sector": 0.5,
+            "beta_market": 1.0, "beta_oil": 0.3,
         }, index=dates)
-    peers = {"A": {"B": 1.0}, "B": {"A": 1.0}, "C": {"A": 1.0}}
-    return close, stock_ret, peers, betas, factor, macro_cols, horizon, dates, gap_at
+    return close, betas, factor, macro_cols, horizon, dates, gap_at
 
 
 def test_shared_factor_gap_does_not_drop_the_cross_section():
-    (close, stock_ret, peers, betas, factor, macro_cols, horizon,
+    (close, betas, factor, macro_cols, horizon,
      dates, gap_at) = _setup()
 
-    eps = compute_epsilon(close, stock_ret, peers, betas, factor, macro_cols, horizon)
+    eps = compute_epsilon(close, betas, factor, macro_cols, horizon)
 
     # dates whose forward window [t+1, t+h] contains the oil gap -> oil forward NaN
     oil_fwd = forward_compound(factor["oil"], horizon)
@@ -78,13 +76,13 @@ def test_shared_factor_gap_does_not_drop_the_cross_section():
 def test_missing_beta_still_propagates_nan():
     """Filling the FACTOR (not the product) means a missing BETA still NaNs the
     residual -- early-history behaviour is preserved, only factor DATA gaps heal."""
-    (close, stock_ret, peers, betas, factor, macro_cols, horizon,
+    (close, betas, factor, macro_cols, horizon,
      dates, gap_at) = _setup()
     # blank ticker A's market beta on an interior date with a defined forward
     t = dates[50]
     betas["A"].loc[t, "beta_market"] = np.nan
 
-    eps = compute_epsilon(close, stock_ret, peers, betas, factor, macro_cols, horizon)
+    eps = compute_epsilon(close, betas, factor, macro_cols, horizon)
     assert np.isnan(eps.loc[t, "A"]), "missing beta must still yield NaN (unchanged)"
     assert np.isfinite(eps.loc[t, "B"]), "other stocks unaffected"
     print("\n=== SANITY CHECK: missing beta still propagates NaN ===")

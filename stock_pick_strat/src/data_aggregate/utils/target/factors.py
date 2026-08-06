@@ -186,7 +186,7 @@ def filter_daily_factors(
     if dropped:
         logger.warning("dropped non-daily-moving factors from target built neutrality: %s", dropped)
 
-    return panel[keep]
+    return panel[keep], dropped
 
 
 def assemble_factor_panel(
@@ -207,6 +207,6 @@ def assemble_factor_panel(
         [market_ret.rename("market"), style_factors, commodity_returns, currency_returns, macro_changes],
         axis=1,
     )
-    panel = filter_daily_factors(panel)
+    panel, _dropped = filter_daily_factors(panel)
     macro_cols = [c for c in macro_changes.columns if c in panel.columns]
     return panel, macro_cols

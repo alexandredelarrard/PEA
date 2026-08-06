@@ -69,15 +69,13 @@ def _mini_inputs(T=40, N=6, seed=0):
     stock_ret = pd.DataFrame(rng.normal(0, 0.02, (T, N)), index=dates, columns=tickers)
     close = (1 + stock_ret).cumprod() * 100.0
     factor_panel = pd.DataFrame({"market": rng.normal(0.0004, 0.01, T)}, index=dates)
-    betas = {t: pd.DataFrame({"beta_market": 1.0, "beta_sector": 0.0}, index=dates)
-             for t in tickers}
-    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
-    return close, stock_ret, peers, betas, factor_panel
+    betas = {t: pd.DataFrame({"beta_market": 1.0}, index=dates) for t in tickers}
+    return close, betas, factor_panel
 
 
 def test_build_targets_multi_returns_rank_and_zscore():
-    close, stock_ret, peers, betas, factor_panel = _mini_inputs()
-    out = build_targets_multi(close, stock_ret, peers, betas, factor_panel, macro_cols=[],
+    close, betas, factor_panel = _mini_inputs()
+    out = build_targets_multi(close, betas, factor_panel, macro_cols=[],
                               horizons=(5,), labels=("rank", "zscore"), min_names=3)
 
     assert set(out.keys()) == {5}

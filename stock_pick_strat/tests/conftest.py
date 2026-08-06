@@ -107,16 +107,14 @@ def real_pipeline(real_frames):
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.targets import build_targets_multi
     from src.data_aggregate.utils.common.prices import price_column_returns
+    from src.data_aggregate.utils.common.gics import load_gics_maps
     from src.data_aggregate.utils.target.factors import (
         build_characteristics,
         characteristic_to_factor_return,
         macro_change_factors,
         assemble_factor_panel,
     )
-    from src.data_peers.utils.sector_peers import (
-        build_peer_dict,
-        compute_sector_returns,
-    )
+    from src.data_peers.utils.sector_peers import build_peer_dict
 
     stock_close = real_frames["stock_close"]
     stock_ret = real_frames["stock_ret"]
@@ -130,7 +128,9 @@ def real_pipeline(real_frames):
     macro = None if macro.empty else macro
 
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
-    sector_ret = compute_sector_returns(stock_ret, peers)
+    # mirror StepCubeTarget._gics_groups: GICS sector + industry_group neutralization
+    context = type("Ctx", (), {"store": store})()
+    sector_groups = load_gics_maps(context)
 
     # mirror StepCubeTarget._factor_panel: market + style + commodity + currency + macro
     chars = build_characteristics(stock_close, stock_ret, fundamentals, resvol_window=63)
@@ -149,7 +149,7 @@ def real_pipeline(real_frames):
         mkt_ret, style, commodity_returns, currency_returns, macro_chg)
 
     betas = estimate_all_betas(
-        stock_ret, factor_panel, sector_ret,
+        stock_ret, factor_panel,
         window=63, min_obs=40, ridge=5.0, step=5,
     )
 
@@ -158,14 +158,14 @@ def real_pipeline(real_frames):
     # deleted); unwrap {h: {"rank": df}} -> {h: df} so the fixture's shape is unchanged
     # and its five consumer tests need no edits.
     _multi = build_targets_multi(
-        stock_close, stock_ret, peers, betas, factor_panel, macro_cols,
+        stock_close, betas, factor_panel, macro_cols,
         horizons=horizons, labels=("rank",), min_names=20,
+        sector_groups=sector_groups,
     )
     labels_rank = {h: by_label["rank"] for h, by_label in _multi.items()}
 
     return {
         "peers": peers,
-        "sector_ret": sector_ret,
         "factor_panel": factor_panel,
         "macro_cols": macro_cols,
         "betas": betas,

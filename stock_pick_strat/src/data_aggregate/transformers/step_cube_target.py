@@ -64,7 +64,8 @@ class StepCubeTarget(Step):
         max_h = max(horizons)
         calendar = load_trading_calendar(self._parts)
         window = plan_window(self._parts, CUBE_PART_TARGETS, full=full,
-                             warmup=self._warmup(), trading_index=calendar,
+                             warmup= self._part.warmup_trading_days, 
+                             trading_index=calendar,
                              extra_back=max_h)
 
         frames = self._load_frames(window.since)
@@ -76,10 +77,6 @@ class StepCubeTarget(Step):
         
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
-
-    def _warmup(self) -> int:
-        override = self._cfg.get("incremental", {}).get("warmup_trading_days")
-        return int(override) if override is not None else self._part.warmup_trading_days
 
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:

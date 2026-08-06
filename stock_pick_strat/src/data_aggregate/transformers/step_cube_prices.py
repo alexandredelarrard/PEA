@@ -169,6 +169,7 @@ class StepCubePrices(Step):
         n = write_part(self._parts, CUBE_PART_PRICES, prices_long, window, self._log)
         if n == COLUMNS_CHANGED:
             return n
+
         # the market table is ~15k rows and is the definition of the trading calendar, so it
         # is always fully replaced rather than appended to
         m = self._parts.replace(CUBE_PART_MARKET, market_long)

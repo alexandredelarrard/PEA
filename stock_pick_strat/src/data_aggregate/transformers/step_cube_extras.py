@@ -34,6 +34,7 @@ from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames, load_price_frames, load_trading_calendar,
 )
+from src.data_aggregate.utils.common.sources import project_existing
 from src.data_aggregate.utils.extras.attention_features import build_combined_attention_panel
 from src.data_aggregate.utils.extras.def14a_impute import drop_implausible_def14a, impute_def14a
 from src.data_aggregate.utils.extras.governance_features import build_governance_feature_panel
@@ -117,8 +118,16 @@ class StepCubeExtras(Step):
 
     def _load_source(self, table: str) -> pd.DataFrame | None:
         """Load one source, PROJECTED to the columns its builder reads (see
-        `utils/common/sources.py`); a table absent from that map loads in full."""
-        df = self._context.store.load(table, columns=SOURCE_COLUMNS.get(table))
+        `utils/common/sources.py`); a table absent from that map loads in full.
+
+        The projection is narrowed to the columns that actually exist: `read_table` resolves
+        each via `tbl.c[name]` and raises `KeyError` otherwise, so demanding a column the
+        builder treats as optional (short_interest's `days_to_cover` inputs) killed the read
+        instead of degrading."""
+        if not self._context.store.exists(table):
+            return None
+        columns = project_existing(self._parts.columns(table), table)
+        df = self._context.store.load(table, columns=columns)
         if df is None or df.empty:
             return None
         self._log.info("Loaded %s: %s rows x %s cols", table, len(df), len(df.columns))

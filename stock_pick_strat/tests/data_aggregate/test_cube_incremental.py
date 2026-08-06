@@ -18,7 +18,9 @@ import pandas as pd
 from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
-from src.data_aggregate.utils.common.sources import SOURCE_COLUMNS
+from src.data_aggregate.utils.common.sources import (
+    OPTIONAL_SOURCE_COLUMNS, SOURCE_COLUMNS, project_existing,
+)
 
 
 def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
@@ -155,8 +157,14 @@ def test_source_column_projection_covers_builder_needs():
     # the extras step must FORWARD the projection to the store; an unmapped table -> full load
     step = object.__new__(StepCubeExtras)
     seen: dict[str, list | None] = {}
+    # what each table really has, so the projection can be narrowed to it
+    live = {"sec13f_hr": SOURCE_COLUMNS["sec13f_hr"],
+            "fundamentals_history": ["ticker", "as_of", "totalRevenue"]}
 
     class _Store:
+        def exists(self, name):
+            return name in live
+
         def load(self, name, columns=None):
             seen[name] = columns
             return pd.DataFrame()
@@ -164,7 +172,12 @@ def test_source_column_projection_covers_builder_needs():
     class _Ctx:
         store = _Store()
 
+    class _Parts:
+        def columns(self, name):
+            return live.get(name)
+
     step._context = _Ctx()
+    step._parts = _Parts()
     step._log = logging.getLogger("test")
     step._load_source("sec13f_hr")
     step._load_source("fundamentals_history")             # not in the projection map
@@ -178,8 +191,43 @@ def test_source_column_projection_covers_builder_needs():
           "full. StepCubeExtras forwards the projection to the store. Validated.")
 
 
+def test_projection_tolerates_an_absent_optional_column():
+    """A column the BUILDER treats as optional must not make the READ fail.
+
+    `read_table` resolves each projected column via `tbl.c[name]`, which raises KeyError for
+    an absent one. The live `short_interest` table has only date/ticker/short_volume/
+    total_volume, while the projection also lists `short_interest` + `avg_daily_volume` --
+    which `_short_fields` uses only `if {...}.issubset(hist.columns)`. Demanding them
+    unconditionally killed the whole extras step with `KeyError: 'short_interest'`."""
+    live_short = ["date", "ticker", "short_volume", "total_volume"]
+    got = project_existing(live_short, "short_interest")
+    assert got == live_short, got
+    assert "short_interest" not in got and "avg_daily_volume" not in got
+
+    # a table with every projected column present is unchanged
+    full_13f = list(SOURCE_COLUMNS["sec13f_hr"])
+    assert project_existing(full_13f, "sec13f_hr") == full_13f
+
+    # unknown column list (table shape unreadable) -> project the full wanted list
+    assert project_existing(None, "short_interest") == SOURCE_COLUMNS["short_interest"]
+    # a table absent from the map -> no projection (load in full)
+    assert project_existing(["a", "b"], "fundamentals_history") is None
+
+    # every OPTIONAL column must actually appear in that table's projection, else the
+    # exemption is dead and a real missing column would be silently tolerated
+    for tbl, optional in OPTIONAL_SOURCE_COLUMNS.items():
+        assert optional <= set(SOURCE_COLUMNS[tbl]), f"{tbl}: stale optional cols"
+
+    print("\n=== SANITY CHECK: optional projected columns degrade, required ones warn ===")
+    print(f"  short_interest live cols {live_short} -> projection {got}")
+    print(f"  optional-by-table: { {k: sorted(v) for k, v in OPTIONAL_SOURCE_COLUMNS.items()} }")
+    print("  CONCLUSION: an optional column missing from the live table is dropped from the "
+          "projection instead of raising KeyError and killing the step. Validated.")
+
+
 if __name__ == "__main__":
     test_windowed_build_reproduces_full_tail()
     test_incremental_horizon_arithmetic()
     test_per_part_warmup_covers_binding_lookback()
     test_source_column_projection_covers_builder_needs()
+    test_projection_tolerates_an_absent_optional_column()

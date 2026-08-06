@@ -105,20 +105,6 @@ def build_characteristics(
             if val_parts:
                 chars["value"] = sum(val_parts) / len(val_parts)
 
-        # Quality: ROE + gross margin + profit margin - leverage (SEC-derived).
-        roe = fundamentals_to_daily(fundamentals_history, "returnOnEquity", idx)
-        gm = fundamentals_to_daily(fundamentals_history, "grossMargins", idx)
-        pm = fundamentals_to_daily(fundamentals_history, "profitMargins", idx)
-        de = fundamentals_to_daily(fundamentals_history, "debtToEquity", idx)
-        q_parts = []
-        for f in (roe, gm, pm):
-            if not f.empty:
-                q_parts.append(xs_z(f, clip=XS_CLIP_CHARACTERISTIC))
-        if not de.empty:
-            q_parts.append(-xs_z(de, clip=XS_CLIP_CHARACTERISTIC))
-        if q_parts:
-            chars["quality"] = sum(q_parts) / len(q_parts)
-
     return chars
 
 

@@ -378,6 +378,120 @@ def test_build_tag_frames_denies_aep_costofrevenue_misuse():
     assert out.iloc[0]["source_tag"] == "us-gaap:CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization"
 
 
+def test_build_tag_frames_net_income_to_common_fills_when_no_preferred_stock():
+    """Real gap found via live SEC data: a filer with NO preferred stock has nothing
+    to net off, so it tags ONLY `NetIncomeLossAvailableToCommonStockholdersBasic` for
+    its income-statement bottom line instead of also tagging `NetIncomeLoss`/
+    `ProfitLoss` -- confirmed on TGT, BKNG, EW, ROL, SYY (e.g. TGT's FY2015 10-K tags
+    no other net-income-shaped concept at all, truncating its `netIncome` for FY2013
+    Q4 through FY2020 Q2). Fill-only, lowest priority: must be used when nothing else
+    reports the period."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:NetIncomeLossAvailableToCommonStockholdersBasic", 3363000000.0,
+             "2015-02-01", "2016-01-30", "duration", 2016, "FY"),
+    ])
+    tag_map = {"netIncome": ["ProfitLoss", "NetIncomeLoss",
+                             "NetIncomeLossAvailableToCommonStockholdersBasic"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 3363000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:NetIncomeLossAvailableToCommonStockholdersBasic"
+
+
+def test_build_tag_frames_net_income_to_common_never_outranks_the_primary_tag():
+    """A preferred-dividend payer (REIT/bank/insurer) tags `NetIncomeLoss`/`ProfitLoss`
+    for the SAME period too (GAAP requires presenting the un-netted figure), so the
+    to-common tag being fill-only lowest priority means it can never corrupt that
+    filer's history -- confirmed live on USB, VTR and WELL, which all tag the primary
+    concept in the same filing as the to-common one."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:ProfitLoss", 5000000000.0,
+             "2015-01-01", "2015-12-31", "duration", 2015, "FY"),
+        _fact("us-gaap:NetIncomeLossAvailableToCommonStockholdersBasic", 4800000000.0,
+             "2015-01-01", "2015-12-31", "duration", 2015, "FY"),
+    ])
+    tag_map = {"netIncome": ["ProfitLoss", "NetIncomeLoss",
+                             "NetIncomeLossAvailableToCommonStockholdersBasic"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 5000000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:ProfitLoss"
+
+
+def test_build_tag_frames_partners_capital_fills_pre_conversion_equity():
+    """A filer organized as an LP before converting to a corporation (KKR through
+    mid-2018, BX through mid-2019) tags no `StockholdersEquity` concept at all for its
+    pre-conversion years -- their entire pre-conversion history was NULL without this
+    fill-only, lowest-priority candidate."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:PartnersCapital", 2722010000.0, None, None, "instant", 2013, "Q4",
+             period_instant="2013-12-31"),
+    ])
+    tag_map = {"stockholdersEquity": ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                                      "StockholdersEquity", "PartnersCapital"]}
+    out = build_tag_frames(facts_df, tag_map)
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 2722010000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:PartnersCapital"
+
+
+def test_build_tag_frames_denies_kkr_and_bx_consolidated_fund_basis():
+    """KKR and BX consolidate investment vehicles they manage but do not economically
+    own (ASC 810 control, not equity ownership), so their `...IncludingPortionAttribu
+    tableToNoncontrollingInterest`/`ProfitLoss` facts mix in THIRD-PARTY FUND INVESTOR
+    CAPITAL -- structurally unlike an Up-C's minority public share class. Confirmed
+    live against Yahoo Finance, which reports the PARENT-only figure for both (KKR
+    2026-Q1: $30.496bn parent vs $80.806bn incl-NCI; BX: $8.371bn vs $21.417bn).
+    Denying the incl-NCI candidates for these two tickers must fall through to the
+    parent-only tag; an unlisted ticker (e.g. IBKR, which the consolidated-basis
+    ordering was built for) must be unaffected."""
+    facts_df = pd.DataFrame([
+        _fact("us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+             80806000000.0, None, None, "instant", 2026, "Q1", period_instant="2026-03-31"),
+        _fact("us-gaap:StockholdersEquity", 30496000000.0, None, None, "instant", 2026, "Q1",
+             period_instant="2026-03-31"),
+    ])
+    tag_map = {"stockholdersEquity": ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                                      "StockholdersEquity", "PartnersCapital"]}
+    out = build_tag_frames(facts_df, tag_map, ticker="KKR")
+    assert len(out) == 1
+    assert out.iloc[0]["value"] == 30496000000.0
+    assert out.iloc[0]["source_tag"] == "us-gaap:StockholdersEquity"
+
+    out_other = build_tag_frames(facts_df, tag_map, ticker="IBKR")
+    assert len(out_other) == 1
+    assert out_other.iloc[0]["value"] == 80806000000.0
+
+
+def test_build_tag_frames_denies_aee_and_ed_parent_only_liabilities():
+    """AEE and ED are utility HOLDING companies whose 10-Ks include SEC Schedule I
+    parent-only condensed financial statements -- confirmed live: AEE's FY2011 10-K
+    tags `us-gaap:Liabilities` ONLY once, dimensioned `dei:LegalEntityAxis=Parent
+    CompanyMember`, value $721M against a true consolidated ~$15.7bn. No undimensioned
+    duplicate exists, so the "sole parent fallback" (built for dual-registrant REIT/LP
+    pairs where parent-vs-consolidated are close) wrongly admits it as the total.
+    Denying `Liabilities` for these two tickers removes the wrong value so the
+    assets-minus-equity footing derivation can fill it correctly instead."""
+    fact = _fact("us-gaap:Liabilities", 721000000.0, None, None, "instant", 2011, "Q4",
+                 is_dimensioned=True, period_instant="2011-12-31")
+    fact |= {"dimension": "dei:LegalEntityAxis", "member": "us-gaap:ParentCompanyMember",
+             "dimension_member_label": "Parent Company"}
+    facts_df = pd.DataFrame([fact])
+    tag_map = {"totalLiabilities": ["Liabilities"]}
+    out = build_tag_frames(facts_df, tag_map, ticker="AEE")
+    assert out.empty
+
+    out_other = build_tag_frames(facts_df, tag_map, ticker="ED")
+    assert out_other.empty
+
+    # Unlisted-ticker control: the sole-parent-fallback heuristic DOES admit this
+    # fact absent the deny entry -- proving the denylist, not the fact shape, is
+    # what changes the outcome for AEE/ED.
+    out_unlisted = build_tag_frames(facts_df, tag_map, ticker=None)
+    assert len(out_unlisted) == 1
+    assert out_unlisted.iloc[0]["value"] == 721000000.0
+
+
 def test_build_tag_frames_sums_sga_companion_when_ga_only_wins():
     """Real gap found via the Tiingo cross-check: CRM (Salesforce) tags ONLY
     `GeneralAndAdministrativeExpense` (a component) and `SellingAndMarketingExpense`

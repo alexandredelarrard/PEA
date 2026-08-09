@@ -224,9 +224,14 @@ class DataStore:
         """`where` scopes the read server-side -- see `read_table`. Omitted (the
         default) reads the whole table exactly as before."""
         if not self.exists(name):
-            return pd.DataFrame(columns=columns or [])
-        return read_table(self.engine, name, columns=columns, limit=limit, where=where)
+            raise Exception(f"Table name does not exist {name}")
+        df = read_table(self.engine, name, columns=columns, limit=limit, where=where)
 
+        if df.empty:
+            raise Exception(f"The extraction gave empty dataframe in load {name}, Where={where}")
+
+        return df 
+    
     def row_count(self, name: str) -> int:
         return row_count(self.engine, name) if self.exists(name) else 0
 

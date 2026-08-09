@@ -36,7 +36,7 @@ import json
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
-from src.constants.constants import CUBE_PART_BETAS, CUBE_PART_TARGETS
+from src.constants.constants import CUBE_PART_BETAS, CUBE_PART_TARGETS, CUBE_TABLE
 from src.context import Context
 from src.data_aggregate.utils.assemble.composites import build_composites
 from src.data_aggregate.utils.common.gics import apply_categorical_codes
@@ -46,7 +46,6 @@ from src.data_aggregate.utils.common.parts import FEATURE_PARTS
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.utils.step import Step
 
-_CUBE = "cube"
 _CHUNK_ROWS = 200_000
 
 
@@ -161,10 +160,10 @@ class StepAssembleCube(Step):
                 if chunk.empty:
                     continue
                 if first:
-                    self._context.store.replace(_CUBE, chunk)   # clears + creates the schema
+                    self._context.store.replace(CUBE_TABLE, chunk)   # clears + creates the schema
                     first = False
                 else:
-                    self._context.store.bulk_seed(_CUBE, chunk)  # chunked COPY-append
+                    self._context.store.bulk_seed(CUBE_TABLE, chunk)  # chunked COPY-append
                 total += len(chunk)
                 chunk = None
                 gc.collect()          # hand the arrays + COPY buffer back before the next
@@ -172,4 +171,4 @@ class StepAssembleCube(Step):
             tg = None
             gc.collect()
         self._log.info("Saved cube to DB table '%s' (%s rows across %d horizons)",
-                       _CUBE, total, len(horizons))
+                       CUBE_TABLE, total, len(horizons))

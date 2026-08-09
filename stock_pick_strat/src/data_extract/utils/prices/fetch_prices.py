@@ -27,7 +27,7 @@ from src.data_extract.utils.common.gics import industry_group
 from src.data_extract.utils.common.run_manifest import record_run
 from src.constants.constants import (
     DATE_FORMAT, NO_VOLUME_TICKERS, PRELISTING_VOLUME_RATIO,
-    PRELISTING_ZERO_VOLUME_SHARE,
+    PRELISTING_ZERO_VOLUME_SHARE, UNIVERSE_TABLE
 )
 from src.context import Context
 
@@ -85,8 +85,8 @@ def get_sp500_tickers(context: Context) -> list[str]:
     keep = [c for c in ["ticker", "name", "sector", "industry_group", "sub_industry", "cik"]
             if c in df.columns]
     df = df.loc[~df['ticker'].isin(tick_redundant)].reset_index(drop=True)
-    context.store.save("sp500_tickers", df[keep])
-    print(f"Saved {len(df)} tickers to DB table 'sp500_tickers'")
+    context.store.save(UNIVERSE_TABLE, df[keep])
+    print(f"Saved {len(df)} tickers to DB table {UNIVERSE_TABLE}")
     return df["ticker"].tolist()
 
 

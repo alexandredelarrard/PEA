@@ -35,6 +35,7 @@ from src.data_aggregate.utils.common.part_io import PartStore
 # tell the caller "your column set no longer matches the stored table -- re-run full".
 COLUMNS_CHANGED = -1
 
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class PartWindow:
@@ -73,7 +74,7 @@ def plan_window(parts: PartStore, part: str, *, warmup: int, full: bool,
 
 
 def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str],
-                            log: logging.Logger, part: str) -> pd.DataFrame:
+                            part: str) -> pd.DataFrame:
     """Drop (date, ticker) rows where EVERY feature is NaN.
 
     The merge-based builders left-join onto the full universe grid, so a name with no
@@ -87,13 +88,13 @@ def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str],
     keep = rows[fcols].notna().any(axis=1)
     dropped = int((~keep).sum())
     if dropped:
-        log.info("%s: dropped %s all-NaN grid rows (%.1f%% of %s)", part, dropped,
+        logger.info("%s: dropped %s all-NaN grid rows (%.1f%% of %s)", part, dropped,
                  100 * dropped / len(rows), len(rows))
     return rows[keep]
 
 
 def write_part(parts: PartStore, part: str, rows: pd.DataFrame, window: PartWindow,
-               log: logging.Logger, *, keys: Sequence[str] = tuple(PANEL_KEYS),
+               *, keys: Sequence[str] = tuple(PANEL_KEYS),
                refresh_from: pd.Timestamp | None = None,
                drop_empty: bool = False) -> int:
     """Persist a part according to `window`.
@@ -107,20 +108,20 @@ def write_part(parts: PartStore, part: str, rows: pd.DataFrame, window: PartWind
     `drop_empty` (feature parts) removes rows carrying no feature values at all.
     """
     if rows is not None and not rows.empty and drop_empty:
-        rows = drop_empty_feature_rows(rows, keys, log, part)
+        rows = drop_empty_feature_rows(rows, keys, part)
     if rows is None or rows.empty:
-        log.warning("%s produced no rows -> nothing persisted.", part)
+        logger.warning("%s produced no rows -> nothing persisted.", part)
         return 0
 
     if window.is_full:
         n = parts.replace(part, rows)
-        log.info("Persisted %s (FULL): %s rows x %s cols.", part, n,
+        logger.info("Persisted %s (FULL): %s rows x %s cols.", part, n,
                  len([c for c in rows.columns if c not in keys]))
         return n
 
     existing = parts.columns(part)
     if existing is not None and set(existing) != set(rows.columns):
-        log.warning("%s column set changed (%s stored vs %s built) -> full rebuild needed.",
+        logger.warning("%s column set changed (%s stored vs %s built) -> full rebuild needed.",
                     part, len(existing), len(rows.columns))
         return COLUMNS_CHANGED
 
@@ -128,6 +129,6 @@ def write_part(parts: PartStore, part: str, rows: pd.DataFrame, window: PartWind
     inclusive = refresh_from is not None
     tail = rows[rows["date"] >= cutoff] if inclusive else rows[rows["date"] > cutoff]
     n = parts.append_tail(part, tail, cutoff=cutoff, inclusive=inclusive)
-    log.info("Appended %s (INCREMENTAL): +%s rows %s %s.", part, n,
+    logger.info("Appended %s (INCREMENTAL): +%s rows %s %s.", part, n,
              ">=" if inclusive else ">", pd.Timestamp(cutoff).date())
     return n

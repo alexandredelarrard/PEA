@@ -41,6 +41,7 @@ from src.constants.constants import (
     GOOGLE_TRENDS_EXPLORE_URL,
     GOOGLE_TRENDS_HOME_URL,
     GOOGLE_TRENDS_MULTILINE_URL,
+    UNIVERSE_TABLE
 )
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
@@ -356,7 +357,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     verify = _VERIFY if verify is None else verify
     impersonate = impersonate or _IMPERSONATE
 
-    names = context.store.load("sp500_tickers")
+    names = context.store.load(UNIVERSE_TABLE)
     names["name"] = names["name"].apply(_clean_name)
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]

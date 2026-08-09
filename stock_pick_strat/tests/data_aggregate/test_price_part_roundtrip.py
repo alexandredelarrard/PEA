@@ -26,13 +26,14 @@ import pytest
 
 from src.constants.constants import CUBE_PART_MARKET, CUBE_PART_PRICES
 from src.data_aggregate.utils.common.price_frames import (
-    ALL_PRICE_FIELDS, frames_to_long, load_price_frames, load_trading_calendar,
+    frames_to_long, load_price_frames, load_trading_calendar,
     universe_columns,
 )
 
 MARKET = "SPY"
 OTHER = "CL=F"
 TICKERS = ["AAA", "BBB", "CCC", "DDD"]
+ALL_PRICE_FIELDS = ['open', 'close', 'date', 'ticker']
 
 
 class _FakeStore:

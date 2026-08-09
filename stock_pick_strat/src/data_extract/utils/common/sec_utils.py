@@ -22,6 +22,7 @@ import pandas as pd
 import requests
 
 from src.context import Context
+from src.constants.constants import UNIVERSE_TABLE
 
 _MIN_INTERVAL = 0.11          # ~9 req/sec, safely under SEC's 10/sec limit
 _DEFAULT_TIMEOUT = 30         # seconds; avoid a hung socket stalling a worker
@@ -139,7 +140,7 @@ def load_cik_mapping(context: Context) -> pd.DataFrame:
     active tickers (e.g. XOM -> a non-filing "ExxonMobil Holdings Corp" shell), while
     sp500_tickers already held the correct CIKs.
     """
-    df = context.store.load("sp500_tickers")
+    df = context.store.load(UNIVERSE_TABLE)
     if df.empty or "cik" not in df.columns:
         return df
     df = df.copy()

@@ -48,19 +48,9 @@ import pandas as pd
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.prices import momentum_characteristic, trailing_vol
 from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, xs_z
+from src.constants.constants import DAILY_MACRO_LEVELS
 
 logger = logging.getLogger(__name__)
-
-# FRED level -> daily-change factor name. ONLY daily-moving series belong here.
-# NOTE: cpi_yoy_pct (monthly) and fed_balance_sheet (weekly) are deliberately
-# EXCLUDED -- their daily change is ~always zero. Inflation risk is captured by
-# the daily breakeven instead.
-DAILY_MACRO_LEVELS = {
-    "yield_10y": "d_yield_10y",
-    "yield_curve_10y2y": "d_yield_curve",
-    "vix": "d_vix",
-    "breakeven_10y": "d_breakeven_10y",   # FRED T10YIE Inflation
-}
 
 # --------------------------------------------------------------------------- #
 # Characteristics                                                              #
@@ -113,7 +103,6 @@ def build_characteristics(
                         val_parts.append(xs_z(yld, clip=XS_CLIP_CHARACTERISTIC))
             if val_parts:
                 chars["value"] = sum(val_parts) / len(val_parts)
-
     return chars
 
 
@@ -136,14 +125,13 @@ def characteristic_to_factor_return(char: pd.DataFrame, stock_ret: pd.DataFrame)
     f = (w.shift(1) * aligned).sum(axis=1, min_count=1)
     return f.rename(char.name if char.name else "factor")
 
-
 def macro_change_factors(
     macro_df: pd.DataFrame,
     trading_index: pd.DatetimeIndex,
-    level_to_change: dict | None = None,
+    level_to_change: dict | None = DAILY_MACRO_LEVELS,
 ) -> pd.DataFrame:
     """Daily first-differences of the daily-moving macro levels only."""
-    mapping = level_to_change or DAILY_MACRO_LEVELS
+
     m = macro_df.copy()
     if "date" in m.columns:
         m["date"] = pd.to_datetime(m["date"])
@@ -151,7 +139,7 @@ def macro_change_factors(
     m = m.sort_index()
 
     out = {}
-    for level, change in mapping.items():
+    for level, change in level_to_change.items():
         if level in m.columns:
             s = m[level].reindex(m.index.union(trading_index)).ffill().reindex(trading_index)
             out[change] = s.diff()
@@ -161,7 +149,7 @@ def macro_change_factors(
 def filter_daily_factors(
     panel: pd.DataFrame,
     max_zero_frac: float = 0.30,
-    max_nan_frac: float = 0.50,
+    max_nan_frac: float = 0.80,
 ) -> tuple[pd.DataFrame, list[str]]:
     """
     Keep only columns that genuinely move at daily frequency. A return/change
@@ -203,6 +191,7 @@ def assemble_factor_panel(
     forward-accumulates via cumulative sum. Market, style, and COMMODITY columns
     are returns and are compounded forward -- so commodity is NOT in macro_cols.
     """
+
     panel = pd.concat(
         [market_ret.rename("market"), style_factors, commodity_returns, currency_returns, macro_changes],
         axis=1,

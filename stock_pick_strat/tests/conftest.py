@@ -42,7 +42,42 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+from src.data_store.store import DataStore  # noqa: E402
+from src.utils.db import get_engine  # noqa: E402
+
 DATA = ROOT / "data"
+
+
+# --------------------------------------------------------------------------- #
+# The shared UNIT-level store: a REAL DataStore on in-memory SQLite.           #
+# --------------------------------------------------------------------------- #
+# This replaces the ~18 hand-rolled `_FakeStore` / `_FakePartStore` duck types scattered
+# across tests/. Those fakes each re-implemented a slightly different subset of the store
+# API -- only ONE of them accepted `where=` -- so every change to the store surface broke
+# them one at a time, and four production modules still carry a whole second "no engine"
+# code path that exists PURELY to keep them working (see superinvestor_features.py's
+# `getattr(store, "engine", None)` branch).
+#
+# Deliberately NOT the Postgres fixture below: `_store()` SKIPS when the container is down,
+# which silently greens the suite on a machine with no DB. This one never skips, so a unit
+# test that depends on store behaviour actually runs everywhere.
+#
+# SQLite is a genuine dialect for this purpose -- `DataStore` adapts its upsert per dialect
+# (`ON CONFLICT DO UPDATE` on both Postgres and SQLite), which is exactly the path under test.
+@pytest.fixture
+def sqlite_store():
+    """A real `DataStore` backed by a fresh in-memory SQLite DB (never skips)."""
+    # StaticPool + one shared connection: the default pool hands out a NEW (and therefore
+    # EMPTY) in-memory database per checkout, so a table written by `save` would vanish
+    # before the next `load` -- the failure mode looks like a broken store, not a fixture bug.
+    engine = create_engine("sqlite://", poolclass=StaticPool,
+                           connect_args={"check_same_thread": False})
+    store = DataStore(engine)
+    yield store
+    engine.dispose()
 
 
 def _store():
@@ -53,8 +88,6 @@ def _store():
     An UNREACHABLE database also skips rather than errors: these are integration tests, and
     a machine without the Postgres container should report 'skipped', not a wall of
     connection tracebacks that hides real failures."""
-    from src.utils.db import get_engine
-    from src.data_store.store import DataStore
     engine = get_engine()
     try:
         with engine.connect():
@@ -150,7 +183,7 @@ def real_pipeline(real_frames):
 
     betas = estimate_all_betas(
         stock_ret, factor_panel,
-        window=63, min_obs=40, ridge=5.0, step=5,
+        window=63, min_obs=40, ridge_alpha=0.08, step=1,
     )
 
     horizons = (5, 20, 60)

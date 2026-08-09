@@ -36,7 +36,7 @@ class StepCubeMomentum(Step):
 
     # `ret` is read from the part rather than recomputed: build_feature_panel used to derive
     # it internally from close, duplicating what the price step already persisted
-    _FIELDS = ("close", "open_", "high", "low", "volume", "ret", "sector_ret")
+    _FIELDS = ("close", "open", "high", "low", "volume", "ret", "sector_ret")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -52,7 +52,7 @@ class StepCubeMomentum(Step):
         frames = self._load_frames(window.since)
         panel = self._price_panel(frames)
         del frames
-        n = write_part(self._parts, CUBE_PART_MOMENTUM, panel, window, self._log, drop_empty=True)
+        n = write_part(self._parts, CUBE_PART_MOMENTUM, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 
@@ -66,9 +66,9 @@ class StepCubeMomentum(Step):
             market_ticker=self._market_ticker, fields=self._FIELDS, since=since)
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:
-        frames.require("close", "open_", "sector_ret", "ret")
+        frames.require("close", "open", "sector_ret", "ret")
         panel = build_feature_panel(
-            frames.close, frames.open_, frames.sector_ret,
+            frames.close, frames.open, frames.sector_ret,
             method=self._cfg.features.standardize_method,
             high=frames.high, low=frames.low, volume=frames.volume,
             seasonal_horizons=[int(h) for h in self._cfg.targets.horizons],

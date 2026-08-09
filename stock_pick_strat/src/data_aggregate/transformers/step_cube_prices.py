@@ -14,12 +14,10 @@ MEMORY DISCIPLINE (the invariant that makes seven sequential sub-steps safe): ev
 frame is LOCAL to `run()`. Nothing is stashed on `self`, so when `run()` returns its
 locals are collected and the next sub-step starts from a clean slate.
 """
-from __future__ import annotations
 
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import CUBE_PART_MARKET, CUBE_PART_PRICES
 from src.context import Context
 from src.data_aggregate.utils.common import data_utils as du
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
@@ -29,10 +27,11 @@ from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.common.price_frames import frames_to_long, universe_columns
 from src.data_peers.utils.sector_peers import compute_sector_returns
 from src.data_aggregate.utils.common.price_frames import load_trading_calendar
+
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
-
-_PRICES_TABLE = "prices"
+from src.constants.constants import (PRICES_TABLE, UNIVERSE_TABLE,
+CUBE_PART_MARKET, CUBE_PART_PRICES)
 
 
 class StepCubePrices(Step):
@@ -45,20 +44,25 @@ class StepCubePrices(Step):
         self._other_tickers = tuple(config.data_extract.get("other_tickers", ()) or ())
         self._parts = PartStore(context.store, self._log)
         self._tickers = load_universe_tickers(context)
-        self._log.info("Ticker universe: %d tickers from sp500_tickers", len(self._tickers))
+        self._log.info(f"Ticker universe: {len(self._tickers)} tickers from {UNIVERSE_TABLE}")
 
     def run(self, full: bool = False) -> None:
         window = self._plan_window(full)
         raw = self._load_prices(window.since)
         wide = self._pivot_fields(raw)
-        del raw
-        idx = self._trading_calendar(wide["close"])
-        wide = self._on_calendar(wide, idx)
+
+        # filter wide on trading days with close value 
+        days_index = self._trading_calendar(wide["close"])
+        wide = self._on_calendar(wide, days_index)
+
+        # get deltas
         returns =  self._daily_returns(wide["close"])
         market = self._market_frames(wide["close"], returns)
         peers = self._peers()
         universe = self._universe_frames(wide, returns, peers)
-        del wide, returns
+        del raw, wide, returns
+
+        # save it all
         n = self._persist(universe, market, window)
         if n == COLUMNS_CHANGED:                      # schema drift -> one clean full rebuild
             return self.run(full=True)
@@ -76,24 +80,19 @@ class StepCubePrices(Step):
                            warmup=self._part.warmup_trading_days, 
                            trading_index=idx)
 
-    # ---- load + normalize ---- #
     def _load_prices(self, since: pd.Timestamp | None) -> pd.DataFrame:
         """The one read of the raw ~1.9M-row `prices` table. `since` is pushed into SQL
-        (`PartStore.read` is not restricted to the part tables), so an incremental run
-        transfers a few hundred trading days instead of fifteen years and then discarding
-        90% of them -- which is what the old `_trim_window` did."""
-        where = f" since {pd.Timestamp(since).date()}" if since is not None else " (full)"
-        self._log.info("Loading %s%s", _PRICES_TABLE, where)
-        raw = self._parts.read(_PRICES_TABLE, since=since)
-        if raw.empty:
-            raise RuntimeError(f"{_PRICES_TABLE} is empty -> run the extraction step first")
+        so an incremental run transfers a few hundred trading days instead of fifteen years 
+        and then discarding 90% of them"""
+        raw = self._parts.read(PRICES_TABLE, since=since)
+        self._log.info(f"Loading {PRICES_TABLE} since={since if since else "full"}")
         return raw
 
     @staticmethod
     def _pivot_fields(raw: pd.DataFrame) -> dict[str, pd.DataFrame]:
         pivot = du.prices_long_to_multiindex(raw)
         return {"close": du.extract_field(pivot, "Close"),
-                "open_": du.extract_field(pivot, "Open"),
+                "open": du.extract_field(pivot, "Open"),
                 "high": du.extract_field(pivot, "High"),
                 "low": du.extract_field(pivot, "Low"),
                 "volume": du.extract_field(pivot, "Volume")}
@@ -135,7 +134,7 @@ class StepCubePrices(Step):
         if missing:
             self._log.warning("market/other tickers absent from prices: %s", missing)
         if self._market_ticker not in cols:
-            raise RuntimeError(f"market_ticker {self._market_ticker} is not in {_PRICES_TABLE}"
+            raise RuntimeError(f"market_ticker {self._market_ticker} is not in {PRICES_TABLE}"
                                " -> the trading calendar cannot be reconstructed downstream")
         return close[cols], returns[cols]
 
@@ -149,10 +148,12 @@ class StepCubePrices(Step):
                          peers: dict) -> dict[str, pd.DataFrame]:
         """Restrict every frame to the analysis universe (SORTED -- see
         `universe_columns`), then add the persisted return and peer-basket return."""
+        
         universe = universe_columns(self._tickers, wide["close"])
         out = {k: v.reindex(columns=universe) for k, v in wide.items()}
         out["ret"] = returns.reindex(columns=universe)
         out["sector_ret"] = self._sector_returns(out["ret"], peers)
+
         self._log.info("Normalized prices: %d dates x %d universe tickers",
                        len(wide["close"]), len(universe))
         return out
@@ -165,9 +166,10 @@ class StepCubePrices(Step):
 
     def _persist(self, universe: dict[str, pd.DataFrame],
                  market: tuple[pd.DataFrame, pd.DataFrame], window) -> int:
+        
         prices_long, market_long = frames_to_long(universe, market[0], market[1])
-        n = write_part(self._parts, CUBE_PART_PRICES, prices_long, window, self._log)
+        n = write_part(self._parts, CUBE_PART_PRICES, prices_long, window)
         if n == COLUMNS_CHANGED:
             return n
-        m = write_part(self._parts, CUBE_PART_MARKET, market_long, window, self._log)
+        m = write_part(self._parts, CUBE_PART_MARKET, market_long, window)
         return COLUMNS_CHANGED if m == COLUMNS_CHANGED else n

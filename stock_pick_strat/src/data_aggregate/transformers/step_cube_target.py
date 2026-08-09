@@ -18,8 +18,6 @@ import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import CUBE_PART_BETAS, CUBE_PART_TARGETS
-from src.context import Context
 from src.data_aggregate.utils.assemble.cube import _betas_to_long, _labels_to_long
 from src.data_aggregate.utils.common.gics import load_gics_maps
 from src.data_aggregate.utils.common.incremental import (
@@ -34,24 +32,26 @@ from src.data_aggregate.utils.common.price_frames import (
 from src.data_aggregate.utils.common.prices import price_column_returns
 from src.data_aggregate.utils.target.betas import estimate_all_betas
 from src.data_aggregate.utils.target.factors import (
-    assemble_factor_panel, build_characteristics, characteristic_to_factor_return,
+    assemble_factor_panel, build_characteristics, 
+    characteristic_to_factor_return,
     macro_change_factors,
 )
 from src.data_aggregate.utils.target.targets import build_targets_multi
+
+
+from src.constants.constants import (DAILY_MACRO_LEVELS, CUBE_PART_BETAS, 
+                                     CUBE_PART_TARGETS, MACRO_TABLE, 
+                                     FUNDAMENTALS_HISTORY_TABLE)
+from src.context import Context
 from src.utils.step import Step
 
-_FUNDAMENTALS = "fundamentals_history"
-_MACRO = "macro"
 _COMMODITY_TICKERS = {"oil": "CL=F", "gold": "GC=F"}
 _CURRENCY_TICKERS = {"USD/EUR": "USDEUR=X"}
 
-
 class StepCubeTarget(Step):
 
-    # the style factors need close + returns
-    _FIELDS = ("close", "ret")
-
     def __init__(self, context: Context, config: DictConfig):
+        
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
         self._part = PART_BY_NAME[CUBE_PART_TARGETS]
@@ -79,8 +79,8 @@ class StepCubeTarget(Step):
 
         # fit betas and build target neutrals to betas 
         betas = self._estimate_betas(frames, panel)
-        labels = self._build_targets(frames, betas, panel, macro_cols, horizons)
-        n = self._persist(labels, betas, window, calendar, max_h)
+        targets = self._build_targets(frames, betas, panel, macro_cols, horizons)
+        n = self._persist(targets, betas, window, calendar, max_h)
         
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
@@ -88,25 +88,24 @@ class StepCubeTarget(Step):
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(
-            self._parts, peers=load_peers_or_raise(self._context, self._config),
-            market_ticker=self._market_ticker, fields=self._FIELDS,
-            with_market=True, other_tickers=self._other_tickers, since=since)
+            parts=self._parts, 
+            peers=load_peers_or_raise(self._context, self._config),
+            market_ticker=self._market_ticker, 
+            fields=("close", "ret"),
+            with_market=True, 
+            other_tickers=self._other_tickers, 
+            since=since)
 
-    def _load_fundamentals(self) -> pd.DataFrame | None:
-        """Optional: without it the value / quality style factors are simply skipped."""
-        df = self._context.store.load(_FUNDAMENTALS)
-        if df.empty:
-            self._log.warning("No fundamentals history -> value/quality style factors skipped.")
-            return None
-        return df
+    def _load_fundamentals(self) -> pd.DataFrame:
+        columns = ("ticker", "as_of", "sharesOutstanding", "netIncome", "freeCashflow", "stockholdersEquity")
+        return self._context.store.load(FUNDAMENTALS_HISTORY_TABLE, columns=columns)
 
     # ---- factor panel ---- #
     def _macro_changes(self, frames: PriceFrames) -> pd.DataFrame:
-        macro = self._context.store.load(_MACRO)
-        if macro.empty:
-            self._log.warning("No macro data -> macro betas will be skipped.")
-            return pd.DataFrame(index=frames.trading_index)
-        return macro_change_factors(macro, frames.trading_index)
+        macro = self._context.store.load(MACRO_TABLE)
+        return macro_change_factors(macro, 
+                                    frames.trading_index,
+                                    level_to_change=DAILY_MACRO_LEVELS)
 
     def _asset_factors(self, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Commodity + FX factor returns, from the market part's own close frame. The factor
@@ -157,7 +156,11 @@ class StepCubeTarget(Step):
         betas = estimate_all_betas(
             frames.ret, panel,
             window=cfg.window, min_obs=cfg.min_obs,
-            ridge=cfg.get("ridge", 5.0), step=cfg.get("step", 5))
+            ridge_alpha=cfg.get("ridge_alpha", 0.08),
+            step=cfg.get("step", 1),
+            market_prior=cfg.get("market_prior", 1.0),
+            ffill_limit=cfg.get("ffill_limit", 21),
+            smooth_halflife=cfg.get("smooth_halflife", 0))
 
         # a ticker without the univariate market beta is unusable downstream (the L/S
         # optimizer neutralizes on it), so drop it rather than ship a hole
@@ -173,19 +176,14 @@ class StepCubeTarget(Step):
         return betas
 
     # ---- targets ---- #
-    def _gics_groups(self) -> dict[str, dict[str, str]]:
-        """The ACTUAL GICS sector + industry (per-day within-group demeaning), so
-        sector / industry membership cannot predict the target -- if it could, it
-        would dominate the model."""
-        return load_gics_maps(self._context)
-
     def _build_targets(self, frames: PriceFrames, betas: dict, panel: pd.DataFrame,
                        macro_cols: list[str], horizons: list[int]) -> dict:
+
         cfg = self._cfg.targets
         # store EVERY configured target version (e.g. rank AND zscore) so the modelling step
         # can pick one via model.target_type without a cube rebuild
-        label_types = list(cfg.get("labels", [cfg.get("label", "rank")]))
-        sector_groups = self._gics_groups()
+        label_types = list(cfg.get("labels", ["zscore", "rank"]))
+        sector_groups = load_gics_maps(self._context)
         labels = build_targets_multi(
             close=frames.close,
             betas=betas, factor_panel=panel, macro_cols=macro_cols,
@@ -208,12 +206,13 @@ class StepCubeTarget(Step):
         # targets: overwrite the trailing max_horizon window so MATURED labels refresh
         refresh_from = (None if window.is_full
                         else window_start(calendar, window.last, max_h))
-        n = write_part(self._parts, CUBE_PART_TARGETS, targets_long, window, self._log,
+        n = write_part(self._parts, CUBE_PART_TARGETS, targets_long, window,
                        refresh_from=refresh_from)
         if n == COLUMNS_CHANGED:
             return n
+        
         # betas: backward-looking -> plain append after their OWN stored max
         beta_window = plan_window(self._parts, CUBE_PART_BETAS, full=window.is_full,
                                   warmup=0, trading_index=calendar)
-        write_part(self._parts, CUBE_PART_BETAS, betas_long, beta_window, self._log)
+        write_part(self._parts, CUBE_PART_BETAS, betas_long, beta_window)
         return n

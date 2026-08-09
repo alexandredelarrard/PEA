@@ -51,7 +51,7 @@ from src.data_extract.utils.behavioral.fetch_earnings_calls import (
     download_earnings_calls as _download_earnings_calls,
     ingest_all_earnings_calls as _ingest_earnings_calls,
 )
-
+from src.constants.constants import UNIVERSE_TABLE
 
 @click.group(cls=SpecialHelpOrder)
 def cli() -> None:
@@ -78,8 +78,8 @@ def _tickers(context: Context, tickers: str | None) -> list[str]:
 @click.option("--refresh", is_flag=True, default=False, help="Re-scrape the S&P 500 even if populated.")
 def seed_universe(config_path: str, refresh: bool) -> None:
     _, context = _ctx(config_path)
-    if refresh or context.store.row_count("sp500_tickers") == 0:
-        context.log.info("Seeding sp500_tickers via the S&P 500 scraper (refresh=%s)", refresh)
+    if refresh or context.store.row_count(UNIVERSE_TABLE) == 0:
+        context.log.info(F"Seeding {UNIVERSE_TABLE} via the S&P 500 scraper (refresh={refresh})")
         get_sp500_tickers(context)
     context.log.info("Universe ready: %d tickers.", len(load_universe_tickers(context)))
 

@@ -38,6 +38,7 @@ from src.constants.constants import (
     EARNINGS_CALL_SECTIONS_TABLE,
     MOTLEY_FOOL_BASE_URL,
     MOTLEY_FOOL_TRANSCRIPT_INDEX_URL,
+    UNIVERSE_TABLE
 )
 from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import (
@@ -147,7 +148,7 @@ def build_transcript_index(context: Context, tickers: list[str] | None = None,
       * `max_pages` / end-of-feed (a page that won't load) as hard safety caps.
 
     `tickers` restricts the kept universe (None = all)."""
-    universe = list(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
+    universe = list(context.store.load(UNIVERSE_TABLE, columns=["ticker"])["ticker"])
     if tickers is not None:                          # scope to a subset (e.g. a test run)
         keep = set(tickers)
         universe = [t for t in universe if t in keep]

@@ -23,15 +23,16 @@ import logging
 import pandas as pd
 
 from src.context import Context
+from src.constants.constants import UNIVERSE_TABLE
 
 GICS_COLUMNS = ("sector", "industry_group")
-_UNIVERSE_TABLE = "sp500_tickers"
+
 
 
 def load_gics_maps(context: Context) -> dict[str, dict[str, str]]:
     """{"sector": {ticker: group}, "industry_group": {...}} -- only the columns present and
     populated in `sp500_tickers`."""
-    ref = context.store.load(_UNIVERSE_TABLE)
+    ref = context.store.load(UNIVERSE_TABLE)
     maps: dict[str, dict[str, str]] = {}
     for col in GICS_COLUMNS:
         if not ref.empty and col in ref.columns:
@@ -45,10 +46,10 @@ def apply_categorical_codes(df: pd.DataFrame, context: Context,
     """Attach GICS sector / industry_group as INTEGER category codes (deterministic sorted
     mapping; unknown / NaN -> -1)."""
     log = log or logging.getLogger(__name__)
-    ref = context.store.load(_UNIVERSE_TABLE)
+    ref = context.store.load(UNIVERSE_TABLE)
     for col in GICS_COLUMNS:
         if ref is None or ref.empty or col not in ref.columns:
-            log.warning("%s has no '%s' -> categorical skipped", _UNIVERSE_TABLE, col)
+            log.warning("%s has no '%s' -> categorical skipped", UNIVERSE_TABLE, col)
             continue
         m = dict(zip(ref["ticker"].astype(str), ref[col].astype("string")))
         cats = df["ticker"].astype(str).map(m).astype("category")

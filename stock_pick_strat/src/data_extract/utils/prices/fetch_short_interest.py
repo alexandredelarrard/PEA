@@ -19,6 +19,7 @@ import time
 
 import pandas as pd
 import requests
+import logging 
 
 from src.constants.constants import DATE_FORMAT_COMPACT
 from src.context import Context
@@ -28,6 +29,7 @@ from src.data_extract.utils.common.run_manifest import record_run
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 _HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; contact@example.com)"}
 
+logger = logging.getLogger(__name__)
 
 def _parse_regsho(text: str) -> pd.DataFrame:
     """Parse one CNMSshvol pipe-delimited file -> [date, ticker, short_volume,
@@ -69,7 +71,7 @@ def fetch_short_interest(context: Context, tickers: list[str] | None = None,
         try:
             text = _fetch_day(d)
         except Exception as e:
-            print(f"RegSHO {d.date()} failed: {e}")
+            logger.error(f"RegSHO {d.date()} failed: {e}")
             continue
         if not text:
             continue
@@ -83,16 +85,20 @@ def fetch_short_interest(context: Context, tickers: list[str] | None = None,
     ticker_count = len(universe) if universe is not None else 0
     parts = [df for df in (existing, *frames) if df is not None and not df.empty]
     if not parts:
-        print("No short-volume data available.")
+        logger.warning("No short-volume data available.")
         record_run(context, "short_interest", ticker_count, 0)
         return pd.DataFrame(columns=["date", "ticker", "short_volume", "total_volume"])
+
     out = (pd.concat(parts, ignore_index=True)
            .drop_duplicates(["ticker", "date"], keep="last")
            .sort_values(["ticker", "date"]).reset_index(drop=True))
+    
     # persist only the newly-downloaded days; the DB merges on (ticker, date)
     new = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if not new.empty:
         context.store.save("short_interest", new)
-    print(f"Saved {len(new)} new short-volume rows to DB table 'short_interest'")
+
+    logger.info(f"Saved {len(new)} new short-volume rows to DB table 'short_interest'")
     record_run(context, "short_interest", ticker_count, len(new))
+
     return out

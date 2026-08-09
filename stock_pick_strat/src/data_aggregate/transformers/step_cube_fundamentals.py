@@ -21,13 +21,14 @@ dividend payout growth. `sector` / `earnings` need ~none (they look back in fili
 the full source table), so merging them into this part costs them a longer daily grid but no
 correctness.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 from omegaconf import DictConfig
 from omegaconf import OmegaConf
 
-from src.constants.constants import CUBE_PART_FUNDAMENTALS
+from src.constants.constants import CUBE_PART_FUNDAMENTALS, FUNDAMENTALS_HISTORY_TABLE, EARNINGS_TABLE, DIVIDENDS_TABLE
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
@@ -47,14 +48,7 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
 from src.utils.step import Step
 
-_FUNDAMENTALS = "fundamentals_history"
-_EARNINGS = "earnings_surprises"
-_DIVIDENDS = "dividends"
-
-
 class StepCubeFundamentals(Step):
-
-    _FIELDS = ("close",)
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -69,7 +63,7 @@ class StepCubeFundamentals(Step):
                              trading_index=load_trading_calendar(self._parts))
         frames = self._load_frames(window.since)
         fundamentals = self._load_fundamentals()
-        earnings = self._load_optional(_EARNINGS, "earnings-surprise history",
+        earnings = self._load_optional(EARNINGS_TABLE, "earnings-surprise history",
                                        "fetch_earnings_surprises")
         
         # ONE point-in-time cache for all five builders (see the module docstring)
@@ -92,7 +86,7 @@ class StepCubeFundamentals(Step):
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames, fundamentals, earnings, pit
-        n = write_part(self._parts, CUBE_PART_FUNDAMENTALS, panel, window, self._log, drop_empty=True)
+        n = write_part(self._parts, CUBE_PART_FUNDAMENTALS, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 
@@ -108,16 +102,16 @@ class StepCubeFundamentals(Step):
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(
             self._parts, peers=load_peers_or_raise(self._context, self._config),
-            market_ticker=self._market_ticker, fields=self._FIELDS, since=since)
+            market_ticker=self._market_ticker, fields=("close",), since=since)
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
-        df = self._context.store.load(_FUNDAMENTALS)
+        df = self._context.store.load(FUNDAMENTALS_HISTORY_TABLE)
         if df.empty:
             self._log.warning("No fundamentals history -> the fundamental, sector, workforce "
                               "and dividend-payout features will be skipped.")
             return None
         self._log.info("Loaded %s: %s rows, %s tickers (ONCE for five builders)",
-                       _FUNDAMENTALS, len(df), df["ticker"].nunique())
+                       FUNDAMENTALS_HISTORY_TABLE, len(df), df["ticker"].nunique())
         return df
 
     def _load_optional(self, table: str, what: str, fetcher: str) -> pd.DataFrame | None:
@@ -184,7 +178,7 @@ class StepCubeFundamentals(Step):
         + buyback yield. RECONCILES the per-share ex-date history (`dividends`, primary) with
         the SEC cash-flow `dividendsPaid` total (gap-fill + payout/coverage). Non-payers get a
         real 0 yield so they rank correctly."""
-        dividends = self._load_optional(_DIVIDENDS, "dividend history",
+        dividends = self._load_optional(DIVIDENDS_TABLE, "dividend history",
                                         "fetch_price_history -> StepExtractPrices")
         if dividends is None:
             return None

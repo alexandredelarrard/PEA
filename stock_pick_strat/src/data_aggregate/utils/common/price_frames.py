@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Sequence
 
 import pandas as pd
 
@@ -44,15 +44,7 @@ from src.data_aggregate.utils.common.part_io import PartStore
 
 logger = logging.getLogger(__name__)
 
-PriceField = Literal["close", "open_", "high", "low", "volume", "ret", "sector_ret"]
-ALL_PRICE_FIELDS: tuple[PriceField, ...] = (
-    "close", "open_", "high", "low", "volume", "ret", "sector_ret")
-# in-memory field name -> DB column. Only `open_` differs, so the name never shadows the
-# builtin `open` (the old code had `self.open` but a `_trim_window` list saying "open_",
-# so the full-history open frame was silently never trimmed).
-_COLUMN: dict[str, str] = {f: ("open" if f == "open_" else f) for f in ALL_PRICE_FIELDS}
-_MARKET_FIELDS = ("close", "ret")
-
+ALL_FIELDS = ("close", "open", "high", "low", "volume", "ret", "sector_ret")
 
 @dataclass(frozen=True, slots=True)
 class PriceFrames:
@@ -67,10 +59,10 @@ class PriceFrames:
     sub-steps accumulating seven sub-steps' worth of memory.
     """
     trading_index: pd.DatetimeIndex
-    universe: tuple[str, ...]                 # SORTED -- see the note in load_price_frames
+    universe: tuple[str, ...]                 
     peers: dict[str, dict[str, float]]
     close: pd.DataFrame | None = None
-    open_: pd.DataFrame | None = None
+    open: pd.DataFrame | None = None
     high: pd.DataFrame | None = None
     low: pd.DataFrame | None = None
     volume: pd.DataFrame | None = None
@@ -107,15 +99,15 @@ def frames_to_long(universe_fields: dict[str, pd.DataFrame],
 
     Rows where every value column is NULL are dropped (a ticker that had not listed yet
     contributes nothing)."""
+
     frames = []
     for field, wide in universe_fields.items():
         if wide is None or wide.empty:
             continue
         s = wide.stack(future_stack=True)
         s.index = s.index.set_names(["date", "ticker"])
-        frames.append(s.rename(_COLUMN[field]))
-    if not frames:
-        raise RuntimeError("no price fields to persist -> refusing to write an empty part")
+        frames.append(s.rename(field))
+
     prices = pd.concat(frames, axis=1)
     prices = prices.dropna(how="all").reset_index()
 
@@ -126,6 +118,7 @@ def frames_to_long(universe_fields: dict[str, pd.DataFrame],
         s = wide.stack(future_stack=True)
         s.index = s.index.set_names(["date", "ticker"])
         mkt.append(s.rename(name))
+
     market = (pd.concat(mkt, axis=1).dropna(how="all").reset_index() if mkt
               else pd.DataFrame(columns=["date", "ticker", "close", "ret"]))
     return prices, market
@@ -153,7 +146,7 @@ def load_price_frames(
     *,
     peers: dict[str, dict[str, float]],
     market_ticker: str,
-    fields: Sequence[str] = ALL_PRICE_FIELDS,
+    fields: Sequence[str] = ALL_FIELDS,
     with_market: bool = False,
     other_tickers: Sequence[str] = (),
     since: pd.Timestamp | None = None,
@@ -164,14 +157,12 @@ def load_price_frames(
     `object` ticker column costs ~100 MB on its own, so reading once per field would pay
     that N times. The long frame is dropped as soon as the pivots exist.
     """
-    unknown = [f for f in fields if f not in _COLUMN]
-    if unknown:
-        raise ValueError(f"unknown price field(s) {unknown}; known: {ALL_PRICE_FIELDS}")
+
     if not parts.exists(CUBE_PART_PRICES):
         raise RuntimeError(
             f"{CUBE_PART_PRICES} is missing -> run `data_aggregate build-prices` first")
 
-    cols = ["date", "ticker"] + [_COLUMN[f] for f in fields]
+    cols = ["date", "ticker"] + list(fields)
     long = parts.read(CUBE_PART_PRICES, columns=cols, since=since)
     if long.empty:
         raise RuntimeError(f"{CUBE_PART_PRICES} returned no rows"
@@ -180,7 +171,7 @@ def load_price_frames(
 
     wide: dict[str, pd.DataFrame] = {}
     for f in fields:
-        piv = long.pivot(index="date", columns="ticker", values=_COLUMN[f]).sort_index()
+        piv = long.pivot(index="date", columns="ticker", values=f).sort_index()
         piv.index.name, piv.columns.name = "date", "ticker"
         wide[f] = piv
     idx = pd.DatetimeIndex(sorted(long["date"].unique()), name="date")
@@ -208,7 +199,7 @@ def load_price_frames(
 
     return PriceFrames(
         trading_index=idx, universe=universe, peers=peers,
-        close=wide.get("close"), open_=wide.get("open_"), high=wide.get("high"),
+        close=wide.get("close"), open=wide.get("open"), high=wide.get("high"),
         low=wide.get("low"), volume=wide.get("volume"), ret=wide.get("ret"),
         sector_ret=wide.get("sector_ret"),
         market_close=market_close, mkt_ret=mkt_ret, other_close=other_close,
@@ -228,7 +219,3 @@ def universe_columns(tickers: Sequence[str], close: pd.DataFrame) -> list[str]:
     if not universe:
         raise RuntimeError("sp500_tickers empty/unseeded -> cube universe is empty")
     return universe
-
-
-__all__ = ["ALL_PRICE_FIELDS", "PriceFrames", "PriceField", "frames_to_long",
-           "load_price_frames", "load_trading_calendar", "universe_columns", "du"]

@@ -23,8 +23,6 @@ from __future__ import annotations
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import CUBE_PART_TEXT
-from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.part_io import PartStore
@@ -40,15 +38,17 @@ from src.data_aggregate.utils.text.earnings_call_features import (
     build_earnings_call_embedding_panel, build_earnings_call_feature_panel,
     score_earnings_calls, sentiment_kpis_streamed,
 )
+
+from src.constants.constants import CUBE_PART_TEXT
+from src.context import Context
 from src.utils.step import Step
 
 
 class StepCubeText(Step):
 
-    _FIELDS = ("close",)
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
+
         self._cfg = config.build_cube
         self._part = PART_BY_NAME[CUBE_PART_TEXT]
         self._market_ticker = str(self._cfg.market_ticker)
@@ -70,7 +70,7 @@ class StepCubeText(Step):
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames
-        n = write_part(self._parts, CUBE_PART_TEXT, panel, window, self._log, drop_empty=True)
+        n = write_part(self._parts, CUBE_PART_TEXT, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 
@@ -81,7 +81,7 @@ class StepCubeText(Step):
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(
             self._parts, peers=load_peers_or_raise(self._context, self._config),
-            market_ticker=self._market_ticker, fields=self._FIELDS, since=since)
+            market_ticker=self._market_ticker, fields=("close",), since=since)
 
     def _sentiment_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
         score_earnings_calls(self._context)                  # lazy, iterative, cache-incremental

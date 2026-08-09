@@ -11,7 +11,6 @@ seeded via the S&P 500 scraper only when empty) — and hands it to each sub-ste
   4. behavioral    — Wikipedia pageviews (+Google Trends, news)
 """
 
-import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
@@ -22,7 +21,7 @@ from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.transformers.step_extract_behavioral import StepExtractBehavioral
-
+from src.constants.constants import UNIVERSE_TABLE
 
 class StepExtractAllData(Step):
 
@@ -37,14 +36,13 @@ class StepExtractAllData(Step):
 
     def _resolve_tickers(self) -> list[str]:
         refresh = bool(self._config.data_extract.get("refresh_universe", False))
-        if refresh or self._context.store.row_count("sp500_tickers") == 0:
+        if refresh or self._context.store.row_count(UNIVERSE_TABLE) == 0:
             self._log.info("Seeding sp500_tickers via S&P 500 scraper (refresh=%s)", refresh)
             get_sp500_tickers(self._context)              # scrape + persist the table
 
         universe = load_universe_tickers(self._context)
-        self._log.info("Equity universe: %d tickers from sp500_tickers "
-                       "(other_tickers fetched separately as market/macro prices)",
-                       len(universe))
+        self._log.info(f"Equity universe: {len(universe)} tickers from {UNIVERSE_TABLE} "
+                       "(other_tickers fetched separately as market/macro prices)")
         return universe
 
     def run(self) -> None:

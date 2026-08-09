@@ -78,14 +78,21 @@ class PartStore:
 
         The `since` filter is pushed into SQL: the incremental steps read a few hundred
         trading days instead of fifteen years."""
+        
         cols = list(columns) if columns else None
         if since is None:
             return self._store.load(part, columns=cols)
         select = ", ".join(f'"{c}"' for c in cols) if cols else "*"
         sql = text(f'SELECT {select} FROM "{part}" WHERE date >= :since')
-        with self._store.engine.connect() as c:
-            return pd.read_sql(sql, c, params={"since": pd.Timestamp(since).strftime("%Y-%m-%d")})
 
+        with self._store.engine.connect() as c:
+            df = pd.read_sql(sql, c, params={"since": pd.Timestamp(since).strftime("%Y-%m-%d")})
+
+        if df.empty:
+            raise RuntimeError(f"{part} is empty fill it !")
+        
+        return df
+    
     # ---- writes ---- #
     def replace(self, part: str, df: pd.DataFrame) -> int:
         """Full rebuild. Pre-creates the table from the frame's OWN dtypes so

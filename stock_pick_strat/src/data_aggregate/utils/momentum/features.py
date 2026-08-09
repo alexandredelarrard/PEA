@@ -82,7 +82,7 @@ def _atr(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame, n: int = 14
 
 def compute_raw_features(
     close: pd.DataFrame,
-    open_: pd.DataFrame,
+    open: pd.DataFrame,
     sector_returns: pd.DataFrame,
     high: pd.DataFrame | None = None,
     low: pd.DataFrame | None = None,
@@ -132,11 +132,11 @@ def compute_raw_features(
     feats["high_prox_252"] = sanitize(close / close.rolling(252).max())
 
     # Overnight gap: average of (open_t / close_{t-1} - 1) over 21d.
-    gap = sanitize(open_ / close.shift(1) - 1.0)
+    gap = sanitize(open / close.shift(1) - 1.0)
     feats["gap_21"] = gap.rolling(21).mean()
 
     # Intraday range proxy from close/open.
-    rng = sanitize((close - open_).abs() / open_)
+    rng = sanitize((close - open).abs() / open)
     feats["range_21"] = rng.rolling(21).mean()
 
     # Peer-relative (residual) momentum: 63d stock cum ret minus sector cum ret.
@@ -250,7 +250,7 @@ def compute_raw_features(
 
 def build_feature_panel(
     close: pd.DataFrame,
-    open_: pd.DataFrame,
+    open: pd.DataFrame,
     sector_returns: pd.DataFrame,
     method: str = "rank",
     high: pd.DataFrame | None = None,
@@ -272,7 +272,7 @@ def build_feature_panel(
     `compute_raw_features`); keyword-only, so the eight-positional-arg call sites are
     unaffected.
     """
-    raw = compute_raw_features(close, open_, sector_returns, high=high, low=low,
+    raw = compute_raw_features(close, open, sector_returns, high=high, low=low,
                                volume=volume, seasonal_horizons=seasonal_horizons,
                                returns=returns)
     std = {name: xs_standardize(f, method) for name, f in raw.items()}

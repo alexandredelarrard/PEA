@@ -6,6 +6,40 @@ formats or SEC endpoints across modules, so a change happens in one place.
 """
 from __future__ import annotations
 
+
+# TABLE NAMES IN THE SQL DATABASE - raw info
+PRICES_TABLE="prices"
+MACRO_TABLE="macro"
+
+FUNDAMENTALS_HISTORY_TABLE="fundamentals_history"
+FUNDAMENTALS_FACTS_TABLE="fundamentals_facts"
+
+SEC_INSIDER_TRANSACTIONS_TABLE = "insider_transactions"
+SEC_8K_TABLE = "sec_8k"   
+
+DEF14A_EDGAR_TABLE = "def14a_edgar"
+DEF14A_EDGAR_EXEC_COMP_TABLE = "def14a_edgar_executive_comp"
+DEF14A_EDGAR_DIRECTOR_COMP_TABLE = "def14a_edgar_director_comp"
+DEF14A_EDGAR_OWNERSHIP_TABLE = "def14a_edgar_ownership"
+DEF14A_EDGAR_VOTES_TABLE = "def14a_edgar_votes"
+
+SEC_13D_TRANSACTIONS_TABLE = "sec_13d_transactions"
+SEC_13D_TABLE = "sec_13d"
+SHORT_INTEREST_TABLE = "short_interest"
+SEC13F_TABLE = "sec13f_hr"
+EARNINGS_CALL_SENTIMENT_TABLE = "earnings_call_sentiment"
+EARNINGS_CALL_EMBEDDING_TABLE = "earning_calls_embedding"
+EARNINGS_CALL_SECTIONS_TABLE = "earnings_call_sections"
+FILING_TEXT_TABLE = "filing_risk_text"
+NOTES_TEXT_TABLE = "notes_text"
+NOTES_EMBEDDING_TABLE = "notes_embedding"  
+MACRO_ASSET_PRICES_TABLE = "macro_asset_prices"
+TREND_ASSET_RETURNS_TABLE = "trend_asset_returns"
+
+EARNINGS_TABLE = "earnings_surprises"
+DIVIDENDS_TABLE = "dividends"
+UNIVERSE_TABLE = "sp500_tickers"
+
 # --------------------------------------------------------------------------- #
 # Date formats                                                                 #
 # --------------------------------------------------------------------------- #
@@ -119,8 +153,8 @@ SEC_INSIDER_URL_TEMPLATE = (
     "{quarter}_form345.zip")
 SEC_FINSTMT_URL_TEMPLATE = (
     "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip")
-SEC_INSIDER_FIRST_YEAR = 2011      # earliest insider-transactions data set
-SEC_FINSTMT_FIRST_YEAR = 2009      # earliest financial-statement data set (2009q2)
+SEC_INSIDER_FIRST_YEAR = 2011      
+SEC_FINSTMT_FIRST_YEAR = 2009     
 
 # SEC "Financial Statement AND Notes" data sets: like finstmt but ALSO carry the
 # NOTES (footnote) facts — numeric (num.tsv, incl. footnote PBO / plan-asset /
@@ -150,7 +184,7 @@ SEC_FTD_FIRST_YEAR = 2009          # earliest FTD file overall (2009-07, legacy 
 # CurrentReport flags (has_earnings/has_press_release). Table keyed per (ticker, accession);
 # raw comma-separated `items` stored + a count. The curated high-signal codes (leading
 # distress/governance events) are mapped for the downstream feature layer.
-SEC_8K_TABLE = "sec_8k"   
+
 SEC_8K_FORMS = ["8-K", "8-K/A"]
 SEC_8K_HIGH_SIGNAL_ITEMS = {
     # Section 1: Registrant's Business and Operations
@@ -207,12 +241,8 @@ SEC_8K_HIGH_SIGNAL_ITEMS = {
 # SC 13D activist filings (>5% stake WITH intent to influence) + amendments — the event-driven
 # catalyst signal, read via edgartools' typed Schedule13D object (reporting persons, CUSIP,
 # ownership -- see fetch_13d_edgar.py). One row PER REPORTING PERSON per filing.
-SEC_13D_TABLE = "sec_13d"
+
 SEC_13D_FORMS = ["SC 13D", "SC 13D/A"]   # activist (13G = passive is deliberately excluded)
-# Item 5(c) 60-day transaction log, parsed from each filing's "TRADING DATA" exhibit
-# (e.g. EX-99.2 -- exhibit NUMBER varies by filer, identified by table content instead).
-# One row PER DISCLOSED TRADE; independent grain from `sec_13d` (no rp_seq relationship).
-SEC_13D_TRANSACTIONS_TABLE = "sec_13d_transactions"
 
 # Fundamentals (financial-statement) forms walked per-filing via edgartools -> `fundamentals_facts`
 # / `fundamentals_history`. Amendments included explicitly (never inferred from a form-filter
@@ -224,18 +254,6 @@ FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
 # form-dispatch registry (form_registry.py) has one source of truth, matching SEC_8K_FORMS /
 # SEC_13D_FORMS / FILING_TEXT_FORMS above.
 DEF14A_FORMS = ["DEF 14A", "DEF 14C"]
-
-# Deterministic, structured DEF 14A extraction (fetch_def14a_edgar.py) via edgartools' typed
-# `ProxyStatement` (SEC XBRL ECD taxonomy + deterministic HTML-table parsing) -- COMPLEMENTARY to
-# the LLM-based `def14a_llm` table (board bios / governance provisions / say-on-pay SUPPORT %,
-# none of which edgartools exposes structurally), not a replacement. One row per (ticker,
-# accession_number) in the main table; one-to-many detail carried in four child tables (see
-# fetch_def14a_edgar.py's module docstring for the exact grain of each).
-DEF14A_EDGAR_TABLE = "def14a_edgar"
-DEF14A_EDGAR_EXEC_COMP_TABLE = "def14a_edgar_executive_comp"
-DEF14A_EDGAR_DIRECTOR_COMP_TABLE = "def14a_edgar_director_comp"
-DEF14A_EDGAR_OWNERSHIP_TABLE = "def14a_edgar_ownership"
-DEF14A_EDGAR_VOTES_TABLE = "def14a_edgar_votes"
 
 # Sanity bounds for the DEF 14A repair layer (def14a_validate.py). edgartools' proxy HTML parser
 # emits values that are silently WRONG rather than absent: unit-scaled fee/net-income blocks whose
@@ -250,11 +268,6 @@ DEF14A_PAY_RATIO_TOLERANCE = 0.02        # ceo_comp / median_comp must reproduce
 DEF14A_COMP_RECONCILE_TOLERANCE = 1.0    # comp components must sum to `total` within $1 (rounding)
 DEF14A_PLACEHOLDER_PERCENT = 0.5         # edgartools' fabricated stand-in for a "*" percent cell
 
-# 10-K narrative sections: Item 1A (Risk Factors) + Item 7 (MD&A). Extracted via edgartools
-# (`fetch_filing_text.py`), section-carved to raw text, stored for later embedding/drift features
-# (YoY risk-factor additions, MD&A tone drift — reusing the notes-embedding machinery). One row per
-# (ticker, accession, section).
-FILING_TEXT_TABLE = "filing_risk_text"
 # MD&A lives in DIFFERENT items per form: 10-K Item 7 (annual) and 10-Q Item 2 (quarterly). Both are
 # extracted so the MD&A tone/drift signal is QUARTERLY. Risk Factors are taken from the 10-K (Item 1A,
 # the substantive annual set); 10-Q Part II Item 1A is usually "no material change" so it is skipped.
@@ -283,7 +296,7 @@ MOTLEY_FOOL_HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64)
                                       "Chrome/124.0 Safari/537.36")}
 # raw transcript HTML + link-index cache, relative to DATA_STORE (non-tabular artifact)
 EARNINGS_CALL_CACHE_DIR = "call_transcripts"
-EARNINGS_CALL_SECTIONS_TABLE = "earnings_call_sections"
+
 # Motley Fool politeness: base inter-request pause (seconds) for the quote-page discovery
 # AND the transcript HTML download. Deliberately slow — fool.com sits behind Cloudflare and
 # throttles (429) after a short burst; the per-host slowdown in polite_http then ratchets
@@ -327,17 +340,7 @@ ROIC_EARNINGS_LIST_URL = "https://api.roic.ai/v2/company/earnings-calls/list/{ti
 ROIC_EARNINGS_TRANSCRIPT_URL = "https://api.roic.ai/v2/company/earnings-calls/transcript/{ticker}"
 ROIC_REQUEST_PAUSE = 12.5              # free tier = 5 req/min -> >= 12s between calls
 
-# Per-call sentiment / text-metrics cache (one row per ticker / quarter / tag). The
-# EXPENSIVE, call-intrinsic scores (FinBERT tone probs + word count + lexicon ratios)
-# live here so the GPU pass runs once; the cross-call KPIs (tone delta, Q&A gap,
-# length delta, vocabulary novelty) are cheap and derived at cube-build time.
-EARNINGS_CALL_SENTIMENT_TABLE = "earnings_call_sentiment"
-# OpenAI-embedding cache for earnings calls: one row PER SPEAKER TURN (question / answer /
-# prepared), each with its own embedding + raw text + person + tag + exchange_idx (links a
-# question to its answer turns) + model/run stamp + as_of (call date). The Q&A-coherence
-# (cosine of a question vs its answer turns) + quarter-to-quarter drift cube features are
-# DERIVED from these turns at build time. See earnings_call_embeddings.py.
-EARNINGS_CALL_EMBEDDING_TABLE = "earning_calls_embedding"
+
 EARNINGS_CALL_EMBED_MODEL = "text-embedding-3-small"     # cheap, 1536-dim; cost-efficient default
 # per-turn `tag` values in EARNINGS_CALL_EMBEDDING_TABLE
 EARNINGS_CALL_TAG_QUESTION = "question"      # a sell-side analyst turn (asks)
@@ -361,9 +364,7 @@ FINBERT_MAX_TOKENS = 512
 # them yet: the module that was meant to turn them into peer-relative features (narrative
 # drift, risk-anchor similarity, tone/litigious density, disclosure-length dynamics) was
 # never wired into any panel and has been removed, so no cube consumer exists today.
-# --------------------------------------------------------------------------- #
-NOTES_TEXT_TABLE = "notes_text"
-NOTES_EMBEDDING_TABLE = "notes_embedding"          # cache: 1 row per (ticker, adsh, tag), pooled vector
+# --------------------------------------------------------------------------- #       
 NOTES_EMBED_MODEL = "text-embedding-3-small"       # cheap, 1536-dim (shared with the earnings-call layer)
 # risk/compliance THEME <- the footnote TextBlock tags that carry it (see fetch_financial_notes
 # `_NOTES_TEXT_TAGS`). Drift/tone/length are tracked per tag and aggregated to the theme.
@@ -554,16 +555,7 @@ SEC_FORM13F_URL_DICT = {
 # --------------------------------------------------------------------------- #
 # Long-history multi-asset ALLOCATION series (FRED, free, deep history)        #
 # --------------------------------------------------------------------------- #
-# A separate, deeper-history pull than the `macro` feature table: total-return /
-# level series for the risk-parity + trend asset-allocation sleeve, back to ~1995
-# (scoped by data_extract.macro_asset_years_history). Written to MACRO_ASSET_PRICES_TABLE.
-#
-# Equity: FRED's S&P 500 (`SP500`) is license-truncated to ~10y daily, so the
-# long equity leg uses the Wilshire 5000 Total Market Full Cap index (near-identical
-# US equity beta, daily since ~1971). 10Y bond is stored as a TOTAL-RETURN index
-# reconstructed from the constant-maturity yield (carry + duration*Δyield) — the raw
-# yield is kept alongside for transparency. Cash = 3M T-bill secondary-market rate.
-MACRO_ASSET_PRICES_TABLE = "macro_asset_prices"
+
 # HYBRID source (verified July 2026): FRED's API no longer serves a broad daily S&P
 # (SP500 is license-truncated to ~10y) or ANY gold series (the London fixes were
 # removed ~2025), so the RATES/CASH/FX legs come from FRED (its strong long history)
@@ -594,12 +586,21 @@ MACRO_ASSET_BOND_MATURITY_YEARS = 10
 # CORE daily level series used to judge table freshness (lag ~1 business day)
 MACRO_ASSET_CORE_LEVEL_COLUMNS = ("equity_tr", "yield_10y", "cash_rate")
 
+# FRED level -> daily-change factor name. ONLY daily-moving series belong here.
+# NOTE: cpi_yoy_pct (monthly) and fed_balance_sheet (weekly) are deliberately
+# EXCLUDED -- their daily change is ~always zero. Inflation risk is captured by
+# the daily breakeven instead.
+DAILY_MACRO_LEVELS = {
+    "yield_10y": "d_yield_10y",
+    "yield_curve_10y2y": "d_yield_curve",
+    "vix": "d_vix",
+    "breakeven_10y": "d_breakeven_10y",   # FRED T10YIE Inflation
+}
+
 # --------------------------------------------------------------------------- #
 # Multi-asset trend (time-series-momentum) sleeve — StepTrendAssetClass output #
 # --------------------------------------------------------------------------- #
-# Daily NET return of the directional cross-asset trend book (one row per date, no ticker),
-# consumed by StepBacktest as a diversifying sleeve to blend with the equity L/S alpha + SPY.
-TREND_ASSET_RETURNS_TABLE = "trend_asset_returns"
+
 # model artifact (params + vol-target calibration) under paths["MODELS_DIR"]
 TREND_ASSET_MODEL_FILE = "trend_asset_model.json"
 
@@ -697,7 +698,7 @@ CUBE_PART_FUNDAMENTALS = "cube_part_fundamentals"
 CUBE_PART_MOMENTUM = "cube_part_momentum"
 CUBE_PART_TEXT = "cube_part_text"
 CUBE_PART_EXTRAS = "cube_part_extras"
-
+CUBE_TABLE="cube"
 
 # --------------------------------------------------------------------------- #
 # GICS sectors / industry groups (values as stored in `sp500_tickers`, carried  #

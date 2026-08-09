@@ -44,6 +44,8 @@ class StepExtractPrices(Step):
         fetch_macro_assets(self._context)
 
         # 13F institutional holdings (SEC bulk + OpenFIGI cusip map; slow one-off)
+        # TODO : update it to be daily extract from edgar tool  Form 3/4/5's own SUBMISSION.FILING_DATE
+        # NOT to stay the quarterly zip download
         fetch_13f(self._context)
 
         # Superinvestors roster: curated top managers (Dataroma) -> CIK subset JSON,

@@ -55,11 +55,14 @@ SOURCE_COLUMNS: dict[str, list[str]] = {
     # institutional_features + superinvestor_features (the ~21.7M-row table)
     "sec13f_hr": ["cik", "period", "ticker", "shares", "value_usd",
                   "call_value", "put_value", "filing_date"],
+
     # insider_features
     "insider_transactions": ["ticker", "filing_date", "transaction_code", "value_usd"],
+
     # short_interest_features: RegSHO short/total volume + reported short interest / ADV
     "short_interest": ["date", "ticker", "short_volume", "total_volume"],
     "fails_to_deliver": ["date", "ticker", "fails_quantity"],
+
     # attention_features
     "wiki_pageviews": ["date", "ticker", "pageviews"],
     "google_trends": ["date", "ticker", "search_interest"],
@@ -102,7 +105,7 @@ class StepCubeExtras(Step):
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames, shares
-        n = write_part(self._parts, CUBE_PART_EXTRAS, panel, window, self._log, drop_empty=True)
+        n = write_part(self._parts, CUBE_PART_EXTRAS, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 

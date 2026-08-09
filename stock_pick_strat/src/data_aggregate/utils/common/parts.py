@@ -58,7 +58,7 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     # (a trimmed window's first pct_change row would otherwise come back NaN). 260 days is
     # not a look-back: it keeps a year of context in `get_trading_days`'s interior-calendar
     # -hole warning, which is a diagnostic over history.
-    CubePart(CUBE_PART_PRICES, "build-prices", "prices", 260),
+    CubePart(CUBE_PART_PRICES, "build-prices", "prices", 520),
     CubePart(CUBE_PART_MARKET, "build-prices", "market", 0),
 
     # style momentum shift(252) + beta window(63); the forward horizon is added at the call

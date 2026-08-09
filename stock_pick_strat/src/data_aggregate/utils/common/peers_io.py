@@ -23,7 +23,6 @@ from src.context import Context
 
 logger = logging.getLogger(__name__)
 
-
 def load_peers(context: Context, config: DictConfig | None = None) -> dict:
     """The peer dict, from the `SECTOR_PEERS_PATH` cache; recomputed via `StepDeducePeers`
     only when the cache is missing and a config is supplied."""

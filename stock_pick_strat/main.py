@@ -1,8 +1,10 @@
 from src.context import get_config_context
+
 from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_aggregate.step_build_cube import StepBuildCube
 from src.modelling.long_short.step_train import StepModelling
-# from src.portfolio import StepPortfolio
+from src.strategies.step_super_investors import SuperInvestorsStrategy
+from src.portfolio import StepPortfolio
 
 if __name__ == "__main__":
     config, context = get_config_context("./configs", use_cache=False, save=True)
@@ -12,6 +14,8 @@ if __name__ == "__main__":
 
     self = StepBuildCube(context=context, config=config)
     # self.run()
+
+    # self = SuperInvestorsStrategy(context=context, config=config).run()
 
     # self = StepModelling(context=context, config=config)
     # self.run()

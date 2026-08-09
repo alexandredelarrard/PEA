@@ -36,7 +36,7 @@ class PortfolioInputs:
     fee_bps: float = 2.0                   # default trading cost (bps) unless the sleeve overrides
     spread_bps: float = 8.0
     risk_free_rate: float = 0.02
-    analysis: bool = False                 # if True, each sleeve saves its analysis/plots
+    analysis: bool = True                 # if True, each sleeve saves its analysis/plots
 
 
 @dataclass

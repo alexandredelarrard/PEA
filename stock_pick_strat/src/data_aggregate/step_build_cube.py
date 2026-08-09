@@ -37,7 +37,7 @@ from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
-from src.data_aggregate.utils.common.panel_merge import FeatureCollisionError  # re-export
+from src.data_aggregate.utils.common.panel_merge import FeatureCollisionError
 from src.data_aggregate.utils.common.part_status import part_status_report
 from src.utils.step import Step
 

@@ -6,7 +6,7 @@ CROSS-SECTIONAL operations: every per-day, across-tickers transform in one place
 Five separate implementations of "standardize within a date" had accumulated --
 `factors._xs_z` (clip 4), `features.cross_sectional_standardize` (rank | z clip 3),
 `targets.cross_sectional_zscore` (clip 3 + a min_names gate), the inline z inside
-`targets.cross_sectional_neutralize` (clip 4, zero-sd -> NaN) and
+`targets`' neutralization design (clip 4, zero-sd -> NaN) and
 `composites._xs_standardize` (long panel, groupby("date")) -- plus four independent
 `rank(axis=1, pct=True)` call sites.
 
@@ -67,8 +67,8 @@ def xs_z(df: pd.DataFrame, clip: float | None, *,
     `clip` is required (see the module docstring); pass `None` for unclipped.
     `zero_sd_to_nan=False` reproduces the UNGUARDED behaviour of `factors._xs_z` /
     `features.cross_sectional_standardize` / `targets.cross_sectional_zscore`
-    (sd == 0 -> +/-inf -> clip -> +/-clip); `True` reproduces the guarded behaviour of
-    `targets.cross_sectional_neutralize` (sd == 0 -> NaN)."""
+    (sd == 0 -> +/-inf -> clip -> +/-clip); `True` is the guarded behaviour a REGRESSOR needs
+    (sd == 0 -> NaN), used by `targets._neutralizing_design`."""
     mu = df.mean(axis=1)
     sd = df.std(axis=1)
     if zero_sd_to_nan:
@@ -78,6 +78,55 @@ def xs_z(df: pd.DataFrame, clip: float | None, *,
         sd = sd.mask(sd < eps, np.nan)
     z = df.sub(mu, axis=0).div(sd, axis=0)
     return z if clip is None else z.clip(-clip, clip)
+
+
+def xs_group_dummies(group_map: dict[str, str], tickers: pd.Index) -> pd.DataFrame:
+    """Ticker x group one-hot membership, to be used as a regressor block in `xs_project_out`.
+
+    Static (no date axis): GICS membership is keyed by ticker only. An unmapped name lands in a
+    shared `__UNK__` column so every name sits in exactly one group and the block spans the
+    constant -- which is what makes the projection's residual exactly zero-mean per group.
+    """
+    labels = pd.Series([group_map.get(t, "__UNK__") for t in tickers], index=tickers)
+    return pd.get_dummies(labels, dtype=float)
+
+
+def _day_residual(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """OLS residual of ONE day's cross-section on `x`.
+
+    Both sides are demeaned, so the intercept is implicit. `lstsq` (not the normal equations)
+    because it returns the exact projection even when `x` is rank-deficient -- a GICS group
+    with no name on that day is an all-zero column, and that is the normal case at the edges.
+    """
+    y_centered = y - y.mean()
+    x_centered = x - x.mean(axis=0)
+    coef, *_ = np.linalg.lstsq(x_centered, y_centered, rcond=None)
+    return y_centered - x_centered @ coef
+
+
+def xs_project_out(values: pd.DataFrame, exposures: list[pd.DataFrame],
+                   dummies: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Per-day cross-sectional residual of `values` on `exposures` + `dummies`, JOINTLY.
+
+    The multivariate sibling of a single-factor neutralization, and the difference is not
+    cosmetic: the regressors are mutually correlated (market beta vs trailing vol is +0.6), so
+    removing them one at a time leaves the result orthogonal to none of them.
+
+    `exposures` are (date x ticker) frames, ALREADY standardized by the caller (once, rather
+    than once per label); `dummies` is the static ticker x group block from `xs_group_dummies`.
+    """
+    stacked = (np.stack([e.reindex_like(values).to_numpy(float) for e in exposures], axis=2)
+               if exposures else np.zeros((*values.shape, 0)))
+    group_block = (dummies.reindex(values.columns).to_numpy(float)
+                   if dummies is not None else np.zeros((values.shape[1], 0)))
+    y = values.to_numpy(float)
+    out = np.full_like(y, np.nan)
+    for i in range(len(y)):
+        present = np.isfinite(y[i])
+        design = np.column_stack([stacked[i][present], group_block[present]])
+        if present.sum() > design.shape[1]:          # else the fit is exact and says nothing
+            out[i, present] = _day_residual(y[i][present], design)
+    return pd.DataFrame(out, index=values.index, columns=values.columns)
 
 
 def xs_standardize(feat: pd.DataFrame, method: Literal["rank", "zscore"],

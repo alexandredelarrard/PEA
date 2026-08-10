@@ -290,9 +290,9 @@ def build_comparison_frame(
     hist = context.store.load(
         "fundamentals_history",
         columns=["ticker", "fiscal_end"] + list(field_map.keys()),
-        where={"ticker": list(tickers)},
+        where={"ticker": list(tickers)}, optional=True,
     )
-    if hist.empty:
+    if hist is None:
         return pd.DataFrame(columns=cols)
     hist = hist.dropna(subset=["fiscal_end"]).copy()
     hist["fiscal_end"] = pd.to_datetime(hist["fiscal_end"])

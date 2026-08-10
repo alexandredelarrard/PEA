@@ -18,11 +18,11 @@ locals are collected and the next sub-step starts from a clean slate.
 import pandas as pd
 from omegaconf import DictConfig
 
+from src.data_store.schema import Tables
 from src.context import Context
 from src.data_aggregate.utils.common import data_utils as du
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
-from src.data_aggregate.utils.common.part_io import PartStore
-from src.data_aggregate.utils.common.parts import PART_BY_NAME
+from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.common.price_frames import frames_to_long, universe_columns
 from src.data_peers.utils.sector_peers import compute_sector_returns
@@ -30,8 +30,6 @@ from src.data_aggregate.utils.common.price_frames import load_trading_calendar
 
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
-from src.constants.constants import (PRICES_TABLE, UNIVERSE_TABLE,
-CUBE_PART_MARKET, CUBE_PART_PRICES)
 
 
 class StepCubePrices(Step):
@@ -39,12 +37,12 @@ class StepCubePrices(Step):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
-        self._part = PART_BY_NAME[CUBE_PART_PRICES]
+        self._part = part_for(Tables.cube_part_prices)
         self._market_ticker = str(self._cfg.market_ticker)
         self._other_tickers = tuple(config.data_extract.get("other_tickers", ()) or ())
-        self._parts = PartStore(context.store, self._log)
+        self._store = context.store
         self._tickers = load_universe_tickers(context)
-        self._log.info(f"Ticker universe: {len(self._tickers)} tickers from {UNIVERSE_TABLE}")
+        self._log.info(f"Ticker universe: {len(self._tickers)} tickers from {Tables.sp500_tickers}")
 
     def run(self, full: bool = False) -> None:
         window = self._plan_window(full)
@@ -73,10 +71,10 @@ class StepCubePrices(Step):
         the trailing recompute is exact), but `get_trading_days`'s interior-calendar-hole
         warning is a diagnostic over history and wants a year of context."""
         idx = None
-        if self._parts.exists(CUBE_PART_MARKET):
-            idx = load_trading_calendar(self._parts)
+        if self._store.exists(Tables.cube_part_market):
+            idx = load_trading_calendar(self._store)
 
-        return plan_window(self._parts, CUBE_PART_PRICES, full=full,
+        return plan_window(self._store, Tables.cube_part_prices, full=full,
                            warmup=self._part.warmup_trading_days, 
                            trading_index=idx)
 
@@ -84,8 +82,8 @@ class StepCubePrices(Step):
         """The one read of the raw ~1.9M-row `prices` table. `since` is pushed into SQL
         so an incremental run transfers a few hundred trading days instead of fifteen years 
         and then discarding 90% of them"""
-        raw = self._parts.read(PRICES_TABLE, since=since)
-        self._log.info(f"Loading {PRICES_TABLE} since={since if since else "full"}")
+        raw = self._store.read(Tables.prices, since=since)
+        self._log.info(f"Loading {Tables.prices} since={since if since else "full"}")
         return raw
 
     @staticmethod
@@ -134,7 +132,7 @@ class StepCubePrices(Step):
         if missing:
             self._log.warning("market/other tickers absent from prices: %s", missing)
         if self._market_ticker not in cols:
-            raise RuntimeError(f"market_ticker {self._market_ticker} is not in {PRICES_TABLE}"
+            raise RuntimeError(f"market_ticker {self._market_ticker} is not in {Tables.prices}"
                                " -> the trading calendar cannot be reconstructed downstream")
         return close[cols], returns[cols]
 
@@ -168,8 +166,8 @@ class StepCubePrices(Step):
                  market: tuple[pd.DataFrame, pd.DataFrame], window) -> int:
         
         prices_long, market_long = frames_to_long(universe, market[0], market[1])
-        n = write_part(self._parts, CUBE_PART_PRICES, prices_long, window)
+        n = write_part(self._store, Tables.cube_part_prices, prices_long, window)
         if n == COLUMNS_CHANGED:
             return n
-        m = write_part(self._parts, CUBE_PART_MARKET, market_long, window)
+        m = write_part(self._store, Tables.cube_part_market, market_long, window)
         return COLUMNS_CHANGED if m == COLUMNS_CHANGED else n

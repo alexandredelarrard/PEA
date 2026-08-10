@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
-from src.constants.constants import STRATEGY_TABLE
+from src.data_store.schema import Tables
 from src.portfolio import step_strategy_moves as sm
 from src.strategies.base import StrategyResult
 from src.strategies.utils.positions import LEDGER_COLUMNS
@@ -137,15 +137,14 @@ def test_resizing_uses_the_weight_panel_not_scaled_dollars(monkeypatch):
 def test_ledger_is_upserted_with_the_position_pk(monkeypatch):
     """The step upserts to `strategy` on (trading_day, sleeve, ticker) so a re-run refreshes a
     closed position's exit price / P&L instead of appending a duplicate move."""
-    from src.data_store.schema_registry import BY_NAME
 
     saved: list = []
     step, _, _ = _step(monkeypatch, saved=saved)
     led = step.run()
 
-    assert BY_NAME[STRATEGY_TABLE].pk == ("trading_day", "sleeve", "ticker")
-    assert BY_NAME[STRATEGY_TABLE].date_col == "trading_day"
-    assert len(saved) == 1 and saved[0][0] == STRATEGY_TABLE
+    assert Tables.strategy.pk == ("trading_day", "sleeve", "ticker")
+    assert Tables.strategy.date_col == "trading_day"
+    assert len(saved) == 1 and saved[0][0] == Tables.strategy
     written = saved[0][1]
     assert list(written.columns) == LEDGER_COLUMNS
     assert not written.duplicated(["trading_day", "sleeve", "ticker"]).any(), \
@@ -157,8 +156,8 @@ def test_ledger_is_upserted_with_the_position_pk(monkeypatch):
     assert bbb["pnl"].isna().all() and bbb["price_sold"].isna().all()
 
     print("\n=== SANITY CHECK: upsert grain + open vs closed ===")
-    print(f"  wrote {len(written)} row(s) to '{STRATEGY_TABLE}' with PK "
-          f"{BY_NAME[STRATEGY_TABLE].pk} — no duplicate keys")
+    print(f"  wrote {len(written)} row(s) to '{Tables.strategy}' with PK "
+          f"{Tables.strategy.pk} — no duplicate keys")
     print(f"  AAA (exited): bought @{aaa_open['price_bought']:.2f}, sold "
           f"@{aaa_open['price_sold']:.2f} on {pd.Timestamp(aaa_open['closed_on']).date()}, "
           f"pnl ${aaa_open['pnl']:+,.2f}")

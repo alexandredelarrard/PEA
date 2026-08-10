@@ -16,13 +16,12 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from sqlalchemy import text
 
 import pandas as pd
 import requests
 
+from src.data_store.schema import Tables
 from src.context import Context
-from src.constants.constants import UNIVERSE_TABLE
 
 _MIN_INTERVAL = 0.11          # ~9 req/sec, safely under SEC's 10/sec limit
 _DEFAULT_TIMEOUT = 30         # seconds; avoid a hung socket stalling a worker
@@ -87,11 +86,8 @@ def existing_filings(context: Context, table: str) -> set[str]:
     posts to EDGAR out of date order, stays missing forever. Every run now lists each
     ticker's FULL `years_history` window and relies solely on this accession set to
     avoid re-work, matching `fetch_def14a_llm.py`'s gap-filling convention."""
-    try:
-        df = context.store.load(table, columns=["accession_number"])
-    except Exception:                                   # noqa: BLE001 (table not created yet)
-        return set()
-    if df is None or df.empty:
+    df = context.store.load(table, columns=["accession_number"], optional=True)
+    if df is None:
         return set()
     return set(df["accession_number"].dropna().astype(str))
 
@@ -100,12 +96,7 @@ def bulk_ingested_quarters(store, table: str) -> set[str]:
     """Distinct source-zip `quarter` tags already stored in a bulk table -> the
     set of quarters an incremental re-run can SKIP (a past quarter's data set is
     final once the quarter ends). Empty when the table doesn't exist yet."""
-    if not store.exists(table):
-        return set()
-    
-    with store.engine.connect() as c:
-        return set(pd.read_sql(text(f'SELECT DISTINCT quarter FROM "{table}"'), c)
-                   ["quarter"].dropna())
+    return {str(q) for q in store.distinct(table, "quarter")}
 
 
 def load_processed_universe(cache_dir: Path, table: str) -> set[str]:
@@ -140,8 +131,10 @@ def load_cik_mapping(context: Context) -> pd.DataFrame:
     active tickers (e.g. XOM -> a non-filing "ExxonMobil Holdings Corp" shell), while
     sp500_tickers already held the correct CIKs.
     """
-    df = context.store.load(UNIVERSE_TABLE)
-    if df.empty or "cik" not in df.columns:
+    # No `optional=True`: every SEC fetcher needs CIKs, so an absent/empty universe is a fault to
+    # surface here rather than an empty mapping that silently fetches nothing.
+    df = context.store.load(Tables.sp500_tickers)
+    if "cik" not in df.columns:
         return df
     df = df.copy()
     # SEC URLs need the 10-digit zero-padded CIK

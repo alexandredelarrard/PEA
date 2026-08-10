@@ -110,7 +110,6 @@ skipped automatically.
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from sqlalchemy import bindparam, text
 
 from src.context import Context
 from src.data_aggregate.utils.fundamentals.earnings_features import ntm_ttm_eps
@@ -405,24 +404,10 @@ def load_tagged_facts(context: Context, table: str, tags: tuple[str, ...],
     """Read ONLY the rows whose `tag` the pension/footnote builders actually use — they touch just 2
     tags of each facts table (`notes_num` has 10 tags; only ~16% of its rows are these two). Pulling
     the whole table then filtering in-memory is the same waste pattern as the 13F/embedding tables.
-    Engine-side `WHERE tag IN (…)` when DB-backed, else a projected full read filtered in pandas.
-    None if the table is absent/empty or no row matches."""
-    cols = columns or _FACT_COLS
-    store = context.store
-    if hasattr(store, "exists") and not store.exists(table):
-        return None
-    engine = getattr(store, "engine", None)
-    if engine is not None:
-        sel = ", ".join(f'"{c}"' for c in cols)
-        sql = text(f'SELECT {sel} FROM "{table}" WHERE tag IN :tags'
-                   ).bindparams(bindparam("tags", expanding=True))
-        with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params={"tags": list(tags)})
-    else:
-        df = store.load(table, columns=cols)
-        if df is not None and not df.empty and "tag" in df.columns:
-            df = df[df["tag"].isin(tags)]
-    return df.reset_index(drop=True) if df is not None and not df.empty else None
+    The tag filter is pushed down server-side. None if the table is absent/empty or no row matches."""
+    df = context.store.load(table, columns=columns or _FACT_COLS,
+                            where={"tag": list(tags)}, optional=True)
+    return df.reset_index(drop=True) if df is not None else None
 
 
 def load_pension_facts_scoped(context: Context) -> pd.DataFrame | None:

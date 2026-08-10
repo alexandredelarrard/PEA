@@ -115,9 +115,15 @@ Key tables (PK): `prices` (ticker,date) · `dividends` · `short_interest` ·
 `predictions` · `cube_signal` · `macro_asset_prices` (date — long-history multi-asset
 allocation series: equity/gold/energy/bond-TR/cash/FX/VIX).
 
-Access is always via `context.store` (`DataStore.load/save/replace/existing_dates`);
-new columns auto-add via `ensure_columns`. Non-tabular artifacts (models, plots,
-`sec_bulk_cache/` JSON + 13F zips, filing text) stay on disk under `data/`.
+Every table is described ONCE in `src/data_store/schema.py` (`Tables.<name>` — name, PK, date
+column, freshness cadence, read projection), and access is always via `context.store`
+(`DataStore`: `load` / `iter_load` / `save` / `replace` / `append_tail` / `bulk_seed` / `delete`
+/ `drop`, plus `exists` / `columns` / `distinct` / `bounds` / `max_date` / `row_count`). New
+columns auto-add via `ensure_columns`. `load` RAISES on a missing or empty table — pass
+`optional=True` for the reads that are genuinely allowed to find nothing (a fetcher's resume
+check on a cold DB). Nothing outside `src/data_store/` issues SQL; `tests/data_store/
+test_store_boundary.py` enforces that. Non-tabular artifacts (models, plots, `sec_bulk_cache/`
+JSON + 13F zips, filing text) stay on disk under `data/`.
 
 ## Data reality (free-source limits)
 - **SEC XBRL is the fundamentals backbone** — genuine point-in-time history keyed on filing date. Concepts are *coalesced* across candidate tags (filers split e.g. `Revenues`↔`RevenueFromContractWithCustomer` at ASC-606, `NetIncomeLoss`↔`ProfitLoss`); operating income is derived (gross − SG&A − R&D) when a filer doesn't tag it.

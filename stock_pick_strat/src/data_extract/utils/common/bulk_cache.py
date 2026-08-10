@@ -32,7 +32,6 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-from sqlalchemy import inspect, text
 
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import _sec_headers
@@ -186,13 +185,9 @@ def ingested_periods(context: Context, tables: str | Sequence[str],
     names = [tables] if isinstance(tables, str) else list(tables)
     done: set[str] = set()
     for table in names:
-        if not store.exists(table):
+        if column not in store.columns(table):     # absent table or pre-feature schema
             continue
-        if column not in {c["name"] for c in inspect(store.engine).get_columns(table)}:
-            continue
-        with store.engine.connect() as conn:
-            got = pd.read_sql(text(f'SELECT DISTINCT "{column}" FROM "{table}"'), conn)
-        done |= set(got[column].dropna().astype(str))
+        done |= {str(v) for v in store.distinct(table, column)}
     return done
 
 

@@ -14,20 +14,12 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from conftest import FakeStore     # the ONE shared store double
 from src.data_extract.utils.fundamentals import fetch_macro as fm
 
 
-class _Store:
-    def __init__(self, df):
-        self._df = df
-
-    def load(self, name, columns=None, limit=None):
-        d = self._df.copy()                        # the checker mutates 'date' -> hand a copy
-        return d[columns] if columns else d
-
-
 def _ctx(df):
-    return SimpleNamespace(store=_Store(df))
+    return SimpleNamespace(store=FakeStore({"macro": df}))
 
 
 def _macro_df(level_last: pd.Timestamp, spread_last: pd.Timestamp) -> pd.DataFrame:

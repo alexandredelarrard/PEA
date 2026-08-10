@@ -1183,13 +1183,11 @@ def fetch_fundamentals_edgartools(context: Context, tickers: list[str]) -> pd.Da
 
     pk = ["ticker", "accession_number", "field", "fiscal_year", "fiscal_period", "duration_type"]
     existing_accessions: dict[str, frozenset[str]] = {}
-    try:
-        existing = context.store.load("fundamentals_facts", columns=["ticker", "accession_number"])
-        if not existing.empty:
-            for t, grp in existing.groupby("ticker"):
-                existing_accessions[t] = frozenset(grp["accession_number"].unique())
-    except Exception:                              # noqa: BLE001 - table may not exist yet
-        existing_accessions = {}
+    existing = context.store.load("fundamentals_facts",
+                                 columns=["ticker", "accession_number"], optional=True)
+    if existing is not None:
+        for t, grp in existing.groupby("ticker"):
+            existing_accessions[t] = frozenset(grp["accession_number"].unique())
 
     # Stored headcounts, so the continuity guard has a per-ticker anchor even on an
     # incremental run that re-parses a single 10-K (see `build_ticker_facts_edgar`).

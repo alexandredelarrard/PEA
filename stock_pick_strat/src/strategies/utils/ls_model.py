@@ -17,8 +17,8 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 from omegaconf import DictConfig
-from sqlalchemy import text
 
+from src.data_store.schema import Tables
 from src.context import Context
 from src.data_aggregate.utils.common import data_utils as du
 from src.data_aggregate.utils.assemble.cube import panel_from_cube
@@ -66,16 +66,10 @@ def _load_models(context: Context, cube_cfg: DictConfig, model_cfg: DictConfig):
     return meta, models, target_type, horizons
 
 
-def _cube_columns(context: Context) -> set[str]:
-    with context.store.engine.connect() as c:
-        return set(pd.read_sql(text("SELECT column_name FROM information_schema.columns "
-                                     "WHERE table_name = 'cube'"), c)["column_name"])
-
-
 def _project_cube(context: Context, meta: dict, models: dict, target_type: str,
                   start: pd.Timestamp, end) -> tuple[pd.DataFrame, str]:
-    
-    cube_cols = _cube_columns(context)
+    store = context.store
+    cube_cols = set(store.columns(Tables.cube))
     target_col = (f"target_{target_type}" if f"target_{target_type}" in cube_cols
                   else "target" if "target" in cube_cols else None)
     if target_col is None:
@@ -84,22 +78,18 @@ def _project_cube(context: Context, meta: dict, models: dict, target_type: str,
     want = list(dict.fromkeys(meta["feature_cols"] + meta.get("categorical_cols", [])))
     load_cols = list(dict.fromkeys(["date", "ticker", "target_horizon", target_col]
                                    + [c for c in want if c in cube_cols]))
-    horizons = sorted(int(h) for h in models)
-    where = [f'target_horizon IN ({",".join(str(h) for h in horizons)})', f"date >= '{start.date()}'"]
-    if end is not None:
-        where.append(f"date <= '{pd.Timestamp(end).date()}'")
-    q = text(f"SELECT {', '.join(chr(34)+c+chr(34) for c in load_cols)} FROM cube WHERE " + " AND ".join(where))
-    with context.store.engine.connect() as c:
-        return pd.read_sql(q, c, parse_dates=["date"]), target_col
+    # bound parameters, not f-string interpolation: `date >= '{start.date()}'` was the one
+    # query in the repo pasting a value straight into SQL
+    return store.load(Tables.cube, columns=load_cols,
+                      where={"target_horizon": sorted(int(h) for h in models)},
+                      since=start, until=end), target_col
 
 
 def _returns(context: Context, config: DictConfig, cube_cfg: DictConfig, model_cfg: DictConfig,
              start: pd.Timestamp):
     buffer = int(2.2 * (int(model_cfg.get("beta_window", 63)) + int(model_cfg.get("vol_window", 63))) + 30)
-    cutoff = (start - pd.Timedelta(days=buffer)).date()
-    with context.store.engine.connect() as c:
-        long = pd.read_sql(text("SELECT * FROM prices WHERE date >= :cut"), c,
-                           params={"cut": str(cutoff)}, parse_dates=["date"])
+    cutoff = start - pd.Timedelta(days=buffer)
+    long = context.store.load(Tables.prices, since=cutoff)
     close = du.extract_field(du.prices_long_to_multiindex(long), "Close")
     mkt = cube_cfg.market_ticker
     rets = du.daily_returns(close)
@@ -126,7 +116,7 @@ def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle
                                 target_type=target_type)
         panel = panel[(panel["date"] >= start) & (panel["date"] <= end_ts)]
         if panel.empty:
-            continuev
+            continue
         scores, _ = ml.ensemble_predict(members, panel, meta["feature_cols"])
         df = panel[["date", "ticker"]].copy()
         df["z"] = pd.Series(scores.to_numpy(), index=panel.index)

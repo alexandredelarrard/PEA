@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from conftest import FakeStore     # the ONE shared store double
 from src.data_peers.utils import embeddings as emb
 
 _OAI_CALLS: list[list[str]] = []            # captures each embeddings.create(input=...)
@@ -28,24 +29,13 @@ class _FakeOpenAI:
                                      for _ in input])
 
 
-class _FakeStore:
-    """Minimal store: serves a ticker_embeddings cache and records saves."""
-    def __init__(self, embedded: dict[str, list[float]] | None = None):
-        self._emb = embedded or {}
-        self.saved: list[tuple[str, pd.DataFrame]] = []
-
-    def load(self, name, columns=None, limit=None):
-        if name == "ticker_embeddings" and self._emb:
-            df = pd.DataFrame({"ticker": list(self._emb),
-                               "embedding": [list(v) for v in self._emb.values()]})
-            return df[columns] if columns else df
-        base = ["ticker", "embedding"] if name == "ticker_embeddings" else \
-               (["ticker", "description"] if name == "ticker_descriptions" else [])
-        return pd.DataFrame(columns=columns or base)
-
-    def save(self, name, df, pk=None):
-        self.saved.append((name, df))
-        return len(df)
+def _FakeStore(embedded: dict[str, list[float]] | None = None):
+    """A `ticker_embeddings` cache on the shared double. NOT `sqlite_store`: `embedding` is a
+    vector column and SQLite's driver cannot bind a Python list."""
+    if not embedded:
+        return FakeStore()
+    return FakeStore({"ticker_embeddings": pd.DataFrame(
+        {"ticker": list(embedded), "embedding": [list(v) for v in embedded.values()]})})
 
 
 def test_load_embedded_tickers_is_the_done_set():
@@ -79,7 +69,7 @@ def test_only_missing_tickers_are_embedded(monkeypatch):
     # full universe matrix returned (cached + new)
     assert set(out.index) == {"AAA", "BBB", "CCC", "DDD"} and out.shape[1] == 4
     # only the NEW vectors persisted back
-    saved = [df for name, df in store.saved if name == "ticker_embeddings"]
+    saved = store.saved_frames("ticker_embeddings")
     assert len(saved) == 1 and set(saved[0]["ticker"]) == {"CCC", "DDD"}
     print("\n=== SANITY CHECK: incremental embedding (only missing tickers) ===")
     print(f"  done={sorted(done)}, todo={todo}; OpenAI called once for {_OAI_CALLS[0]} "
@@ -99,7 +89,7 @@ def test_all_cached_makes_zero_openai_calls(monkeypatch):
     out = emb.get_openai_embeddings({}, store=store, universe=["AAA", "BBB"])
     assert _OAI_CALLS == []
     assert set(out.index) == {"AAA", "BBB"}
-    assert not any(name == "ticker_embeddings" for name, _ in store.saved)   # nothing new saved
+    assert not store.saved_frames("ticker_embeddings")          # nothing new saved
     print("\n=== SANITY CHECK: fully-cached universe = zero API calls ===")
     print("  all tickers in ticker_embeddings -> OpenAI never constructed, matrix served "
           "from cache, nothing re-saved. Validated.")

@@ -23,34 +23,10 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import CUBE_PART_MARKET, CUBE_PART_PRICES
+from src.data_store.schema import Tables
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.utils.common.incremental import PartWindow
 
-
-class _FakePartStore:
-    """Reproduces the write-path semantics of `PartStore` (`columns`/`replace`/
-    `append_tail`) over in-memory frames, so `write_part`'s full-vs-incremental branching
-    can be exercised without a database."""
-
-    def __init__(self) -> None:
-        self.t: dict[str, pd.DataFrame] = {}
-
-    def columns(self, part):
-        return list(self.t[part].columns) if part in self.t else None
-
-    def replace(self, part, df):
-        self.t[part] = df.reset_index(drop=True).copy()
-        return len(df)
-
-    def append_tail(self, part, df, cutoff, inclusive=False):
-        existing = self.t.get(part)
-        if existing is not None:
-            keep = existing["date"] < cutoff if inclusive else existing["date"] <= cutoff
-            existing = existing[keep]
-        merged = df if existing is None else pd.concat([existing, df], ignore_index=True)
-        self.t[part] = merged.reset_index(drop=True)
-        return len(df)
 
 
 def _wide(dates: pd.DatetimeIndex, tickers: list[str], seed: int) -> pd.DataFrame:
@@ -60,7 +36,7 @@ def _wide(dates: pd.DatetimeIndex, tickers: list[str], seed: int) -> pd.DataFram
                         index=dates, columns=pd.Index(tickers, name="ticker"))
 
 
-def test_incremental_market_run_appends_instead_of_truncating():
+def test_incremental_market_run_appends_instead_of_truncating(sqlite_store):
     tickers = ["AAA", "BBB"]
     full_dates = pd.bdate_range("2024-01-01", periods=50, name="date")
     close_full = _wide(full_dates, tickers, seed=1)
@@ -68,15 +44,15 @@ def test_incremental_market_run_appends_instead_of_truncating():
     mkt_ret_full = mkt_close_full.pct_change().fillna(0.0)
 
     step = object.__new__(StepCubePrices)
-    step._parts = _FakePartStore()
+    step._store = sqlite_store
     step._log = logging.getLogger("test")
 
     # --- FULL build: both parts fully populated ---
     step._persist({"close": close_full}, (mkt_close_full, mkt_ret_full),
                   PartWindow(last=None, since=None))
 
-    prices_after_full = step._parts.t[CUBE_PART_PRICES]
-    market_after_full = step._parts.t[CUBE_PART_MARKET]
+    prices_after_full = sqlite_store.load(Tables.cube_part_prices)
+    market_after_full = sqlite_store.load(Tables.cube_part_market)
     assert len(market_after_full) == 50
     assert market_after_full["date"].min() == full_dates[0]
     assert market_after_full["date"].max() == full_dates[-1]
@@ -95,8 +71,8 @@ def test_incremental_market_run_appends_instead_of_truncating():
     step._persist({"close": close_window}, (mkt_close_window, mkt_ret_window),
                   PartWindow(last=last_stored, since=warmup_dates[0]))
 
-    prices_after_incr = step._parts.t[CUBE_PART_PRICES]
-    market_after_incr = step._parts.t[CUBE_PART_MARKET]
+    prices_after_incr = sqlite_store.load(Tables.cube_part_prices)
+    market_after_incr = sqlite_store.load(Tables.cube_part_market)
 
     # cube_part_prices already worked: full 60-day history preserved
     assert prices_after_incr["date"].min() == full_dates[0]

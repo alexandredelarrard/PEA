@@ -31,15 +31,8 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from src.constants.constants import (
-    EARNINGS_CALL_CACHE_DIR,
-    EARNINGS_CALL_REPORT_GRACE_DAYS,
-    EARNINGS_CALL_REQUEST_PAUSE,
-    EARNINGS_CALL_SECTIONS_TABLE,
-    MOTLEY_FOOL_BASE_URL,
-    MOTLEY_FOOL_TRANSCRIPT_INDEX_URL,
-    UNIVERSE_TABLE
-)
+from src.data_store.schema import Tables
+from src.constants.constants import (EARNINGS_CALL_CACHE_DIR, EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_CALL_REQUEST_PAUSE, MOTLEY_FOOL_BASE_URL, MOTLEY_FOOL_TRANSCRIPT_INDEX_URL)
 from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import (
     download_hf_parquet,
@@ -70,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 _BASE = MOTLEY_FOOL_BASE_URL
 _INDEX = MOTLEY_FOOL_TRANSCRIPT_INDEX_URL
-_TABLE = EARNINGS_CALL_SECTIONS_TABLE
+_TABLE = Tables.earnings_call_sections
 
 # transcript-link path + the (year, month, day, slug, quarter, fiscal-year) groups
 _LINK_RE = re.compile(
@@ -148,7 +141,7 @@ def build_transcript_index(context: Context, tickers: list[str] | None = None,
       * `max_pages` / end-of-feed (a page that won't load) as hard safety caps.
 
     `tickers` restricts the kept universe (None = all)."""
-    universe = list(context.store.load(UNIVERSE_TABLE, columns=["ticker"])["ticker"])
+    universe = list(context.store.load(Tables.sp500_tickers, columns=["ticker"])["ticker"])
     if tickers is not None:                          # scope to a subset (e.g. a test run)
         keep = set(tickers)
         universe = [t for t in universe if t in keep]
@@ -384,13 +377,10 @@ def _existing_section_keys(context: Context) -> set[tuple[str, str]]:
     """(ticker, quarter) already present in `earnings_call_sections` (from ANY source). Lets the MF
     ingest SKIP transcripts already parsed instead of re-reading + re-parsing every cached HTML each
     run. Empty set when the table is missing / unreadable (-> full ingest)."""
-    try:
-        df = context.store.load(_TABLE, columns=["ticker", "quarter"])
-        if df is None or df.empty:
-            return set()
-        return set(map(tuple, df[["ticker", "quarter"]].astype(str).drop_duplicates().to_numpy()))
-    except Exception:                                   # noqa: BLE001 (table not created yet)
+    df = context.store.load(_TABLE, columns=["ticker", "quarter"], optional=True)
+    if df is None:
         return set()
+    return set(map(tuple, df.astype(str).drop_duplicates().to_numpy()))
 
 
 def ingest_earnings_calls(context: Context, tickers: list[str] | None = None,
@@ -504,5 +494,5 @@ def fetch_earnings_calls(context: Context, tickers: list[str] | None = None,
                             recent_since=recent_since, use_global_crawl=use_global_crawl,
                             mf_history_years=mf_history_years)
     saved = ingest_all_earnings_calls(context, tickers=tickers)
-    record_run(context, EARNINGS_CALL_SECTIONS_TABLE, len(tickers) if tickers else 0, saved)
+    record_run(context, Tables.earnings_call_sections, len(tickers) if tickers else 0, saved)
     return saved

@@ -606,8 +606,8 @@ def fetch_def14a_llm(
                                  temperature=temperature, cache=cache)
     except EnvironmentError as e:
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
-        existing = context.store.load("def14a_llm")
-        return existing if not existing.empty else pd.DataFrame(columns=["ticker", "as_of"])
+        existing = context.store.load("def14a_llm", optional=True)
+        return existing if existing is not None else pd.DataFrame(columns=["ticker", "as_of"])
 
     total_new, tickers_touched, total_skipped = 0, 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):

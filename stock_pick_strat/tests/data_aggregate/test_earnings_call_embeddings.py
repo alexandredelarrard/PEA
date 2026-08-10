@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
+from src.data_store.schema import name_of, resolve
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
     embed_earnings_calls,
@@ -44,17 +45,46 @@ class StubClient:
 
 
 class FakeStore:
-    _PK = {"earning_calls_embedding": ["ticker", "quarter", "seq"]}
+    """In-memory stand-in mirroring the `DataStore` contract (`where=` equality/IN, raise-unless-
+    `optional`, `distinct`, `delete`).
+
+    The one test store that cannot be the real SQLite `DataStore`: `earning_calls_embedding.embedding`
+    is a `DOUBLE PRECISION[]` and SQLite's driver refuses to bind a Python list.
+    """
     def __init__(self): self.t: dict[str, pd.DataFrame] = {}
-    def load(self, table, columns=None): return self.t.get(table, pd.DataFrame()).copy()
-    def save(self, table, df):
-        both = pd.concat([self.t.get(table, pd.DataFrame()), df], ignore_index=True)
-        pk = self._PK.get(table)
-        if pk:
-            both = both.drop_duplicates(subset=pk, keep="last")
-        self.t[table] = both.reset_index(drop=True)
-    def replace(self, table, df, chunksize=200_000):
-        self.t[table] = df.reset_index(drop=True); return len(df)
+
+    @staticmethod
+    def _filter(df, where):
+        for col, val in (where or {}).items():
+            df = df[df[col].isin(val)] if isinstance(val, (list, tuple, set)) else df[df[col] == val]
+        return df
+
+    def load(self, table, columns=None, where=None, *, optional=False, **kw):
+        df = self._filter(self.t.get(name_of(table), pd.DataFrame()), where)
+        if df.empty:
+            if optional:
+                return None
+            raise LookupError(f"{name_of(table)} is empty/missing and the read was not optional")
+        return (df[list(columns)] if columns else df).copy().reset_index(drop=True)
+
+    def distinct(self, table, column, **kw):
+        df = self.t.get(name_of(table))
+        return [] if df is None or df.empty else df[column].dropna().unique().tolist()
+
+    def save(self, table, df, pk=None):
+        name = name_of(table)
+        both = pd.concat([self.t.get(name, pd.DataFrame()), df], ignore_index=True)
+        pk = pk or list(resolve(table).pk)
+        self.t[name] = both.drop_duplicates(subset=pk, keep="last").reset_index(drop=True)
+
+    def delete(self, table, where):
+        name = name_of(table)
+        df = self.t.get(name)
+        if df is None or df.empty:
+            return 0
+        drop = self._filter(df, where).index
+        self.t[name] = df.drop(index=drop).reset_index(drop=True)
+        return len(drop)
 
 
 class FakeCtx:

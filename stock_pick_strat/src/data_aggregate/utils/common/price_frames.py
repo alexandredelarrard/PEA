@@ -27,7 +27,7 @@ recompute exact by construction.
 FLOAT64, not float32. `_atr` takes `high - low` and `high - close.shift(1)`; `_macd` takes
 `ema_fast - ema_slow` -- differences of nearly-equal large numbers, then divided by close.
 The repo convention is already *features float32, raw inputs float64* (see
-`panel.build_peer_relative_panel` and `part_io.downcast_float32` for the feature side, and
+`panel.build_peer_relative_panel` and `frames.downcast_float32` for the feature side, and
 the `prices` table itself for the input side). This is a raw input.
 """
 from __future__ import annotations
@@ -38,9 +38,9 @@ from typing import Sequence
 
 import pandas as pd
 
-from src.constants.constants import CUBE_PART_MARKET, CUBE_PART_PRICES
+from src.data_store.schema import Tables
 from src.data_aggregate.utils.common import data_utils as du
-from src.data_aggregate.utils.common.part_io import PartStore
+from src.data_store.store import DataStore
 
 logger = logging.getLogger(__name__)
 
@@ -124,25 +124,23 @@ def frames_to_long(universe_fields: dict[str, pd.DataFrame],
     return prices, market
 
 
-def load_trading_calendar(parts: PartStore) -> pd.DatetimeIndex:
+def load_trading_calendar(store: DataStore) -> pd.DatetimeIndex:
     """The trading calendar, read from the MARKET part's own dates (~15k rows, ~1 MB).
 
     `du.get_trading_days` defines the calendar as the dates the market ticker traded, and
     `StepCubePrices` stores the market ticker on exactly those dates -- so this is the
     definition, not an inference. Read first and cheaply, so the incremental window can be
     decided BEFORE the wide read (the old code loaded 15 years and then trimmed)."""
-    if not parts.exists(CUBE_PART_MARKET):
-        raise RuntimeError(
-            f"{CUBE_PART_MARKET} is missing -> run `data_aggregate build-prices` first")
-    rows = parts.read(CUBE_PART_MARKET, columns=["date", "ticker"])
-    if rows.empty:
-        raise RuntimeError(f"{CUBE_PART_MARKET} is empty -> re-run `build-prices`")
+    rows = store.load(Tables.cube_part_market, columns=["date", "ticker"], optional=True)
+    if rows is None:
+        raise RuntimeError(f"{Tables.cube_part_market} is missing or empty -> run "
+                           "`data_aggregate build-prices` first")
     dates = pd.to_datetime(rows["date"]).dt.normalize().unique()
     return pd.DatetimeIndex(sorted(dates))
 
 
 def load_price_frames(
-    parts: PartStore,
+    store: DataStore,
     *,
     peers: dict[str, dict[str, float]],
     market_ticker: str,
@@ -158,15 +156,12 @@ def load_price_frames(
     that N times. The long frame is dropped as soon as the pivots exist.
     """
 
-    if not parts.exists(CUBE_PART_PRICES):
-        raise RuntimeError(
-            f"{CUBE_PART_PRICES} is missing -> run `data_aggregate build-prices` first")
-
     cols = ["date", "ticker"] + list(fields)
-    long = parts.read(CUBE_PART_PRICES, columns=cols, since=since)
-    if long.empty:
-        raise RuntimeError(f"{CUBE_PART_PRICES} returned no rows"
-                           f"{f' since {pd.Timestamp(since).date()}' if since else ''}")
+    long = store.load(Tables.cube_part_prices, columns=cols, since=since, optional=True)
+    if long is None:
+        raise RuntimeError(f"{Tables.cube_part_prices} is missing or returned no rows"
+                           f"{f' since {pd.Timestamp(since).date()}' if since else ''}"
+                           " -> run `data_aggregate build-prices` first")
     long["date"] = pd.to_datetime(long["date"]).dt.normalize()
 
     wide: dict[str, pd.DataFrame] = {}
@@ -174,6 +169,7 @@ def load_price_frames(
         piv = long.pivot(index="date", columns="ticker", values=f).sort_index()
         piv.index.name, piv.columns.name = "date", "ticker"
         wide[f] = piv
+        
     idx = pd.DatetimeIndex(sorted(long["date"].unique()), name="date")
     universe = tuple(sorted(long["ticker"].astype(str).unique()))
     del long
@@ -181,8 +177,11 @@ def load_price_frames(
     market_close = mkt_ret = other_close = None
     if with_market:
         want = [str(market_ticker)] + [str(t) for t in other_tickers]
-        mrows = parts.read(CUBE_PART_MARKET, columns=["date", "ticker", "close", "ret"],
-                           since=since)
+        mrows = store.load(Tables.cube_part_market, columns=["date", "ticker", "close", "ret"],
+                           since=since, optional=True)
+        if mrows is None:
+            raise RuntimeError(f"{Tables.cube_part_market} is missing or returned no rows -> re-run "
+                               "`data_aggregate build-prices`")
         mrows["date"] = pd.to_datetime(mrows["date"]).dt.normalize()
         mrows = mrows[mrows["ticker"].astype(str).isin(want)]
         oc = mrows.pivot(index="date", columns="ticker", values="close").sort_index()
@@ -195,7 +194,7 @@ def load_price_frames(
             market_close = other_close[market_ticker]
             mkt_ret = orr.reindex(idx)[market_ticker]
         else:
-            logger.warning("market_ticker %s absent from %s", market_ticker, CUBE_PART_MARKET)
+            logger.warning("market_ticker %s absent from %s", market_ticker, Tables.cube_part_market)
 
     return PriceFrames(
         trading_index=idx, universe=universe, peers=peers,

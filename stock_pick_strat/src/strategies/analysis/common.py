@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import MACRO_ASSET_PRICES_TABLE
+from src.data_store.schema import Tables
 from src.strategies.utils.accuracy import forward_return
 
 _ANN: float = 252.0
@@ -76,9 +76,9 @@ def rolling_pairwise_corr(df: pd.DataFrame, window: int = 126) -> tuple[dict[str
 def load_market_refs(store) -> dict[str, pd.Series]:
     """Reference daily returns from `macro_asset_prices`: {'sp': equity_tr, 'energy': energy}.
     Used to check L/S market-neutrality (beta vs SP) and idiosyncrasy (corr vs energy)."""
-    df = store.load(MACRO_ASSET_PRICES_TABLE)
+    df = store.load(Tables.macro_asset_prices, optional=True)
     out: dict[str, pd.Series] = {}
-    if df is None or df.empty:
+    if df is None:
         return out
     d = df.copy(); d["date"] = pd.to_datetime(d["date"])
     d = d.sort_values("date").set_index("date")

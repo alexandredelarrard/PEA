@@ -32,8 +32,8 @@ def load_existing(context: Context, table: str,
     "full history" and "incremental". `date_col` is normalised to midnight so date
     comparisons against freshly fetched rows are exact; pass `date_col=None` for a
     table keyed by something else (employees_history is keyed by filing date)."""
-    df = context.store.load(table)
-    if df is None or df.empty:
+    df = context.store.load(table, optional=True)
+    if df is None:
         return None
     if date_col is not None and date_col in df.columns:
         df[date_col] = pd.to_datetime(df[date_col]).dt.normalize()

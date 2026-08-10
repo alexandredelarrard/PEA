@@ -45,6 +45,8 @@ load_dotenv(ROOT / ".env")
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
+from src.data_store.errors import TableEmptyError  # noqa: E402
+from src.data_store.schema import name_of, resolve  # noqa: E402
 from src.data_store.store import DataStore  # noqa: E402
 from src.utils.db import get_engine  # noqa: E402
 
@@ -80,6 +82,119 @@ def sqlite_store():
     engine.dispose()
 
 
+class FakeStore:
+    """THE in-memory store double, for the cases `sqlite_store` cannot serve:
+
+      * a vector column (`ticker_embeddings.embedding`, `earning_calls_embedding.embedding`) --
+        SQLite's driver refuses to bind a Python list;
+      * a test that asserts the ORDER of writes, which a real store does not expose.
+
+    Prefer `sqlite_store`. This exists so those cases share ONE definition that tracks the real
+    contract, instead of ten near-identical duck types that each implemented a different subset
+    (only one of them accepted `where=`) and broke one at a time whenever the store surface moved.
+
+    Faithful on the parts that matter: keyed by `name_of` so a `Table` and its name are the same
+    table, `where` does equality/IN, and a read of an absent-or-empty table RAISES unless
+    `optional=True` -- the contract that makes a missing table a visible fault.
+    """
+
+    def __init__(self, tables: dict | None = None):
+        self.t: dict[str, pd.DataFrame] = {name_of(k): v.copy()
+                                           for k, v in (tables or {}).items()}
+        self.writes: list[tuple[str, str, pd.DataFrame]] = []   # (op, table, df) in call order
+
+    @staticmethod
+    def _filter(df, where):
+        for col, val in (where or {}).items():
+            df = (df[df[col].isin(list(val))]
+                  if isinstance(val, (list, tuple, set, frozenset)) else df[df[col] == val])
+        return df
+
+    # -- introspection -- #
+    def exists(self, table) -> bool:
+        return name_of(table) in self.t
+
+    def columns(self, table) -> list[str]:
+        df = self.t.get(name_of(table))
+        return [] if df is None else list(df.columns)
+
+    def row_count(self, table) -> int:
+        df = self.t.get(name_of(table))
+        return 0 if df is None else len(df)
+
+    def distinct(self, table, column, **kw) -> list:
+        df = self.t.get(name_of(table))
+        return [] if df is None or df.empty else df[column].dropna().unique().tolist()
+
+    def bounds(self, table, column=None):
+        df = self.t.get(name_of(table))
+        col = column or resolve(table).date_col
+        if df is None or df.empty or col not in df.columns:
+            return (None, None)
+        return (df[col].min(), df[col].max())
+
+    def max_date(self, table, column=None):
+        lo, hi = self.bounds(table, column)
+        return None if hi is None else pd.Timestamp(hi).normalize()
+
+    # -- reads -- #
+    def load(self, table, columns=None, limit=None, where=None, *, optional=False, **kw):
+        name = name_of(table)
+        df = self._filter(self.t.get(name, pd.DataFrame()), where)
+        if df.empty:
+            if optional:
+                return None
+            raise TableEmptyError(name, where)
+        if columns:
+            df = df[list(columns)]
+        return (df.head(limit) if limit else df).copy().reset_index(drop=True)
+
+    # -- writes -- #
+    def save(self, table, df, pk=None):
+        name = name_of(table)
+        self.writes.append(("save", name, df.copy()))
+        both = pd.concat([self.t.get(name), df], ignore_index=True)
+        pk = list(pk or resolve(table).pk)
+        keys = [c for c in pk if c in both.columns] or None
+        self.t[name] = (both.drop_duplicates(subset=keys, keep="last") if keys else both
+                        ).reset_index(drop=True)
+        return len(df)
+
+    def replace(self, table, df, chunksize=200_000):
+        name = name_of(table)
+        self.writes.append(("replace", name, df.copy()))
+        self.t[name] = df.copy().reset_index(drop=True)
+        return len(df)
+
+    def bulk_seed(self, table, df):
+        name = name_of(table)
+        self.writes.append(("bulk_seed", name, df.copy()))
+        self.t[name] = pd.concat([self.t.get(name), df], ignore_index=True)
+        return len(df)
+
+    def delete(self, table, where):
+        name = name_of(table)
+        df = self.t.get(name)
+        if df is None or df.empty:
+            return 0
+        drop = self._filter(df, where).index
+        self.t[name] = df.drop(index=drop).reset_index(drop=True)
+        return len(drop)
+
+    def drop(self, table):
+        self.t.pop(name_of(table), None)
+
+    def ensure_columns(self, table, df):
+        return []
+
+    # -- write assertions -- #
+    def saved_frames(self, table=None) -> list[pd.DataFrame]:
+        """The frames passed to `save`, in call order (optionally for one table only)."""
+        want = None if table is None else name_of(table)
+        return [df for op, name, df in self.writes
+                if op == "save" and (want is None or name == want)]
+
+
 def _store():
     """DB-backed data store for the real-data fixtures (DB is the source of
     truth now that the pipeline is DB-only). Skips a fixture when its table is
@@ -99,6 +214,8 @@ def _store():
 MARKET = "SPY"
 OTHER_TICKERS = ["SPY", "^VIX"]
 SUBSET_SIZE = 100  # keep the real-data pipeline fast but keep a real cross-section
+# commodity / FX series the factor panel reads by name out of `close_full`
+FACTOR_PROXY_TICKERS = ["CL=F", "GC=F", "USDEUR=X"]
 
 
 # --------------------------------------------------------------------------- #
@@ -106,13 +223,30 @@ SUBSET_SIZE = 100  # keep the real-data pipeline fast but keep a real cross-sect
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="session")
 def real_frames():
-    """Wide close / returns matrices from the real price parquet, subset for
-    speed but guaranteed to contain AMD (the ticker under investigation)."""
+    """Wide close / returns matrices from real prices, subset for speed but guaranteed to
+    contain AMD (the ticker under investigation).
+
+    Reads a SUBSET of TICKERS, never the whole table: `prices` is 1.8M rows / 207MB and the
+    pivot below multiplies that. The ticker list is resolved first (a cheap indexed DISTINCT)
+    and the same 101 names this fixture has always selected are picked from it, cutting the
+    read to ~380k rows. All price COLUMNS are kept -- `prices_long_to_multiindex` needs both
+    close and open, and the momentum builders need the full OHLCV.
+    """
     from src.data_aggregate.utils.common import data_utils as du
 
-    prices = _store().load("prices")
-    if prices.empty:
+    store = _store()
+    # replicate the historical selection exactly: pivot columns come out sorted, and `keep`
+    # below took AMD + the first SUBSET_SIZE of everything except the OTHER_TICKERS
+    all_tickers = sorted(store.distinct("prices", "ticker"))
+    if not all_tickers:
         pytest.skip("prices table is empty")
+    candidates = [t for t in all_tickers if t not in OTHER_TICKERS]
+    subset = (["AMD"] if "AMD" in candidates else []) + \
+             [c for c in candidates if c != "AMD"][:SUBSET_SIZE]
+    # + the market / vol / commodity / FX series `close_full` exists to provide
+    wanted = sorted(set(subset) | set(OTHER_TICKERS) | set(FACTOR_PROXY_TICKERS))
+
+    prices = store.load("prices", where={"ticker": wanted})
     raw = du.prices_long_to_multiindex(prices)
     close = du.extract_field(raw, "Close")
     close = close.loc[close[MARKET].notna()]
@@ -155,10 +289,10 @@ def real_pipeline(real_frames):
     close_full = real_frames["close_full"]
 
     store = _store()
-    fundamentals = store.load("fundamentals_history")
-    fundamentals = None if fundamentals.empty else fundamentals
-    macro = store.load("macro")
-    macro = None if macro.empty else macro
+    # optional=True: these builders accept None, and `load` now raises rather than
+    # returning an empty frame
+    fundamentals = store.load("fundamentals_history", optional=True)
+    macro = store.load("macro", optional=True)
 
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     # mirror StepCubeTarget._gics_groups: GICS sector + industry_group neutralization
@@ -216,11 +350,16 @@ def fundamental_panel(real_frames):
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_peers.utils.sector_peers import build_peer_dict
 
-    fundamentals = _store().load("fundamentals_history")
-    if fundamentals.empty:
-        pytest.skip("fundamentals_history table is empty")
     stock_close = real_frames["stock_close"]
     stock_ret = real_frames["stock_ret"]
+    # Scope the fundamentals to the SAME universe as the price frames. Passing the full
+    # 495-ticker history against a 101-ticker close frame built a ~1.9M-row x 200-feature
+    # panel (with rolling(1260) windows) for tickers the test never looks at.
+    tickers = sorted(stock_close.columns)
+    fundamentals = _store().load("fundamentals_history",
+                                 where={"ticker": tickers}, optional=True)
+    if fundamentals is None:
+        pytest.skip("fundamentals_history has no rows for the sample universe")
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     panel = build_fundamental_feature_panel(
         fundamentals, peers, stock_close.index, stock_close=stock_close,

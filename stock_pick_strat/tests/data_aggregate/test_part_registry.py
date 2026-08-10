@@ -13,6 +13,10 @@ apart again. They need no DB and no fixtures.
 """
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+from types import SimpleNamespace
+
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
@@ -23,6 +27,7 @@ from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.parts import (
     CUBE_PARTS, FEATURE_PARTS, PART_BY_NAME, PART_COMMANDS,
 )
+from src.data_aggregate.utils.common.price_frames import ALL_FIELDS
 
 # the sub-step that owns each CLI command
 OWNER = {
@@ -62,21 +67,49 @@ def test_every_part_has_an_owning_substep_and_cli_command():
           "command is registered. Validated.")
 
 
+def test_every_substep_constructs_and_binds_its_part(sqlite_store):
+    """CONSTRUCT all six sub-steps, which nothing else in the suite did.
+
+    Their `__init__` resolves `part_for(Tables.cube_part_*)` and reads the universe, so a
+    registry lookup that no longer matches its key -- e.g. indexing the name-keyed
+    `PART_BY_NAME` with a `Table` object -- is a KeyError at construction that every
+    build-time test missed because they exercise `run()` helpers on pre-built objects."""
+    import pandas as pd
+    from omegaconf import OmegaConf
+    from src.data_aggregate.utils.common.parts import CUBE_PARTS as REG
+
+    sqlite_store.replace("sp500_tickers", pd.DataFrame({"ticker": ["AAA", "BBB"]}))
+    ctx = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test"),
+                          paths={"DATA_STORE": Path("."), "SECTOR_PEERS_PATH": Path("peers.json")})
+    config = OmegaConf.create({
+        "build_cube": {"market_ticker": "SPY", "targets": {"horizons": [30, 60, 90]},
+                       "composites": {"enabled": False}},
+        "data_extract": {"other_tickers": ["SPY"]},
+    })
+    owned = {cmd: [p.name for p in REG if p.command == cmd] for cmd in OWNER}
+    for cmd, cls in OWNER.items():
+        step = cls(context=ctx, config=config)
+        assert step._part.name in owned[cmd], f"{cls.__name__} bound the wrong part"
+        assert isinstance(step._part.name, str), "CubePart.name must stay a plain str"
+    print("\n=== SANITY CHECK: sub-step construction ===")
+    print(f"  all {len(OWNER)} sub-steps construct and bind a registered part: "
+          f"{ {c: OWNER[c](context=ctx, config=config)._part.name for c in OWNER} }")
+    print("  CONCLUSION: the registry lookup in every __init__ resolves. Validated.")
+
+
 def test_substep_price_fields_are_declared_and_valid():
     """Each feature sub-step declares the price fields it reads, which is what makes the
     projection meaningful -- a step asking for everything would undo the memory win."""
-    from src.data_aggregate.utils.common.price_frames import ALL_PRICE_FIELDS
-
     declared = {cls.__name__: cls._FIELDS for cls in
                 (StepCubeTarget, StepCubeFundamentals, StepCubeMomentum, StepCubeText,
                  StepCubeExtras)}
     for name, fields in declared.items():
         assert fields, f"{name} declares no price fields"
-        unknown = [f for f in fields if f not in ALL_PRICE_FIELDS]
+        unknown = [f for f in fields if f not in ALL_FIELDS]
         assert not unknown, f"{name} declares unknown price field(s) {unknown}"
 
     # only the momentum step should need the full OHLCV set; the rest must be lighter
-    assert set(StepCubeMomentum._FIELDS) >= {"close", "open_", "high", "low", "volume"}
+    assert set(StepCubeMomentum._FIELDS) >= {"close", "open", "high", "low", "volume"}
     for name in ("StepCubeFundamentals", "StepCubeText"):
         assert set(declared[name]) == {"close"}, f"{name} should need close only"
     assert set(StepCubeExtras._FIELDS) == {"close", "volume"}

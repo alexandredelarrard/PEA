@@ -11,7 +11,7 @@ import pandas as pd
 CUBE_META_COLS = frozenset({
     "date", "ticker", "target_horizon",
     "target", "target_rank", "target_zscore", "target_epsilon",  # target versions
-    "beta_m", "beta_s", "gamma", "peers",
+    "beta_m", "beta_s", "gamma", "peers", # TODO: to update when cube will run 
 })
 
 

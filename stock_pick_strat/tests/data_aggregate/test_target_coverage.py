@@ -90,7 +90,10 @@ def test_target_is_defined_from_the_beta_warmup_and_missing_only_the_last_horizo
     close, rets, tickers = _market()
     idx = close.index
     factor_panel = _factor_panel(close, rets)
-    betas = estimate_all_betas(rets, factor_panel)
+    # min_obs is pinned to the assertion below rather than left to the signature default:
+    # this test is about WHICH warm-up binds (the beta window, not the 252-day style factor),
+    # so it must not silently re-measure when the default window/min_obs is retuned.
+    betas = estimate_all_betas(rets, factor_panel, min_obs=MIN_OBS)
     horizons = (30, 60, 90)
 
     built = build_targets_multi(close, betas, factor_panel, macro_cols=[],

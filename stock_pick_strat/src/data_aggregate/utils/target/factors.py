@@ -125,6 +125,51 @@ def characteristic_to_factor_return(char: pd.DataFrame, stock_ret: pd.DataFrame)
     f = (w.shift(1) * aligned).sum(axis=1, min_count=1)
     return f.rename(char.name if char.name else "factor")
 
+def gics_sector_excess_returns(
+    stock_ret: pd.DataFrame,
+    sector_map: dict[str, str],
+    market_ret: pd.Series,
+    window: int = 126,
+    min_obs: int = 80,
+) -> pd.DataFrame:
+    """Each stock's OWN GICS sector basket return, market-neutralized -> (date x ticker).
+
+    This is the regressor that gives every stock its own `beta_sector`, so the
+    residual is sector-neutral PER NAME instead of only on average after the
+    cross-sectional demeaning in `targets.py`. Two deliberate choices:
+
+    LEAVE-ONE-OUT. Including the stock in its own basket puts var(r_i)/n of its OWN
+    move on the right-hand side. With ~45 names in a GICS sector that inflates
+    beta_sector by ~0.07 AND correlates the error with the stock's own return, i.e.
+    it stamps a mean-reversion artefact into the label. Excluding self costs one
+    subtraction and removes it exactly. (The peer-basket version this replaces was
+    clean on this point because peer lists never contain the stock itself.)
+
+    MARKET-NEUTRALIZED. A raw sector basket correlates ~0.9 with the market, so the
+    ridge splits the market exposure between `beta_market` and `beta_sector` and
+    neither is interpretable -- measured on the live panel, the raw basket drops
+    mean beta_market from 0.95 to 0.65, which is exactly the artefact visible in the
+    stored `cube_part_betas` (beta_market 0.29 + beta_sector 0.59). Subtracting the
+    basket's own rolling market beta leaves a pure INDUSTRY tilt, keeps beta_market
+    at 0.97, and lands LESS sector exposure in epsilon (residual/sector correlation
+    0.036 vs 0.088 for the raw basket, 0.199 with no sector term at all).
+    """
+
+    sector_per_ticker = pd.Series({c: sector_map.get(c) for c in stock_ret.columns}).dropna()
+    basket = pd.DataFrame(index=stock_ret.index, columns=stock_ret.columns, dtype="float64")
+
+    # basket = (- delta_stock + sum_delta_storck ) / (n-1)
+    for _, members in sector_per_ticker.groupby(sector_per_ticker).groups.items():
+        n = stock_ret[members].notna().sum(axis=1)
+        total = stock_ret[members].sum(axis=1, min_count=1)
+        basket[members] = stock_ret[members].rsub(total, axis=0).div((n - 1).where(n > 1), axis=0)
+
+    m = market_ret.reindex(stock_ret.index)
+    var = m.rolling(window, min_periods=min_obs).var()
+    cov = basket.rolling(window, min_periods=min_obs).cov(m)
+    return basket - cov.div(var, axis=0).mul(m, axis=0)
+
+
 def macro_change_factors(
     macro_df: pd.DataFrame,
     trading_index: pd.DatetimeIndex,

@@ -22,23 +22,10 @@ from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.utils.prices import fetch_prices as fp
 
 
-class _FakeStore:
-    def __init__(self, universe: list[str]):
-        self._u = universe
-
-    def row_count(self, name):
-        return len(self._u) if name == "sp500_tickers" else 0
-
-    def load(self, name, columns=None, limit=None):
-        if name == "sp500_tickers":
-            df = pd.DataFrame({"ticker": self._u})
-            return df[columns] if columns else df
-        return pd.DataFrame(columns=columns or [])
-
-
-def test_equity_universe_excludes_other_tickers():
+def test_equity_universe_excludes_other_tickers(sqlite_store):
+    sqlite_store.replace("sp500_tickers", pd.DataFrame({"ticker": ["AAPL", "MSFT", "XOM"]}))
     fake = SimpleNamespace(
-        _context=SimpleNamespace(store=_FakeStore(["AAPL", "MSFT", "XOM"])),
+        _context=SimpleNamespace(store=sqlite_store),
         _config=OmegaConf.create({"data_extract": {
             "refresh_universe": False,
             "other_tickers": ["SPY", "^VIX", "CL=F", "GC=F", "USDEUR=X"]}}),

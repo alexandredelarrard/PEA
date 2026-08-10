@@ -21,7 +21,8 @@ import pandas as pd
 from edgar import Company
 import itertools
 
-from src.constants.constants import SEC_8K_FORMS, SEC_8K_TABLE, SEC_8K_HIGH_SIGNAL_ITEMS
+from src.data_store.schema import Tables
+from src.constants.constants import SEC_8K_FORMS, SEC_8K_HIGH_SIGNAL_ITEMS
 from src.context import Context
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.run_manifest import manifest_window, record_run
@@ -129,10 +130,10 @@ def fetch_8k_edgar(context: Context, tickers: list[str], years: int | None = Non
 
     rescan_days = int(getattr(context.config.data_extract, "manifest_full_rescan_days", 30))
     since, is_full_rescan = manifest_window(
-        context, SEC_8K_TABLE, len(cik_map), fallback_since=full_since,
+        context, Tables.sec_8k, len(cik_map), fallback_since=full_since,
         full_rescan_days=rescan_days)
 
-    seen = existing_filings(context, SEC_8K_TABLE)
+    seen = existing_filings(context, Tables.sec_8k)
 
     def _worker(ticker: str, cik: str) -> tuple[int, bool]:
         try:
@@ -141,7 +142,7 @@ def fetch_8k_edgar(context: Context, tickers: list[str], years: int | None = Non
             context.log.warning("fetch_8k_edgar: %s failed (%s)", ticker, e)
             return 0, False
         if not out.empty:
-            context.store.save(SEC_8K_TABLE, out)
+            context.store.save(Tables.sec_8k, out)
         return len(out), True
 
     results = run_per_ticker(cik_map, _worker, desc="8-K (edgartools)")
@@ -149,6 +150,6 @@ def fetch_8k_edgar(context: Context, tickers: list[str], years: int | None = Non
     failed = sum(1 for _, ok in results if not ok)
 
     context.log.info("fetch_8k_edgar: +%d filings across %d/%d ticker(s) (%d failed) -> '%s'",
-                     total_rows, len(results), len(cik_map), failed, SEC_8K_TABLE)
-    record_run(context, SEC_8K_TABLE, len(cik_map), total_rows, is_full_rescan=is_full_rescan)
-    return context.store.load(SEC_8K_TABLE)
+                     total_rows, len(results), len(cik_map), failed, Tables.sec_8k)
+    record_run(context, Tables.sec_8k, len(cik_map), total_rows, is_full_rescan=is_full_rescan)
+    return context.store.load(Tables.sec_8k)

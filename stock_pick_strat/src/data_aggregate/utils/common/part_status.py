@@ -26,7 +26,6 @@ import logging
 import pandas as pd
 
 from src.context import Context
-from src.data_aggregate.utils.common.part_io import PartStore
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
 
 # more than ~one build behind the cube is a gap worth attention
@@ -37,21 +36,25 @@ def part_status_report(context: Context, log: logging.Logger | None = None) -> d
     """Report every cube part + the downstream tables. See the module docstring for the
     contract on the returned shape."""
     log = log or logging.getLogger(__name__)
-    parts_io = PartStore(context.store, log)
+    store = context.store
 
     # the market part is ALWAYS fully replaced by build-prices, so its max date is by
     # construction the prices part's -- reporting it as "behind" would be noise
-    names = [p.name for p in CUBE_PARTS] + list(TERMINAL_TABLES)
-    never_behind = {p.name for p in CUBE_PARTS if p.kind == "market"} | set(TERMINAL_TABLES)
+    # `.name`, not the `Table` object: these become the KEYS of report["parts"], which the DAG
+    # pushes as XCom JSON (`max_<name>`) -- a Table key is neither serialisable nor the shape
+    # `dag_data_aggregation._cube_status` reads.
+    terminal = [t.name for t in TERMINAL_TABLES]
+    names = [p.name for p in CUBE_PARTS] + terminal
+    never_behind = {p.name for p in CUBE_PARTS if p.kind == "market"} | set(terminal)
 
     parts: dict[str, dict] = {}
     for name in names:
         info: dict = {"exists": False, "max_date": None, "rows": None}
         if context.store.exists(name):
-            mx = parts_io.max_date(name)
+            mx = store.max_date(name)
             info = {"exists": True,
                     "max_date": mx.strftime("%Y-%m-%d") if mx is not None else None,
-                    "rows": parts_io.row_count(name)}
+                    "rows": store.row_count(name)}
         parts[name] = info
 
     cube_max = parts.get("cube", {}).get("max_date")

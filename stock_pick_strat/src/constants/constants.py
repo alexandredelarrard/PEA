@@ -7,39 +7,6 @@ formats or SEC endpoints across modules, so a change happens in one place.
 from __future__ import annotations
 
 
-# TABLE NAMES IN THE SQL DATABASE - raw info
-PRICES_TABLE="prices"
-MACRO_TABLE="macro"
-
-FUNDAMENTALS_HISTORY_TABLE="fundamentals_history"
-FUNDAMENTALS_FACTS_TABLE="fundamentals_facts"
-
-SEC_INSIDER_TRANSACTIONS_TABLE = "insider_transactions"
-SEC_8K_TABLE = "sec_8k"   
-
-DEF14A_EDGAR_TABLE = "def14a_edgar"
-DEF14A_EDGAR_EXEC_COMP_TABLE = "def14a_edgar_executive_comp"
-DEF14A_EDGAR_DIRECTOR_COMP_TABLE = "def14a_edgar_director_comp"
-DEF14A_EDGAR_OWNERSHIP_TABLE = "def14a_edgar_ownership"
-DEF14A_EDGAR_VOTES_TABLE = "def14a_edgar_votes"
-
-SEC_13D_TRANSACTIONS_TABLE = "sec_13d_transactions"
-SEC_13D_TABLE = "sec_13d"
-SHORT_INTEREST_TABLE = "short_interest"
-SEC13F_TABLE = "sec13f_hr"
-EARNINGS_CALL_SENTIMENT_TABLE = "earnings_call_sentiment"
-EARNINGS_CALL_EMBEDDING_TABLE = "earning_calls_embedding"
-EARNINGS_CALL_SECTIONS_TABLE = "earnings_call_sections"
-FILING_TEXT_TABLE = "filing_risk_text"
-NOTES_TEXT_TABLE = "notes_text"
-NOTES_EMBEDDING_TABLE = "notes_embedding"  
-MACRO_ASSET_PRICES_TABLE = "macro_asset_prices"
-TREND_ASSET_RETURNS_TABLE = "trend_asset_returns"
-
-EARNINGS_TABLE = "earnings_surprises"
-DIVIDENDS_TABLE = "dividends"
-UNIVERSE_TABLE = "sp500_tickers"
-
 # --------------------------------------------------------------------------- #
 # Date formats                                                                 #
 # --------------------------------------------------------------------------- #
@@ -594,7 +561,8 @@ DAILY_MACRO_LEVELS = {
     "yield_10y": "d_yield_10y",
     "yield_curve_10y2y": "d_yield_curve",
     "vix": "d_vix",
-    "breakeven_10y": "d_breakeven_10y",   # FRED T10YIE Inflation
+    "breakeven_10y": "d_breakeven_10y",   
+    "baa_credit_spread": "d_baa_credit_spread",
 }
 
 # --------------------------------------------------------------------------- #
@@ -607,56 +575,24 @@ TREND_ASSET_MODEL_FILE = "trend_asset_model.json"
 # --------------------------------------------------------------------------- #
 # Daily prediction + live trading ledger (the `strat_prediction` DAG)          #
 # --------------------------------------------------------------------------- #
-# LONG-format live predictions: one row per (as-of date, ticker, horizon, model), so each
-# row can carry its OWN `predicts_for` -- the h30 and h90 predictions made on the same day
+# `Tables.predictions_latest` is LONG-format: one row per (as-of date, ticker, horizon, model), so
+# each row can carry its OWN `predicts_for` -- the h30 and h90 predictions made on the same day
 # target different future dates, which a wide pred_h30/pred_h60 layout cannot express.
-PREDICTIONS_LATEST_TABLE = "predictions_latest"
 # `model` values: one per ensemble member, plus these two aggregates.
 PREDICTION_MODEL_ENSEMBLE = "ensemble"      # the per-horizon average of that horizon's members
 PREDICTION_MODEL_BLENDED = "blended"        # the IR-weighted blend ACROSS horizons
-# The trading ledger: one row per (trading day, sleeve, ticker) move, with the FIFO-matched
-# entry/exit price and realized P&L of each round trip.
-STRATEGY_TABLE = "strategy"
+# The trading ledger (`Tables.strategy`): one row per (trading day, sleeve, ticker) move, with the
+# FIFO-matched entry/exit price and realized P&L of each round trip.
 STRATEGY_SIDE_BUY = "BUY"
 STRATEGY_SIDE_SELL = "SELL"
 
 # --------------------------------------------------------------------------- #
-# Data-freshness / gap check (StepCheckFreshness) — runs at the tail of the    #
-# nightly extraction DAG, before triggering aggregation, so prediction never   #
-# runs on stale inputs. Each source maps to (table, observation-date column,   #
-# cadence); the cadence sets how old the latest observed date may be before it #
-# is flagged (RED). Thresholds are generous by design — they fold in weekends/ #
-# holidays (daily) and the normal reporting/filing lag (quarterly/yearly), so  #
-# only a genuine GAP beyond one extra cycle trips the warning. Where a filing  #
-# date exists (SEC notes/pension/insider) it is used instead of the period-end #
-# so freshness reflects WHEN data was published, not the period it covers.     #
+# Data-freshness / gap check (StepCheckFreshness) -- cadence THRESHOLDS only.  #
 # --------------------------------------------------------------------------- #
-DATA_FRESHNESS_SOURCES: dict[str, tuple[str, str, str]] = {
-    # label:                 (table,                  date_col,           cadence)
-    "prices":                ("prices",               "date",             "daily"),
-    "macro":                 ("macro",                "date",             "daily"),
-    "macro_asset_prices":    ("macro_asset_prices",   "date",             "daily"),
-    "short_interest":        ("short_interest",       "date",             "daily"),
-    "wiki_pageviews":        ("wiki_pageviews",       "date",             "daily"),
-    "google_trends":         ("google_trends",        "date",             "weekly"),
-    "fails_to_deliver":      ("fails_to_deliver",     "date",             "biweekly"),
-    "notes_num":             ("notes_num",            "filed",            "biweekly"),
-    "notes_text":            ("notes_text",           "filed",            "biweekly"),
-    "insider_transactions":  ("insider_transactions", "filing_date",      "quarterly"),
-    "fundamentals_history":  ("fundamentals_history", "as_of",            "quarterly"),
-    # Raw accession-grain fundamentals facts (edgartools); fundamentals_history above is
-    # derived from this. Separate entry so a lag here (vs. fundamentals_history) localizes
-    # a defect to the derivation step rather than extraction itself.
-    "fundamentals_facts":    ("fundamentals_facts",   "filing_date",      "quarterly"),
-    "earnings_surprises":    ("earnings_surprises",   "earnings_date",    "quarterly"),
-    "sec13f_hr":             ("sec13f_hr",            "period",           "quarterly"),
-    "pension_facts":         ("pension_facts",        "filed",            "quarterly"),
-    "earnings_call_sections":("earnings_call_sections","as_of",           "quarterly"),
-    # employee headcount is no longer its own table -- it rides `fundamentals_facts`
-    # (10-K body text) and is covered by the two fundamentals entries above.
-    "def14a_llm":            ("def14a_llm",           "as_of",            "yearly"),
-}
-# how many days old the latest observed date may be, per cadence, before RED
+# WHICH tables are checked, and on which date column, now comes from
+# `schema.freshness_tables()` (`Table.freshness` / `Table.freshness_col`). The old
+# DATA_FRESHNESS_SOURCES dict repeated every table's date column, which `TableSpec`
+# already declared, and its label was always the table name.
 DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
     "daily": 4, "weekly": 10, "biweekly": 20, "monthly": 45,
     "quarterly": 140, "yearly": 460,
@@ -666,39 +602,27 @@ DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = (
     "daily", "weekly", "biweekly", "monthly", "quarterly", "yearly")
 # To report WHICH tickers got a new fundamentals filing (new earnings) since the last run, the
 # freshness gate snapshots the per-ticker latest fundamentals date to this JSON (under DATA_STORE,
-# so it persists on the host ./data mount) and diffs it next run. Keyed off the "fundamentals_history"
-# source in DATA_FRESHNESS_SOURCES above.
+# so it persists on the host ./data mount) and diffs it next run.
 FRESHNESS_SNAPSHOT_DIR = "freshness"
 FUNDAMENTALS_SNAPSHOT_FILE = "fundamentals_latest_by_ticker.json"
-FRESHNESS_FUNDAMENTALS_SOURCE = "fundamentals_history"
 
 
 # --------------------------------------------------------------------------- #
 # Incremental cube-part builds (Airflow data_aggregation DAG)                  #
 # --------------------------------------------------------------------------- #
-# Each cube_part_<group> is rebuilt INCREMENTALLY: read its latest date, recompute only the
-# trailing tail and append the new rows (instead of truncating + reloading 15y every run). The
-# rolling/peer-relative feature builders need history BEFORE the first new date, so the trailing
-# window is padded by this many trading days of warm-up. It MUST exceed the longest look-back any
-# feature uses (the fundamental peer-relative history window ~1260 trading days is the binding one),
-# else tail values would be computed on a truncated history. Bump it if a longer-window feature is added.
-CUBE_INCREMENTAL_WARMUP_TRADING_DAYS = 1400
+# NOTE: the old single global `CUBE_INCREMENTAL_WARMUP_TRADING_DAYS = 1400` is gone. The
+# warm-up is PER PART now (`parts.py::CubePart.warmup_trading_days`, checked against each
+# part's binding look-backs by tests/data_aggregate/test_part_registry.py), and the global
+# had no remaining reader.
 
 # The join keys every feature panel carries; everything else in a panel is a feature column.
 PANEL_KEYS = ["date", "ticker"]
 
-# The ad-hoc intermediate tables the cube sub-steps hand to each other. Deliberately NOT in
-# schema_registry.py: they are rebuilt from scratch by their owning step and carry no PK, so
-# `PartStore` pre-creates each from its frame's own dtypes (see utils/common/part_io.py).
-CUBE_PART_PRICES = "cube_part_prices"           # normalized OHLCV+returns grid, analysis universe
-CUBE_PART_MARKET = "cube_part_market"           # market ticker + commodity/FX close & returns
-CUBE_PART_TARGETS = "cube_part_targets"         # long multi-horizon labels
-CUBE_PART_BETAS = "cube_part_betas"             # long per-ticker factor loadings
-CUBE_PART_FUNDAMENTALS = "cube_part_fundamentals"
-CUBE_PART_MOMENTUM = "cube_part_momentum"
-CUBE_PART_TEXT = "cube_part_text"
-CUBE_PART_EXTRAS = "cube_part_extras"
-CUBE_TABLE="cube"
+# The cube + the ad-hoc intermediate `cube_part_*` tables the sub-steps hand to each other are
+# declared in src/data_store/schema.py (`Tables.cube`, `Tables.cube_part_*`), the parts with
+# `managed=False`: they carry a declared PK and date column but own their own DDL (inferred from
+# the frame each owning step writes) and stay out of sql/schema.sql. `parts.py` adds only the
+# build ORCHESTRATION on top (CLI command, warm-up window, binding look-backs).
 
 # --------------------------------------------------------------------------- #
 # GICS sectors / industry groups (values as stored in `sp500_tickers`, carried  #

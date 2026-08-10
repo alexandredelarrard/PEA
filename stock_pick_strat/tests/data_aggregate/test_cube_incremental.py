@@ -162,22 +162,23 @@ def test_source_column_projection_covers_builder_needs():
             "fundamentals_history": ["ticker", "as_of", "totalRevenue"]}
 
     class _Store:
+        """One object now that the step reads columns AND rows from the same store."""
+
         def exists(self, name):
             return name in live
 
-        def load(self, name, columns=None):
+        def columns(self, name):
+            return live.get(name)
+
+        def load(self, name, columns=None, **kw):
             seen[name] = columns
             return pd.DataFrame()
 
     class _Ctx:
         store = _Store()
 
-    class _Parts:
-        def columns(self, name):
-            return live.get(name)
-
     step._context = _Ctx()
-    step._parts = _Parts()
+    step._store = step._context.store
     step._log = logging.getLogger("test")
     step._load_source("sec13f_hr")
     step._load_source("fundamentals_history")             # not in the projection map

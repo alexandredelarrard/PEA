@@ -23,23 +23,15 @@ import pyarrow.parquet as pq
 import requests
 
 import pandas as pd
-from sqlalchemy import text
 
-from src.constants.constants import (
-    EARNINGS_CALL_CACHE_DIR,
-    EARNINGS_CALL_SECTIONS_TABLE,
-    HF_BACKBONE_EARLY_QUARTER,
-    HF_BACKBONE_LATE_QUARTER,
-    HF_TRANSCRIPTS_CACHE,
-    HF_TRANSCRIPTS_DATASET,
-    HF_TRANSCRIPTS_PARQUET_URL,
-)
+from src.data_store.schema import Tables
+from src.constants.constants import (EARNINGS_CALL_CACHE_DIR, HF_BACKBONE_EARLY_QUARTER, HF_BACKBONE_LATE_QUARTER, HF_TRANSCRIPTS_CACHE, HF_TRANSCRIPTS_DATASET, HF_TRANSCRIPTS_PARQUET_URL)
 from src.context import Context
 from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
 
 logger = logging.getLogger(__name__)
-_TABLE = EARNINGS_CALL_SECTIONS_TABLE
+_TABLE = Tables.earnings_call_sections
 _ROLE_PREFIX = re.compile(r"^[A-Za-z]\s*-\s*")            # "A - Jane Doe" / "E - John Roe" role tags
 
 # --------------------------------------------------------------------------- #
@@ -159,27 +151,20 @@ def _hf_backbone_already_ingested(context: Context) -> tuple[bool, str | None, s
     fixed-width 'YYYYQN', so a plain string MIN/MAX is chronological -> one cheap aggregate, no
     parquet load. Returns (present, min_quarter, max_quarter); False/None when the table is empty
     or unavailable (so a fresh DB still triggers the full ingest)."""
-    try:
-        with context.store.engine.connect() as c:
-            row = c.execute(text(f'SELECT MIN(quarter), MAX(quarter) FROM "{_TABLE}"')).first()
-    except Exception:                                    # table absent / DB unreachable
+    lo, hi = context.store.bounds(_TABLE, "quarter")
+    if lo is None:
         return False, None, None
-    if not row or row[0] is None:
-        return False, None, None
-    min_q, max_q = str(row[0]), str(row[1])
+    min_q, max_q = str(lo), str(hi)
     present = (min_q <= HF_BACKBONE_EARLY_QUARTER and max_q >= HF_BACKBONE_LATE_QUARTER)
     return present, min_q, max_q
 
 
 def _existing_keys(context: Context) -> set[tuple[str, str]]:
     """(ticker, quarter) already in the table — so a re-run skips them (from ANY source)."""
-    try:
-        df = context.store.load(_TABLE, columns=["ticker", "quarter"])
-        if df is None or df.empty:
-            return set()
-        return set(map(tuple, df[["ticker", "quarter"]].drop_duplicates().to_numpy()))
-    except Exception:                                    # table not created yet
+    df = context.store.load(_TABLE, columns=["ticker", "quarter"], optional=True)
+    if df is None:
         return set()
+    return set(map(tuple, df[["ticker", "quarter"]].drop_duplicates().to_numpy()))
 
 
 def ingest_hf_transcripts(context: Context, tickers: list[str] | None = None,

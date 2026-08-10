@@ -55,7 +55,6 @@ from pathlib import Path
 import pandas as pd
 import requests
 from tqdm import tqdm
-from sqlalchemy import text
 
 from src.constants.constants import (
     SEC_FINNOTES_URL_TEMPLATE, SEC_FINNOTES_FIRST_YEAR)

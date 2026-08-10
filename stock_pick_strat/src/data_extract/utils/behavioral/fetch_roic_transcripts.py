@@ -30,12 +30,8 @@ from typing import NamedTuple
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import (
-    EARNINGS_CALL_SECTIONS_TABLE,
-    ROIC_EARNINGS_LIST_URL,
-    ROIC_EARNINGS_TRANSCRIPT_URL,
-    ROIC_REQUEST_PAUSE,
-)
+from src.data_store.schema import Tables
+from src.constants.constants import (ROIC_EARNINGS_LIST_URL, ROIC_EARNINGS_TRANSCRIPT_URL, ROIC_REQUEST_PAUSE)
 from src.context import Context
 from src.utils import polite_http as ph
 # reuse the ONE gap definition + the shared transcript-section splitter
@@ -48,7 +44,7 @@ from src.data_extract.utils.behavioral.utils_missing_quarters import (
 )
 
 logger = logging.getLogger(__name__)
-_TABLE = EARNINGS_CALL_SECTIONS_TABLE
+_TABLE = Tables.earnings_call_sections
 
 
 class RoicResult(NamedTuple):

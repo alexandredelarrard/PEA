@@ -54,8 +54,8 @@ def fetch_business_descriptions(
     """
     cached: dict[str, str] = {}
     if store is not None:
-        df = store.load("ticker_descriptions")
-        if not df.empty:
+        df = store.load("ticker_descriptions", optional=True)
+        if df is not None:
             cached = dict(zip(df["ticker"], df["description"]))
 
     missing = [t for t in tickers if force or t not in cached]
@@ -91,8 +91,8 @@ def load_embedded_tickers(store) -> set[str]:
     the caller can skip it end-to-end and only process the rest."""
     if store is None:
         return set()
-    df = store.load("ticker_embeddings", columns=["ticker"])
-    return set(df["ticker"].dropna()) if not df.empty else set()
+    df = store.load("ticker_embeddings", columns=["ticker"], optional=True)
+    return set(df["ticker"].dropna()) if df is not None else set()
 
 
 def get_openai_embeddings(
@@ -115,8 +115,8 @@ def get_openai_embeddings(
     """
     cached: dict[str, np.ndarray] = {}
     if store is not None:
-        cache = store.load("ticker_embeddings")
-        if not cache.empty:
+        cache = store.load("ticker_embeddings", optional=True)
+        if cache is not None:
             for _, r in cache.iterrows():
                 cached[r["ticker"]] = np.asarray(r["embedding"], dtype="float64")
 

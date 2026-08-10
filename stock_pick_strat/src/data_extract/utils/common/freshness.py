@@ -20,38 +20,17 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import text
 
 from src.constants.constants import (
     DATA_FRESHNESS_CADENCE_ORDER,
     DATA_FRESHNESS_MAX_AGE_DAYS,
-    DATA_FRESHNESS_SOURCES,
-    FRESHNESS_FUNDAMENTALS_SOURCE,
     FRESHNESS_SNAPSHOT_DIR,
     FUNDAMENTALS_SNAPSHOT_FILE,
 )
 from src.context import Context
+from src.data_store.schema import Tables, freshness_tables
 
 logger = logging.getLogger(__name__)
-
-
-def _table_exists(conn, table: str) -> bool:
-    q = text("SELECT 1 FROM information_schema.tables WHERE table_name = :t LIMIT 1")
-    return conn.execute(q, {"t": table}).first() is not None
-
-
-def _column_exists(conn, table: str, col: str) -> bool:
-    q = text("SELECT 1 FROM information_schema.columns "
-             "WHERE table_name = :t AND column_name = :c LIMIT 1")
-    return conn.execute(q, {"t": table, "c": col}).first() is not None
-
-
-def _max_date(conn, table: str, col: str) -> pd.Timestamp | None:
-    v = conn.execute(text(f'SELECT MAX("{col}") FROM "{table}"')).scalar()
-    if v is None:
-        return None
-    ts = pd.to_datetime(v, errors="coerce")
-    return None if pd.isna(ts) else pd.Timestamp(ts).normalize()
 
 
 # --------------------------------------------------------------------------- #
@@ -89,9 +68,10 @@ def _compute_new_filings(current: dict[str, str], prev: dict[str, str]) -> dict:
 def _fundamentals_latest_by_ticker(context: Context) -> dict[str, str]:
     """{ticker: latest fundamentals date (YYYY-MM-DD)} from the fundamentals table (its freshness
     source's date_col = the reported period end `as_of`)."""
-    table, col, _ = DATA_FRESHNESS_SOURCES[FRESHNESS_FUNDAMENTALS_SOURCE]
-    df = context.store.load(table, columns=["ticker", col])
-    if df is None or df.empty:
+    spec = Tables.fundamentals_history
+    col = spec.freshness_col
+    df = context.store.load(spec, columns=["ticker", col], optional=True)
+    if df is None:
         return {}
     s = pd.to_datetime(df[col], errors="coerce")
     out = (pd.DataFrame({"ticker": df["ticker"].astype(str), col: s})
@@ -141,31 +121,35 @@ def check_data_freshness(context: Context, today: pd.Timestamp | str | None = No
     sources: dict[str, dict] = {}
     stale: list[str] = []
 
-    with context.store.engine.connect() as conn:
-        for label, (table, col, cadence) in DATA_FRESHNESS_SOURCES.items():
-            max_age = DATA_FRESHNESS_MAX_AGE_DAYS[cadence]
-            info: dict = {"table": table, "date_col": col, "cadence": cadence,
-                          "max_age_days": max_age, "latest": None, "age_days": None,
-                          "status": None}
-            try:
-                if not _table_exists(conn, table):
-                    info["status"] = "missing_table"
-                elif not _column_exists(conn, table, col):
-                    info["status"] = "missing_column"
+    store = context.store
+    # The source list IS the schema registry: `Table.freshness` is the cadence and
+    # `freshness_col` the column to measure. `DATA_FRESHNESS_SOURCES` used to repeat both,
+    # and its label was always the table name anyway.
+    for spec in freshness_tables():
+        label, col, cadence = spec.name, spec.freshness_col, spec.freshness
+        max_age = DATA_FRESHNESS_MAX_AGE_DAYS[cadence]
+        info: dict = {"table": spec.name, "date_col": col, "cadence": cadence,
+                      "max_age_days": max_age, "latest": None, "age_days": None,
+                      "status": None}
+        try:
+            if not store.exists(spec):
+                info["status"] = "missing_table"
+            elif col not in store.columns(spec):
+                info["status"] = "missing_column"
+            else:
+                latest = store.max_date(spec, col)
+                if latest is None:
+                    info["status"] = "empty"
                 else:
-                    latest = _max_date(conn, table, col)
-                    if latest is None:
-                        info["status"] = "empty"
-                    else:
-                        age = int((today - latest).days)
-                        info["latest"] = latest.strftime("%Y-%m-%d")
-                        info["age_days"] = age
-                        info["status"] = "ok" if age <= max_age else "stale"
-            except Exception as e:                                  # noqa: BLE001
-                info["status"] = f"error:{type(e).__name__}"
-            if info["status"] != "ok":
-                stale.append(label)
-            sources[label] = info
+                    age = int((today - latest).days)
+                    info["latest"] = latest.strftime("%Y-%m-%d")
+                    info["age_days"] = age
+                    info["status"] = "ok" if age <= max_age else "stale"
+        except Exception as e:                                  # noqa: BLE001
+            info["status"] = f"error:{type(e).__name__}"
+        if info["status"] != "ok":
+            stale.append(label)
+        sources[label] = info
 
     report = {"as_of": today.strftime("%Y-%m-%d"), "ok": not stale,
               "stale": stale, "sources": sources}

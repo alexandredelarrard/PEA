@@ -19,11 +19,10 @@ from __future__ import annotations
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import CUBE_PART_MOMENTUM
+from src.data_store.schema import Tables
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
-from src.data_aggregate.utils.common.part_io import PartStore
-from src.data_aggregate.utils.common.parts import PART_BY_NAME
+from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames, load_price_frames, load_trading_calendar,
@@ -41,18 +40,18 @@ class StepCubeMomentum(Step):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
-        self._part = PART_BY_NAME[CUBE_PART_MOMENTUM]
+        self._part = part_for(Tables.cube_part_momentum)
         self._market_ticker = str(self._cfg.market_ticker)
-        self._parts = PartStore(context.store, self._log)
+        self._store = context.store
 
     def run(self, full: bool = False) -> None:
-        window = plan_window(self._parts, CUBE_PART_MOMENTUM, full=full,
+        window = plan_window(self._store, Tables.cube_part_momentum, full=full,
                              warmup=self._warmup(),
-                             trading_index=load_trading_calendar(self._parts))
+                             trading_index=load_trading_calendar(self._store))
         frames = self._load_frames(window.since)
         panel = self._price_panel(frames)
         del frames
-        n = write_part(self._parts, CUBE_PART_MOMENTUM, panel, window, drop_empty=True)
+        n = write_part(self._store, Tables.cube_part_momentum, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 
@@ -62,7 +61,7 @@ class StepCubeMomentum(Step):
 
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(
-            self._parts, peers=load_peers_or_raise(self._context, self._config),
+            self._store, peers=load_peers_or_raise(self._context, self._config),
             market_ticker=self._market_ticker, fields=self._FIELDS, since=since)
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:

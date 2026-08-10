@@ -40,16 +40,9 @@ import numpy as np
 import pandas as pd
 from fredapi import Fred
 
+from src.data_store.schema import Tables
 from src.context import Context
-from src.constants.constants import (
-    MACRO_ASSET_PRICES_TABLE,
-    MACRO_ASSET_FRED_SERIES,
-    MACRO_ASSET_YF_SERIES,
-    MACRO_ASSET_BOND_TR_COLUMN,
-    MACRO_ASSET_BOND_MATURITY_YEARS,
-    MACRO_ASSET_CORE_LEVEL_COLUMNS,
-    DATE_FORMAT,
-)
+from src.constants.constants import (MACRO_ASSET_FRED_SERIES, MACRO_ASSET_YF_SERIES, MACRO_ASSET_BOND_TR_COLUMN, MACRO_ASSET_BOND_MATURITY_YEARS, MACRO_ASSET_CORE_LEVEL_COLUMNS, DATE_FORMAT)
 from src.utils.ssl_setup import configure_corporate_ca
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals.fetch_macro import fill_short_gaps
@@ -128,8 +121,8 @@ def _fetch_yfinance(start: pd.Timestamp, context: Context) -> pd.DataFrame:
 def _macro_assets_up_to_date(context: Context) -> bool:
     """True only when the CORE daily level columns already reach the previous business
     day (their sources lag ~1 BDay). Missing table -> not fresh."""
-    existing = context.store.load(MACRO_ASSET_PRICES_TABLE)
-    if existing is None or existing.empty or "date" not in existing.columns:
+    existing = context.store.load(Tables.macro_asset_prices, optional=True)
+    if existing is None or "date" not in existing.columns:
         return False
     existing["date"] = pd.to_datetime(existing["date"])
     last_expected = pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(1)
@@ -159,11 +152,11 @@ def _refresh_macro_assets(context: Context) -> None:
     assets[MACRO_ASSET_BOND_TR_COLUMN] = build_bond_total_return(assets["yield_10y"])
 
     assets = assets.reset_index()
-    context.store.replace(MACRO_ASSET_PRICES_TABLE, assets)
+    context.store.replace(Tables.macro_asset_prices, assets)
     context.log.info("Saved %d rows of macro-asset series to DB table '%s' (%d-year history; "
                      "FRED rates/cash/fx + yfinance equity/gold)",
-                     len(assets), MACRO_ASSET_PRICES_TABLE, years)
-    record_run(context, MACRO_ASSET_PRICES_TABLE, 0, len(assets))
+                     len(assets), Tables.macro_asset_prices, years)
+    record_run(context, Tables.macro_asset_prices, 0, len(assets))
 
 
 def fetch_macro_assets(context: Context) -> None:
@@ -173,7 +166,7 @@ def fetch_macro_assets(context: Context) -> None:
             "https://fred.stlouisfed.org/docs/api/api_key.html and add it to your .env file.")
     if _macro_assets_up_to_date(context):
         context.log.info("Macro-asset series already up to date - skipping (DB table '%s')",
-                         MACRO_ASSET_PRICES_TABLE)
-        record_run(context, MACRO_ASSET_PRICES_TABLE, 0, 0)
+                         Tables.macro_asset_prices)
+        record_run(context, Tables.macro_asset_prices, 0, 0)
         return
     _refresh_macro_assets(context)

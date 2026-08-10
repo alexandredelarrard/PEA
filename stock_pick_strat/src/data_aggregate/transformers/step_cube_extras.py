@@ -24,12 +24,12 @@ import json
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import CUBE_PART_EXTRAS, SUPERINVESTORS_JSON
+from src.data_store.schema import Tables
+from src.constants.constants import SUPERINVESTORS_JSON
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.part_io import PartStore
-from src.data_aggregate.utils.common.parts import PART_BY_NAME
+from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames, load_price_frames, load_trading_calendar,
@@ -75,14 +75,14 @@ class StepCubeExtras(Step):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
-        self._part = PART_BY_NAME[CUBE_PART_EXTRAS]
+        self._part = part_for(Tables.cube_part_extras)
         self._market_ticker = str(self._cfg.market_ticker)
-        self._parts = PartStore(context.store, self._log)
+        self._store = context.store
 
     def run(self, full: bool = False) -> None:
-        window = plan_window(self._parts, CUBE_PART_EXTRAS, full=full,
+        window = plan_window(self._store, Tables.cube_part_extras, full=full,
                              warmup=self._warmup(),
-                             trading_index=load_trading_calendar(self._parts))
+                             trading_index=load_trading_calendar(self._store))
         frames = self._load_frames(window.since)
         # shares outstanding for the market-cap scaling shared by 13F / insider panels
         shares = self._load_shares_out()
@@ -105,7 +105,7 @@ class StepCubeExtras(Step):
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames, shares
-        n = write_part(self._parts, CUBE_PART_EXTRAS, panel, window, drop_empty=True)
+        n = write_part(self._store, Tables.cube_part_extras, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 
@@ -116,7 +116,7 @@ class StepCubeExtras(Step):
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(
-            self._parts, peers=load_peers_or_raise(self._context, self._config),
+            self._store, peers=load_peers_or_raise(self._context, self._config),
             market_ticker=self._market_ticker, fields=self._FIELDS, since=since)
 
     def _load_source(self, table: str) -> pd.DataFrame | None:
@@ -129,16 +129,16 @@ class StepCubeExtras(Step):
         instead of degrading."""
         if not self._context.store.exists(table):
             return None
-        columns = project_existing(self._parts.columns(table), table)
-        df = self._context.store.load(table, columns=columns)
-        if df is None or df.empty:
+        columns = project_existing(self._store.columns(table), table)
+        df = self._context.store.load(table, columns=columns, optional=True)
+        if df is None:
             return None
         self._log.info("Loaded %s: %s rows x %s cols", table, len(df), len(df.columns))
         return df
 
     def _load_shares_out(self) -> pd.DataFrame | None:
-        df = self._context.store.load(_FUNDAMENTALS)
-        if df.empty:
+        df = self._context.store.load(_FUNDAMENTALS, optional=True)
+        if df is None:
             self._log.warning("No fundamentals history -> the market-cap-scaled ownership "
                               "features are skipped.")
             return None

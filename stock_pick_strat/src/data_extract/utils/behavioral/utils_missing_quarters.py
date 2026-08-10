@@ -32,18 +32,14 @@ import pandas as pd
 import re
 from pathlib import Path
 
+from src.data_store.schema import Tables
 from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import hf_latest_quarter_by_ticker
 from src.data_extract.utils.behavioral.utils_behavior import (
     _index_path,
     _load_index)
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.constants.constants import (
-    EARNINGS_CALL_CACHE_DIR,
-    EARNINGS_CALL_REPORT_GRACE_DAYS,
-    EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
-    NO_EARNINGS_CALL_TICKERS,
-    EARNINGS_CALL_SECTIONS_TABLE)
+from src.constants.constants import (EARNINGS_CALL_CACHE_DIR, EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_REPORT_TO_QUARTER_LAG_DAYS, NO_EARNINGS_CALL_TICKERS)
 
 # --- quarter arithmetic (a fiscal quarter as a monotone integer index YYYY*4 + (Q-1)) ---
 _QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$")
@@ -90,18 +86,16 @@ def _local_quarters(cache: Path, ticker: str) -> set[str]:
 
 
 def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
-    """{ticker: {quarters}} already in the sections table (ANY source, incl. HF). Empty when
-    the DB is unavailable / the table is not created yet -> resume on disk + JSON coverage."""
-    try:
-        db = context.store.load(EARNINGS_CALL_SECTIONS_TABLE, columns=["ticker", "quarter"])
-        if db is None or db.empty:
-            return {}
-        out: dict[str, set] = {}
-        for tk, q in zip(db["ticker"], db["quarter"]):
-            out.setdefault(str(tk), set()).add(str(q))
-        return out
-    except Exception:
+    """{ticker: {quarters}} already in the sections table (ANY source, incl. HF). Empty when the
+    table is not created yet -> resume on disk + JSON coverage."""
+    db = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter"],
+                            optional=True)
+    if db is None:
         return {}
+    out: dict[str, set] = {}
+    for tk, q in zip(db["ticker"], db["quarter"]):
+        out.setdefault(str(tk), set()).add(str(q))
+    return out
 
 
 def _released_quarter_idx_by_ticker(

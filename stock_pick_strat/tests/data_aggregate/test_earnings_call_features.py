@@ -89,22 +89,18 @@ def test_per_call_kpi_arithmetic():
     assert a.loc["2023Q3", "ec_vocab_novelty"] > 0.5
 
 
-class _FakeStore:
-    """Minimal store: no `.engine` (forces the memory-safe in-memory streaming branch), no
-    `.exists` (guard is skipped via hasattr), `columns=` ignored (tiny data)."""
-    def __init__(self, tables): self.t = tables
-    def load(self, table, columns=None): return self.t.get(table, pd.DataFrame()).copy()
-
-
-class _FakeCtx:
+class _Ctx:
     def __init__(self, store): self.store = store; self.log = logging.getLogger("test")
 
 
-def test_sentiment_kpis_streamed_equals_batch():
+def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
     """The per-ticker STREAMED KPIs (bounded memory) must exactly equal the whole-cache
-    computation — proving the streaming refactor preserves QoQ deltas + vocab novelty."""
+    computation — proving the streaming refactor preserves QoQ deltas + vocab novelty. Runs on a
+    REAL DataStore, so the per-ticker `distinct` + WHERE-scoped reads are exercised for real."""
     sent, sec = _sentiment_frame(), _sections_frame()
-    ctx = _FakeCtx(_FakeStore({"earnings_call_sentiment": sent, "earnings_call_sections": sec}))
+    sqlite_store.save("earnings_call_sentiment", sent)
+    sqlite_store.save("earnings_call_sections", sec)
+    ctx = _Ctx(sqlite_store)
     streamed = sentiment_kpis_streamed(ctx)
     batch = _per_call_kpis(sent, sec)
     m = streamed.merge(batch, on=["ticker", "quarter"], suffixes=("_s", "_b"))

@@ -9,12 +9,14 @@ test_load_cik_mapping_reads_sp500_tickers — reads sp500_tickers, zero-pads the
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pandas as pd
 
 from src.data_extract.utils.common import sec_utils
 
 
-def test_load_cik_mapping_reads_sp500_tickers():
+def test_load_cik_mapping_reads_sp500_tickers(sqlite_store):
     sp500 = pd.DataFrame([
         {"ticker": "XOM", "name": "ExxonMobil", "cik": "0000034088",
          "sector": "Energy", "industry_group": "Energy", "sub_industry": "Integrated Oil & Gas"},
@@ -23,15 +25,8 @@ def test_load_cik_mapping_reads_sp500_tickers():
          "sub_industry": "Technology Hardware, Storage & Peripherals"},
     ])
 
-    class _Store:
-        def load(self, name, columns=None, limit=None):
-            assert name == "sp500_tickers"          # no longer reads a cik_mapping table
-            return sp500.copy()
-
-    class _Ctx:
-        store = _Store()
-
-    m = sec_utils.load_cik_mapping(_Ctx())
+    sqlite_store.replace("sp500_tickers", sp500)     # the ONLY table it may read (no cik_mapping)
+    m = sec_utils.load_cik_mapping(SimpleNamespace(store=sqlite_store))
     d = {r["ticker"]: r for _, r in m.iterrows()}
 
     # CIK zero-padded to 10 digits for SEC URLs (even when stored short)

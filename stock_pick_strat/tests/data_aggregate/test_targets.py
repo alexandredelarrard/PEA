@@ -22,8 +22,9 @@ import pytest
 
 import warnings
 
+from src.data_aggregate.utils.common.xs import xs_project_out
 from src.data_aggregate.utils.target.factors import momentum_characteristic
-from src.data_aggregate.utils.target.targets import cross_sectional_neutralize, forward_compound
+from src.data_aggregate.utils.target.targets import forward_compound
 
 
 def test_forward_compound_no_log1p_warning_on_sub_minus1_return():
@@ -122,31 +123,48 @@ def test_amd_not_persistently_top_ranked(real_pipeline):
 # --------------------------------------------------------------------------- #
 # 4a. Unit test: the neutralizer removes a cross-sectional factor tilt          #
 # --------------------------------------------------------------------------- #
-def test_cross_sectional_neutralize_removes_tilt():
-    """Deterministic proof the orthogonalization works: build values that are,
-    each day, a strong linear function of a factor plus noise; after
-    neutralization the per-day cross-sectional correlation with that factor
-    must be ~0."""
+def test_xs_project_out_removes_tilt_to_correlated_factors():
+    """Deterministic proof the orthogonalization works, on TWO CORRELATED factors -- the case
+    a univariate pass cannot handle. Values are, each day, a strong linear function of both
+    plus noise; after the joint projection the per-day cross-sectional correlation with EACH
+    must be ~0, which is only true because they are removed together."""
     rng = np.random.default_rng(3)
     dates = pd.bdate_range("2021-01-01", periods=60)
     tickers = [f"T{i:02d}" for i in range(40)]
 
-    factor = pd.DataFrame(rng.normal(0, 1, (len(dates), len(tickers))),
-                          index=dates, columns=tickers)
-    values = 2.0 * factor + pd.DataFrame(
-        rng.normal(0, 0.3, (len(dates), len(tickers))), index=dates, columns=tickers
-    )
+    def frame(scale):
+        return pd.DataFrame(rng.normal(0, scale, (len(dates), len(tickers))),
+                            index=dates, columns=tickers)
 
-    before = values.corrwith(factor, axis=1).mean()
-    neutral = cross_sectional_neutralize(values, factor)
-    after = neutral.corrwith(factor, axis=1).mean()
+    factor_a = frame(1.0)
+    factor_b = 0.8 * factor_a + frame(0.6)          # correlated with a, as real exposures are
+    values = 2.0 * factor_a - 1.5 * factor_b + frame(0.3)
 
-    assert abs(before) > 0.9, "sanity: values should start highly correlated"
-    assert abs(after) < 1e-6, f"neutralized values still correlate with factor: {after:+.4f}"
+    before = (values.corrwith(factor_a, axis=1).mean(),
+              values.corrwith(factor_b, axis=1).mean())
+    neutral = xs_project_out(values, [factor_a, factor_b])
+    after = (neutral.corrwith(factor_a, axis=1).mean(),
+             neutral.corrwith(factor_b, axis=1).mean())
 
-    print("\n=== SANITY CHECK: cross_sectional_neutralize removes tilt ===")
-    print(f"  per-day corr(values, factor) : before={before:+.3f}  after={after:+.6f}")
-    print("  -> orthogonalization drives the cross-sectional correlation to zero.")
+    # Sanity on the SETUP: factor_a starts strongly correlated. factor_b does NOT, even though its
+    # true loading is -1.5, because the two channels cancel:
+    #   cov(values, b) = 2(0.8)var(a) - 1.5 var(e_b) = 0.64 - 0.54 ~ 0.1
+    # That is the point, not a flaw -- a factor can carry a large loading and almost no marginal
+    # correlation, so a univariate pass would leave it in place while the JOINT fit removes it.
+    assert abs(before[0]) > 0.3, f"sanity: factor_a should start correlated, got {before[0]:+.3f}"
+    assert abs(before[1]) < 0.2, f"setup assumption changed: factor_b marginal {before[1]:+.3f}"
+    # what actually matters: after the joint projection BOTH tilts are gone
+    assert abs(after[0]) < 1e-6 and abs(after[1]) < 1e-6, f"still correlated: {after}"
+    # and the projection really removed signal rather than doing nothing
+    assert neutral.std(axis=1).mean() < 0.5 * values.std(axis=1).mean()
+
+    print("\n=== SANITY CHECK: xs_project_out removes tilt to correlated factors ===")
+    print(f"  per-day corr(values, factor_a): before={before[0]:+.3f}  after={after[0]:+.6f}")
+    print(f"  per-day corr(values, factor_b): before={before[1]:+.3f}  after={after[1]:+.6f}")
+    print(f"  factor_b's MARGINAL corr is only {before[1]:+.3f} despite a true loading of -1.5 "
+          "(the two channels cancel) -- exactly the case a univariate pass misses.")
+    print(f"  cross-sectional sd {values.std(axis=1).mean():.2f} -> "
+          f"{neutral.std(axis=1).mean():.2f}: the JOINT projection drives both correlations to 0.")
 
 
 # --------------------------------------------------------------------------- #

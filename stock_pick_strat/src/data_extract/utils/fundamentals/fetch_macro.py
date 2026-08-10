@@ -81,8 +81,8 @@ def _macro_is_up_to_date(context: Context) -> bool:
     the overall max let a same-day spread mask a stale level block and skip the
     refresh; keying the level block on `today` would instead re-pull every run (they
     never reach today). The previous business day settles both."""
-    existing = context.store.load("macro")
-    if existing is None or existing.empty or "date" not in existing.columns:
+    existing = context.store.load("macro", optional=True)
+    if existing is None or "date" not in existing.columns:
         return False
     existing["date"] = pd.to_datetime(existing["date"])
     last_expected = pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(1)

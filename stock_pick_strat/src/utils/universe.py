@@ -19,10 +19,9 @@ as `sp500_tickers` for backward-compat regardless of which index actually fills 
 """
 from __future__ import annotations
 
+from src.data_store.schema import Tables
 from src.context import Context
 from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
-
-UNIVERSE_TABLE = "sp500_tickers"
 
 
 def load_universe_tickers(context: Context) -> list[str]:
@@ -31,8 +30,10 @@ def load_universe_tickers(context: Context) -> list[str]:
     (`INSUFFICIENT_HISTORY_TICKERS` -- recent IPOs / spin-offs with < 4 years of data
     that can't support the multi-year look-backs / walk-forward backtest). Returns []
     when the table is absent or empty (not yet seeded) so callers can fall back / warn."""
-    df = context.store.load(UNIVERSE_TABLE, columns=["ticker"])
-    if df is None or df.empty or "ticker" not in df.columns:
+    # `optional=True` is what makes the documented "[] when not yet seeded" true: a plain `load`
+    # raises on an absent/empty table, which on a cold DB would abort the seeding run itself.
+    df = context.store.load(Tables.sp500_tickers, columns=["ticker"], optional=True)
+    if df is None or "ticker" not in df.columns:
         return []
     return sorted({t for raw in df["ticker"].dropna()
                    if (t := str(raw).strip().upper()) and t not in INSUFFICIENT_HISTORY_TICKERS})

@@ -33,10 +33,8 @@ from collections import Counter
 import pandas as pd
 from edgar import Company
 
-from src.constants.constants import (
-    DEF14A_EDGAR_DIRECTOR_COMP_TABLE, DEF14A_EDGAR_EXEC_COMP_TABLE, DEF14A_EDGAR_OWNERSHIP_TABLE,
-    DEF14A_EDGAR_TABLE, DEF14A_EDGAR_VOTES_TABLE, DEF14A_FORMS,
-)
+from src.data_store.schema import Tables
+from src.constants.constants import (DEF14A_FORMS)
 from src.context import Context
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.run_manifest import manifest_window, record_run
@@ -345,10 +343,10 @@ def fetch_def14a_edgar(context: Context, tickers: list[str], years: int | None =
 
     rescan_days = int(getattr(context.config.data_extract, "manifest_full_rescan_days", 30))
     since, is_full_rescan = manifest_window(
-        context, DEF14A_EDGAR_TABLE, len(cik_map), fallback_since=full_since,
+        context, Tables.def14a_edgar, len(cik_map), fallback_since=full_since,
         full_rescan_days=rescan_days)
 
-    seen = existing_filings(context, DEF14A_EDGAR_TABLE)
+    seen = existing_filings(context, Tables.def14a_edgar)
 
     def _worker(ticker: str, cik: str) -> dict[str, int] | None:
         try:
@@ -362,29 +360,29 @@ def fetch_def14a_edgar(context: Context, tickers: list[str], years: int | None =
         if not main_df.empty:
             main_df = _coerce_numeric(main_df, _MAIN_NUMERIC_COLS)
             main_df = main_df.drop_duplicates(subset=["ticker", "accession_number"], keep="last")
-            context.store.save(DEF14A_EDGAR_TABLE, main_df)
+            context.store.save(Tables.def14a_edgar, main_df)
             totals["main"] += len(main_df)
         if not exec_df.empty:
             exec_df = _coerce_numeric(exec_df, _EXEC_COMP_NUMERIC_COLS)
             exec_df = exec_df.drop_duplicates(subset=["ticker", "accession_number", "name", "year"], keep="last")
-            context.store.save(DEF14A_EDGAR_EXEC_COMP_TABLE, exec_df)
+            context.store.save(Tables.def14a_edgar_executive_comp, exec_df)
             totals["exec_comp"] += len(exec_df)
         if not dir_df.empty:
             dir_df = _coerce_numeric(dir_df, _DIRECTOR_COMP_NUMERIC_COLS)
             dir_df = dir_df.drop_duplicates(subset=["ticker", "accession_number", "name"], keep="last")
-            context.store.save(DEF14A_EDGAR_DIRECTOR_COMP_TABLE, dir_df)
+            context.store.save(Tables.def14a_edgar_director_comp, dir_df)
             totals["director_comp"] += len(dir_df)
         if not own_df.empty:
             own_df = _coerce_numeric(own_df, _OWNERSHIP_NUMERIC_COLS)
             own_df = own_df.drop_duplicates(
                 subset=["ticker", "accession_number", "holder_name", "holder_type"], keep="last")
-            context.store.save(DEF14A_EDGAR_OWNERSHIP_TABLE, own_df)
+            context.store.save(Tables.def14a_edgar_ownership, own_df)
             totals["ownership"] += len(own_df)
         if not vote_df.empty:
             vote_df = _coerce_numeric(vote_df, _VOTES_NUMERIC_COLS)
             vote_df = vote_df.drop_duplicates(
                 subset=["ticker", "accession_number", "proposal_number"], keep="last")
-            context.store.save(DEF14A_EDGAR_VOTES_TABLE, vote_df)
+            context.store.save(Tables.def14a_edgar_votes, vote_df)
             totals["votes"] += len(vote_df)
         return totals
 
@@ -400,6 +398,6 @@ def fetch_def14a_edgar(context: Context, tickers: list[str], years: int | None =
         "fetch_def14a_edgar: +%d filings, +%d exec-comp / +%d director-comp / +%d ownership / "
         "+%d vote rows across %d/%d ticker(s) (%d failed) -> '%s'",
         totals["main"], totals["exec_comp"], totals["director_comp"], totals["ownership"],
-        totals["votes"], len(results), len(cik_map), failed, DEF14A_EDGAR_TABLE)
-    record_run(context, DEF14A_EDGAR_TABLE, len(cik_map), totals["main"], is_full_rescan=is_full_rescan)
-    return context.store.load(DEF14A_EDGAR_TABLE)
+        totals["votes"], len(results), len(cik_map), failed, Tables.def14a_edgar)
+    record_run(context, Tables.def14a_edgar, len(cik_map), totals["main"], is_full_rescan=is_full_rescan)
+    return context.store.load(Tables.def14a_edgar)

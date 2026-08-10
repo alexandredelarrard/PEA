@@ -12,6 +12,7 @@ import types
 import pandas as pd
 
 import src.data_extract.utils.prices.fetch_cusip_map as cm
+from conftest import FakeStore     # the ONE shared store double
 from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.data_extract.utils.prices.fetch_cusip_map import (
     normalize_cusip, build_cusip_ticker_map,
@@ -28,23 +29,8 @@ def _looked_up(df):
     return set(df["cusip"]) - _OVERRIDES
 
 
-class _FakeStore:
-    """Minimal in-memory stand-in for context.store (dedupes on cusip like the DB)."""
-    def __init__(self):
-        self._t: dict[str, pd.DataFrame] = {}
-
-    def load(self, name, columns=None, limit=None):
-        return self._t.get(name, pd.DataFrame(columns=["cusip", "ticker"])).copy()
-
-    def save(self, name, df, pk=None):
-        prev = self._t.get(name, pd.DataFrame(columns=df.columns))
-        self._t[name] = (pd.concat([prev, df], ignore_index=True)
-                         .drop_duplicates("cusip", keep="last").reset_index(drop=True))
-        return len(df)
-
-
 def _ctx():
-    return types.SimpleNamespace(store=_FakeStore())
+    return types.SimpleNamespace(store=FakeStore())
 
 
 def test_normalize_cusip():

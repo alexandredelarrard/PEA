@@ -27,29 +27,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from src.constants.constants import (
-    CUBE_PART_BETAS,
-    CUBE_PART_EXTRAS,
-    CUBE_PART_FUNDAMENTALS,
-    CUBE_PART_MARKET,
-    CUBE_PART_MOMENTUM,
-    CUBE_PART_PRICES,
-    CUBE_PART_TARGETS,
-    CUBE_PART_TEXT,
-)
+from src.data_store.schema import Table, Tables, name_of
 
 PartKind = Literal["prices", "market", "features", "targets", "betas"]
 
 
 @dataclass(frozen=True, slots=True)
 class CubePart:
-    """One intermediate table, its owning CLI sub-command, and its warm-up."""
-    name: str
+    """One part's BUILD ORCHESTRATION: which CLI sub-command owns it and how far back an
+    incremental run must warm up. Schema (name, PK, date column) lives on `table`, so this
+    registry no longer re-declares any of it.
+
+    Note `kind` here is aggregation semantics (it drives `FEATURE_PARTS` and the status gate's
+    `never_behind` set) -- NOT `Table.kind`, which is DDL grouping.
+    """
+    table: Table
     command: str
     kind: PartKind
     warmup_trading_days: int
     # (merged feature group, its longest DAILY-grid look-back in trading days)
     binding_lookbacks: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def name(self) -> str:
+        return self.table.name
 
 
 CUBE_PARTS: tuple[CubePart, ...] = (
@@ -58,26 +59,26 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     # (a trimmed window's first pct_change row would otherwise come back NaN). 260 days is
     # not a look-back: it keeps a year of context in `get_trading_days`'s interior-calendar
     # -hole warning, which is a diagnostic over history.
-    CubePart(CUBE_PART_PRICES, "build-prices", "prices", 520),
-    CubePart(CUBE_PART_MARKET, "build-prices", "market", 0),
+    CubePart(Tables.cube_part_prices, "build-prices", "prices", 520),
+    CubePart(Tables.cube_part_market, "build-prices", "market", 0),
 
-    # style momentum shift(252) + beta window(63); the forward horizon is added at the call
+    # style momentum shift(252) + beta window(126); the forward horizon is added at the call
     # site, because targets look FORWARD and recent NaN labels MATURE between runs.
-    CubePart(CUBE_PART_TARGETS, "build-target", "targets", 320),
-    CubePart(CUBE_PART_BETAS, "build-target", "betas", 320),
+    CubePart(Tables.cube_part_targets, "build-target", "targets", 390),
+    CubePart(Tables.cube_part_betas, "build-target", "betas", 390),
 
-    CubePart(CUBE_PART_FUNDAMENTALS, "build-fundamentals", "features", 1320,
+    CubePart(Tables.cube_part_fundamentals, "build-fundamentals", "features", 1320,
              (("fundamental", 1260),      # _self_history_z rolling(1260)
               ("dividend", 1260),         # 5y payout growth shift(5 * 252)
               ("employee", 252),          # YoY headcount / rev-per-employee shift(252)
               ("sector", 0),              # _yearly_lag over the FULL fundamentals history
               ("earnings", 0))),          # trailing-4Q rolling over REPORTED quarters
-    CubePart(CUBE_PART_MOMENTUM, "build-momentum", "features", 1320,
+    CubePart(Tables.cube_part_momentum, "build-momentum", "features", 1320,
              (("price", 1260),)),         # seasonal_h*: close.shift(252 * seasonal_years=5)
-    CubePart(CUBE_PART_TEXT, "build-text", "features", 130,
+    CubePart(Tables.cube_part_text, "build-text", "features", 130,
              (("earnings_call_sentiment", 0),   # QoQ over reported quarters
               ("earnings_call_embedding", 0))),  # QoQ embedding drift
-    CubePart(CUBE_PART_EXTRAS, "build-extras", "features", 160,
+    CubePart(Tables.cube_part_extras, "build-extras", "features", 160,
              (("short_interest", 103),    # short-vol rolling(63) + FTD shift(40)
               ("attention", 63),          # spike rolling(63) / level rolling(21)
               ("governance", 0),          # YoY fiscal change over annual proxies
@@ -88,7 +89,16 @@ CUBE_PARTS: tuple[CubePart, ...] = (
 
 FEATURE_PARTS: tuple[CubePart, ...] = tuple(p for p in CUBE_PARTS if p.kind == "features")
 PART_BY_NAME: dict[str, CubePart] = {p.name: p for p in CUBE_PARTS}
+
+
 # the ordered CLI sub-commands the DAG chains (deduplicated, registry order preserved)
 PART_COMMANDS: tuple[str, ...] = tuple(dict.fromkeys(p.command for p in CUBE_PARTS))
 # downstream tables reported alongside the parts by the status gate
-TERMINAL_TABLES: tuple[str, ...] = ("cube", "predictions", "cube_signal", "predictions_latest")
+TERMINAL_TABLES: tuple[Table, ...] = (Tables.cube, Tables.predictions, Tables.cube_signal,
+                                      Tables.predictions_latest)
+
+
+def part_for(table: Table | str) -> CubePart:
+    """The build orchestration for a part table. Accepts the `Table` or its name -- `PART_BY_NAME`
+    is keyed by NAME, so indexing it with a `Table` object raises KeyError."""
+    return PART_BY_NAME[name_of(table)]

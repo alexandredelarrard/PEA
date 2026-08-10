@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import MACRO_ASSET_PRICES_TABLE
+from src.data_store.schema import Tables
 from src.utils.trend import combined_forecast, vol_scaled_positions, sleeve_returns
 
 # level (price / total-return-index) columns usable as trend "close"; renamed to short labels
@@ -26,9 +26,9 @@ _ANN: float = 252.0
 
 def load_close(store, include_fx: bool = True) -> pd.DataFrame:
     """Wide close (level) matrix (date x asset) for the trend universe from `macro_asset_prices`."""
-    df = store.load(MACRO_ASSET_PRICES_TABLE)
-    if df is None or df.empty:
-        raise RuntimeError(f"Table '{MACRO_ASSET_PRICES_TABLE}' is empty — run fetch_macro_assets.")
+    df = store.load(Tables.macro_asset_prices, optional=True)
+    if df is None:
+        raise RuntimeError(f"Table '{Tables.macro_asset_prices}' is empty — run fetch_macro_assets.")
     d = df.copy()
     d["date"] = pd.to_datetime(d["date"])
     d = d.sort_values("date").set_index("date")

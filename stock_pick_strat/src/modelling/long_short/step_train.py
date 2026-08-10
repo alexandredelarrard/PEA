@@ -5,16 +5,12 @@ import pickle
 import pandas as pd
 from datetime import datetime, timedelta
 from omegaconf import DictConfig
-from sqlalchemy import text
 import lightgbm as lgb
 
+from src.data_store.schema import Tables
 from src.utils.step import Step
 from src.context import Context
-from src.constants.constants import (
-    PREDICTION_MODEL_BLENDED,
-    PREDICTION_MODEL_ENSEMBLE,
-    PREDICTIONS_LATEST_TABLE,
-)
+from src.constants.constants import (PREDICTION_MODEL_BLENDED, PREDICTION_MODEL_ENSEMBLE)
 from src.data_aggregate.utils.assemble.cube import panel_from_cube, CUBE_META_COLS
 from src.modelling.long_short.utils import model as ml
 from src.modelling.long_short.utils import baselines
@@ -65,7 +61,7 @@ class StepModelling(Step):
     # ------------------------------------------------------------------ #
     def _setup(self):
         """Resolve the target column, horizons and per-member feature-column sets from the cube's
-        SCHEMA only (information_schema + a cheap DISTINCT) — no feature data is read here."""
+        SCHEMA only (`store.columns` + a cheap `store.distinct`) — no feature data is read here."""
         self.primary_horizon = self._cfg.targets.primary_horizon
         self.label_column = self._config.model.label_column
         self.target_type = self._config.model.get("target_type", "rank")
@@ -111,10 +107,9 @@ class StepModelling(Step):
 
     def _distinct_horizons(self, target_col: str) -> list:
         """Sorted horizons that HAVE a non-null label — a cheap DISTINCT (no feature scan)."""
-        q = text(f'SELECT DISTINCT target_horizon FROM cube WHERE "{target_col}" IS NOT NULL '
-                 "ORDER BY target_horizon")
-        with self._context.store.engine.connect() as c:
-            return pd.read_sql(q, c)["target_horizon"].tolist()
+        store = self._context.store
+        return store.distinct(Tables.cube, "target_horizon",
+                              where={target_col: store.NOT_NULL}, order="asc")
 
     @staticmethod
     def _downcast_f32(df: pd.DataFrame) -> pd.DataFrame:
@@ -128,12 +123,12 @@ class StepModelling(Step):
         """Read ONLY this horizon's labelled rows (SQL WHERE target_horizon = h), projected to the
         model's columns and float32, then shape into a modelling panel + apply the train window.
         None if the horizon has no rows after filtering."""
-        projected = ", ".join(f'"{c}"' for c in self._load_cols)
-        q = text(f'SELECT {projected} FROM cube WHERE "{self._target_col}" IS NOT NULL '
-                 "AND target_horizon = :h")
-        with self._context.store.engine.connect() as c:
-            raw = pd.read_sql(q, c, params={"h": int(horizon)}, parse_dates=["date"])
-        if raw.empty:
+        store = self._context.store
+        raw = store.load(Tables.cube, columns=self._load_cols,
+                         where={self._target_col: store.NOT_NULL,
+                                "target_horizon": int(horizon)},
+                         optional=True)
+        if raw is None:
             return None
         raw = self._downcast_f32(raw)
         panel = panel_from_cube(raw, horizon=horizon, label_name=self.label_column,
@@ -152,10 +147,7 @@ class StepModelling(Step):
     # ------------------------------------------------------------------ #
     def _cube_columns(self) -> set[str]:
         """Column names actually present in the `cube` table (no data scan)."""
-        q = text("SELECT column_name FROM information_schema.columns "
-                 "WHERE table_name = 'cube'")
-        with self._context.store.engine.connect() as c:
-            return set(pd.read_sql(q, c)["column_name"])
+        return set(self._context.store.columns(Tables.cube))
 
     def _target_column(self, cube_cols: set[str]) -> str:
         """Stored target column for the configured `target_type` (falls back to a
@@ -286,10 +278,9 @@ class StepModelling(Step):
     def _load_cube_where_labelled(self, load_cols: list[str], target_col: str
                                   ) -> pd.DataFrame:
         """SELECT the projected columns for rows whose target is non-null."""
-        projected = ", ".join(f'"{c}"' for c in load_cols)
-        q = text(f'SELECT {projected} FROM cube WHERE "{target_col}" IS NOT NULL')
-        with self._context.store.engine.connect() as c:
-            return pd.read_sql(q, c, parse_dates=["date"])
+        store = self._context.store
+        return store.load(Tables.cube, columns=load_cols,
+                          where={target_col: store.NOT_NULL})
 
     def _select_categoricals(self, available: list[str]) -> list[str]:
         """Categorical columns (`inputs.categoricals` in modellling.yml, e.g. sector /
@@ -566,7 +557,11 @@ class StepModelling(Step):
         full_train_end = datetime.today() - timedelta(days=30 + 30)
         train_end = (full_train_end.strftime("%Y-%m-%d") if getattr(self, "_full_history", False)
                           else self._config.train.end_date)
-        self._context.log.info(f"Train from {self._config.train.start_date} to {train_end} ")
+        # `self._log`, not `self._context.log`: the Step's own logger, as everywhere else in
+        # src. This was the only `_context.log` call in the codebase, and it took the whole
+        # per-horizon diagnostics block down with it -- `_horizon_diagnostics` swallows
+        # exceptions as "best-effort", so no SHAP/PDP/kpis were written and nothing said why.
+        self._log.info("Train from %s to %s", self._config.train.start_date, train_end)
 
         return {
             "cv_mean_ic": ens.get("mean_ic"),
@@ -806,10 +801,9 @@ class StepModelling(Step):
         return meta, models
 
     def _latest_cube_dates(self, n_dates: int) -> list[pd.Timestamp]:
-        with self._context.store.engine.connect() as c:
-            rows = c.execute(text("SELECT DISTINCT date FROM cube ORDER BY date DESC LIMIT :n"),
-                             {"n": int(n_dates)}).fetchall()
-        return sorted(pd.Timestamp(r[0]).normalize() for r in rows)
+        dates = self._context.store.distinct(Tables.cube, "date", order="desc",
+                                             limit=int(n_dates))
+        return sorted(pd.Timestamp(d).normalize() for d in dates)
 
     @staticmethod
     def predicts_for(as_of, horizon) -> pd.Timestamp:
@@ -851,12 +845,10 @@ class StepModelling(Step):
         cube_cols = self._cube_columns()
         want = [c for c in dict.fromkeys(feat_cols + cat_cols) if c in cube_cols]
         load_cols = list(dict.fromkeys(["date", "ticker", "target_horizon"] + want))
-        hlist = ", ".join(str(int(h)) for h in models)
-        q = text(f'SELECT {", ".join(chr(34)+c+chr(34) for c in load_cols)} FROM cube '
-                 f"WHERE target_horizon IN ({hlist}) AND date >= :d")
-        with self._context.store.engine.connect() as c:
-            cube = pd.read_sql(q, c, params={"d": str(start.date())}, parse_dates=["date"])
-        if cube.empty:
+        cube = self._context.store.load(
+            Tables.cube, columns=load_cols,
+            where={"target_horizon": [int(h) for h in models]}, since=start, optional=True)
+        if cube is None:
             raise RuntimeError(f"No cube rows on/after {start.date()} for horizons {list(models)}.")
 
         long_rows: list[pd.DataFrame] = []
@@ -906,12 +898,12 @@ class StepModelling(Step):
         out = pd.concat(long_rows, ignore_index=True)
         out = out.sort_values(["date", "model", "horizon", "rank"],
                              ascending=[True, True, True, False]).reset_index(drop=True)
-        self._context.store.replace(PREDICTIONS_LATEST_TABLE, out)
+        self._context.store.replace(Tables.predictions_latest, out)
 
         last = out[(out["date"] == out["date"].max())
                    & (out["model"] == PREDICTION_MODEL_BLENDED)]
         self._log.info("predict_latest: %d row(s) -> '%s' | as-of %s | horizons %s x models %s | "
-                       "blend weights %s", len(out), PREDICTIONS_LATEST_TABLE,
+                       "blend weights %s", len(out), Tables.predictions_latest,
                        [str(d.date()) for d in dates], sorted(out["horizon"].unique()),
                        sorted(out["model"].unique()), {h: round(w[h], 3) for h in hs})
         self._log.info("blended (h~%d) on %s: %d names, predicts_for %s, pred range [%.3f, %.3f]",

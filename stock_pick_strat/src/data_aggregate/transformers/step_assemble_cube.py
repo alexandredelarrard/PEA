@@ -18,9 +18,8 @@ serialized in one shot. Instead:
 Peak memory drops by the horizon factor and there is no giant final serialization spike.
 
 TWO THINGS THIS STEP MUST KEEP DOING:
-  * store-facade only. It uses `exists` / `load` / `replace` / `bulk_seed` and never touches
-    `store.engine`, so it stays testable against a fake store -- `PartStore` is for the
-    part-BUILDING steps. `tests/data_aggregate/test_assemble_cube.py` enforces this.
+  * store-facade only: `exists` / `load` / `replace` / `bulk_seed`, never raw SQL. Now enforced
+    repo-wide by `tests/data_store/test_store_boundary.py`, not just for this step.
   * `replace` for the first chunk (clears the table + creates the schema), then `bulk_seed`
     (chunked COPY-append). NOT the slow unchunked upsert -- that was the horizon-2 OOM.
 
@@ -36,12 +35,12 @@ import json
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
-from src.constants.constants import CUBE_PART_BETAS, CUBE_PART_TARGETS, CUBE_TABLE
+from src.data_store.schema import Tables
 from src.context import Context
 from src.data_aggregate.utils.assemble.composites import build_composites
 from src.data_aggregate.utils.common.gics import apply_categorical_codes
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.part_io import downcast_float32, normalize_date_col
+from src.data_aggregate.utils.common.frames import downcast_float32, normalize_date_col
 from src.data_aggregate.utils.common.parts import FEATURE_PARTS
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.utils.step import Step
@@ -125,11 +124,11 @@ class StepAssembleCube(Step):
 
     # ---- the horizon-independent base ---- #
     def _build_base(self, panel: pd.DataFrame, peers: dict) -> pd.DataFrame:
-        betas = self._read_part(CUBE_PART_BETAS)
+        betas = self._read_part(Tables.cube_part_betas)
         base = panel if betas is None else panel.merge(betas, on=["date", "ticker"], how="left")
         if betas is None:
             self._log.warning("%s missing -> the cube will carry no beta columns.",
-                              CUBE_PART_BETAS)
+                              Tables.cube_part_betas)
         del betas
         # peers JSON PRECOMPUTED PER TICKER (a few hundred unique strings shared across
         # every row). The old per-row json.dumps built millions of DISTINCT strings -- a
@@ -143,9 +142,9 @@ class StepAssembleCube(Step):
 
     # ---- stream the write ---- #
     def _load_targets(self) -> pd.DataFrame:
-        targets = self._read_part(CUBE_PART_TARGETS)
+        targets = self._read_part(Tables.cube_part_targets)
         if targets is None:
-            raise RuntimeError(f"{CUBE_PART_TARGETS} missing/empty -> run `build-target` first.")
+            raise RuntimeError(f"{Tables.cube_part_targets} missing/empty -> run `build-target` first.")
         return targets
 
     def _stream_cube(self, base: pd.DataFrame) -> None:
@@ -160,10 +159,10 @@ class StepAssembleCube(Step):
                 if chunk.empty:
                     continue
                 if first:
-                    self._context.store.replace(CUBE_TABLE, chunk)   # clears + creates the schema
+                    self._context.store.replace(Tables.cube, chunk)   # clears + creates the schema
                     first = False
                 else:
-                    self._context.store.bulk_seed(CUBE_TABLE, chunk)  # chunked COPY-append
+                    self._context.store.bulk_seed(Tables.cube, chunk)  # chunked COPY-append
                 total += len(chunk)
                 chunk = None
                 gc.collect()          # hand the arrays + COPY buffer back before the next
@@ -171,4 +170,4 @@ class StepAssembleCube(Step):
             tg = None
             gc.collect()
         self._log.info("Saved cube to DB table '%s' (%s rows across %d horizons)",
-                       CUBE_TABLE, total, len(horizons))
+                       Tables.cube, total, len(horizons))

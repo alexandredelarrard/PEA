@@ -13,6 +13,7 @@ import types
 
 import pandas as pd
 
+from conftest import FakeStore     # the ONE shared store double
 from src.constants.constants import DATE_FORMAT_COMPACT
 from src.data_extract.utils.behavioral import fetch_wiki_pageviews as wp
 
@@ -26,10 +27,7 @@ def test_wiki_incremental_reads_last_date_per_ticker(tmp_path, monkeypatch):
     existing = pd.DataFrame({"date": [aaa_last, bbb_last], "ticker": ["AAA", "BBB"],
                              "pageviews": [100.0, 200.0]})
 
-    saved: dict[str, pd.DataFrame] = {}
-    store = types.SimpleNamespace(
-        load=lambda t, columns=None: names if t == "sp500_tickers" else existing,
-        save=lambda t, df: saved.__setitem__(t, df))
+    store = FakeStore({"sp500_tickers": names, "wiki_pageviews": existing})
     ctx = types.SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path})
 
     calls: list[tuple[str, str, str]] = []

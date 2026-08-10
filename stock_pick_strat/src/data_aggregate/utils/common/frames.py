@@ -61,3 +61,22 @@ def safe_div(num: pd.Series, den: pd.Series | None, den_positive: bool = False) 
         return pd.Series(np.nan, index=num.index)
     den = den.where(den > 0) if den_positive else den.replace(0, np.nan)
     return num / den
+
+
+def normalize_date_col(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Normalize a frame's `date` column to midnight so merges across parts align."""
+    if df is not None and not df.empty and "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    return df
+
+
+def downcast_float32(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """float64 -> float32 for feature columns (z-scores / ranks / returns need no float64),
+    halving the wide panel and every horizon slice built from it. Keys, ints and object
+    columns untouched. Raw price inputs stay float64 -- see price_frames' docstring."""
+    if df is None or df.empty:
+        return df
+    f64 = df.select_dtypes(include=["float64"]).columns
+    if len(f64):
+        df[f64] = df[f64].astype("float32")
+    return df

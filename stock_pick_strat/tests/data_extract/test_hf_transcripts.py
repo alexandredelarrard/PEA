@@ -111,31 +111,13 @@ def test_row_sections_on_real_dataset_rows():
 # --------------------------------------------------------------------------- #
 # Backbone-present short-circuit (the "0 new calls" stall fix)                  #
 # --------------------------------------------------------------------------- #
-class _Res:
-    def __init__(self, value):
-        self._value = value
-
-    def first(self):
-        return self._value                               # (min_quarter, max_quarter) or (None, None)
-
-
-class _FakeConn:
-    def __init__(self, minmax):
-        self._minmax = minmax
-
-    def execute(self, clause, params=None):
-        return _Res(self._minmax)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
 def _ctx(minmax):
-    engine = types.SimpleNamespace(connect=lambda: _FakeConn(minmax))
-    return types.SimpleNamespace(store=types.SimpleNamespace(engine=engine))
+    """A store whose `bounds` returns the given (min_quarter, max_quarter).
+
+    Was a fake ENGINE returning a fake result row -- only meaningful while the check issued
+    its own `SELECT MIN(quarter), MAX(quarter)`."""
+    store = types.SimpleNamespace(bounds=lambda table, column=None: minmax)
+    return types.SimpleNamespace(store=store)
 
 
 def test_hf_backbone_presence_detection():

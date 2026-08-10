@@ -22,7 +22,11 @@ Pipeline executes sequential `Step` classes (base: `src/utils/step.py`) wired by
 ### Core Infrastructure
 - `src/context.py` — `Context`: configs, logging, `.store` (DB access), `.paths` (artifact paths).
 - `src/constants/constants.py` — Global literals (dates, SEC URLs, sector scope thresholds).
-- `src/data_store/` — `store.py` (`DataStore`: `load`, `save`, `replace`, `ensure_columns`, `existing_dates`), `schema_registry.py` (PKs & date cols), `schema_sql.py` (`sql/schema.sql`), `io.py`.
+- `src/data_store/` — the ONLY code in the repo that issues SQL (enforced by `tests/data_store/test_store_boundary.py`). Three files:
+  - `schema.py` — **THE table registry.** One `Table` per DB table, declared once, carrying `name`, `pk`, `date_col`, `ticker_col`, `date_type_cols`, `vector_col`, `managed`, freshness cadence and read projection. Reference tables as `Tables.<name>`; **never** as a string literal, and never re-declare a table name elsewhere. Derived views (`ALL`, `BY_NAME`, `MANAGED`, `PARTS`, `freshness_tables()`, `projection()`) are comprehensions, not hand-lists.
+  - `store.py` — `DataStore`, the single access layer. Reads: `load` / `iter_load` (+ `exists`, `columns`, `row_count`, `bounds`, `max_date`, `distinct`). Writes: `save` (upsert on the registry PK), `replace`, `append_tail`, `bulk_seed`, `delete`, `drop`, `ensure_columns`. Filters compose server-side: `where=` (equality / `IN` / `IS NULL` / `store.NOT_NULL`), `since=` / `until=`, `columns=` or `project=True`. All bound parameters — never string interpolation.
+  - `ddl.py` — generates `sql/schema.sql` from the registry + live reflection (`python -m scripts.generate_schema_sql`); regeneration carries over any table it cannot reflect, so a table absent from the live DB does not lose its DDL.
+- **`load` raises by default.** A missing or empty table is nearly always a real fault, so `load` raises `TableMissingError` / `TableEmptyError` (`errors.py`) rather than returning a fabricated empty frame. Pass `optional=True` **only** where finding nothing is legitimate (a fetcher's resume check on a cold DB, an optional feature source) — and then branch on `is None`, not `.empty`.
 - `src/sql/` - `database.md` and `schemas.sql` to understand data sources, fields, refreshing pace and structure
 - `.env` has database and api keys saved + SEC profile
 
@@ -72,9 +76,9 @@ command / DAG task; `run()` drives the same seven objects in-process. One code p
   `pit.py` (point-in-time accessors + the memoizing `PitFrames`), `panel.py` (peer-relative panel),
   `frames.py` (`ratio`/`safe_div`/`sanitize`), `xs.py` (ONE cross-sectional z + rank — the 3.0/4.0/8.0
   clips are three deliberate policies, `clip` is a required argument), `prices.py` (momentum,
-  trailing vol, forward windows, `price_column_returns`), `part_io.py` + `incremental.py`
-  (part lifecycle + the full-vs-incremental decision), `panel_merge.py`, `capital.py`,
-  `sector_gates.py`, `gics.py`, `peers_io.py`, `sources.py`, `data_utils.py`.
+  trailing vol, forward windows, `price_column_returns`), `incremental.py` (part lifecycle +
+  the full-vs-incremental decision, straight on `context.store`), `panel_merge.py`,
+  `capital.py`, `sector_gates.py`, `gics.py`, `peers_io.py`, `sources.py`, `data_utils.py`.
 - **Collision Protection:** `PanelMerger.add` raises `FeatureCollisionError` on a duplicate feature
   name, naming the panel that already owns it. Applied to BOTH the per-step merge and the
   cross-part merge in assemble.
@@ -112,7 +116,9 @@ Self-contained steps implementing `base.Strategy` interface (`run(inputs: Portfo
 
 ## Data & DB Conventions
 
-- **Database I/O:** Read/write tabular data exclusively via `context.store` (`load`/`save`/`replace`/`existing_dates`). Schema auto-expands via `ensure_columns`. Keep non-tabular artifacts (models, plots, raw JSONs) in `context.paths`.
+- **Database I/O:** Read/write tabular data exclusively via `context.store`. Never import `sqlalchemy`, call `pd.read_sql`/`to_sql`, or touch `store.engine` outside `src/data_store/` — if the facade can't express a query, ADD the capability to `DataStore` rather than bypassing it. Schema auto-expands via `ensure_columns`. Keep non-tabular artifacts (models, plots, raw JSONs) in `context.paths`.
+- **Never read a full large table.** Always project (`columns=` / `project=True`) and scope (`where=` / `since=` / `until=`); use `iter_load` for anything cube-sized. `cube` is ~26 GB and `sec13f_hr` ~21.7M rows — an unprojected read of either is an OOM, not a slow query.
+- **Table names:** one source of truth, `schema.py`. Register a new table there and reference it as `Tables.<name>`; do not add a `*_TABLE` constant.
 - **Point-In-Time & Incremental:** Save work per entity to prevent data loss. Lag features by filing date to prevent forward-looking bias.
 - **SEC & XBRL Handling:** Coalesce alternative XBRL tags across candidate lists per period instead of picking the first present. Convert boolean flags to float indicators (`1.0`/`0.0`).
 

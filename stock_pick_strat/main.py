@@ -1,5 +1,5 @@
 from src.context import get_config_context
-
+ 
 from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_aggregate.step_build_cube import StepBuildCube
 from src.modelling.long_short.step_train import StepModelling
@@ -13,7 +13,7 @@ if __name__ == "__main__":
     # self.run()
 
     self = StepBuildCube(context=context, config=config)
-    # self.run()
+    self.run(full=True)
 
     # self = SuperInvestorsStrategy(context=context, config=config).run()
 

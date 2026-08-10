@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import STRATEGY_TABLE
+from src.data_store.schema import Tables
 from src.context import Context
 from src.portfolio.step_portfolio import StepPortfolio
 from src.strategies import STRATEGY_REGISTRY
@@ -123,7 +123,7 @@ class StepStrategyMoves(Step):
                  if (led := self._sleeve_ledger(str(s))) is not None and not led.empty]
         if not parts:
             raise RuntimeError("No sleeve produced any trading move -> nothing to write to "
-                               f"'{STRATEGY_TABLE}'. Check the portfolio window / sleeve data.")
+                               f"'{Tables.strategy}'. Check the portfolio window / sleeve data.")
         led = pd.concat(parts, ignore_index=True)
         return led.sort_values(["trading_day", "sleeve", "ticker"]).reset_index(drop=True)
 
@@ -134,8 +134,8 @@ class StepStrategyMoves(Step):
         if not self._context.save:
             self._log.info("save=False -> ledger not persisted (%d rows computed)", len(ledger))
             return
-        saved = self._context.store.save(STRATEGY_TABLE, ledger[LEDGER_COLUMNS])
-        self._log.info("Upserted %d row(s) to '%s'", saved, STRATEGY_TABLE)
+        saved = self._context.store.save(Tables.strategy, ledger[LEDGER_COLUMNS])
+        self._log.info("Upserted %d row(s) to '%s'", saved, Tables.strategy)
 
     def _report(self, ledger: pd.DataFrame) -> None:
         closed = ledger[ledger["pnl"].notna()]

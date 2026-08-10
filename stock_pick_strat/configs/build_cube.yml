@@ -2,28 +2,45 @@ build_cube:
   market_ticker: SPY
 
   betas:                       # rolling multi-factor loadings epsilon is residualized on
-    window: 63                 # trailing estimation window (trading days)
-    min_obs: 40                # observations needed before a beta is emitted
-    ridge_alpha: 0.08          # shrinkage RATIO: lambda = ridge_alpha * N, so an orthogonal
-                               # factor is shrunk by 1/(1+alpha) at EVERY window length
-                               # (0.08 == the old fixed lambda=5.0 at the 63d steady state)
+    window: 126                # trailing estimation window (trading days). Was 63: at that
+                               # length the cross-sectional slope of the REALIZED in-window
+                               # beta on the ex-ante one is only 0.43, i.e. 57% of the beta's
+                               # dispersion is noise and the hedge over-shoots by that much.
+    min_obs: 80                # observations needed before a beta is emitted (scaled with window)
+    ridge_alpha: 1.5           # shrinkage RATIO: lambda = ridge_alpha * N, so an orthogonal
+                               # factor is shrunk by 1/(1+alpha) at EVERY window length.
+                               # Was 0.08 = a 7% shrink, far too little for a noisy loading.
+    ridge_alpha_market: 0.48   # market's OWN ratio: it shrinks toward 1.0 rather than 0.0 and
+                               # forecasts its window far better than the macro loadings do,
+                               # so it needs much less. TUNE BOTH against the realized-on-
+                               # ex-ante slope; the target is ~1.0.
     market_prior: 1.0          # beta_market shrinks toward 1.0 (its natural centre), every
                                # other beta toward 0.0. Shrinking market toward 0 leaves the
-                               # missing part inside epsilon as unhedged market exposure.
     step: 1                    # re-fit every N days. 1 = daily => no 5-day staircase
-    smooth_halflife: 0         # EWMA over the fitted betas; 0 = off. Only adds lag at step=1,
-                               # and lag measurably costs neutrality
     ffill_limit: 21            # carry a beta at most N days over a gap with no estimable window
+    gics_sector_factor: true   # regress each stock on its OWN GICS sector basket (leave-one-out,
+                               # market-neutralized) -> a per-name `beta_sector`, so epsilon strips
 
   targets:
     horizons: [30, 60, 90]
     primary_horizon: 60
-    labels: [rank, zscore]   # target versions STORED in the cube (rank | zscore | epsilon);
+    labels: [rank, zscore, epsilon]   # target versions STORED in the cube (rank | zscore | epsilon);
                              # the model picks one via model.target_type in modellling.yml
     min_names: 20
-    neutralize_momentum: true  # orthogonalize target vs 12-1 momentum characteristic
-                               # sector/industry are always neutralized to ACTUAL GICS
-                               # sector + industry_group (per-day within-group demean)
+    neutralize_momentum: true  # add the 12-1 momentum characteristic to the design below
+    # Every label is finally PROJECTED cross-sectionally orthogonal to these loadings +
+    # momentum + GICS industry_group indicators, jointly and AFTER the rank/zscore transform.
+    # Subtracting beta*factor is not enough on its own: a signal built from nothing but a
+    # name's market beta earned rank-IC +0.073 (t +10.3) against the un-projected label.
+    # vol_63 / log_mcap are deliberately ABSENT -- adding them also stripped a genuine
+    # fcf-yield signal without reducing the exposure tilt any further.
+    neutralize_betas: [beta_market, beta_market_simple, beta_size, beta_sector,
+                       beta_d_vix, beta_oil, beta_d_yield_10y, beta_momentum]
+    vol_standardize: false     # divide epsilon by its own trailing risk (-> an information
+                               # ratio) before the transform. OFF: measured to NOT reduce the
+                               # exposure tilt once the projection is in place; it only
+                               # homogenises magnitude, which matters for an RMSE loss on the
+                               # zscore/epsilon labels but not for the live rank one.
 
   features:
     standardize_method: rank # rank | zscore

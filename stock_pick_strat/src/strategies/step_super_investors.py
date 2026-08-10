@@ -15,6 +15,7 @@ from __future__ import annotations
 import pandas as pd
 from omegaconf import DictConfig
 
+from src.data_store.schema import Tables
 from src.context import Context
 from src.strategies.base import Strategy, PortfolioInputs, StrategyResult
 from src.strategies.utils.superinvestors import (
@@ -26,7 +27,6 @@ from src.utils.risk_parity import series_metrics
 from src.strategies.analysis.super_investors_analysis import (
     analyze_super_investors, analyze_super_investors_by_cik)
 
-from src.constants.constants import SEC13F_TABLE
 
 # A name the cohort has exited must be gone, not merely small. The only legitimate residual is
 # a position that briefly cannot be sold (no price that day), so the bar is float noise, not a
@@ -130,7 +130,7 @@ class SuperInvestorsStrategy(Strategy):
         if not roster_ciks:
             raise RuntimeError("super_investors: superinvestors roster resolved to no manager "
                                "-- check data/superinvestors/superinvestors.json.")
-        df_funds = store.load(SEC13F_TABLE, columns=_FUNDS_COLS,
+        df_funds = store.load(Tables.sec13f_hr, columns=_FUNDS_COLS,
                               where={"cik": set(roster_ciks.keys())})
         prices = store.load("prices", columns=["date", "ticker", "close"])
 

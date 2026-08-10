@@ -1,6 +1,6 @@
 """
 Form-dispatch registry tests: every FORM_REGISTRY entry must point at a real
-schema_registry table, and its declared sec_forms must not drift from the
+schema.py table, and its declared sec_forms must not drift from the
 centralized constants.py form-type lists.
 """
 from __future__ import annotations
@@ -9,12 +9,12 @@ from src.constants.constants import (
     DEF14A_FORMS, FUNDAMENTALS_FORMS, SEC_8K_FORMS, SEC_13D_FORMS,
 )
 from src.data_extract.utils.common.form_registry import FORM_REGISTRY
-from src.data_store.schema_registry import BY_NAME
+from src.data_store.schema import BY_NAME
 
 
 def test_registry_tables_exist_in_schema_registry():
     for name, spec in FORM_REGISTRY.items():
-        assert spec.table in BY_NAME, f"{name}: table '{spec.table}' not in schema_registry.BY_NAME"
+        assert spec.table in BY_NAME, f"{name}: table '{spec.table}' not in schema.BY_NAME"
 
 
 def test_registry_forms_match_constants():
@@ -52,7 +52,7 @@ def test_thirteen_f_keeps_its_bulk_quarterly_grain():
     assert spec.discovery == "bulk_quarterly"
 
     print("\n=== SANITY CHECK: form-dispatch registry ===")
-    print(f"  {len(FORM_REGISTRY)} forms registered, every table exists in schema_registry,")
+    print(f"  {len(FORM_REGISTRY)} forms registered, every table exists in schema.py,")
     print("  every handler is callable, no drift from constants.py form lists;")
     print("  def_14 correctly points at the EXISTING def14a_llm table (kept per the task's")
     print("  own instruction); sec_8k/sec13f_hr correctly point at the renamed tables;")

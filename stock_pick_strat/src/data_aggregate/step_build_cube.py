@@ -58,13 +58,13 @@ class StepBuildCube(Step):
         self._assemble = StepAssembleCube(context=context, config=config)
 
     def run(self, full: bool = False) -> None:
-        self._prices.run(full=full)
+        # self._prices.run(full=full)
         self._target.run(full=full)
-        self._fundamentals.run(full=full)
-        self._momentum.run(full=full)
-        self._text.run(full=full)
-        self._extras.run(full=full)
-        self._assemble.run()
+        # self._fundamentals.run(full=full)
+        # self._momentum.run(full=full)
+        # self._text.run(full=full)
+        # self._extras.run(full=full)
+        # self._assemble.run()
 
     def cube_parts_status(self) -> dict:
         """Latest date + row count of every cube part (+ the downstream cube / predictions

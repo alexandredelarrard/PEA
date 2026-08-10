@@ -57,7 +57,8 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from edgar import Company
 
-from src.constants.constants import SEC_13D_FORMS, SEC_13D_TABLE, SEC_13D_TRANSACTIONS_TABLE
+from src.data_store.schema import Tables
+from src.constants.constants import SEC_13D_FORMS
 from src.context import Context
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.run_manifest import manifest_window, record_run
@@ -544,10 +545,10 @@ def fetch_13d_edgar(context: Context, tickers: list[str]) -> pd.DataFrame:
 
     rescan_days = int(getattr(context.config.data_extract, "manifest_full_rescan_days", 30))
     since, is_full_rescan = manifest_window(
-        context, SEC_13D_TABLE, len(cik_map), fallback_since=full_since,
+        context, Tables.sec_13d, len(cik_map), fallback_since=full_since,
         full_rescan_days=rescan_days)
 
-    seen = existing_filings(context, SEC_13D_TABLE)
+    seen = existing_filings(context, Tables.sec_13d)
 
     def _worker(ticker: str, cik: str) -> tuple[int, int, bool]:
         try:
@@ -556,9 +557,9 @@ def fetch_13d_edgar(context: Context, tickers: list[str]) -> pd.DataFrame:
             context.log.warning("fetch_13d_edgar: %s failed (%s)", ticker, e)
             return 0, 0, False
         if not out.empty:
-            context.store.save(SEC_13D_TABLE, out)
+            context.store.save(Tables.sec_13d, out)
         if not txns.empty:
-            context.store.save(SEC_13D_TRANSACTIONS_TABLE, txns)
+            context.store.save(Tables.sec_13d_transactions, txns)
         return len(out), len(txns), True
 
     results = run_per_ticker(cik_map, _worker, desc="SC 13D (edgartools)")
@@ -568,6 +569,6 @@ def fetch_13d_edgar(context: Context, tickers: list[str]) -> pd.DataFrame:
 
     context.log.info("fetch_13d_edgar: +%d rows (+%d transactions) across %d/%d ticker(s) "
                      "(%d failed) -> '%s'/'%s'", total_rows, txn_total,
-                     len(results), len(cik_map), failed, SEC_13D_TABLE, SEC_13D_TRANSACTIONS_TABLE)
-    record_run(context, SEC_13D_TABLE, len(cik_map), total_rows, is_full_rescan=is_full_rescan)
-    return context.store.load(SEC_13D_TABLE)
+                     len(results), len(cik_map), failed, Tables.sec_13d, Tables.sec_13d_transactions)
+    record_run(context, Tables.sec_13d, len(cik_map), total_rows, is_full_rescan=is_full_rescan)
+    return context.store.load(Tables.sec_13d)

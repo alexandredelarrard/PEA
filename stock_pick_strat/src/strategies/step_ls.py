@@ -58,8 +58,8 @@ class LongShortStrategy(Strategy):
                               book_weights=book, book_prices=getattr(self, "close", None))
 
     def _sector_map(self) -> dict:
-        tk = self._context.store.load("sp500_tickers")
-        if tk.empty:
+        tk = self._context.store.load("sp500_tickers", optional=True)
+        if tk is None:
             return {}
         col = ("industry_group" if "industry_group" in tk.columns
                else "sector" if "sector" in tk.columns else None)

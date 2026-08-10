@@ -24,53 +24,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.constants.constants import CUBE_PART_MARKET, CUBE_PART_PRICES
+from src.data_store.schema import Tables
 from src.data_aggregate.utils.common.price_frames import (
-    frames_to_long, load_price_frames, load_trading_calendar,
+    ALL_FIELDS, frames_to_long, load_price_frames, load_trading_calendar,
     universe_columns,
 )
 
 MARKET = "SPY"
 OTHER = "CL=F"
 TICKERS = ["AAA", "BBB", "CCC", "DDD"]
-ALL_PRICE_FIELDS = ['open', 'close', 'date', 'ticker']
-
-
-class _FakeStore:
-    """Minimal store: the part helpers only need `exists` and `load` for the read path, and
-    this fake also stands in for the engine-backed `replace` by storing the frame."""
-
-    def __init__(self) -> None:
-        self.t: dict[str, pd.DataFrame] = {}
-
-    def exists(self, name): return name in self.t
-
-    def load(self, name, columns=None, limit=None, where=None):
-        df = self.t.get(name)
-        if df is None:
-            return pd.DataFrame(columns=columns or [])
-        return df[list(columns)].copy() if columns else df.copy()
-
-    def replace(self, name, df, chunksize=200_000):
-        self.t[name] = df.copy()
-        return len(df)
-
-
-class _FakeParts:
-    """Stands in for PartStore: `read`/`replace`/`exists` without a database."""
-
-    def __init__(self, store: _FakeStore) -> None:
-        self._store = store
-
-    def exists(self, part): return self._store.exists(part)
-
-    def read(self, part, columns=None, since=None):
-        df = self._store.load(part, columns=columns)
-        if since is not None and not df.empty:
-            df = df[pd.to_datetime(df["date"]) >= pd.Timestamp(since)]
-        return df.reset_index(drop=True)
-
-    def replace(self, part, df): return self._store.replace(part, df)
+# the VALUE fields only -- `date`/`ticker` are the join keys `load_price_frames` adds itself,
+# so listing them here made the projection ask for them twice
+ALL_PRICE_FIELDS = list(ALL_FIELDS)
 
 
 @pytest.fixture
@@ -88,7 +53,8 @@ def frames() -> dict:
     close.iloc[25, close.columns.get_loc(MARKET)] = np.nan          # interior calendar hole
     volume = pd.DataFrame(rng.lognormal(14, 0.4, close.shape), index=idx, columns=close.columns)
     return {"close": close,
-            "open_": close.shift(1).bfill() * 1.001,
+            # "open", not "open_": the canonical field name in price_frames.ALL_FIELDS
+            "open": close.shift(1).bfill() * 1.001,
             "high": close * 1.01,
             "low": close * 0.99,
             "volume": volume}
@@ -115,14 +81,13 @@ def _normalize(frames: dict) -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.Datet
     return uni, on_cal["close"][market_cols], returns[market_cols], idx
 
 
-def test_price_part_round_trip_is_bit_identical(frames):
+def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
     uni, mkt_close, mkt_ret, idx = _normalize(frames)
-    store, parts = _FakeStore(), None
-    parts = _FakeParts(store)
+    parts = sqlite_store
 
     prices_long, market_long = frames_to_long(uni, mkt_close, mkt_ret)
-    parts.replace(CUBE_PART_PRICES, prices_long)
-    parts.replace(CUBE_PART_MARKET, market_long)
+    parts.replace(Tables.cube_part_prices, prices_long)
+    parts.replace(Tables.cube_part_market, market_long)
 
     back = load_price_frames(parts, peers={}, market_ticker=MARKET,
                              fields=ALL_PRICE_FIELDS, with_market=True,
@@ -157,12 +122,12 @@ def test_price_part_round_trip_is_bit_identical(frames):
           "Validated.")
 
 
-def test_projected_read_leaves_other_fields_none(frames):
+def test_projected_read_leaves_other_fields_none(frames, sqlite_store):
     uni, mkt_close, mkt_ret, _ = _normalize(frames)
-    parts = _FakeParts(_FakeStore())
+    parts = sqlite_store
     prices_long, market_long = frames_to_long(uni, mkt_close, mkt_ret)
-    parts.replace(CUBE_PART_PRICES, prices_long)
-    parts.replace(CUBE_PART_MARKET, market_long)
+    parts.replace(Tables.cube_part_prices, prices_long)
+    parts.replace(Tables.cube_part_market, market_long)
 
     back = load_price_frames(parts, peers={}, market_ticker=MARKET, fields=("close",))
     assert back.close is not None

@@ -12,50 +12,37 @@ import types
 
 import pandas as pd
 
-from src.constants.constants import DATA_FRESHNESS_MAX_AGE_DAYS, DATA_FRESHNESS_SOURCES
+from src.constants.constants import DATA_FRESHNESS_MAX_AGE_DAYS
 from src.data_extract.utils.common import freshness as fr
+from src.data_store.schema import freshness_tables
 
 
-class _FakeConn:
-    """Answers the three query shapes check_data_freshness issues, from an in-memory map
-    {table: {col: latest_date}}. A table absent from the map = missing_table."""
+class _FakeStore:
+    """The three store calls `check_data_freshness` makes, over an in-memory map
+    {table: {col: latest_date}}. A table absent from the map = missing_table.
+
+    This used to fake an ENGINE and pull the table/column back out of the SQL text, which
+    only worked while the check issued `information_schema` queries by hand."""
 
     def __init__(self, data: dict[str, dict[str, pd.Timestamp | None]]):
         self._data = data
 
-    def execute(self, clause, params=None):
-        sql = str(clause)
-        if "information_schema.tables" in sql:
-            return _Res(1 if params["t"] in self._data else None)
-        if "information_schema.columns" in sql:
-            cols = self._data.get(params["t"], {})
-            return _Res(1 if params["c"] in cols else None)
-        # MAX("col") FROM "table"  -> pull table + col out of the SQL text
-        table = sql.split('FROM "')[1].split('"')[0]
-        col = sql.split('MAX("')[1].split('"')[0]
-        return _Res(self._data.get(table, {}).get(col))
+    @staticmethod
+    def _name(table) -> str:
+        return getattr(table, "name", table)
 
-    def __enter__(self):
-        return self
+    def exists(self, table) -> bool:
+        return self._name(table) in self._data
 
-    def __exit__(self, *a):
-        return False
+    def columns(self, table) -> list[str]:
+        return list(self._data.get(self._name(table), {}))
 
-
-class _Res:
-    def __init__(self, value):
-        self._value = value
-
-    def first(self):
-        return (self._value,) if self._value is not None else None
-
-    def scalar(self):
-        return self._value
+    def max_date(self, table, column=None):
+        return self._data.get(self._name(table), {}).get(column)
 
 
 def _ctx(data: dict) -> types.SimpleNamespace:
-    engine = types.SimpleNamespace(connect=lambda: _FakeConn(data))
-    return types.SimpleNamespace(store=types.SimpleNamespace(engine=engine))
+    return types.SimpleNamespace(store=_FakeStore(data))
 
 
 def test_freshness_flags_stale_daily_and_tolerates_lagged_quarterly():
@@ -106,10 +93,10 @@ def test_freshness_flags_stale_daily_and_tolerates_lagged_quarterly():
 def test_freshness_all_ok_when_current():
     today = pd.Timestamp("2026-07-24")
     data = {}
-    for label, (table, col, cadence) in DATA_FRESHNESS_SOURCES.items():
+    for spec in freshness_tables():
         # every source exactly at the edge of its allowed age -> all ok, overall ok
-        age = DATA_FRESHNESS_MAX_AGE_DAYS[cadence]
-        data[table] = {col: today - pd.Timedelta(days=age)}
+        age = DATA_FRESHNESS_MAX_AGE_DAYS[spec.freshness]
+        data[spec.name] = {spec.freshness_col: today - pd.Timedelta(days=age)}
     report = fr.check_data_freshness(_ctx(data), today=today, track_new_fundamentals=False)
     assert report["ok"] is True and report["stale"] == []
     assert all(v["status"] == "ok" for v in report["sources"].values())
@@ -120,7 +107,7 @@ def test_freshness_all_ok_when_current():
 
 def _fund_ctx(rows, tmp_path):
     df = pd.DataFrame(rows, columns=["ticker", "as_of"])
-    store = types.SimpleNamespace(load=lambda table, columns=None: df)
+    store = types.SimpleNamespace(load=lambda table, columns=None, **kw: df)
     return types.SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path})
 
 

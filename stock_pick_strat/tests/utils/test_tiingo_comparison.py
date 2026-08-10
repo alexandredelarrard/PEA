@@ -39,7 +39,7 @@ def _tiingo_entry(date: str, quarter: int, **data_codes) -> dict:
 
 def _fake_context(hist: pd.DataFrame) -> SimpleNamespace:
     return SimpleNamespace(store=SimpleNamespace(
-        load=lambda name, columns=None, where=None: hist))
+        load=lambda name, columns=None, where=None, **kw: hist))
 
 
 def test_fetch_tiingo_statements_filters_quarterly_and_caches(monkeypatch, tmp_path):

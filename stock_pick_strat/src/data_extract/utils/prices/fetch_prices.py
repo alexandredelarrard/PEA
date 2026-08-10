@@ -23,12 +23,10 @@ import requests
 import yfinance as yf
 from tqdm import tqdm
 
+from src.data_store.schema import Tables
 from src.data_extract.utils.common.gics import industry_group
 from src.data_extract.utils.common.run_manifest import record_run
-from src.constants.constants import (
-    DATE_FORMAT, NO_VOLUME_TICKERS, PRELISTING_VOLUME_RATIO,
-    PRELISTING_ZERO_VOLUME_SHARE, UNIVERSE_TABLE
-)
+from src.constants.constants import (DATE_FORMAT, NO_VOLUME_TICKERS, PRELISTING_VOLUME_RATIO, PRELISTING_ZERO_VOLUME_SHARE)
 from src.context import Context
 
 _WIKI_HEADERS = {
@@ -85,8 +83,8 @@ def get_sp500_tickers(context: Context) -> list[str]:
     keep = [c for c in ["ticker", "name", "sector", "industry_group", "sub_industry", "cik"]
             if c in df.columns]
     df = df.loc[~df['ticker'].isin(tick_redundant)].reset_index(drop=True)
-    context.store.save(UNIVERSE_TABLE, df[keep])
-    print(f"Saved {len(df)} tickers to DB table {UNIVERSE_TABLE}")
+    context.store.save(Tables.sp500_tickers, df[keep])
+    print(f"Saved {len(df)} tickers to DB table {Tables.sp500_tickers}")
     return df["ticker"].tolist()
 
 
@@ -165,8 +163,8 @@ def trim_prelisting_bars(prices: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_existing_prices(context: Context) -> pd.DataFrame | None:
-    df = context.store.load("prices")
-    if df.empty:
+    df = context.store.load("prices", optional=True)
+    if df is None:
         return None
     return _normalize_prices(df)
 

@@ -12,11 +12,20 @@ keeping each ORIGINAL query as a literal and asserting the new store call is fra
 Each case names the production site it came from. When a site is migrated, its case stops
 being a claim about the future and becomes a regression test for the code that shipped.
 
-SCOPE, DELIBERATELY. `sec13f_hr` is 21.7M rows and `cube` is 5.6M, so a case that replayed a
-production query in full would make this file unrunnable. Every case is therefore scoped (one
-ticker, a short date window, a LIMIT) -- which still exercises the part that actually breaks:
-predicate COMPOSITION, column PROJECTION, and date/type BINDING. It does not attempt to prove
-anything about volume.
+EVERY CASE MUST BE BOUNDED. THIS IS A HARD RULE, not a style preference. The tables are
+multi-GB: `sec13f_hr` 21.7M rows, `cube` 5.6M, `cube_part_prices` 1.85M, `prices` 1.8M. An
+equivalence check materializes the frame TWICE (old query + new call), so an unbounded case
+does not merely run slowly -- an earlier version of this file scoped two cases by `since=`
+alone and exhausted the machine's memory.
+
+So: every row-returning case carries a KEY predicate (one ticker) or a LIMIT, and the
+unbounded shapes are only ever exercised against the small tables (`cube_part_market`, 15k
+rows). That still tests the thing that actually breaks -- predicate COMPOSITION, column
+PROJECTION and date/type BINDING. It deliberately proves nothing about volume; `iter_load`'s
+memory behaviour is not something a frame-equality test can assert anyway.
+
+Aggregate-only shapes (MAX / MIN / COUNT / DISTINCT) return a handful of rows regardless of
+table size, so they need no extra scoping.
 
 CAPABILITY-GATED. The store methods land in phase 2 of the refactor, so a case whose method
 does not exist yet SKIPS with an explicit reason, and `test_every_case_is_live` reports how
@@ -28,6 +37,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import bindparam, text
 
+from src.data_store.errors import TableEmptyError, TableMissingError
 from src.data_store.store import DataStore
 from src.utils.db import get_engine
 
@@ -164,23 +174,43 @@ def test_distinct_ordered_and_limited_matches_step_train_recent_dates(store):
 # --------------------------------------------------------------------------- #
 def test_since_matches_part_io_read_since(store):
     """`PartStore.read(since=)` -- `SELECT <cols> FROM "<part>" WHERE date >= :since`
-    (part_io.py:86). The date is BOUND, not formatted into the string."""
+    (part_io.py:86). The date is BOUND, not formatted into the string.
+
+    Run against `cube_part_market` (15k rows), the only part small enough to compare
+    unscoped. `cube_part_prices` is 1.85M rows and is covered by the ticker-scoped case
+    below."""
+    _requires(store, "load")
+    cols = ["date", "ticker", "close"]
+    old = _sql(store, 'SELECT "date", "ticker", "close" FROM "cube_part_market" '
+                      "WHERE date >= :since", {"since": SINCE.strftime("%Y-%m-%d")})
+    new = store.load("cube_part_market", columns=cols, since=SINCE)
+    pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
+
+
+def test_since_composes_with_a_key_predicate_on_a_large_part(store):
+    """The same `date >= :since` on the 1.85M-row `cube_part_prices`, scoped to ONE ticker so
+    the comparison stays bounded -- this is the shape every cube sub-step actually issues."""
     _requires(store, "load")
     cols = ["date", "ticker", "close"]
     old = _sql(store, 'SELECT "date", "ticker", "close" FROM "cube_part_prices" '
-                      "WHERE date >= :since", {"since": SINCE.strftime("%Y-%m-%d")})
-    new = store.load("cube_part_prices", columns=cols, since=SINCE)
+                      "WHERE date >= :since AND ticker = :t",
+               {"since": SINCE.strftime("%Y-%m-%d"), "t": TICKER})
+    new = store.load("cube_part_prices", columns=cols, since=SINCE, where={"ticker": TICKER})
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
 
 def test_since_matches_ls_model_prices_window(store):
-    """`ls_model` -- `SELECT * FROM prices WHERE date >= :cut` (ls_model.py:101). The sibling
-    cube query at ls_model.py:88-90 INTERPOLATES its dates into the string; this pins that
-    replacing both with one bound predicate selects the same rows."""
+    """`ls_model` -- `SELECT * FROM prices WHERE date >= :cut` (ls_model.py:101), scoped to one
+    ticker (the table is 1.8M rows).
+
+    The sibling cube query at ls_model.py:88-90 INTERPOLATES its dates straight into the SQL
+    string; this pins that replacing both with one BOUND predicate selects the same rows."""
     _requires(store, "load")
-    old = _sql(store, 'SELECT "date", "ticker", "close" FROM prices WHERE date >= :cut',
-               {"cut": SINCE.strftime("%Y-%m-%d")})
-    new = store.load("prices", columns=["date", "ticker", "close"], since=SINCE)
+    old = _sql(store, 'SELECT "date", "ticker", "close" FROM prices '
+                      "WHERE date >= :cut AND ticker = :t",
+               {"cut": SINCE.strftime("%Y-%m-%d"), "t": TICKER})
+    new = store.load("prices", columns=["date", "ticker", "close"], since=SINCE,
+                     where={"ticker": TICKER})
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
 
@@ -205,10 +235,12 @@ def test_in_predicate_matches_fundamental_features_tag_pushdown(store):
     _requires(store, "load")
     tags = ["DefinedBenefitPlanBenefitObligation",
             "DefinedBenefitPlanFairValueOfPlanAssets"]
+    cols = ["adsh", "tag", "ddate", "qtrs", "value"]
+    # the two-tag filter IS the bound here: it selects a few thousand of the 40k rows
     old = _sql(store, 'SELECT "adsh", "tag", "ddate", "qtrs", "value" FROM "notes_num" '
                       "WHERE tag IN :tags", {"tags": tags}, expanding="tags")
-    new = store.load("notes_num", columns=["adsh", "tag", "ddate", "qtrs", "value"],
-                     where={"tag": tags})
+    new = store.load("notes_num", columns=cols, where={"tag": tags})
+    assert len(old) < 50_000, f"case is not bounded any more ({len(old)} rows)"
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
 
@@ -227,20 +259,24 @@ def test_iter_load_concatenates_to_the_same_frame(store):
 # --------------------------------------------------------------------------- #
 # the load contract itself                                                     #
 # --------------------------------------------------------------------------- #
-def test_missing_table_is_empty_not_an_exception(store):
-    """Decision 1: `load` returns an EMPTY frame for an absent table. ~40 call sites already
-    guard with `.empty`, and `load_existing`'s documented `None` branch (extract-side
-    incremental.py:36) is unreachable while `load` raises -- which is why a cold DB crashes
-    four fetchers instead of backfilling."""
-    assert store.load("no_such_table_xyz").empty
-
-
-def test_require_raises_on_a_missing_table(store):
-    """...and `require=True` is how a genuinely mandatory read opts back into failing loud."""
-    _requires(store, "load")
-    from src.data_store.errors import TableMissingError
+def test_missing_table_raises_a_typed_error(store):
+    """`load` fails loud on a missing table, but with a TYPED error -- so a caller can catch
+    "not created yet" without also swallowing a mistyped column or a dead connection, which
+    is what the eight bare `except Exception` blocks did."""
     with pytest.raises(TableMissingError):
-        store.load("no_such_table_xyz", require=True)
+        store.load("no_such_table_xyz")
+
+
+def test_empty_result_raises_rather_than_returning_a_frame(store):
+    """An empty read is a fault, not a value: no fabricated frame."""
+    with pytest.raises(TableEmptyError):
+        store.load("cube_part_market", where={"ticker": "__no_such_ticker__"})
+
+
+def test_optional_returns_none_for_the_resume_reads(store):
+    """The one documented exception: a fetcher asking "what do we already have?" against a
+    cold database. None, not an empty frame -- that is what those callers branch on."""
+    assert store.load("no_such_table_xyz", optional=True) is None
 
 
 # --------------------------------------------------------------------------- #

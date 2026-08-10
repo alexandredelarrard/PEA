@@ -63,7 +63,7 @@ class _Store:
     def __init__(self, df):
         self._df = df
 
-    def load(self, name, columns=None, limit=None):
+    def load(self, name, columns=None, limit=None, **kw):
         return self._df.copy()
 
 

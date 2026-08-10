@@ -20,9 +20,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig
 
+from src.data_store.schema import Tables
 from src.context import Context
 from src.utils.step import Step
-from src.constants.constants import MACRO_ASSET_PRICES_TABLE
 from src.strategies import STRATEGY_REGISTRY, PortfolioInputs
 from src.strategies.utils.metrics import compute_metrics
 from src.utils.risk_parity import base_weights, series_metrics, daily_frame
@@ -73,8 +73,8 @@ class StepPortfolio(Step):
 
     def _benchmark(self, index: pd.DatetimeIndex) -> pd.Series:
         """S&P proxy daily returns (equity_tr from macro_asset_prices) aligned to `index`."""
-        df = self._context.store.load(MACRO_ASSET_PRICES_TABLE)
-        if df is None or df.empty or "equity_tr" not in df.columns:
+        df = self._context.store.load(Tables.macro_asset_prices, optional=True)
+        if df is None or "equity_tr" not in df.columns:
             return pd.Series(0.0, index=index)
         d = df.copy(); d["date"] = pd.to_datetime(d["date"])
         eq = d.sort_values("date").set_index("date")["equity_tr"].astype(float)

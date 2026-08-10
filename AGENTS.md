@@ -24,12 +24,15 @@ stock_pick_strat/
 ├── src/
 │   ├── constants/constants.py  # Global literals (date formats, URLs, thresholds) — SINGLE source of truth
 │   ├── context.py              # Context initialization (configs, logger, DB .store, artifact .paths)
-│   ├── data_store/             # DataStore (store.py), schema_registry.py, schema_sql.py, io.py
+│   ├── data_store/             # THE data layer, and the only SQL in the repo:
+│   │                           #   schema.py (the table registry: Tables.<name> + pk /
+│   │                           #   date_col / projection), store.py (DataStore),
+│   │                           #   ddl.py (sql/schema.sql), errors.py
 │   ├── data_extract/           # StepExtractAllData & fetchers (utils/{prices,fundamentals,structure,behavioral,common}/)
 │   ├── data_peers/             # StepDeducePeers (return correlation & OpenAI embedding-based peers)
 │   ├── data_aggregate/         # StepBuildCube super-step -> 7 sub-steps in transformers/,
 │   │                           #   one cube_part_* table each; shared layer in utils/common/
-│   │                           #   (price_frames, pit, panel, xs, frames, prices, parts, part_io)
+│   │                           #   (price_frames, pit, panel, xs, frames, prices, parts, incremental)
 │   ├── modelling/              # Model/signal engines per strategy: long_short/, trend/, long_book/
 │   ├── strategies/             # Self-contained strategy steps (step_ls, step_long_book, step_trend) & analytics
 │   ├── portfolio/              # StepPortfolio (ERC blending & global vol scaling), StepStrategyMoves (live trading ledger)
@@ -83,7 +86,13 @@ Imports: Place all import statements at the top of the Python file.
 ---
 
 ## Data & Database Conventions
-Database I/O: Read and write tabular data exclusively via self._context.store (DataStore: load, save, replace, existing_dates).
+Database I/O: Read and write tabular data exclusively via self._context.store. DataStore reads with load / iter_load (+ exists, columns, distinct, bounds, max_date, row_count) and writes with save / replace / append_tail / bulk_seed / delete / drop / ensure_columns. Filter server-side: where= (equality / IN / IS NULL / store.NOT_NULL), since=, until=, columns= or project=True.
+
+Never bypass the facade: no sqlalchemy import, no pd.read_sql / to_sql, no store.engine outside src/data_store/ (tests/data_store/test_store_boundary.py enforces this). If a query cannot be expressed, add the capability to DataStore instead.
+
+Never read a full large table: always project and scope (cube is ~26 GB, sec13f_hr ~21.7M rows); use iter_load for cube-sized reads.
+
+load raises TableMissingError / TableEmptyError on a missing or empty table. Pass optional=True only where finding nothing is legitimate (a resume check on a cold DB), then branch on `is None`.
 
 Artifacts: Store non-tabular data (models, plots, raw JSONs) in paths defined by context.paths.
 
@@ -91,7 +100,7 @@ Point-in-Time Integrity: Resume extraction using the maximum entity date stored 
 
 XBRL Processing: Union candidate XBRL tags per period rather than relying on the first match. Cast boolean values to numeric flags (1.0/0.0).
 
-Schema Registration: Register new logical tables in src/data_store/schema_registry.py.
+Schema Registration: Register new logical tables in src/data_store/schema.py as a Table (name, pk, date_col, ...) and reference them as Tables.<name>. Table names live ONLY there — never as a string literal and never as a *_TABLE constant in src/constants/constants.py.
 
 ---
 

@@ -18,41 +18,40 @@ import pandas as pd
 
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.utils.common.parts import FEATURE_PARTS
+from src.data_store.schema import name_of
 
 
 class _FakeStore:
+    """A write-ORDER spy, which is what this test is about: the first chunk must go through
+    `replace` (clears + creates the schema) and every later chunk through `bulk_seed`. A real
+    store would not expose the call sequence. Tables are keyed by `name_of` so it accepts both a
+    `Table` and a bare name."""
+
     def __init__(self, tables: dict):
-        self.t = dict(tables)
+        self.t = {name_of(k): v for k, v in tables.items()}
         self.writes: list[tuple[str, pd.DataFrame]] = []   # (op, df) in call order
 
-    def exists(self, name): return name in self.t
-    def load(self, name, columns=None):
-        df = self.t.get(name)
+    def exists(self, table): return name_of(table) in self.t
+
+    def load(self, table, columns=None, **kw):
+        df = self.t.get(name_of(table))
         return df.copy() if df is not None else pd.DataFrame()
 
-    def replace(self, name, df, chunksize=200_000):
+    def _append(self, op, table, df):
+        self.writes.append((op, df.copy()))
+        prev = self.t.get(name_of(table))
+        self.t[name_of(table)] = (pd.concat([prev, df], ignore_index=True)
+                                  if prev is not None else df.copy())
+        return len(df)
+
+    def replace(self, table, df, chunksize=200_000):
         self.writes.append(("replace", df.copy()))
-        self.t[name] = df.copy()
+        self.t[name_of(table)] = df.copy()
         return len(df)
 
-    def save(self, name, df, pk=None):
-        self.writes.append(("save", df.copy()))
-        prev = self.t.get(name)
-        self.t[name] = pd.concat([prev, df], ignore_index=True) if prev is not None else df.copy()
-        return len(df)
+    def save(self, table, df, pk=None): return self._append("save", table, df)
 
-    def bulk_seed(self, name, df):                        # chunked COPY-append (no delete)
-        self.writes.append(("bulk_seed", df.copy()))
-        prev = self.t.get(name)
-        self.t[name] = pd.concat([prev, df], ignore_index=True) if prev is not None else df.copy()
-        return len(df)
-
-
-    @property
-    def engine(self):
-        raise AssertionError(
-            "StepAssembleCube must use the store facade (exists/load/replace/bulk_seed), not "
-            "raw SQL -- PartStore/engine access belongs to the part-BUILDING steps only")
+    def bulk_seed(self, table, df): return self._append("bulk_seed", table, df)
 
 
 class _FakeCtx:

@@ -28,12 +28,11 @@ import pandas as pd
 from omegaconf import DictConfig
 from omegaconf import OmegaConf
 
-from src.constants.constants import CUBE_PART_FUNDAMENTALS, FUNDAMENTALS_HISTORY_TABLE, EARNINGS_TABLE, DIVIDENDS_TABLE
+from src.data_store.schema import Tables
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.part_io import PartStore
-from src.data_aggregate.utils.common.parts import PART_BY_NAME
+from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.pit import PitFrames
 from src.data_aggregate.utils.common.price_frames import (
@@ -50,20 +49,26 @@ from src.utils.step import Step
 
 class StepCubeFundamentals(Step):
 
+    # The price fields this step reads back from `cube_part_prices`. Declared rather than
+    # inlined at the call site so the projection is introspectable -- that is what
+    # `tests/data_aggregate/test_part_registry.py` checks, and what keeps a step from
+    # quietly widening its read back to the full OHLCV grid.
+    _FIELDS = ("close",)
+
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
-        self._part = PART_BY_NAME[CUBE_PART_FUNDAMENTALS]
+        self._part = part_for(Tables.cube_part_fundamentals)
         self._market_ticker = str(self._cfg.market_ticker)
-        self._parts = PartStore(context.store, self._log)
+        self._store = context.store
 
     def run(self, full: bool = False) -> None:
-        window = plan_window(self._parts, CUBE_PART_FUNDAMENTALS, full=full,
+        window = plan_window(self._store, Tables.cube_part_fundamentals, full=full,
                              warmup=self._warmup(),
-                             trading_index=load_trading_calendar(self._parts))
+                             trading_index=load_trading_calendar(self._store))
         frames = self._load_frames(window.since)
         fundamentals = self._load_fundamentals()
-        earnings = self._load_optional(EARNINGS_TABLE, "earnings-surprise history",
+        earnings = self._load_optional(Tables.earnings_surprises, "earnings-surprise history",
                                        "fetch_earnings_surprises")
         
         # ONE point-in-time cache for all five builders (see the module docstring)
@@ -86,7 +91,7 @@ class StepCubeFundamentals(Step):
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames, fundamentals, earnings, pit
-        n = write_part(self._parts, CUBE_PART_FUNDAMENTALS, panel, window, drop_empty=True)
+        n = write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 
@@ -101,22 +106,22 @@ class StepCubeFundamentals(Step):
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(
-            self._parts, peers=load_peers_or_raise(self._context, self._config),
-            market_ticker=self._market_ticker, fields=("close",), since=since)
+            self._store, peers=load_peers_or_raise(self._context, self._config),
+            market_ticker=self._market_ticker, fields=self._FIELDS, since=since)
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
-        df = self._context.store.load(FUNDAMENTALS_HISTORY_TABLE)
-        if df.empty:
+        df = self._context.store.load(Tables.fundamentals_history, optional=True)
+        if df is None:
             self._log.warning("No fundamentals history -> the fundamental, sector, workforce "
                               "and dividend-payout features will be skipped.")
             return None
         self._log.info("Loaded %s: %s rows, %s tickers (ONCE for five builders)",
-                       FUNDAMENTALS_HISTORY_TABLE, len(df), df["ticker"].nunique())
+                       Tables.fundamentals_history, len(df), df["ticker"].nunique())
         return df
 
     def _load_optional(self, table: str, what: str, fetcher: str) -> pd.DataFrame | None:
-        df = self._context.store.load(table)
-        if df.empty:
+        df = self._context.store.load(table, optional=True)
+        if df is None:
             self._log.warning("No %s -> related features skipped (run %s).", what, fetcher)
             return None
         return df
@@ -178,7 +183,7 @@ class StepCubeFundamentals(Step):
         + buyback yield. RECONCILES the per-share ex-date history (`dividends`, primary) with
         the SEC cash-flow `dividendsPaid` total (gap-fill + payout/coverage). Non-payers get a
         real 0 yield so they rank correctly."""
-        dividends = self._load_optional(DIVIDENDS_TABLE, "dividend history",
+        dividends = self._load_optional(Tables.dividends, "dividend history",
                                         "fetch_price_history -> StepExtractPrices")
         if dividends is None:
             return None

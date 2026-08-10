@@ -123,8 +123,7 @@ def fetch_earnings_surprises(
     # FX from other_tickers, e.g. ^VIX, CL=F, USDEUR=X) that never return a calendar and
     # would otherwise be re-attempted every run as "missing".
     tickers = [t for t in tickers if not any(c in t for c in ("^", "="))]
-    existing = context.store.load("earnings_surprises")
-    existing = None if existing.empty else existing
+    existing = context.store.load("earnings_surprises", optional=True)
     if existing is not None:
         existing["earnings_date"] = pd.to_datetime(existing["earnings_date"]).dt.normalize()
 

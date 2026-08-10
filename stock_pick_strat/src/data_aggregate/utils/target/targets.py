@@ -3,16 +3,29 @@ targets.py  (src/data_aggregate/utils/targets.py)  -- MULTI-FACTOR REWRITE
 --------------------------------------------------------------------------
 epsilon_i(t) = fwd_ret_i(t->t+h)
                - beta_market_i  * fwd_market(t->t+h)
+               - beta_sector_i  * fwd_gics_sector_excess_i(t->t+h)
                - sum_style  beta_style_i  * fwd_style(t->t+h)
                - sum_macro  beta_macro_i  * fwd_macro_change(t->t+h)
 
-i.e. strip market AND every style + macro factor, leaving the residual to be
-neutralized to the GICS sector + industry_group (`cross_sectional_group_neutralize`).
-Then rank cross-sectionally per day.
+i.e. strip market, the stock's own GICS sector tilt, AND every style + macro factor.
+
+That subtraction is only HALF the job, and the missing half was measured: the residual stays
+predictable from the very loadings that were subtracted (a signal built from nothing but a
+name's market beta earned rank-IC +0.073, t +10.3, against the old label). So each label is
+then TRANSFORMED (rank / zscore) and PROJECTED cross-sectionally orthogonal to those loadings
+plus momentum plus GICS industry_group, jointly, and transformed again to restore its scale --
+`_neutral_label`. Projecting the transformed label rather than epsilon is deliberate: see that
+function for why the ordering carries most of the effect.
+
+The sector term appears TWICE on purpose: `beta_sector_i` removes the stock's own loading
+(dispersed across names, and a group demean cannot capture that), while the industry indicator
+block guarantees an exact zero group mean on the day and covers industry_group, which has no
+beta. See `betas.py` for the measurements.
 
 Forward factor returns over the SAME t->t+h window:
   * market / style : compounded factor return over the window (one series each,
                      applied via each stock's loading)
+  * sector         : per-stock GICS basket excess return, compounded (same shape)
   * macro          : cumulative CHANGE over the window (level[t+h]-level[t]),
                      matching how the macro beta was estimated on daily changes
 """
@@ -26,8 +39,19 @@ from src.data_aggregate.utils.common.prices import (
     forward_cumchange,
     forward_return,
     momentum_characteristic,
+    trailing_vol,
 )
-from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, XS_CLIP_LABEL, xs_rank_pct, xs_z
+from src.data_aggregate.utils.common.xs import (
+    XS_CLIP_CHARACTERISTIC, XS_CLIP_LABEL, xs_group_dummies, xs_project_out, xs_rank_pct, xs_z,
+)
+
+# The loadings the LABEL is projected orthogonal to. `vol_63` and `log_mcap` are deliberately
+# ABSENT: adding them was measured to also strip a genuine fcf-yield signal (firm IC +0.0058 ->
+# -0.0028) without reducing the exposure tilt any further.
+NEUTRALIZE_BETAS: tuple[str, ...] = (
+    "beta_market", "beta_market_simple", "beta_size", "beta_sector",
+    "beta_d_vix", "beta_oil", "beta_d_yield_10y", "beta_momentum",
+)
 
 
 def compute_epsilon(
@@ -36,12 +60,26 @@ def compute_epsilon(
     factor_panel: pd.DataFrame,      # market + style + macro daily
     macro_cols: list,                # which factor_panel columns are macro CHANGES
     horizon: int,
+    sector_excess: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
-    Multi-factor forward residual for every stock at every date, one horizon. Sector /
-    industry_group neutralization happens separately, cross-sectionally, on the residual
-    this returns (see `cross_sectional_group_neutralize`), not inside this function.
+    Multi-factor forward residual for every stock at every date, one horizon.
+
+    `sector_excess` = (date x ticker) DAILY frame of each stock's OWN GICS sector basket
+    (`factors.gics_sector_excess_returns`) -- the one regressor that differs per stock --
+    applied through the `beta_sector` fitted in `betas.py`. SAME shape `estimate_all_betas`
+    takes, so one object travels the whole path. Forward-compounded over the SAME t->t+h
+    window as the shared return factors, so the beta and the thing it multiplies are the
+    same object.
+
+    This strips each stock's OWN sector loading. The GICS indicator block in the label
+    projection that runs afterwards is NOT redundant with it: this removes the stock's
+    individual sector beta, that one guarantees an exact zero group mean on the day AND covers
+    industry_group, which has no beta of its own. Measured on the live panel, the sector beta
+    cuts the sector share of epsilon's cross-sectional variance from 9.3% to 1.7%; the
+    indicator block then takes the LABEL to 0.0%.
     """
+    
     fwd_stock = forward_return(close, horizon)
 
     # Precompute forward returns of every SHARED factor (same for all stocks).
@@ -53,12 +91,19 @@ def compute_epsilon(
         fwd_shared[c] = forward_cumchange(factor_panel[c], horizon)
     fwd_shared = pd.DataFrame(fwd_shared)
 
+    # the sector basket is a daily RETURN frame -> compounded, like the style factors
+    fwd_sector = forward_compound(sector_excess, horizon) if sector_excess is not None else None
+
     eps = pd.DataFrame(index=close.index, columns=close.columns, dtype="float64")
     for ticker in close.columns:
         if ticker not in betas:
             continue
         b = betas[ticker].reindex(close.index)
         resid = fwd_stock[ticker].copy()
+        # the stock's OWN sector basket -> strip its individual sector loading
+        if (fwd_sector is not None and "beta_sector" in b.columns
+                and ticker in fwd_sector.columns):
+            resid = resid - b["beta_sector"] * fwd_sector[ticker].reindex(close.index).fillna(0.0)
         # Subtract every shared factor's forward return * its loading. A SHARED
         # factor is the same series for every stock, so a single missing value
         # (e.g. a data gap in oil / gold / USD-EUR, whose calendar differs from
@@ -112,79 +157,75 @@ def _apply_label(eps: pd.DataFrame, label: str, min_names: int) -> pd.DataFrame:
     raise ValueError("label must be 'rank', 'zscore', or 'epsilon'")
 
 
-def cross_sectional_neutralize(
-    values: pd.DataFrame,
-    factor: pd.DataFrame,
-) -> pd.DataFrame:
-    """Per-day residual of `values` regressed cross-sectionally on `factor`
-    (single regressor, with intercept). Makes each row (date) orthogonal to
-    `factor`, so a target built on the residual no longer tilts toward that
-    characteristic.
-
-    The factor is z-scored and clipped per day so a handful of extreme names
-    (e.g. a stock up 500%) cannot dominate the slope. NaN-safe: a name is
-    neutralized only where BOTH the value and the factor are present; names
-    whose factor is missing (e.g. < 252 days of history) are left untouched so
-    they still enter the cross-sectional ranking.
-    """
-    # zero_sd_to_nan: on a day with no factor dispersion the slope is undefined, so this
-    # call site yields NaN rather than the fabricated +/-clip the unguarded sites produce.
-    z = xs_z(factor.reindex_like(values), clip=XS_CLIP_CHARACTERISTIC, zero_sd_to_nan=True)
-
-    mask = values.notna() & z.notna()
-    v = values.where(mask)
-    x = z.where(mask)
-
-    vc = v.sub(v.mean(axis=1), axis=0)
-    xc = x.sub(x.mean(axis=1), axis=0)
-    denom = (xc * xc).sum(axis=1).replace(0.0, np.nan)
-    beta = ((vc * xc).sum(axis=1) / denom).fillna(0.0)
-    resid = vc.sub(xc.mul(beta, axis=0))
-
-    # Keep un-neutralizable names (factor NaN) as their demeaned value so they
-    # still rank; ranking is invariant to the per-day demeaning.
-    values_demeaned = values.sub(values.mean(axis=1), axis=0)
-    return resid.where(mask, values_demeaned)
+def _beta_frame(betas: dict, column: str, like: pd.DataFrame) -> pd.DataFrame | None:
+    """One beta column pivoted to a (date x ticker) frame on `like`'s grid, None if unfitted."""
+    fitted = {t: b[column] for t, b in betas.items() if column in b.columns}
+    if not fitted:
+        return None
+    return pd.DataFrame(fitted).reindex(index=like.index, columns=like.columns)
 
 
-def cross_sectional_group_neutralize(
-    values: pd.DataFrame,
-    group_map: dict[str, str],
-    unknown: str = "__UNK__",
-) -> pd.DataFrame:
-    """Per-day, subtract each cross-sectional GROUP mean (a GICS sector or industry)
-    so the residual has ~zero mean within every group on every day -> the target
-    carries NO sector/industry tilt and group membership can no longer PREDICT it.
-
-    `group_map` is {ticker: group_label}. Names with no group are left untouched
-    (they keep whatever neutralization ran before). NaN-safe: a day's group mean
-    skips missing names. Compose calls (sector, then the nested industry_group) to
-    neutralize both levels; industry is nested in sector, so the industry pass — run
-    last — is what makes the target neutral to BOTH."""
-    if values.empty or not group_map:
-        return values
-    labels = pd.Series({c: (group_map.get(c) or unknown) for c in values.columns})
-    out = values.copy()
-    for g, idx in labels.groupby(labels).groups.items():
-        if g == unknown:
-            continue
-        cols = list(idx)
-        out[cols] = values[cols].sub(values[cols].mean(axis=1), axis=0)   # per-date group demean
-    return out
-
-
-def _neutralize_sector_industry(
-    eps: pd.DataFrame,
+def _neutralizing_design(
+    close: pd.DataFrame,
+    betas: dict,
+    beta_cols: tuple[str, ...],
     sector_groups: dict[str, dict[str, str]] | None,
-) -> pd.DataFrame:
-    """Sequentially demean `eps` within GICS sector then industry_group (each level's
-    {ticker: label} under `sector_groups[level]`). No-op when `sector_groups` is None
-    (no sector/industry neutralization is applied at all)."""
-    for level in ("sector", "industry_group"):
-        gm = (sector_groups or {}).get(level)
-        if gm:
-            eps = cross_sectional_group_neutralize(eps, gm)
-    return eps
+    with_momentum: bool,
+) -> tuple[list[pd.DataFrame], pd.DataFrame | None]:
+    """The regressors the LABEL is made orthogonal to: the fitted factor loadings, the 12-1
+    momentum characteristic, and the GICS industry_group indicators.
+
+    The exposures ARE the betas this same step just fitted, so nothing new has to be loaded.
+    Each is z-scored ONCE here rather than once per (horizon, label); a name with no fitted
+    beta gets 0 -- the day's average exposure -- so it is simply not neutralized on that
+    factor instead of dropping out of the fit.
+    """
+    frames = [_beta_frame(betas, c, close) for c in beta_cols]
+    if with_momentum:
+        frames.append(momentum_characteristic(close))
+    # zero_sd_to_nan: on a day with no dispersion the loading is undefined, so this yields NaN
+    # (-> 0 below) rather than the fabricated +/-clip an unguarded z would produce.
+    exposures = [xs_z(f, clip=XS_CLIP_CHARACTERISTIC, zero_sd_to_nan=True).fillna(0.0)
+                 for f in frames if f is not None]
+
+    # industry_group is NESTED in sector, so industry indicators span both levels; fall back to
+    # sector when only that level is supplied.
+    groups = ((sector_groups or {}).get("industry_group")
+              or (sector_groups or {}).get("sector"))
+    dummies = xs_group_dummies(groups, close.columns) if groups else None
+    return exposures, dummies
+
+
+def _neutral_label(eps: pd.DataFrame, label: str, min_names: int,
+                   exposures: list[pd.DataFrame],
+                   dummies: pd.DataFrame | None) -> pd.DataFrame:
+    """Transform -> project the exposures out -> transform again.
+
+    The projection sits on the TRANSFORMED label, not on epsilon, and that ordering is the
+    whole point: the rank/z transform is NON-LINEAR and the residual is right-skewed for
+    volatile names (cross-sectional skew 0.07 -> 0.62 across vol quintiles), so a name's
+    MEDIAN residual is negative while its mean is zero. Neutralizing epsilon therefore removes
+    only half the tilt (free IC 0.073 -> 0.036) where neutralizing the label removes it
+    (-> 0.016).
+
+    The second `_apply_label` restores each label's own scale, which the projection destroys:
+    rank back to a [0,1] percentile, zscore back to mean 0 / sd 1 / +-3.
+    """
+    y = _apply_label(eps, label, min_names)
+    y = xs_project_out(y, exposures, dummies)
+    return _apply_label(y, label, min_names)
+
+
+def vol_standardize_epsilon(eps: pd.DataFrame, stock_ret: pd.DataFrame, horizon: int,
+                            window: int = 63) -> pd.DataFrame:
+    """Epsilon per unit of the name's OWN trailing risk, i.e. an information ratio.
+
+    Without it the label's magnitude is a volatility artefact -- sd(epsilon) correlates +0.90
+    with trailing vol and the top-vol decile carries 3.5x the dispersion of the bottom -- which
+    an RMSE loss on the raw or z-scored label reads as signal.
+    """
+    sigma = trailing_vol(stock_ret, window, min_periods=window // 2) * np.sqrt(horizon)
+    return eps / sigma.where(sigma > 0).reindex_like(eps)
 
 
 def build_targets_multi(
@@ -193,25 +234,39 @@ def build_targets_multi(
     factor_panel: pd.DataFrame,
     macro_cols: list,
     horizons=(5, 10, 20, 60),
-    labels=("rank", "zscore"),
+    labels=("rank", "zscore", "epsilon"),
     min_names: int = 20,
     neutralize_momentum: bool = True,
+    neutralize_betas: tuple[str, ...] = NEUTRALIZE_BETAS,
     sector_groups: dict[str, dict[str, str]] | None = None,
+    sector_excess: pd.DataFrame | None = None,
+    stock_ret: pd.DataFrame | None = None,
+    vol_standardize: bool = False,
 ) -> dict:
     """Compute the (expensive) factor-neutral residual ONCE per horizon and emit
     SEVERAL target versions from it, so the cube can store e.g. both the rank and the
     z-score target and the modelling step can pick which one to train on without a
     cube rebuild.
 
-    `neutralize_momentum`: after computing the multi-factor residual epsilon,
-    cross-sectionally orthogonalize it against the 12-1 momentum characteristic each
-    day (makes the target orthogonal to momentum by construction).
+    Subtracting `beta * factor` leaves the label still PREDICTABLE from the exposures, for two
+    reasons no better beta can fix: the hedge is a noisy forecast of the window it hedges, and
+    a beta-hedged high-beta name genuinely under-earns in a rising market (the low-risk
+    anomaly). Measured on the live panel, a signal built from nothing but a name's market beta
+    earned a rank-IC of +0.073 (t +10.3) against the old label -- free IC a model would happily
+    learn, and which the L/S optimizer then neutralizes back out. So every label is finally
+    PROJECTED orthogonal to `neutralize_betas` + momentum + GICS industry, jointly, by
+    `_neutral_label`.
 
-    `sector_groups` = {"sector": {ticker: gics_sector}, "industry_group": {...}}. When
-    given, the residual is neutralized to the ACTUAL GICS sector + industry_group
-    (per-day within-group demeaning, applied LAST) so sector / industry membership can
-    no longer predict the target (else they'd dominate the model, a sign the target was
-    not sector-neutral). `None` means no group neutralization is applied at all.
+    `neutralize_momentum` adds the 12-1 momentum characteristic to that same design.
+
+    `sector_groups` = {"sector": {ticker: gics_sector}, "industry_group": {...}} -> the group
+    indicator block, so sector / industry membership cannot predict the target. `None` means no
+    group neutralization at all.
+
+    `vol_standardize` divides epsilon by the name's trailing risk first (needs `stock_ret`);
+    off by default because it does NOT reduce the exposure tilt once the projection is in
+    place -- it only homogenises magnitude, which matters for an RMSE loss on the zscore /
+    epsilon labels but not for the rank one.
 
     Returns {horizon: {label: DataFrame(date x ticker)}}.
 
@@ -219,12 +274,15 @@ def build_targets_multi(
     whole epsilon -> neutralize -> label loop for one label. Nothing in `src/` called
     it; pass `labels=("rank",)` instead.)
     """
-    mom_char = momentum_characteristic(close) if neutralize_momentum else None
+    # horizon-independent, so it is built ONCE for all (horizon, label) pairs
+    exposures, dummies = _neutralizing_design(close, betas, neutralize_betas,
+                                              sector_groups, neutralize_momentum)
     out: dict[int, dict[str, pd.DataFrame]] = {}
     for h in horizons:
-        eps = compute_epsilon(close, betas, factor_panel, macro_cols, h)
-        if neutralize_momentum:
-            eps = cross_sectional_neutralize(eps, mom_char)
-        eps = _neutralize_sector_industry(eps, sector_groups)      # last -> neutral to both
-        out[h] = {lab: _apply_label(eps, lab, min_names) for lab in labels}
+        eps = compute_epsilon(close, betas, factor_panel, macro_cols, h,
+                              sector_excess=sector_excess)
+        if vol_standardize:
+            eps = vol_standardize_epsilon(eps, stock_ret, h)
+        out[h] = {lab: _neutral_label(eps, lab, min_names, exposures, dummies)
+                  for lab in labels}
     return out

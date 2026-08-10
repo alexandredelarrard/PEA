@@ -16,6 +16,9 @@ Covers:
   8. No staircase   -> at step=1 consecutive betas actually differ.
   9. Panel == loop  -> the vectorized panel path equals the single-stock path.
  10. Label timing   -> the estimation window and the label window do not overlap.
+ 11. Per-stock factor -> the GICS sector regressor (passed via `per_stock_factors`,
+                       NOT a shared column) recovers a DIFFERENT known loading per
+                       stock (Schur-complement fold-in, `_fold_in_sector`).
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ import pandas as pd
 from src.data_aggregate.utils.target.betas import (
     estimate_all_betas, estimate_betas_for_stock,
 )
+from src.data_aggregate.utils.target.factors import gics_sector_excess_returns
 
 
 # --------------------------------------------------------------------------- #
@@ -349,3 +353,97 @@ def test_label_window_does_not_overlap_estimation_window():
     print(f"  label at {dates[t].date()} = close[{dates[t+h].date()}]/close[{dates[t].date()}]-1"
           f" = returns of {dates[t+1].date()}..{dates[t+h].date()}")
     print("  -> no shared observation, so beta_t applied to the label is NOT in-sample.")
+
+
+# --------------------------------------------------------------------------- #
+# 11. The per-stock sector factor recovers a DIFFERENT loading per stock       #
+# --------------------------------------------------------------------------- #
+def test_per_stock_sector_factor_recovers_known_loading():
+    """Unlike every other factor, the GICS sector basket is passed via
+    `per_stock_factors` (date x ticker, one column per ticker) rather than as a
+    column of the shared panel -- each stock regresses on its OWN sector series
+    and gets its OWN `beta_sector`, folded into the shared ridge solve via the
+    Schur complement (`_fold_in_sector`)."""
+    rng = np.random.default_rng(21)
+    n = 400
+    dates = pd.bdate_range("2019-01-01", periods=n)
+    market = pd.Series(rng.normal(0, 0.010, n), index=dates, name="market")
+
+    sector_a = pd.Series(rng.normal(0, 0.008, n), index=dates)
+    sector_b = pd.Series(rng.normal(0, 0.008, n), index=dates)
+    true_beta_a, true_beta_b = 0.8, -0.5
+
+    y_a = (1.0 * market + true_beta_a * sector_a
+           + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("A")
+    y_b = (1.0 * market + true_beta_b * sector_b
+           + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("B")
+
+    stock_returns = pd.concat([y_a, y_b], axis=1)
+    per_stock_factors = pd.concat([sector_a.rename("A"), sector_b.rename("B")], axis=1)
+
+    out = estimate_all_betas(stock_returns, market.to_frame(), per_stock_factors,
+                             window=200, min_obs=150, ridge_alpha=0.001, step=1,
+                             filter_factors=False)
+
+    last_a = out["A"].dropna().iloc[-1]
+    last_b = out["B"].dropna().iloc[-1]
+
+    assert abs(last_a["beta_sector"] - true_beta_a) < 0.15
+    assert abs(last_b["beta_sector"] - true_beta_b) < 0.15
+    assert abs(last_a["beta_market"] - 1.0) < 0.15
+    assert abs(last_b["beta_market"] - 1.0) < 0.15
+
+    print("\n=== SANITY CHECK: per-stock sector factor (Schur-complement fold-in) ===")
+    print(f"  A: beta_sector recovered={last_a['beta_sector']:+.3f}  true={true_beta_a:+.2f}")
+    print(f"  B: beta_sector recovered={last_b['beta_sector']:+.3f}  true={true_beta_b:+.2f}")
+    print("  -> each stock's OWN sector regressor and loading recovered independently.")
+
+
+# --------------------------------------------------------------------------- #
+# 12. A SECOND ridge alpha, for the market column alone                        #
+# --------------------------------------------------------------------------- #
+def test_market_gets_its_own_ridge_alpha():
+    """`ridge_alpha_market` exists because the two priors are not comparable: market shrinks
+    toward 1.0 and every other factor toward 0.0, and how much shrinkage each NEEDS is set by
+    how well its beta forecasts the window it hedges (measured at window=63: 0.43 for market,
+    0.03 for d_vix). Two things must hold:
+
+      * `None` reproduces the single-alpha path EXACTLY -- the gram is built as
+        `n * diag(alphas)` instead of `alpha * n * eye`, which is the same float64 product, so
+        this is a bit-identity and not a tolerance;
+      * a small market alpha with a large style alpha shrinks market toward 1.0 far LESS than
+        style is shrunk toward 0.0.
+    """
+    rng = np.random.default_rng(11)
+    n = 400
+    dates = pd.bdate_range("2019-01-01", periods=n)
+    market = pd.Series(rng.normal(0, 0.010, n), index=dates, name="market")
+    style = pd.Series(rng.normal(0, 0.008, n), index=dates, name="style")
+    shared = pd.concat([market, style], axis=1)
+    y = (1.6 * market + 0.9 * style
+         + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("STOCK")
+
+    base = estimate_betas_for_stock(y, shared, window=126, min_obs=80,
+                                    ridge_alpha=0.08, step=1)
+    same = estimate_betas_for_stock(y, shared, window=126, min_obs=80,
+                                    ridge_alpha=0.08, ridge_alpha_market=None, step=1)
+    pd.testing.assert_frame_equal(base, same)          # bit-identical, no tolerance
+
+    unshrunk = estimate_betas_for_stock(y, shared, window=126, min_obs=80,
+                                       ridge_alpha=0.0, step=1).dropna().iloc[-1]
+    split = estimate_betas_for_stock(y, shared, window=126, min_obs=80,
+                                     ridge_alpha=1.5, ridge_alpha_market=0.24,
+                                     step=1).dropna().iloc[-1]
+
+    market_kept = (split["beta_market"] - 1.0) / (unshrunk["beta_market"] - 1.0)
+    style_kept = split["beta_style"] / unshrunk["beta_style"]
+    assert abs(market_kept - 1.0 / 1.24) < 0.05, f"market shrunk by {market_kept:.3f}"
+    assert abs(style_kept - 1.0 / 2.5) < 0.05, f"style shrunk by {style_kept:.3f}"
+    assert market_kept > style_kept
+
+    print("\n=== SANITY CHECK: per-factor ridge alpha ===")
+    print("  ridge_alpha_market=None -> frame is bit-identical to the single-alpha path")
+    print(f"  alpha_market=0.24 / alpha_other=1.5: market keeps {market_kept:.3f} of its "
+          f"distance from the 1.0 prior (expected {1/1.24:.3f}), style keeps {style_kept:.3f} "
+          f"of its distance from 0.0 (expected {1/2.5:.3f})")
+    print("  -> the market column is shrunk on its own dial. Validated.")

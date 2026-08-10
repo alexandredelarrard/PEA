@@ -37,12 +37,8 @@ from datetime import datetime, timezone
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import (
-    GOOGLE_TRENDS_EXPLORE_URL,
-    GOOGLE_TRENDS_HOME_URL,
-    GOOGLE_TRENDS_MULTILINE_URL,
-    UNIVERSE_TABLE
-)
+from src.data_store.schema import Tables
+from src.constants.constants import (GOOGLE_TRENDS_EXPLORE_URL, GOOGLE_TRENDS_HOME_URL, GOOGLE_TRENDS_MULTILINE_URL)
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.utils import crawler                    # authorized proxy-pool loader (PEA_SCRAPE_PROXIES / PEA_SCRAPE_PROXY)
@@ -357,7 +353,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     verify = _VERIFY if verify is None else verify
     impersonate = impersonate or _IMPERSONATE
 
-    names = context.store.load(UNIVERSE_TABLE)
+    names = context.store.load(Tables.sp500_tickers)
     names["name"] = names["name"].apply(_clean_name)
     if tickers is not None:
         names = names[names["ticker"].isin(tickers)]
@@ -432,8 +428,8 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
     context.log.info("Google Trends: +%d rows across %d tickers (%d already current).",
                      total_new, touched, skipped)
     record_run(context, "google_trends", len(names), total_new)
-    out = context.store.load("google_trends")
-    return out if not out.empty else _empty_long()
+    out = context.store.load("google_trends", optional=True)
+    return out if out is not None else _empty_long()
 
 
 def _empty_long() -> pd.DataFrame:

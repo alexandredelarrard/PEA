@@ -234,7 +234,11 @@ def _net_income_tags(gaap: dict) -> list[str]:
     for no-preferred filers (e.g. WAT 2014-2015) without contaminating the YTD
     de-cumulation chain of preferred-paying REITs/banks/insurers (WELL, O, SPG, USB,
     VTR, ...), whose to-common figure is net of preferred dividends."""
-    tags = list(FLOW_TAGS["netIncome"])
+    # Start WITHOUT the to-common tag. `FLOW_TAGS["netIncome"]` lists it as a candidate, so
+    # starting from that list left the guard unable to reject anything -- it could only
+    # re-append a tag that was already there, and every preferred-paying filer's netIncome
+    # was silently net of preferred dividends regardless.
+    tags = [t for t in FLOW_TAGS["netIncome"] if t != _NET_INCOME_TO_COMMON_TAG]
     common = _concept_periods(gaap, _NET_INCOME_TO_COMMON_TAG)
     if not common:
         return tags

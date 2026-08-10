@@ -22,12 +22,13 @@ import types
 import pandas as pd
 import pytest
 
+from conftest import FakeStore     # the ONE shared store double
 from src.data_extract.utils.behavioral import fetch_earnings_calls as fe
 from src.data_extract.utils.behavioral import utils_missing_quarters as mq
 
 
 def _ctx(tickers, tmp_path):
-    store = types.SimpleNamespace(load=lambda table, columns=None: pd.DataFrame({"ticker": list(tickers)}))
+    store = FakeStore({"sp500_tickers": pd.DataFrame({"ticker": list(tickers)})})
     return types.SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path})
 
 
@@ -189,8 +190,7 @@ def test_released_quarter_idx_maps_report_date_to_reported_quarter(tmp_path):
     report is Q1, an early-Feb report is the prior Q4 (report date shifted back ~45d)."""
     es = pd.DataFrame({"ticker": ["AAA", "AAA", "BBB"],
                        "earnings_date": ["2025-01-30", "2025-04-25", "2025-02-05"]})
-    ctx = types.SimpleNamespace(store=types.SimpleNamespace(
-        load=lambda table, columns=None: es if table == "earnings_surprises" else pd.DataFrame()))
+    ctx = types.SimpleNamespace(store=FakeStore({"earnings_surprises": es}))
     rel = mq._released_quarter_idx_by_ticker(ctx)
     assert rel["AAA"] == mq._quarter_index(2025, 1)   # latest = Apr-25 report -> Q1'25
     assert rel["BBB"] == mq._quarter_index(2024, 4)   # Feb-05 report -> prior Q4'24

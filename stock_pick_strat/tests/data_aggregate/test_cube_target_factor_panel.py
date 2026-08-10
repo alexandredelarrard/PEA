@@ -18,6 +18,7 @@ import pandas as pd
 from src.data_aggregate.transformers.step_cube_target import (
     _COMMODITY_TICKERS, _CURRENCY_TICKERS, StepCubeTarget,
 )
+from src.data_store.schema import name_of
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.common.prices import price_column_returns
 from src.data_aggregate.utils.target.factors import (
@@ -27,10 +28,13 @@ from src.data_aggregate.utils.target.factors import (
 
 class _FakeStore:
     """`_macro_changes` is the only store read `_factor_panel` triggers; empty macro exercises
-    its early-return branch (mirrored by hand in the expected panel below)."""
+    its early-return branch (mirrored by hand in the expected panel below).
 
-    def load(self, name, columns=None):
-        assert name == "macro", f"unexpected store.load({name!r})"
+    A read spy, not a store: it asserts WHICH table is read. `name_of` because call sites now pass
+    the `Table` object, and the assertion is about the table's identity either way."""
+
+    def load(self, table, columns=None, **kw):
+        assert name_of(table) == "macro", f"unexpected store.load({table!r})"
         return pd.DataFrame()
 
 
@@ -112,5 +116,32 @@ def test_factor_panel_matches_hand_composed_reference():
           "Validated.")
 
 
+def test_panel_market_column_is_frames_mkt_ret():
+    """`_sector_factor` market-neutralizes the sector basket with `frames.mkt_ret`
+    rather than looking up the panel's `market` column by name. That is only valid
+    because `assemble_factor_panel` BUILDS that column from `mkt_ret` -- pin it, so
+    the day the panel stops being a rename of `mkt_ret` this fails loudly instead of
+    silently neutralizing against the wrong series."""
+    frames, fundamentals, close, ret, other_close, mkt_ret, dates = _synthetic_inputs()
+
+    step = object.__new__(StepCubeTarget)
+    step._log = logging.getLogger("test")
+    step._context = type("Ctx", (), {"store": _FakeStore()})()
+
+    panel, _ = step._factor_panel(frames, fundamentals)
+
+    assert "market" in panel.columns, "the panel lost its market column"
+    # `gics_sector_excess_returns` reindexes onto stock_ret.index, so compare there
+    pd.testing.assert_series_equal(
+        panel["market"].reindex(ret.index),
+        frames.mkt_ret.reindex(ret.index),
+        check_names=False)
+
+    print("\n=== SANITY CHECK: panel['market'] is frames.mkt_ret ===")
+    print(f"  identical over {len(ret.index)} dates -> `frames.mkt_ret` is the direct "
+          "source, so no MARKET_FACTOR constant / string lookup is needed. Validated.")
+
+
 if __name__ == "__main__":
     test_factor_panel_matches_hand_composed_reference()
+    test_panel_market_column_is_frames_mkt_ret()

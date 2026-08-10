@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.data_store.errors import TableMissingError
 from src.data_store.store import DataStore, read_table
 
 _FRAME = pd.DataFrame({
@@ -73,8 +74,12 @@ def test_omitting_where_reads_the_whole_table_exactly_as_before(store):
     pd.testing.assert_frame_equal(store.load("facts"), _FRAME)
 
 
-def test_where_on_a_missing_table_returns_empty_rather_than_raising(store):
-    assert store.load("nope", where={"ticker": "ZBH"}).empty
+def test_where_on_a_missing_table_raises_a_typed_error(store):
+    """A missing table is a fault, so `load` raises -- but `TableMissingError`, not a bare
+    `Exception`, so callers can distinguish it from a broken query."""
+    with pytest.raises(TableMissingError):
+        store.load("nope", where={"ticker": "ZBH"})
+    assert store.load("nope", where={"ticker": "ZBH"}, optional=True) is None
 
 
 def test_unknown_where_column_fails_loudly_before_reaching_the_database(store):

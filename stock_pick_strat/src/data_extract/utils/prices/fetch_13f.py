@@ -26,7 +26,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import SEC_FORM13F_URL_DICT, UNIVERSE_TABLE
+from src.data_store.schema import Tables
+from src.constants.constants import SEC_FORM13F_URL_DICT
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, ingested_periods, read_zip_members,
@@ -149,7 +150,7 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     already-attempted cusips), so a converged re-run does almost no work."""
     
     store = context.store
-    universe = set(store.load(UNIVERSE_TABLE, columns=["ticker"])["ticker"])
+    universe = set(store.load(Tables.sp500_tickers, columns=["ticker"])["ticker"])
     years_history = context.config.data_extract.years_history + 1
     cache = cache_dir(context, "SEC_13F_INSIDERS_DIR")
 

@@ -29,7 +29,7 @@ from typing import Sequence
 import pandas as pd
 
 from src.constants.constants import PANEL_KEYS
-from src.data_aggregate.utils.common.part_io import PartStore
+from src.data_store.store import DataStore
 
 # `write_part` returns this instead of a row count when the part's feature set changed, to
 # tell the caller "your column set no longer matches the stored table -- re-run full".
@@ -56,7 +56,7 @@ def window_start(trading_index: pd.DatetimeIndex, last: pd.Timestamp,
     return trading_index[max(0, pos - n_back)]
 
 
-def plan_window(parts: PartStore, part: str, *, warmup: int, full: bool,
+def plan_window(store: DataStore, part: str, *, warmup: int, full: bool,
                 trading_index: pd.DatetimeIndex | None = None,
                 extra_back: int = 0) -> PartWindow:
     """Decide what to rebuild.
@@ -67,7 +67,7 @@ def plan_window(parts: PartStore, part: str, *, warmup: int, full: bool,
     """
     if full:
         return PartWindow(None, None)
-    last = parts.max_date(part)
+    last = store.max_date(part)
     if last is None or trading_index is None or len(trading_index) == 0:
         return PartWindow(None, None)
     return PartWindow(last, window_start(trading_index, last, warmup + extra_back))
@@ -93,7 +93,7 @@ def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str],
     return rows[keep]
 
 
-def write_part(parts: PartStore, part: str, rows: pd.DataFrame, window: PartWindow,
+def write_part(store: DataStore, part: str, rows: pd.DataFrame, window: PartWindow,
                *, keys: Sequence[str] = tuple(PANEL_KEYS),
                refresh_from: pd.Timestamp | None = None,
                drop_empty: bool = False) -> int:
@@ -114,13 +114,16 @@ def write_part(parts: PartStore, part: str, rows: pd.DataFrame, window: PartWind
         return 0
 
     if window.is_full:
-        n = parts.replace(part, rows)
+        n = store.replace(part, rows)
         logger.info("Persisted %s (FULL): %s rows x %s cols.", part, n,
                  len([c for c in rows.columns if c not in keys]))
         return n
 
-    existing = parts.columns(part)
-    if existing is not None and set(existing) != set(rows.columns):
+    # `columns` returns [] for a table that does not exist -- "no stored column set to
+    # compare against", not "a stored set that differs". Treating [] as a difference would
+    # report COLUMNS_CHANGED for an absent part.
+    existing = store.columns(part)
+    if existing and set(existing) != set(rows.columns):
         logger.warning("%s column set changed (%s stored vs %s built) -> full rebuild needed.",
                     part, len(existing), len(rows.columns))
         return COLUMNS_CHANGED
@@ -128,7 +131,7 @@ def write_part(parts: PartStore, part: str, rows: pd.DataFrame, window: PartWind
     cutoff = refresh_from if refresh_from is not None else window.last
     inclusive = refresh_from is not None
     tail = rows[rows["date"] >= cutoff] if inclusive else rows[rows["date"] > cutoff]
-    n = parts.append_tail(part, tail, cutoff=cutoff, inclusive=inclusive)
+    n = store.append_tail(part, tail, cutoff, inclusive=inclusive)
     logger.info("Appended %s (INCREMENTAL): +%s rows %s %s.", part, n,
              ">=" if inclusive else ">", pd.Timestamp(cutoff).date())
     return n

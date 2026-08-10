@@ -71,8 +71,8 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
     """Return + cache a [cusip, ticker] map for the given CUSIPs (deduplicated).
     Reuses the cache and only looks up CUSIPs not already mapped."""
     
-    cached = context.store.load("cusip_ticker_map")
-    if cached.empty:
+    cached = context.store.load("cusip_ticker_map", optional=True)
+    if cached is None:
         cached = pd.DataFrame(columns=["cusip", "ticker"])
     else:
         # normalize the STORED cusips too, so a legacy row saved before this fix

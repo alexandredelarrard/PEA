@@ -36,7 +36,8 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import SEC_INSIDER_TRANSACTIONS_TABLE, SEC_INSIDER_URL_TEMPLATE, SEC_INSIDER_FIRST_YEAR
+from src.data_store.schema import Tables
+from src.constants.constants import SEC_INSIDER_URL_TEMPLATE, SEC_INSIDER_FIRST_YEAR
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, quarter_periods,
@@ -229,8 +230,8 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     cache = cache_dir(context, "sec_insider_transactions")
 
     tickers = {str(t).upper() for t in tickers}          # universe as an uppercased set
-    done_q = bulk_ingested_quarters(store, SEC_INSIDER_TRANSACTIONS_TABLE)
-    new_tickers = tickers - load_processed_universe(cache, SEC_INSIDER_TRANSACTIONS_TABLE)   # empty once converged
+    done_q = bulk_ingested_quarters(store, Tables.insider_transactions)
+    new_tickers = tickers - load_processed_universe(cache, Tables.insider_transactions)   # empty once converged
     if new_tickers:
         logger.info("insider: %d new/changed tickers -> re-parsing cached quarters",
                     len(new_tickers))
@@ -251,10 +252,10 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
         if df.empty:
             continue
         df["quarter"] = q
-        saved += store.save(SEC_INSIDER_TRANSACTIONS_TABLE, df[[c for c in _OUT_COLS if c in df.columns]])
+        saved += store.save(Tables.insider_transactions, df[[c for c in _OUT_COLS if c in df.columns]])
 
-    save_processed_universe(cache, SEC_INSIDER_TRANSACTIONS_TABLE, tickers)   # so a converged re-run skips
+    save_processed_universe(cache, Tables.insider_transactions, tickers)   # so a converged re-run skips
     logger.info("insider_transactions: upserted %d rows (%d quarters scanned)",
                    saved, len(quarter_periods(years_history, SEC_INSIDER_FIRST_YEAR)))
-    record_run(context, SEC_INSIDER_TRANSACTIONS_TABLE, len(tickers), saved)
+    record_run(context, Tables.insider_transactions, len(tickers), saved)
     return saved

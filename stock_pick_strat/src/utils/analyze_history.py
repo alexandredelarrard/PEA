@@ -180,6 +180,30 @@ def detect_source_tag_misalignment(df: pd.DataFrame, ticker: str, field: str) ->
     return pd.DataFrame(rows, columns=cols)
 
 
+# The raw, TAG-GRAIN fields these checks can run on -- i.e. present in `fundamentals_facts`
+# with a real `source_tag`, as opposed to a column like `ebitda`/`freeCashflow`/`revenue_q`/
+# `netIncome_q` that only exists post-hoc inside `fundamentals_history` (computed in
+# `_derive_history`, never itself tagged, so there is no `source_tag` for a tag-switch or
+# misalignment check to key on). Shared with `fundamentals_audit.py` so the internal and
+# external (Tiingo/Yahoo) audits stay in sync on which raw fields are in scope.
+DEFAULT_AUDIT_FIELDS = (
+    'totalRevenue', 'costOfRevenue', 'sellingGeneralAdmin',
+    'operatingIncome', 'pretaxIncome', 'netIncome', 'incomeTaxExpense',
+    'interestExpense', 'epsBasic', 'epsDiluted', 'cash',
+    'cashInclRestricted', 'shortTermInvestments', 'currentAssets',
+    'totalAssets', 'ppeNet', 'goodwill', 'intangiblesGross',
+    'currentLiabilities', 'totalLiabilities', 'shortTermDebt',
+    'longTermDebt', 'longTermDebtTotal', 'stockholdersEquity',
+    'operatingCashFlow', 'capex', 'depAmort', 'stockBasedComp',
+    'changeInInventory', 'changeInReceivables', 'changeInPayables',
+    'sharesOutstanding', 'basicShares', 'dilutedShares',
+    'dividendsPerShare',
+    # Added alongside the Tiingo/Yahoo TIINGO_FIELD_MAP/YAHOO_FIELD_MAP extension for
+    # downstream-consumed fields -- these four ARE tag-resolved (unlike ebitda/
+    # freeCashflow/revenue_q/netIncome_q, see the module-level note above).
+    'researchAndDevelopment', 'employees', 'minorityInterest', 'nciIncome',
+)
+
 _ALL_DURATION_TYPES = ("quarterly", "annual", "instant")
 
 
@@ -338,17 +362,7 @@ if __name__ == "__main__":
     _, context = get_config_context(config_path="./configs", use_cache=True, save=False)
     facts = context.store.load("fundamentals_facts")
     TICKERS = sorted(facts["ticker"].unique().tolist())
-    FIELDS = ['totalRevenue', 'costOfRevenue', 'sellingGeneralAdmin',
-            'operatingIncome', 'pretaxIncome', 'netIncome', 'incomeTaxExpense',
-            'interestExpense', 'epsBasic', 'epsDiluted', 'cash',
-            'cashInclRestricted', 'shortTermInvestments', 'currentAssets',
-            'totalAssets', 'ppeNet', 'goodwill', 'intangiblesGross',
-            'currentLiabilities', 'totalLiabilities', 'shortTermDebt',
-            'longTermDebt', 'longTermDebtTotal', 'stockholdersEquity',
-            'operatingCashFlow', 'capex', 'depAmort', 'stockBasedComp',
-            'changeInInventory', 'changeInReceivables', 'changeInPayables',
-            'sharesOutstanding', 'basicShares', 'dilutedShares',
-            'dividendsPerShare']
+    FIELDS = list(DEFAULT_AUDIT_FIELDS)
 
     #############################################
     ##################  1. identify missing quarters

@@ -21,6 +21,7 @@ from omegaconf import DictConfig
 from src.data_store.schema import Tables
 from src.data_aggregate.utils.assemble.cube import _betas_to_long, _labels_to_long
 from src.data_aggregate.utils.common.gics import load_gics_maps
+from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED, plan_window, window_start, write_part,
 )
@@ -37,7 +38,7 @@ from src.data_aggregate.utils.target.factors import (
     gics_sector_excess_returns,
     macro_change_factors,
 )
-from src.data_aggregate.utils.target.targets import NEUTRALIZE_BETAS, build_targets_multi
+from src.data_aggregate.utils.target.targets import build_targets_multi, fitted_beta_columns
 
 from src.constants.constants import DAILY_MACRO_LEVELS
 from src.context import Context
@@ -85,7 +86,7 @@ class StepCubeTarget(Step):
         # fit betas and build target neutrals to betas
         betas = self._estimate_betas(price_frames, panel, sector_excess)
         targets = self._build_targets(price_frames, betas, panel, macro_cols, horizons,
-                                      sector_groups, sector_excess)
+                                      sector_groups, sector_excess, fundamentals)
         n = self._persist(targets, betas, window, calendar, max_h)
         
         if n == COLUMNS_CHANGED:
@@ -184,8 +185,8 @@ class StepCubeTarget(Step):
         frames.require("ret")
         betas = estimate_all_betas(
             stock_returns=frames.ret,
-            factor_panel=panel,
-            per_stock_factors=sector_excess,
+            global_factors=panel,
+            stock_sector_factor=sector_excess,
             window=cfg.window,
             min_obs=cfg.min_obs,
             ridge_alpha=cfg.get("ridge_alpha", 1),
@@ -194,49 +195,59 @@ class StepCubeTarget(Step):
             market_prior=cfg.get("market_prior", 1.0),
             ffill_limit=cfg.get("ffill_limit", 21))
 
-        # a ticker without the univariate market beta is unusable downstream (the L/S
-        # optimizer neutralizes on it), so drop it rather than ship a hole
-        to_kick = [t for t, b in betas.items() if "beta_market_simple" not in b]
-        for t in to_kick:
-            self._log.warning("beta_market_simple missing for %s -> dropped", t)
-
-        betas = {t: v for t, v in betas.items() if t not in to_kick}
+        # `_assemble_output` already OMITS a ticker with no estimable window, and
+        # `compute_epsilon` skips a ticker absent from this dict -- so an empty dict is the
+        # only unrecoverable case and there is nothing to filter per-ticker.
         if not betas:
             raise RuntimeError("no ticker produced betas -> factor panel or returns are empty")
 
-        bm = np.nanmean([betas[t]["beta_market_simple"].mean() for t in betas])
-        self._log.info("Estimated multi-factor betas for %s tickers "
-                       "(mean beta_market_simple=%.2f)", len(betas), bm)
+        bm = np.nanmean([b["beta_market"].mean() for b in betas.values()])
+        self._log.info("Estimated multi-factor betas for %s tickers (mean beta_market=%.2f)",
+                       len(betas), bm)
         return betas
 
     # ---- targets ---- #
     def _build_targets(self, frames: PriceFrames, betas: dict, panel: pd.DataFrame,
                        macro_cols: list[str], horizons: list[int],
                        sector_groups: dict[str, dict[str, str]],
-                       sector_excess: pd.DataFrame | None) -> dict:
+                       sector_excess: pd.DataFrame | None,
+                       fundamentals: pd.DataFrame) -> dict:
 
         cfg = self._cfg.targets
         frames.require("ret")
+
         # store EVERY configured target version (e.g. rank AND zscore) so the modelling step
         # can pick one via model.target_type without a cube rebuild
         label_types = list(cfg.get("labels", ["zscore", "rank", "epsilon"]))
-        neutralize_betas = tuple(cfg.get("neutralize_betas", NEUTRALIZE_BETAS))
+        # recomputed here rather than reused from `PitFrames.market_cap`: that cache belongs to
+        # the fundamentals sub-step, which runs later and over a different warm-up window.
+        market_cap = (daily_market_cap(fundamentals, frames.close)
+                      if cfg.get("neutralize_log_mcap", False) else None)
         labels = build_targets_multi(
             close=frames.close,
-            betas=betas, factor_panel=panel, macro_cols=macro_cols,
-            horizons=tuple(horizons), labels=tuple(label_types),
+            betas=betas,
+            factor_panel=panel,
+            macro_cols=macro_cols,
+            horizons=tuple(horizons),
+            labels=tuple(label_types),
             min_names=cfg.min_names,
             neutralize_momentum=cfg.get("neutralize_momentum", True),
-            neutralize_betas=neutralize_betas,
             sector_groups=sector_groups,
             sector_excess=sector_excess,
             stock_ret=frames.ret,
-            vol_standardize=cfg.get("vol_standardize", False))
+            vol_standardize=cfg.get("vol_standardize", False),
+            market_cap=market_cap)
+
         non_null = sum(int(df.notna().sum().sum())
                        for per in labels.values() for df in per.values())
+        # the log_mcap name count is the ONLY observable for the one silent failure mode: an
+        # EMPTY market-cap frame becomes an all-zero design column `lstsq` absorbs exactly, so
+        # the flag would no-op with the size tilt intact and no test or gate would fire.
         self._log.info("Built factor-neutral targets %s for horizons %s (projected orthogonal "
-                       "to %s exposures + momentum + GICS industry, non-null=%s)",
-                       label_types, horizons, len(neutralize_betas), non_null)
+                       "to %s loadings + momentum + GICS industry + log_mcap on %s names, "
+                       "non-null=%s)", label_types, horizons, len(fitted_beta_columns(betas)),
+                       0 if market_cap is None else int(market_cap.notna().any().sum()),
+                       non_null)
         return labels
 
     # ---- persist ---- #

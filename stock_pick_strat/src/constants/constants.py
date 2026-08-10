@@ -904,3 +904,25 @@ TIINGO_RATIO_OUTLIERS_FILENAME = "tiingo_ratio_outliers.csv"
 # drift is expected even when both sides agree on the underlying concept.
 TIINGO_EXACT_MATCH_TOLERANCE_FLOW = 0.02
 TIINGO_EXACT_MATCH_TOLERANCE_LEVEL = 0.01
+
+# --------------------------------------------------------------------------- #
+# YAHOO CROSS-VALIDATION (src/utils/yahoo_comparison.py)                      #
+# --------------------------------------------------------------------------- #
+# Fallback external ground-truth check for tickers Tiingo's Free/Power plan does not
+# cover. Same shape as the Tiingo constants above; `yfinance` quarterly statements only
+# expose ~4-5 trailing, CURRENT-RESTATED quarters (no as-filed point-in-time depth), so
+# this is a coverage-gap filler, not a substitute for Tiingo's deeper history.
+YAHOO_CACHE_DIRNAME = "yahoo_cache"
+YAHOO_COMPARISON_FILENAME = "yahoo_comparison.csv"
+YAHOO_RATIO_OUTLIERS_FILENAME = "yahoo_ratio_outliers.csv"
+YAHOO_EXACT_MATCH_TOLERANCE_FLOW = 0.02
+YAHOO_EXACT_MATCH_TOLERANCE_LEVEL = 0.01
+
+# Tickers the universe-wide audit could validate against NEITHER Tiingo NOR Yahoo --
+# logged aside as informational, never treated as a blocking failure.
+NO_EXTERNAL_VALIDATION_FILENAME = "no_external_validation.csv"
+
+# Single ranked review queue combining Tiingo/Yahoo bucket-a misses, Tiingo/Yahoo
+# ratio-outlier flags, tag-ledger switch breaks and internal level/YoY outliers --
+# see fundamentals_findings.py.
+FUNDAMENTALS_FINDINGS_RANKED_FILENAME = "fundamentals_findings_ranked.csv"

@@ -1418,9 +1418,8 @@ def _derived_fields(
     annual); growth/trend features use it for a true YoY comparison. `intrinsic_cfg`
     overrides the DCF parameters for the intrinsic-value yield.
     """
-    F: dict[str, pd.DataFrame] = {}
-    intrinsic_cfg = intrinsic_cfg or {}
 
+    F: dict[str, pd.DataFrame] = {}
     _daily_cache: dict[str, pd.DataFrame] = {}
 
     def daily(field):
@@ -1448,17 +1447,17 @@ def _derived_fields(
     F.update(_pension_health_fields(daily, pbo, notes_num, idx, pension_ret))
 
     # ---- everything that needs a daily market cap ---- #
-    mcap = daily_market_cap(fund_hist, close) if close is not None else pd.DataFrame()
-    if not mcap.empty:
-        F.update(_valuation_yield_fields(mcap, net_income, revenue, equity, fcf))
-        ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret)
-        F.update(_pension_scale_fields(pension_ret, pbo, fn_deficit, mcap))
-        F.update(_ev_yield_fields(ebitda, fcf, ev))
-        F.update(_altman_z_fields(daily, mcap, revenue))
-        F.update(_pegy_fields(daily, fund_hist, idx, mcap, net_income, yoy_periods,
-                              earnings_history))
-        F.update(_reit_multiple_fields(daily, fund_hist, net_income, mcap, ev))
-        F.update(_energy_multiple_fields(daily, fund_hist, ev))
+    mcap = daily_market_cap(fund_hist, close)
+    ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret)
+
+    F.update(_valuation_yield_fields(mcap, net_income, revenue, equity, fcf))
+    F.update(_pension_scale_fields(pension_ret, pbo, fn_deficit, mcap))
+    F.update(_ev_yield_fields(ebitda, fcf, ev))
+    F.update(_altman_z_fields(daily, mcap, revenue))
+    F.update(_pegy_fields(daily, fund_hist, idx, mcap, net_income, yoy_periods,
+                            earnings_history))
+    F.update(_reit_multiple_fields(daily, fund_hist, net_income, mcap, ev))
+    F.update(_energy_multiple_fields(daily, fund_hist, ev))
 
     # ---- price-independent blocks ---- #
     F.update(_profitability_level_fields(daily, revenue, net_income, fcf))
@@ -1571,21 +1570,19 @@ def build_fundamental_feature_panel(
     """
     
     if fundamentals_history is None or fundamentals_history.empty:
-        return pd.DataFrame(columns=["date", "ticker"])
+        raise ValueError("Need to build fundamentals_history table first")
 
     yoy_periods = infer_yoy_periods(fundamentals_history)
     fields = _derived_fields(fund_hist=fundamentals_history, 
                              idx=trading_index, 
                              close=stock_close,
-                             yoy_periods=yoy_periods, intrinsic_cfg=intrinsic_cfg,
-                             earnings_history=earnings_history, pension_facts=pension_facts,
+                             yoy_periods=yoy_periods, 
+                             intrinsic_cfg=intrinsic_cfg,
+                             earnings_history=earnings_history, 
+                             pension_facts=pension_facts,
                              notes_num=notes_num)
 
-    # float32 the ~90 daily [dates x tickers] wide frames: every derived field is a ratio / yield /
-    # 0-1 flag that gets z-scored or ranked downstream, so float64 precision is wasted. This halves
-    # the resident `fields` dict (the fundamental group's dict alone is the largest of any group) and,
-    # with the float32 stacks in the panel builders, keeps the full-history rebuild off the OOM
-    # killer (the group was SIGKILL/-9 exceeding the DB/VM memory limit).
+    # float32 to reduce space vs float 64, no need of too much detail since z scored or ranked
     fields = {k: (v.astype("float32") if isinstance(v, pd.DataFrame) and not v.empty else v)
               for k, v in fields.items()}
 

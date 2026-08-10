@@ -62,8 +62,7 @@ def _build(labels, **kwargs):
     close, stock_ret, betas, panel, groups, true_beta = _panel_with_beta_tilt()
     out = build_targets_multi(close, betas, panel, macro_cols=[], horizons=(HORIZON,),
                               labels=labels, min_names=20, neutralize_momentum=False,
-                              neutralize_betas=("beta_market",), sector_groups=groups,
-                              stock_ret=stock_ret, **kwargs)
+                              sector_groups=groups, stock_ret=stock_ret, **kwargs)
     return out[HORIZON], true_beta
 
 
@@ -123,6 +122,36 @@ def test_group_means_are_exactly_zero_per_day():
     print("\n=== SANITY CHECK: industry indicator block ===")
     print(f"  worst |per-day industry mean| of the projected epsilon = {worst:.2e}")
     print("  -> group membership cannot predict the target, exactly. Validated.")
+
+
+def test_label_is_orthogonal_to_the_size_characteristic():
+    """A LOADING does not span a CHARACTERISTIC, so the size characteristic gets its own
+    regressor. On the live panel `beta_size` explained only R^2 0.26 of `-log(mcap)` and
+    `-log_mcap` earned free rank-IC +0.0380 (t +7.4) at h=60; adding this took it to +0.0051.
+
+    Uses `epsilon`, not `rank`: `_neutral_label` re-applies the transform AFTER projecting, and
+    that transform is non-linear, so only the untransformed label is orthogonal to machine
+    precision. Uses a COLUMN SUBSET because `pit.daily_market_cap` returns one -- a ticker with
+    no filing history is absent, not NaN -- which is what makes the `reindex_like` in
+    `_neutralizing_design` load-bearing rather than redundant. Uses `logspace` because a
+    linearly-spaced $1bn-$400bn grid skews `log(mcap)` enough for XS_CLIP_CHARACTERISTIC to
+    bind, which would break exact orthogonality for a legitimate reason.
+    """
+    close, *_ = _panel_with_beta_tilt()
+    covered = close.columns[:50]                       # the other 10 have NO filing history
+    mcap = close[covered].mul(np.logspace(9, 11.5, len(covered)), axis=1)
+
+    built, _ = _build(("epsilon",), market_cap=mcap)
+    corr = built["epsilon"].corrwith(np.log(mcap), axis=1)
+    worst = float(corr.abs().max())
+
+    assert worst < 1e-9, f"label still tilts on log market cap: {worst:.2e}"
+    print("\n=== SANITY CHECK: label orthogonal to the size characteristic ===")
+    print(f"  {len(covered)}/{len(close.columns)} names carry a market cap "
+          "(the rest exercise the column-subset path that used to raise LinAlgError)")
+    print(f"  worst |per-day xs corr(epsilon, log_mcap)| = {worst:.2e}")
+    print("  -> size is removed exactly, not approximately. On the live panel this is the "
+          "0.0380 -> 0.0051 free-IC drop at h=60. Validated.")
 
 
 def test_vol_standardize_homogenises_label_magnitude():

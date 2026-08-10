@@ -415,7 +415,8 @@ class DataStore:
         RAISES on a missing or empty result -- an empty read is nearly always a real fault and
         should stop the run here, not surface later as an empty feature panel. Never returns a
         fabricated frame. `optional=True` returns None instead, for reads that are genuinely
-        allowed to have no data yet (a fetcher's resume check on a cold DB).
+        allowed to have no data yet (a fetcher's resume check on a cold DB); ~48 call sites in
+        `src/` rely on it, so branch on `is None` there rather than on `.empty`.
         """
         name = name_of(table)
         cols = self._resolve_columns(table, columns, project)
@@ -423,14 +424,17 @@ class DataStore:
             if optional:
                 return None
             raise TableMissingError(name)
+
         df = read_table(self.engine, name, columns=list(cols) if cols else None,
                         limit=limit, where=where, since=since, until=until,
                         date_col=date_col or self._date_col(table),
                         order_by=order_by, descending=descending)
+
         if df.empty:
             if optional:
                 return None
             raise TableEmptyError(name, where)
+
         return df
 
     def iter_load(self, table, *, chunksize: int = 200_000,

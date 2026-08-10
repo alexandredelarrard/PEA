@@ -182,6 +182,7 @@ def load_price_frames(
         if mrows is None:
             raise RuntimeError(f"{Tables.cube_part_market} is missing or returned no rows -> re-run "
                                "`data_aggregate build-prices`")
+        
         mrows["date"] = pd.to_datetime(mrows["date"]).dt.normalize()
         mrows = mrows[mrows["ticker"].astype(str).isin(want)]
         oc = mrows.pivot(index="date", columns="ticker", values="close").sort_index()

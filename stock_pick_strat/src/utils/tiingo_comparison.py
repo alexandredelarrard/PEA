@@ -69,7 +69,7 @@ _LOG: logging.Logger = logging.getLogger(__name__)
 __all__ = [
     "TIINGO_FIELD_MAP", "BUCKET_B_OVERRIDES", "BUCKET_B_FIELDS", "classify_bucket",
     "fetch_tiingo_statements", "build_comparison_frame", "ratio_outlier_check",
-    "alignment_summary", "run_dow30_audit",
+    "alignment_summary", "run_tiingo_audit",
 ]
 
 # `kind`:
@@ -117,6 +117,35 @@ TIINGO_FIELD_MAP: dict[str, dict[str, str | None]] = {
     "basicShares": {"tiingo_code": "shareswa", "kind": "latest_q"},
     "dilutedShares": {"tiingo_code": "shareswaDil", "kind": "latest_q"},
     "dividendsPerShare": {"tiingo_code": None, "kind": None},
+
+    # Added for downstream-consumed fields in fundamental_features.py (EV bridge, EBITDA
+    # yield, R&D moat, latest-quarter momentum) that had NO cross-check at all before this
+    # pass. Confirmed live against Tiingo's own `/statements` response (2026-08 probe,
+    # AAPL) that these dataCodes exist -- unlike `researchAndDevelopment`/`ebitda`/
+    # `freeCashflow`, no bucket-b evidence has been gathered yet for these three, so they
+    # start in bucket "a" (the default) and must be watched on the first live run:
+    # `ebitda` in particular is not a standardized GAAP concept and Tiingo's own add-back
+    # methodology may differ from ours, same caution as any other bucket-a candidate that
+    # hasn't been reconciled to the dollar yet.
+    "freeCashflow": {"tiingo_code": "freeCashFlow", "kind": "flow"},
+    "ebitda": {"tiingo_code": "ebitda", "kind": "flow"},
+    "researchAndDevelopment": {"tiingo_code": "rnd", "kind": "flow"},
+    # Single latest-quarter (not TTM-summed) companions to `totalRevenue`/`netIncome`,
+    # feeding fundamental_features.py's `q_rev_growth`/`q_earnings_growth` block. Same
+    # Tiingo dataCode as the TTM field, but `kind="latest_q"` (single matched quarter, no
+    # trailing-4 sum) -- same reasoning as `basicShares`/`dilutedShares` above.
+    "revenue_q": {"tiingo_code": "revenue", "kind": "latest_q"},
+    "netIncome_q": {"tiingo_code": "netIncComStock", "kind": "latest_q"},
+    # No Tiingo equivalent at all (bucket "c"): headcount is not a financial-statement
+    # line item, and Tiingo's `nonControllingInterests` dataCode lives only on the INCOME
+    # STATEMENT (the NCI share of net income) -- there is no separate balance-sheet
+    # minority-interest/NCI equity line in Tiingo's schema to compare `minorityInterest`
+    # against (confirmed via the full AAPL dataCode dump, 2026-08 probe).
+    "employees": {"tiingo_code": None, "kind": None},
+    "minorityInterest": {"tiingo_code": None, "kind": None},
+    # NCI's share of net income -- the one income-statement-side NCI figure Tiingo does
+    # expose. Flow, TTM-summed like every other income-statement line.
+    "nciIncome": {"tiingo_code": "nonControllingInterests", "kind": "flow"},
 }
 
 # Bucket "b": CONFIRMED (ticker, field) pairs whose definition genuinely differs from
@@ -184,11 +213,14 @@ def fetch_tiingo_statements(
 
     Returns `None` (logs, never raises) when Tiingo has no data for this ticker --
     this is the SAME mechanism that self-discovers plan entitlement: a ticker
-    outside the current plan's coverage (confirmed live: non-Dow-30 tickers return
-    HTTP 400 on the plan this was built against) just comes back empty, with no
-    ticker-eligibility list hardcoded anywhere. `DOW_30_TICKERS` is only today's
-    default caller argument (see `run_dow30_audit`), so widening coverage later
-    needs no code change here.
+    outside the current plan's coverage (confirmed live 2026-08:
+    `{"detail": "Error: Free and Power plans are limited to the DOW 30..."}`, and that
+    whitelist is itself the PRE-2024 Dow roster -- AMZN/NVDA/SHW, the 2024
+    reconstitution's additions, fail too) just comes back empty, with no
+    ticker-eligibility list hardcoded anywhere. `run_tiingo_audit` defaults to the full
+    analysis universe and lets each ticker self-discover coverage this way; `fundamentals_
+    audit.py`'s `run_universe_audit` is what routes anything left uncovered to the Yahoo
+    fallback.
 
     Cached under `cache_dir / f"{ticker}.json"` when a `cache_dir` is given (no
     TTL -- fundamentals restate slowly and this is a periodic audit, not a
@@ -403,15 +435,25 @@ def alignment_summary(comparison_frame: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def run_dow30_audit(
-    context: Context, tickers: list[str] = DOW_30_TICKERS, *, field_map: dict = TIINGO_FIELD_MAP,
+def run_tiingo_audit(
+    context: Context, tickers: list[str] | None = None, *, field_map: dict = TIINGO_FIELD_MAP,
     threshold: float = 3.5, api_key: str, cache_dir: Path | None = None,
 ) -> dict[str, pd.DataFrame]:
     """`run_audit`-shaped orchestrator: builds the comparison frame across every
     ticker, then the ratio-outlier check on top of it. One bad ticker (Tiingo
     HTTP failure, no coverage) never blocks the others -- `build_comparison_frame`
     already skips a ticker with no usable Tiingo data via `fetch_tiingo_statements`
-    returning `None`."""
+    returning `None`.
+
+    `tickers=None` resolves to the full analysis universe (`load_universe_tickers`) --
+    Tiingo's plan-coverage gate (confirmed live: Free/Power = the PRE-2024 Dow roster
+    only) is discovered per-ticker at fetch time, not predicted from `DOW_30_TICKERS`,
+    so there is no reason to default to that constant anymore; pass it explicitly for a
+    cheap smoke test instead. `fundamentals_audit.py`'s `run_universe_audit` is the
+    caller that adds the Yahoo fallback for whatever this leaves uncovered."""
+    if tickers is None:
+        from src.utils.universe import load_universe_tickers
+        tickers = load_universe_tickers(context)
     comparison = build_comparison_frame(context, list(tickers), field_map=field_map,
                                        api_key=api_key, cache_dir=cache_dir)
     ratio_outliers = ratio_outlier_check(comparison, threshold=threshold)
@@ -433,14 +475,14 @@ if __name__ == "__main__":
         )
     cache_dir = context.paths["DATA_STORE"] / "gaps" / TIINGO_CACHE_DIRNAME
 
-    result = run_dow30_audit(context, api_key=api_key, cache_dir=cache_dir)
+    result = run_tiingo_audit(context, api_key=api_key, cache_dir=cache_dir)
 
     out_dir = context.paths["DATA_STORE"] / "gaps"
     out_dir.mkdir(parents=True, exist_ok=True)
     result["comparison"].to_csv(out_dir / TIINGO_COMPARISON_FILENAME, index=False)
     result["ratio_outliers"].to_csv(out_dir / TIINGO_RATIO_OUTLIERS_FILENAME, index=False)
 
-    print("\n=== SANITY CHECK: Tiingo cross-validation (Dow 30) ===")
+    print("\n=== SANITY CHECK: Tiingo cross-validation (full universe) ===")
     print(result["alignment"].to_string(index=False))
     n_ratio_flags = len(result["ratio_outliers"])
     print(f"  bucket-b/c ratio-outlier flags: {n_ratio_flags}")

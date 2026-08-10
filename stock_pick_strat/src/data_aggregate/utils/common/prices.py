@@ -54,20 +54,7 @@ def forward_return(prices: pd.DataFrame, horizon: int) -> pd.DataFrame:
 
 def forward_compound(daily: pd.Series | pd.DataFrame, horizon: int,
                      min_periods: int | None = None):
-    """Compounded forward return over t+1..t+h from a daily-return series/frame.
-
-    A simple return <= -100% (1 + r <= 0) is undefined for log-compounding and
-    triggers `invalid value encountered in log1p`. That happens on bad ticks and,
-    notably, the April-2020 NEGATIVE oil-futures episode in the commodity factor.
-    We floor the return just above -1 so log1p stays finite -- a floored extreme
-    for a control factor, which keeps coverage (masking to NaN would blank a whole
-    ~horizon window of every stock's target, since factors are shared). NaNs are
-    preserved (they do not warn).
-
-    `min_periods` defaults to `horizon` (the TARGET's policy: a partial forward window is
-    a different horizon, not a usable label). The seasonality feature passes
-    `round(0.6 * horizon)` instead -- see the module docstring.
-    """
+    """Compounded forward return over t+1..t+h from a daily-return series/frame."""
     safe = daily.clip(lower=-0.999999)
     log1p = np.log1p(safe)
     mp = horizon if min_periods is None else min_periods

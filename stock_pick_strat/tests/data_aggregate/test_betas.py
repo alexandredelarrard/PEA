@@ -54,9 +54,6 @@ def test_ridge_recovers_known_betas(synthetic_factor_model):
             f"beta_{name}={recovered[name]:.3f} not within 0.15 of true {truth}"
         )
 
-    # beta_market_simple (cov/var) should also be close to the true market beta.
-    assert abs(last["beta_market_simple"] - true_betas["market"]) < 0.30
-
     print("\n=== SANITY CHECK: ridge recovers known betas ===")
     for name, truth in true_betas.items():
         print(f"  beta_{name:<9} recovered={recovered[name]:+.3f}  true={truth:+.2f}")
@@ -120,9 +117,8 @@ def test_betas_have_no_lookahead(synthetic_factor_model):
 
     corrupted = estimate_betas_for_stock(y2, X2, window=120, min_obs=60, step=5)
 
-    joint_cols = [c for c in base.columns if c != "beta_market_simple"]
-    a = base.loc[base.index <= cutoff, joint_cols]
-    b = corrupted.loc[corrupted.index <= cutoff, joint_cols]
+    a = base.loc[base.index <= cutoff]
+    b = corrupted.loc[corrupted.index <= cutoff]
     pd.testing.assert_frame_equal(a, b, check_exact=False, atol=1e-10)
 
     print("\n=== SANITY CHECK: no look-ahead in betas ===")

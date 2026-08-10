@@ -49,12 +49,6 @@ from src.utils.step import Step
 
 class StepCubeFundamentals(Step):
 
-    # The price fields this step reads back from `cube_part_prices`. Declared rather than
-    # inlined at the call site so the projection is introspectable -- that is what
-    # `tests/data_aggregate/test_part_registry.py` checks, and what keeps a step from
-    # quietly widening its read back to the full OHLCV grid.
-    _FIELDS = ("close",)
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
@@ -63,13 +57,15 @@ class StepCubeFundamentals(Step):
         self._store = context.store
 
     def run(self, full: bool = False) -> None:
+
+        # load inputs 
         window = plan_window(self._store, Tables.cube_part_fundamentals, full=full,
                              warmup=self._warmup(),
                              trading_index=load_trading_calendar(self._store))
         frames = self._load_frames(window.since)
         fundamentals = self._load_fundamentals()
         earnings = self._load_optional(Tables.earnings_surprises, "earnings-surprise history",
-                                       "fetch_earnings_surprises")
+                                                       "fetch_earnings_surprises")
         
         # ONE point-in-time cache for all five builders (see the module docstring)
         pit = PitFrames(fundamentals, frames.trading_index, frames.close)
@@ -81,16 +77,23 @@ class StepCubeFundamentals(Step):
                    "No fundamental features built (missing fundamentals).")
         merger.add(self._sector_kpi_panel(frames, fundamentals, pit), "sector-KPI",
                    "No sector KPI features built (missing fundamentals).")
+
+        # earnings 
         merger.add(self._earnings_panel(frames, earnings), "earnings-expectation",
                    "No earnings-expectation features built.")
+
+        # employees 
         merger.add(self._employee_panel(frames, fundamentals, pit), "workforce",
                    "No workforce features built.")
+
+        # dividends 
         merger.add(self._dividend_panel(frames, fundamentals, pit), "dividend",
                    "No dividend features built (missing dividend history).")
         self._log.info("PitFrames shared across the fundamentals builders: %s", pit.stats())
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames, fundamentals, earnings, pit
+
         n = write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
@@ -99,22 +102,20 @@ class StepCubeFundamentals(Step):
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
         return int(override) if override is not None else self._part.warmup_trading_days
 
-    def _intrinsic_cfg(self) -> dict:
-        cfg = self._cfg.get("intrinsic", {})
-        return OmegaConf.to_container(cfg, resolve=True) if cfg else {}
-
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(
-            self._store, peers=load_peers_or_raise(self._context, self._config),
-            market_ticker=self._market_ticker, fields=self._FIELDS, since=since)
+            self._store, 
+            peers=load_peers_or_raise(self._context, self._config),
+            market_ticker=self._market_ticker, 
+            fields=("close",), 
+            since=since)
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
         df = self._context.store.load(Tables.fundamentals_history, optional=True)
         if df is None:
-            self._log.warning("No fundamentals history -> the fundamental, sector, workforce "
+            raise Exception("No fundamentals history -> the fundamental, sector, workforce "
                               "and dividend-payout features will be skipped.")
-            return None
         self._log.info("Loaded %s: %s rows, %s tickers (ONCE for five builders)",
                        Tables.fundamentals_history, len(df), df["ticker"].nunique())
         return df
@@ -139,7 +140,7 @@ class StepCubeFundamentals(Step):
             peer_dict=frames.peers,
             trading_index=frames.trading_index,
             stock_close=frames.close,
-            intrinsic_cfg=self._intrinsic_cfg(),
+            intrinsic_cfg=self._cfg.get("intrinsic", {}),
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
             earnings_history=earnings,                       # PEGY projected-growth term

@@ -9,38 +9,42 @@ build_cube:
     min_obs: 80                # observations needed before a beta is emitted (scaled with window)
     ridge_alpha: 1.5           # shrinkage RATIO: lambda = ridge_alpha * N, so an orthogonal
                                # factor is shrunk by 1/(1+alpha) at EVERY window length.
-                               # Was 0.08 = a 7% shrink, far too little for a noisy loading.
     ridge_alpha_market: 0.48   # market's OWN ratio: it shrinks toward 1.0 rather than 0.0 and
                                # forecasts its window far better than the macro loadings do,
-                               # so it needs much less. TUNE BOTH against the realized-on-
-                               # ex-ante slope; the target is ~1.0.
-    market_prior: 1.0          # beta_market shrinks toward 1.0 (its natural centre), every
-                               # other beta toward 0.0. Shrinking market toward 0 leaves the
+                               # so it needs much less. 
+    market_prior: 1.0          # beta_market shrinks toward 1.0 (its natural centre)
     step: 1                    # re-fit every N days. 1 = daily => no 5-day staircase
     ffill_limit: 21            # carry a beta at most N days over a gap with no estimable window
-    gics_sector_factor: true   # regress each stock on its OWN GICS sector basket (leave-one-out,
-                               # market-neutralized) -> a per-name `beta_sector`, so epsilon strips
 
   targets:
     horizons: [30, 60, 90]
     primary_horizon: 60
-    labels: [rank, zscore, epsilon]   # target versions STORED in the cube (rank | zscore | epsilon);
-                             # the model picks one via model.target_type in modellling.yml
+    labels: [rank, zscore, epsilon]   
     min_names: 20
-    neutralize_momentum: true  # add the 12-1 momentum characteristic to the design below
-    # Every label is finally PROJECTED cross-sectionally orthogonal to these loadings +
-    # momentum + GICS industry_group indicators, jointly and AFTER the rank/zscore transform.
-    # Subtracting beta*factor is not enough on its own: a signal built from nothing but a
-    # name's market beta earned rank-IC +0.073 (t +10.3) against the un-projected label.
-    # vol_63 / log_mcap are deliberately ABSENT -- adding them also stripped a genuine
-    # fcf-yield signal without reducing the exposure tilt any further.
-    neutralize_betas: [beta_market, beta_market_simple, beta_size, beta_sector,
-                       beta_d_vix, beta_oil, beta_d_yield_10y, beta_momentum]
-    vol_standardize: false     # divide epsilon by its own trailing risk (-> an information
-                               # ratio) before the transform. OFF: measured to NOT reduce the
-                               # exposure tilt once the projection is in place; it only
-                               # homogenises magnitude, which matters for an RMSE loss on the
-                               # zscore/epsilon labels but not for the live rank one.
+    # Every label is finally PROJECTED cross-sectionally orthogonal to EVERY fitted loading +
+    # momentum + log market cap + GICS industry_group indicators, jointly and AFTER the
+    # rank/zscore transform. Subtracting beta*factor is not enough on its own: a signal built
+    # from nothing but a name's market beta earned rank-IC +0.073 (t +10.3) against the
+    # un-projected label. The loading list is DERIVED from the fitted betas (see
+    # `targets.fitted_beta_columns`) rather than listed here: a hand-kept list let a newly
+    # added factor's loading leak into the label until somebody remembered to edit it, and the
+    # loadings that had been left out were measured to leak no more than the ones left in.
+    neutralize_momentum: true  # ALSO project out the 12-1 momentum CHARACTERISTIC. This zeroes
+                               # the mom_12_1 feature's own IC by construction -- deliberate for
+                               # a cheap price-based risk premium, and exactly why the value and
+                               # vol characteristics are NOT treated the same way.
+    neutralize_log_mcap: true  # ALSO project out log market cap. `beta_size` is a LOADING on the
+                               # size factor's RETURN and does not span the size CHARACTERISTIC
+                               # (R^2 0.26 across names, 59% of the size ordering unspanned by
+                               # the whole design), so `-log_mcap` earned free rank-IC
+                               # +0.0254/+0.0380/+0.0443 at h=30/60/90 (t up to +7.4); this takes
+                               # h=60 to +0.0051. Un-shrinking beta_size is NOT a substitute -- a
+                               # deliberate 5x over-hedge still leaves t +4.4 while injecting
+                               # beta noise. vol_63 stays OUT: it would zero the vol_63 feature.
+                               # Unlike the beta/sector tilts, a size tilt is neutralized nowhere
+                               # downstream (strategy_ls.yml enforces beta+sector only), so it
+                               # would flow straight into the live book.
+    vol_standardize: true     # divide epsilon by its own trailing risk
 
   features:
     standardize_method: rank # rank | zscore

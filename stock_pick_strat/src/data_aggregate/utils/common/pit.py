@@ -178,12 +178,6 @@ class PitFrames:
     accessor protocol and into `fundamental_features`'s `daily(...)` call sites with no
     other change.
 
-    IDENTITY GUARANTEE -- this is what makes the sharing bit-identical: the cache is
-    keyed ONLY by field, so it is valid solely for the (history, trading_index, close)
-    it was built with. `assert_matches` raises rather than returning a frame computed on
-    a different window; the cube sub-steps use DIFFERENT warm-up trims, so a silently
-    reused cache would be a correctness bug, not a performance one.
-
     A None / empty history is allowed and yields empty frames, exactly as
     `fundamentals_to_daily` does for an absent field -- so a caller's own
     `if history is None` guard keeps behaving as before.

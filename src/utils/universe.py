@@ -4,7 +4,7 @@ universe.py  (src/utils/universe.py)
 THE single entry point for the analysis universe. Every step (extract, peers,
 cube, modelling, backtest) resolves which tickers to analyse from ONE place: the
 `sp500_tickers` DB table. Populate that table with whatever set you want — the
-S&P 500 (the default seeder `fetch_prices.get_sp500_tickers` scrapes it), the
+S&P 500 (the default seeder `fetch_tickers.get_sp500_tickers` scrapes it), the
 Russell 1000, or a hand-picked list — and the whole flow follows automatically:
 
     extraction  -> seeds the table if empty, then FETCHES only these names (+ the
@@ -22,7 +22,6 @@ from __future__ import annotations
 from src.data_store.schema import Tables
 from src.context import Context
 from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
-
 
 def load_universe_tickers(context: Context) -> list[str]:
     """The analysis universe: sorted, de-duplicated, upper-cased tickers from the

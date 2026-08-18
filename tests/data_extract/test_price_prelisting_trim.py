@@ -14,7 +14,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.data_extract.utils.prices.fetch_prices import (
-    _prelisting_cutoff, trim_prelisting_bars,
+    _ACTION_COLS, _prelisting_cutoff, trim_prelisting_bars,
 )
 
 _START = pd.Timestamp("2015-01-05")
@@ -29,7 +29,7 @@ def _bars(ticker: str, closes: list[float], volumes: list[float]) -> pd.DataFram
 def test_zero_volume_prefix_is_trimmed_and_only_the_prefix():
     """AMCR's shape: a long flat zero-volume block, then real trading. The cutoff is the
     LAST zero-volume bar, so what remains is contiguous — trimming a prefix can never
-    punch an interior hole for `_interior_gap_start` to chase in a re-download loop."""
+    punch an interior hole in the middle of a ticker's otherwise-contiguous history."""
     frame = _bars("AMCR", [22.87] * 40 + [23.0 + i * 0.1 for i in range(60)],
                   [0.0] * 40 + [3_000_000.0] * 60)
     out = trim_prelisting_bars(frame)
@@ -113,3 +113,21 @@ def test_prelisting_trim_prints_conclusion():
     print("    None of the 18 known false positives (PFG/AMD/XEL/IBKR/DXCM/HUBB/SBAC/")
     print("    WTW/DOC/CNC/GEN/CHD/ERIE/VST/SMCI/CRH/NCLH/ARES) was trimmed.")
     print("    USDEUR=X, GC=F, CL=F, SPY untouched. Idempotent. Validated.")
+
+
+def test_action_columns_dropped_keep_prices_clean_ohlcv():
+    """Regression: yfinance actions=True returns Dividends, Stock Splits AND
+    'Capital Gains' (a fund/ETF distribution field, ~99% empty for equities, unused).
+    All three must be dropped so the `prices` table stays clean OHLCV — 'capital
+    gains' used to leak in."""
+    assert "capital gains" in _ACTION_COLS
+    raw = pd.DataFrame({
+        "date": [pd.Timestamp("2024-01-02")], "ticker": ["SPY"],
+        "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1.0],
+        "dividends": [0.0], "stock splits": [0.0], "capital gains": [0.0],
+    })
+    kept = raw.drop(columns=_ACTION_COLS, errors="ignore")
+    assert set(kept.columns) == {"date", "ticker", "open", "high", "low", "close", "volume"}
+    print("\n=== SANITY CHECK: prices stays clean OHLCV ===")
+    print("  dividends / stock splits / capital gains dropped from the price download -> "
+          "prices table is date,ticker,OHLCV only. Validated.")

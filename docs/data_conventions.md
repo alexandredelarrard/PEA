@@ -122,8 +122,18 @@ become a full 15-year rebuild.
   it, never from the period it describes.
 - `fundamentals_facts` keeps ORIGINAL and AMENDED rows as separate rows and never overwrites, so
   "what was known as of D" is answerable without exposing an amendment before its own filing date.
-- **Resume from the DB**, per entity: read the stored max date and fetch forward. **Save per
-  entity**, so an interrupted run never loses expensive work (LLM calls, 13F zips, API pulls).
+- **Resume from the DB**, never by reading the table: ask the store for the frontier and fetch
+  forward. Match the grain to the *source*, not to the table's PK —
+  - **per entity** (`store.max_date_by` → `resume_since` in
+    [utils/common/incremental.py](../src/data_extract/utils/common/incremental.py)) when the
+    provider is queried per ticker (yfinance prices/dividends). `resume_since` returns the OLDEST
+    per-ticker frontier so one batch window covers everyone, and the upsert no-ops whoever was
+    already current. 
+  - **global** (`store.max_date`) when one file serves the whole market: `short_interest`'s RegSHO
+    day-files contain every ticker, so once day D is stored everyone has D, and a per-ticker
+    frontier would only re-download days already held.
+- **Save per entity**, so an interrupted run never loses expensive work (LLM calls, 13F zips, API
+  pulls).
 - Catch provider errors **per ticker**, `context.log.warning(...)`, continue.
 - Cache large downloads (companyfacts JSON, 13F/notes zips, HF parquet) under `data/`; re-download
   only when missing. See [bulk_cache.py](../src/data_extract/utils/common/bulk_cache.py).

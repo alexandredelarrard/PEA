@@ -75,7 +75,7 @@ def price_column_returns(close: pd.DataFrame, tickers: dict[str, str]) -> pd.Dat
     `tickers` maps factor name -> price column, e.g.
         {"oil": "CL=F", "gold": "GC=F"}   or   {"USD/EUR": "USDEUR=X"}
 
-    These series are fetched OHLCV-only as `other_tickers` via fetch_market_prices: they
+    These series are fetched OHLCV-only as `other_tickers` via fetch_price_history: they
     live in `prices` but are never part of the analysed universe / features.
 
     Replaces `commodity_factor_returns` and `currency_factor_returns`, whose bodies were

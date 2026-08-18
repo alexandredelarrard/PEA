@@ -1,5 +1,5 @@
 """
-macro up-to-date check (src/data_extract/utils/fundamentals/fetch_macro.py).
+macro up-to-date check (src/data_extract/utils/prices/fetch_macro.py).
 
 FRED publishes the raw LEVEL series (Treasury yields, VIX) with a ~1 business-day
 lag, but the COMPUTED spreads/breakeven (T10Y2Y/T10Y3M/T10YIE) publish SAME-DAY.

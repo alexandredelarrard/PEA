@@ -45,7 +45,7 @@ from src.context import Context
 from src.constants.constants import (MACRO_ASSET_FRED_SERIES, MACRO_ASSET_YF_SERIES, MACRO_ASSET_BOND_TR_COLUMN, MACRO_ASSET_BOND_MATURITY_YEARS, MACRO_ASSET_CORE_LEVEL_COLUMNS, DATE_FORMAT)
 from src.utils.ssl_setup import configure_corporate_ca
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.fundamentals.fetch_macro import fill_short_gaps
+from src.data_extract.utils.prices.fetch_macro import fill_short_gaps
 
 # ORDERING, not a side-effect to tidy away: yfinance imports curl_cffi at module load and
 # freezes its CA bundle then, so the combined corporate bundle must exist BEFORE that import.

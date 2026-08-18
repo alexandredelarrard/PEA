@@ -46,16 +46,17 @@ Derived views are comprehensions, never hand-lists: `ALL`, `BY_NAME`, `MANAGED`,
 |---|---|---|
 | `sp500_tickers` | `ticker` | THE universe. `name, sector, industry_group, sub_industry, cik`. Also the only ticker→CIK source (the old `cik_mapping` table was dropped). Resolved via [src/utils/universe.py](../src/utils/universe.py)`::load_universe_tickers`, which drops `constants.INSUFFICIENT_HISTORY_TICKERS`. Swap universe by replacing rows only — no step code changes. |
 
-`other_tickers` (`SPY`, `CL=F`, `GC=F`, `USDEUR=X`, `^VIX`) go into `prices` via
-`fetch_market_prices` and are **never** added to the equity universe.
+`other_tickers` (`SPY`, `CL=F`, `GC=F`, `USDEUR=X`, `^VIX`) go into `prices` via a plain
+`fetch_price_history` call over that list (they are ordinary OHLCV rows) and are **never**
+added to the equity universe — nor passed to `fetch_dividends`.
 
 ## Extract — prices & market
 
 | Table | PK | date_col | Fresh | Notes |
 |---|---|---|---|---|
 | `prices` | `ticker, date` | `date` | daily | OHLCV. Read raw **only** by `StepCubePrices`. |
-| `dividends` | `ticker, date` | `date` | — | ex-div cash amount; same yfinance download as prices |
-| `short_interest` | `ticker, date` | `date` | daily | FINRA RegSHO. Projection lists `short_interest`/`avg_daily_volume` as **optional** — the live table has neither, and demanding them killed the read instead of degrading it |
+| `dividends` | `ticker, date` | `date` | — | ex-div cash amount. Its **own** fetcher (`fetch_dividends.py`) with its own resume window — ex-dates are quarterly where bars are daily — though it reuses the same yfinance `actions=True` response shape |
+| `short_interest` | `ticker, date` | `date` | daily | FINRA RegSHO. Resumes on the table's **global** max date (one day-file covers the whole market, so a per-ticker frontier would only re-fetch days already held). Projection lists `short_interest`/`avg_daily_volume` as **optional** — the live table has neither, and demanding them killed the read instead of degrading it |
 | `fails_to_deliver` | `ticker, date` | `date` | biweekly | SEC CNS fails. Separate from `short_interest` so its semi-monthly ~2-month-lagged files don't poison that table's global-max incremental |
 | `macro` | `date` | `date` | daily | FRED: 3M/2Y/10Y/30Y yields, 10y-2y & 10y-3m spreads, VIX, BAA spread, 10y breakeven. `ticker_col=None` |
 | `macro_asset_prices` | `date` | `date` | daily | long-history (~1995) allocation legs: `equity_tr`, `gold`, `energy`, `bond_10y_tr`, `cash_rate`, `fx_usdeur`, `yield_10y`, `vix`. `ticker_col=None` |

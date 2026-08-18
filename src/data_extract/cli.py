@@ -24,15 +24,15 @@ from src.utils.universe import load_universe_tickers
 from src.data_extract.step_check_freshness import StepCheckFreshness
 
 # --- prices / market / macro ------------------------------------------------ #
-from src.data_extract.utils.prices.fetch_prices import (
-    fetch_market_prices, fetch_price_history, get_sp500_tickers,
-)
+from src.data_extract.utils.prices.fetch_prices import fetch_price_history
+from src.data_extract.utils.prices.fetch_dividends import fetch_dividends
+from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_extract.utils.prices.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.prices.fetch_fails_to_deliver import fetch_fails_to_deliver
 from src.data_extract.utils.prices.fetch_13f import fetch_13f
 from src.data_extract.utils.prices.fetch_superinvestors import build_superinvestors_json
 from src.data_extract.utils.prices.fetch_macro_assets import fetch_macro_assets
-from src.data_extract.utils.fundamentals.fetch_macro import fetch_macro
+from src.data_extract.utils.prices.fetch_macro import fetch_macro
 # --- fundamentals ----------------------------------------------------------- #
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import fetch_fundamentals_edgartools
 from src.data_extract.utils.fundamentals.fundamentals_derive import rebuild_fundamentals_history
@@ -87,12 +87,22 @@ def seed_universe(config_path: str, refresh: bool) -> None:
 # --------------------------------------------------------------------------- #
 # Prices / market / macro                                                       #
 # --------------------------------------------------------------------------- #
-@cli.command(help="Daily price history + dividends (yfinance). HEAVY.", help_priority=2)
+@cli.command(help="Daily price history, OHLCV (yfinance). HEAVY.", help_priority=2)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def price_history(config_path: str, tickers: str | None) -> None:
     _, context = _ctx(config_path)
-    fetch_price_history(context, tickers=_tickers(context, tickers))
+    fetch_price_history(context, tickers=_tickers(context, tickers),
+                        years_history=context.config.data_extract.years_history)
+
+
+@cli.command(help="Cash-dividend ex-dates (yfinance). HEAVY.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+def dividends(config_path: str, tickers: str | None) -> None:
+    _, context = _ctx(config_path)
+    fetch_dividends(context, tickers=_tickers(context, tickers),
+                    years_history=context.config.data_extract.years_history)
 
 
 @cli.command(help="FINRA RegSHO short interest / short volume.")
@@ -114,8 +124,11 @@ def fails_to_deliver(config_path: str, tickers: str | None) -> None:
 @cli.command(help="Benchmark + commodity/FX OHLCV (SPY, ^VIX, oil, gold, FX). Light.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def market_prices(config_path: str) -> None:
+    """Market/macro series are plain OHLCV rows in `prices`, so they are just
+    `fetch_price_history` over `other_tickers` — no dividends, no equity features."""
     _, context = _ctx(config_path)
-    fetch_market_prices(context)
+    fetch_price_history(context, tickers=list(context.config.data_extract.other_tickers),
+                        years_history=context.config.data_extract.years_history)
 
 
 @cli.command(help="FRED macro series (yields, VIX, credit spread, breakevens). Light.")

@@ -4,6 +4,14 @@ Scope: how to write Python in `src/`. Short on purpose — the data rules are in
 [data_conventions.md](data_conventions.md), the structural rules in
 [architecture.md](architecture.md).
 
+
+## Functions and variables 
+
+- Write class, methods, functions extremely cleanly: the less code the better, edge cases are specific functions.
+- Write explicit variable names as convention. `df_xx` for dataframes, transparent variable names to improve readability. 
+- Split large function into unitary functions doing one unique goal. 
+- Write small functions to be reusable. If used through different modules, avoid circular import and move the function to a `/utils/` folder or subfolder.
+
 ## Constants first
 
 Before naming any column, key, URL, threshold, or date format: **grep
@@ -21,44 +29,36 @@ numbers (those live in `configs/` — see [config.md](config.md)).
 
 ## Logging
 
-```python
-class StepFoo(Step):
-    def run(self):
-        self._log.info("Fetching %d tickers", len(tickers))     # inside a Step
-
-def fetch_bar(context: Context, tickers: list[str]) -> pd.DataFrame:
-    context.log.warning("skipping %s: %s", ticker, exc)          # in a helper taking context
-```
-
 - **`self._log`** in a `Step` (or a `Strategy` — both set it in `__init__`).
 - **`context.log`** in a helper that receives `context`.
-- **Never `print()`** in `src/`. (36 `print(` occurrences remain in `src/` — legacy, not a licence.)
+- **Never `print()`** in `src/`. Fix any remaining print if still exists.
 - `logging.getLogger(__name__)` at module level is accepted in the leaf util/builder modules that
-  take no `context` (53 such modules); the logging config routes them the same way.
+  take no `context`; the logging config routes them the same way.
 - **There is no `self._context.logger`.** `Context` exposes `.log`; `_context.logger` would raise
   `AttributeError`. Some instruction files still say otherwise — see
   [docs/README.md](README.md#known-documentation-drift-verified-2026-08-17).
 
-Prefer `%s` lazy formatting over f-strings in log calls.
+Prefer `f{}` f-strings in log calls over %s.
 
 ## Typing & imports
 
 - **Full type annotations on every signature**, parameters and return.
 - `from __future__ import annotations` at the top of new modules (most of `src/` has it).
-- **All imports at the top of the file.** No function-local imports except where a module docstring
-  documents a deliberate cycle break (e.g. `tests/conftest.py`'s fixture-local imports, which exist
-  so `configure_corporate_ca()` runs first).
+- **All imports at the top of the file.** No function-local imports.
+- Fix cycle breaks, circular import. No import inside the function
 - No cross-imports between `src/` subfolders — shared logic goes in `src/utils/`.
 
 ## Module docstrings carry the reasoning
 
 This codebase's docstrings are unusually load-bearing: they record *why* a value is what it is, and
-what broke last time. `xs.py` explains why three clip constants must not be unified; `frames.py`
-explains why `ratio` and `safe_div` must not be merged; `store.py` explains why `until` is `< day+1`.
+what broke last time. 
+
+Be as clear and direct as possible. Keep to the strict minimum and give key ideas, not whole details. 
 
 **When you change one of these, update its docstring in the same edit.** When you are tempted to
 "simplify" one of them, read the docstring first — several explicitly say the duplication is
 deliberate.
+
 
 ## What not to do
 

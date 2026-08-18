@@ -44,7 +44,7 @@ def test_13f_period_names_format():
 
 # ---- 3. dual-class dedup + GICS industry group ------------------------------
 def test_dedupe_share_classes_and_gics():
-    from src.data_extract.utils.prices.fetch_prices import _dedupe_share_classes
+    from src.data_extract.utils.prices.fetch_tickers import _dedupe_share_classes
     from src.data_extract.utils.common.gics import industry_group
     df = pd.DataFrame({
         "ticker": ["GOOGL", "GOOG", "FOXA", "FOX", "NWSA", "NWS", "AAPL"],

@@ -127,6 +127,7 @@ def record_run(
         run_date_str if (is_full_rescan or not prior.get("last_full_rescan_date"))
         else prior["last_full_rescan_date"]
     )
+    
     manifest[name] = {
         "last_run_date": run_date_str,
         "last_full_rescan_date": last_full_rescan_date,

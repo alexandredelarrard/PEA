@@ -8,8 +8,10 @@ debugging time. All free or freemium. For the tables they land in, see
 
 | Domain | Source | Key? | Lands in | Fetcher |
 |---|---|---|---|---|
-| Prices, dividends | yfinance | no | `prices`, `dividends` | `prices/fetch_prices.py` |
-| Benchmark / commodity / FX | yfinance (`SPY`, `^VIX`, `CL=F`, `GC=F`, `USDEUR=X`) | no | `prices` | `fetch_market_prices` |
+| Prices (OHLCV) | yfinance | no | `prices` | `prices/fetch_prices.py` |
+| Dividends (ex-dates) | yfinance | no | `dividends` | `prices/fetch_dividends.py` |
+| S&P 500 constituents | Wikipedia | no | `sp500_tickers` | `prices/fetch_tickers.py` |
+| Benchmark / commodity / FX | yfinance (`SPY`, `^VIX`, `CL=F`, `GC=F`, `USDEUR=X`) | no | `prices` | `fetch_price_history` over `other_tickers` |
 | Macro | FRED | `FRED_API_KEY` | `macro` | `fundamentals/fetch_macro.py` |
 | Multi-asset allocation legs (~1995→) | FRED + yfinance | `FRED_API_KEY` | `macro_asset_prices` | `prices/fetch_macro_assets.py` |
 | Fundamentals history | SEC EDGAR per-filing XBRL (edgartools) | `SEC_USER_AGENT` | `fundamentals_facts` → `fundamentals_history` | `fundamentals/fetch_fundamentals_edgar.py` |

@@ -1,16 +1,16 @@
 """Step 2 — Dividend / shareholder-yield features.
 
-Checks: extractor parser is pure/clean; features are point-in-time; non-payers
-get a real 0 yield; rising dividends -> positive growth; shareholder_yield adds
-buyback yield (up for repurchasers, down for issuers); the built panel exposes
-the expected f_* columns.
+Checks: features are point-in-time; non-payers get a real 0 yield; rising
+dividends -> positive growth; shareholder_yield adds buyback yield (up for
+repurchasers, down for issuers); the built panel exposes the expected f_*
+columns. (The dividend extractor's own parser, `_extract_dividends`, is
+covered in test_da_capex_and_dividend_consolidation.py.)
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.prices.fetch_dividends import _series_to_long
 from src.data_aggregate.utils.fundamentals.dividend_features import (
     _dividend_fields, build_dividend_feature_panel,
 )
@@ -47,17 +47,6 @@ def _synth():
             frows.append({"ticker": t, "as_of": aso, "sharesOutstanding": shares})
     fund = pd.DataFrame(frows)
     return dates, tickers, close, div_hist, fund
-
-
-def test_series_to_long_parser():
-    s = pd.Series([0.5, 0.0, 0.6, np.nan], index=pd.to_datetime(
-        ["2021-03-01", "2021-06-01", "2021-09-01", "2021-12-01"]))
-    out = _series_to_long(s, "AAA")
-    assert list(out.columns) == ["date", "ticker", "dividend"]
-    assert len(out) == 2 and (out["dividend"] > 0).all()     # drops 0 and NaN
-    assert _series_to_long(pd.Series(dtype=float), "AAA").empty
-    print("\n=== SANITY CHECK: dividend parser ===")
-    print(f"  kept {len(out)} positive ex-dates, dropped 0/NaN; empty series -> empty frame. Validated.")
 
 
 def test_dividend_fields_economics_and_pit():
@@ -169,6 +158,5 @@ def test_panel_exposes_f_columns():
 
 
 if __name__ == "__main__":
-    test_series_to_long_parser()
     test_dividend_fields_economics_and_pit()
     test_panel_exposes_f_columns()

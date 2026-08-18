@@ -9,6 +9,7 @@ Fundamentals / financials extraction:
   * earnings surprises
   * macro series (economy-wide context)
 """
+
 from omegaconf import DictConfig
 
 from src.context import Context

@@ -20,6 +20,7 @@ OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI,
 
 ## Hard rules (always apply)
 
+- Always use `rtk` in all your bash, grep, git scripts to, save tokens.
 - All tabular I/O via `self._context.store`. No `sqlalchemy` / `pd.read_sql` / `to_sql` /
   `store.engine` outside `src/data_store/` — a test enforces this.
 - Never read a large table unprojected: `columns=`/`project=True` **and** `where=`/`since=`;
@@ -31,14 +32,13 @@ OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI,
 - Literals (URLs, formats, thresholds) → `src/constants/constants.py`. Tunable numbers → `configs/`.
 - Logging: `self._log` in a Step/Strategy, `context.log` in a helper taking `context`. Never
   `print()`. `Context` has `.log` — there is **no** `.logger`.
-- Full type annotations; imports at top of file; no cross-imports between `src/` subfolders
-  (shared code → `src/utils/`).
+- Full type annotations; imports at top; no cross-imports between `src/` subfolders (→ `src/utils/`).
+- Fetchers resume from the DB, never a full read: `store.max_date` / `max_date_by` → `resume_since`.
 - Feature/economic tests use **real** data; only parsing math gets synthetic known-truth fixtures.
 - A test isn't done until it **prints a sanity-check conclusion**. Report only the new test's output.
 - Ask before editing risk zones: `context.py`, `utils/step.py`, `constants/`, `data_store/`,
   `sql/schema.sql`, `configs/`, `data/` + the Postgres volume, the aggregate fingerprint baseline.
-- Keep `AGENTS.md` (**hard cap 70 lines**), `README.md` and `docs/*.md` in sync in the same change;
-  propose a new shared convention before editing this file.
+- Keep `AGENTS.md` (**cap 70 lines**), `README.md`, `docs/*.md` in sync; propose conventions first.
 - Finish an important task with a report — [docs/definition_of_done.md](docs/definition_of_done.md).
   No model is "done" without TimeSeriesSplit CV + SHAP + printed OOS metrics. A `Stop` hook checks.
 

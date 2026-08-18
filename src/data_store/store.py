@@ -381,6 +381,39 @@ class DataStore:
         except (TypeError, ValueError):
             return None
 
+    def max_date_by(self, table, key_col: str,
+                    date_col: str | None = None) -> dict[str, pd.Timestamp]:
+        """Per-key latest stored date -- `SELECT key, MAX(date) ... GROUP BY key`.
+
+        The grouped counterpart of `max_date`, for the fetchers that resume per entity.
+        One aggregate query, so the resume check never loads the table: `prices` is
+        ~1.8M rows, and reading it just to `groupby("ticker")["date"].max()` in pandas
+        cost seconds and hundreds of MB per run.
+
+        Empty dict when the table or either column is absent -- callers read that as
+        "nothing stored yet", the same contract as `max_date`'s None."""
+        name = name_of(table)
+        col = date_col or self._date_col(table)
+        if col is None or not self.exists(name):
+            return {}
+        tbl = _reflect(self.engine, name)
+        if col not in tbl.c or key_col not in tbl.c:
+            return {}
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(tbl.c[key_col], func.max(tbl.c[col])).group_by(tbl.c[key_col])
+            ).all()
+        # a DATE column round-trips as `datetime.date`, so normalise every value
+        out: dict[str, pd.Timestamp] = {}
+        for key, value in rows:
+            if key is None or value is None:
+                continue
+            try:
+                out[str(key)] = pd.Timestamp(value).normalize()
+            except (TypeError, ValueError):
+                continue
+        return out
+
     def distinct(self, table, column: str, *, where: dict | None = None,
                  order: str | None = None, limit: int | None = None,
                  dropna: bool = True) -> list:
@@ -499,9 +532,10 @@ class DataStore:
     # -- writes ------------------------------------------------------------ #
     def save(self, table, df: pd.DataFrame, pk: list[str] | None = None) -> int:
         """Upsert `df` into `table` on its PK, creating the table if needed."""
-        if df is None or df.empty:
-            return 0
         name = name_of(table)
+        if df is None or df.empty:
+            logger.warning(f"save() skipped: table '{name}' is empty")
+            return 0
         if pk is None:
             pk = list(resolve(table).pk)
         ensure_table(self.engine, name, df)

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.fundamentals.fetch_macro import fill_short_gaps
+from src.data_extract.utils.prices.fetch_macro import fill_short_gaps
 
 
 def test_fill_short_gaps_mean_and_week_guard():

@@ -17,7 +17,7 @@ from src.data_store.schema import Tables
 from src.context import Context
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
-from src.data_extract.utils.prices.fetch_prices import get_sp500_tickers
+from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
@@ -38,7 +38,7 @@ class StepExtractAllData(Step):
         refresh = bool(self._config.data_extract.get("refresh_universe", False))
         if refresh or self._context.store.row_count(Tables.sp500_tickers) == 0:
             self._log.info("Seeding sp500_tickers via S&P 500 scraper (refresh=%s)", refresh)
-            get_sp500_tickers(self._context)              # scrape + persist the table
+            universe = get_sp500_tickers(self._context)              # scrape + persist the table
 
         universe = load_universe_tickers(self._context)
         self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers} "
@@ -48,7 +48,7 @@ class StepExtractAllData(Step):
     def run(self) -> None:
         tickers = self._resolve_tickers()
 
+        self._prices.run(tickers=tickers)
         self._structure.run(tickers=tickers)
         self._fundamentals.run(tickers=tickers)
-        self._prices.run(tickers=tickers)
         self._behavioral.run(tickers=tickers)

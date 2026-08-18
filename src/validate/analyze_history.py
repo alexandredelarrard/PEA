@@ -19,6 +19,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.utils.outliers import modified_zscore
+
 # Ordinal position of each fiscal-period label -- mirrors
 # `fundamentals_periods.FISCAL_PERIOD_ORDER`, duplicated (not imported) since
 # this is a generic `src/utils/` diagnostic, not part of the data_extract
@@ -98,14 +100,7 @@ def detect_level_outliers(
         return pd.DataFrame(columns=cols)
 
     vals = sub["value"].astype(float).values
-    median = np.median(vals)
-    mad = np.median(np.abs(vals - median))
-    if mad > 0:
-        modified_z = 0.6745 * np.abs(vals - median) / mad
-    else:
-        mean_abs_dev = np.mean(np.abs(vals - median))
-        modified_z = (0.6745 * np.abs(vals - median) / mean_abs_dev
-                      if mean_abs_dev > 0 else np.zeros_like(vals))
+    modified_z = modified_zscore(vals)
     level_outlier = modified_z > threshold
 
     yoy_outlier = np.zeros(len(sub), dtype=bool)
@@ -114,11 +109,11 @@ def detect_level_outliers(
         has_yoy = yoy_change.notna()          # first (up to) 4 periods excluded -- nothing to lag against
         yoy_vals = yoy_change[has_yoy].values
         if len(yoy_vals) >= 3:
-            yoy_med = np.median(yoy_vals)
-            yoy_mad = np.median(np.abs(yoy_vals - yoy_med))
-            if yoy_mad > 0:
-                yoy_z = 0.6745 * np.abs(yoy_change - yoy_med) / yoy_mad
-                yoy_outlier = (has_yoy & (yoy_z > threshold)).values
+            # statistics from the DEFINED diffs only, scores over the whole series; and no
+            # mean-abs-dev fallback here -- a zero MAD on the diffs means "nothing to say".
+            yoy_z = modified_zscore(yoy_change, reference=yoy_vals,
+                                    fallback_to_mean_abs_dev=False)
+            yoy_outlier = (has_yoy.values & (yoy_z > threshold))
 
     out = sub.copy()
     out["is_level_outlier"] = level_outlier

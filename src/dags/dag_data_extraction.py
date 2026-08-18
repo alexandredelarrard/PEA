@@ -14,9 +14,7 @@ Airflow POOLS (created in airflow-init):
   * default             — light / fast: market_prices, macro, macro_assets, short_interest,
                           earnings_surprises, superinvestors  (+ the one heavy yfinance pull: price_history)
 
-Flow: seed_universe -> (all fetchers in parallel, pool-throttled) -> extraction_complete ->
-check_data_freshness (data-drift/gap gate: verifies every source is up to date for its cadence
-daily..yearly, pushes the latest date per source to XCom, turns RED when not as expected) -> trigger
+Flow: seed_universe -> (all fetchers in parallel, pool-throttled) -> extraction_complete -> trigger
 the data_aggregation DAG. The gate is a visible WARNING, not a hard block (trigger_rule=ALL_DONE), so
 aggregation still runs on a red gate; flip to ALL_SUCCESS to hard-stop prediction on stale data.
 
@@ -108,44 +106,6 @@ download_earnings_calls = fetch("download-earnings-calls", pool="scrape")
 ingest_earnings_calls = fetch("ingest-earnings-calls", pool="scrape")
 extraction_complete = EmptyOperator(task_id="extraction_complete", dag=dag)
 
-def _freshness_check(**context) -> None:
-    """Data-drift / gap gate. Shells to the pipeline venv (`check-freshness`), captures the JSON
-    report, pushes it to XCom (the whole report under `freshness` + the latest date per source under
-    `latest_<source>`), and RAISES when anything is not up to date so the task goes RED. XCom is
-    pushed BEFORE raising, so the per-source latest dates are visible even on a red run."""
-    proc = subprocess.run(
-        [PIPE_PY, "-m", "src", "data_extract", "check-freshness", "-c", CONFIGS],
-        cwd=PROJECT, capture_output=True, text=True)
-    report = None
-    for line in reversed((proc.stdout or "").strip().splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                report = json.loads(line)
-                break
-            except json.JSONDecodeError:
-                continue
-    ti = context["ti"]
-    if report is None:                            # the check itself failed to produce a report
-        ti.xcom_push(key="freshness", value={
-            "ok": False, "error": "no report parsed", "returncode": proc.returncode,
-            "stdout_tail": (proc.stdout or "")[-800:], "stderr_tail": (proc.stderr or "")[-800:]})
-        raise AirflowFailException(f"freshness check produced no report (rc={proc.returncode})")
-    ti.xcom_push(key="freshness", value=report)
-    for label, info in report.get("sources", {}).items():
-        ti.xcom_push(key=f"latest_{label}", value=info.get("latest"))
-    # which tickers got a new fundamentals filing (new earnings) since the last run
-    ti.xcom_push(key="new_fundamentals", value=report.get("new_fundamentals"))
-    if not report.get("ok", False):
-        raise AirflowFailException(
-            "Data NOT up to date (RED) — stale/gapped sources: "
-            + ", ".join(report.get("stale", [])))
-
-
-# RED when any source is not up to date; XCom carries the latest date per source either way.
-freshness_check = PythonOperator(
-    task_id="check_data_freshness", python_callable=_freshness_check, dag=dag)
-
 # aggregation still runs even if the freshness gate is RED (it is a visible WARNING, not a hard
 # block); flip this to TriggerRule.ALL_SUCCESS to make stale data hard-stop the prediction build.
 trigger_aggregation = TriggerDagRunOperator(
@@ -166,6 +126,7 @@ all_fetchers = light + [price_history, fails_to_deliver, thirteen_f, financial_s
 seed_universe >> all_fetchers
 thirteen_f >> superinvestors                                         # roster reads the 13F holdings
 download_earnings_calls >> ingest_earnings_calls                     # ingest parses the downloaded files
-# all sources refreshed -> freshness/gap gate (XCom + RED) -> trigger aggregation
+
+# all sources refreshed -> trigger aggregation
 (all_fetchers + [superinvestors, ingest_earnings_calls]) >> extraction_complete
-extraction_complete >> freshness_check >> trigger_aggregation
+extraction_complete >> trigger_aggregation

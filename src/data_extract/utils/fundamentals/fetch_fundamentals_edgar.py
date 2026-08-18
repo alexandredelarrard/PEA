@@ -25,6 +25,7 @@ in `build_ticker_facts_edgar`). This replaces the separate
 the 10-K is already open here, so listing and downloading those filings a second
 time bought nothing.
 """
+
 from __future__ import annotations
 
 import logging

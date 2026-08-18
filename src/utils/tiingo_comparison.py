@@ -61,7 +61,7 @@ from src.constants.constants import (
     TIINGO_RATIO_OUTLIERS_FILENAME, TIINGO_STATEMENTS_URL_TEMPLATE,
 )
 from src.context import Context
-from src.utils.analyze_history import detect_level_outliers
+from src.validate.analyze_history import detect_level_outliers
 from src.utils.polite_http import get_json
 
 _LOG: logging.Logger = logging.getLogger(__name__)

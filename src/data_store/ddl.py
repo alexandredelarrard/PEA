@@ -21,11 +21,7 @@ import re
 import pandas as pd
 from pandas.api import types as ptypes
 
-from src.data_store.schema import MANAGED, Table
-
-# Columns that are zero-padded string identifiers, never numeric -- forcing them to TEXT
-# preserves leading zeros (SEC CIK "0000320193" would lose them as BIGINT).
-_TEXT_IDENTIFIER_COLS = {"cik"}
+from src.data_store.schema import MANAGED, Table, _TEXT_IDENTIFIER_COLS
 
 # The SQL type a `vector_col` always gets, whether its columns were inferred from a frame
 # or reflected from the live DB. See item 2 in the module docstring.

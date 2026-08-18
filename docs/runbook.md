@@ -200,14 +200,36 @@ and `POSTGRES_HOST=db` (the compose service name, not `localhost`).
 
 Pools created by `airflow-init`: `sec_bulk` 2, `sec_api` 2, `scrape` 2, `aggregate` 3.
 
+## Finishing a task — the definition-of-done report
+
+Contract and rationale: [definition_of_done.md](definition_of_done.md). Pick the generator that
+matches the work; each writes `reports/<YYYY-MM-DD>/<slug>__<TYPE>.md` (one folder per day) and
+prints what still needs a human sentence.
+
+```bash
+"$PY" scripts/dod/refactor_metrics.py --slug <slug> --tests tests/path/test_x.py
+"$PY" scripts/dod/data_profile.py     --slug <slug> --tables fundamentals_facts [--tickers AAPL,JPM]
+"$PY" scripts/dod/modelling_report.py --slug <slug> [--compare-run <run_stamp>]
+```
+
+Then write §1, §5 and §6 yourself. **Never edit the ` ```json dod-metrics ` block** — it carries a
+`content_hash` the `Stop` hook recomputes.
+
+The hook is **warn-only** by default: it records a verdict and never blocks. To enforce it, set
+`PEA_DOD_MODE=enforce` or create `.claude/dod-enforce`. To turn it off entirely, create
+`.claude/dod-disabled` or set `PEA_DOD=off`. Verdicts accumulate at
+`%LOCALAPPDATA%\pea-dod\<repo-hash>\<session_id>\verdicts.jsonl` — read that file before flipping
+to enforce, to see what it *would* have blocked.
+
 ## Gotchas
 
 - **Postgres `DATE` columns round-trip as `datetime.date`, not `Timestamp`.** A parquet-cached test
   harness hides this entire bug class — verify against the DB.
 - `load` raises on a missing/empty table. On a cold DB that is correct behaviour, not a bug.
 - `iter_load` holds a pooled connection — exhaust or close it.
-- `pea_db` still bind-mounts the now-nonexistent `./stock_pick_strat/sql` as its initdb dir; harmless
-  while the volume has data, but recreate the container from the current compose file to fix it.
+- The **running** `pea_db` container predates the move to the repo root and still binds the
+  nonexistent `./stock_pick_strat/sql` as its initdb dir (`docker-compose.yml` itself is correct).
+  Harmless while the volume has data; recreate the container before rebuilding the volume.
 - The 13F / notes / insider bulk downloads are multi-GB and cached under `data/`. Check for the cached
   zip before re-running a fetcher.
 - A full fundamentals quality-gate pass is **~60s/ticker ≈ 8 hours** for the universe, not "minutes".

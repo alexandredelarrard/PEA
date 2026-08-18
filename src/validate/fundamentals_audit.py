@@ -45,7 +45,7 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.utils import tiingo_comparison, yahoo_comparison
-from src.utils.analyze_history import DEFAULT_AUDIT_FIELDS, run_audit
+from src.validate.analyze_history import DEFAULT_AUDIT_FIELDS, run_audit
 from src.utils.fundamentals_tag_ledger import build_tag_ledger, detect_tag_switch_breaks
 
 _LOG: logging.Logger = logging.getLogger(__name__)

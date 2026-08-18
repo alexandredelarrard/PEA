@@ -5,7 +5,7 @@ Localize WHERE a date window disappears from the cube pipeline: raw prices ->
 SPY trading calendar -> per-stock coverage -> factor/macro panel -> targets ->
 final cube. Run against the real data store (no rebuild needed).
 
-Usage (from stock_pick_strat/):
+Usage (from the repo root):
     python scripts/diagnose_missing_dates.py 2025-03-01 2025-04-30
 """
 from __future__ import annotations

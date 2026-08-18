@@ -22,3 +22,11 @@ class TableEmptyError(StoreError, LookupError):
         super().__init__(f"table {table!r} returned no rows{detail}")
         self.table = table
         self.where = where
+
+class UnknownTableError(KeyError):
+    """A table name that is not in the registry.
+
+    With the `cube_part_*` tables registered there are no legitimately ad-hoc tables left,
+    so an unresolvable name is a bug (usually a typo) rather than a table the caller means
+    to create on the fly.
+    """

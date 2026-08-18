@@ -100,7 +100,10 @@ Do **not** silently substitute a synthetic price frame in a feature or economic 
 
 ## Stale bind mount
 
-`pea_db` still bind-mounts `./stock_pick_strat/sql → /docker-entrypoint-initdb.d`, a path that no
-longer exists after the move to the repo root. Harmless while the volume has data (initdb scripts
-run only on an empty data dir), but the container must be recreated from the current
-`docker-compose.yml` for that mount to be correct.
+`docker-compose.yml` is **correct** (`./sql → /docker-entrypoint-initdb.d`). The drift is in the
+**running container**: `pea_db` was created before the move to the repo root and still binds the
+now-nonexistent `./stock_pick_strat/sql` — confirm with
+`MSYS_NO_PATHCONV=1 docker inspect pea_db --format '{{range .Mounts}}{{.Source}}{{println}}{{end}}'`.
+Harmless while the volume has data (initdb scripts run only on an empty data dir), but recreate the
+container from the current compose file **before** you ever rebuild the volume, or the schema will
+not be applied.

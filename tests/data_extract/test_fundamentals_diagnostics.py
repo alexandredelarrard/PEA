@@ -14,7 +14,7 @@ import pandas as pd
 from src.constants.constants import (
     Q4_RECONCILIATION_TOLERANCE, SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO,
 )
-from src.data_extract.utils.fundamentals.fundamentals_validation import (
+from src.validate.fundamentals_validation import (
     AMBIGUOUS_MULTIPLE_MATCHES, FILTERED_BY_QUALITY_RULE, MAPPED_BUT_ABSENT,
     NO_FACT_IN_SOURCE, apply_plausibility_guards, diagnose_missing_field,
     reconcile_fundamentals_facts,

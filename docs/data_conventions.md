@@ -15,8 +15,6 @@ Enforced by [tests/data_store/test_store_boundary.py](../tests/data_store/test_s
 which greps every `src/**/*.py` except the store package and `src/utils/db.py` (the engine factory).
 
 **If the facade cannot express your query, add the capability to `DataStore` — do not bypass it.**
-That is what the boundary exists to prevent: three parallel access layers previously spoke to one
-database, three of them building SQL by string interpolation.
 
 ## 2. The `DataStore` surface
 

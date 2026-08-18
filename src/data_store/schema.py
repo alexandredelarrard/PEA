@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Sequence
+from src.data_store.errors import UnknownTableError
 
 # Table kinds. `reference` is a dimension, `extract` is raw fetched data, `aggregate` is a
 # pipeline output, `part` is private plumbing between cube sub-steps.
@@ -26,6 +27,10 @@ KIND_REFERENCE = "reference"
 KIND_EXTRACT = "extract"
 KIND_AGGREGATE = "aggregate"
 KIND_PART = "part"
+
+# Columns that are zero-padded string identifiers, never numeric -- forcing them to TEXT
+# preserves leading zeros (SEC CIK "0000320193" would lose them as BIGINT).
+_TEXT_IDENTIFIER_COLS = {"cik"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,15 +369,6 @@ class Tables:
                              date_col="date", managed=False)
 
 
-class UnknownTableError(KeyError):
-    """A table name that is not in the registry.
-
-    With the `cube_part_*` tables registered there are no legitimately ad-hoc tables left,
-    so an unresolvable name is a bug (usually a typo) rather than a table the caller means
-    to create on the fly.
-    """
-
-
 def _collect() -> tuple[Table, ...]:
     """Every `Table` declared on `Tables`, in declaration order.
 
@@ -441,6 +437,7 @@ def projection(table: Table | str,
 
     Use `projection_report` instead when you want to log what was dropped.
     """
+    
     cols, _, _ = projection_report(table, available)
     return cols
 

@@ -24,6 +24,11 @@ docstring still saying otherwise is stale).
 ├── docs/                     # this documentation set
 ├── sql/schema.sql            # generated DDL, applied by Postgres initdb on an EMPTY volume
 ├── scripts/                  # generate_schema_sql, diagnostics, one-off reports
+│   └── dod/                  #   definition-of-done report generators — see definition_of_done.md
+├── reports/                  # definition-of-done reports, TRACKED in git; ONE FOLDER PER DAY
+│   ├── YYYY-MM-DD/           #   <slug>__<TYPE>.md + assets/<slug>/ (plots copied out of data/)
+│   └── baselines/            #   data_profile.json — persistent, NOT per-day (gates D2/D3/D5)
+├── .claude/                  # hooks/ (the Stop gate), skills/ (dod-*-report), commands/, settings.json
 ├── specs/, coverage_bar/     # design notes / coverage tracking (not executed)
 ├── docker-compose.yml        # `db` (pipeline Postgres) + Airflow scheduler/webserver/metadata-db
 ├── main.py                   # scratch driver: instantiate a step, uncomment its .run()
@@ -38,6 +43,8 @@ docstring still saying otherwise is stale).
 │   ├── modelling/               # long_short/, trend/, long_book/ — signal engines
 │   ├── strategies/              # self-contained sleeves + analysis plots
 │   ├── portfolio/               # StepPortfolio (ERC blend), StepStrategyMoves (trade ledger)
+│   ├── validate/                # post-hoc audits of extracted data (fundamentals_audit,
+│   │                            #   fundamentals_validation, analyze_history) — read-only
 │   ├── dags/                    # 4 Airflow DAGs
 │   └── utils/                   # cross-package shared code (step, db, config, universe, http…)
 ├── tests/                    # mirrors src/; 160 test files; conftest.py has the shared fixtures
@@ -182,5 +189,3 @@ Read this before assuming a stage runs end-to-end:
 - The live database has **no `prices` table and no cube/prediction/strategy tables at all** — see
   [database.md](database.md). Any code path starting from `prices` cannot run locally as-is.
 - `data/` does not exist in a fresh checkout; `Context` creates it on first run.
-- The git working tree shows the whole old `stock_pick_strat/` subtree as deleted (the move to root
-  is not yet committed).

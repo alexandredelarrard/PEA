@@ -49,7 +49,7 @@ from src.constants.constants import (
     YAHOO_RATIO_OUTLIERS_FILENAME,
 )
 from src.context import Context
-from src.utils.analyze_history import detect_level_outliers
+from src.validate.analyze_history import detect_level_outliers
 
 _LOG: logging.Logger = logging.getLogger(__name__)
 

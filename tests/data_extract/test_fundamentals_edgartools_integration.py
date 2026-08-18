@@ -26,7 +26,7 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import (
 from src.data_extract.utils.fundamentals.fundamentals_derive import (
     derive_fundamentals_history,
 )
-from src.data_extract.utils.fundamentals.fundamentals_validation import (
+from src.validate.fundamentals_validation import (
     reconcile_fundamentals_facts,
 )
 from src.data_extract.utils.fundamentals.fundamentals_tags import (

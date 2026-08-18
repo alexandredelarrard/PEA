@@ -15,6 +15,7 @@ scope. `AGENTS.md` (repo root) is the always-loaded summary; these are the detai
 | [coding_standard.md](coding_standard.md) | you write any Python in `src/` (naming, logging, typing, risk zones) |
 | [testing.md](testing.md) | you write or run a test |
 | [runbook.md](runbook.md) | you need to *execute* something (interpreter, DB access, CLI commands) |
+| [definition_of_done.md](definition_of_done.md) | you are about to call a task finished |
 
 ## The five rules that override everything
 
@@ -29,16 +30,8 @@ scope. `AGENTS.md` (repo root) is the always-loaded summary; these are the detai
    Never `print()`.
 5. **A test is not done until it prints a sanity-check conclusion.** See [testing.md](testing.md).
 
-## Known documentation drift (verified 2026-08-17)
+## Finishing a task
 
-Three instruction files predate the repo restructure and contain claims that are **false against
-the current code**. Trust `docs/` over them where they conflict:
-
-| Claim | Where | Reality |
-|---|---|---|
-| `self._context.logger` | [src/CLAUDE.md:150](../src/CLAUDE.md), [AGENTS.md:52](../AGENTS.md) | `Context` has **no** `logger` attribute — it has `.log`. `Step` exposes `self._log`. `_context.logger` would raise `AttributeError`; zero call sites use it. |
-| `store.existing_dates(...)` | [.cursor/rules/base.mdc](../.cursor/rules/base.mdc), [utils-config.mdc](../.cursor/rules/utils-config.mdc) | No such method. Use `max_date` / `bounds` / `distinct`. |
-| `schema_registry.py`, `schema_sql.py` | [.cursor/rules/data-layer.mdc](../.cursor/rules/data-layer.mdc), [utils-config.mdc](../.cursor/rules/utils-config.mdc) | Renamed to `schema.py` / `ddl.py`. |
-| `backtest.yml` | [.cursor/rules/utils-config.mdc](../.cursor/rules/utils-config.mdc) | Does not exist; the backtest is configured by `configs/portfolio.yml` + `configs/strategy/*.yml`. |
-| Paths under `stock_pick_strat/` | README.md, AGENTS.md, app/app.py docstring | The package moved to the **repo root**. There is no `stock_pick_strat/` directory. |
-| `sql/database.md` | [src/CLAUDE.md:33](../src/CLAUDE.md) | Moved to `docs/database.md`. |
+An "important" task is not done when the code runs — it is done when a report exists. See
+[definition_of_done.md](definition_of_done.md) for the three report types (REFACTOR / DATA /
+MODELLING), the mandatory sections, and the `Stop` hook that enforces them.

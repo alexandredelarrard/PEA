@@ -46,7 +46,7 @@ from src.data_extract.utils.fundamentals.fundamentals_tags import (
     LATEST_DURATION_TAGS,
     SHARES_TAGS, STOCK_TAGS, TTM_QUARTERS,
 )
-from src.data_extract.utils.fundamentals.fundamentals_validation import (
+from src.validate.fundamentals_validation import (
     apply_plausibility_guards,
 )
 

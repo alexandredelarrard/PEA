@@ -6,7 +6,7 @@ sections). Wraps a HuggingFace tone classifier (default FinBERT-tone) behind a s
 dependency-light API so the rest of the pipeline never imports torch/transformers
 directly:
 
-    engine = get_sentiment_engine(context.logger)   # None if torch/transformers absent
+    engine = get_sentiment_engine(context.log)      # None if torch/transformers absent
     probs  = engine.score_texts([doc1, doc2, ...])   # -> [{'pos','neg','neu'}|None, ...]
 
 Design notes

@@ -1,7 +1,7 @@
 """
 Streamlit PORTFOLIO dashboard.
 
-Run from stock_pick_strat/ with:
+Run from the repo root with:
     streamlit run app/app.py
 
 Layout:
@@ -22,7 +22,7 @@ import os
 import json
 from pathlib import Path
 
-# Ensure imports resolve from stock_pick_strat/
+# Ensure imports resolve from the repo root
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.utils.analyze_history import detect_level_outliers, detect_source_tag_misalignment
+from src.validate.analyze_history import detect_level_outliers, detect_source_tag_misalignment
 
 
 def _row(fiscal_year, fiscal_period, value, source_tag="us-gaap:X", duration_type="quarterly",

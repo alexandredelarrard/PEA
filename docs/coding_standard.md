@@ -104,5 +104,6 @@ change. Before writing new code:
 
 ## Documentation synchronisation
 
-`AGENTS.md`, `README.md`, `src/CLAUDE.md`, `docs/*.md` and `.cursor/rules/*.mdc` must move together
-with the code. **Propose a new shared convention and get approval before editing `AGENTS.md`.**
+`AGENTS.md`, `README.md` and `docs/*.md` must move together with the code. **Propose a new shared
+convention and get approval before editing `AGENTS.md`**, which is capped at **70 lines** — to add a
+line there, remove one or push the detail into `docs/`.

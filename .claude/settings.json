@@ -1,0 +1,35 @@
+{
+  "$comment": [
+    "Definition-of-done hooks. See docs/definition_of_done.md.",
+    "The interpreter is resolved by SHELL PARAMETER EXPANSION, not by a wrapper script: a",
+    "wrapper .sh would cost a second process, and a process spawn is ~450ms on this machine",
+    "(Git Bash + Defender + a OneDrive-synced tree). Override with PEA_PY if the venv moves.",
+    "Every interpolation is quoted because the project path contains spaces.",
+    "'-S -E' keeps the hooks stdlib-only and ignores PYTHON* env vars, so a hook can never be",
+    "broken by a change to src/ or to the venv's site-packages."
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PEA_PY:-$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3.13/Scripts/python.exe}\" -S -E \"$CLAUDE_PROJECT_DIR/.claude/hooks/dod_session_start.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PEA_PY:-$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3.13/Scripts/python.exe}\" -S -E \"$CLAUDE_PROJECT_DIR/.claude/hooks/dod_stop.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

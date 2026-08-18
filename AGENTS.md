@@ -1,8 +1,7 @@
 `stock_pick_strat` — quant long/short S&P 500 pipeline: extract market / fundamental / governance /
 alt-data into **PostgreSQL**, build point-in-time peer-relative features (the "cube"), train
-cross-sectional models, blend strategy sleeves into one book. Package lives at the **repo root**.
-Python 3.13, OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI, click,
-pytest; Airflow in its own 3.12 container.
+cross-sectional models, blend sleeves into one book. Package at the **repo root**. Python 3.13,
+OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI, pytest; Airflow 3.12.
 
 ## Read the doc for your task FIRST, then the code
 
@@ -35,10 +34,13 @@ pytest; Airflow in its own 3.12 container.
 - Full type annotations; imports at top of file; no cross-imports between `src/` subfolders
   (shared code → `src/utils/`).
 - Feature/economic tests use **real** data; only parsing math gets synthetic known-truth fixtures.
-  Every model: TimeSeriesSplit CV + SHAP + printed OOF metrics before it's "done."
 - A test isn't done until it **prints a sanity-check conclusion**. Report only the new test's output.
 - Ask before editing risk zones: `context.py`, `utils/step.py`, `constants/`, `data_store/`,
   `sql/schema.sql`, `configs/`, `data/` + the Postgres volume, the aggregate fingerprint baseline.
+- Keep `AGENTS.md` (**hard cap 70 lines**), `README.md` and `docs/*.md` in sync in the same change;
+  propose a new shared convention before editing this file.
+- Finish an important task with a report — [docs/definition_of_done.md](docs/definition_of_done.md).
+  No model is "done" without TimeSeriesSplit CV + SHAP + printed OOS metrics. A `Stop` hook checks.
 
 ## Code map
 
@@ -54,6 +56,7 @@ data_aggregate/ StepBuildCube: 7 sub-steps -> cube_part_*   -> cube
 modelling/    long_short/ (trained ensemble), trend/, long_book/
 strategies/   sleeves: ls_equity, eq_long_only, long_book, trend_cta
 portfolio/    StepPortfolio (ERC blend), StepStrategyMoves (`strategy` ledger)
+validate/     read-only audits: fundamentals_audit, fundamentals_validation, analyze_history
 utils/ context.py constants/ dags/ cli.py   |   repo: configs/ docs/ tests/ app/ scripts/ sql/ main.py
 ```
 
@@ -65,8 +68,3 @@ PY="$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3
 "$PY" -m src <package> <command> [-c ./configs] [-t AAPL] [-F]
 MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea -c "…"   # DB, no password
 ```
-
-## Todo, each agent run 
-
-Keep `AGENTS.md`, `README.md`, `src/CLAUDE.md`, `docs/*.md`, `.cursor/rules/*.mdc` in sync in the
-same change. Propose new shared conventions before editing this file.

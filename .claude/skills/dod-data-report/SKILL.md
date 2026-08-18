@@ -28,7 +28,7 @@ Useful flags — **scope is the point**, not an afterthought:
 | `--since 2024-01-01` | bound the window |
 | `--limit 0` | no row cap (needed for a full-scope run) |
 | `--expect-through 2026-08-01` | turns **D4** from N/A into a real check |
-| `--parts` / `--freshness` | add the cube-part and source-freshness blocks |
+| `--parts` | add the cube-part status block |
 | `--update-baseline` | record this shape so D2/D3/D5 can compare next time |
 | `--declare-shrink <table>` | a row-count drop you *intended* (deletes, dedupe) |
 

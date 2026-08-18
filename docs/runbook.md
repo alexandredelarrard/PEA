@@ -123,7 +123,6 @@ sec-8k-items  sec-13d  filing-text
 wiki-pageviews  google-trends
 download-earnings-calls    # to disk, no DB (HEAVY)
 ingest-earnings-calls      # cached transcripts -> earnings_call_sections; -F re-parses all
-check-freshness            # the gate; JSON on the last stdout line, exit 2 when stale
 ```
 
 There is **no `employees` command** — headcount comes from the same 10-K as `fundamentals`.

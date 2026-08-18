@@ -148,7 +148,7 @@ schema.
 
 ## Freshness cadences
 
-17 tables are freshness-checked (`Table.freshness`), gated by
+Each table declares its expected refresh cadence (`Table.freshness`), keyed into
 `constants.DATA_FRESHNESS_MAX_AGE_DAYS`:
 
 ```
@@ -165,8 +165,10 @@ Four of these measure a **different column** than their period grain (`freshness
 `insider_transactions`→`filing_date`. Freshness must watch *when the fact was filed*, not the
 quarter it covers.
 
-Run the gate with `python -m src data_extract check-freshness` (JSON on the last stdout line,
-non-zero exit when stale).
+This is **declarative metadata only** — it records each source's expected cadence and is exposed
+by `schema.freshness_tables()`. The automated staleness gate that consumed it was removed, so
+nothing reads it today; check staleness against [database.md](database.md) by hand, or wire a new
+consumer to `freshness_tables()`.
 
 ## `sql/schema.sql` gap
 

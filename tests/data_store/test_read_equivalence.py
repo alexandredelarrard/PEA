@@ -126,9 +126,9 @@ def test_bounds_matches_hf_transcripts_min_max(store):
         old["lo"].iloc[0], old["hi"].iloc[0])
 
 
-def test_max_date_matches_freshness_max_date(store):
-    """`freshness._max_date` -- `SELECT MAX("<col>") FROM "<table>"` (freshness.py:50), on a
-    table whose freshness column is the FILING date, not its period end."""
+def test_max_date_matches_raw_max_on_a_filing_dated_table(store):
+    """`store.max_date` -- `SELECT MAX("<col>") FROM "<table>"` -- on a table whose
+    meaningful date is the FILING date, not its period end."""
     _requires(store, "max_date")
     old = _sql(store, 'SELECT MAX("filed") AS m FROM "notes_num"')["m"].iloc[0]
     assert store.max_date("notes_num", "filed") == pd.Timestamp(old).normalize()

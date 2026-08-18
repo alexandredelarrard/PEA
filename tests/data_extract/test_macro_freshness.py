@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from conftest import FakeStore     # the ONE shared store double
-from src.data_extract.utils.fundamentals import fetch_macro as fm
+from src.data_extract.utils.prices import fetch_macro as fm
 
 
 def _ctx(df):

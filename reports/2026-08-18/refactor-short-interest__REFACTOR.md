@@ -108,12 +108,21 @@ _Observations only — no verdicts. LOC is never a target (see [definition_of_do
   `test_new_factor_features.py`, `test_latest_quarter_features.py` — all in `data_aggregate`,
   none in `data_extract`, where 100% of this change lives.
 - **Two suites excluded from the run, both broken by the previous commit, not by me.**
-  `tests/data_extract/test_freshness.py` and `tests/utils/test_fundamentals_audit.py` fail at
+  `tests/data_extract/test_freshness.py` and `tests/utils/test_fundamentals_audit.py` failed at
   COLLECTION: commit `53e7beb` ("reshaping repo") deleted `src/data_extract/utils/common/
-  freshness.py` + `step_check_freshness.py` and moved `fundamentals_audit` into `src/validate/`,
-  leaving both importers dangling. `cli.py` still imports the missing `StepCheckFreshness`, so
-  that module will not import until someone restores or removes it — flagged, not fixed
-  (out of scope, and deleting a CLI command is the user's call).
+  freshness.py` + the freshness Step, and moved `fundamentals_audit` into `src/validate/`,
+  leaving both importers dangling.
+  **The freshness half is now RESOLVED** (user confirmed the removal was intentional): the dead
+  CLI command + its import, the `--freshness` path in `scripts/dod/data_profile.py` (which was a
+  module-level import of the deleted `check_data_freshness`, so the DATA DoD generator was broken
+  too), the obsolete test file, the DAG/docs/skill references and the orphaned snapshot constants
+  are all gone. `src.data_extract.cli` now imports for the first time since that commit — 23
+  commands, verified. The cadence METADATA (`Table.freshness`, `DATA_FRESHNESS_MAX_AGE_DAYS`,
+  `freshness_tables()`) was deliberately KEPT: it is declarative, it lives in two risk zones
+  (`schema.py`, `constants.py`), and it is the right anchor if a staleness check is ever rewired.
+  Its docstrings now say plainly that nothing consumes it today.
+  `test_fundamentals_audit.py` is still excluded — repointing it at `src/validate/` is a separate
+  call.
 - **G4 — all 20 entries are false positives.** The gate flags a removed name whenever the same
   identifier text appears anywhere else in the repo, with no scoping to the definition. Broken
   down: `fetch_macro.py::{Context,Fred,os,pd,record_run,fetch_macro,fill_short_gaps}` and
@@ -153,11 +162,10 @@ _Observations only — no verdicts. LOC is never a target (see [definition_of_do
 
 ## 6. Next actions
 
-- **Decide what happens to `StepCheckFreshness`.** `cli.py` imports it and the module was
-  deleted in `53e7beb`, so `src.data_extract.cli` cannot be imported at all right now. Either
-  restore `freshness.py` or drop the command + its test. This blocks every CLI entry point,
-  including the `price_history` / `dividends` / `short_interest` commands touched here.
-- Same for `tests/utils/test_fundamentals_audit.py` — repoint it at `src/validate/`.
+- ~~Decide what happens to the freshness Step~~ — **DONE.** Removed everywhere; `src.data_extract.cli`
+  imports again (23 commands, verified). Only the declarative cadence metadata remains, and its
+  docstrings now state that nothing consumes it.
+- `tests/utils/test_fundamentals_audit.py` — repoint it at `src/validate/` (still excluded).
 - Apply this same pass to `fetch_google_trends.py` and `fetch_wiki_pageviews.py`: `Tables.<name>`
   instead of string literals, and `resume_since` instead of `load_existing` + a full table read.
   Once those two are converted, `load_existing` has no callers left and can be deleted.

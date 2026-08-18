@@ -10,8 +10,6 @@ sources; throttle the heavy / rate-limited ones via pools). Invoked as:
 Every command builds a fresh Context, resolves the ticker universe (or a --tickers subset) and runs
 its fetcher. Fetchers are incremental (resume from the DB), so re-running nightly only pulls new data.
 """
-import json
-
 import click
 
 from src.data_store.schema import Tables
@@ -21,7 +19,6 @@ from src.constants.command_line_interface import (
 from src.context import Context, get_config_context
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.universe import load_universe_tickers
-from src.data_extract.step_check_freshness import StepCheckFreshness
 
 # --- prices / market / macro ------------------------------------------------ #
 from src.data_extract.utils.prices.fetch_prices import fetch_price_history
@@ -283,17 +280,3 @@ def ingest_earnings_calls(config_path: str, tickers: str | None, force: bool) ->
     _ingest_earnings_calls(context, tickers=_tickers(context, tickers), force=force)
 
 
-# --------------------------------------------------------------------------- #
-# Data-freshness / gap gate — runs LAST, before triggering aggregation         #
-# --------------------------------------------------------------------------- #
-@cli.command(help="Check every source is up to date for its cadence (daily..yearly). Prints the "
-                  "report as a JSON last line (the DAG pushes it to XCom); exits non-zero if any "
-                  "source is stale / gapped.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def check_freshness(config_path: str) -> None:
-    config, context = _ctx(config_path)
-    report = StepCheckFreshness(context=context, config=config).run()
-    # emit the report as the FINAL stdout line so the DAG can capture it into XCom
-    click.echo(json.dumps(report, separators=(",", ":")))
-    if not report["ok"]:
-        raise SystemExit(2)                       # non-zero -> "not as expected" (RED)

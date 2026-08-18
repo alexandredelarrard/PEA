@@ -166,14 +166,14 @@ the DAGs call. Full list in [runbook.md](runbook.md).
 
 | DAG | Schedule | Tasks |
 |---|---|---|
-| `data_extraction` | daily 01:00 | `seed_universe` → all fetchers in parallel (pool-throttled: `sec_bulk`/`sec_api`/`scrape` = 2 slots each) → `check_data_freshness` gate → trigger `data_aggregation` |
+| `data_extraction` | daily 01:00 | `seed_universe` → all fetchers in parallel (pool-throttled: `sec_bulk`/`sec_api`/`scrape` = 2 slots each) → `extraction_complete` → trigger `data_aggregation` |
 | `data_aggregation` | triggered | `deduce_peers` → the 6 build commands **strictly sequential** (`max_active_tasks=1`, so peak memory = the largest single step) → `assemble_cube` → `cube_status` → trigger `strat_prediction` |
 | `strat_prediction` | daily 06:00 | `predict` (→ `predictions_latest`) → `strategy_moves` (→ the `strategy` ledger) |
 | `modelling` | weekly, Sat 02:00 | `train_model` (holdout) → `backtest_portfolio` (OOS) → `full_train` (ALL history, no holdout) |
 
 Training is weekly and prediction is daily, so a freshly rebuilt cube is scored every night without
 waiting for a retrain; `strat_prediction` reads back the artifacts from the last `full_train`.
-The freshness gate is a visible WARNING, not a hard block (`trigger_rule=ALL_DONE`).
+Aggregation is triggered on `ALL_DONE`, so a failed fetcher does not block the prediction build.
 
 **4. `app/app.py`** — Streamlit dashboard (`streamlit run app/app.py`). Assumes pre-trained models.
 

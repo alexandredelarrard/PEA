@@ -7,7 +7,7 @@ that catch the ways an extraction or aggregation change silently loses data.
     "$PY" scripts/dod/data_profile.py --slug fix-q4 --tables fundamentals_history
     "$PY" scripts/dod/data_profile.py --slug fix-q4 --tables fundamentals_history \
           --tickers AAPL,JPM --slug smoke
-    "$PY" scripts/dod/data_profile.py --slug cube-rebuild --tables cube --parts --freshness
+    "$PY" scripts/dod/data_profile.py --slug cube-rebuild --tables cube --parts
 
 Gates
     D1  the declared primary key is UNIQUE over the rows profiled
@@ -48,7 +48,6 @@ from scripts.dod.report_common import (                               # noqa: E4
 )
 from src.context import get_config_context                            # noqa: E402
 from src.data_aggregate.utils.common.part_status import part_status_report   # noqa: E402
-from src.data_extract.utils.common.freshness import check_data_freshness     # noqa: E402
 from src.data_store import schema                                     # noqa: E402
 from src.utils.outliers import count_mad_outliers, mad_center_scale    # noqa: E402
 
@@ -313,19 +312,6 @@ def _parts_md(report: dict) -> str:
         rows, ["part", "exists", "rows", "max_date", "lag_vs_cube_days"])
 
 
-def _freshness_md(report: dict) -> str:
-    sources = report.get("sources") or {}
-    rows = [{"source": k, "latest": v.get("latest"), "age_days": v.get("age_days"),
-             "cadence": v.get("cadence"), "max_age_days": v.get("max_age_days"),
-             "status": v.get("status")}
-            for k, v in sorted(sources.items())]
-    stale = report.get("stale") or []
-    head = (f"**{len(stale)} stale source(s):** {', '.join(stale)}" if stale
-            else "**Every source is fresh.**")
-    return head + "\n\n" + metrics_table(
-        rows, ["source", "latest", "age_days", "cadence", "max_age_days", "status"])
-
-
 # --------------------------------------------------------------------------- #
 # Entry point                                                                 #
 # --------------------------------------------------------------------------- #
@@ -341,7 +327,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--declare-shrink", default="", help="D2: tables whose shrink is intended")
     ap.add_argument("--declare-nulls", default="", help="D5: `table.field` pairs allowed to worsen")
     ap.add_argument("--parts", action="store_true", help="include the cube-part status block")
-    ap.add_argument("--freshness", action="store_true", help="include the source freshness block")
     ap.add_argument("--top-fields", type=int, default=60, help="rows in the per-field table")
     ap.add_argument("--update-baseline", action="store_true",
                     help="record this profile as the new baseline (full-scope tables only)")
@@ -352,8 +337,8 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     root = repo_root()
     names = [t.strip() for t in args.tables.replace(",", " ").split() if t.strip()]
-    if not names and not (args.parts or args.freshness):
-        ap.error("give --tables, and/or --parts / --freshness")
+    if not names and not args.parts:
+        ap.error("give --tables and/or --parts")
 
     tickers = [t.strip().upper() for t in args.tickers.replace(",", " ").split() if t.strip()]
     limit = args.limit or None
@@ -377,8 +362,6 @@ def main(argv: list[str] | None = None) -> int:
                         declare_shrink=args.declare_shrink, declare_nulls=args.declare_nulls)
 
     parts_report = part_status_report(context, _LOG) if args.parts else None
-    fresh_report = (check_data_freshness(context, log=_LOG, track_new_fundamentals=False)
-                    if args.freshness else None)
 
     metrics_parts = [
         "_Observed values only — no verdicts. `rows`, `date_min` and `date_max` are "
@@ -399,9 +382,6 @@ def main(argv: list[str] | None = None) -> int:
         ]
     if parts_report:
         metrics_parts += ["**Cube parts** (`part_status_report`)", _parts_md(parts_report)]
-    if fresh_report:
-        metrics_parts += ["**Source freshness** (`check_data_freshness`)",
-                          _freshness_md(fresh_report)]
 
     scope_md = "\n".join([
         "**SAMPLE SCOPE** — a metric without its scope is not a measurement:",

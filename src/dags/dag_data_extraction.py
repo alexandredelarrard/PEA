@@ -106,8 +106,8 @@ download_earnings_calls = fetch("download-earnings-calls", pool="scrape")
 ingest_earnings_calls = fetch("ingest-earnings-calls", pool="scrape")
 extraction_complete = EmptyOperator(task_id="extraction_complete", dag=dag)
 
-# aggregation still runs even if the freshness gate is RED (it is a visible WARNING, not a hard
-# block); flip this to TriggerRule.ALL_SUCCESS to make stale data hard-stop the prediction build.
+# aggregation runs even if some fetchers failed (ALL_DONE, not ALL_SUCCESS); flip this to
+# TriggerRule.ALL_SUCCESS to make a failed extraction hard-stop the prediction build.
 trigger_aggregation = TriggerDagRunOperator(
     task_id="trigger_data_aggregation",
     trigger_dag_id="data_aggregation",

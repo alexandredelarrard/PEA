@@ -417,11 +417,13 @@ def by_kind(kind: str) -> tuple[Table, ...]:
 
 
 def freshness_tables() -> tuple[Table, ...]:
-    """The freshness-checked tables, in registry order.
+    """The tables declaring a refresh cadence, in registry order.
 
-    Replaces `constants.DATA_FRESHNESS_SOURCES`. Every label in that dict equalled its own
-    table name, so the label was derivable and the dict was pure duplication of
-    `date_col` + a cadence.
+    Currently has NO caller: the gate that consumed it was removed. Kept as the single
+    entry point for any future staleness check, so a new consumer reads the cadence off
+    the registry instead of reintroducing a hand-maintained table list (the mistake
+    `constants.DATA_FRESHNESS_SOURCES` made -- every label there equalled its own table
+    name, duplicating `date_col` plus a cadence the spec already declared).
     """
     return tuple(t for t in ALL if t.freshness is not None)
 

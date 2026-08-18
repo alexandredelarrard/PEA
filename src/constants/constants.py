@@ -587,24 +587,20 @@ STRATEGY_SIDE_BUY = "BUY"
 STRATEGY_SIDE_SELL = "SELL"
 
 # --------------------------------------------------------------------------- #
-# Data-freshness / gap check (StepCheckFreshness) -- cadence THRESHOLDS only.  #
+# Data-freshness cadence THRESHOLDS -- declarative metadata, no consumer today. #
 # --------------------------------------------------------------------------- #
-# WHICH tables are checked, and on which date column, now comes from
-# `schema.freshness_tables()` (`Table.freshness` / `Table.freshness_col`). The old
-# DATA_FRESHNESS_SOURCES dict repeated every table's date column, which `TableSpec`
-# already declared, and its label was always the table name.
+# WHICH tables carry a cadence, and on which date column, comes from
+# `schema.freshness_tables()` (`Table.freshness` / `Table.freshness_col`).
+# The automated gate that read these was removed; they now only document each
+# source's expected refresh rate. Wire a new consumer to `freshness_tables()`
+# rather than reintroducing a parallel table list here.
 DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
     "daily": 4, "weekly": 10, "biweekly": 20, "monthly": 45,
     "quarterly": 140, "yearly": 460,
 }
-# cadence tiers in the order the freshness report walks them (daily -> yearly)
+# cadence tiers from the tightest to the loosest (daily -> yearly)
 DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = (
     "daily", "weekly", "biweekly", "monthly", "quarterly", "yearly")
-# To report WHICH tickers got a new fundamentals filing (new earnings) since the last run, the
-# freshness gate snapshots the per-ticker latest fundamentals date to this JSON (under DATA_STORE,
-# so it persists on the host ./data mount) and diffs it next run.
-FRESHNESS_SNAPSHOT_DIR = "freshness"
-FUNDAMENTALS_SNAPSHOT_FILE = "fundamentals_latest_by_ticker.json"
 
 
 # --------------------------------------------------------------------------- #

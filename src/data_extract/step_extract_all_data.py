@@ -35,13 +35,12 @@ class StepExtractAllData(Step):
         self._behavioral = StepExtractBehavioral(context=context, config=config)
 
     def _resolve_tickers(self) -> list[str]:
-        refresh = bool(self._config.data_extract.get("refresh_universe", False))
-        if refresh or self._context.store.row_count(Tables.sp500_tickers) == 0:
-            self._log.info("Seeding sp500_tickers via S&P 500 scraper (refresh=%s)", refresh)
-            universe = get_sp500_tickers(self._context)              # scrape + persist the table
-
-        universe = load_universe_tickers(self._context)
-        self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers} "
+        if self._context.store.row_count(Tables.sp500_tickers) == 0:
+            universe = get_sp500_tickers(self._context)           
+            self._log.info("Extracted ticker list")
+        else:
+            universe = load_universe_tickers(self._context)
+            self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers} "
                        "(other_tickers fetched separately as market/macro prices)")
         return universe
 
@@ -49,6 +48,6 @@ class StepExtractAllData(Step):
         tickers = self._resolve_tickers()
 
         self._prices.run(tickers=tickers)
-        self._structure.run(tickers=tickers)
-        self._fundamentals.run(tickers=tickers)
-        self._behavioral.run(tickers=tickers)
+        # self._structure.run(tickers=tickers)
+        # self._fundamentals.run(tickers=tickers)
+        # self._behavioral.run(tickers=tickers)

@@ -7,9 +7,10 @@ normalized SEC form-dispatch key to its discovery mechanism, extraction
 handler, and destination table.
 
 Deliberately NOT a generic `run_handler(name, context, tickers)` dispatcher: the
-five handlers have genuinely different call signatures (`fetch_13f(context)`
-takes no `tickers` at all -- it is a bulk, all-filers pull; `fetch_def14a_llm`
-takes an extra `model` kwarg) -- forcing a uniform interface would mean
+five handlers have genuinely different call signatures (`fetch_13f` walks ALL
+filers by filing date, so its `tickers` is only a universe filter and defaults to
+the whole universe; `fetch_def14a_llm` takes an extra `model` kwarg) -- forcing a
+uniform interface would mean
 touching 4 already-working, DAG-scheduled pipelines for no functional gain.
 This registry exists to centralize ROUTING/documentation (which form -> which
 handler -> which table), consulted by tests and future orchestration work, not
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from src.constants.constants import (
-    DEF14A_FORMS, FUNDAMENTALS_FORMS, SEC_8K_FORMS, SEC_13D_FORMS,
+    DEF14A_FORMS, FUNDAMENTALS_FORMS, SEC_8K_FORMS, SEC_13D_FORMS, SEC_13F_FORMS,
 )
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import (
     fetch_fundamentals_edgartools,
@@ -36,7 +37,7 @@ from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
 class FormHandlerSpec:
     name: str
     sec_forms: tuple[str, ...]
-    discovery: str            # "per_cik_accession" | "bulk_quarterly"
+    discovery: str            # "per_cik_accession" | "all_filers_by_date"
     table: str
     handler: Callable
     call_shape: str
@@ -83,14 +84,12 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
              "the task's own instruction ('keep the def14a_llm table and process as a "
              "complementary one'), not renamed"),
     "sec13f_hr": FormHandlerSpec(
-        name="sec13f_hr", sec_forms=("13F-HR", "13F-HR/A", "13F-NT", "13F-NT/A"),
-        discovery="bulk_quarterly", table="sec13f_hr",
-        handler=fetch_13f, call_shape="(context)  # NO tickers -- ALL filers, whole-quarter grain",
+        name="sec13f_hr", sec_forms=tuple(SEC_13F_FORMS),
+        discovery="all_filers_by_date", table="sec13f_hr",
+        handler=fetch_13f, call_shape="(context, tickers=None)  # ALL filers, by filing date",
         step_chain_wired=False,
-        notes="renamed from institutional_holdings (DB-level ALTER TABLE RENAME); sec_forms "
-             "is documentation only -- fetch_13f.py does not filter by form string (SEC's own "
-             "bulk 'Form 13F Data Sets' are pre-joined across all filers/forms); keep its "
-             "existing bulk-grain contract (cik, period, ticker, cusip) -- do not force "
-             "per-accession grain onto it, that would require abandoning the pre-joined bulk "
-             "files SEC already provides"),
+        notes="renamed from institutional_holdings (DB-level ALTER TABLE RENAME). Discovery "
+             "moved off SEC's quarterly bulk data sets (published weeks after a quarter "
+             "closes) onto edgartools by filing date; the all-filers grain and the "
+             "(cik, period, ticker, cusip) PK are unchanged, so there is no accession column"),
 }

@@ -1,8 +1,11 @@
-"""Covers this batch's four changes:
-  1. 13F data-set filenames use the DDMMMYYYY-DDMMMYYYY window convention.
-  2. Sector-neutral portfolio construction -> net weight per group ~ 0.
-  3. dual-class dedup (GOOG/FOX/NWS dropped, one per CIK) + GICS industry group.
-  4. Google-Trends header rotation (anti-429).
+"""Covers this batch's three changes:
+  1. Sector-neutral portfolio construction -> net weight per group ~ 0.
+  2. dual-class dedup (GOOG/FOX/NWS dropped, one per CIK) + GICS industry group.
+  3. Google-Trends header rotation (anti-429).
+
+The 13F data-set filename test that used to live here went away with the quarterly zip
+download: fetch_13f discovers filings by date through edgartools now, so there are no
+data-set names to build. See tests/data_aggregate/test_institutional_features.py.
 """
 from __future__ import annotations
 
@@ -10,39 +13,7 @@ import numpy as np
 import pandas as pd
 
 
-# ---- 1. 13F filenames --------------------------------------------------------
-def test_13f_period_names_format():
-    """SEC moved its 13F data sets from DDMMMYYYY-DDMMMYYYY windows to QUARTER tags
-    ('2025q2'), so the names are asserted in that shape now. The invariant this test was
-    written to protect is unchanged and still the point: a quarter whose END has not passed
-    must be excluded, because SEC publishes the set only after the quarter closes.
-    `pd.to_datetime("2026q3")` resolves to the quarter START (2026-07-01), which admitted
-    the current quarter from its first day and spent a guaranteed 404 every run."""
-    import re
-
-    from src.data_extract.utils.prices.fetch_13f import _period_names
-    today = pd.Timestamp("2026-07-15")
-    names = _period_names(years_history=2, today=today)
-
-    # every name is a lowercase quarter tag
-    pat = re.compile(r"^\d{4}q[1-4]$")
-    assert all(pat.match(n) for n in names), names
-    # the quarter that CLOSED before `today` is present ...
-    assert "2026q2" in names, names          # ends 2026-06-30
-    assert "2025q2" in names, names
-    # ... and the quarter still OPEN on `today` is not (ends 2026-09-30)
-    assert "2026q3" not in names, names
-    assert "2026q4" not in names, names
-    # no name may end after today
-    assert all(pd.Period(n, freq="Q").end_time.normalize() <= today for n in names), names
-    # the pre-2013q2 window SEC never published stays excluded
-    assert "2013q1" not in names
-    print("\n=== SANITY CHECK: 13F data-set quarter tags ===")
-    print(f"  {len(names)} quarters {names[0]}..{names[-1]}; 2026q2 included (closed), "
-          f"2026q3 excluded (still open); all end <= {today.date()}. Validated.")
-
-
-# ---- 3. dual-class dedup + GICS industry group ------------------------------
+# ---- dual-class dedup + GICS industry group ---------------------------------
 def test_dedupe_share_classes_and_gics():
     from src.data_extract.utils.prices.fetch_tickers import _dedupe_share_classes
     from src.data_extract.utils.common.gics import industry_group
@@ -115,7 +86,6 @@ def test_google_trends_header_rotation():
 
 
 if __name__ == "__main__":
-    test_13f_period_names_format()
     test_dedupe_share_classes_and_gics()
     test_sector_neutral_weights_sum_to_zero_per_group()
     test_google_trends_header_rotation()

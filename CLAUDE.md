@@ -1,6 +1,5 @@
 This project uses AGENTS.md as its source of truth for instructions.
-See ./AGENTS.md.
-
+Always start by reading ./AGENTS.md.
 Always use rtk for all your commands. See examples below. 
 
 <!-- rtk-instructions v2 -->

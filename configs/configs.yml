@@ -9,7 +9,7 @@ data_extract:
   # places to edit, so it lives in constants.MACRO_PRICE_SERIES / MACRO_FRED_SERIES.
   macro_years_history: 31
   notes_years_history: 15
-  redundant_ticks: ["GOOG", "FOX", "NWS"]
+  redundant_ticks: ["GOOG", "FOX", "NWS", "EA"] #EA got acquired
   llm_model: "gpt-5-mini"
   # Self-heal cadence for the EDGAR filing-listing fetchers (13D, 8-K, DEF 14A
   # edgar + LLM, fundamentals edgartools): each uses the extraction manifest's

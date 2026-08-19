@@ -128,7 +128,7 @@ def macro(config_path: str) -> None:
     fetch_macro(context, years_history=context.config.data_extract.macro_years_history)
 
 
-@cli.command(help="13F institutional holdings (SEC bulk + OpenFIGI cusip map). HEAVY.")
+@cli.command(help="13F institutional holdings (EDGAR by filing date + OpenFIGI cusip map). HEAVY.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def thirteen_f(config_path: str) -> None:
     _, context = _ctx(config_path)

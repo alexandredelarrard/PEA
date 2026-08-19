@@ -109,7 +109,7 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str], years_history:i
     unless the universe gained tickers (then cached files are re-parsed)."""
 
     cache = cache_dir(context, "sec_fails_to_deliver")
-    done = ingested_periods(context, "fails_to_deliver")
+    done = ingested_periods(context, Tables.fails_to_deliver)
     new_tickers = set(tickers) - load_processed_universe(cache, Tables.fails_to_deliver)   # empty once converged
     if new_tickers:
         logger.info("FTD: %d new/changed tickers -> re-parsing cached files", len(new_tickers))

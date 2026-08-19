@@ -44,17 +44,19 @@ def test_renamed_tables_use_new_names_not_old():
     assert FORM_REGISTRY["sec13f_hr"].table == "sec13f_hr"
 
 
-def test_thirteen_f_keeps_its_bulk_quarterly_grain():
-    """13F-HR is a bulk, all-filers pull (SEC's pre-joined quarterly data sets) --
-    it must NOT be forced into the per-CIK/accession discovery shape the other
-    four forms use."""
+def test_thirteen_f_keeps_its_all_filers_grain():
+    """13F-HR is an all-filers pull, discovered by FILING DATE across every manager --
+    not the per-CIK/accession shape the other four forms use. Discovery moved off SEC's
+    quarterly bulk data sets onto edgartools (they publish weeks after a quarter closes),
+    but the all-filers grain, and the (cik, period, ticker, cusip) PK, did not."""
     spec = FORM_REGISTRY["sec13f_hr"]
-    assert spec.discovery == "bulk_quarterly"
+    assert spec.discovery == "all_filers_by_date"
+    assert "13F-NT" not in spec.sec_forms      # a notice filing carries no info table
 
     print("\n=== SANITY CHECK: form-dispatch registry ===")
     print(f"  {len(FORM_REGISTRY)} forms registered, every table exists in schema.py,")
     print("  every handler is callable, no drift from constants.py form lists;")
     print("  def_14 correctly points at the EXISTING def14a_llm table (kept per the task's")
     print("  own instruction); sec_8k/sec13f_hr correctly point at the renamed tables;")
-    print("  sec13f_hr keeps its distinct bulk-quarterly discovery contract.")
+    print("  sec13f_hr keeps its distinct all-filers-by-filing-date discovery contract.")
     print("  Validated.")

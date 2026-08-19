@@ -12,8 +12,12 @@ import pandas as pd
 from src.data_aggregate.utils.extras.institutional_features import (
     _quarter_features, build_institutional_feature_panel,
 )
-from src.data_extract.utils.prices.fetch_13f import _join_13f
+from src.data_extract.utils.prices.fetch_13f import _holdings_frame
 from src.data_extract.utils.prices.fetch_cusip_map import _parse_openfigi
+
+
+def _frame(infotable):
+    return _holdings_frame("111", "2022-05-10", "2022-03-31", infotable)
 
 
 def _holdings():
@@ -89,47 +93,39 @@ def test_panel_columns_and_ownership_pct():
 
 
 def test_extractor_parsers():
-    sub = pd.DataFrame({
-        "ACCESSION_NUMBER": ["a1", "a2"], "CIK": ["111", "222"],
-        "FILING_DATE": ["2022-05-10", "2022-05-12"],   # pre-2023 -> VALUE in $1000s
-        "PERIODOFREPORT": ["03-31-2022", "03-31-2022"]})
     info = pd.DataFrame({
-        "ACCESSION_NUMBER": ["a1", "a1", "a2"],
         "CUSIP": ["037833100", "037833100", "594918104"],
         "VALUE": ["1000", "500", "2000"], "SSHPRNAMT": ["10", "5", "20"]})
-    h = _join_13f(sub, info).sort_values("cusip").reset_index(drop=True)
-    assert set(["cik", "period", "filing_date", "cusip", "value_usd", "shares",
-                "call_shares", "put_shares", "debt_value", "other_value"]).issubset(h.columns)
+    h = _frame(info).sort_values("cusip").reset_index(drop=True)
+    assert {"cik", "period", "filing_date", "cusip", "shares", "value_usd", "call_shares",
+            "call_value", "put_shares", "put_value", "debt_prn", "debt_value",
+            "other_value"} <= set(h.columns)
     # a manager's two lines for the same CUSIP are summed into one row
     assert len(h) == 2
-    assert h.loc[0, "shares"] == 15.0 and h.loc[0, "value_usd"] == 1.5e6   # (1000+500)*1000
-    assert h.loc[1, "shares"] == 20.0 and h.loc[1, "value_usd"] == 2e6
+    assert h.loc[0, "shares"] == 15.0 and h.loc[0, "value_usd"] == 1500.0
+    assert h.loc[1, "shares"] == 20.0 and h.loc[1, "value_usd"] == 2000.0
     assert h["period"].iloc[0] == pd.Timestamp("2022-03-31")
+    assert h["cik"].iloc[0] == "0000000111"      # padded to the stored 10-digit form
 
     figi = [{"data": [{"ticker": "AAPL"}]}, {"warning": "no match"}]
     m = _parse_openfigi(figi, ["037833100", "999999999"])
     assert m == {"037833100": "AAPL"}
     print("\n=== SANITY CHECK: 13F + OpenFIGI parsers ===")
-    print("  join sums a manager's duplicate-CUSIP lines, scales $1000s->$; OpenFIGI "
-          "maps CUSIP->ticker (not the free-text issuer name). Validated.")
+    print("  join sums a manager's duplicate-CUSIP lines and takes VALUE as-is (edgartools "
+          "normalizes each filing's $thousands/$ones unit); OpenFIGI maps CUSIP->ticker "
+          "(not the free-text issuer name). Validated.")
 
 
-def test_join_13f_splits_holding_types():
+def test_holdings_frame_splits_holding_types():
     """Stock / call / put / debt / other land in separate columns; long `shares`
     excludes options and bond principal (the noise that was inflating shares)."""
-    sub = pd.DataFrame({
-        "ACCESSION_NUMBER": ["a1"], "CIK": ["111"],
-        "FILING_DATE": ["2024-05-10"],            # post-2023 -> VALUE already in $
-        "PERIODOFREPORT": ["03-31-2024"]})
     info = pd.DataFrame({
-        "ACCESSION_NUMBER": ["a1"] * 5,
         "CUSIP": ["037833100"] * 5,
-        "NAMEOFISSUER": ["APPLE INC", "APPLE INC", "APPLE", "Apple Inc.", "APPLE INC"],
         "VALUE":       ["1000000", "300000", "200000", "50000", "7000"],
         "SSHPRNAMT":   ["10000",   "3000",   "2000",   "40000", "70"],
         "SSHPRNAMTTYPE": ["SH",    "SH",     "SH",     "PRN",   "XX"],
         "PUTCALL":     ["",        "Call",   "Put",    "",      ""]})
-    h = _join_13f(sub, info)
+    h = _frame(info)
     assert len(h) == 1
     r = h.iloc[0]
     assert r["shares"] == 10000 and r["value_usd"] == 1_000_000       # long stock ONLY
@@ -142,6 +138,26 @@ def test_join_13f_splits_holding_types():
     print(f"  shares(long)={r['shares']:.0f} calls={r['call_shares']:.0f} "
           f"puts={r['put_shares']:.0f} debt$={r['debt_value']:.0f} other$={r['other_value']:.0f} "
           f"-> long shares no longer contaminated by options/bonds. Validated.")
+
+
+def test_holdings_frame_reads_edgartools_columns():
+    """edgartools names the same fields Cusip / Value / SharesPrnAmount / PutCall / Type,
+    and spells the amount type Shares/Principal rather than SH/PRN. Both vocabularies must
+    classify identically, since the stored history was built from the bulk TSV names."""
+    info = pd.DataFrame({
+        "Cusip": ["037833100"] * 3,
+        "Value": [1_000_000, 300_000, 50_000],
+        "SharesPrnAmount": [10_000, 3_000, 40_000],
+        "Type": ["Shares", "Shares", "Principal"],
+        "PutCall": ["", "Call", ""]})
+    r = _frame(info).iloc[0]
+    assert r["shares"] == 10_000 and r["value_usd"] == 1_000_000
+    assert r["call_shares"] == 3_000 and r["call_value"] == 300_000
+    assert r["debt_prn"] == 40_000 and r["debt_value"] == 50_000
+    assert r["other_value"] == 0 and r["put_value"] == 0
+    print("\n=== SANITY CHECK: edgartools column vocabulary ===")
+    print("  Cusip/Value/SharesPrnAmount/PutCall/Type + Shares|Principal classify into the "
+          "same buckets as the bulk CUSIP/VALUE/SSHPRNAMT/SSHPRNAMTTYPE names. Validated.")
 
 
 def _holdings_opts():
@@ -213,6 +229,7 @@ if __name__ == "__main__":
     test_filing_lag_point_in_time()
     test_panel_columns_and_ownership_pct()
     test_extractor_parsers()
-    test_join_13f_splits_holding_types()
+    test_holdings_frame_splits_holding_types()
+    test_holdings_frame_reads_edgartools_columns()
     test_value_flow_options_and_concentration()
     test_value_to_mcap_and_flow_panel()

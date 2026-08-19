@@ -45,13 +45,13 @@ class StepExtractStructure(Step):
         # 8k edgar
         fetch_8k_edgar(self._context, tickers=tickers)
 
-        # fetch filing text
-        # fetch_filing_text(self._context, tickers=tickers)
+        # LLM + edgar 
+        fetch_def14a_llm(self._context, tickers=tickers,
+                                model=self._config.data_extract.llm_model)
 
         # fetch def14a 
         # fetch_def14a_edgar(self._context, tickers=tickers)
 
-        # LLM + edgar 
-        fetch_def14a_llm(self._context, tickers=tickers,
-                                model=self._config.data_extract.llm_model)
+        # fetch filing text
+        # fetch_filing_text(self._context, tickers=tickers)
         

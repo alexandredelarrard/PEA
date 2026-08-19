@@ -49,9 +49,8 @@ class StepExtractPrices(Step):
         # shorting stock 
         fetch_short_interest(self._context, tickers=tickers, years_history=years_history)
 
-        # 13F institutional holdings (SEC bulk + OpenFIGI cusip map; slow one-off)
-        # TODO : update it to be daily extract from edgar tool  Form 3/4/5's own SUBMISSION.FILING_DATE
-        # NOT to stay the quarterly zip download
+        # 13F institutional holdings (edgartools by filing date + OpenFIGI cusip map). Resumes
+        # from max(filing_date) in sec13f_hr, so a routine run reads only the new filings.
         fetch_13f(self._context, tickers=tickers, years_history=years_history)
 
         # failing to give a stock in time

@@ -67,7 +67,7 @@ def _normalize_prices(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out.columns = [str(c).lower() for c in out.columns]
     out = out.rename(columns={"index": "date"})
-    out["date"] = pd.to_datetime(out["date"]).dt.normalize()
+    out["date"] = pd.to_datetime(out["date"], format="%Y-%m-%d")
     return out
 
 

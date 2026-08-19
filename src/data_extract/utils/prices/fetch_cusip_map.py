@@ -18,24 +18,18 @@ import requests
 from tqdm import tqdm
 import logging 
 
+from src.data_store.schema import Tables
 from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.context import Context
 
 logger = logging.getLogger(__name__)
 
 _URL = "https://api.openfigi.com/v3/mapping"
-_BATCH = 90          # OpenFIGI allows up to 100 jobs per request (no key)
+_BATCH = 95          # OpenFIGI allows up to 100 jobs per request (no key)
 
 
 def normalize_cusip(cusip) -> str | None:
-    """Canonical CUSIP: uppercased, stripped, and left zero-padded to 9 chars.
-
-    A CUSIP is ALWAYS 9 characters, but filers (and any int-coercing reader) drop
-    the leading zero on all-digit CUSIPs -- so the SAME security appears as
-    '037833100' and '37833100'. Without a single canonical form, the incremental
-    'already mapped?' check (`c not in known`) and the holdings<->ticker merge both
-    miss, so the map is rebuilt (and the rate-limited OpenFIGI lookup re-run) every
-    time. Returns None for blank / NaN so those are skipped."""
+    """Canonical CUSIP: uppercased, stripped, and left zero-padded to 9 chars."""
     if cusip is None:
         return None
     s = str(cusip).strip().upper()
@@ -70,14 +64,10 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
                            pause: float = 6.0) -> pd.DataFrame:
     """Return + cache a [cusip, ticker] map for the given CUSIPs (deduplicated).
     Reuses the cache and only looks up CUSIPs not already mapped."""
-    
-    cached = context.store.load("cusip_ticker_map", optional=True)
-    if cached is None:
-        cached = pd.DataFrame(columns=["cusip", "ticker"])
-    else:
-        # normalize the STORED cusips too, so a legacy row saved before this fix
-        # (or a differently-zero-padded one) still counts as 'already mapped'.
-        cached = (cached.assign(cusip=cached["cusip"].map(normalize_cusip))
+
+    api_key = os.getenv("OPENFIGI_API_KEY")
+    cached = context.store.load(Tables.cusip_ticker_map, optional=True)
+    cached = (cached.assign(cusip=cached["cusip"].map(normalize_cusip))
                   .dropna(subset=["cusip"]).drop_duplicates("cusip", keep="last"))
 
     # Curated CINS overrides, applied to the cache IMMEDIATELY -- before the `todo` short-circuit
@@ -96,7 +86,7 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
         cached = (pd.concat([cached, overrides], ignore_index=True)
                     .drop_duplicates("cusip", keep="last"))
         if stale:
-            context.store.save("cusip_ticker_map", overrides)   # repair the cached misses
+            context.store.save(Tables.cusip_ticker_map, overrides)   # repair the cached misses
             logger.info(f"CUSIP overrides: {len(overrides)} curated identifiers applied "
                         f"({len(stale)} were unmapped in the cache, e.g. {stale[:5]})")
 
@@ -109,8 +99,7 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
     todo = sorted({n for c in cusips if (n := normalize_cusip(c)) and n not in known})
     if not todo:
         return _mapped_only(cached)
-
-    api_key = os.getenv("OPENFIGI_API_KEY")
+    
     mapped: dict[str, str] = {}
     attempted: list[str] = []      # cusips whose OpenFIGI batch RESPONDED (a miss is permanent)
     for i in tqdm(range(0, len(todo), _BATCH)):
@@ -132,8 +121,8 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
     # ages" bug: those cusips never got a ticker, so were never stored, so were re-
     # queried forever. Transient (network) failures are NOT recorded, so they retry.
     new = pd.DataFrame({"cusip": attempted, "ticker": [mapped.get(c) for c in attempted]})
-    if not new.empty:
-        context.store.save("cusip_ticker_map", new)
+    context.store.save(Tables.cusip_ticker_map, new)
+
     # overrides last again, so a fresh OpenFIGI no-match cannot re-bury a curated identifier
     out = (pd.concat([cached, new, overrides], ignore_index=True)
              .drop_duplicates("cusip", keep="last"))

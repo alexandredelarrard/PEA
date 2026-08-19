@@ -65,4 +65,5 @@ def get_sp500_tickers(context: Context) -> list[str]:
     df = df.loc[~df['ticker'].isin(tick_redundant)].reset_index(drop=True)
     context.store.save(Tables.sp500_tickers, df[keep])
     logger.info(f"Saved {len(df)} tickers to DB table {Tables.sp500_tickers}")
+    
     return df["ticker"].tolist()

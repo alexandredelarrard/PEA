@@ -183,8 +183,8 @@ class Tables:
     # Extract -- ownership & institutional                              #
     # ----------------------------------------------------------------- #
     # Renamed from `institutional_holdings` to match the form-dispatch registry's logical
-    # name for 13F-HR. Same bulk-quarterly grain/PK (13F is an all-filers bulk pull, no
-    # accession_number).
+    # name for 13F-HR. 13F is an all-filers pull walked by filing date (fetch_13f.py), so the
+    # grain stays one row per manager x security x period -- no accession_number.
     sec13f_hr = Table(
         "sec13f_hr", ("cik", "period", "ticker", "cusip"), date_col="period",
         freshness="quarterly",

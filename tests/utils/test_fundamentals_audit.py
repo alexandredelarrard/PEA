@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.utils import fundamentals_audit as fa
+from src.validate import fundamentals_audit as fa
 
 
 def _empty_audit_result(value_col: str) -> dict[str, pd.DataFrame]:

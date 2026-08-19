@@ -8,7 +8,11 @@ uses across the fetchers in `step_extract_all_data.py`:
   1. VISIBILITY (most fetchers): `record_run` is called once at the end purely
      for bookkeeping. These fetchers already decide their own extraction window
      from DB state (per-ticker max date, or bulk-period/accession dedup), which
-     stays authoritative and is NOT replaced by this file.
+     stays authoritative and is NOT replaced by this file. `fetch_13f` belongs
+     here despite being an EDGAR filing-lister: it is all-filers, so
+     `manifest_window`'s `ticker_count` trigger means nothing to it, and a full
+     rescan would be ~528k filings (~16h). It resumes from the table's
+     max(filing_date) minus its own bounded `lookback_days` instead.
   2. WINDOW CONTROL (the EDGAR filing-listing fetchers only: 13D, 8-K, DEF 14A
      edgar + LLM, fundamentals edgartools): these list each ticker's FULL
      `years_history` window every run and rely solely on post-hoc accession

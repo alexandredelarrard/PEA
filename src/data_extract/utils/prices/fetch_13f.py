@@ -1,47 +1,45 @@
 """
-fetch_13f.py (src/data_extract/utils/fetch_13f.py)
----------------------------------------------------
-Extracts institutional holdings from SEC Form 13F quarterly bulk TSV datasets
-(`SUBMISSION` and `INFOTABLE`). Reconciles holdings to tickers exclusively via 
-CUSIP (OpenFIGI mapping) rather than unstandardized issuer names.
+fetch_13f.py (src/data_extract/utils/prices/fetch_13f.py)
+---------------------------------------------------------
+Institutional holdings from SEC Form 13F-HR, discovered by FILING DATE through
+edgartools. Replaces the quarterly bulk TSV data sets, which SEC only publishes
+weeks after a quarter closes.
 
-Data Grain & Instrument Breakdown:
-- One record per (Manager, CUSIP, Quarter), categorized to isolate long equity 
-  from derivatives/debt:
-  • Long Stock: Standard equity (`SSHPRNAMTTYPE=SH`, no Put/Call)
-  • Options: Split into Call vs. Put exposure (`PUTCALL`)
-  • Debt / Principal: Fixed income holdings (`SSHPRNAMTTYPE=PRN`)
-  • Residual / Other: Unclassified or malformed rows
-
-Key Guardrails:
-- Dollar Value Scaling: Automatically normalizes reported `VALUE` magnitudes 
-  ($thousands pre-Jan 2023 vs. whole dollars post-Jan 2023) based on filing date.
+Grain: one row per (manager cik, period, ticker, cusip), the holding split into
+long stock / calls / puts / debt principal / residual. Tickers are reconciled via
+CUSIP (OpenFIGI), never via unstandardized issuer names.
 """
 
 from __future__ import annotations
 
 import logging
 
-import numpy as np
 import pandas as pd
+from edgar import get_filings
 from tqdm import tqdm
-from typing import List
 
-from src.data_store.schema import Tables
-from src.constants.constants import SEC_FORM13F_URL_DICT
+from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import (
-    cache_dir, ensure_zip, ingested_periods, read_zip_members,
-)
-from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sec_utils import load_cik_mapping
+from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
+from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
+from src.data_store.schema import Tables
+from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
 
-# SEC changed the 13F VALUE unit from $thousands to $ones with the amendment
-# effective 2023-01-03; scale by filing_date so pre/post-2023 values are comparable.
-_VALUE_DOLLARS_FROM = pd.Timestamp("2023-01-01")
-_VALUE_COLS = ["shares_value", "call_value", "put_value", "debt_value", "other_value"]
+# `quarter` is absent on purpose: it tagged the SOURCE bulk data set, not the period.
+_COLS = ["cik", "period", "filing_date", "ticker", "cusip", "shares", "value_usd",
+         "call_shares", "call_value", "put_shares", "put_value",
+         "debt_prn", "debt_value", "other_value"]
+
+# 13F `VALUE` is in $thousands or $ones depending on the schema the FILER used -- not on the
+# period, so the old pre/post-2023 date rule was wrong. edgartools infers the unit per filing
+# and hands `infotable` back in dollars; an implied price outside this band means it inferred
+# wrong, the one failure mode that would silently scale value_usd by 1000x.
+_IMPLIED_PRICE_BAND = (1.0, 5000.0)
+
 
 def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
     """Return the first present column (case-insensitive) among candidates."""
@@ -52,140 +50,121 @@ def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
     return pd.Series([pd.NA] * len(df), index=df.index)
 
 
-# --------------------------------------------------------------------------- #
-# Classification: split each holding into stock / call / put / debt / other    #
-# --------------------------------------------------------------------------- #
 def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
-    """One typed row per INFOTABLE line: the value/shares land in exactly one
-    bucket keyed on PUTCALL (Put/Call) and SSHPRNAMTTYPE (SH shares / PRN debt).
-    A blank type with no put/call is treated as long stock (the overwhelmingly
-    common case, and what older datasets omit)."""
-    putcall = _pick(infotable, "PUTCALL", "putCall").astype("string").str.strip().str.upper().fillna("")
-    amttype = _pick(infotable, "SSHPRNAMTTYPE", "sshPrnamtType").astype("string").str.strip().str.upper().fillna("")
-    amt = pd.to_numeric(_pick(infotable, "SSHPRNAMT", "sshPrnamt", "shares"), errors="coerce").fillna(0.0)
-    val = pd.to_numeric(_pick(infotable, "VALUE", "value"), errors="coerce").fillna(0.0)
+    """One typed row per holding line: value/shares land in exactly one bucket keyed on
+    put/call and the amount type. A blank type with no put/call is long stock (the
+    overwhelmingly common case, and what older data sets omit). The amount type is spelled
+    SH/PRN in the bulk TSVs and Shares/Principal by edgartools; both are accepted."""
+    putcall = _pick(infotable, "PUTCALL").astype("string").str.strip().str.upper().fillna("")
+    amttype = (_pick(infotable, "SSHPRNAMTTYPE", "Type")
+               .astype("string").str.strip().str.upper().fillna(""))
+    amt = pd.to_numeric(_pick(infotable, "SSHPRNAMT", "SharesPrnAmount"),
+                        errors="coerce").fillna(0.0)
+    val = pd.to_numeric(_pick(infotable, "VALUE"), errors="coerce").fillna(0.0)
 
     is_call = putcall == "CALL"
     is_put = putcall == "PUT"
     opt = is_call | is_put
-    is_debt = (~opt) & (amttype == "PRN")
-    is_stock = (~opt) & (amttype.isin(["SH", ""]))     # SH or blank -> long equity
-    is_other = ~(is_call | is_put | is_debt | is_stock)
+    is_debt = (~opt) & amttype.isin(["PRN", "PRINCIPAL"])
+    is_stock = (~opt) & amttype.isin(["SH", "SHARES", ""])
+    is_other = ~(opt | is_debt | is_stock)
 
-    z = pd.Series(0.0, index=infotable.index)
     return pd.DataFrame({
-        "accession": _pick(infotable, "ACCESSION_NUMBER", "accession_number"),
-        # canonical 9-char CUSIP (restore any dropped leading zero) so the map skip
-        # and the holdings<->ticker merge use ONE form (see fetch_cusip_map.normalize_cusip)
-        "cusip": _pick(infotable, "CUSIP", "cusip").astype(str).str.strip().str.upper().str.zfill(9),
-        "shares": amt.where(is_stock, z),        "shares_value": val.where(is_stock, z),
-        "call_shares": amt.where(is_call, z),    "call_value": val.where(is_call, z),
-        "put_shares": amt.where(is_put, z),      "put_value": val.where(is_put, z),
-        "debt_prn": amt.where(is_debt, z),       "debt_value": val.where(is_debt, z),
-        "other_value": val.where(is_other, z),
+        # canonical 9-char CUSIP so the map lookup and the ticker merge use ONE form
+        "cusip": _pick(infotable, "CUSIP").map(normalize_cusip),
+        "shares": amt.where(is_stock, 0.0),      "value_usd": val.where(is_stock, 0.0),
+        "call_shares": amt.where(is_call, 0.0),  "call_value": val.where(is_call, 0.0),
+        "put_shares": amt.where(is_put, 0.0),    "put_value": val.where(is_put, 0.0),
+        "debt_prn": amt.where(is_debt, 0.0),     "debt_value": val.where(is_debt, 0.0),
+        "other_value": val.where(is_other, 0.0),
     })
 
 
-def _join_13f(submission: pd.DataFrame, infotable: pd.DataFrame) -> pd.DataFrame:
-    """SUBMISSION + typed INFOTABLE -> one row per manager x security x quarter
-    with the type breakdown. Pure."""
-
-    sub = pd.DataFrame({
-        "accession": _pick(submission, "ACCESSION_NUMBER", "accession_number"),
-        "cik": _pick(submission, "CIK", "cik"),
-        "filing_date": pd.to_datetime(_pick(submission, "FILING_DATE", "filing_date"),
-                                      format="mixed", errors="coerce"),
-        "period": pd.to_datetime(_pick(submission, "PERIODOFREPORT", "period_of_report",
-                                       "periodofreport"), format="mixed", errors="coerce"),
-    })
-    typed = _classify_holdings(infotable)
-    # combine a manager's multiple lines for the same security (e.g. split sub-accounts)
-    agg = typed.groupby(["accession", "cusip"], as_index=False).sum(numeric_only=True)
-    holdings = agg.merge(sub, on="accession", how="inner")
-
-    # normalize VALUE units to raw dollars (thousands before the 2023 amendment)
-    scale = np.where(holdings["filing_date"].fillna(pd.Timestamp("2000-01-01"))
-                     < _VALUE_DOLLARS_FROM, 1000.0, 1.0)
-    for c in _VALUE_COLS:
-        holdings[c] = holdings[c] * scale
-    holdings["value_usd"] = holdings["shares_value"]     # long-equity value (feature-layer key)
-
-    return holdings.dropna(subset=["cusip", "cik", "period"])
+def _holdings_frame(cik, filing_date, period, infotable: pd.DataFrame) -> pd.DataFrame:
+    """One filing's info table -> one row per security. Pure."""
+    typed = _classify_holdings(infotable).dropna(subset=["cusip"])
+    # a manager's several lines for the same security (split sub-accounts) become one row
+    out = typed.groupby("cusip", as_index=False).sum(numeric_only=True)
+    out["cik"] = pad_cik(cik)      # the stored form; the PK join depends on matching it
+    out["period"] = pd.Timestamp(period)
+    out["filing_date"] = pd.Timestamp(filing_date)
+    return out.dropna(subset=["period"])
 
 
-def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
-    """Data-set base names (no extension) for every filing window in range, e.g. '2025q2'.
-    Only quarters whose END date has passed are included, because SEC publishes a data set
-    only after the quarter closes. Pure/deterministic (pass `today` in tests).
-
-    `pd.to_datetime("2026q3")` resolves to the quarter's START (2026-07-01), so comparing
-    that against `today` admitted the current, not-yet-published quarter from its first day
-    and spent a guaranteed 404 on every run. Anchor on the quarter END instead."""
-    today = (today or pd.Timestamp.today()).normalize()
-    names = []
-    for y in range(today.year - years_history, today.year + 1):
-        if y >= 2013:  # SEC started filing 13F data in 2013 q2
-            for quarter in range(1, 5):
-                tag = f"{y}q{quarter}"
-                quarter_end = pd.Period(tag, freq="Q").end_time.normalize()
-                if tag == "2013q1" or quarter_end > today:
-                    continue
-                names.append(tag)
-    return names
+def _read_filing(filing) -> pd.DataFrame:
+    """Fetch and parse one 13F-HR. Empty on any failure: one unparseable filing must not
+    abort a batch of thousands. `lookback_days` is what gets it retried on a later run."""
+    try:
+        infotable = filing.obj().infotable
+        if infotable is None or infotable.empty:
+            return pd.DataFrame()
+        return _holdings_frame(filing.cik, filing.filing_date,
+                               filing.period_of_report, infotable)
+    except Exception as e:                                        # noqa: BLE001
+        logger.warning(f"13F {filing.accession_number}: {type(e).__name__}: {e}")
+        return pd.DataFrame()
 
 
-# --------------------------------------------------------------------------- #
-# Zip cache: download once to disk, reuse thereafter                           #
-# --------------------------------------------------------------------------- #
-def fetch_13f(context: Context, tickers: List[str], years_history : int = 15) -> None:
-    """Download (once, cached) the 13F data sets, split by holding type, map to
-    tickers, keep the universe, and store.
+def _resolve_tickers(holdings: pd.DataFrame, cmap: pd.DataFrame,
+                     universe: set[str]) -> pd.DataFrame:
+    out = holdings.merge(cmap, on="cusip", how="inner")
+    return out[out["ticker"].isin(universe)]
 
-    INCREMENTAL: a quarter already ingested into `sec13f_hr` is skipped
-    ENTIRELY (no re-download, no re-parse of the cached zip, no re-ingest) unless the
-    ticker universe grew (then cached zips are re-parsed to back-fill new names). The
-    CUSIP->ticker map is built only over the NEW quarters' cusips (and itself skips
-    already-attempted cusips), so a converged re-run does almost no work."""
-    
-    cache = cache_dir(context, "SEC_13F_INSIDERS_DIR")
-    done = ingested_periods(context, Tables.sec13f_hr, "quarter")
-  
-    quarter_frames: dict[str, pd.DataFrame] = {}
-    for tag in tqdm(_period_names(years_history + 1), desc="13F data sets"):
-        if tag in done:
-            continue                                   
-        path = ensure_zip(cache / f"{tag}_form13f.zip",
-                          SEC_FORM13F_URL_DICT.get(tag),
-                          label=f"13F {tag}", timeout=180, log=logger)
-        if path is None:
-            continue
-        got = read_zip_members(path, ("SUBMISSION.tsv", "INFOTABLE.tsv"), log=logger)
-        if got is None:
-            continue
-        h = _join_13f(got["SUBMISSION.tsv"], got["INFOTABLE.tsv"])
-        if not h.empty:
-            h["quarter"] = tag
-            quarter_frames[tag] = h
 
-    cols = ["cik", "period", "filing_date", "ticker", "cusip", "shares", "value_usd",
-            "call_shares", "call_value", "put_shares", "put_value",
-            "debt_prn", "debt_value", "other_value", "quarter"]
-    if not quarter_frames:
-        logger.info(f"13F {Tables.sec13f_hr} already up to date (no new quarters).")
-        record_run(context, Tables.sec13f_hr, len(tickers), 0)
+def fetch_13f(context: Context, tickers: list[str] | None = None, years_history: int = 15,
+              save_every: int = 200, lookback_days: int = 7) -> None:
+    """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date`, minus
+    `lookback_days`.
 
-    all_cusips = sorted(set().union(*(set(h["cusip"].unique()) for h in quarter_frames.values())))
-    cmap = build_cusip_ticker_map(context, all_cusips)
+    The watermark is the FILING date, not the reported period: managers back-file old periods
+    (seen: a 2019-06-30 period filed in 2025), which period-keyed dedup would skip for ever.
+    `lookback_days` re-reads the tail of the window because there is no accession dedup and
+    `_read_filing` swallows per-filing failures -- without it, a filing that failed
+    transiently would sit behind the advanced watermark and never be retried. A full rescan
+    is the wrong self-heal here: 15y is ~528k filings, ~16h."""
+    _configure_identity()
+    today = pd.Timestamp.today().normalize()
 
-    saved, saved_frames = 0, []
-    for tag, h in quarter_frames.items():
-        out = h.merge(cmap, on="cusip", how="inner")
-        out = out[out["ticker"].isin(tickers)]
-        if not out.empty:
-            keep = out[[c for c in cols if c in out.columns]]
-            saved += context.store.save(Tables.sec13f_hr, keep)
-            saved_frames.append(keep)
+    watermark = context.store.max_date(Tables.sec13f_hr, "filing_date")
+    if watermark is None:
+        since = today - pd.DateOffset(years=years_history)
+        logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- "
+                       f"full history from {since:%Y-%m-%d}")
+    else:
+        since = watermark - pd.Timedelta(days=lookback_days)
 
-    logger.info(f"Saved {saved} rows across {len(quarter_frames)} \
-                 new quarter(s) to {Tables.sec13f_hr}")
-    record_run(context, Tables.sec13f_hr, len(tickers), saved)
+    filings = get_filings(form=SEC_13F_FORMS,
+                          filing_date=f"{since:%Y-%m-%d}:{today:%Y-%m-%d}") or []
+    total = len(filings)
+    logger.info(f"13F: {total} filing(s) to read since {since:%Y-%m-%d}")
+    universe = set(tickers) if tickers is not None else set(load_cik_mapping(context)["ticker"])
+    if not total:
+        record_run(context, Tables.sec13f_hr, len(universe), 0)
+        return
+
+    saved, suspect, batch, looked_up, cmap = 0, 0, [], set(), None
+    for i, filing in enumerate(tqdm(filings, total=total, desc="13F-HR"), start=1):
+        rows = _read_filing(filing)
+        if not rows.empty:
+            batch.append(rows)
+        if batch and (len(batch) >= save_every or i == total):
+            holdings = pd.concat(batch, ignore_index=True)
+            batch.clear()
+            new_cusips = set(holdings["cusip"]) - looked_up
+            if new_cusips or cmap is None:
+                # build_cusip_ticker_map re-reads the WHOLE map table, so only call it for a
+                # genuinely new cusip -- once per batch would reload it ~44x a quarter
+                cmap = build_cusip_ticker_map(context, sorted(new_cusips))
+                looked_up |= new_cusips
+            out = _resolve_tickers(holdings, cmap, universe)
+            if not out.empty:
+                implied = (out["value_usd"] / out["shares"].where(out["shares"] > 0)).dropna()
+                suspect += int((~implied.between(*_IMPLIED_PRICE_BAND)).sum())
+                saved += context.store.save(Tables.sec13f_hr, out[_COLS])
+
+    if suspect:
+        logger.warning(f"13F: {suspect}/{saved} saved rows imply a share price outside "
+                       f"{_IMPLIED_PRICE_BAND} -- check edgartools' per-filing $thousands "
+                       f"detection before trusting value_usd")
+    logger.info(f"13F: saved {saved} row(s) from {total} filing(s) to {Tables.sec13f_hr}")
+    record_run(context, Tables.sec13f_hr, len(universe), saved)

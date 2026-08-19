@@ -46,9 +46,19 @@ Derived views are comprehensions, never hand-lists: `ALL`, `BY_NAME`, `MANAGED`,
 |---|---|---|
 | `sp500_tickers` | `ticker` | THE universe. `name, sector, industry_group, sub_industry, cik`. Also the only ticker→CIK source (the old `cik_mapping` table was dropped). Resolved via [src/utils/universe.py](../src/utils/universe.py)`::load_universe_tickers`, which drops `constants.INSUFFICIENT_HISTORY_TICKERS`. Swap universe by replacing rows only — no step code changes. |
 
-`other_tickers` (`SPY`, `CL=F`, `GC=F`, `USDEUR=X`, `^VIX`) go into `prices` via a plain
-`fetch_price_history` call over that list (they are ordinary OHLCV rows) and are **never**
-added to the equity universe — nor passed to `fetch_dividends`.
+The market / commodity / energy series (`SPY`, `^VIX`, `CL=F`, `GC=F`, `XLE`) do **not** go into
+`prices`. They are close-only rows in `prices_macro`, stored under SERIES names (`equity_tr`,
+`vix`, `oil`, `gold`, `energy`) by `fetch_macro`, alongside the FRED legs — including FX
+(`fx_usdeur` ← `DEXUSEU`, which is quoted USD-per-EUR and reaches back to 1999-01, where
+Yahoo's `USDEUR=X` is the reciprocal and only starts 2003-12). So `prices` is the equity
+universe and nothing else.
+
+That separation is enforced at the SOURCE, and it is load-bearing. When those tickers were
+extra OHLCV rows inside `prices`, every consumer needed a firewall against them — a whole
+second part table (`cube_part_market`), three `drop(columns=[market])` guards, a `^`-prefix
+filter, a zero-volume trim exemption — because consumers pivot to wide and rank
+cross-sectionally, where one stray `SPY` column silently shifts every percentile. All of that
+is gone. See [tests/data_extract/test_macro_prices_separation.py](../tests/data_extract/test_macro_prices_separation.py).
 
 ## Extract — prices & market
 
@@ -59,7 +69,7 @@ added to the equity universe — nor passed to `fetch_dividends`.
 | `short_interest` | `ticker, date` | `date` | daily | FINRA RegSHO. Resumes on the table's **global** max date (one day-file covers the whole market, so a per-ticker frontier would only re-fetch days already held). Projection lists `short_interest`/`avg_daily_volume` as **optional** — the live table has neither, and demanding them killed the read instead of degrading it |
 | `fails_to_deliver` | `ticker, date` | `date` | biweekly | SEC CNS fails. Separate from `short_interest` so its semi-monthly ~2-month-lagged files don't poison that table's global-max incremental |
 | `macro` | `date` | `date` | daily | FRED: 3M/2Y/10Y/30Y yields, 10y-2y & 10y-3m spreads, VIX, BAA spread, 10y breakeven. `ticker_col=None` |
-| `macro_asset_prices` | `date` | `date` | daily | long-history (~1995) allocation legs: `equity_tr`, `gold`, `energy`, `bond_10y_tr`, `cash_rate`, `fx_usdeur`, `yield_10y`, `vix`. `ticker_col=None` |
+| `prices_macro` | `ticker`, `date` | `date` | daily | LONG: one `close` per (series, date). 15 series — yfinance closes (`equity_tr`, `vix`, `oil`, `gold`, `energy`), FRED levels (`yield_2y/10y/30y`, `cash_rate`, `baa_credit_spread`, `breakeven_10y`, `fx_usdeur`) and derived (`yield_curve_10y2y`, `yield_curve_10y3m`, `bond_10y_tr`). Replaced the wide `macro` + `macro_asset_prices` |
 | `cusip_ticker_map` | `cusip` | — | — | CUSIP→ticker via OpenFIGI (+ `constants.CUSIP_TICKER_OVERRIDES`) |
 
 ## Extract — fundamentals
@@ -155,7 +165,7 @@ Each table declares its expected refresh cadence (`Table.freshness`), keyed into
 daily 4d · weekly 10d · biweekly 20d · monthly 45d · quarterly 140d · yearly 460d
 ```
 
-Watched: `prices`, `short_interest`, `macro`, `macro_asset_prices`, `wiki_pageviews` (daily) ·
+Watched: `prices`, `short_interest`, `prices_macro`, `wiki_pageviews` (daily) ·
 `google_trends` (weekly) · `fails_to_deliver`, `notes_num`, `notes_text` (biweekly) ·
 `fundamentals_history`, `fundamentals_facts`, `earnings_surprises`, `pension_facts`, `sec13f_hr`,
 `insider_transactions`, `earnings_call_sections` (quarterly) · `def14a_llm` (yearly).

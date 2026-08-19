@@ -29,7 +29,7 @@ OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI,
   `is None`, not `.empty`.
 - Table names live only in `src/data_store/schema.py` → `Tables.<name>`, never a string literal.
   Likewise never hand-list what a registry drives (`CUBE_PARTS`, `STRATEGY_REGISTRY`, `FORM_REGISTRY`).
-- Literals (URLs, formats, thresholds) → `src/constants/constants.py`. Tunable numbers → `configs/`.
+- Literals (URLs, formats, thresholds) → `src/constants/constants.py`. Tunable numbers → `configs/`. Always tighten the prose in docstrings / comments, in all files.
 - Logging: `self._log` in a Step/Strategy, `context.log` in a helper taking `context`. Never
   `print()`. `Context` has `.log` — there is **no** `.logger`.
 - Full type annotations; imports at top; no cross-imports between `src/` subfolders (→ `src/utils/`).

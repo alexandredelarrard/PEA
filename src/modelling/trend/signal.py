@@ -2,7 +2,7 @@
 signal.py  (src/modelling/trend/signal.py)
 ------------------------------------------
 The TREND / CTA "model": a DIRECTIONAL long/short time-series-momentum book on the macro
-asset universe (equity / gold / energy / 10Y-bond-TR / FX from `macro_asset_prices`). Unlike
+asset universe (equity / gold / energy / 10Y-bond-TR / FX from `prices_macro`). Unlike
 the long book (always long), it goes SHORT an asset trending down — so it PROFITS in sustained
 sell-offs (short bonds in 2022, short equities in 2008): the positive-skew / crisis-alpha
 diversifier. Self-contained on the shared trend blocks (src/utils/trend); no ML.
@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_store.schema import Tables
+from src.utils.macro import load_macro_wide
 from src.utils.trend import combined_forecast, vol_scaled_positions, sleeve_returns
 
 # level (price / total-return-index) columns usable as trend "close"; renamed to short labels
@@ -25,10 +26,10 @@ _ANN: float = 252.0
 
 
 def load_close(store, include_fx: bool = True) -> pd.DataFrame:
-    """Wide close (level) matrix (date x asset) for the trend universe from `macro_asset_prices`."""
-    df = store.load(Tables.macro_asset_prices, optional=True)
+    """Wide close (level) matrix (date x asset) for the trend universe from `prices_macro`."""
+    df = load_macro_wide(store, series=TREND_CLOSE_COLS)
     if df is None:
-        raise RuntimeError(f"Table '{Tables.macro_asset_prices}' is empty — run fetch_macro_assets.")
+        raise RuntimeError(f"Table '{Tables.prices_macro}' is empty — run `data_extract macro`.")
     d = df.copy()
     d["date"] = pd.to_datetime(d["date"])
     d = d.sort_values("date").set_index("date")

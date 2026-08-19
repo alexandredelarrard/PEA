@@ -19,16 +19,18 @@ import lightgbm as lgb
 from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
+from src.constants.constants import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common import data_utils as du
 from src.data_aggregate.utils.assemble.cube import panel_from_cube
 from src.modelling.long_short.utils import model as ml
+from src.utils.macro import load_macro_series
 
 
 @dataclass
 class SignalBundle:
     signal: pd.DataFrame        # date x ticker combined cross-sectional z-signal
-    stock_ret: pd.DataFrame     # date x equity daily returns (market/macro + ^index dropped)
+    stock_ret: pd.DataFrame     # date x equity daily returns (`prices` is equity-only now)
     spy_ret: pd.Series          # market benchmark daily return
     close: pd.DataFrame         # date x ticker close prices (all tickers; for share blotters)
     backtest_start: pd.Timestamp
@@ -91,11 +93,15 @@ def _returns(context: Context, config: DictConfig, cube_cfg: DictConfig, model_c
     cutoff = start - pd.Timedelta(days=buffer)
     long = context.store.load(Tables.prices, since=cutoff)
     close = du.extract_field(du.prices_long_to_multiindex(long), "Close")
-    mkt = cube_cfg.market_ticker
+    # `prices` is the equity universe and nothing else now, so there is no market/index/FX
+    # column to strip out here -- the benchmark leg comes from `prices_macro` instead.
     rets = du.daily_returns(close)
-    idx_syms = [c for c in rets.columns if str(c).startswith("^")]   # drop indices (^VIX, ^GSPC…)
-    drop = [mkt] + list(config.data_extract.get("other_tickers", [])) + idx_syms
-    return close, rets.drop(columns=drop, errors="ignore"), rets[mkt]
+    mkt_close = load_macro_series(context.store, MACRO_MARKET_SERIES, since=cutoff)
+    if mkt_close is None:
+        raise RuntimeError(f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> "
+                           "no benchmark for the L/S sleeve. Run `data_extract macro`.")
+    mkt_ret = mkt_close.pct_change(fill_method=None).reindex(rets.index)
+    return close, rets, mkt_ret
 
 
 def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle:

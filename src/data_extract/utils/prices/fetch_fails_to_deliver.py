@@ -25,6 +25,7 @@ import logging
 import pandas as pd
 from tqdm import tqdm
 
+from src.data_store.schema import Tables
 from src.constants.constants import (
     SEC_FTD_URL_TEMPLATE, SEC_FTD_LEGACY_URL_TEMPLATE,
     SEC_FTD_LEGACY_LAST_PERIOD, SEC_FTD_FIRST_YEAR)
@@ -34,11 +35,10 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
-    load_processed_universe, save_processed_universe)
+    load_processed_universe)
 
 logger = logging.getLogger(__name__)
 
-_TABLE = "fails_to_deliver"
 _OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
 
 
@@ -102,23 +102,20 @@ def _period_urls(period: str) -> tuple[str, ...]:
     return (legacy, modern) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy)
 
 
-def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
+def fetch_fails_to_deliver(context: Context, tickers: list[str], years_history:int = 15) -> int:
     """Download (cached) the semi-monthly SEC Fails-to-Deliver files over
     `years_history`, keep the universe, upsert to `fails_to_deliver`. Returns rows
     upserted. Incremental: a file already in the DB is skipped (no re-download)
     unless the universe gained tickers (then cached files are re-parsed)."""
-    store = context.store
-    universe = {str(t).upper() for t in tickers}
-    years_history = context.config.data_extract.years_history + 1
-    cache = cache_dir(context, "sec_fails_to_deliver")
 
+    cache = cache_dir(context, "sec_fails_to_deliver")
     done = ingested_periods(context, "fails_to_deliver")
-    new_tickers = universe - load_processed_universe(cache, _TABLE)   # empty once converged
+    new_tickers = set(tickers) - load_processed_universe(cache, Tables.fails_to_deliver)   # empty once converged
     if new_tickers:
         logger.info("FTD: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
 
     saved = 0
-    for period in tqdm(_periods(years_history), desc="SEC fails-to-deliver"):
+    for period in tqdm(_periods(years_history +1), desc="SEC fails-to-deliver"):
         if period in done and not new_tickers:
             continue
         path = ensure_zip(cache / f"cnsfails{period}.zip", _period_urls(period),
@@ -129,14 +126,12 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str]) -> int:
         if raw is None:
             continue
         df = _parse_ftd(raw)
-        df = df[df["ticker"].isin(universe)]
+        df = df[df["ticker"].isin(tickers)]
         if df.empty:
             continue
         df["period"] = period
-        saved += store.save(_TABLE, df[[c for c in _OUT_COLS if c in df.columns]])
+        context.store.save(Tables.fails_to_deliver, df[[c for c in _OUT_COLS if c in df.columns]])
+        saved +=df.shape[0]
 
-    save_processed_universe(cache, _TABLE, universe)   # so a converged re-run skips
-    logger.warning("fails_to_deliver: upserted %d rows (%d files scanned)",
-                   saved, len(_periods(years_history)))
-    record_run(context, _TABLE, len(universe), saved)
-    return saved
+    logger.info(f"fails_to_deliver completed ({len(_periods(years_history))} files scanned) +{saved}")
+    record_run(context, Tables.fails_to_deliver, len(tickers), saved)

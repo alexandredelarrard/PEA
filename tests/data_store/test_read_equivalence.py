@@ -19,17 +19,23 @@ does not merely run slowly -- an earlier version of this file scoped two cases b
 alone and exhausted the machine's memory.
 
 So: every row-returning case carries a KEY predicate (one ticker) or a LIMIT, and the
-unbounded shapes are only ever exercised against the small tables (`cube_part_market`, 15k
-rows). That still tests the thing that actually breaks -- predicate COMPOSITION, column
-PROJECTION and date/type BINDING. It deliberately proves nothing about volume; `iter_load`'s
-memory behaviour is not something a frame-equality test can assert anyway.
+unbounded shapes are only ever exercised against a SMALL table. That used to be
+`cube_part_market` (15k rows); that part no longer exists -- the market/commodity/FX series
+moved into `prices_macro`, which is the small table now (~15 series x 31y, same order of
+magnitude, and it is long-format with the same (date, ticker, close) shape the cases need).
+That still tests the thing that actually breaks -- predicate COMPOSITION, column PROJECTION
+and date/type BINDING. It deliberately proves nothing about volume; `iter_load`'s memory
+behaviour is not something a frame-equality test can assert anyway.
 
 Aggregate-only shapes (MAX / MIN / COUNT / DISTINCT) return a handful of rows regardless of
 table size, so they need no extra scoping.
 
-CAPABILITY-GATED. The store methods land in phase 2 of the refactor, so a case whose method
-does not exist yet SKIPS with an explicit reason, and `test_every_case_is_live` reports how
-many remain. That test is the phase-6 gate: it must report zero.
+CAPABILITY-GATED, twice over. The store methods land in phase 2 of the refactor, so a case
+whose method does not exist yet SKIPS with an explicit reason, and `test_every_case_is_live`
+reports how many remain. That test is the phase-6 gate: it must report zero. A case also
+skips when its TABLE is absent: this DB carries the extract tables but not the cube ones
+(docs/database.md), and "the aggregation has not been run here" is an environment fact, not
+a read-equivalence failure -- reporting it as red just trains everyone to ignore red.
 """
 from __future__ import annotations
 
@@ -75,6 +81,14 @@ def _requires(store: DataStore, *methods: str) -> None:
         pytest.skip(f"DataStore.{'/'.join(missing)} not implemented yet (refactor phase 2)")
 
 
+def _requires_tables(store: DataStore, *tables: str) -> None:
+    """Skip when a table this case reads is not in THIS database. Both sides of an
+    equivalence check hit the same table, so an absent one proves nothing either way."""
+    absent = [t for t in tables if not store.exists(t)]
+    if absent:
+        pytest.skip(f"table(s) not present in this database: {', '.join(absent)}")
+
+
 def _norm(df: pd.DataFrame) -> pd.DataFrame:
     """Column order and row order are NOT part of the contract -- content is."""
     return (df.reindex(sorted(df.columns), axis=1)
@@ -88,6 +102,7 @@ def _norm(df: pd.DataFrame) -> pd.DataFrame:
 def test_max_date_matches_part_io_max_date(store):
     """`PartStore.max_date` -- `SELECT MAX(date) FROM "<part>"` (part_io.py:52)."""
     _requires(store, "max_date")
+    _requires_tables(store, "cube_part_prices")
     old = _sql(store, 'SELECT MAX(date) AS m FROM "cube_part_prices"')["m"].iloc[0]
     assert store.max_date("cube_part_prices") == pd.Timestamp(old).normalize()
 
@@ -95,8 +110,8 @@ def test_max_date_matches_part_io_max_date(store):
 def test_columns_matches_part_io_columns(store):
     """`PartStore.columns` -- `SELECT * FROM "<part>" LIMIT 0` (part_io.py:64)."""
     _requires(store, "columns")
-    old = list(_sql(store, 'SELECT * FROM "cube_part_market" LIMIT 0').columns)
-    assert list(store.columns("cube_part_market")) == old
+    old = list(_sql(store, 'SELECT * FROM "prices_macro" LIMIT 0').columns)
+    assert list(store.columns("prices_macro")) == old
 
 
 def test_columns_matches_information_schema_for_cube(store):
@@ -104,6 +119,7 @@ def test_columns_matches_information_schema_for_cube(store):
     (step_train.py:156, ls_model.py:71). `inspect()` resolves through `search_path` and is
     stricter than an unqualified `table_name = 'cube'`, so this pins that they agree HERE."""
     _requires(store, "columns")
+    _requires_tables(store, "cube")
     old = set(_sql(store, "SELECT column_name FROM information_schema.columns "
                           "WHERE table_name = 'cube'")["column_name"])
     assert set(store.columns("cube")) == old
@@ -112,8 +128,8 @@ def test_columns_matches_information_schema_for_cube(store):
 def test_row_count_matches_part_io_row_count(store):
     """`PartStore.row_count` -- `SELECT COUNT(*) FROM "<part>"` (part_io.py:72)."""
     _requires(store, "row_count")
-    old = int(_sql(store, 'SELECT COUNT(*) AS n FROM "cube_part_market"')["n"].iloc[0])
-    assert store.row_count("cube_part_market") == old
+    old = int(_sql(store, 'SELECT COUNT(*) AS n FROM "prices_macro"')["n"].iloc[0])
+    assert store.row_count("prices_macro") == old
 
 
 def test_bounds_matches_hf_transcripts_min_max(store):
@@ -151,6 +167,7 @@ def test_distinct_with_notnull_matches_step_train_horizons(store):
     WHERE "<target>" IS NOT NULL ORDER BY target_horizon` (step_train.py:114). This is the
     case that needs an IS NOT NULL predicate composed with DISTINCT."""
     _requires(store, "distinct", "NOT_NULL")
+    _requires_tables(store, "cube")
     old = _sql(store, 'SELECT DISTINCT target_horizon FROM cube '
                       'WHERE "target_rank" IS NOT NULL ORDER BY target_horizon'
                )["target_horizon"].tolist()
@@ -163,6 +180,7 @@ def test_distinct_ordered_and_limited_matches_step_train_recent_dates(store):
     """`step_train` latest dates -- `SELECT DISTINCT date FROM cube ORDER BY date DESC
     LIMIT :n` (step_train.py:809)."""
     _requires(store, "distinct")
+    _requires_tables(store, "cube")
     old = _sql(store, "SELECT DISTINCT date FROM cube ORDER BY date DESC LIMIT :n",
                {"n": 5})["date"].tolist()
     new = store.distinct("cube", "date", order="desc", limit=5)
@@ -176,14 +194,13 @@ def test_since_matches_part_io_read_since(store):
     """`PartStore.read(since=)` -- `SELECT <cols> FROM "<part>" WHERE date >= :since`
     (part_io.py:86). The date is BOUND, not formatted into the string.
 
-    Run against `cube_part_market` (15k rows), the only part small enough to compare
-    unscoped. `cube_part_prices` is 1.85M rows and is covered by the ticker-scoped case
-    below."""
+    Run against `prices_macro`, the small table (see the module docstring). `cube_part_prices`
+    is 1.85M rows and is covered by the ticker-scoped case below."""
     _requires(store, "load")
     cols = ["date", "ticker", "close"]
-    old = _sql(store, 'SELECT "date", "ticker", "close" FROM "cube_part_market" '
+    old = _sql(store, 'SELECT "date", "ticker", "close" FROM "prices_macro" '
                       "WHERE date >= :since", {"since": SINCE.strftime("%Y-%m-%d")})
-    new = store.load("cube_part_market", columns=cols, since=SINCE)
+    new = store.load("prices_macro", columns=cols, since=SINCE)
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
 
@@ -192,6 +209,7 @@ def test_since_composes_with_a_key_predicate_on_a_large_part(store):
     the comparison stays bounded -- this is the shape every cube sub-step actually issues."""
     _requires(store, "load")
     cols = ["date", "ticker", "close"]
+    _requires_tables(store, "cube_part_prices")
     old = _sql(store, 'SELECT "date", "ticker", "close" FROM "cube_part_prices" '
                       "WHERE date >= :since AND ticker = :t",
                {"since": SINCE.strftime("%Y-%m-%d"), "t": TICKER})
@@ -220,6 +238,7 @@ def test_notnull_and_equality_compose_like_step_train_panel(store):
     equality, ANDed. Scoped to one ticker so it does not scan 5.6M rows."""
     _requires(store, "load", "NOT_NULL")
     cols = ["date", "ticker", "target_horizon", "target_rank"]
+    _requires_tables(store, "cube")
     old = _sql(store, 'SELECT "date", "ticker", "target_horizon", "target_rank" FROM cube '
                       'WHERE "target_rank" IS NOT NULL AND target_horizon = :h '
                       "AND ticker = :t", {"h": 30, "t": TICKER})
@@ -249,8 +268,8 @@ def test_iter_load_concatenates_to_the_same_frame(store):
     duplication or loss at the chunk boundaries (the keyset/stream_results path)."""
     _requires(store, "iter_load", "load")
     cols = ["date", "ticker", "close"]
-    whole = store.load("cube_part_market", columns=cols)
-    chunks = list(store.iter_load("cube_part_market", columns=cols, chunksize=1_000))
+    whole = store.load("prices_macro", columns=cols)
+    chunks = list(store.iter_load("prices_macro", columns=cols, chunksize=1_000))
     assert len(chunks) > 1, "chunksize did not actually split the read"
     pd.testing.assert_frame_equal(_norm(pd.concat(chunks, ignore_index=True)),
                                   _norm(whole), check_dtype=False)
@@ -270,7 +289,7 @@ def test_missing_table_raises_a_typed_error(store):
 def test_empty_result_raises_rather_than_returning_a_frame(store):
     """An empty read is a fault, not a value: no fabricated frame."""
     with pytest.raises(TableEmptyError):
-        store.load("cube_part_market", where={"ticker": "__no_such_ticker__"})
+        store.load("prices_macro", where={"ticker": "__no_such_ticker__"})
 
 
 def test_optional_returns_none_for_the_resume_reads(store):

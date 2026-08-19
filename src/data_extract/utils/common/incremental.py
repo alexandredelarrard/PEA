@@ -76,6 +76,7 @@ def resume_since(
     needs its whole history, and self-correcting once it has rows. Pass **False**
     where absence is legitimate and PERMANENT: `dividends` never gets a row for a
     non-payer, so counting those would pin every run to the full window forever."""
+    
     history_start = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     last_by_ticker = context.store.max_date_by(table, ticker_col, date_col)
     if not last_by_ticker:

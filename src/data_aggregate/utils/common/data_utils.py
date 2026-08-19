@@ -75,19 +75,24 @@ def prices_long_to_multiindex(prices: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(wide, axis=1)
 
 
-def get_trading_days(close, market_ticker) -> pd.Series:
-    quorum = 0.5 *close.shape[1]
-    trading_days = close[market_ticker].notna()
-    stock_cov = (close.drop(columns=[market_ticker], errors="ignore")
-                    .notna().sum(axis=1))
+def get_trading_days(close, market: pd.Series, market_name: str = "market") -> pd.Series:
+    """The trading calendar: a boolean over `close.index`, True where the MARKET traded.
+
+    Takes the market series, not a column name. It used to be `close[market_ticker]`, back
+    when SPY was stored inside `prices` alongside the equities; the market series now lives in
+    `prices_macro`, so the caller reads it and hands it in. Same definition, so the calendar
+    is unchanged -- and the quorum denominator is now right, since `close` no longer carries
+    four non-equity columns it was counting as stocks."""
+    quorum = 0.5 * close.shape[1]
+    trading_days = market.reindex(close.index).notna()
+    stock_cov = close.notna().sum(axis=1)
     holes = close.index[(~trading_days) & (stock_cov >= quorum)]
     if len(holes):
         logger.warning(
-            "%s (market_ticker) missing on %d date(s) where >=50%% of stocks "
+            "%s (market series) missing on %d date(s) where >=50%% of stocks "
             "trade (%s .. %s) -> these dates are dropped for the ENTIRE universe. "
-            "Re-run price extraction to backfill %s (interior-gap heal in "
-            "fetch_prices).", market_ticker, len(holes),
-            holes.min().date(), holes.max().date(), market_ticker)
+            "Re-run `data_extract macro` to backfill %s.", market_name, len(holes),
+            holes.min().date(), holes.max().date(), market_name)
 
     return trading_days
 

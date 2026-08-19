@@ -15,8 +15,9 @@ enters TTM only on/after its ex-date, and growth compares past-vs-past):
                            issuance/dilution lowers it, buybacks raise it)
 
 RECONCILED across the two dividend sources (they measure the same cash two ways):
-  * source A = the per-share EX-DATE history (`dividends` table, from the price
-    download) -> precise, per-share, full history; PRIMARY for yield/growth.
+  * source A = the per-share EX-DATE history (`dividends` table, `dividends` column,
+    from the price download) -> precise, per-share, full history; PRIMARY for
+    yield/growth.
   * source B = the SEC cash-flow `dividendsPaid` total (from fundamentals) -> the
     dollar figure that pairs with net income / FCF; powers payout & coverage and
     GAP-FILLS names the ex-date history misses.
@@ -53,7 +54,7 @@ def _ttm_dividends(dividends_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     that never paid, aligned to the trading calendar. Point-in-time: the rolling
     sum at t only includes ex-dates <= t."""
     piv = dividends_hist.pivot_table(index="date", columns="ticker",
-                                     values="dividend", aggfunc="sum")
+                                     values="dividends", aggfunc="sum")
     piv.index = pd.to_datetime(piv.index).normalize()
     # full universe so non-payers are a real 0, aligned to trading days
     piv = piv.reindex(index=idx, columns=universe).fillna(0.0)
@@ -138,7 +139,7 @@ def build_dividend_feature_panel(
     """Long-format dividend feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
     Empty if no dividend history is available."""
     if (dividends_history is None or dividends_history.empty
-            or "dividend" not in dividends_history.columns or stock_close is None):
+            or "dividends" not in dividends_history.columns or stock_close is None):
         return pd.DataFrame(columns=["date", "ticker"])
     close = stock_close.reindex(trading_index)
     fields = _dividend_fields(dividends_history, close, fundamentals_history)

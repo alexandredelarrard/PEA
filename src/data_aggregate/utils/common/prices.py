@@ -14,8 +14,12 @@ targets. Each was implemented twice, in modules that do not import each other:
     forward compound  the reverse-rolling log-sum trick in `targets.forward_compound` and
                       again inside `features`'s seasonality block -- a leak-sensitive
                       routine written twice, with different `min_periods` policies.
-    column returns    `factors.commodity_factor_returns` and
-                      `factors.currency_factor_returns` had byte-identical bodies.
+
+NOT here any more: `price_column_returns`. Its whole job was remapping factor name -> price
+COLUMN ({"oil": "CL=F"}) while the commodity/FX series sat inside the `prices` panel. Those
+series now live in `prices_macro` under their factor names, so the remap is the identity and
+`StepCubeTarget._asset_factors` just takes the pct_change -- and it no longer silently skips a
+missing column, which is how a factor could vanish from the panel with no error.
 
 The differing `min_periods` policies are PARAMETERS here, not harmonised: the target must
 not accept a partial forward window (that would silently be a shorter horizon), while the
@@ -69,23 +73,3 @@ def forward_cumchange(level_change: pd.Series | pd.DataFrame, horizon: int,
     return level_change[::-1].rolling(horizon, min_periods=mp).sum()[::-1].shift(-1)
 
 
-def price_column_returns(close: pd.DataFrame, tickers: dict[str, str]) -> pd.DataFrame:
-    """Daily RETURNS of named price columns, taken from the price panel.
-
-    `tickers` maps factor name -> price column, e.g.
-        {"oil": "CL=F", "gold": "GC=F"}   or   {"USD/EUR": "USDEUR=X"}
-
-    These series are fetched OHLCV-only as `other_tickers` via fetch_price_history: they
-    live in `prices` but are never part of the analysed universe / features.
-
-    Replaces `commodity_factor_returns` and `currency_factor_returns`, whose bodies were
-    byte-identical -- `assemble_factor_panel` also treated them identically (both
-    concatenated as returns, neither listed in `macro_cols`), so the distinction was
-    nominal. `tickers` is REQUIRED: both originals defaulted it to `None` and then called
-    `tickers.items()`, so the default raised `AttributeError`.
-    """
-    out = {}
-    for name, col in tickers.items():
-        if col in close.columns:
-            out[name] = close[col].pct_change()
-    return pd.DataFrame(out, index=close.index)

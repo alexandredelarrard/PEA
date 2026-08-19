@@ -13,7 +13,6 @@ frontier would only re-download days already held -- one lagging symbol (index
 churn, a renamed ticker) would drag the loop back over thousands of files on every
 run. `fails_to_deliver` lives in its own table precisely to keep its semi-monthly,
 ~2-month-lagged files out of this max (see schema.py).
-
 """
 
 from __future__ import annotations
@@ -73,7 +72,7 @@ def _resume_day(context: Context, years_history: int) -> pd.Timestamp:
 
 
 def fetch_short_interest(context: Context, tickers: list[str],
-                         years_history: int = 15, pause: float = 0.05) -> pd.DataFrame:
+                         years_history: int = 15, pause: float = 0.05) -> None:
     """Download the RegSHO daily short-volume files not yet stored, keep only
     `tickers`, and upsert them into `short_interest`. Returns the new rows."""
 
@@ -81,7 +80,6 @@ def fetch_short_interest(context: Context, tickers: list[str],
     days = pd.bdate_range(_resume_day(context, years_history), today)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers")
 
-    universe = set(tickers)
     frames: list[pd.DataFrame] = []
     for day in days:
         try:
@@ -92,7 +90,7 @@ def fetch_short_interest(context: Context, tickers: list[str],
         if not text:
             continue
         df_day = _parse_regsho(text)
-        df_day = df_day[df_day["ticker"].isin(universe)]
+        df_day = df_day[df_day["ticker"].isin(tickers)]
         if not df_day.empty:
             frames.append(df_day)
         time.sleep(pause)
@@ -104,6 +102,4 @@ def fetch_short_interest(context: Context, tickers: list[str],
     context.store.save(Tables.short_interest, df_short)
     logger.info(f"Saved {len(df_short)} new short-volume rows to DB table "
                 f"'{Tables.short_interest}'")
-    record_run(context, Tables.short_interest, len(universe), len(df_short))
-
-    return df_short
+    record_run(context, Tables.short_interest, len(tickers), len(df_short))

@@ -43,9 +43,11 @@ never replace OmegaConf.
 ```yaml
 data_extract:
   years_history: 15                  # equity price / filing history depth
-  macro_asset_years_history: 31      # the long allocation series (~1995 →)
+  macro_years_history: 31            # `prices_macro`'s only window (~1995 →)
   notes_years_history: 15
-  other_tickers: ["SPY", "CL=F", "GC=F", "USDEUR=X"]   # market/macro, NEVER the equity universe
+  # NO other_tickers: the market/macro SERIES LIST is a registry, not a tunable — it cannot be
+  # split from its symbol→name mapping, so it lives in constants.MACRO_PRICE_SERIES /
+  # MACRO_FRED_SERIES. Those series land in `prices_macro`, never in `prices`.
   redundant_ticks: ["GOOG", "FOX", "NWS"]              # dual-class duplicates to skip
   refresh_universe: false            # true -> re-scrape sp500_tickers even when populated
   llm_model: "gpt-5-mini"            # DEF 14A structured extraction
@@ -59,7 +61,7 @@ comments before changing a value; several encode a specific finding.
 
 | Block | Keys | Notes |
 |---|---|---|
-| `market_ticker` | `SPY` | the beta/benchmark series |
+| — | — | no `market_ticker`: the beta/benchmark series is `constants.MACRO_MARKET_SERIES` (`equity_tr`), a named row in `prices_macro` |
 | `betas` | `window: 126`, `min_obs: 80`, `ridge_alpha: 1.5`, `ridge_alpha_market: 0.48`, `market_prior: 1.0`, `step: 1`, `ffill_limit: 21` | `window` was 63; at that length the cross-sectional slope of realized on ex-ante beta is only 0.43, so the hedge over-shot. `ridge_alpha` is a **ratio** (λ = α·N), so shrinkage is window-length invariant. The market shrinks toward 1.0, not 0 |
 | `targets` | `horizons: [30, 60, 90]`, `primary_horizon: 60`, `labels: [rank, zscore, epsilon]`, `min_names: 20`, `neutralize_momentum: true`, `neutralize_log_mcap: true`, `vol_standardize: true` | Every label is finally projected cross-sectionally orthogonal to **every fitted loading + momentum + log market cap + GICS industry-group dummies, jointly and after the rank/zscore transform**. Subtracting β·factor alone is insufficient — a signal built from nothing but market beta earned rank-IC +0.073 (t +10.3) against the un-projected label. The loading list is **derived** from the fitted betas, not listed. `vol_63` deliberately stays OUT (it would zero the `vol_63` feature) |
 | `features` | `standardize_method: rank` | |

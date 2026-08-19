@@ -41,7 +41,6 @@ class StepCubeMomentum(Step):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_momentum)
-        self._market_ticker = str(self._cfg.market_ticker)
         self._store = context.store
 
     def run(self, full: bool = False) -> None:
@@ -62,7 +61,7 @@ class StepCubeMomentum(Step):
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(
             self._store, peers=load_peers_or_raise(self._context, self._config),
-            market_ticker=self._market_ticker, fields=self._FIELDS, since=since)
+            fields=self._FIELDS, since=since)
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:
         frames.require("close", "open", "sector_ret", "ret")

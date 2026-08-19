@@ -2,7 +2,7 @@
 price_frames.py  (src/data_aggregate/utils/common/price_frames.py)
 ---------------------------------------------------------------
 THE price contract between the cube sub-steps: `StepCubePrices` normalizes the raw
-`prices` table ONCE into two part tables, and every later step reads them back through
+`prices` table ONCE into `cube_part_prices`, and every later step reads it back through
 here, projected to the fields it actually needs.
 
 WHY. In the exploded DAG each of the fourteen tasks re-ran the same prologue: load the
@@ -11,12 +11,14 @@ calendar, restrict it to the universe, and recompute peer sector returns with a
 490-iteration Python loop. That is ~400 MB peak and the most expensive thing in the task,
 paid FOURTEEN times per run. Now it is paid once.
 
-TWO TABLES, NOT AN `is_universe` FLAG. Consumers pivot to wide and then rank
-cross-sectionally (`xs_rank_pct`, `panel.peer_relative`), so a single SPY or CL=F column
-leaking into that pivot would silently shift every percentile in the panel. `du._sub(...,
-universe)` guarantees that structurally today; a flag column would demote the guarantee to
-a `where=` that six call sites must remember. The market table is ~4 tickers x ~3.8k days
-= 15k rows, so the second round-trip is free.
+ONE PART TABLE, NOT TWO. There used to be a second, `cube_part_market`, holding the market /
+commodity / FX series: consumers pivot to wide and rank cross-sectionally (`xs_rank_pct`,
+`panel.peer_relative`), so a single SPY or CL=F column leaking into that pivot would silently
+shift every percentile in the panel, and a separate table guaranteed it structurally. That
+firewall is now unnecessary at the source -- those series live in `prices_macro` and are
+NEVER in `prices` -- so the part, and the `with_market` / `market_ticker` / `other_tickers`
+plumbing that fed it, are gone. `StepCubeTarget` reads them straight from `prices_macro` via
+`src/utils/macro.load_macro_wide`, the same helper the strategy sleeves use.
 
 `ret` AND `sector_ret` ARE PERSISTED, not recomputed on read. Beyond the obvious saving,
 this removes an incremental-correctness wart: a trimmed window recomputing
@@ -48,8 +50,11 @@ ALL_FIELDS = ("close", "open", "high", "low", "volume", "ret", "sector_ret")
 
 @dataclass(frozen=True, slots=True)
 class PriceFrames:
-    """Wide (date x ticker) price frames for the ANALYSIS UNIVERSE, plus the market /
-    commodity / FX series the factor panel needs, plus the peer dict.
+    """Wide (date x ticker) price frames for the ANALYSIS UNIVERSE, plus the peer dict.
+
+    EQUITY ONLY. The market / commodity / FX series are not here -- they are read from
+    `prices_macro` by the one step that needs them (`StepCubeTarget`), so nothing non-equity
+    can reach a cross-sectional rank through this object.
 
     Every wide field is `None` unless it was requested via `load_price_frames(fields=...)`,
     so a step that only needs `close` never materialises open/high/low/volume.
@@ -59,7 +64,7 @@ class PriceFrames:
     sub-steps accumulating seven sub-steps' worth of memory.
     """
     trading_index: pd.DatetimeIndex
-    universe: tuple[str, ...]                 
+    universe: tuple[str, ...]
     peers: dict[str, dict[str, float]]
     close: pd.DataFrame | None = None
     open: pd.DataFrame | None = None
@@ -68,9 +73,6 @@ class PriceFrames:
     volume: pd.DataFrame | None = None
     ret: pd.DataFrame | None = None
     sector_ret: pd.DataFrame | None = None
-    market_close: pd.Series | None = None
-    mkt_ret: pd.Series | None = None
-    other_close: pd.DataFrame | None = None   # market + other_tickers, wide close
 
     def require(self, *fields: str) -> None:
         """Fail at the top of a builder rather than with a None-arithmetic TypeError two
@@ -92,10 +94,8 @@ class PriceFrames:
         return m[["date", "ticker"]].reset_index(drop=True)
 
 
-def frames_to_long(universe_fields: dict[str, pd.DataFrame],
-                   market_close: pd.DataFrame,
-                   market_ret: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Wide -> the two long part frames. WRITER side; used only by `StepCubePrices`.
+def frames_to_long(universe_fields: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Wide -> the long part frame. WRITER side; used only by `StepCubePrices`.
 
     Rows where every value column is NULL are dropped (a ticker that had not listed yet
     contributes nothing)."""
@@ -109,47 +109,33 @@ def frames_to_long(universe_fields: dict[str, pd.DataFrame],
         frames.append(s.rename(field))
 
     prices = pd.concat(frames, axis=1)
-    prices = prices.dropna(how="all").reset_index()
-
-    mkt = []
-    for name, wide in (("close", market_close), ("ret", market_ret)):
-        if wide is None or wide.empty:
-            continue
-        s = wide.stack(future_stack=True)
-        s.index = s.index.set_names(["date", "ticker"])
-        mkt.append(s.rename(name))
-
-    market = (pd.concat(mkt, axis=1).dropna(how="all").reset_index() if mkt
-              else pd.DataFrame(columns=["date", "ticker", "close", "ret"]))
-    return prices, market
+    return prices.dropna(how="all").reset_index()
 
 
 def load_trading_calendar(store: DataStore) -> pd.DatetimeIndex:
-    """The trading calendar, read from the MARKET part's own dates (~15k rows, ~1 MB).
+    """The trading calendar, read as `cube_part_prices`' own distinct dates.
 
-    `du.get_trading_days` defines the calendar as the dates the market ticker traded, and
-    `StepCubePrices` stores the market ticker on exactly those dates -- so this is the
-    definition, not an inference. Read first and cheaply, so the incremental window can be
-    decided BEFORE the wide read (the old code loaded 15 years and then trimmed)."""
-    rows = store.load(Tables.cube_part_market, columns=["date", "ticker"], optional=True)
-    if rows is None:
-        raise RuntimeError(f"{Tables.cube_part_market} is missing or empty -> run "
+    Still the definition rather than an inference: `du.get_trading_days` defines the calendar
+    as the dates the market series traded, `StepCubePrices` slices every frame to exactly
+    those dates before writing, and a row survives the write only if some field is non-null.
+    It used to read `cube_part_market` -- the same dates, one table earlier. Cheap
+    (`SELECT DISTINCT date`), so the incremental window can be decided BEFORE the wide read."""
+    dates = store.distinct(Tables.cube_part_prices, "date")
+    if not dates:
+        raise RuntimeError(f"{Tables.cube_part_prices} is missing or empty -> run "
                            "`data_aggregate build-prices` first")
-    dates = pd.to_datetime(rows["date"]).dt.normalize().unique()
-    return pd.DatetimeIndex(sorted(dates))
+    return pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(dates)).dt.normalize().unique()),
+                            name="date")
 
 
 def load_price_frames(
     store: DataStore,
     *,
     peers: dict[str, dict[str, float]],
-    market_ticker: str,
     fields: Sequence[str] = ALL_FIELDS,
-    with_market: bool = False,
-    other_tickers: Sequence[str] = (),
     since: pd.Timestamp | None = None,
 ) -> PriceFrames:
-    """Read `cube_part_prices` (+ `cube_part_market` when `with_market`) and pivot to wide.
+    """Read `cube_part_prices` and pivot to wide.
 
     ONE read projected to the requested fields, then a pivot per field: the long frame's
     `object` ticker column costs ~100 MB on its own, so reading once per field would pay
@@ -169,40 +155,16 @@ def load_price_frames(
         piv = long.pivot(index="date", columns="ticker", values=f).sort_index()
         piv.index.name, piv.columns.name = "date", "ticker"
         wide[f] = piv
-        
+
     idx = pd.DatetimeIndex(sorted(long["date"].unique()), name="date")
     universe = tuple(sorted(long["ticker"].astype(str).unique()))
     del long
-
-    market_close = mkt_ret = other_close = None
-    if with_market:
-        want = [str(market_ticker)] + [str(t) for t in other_tickers]
-        mrows = store.load(Tables.cube_part_market, columns=["date", "ticker", "close", "ret"],
-                           since=since, optional=True)
-        if mrows is None:
-            raise RuntimeError(f"{Tables.cube_part_market} is missing or returned no rows -> re-run "
-                               "`data_aggregate build-prices`")
-        
-        mrows["date"] = pd.to_datetime(mrows["date"]).dt.normalize()
-        mrows = mrows[mrows["ticker"].astype(str).isin(want)]
-        oc = mrows.pivot(index="date", columns="ticker", values="close").sort_index()
-        orr = mrows.pivot(index="date", columns="ticker", values="ret").sort_index()
-        # reindexed onto the equity calendar: the factor functions derive their own index
-        # from this frame, so `price_column_returns(other_close, ...)` is numerically
-        # identical to the old call against the full untrimmed close panel.
-        other_close = oc.reindex(idx)
-        if market_ticker in other_close.columns:
-            market_close = other_close[market_ticker]
-            mkt_ret = orr.reindex(idx)[market_ticker]
-        else:
-            logger.warning("market_ticker %s absent from %s", market_ticker, Tables.cube_part_market)
 
     return PriceFrames(
         trading_index=idx, universe=universe, peers=peers,
         close=wide.get("close"), open=wide.get("open"), high=wide.get("high"),
         low=wide.get("low"), volume=wide.get("volume"), ret=wide.get("ret"),
         sector_ret=wide.get("sector_ret"),
-        market_close=market_close, mkt_ret=mkt_ret, other_close=other_close,
     )
 
 

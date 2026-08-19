@@ -141,7 +141,10 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # every primitive the dedup sweep merges or moves
     for must in ("prim.momentum_characteristic", "prim.mom_12_1_inline", "prim.trailing_vol",
                  "prim.daily_returns", "prim.forward_windows", "prim.xs_standardize",
-                 "prim.ratio_helpers", "prim.safe_div", "prim.price_column_returns",
+                 # `prim.price_column_returns` became `prim.macro_factor_returns`: that helper
+                 # was deleted when the commodity/FX series moved to `prices_macro` under their
+                 # factor names, making its name->column remap the identity.
+                 "prim.ratio_helpers", "prim.safe_div", "prim.macro_factor_returns",
                  "prim.quarter_features", "prim.super_quarter_features", "prim.pit",
                  "prim.peer_relative_panel"):
         assert must in baseline, f"{must} is not fingerprinted"

@@ -106,7 +106,7 @@ behavioral**, not the docstring's numbering.
 
 | Sub-step | Writes | Price fields it reads (`_FIELDS`) | Contents |
 |---|---|---|---|
-| `StepCubePrices` | `cube_part_prices`, `cube_part_market` | — (**the only reader of raw `prices`**) | pivot, trading calendar, returns, universe restriction, peer sector returns |
+| `StepCubePrices` | `cube_part_prices` | `prices_macro` (market series, for the trading calendar) — (**the only reader of raw `prices`**) | pivot, trading calendar, returns, universe restriction, peer sector returns |
 | `StepCubeTarget` | `cube_part_targets`, `cube_part_betas` | `close, ret` | factor panel → rolling betas → multi-horizon factor-neutral labels |
 | `StepCubeFundamentals` | `cube_part_fundamentals` | (via `PitFrames`) | fundamental, sector-KPI, earnings, workforce, dividend |
 | `StepCubeMomentum` | `cube_part_momentum` | `close, open, high, low, volume, ret, sector_ret` | momentum, vol, trend, lottery, liquidity, seasonality, MACD/RSI/ATR |

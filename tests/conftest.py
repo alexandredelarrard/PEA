@@ -137,6 +137,18 @@ class FakeStore:
         lo, hi = self.bounds(table, column)
         return None if hi is None else pd.Timestamp(hi).normalize()
 
+    def max_date_by(self, table, key_col, date_col=None) -> dict:
+        """Per-key latest stored date. The grouped counterpart of `max_date` -- what
+        `resume_since` and the macro freshness gate resolve their frontier with, so the double
+        needs it or those paths are untestable without a DB. Empty dict when the table or
+        either column is absent, matching the real store's "nothing stored yet" contract."""
+        df = self.t.get(name_of(table))
+        col = date_col or resolve(table).date_col
+        if df is None or df.empty or col not in df.columns or key_col not in df.columns:
+            return {}
+        g = df.dropna(subset=[col]).groupby(key_col)[col].max()
+        return {str(k): pd.Timestamp(v).normalize() for k, v in g.items() if pd.notna(v)}
+
     # -- reads -- #
     def load(self, table, columns=None, limit=None, where=None, *, optional=False, **kw):
         name = name_of(table)
@@ -211,11 +223,10 @@ def _store():
         pytest.skip(f"database unavailable: {type(exc).__name__}")
     return DataStore(engine)
 
-MARKET = "SPY"
-OTHER_TICKERS = ["SPY", "^VIX"]
 SUBSET_SIZE = 100  # keep the real-data pipeline fast but keep a real cross-section
-# commodity / FX series the factor panel reads by name out of `close_full`
-FACTOR_PROXY_TICKERS = ["CL=F", "GC=F", "USDEUR=X"]
+# The market / commodity / FX series are NOT in `prices` any more -- they are series in
+# `prices_macro`, so the fixtures read them from there instead of filtering them out of the
+# equity frame. MARKET / OTHER_TICKERS / FACTOR_PROXY_TICKERS are gone with that split.
 
 
 # --------------------------------------------------------------------------- #
@@ -231,39 +242,45 @@ def real_frames():
     and the same 101 names this fixture has always selected are picked from it, cutting the
     read to ~380k rows. All price COLUMNS are kept -- `prices_long_to_multiindex` needs both
     close and open, and the momentum builders need the full OHLCV.
+
+    TWO tables now: `prices` for the equities and `prices_macro` for the market / commodity /
+    FX series. It used to be one read plus three `drop(columns=...)` calls, because those
+    series were mixed into `prices`.
     """
     from src.data_aggregate.utils.common import data_utils as du
+    from src.constants.constants import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
+    from src.utils.macro import load_macro_wide
 
     store = _store()
-    # replicate the historical selection exactly: pivot columns come out sorted, and `keep`
-    # below took AMD + the first SUBSET_SIZE of everything except the OTHER_TICKERS
     all_tickers = sorted(store.distinct("prices", "ticker"))
     if not all_tickers:
         pytest.skip("prices table is empty")
-    candidates = [t for t in all_tickers if t not in OTHER_TICKERS]
-    subset = (["AMD"] if "AMD" in candidates else []) + \
-             [c for c in candidates if c != "AMD"][:SUBSET_SIZE]
-    # + the market / vol / commodity / FX series `close_full` exists to provide
-    wanted = sorted(set(subset) | set(OTHER_TICKERS) | set(FACTOR_PROXY_TICKERS))
+    subset = (["AMD"] if "AMD" in all_tickers else []) + \
+             [c for c in all_tickers if c != "AMD"][:SUBSET_SIZE]
 
-    prices = store.load("prices", where={"ticker": wanted})
+    macro = load_macro_wide(store)
+    if macro is None or MACRO_MARKET_SERIES not in macro.columns:
+        pytest.skip("prices_macro is empty -> no market series for the trading calendar")
+    macro = macro.set_index("date").sort_index()
+
+    prices = store.load("prices", where={"ticker": sorted(subset)})
     raw = du.prices_long_to_multiindex(prices)
     close = du.extract_field(raw, "Close")
-    close = close.loc[close[MARKET].notna()]
+    # the trading calendar is still the dates the MARKET traded -- sourced from prices_macro
+    close = close.loc[macro[MACRO_MARKET_SERIES].reindex(close.index).notna()]
     returns = du.daily_returns(close)
 
-    stock_close = close.drop(columns=[c for c in OTHER_TICKERS if c in close.columns])
-    stock_ret = returns.drop(columns=[c for c in OTHER_TICKERS if c in returns.columns])
-
-    cols = list(stock_ret.columns)
+    cols = list(returns.columns)
     keep = (["AMD"] if "AMD" in cols else []) + [c for c in cols if c != "AMD"][:SUBSET_SIZE]
+    mkt_level = macro[MACRO_MARKET_SERIES].astype(float)
+    mkt_level = mkt_level.reindex(mkt_level.index.union(close.index)).ffill()
     return {
-        "mkt_ret": returns[MARKET],
-        "stock_close": stock_close[keep],
-        "stock_ret": stock_ret[keep],
-        # full close (ALL tickers incl. commodity/FX proxies like CL=F/GC=F/USDEUR=X,
-        # which are not in the 100-stock subset) for the commodity/currency factors
-        "close_full": close,
+        "mkt_ret": mkt_level.pct_change(fill_method=None).reindex(close.index),
+        "stock_close": close[keep],
+        "stock_ret": returns[keep],
+        # the macro/market series the commodity + currency factors read, wide by series name
+        "macro_wide": macro,
+        "factor_series": dict(MACRO_CUBE_FACTORS),
     }
 
 
@@ -273,7 +290,6 @@ def real_pipeline(real_frames):
     returns, factor panel, rolling betas and multi-horizon targets."""
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.targets import build_targets_multi
-    from src.data_aggregate.utils.common.prices import price_column_returns
     from src.data_aggregate.utils.common.gics import load_gics_maps
     from src.data_aggregate.utils.target.factors import (
         build_characteristics,
@@ -286,13 +302,13 @@ def real_pipeline(real_frames):
     stock_close = real_frames["stock_close"]
     stock_ret = real_frames["stock_ret"]
     mkt_ret = real_frames["mkt_ret"]
-    close_full = real_frames["close_full"]
+    macro = real_frames["macro_wide"]
+    factor_series = real_frames["factor_series"]
 
     store = _store()
     # optional=True: these builders accept None, and `load` now raises rather than
     # returning an empty frame
     fundamentals = store.load("fundamentals_history", optional=True)
-    macro = store.load("macro", optional=True)
 
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     # mirror StepCubeTarget._gics_groups: GICS sector + industry_group neutralization
@@ -306,12 +322,18 @@ def real_pipeline(real_frames):
         char.name = name
         style_cols[name] = characteristic_to_factor_return(char, stock_ret)
     style = pd.DataFrame(style_cols)
-    if macro is not None:
-        macro_chg = macro_change_factors(macro, stock_close.index)
-    else:
-        macro_chg = pd.DataFrame(index=stock_close.index)
-    commodity_returns = price_column_returns(close_full, {"oil": "CL=F", "gold": "GC=F"})
-    currency_returns = price_column_returns(close_full, {"USD/EUR": "USDEUR=X"})
+    macro_chg = macro_change_factors(macro.reset_index(), stock_close.index)
+
+    def _factor_ret(series: str):
+        s = macro[series].astype(float)
+        s = s.reindex(s.index.union(stock_close.index)).ffill()
+        return s.pct_change(fill_method=None).reindex(stock_close.index)
+
+    asset = pd.DataFrame({col: _factor_ret(series) for col, series in factor_series.items()
+                          if series in macro.columns}, index=stock_close.index)
+    fx_cols = [c for c in asset.columns if factor_series[c].startswith("fx_")]
+    commodity_returns = asset.drop(columns=fx_cols)
+    currency_returns = asset[fx_cols]
     factor_panel, macro_cols = assemble_factor_panel(
         mkt_ret, style, commodity_returns, currency_returns, macro_chg)
 

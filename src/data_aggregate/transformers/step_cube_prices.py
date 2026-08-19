@@ -2,9 +2,15 @@
 step_cube_prices.py  (src/data_aggregate/transformers/step_cube_prices.py)
 -----------------------------------------------------------------------
 The ONLY step that reads the raw `prices` table, the ONLY one that pivots it, and the ONLY
-one that computes peer sector returns. Everything downstream reads the two part tables it
-writes (`cube_part_prices`, `cube_part_market`) through
-`utils/common/price_frames.load_price_frames`, projected to the fields it needs.
+one that computes peer sector returns. Everything downstream reads the part table it writes
+(`cube_part_prices`) through `utils/common/price_frames.load_price_frames`, projected to the
+fields it needs.
+
+`prices` is the EQUITY universe and nothing else, so there is no market/commodity/FX split to
+make here any more: the second part table (`cube_part_market`) and its `_market_frames`
+subsetting are gone, and `StepCubeTarget` reads those series from `prices_macro` directly.
+The trading calendar still comes from the market series -- read from `prices_macro`, which is
+the table that owns it.
 
 That prologue -- load ~1.9M rows, pivot to five wide frames, filter to the trading
 calendar, restrict to the universe, then a 490-iteration Python loop for the peer sector
@@ -19,6 +25,7 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
+from src.constants.constants import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common import data_utils as du
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
@@ -28,6 +35,7 @@ from src.data_aggregate.utils.common.price_frames import frames_to_long, univers
 from src.data_peers.utils.sector_peers import compute_sector_returns
 from src.data_aggregate.utils.common.price_frames import load_trading_calendar
 
+from src.utils.macro import load_macro_series
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
@@ -38,8 +46,6 @@ class StepCubePrices(Step):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_prices)
-        self._market_ticker = str(self._cfg.market_ticker)
-        self._other_tickers = tuple(config.data_extract.get("other_tickers", ()) or ())
         self._store = context.store
         self._tickers = load_universe_tickers(context)
         self._log.info(f"Ticker universe: {len(self._tickers)} tickers from {Tables.sp500_tickers}")
@@ -49,19 +55,18 @@ class StepCubePrices(Step):
         raw = self._load_prices(window.since)
         wide = self._pivot_fields(raw)
 
-        # filter wide on trading days with close value 
+        # filter wide on trading days with close value
         days_index = self._trading_calendar(wide["close"])
         wide = self._on_calendar(wide, days_index)
 
         # get deltas
         returns =  self._daily_returns(wide["close"])
-        market = self._market_frames(wide["close"], returns)
         peers = self._peers()
         universe = self._universe_frames(wide, returns, peers)
         del raw, wide, returns
 
         # save it all
-        n = self._persist(universe, market, window)
+        n = self._persist(universe, window)
         if n == COLUMNS_CHANGED:                      # schema drift -> one clean full rebuild
             return self.run(full=True)
 
@@ -71,11 +76,11 @@ class StepCubePrices(Step):
         the trailing recompute is exact), but `get_trading_days`'s interior-calendar-hole
         warning is a diagnostic over history and wants a year of context."""
         idx = None
-        if self._store.exists(Tables.cube_part_market):
+        if self._store.exists(Tables.cube_part_prices):
             idx = load_trading_calendar(self._store)
 
         return plan_window(self._store, Tables.cube_part_prices, full=full,
-                           warmup=self._part.warmup_trading_days, 
+                           warmup=self._part.warmup_trading_days,
                            trading_index=idx)
 
     def _load_prices(self, since: pd.Timestamp | None) -> pd.DataFrame:
@@ -96,10 +101,16 @@ class StepCubePrices(Step):
                 "volume": du.extract_field(pivot, "Volume")}
 
     def _trading_calendar(self, close: pd.DataFrame) -> pd.DatetimeIndex:
-        """The market ticker's own calendar. `du.get_trading_days` also WARNS about interior
-        holes -- dates where a quorum of stocks trade but the market ticker is missing --
-        because those dates get dropped for the entire universe."""
-        mask = du.get_trading_days(close, self._market_ticker)
+        """The market series' own calendar, read from `prices_macro` (the table that owns it).
+        `du.get_trading_days` also WARNS about interior holes -- dates where a quorum of stocks
+        trade but the market series is missing -- because those dates get dropped for the
+        entire universe."""
+        market = load_macro_series(self._store, MACRO_MARKET_SERIES)
+        if market is None:
+            raise RuntimeError(
+                f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> the cube "
+                "trading calendar is undefined. Run `data_extract macro` first.")
+        mask = du.get_trading_days(close, market, MACRO_MARKET_SERIES)
         idx = pd.DatetimeIndex(close.index[mask.to_numpy()], name="date")
         self._log.info("Trading calendar: %d dates (%s .. %s)", len(idx),
                        idx.min().date(), idx.max().date())
@@ -117,24 +128,6 @@ class StepCubePrices(Step):
     @staticmethod
     def _daily_returns(close: pd.DataFrame) -> pd.DataFrame:
         return du.daily_returns(close)
-
-    def _market_frames(self, close: pd.DataFrame,
-                       returns: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """The market ticker + the configured `other_tickers` (commodities / FX) that the
-        factor panel needs. Kept in their OWN table so they can never leak into a
-        cross-sectional rank over the universe."""
-        # `other_tickers` already contains the market ticker in the shipped config, so
-        # dict.fromkeys dedupes while keeping the market ticker first (a duplicate column
-        # makes the wide->long `stack` raise).
-        want = list(dict.fromkeys([self._market_ticker, *self._other_tickers]))
-        cols = [c for c in want if c in close.columns]
-        missing = sorted(set(want) - set(cols))
-        if missing:
-            self._log.warning("market/other tickers absent from prices: %s", missing)
-        if self._market_ticker not in cols:
-            raise RuntimeError(f"market_ticker {self._market_ticker} is not in {Tables.prices}"
-                               " -> the trading calendar cannot be reconstructed downstream")
-        return close[cols], returns[cols]
 
     def _peers(self) -> dict:
         peers = load_peers(self._context, self._config)
@@ -162,12 +155,6 @@ class StepCubePrices(Step):
         persisting it means it runs once."""
         return compute_sector_returns(stock_ret, peers)
 
-    def _persist(self, universe: dict[str, pd.DataFrame],
-                 market: tuple[pd.DataFrame, pd.DataFrame], window) -> int:
-        
-        prices_long, market_long = frames_to_long(universe, market[0], market[1])
-        n = write_part(self._store, Tables.cube_part_prices, prices_long, window)
-        if n == COLUMNS_CHANGED:
-            return n
-        m = write_part(self._store, Tables.cube_part_market, market_long, window)
-        return COLUMNS_CHANGED if m == COLUMNS_CHANGED else n
+    def _persist(self, universe: dict[str, pd.DataFrame], window) -> int:
+        return write_part(self._store, Tables.cube_part_prices,
+                          frames_to_long(universe), window)

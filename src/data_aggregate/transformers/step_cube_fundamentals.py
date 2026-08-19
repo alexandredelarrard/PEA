@@ -53,7 +53,6 @@ class StepCubeFundamentals(Step):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_fundamentals)
-        self._market_ticker = str(self._cfg.market_ticker)
         self._store = context.store
 
     def run(self, full: bool = False) -> None:
@@ -107,7 +106,6 @@ class StepCubeFundamentals(Step):
         return load_price_frames(
             self._store, 
             peers=load_peers_or_raise(self._context, self._config),
-            market_ticker=self._market_ticker, 
             fields=("close",), 
             since=since)
 

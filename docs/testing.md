@@ -37,7 +37,7 @@ the store.
 
 | Fixture | Gives you |
 |---|---|
-| `real_frames` | wide close / returns matrices from real `prices`, ~101 tickers (always incl. `AMD`) plus `SPY`/`^VIX`/`CL=F`/`GC=F`/`USDEUR=X`. Reads a **ticker subset**, never the whole table |
+| `real_frames` | wide close / returns matrices from real `prices`, ~101 EQUITY tickers (always incl. `AMD`), plus the market/commodity/FX series read separately from `prices_macro` (`macro_wide`). Reads a **ticker subset**, never the whole table. It is a two-table read now: those series left `prices` |
 | `real_pipeline` | end-to-end real pieces computed once: peers, sector returns, factor panel, rolling betas, multi-horizon targets |
 | `fundamental_panel` | the peer-relative fundamental feature panel, scoped to the same universe as `real_frames` |
 | `sqlite_store` | a **real `DataStore`** on fresh in-memory SQLite. Function-scoped. **Never skips** |
@@ -69,8 +69,9 @@ intentional — these are integration tests and a machine without the container 
 not a wall of connection tracebacks that hides real failures.
 
 > **Corollary you must not forget:** with `prices` currently absent from the local DB (see
-> [database.md](database.md)), `real_frames` and everything derived from it **skip**. A green suite
-> here is not full coverage. Say so when you report results.
+> [database.md](database.md)), `real_frames` and everything derived from it **skip**. `real_frames`
+> now also skips when `prices_macro` is empty, since that is where the market series (and so the
+> trading calendar) comes from. A green suite here is not full coverage. Say so when you report results.
 
 ## Mandatory sanity check
 

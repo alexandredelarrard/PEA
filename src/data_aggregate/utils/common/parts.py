@@ -29,7 +29,9 @@ from typing import Literal
 
 from src.data_store.schema import Table, Tables, name_of
 
-PartKind = Literal["prices", "market", "features", "targets", "betas"]
+# No "market" kind: `cube_part_market` existed only to keep the market/commodity/FX series out
+# of the equity frame the cross-sectional ranks are built on. They live in `prices_macro` now.
+PartKind = Literal["prices", "features", "targets", "betas"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +62,6 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     # not a look-back: it keeps a year of context in `get_trading_days`'s interior-calendar
     # -hole warning, which is a diagnostic over history.
     CubePart(Tables.cube_part_prices, "build-prices", "prices", 520),
-    CubePart(Tables.cube_part_market, "build-prices", "market", 0),
 
     # style momentum shift(252) + beta window(126); the forward horizon is added at the call
     # site, because targets look FORWARD and recent NaN labels MATURE between runs.

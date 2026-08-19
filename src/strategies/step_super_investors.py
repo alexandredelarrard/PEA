@@ -16,6 +16,7 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
+from src.constants.constants import MACRO_MARKET_SERIES
 from src.context import Context
 from src.strategies.base import Strategy, PortfolioInputs, StrategyResult
 from src.strategies.utils.superinvestors import (
@@ -23,6 +24,7 @@ from src.strategies.utils.superinvestors import (
     _aggregate_superinvestors,
 )
 from src.strategies.utils.replication import replicate_superinvestors
+from src.utils.macro import load_macro_series
 from src.utils.risk_parity import series_metrics
 from src.strategies.analysis.super_investors_analysis import (
     analyze_super_investors, analyze_super_investors_by_cik)
@@ -78,7 +80,7 @@ class SuperInvestorsStrategy(Strategy):
         if inputs.analysis:
             out_dir = self._context.paths["OUTPUT_DIR"] / self.name / "analysis"
             extra["analysis"] = analyze_super_investors(
-                ret, self._benchmark_returns(prices, ret.index), res["weights"],
+                ret, self._benchmark_returns(ret.index), res["weights"],
                 out_dir, capital=float(inputs.capital))
             self._log.info("super_investors analysis -> %s", out_dir)
 
@@ -88,7 +90,7 @@ class SuperInvestorsStrategy(Strategy):
                 roster = _load_superinvestor_roster(self._context)
                 per_cik = _aggregate_superinvestors(raw_funds, end=end, by_cik=True)
                 spy = self._benchmark_returns(
-                    prices, pd.DatetimeIndex(per_cik["as_of"].unique()).sort_values())
+                    pd.DatetimeIndex(per_cik["as_of"].unique()).sort_values())
                 summary = analyze_super_investors_by_cik(
                     per_cik, prices, spy, roster, out_dir / "per_cik",
                     capital=float(inputs.capital),
@@ -107,18 +109,24 @@ class SuperInvestorsStrategy(Strategy):
                               positions=res["weights"], trades=res["trades"], extra=extra,
                               book_weights=res["weights"])
 
-    def _benchmark_returns(self, prices: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
-        """SPY daily returns on the sleeve's own calendar. SPY is fetched into `prices` as a
-        market series (never into the equity universe), so it comes from the same read."""
-        spy = prices[prices["ticker"] == self._config.build_cube.market_ticker].copy()
-        spy["date"] = pd.to_datetime(spy["date"]).dt.normalize()
-        s = spy.sort_values("date").set_index("date")["close"].astype(float)
+    def _benchmark_returns(self, index: pd.DatetimeIndex) -> pd.Series:
+        """Market daily returns on the sleeve's own calendar, from `prices_macro`.
+
+        Was a filter on the `prices` read back when SPY was stored there. That is the whole
+        point of this sleeve ("did the manager beat SPY?"), and an empty filter would have
+        made every excess number silently zero -- so a missing series raises here."""
+        s = load_macro_series(self._context.store, MACRO_MARKET_SERIES)
+        if s is None:
+            raise RuntimeError(f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> "
+                               "super_investors cannot compute its beat-the-market metric. "
+                               "Run `data_extract macro`.")
         return s.reindex(s.index.union(index)).ffill().reindex(index).pct_change(
             fill_method=None).fillna(0.0)
 
     def load_raw(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.Timestamp | None]:
-        """The roster managers' raw 13F rows + close prices (equity universe AND the SPY
-        benchmark row), plus the date to carry holdings forward to.
+        """The roster managers' raw 13F rows + equity close prices, plus the date to carry
+        holdings forward to. The benchmark is NOT in this read any more -- it is a series in
+        `prices_macro` (see `_benchmark_returns`), and `prices` is the equity universe only.
 
         Returns the RAW filings rather than an aggregated panel because the caller aggregates
         the same rows twice -- once pooled, once `by_cik` -- and `sec13f_hr` is a 21.7M-row

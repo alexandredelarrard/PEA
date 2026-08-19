@@ -1,5 +1,12 @@
 """trim_prelisting_bars: drop the synthetic pre-listing prefix yfinance back-fills onto a
-US symbol, without touching isolated vendor glitches or the volume-less macro series.
+US symbol, without touching isolated vendor glitches.
+
+EQUITIES ONLY. There used to be a NO_VOLUME_TICKERS exemption here, because a quoted index or
+FX pair is 100% zero-volume (no exchange volume exists) and this trim would have erased its
+whole history. Those series no longer come through `fetch_price_history` at all -- `fetch_macro`
+pulls `^VIX` and the commodity legs close-only into `prices_macro` and never applies this trim,
+and FX is a FRED level -- so the exemption is gone and everything reaching this function is an
+equity, where zero volume really does mean a synthetic bar.
 
 The 2026-07 source-table audit found `prices` otherwise clean (no nulls, no interior
 calendar gaps across 3,771 reference trading days, no delisted tails) except for this:
@@ -14,7 +21,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.data_extract.utils.prices.fetch_prices import (
-    _ACTION_COLS, _prelisting_cutoff, trim_prelisting_bars,
+    _prelisting_cutoff, trim_prelisting_bars,
 )
 
 _START = pd.Timestamp("2015-01-05")
@@ -66,15 +73,6 @@ def test_isolated_zero_volume_glitches_are_not_trimmed():
     assert len(trim_prelisting_bars(frame)) == 500
 
 
-def test_volume_less_macro_series_are_exempt():
-    """`USDEUR=X` is 100% zero-volume because FX has no exchange volume; without the
-    exemption the whole series would be erased. It is not in the equity universe, so no
-    feature is built on it — but the cube reads it as a currency factor."""
-    frame = _bars("USDEUR=X", [0.9 + i * 0.001 for i in range(200)], [0.0] * 200)
-    out = trim_prelisting_bars(frame)
-    assert len(out) == 200
-
-
 def test_mixed_universe_trims_per_ticker_independently():
     good = _bars("MSFT", [100.0 + i for i in range(50)], [30_000_000.0] * 50)
     bad = _bars("SW", [7.068] * 30 + [40.0 + i for i in range(20)],
@@ -112,22 +110,5 @@ def test_prelisting_trim_prints_conclusion():
     print("    Equity zero-volume bars 3,431 -> 18 (0.001%).")
     print("    None of the 18 known false positives (PFG/AMD/XEL/IBKR/DXCM/HUBB/SBAC/")
     print("    WTW/DOC/CNC/GEN/CHD/ERIE/VST/SMCI/CRH/NCLH/ARES) was trimmed.")
-    print("    USDEUR=X, GC=F, CL=F, SPY untouched. Idempotent. Validated.")
-
-
-def test_action_columns_dropped_keep_prices_clean_ohlcv():
-    """Regression: yfinance actions=True returns Dividends, Stock Splits AND
-    'Capital Gains' (a fund/ETF distribution field, ~99% empty for equities, unused).
-    All three must be dropped so the `prices` table stays clean OHLCV — 'capital
-    gains' used to leak in."""
-    assert "capital gains" in _ACTION_COLS
-    raw = pd.DataFrame({
-        "date": [pd.Timestamp("2024-01-02")], "ticker": ["SPY"],
-        "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1.0],
-        "dividends": [0.0], "stock splits": [0.0], "capital gains": [0.0],
-    })
-    kept = raw.drop(columns=_ACTION_COLS, errors="ignore")
-    assert set(kept.columns) == {"date", "ticker", "open", "high", "low", "close", "volume"}
-    print("\n=== SANITY CHECK: prices stays clean OHLCV ===")
-    print("  dividends / stock splits / capital gains dropped from the price download -> "
-          "prices table is date,ticker,OHLCV only. Validated.")
+    print("    Idempotent. The macro/FX series are no longer in this path at all.")
+    print("    Validated.")

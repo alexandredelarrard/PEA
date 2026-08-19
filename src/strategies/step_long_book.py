@@ -12,6 +12,7 @@ import pandas as pd
 from src.data_store.schema import Tables
 from src.strategies.base import Strategy, PortfolioInputs, StrategyResult
 from src.modelling.long_book.allocation import asset_returns_from_macro, allocation_backtest
+from src.utils.macro import load_macro_wide
 from src.utils.risk_parity import series_metrics
 
 
@@ -21,9 +22,9 @@ class LongBookStrategy(Strategy):
 
     def run(self, inputs: PortfolioInputs) -> StrategyResult:
         c = self.config
-        df = self._context.store.load(Tables.macro_asset_prices, optional=True)
+        df = load_macro_wide(self._context.store)
         if df is None:
-            raise RuntimeError(f"'{Tables.macro_asset_prices}' empty — run fetch_macro_assets.")
+            raise RuntimeError(f"'{Tables.prices_macro}' empty — run `data_extract macro`.")
         rets, cash = asset_returns_from_macro(df, include_fx=bool(c.get("include_fx", True)))
         vix = None
         if bool(c.get("use_vix", False)) and "vix" in df.columns:

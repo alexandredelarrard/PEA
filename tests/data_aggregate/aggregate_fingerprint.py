@@ -132,7 +132,7 @@ def synthetic_dividends(tickers: list[str], idx: pd.DatetimeIndex,
         base = float(rng.uniform(0.15, 1.10))
         for k, d in enumerate(ex_dates):
             rows.append({"date": d, "ticker": t,
-                         "dividend": round(base * (1.0 + 0.02 * k), 4)})
+                         "dividends": round(base * (1.0 + 0.02 * k), 4)})
     return pd.DataFrame(rows)
 
 
@@ -307,7 +307,7 @@ def compute() -> dict:
     from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
     from src.data_aggregate.utils.common.prices import (
         forward_compound, forward_cumchange, forward_return, momentum_characteristic,
-        price_column_returns, trailing_vol,
+        trailing_vol,
     )
     from src.data_aggregate.utils.momentum.features import (
         build_feature_panel, compute_raw_features,
@@ -470,15 +470,16 @@ def compute() -> dict:
         "none_den": safe_div(num["P0"], None),
     }))
 
-    # commodity_factor_returns and currency_factor_returns had byte-identical bodies and are
-    # now one `price_column_returns`; the three keys keep their original meaning, and the
-    # third proves the "commodity" function applied to the FX column always agreed with the
-    # "currency" one -- which is why the merge is safe.
-    out["prim.price_column_returns"] = frame_digest(pd.concat({
-        "commodity": price_column_returns(fx["other_close"], {"oil": "CL=F", "gold": "GC=F"}),
-        "currency": price_column_returns(fx["other_close"], {"USD/EUR": "USDEUR=X"}),
-        "commodity_on_fx_col": price_column_returns(fx["other_close"], {"USD/EUR": "USDEUR=X"}),
-    }, axis=1))
+    # `price_column_returns` is GONE. Its whole job was remapping factor name -> price COLUMN
+    # ({"oil": "CL=F"}) while the commodity/FX series sat inside the `prices` panel; they now
+    # live in `prices_macro` under their factor names, so the remap is the identity and
+    # StepCubeTarget._asset_factors just takes the pct_change. Digest the surviving
+    # expression, keyed by the factor NAME the panel uses, so the fingerprint still covers the
+    # arithmetic that feeds the commodity/currency factors.
+    _macro_close = fx["other_close"].rename(
+        columns={"SPY": "equity_tr", "CL=F": "oil", "GC=F": "gold", "USDEUR=X": "fx_usdeur"})
+    out["prim.macro_factor_returns"] = frame_digest(
+        _macro_close[["oil", "gold", "fx_usdeur"]].pct_change())
 
     out["prim.quarter_features"] = frame_digest(
         _quarter_features(holdings).sort_values(["ticker", "as_of"]).reset_index(drop=True))

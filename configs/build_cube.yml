@@ -1,5 +1,6 @@
 build_cube:
-  market_ticker: SPY
+  # No market_ticker: the market reference is a SERIES in `prices_macro`, identified by name
+  # (constants.MACRO_MARKET_SERIES), not a configurable ticker symbol in `prices`.
 
   betas:                       # rolling multi-factor loadings epsilon is residualized on
     window: 126                # trailing estimation window (trading days). Was 63: at that

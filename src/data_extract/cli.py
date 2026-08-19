@@ -28,7 +28,6 @@ from src.data_extract.utils.prices.fetch_short_interest import fetch_short_inter
 from src.data_extract.utils.prices.fetch_fails_to_deliver import fetch_fails_to_deliver
 from src.data_extract.utils.prices.fetch_13f import fetch_13f
 from src.data_extract.utils.prices.fetch_superinvestors import build_superinvestors_json
-from src.data_extract.utils.prices.fetch_macro_assets import fetch_macro_assets
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 # --- fundamentals ----------------------------------------------------------- #
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import fetch_fundamentals_edgartools
@@ -118,28 +117,15 @@ def fails_to_deliver(config_path: str, tickers: str | None) -> None:
     fetch_fails_to_deliver(context, tickers=_tickers(context, tickers))
 
 
-@cli.command(help="Benchmark + commodity/FX OHLCV (SPY, ^VIX, oil, gold, FX). Light.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def market_prices(config_path: str) -> None:
-    """Market/macro series are plain OHLCV rows in `prices`, so they are just
-    `fetch_price_history` over `other_tickers` — no dividends, no equity features."""
-    _, context = _ctx(config_path)
-    fetch_price_history(context, tickers=list(context.config.data_extract.other_tickers),
-                        years_history=context.config.data_extract.years_history)
-
-
-@cli.command(help="FRED macro series (yields, VIX, credit spread, breakevens). Light.")
+@cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def macro(config_path: str) -> None:
+    """One command for every non-equity series: the market/commodity/FX closes (SPY, ^VIX,
+    oil, gold, energy, FX), the FRED levels (yields, cash, credit spread, breakeven) and the
+    derived spreads + 10Y total-return index. Replaced three commands -- `market-prices`
+    (which wrote its tickers into `prices`), `macro` and `macro-assets`."""
     _, context = _ctx(config_path)
-    fetch_macro(context)
-
-
-@cli.command(help="Long-history multi-asset allocation series (FRED + yfinance, since ~1995). Light.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def macro_assets(config_path: str) -> None:
-    _, context = _ctx(config_path)
-    fetch_macro_assets(context)
+    fetch_macro(context, years_history=context.config.data_extract.macro_years_history)
 
 
 @cli.command(help="13F institutional holdings (SEC bulk + OpenFIGI cusip map). HEAVY.")

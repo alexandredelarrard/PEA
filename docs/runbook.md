@@ -112,7 +112,7 @@ Shared options: `-c/--config-path` (default `./configs`), `-t/--tickers` (defaul
 ```
 seed-universe              # MUST run first; everything resolves the universe from sp500_tickers
 price-history              # prices + dividends (HEAVY)
-short-interest  fails-to-deliver  market-prices  macro  macro-assets
+short-interest  fails-to-deliver  macro
 thirteen-f                 # 13F bulk + OpenFIGI cusip map (HEAVY)
 superinvestors             # needs 13F
 fundamentals               # SEC XBRL per-filing + rebuild fundamentals_history (HEAVY)
@@ -136,7 +136,7 @@ deduce-peers               # -> paths["SECTOR_PEERS_PATH"] (data/output/sector_p
 ### `data_aggregate` — the seven-step cube build
 
 ```
-build-prices          # -> cube_part_prices + cube_part_market   (the ONLY reader of raw prices)
+build-prices          # -> cube_part_prices                      (the ONLY reader of raw prices)
 build-target          # -> cube_part_targets + cube_part_betas
 build-fundamentals    # -> cube_part_fundamentals
 build-momentum        # -> cube_part_momentum

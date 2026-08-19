@@ -2,7 +2,10 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.utils.step import Step
+from src.constants.constants import MACRO_MARKET_SERIES
 from src.context import Context
+from src.data_store.schema import Tables
+from src.utils.macro import load_macro_series
 from src.utils.universe import load_universe_tickers
 from src.data_aggregate.utils.common import data_utils as du
 from src.data_peers.utils.embeddings import (
@@ -52,14 +55,19 @@ class StepDeducePeers(Step):
         self.prices_long = self._context.store.load("prices")
 
     def normalize_prices(self):
-        mkt = self._config.build_cube.market_ticker
-
         raw = du.prices_long_to_multiindex(self.prices_long)
         self.close = du.extract_field(raw, "Close")
-        trading_days = self.close[mkt].notna()
-        self.close = self.close.loc[trading_days]
+        # The trading calendar is the days the MARKET traded, which now lives in
+        # `prices_macro` rather than as a column inside this equity frame. Same definition as
+        # the cube's (du.get_trading_days), just sourced from the table that owns it.
+        market = load_macro_series(self._context.store, MACRO_MARKET_SERIES)
+        if market is None:
+            raise RuntimeError(f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> "
+                               "no trading calendar for the peer graph. Run `data_extract macro`.")
+        self.close = self.close.loc[market.reindex(self.close.index).notna()]
         self.returns = du.daily_returns(self.close)
-        self.stock_ret = self.returns.drop(columns=[mkt])
+        # no market column to drop: `prices` is the equity universe and nothing else
+        self.stock_ret = self.returns
         # restrict to the authoritative universe (sp500_tickers) so peers are built
         # ONLY among analysed names — swap that table and the peer graph reroutes.
         universe = [t for t in load_universe_tickers(self._context)

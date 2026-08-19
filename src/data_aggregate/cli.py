@@ -4,7 +4,7 @@ cli.py  (src/data_aggregate/cli.py)
 DATA-AGGREGATION CLI — the cube build as seven sequential, memory-bounded steps, one command
 each, for the Airflow `data_aggregation` DAG:
 
-    python -m src data_aggregate build-prices          # -> cube_part_prices + cube_part_market
+    python -m src data_aggregate build-prices          # -> cube_part_prices
     python -m src data_aggregate build-target          # -> cube_part_targets + cube_part_betas
     python -m src data_aggregate build-fundamentals    # -> cube_part_fundamentals
     python -m src data_aggregate build-momentum        # -> cube_part_momentum
@@ -54,7 +54,7 @@ def _step(cls, config_path: str):
     return cls(context=context, config=config)
 
 
-@cli.command(help="Normalize `prices` -> cube_part_prices + cube_part_market (pivot, trading "
+@cli.command(help="Normalize `prices` -> cube_part_prices (pivot, trading "
                   "calendar, returns, universe restriction, peer sector returns). Every other "
                   "step reads these instead of re-loading the whole prices table.",
              help_priority=1)

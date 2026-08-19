@@ -362,6 +362,12 @@ def main(argv: list[str] | None = None) -> int:
                         declare_shrink=args.declare_shrink, declare_nulls=args.declare_nulls)
 
     parts_report = part_status_report(context, _LOG) if args.parts else None
+    # Leftover from the automated freshness gate, which was removed (see constants.py's
+    # DATA_FRESHNESS_* block: declarative metadata, no consumer). The two references below
+    # were never re-pointed, so `main()` raised NameError on EVERY run -- this generator has
+    # not produced a report since. None keeps the evidence line and the payload key present
+    # but empty, which is what "no freshness gate" should look like.
+    fresh_report = None
 
     metrics_parts = [
         "_Observed values only — no verdicts. `rows`, `date_min` and `date_max` are "

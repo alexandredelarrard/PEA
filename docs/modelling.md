@@ -25,7 +25,7 @@ Registry: [src/strategies/__init__.py](../src/strategies/__init__.py)`::STRATEGY
 `config_key` is declared on the class — a caller needing a sleeve's fees without instantiating it
 reads it from there.
 
-The `long_book` / `trend_cta` sleeves run off the long-history `macro_asset_prices` table (~1995→),
+The `long_book` / `trend_cta` sleeves run off the long-history `prices_macro` table (~1995→),
 not off `prices`.
 
 ## Contracts

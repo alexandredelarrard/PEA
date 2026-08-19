@@ -25,7 +25,7 @@ CASH: str = "cash"
 
 def asset_returns_from_macro(df: pd.DataFrame, include_fx: bool = True
                              ) -> tuple[pd.DataFrame, pd.Series]:
-    """`macro_asset_prices` rows -> (risky daily returns [equity, gold, energy, bond, (fx)],
+    """Wide `prices_macro` rows -> (risky daily returns [equity, gold, energy, bond, (fx)],
     cash daily return). Total-return legs -> pct_change; cash_rate (annual %) -> daily riskless
     drift (rate/100/252); FX -> pct_change (dropped if entirely absent)."""
     d = df.copy()

@@ -34,7 +34,7 @@ def _synth():
         year = i // 4
         for p in payers:
             amt = 0.5 * (1.15 ** year if p == "P0" else 1.0)   # P0 grows 15%/yr
-            rows.append({"date": d, "ticker": p, "dividend": amt})
+            rows.append({"date": d, "ticker": p, "dividends": amt})
     div_hist = pd.DataFrame(rows)
 
     # fundamentals: sharesOutstanding — P0 buys back, N0 issues, rest flat
@@ -70,7 +70,7 @@ def test_dividend_fields_economics_and_pit():
 
     # point-in-time: perturb everything AFTER t -> value at t unchanged
     div2 = pd.concat([div_hist, pd.DataFrame([{"date": dates[-1], "ticker": "P0",
-                                               "dividend": 99.0}])], ignore_index=True)
+                                               "dividends": 99.0}])], ignore_index=True)
     tm = dates[len(dates) // 2]
     F2 = _dividend_fields(div2, close, fund)
     assert np.isclose(F["dividend_yield"].loc[tm, "P0"], F2["dividend_yield"].loc[tm, "P0"])
@@ -90,7 +90,7 @@ def _synth_reconcile():
     tickers = ["A", "B_ONLY", "N"]
     close = pd.DataFrame(100.0, index=dates, columns=tickers)
     ex = dates[::63]                                        # quarterly ex-dates
-    rows = [{"date": d, "ticker": "A", "dividend": 1.0 * (1.10 ** (i // 4))}
+    rows = [{"date": d, "ticker": "A", "dividends": 1.0 * (1.10 ** (i // 4))}
             for i, d in enumerate(ex)]                      # A grows 10%/yr per share
     div_hist = pd.DataFrame(rows)
     frows = []

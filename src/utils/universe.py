@@ -7,8 +7,8 @@ cube, modelling, backtest) resolves which tickers to analyse from ONE place: the
 S&P 500 (the default seeder `fetch_tickers.get_sp500_tickers` scrapes it), the
 Russell 1000, or a hand-picked list — and the whole flow follows automatically:
 
-    extraction  -> seeds the table if empty, then FETCHES only these names (+ the
-                   benchmark/macro `other_tickers`),
+    extraction  -> seeds the table if empty, then FETCHES only these names (the
+                   benchmark/macro series are a separate table, `prices_macro`),
     peers       -> builds baskets ONLY among these names,
     cube        -> builds features ONLY for these names,
     modelling/backtest -> inherit the universe through the cube.

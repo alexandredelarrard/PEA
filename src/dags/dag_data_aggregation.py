@@ -7,7 +7,7 @@ Triggered by the extraction DAG once ALL sources have refreshed (schedule=None).
     deduce_peers ─▶ build_prices ─▶ build_target ─▶ build_fundamentals ─▶ build_momentum
                          │                                                        │
                          │  (normalizes `prices` ONCE into cube_part_prices /     ▼
-                         │   cube_part_market; every later step reads those    build_text
+                         │   every later step reads that part                  build_text
                          │   back, projected to the fields it needs)              │
                          │                                                        ▼
                          │                                                   build_extras

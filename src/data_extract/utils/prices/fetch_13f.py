@@ -25,6 +25,7 @@ import logging
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from typing import List
 
 from src.data_store.schema import Tables
 from src.constants.constants import SEC_FORM13F_URL_DICT
@@ -34,8 +35,6 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.sec_utils import (
-    load_processed_universe, save_processed_universe)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +89,7 @@ def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
 def _join_13f(submission: pd.DataFrame, infotable: pd.DataFrame) -> pd.DataFrame:
     """SUBMISSION + typed INFOTABLE -> one row per manager x security x quarter
     with the type breakdown. Pure."""
+
     sub = pd.DataFrame({
         "accession": _pick(submission, "ACCESSION_NUMBER", "accession_number"),
         "cik": _pick(submission, "CIK", "cik"),
@@ -137,9 +137,7 @@ def _period_names(years_history: int, today: pd.Timestamp | None = None) -> list
 # --------------------------------------------------------------------------- #
 # Zip cache: download once to disk, reuse thereafter                           #
 # --------------------------------------------------------------------------- #
-
-
-def fetch_13f(context: Context) -> pd.DataFrame:
+def fetch_13f(context: Context, tickers: List[str], years_history : int = 15) -> None:
     """Download (once, cached) the 13F data sets, split by holding type, map to
     tickers, keep the universe, and store.
 
@@ -149,20 +147,13 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     CUSIP->ticker map is built only over the NEW quarters' cusips (and itself skips
     already-attempted cusips), so a converged re-run does almost no work."""
     
-    store = context.store
-    universe = set(store.load(Tables.sp500_tickers, columns=["ticker"])["ticker"])
-    years_history = context.config.data_extract.years_history + 1
     cache = cache_dir(context, "SEC_13F_INSIDERS_DIR")
-
-    done = ingested_periods(context, "sec13f_hr", "quarter")
-    new_tickers = universe - load_processed_universe(cache, "sec13f_hr")
-    if new_tickers:
-        logger.info("13F: %d new/changed tickers -> re-parsing cached quarters", len(new_tickers))
-
+    done = ingested_periods(context, Tables.sec13f_hr, "quarter")
+  
     quarter_frames: dict[str, pd.DataFrame] = {}
-    for tag in tqdm(_period_names(years_history), desc="13F data sets"):
-        if tag in done and not new_tickers:
-            continue                                   # downloaded + ingested already -> skip
+    for tag in tqdm(_period_names(years_history + 1), desc="13F data sets"):
+        if tag in done:
+            continue                                   
         path = ensure_zip(cache / f"{tag}_form13f.zip",
                           SEC_FORM13F_URL_DICT.get(tag),
                           label=f"13F {tag}", timeout=180, log=logger)
@@ -180,10 +171,8 @@ def fetch_13f(context: Context) -> pd.DataFrame:
             "call_shares", "call_value", "put_shares", "put_value",
             "debt_prn", "debt_value", "other_value", "quarter"]
     if not quarter_frames:
-        save_processed_universe(cache, "sec13f_hr", universe)
-        logger.info("13F sec13f_hr already up to date (no new quarters).")
-        record_run(context, "sec13f_hr", len(universe), 0)
-        return pd.DataFrame(columns=cols)
+        logger.info(f"13F {Tables.sec13f_hr} already up to date (no new quarters).")
+        record_run(context, Tables.sec13f_hr, len(tickers), 0)
 
     all_cusips = sorted(set().union(*(set(h["cusip"].unique()) for h in quarter_frames.values())))
     cmap = build_cusip_ticker_map(context, all_cusips)
@@ -191,13 +180,12 @@ def fetch_13f(context: Context) -> pd.DataFrame:
     saved, saved_frames = 0, []
     for tag, h in quarter_frames.items():
         out = h.merge(cmap, on="cusip", how="inner")
-        out = out[out["ticker"].isin(universe)]
+        out = out[out["ticker"].isin(tickers)]
         if not out.empty:
             keep = out[[c for c in cols if c in out.columns]]
-            saved += store.save("sec13f_hr", keep)
+            saved += context.store.save(Tables.sec13f_hr, keep)
             saved_frames.append(keep)
-    save_processed_universe(cache, "sec13f_hr", universe)
-    logger.warning("Saved %d 13F holding rows across %d new quarter(s) to 'sec13f_hr'",
-                   saved, len(quarter_frames))
-    record_run(context, "sec13f_hr", len(universe), saved)
-    return pd.concat(saved_frames, ignore_index=True) if saved_frames else pd.DataFrame(columns=cols)
+
+    logger.info(f"Saved {saved} rows across {len(quarter_frames)} \
+                 new quarter(s) to {Tables.sec13f_hr}")
+    record_run(context, Tables.sec13f_hr, len(tickers), saved)

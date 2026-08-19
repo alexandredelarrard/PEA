@@ -30,8 +30,6 @@ from src.data_aggregate.utils.common.price_frames import (
     universe_columns,
 )
 
-MARKET = "SPY"
-OTHER = "CL=F"
 TICKERS = ["AAA", "BBB", "CCC", "DDD"]
 # the VALUE fields only -- `date`/`ticker` are the join keys `load_price_frames` adds itself,
 # so listing them here made the projection ask for them twice
@@ -40,34 +38,43 @@ ALL_PRICE_FIELDS = list(ALL_FIELDS)
 
 @pytest.fixture
 def frames() -> dict:
-    """A synthetic price panel with the awkward cases: an interior market-ticker hole, a late
-    IPO, a delisting, and a non-universe `other_ticker`."""
+    """A synthetic EQUITY price panel with the awkward cases: a late IPO and a delisting.
+
+    The market series is NOT a column in here. It used to be (SPY and CL=F sat inside
+    `prices` alongside the equities), which is exactly what `prices_macro` took over -- so the
+    fixture keeps it as a separate `market` Series, carrying the interior calendar hole."""
     idx = pd.bdate_range("2024-01-01", periods=60, name="date")
     rng = np.random.default_rng(11)
-    cols = TICKERS + [MARKET, OTHER]
     close = pd.DataFrame(
-        100 * np.exp(np.cumsum(rng.normal(0, 0.01, (len(idx), len(cols))), axis=0)),
-        index=idx, columns=pd.Index(cols, name="ticker"))
+        100 * np.exp(np.cumsum(rng.normal(0, 0.01, (len(idx), len(TICKERS))), axis=0)),
+        index=idx, columns=pd.Index(TICKERS, name="ticker"))
     close.iloc[:10, close.columns.get_loc("CCC")] = np.nan          # late IPO
     close.iloc[-8:, close.columns.get_loc("DDD")] = np.nan          # delisting
-    close.iloc[25, close.columns.get_loc(MARKET)] = np.nan          # interior calendar hole
+    market = pd.Series(400.0, index=idx)
+    market.iloc[25] = np.nan                                        # interior calendar hole
     volume = pd.DataFrame(rng.lognormal(14, 0.4, close.shape), index=idx, columns=close.columns)
     return {"close": close,
             # "open", not "open_": the canonical field name in price_frames.ALL_FIELDS
             "open": close.shift(1).bfill() * 1.001,
             "high": close * 1.01,
             "low": close * 0.99,
-            "volume": volume}
+            "volume": volume,
+            "market": market}
 
 
-def _normalize(frames: dict) -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.DatetimeIndex]:
-    """Mirror StepCubePrices: calendar -> universe restriction -> returns -> sector returns."""
+def _normalize(frames: dict) -> tuple[dict, pd.DatetimeIndex]:
+    """Mirror StepCubePrices: calendar -> universe restriction -> returns -> sector returns.
+
+    The market series is no longer a column inside `close` (it lives in `prices_macro`), so
+    the calendar mask is built from a market series handed in, and there is no second
+    (market) part frame to persist."""
     from src.data_aggregate.utils.common import data_utils as du
 
-    close = frames["close"]
-    mask = du.get_trading_days(close, MARKET)
+    wide = {k: v for k, v in frames.items() if k != "market"}
+    close = wide["close"]
+    mask = du.get_trading_days(close, frames["market"])
     idx = pd.DatetimeIndex(close.index[mask.to_numpy()], name="date")
-    on_cal = {k: (v.loc[idx] if k != "volume" else v.reindex(idx)) for k, v in frames.items()}
+    on_cal = {k: (v.loc[idx] if k != "volume" else v.reindex(idx)) for k, v in wide.items()}
     returns = du.daily_returns(on_cal["close"])
 
     universe = universe_columns(TICKERS, on_cal["close"])
@@ -77,21 +84,16 @@ def _normalize(frames: dict) -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.Datet
     uni["sector_ret"] = pd.DataFrame(
         {t: uni["ret"].drop(columns=[t]).mean(axis=1) for t in universe},
         index=idx, columns=pd.Index(universe, name="ticker"))
-    market_cols = [MARKET, OTHER]
-    return uni, on_cal["close"][market_cols], returns[market_cols], idx
+    return uni, idx
 
 
 def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
-    uni, mkt_close, mkt_ret, idx = _normalize(frames)
+    uni, idx = _normalize(frames)
     parts = sqlite_store
 
-    prices_long, market_long = frames_to_long(uni, mkt_close, mkt_ret)
-    parts.replace(Tables.cube_part_prices, prices_long)
-    parts.replace(Tables.cube_part_market, market_long)
+    parts.replace(Tables.cube_part_prices, frames_to_long(uni))
 
-    back = load_price_frames(parts, peers={}, market_ticker=MARKET,
-                             fields=ALL_PRICE_FIELDS, with_market=True,
-                             other_tickers=[OTHER])
+    back = load_price_frames(parts, peers={}, fields=ALL_PRICE_FIELDS)
 
     for field in ALL_PRICE_FIELDS:
         expected = uni[field]
@@ -101,40 +103,33 @@ def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
         pd.testing.assert_frame_equal(got, expected, check_exact=True, check_dtype=True,
                                       check_names=True)
 
-    pd.testing.assert_series_equal(
-        back.market_close.reindex(idx), mkt_close[MARKET].reindex(idx),
-        check_exact=True, check_dtype=True, check_names=False)
-    pd.testing.assert_series_equal(
-        back.mkt_ret.reindex(idx), mkt_ret[MARKET].reindex(idx),
-        check_exact=True, check_dtype=True, check_names=False)
-
     assert back.trading_index.equals(idx)
+    # the calendar now comes from cube_part_prices' OWN dates, not a second market part
     assert load_trading_calendar(parts).equals(idx)
-    assert OTHER in back.other_close.columns and MARKET in back.other_close.columns
+    # nothing non-equity can reach a cross-sectional rank through PriceFrames any more
+    for gone in ("market_close", "mkt_ret", "other_close"):
+        assert not hasattr(back, gone), f"PriceFrames still carries {gone}"
 
     print("\n=== SANITY CHECK: cube_part_prices round-trip ===")
-    print(f"  {len(ALL_PRICE_FIELDS)} wide fields + 2 market series over {len(idx)} dates x "
-          f"{len(back.universe)} tickers")
+    print(f"  {len(ALL_PRICE_FIELDS)} wide fields over {len(idx)} dates x "
+          f"{len(back.universe)} tickers (ONE part table, no market twin)")
     print(f"  float64 preserved: {all(getattr(back, f).dtypes.eq('float64').all() for f in ALL_PRICE_FIELDS)}"
-          f" | index/column names intact | calendar from the market part == the in-memory one")
+          f" | index/column names intact | calendar from cube_part_prices == the in-memory one")
     print("  CONCLUSION: persisting and reloading the price grid reproduces the in-memory frames "
           "bit-for-bit (check_exact=True), so every downstream step sees identical prices. "
           "Validated.")
 
 
 def test_projected_read_leaves_other_fields_none(frames, sqlite_store):
-    uni, mkt_close, mkt_ret, _ = _normalize(frames)
+    uni, _ = _normalize(frames)
     parts = sqlite_store
-    prices_long, market_long = frames_to_long(uni, mkt_close, mkt_ret)
-    parts.replace(Tables.cube_part_prices, prices_long)
-    parts.replace(Tables.cube_part_market, market_long)
+    parts.replace(Tables.cube_part_prices, frames_to_long(uni))
 
-    back = load_price_frames(parts, peers={}, market_ticker=MARKET, fields=("close",))
+    back = load_price_frames(parts, peers={}, fields=("close",))
     assert back.close is not None
     for field in ALL_PRICE_FIELDS:
         if field != "close":
             assert getattr(back, field) is None, f"{field} was materialised but not requested"
-    assert back.market_close is None and back.other_close is None    # with_market=False
 
     # and `require` fails loudly rather than letting a None reach the arithmetic
     with pytest.raises(ValueError, match="loaded without"):
@@ -147,9 +142,9 @@ def test_projected_read_leaves_other_fields_none(frames, sqlite_store):
 
 
 def test_interior_calendar_hole_is_dropped_and_universe_is_sorted(frames):
-    uni, _, _, idx = _normalize(frames)
+    uni, idx = _normalize(frames)
     hole = frames["close"].index[25]
-    assert hole not in idx, "the market-ticker hole must be dropped from the calendar"
+    assert hole not in idx, "the market-series hole must be dropped from the calendar"
     assert len(idx) == len(frames["close"].index) - 1
 
     # deterministic, sorted universe -- from a SHUFFLED input list, twice
@@ -163,7 +158,7 @@ def test_interior_calendar_hole_is_dropped_and_universe_is_sorted(frames):
         universe_columns(["NOT_LISTED"], frames["close"])
 
     print("\n=== SANITY CHECK: calendar hole + deterministic universe ===")
-    print(f"  interior {hole.date()} hole (market ticker missing) dropped: "
+    print(f"  interior {hole.date()} hole (market series missing) dropped: "
           f"{len(frames['close'].index)} -> {len(idx)} dates")
     print(f"  universe from a shuffled ticker list is stable and sorted: {a}")
     print("  CONCLUSION: the universe no longer comes from a set, so column order (and therefore "

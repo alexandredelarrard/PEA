@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS "prices" (
 CREATE TABLE IF NOT EXISTS "dividends" (
     "date" TIMESTAMP NOT NULL,
     "ticker" TEXT NOT NULL,
-    "dividend" DOUBLE PRECISION,
+    "dividends" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "date")
 );
 
@@ -60,35 +60,13 @@ CREATE TABLE IF NOT EXISTS "fails_to_deliver" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] macro  (pk: date)
+-- [extract] prices_macro  (pk: ticker, date)
 
-CREATE TABLE IF NOT EXISTS "macro" (
-    "date" TIMESTAMP NOT NULL,
-    "yield_3m" DOUBLE PRECISION,
-    "yield_2y" DOUBLE PRECISION,
-    "yield_10y" DOUBLE PRECISION,
-    "yield_30y" DOUBLE PRECISION,
-    "yield_curve_10y2y" DOUBLE PRECISION,
-    "yield_curve_10y3m" DOUBLE PRECISION,
-    "vix" DOUBLE PRECISION,
-    "baa_credit_spread" DOUBLE PRECISION,
-    "breakeven_10y" DOUBLE PRECISION,
-    PRIMARY KEY ("date")
-);
-
--- [extract] macro_asset_prices  (pk: date)
-
-CREATE TABLE IF NOT EXISTS "macro_asset_prices" (
+CREATE TABLE IF NOT EXISTS "prices_macro" (
     "date" DATE NOT NULL,
-    "yield_10y" DOUBLE PRECISION,
-    "cash_rate" DOUBLE PRECISION,
-    "fx_usdeur" DOUBLE PRECISION,
-    "vix" DOUBLE PRECISION,
-    "equity_tr" DOUBLE PRECISION,
-    "gold" DOUBLE PRECISION,
-    "energy" DOUBLE PRECISION,
-    "bond_10y_tr" DOUBLE PRECISION,
-    PRIMARY KEY ("date")
+    "ticker" TEXT NOT NULL,
+    "close" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "date")
 );
 
 -- [extract] cusip_ticker_map  (pk: cusip)
@@ -340,6 +318,8 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "debtMaturity5yTotal" DOUBLE PRECISION,
     "sector" TEXT,
     "industry_group" TEXT,
+    "shortTermBorrowingsOnly" DOUBLE PRECISION,
+    "longTermDebtCurrentOnly" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "as_of")
 );
 
@@ -349,22 +329,33 @@ CREATE TABLE IF NOT EXISTS "fundamentals_facts" (
     "ticker" TEXT NOT NULL,
     "cik" TEXT,
     "accession_number" TEXT NOT NULL,
-    "field" TEXT NOT NULL,
-    "fiscal_year" TEXT NOT NULL,
-    "fiscal_period" TEXT NOT NULL,
-    "duration_type" TEXT NOT NULL,
     "form" TEXT,
     "filing_date" DATE,
+    "is_amendment" DOUBLE PRECISION,
+    "fiscal_period_source" TEXT,
+    "period_of_report" TIMESTAMP,
+    "cover_fiscal_year" BIGINT,
+    "cover_fiscal_period" TEXT,
+    "concept" TEXT,
+    "taxonomy" TEXT,
+    "bare_tag" TEXT,
+    "period_type" TEXT,
     "period_start" DATE,
     "period_end" DATE,
+    "period_key" TEXT,
+    "duration_shape" TEXT,
+    "fiscal_year" TEXT NOT NULL,
+    "fiscal_period" TEXT NOT NULL,
     "value" DOUBLE PRECISION,
     "unit" TEXT,
-    "source_tag" TEXT,
-    "is_amendment" DOUBLE PRECISION,
-    "amends_accession" TEXT,
-    "derived" DOUBLE PRECISION,
-    "derived_from_accessions" TEXT,
-    "fiscal_period_source" TEXT,
+    "decimals" TEXT,
+    "is_dimensioned" BOOLEAN,
+    "axis" TEXT,
+    "member" TEXT,
+    "member_label" TEXT,
+    "dim_count" BIGINT,
+    "dim_key" TEXT,
+    "dim_admission" TEXT,
     PRIMARY KEY ("ticker", "accession_number", "field", "fiscal_year", "fiscal_period", "duration_type")
 );
 CREATE INDEX IF NOT EXISTS ix_fundamentals_facts_filing_date ON "fundamentals_facts" ("filing_date");
@@ -824,7 +815,7 @@ CREATE TABLE IF NOT EXISTS "ticker_embeddings" (
     PRIMARY KEY ("ticker")
 );
 
--- [aggregate] cube  (pk: ticker, date, target_horizon)
+-- [aggregate] cube  (pk: ticker, date, target_horizon) -- CARRIED OVER: not present in the database that generated this file, so its previous DDL is preserved verbatim.
 
 CREATE TABLE IF NOT EXISTS "cube" (
     "date" TIMESTAMP NOT NULL,

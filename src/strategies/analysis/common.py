@@ -4,15 +4,16 @@ common.py  (src/strategies/analysis/common.py)
 Shared analytics primitives for the per-strategy + portfolio analysis modules: daily
 cross-sectional IC, rolling Sharpe / drawdown / beta / correlation, rolling pairwise
 correlation, and a loader for the market/energy reference return series (from
-`macro_asset_prices`) used in the L/S neutrality and trend crisis-alpha checks.
+`prices_macro`) used in the L/S neutrality and trend crisis-alpha checks.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from src.data_store.schema import Tables
+from src.constants.constants import MACRO_MARKET_SERIES
 from src.strategies.utils.accuracy import forward_return
+from src.utils.macro import load_macro_wide
 
 _ANN: float = 252.0
 
@@ -74,16 +75,15 @@ def rolling_pairwise_corr(df: pd.DataFrame, window: int = 126) -> tuple[dict[str
 
 
 def load_market_refs(store) -> dict[str, pd.Series]:
-    """Reference daily returns from `macro_asset_prices`: {'sp': equity_tr, 'energy': energy}.
+    """Reference daily returns from `prices_macro`: {'sp': the market series, 'energy': energy}.
     Used to check L/S market-neutrality (beta vs SP) and idiosyncrasy (corr vs energy)."""
-    df = store.load(Tables.macro_asset_prices, optional=True)
+    df = load_macro_wide(store, series=[MACRO_MARKET_SERIES, "energy"])
     out: dict[str, pd.Series] = {}
     if df is None:
         return out
-    d = df.copy(); d["date"] = pd.to_datetime(d["date"])
-    d = d.sort_values("date").set_index("date")
-    if "equity_tr" in d.columns:
-        out["sp"] = d["equity_tr"].astype(float).pct_change(fill_method=None)
+    d = df.sort_values("date").set_index("date")
+    if MACRO_MARKET_SERIES in d.columns:
+        out["sp"] = d[MACRO_MARKET_SERIES].astype(float).pct_change(fill_method=None)
     if "energy" in d.columns:
         out["energy"] = d["energy"].astype(float).pct_change(fill_method=None)
     return out

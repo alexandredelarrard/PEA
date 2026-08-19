@@ -121,15 +121,20 @@ class Tables:
         "fails_to_deliver", ("ticker", "date"), date_col="date",
         date_type_cols=("date",), freshness="biweekly",
         read_columns=("date", "ticker", "fails_quantity"))
-    macro = Table("macro", ("date",), date_col="date", ticker_col=None,
-                  freshness="daily")
-    # Long-history multi-asset ALLOCATION series (FRED, since ~1995): one row per date, no
-    # ticker. Total-return / level legs (equity_tr [Wilshire 5000], gold, bond_10y_tr
-    # [reconstructed from the 10Y yield], cash_rate, fx_usdeur) for the risk-parity + trend
-    # allocation sleeve. See fetch_macro_assets.py.
-    macro_asset_prices = Table("macro_asset_prices", ("date",), date_col="date",
-                               ticker_col=None, date_type_cols=("date",),
-                               freshness="daily")
+    # Unified macro / market series, LONG: one close per (series, date). Replaced the two
+    # wide tables `macro` (FRED features, 16y) and `macro_asset_prices` (allocation legs,
+    # 31y) -- which double-stored yield_10y and vix from two sources at two depths -- and
+    # took over the non-equity tickers that used to sit in `prices`. That last move is what
+    # lets `prices` be the equity universe and nothing else, which in turn is what let
+    # `cube_part_market` (a firewall against macro tickers leaking into cross-sectional
+    # ranks) disappear entirely.
+    # `ticker` holds the SERIES name (equity_tr, vix, yield_10y, bond_10y_tr, ...), not the
+    # source symbol, so the wide pivot reproduces the column vocabulary its consumers had.
+    # Long, not wide: the legs start on different dates (gold 2000, breakeven 2003) and a
+    # wide layout paid for that with a NaN block per series. See fetch_macro.py.
+    prices_macro = Table("prices_macro", ("ticker", "date"), date_col="date",
+                         date_type_cols=("date",), freshness="daily",
+                         read_columns=("date", "ticker", "close"))
     cusip_ticker_map = Table("cusip_ticker_map", ("cusip",), ticker_col="ticker")
 
     # ----------------------------------------------------------------- #
@@ -346,9 +351,12 @@ class Tables:
     # The BUILD-ORCHESTRATION facet of these tables -- CLI sub-command, warm-up trading
     # days, per-group binding look-backs -- deliberately stays in
     # `data_aggregate/utils/common/parts.py`. That is aggregation policy, not schema.
+    # NO cube_part_market: it existed only to keep the market/commodity/FX tickers out of
+    # the equity frame the cross-sectional ranks are computed on. Once those series live in
+    # `prices_macro` and never in `prices`, there is nothing to separate -- StepCubeTarget
+    # reads them straight from `prices_macro`, and the trading calendar (which this part
+    # used to define) comes off cube_part_prices' own dates.
     cube_part_prices = Table("cube_part_prices", ("date", "ticker"), KIND_PART,
-                             date_col="date", managed=False)
-    cube_part_market = Table("cube_part_market", ("date", "ticker"), KIND_PART,
                              date_col="date", managed=False)
     # NOT ("date","ticker"): `_labels_to_long` (utils/assemble/cube.py) stamps
     # `target_horizon` per horizon and concatenates, so the grain is three-part. Declaring

@@ -1,5 +1,5 @@
 # strategy_trend.yml -- multi-asset TREND / CTA sleeve (merged as top-level key `strategy_trend`).
-# A DIRECTIONAL long/short time-series-momentum book on the `macro_asset_prices` universe
+# A DIRECTIONAL long/short time-series-momentum book on the `prices_macro` asset universe
 # (equity / gold / energy / 10Y-bond-TR / FX). Self-contained (src/modelling/trend/signal.py);
 # price-only, no ML. sleeve_vol_target + window come DOWN from the portfolio (PortfolioInputs).
 strategy_trend:

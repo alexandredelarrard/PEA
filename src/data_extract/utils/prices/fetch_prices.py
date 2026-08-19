@@ -17,9 +17,12 @@ Notes:
     alongside this one by `StepExtractPrices`) with its own resume window, since
     ex-dates are quarterly and sparse where bars are daily. `download_ohlcv` is
     the shared entry point -- one yfinance response serves both.
-  - The market/macro series (`other_tickers`: SPY, ^VIX, oil/gold, FX) are just
-    this function over that list: ordinary OHLCV rows in `prices`, never part of
-    the equity universe and never passed to `fetch_dividends`.
+  - EQUITY ONLY. The market/macro series (SPY, ^VIX, oil/gold/energy, FX) used to be
+    extra OHLCV rows in `prices`, fetched by this function over `other_tickers`.
+    They are now rows in `prices_macro` (`fetch_macro.py`) -- close-only from
+    yfinance, or a FRED level for FX -- so `prices` holds the analysed universe and
+    nothing else, which is what let the cube drop its `cube_part_market` firewall
+    and three `drop(columns=[market])` guards.
 """
 import time
 
@@ -31,10 +34,33 @@ import logging
 from src.data_store.schema import Tables
 from src.data_extract.utils.common.incremental import resume_since
 from src.data_extract.utils.common.run_manifest import record_run
-from src.constants.constants import (DATE_FORMAT, NO_VOLUME_TICKERS, PRELISTING_VOLUME_RATIO, PRELISTING_ZERO_VOLUME_SHARE)
+from src.constants.constants import DATE_FORMAT
 from src.context import Context
 
 logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# PRICE PRE-LISTING TRIM                                                       #
+# --------------------------------------------------------------------------- #
+# yfinance back-fills a US ticker with its predecessor line (AMCR's ASX quote
+# pre-2019, SW's Smurfit Kappa quote pre-2024) or its SPAC trust (VRT before the
+# Feb-2020 merger). Those bars are flat and mostly zero-volume, so they inject
+# zero realised vol and fake zero returns into beta / correlation / momentum.
+# Two independent tells, either of which marks the pre-window as synthetic:
+#   * zero-volume share in [first_bar .. last_zero_volume_bar] >= 20%
+#     (AMCR 77.1%, SW 62.7%, HWM 94.6% vs PFG/AMD/XEL/IBKR/... all <= 2.7%),
+#   * first-year median volume < 1% of the ticker's full-history median volume
+#     (VRT 0.17% vs the tightest true listing, NCLH 2.9% / ARES 2.85% / SMCI 3.9%).
+# Both thresholds sit an order of magnitude away from the nearest false positive.
+PRELISTING_ZERO_VOLUME_SHARE = 0.2
+PRELISTING_VOLUME_RATIO = 0.01
+
+# No NO_VOLUME_TICKERS exemption any more. It existed because a quoted index or FX pair carries
+# 100% zero volume (no exchange volume exists) and this trim would have erased its whole history
+# -- but those series are no longer fetched through here at all (`fetch_macro.py` pulls ^VIX and
+# the commodity/energy legs close-only and skips the trim, which is an equity-listing heuristic;
+# FX is a FRED level). Everything reaching this function is an equity, where zero volume really
+# does mean a synthetic bar.
 
 
 def _normalize_prices(df: pd.DataFrame) -> pd.DataFrame:
@@ -55,16 +81,6 @@ def _prelisting_cutoff(frame: pd.DataFrame) -> pd.Timestamp | None:
     realised volatility and fake zero returns into vol / beta / correlation / momentum.
     Measured on the live table: AMCR 1,371 of 3,569 rows zero-volume (all <= 2019-06-10),
     SW 2,041 of 3,771 (all <= 2024-07-05, i.e. 86% of its stored history).
-
-    Two independent tells, either sufficient, both an order of magnitude clear of the
-    nearest false positive:
-      * the zero-volume SHARE of [first bar .. last zero-volume bar] is high -- AMCR
-        77.1%, SW 62.7%, HWM 94.6%, versus PFG / AMD / XEL / IBKR / DXCM / HUBB / SBAC /
-        WTW / DOC / CNC / GEN / CHD / ERIE / VST at <= 2.7% (isolated vendor glitches,
-        which must NOT be trimmed),
-      * the first-year median VOLUME is a negligible fraction of the ticker's own
-        full-history median -- VRT 0.17%, whose zero-volume share is only 3.6%, versus
-        the tightest genuine listings NCLH 2.9% / ARES 2.85% / SMCI 3.9% / CRH 4.2%.
 
     Only a contiguous PREFIX is ever returned, so trimming can never punch an interior
     hole in the middle of a ticker's otherwise-contiguous history.
@@ -94,15 +110,13 @@ def _prelisting_cutoff(frame: pd.DataFrame) -> pd.Timestamp | None:
 def trim_prelisting_bars(prices: pd.DataFrame) -> pd.DataFrame:
     """Drop each equity ticker's synthetic pre-listing prefix (see `_prelisting_cutoff`).
 
-    Tickers whose volume is legitimately always zero are exempt: FX has no exchange
-    volume, so `USDEUR=X` is 100% zero-volume and would otherwise be erased entirely.
+    EQUITIES ONLY -- there is no volume-less exemption list, because the volume-less series
+    (FX, ^VIX) do not come through this function any more (see the module docstring).
     Pure; safe to re-apply (a trimmed frame has no qualifying prefix left)."""
     if prices is None or prices.empty or "ticker" not in prices.columns:
         return prices
     drop = pd.Series(False, index=prices.index)
     for ticker, group in prices.groupby("ticker", sort=False):
-        if str(ticker).upper() in NO_VOLUME_TICKERS:
-            continue
         cutoff = _prelisting_cutoff(group)
         if cutoff is not None:
             drop.loc[group.index[group["date"] <= cutoff]] = True
@@ -110,15 +124,8 @@ def trim_prelisting_bars(prices: pd.DataFrame) -> pd.DataFrame:
         return prices
     return prices.loc[~drop].reset_index(drop=True)
 
-
 def _is_up_to_date(since: pd.Timestamp, today: pd.Timestamp) -> bool:
-    # The freshest bar we could reasonably have is the previous *business* day
-    # (today's close may not be published yet by yfinance). Using a business-day
-    # offset stops weekends/Mondays from re-downloading Friday-anchored data:
-    #   Sun/Sat/Mon -> Fri, Wed -> Tue, etc.
-    last_expected = today - pd.tseries.offsets.BDay(1)
-    return since >= last_expected
-
+    return since >= today - pd.tseries.offsets.BDay(1)
 
 def _chunk_response_to_frames(data: pd.DataFrame, chunk: list[str]) -> list[pd.DataFrame]:
     frames = []
@@ -141,6 +148,7 @@ def _download_price_chunk(
     start: pd.Timestamp,
     end: pd.Timestamp,
     pause: float,
+    actions: False
 ) -> list[pd.DataFrame]:
     for attempt in range(3):
         try:
@@ -151,7 +159,7 @@ def _download_price_chunk(
                 interval="1d",
                 group_by="ticker",
                 auto_adjust=True,
-                actions=True,          # also return Dividends / Stock Splits
+                actions=actions,          # also return Dividends / Stock Splits
                 threads=True,
                 progress=False,
             )
@@ -175,10 +183,16 @@ def download_ohlcv(
     [date, ticker, OHLCV, dividends, stock splits, ...]. Shared with
     `fetch_dividends`, which needs the same `actions=True` response for its
     ex-dates; empty frame when every chunk failed."""
+
+    actions= False
+    if 'dividend' in desc.lower():
+        actions = True
+
     frames: list[pd.DataFrame] = []
     for i in tqdm(range(0, len(tickers), chunk_size), desc=desc):
         chunk = tickers[i:i + chunk_size]
-        frames.extend(_download_price_chunk(chunk, since, until, pause))
+        
+        frames.extend(_download_price_chunk(chunk, since, until, pause, actions))
         time.sleep(pause)
 
     if not frames:
@@ -187,32 +201,20 @@ def download_ohlcv(
     return _normalize_prices(pd.concat(frames, ignore_index=True))
 
 
-# yfinance actions=True columns to DROP from the OHLCV `prices` table: dividends are
-# saved separately (see fetch_dividends.py); "capital gains" is a mutual-fund/ETF
-# distribution field (~99% empty for equities, unused) — keep prices clean OHLCV.
-_ACTION_COLS = ["dividends", "stock splits", "capital gains"]
-
-
 def fetch_price_history(
     context: Context,
     tickers: list[str],
     years_history: int,
     chunk_size: int = 50,
-    pause: float = 2.0,
-) -> pd.DataFrame:
+    pause: float = 1,
+) -> None:
     """Download daily OHLCV for `tickers`, incrementally upserting into the `prices`
-    DB table, and return only the freshly-downloaded rows.
-
-    Resumes from `resume_since` -- the oldest per-ticker last-extracted date across the
-    whole batch -- and re-fetches every ticker forward from that ONE shared date; a
-    ticker already current just gets redundant rows, no-opped by the upsert, while a
-    ticker with no rows yet gets `years_history` of backfill. Dividends are NOT written
-    here: `fetch_dividends` is its own fetcher, called alongside this one."""
+    DB table, and return only the freshly-downloaded rows."""
 
     today = pd.Timestamp.today().normalize()
     since = resume_since(context, Tables.prices, tickers, years_history)
 
-    if not tickers or _is_up_to_date(since, today):
+    if _is_up_to_date(since, today):
         logger.info(f"Price history already up to date — DB table '{Tables.prices}'")
         record_run(context, Tables.prices, len(tickers), 0)
         return pd.DataFrame()
@@ -220,8 +222,6 @@ def fetch_price_history(
     logger.info(f"Downloading prices for {len(tickers)} tickers since {since.date()}")
     df_prices = download_ohlcv(tickers, since, today, chunk_size, pause)
 
-    # keep the prices table a clean OHLCV frame (drop the action columns)
-    df_prices = df_prices.drop(columns=_ACTION_COLS, errors="ignore")
     # Drop the synthetic pre-listing prefix BEFORE the upsert, so a full-history pull
     # never writes another ticker's predecessor line into `prices`. Applied to the
     # freshly-downloaded frame only: an incremental tail carries no prefix.
@@ -231,5 +231,3 @@ def fetch_price_history(
     context.store.save(Tables.prices, df_prices)
     logger.info(f"Saved {len(df_prices)} new price rows to DB table '{Tables.prices}'")
     record_run(context, Tables.prices, len(tickers), len(df_prices))
-
-    return df_prices

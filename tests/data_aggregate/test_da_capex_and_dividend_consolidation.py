@@ -1,6 +1,6 @@
 """Refactor tests:
   * dividends now piggy-back on the price download (actions=True): the pure
-    extractor pulls nonzero ex-dates out of a normalized price frame.
+    extractor pulls the `dividends` column out of a normalized price frame.
   * D&A-vs-capex reinvestment-quality feature is built from the already-extracted
     SEC `depAmort` / `capex`.
 """
@@ -24,15 +24,19 @@ def test_dividends_extracted_from_price_frame():
         "stock splits": [0.0, 0.0, 0.0, 0.0],
     })
     div = _extract_dividends(px)
-    assert list(div.columns) == ["date", "ticker", "dividend"]
-    assert len(div) == 3                          # only the nonzero ex-dates
+    assert list(div.columns) == ["date", "ticker", "dividends"]
+    # every bar is kept, ZEROS INCLUDED: a 0 is informative, and keeping it makes the
+    # incremental refresh idempotent instead of dependent on which bars were nonzero
+    assert len(div) == len(px)
     assert set(div["ticker"]) == {"AAPL", "MSFT"}
-    assert div[(div["ticker"] == "AAPL")]["dividend"].tolist() == [0.24, 0.25]
-    # no dividends column -> empty (defensive)
+    assert div[(div["ticker"] == "AAPL")]["dividends"].tolist() == [0.0, 0.24, 0.25]
+    # no dividends column / empty frame -> empty (a total yfinance outage must no-op)
     assert _extract_dividends(px.drop(columns=["dividends"])).empty
+    assert _extract_dividends(pd.DataFrame()).empty
+    assert list(_extract_dividends(None).columns) == ["date", "ticker", "dividends"]
     print("\n=== SANITY CHECK: dividends piggy-back on the price download ===")
-    print(f"  pulled {len(div)} nonzero ex-dates from the actions=True price frame; "
-          f"schema [date,ticker,dividend]; one download feeds both. Validated.")
+    print(f"  pulled {len(div)} rows (incl. the 0.0 ex-date) from the actions=True price "
+          f"frame; schema [date,ticker,dividends]; one download feeds both. Validated.")
 
 
 def _fund_hist():

@@ -40,8 +40,7 @@ class StepExtractAllData(Step):
             self._log.info("Extracted ticker list")
         else:
             universe = load_universe_tickers(self._context)
-            self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers} "
-                       "(other_tickers fetched separately as market/macro prices)")
+            self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers}")
         return universe
 
     def run(self) -> None:
@@ -49,5 +48,6 @@ class StepExtractAllData(Step):
 
         self._prices.run(tickers=tickers)
         # self._structure.run(tickers=tickers)
-        # self._fundamentals.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
+        # self._fundamentals.run(tickers=tickers)
+        

@@ -11,8 +11,8 @@ Airflow POOLS (created in airflow-init):
     10-K headcount), def14a
   * scrape   (2 slots)  — external rate-limited scraping: wiki_pageviews, google_trends,
                           download_earnings_calls -> ingest_earnings_calls
-  * default             — light / fast: market_prices, macro, macro_assets, short_interest,
-                          earnings_surprises, superinvestors  (+ the one heavy yfinance pull: price_history)
+  * default             — light / fast: macro, short_interest, earnings_surprises,
+                          superinvestors  (+ the one heavy yfinance pull: price_history)
 
 Flow: seed_universe -> (all fetchers in parallel, pool-throttled) -> extraction_complete -> trigger
 the data_aggregation DAG. The gate is a visible WARNING, not a hard block (trigger_rule=ALL_DONE), so
@@ -74,9 +74,9 @@ seed_universe = fetch("seed-universe")
 
 # 1) LIGHT / fast — fan out in the default pool
 light = [
-    fetch("market-prices"),
+    # ONE macro task: `market-prices` + `macro` + `macro-assets` collapsed into it when every
+    # non-equity series moved out of `prices` and into `prices_macro`.
     fetch("macro"),
-    fetch("macro-assets"),
     fetch("short-interest"),
     fetch("earnings-surprises"),
 ]

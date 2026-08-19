@@ -21,10 +21,12 @@ import matplotlib.pyplot as plt
 from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
+from src.constants.constants import MACRO_MARKET_SERIES
 from src.context import Context
 from src.utils.step import Step
 from src.strategies import STRATEGY_REGISTRY, PortfolioInputs
 from src.strategies.utils.metrics import compute_metrics
+from src.utils.macro import load_macro_series
 from src.utils.risk_parity import base_weights, series_metrics, daily_frame
 from src.portfolio.utils.blend import blend_to_vol_target
 
@@ -72,12 +74,16 @@ class StepPortfolio(Step):
             analysis=bool(c.get("plot_analysis", True)))
 
     def _benchmark(self, index: pd.DatetimeIndex) -> pd.Series:
-        """S&P proxy daily returns (equity_tr from macro_asset_prices) aligned to `index`."""
-        df = self._context.store.load(Tables.macro_asset_prices, optional=True)
-        if df is None or "equity_tr" not in df.columns:
+        """S&P proxy daily returns (the market series from `prices_macro`) aligned to `index`.
+
+        A zero benchmark makes every relative metric silently meaningless, so log it loudly
+        rather than only returning zeros."""
+        eq = load_macro_series(self._context.store, MACRO_MARKET_SERIES)
+        if eq is None:
+            self._log.warning("'%s' has no '%s' rows -> benchmark is FLAT ZERO, so every "
+                              "excess/beta metric below is against nothing. Run "
+                              "`data_extract macro`.", Tables.prices_macro, MACRO_MARKET_SERIES)
             return pd.Series(0.0, index=index)
-        d = df.copy(); d["date"] = pd.to_datetime(d["date"])
-        eq = d.sort_values("date").set_index("date")["equity_tr"].astype(float)
         return eq.pct_change(fill_method=None).reindex(index).fillna(0.0)
 
     def load_sleeves(self) -> None:

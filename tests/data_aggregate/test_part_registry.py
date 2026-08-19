@@ -82,9 +82,10 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
     ctx = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test"),
                           paths={"DATA_STORE": Path("."), "SECTOR_PEERS_PATH": Path("peers.json")})
     config = OmegaConf.create({
-        "build_cube": {"market_ticker": "SPY", "targets": {"horizons": [30, 60, 90]},
+        # no market_ticker / other_tickers: the market and commodity/FX series are named
+        # rows in `prices_macro` now, not config-selected tickers inside `prices`
+        "build_cube": {"targets": {"horizons": [30, 60, 90]},
                        "composites": {"enabled": False}},
-        "data_extract": {"other_tickers": ["SPY"]},
     })
     owned = {cmd: [p.name for p in REG if p.command == cmd] for cmd in OWNER}
     for cmd, cls in OWNER.items():

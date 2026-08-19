@@ -1,6 +1,6 @@
 # strategy_long_book.yml -- multi-asset LONG BOOK sleeve (merged as top-level key `strategy_long_book`).
 # Long-only % allocation across equity / gold / energy / 10Y-bond-TR / FX + CASH residual, on the
-# long-history `macro_asset_prices` table. Risk-parity (ERC/inverse-vol) + long-only trend overlay
+# long-history `prices_macro` table. Risk-parity (ERC/inverse-vol) + long-only trend overlay
 # + VIX risk-on regime tilt + responsive leverage. See src/modelling/long_book/allocation.py.
 # portfolio_vol_target (the sleeve's vol target), starting_capital, risk_free_rate and the window
 # come DOWN from the portfolio (PortfolioInputs).

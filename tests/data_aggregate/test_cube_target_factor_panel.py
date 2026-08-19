@@ -2,11 +2,16 @@
 `StepCubeTarget._factor_panel` (src/data_aggregate/transformers/step_cube_target.py).
 
 `_factor_panel` calls `build_characteristics` and `characteristic_to_factor_return` directly,
-alongside `_macro_changes` / `_asset_factors`, so every factor family that goes into the panel
-is visible as a flat list of calls rather than behind another wrapper.
+alongside `_macro_changes` / `_asset_factors` / `_market_return`, so every factor family that
+goes into the panel is visible as a flat list of calls rather than behind another wrapper.
 
-This test proves it reproduces the SAME factor panel as composing those two functions and
-`assemble_factor_panel` by hand -- guarding the aggregate-fingerprint invariant.
+This test proves it reproduces the SAME factor panel as composing those functions by hand --
+guarding the aggregate-fingerprint invariant.
+
+It also pins the read contract after the macro consolidation: `_factor_panel` makes exactly
+ONE store read, of `prices_macro`. It used to make three across two tables (`cube_part_market`
+for the market return and the commodity/FX closes, `macro` for the change factors), so the spy
+store below asserts both the table identity AND the call count.
 """
 from __future__ import annotations
 
@@ -15,27 +20,35 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.transformers.step_cube_target import (
-    _COMMODITY_TICKERS, _CURRENCY_TICKERS, StepCubeTarget,
-)
+from src.constants.constants import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
+from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_store.schema import name_of
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.common.prices import price_column_returns
 from src.data_aggregate.utils.target.factors import (
     assemble_factor_panel, build_characteristics, characteristic_to_factor_return,
 )
 
+_MACRO_SERIES = [MACRO_MARKET_SERIES, *MACRO_CUBE_FACTORS.values()]
 
-class _FakeStore:
-    """`_macro_changes` is the only store read `_factor_panel` triggers; empty macro exercises
-    its early-return branch (mirrored by hand in the expected panel below).
 
-    A read spy, not a store: it asserts WHICH table is read. `name_of` because call sites now pass
-    the `Table` object, and the assertion is about the table's identity either way."""
+class _SpyStore:
+    """A read spy, not a store: it records WHICH tables `_factor_panel` reads and how often.
 
-    def load(self, table, columns=None, **kw):
-        assert name_of(table) == "macro", f"unexpected store.load({table!r})"
-        return pd.DataFrame()
+    `name_of` because call sites pass the `Table` object; the assertion is about identity.
+    Returns the long `prices_macro` shape, so the adapter's pivot is exercised for real."""
+
+    def __init__(self, long: pd.DataFrame):
+        self._long = long
+        self.reads: list[str] = []
+
+    def load(self, table, columns=None, where=None, **kw):
+        name = name_of(table)
+        self.reads.append(name)
+        assert name == "prices_macro", f"unexpected store.load({table!r})"
+        df = self._long
+        if where and "ticker" in where:
+            df = df[df["ticker"].isin(list(where["ticker"]))]
+        return df.copy() if not df.empty else None
 
 
 def _synthetic_inputs():
@@ -50,11 +63,14 @@ def _synthetic_inputs():
     sector_ret = pd.DataFrame(np.repeat(ret.mean(axis=1).to_numpy()[:, None], len(tickers), axis=1),
                               index=dates, columns=tickers)
 
-    other_cols = ["CL=F", "GC=F", "USDEUR=X"]
-    other_close = pd.DataFrame(
-        100 * np.exp(np.cumsum(rng.normal(0, 0.008, (len(dates), len(other_cols))), axis=0)),
-        index=dates, columns=other_cols)
-    mkt_ret = pd.Series(rng.normal(0, 0.01, len(dates)), index=dates, name="SPY")
+    # the macro series the cube consumes, as the LONG frame `prices_macro` really stores.
+    # No FRED level series -> `_macro_changes` short-circuits to an empty frame, the same
+    # branch the old empty-`macro` fixture exercised.
+    macro_wide = pd.DataFrame(
+        100 * np.exp(np.cumsum(rng.normal(0, 0.008, (len(dates), len(_MACRO_SERIES))), axis=0)),
+        index=dates, columns=_MACRO_SERIES)
+    macro_long = (macro_wide.rename_axis("date").reset_index()
+                  .melt(id_vars="date", var_name="ticker", value_name="close"))
 
     # quarterly fundamentals history -> exercises the size/value/quality characteristics too,
     # not just the price-only momentum/resvol ones
@@ -75,21 +91,33 @@ def _synthetic_inputs():
     fundamentals = pd.DataFrame(rows)
 
     frames = PriceFrames(trading_index=dates, universe=tuple(tickers), peers={},
-                         close=close, ret=ret, sector_ret=sector_ret,
-                         mkt_ret=mkt_ret, other_close=other_close)
-    return frames, fundamentals, close, ret, other_close, mkt_ret, dates
+                         close=close, ret=ret, sector_ret=sector_ret)
+    return frames, fundamentals, close, ret, macro_wide, macro_long, dates
+
+
+def _step(macro_long: pd.DataFrame) -> StepCubeTarget:
+    step = object.__new__(StepCubeTarget)
+    step._log = logging.getLogger("test")
+    store = _SpyStore(macro_long)
+    step._store = store
+    step._context = type("Ctx", (), {"store": store})()
+    return step
+
+
+def _expected_returns(macro_wide: pd.DataFrame, calendar: pd.DatetimeIndex,
+                      series: str) -> pd.Series:
+    s = macro_wide[series].astype(float)
+    s = s.reindex(s.index.union(calendar)).ffill()
+    return s.pct_change(fill_method=None).reindex(calendar)
 
 
 def test_factor_panel_matches_hand_composed_reference():
-    frames, fundamentals, close, ret, other_close, mkt_ret, dates = _synthetic_inputs()
-
-    step = object.__new__(StepCubeTarget)
-    step._log = logging.getLogger("test")
-    step._context = type("Ctx", (), {"store": _FakeStore()})()
+    frames, fundamentals, close, ret, macro_wide, macro_long, dates = _synthetic_inputs()
+    step = _step(macro_long)
 
     panel, macro_cols = step._factor_panel(frames, fundamentals)
 
-    # hand-composed reference: the same two building blocks `_factor_panel` calls, composed
+    # hand-composed reference: the same building blocks `_factor_panel` calls, composed
     # independently here rather than by importing its loop
     chars_expected = build_characteristics(close, ret, fundamentals, resvol_window=63)
     style_cols_expected = {}
@@ -97,51 +125,69 @@ def test_factor_panel_matches_hand_composed_reference():
         char.name = name
         style_cols_expected[name] = characteristic_to_factor_return(char, ret)
     style_expected = pd.DataFrame(style_cols_expected)
-    commodity_expected = price_column_returns(other_close, dict(_COMMODITY_TICKERS))
-    currency_expected = price_column_returns(other_close, dict(_CURRENCY_TICKERS))
-    macro_chg_expected = pd.DataFrame(index=dates)          # empty macro -> _macro_changes short-circuits
+
+    asset = pd.DataFrame({col: _expected_returns(macro_wide, dates, series)
+                          for col, series in MACRO_CUBE_FACTORS.items()}, index=dates)
+    fx_cols = [c for c in asset.columns if MACRO_CUBE_FACTORS[c].startswith("fx_")]
+    commodity_expected = asset.drop(columns=fx_cols)
+    currency_expected = asset[fx_cols]
+    mkt_expected = _expected_returns(macro_wide, dates, MACRO_MARKET_SERIES)
+    macro_chg_expected = pd.DataFrame(index=dates)      # no FRED levels -> short-circuits
+
     panel_expected, macro_cols_expected = assemble_factor_panel(
-        mkt_ret, style_expected, commodity_expected, currency_expected, macro_chg_expected)
+        mkt_expected, style_expected, commodity_expected, currency_expected, macro_chg_expected)
 
     pd.testing.assert_frame_equal(panel, panel_expected, check_exact=True)
     assert macro_cols == macro_cols_expected
     # fundamentals-gated characteristics actually got built (not silently skipped)
     assert {"size", "value"} <= set(style_expected.columns)
+    # the panel column NAMES survived the move off `prices` unchanged
+    assert set(MACRO_CUBE_FACTORS) <= set(panel.columns)
 
     print("\n=== SANITY CHECK: _factor_panel matches the hand-composed reference ===")
     print(f"  panel: {panel.shape[1]} factors over {len(panel)} dates; "
           f"style factors present: {sorted(set(style_expected.columns))}")
-    print("  CONCLUSION: _factor_panel's direct build_characteristics + "
-          "characteristic_to_factor_return calls are bit-identical to composing them by hand. "
-          "Validated.")
+    print(f"  macro/market factor columns preserved: {sorted(set(MACRO_CUBE_FACTORS))} + market")
+    print("  CONCLUSION: bit-identical to composing the same blocks by hand. Validated.")
 
 
-def test_panel_market_column_is_frames_mkt_ret():
-    """`_sector_factor` market-neutralizes the sector basket with `frames.mkt_ret`
-    rather than looking up the panel's `market` column by name. That is only valid
-    because `assemble_factor_panel` BUILDS that column from `mkt_ret` -- pin it, so
-    the day the panel stops being a rename of `mkt_ret` this fails loudly instead of
-    silently neutralizing against the wrong series."""
-    frames, fundamentals, close, ret, other_close, mkt_ret, dates = _synthetic_inputs()
+def test_factor_panel_makes_exactly_one_macro_read():
+    """The consolidation claim, pinned: ONE read of ONE table for all macro information.
+    Three reads across two tables before (cube_part_market twice, macro once)."""
+    frames, fundamentals, *_rest, macro_long, _dates = _synthetic_inputs()
+    step = _step(macro_long)
 
-    step = object.__new__(StepCubeTarget)
-    step._log = logging.getLogger("test")
-    step._context = type("Ctx", (), {"store": _FakeStore()})()
+    step._factor_panel(frames, fundamentals)
+
+    assert step._store.reads == ["prices_macro"], f"reads were {step._store.reads}"
+
+    print("\n=== SANITY CHECK: one macro read, one pivot ===")
+    print(f"  _factor_panel store reads: {step._store.reads}")
+    print("  market return + commodity/FX factors + macro changes all come off that single "
+          "wide pivot. Validated.")
+
+
+def test_panel_market_column_is_the_market_series_return():
+    """`_sector_factor` de-markets the sector basket with the panel's OWN `market` column, so
+    the sector regressor and the betas are neutralised against the identical series. Pin that
+    the column really is the market series' return."""
+    frames, fundamentals, close, ret, macro_wide, macro_long, dates = _synthetic_inputs()
+    step = _step(macro_long)
 
     panel, _ = step._factor_panel(frames, fundamentals)
 
     assert "market" in panel.columns, "the panel lost its market column"
-    # `gics_sector_excess_returns` reindexes onto stock_ret.index, so compare there
     pd.testing.assert_series_equal(
         panel["market"].reindex(ret.index),
-        frames.mkt_ret.reindex(ret.index),
+        _expected_returns(macro_wide, dates, MACRO_MARKET_SERIES).reindex(ret.index),
         check_names=False)
 
-    print("\n=== SANITY CHECK: panel['market'] is frames.mkt_ret ===")
-    print(f"  identical over {len(ret.index)} dates -> `frames.mkt_ret` is the direct "
-          "source, so no MARKET_FACTOR constant / string lookup is needed. Validated.")
+    print("\n=== SANITY CHECK: panel['market'] is the market series return ===")
+    print(f"  identical over {len(ret.index)} dates -> `{MACRO_MARKET_SERIES}` from "
+          f"prices_macro is the single source for market beta and epsilon. Validated.")
 
 
 if __name__ == "__main__":
     test_factor_panel_matches_hand_composed_reference()
-    test_panel_market_column_is_frames_mkt_ret()
+    test_factor_panel_makes_exactly_one_macro_read()
+    test_panel_market_column_is_the_market_series_return()

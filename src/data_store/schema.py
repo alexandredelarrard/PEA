@@ -117,8 +117,8 @@ class Tables:
     # SEC Fails-to-Deliver: settlement fails per ticker x date. Same grain as
     # short_interest but a separate table -> its semi-monthly, ~2-month-lagged files don't
     # pollute short_interest's global-max-date incremental; combined at the feature layer.
-    fails_to_deliver = Table(
-        "fails_to_deliver", ("ticker", "date"), date_col="date",
+    sec_fails_to_deliver = Table(
+        "sec_fails_to_deliver", ("ticker", "date"), date_col="date",
         date_type_cols=("date",), freshness="biweekly",
         read_columns=("date", "ticker", "fails_quantity"))
     # Unified macro / market series, LONG: one close per (series, date). Replaced the two

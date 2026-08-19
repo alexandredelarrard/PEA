@@ -29,7 +29,7 @@ def _dedupe_share_classes(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([kept, no_cik], ignore_index=True).sort_values("ticker").reset_index(drop=True)
 
 
-def get_sp500_tickers(context: Context) -> list[str]:
+def get_sp500_tickers(context: Context) -> None:
     """Scrape current S&P 500 tickers + sector info from Wikipedia. Adds the GICS
     industry group (24-level, for sector-neutral construction) and deduplicates
     dual-class share listings."""
@@ -52,15 +52,12 @@ def get_sp500_tickers(context: Context) -> list[str]:
         df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
     
     # GICS industry group (24) from sub-industry, sector fallback -> sector neutrality
-    tick_redundant = context.config.data_extract.redundant_ticks
     df["industry_group"] = [industry_group(s, sec)
                             for s, sec in zip(df["sub_industry"], df["sector"])]
     df = _dedupe_share_classes(df)
 
     keep = [c for c in ["ticker", "name", "sector", "industry_group", "sub_industry", "cik"]
             if c in df.columns]
-    df = df.loc[~df['ticker'].isin(tick_redundant)].reset_index(drop=True)
     context.store.save(Tables.sp500_tickers, df[keep])
     logger.info(f"Saved {len(df)} tickers to DB table {Tables.sp500_tickers}")
     
-    return df["ticker"].tolist()

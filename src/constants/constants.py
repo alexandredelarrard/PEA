@@ -20,28 +20,8 @@ _HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                             "AppleWebKit/537.36 (KHTML, like Gecko) "
                             "Chrome/124.0 Safari/537.36; contact@example.com")}
 
-# --------------------------------------------------------------------------- #
-# Dual-class share redundancy                                                  #
-# --------------------------------------------------------------------------- #
-# Some companies trade under TWO tickers for the SAME business (e.g. Alphabet
-# GOOGL/GOOG, Fox FOXA/FOX, News Corp NWSA/NWS). Their returns correlate ~1.0, so
-# in the peer calc the twin would be a stock's own #1 "peer" and would double-count
-# that company in everyone else's basket -> flawed peers. We keep the PRIMARY
-# (class A / more liquid) and map each redundant SECONDARY (class B/C) to it: the
-# secondary is dropped as a peer CANDIDATE and instead inherits its primary's
-# basket. Extend as the universe adds dual-class names (e.g. "UA": "UAA").
-DUAL_CLASS_SECONDARY_TO_PRIMARY: dict[str, str] = {
-    "GOOG": "GOOGL",   # Alphabet   class C -> class A
-    "FOX": "FOXA",     # Fox        class B -> class A
-    "NWS": "NWSA",     # News Corp  class B -> class A
-}
-
 # Tickers EXCLUDED from the modelling universe for INSUFFICIENT HISTORY (< 4 years of price
-# data): recent IPOs / spin-offs that can't support the cube's multi-year look-backs (seasonal,
-# self-history z-scores, QoQ drift) or a walk-forward backtest. Filtered out in
-# `load_universe_tickers`. Point-in-time snapshot (as of 2026-07, latest price 2026-07-20) --
-# REFRESH periodically: a name crosses the 4y threshold and should be removed (GEHC ~= 3.6y is
-# closest), and new spin-offs appear. All are genuine separate entities, not dual-class twins.
+# data): recent IPOs / spin-offs that can't support the cube's multi-year look-backs.
 INSUFFICIENT_HISTORY_TICKERS: frozenset[str] = frozenset({
     "HONA",   # Honeywell Aerospace spin-off (2026)
     "FDXF",   # FedEx Freight spin-off (2026)
@@ -54,15 +34,7 @@ INSUFFICIENT_HISTORY_TICKERS: frozenset[str] = frozenset({
     "GEHC",   # GE HealthCare spin-off (2022, ~3.6y -- closest to the 4y cutoff)
 })
 
-# Companies that LEFT the S&P 500 in the last ~15 years (removed 2011+ and not since re-added),
-# from the Wikipedia "Selected changes to the S&P 500 components" table. Held here so the universe
-# can be made SURVIVORSHIP-BIAS-FREE: a backtest that trains only on today's members overstates
-# returns because the losers that were delisted / acquired / demoted (BBBY, SIVB, FRC, SHLD, MON,
-# YHOO, TWTR, ...) are silently excluded. Union these into `sp500_tickers` to include them.
-# CAVEATS: (1) many are delisted/acquired -> yfinance has PRICES up to delisting but EDGAR
-# fundamentals need a CURRENT ticker->CIK match, so those resolve thinly; (2) some symbols were
-# later REUSED by a different company (ticker recycling); (3) truly bias-free use wants POINT-IN-TIME
-# membership (a name in the universe only WHILE it was in the index) -- a static union approximates.
+# Companies that LEFT the S&P 500 in the last ~15 years (removed 2011+ and not since re-added).
 FORMER_SP500_TICKERS: frozenset[str] = frozenset({
     "AA", "AAL", "AAP", "ABMD", "ACE", "ADS", "ADT", "AET", "AGN", "AIV",
     "AKS", "ALK", "ALTR", "ALXN", "AMG", "AMTM", "AN", "ANDV", "ANF", "ANR",
@@ -141,18 +113,6 @@ SEC_FINNOTES_URL_TEMPLATE = (
     "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/"
     "{period}_notes.zip")
 SEC_FINNOTES_FIRST_YEAR = 2009     # earliest notes data set (2009q1)
-
-# SEC Fails-to-Deliver: semi-monthly settlement-fails files ({period} = "YYYYMMa" for
-# settlement dates 1-15, "YYYYMMb" for 16-end). Daily grain (ticker x settlement date).
-# The SAME cnsfails{period}.zip files (identical pipe format) live under TWO paths:
-#   * current path       -> 2017-06b onward
-#   * FOIA "legacy" path  -> 2009-07a .. 2017-06a  (pre-2017-06 history)
-# The fetcher picks the path by period (with a cross-fallback for the boundary file).
-SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
-SEC_FTD_LEGACY_URL_TEMPLATE = ("https://www.sec.gov/files/data/"
-                               "frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip")
-SEC_FTD_LEGACY_LAST_PERIOD = "201706a"   # last period on the legacy path (>= 201706b uses the current path)
-SEC_FTD_FIRST_YEAR = 2009          # earliest FTD file overall (2009-07, legacy path) -> full 15y coverage
 
 # 8-K events: item codes (structured, ~100% fill for post-2004 8-Ks) + edgartools' typed
 # CurrentReport flags (has_earnings/has_press_release). Table keyed per (ticker, accession);
@@ -380,6 +340,9 @@ NOTES_RISK_ANCHORS: dict[str, str] = {
     "customer_concentration": ("A substantial portion of the company's revenue or credit exposure is "
                                "concentrated in a single large customer, counterparty, supplier or region."),
 }
+
+# Super investors TODO: in config
+SUPERINVESTORS_JSON = "superinvestors/superinvestors.json"
 
 # --------------------------------------------------------------------------- #
 # CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #

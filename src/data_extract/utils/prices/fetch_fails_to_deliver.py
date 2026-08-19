@@ -1,20 +1,10 @@
 """
 fetch_fails_to_deliver.py (src/data_extract/utils/prices/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
-Extracts SEC Fails-to-Deliver (FTD) settlement-fail data from semi-monthly SEC 
-text releases (`YYYYMMa` / `YYYYMMb`). Serves as a key signal for settlement 
-stress and short-squeeze risk, complementing FINRA RegSHO short-volume data.
-
-Data Grain:
-- Daily records stored long as (date, ticker, fails_quantity, fails_value).
-
-Key Guardrails & Architecture:
-- Point-in-Time Lag: Released with a 1–2 month publication delay; backtests 
-  must account for reporting lag to avoid look-ahead bias.
-- Isolated Table: Stored in its own table separate from `short_interest` to 
-  prevent lagged semi-monthly releases from corrupting incremental sync dates.
-- File-Level Incremental Sync: Caches raw files in `data/sec_fails_to_deliver/` 
-  and skips re-downloading existing files unless the ticker universe expands.
+SEC Fails-to-Deliver (FTD): semi-monthly settlement-fail files, a signal for
+settlement stress / short-squeeze risk. Kept in its own table, separate from
+`short_interest`, so its ~2-month publication lag doesn't corrupt that table's
+global-max-date incremental sync (see schema.py).
 """
 
 from __future__ import annotations
@@ -26,20 +16,27 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.data_store.schema import Tables
-from src.constants.constants import (
-    SEC_FTD_URL_TEMPLATE, SEC_FTD_LEGACY_URL_TEMPLATE,
-    SEC_FTD_LEGACY_LAST_PERIOD, SEC_FTD_FIRST_YEAR)
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, ingested_periods, read_zip_text,
 )
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
-    load_processed_universe)
+    load_processed_universe, save_processed_universe)
 
 logger = logging.getLogger(__name__)
 
 _OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
+
+# {period} = "YYYYMMa" for settlement dates 1-15, "YYYYMMb" for 16-end. The SAME
+# cnsfails{period}.zip files (identical pipe format) live under TWO paths:
+#   * current path       -> 2017-06b onward
+#   * FOIA "legacy" path  -> 2009-07a .. 2017-06a  (pre-2017-06 history)
+SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
+SEC_FTD_LEGACY_URL_TEMPLATE = ("https://www.sec.gov/files/data/"
+                               "frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip")
+SEC_FTD_LEGACY_LAST_PERIOD = "201706a"   # last period on the legacy path (>= 201706b uses the current path)
+SEC_FTD_FIRST_YEAR = 2009          # earliest FTD file overall (2009-07, legacy path) -> full 15y coverage
 
 
 def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
@@ -104,18 +101,20 @@ def _period_urls(period: str) -> tuple[str, ...]:
 
 def fetch_fails_to_deliver(context: Context, tickers: list[str], years_history:int = 15) -> int:
     """Download (cached) the semi-monthly SEC Fails-to-Deliver files over
-    `years_history`, keep the universe, upsert to `fails_to_deliver`. Returns rows
+    `years_history`, keep the universe, upsert to `sec_fails_to_deliver`. Returns rows
     upserted. Incremental: a file already in the DB is skipped (no re-download)
     unless the universe gained tickers (then cached files are re-parsed)."""
 
+    ticker_set = set(tickers)
     cache = cache_dir(context, "sec_fails_to_deliver")
-    done = ingested_periods(context, Tables.fails_to_deliver)
-    new_tickers = set(tickers) - load_processed_universe(cache, Tables.fails_to_deliver)   # empty once converged
+    done = ingested_periods(context, Tables.sec_fails_to_deliver)
+    new_tickers = ticker_set - load_processed_universe(cache, Tables.sec_fails_to_deliver)   # empty once converged
     if new_tickers:
         logger.info("FTD: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
 
     saved = 0
-    for period in tqdm(_periods(years_history +1), desc="SEC fails-to-deliver"):
+    periods = _periods(years_history + 1)
+    for period in tqdm(periods, desc="SEC fails-to-deliver"):
         if period in done and not new_tickers:
             continue
         path = ensure_zip(cache / f"cnsfails{period}.zip", _period_urls(period),
@@ -130,8 +129,10 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str], years_history:i
         if df.empty:
             continue
         df["period"] = period
-        context.store.save(Tables.fails_to_deliver, df[[c for c in _OUT_COLS if c in df.columns]])
+        context.store.save(Tables.sec_fails_to_deliver, df[[c for c in _OUT_COLS if c in df.columns]])
         saved +=df.shape[0]
 
-    logger.info(f"fails_to_deliver completed ({len(_periods(years_history))} files scanned) +{saved}")
-    record_run(context, Tables.fails_to_deliver, len(tickers), saved)
+    save_processed_universe(cache, Tables.sec_fails_to_deliver, ticker_set)   # so a converged re-run skips
+    logger.info(f"sec_fails_to_deliver completed ({len(periods)} files scanned) +{saved}")
+    record_run(context, Tables.sec_fails_to_deliver, len(tickers), saved)
+    return saved

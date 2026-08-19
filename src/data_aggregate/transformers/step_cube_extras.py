@@ -61,7 +61,7 @@ SOURCE_COLUMNS: dict[str, list[str]] = {
 
     # short_interest_features: RegSHO short/total volume + reported short interest / ADV
     "short_interest": ["date", "ticker", "short_volume", "total_volume"],
-    "fails_to_deliver": ["date", "ticker", "fails_quantity"],
+    "sec_fails_to_deliver": ["date", "ticker", "fails_quantity"],
 
     # attention_features
     "wiki_pageviews": ["date", "ticker", "pageviews"],
@@ -222,7 +222,7 @@ class StepCubeExtras(Step):
         """RegSHO short-volume ratio + its change, plus SEC fails-to-deliver (settlement
         stress). RegSHO is lagged one trading day; FTD by ~2 months (its publication delay)."""
         short = self._load_source("short_interest")
-        fails = self._load_source("fails_to_deliver")
+        fails = self._load_source("sec_fails_to_deliver")
         if short is None and fails is None:
             return None
         return build_short_interest_feature_panel(

@@ -8,20 +8,10 @@ on top of the all-filer institutional features.
 
 TWO internet sources, combined:
   * Dataroma (dataroma.com) — the curated ROSTER of proven long-term investors
-    (names only; it exposes no CIK, no returns). Inclusion here IS the "elite /
-    long-term outperformer" filter.
+    (names only; it exposes no CIK, no returns).
   * SEC EDGAR company search — the AUTHORITATIVE fund-name -> 13F-manager CIK lookup.
-    We resolve each Dataroma name to a CIK straight from EDGAR, so this no longer
-    depends on any local 13F cache (the previous filer-name fuzzy-match failed when
-    the 13F zips had not been downloaded).
 
-Output JSON (`data/superinvestors/superinvestors.json`):
-    {"generated_at": ..., "n_roster": 84, "n_resolved": 80,
-     "cik_to_name": {"0001067983": "Warren Buffett - Berkshire Hathaway", ...}}
-The CIK is the join key into `sec13f_hr`; the name is for readability.
-Fund names EDGAR can't resolve are logged; force one via SUPERINVESTOR_CIK_OVERRIDES
-(keyed by the Dataroma manager code). The pure pieces (roster parse, EDGAR-match
-parse, name->CIK pick) are unit-tested; only the HTTP GETs touch the world.
+Output JSON (`data/superinvestors/superinvestors.json`)
 """
 from __future__ import annotations
 
@@ -54,7 +44,6 @@ _STOP_TOKENS = {
 }
 
 DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
-SUPERINVESTORS_JSON = "superinvestors/superinvestors.json"
 SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
     "BRK": "0001067983",   # Berkshire Hathaway  (Warren Buffett)
     "HA" : "0000827280",
@@ -65,7 +54,7 @@ SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
     "MPF": "0000932223",
     "DAV": "0000200305",
     "T" : "0001002778",
-    "oa" : "0000885665"
+    "OA" : "0000885665"
 }
 
 # --------------------------------------------------------------------------- #
@@ -182,7 +171,7 @@ def build_superinvestors_json(
     returned). CIKs come straight from EDGAR, so this does NOT depend on a local
     13F cache. Fund names EDGAR can't resolve are logged; force a specific CIK via
     SUPERINVESTOR_CIK_OVERRIDES (keyed by the Dataroma manager code)."""
-    
+
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))
 

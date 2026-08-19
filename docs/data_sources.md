@@ -27,7 +27,7 @@ debugging time. All free or freemium. For the tables they land in, see
 | Activist stakes | SEC Schedule 13D / 13D-A | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions` | `structure/fetch_13d_edgar.py` |
 | Filing narrative | SEC 10-K Item 1A / Item 7, 10-Q Item 2 | `SEC_USER_AGENT` | `filing_risk_text` | `structure/fetch_filing_text.py` |
 | Short volume | FINRA RegSHO daily files | no | `short_interest` | `prices/fetch_short_interest.py` |
-| Settlement fails | SEC Market FOIA (semi-monthly zips) | no | `fails_to_deliver` | `prices/fetch_fails_to_deliver.py` |
+| Settlement fails | SEC Market FOIA (semi-monthly zips) | no | `sec_fails_to_deliver` | `prices/fetch_fails_to_deliver.py` |
 | Retail attention | Wikipedia pageviews API | no | `wiki_pageviews` | `behavioral/fetch_wiki_pageviews.py` |
 | Retail attention | Google Trends | no | `google_trends` | `behavioral/fetch_google_trends.py` |
 | Earnings-call transcripts (deep history) | HuggingFace `kurry/sp500_earnings_transcripts` | no | `earnings_call_sections` | `behavioral/fetch_hf_transcripts.py` |

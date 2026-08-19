@@ -35,6 +35,7 @@ import requests
 
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import _sec_headers
+from src.data_store.schema import Table, name_of
 
 __all__ = ["cache_dir", "ensure_zip", "read_zip_member", "read_zip_members",
            "read_zip_text", "ingested_periods", "quarter_periods"]
@@ -172,17 +173,19 @@ def read_zip_text(path: Path, *, encoding: str = "latin-1",
         return None
 
 
-def ingested_periods(context: Context, tables: str | Sequence[str],
+def ingested_periods(context: Context, tables: str | Table | Sequence[str | Table],
                      column: str = "period") -> set[str]:
     """Distinct source-period tags already stored, so an incremental re-run skips them.
 
     Handles the three shapes the callers needed separately before: a single table
-    (fails-to-deliver), a table whose `period` column may predate the feature and be
-    absent (13F -- reflected first, so a stale table degrades to "nothing ingested"
-    rather than raising), and a UNION across two sibling tables (the notes num/text
-    pair). Empty set on the first run."""
+    (fails-to-deliver, passed as the `Table` object per the registry convention -- not
+    a str, which is why this normalizes through `name_of`), a table whose `period`
+    column may predate the feature and be absent (13F -- reflected first, so a stale
+    table degrades to "nothing ingested" rather than raising), and a UNION across two
+    sibling tables (the notes num/text pair). Empty set on the first run."""
     store = context.store
-    names = [tables] if isinstance(tables, str) else list(tables)
+    names = [name_of(t) for t in
+             ([tables] if isinstance(tables, (str, Table)) else tables)]
     done: set[str] = set()
     for table in names:
         if column not in store.columns(table):     # absent table or pre-feature schema

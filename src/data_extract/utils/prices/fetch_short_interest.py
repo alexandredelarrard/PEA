@@ -11,7 +11,7 @@ Resume is on the table's GLOBAL max date, not per ticker: one RegSHO file covers
 the whole market, so once day D is stored every ticker has D and a per-ticker
 frontier would only re-download days already held -- one lagging symbol (index
 churn, a renamed ticker) would drag the loop back over thousands of files on every
-run. `fails_to_deliver` lives in its own table precisely to keep its semi-monthly,
+run. `sec_fails_to_deliver` lives in its own table precisely to keep its semi-monthly,
 ~2-month-lagged files out of this max (see schema.py).
 """
 

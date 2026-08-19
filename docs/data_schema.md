@@ -67,7 +67,7 @@ is gone. See [tests/data_extract/test_macro_prices_separation.py](../tests/data_
 | `prices` | `ticker, date` | `date` | daily | OHLCV. Read raw **only** by `StepCubePrices`. |
 | `dividends` | `ticker, date` | `date` | — | ex-div cash amount. Its **own** fetcher (`fetch_dividends.py`) with its own resume window — ex-dates are quarterly where bars are daily — though it reuses the same yfinance `actions=True` response shape |
 | `short_interest` | `ticker, date` | `date` | daily | FINRA RegSHO. Resumes on the table's **global** max date (one day-file covers the whole market, so a per-ticker frontier would only re-fetch days already held). Projection lists `short_interest`/`avg_daily_volume` as **optional** — the live table has neither, and demanding them killed the read instead of degrading it |
-| `fails_to_deliver` | `ticker, date` | `date` | biweekly | SEC CNS fails. Separate from `short_interest` so its semi-monthly ~2-month-lagged files don't poison that table's global-max incremental |
+| `sec_fails_to_deliver` | `ticker, date` | `date` | biweekly | SEC CNS fails. Separate from `short_interest` so its semi-monthly ~2-month-lagged files don't poison that table's global-max incremental |
 | `macro` | `date` | `date` | daily | FRED: 3M/2Y/10Y/30Y yields, 10y-2y & 10y-3m spreads, VIX, BAA spread, 10y breakeven. `ticker_col=None` |
 | `prices_macro` | `ticker`, `date` | `date` | daily | LONG: one `close` per (series, date). 15 series — yfinance closes (`equity_tr`, `vix`, `oil`, `gold`, `energy`), FRED levels (`yield_2y/10y/30y`, `cash_rate`, `baa_credit_spread`, `breakeven_10y`, `fx_usdeur`) and derived (`yield_curve_10y2y`, `yield_curve_10y3m`, `bond_10y_tr`). Replaced the wide `macro` + `macro_asset_prices` |
 | `cusip_ticker_map` | `cusip` | — | — | CUSIP→ticker via OpenFIGI (+ `constants.CUSIP_TICKER_OVERRIDES`) |
@@ -166,7 +166,7 @@ daily 4d · weekly 10d · biweekly 20d · monthly 45d · quarterly 140d · yearl
 ```
 
 Watched: `prices`, `short_interest`, `prices_macro`, `wiki_pageviews` (daily) ·
-`google_trends` (weekly) · `fails_to_deliver`, `notes_num`, `notes_text` (biweekly) ·
+`google_trends` (weekly) · `sec_fails_to_deliver`, `notes_num`, `notes_text` (biweekly) ·
 `fundamentals_history`, `fundamentals_facts`, `earnings_surprises`, `pension_facts`, `sec13f_hr`,
 `insider_transactions`, `earnings_call_sections` (quarterly) · `def14a_llm` (yearly).
 

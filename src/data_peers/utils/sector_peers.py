@@ -8,11 +8,6 @@ businesses are alike). Embedding the business description and taking cosine
 similarity captures actual business similarity (Zoetis <-> Elanco/IDEXX), which
 correlation misses. We combine the two so peers must be BOTH statistically and
 economically similar.
-
-LOOK-AHEAD NOTE (unchanged): `build_peer_dict*` on full history uses the whole
-return sample to define peers -- fine as a static prototype, but for a rigorous
-backtest recompute on trailing windows. The embeddings use the CURRENT business
-description (slowly changing, like a GICS label), a mild and acceptable static.
 """
 from __future__ import annotations
 
@@ -22,8 +17,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import DUAL_CLASS_SECONDARY_TO_PRIMARY
-
+# --------------------------------------------------------------------------- #
+# Dual-class share redundancy                                                  #
+# --------------------------------------------------------------------------- #
+# Some companies trade under TWO tickers for the SAME business (e.g. Alphabet
+# GOOGL/GOOG, Fox FOXA/FOX, News Corp NWSA/NWS). Their returns correlate ~1.0, so
+# in the peer calc the twin would be a stock's own #1 "peer" and would double-count
+# that company in everyone else's basket -> flawed peers. We keep the PRIMARY
+# (class A / more liquid) and map each redundant SECONDARY (class B/C) to it: the
+# secondary is dropped as a peer CANDIDATE and instead inherits its primary's
+# basket. Extend as the universe adds dual-class names (e.g. "UA": "UAA").
+DUAL_CLASS_SECONDARY_TO_PRIMARY: dict[str, str] = {
+    "GOOG": "GOOGL",   # Alphabet   class C -> class A
+    "FOX": "FOXA",     # Fox        class B -> class A
+    "NWS": "NWSA",     # News Corp  class B -> class A
+}
 
 def _weights_from_similarity(sim_row: pd.Series, top_k: int, weighting: str) -> dict:
     """Top-k peers from one row of a similarity matrix (self excluded)."""

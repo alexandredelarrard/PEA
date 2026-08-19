@@ -36,11 +36,10 @@ class StepExtractAllData(Step):
 
     def _resolve_tickers(self) -> list[str]:
         if self._context.store.row_count(Tables.sp500_tickers) == 0:
-            universe = get_sp500_tickers(self._context)           
+            get_sp500_tickers(self._context)           
             self._log.info("Extracted ticker list")
-        else:
-            universe = load_universe_tickers(self._context)
-            self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers}")
+        universe = load_universe_tickers(self._context)
+        self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers}")
         return universe
 
     def run(self) -> None:

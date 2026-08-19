@@ -146,7 +146,7 @@ def test_source_column_projection_covers_builder_needs():
         "insider_transactions":   {"ticker", "filing_date", "transaction_code", "value_usd"},
         "short_interest":         {"date", "ticker", "short_volume", "total_volume",
                                    "short_interest", "avg_daily_volume"},
-        "fails_to_deliver":       {"date", "ticker", "fails_quantity"},
+        "sec_fails_to_deliver":   {"date", "ticker", "fails_quantity"},
         "wiki_pageviews":         {"date", "ticker", "pageviews"},
         "google_trends":          {"date", "ticker", "search_interest"},
     }

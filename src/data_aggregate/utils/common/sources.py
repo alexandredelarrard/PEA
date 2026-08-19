@@ -38,7 +38,7 @@ SOURCE_COLUMNS: dict[str, list[str]] = {
     # short_interest_features: RegSHO short/total volume + reported short interest / ADV
     "short_interest": ["date", "ticker", "short_volume", "total_volume",
                        "short_interest", "avg_daily_volume"],
-    "fails_to_deliver": ["date", "ticker", "fails_quantity"],
+    "sec_fails_to_deliver": ["date", "ticker", "fails_quantity"],
     # attention_features
     "wiki_pageviews": ["date", "ticker", "pageviews"],
     "google_trends": ["date", "ticker", "search_interest"],

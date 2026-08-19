@@ -8,10 +8,17 @@ from __future__ import annotations
 
 
 # --------------------------------------------------------------------------- #
-# Date formats                                                                 #
+# Date formats                                                                #
 # --------------------------------------------------------------------------- #
 DATE_FORMAT = "%Y-%m-%d"          # ISO day — as_of / filing / query dates
 DATE_FORMAT_COMPACT = "%Y%m%d"    # SEC / FINRA daily-file name stamps
+
+# --------------------------------------------------------------------------- #
+# HEADER for extract                                                          #
+# --------------------------------------------------------------------------- #
+_HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/124.0 Safari/537.36; contact@example.com")}
 
 # --------------------------------------------------------------------------- #
 # Dual-class share redundancy                                                  #
@@ -263,9 +270,7 @@ GOOGLE_TRENDS_MULTILINE_URL = "https://trends.google.com/trends/api/widgetdata/m
 # --------------------------------------------------------------------------- #
 MOTLEY_FOOL_BASE_URL = "https://www.fool.com"
 MOTLEY_FOOL_TRANSCRIPT_INDEX_URL = "https://www.fool.com/earnings-call-transcripts/"
-MOTLEY_FOOL_HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                      "Chrome/124.0 Safari/537.36")}
+
 # raw transcript HTML + link-index cache, relative to DATA_STORE (non-tabular artifact)
 EARNINGS_CALL_CACHE_DIR = "call_transcripts"
 
@@ -374,37 +379,6 @@ NOTES_RISK_ANCHORS: dict[str, str] = {
                     "material misstatement or accounting error."),
     "customer_concentration": ("A substantial portion of the company's revenue or credit exposure is "
                                "concentrated in a single large customer, counterparty, supplier or region."),
-}
-
-# --------------------------------------------------------------------------- #
-# Dataroma "superinvestors" — a curated roster of proven long-term investors.  #
-# We scrape the roster, resolve each manager to its SEC 13F CIK, rank the top  #
-# N by 13F long-equity AUM, and persist a weighted subset JSON so the elite    #
-# "smart-money" 13F features can be recomputed reproducibly (fetch_superinvestors #
-# -> superinvestor_features). Dataroma exposes NO returns and NO CIK, so the    #
-# roster is the curation and CIKs are resolved from cached 13F filer names.     #
-# --------------------------------------------------------------------------- #
-DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
-DATAROMA_HEADERS = {"User-Agent": "Mozilla/5.0 (research; valar_analytics@gmail.com)"}
-# roster JSON, relative to DATA_STORE (non-tabular artifact, like sec_bulk_cache)
-SUPERINVESTORS_JSON = "superinvestors/superinvestors.json"
-SUPERINVESTORS_DEFAULT_TOP_N = 30
-# manager weighting scheme within the selected top-N: "rank" (linear decay, top
-# gets the most), "aum" (proportional to 13F AUM), or "equal"
-SUPERINVESTORS_WEIGHTING = "rank"
-# Dataroma manager code -> SEC 13F CIK (zero-padded 10-digit, as in sp500_tickers),
-# for the few names the fuzzy filer-name match misses.
-SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
-    "BRK": "0001067983",   # Berkshire Hathaway  (Warren Buffett)
-    "HA" : "0000827280",
-    "VAN" : "0000858172",
-    "RC" : "0001570775", 
-    "DAC": "0000200217",
-    "PI": "0001549574",
-    "MPF": "0000932223",
-    "DAV": "0000200305",
-    "T" : "0001002778",
-    "oa" : "0000885665"
 }
 
 # --------------------------------------------------------------------------- #

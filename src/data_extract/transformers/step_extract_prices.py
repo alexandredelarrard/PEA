@@ -57,6 +57,4 @@ class StepExtractPrices(Step):
         fetch_fails_to_deliver(self._context, tickers=tickers, years_history=years_history)
 
         # Superinvestors roster: curated top managers (Dataroma) -> CIK subset JSON,
-        # ranked by 13F AUM, for the elite "smart-money" features. Best-effort: an
-        # external (Dataroma) failure must never break the price extraction.
         build_superinvestors_json(self._context)

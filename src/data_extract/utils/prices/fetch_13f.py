@@ -112,7 +112,7 @@ def _resolve_tickers(holdings: pd.DataFrame, cmap: pd.DataFrame,
 
 
 def fetch_13f(context: Context, tickers: list[str] | None = None, years_history: int = 15,
-              save_every: int = 200, lookback_days: int = 7) -> None:
+              save_every: int = 600, lookback_days: int = 7) -> None:
     """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date`, minus
     `lookback_days`.
 

@@ -25,9 +25,7 @@ If research document exists:
 - **For GitHub issues**: Extract reproduction steps and root cause
 
 If starting fresh:
-- Detect if input is a GitHub issue (#NNN)
-- If issue: Read the issue research or fetch with `gh issue view`
-- Otherwise: Conduct quick research using the codebase-locator agent
+- Conduct quick research using the codebase-locator agent
 - Identify key files and patterns
 - Understand current implementation
 

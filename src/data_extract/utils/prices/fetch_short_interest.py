@@ -24,13 +24,12 @@ import pandas as pd
 import requests
 import logging
 
-from src.constants.constants import DATE_FORMAT_COMPACT
+from src.constants.constants import DATE_FORMAT_COMPACT, _HEADERS
 from src.context import Context
 from src.data_store.schema import Tables
 from src.data_extract.utils.common.run_manifest import record_run
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
-_HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; contact@example.com)"}
 
 logger = logging.getLogger(__name__)
 

@@ -5,12 +5,9 @@ import requests
 import logging 
 
 from src.data_store.schema import Tables
+from src.constants.constants import _HEADERS
 from src.data_extract.utils.common.gics import industry_group
 from src.context import Context
-
-_WIKI_HEADERS = {
-    "User-Agent": "stock_pick_strat/1.0 (https://github.com; research@example.com)",
-}
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +35,7 @@ def get_sp500_tickers(context: Context) -> list[str]:
     dual-class share listings."""
 
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    response = requests.get(url, headers=_WIKI_HEADERS, timeout=30)
+    response = requests.get(url, headers=_HEADERS, timeout=30)
     response.raise_for_status()
     tables = pd.read_html(io.StringIO(response.text))
 

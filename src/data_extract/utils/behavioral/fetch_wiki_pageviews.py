@@ -18,7 +18,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-from src.constants.constants import DATE_FORMAT_COMPACT
+from src.constants.constants import DATE_FORMAT_COMPACT, _HEADERS
 from src.context import Context
 from src.utils import polite_http as ph          # per-host paced inter-request sleep
 from src.utils.crawler import Crawler
@@ -27,7 +27,6 @@ from src.data_extract.utils.common.run_manifest import record_run
 
 _API = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
         "en.wikipedia/all-access/user/{article}/daily/{start}/{end}")
-_HEADERS = {"User-Agent": "stock_pick_strat/1.0 (research; contact@example.com)"}
 
 # shared crawler for Wikimedia: impersonate=False (a FRIENDLY API — send our descriptive contact
 # UA, don't spoof a browser) + IP rotation over PEA_SCRAPE_PROXIES on a block + fast retry.

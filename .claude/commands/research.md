@@ -3,9 +3,9 @@
 You are tasked with conducting comprehensive research to answer user questions by spawning parallel sub-agents and synthesizing their findings. This is Phase 1 of the Frequent Intentional Compaction (FIC) workflow.
 
 This command adapts to different research contexts:
-- **GitHub Issues** (#NNN): Fetches issue, reproduces problem, analyzes affected code
-- **SEC Filings** (10-K, 10-Q, sec, etc.): Researches filing structures and patterns to build robust features
+- **Financial data** (10-K, 10-Q, sec, etc.): Researches filing structures and patterns to build robust extraction per ticker, quarter and kpi.
 - **Codebase** (default): Explores implementation and architecture
+- **Strategy**: Quant financial robust strategies and best methodologies to put in place to avoid leakage and retreive best alphas.
 
 ## CRITICAL: YOUR ONLY JOB IS TO DOCUMENT AND EXPLAIN WHAT EXISTS TODAY
 - DO NOT suggest improvements or changes unless the user explicitly asks for them
@@ -23,9 +23,9 @@ When this command is invoked, respond with:
 🔍 Starting research (Phase 1 of FIC workflow)
 
 I'll analyze your query and adapt my approach based on the context:
-- GitHub issues (#NNN) → Issue reproduction and analysis
-- SEC filings (10-K, 10-Q) → Filing structure research
+- Financial data extraction (10-K, 10-Q, SEC) → Filing structure research
 - General queries → Codebase exploration
+- Quant Strategy → financial strategy exploration
 
 What would you like me to research?
 ```
@@ -36,21 +36,19 @@ Then wait for the user's research query.
 
 1. **Detect research context and adapt approach:**
 
-   **GitHub Issue Detection** (patterns: #NNN, issue NNN, gh-NNN):
-   - Use `gh issue view NNN` to fetch issue details and comments
-   - Focus research on reproduction and affected components
-   - Include issue metadata in research document
-   - Save to: `reports/issues/research/issue-NNN-research.md`
-
-   **SEC Filing Research** (keywords: 10-K, 10-Q, 8-K, XBRL, DEF 14A, etc.):
+   **Financial data Research** (keywords: 10-K, 10-Q, 8-K, XBRL, DEF 14A, etc.):
    - Prioritize the researcher agent for filing structures
    - Include filing format variations across companies
-   - Document extraction opportunities
-   - Save to: `reports/research/sec-filings/YYYY-MM-DD-{topic}.md`
+   - Document extraction opportunities, if limitation of change over time
+   - Save to: `reports/research/financial-data/YYYY-MM-DD-{topic}.md`
 
    **General Codebase Research** (default):
    - Standard implementation exploration
    - Save to: `reports/research/codebase/YYYY-MM-DD-{topic}.md`
+
+   **General Quant strategy Research** (default):
+   - Standard quant financial strategy exploration
+   - Save to: `reports/research/quant/YYYY-MM-DD-{topic}.md`
 
 2. **Read any directly mentioned files first:**
    - If the user mentions specific files, read them FULLY first
@@ -68,25 +66,16 @@ Then wait for the user's research query.
    - Create multiple Task agents to research different aspects concurrently
    - Use these specialized agents for codebase research:
 
-   **Core Research Agents:**
-   - Use the **codebase-locator** agent to find WHERE files and components live
-   - Use the **codebase-analyzer** agent to understand HOW specific code works (without critiquing it)
-   - Use the **codebase-pattern-finder** agent to find examples of existing patterns (without evaluating them)
-
    **IMPORTANT**: All agents are documentarians, not critics. They will describe what exists without suggesting improvements or identifying issues.
 
    **Domain-Specific Agents (when relevant):**
    - Use the **researcher** agent for SEC filing format and XBRL-specific research
    - Use the **reference-data-expert** agent for SEC reference data and ticker/CIK lookups
-   - Use the **sec-table-analyst** agent for table formatting in SEC filings
+   - Use the **sec-table-analyst** agent for table formatting in SEC filings, fundamentals parsing
 
    **For external resources (only if user explicitly asks):**
    - Use WebSearch or WebFetch for external documentation and resources
    - Include links to external resources in your final report
-
-   **For GitHub context (if relevant):**
-   - Use the **issue-handler** agent to understand related GitHub issues
-   - Use the **discussion-handler** agent for community discussions context
 
    The key is to use these agents intelligently:
    - Start with locator agents to find what exists
@@ -148,26 +137,20 @@ Then wait for the user's research query.
    [What tests exist for this area]
 
    ## Related Documentation
-   - Links to relevant docs in `docs/` or `docs-internal/`
+   - Links to relevant docs in `docs/` or `reports/`
    - Related GitHub issues or discussions
 
    ## Open Questions for Planning Phase
    [Any areas that need consideration during planning]
    ```
-
-6. **Add GitHub permalinks (if applicable):**
-   - Check if on main branch: `git branch --show-current`
-   - If on main, generate GitHub permalinks for key code references
-   - Include permalinks in the document for permanent reference
-
-7. **Present findings and next steps:**
+6. **Present findings and next steps:**
    - Present a concise summary of findings to the user
    - Include key file references for easy navigation
    - Explain that this completes Phase 1 (Research) of the FIC workflow
    - Suggest next step: `/plan` to move to Phase 2 (Planning)
    - Ask if they have follow-up questions before moving to planning
 
-8. **Handle follow-up questions:**
+7. **Handle follow-up questions:**
    - If the user has follow-up questions, append to the same research document
    - Add a new section: `## Follow-up Research [timestamp]`
    - Spawn new sub-agents as needed for additional investigation
@@ -181,7 +164,6 @@ Then wait for the user's research query.
 - Each sub-agent prompt should be specific and focused on read-only documentation operations
 - Document cross-component connections and how systems interact
 - Include temporal context (when the research was conducted)
-- Link to GitHub when possible for permanent references
 - Keep the main agent focused on synthesis, not deep file reading
 - Have sub-agents document examples and usage patterns as they exist
 - **CRITICAL**: You and all sub-agents are documentarians, not evaluators
@@ -194,9 +176,9 @@ Then wait for the user's research query.
   - NEVER write the research document with placeholder values
 
 ## PEA-Specific Focus Areas:
-- SEC filing parsing and XBRL extraction
-- Financial statement processing
-- Company and ticker lookups
+- Financial data extraction, stable over time, ticker and KPI
+- Strong Financial KPI comparable between Tickers
+- Quant and ML strategies to predict best investments
 - Rich console output formatting
 - Test fixtures and data validation
 

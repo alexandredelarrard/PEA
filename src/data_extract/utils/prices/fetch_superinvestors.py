@@ -37,9 +37,7 @@ import requests
 from bs4 import BeautifulSoup
 from urllib3.exceptions import InsecureRequestWarning
 
-from src.constants.constants import (
-    DATAROMA_HEADERS, DATAROMA_HOME_URL, SEC_EDGAR_COMPANY_SEARCH_URL,
-    SUPERINVESTOR_CIK_OVERRIDES, SUPERINVESTORS_JSON)
+from src.constants.constants import SEC_EDGAR_COMPANY_SEARCH_URL, _HEADERS
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
 from src.utils.string import pad_cik
@@ -55,6 +53,20 @@ _STOP_TOKENS = {
     "COMPANY", "MASTER", "SECURITIES", "TRUST", "FINANCIAL", "RESEARCH", "SERVICES",
 }
 
+DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
+SUPERINVESTORS_JSON = "superinvestors/superinvestors.json"
+SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
+    "BRK": "0001067983",   # Berkshire Hathaway  (Warren Buffett)
+    "HA" : "0000827280",
+    "VAN" : "0000858172",
+    "RC" : "0001570775", 
+    "DAC": "0000200217",
+    "PI": "0001549574",
+    "MPF": "0000932223",
+    "DAV": "0000200305",
+    "T" : "0001002778",
+    "oa" : "0000885665"
+}
 
 # --------------------------------------------------------------------------- #
 # Pure helpers (unit-tested)                                                    #
@@ -143,12 +155,12 @@ def _http_get(url: str) -> requests.Response:
     OpenSSL cannot verify; the data is public and read-only, so an unverified fetch
     is acceptable here and is logged so the relaxation is never silent."""
     try:
-        r = requests.get(url, headers=DATAROMA_HEADERS, timeout=60)
+        r = requests.get(url, headers=_HEADERS, timeout=60)
     except requests.exceptions.SSLError:
         logger.warning("Dataroma SSL chain incomplete -> retrying unverified (%s)", url)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", InsecureRequestWarning)
-            r = requests.get(url, headers=DATAROMA_HEADERS, timeout=60, verify=False)
+            r = requests.get(url, headers=_HEADERS, timeout=60, verify=False)
     r.raise_for_status()
     return r
 
@@ -170,6 +182,7 @@ def build_superinvestors_json(
     returned). CIKs come straight from EDGAR, so this does NOT depend on a local
     13F cache. Fund names EDGAR can't resolve are logged; force a specific CIK via
     SUPERINVESTOR_CIK_OVERRIDES (keyed by the Dataroma manager code)."""
+    
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))
 

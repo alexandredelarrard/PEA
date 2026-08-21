@@ -12,9 +12,12 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.constants.constants import FILING_SECTION_MDA, FILING_SECTION_RISK, FILING_TEXT_MIN_CHARS
+from src.data_store.schema import Tables
+
 from src.data_extract.utils.structure.fetch_filing_text import (
-    _filing_sections, _seen, _structured_sections, build_ticker_filing_text, extract_item_sections,
+    FILING_SECTION_MDA, FILING_SECTION_RISK, FILING_TEXT_MIN_CHARS)
+from src.data_extract.utils.structure.fetch_filing_text import (
+    _filing_sections, _structured_sections, build_ticker_filing_text, extract_item_sections,
 )
 
 
@@ -164,7 +167,7 @@ def test_build_ticker_filing_text_skips_done_accessions_and_pre_since_filings(mo
     new_filing = _fake_filing(accession="0001-new", filing_date="2024-06-01", obj=obj)
     fake_company = SimpleNamespace(get_filings=lambda form: [old_filing, done_filing, new_filing])
     monkeypatch.setattr(
-        "src.data_extract.utils.structure.fetch_filing_text.Company",
+        "src.data_extract.utils.common.edgar_driver.Company",
         lambda ticker: fake_company,
     )
 
@@ -172,7 +175,7 @@ def test_build_ticker_filing_text_skips_done_accessions_and_pre_since_filings(mo
         "AAPL", "0000320193",
         since=pd.Timestamp("2024-01-01"),
         done_accessions=frozenset({"0001-done"}),
-    )
+    )[Tables.filing_risk_text]
     assert set(out["accession_number"]) == {"0001-new"}
     assert set(out["section"]) == {FILING_SECTION_RISK, FILING_SECTION_MDA}
     assert (out["filed"] == pd.Timestamp("2024-06-01")).all()
@@ -182,40 +185,11 @@ def test_build_ticker_filing_text_returns_no_rows_for_an_unparseable_filing(monk
     filing = _fake_filing(accession="0001-bad")   # obj/text both raise
     fake_company = SimpleNamespace(get_filings=lambda form: [filing])
     monkeypatch.setattr(
-        "src.data_extract.utils.structure.fetch_filing_text.Company",
+        "src.data_extract.utils.common.edgar_driver.Company",
         lambda ticker: fake_company,
     )
-    out = build_ticker_filing_text("AAPL", "0000320193")
+    out = build_ticker_filing_text("AAPL", "0000320193")[Tables.filing_risk_text]
     assert out.empty
-
-
-# --- `_seen` incremental-cutoff helper ----------------------------------------- #
-def test_seen_reads_the_filed_column_not_filing_date():
-    """filing_risk_text's PK/date column is `filed` (not `filing_date` like
-    sec_8k/sec_13d) -- `_seen` must key off that, or a re-run would treat every
-    ticker as never-before-fetched."""
-    class FakeStore:
-        def load(self, table, columns=None):
-            return pd.DataFrame({
-                "ticker": ["AAPL", "AAPL", "MSFT"],
-                "accession_number": ["0001-a", "0001-b", "0002-a"],
-                "filed": ["2023-01-01", "2024-01-01", "2022-06-01"],
-            })
-    context = SimpleNamespace(store=FakeStore())
-    seen, last_by_ticker = _seen(context)
-    assert seen == {"0001-a", "0001-b", "0002-a"}
-    assert last_by_ticker["AAPL"] == pd.Timestamp("2024-01-01")
-    assert last_by_ticker["MSFT"] == pd.Timestamp("2022-06-01")
-
-
-def test_seen_empty_when_table_does_not_exist_yet():
-    class FailingStore:
-        def load(self, table, columns=None):
-            raise Exception("relation does not exist")
-    context = SimpleNamespace(store=FailingStore())
-    seen, last_by_ticker = _seen(context)
-    assert seen == set()
-    assert last_by_ticker == {}
 
 
 def test_sanity_check_prints_conclusion():
@@ -226,8 +200,7 @@ def test_sanity_check_prints_conclusion():
     print("  to the hardened regex carve over filing.text() -- the other, successfully")
     print("  structured section passes through untouched (not re-derived/overwritten).")
     print("  Both .obj() and .text() failing yields an empty dict, not a crash.")
-    print("  _seen() keys off the `filed` column (this table's own PK date column, unlike")
-    print("  sec_8k/sec_13d's `filing_date`) for the accession dedup + per-ticker resume")
-    print("  cutoff. build_ticker_filing_text correctly skips already-seen accessions and")
-    print("  filings before the `since` cutoff, no local HTML cache involved anywhere.")
+    print("  build_ticker_filing_text skips already-seen accessions and filings before the")
+    print("  `since` cutoff (both now supplied by the shared edgar_driver), and returns its")
+    print("  rows keyed by destination table. No local HTML cache involved anywhere.")
     print("  Validated.")

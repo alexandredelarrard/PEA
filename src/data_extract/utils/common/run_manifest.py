@@ -40,7 +40,7 @@ import pandas as pd
 
 from src.constants.constants import DATE_FORMAT
 from src.context import Context
-from src.data_store.schema import name_of
+from src.data_store.schema import Table, name_of
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def _manifest_path(context: Context) -> Path:
     return Path(context.paths["DATA_STORE"]) / _MANIFEST_FILENAME
 
 
-def _load(context: Context) -> dict:
+def _load_manifest(context: Context) -> dict:
     path = _manifest_path(context)
     if not path.exists():
         return {}
@@ -62,17 +62,17 @@ def _load(context: Context) -> dict:
         return {}
 
 
-def get_entry(context: Context, table) -> dict | None:
+def get_entry(context: Context, table: Table | str) -> dict | None:
     """This table's last recorded run, or None on a first run / corrupt file.
 
     `name_of` because the JSON is keyed by the table NAME: callers now pass the `Table` object,
     and keying on it would both fail to serialize and orphan every existing manifest entry."""
-    return _load(context).get(name_of(table))
+    return _load_manifest(context).get(name_of(table))
 
 
 def manifest_window(
     context: Context,
-    table: str,
+    table: Table | str,
     ticker_count: int,
     fallback_since: pd.Timestamp,
     full_rescan_days: int,
@@ -110,7 +110,7 @@ def manifest_window(
 
 def record_run(
     context: Context,
-    table,
+    table: Table | str,
     ticker_count: int,
     rows_added: int,
     is_full_rescan: bool = False,
@@ -125,7 +125,7 @@ def record_run(
     run_date_str = run_ts.strftime(DATE_FORMAT)
 
     name = name_of(table)
-    manifest = _load(context)
+    manifest = _load_manifest(context)
     prior = manifest.get(name) or {}
     last_full_rescan_date = (
         run_date_str if (is_full_rescan or not prior.get("last_full_rescan_date"))

@@ -19,7 +19,7 @@ Before naming any column, key, URL, threshold, or date format: **grep
 there *before* referencing it if not. Never hardcode a global literal inline.
 
 What belongs there: date formats (`DATE_FORMAT`, `DATE_FORMAT_COMPACT`), every SEC/FINRA/Trends/Fool/
-Roic/Dataroma URL template, form lists (`FUNDAMENTALS_FORMS`, `FILING_TEXT_FORMS`), section keys,
+Roic/Dataroma URL template, form lists (`FUNDAMENTALS_FORMS`, `SEC_8K_FORMS`), section keys,
 model names (`FINBERT_TONE_MODEL`, `EARNINGS_CALL_EMBED_MODEL`), GICS sector/group names,
 `SECTOR_KPI_SCOPE`, plausibility bounds (`SHARES_OUTSTANDING_MIN/MAX`, `EPS_ABS_MAX`, …),
 ticker override/exclusion sets, `PANEL_KEYS`, freshness cadence thresholds.

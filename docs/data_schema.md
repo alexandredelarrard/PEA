@@ -98,13 +98,13 @@ Two complementary paths to the same filings:
 
 - `def14a_llm` (`ticker, accession_number`, `as_of`, yearly) — OpenAI structured extraction.
   45 columns: board composition, CEO age/tenure/pay, ownership, say-on-pay, governance flags.
-- `def14a_edgar` (`ticker, accession_number`, `filing_date`) + 4 child tables — deterministic
+- `sec_def14a` (`ticker, accession_number`, `filing_date`) + 4 child tables — deterministic
   edgartools `ProxyStatement`, zero LLM cost:
   `_executive_comp` (`+name, year` — Summary Comp Table, ~3 years/filing),
   `_director_comp` (`+name`), `_ownership` (`+holder_name, holder_type`),
   `_votes` (`+proposal_number` — the **board's recommendation**, not the vote outcome).
 
-> **Only `def14a_edgar`'s XBRL-backed block is trustworthy unconditionally.** edgartools' proxy
+> **Only `sec_def14a`'s XBRL-backed block is trustworthy unconditionally.** edgartools' proxy
 > HTML parser emits values that are silently *wrong* rather than absent, so every row passes through
 > [def14a_validate.py](../src/data_extract/utils/structure/def14a_validate.py) first: it rescales
 > unit-broken fee blocks, NULLs the fabricated `0.5` placeholder for the "*" (= "<1%") footnote,
@@ -114,8 +114,8 @@ Two complementary paths to the same filings:
 
 | Table | PK | date_col | Notes |
 |---|---|---|---|
-| `sec_8k` | `ticker, accession_number` | `filing_date` | `items` = raw comma-separated item codes (structured, ~100% fill); `has_earnings`/`has_press_release` are best-effort → **null, not False**, when the typed parse fails |
-| `filing_risk_text` | `ticker, accession_number, section` | `filed` | 10-K Item 1A + Item 7 / 10-Q Item 2 raw text. `constants.FILING_TEXT_MIN_CHARS = 1500` rejects TOC stubs |
+| `sec_8k` | `ticker, accession_number, item` | `filing_date` | One row **per item code** — an 8-K reports 1..n items and ~75% report more than one. `item_tag` maps the curated high-signal codes; `has_earnings`/`has_press_release` are best-effort → **NaN, not False**, when the typed parse fails |
+| `sec_filing_text` | `ticker, accession_number, section` | `filed` | 10-K Item 1A + Item 7 / 10-Q Item 2 raw text. `fetch_filing_text.FILING_TEXT_MIN_CHARS = 1500` rejects TOC stubs |
 
 ## Extract — behavioral / text / embeddings
 

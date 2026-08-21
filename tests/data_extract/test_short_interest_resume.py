@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from src.data_store.schema import Tables
+
 from src.data_extract.utils.prices import fetch_short_interest as si
 
 
@@ -26,7 +28,7 @@ def test_resume_day_is_the_day_after_the_global_max(sqlite_store):
     cold = si._resume_day(ctx, years_history=10)
     assert cold == pd.Timestamp.today().normalize() - pd.DateOffset(years=10)
 
-    sqlite_store.replace("short_interest", pd.DataFrame({
+    sqlite_store.replace(Tables.short_interest, pd.DataFrame({
         "ticker": ["AAA", "BBB", "BBB"],
         "date": pd.to_datetime(["2024-05-01", "2024-06-03", "2024-06-04"]),
         "short_volume": [1.0, 2.0, 3.0], "total_volume": [10.0, 20.0, 30.0],
@@ -40,7 +42,7 @@ def test_resume_day_is_the_day_after_the_global_max(sqlite_store):
 
 
 def test_fetch_filters_to_the_universe_and_upserts(sqlite_store, monkeypatch):
-    sqlite_store.replace("short_interest", pd.DataFrame({
+    sqlite_store.replace(Tables.short_interest, pd.DataFrame({
         "ticker": ["AAA"], "date": pd.to_datetime(["2024-06-03"]),
         "short_volume": [1.0], "total_volume": [10.0],
     }))
@@ -52,31 +54,32 @@ def test_fetch_filters_to_the_universe_and_upserts(sqlite_store, monkeypatch):
     monkeypatch.setattr(si, "_resume_day",
                         lambda *a, **k: pd.Timestamp.today().normalize())
 
-    out = si.fetch_short_interest(SimpleNamespace(store=sqlite_store),
-                                  tickers=["AAA"], pause=0.0)
+    si.fetch_short_interest(SimpleNamespace(store=sqlite_store), tickers=["AAA"], pause=0.0)
 
-    assert set(out["ticker"]) == {"AAA"}, "ZZZ leaked past the universe filter"
-    stored = sqlite_store.load("short_interest")
-    assert set(stored["ticker"]) == {"AAA"}
-    assert len(stored) == len(out) + 1                 # prior row kept, new day added
+    # the fetcher returns None -- it resumes from the DB and writes to it, so the stored
+    # table is the only contract worth asserting on
+    stored = sqlite_store.load(Tables.short_interest)
+    assert set(stored["ticker"]) == {"AAA"}, "ZZZ leaked past the universe filter"
+    assert len(stored) == 2                            # prior row kept, one new day added
 
     print("\n=== SANITY CHECK: RegSHO universe filter + upsert ===")
-    print(f"  day-file had AAA+ZZZ -> kept {sorted(set(out['ticker']))} only; "
-          f"table {len(stored)} rows (1 prior + {len(out)} new). Validated.")
+    print(f"  day-file had AAA+ZZZ -> stored {sorted(set(stored['ticker']))} only; "
+          f"table {len(stored)} rows (1 prior + 1 new). Validated.")
 
 
-def test_empty_download_still_records_and_returns_the_schema(sqlite_store, monkeypatch):
-    """A holiday / all-404 window must not crash: `store.save` warns on the empty
-    frame and the caller still gets the declared columns back."""
-    monkeypatch.setattr(si, "record_run", lambda *a, **k: None)
+def test_empty_download_leaves_the_table_untouched(sqlite_store, monkeypatch):
+    """A holiday / all-404 window must not crash: `store.save` warns on the empty frame, the
+    run is still recorded, and nothing is written."""
+    recorded: list = []
+    monkeypatch.setattr(si, "record_run", lambda *a, **k: recorded.append(a))
     monkeypatch.setattr(si, "_fetch_day", lambda day: None)
     monkeypatch.setattr(si, "_resume_day",
                         lambda *a, **k: pd.Timestamp.today().normalize())
 
-    out = si.fetch_short_interest(SimpleNamespace(store=sqlite_store),
-                                  tickers=["AAA"], pause=0.0)
+    assert si.fetch_short_interest(SimpleNamespace(store=sqlite_store),
+                                   tickers=["AAA"], pause=0.0) is None
+    assert not sqlite_store.exists(Tables.short_interest)   # nothing written, nothing created
+    assert recorded, "an empty window must still record the run"
 
-    assert out.empty
-    assert list(out.columns) == ["date", "ticker", "short_volume", "total_volume"]
     print("\n=== SANITY CHECK: RegSHO empty window ===")
-    print("  every day-file missing -> empty frame with the declared schema, no crash. Validated.")
+    print("  every day-file missing -> no crash, no table created, run still recorded. Validated.")

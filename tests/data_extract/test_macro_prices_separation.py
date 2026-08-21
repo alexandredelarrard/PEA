@@ -35,9 +35,12 @@ from src.data_store.schema import Tables
 
 def test_equity_universe_is_sp500_tickers_only(sqlite_store):
     sqlite_store.replace("sp500_tickers", pd.DataFrame({"ticker": ["AAPL", "MSFT", "XOM"]}))
+    cfg = OmegaConf.create({"data_extract": {"refresh_universe": False, "redundant_ticks": []}})
     fake = SimpleNamespace(
-        _context=SimpleNamespace(store=sqlite_store),
-        _config=OmegaConf.create({"data_extract": {"refresh_universe": False}}),
+        # `load_universe_tickers` reads `redundant_ticks` off the context's own config, so the
+        # stub context needs it too -- not just the step's `_config`.
+        _context=SimpleNamespace(store=sqlite_store, config=cfg),
+        _config=cfg,
         _log=logging.getLogger("test"),
     )
     # bind the method to a fake self (avoids constructing the sub-steps / hitting the DB)

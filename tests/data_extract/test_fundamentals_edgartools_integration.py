@@ -21,7 +21,7 @@ import pytest
 
 from src.context import Context
 from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import (
-    _configure_identity, build_ticker_facts_edgar,
+    configure_identity, build_ticker_facts_edgar,
 )
 from src.data_extract.utils.fundamentals.fundamentals_derive import (
     derive_fundamentals_history,
@@ -136,7 +136,7 @@ def build_ticker_integration_report(context: Context, ticker: str,
 def test_15_ticker_integration_report():
     from src.context import get_config_context
     _, context = get_config_context("./configs", use_cache=False, save=True)   # loads .env
-    _configure_identity()
+    configure_identity()
 
     reports = {t: build_ticker_integration_report(context, t) for t in INTEGRATION_TICKERS}
 

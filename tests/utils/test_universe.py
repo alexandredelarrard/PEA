@@ -14,12 +14,15 @@ import pandas as pd
 from src.utils.universe import load_universe_tickers
 
 
-def _ctx(store, df: pd.DataFrame | None):
+def _ctx(store, df: pd.DataFrame | None, redundant: list[str] | None = None):
     """A context on the REAL store. `df=None` leaves `sp500_tickers` uncreated, which is the
     unseeded-DB case the loader must answer with [] rather than a raise."""
     if df is not None:
         store.replace("sp500_tickers", df)
-    return SimpleNamespace(store=store)
+    return SimpleNamespace(
+        store=store,
+        config=SimpleNamespace(
+            data_extract=SimpleNamespace(redundant_ticks=redundant or [])))
 
 
 def test_loader_sorted_dedup_upper_and_clean(sqlite_store):
@@ -69,6 +72,18 @@ def test_insufficient_history_tickers_excluded(sqlite_store):
     assert out == ["AAPL", "MSFT"], out
     print("\n=== SANITY CHECK: insufficient-history exclusion ===")
     print(f"  dropped {len(excl)} <4y names {excl} (incl. lower-case) -> universe = {out}. Validated.")
+
+
+def test_redundant_share_classes_excluded(sqlite_store):
+    """`data_extract.redundant_ticks` lists the second share class of a dual-listed name
+    (GOOG next to GOOGL, FOX next to FOXA): counted twice they double that issuer's weight in
+    every cross-sectional feature. Matched after upper-casing, like INSUFFICIENT_HISTORY_TICKERS."""
+    df = pd.DataFrame({"ticker": ["AAPL", "GOOGL", "GOOG", "goog", "FOX", "MSFT"]})
+    out = load_universe_tickers(_ctx(sqlite_store, df, redundant=["GOOG", "FOX"]))
+    assert out == ["AAPL", "GOOGL", "MSFT"], out
+    print("\n=== SANITY CHECK: redundant share-class exclusion ===")
+    print(f"  redundant_ticks=['GOOG','FOX'] dropped GOOG (both cases) and FOX, kept GOOGL "
+          f"-> {out}. Validated.")
 
 
 # no __main__ block: every test now takes the `sqlite_store` fixture, so run them with pytest.

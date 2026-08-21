@@ -1384,11 +1384,13 @@ def _valuation_engine_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeInd
 
 
 def _intrinsic_fields(fund_hist: pd.DataFrame, close: pd.DataFrame | None,
-                      idx: pd.DatetimeIndex, intrinsic_cfg: dict) -> dict:
-    """INTRINSIC VALUE (two-stage DCF on TTM FCF) vs price."""
+                      idx: pd.DatetimeIndex, intrinsic_cfg: dict | None) -> dict:
+    """INTRINSIC VALUE (two-stage DCF on TTM FCF) vs price. `intrinsic_cfg` is optional --
+    every caller up the chain defaults it to None, so fall back to `intrinsic_value_daily`'s
+    own documented DCF defaults rather than splatting None."""
     if close is None:
         return {}
-    iy = intrinsic_value_daily(fund_hist, close, idx, **intrinsic_cfg).get("yield")
+    iy = intrinsic_value_daily(fund_hist, close, idx, **(intrinsic_cfg or {})).get("yield")
     if iy is None or iy.empty or not iy.notna().any().any():
         return {}
     return {"intrinsic_yield": iy}

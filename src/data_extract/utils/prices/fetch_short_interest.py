@@ -73,7 +73,7 @@ def _resume_day(context: Context, years_history: int) -> pd.Timestamp:
 def fetch_short_interest(context: Context, tickers: list[str],
                          years_history: int = 15, pause: float = 0.05) -> None:
     """Download the RegSHO daily short-volume files not yet stored, keep only
-    `tickers`, and upsert them into `short_interest`. Returns the new rows."""
+    `tickers`, and upsert them into `sec_short_interest`."""
 
     today = pd.Timestamp.today().normalize()
     days = pd.bdate_range(_resume_day(context, years_history), today)

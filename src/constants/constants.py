@@ -114,68 +114,13 @@ SEC_FINNOTES_URL_TEMPLATE = (
     "{period}_notes.zip")
 SEC_FINNOTES_FIRST_YEAR = 2009     # earliest notes data set (2009q1)
 
-# 8-K events: item codes (structured, ~100% fill for post-2004 8-Ks) + edgartools' typed
-# CurrentReport flags (has_earnings/has_press_release). Table keyed per (ticker, accession);
-# raw comma-separated `items` stored + a count. The curated high-signal codes (leading
-# distress/governance events) are mapped for the downstream feature layer.
-
+# 8-K events -> `sec_8k`, one row per item code (see fetch_8k_edgar.py, which owns the
+# high-signal item-code -> tag map).
 SEC_8K_FORMS = ["8-K", "8-K/A"]
-SEC_8K_HIGH_SIGNAL_ITEMS = {
-    # Section 1: Registrant's Business and Operations
-    "1.01": "material_agreement_entered",
-    "1.02": "material_agreement_terminated",
-    "1.03": "bankruptcy_or_receivership",
-    "1.04": "mine_safety_reporting",
-    "1.05": "cybersecurity_incidents",
-
-    # Section 2: Financial Information
-    "2.01": "completion_acquisition_or_disposition",
-    "2.02": "results_of_operations_and_financial_condition",
-    "2.03": "creation_of_direct_financial_obligation",
-    "2.04": "triggering_events_accelerating_financial_obligation",
-    "2.05": "restructuring_costs",
-    "2.06": "impairment",
-
-    # Section 3: Securities and Trading Markets
-    "3.01": "delisting_or_covenant",
-    "3.02": "unregistered_sales_of_equity",
-    "3.03": "material_modification_to_security_rights",
-
-    # Section 4: Matters Related to Accountants and Financial Statements
-    "4.01": "auditor_change",
-    "4.02": "non_reliance_restatement",
-
-    # Section 5: Corporate Governance and Management
-    "5.01": "change_in_control",
-    "5.02": "exec_or_director_change",
-    "5.03": "bylaw_change",
-    "5.04": "employee_benefit_plan_trading_suspension",
-    "5.05": "code_of_ethics_amendment_or_waiver",
-    "5.06": "change_in_shell_company_status",
-    "5.07": "vote_of_security_holders",
-    "5.08": "shareholder_director_nominations",
-
-    # Section 6: Asset-Backed Securities
-    "6.01": "abs_informational_computational_material",
-    "6.02": "change_of_servicer_or_trustee",
-    "6.03": "change_in_credit_enhancement",
-    "6.04": "failure_to_make_required_distribution",
-    "6.05": "securities_act_updating_disclosure",
-
-    # Section 7: Regulation FD
-    "7.01": "regulation_fd_disclosure",
-
-    # Section 8: Other Events
-    "8.01": "other_events",
-
-    # Section 9: Financial Statements and Exhibits
-    "9.01": "financial_statements_and_exhibits"
-}
 
 # SC 13D activist filings (>5% stake WITH intent to influence) + amendments — the event-driven
 # catalyst signal, read via edgartools' typed Schedule13D object (reporting persons, CUSIP,
 # ownership -- see fetch_13d_edgar.py). One row PER REPORTING PERSON per filing.
-
 SEC_13D_FORMS = ["SC 13D", "SC 13D/A"]   # activist (13G = passive is deliberately excluded)
 
 # 13F institutional holdings, walked per-filing-date via edgartools (fetch_13f.py). 13F-NT is
@@ -189,31 +134,9 @@ SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
 FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
 
 # DEF 14A proxy + the DEF 14C information-statement equivalent that CONTROLLED companies file
-# instead. Centralized here (was a private `_FORM` constant inside fetch_def14a_llm.py) so the
-# form-dispatch registry (form_registry.py) has one source of truth, matching SEC_8K_FORMS /
-# SEC_13D_FORMS / FILING_TEXT_FORMS above.
+# instead. Centralized here so the form-dispatch registry (form_registry.py) has one source of
+# truth, matching SEC_8K_FORMS / SEC_13D_FORMS above.
 DEF14A_FORMS = ["DEF 14A", "DEF 14C"]
-
-# Sanity bounds for the DEF 14A repair layer (def14a_validate.py). edgartools' proxy HTML parser
-# emits values that are silently WRONG rather than absent: unit-scaled fee/net-income blocks whose
-# "(in thousands)" header it missed, a hardcoded 0.5 placeholder for the "*" (= "less than 1%")
-# ownership footnote, and Total-column values duplicated into a neighbouring component column.
-# These thresholds separate "implausible for an S&P 500 issuer, therefore mis-scaled/fabricated"
-# from "small but real", so the repair layer only ever fires on the former.
-DEF14A_AUDIT_FEE_MIN_PLAUSIBLE = 1e5     # a sub-$100k TOTAL auditor fee => block is in thousands
-DEF14A_NET_INCOME_MIN_PLAUSIBLE = 1e4    # a sub-$10k net income => figure is in millions/billions
-DEF14A_FISCAL_YEAR_MIN = 1990            # fee-table year labels outside [min, today+1] are junk
-DEF14A_PAY_RATIO_TOLERANCE = 0.02        # ceo_comp / median_comp must reproduce ratio within 2%
-DEF14A_COMP_RECONCILE_TOLERANCE = 1.0    # comp components must sum to `total` within $1 (rounding)
-DEF14A_PLACEHOLDER_PERCENT = 0.5         # edgartools' fabricated stand-in for a "*" percent cell
-
-# MD&A lives in DIFFERENT items per form: 10-K Item 7 (annual) and 10-Q Item 2 (quarterly). Both are
-# extracted so the MD&A tone/drift signal is QUARTERLY. Risk Factors are taken from the 10-K (Item 1A,
-# the substantive annual set); 10-Q Part II Item 1A is usually "no material change" so it is skipped.
-FILING_TEXT_FORMS = ["10-K", "10-Q"]
-FILING_SECTION_RISK = "risk_factors"         # 10-K Item 1A
-FILING_SECTION_MDA = "mda"                   # 10-K Item 7 / 10-Q Item 2
-FILING_TEXT_MIN_CHARS = 1500                 # below this a "section" is a TOC/cross-ref stub, not the body
 
 # --------------------------------------------------------------------------- #
 # Google Trends (unofficial API — retail-attention proxy). The explore call    #

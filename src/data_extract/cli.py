@@ -37,6 +37,7 @@ from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 # --- structure -------------------------------------------------------------- #
+from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
 from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
 from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
 from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
@@ -187,6 +188,13 @@ def financial_notes(config_path: str, tickers: str | None) -> None:
     fetch_financial_notes(context, tickers=_tickers(context, tickers))
 
 
+YEARS_ARGS = ("-y", "--years")
+YEARS_KWARGS = dict(
+    type=int, default=None,
+    help="Override data_extract.years_history for THIS run. A rebuild-from-scratch needs "
+         "this to reach as far back as the incrementally-grown table it replaces.")
+
+
 # --------------------------------------------------------------------------- #
 # Structure (governance)                                                        #
 # --------------------------------------------------------------------------- #
@@ -205,25 +213,41 @@ def def14a(config_path: str, tickers: str | None) -> None:
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def sec_8k_items(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
-    fetch_8k_edgar(context, tickers=_tickers(context, tickers))
+@click.option(*YEARS_ARGS, **YEARS_KWARGS)
+def sec_8k_items(config_path: str, tickers: str | None, years: int | None) -> None:
+    config, context = _ctx(config_path)
+    fetch_8k_edgar(context, tickers=_tickers(context, tickers),
+                   years_history=years or config.data_extract.years_history)
 
 
 @cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def sec_13d(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
-    fetch_13d_edgar(context, tickers=_tickers(context, tickers))
+@click.option(*YEARS_ARGS, **YEARS_KWARGS)
+def sec_13d(config_path: str, tickers: str | None, years: int | None) -> None:
+    config, context = _ctx(config_path)
+    fetch_13d_edgar(context, tickers=_tickers(context, tickers),
+                    years_history=years or config.data_extract.years_history)
 
 
 @cli.command(help="Filing text: 10-K Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def filing_text(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
-    fetch_filing_text(context, tickers=_tickers(context, tickers))
+@click.option(*YEARS_ARGS, **YEARS_KWARGS)
+def filing_text(config_path: str, tickers: str | None, years: int | None) -> None:
+    config, context = _ctx(config_path)
+    fetch_filing_text(context, tickers=_tickers(context, tickers),
+                      years_history=years or config.data_extract.years_history)
+
+
+@cli.command(help="DEF 14A structured: pay-vs-performance, audit fees, comp/ownership/vote tables (edgartools).")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*YEARS_ARGS, **YEARS_KWARGS)
+def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> None:
+    config, context = _ctx(config_path)
+    fetch_def14a_edgar(context, tickers=_tickers(context, tickers),
+                       years_history=years or config.data_extract.years_history)
 
 
 # --------------------------------------------------------------------------- #

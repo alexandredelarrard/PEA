@@ -36,7 +36,7 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `sec13f_hr` | 21,659,435 | **6.1 GB** | 15 | 497 | `period` | 1987-03-31 → 2026-03-31 |
 | `fundamentals_facts` | 7,776,870 | **5.2 GB** | 30 | 445 | `filing_date` | 2011-08-12 → 2026-08-12 |
 | `earnings_call_sections` | 109,899 | 1.5 GB | 6 | 494 | `as_of` | 2005-10-13 → 2026-07-24 |
-| `filing_risk_text` | 34,127 | 1.2 GB | 9 | 498 | `filed` | 2011-07-27 → 2026-08-03 |
+| `sec_filing_text` | 34,127 | 1.2 GB | 9 | 498 | `filed` | 2011-07-27 → 2026-08-03 |
 | `insider_transactions` | 1,381,478 | 497 MB | 26 | 491 | `transaction_date` | 1990-05-07 → **2026-03-31** |
 | `notes_text` | 96,576 | 411 MB | 15 | — | `ddate` | 2006-12-31 → 2026-05-31 |
 | `sec_8k` | 95,789 | 137 MB | 14 | 486 | `filing_date` | 2011-08-04 → 2026-08-03 |
@@ -55,18 +55,18 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `pension_facts` | 6,244 | 2.5 MB | 13 | — | `ddate` | 2008-10-31 → **2026-02-28** |
 | `prices_macro` | see §sanity | — | 3 | `ticker` | `date` | ~1995 → today (per series; `fx_usdeur` from 1999, `gold` from 2000, `breakeven_10y` from 2003) |
 | `macro` | 4,175 | 1.0 MB | 10 | — | `date` | 2010-08-02 → 2026-07-31 |
-| `def14a_edgar_director_comp` | 2,279 | 600 kB | 12 | — | `filing_date` | — |
-| `def14a_edgar_ownership` | 2,149 | 592 kB | 8 | — | `filing_date` | — |
-| `def14a_edgar_executive_comp` | 1,395 | 488 kB | 15 | — | `filing_date` | — |
-| `def14a_edgar_votes` | 1,177 | 368 kB | 8 | — | `filing_date` | — |
-| `def14a_edgar` | **329** | 160 kB | 46 | **23** | `filing_date` | 2011-09-23 → 2026-05-06 |
+| `sec_def14a_director_comp` | 2,279 | 600 kB | 12 | — | `filing_date` | — |
+| `sec_def14a_ownership` | 2,149 | 592 kB | 8 | — | `filing_date` | — |
+| `sec_def14a_executive_comp` | 1,395 | 488 kB | 15 | — | `filing_date` | — |
+| `sec_def14a_votes` | 1,177 | 368 kB | 8 | — | `filing_date` | — |
+| `sec_def14a` | **329** | 160 kB | 46 | **23** | `filing_date` | 2011-09-23 → 2026-05-06 |
 | `sp500_tickers` | 500 | 128 kB | 6 | 500 | — | — |
 
 ## Coverage gotchas worth knowing before you build a feature
 
-- **`def14a_edgar` covers only 23 of 500 tickers** (329 filings). The deterministic proxy path is
+- **`sec_def14a` covers only 23 of 500 tickers** (329 filings). The deterministic proxy path is
   barely seeded; `def14a_llm` (497 tickers) is the one with real coverage. Any `f_ceo_*` /
-  governance feature built off `def14a_edgar` will be ~95% NaN.
+  governance feature built off `sec_def14a` will be ~95% NaN.
 - **`fundamentals_facts` covers 445 tickers, `fundamentals_history` 491.** The derived table has
   more names than the raw one because `fundamentals_history` still holds rows from an earlier
   extraction path. Do not treat their ticker sets as equal.

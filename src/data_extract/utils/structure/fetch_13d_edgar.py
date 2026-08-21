@@ -1,52 +1,22 @@
 """
 fetch_13d_edgar.py (src/data_extract/utils/structure/fetch_13d_edgar.py)
 ---------------------------------------------------------------------------
-Extracts SC 13D/13D-A filings into `sec_13d` using `edgartools` (`filing.obj()`).
-Replaces legacy `fetch_13d.py` by capturing full reporting person metadata,
-CUSIPs, amendment details, and Item 4 narrative text.
+SC 13D/13D-A activist filings via edgartools (`filing.obj()`) into two tables:
+`sec_13d`, one row per (ticker, accession, rp_seq) -- co-filers are kept by
+0-based position because a reporting person often has no CIK -- and
+`sec_13d_transactions`, one row per disclosed trade (Item 5(c) 60-day log, an
+independent grain).
 
-Data Grain:
-- One row per (ticker, accession_number, rp_seq) in `sec_13d`.
-- One row per disclosed trade in `sec_13d_transactions` (Item 5(c) 60-day log,
-  see below) -- independent grain, no rp_seq relationship.
-- Preserves multi-filer group submissions using 0-based position (`rp_seq`)
-  since individual co-filers may lack a CIK (`no_cik=True`).
-
-Key Guardrails:
-- Numeric Null Guard: Unstructured 13Ds lack standard XML schemas, causing
-  `edgartools` to default missing numeric fields to 0. If `has_structured_data`
-  is False, force all numeric fields (ownership %, voting powers) to NULL
-  to avoid publishing false "0% ownership" metrics. Only Name/CIK are trusted.
-- Item Narrative Text Fallback: `edgartools`' structured `.items` (Item 3/4/5/6
-  narrative) is populated ONLY from a filing's XML submission. Empirically --
-  checked across 100+ real filings spanning 1994 to mid-2025, including several
-  filed well after the SEC's Dec-2024 structured-data mandate -- `has_structured_data`
-  is essentially always False for real SC 13D filings today, so relying on
-  `.items` alone silently loses Item 4 (the highest-signal field: activist intent)
-  for virtually the entire archive. The underlying `filing.text()` DOES reliably
-  carry the Item 3/4/5/6 prose regardless of XML availability, so `_filing_rows`
-  falls back to a regex section-carve (`_extract_13d_item_sections`, same anchor
-  style as `fetch_filing_text.py`'s 10-K/10-Q carving) whenever the structured
-  parse is empty.
-- 60-Day Transaction Log: Item 5(c)'s trade-by-trade log is either a separate
-  exhibit (e.g. `EX-99.2`, a "TRADING DATA" table) OR embedded directly inside
-  the main SC 13D document as an internal "Schedule I"/"Schedule 1" appendix
-  (e.g. Elliott's 2024 LUV filing) -- `_extract_transaction_rows` scans EVERY
-  attachment (the main document included) for an HTML table with a "Trade
-  Date" header and role-maps its columns generically (works regardless of
-  exhibit number or exact column order/count). Two real bugs found via a
-  live-DB audit (`sec_13d_transactions` coverage dying out entirely after
-  ~2020, only 7 tickers ever populated): (1) the non-HTML skip called
-  `getattr(att, "is_html", False)` instead of `att.is_html()` -- since
-  `is_html` is a METHOD on edgartools' `Attachment`, this fetched the
-  always-truthy bound method itself, so image/GRAPHIC attachments (routine on
-  modern activist letters) were never skipped, and their raw-bytes `.content`
-  crashed the header-cue regex, silently zeroing the ENTIRE filing's
-  transactions via the caller's blanket `except`; (2) some filers (e.g.
-  Elliott) drop the separate Buy/Sell column and encode direction IN the
-  quantity header instead ("Shares Purchased (Sold)": parens == sold) --
-  `_SIGNED_QUANTITY_RE` recognizes that pattern and derives `transaction_type`
-  per-row from the parens rather than requiring a distinct Buy/Sell column.
+Three properties the parsing depends on:
+- `has_structured_data` is False for essentially every real 13D, which makes
+  edgartools default missing numerics to 0. They are forced to NULL instead, so
+  the table never claims a false 0% stake.
+- For the same reason the structured `.items` narrative is usually empty, so
+  Item 3/4/5/6 prose is regex-carved out of `filing.text()`.
+- The 5(c) trade log is either its own exhibit or a "Schedule I" appendix inside
+  the main document, so every attachment is scanned for a "Trade Date" table and
+  its columns role-mapped. `att.is_html()` is a METHOD -- calling it wrongly made
+  binary attachments crash the carve and zero a filing's transactions.
 """
 
 from __future__ import annotations
@@ -55,15 +25,12 @@ import re
 
 import pandas as pd
 from bs4 import BeautifulSoup
-from edgar import Company
 
-from src.data_store.schema import Tables
 from src.constants.constants import SEC_13D_FORMS
 from src.context import Context
-from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.run_manifest import manifest_window, record_run
-from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
-from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
+from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
+from src.data_store.schema import Table, Tables
+from src.utils.string import pad_cik
 
 _COLS = ["ticker", "cik", "accession_number", "form", "filing_date", "rp_seq",
         "is_amendment", "amendment_number", "cusip", "issuer_name", "date_of_event",
@@ -285,21 +252,6 @@ def _extract_transaction_rows(filing, fallback_person: str | None,
     return rows
 
 
-def _cik_num(value) -> int | None:
-    """Normalize a CIK for comparison (zero-padding/type varies by source --
-    '0000070858' from a filing header vs '70858' from the ticker universe).
-    A blank/empty value means "unknown", not CIK 0 -- treating it as 0 would
-    make the issuer/filer guard in `build_ticker_13d_edgar` wrongly DROP a
-    genuine subject-company filing whenever the header's issuer CIK failed to
-    parse (empty string), since 0 would never equal the ticker's real CIK."""
-    if not value:
-        return None
-    try:
-        return int(str(value).lstrip("0") or "0")
-    except (TypeError, ValueError):
-        return None
-
-
 def _num_or_null(value, has_structured_data: bool) -> float:
     """A ReportingPerson numeric field is only meaningful when the filing's own
     parse actually found structured data -- otherwise it is the class default
@@ -337,9 +289,19 @@ def _filing_rows(filing) -> list[dict]:
         getattr(issuer, "ticker", None) if issuer else None
     )
 
-    # Document URL resolution
+    # `filing.document` renders as a rich TABLE, so str() on it stored an ASCII box
+    # ("+-----+ | 1 p24-2469sc13d.htm ... |") in every row instead of a URL. Take the
+    # attachment's own `url`, and fall back to composing the archives path.
     doc_attr = getattr(filing, "document", None)
-    doc_url = str(doc_attr) if doc_attr else None
+    doc_url = getattr(doc_attr, "url", None) if doc_attr is not None else None
+    if not doc_url:
+        accession = str(getattr(filing, "accession_number", "") or "")
+        primary = getattr(filing, "primary_document", None)
+        cik_raw = str(getattr(filing, "cik", "") or "").lstrip("0")
+        if accession and primary and cik_raw:
+            doc_url = (f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/"
+                       f"{accession.replace('-', '')}/{primary}")
+    doc_url = str(doc_url) if doc_url else None
 
     # Item 3/4/5/6 narrative: trust the structured XML parse when present, else fall
     # back to a text-section carve (see module docstring -- has_structured is
@@ -396,7 +358,9 @@ def _filing_rows(filing) -> list[dict]:
 
     persons = getattr(obj, "reporting_persons", None) or []
 
-    # Fallback row if no reporting persons are parsed
+    # Fallback row if no reporting persons are parsed. The six numeric fields are NaN,
+    # not None, for the reason `_num_or_null` documents: an all-None column would be
+    # created as TEXT by `ensure_table` the first time this row seeds a cold table.
     if not persons:
         return [
             {
@@ -407,12 +371,12 @@ def _filing_rows(filing) -> list[dict]:
                 "reporting_person_citizenship": None,
                 "type_of_reporting_person": None,
                 "is_group_member": None,
-                "sole_voting_power": None,
-                "shared_voting_power": None,
-                "sole_dispositive_power": None,
-                "shared_dispositive_power": None,
-                "aggregate_amount": None,
-                "percent_of_class": None,
+                "sole_voting_power": float("nan"),
+                "shared_voting_power": float("nan"),
+                "sole_dispositive_power": float("nan"),
+                "shared_dispositive_power": float("nan"),
+                "aggregate_amount": float("nan"),
+                "percent_of_class": float("nan"),
             }
         ]
 
@@ -458,49 +422,30 @@ def _filing_rows(filing) -> list[dict]:
 
 
 def build_ticker_13d_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None = None,
-                          done_accessions: frozenset[str] = frozenset()) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Walks `Company(ticker).get_filings(form=SEC_13D_FORMS)`, skips accessions
-    already in `done_accessions` or filed before `since`, and reads each filing's
-    typed `Schedule13D` object -- one row per reporting person (see module
-    docstring for the grain rationale). A filing whose `.obj()` parse fails is
-    skipped entirely (no event-only fallback row): unlike 8-K's item codes, SC 13D
-    without its parsed content is not independently useful metadata.
+                           done_accessions: frozenset[str] = frozenset(),
+                           ) -> dict[Table, pd.DataFrame]:
+    """One row per reporting person plus the filing's Item 5(c) trade log. A filing whose
+    `.obj()` parse fails is skipped entirely -- unlike 8-K's item codes, a 13D without its
+    parsed content is not independently useful. The trade log is still attempted, since the
+    two parses read different parts of the filing.
 
-    Issuer/Filer Guard: `Company(ticker).get_filings(form=SEC_13D_FORMS)` returns
-    EVERY SC 13D where `ticker`'s CIK appears at all -- as the subject company
-    (an activist targeting it) OR merely as A FILER disclosing a >5% stake it
-    holds in some UNRELATED issuer (routine for banks/asset managers whose
-    trading desks cross 5% thresholds in odd micro-caps/closed-end funds; e.g.
-    Bank of America is a routine 13D FILER on municipal bond funds it has no
-    connection to as a company). A filing is only kept when the extracted
-    issuer CIK matches `cik` (the ticker's own CIK, passed by the caller) --
-    otherwise `ticker` is the filer, not the target, and every field (issuer
-    name, trade prices/dates) would describe a different company entirely.
-
-    Returns `(sec_13d_rows, transaction_rows)`: the per-reporting-person table and
-    the independent Item 5(c) trade-log table (see `_extract_transaction_rows`).
-    A filing's trade-log exhibit is attempted even when its own `_filing_rows`
-    call fails, since the two parses draw on different parts of the filing."""
-
-    company = Company(ticker)
-    filings = company.get_filings(form=list(SEC_13D_FORMS))
-    sorted_filings = sorted(filings, key=lambda f: f.filing_date)
-    if since is not None:
-        sorted_filings = [f for f in sorted_filings if pd.Timestamp(f.filing_date) >= since]
-
-    ticker_cik = _cik_num(cik)
+    Issuer/filer guard: a ticker's 13D listing includes every filing where its CIK appears
+    AT ALL -- as the targeted issuer, or merely as a FILER disclosing a stake in some
+    unrelated issuer (routine for banks whose desks cross 5% in odd closed-end funds). Only
+    filings whose issuer CIK matches the ticker's own are kept; otherwise every field would
+    describe a different company. An unresolvable CIK on either side means "unknown", which
+    must NOT reject -- hence the falsiness checks rather than an equality test alone."""
+    ticker_cik = pad_cik(cik)
     rows: list[dict] = []
     txn_rows: list[dict] = []
-    for filing in sorted_filings:
-        if filing.accession_number in done_accessions:
-            continue
+    for filing in new_filings(ticker, SEC_13D_FORMS, since, done_accessions):
         try:
             filing_rows = _filing_rows(filing)
         except Exception:                               # noqa: BLE001 -- best-effort only
             filing_rows = []
 
-        issuer_cik = _cik_num(filing_rows[0].get("cik")) if filing_rows else None
-        if ticker_cik is not None and issuer_cik is not None and issuer_cik != ticker_cik:
+        issuer_cik = pad_cik(filing_rows[0].get("cik")) if filing_rows else ""
+        if ticker_cik and issuer_cik and issuer_cik != ticker_cik:
             continue                                    # ticker is a FILER here, not the issuer
 
         person_names = [r.get("reporting_person_name") for r in filing_rows
@@ -511,7 +456,8 @@ def build_ticker_13d_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None 
 
         try:
             fallback_person = person_names[0] if len(person_names) == 1 else None
-            filing_date = filing_rows[0].get("filing_date") if filing_rows else pd.Timestamp(filing.filing_date)
+            filing_date = (filing_rows[0].get("filing_date") if filing_rows
+                           else pd.Timestamp(filing.filing_date))
             exhibit_rows = _extract_transaction_rows(filing, fallback_person, filing_date)
         except Exception:                               # noqa: BLE001 -- best-effort only
             exhibit_rows = []
@@ -521,54 +467,11 @@ def build_ticker_13d_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None 
                       filing_date=filing_date, trade_seq=seq)
             txn_rows.append(tr)
 
-    return (pd.DataFrame(rows, columns=_COLS),
-            pd.DataFrame(txn_rows, columns=_TRANSACTION_COLS))
+    return {Tables.sec_13d: pd.DataFrame(rows, columns=_COLS),
+            Tables.sec_13d_transactions: pd.DataFrame(txn_rows, columns=_TRANSACTION_COLS)}
 
 
-def fetch_13d_edgar(context: Context, tickers: list[str]) -> pd.DataFrame:
-    """Public entry point (mirrors `fetch_8k_edgar`'s conventions): per-ticker
-    try/except, incremental via `existing_filings` (dedup by accession) PLUS a
-    `since` cutoff from the extraction manifest (see `run_manifest.py`) -- a
-    routine run only relists filings from the last run's date onward, while a
-    ticker-count change or the `manifest_full_rescan_days` self-heal window
-    falls back to the FULL `years` window (falls back to `data_extract.years_history`),
-    gap-filling instead of trusting the cutoff alone. Tickers are walked
-    CONCURRENTLY on a thread pool (`run_per_ticker`) -- see parallel_fetch.py's
-    module docstring."""
-
-    _configure_identity()
-
-    years = int(context.config.data_extract.years_history)
-    full_since = pd.Timestamp.today() - pd.DateOffset(years=years)
-    cik_map = load_cik_mapping(context)
-    cik_map = cik_map[cik_map["ticker"].isin(tickers)]
-
-    rescan_days = int(getattr(context.config.data_extract, "manifest_full_rescan_days", 30))
-    since, is_full_rescan = manifest_window(
-        context, Tables.sec_13d, len(cik_map), fallback_since=full_since,
-        full_rescan_days=rescan_days)
-
-    seen = existing_filings(context, Tables.sec_13d)
-
-    def _worker(ticker: str, cik: str) -> tuple[int, int, bool]:
-        try:
-            out, txns = build_ticker_13d_edgar(ticker, cik, since=since, done_accessions=seen)
-        except Exception as e:                          # noqa: BLE001
-            context.log.warning("fetch_13d_edgar: %s failed (%s)", ticker, e)
-            return 0, 0, False
-        if not out.empty:
-            context.store.save(Tables.sec_13d, out)
-        if not txns.empty:
-            context.store.save(Tables.sec_13d_transactions, txns)
-        return len(out), len(txns), True
-
-    results = run_per_ticker(cik_map, _worker, desc="SC 13D (edgartools)")
-    total_rows = sum(n for n, _, _ in results)
-    txn_total = sum(t for _, t, _ in results)
-    failed = sum(1 for _, _, ok in results if not ok)
-
-    context.log.info("fetch_13d_edgar: +%d rows (+%d transactions) across %d/%d ticker(s) "
-                     "(%d failed) -> '%s'/'%s'", total_rows, txn_total,
-                     len(results), len(cik_map), failed, Tables.sec_13d, Tables.sec_13d_transactions)
-    record_run(context, Tables.sec_13d, len(cik_map), total_rows, is_full_rescan=is_full_rescan)
-    return context.store.load(Tables.sec_13d)
+def fetch_13d_edgar(context: Context, tickers: list[str], years_history: int) -> None:
+    run_edgar_fetch(context, tickers, years_history,
+                    tables=(Tables.sec_13d, Tables.sec_13d_transactions),
+                    build=build_ticker_13d_edgar, desc="SC 13D (edgartools)")

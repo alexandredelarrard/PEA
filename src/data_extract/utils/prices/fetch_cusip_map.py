@@ -66,9 +66,12 @@ def build_cusip_ticker_map(context: Context, cusips: list[str],
     Reuses the cache and only looks up CUSIPs not already mapped."""
 
     api_key = os.getenv("OPENFIGI_API_KEY")
+    # `optional=True` yields None on a cold table -- the first-ever build's own case, so branch
+    # on `is None` (repo convention) rather than assuming a frame.
     cached = context.store.load(Tables.cusip_ticker_map, optional=True)
-    cached = (cached.assign(cusip=cached["cusip"].map(normalize_cusip))
-                  .dropna(subset=["cusip"]).drop_duplicates("cusip", keep="last"))
+    cached = (pd.DataFrame(columns=["cusip", "ticker"]) if cached is None else
+              cached.assign(cusip=cached["cusip"].map(normalize_cusip))
+                    .dropna(subset=["cusip"]).drop_duplicates("cusip", keep="last"))
 
     # Curated CINS overrides, applied to the cache IMMEDIATELY -- before the `todo` short-circuit
     # below, which returns early when every requested cusip is already known. A miss is cached as

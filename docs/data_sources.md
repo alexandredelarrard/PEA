@@ -22,10 +22,10 @@ debugging time. All free or freemium. For the tables they land in, see
 | Elite-manager subset | Dataroma roster → CIK filter over 13F | no | `data/superinvestors/superinvestors.json` | `prices/fetch_superinvestors.py` |
 | Insider trades | SEC Insider Data Sets (Forms 3/4/5, quarterly zips) | `SEC_USER_AGENT` | `insider_transactions` | `prices/fetch_insider_transactions.py` |
 | Governance / comp / ownership | SEC **DEF 14A** via OpenAI structured output | `OPENAI_API_KEY`, `SEC_USER_AGENT` | `def14a_llm` | `structure/fetch_def14a_llm.py` |
-| Governance (deterministic) | SEC DEF 14A via edgartools `ProxyStatement` | `SEC_USER_AGENT` | `def14a_edgar` + 4 children | `structure/fetch_def14a_edgar.py` |
+| Governance (deterministic) | SEC DEF 14A via edgartools `ProxyStatement` | `SEC_USER_AGENT` | `sec_def14a` + 4 children | `structure/fetch_def14a_edgar.py` |
 | Corporate events | SEC Form 8-K | `SEC_USER_AGENT` | `sec_8k` | `structure/fetch_8k_edgar.py` |
 | Activist stakes | SEC Schedule 13D / 13D-A | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions` | `structure/fetch_13d_edgar.py` |
-| Filing narrative | SEC 10-K Item 1A / Item 7, 10-Q Item 2 | `SEC_USER_AGENT` | `filing_risk_text` | `structure/fetch_filing_text.py` |
+| Filing narrative | SEC 10-K Item 1A / Item 7, 10-Q Item 2 | `SEC_USER_AGENT` | `sec_filing_text` | `structure/fetch_filing_text.py` |
 | Short volume | FINRA RegSHO daily files | no | `short_interest` | `prices/fetch_short_interest.py` |
 | Settlement fails | SEC Market FOIA (semi-monthly zips) | no | `sec_fails_to_deliver` | `prices/fetch_fails_to_deliver.py` |
 | Retail attention | Wikipedia pageviews API | no | `wiki_pageviews` | `behavioral/fetch_wiki_pageviews.py` |
@@ -117,7 +117,7 @@ availability** and normalized at the GICS industry-group level. See
 
 **edgartools' proxy HTML parser is silently wrong, not absent.** Every row goes through
 [def14a_validate.py](../src/data_extract/utils/structure/def14a_validate.py). Only the XBRL-backed
-block of `def14a_edgar` is trusted unconditionally; the HTML-parsed child tables are best-effort and
+block of `sec_def14a` is trusted unconditionally; the HTML-parsed child tables are best-effort and
 are complemented by the LLM path. **Rule: never fabricate** — write a value only when
 deterministically recoverable, else NaN.
 

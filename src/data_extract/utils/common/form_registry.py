@@ -30,7 +30,10 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import (
 from src.data_extract.utils.prices.fetch_13f import fetch_13f
 from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
 from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
 from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
+from src.data_extract.utils.structure.fetch_filing_text import (
+    FILING_TEXT_FORMS, fetch_filing_text)
 
 
 @dataclass(frozen=True)
@@ -57,18 +60,18 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
     "sec_8k": FormHandlerSpec(
         name="sec_8k", sec_forms=tuple(SEC_8K_FORMS),
         discovery="per_cik_accession", table="sec_8k",
-        handler=fetch_8k_edgar, call_shape="(context, tickers, years=None)",
-        step_chain_wired=False,
+        handler=fetch_8k_edgar, call_shape="(context, tickers, years_history)",
+        step_chain_wired=True,
         notes="edgartools per-filing retrieval (fetch_8k_edgar.py), replacing the "
              "submissions-JSON-only fetch_8k_items.py -- adds has_earnings/has_press_release "
-             "from the typed CurrentReport object alongside the existing item codes. Table "
-             "itself was already renamed from sec_8k_items (DB-level ALTER TABLE RENAME, see "
-             "scripts/rename_form_dispatch_tables.py)"),
+             "from the typed CurrentReport object alongside the item codes. Renamed from "
+             "sec_8k_items at the DB level. Grain is (ticker, accession_number, item): one "
+             "row PER ITEM CODE, since an 8-K reports 1..n items"),
     "sec_13d": FormHandlerSpec(
         name="sec_13d", sec_forms=tuple(SEC_13D_FORMS),
         discovery="per_cik_accession", table="sec_13d",
-        handler=fetch_13d_edgar, call_shape="(context, tickers, years=None)",
-        step_chain_wired=False,
+        handler=fetch_13d_edgar, call_shape="(context, tickers, years_history)",
+        step_chain_wired=True,
         notes="edgartools per-filing retrieval (fetch_13d_edgar.py) reading the typed "
              "Schedule13D object, replacing fetch_13d.py's event/date-only extraction -- adds "
              "reporting-person name/CIK/voting-power + CUSIP + amendment metadata. Grain "
@@ -83,6 +86,20 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
         notes="logical key 'def_14' maps to the EXISTING def14a_llm table -- kept per "
              "the task's own instruction ('keep the def14a_llm table and process as a "
              "complementary one'), not renamed"),
+    "def14a_edgar": FormHandlerSpec(
+        name="def14a_edgar", sec_forms=tuple(DEF14A_FORMS),
+        discovery="per_cik_accession", table="sec_def14a",
+        handler=fetch_def14a_edgar, call_shape="(context, tickers, years_history)",
+        step_chain_wired=True,
+        notes="deterministic complement to def_14's LLM pass: edgartools' typed "
+             "ProxyStatement -> sec_def14a + four detail tables, zero LLM cost"),
+    "filing_text": FormHandlerSpec(
+        name="filing_text", sec_forms=tuple(FILING_TEXT_FORMS),
+        discovery="per_cik_accession", table="sec_filing_text",
+        handler=fetch_filing_text, call_shape="(context, tickers, years_history)",
+        step_chain_wired=True,
+        notes="10-K Item 1A + Item 7 and 10-Q Item 2 narrative text, one row per "
+             "(ticker, accession, section), for the embedding/drift feature layer"),
     "sec13f_hr": FormHandlerSpec(
         name="sec13f_hr", sec_forms=tuple(SEC_13F_FORMS),
         discovery="all_filers_by_date", table="sec13f_hr",

@@ -54,6 +54,7 @@ from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.llm_extractor import LLMExtractor
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping, sec_get
+from src.data_store.schema import Tables
 
 # DEF 14A = the shareholder proxy; DEF 14C = the equivalent INFORMATION STATEMENT that
 # CONTROLLED companies file instead (no vote solicited because a controlling holder already has
@@ -519,12 +520,12 @@ def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
     stops' bug. Checking per-ticker coverage (tickers x date) makes a rerun pick up
     the still-missing names; the per-ticker loop then skips already-done filings
     via `seen` (no re-LLM)."""
-    if not context.store.exists("def14a_llm"):
+    if not context.store.exists(Tables.def14a_llm):
         return False
-    entry = get_entry(context, "def14a_llm")
+    entry = get_entry(context, Tables.def14a_llm)
     if entry is None or entry.get("last_run_date") != pd.Timestamp.today().strftime(DATE_FORMAT):
         return False
-    have = set(context.store.load("def14a_llm", columns=["ticker"])["ticker"].dropna())
+    have = set(context.store.load(Tables.def14a_llm, columns=["ticker"])["ticker"].dropna())
     return set(requested_tickers).issubset(have)
 
 
@@ -555,7 +556,7 @@ def _save_ticker_rows(context: Context, rows: list[dict]) -> int:
     df = _strip_nul(df)                         # Postgres TEXT rejects NUL (\x00)
     df["as_of"] = pd.to_datetime(df["as_of"]).dt.normalize()
     df = df.drop_duplicates(subset=["ticker", "accession_number"], keep="last")
-    return context.store.save("def14a_llm", df)
+    return context.store.save(Tables.def14a_llm, df)
 
 
 def fetch_def14a_llm(
@@ -575,18 +576,19 @@ def fetch_def14a_llm(
     years = context.config.data_extract.years_history
     de = context.config.data_extract
 
-    cik_map = load_cik_mapping(context)
-    cik_map = cik_map[cik_map["ticker"].isin(tickers)]
+    cik_map = load_cik_mapping(context, tickers)
 
     if _is_up_to_date(context, cik_map["ticker"].tolist()):
-        existing = context.store.load("def14a_llm")
+        existing = context.store.load(Tables.def14a_llm)
         context.log.info("DEF 14A LLM already up to date — every requested ticker present "
                          "(%d rows) — skipping", len(existing))
         return existing
 
     # accessions already extracted -> never re-LLM (accession-only dedup, same convention as
     # fetch_8k_edgar.py / fetch_13d_edgar.py / fetch_def14a_edgar.py's `existing_filings`)
-    seen = existing_filings(context, "def14a_llm")
+    # a mutable copy: this fetcher is serial and adds each accession as it extracts it,
+    # so a ticker filing twice in one run is not sent to the LLM twice
+    seen = set(existing_filings(context, Tables.def14a_llm))
 
     # Manifest-driven listing window (see run_manifest.py): a routine run only lists
     # filings from the last run's date onward; a ticker-count change or the
@@ -596,7 +598,7 @@ def fetch_def14a_llm(
     # step back one day to keep the last run's date itself inclusive.
     rescan_days = int(getattr(de, "manifest_full_rescan_days", 30))
     manifest_since, is_full_rescan = manifest_window(
-        context, "def14a_llm", len(cik_map),
+        context, Tables.def14a_llm, len(cik_map),
         fallback_since=pd.Timestamp.today() - pd.DateOffset(years=years),
         full_rescan_days=rescan_days)
     list_since = None if is_full_rescan else (manifest_since - pd.Timedelta(days=1))
@@ -606,7 +608,7 @@ def fetch_def14a_llm(
                                  temperature=temperature, cache=cache)
     except EnvironmentError as e:
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
-        existing = context.store.load("def14a_llm", optional=True)
+        existing = context.store.load(Tables.def14a_llm, optional=True)
         return existing if existing is not None else pd.DataFrame(columns=["ticker", "as_of"])
 
     total_new, tickers_touched, total_skipped = 0, 0, 0
@@ -642,8 +644,8 @@ def fetch_def14a_llm(
             context.log.info("%s: +%d new DEF 14A filing(s) sent to the LLM (%d already in table)",
                              ticker, len(ticker_rows), skipped)
 
-    record_run(context, "def14a_llm", len(cik_map), total_new, is_full_rescan=is_full_rescan)
-    out = context.store.load("def14a_llm")
+    record_run(context, Tables.def14a_llm, len(cik_map), total_new, is_full_rescan=is_full_rescan)
+    out = context.store.load(Tables.def14a_llm)
     context.log.info(
         "DEF 14A LLM: +%d new rows across %d tickers (%d filings already present, skipped); "
         "table now %d rows, %d tickers", total_new, tickers_touched, total_skipped, len(out),

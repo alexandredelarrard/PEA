@@ -19,10 +19,8 @@ the same name and passing IT (not the Path) into `load_processed_universe` /
 `save_processed_universe`, which then raised `TypeError: unsupported operand type(s)
 for /: 'function' and 'str'`. The convention going forward: this module owns the name
 `cache_dir`; every caller stores its result in a variable named `cache`.
-
-Everything here is deliberately IO-only and side-effect-explicit: the parsing of each
-data set stays in its own fetcher, because that is the part that genuinely differs.
 """
+
 from __future__ import annotations
 
 import logging

@@ -29,16 +29,16 @@ time bought nothing.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
-from edgar import Company, set_identity
+from edgar import Company
 
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
+from src.data_extract.utils.common.edgar_driver import configure_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.run_manifest import manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
@@ -79,20 +79,6 @@ _FACTS_COLS = ["ticker", "cik", "accession_number", "field", "fiscal_year", "fis
               "duration_type", "form", "filing_date", "period_start", "period_end",
               "value", "unit", "source_tag", "is_amendment", "amends_accession",
               "derived", "derived_from_accessions", "fiscal_period_source"]
-
-
-def _configure_identity() -> None:
-    """SEC EDGAR requires a real, descriptive User-Agent -- fail loudly if unset,
-    matching this repo's `sec_utils.py` convention. Replaces the WIP file's
-    hardcoded placeholder (`set_identity("Jane Doe jdoe@example.com")`)."""
-    ua = os.getenv("SEC_USER_AGENT", "").strip()
-    if not ua:
-        raise RuntimeError(
-            "SEC_USER_AGENT is not set. SEC EDGAR blocks requests without a "
-            "descriptive User-Agent (name + email). Add it to your .env file, e.g.\n"
-            '  SEC_USER_AGENT="Your Name your.email@example.com"'
-        )
-    set_identity(ua)
 
 
 def _class_of_stock_axis_flags(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
@@ -1177,7 +1163,7 @@ def fetch_fundamentals_edgartools(context: Context, tickers: list[str]) -> pd.Da
     (thread-safe, ~9 req/sec) -- a sequential loop never has more than one request
     in flight and so never comes close to saturating that budget.
     """
-    _configure_identity()
+    configure_identity()
     de = context.config.data_extract
     years = int(getattr(de, "fundamentals_years_history", de.years_history))
     full_since = pd.Timestamp.today() - pd.DateOffset(years=years)

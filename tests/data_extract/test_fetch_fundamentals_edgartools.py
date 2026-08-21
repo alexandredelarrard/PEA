@@ -1262,7 +1262,7 @@ def test_fetch_fundamentals_edgartools_saves_incrementally_per_ticker(tmp_path, 
             "derived": 0.0, "derived_from_accessions": None, "fiscal_period_source": "native",
         }])
 
-    monkeypatch.setattr(mod, "_configure_identity", lambda: None)
+    monkeypatch.setattr(mod, "configure_identity", lambda: None)
     monkeypatch.setattr(mod, "build_ticker_facts_edgar", _fake_build)
 
     engine = create_engine(f"sqlite:///{tmp_path / 't.db'}")

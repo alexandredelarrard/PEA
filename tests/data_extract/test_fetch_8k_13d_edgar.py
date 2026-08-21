@@ -11,30 +11,34 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.data_extract.utils.structure.fetch_8k_edgar import _filing_row
+from src.data_extract.transformers.step_extract_structure import StepExtractStructure
+from src.data_extract.utils.structure.fetch_8k_edgar import _filing_row, fetch_8k_edgar
 from src.data_extract.utils.structure.fetch_13d_edgar import (
-    _cik_num, _clean_transaction_row, _extract_13d_item_sections, _extract_transaction_rows,
-    _filing_rows, build_ticker_13d_edgar,
+    _clean_transaction_row, _extract_13d_item_sections, _extract_transaction_rows,
+    _filing_rows, build_ticker_13d_edgar, fetch_13d_edgar,
 )
+from src.data_store.schema import Tables
+from src.utils.string import pad_cik
 
 
-def test_8k_and_13d_default_to_the_same_years_history_as_fundamentals():
-    """8-K/13D must discover filings over the SAME window fundamentals_facts uses,
-    so a ticker never shows a fundamentals quarter with no corresponding 8-K/13D
-    coverage for that period purely from a config divergence rather than a
-    genuine absence of filings. fundamentals_facts resolves its window via
-    `getattr(de, "fundamentals_years_history", de.years_history)`
-    (fetch_fundamentals_edgar.py); 8-K/13D resolve via plain `de.years_history`
-    (fetch_8k_edgar.py / fetch_13d_edgar.py). These are the SAME value whenever
-    `fundamentals_years_history` is unset (the case in this repo's own
-    configs/configs.yml today) -- this test pins that equivalence property so a
-    future source-specific override on ONE side doesn't silently desync them
-    without at least a visible test failure."""
-    de = SimpleNamespace(years_history=15)   # fundamentals_years_history intentionally unset
-    fundamentals_window = int(getattr(de, "fundamentals_years_history", de.years_history))
-    sec_8k_window = int(de.years_history)
-    sec_13d_window = int(de.years_history)
-    assert fundamentals_window == sec_8k_window == sec_13d_window == 15
+def test_structure_fetchers_take_years_history_as_an_argument():
+    """Every structure fetcher must receive its window from the step rather than reading
+    the config itself -- that is what keeps 8-K/13D/DEF 14A/filing-text discovery over the
+    SAME window as fundamentals_facts, instead of drifting apart through a config read
+    nobody can see from the call site."""
+    import inspect
+
+    for fn in (fetch_8k_edgar, fetch_13d_edgar):
+        params = inspect.signature(fn).parameters
+        assert "years_history" in params, f"{fn.__name__} must take years_history"
+        assert params["years_history"].default is inspect.Parameter.empty, (
+            f"{fn.__name__}.years_history must be required, not defaulted -- a default is a "
+            f"second place for the window to diverge")
+
+    # the step is the single place that reads the window off the config
+    run = inspect.getsource(StepExtractStructure.run)
+    assert run.count("data_extract.years_history") == 1
+    assert run.count("years_history=years_history") == 4   # 8-K, 13D, DEF 14A, filing text
 
 
 def _fake_8k_filing(*, accession="0001-24-000001", form="8-K", filing_date="2024-05-01",
@@ -67,12 +71,16 @@ def test_8k_filing_row_reads_current_report_flags():
 def test_8k_filing_row_survives_failed_obj_parse():
     """A filing whose .obj() call raises must still yield rows (item codes are
     always reliable, straight from the filing index) with both CurrentReport
-    flags null rather than losing the rows entirely."""
+    flags NaN rather than losing the rows entirely.
+
+    NaN, not None: `store.ensure_table` types a cold table's columns from the first
+    frame written to it, so an all-None flag column would be created TEXT."""
     filing = _fake_8k_filing()   # obj=None -> .obj() raises
     rows = _filing_row("MAA", "0000320193", filing)
     assert [r["item"] for r in rows] == ["2.02", "9.01"]
-    assert all(r["has_earnings"] is None for r in rows)
-    assert all(r["has_press_release"] is None for r in rows)
+    assert all(pd.isna(r["has_earnings"]) for r in rows)
+    assert all(pd.isna(r["has_press_release"]) for r in rows)
+    assert all(isinstance(r["has_earnings"], float) for r in rows)
     assert all(r["item_text"] == "" for r in rows)
 
 
@@ -83,13 +91,44 @@ def test_8k_amendment_flag_from_form_suffix():
 
 
 def _fake_13d_filing(*, accession="0001-24-000002", form="SC 13D", filing_date="2024-06-11",
-                     primary_document="sc13d.htm", obj=None):
+                     primary_document="sc13d.htm", obj=None, document=None, cik="0001326380"):
     filing = SimpleNamespace(
         accession_number=accession, form=form, filing_date=filing_date,
-        primary_document=primary_document, document=None,
+        primary_document=primary_document, document=document, cik=cik,
     )
     filing.obj = lambda: obj
     return filing
+
+
+def test_13d_doc_url_is_a_url_not_a_rendered_table():
+    """Real bug found by inspecting the live column: `filing.document` renders as a RICH
+    TABLE, so `str(filing.document)` stored an ASCII box -- '+-----+ | 1 sc13d.htm ... |' --
+    in `doc_url` for every row, never a URL. Take the attachment's own `.url`, else compose
+    the archives path from cik/accession/primary_document."""
+    obj = SimpleNamespace(
+        has_structured_data=False, is_amendment=False, amendment_number=None,
+        issuer_info=None, security_info=None,
+        items=SimpleNamespace(item4_purpose_of_transaction=None),
+        date_of_event=None, event_date=None,
+        reporting_persons=[_reporting_person("Icahn Carl C")],
+    )
+
+    # a `document` whose str() is a rendered box, exactly as edgartools' renders it
+    class _BoxedDocument:
+        url = None
+
+        def __str__(self) -> str:
+            return "+------+\n| 1 sc13d.htm |\n+------+"
+
+    row = _filing_rows(_fake_13d_filing(obj=obj, document=_BoxedDocument()))[0]
+    assert row["doc_url"] == (
+        "https://www.sec.gov/Archives/edgar/data/1326380/000124000002/sc13d.htm")
+    assert "+--" not in row["doc_url"]
+
+    # when the attachment exposes a real url, use it verbatim
+    row = _filing_rows(_fake_13d_filing(
+        obj=obj, document=SimpleNamespace(url="https://www.sec.gov/Archives/x/y.htm")))[0]
+    assert row["doc_url"] == "https://www.sec.gov/Archives/x/y.htm"
 
 
 def _reporting_person(name, cik="0001822844", no_cik=False, **kw):
@@ -399,10 +438,13 @@ def test_clean_transaction_row_strips_unit_suffix_from_quantity():
     assert row["price_per_share"] == 12.91
 
 
-def test_cik_num_normalizes_zero_padded_and_bare_ciks():
-    assert _cik_num("0000070858") == _cik_num("70858") == 70858
-    assert _cik_num(None) is None
-    assert _cik_num("not-a-cik") is None
+def test_pad_cik_normalizes_the_issuer_filer_guard_inputs():
+    """The guard compares an issuer CIK to the ticker's own through `pad_cik`. Zero-padded
+    and bare forms must compare equal, and an unresolvable CIK must be FALSY -- the guard
+    treats "unknown" as "don't reject", so a truthy sentinel there would drop real filings."""
+    assert pad_cik("0000070858") == pad_cik("70858") == "0000070858"
+    assert not pad_cik(None)
+    assert not pad_cik("not-a-cik")
 
 
 def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(monkeypatch):
@@ -434,11 +476,11 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
     )
     fake_company = SimpleNamespace(get_filings=lambda form: [good_filing, bad_filing])
     monkeypatch.setattr(
-        "src.data_extract.utils.structure.fetch_13d_edgar.Company",
+        "src.data_extract.utils.common.edgar_driver.Company",
         lambda ticker: fake_company,
     )
 
-    out, _txns = build_ticker_13d_edgar("AAPL", "0000320193")
+    out = build_ticker_13d_edgar("AAPL", "0000320193")[Tables.sec_13d]
     assert list(out["accession_number"]) == ["0001-good"]
     assert out.iloc[0]["issuer_name"] == "Apple Inc."
 

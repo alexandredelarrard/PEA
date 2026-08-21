@@ -44,6 +44,7 @@ class StepExtractPrices(Step):
 
         # MARKET + MACRO series -> `prices_macro`: the yfinance legs (SPY / VIX / oil / gold
         # / energy / FX, close only) plus the FRED levels and the derived spreads and 10Y
+        # TODO: 5 days off because FRED only downloads weekly -> use yfinance 
         fetch_macro(self._context, years_history=years_macro)
 
         # shorting stock 

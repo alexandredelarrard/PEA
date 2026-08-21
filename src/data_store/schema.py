@@ -103,9 +103,9 @@ class Tables:
     # Extract -- prices & market data                                   #
     # ----------------------------------------------------------------- #
     prices = Table("prices", ("ticker", "date"), date_col="date", freshness="daily")
-    dividends = Table("dividends", ("ticker", "date"), date_col="date")
+    dividends = Table("prices_dividends", ("ticker", "date"), date_col="date")
     short_interest = Table(
-        "short_interest", ("ticker", "date"), date_col="date", freshness="daily",
+        "sec_short_interest", ("ticker", "date"), date_col="date", freshness="daily",
         # short_interest_features: RegSHO short/total volume + reported short interest / ADV.
         # `short_interest` and `avg_daily_volume` are OPTIONAL -- the builder only adds
         # `days_to_cover` when BOTH are present, and the live table has only
@@ -229,38 +229,41 @@ class Tables:
     # Deterministic complement to def14a_llm: structured DEF 14A data via edgartools' typed
     # ProxyStatement (SEC XBRL ECD taxonomy + deterministic HTML-table parsing), zero LLM
     # cost. Filing-level row + four one-to-many detail tables below.
-    def14a_edgar = Table("def14a_edgar", ("ticker", "accession_number"),
+    def14a_edgar = Table("sec_def14a", ("ticker", "accession_number"),
                          date_col="filing_date",
                          date_type_cols=("filing_date", "period_of_report"))
     # Summary Compensation Table: one row per NEO per fiscal year (edgartools typically
     # recovers 3 years per filing) -- richer multi-year history than def14a_llm's single
     # most-recent-year CEO fields.
     def14a_edgar_executive_comp = Table(
-        "def14a_edgar_executive_comp",
+        "sec_def14a_executive_comp",
         ("ticker", "accession_number", "name", "year"),
         date_col="filing_date", date_type_cols=("filing_date",))
     # Non-employee Director Compensation Table (Item 402(k)): one row per director/filing.
     def14a_edgar_director_comp = Table(
-        "def14a_edgar_director_comp", ("ticker", "accession_number", "name"),
+        "sec_def14a_director_comp", ("ticker", "accession_number", "name"),
         date_col="filing_date", date_type_cols=("filing_date",))
     # Beneficial ownership table (5%+ holders + insiders, Reg S-K Item 403).
     def14a_edgar_ownership = Table(
-        "def14a_edgar_ownership",
+        "sec_def14a_ownership",
         ("ticker", "accession_number", "holder_name", "holder_type"),
         date_col="filing_date", date_type_cols=("filing_date",))
     # Ballot items: one row per proposal, carrying the BOARD's recommendation (not the
     # shareholder vote OUTCOME -- see fetch_def14a_edgar.py) + classified type.
     def14a_edgar_votes = Table(
-        "def14a_edgar_votes", ("ticker", "accession_number", "proposal_number"),
+        "sec_def14a_votes", ("ticker", "accession_number", "proposal_number"),
         date_col="filing_date", date_type_cols=("filing_date",))
-    # 8-K events: one row per 8-K filing. `items` is the raw comma-separated item-code
-    # string (structured, ~100% fill); `has_earnings`/`has_press_release` come from
-    # edgartools' typed `CurrentReport` (best-effort -- null, not False, when that fails).
-    sec_8k = Table("sec_8k", ("ticker", "accession_number"), date_col="filing_date",
+    # 8-K events: one row per ITEM CODE of a filing, keyed (ticker, accession, item) -- an
+    # 8-K reports 1..n items and ~75% report more than one. `item` is in the PK because
+    # keying on the accession alone made every extra item upsert onto the same row, silently
+    # keeping only the last (95,785 accessions stored for 196,875 item rows built).
+    # `has_earnings`/`has_press_release` come from edgartools' typed `CurrentReport`
+    # (best-effort -- NaN, not False, when that parse fails).
+    sec_8k = Table("sec_8k", ("ticker", "accession_number", "item"), date_col="filing_date",
                    date_type_cols=("filing_date", "period_of_report"))
     # 10-K Item 1A (Risk Factors) + Item 7 (MD&A) raw text; one row per
     # (ticker, accession, section). Feeds the embedding/drift feature layer.
-    filing_risk_text = Table("filing_risk_text",
+    filing_risk_text = Table("sec_filing_text",
                              ("ticker", "accession_number", "section"), date_col="filed",
                              date_type_cols=("filed", "period_of_report"))
 

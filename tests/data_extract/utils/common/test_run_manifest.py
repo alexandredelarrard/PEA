@@ -10,6 +10,7 @@ import types
 import pandas as pd
 
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
+from src.data_store.schema import Tables
 
 
 def _ctx(tmp_path):
@@ -48,16 +49,16 @@ def test_record_run_does_not_clobber_sibling_tables(tmp_path):
 def test_record_run_preserves_last_full_rescan_date_on_routine_run(tmp_path):
     ctx = _ctx(tmp_path)
     first = pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
-    record_run(ctx, "def14a_edgar", ticker_count=5, rows_added=5,
+    record_run(ctx, Tables.def14a_edgar, ticker_count=5, rows_added=5,
               is_full_rescan=True, run_date=first)
 
     # a routine (non-rescan) run a few days later: last_run_date advances, but
     # last_full_rescan_date must stay pinned to the last TRUE full rescan
     second = first + pd.Timedelta(days=3)
-    record_run(ctx, "def14a_edgar", ticker_count=5, rows_added=2,
+    record_run(ctx, Tables.def14a_edgar, ticker_count=5, rows_added=2,
               is_full_rescan=False, run_date=second)
 
-    entry = get_entry(ctx, "def14a_edgar")
+    entry = get_entry(ctx, Tables.def14a_edgar)
     assert entry["last_run_date"] == second.strftime("%Y-%m-%d")
     assert entry["last_full_rescan_date"] == first.strftime("%Y-%m-%d")
 

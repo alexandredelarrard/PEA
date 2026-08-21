@@ -91,7 +91,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "_process_filing", _fake_process)
     monkeypatch.setattr(mod, "_save_ticker_rows", _fake_save)
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c: pd.DataFrame(
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame(
         {"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
     monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
 
@@ -145,7 +145,7 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod, "list_filings", _fake_list)
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c: pd.DataFrame(
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame(
         {"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
     monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
 

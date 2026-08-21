@@ -27,7 +27,7 @@ import requests
 from bs4 import BeautifulSoup
 from urllib3.exceptions import InsecureRequestWarning
 
-from src.constants.constants import SEC_EDGAR_COMPANY_SEARCH_URL, _HEADERS
+from src.constants.constants import SEC_EDGAR_COMPANY_SEARCH_URL, _HEADERS, SUPERINVESTORS_JSON
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
 from src.utils.string import pad_cik

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from src.data_store.schema import Tables
 from src.data_extract.utils.structure.fetch_def14a_edgar import (
     _director_comp_rows, _exec_comp_rows, _main_row, _ownership_rows, _votes_rows,
     build_ticker_def14a_edgar,
@@ -56,8 +57,13 @@ def _fake_proxy(*, has_xbrl=True, has_individual_executive_data=False,
     )
 
 
-def _fake_filing(*, form="DEF 14A", accession="0001-24-000003", filing_date="2024-04-01"):
-    return SimpleNamespace(accession_number=accession, form=form, filing_date=filing_date)
+def _fake_filing(*, form="DEF 14A", accession="0001-24-000003", filing_date="2024-04-01",
+                 period_of_report="2023-12-31"):
+    return SimpleNamespace(accession_number=accession, form=form, filing_date=filing_date,
+                           period_of_report=period_of_report)
+
+
+_FILED = pd.Timestamp("2024-04-01")
 
 
 # --- _main_row ----------------------------------------------------------------- #
@@ -78,7 +84,7 @@ def test_main_row_reads_xbrl_and_html_fields():
     proxy = _fake_proxy(ceo_pay_ratio=ratio, audit_fees=audit, voting_proposals=proposals)
     filing = _fake_filing()
 
-    row = _main_row("AAPL", "0000320193", filing, proxy)
+    row = _main_row("AAPL", "0000320193", filing, proxy, proposals, _FILED)
 
     assert row["ticker"] == "AAPL"
     assert row["accession_number"] == "0001-24-000003"
@@ -97,14 +103,16 @@ def test_main_row_reads_xbrl_and_html_fields():
     assert row["n_auditor_ratification_proposals"] == 1.0
     assert row["n_shareholder_proposals"] == 1.0
     assert row["n_board_against_recommendations"] == 1.0     # the shareholder proposal
-    assert row["period_of_report"] == pd.Timestamp("2025-12-31")
+    # from the filing index -- `ProxyStatement.fiscal_year_end` was the old source and
+    # resolved for 0 of the 329 rows ever stored
+    assert row["period_of_report"] == "2023-12-31"
 
 
 def test_main_row_survives_missing_optional_sections():
     """A filer with no XBRL (SRC/EGC), no CEO-pay-ratio disclosure, and no audit-fee
     table found must yield NaN for those columns -- not a crash, not a false zero."""
     proxy = _fake_proxy(has_xbrl=False, ceo_pay_ratio=None, audit_fees=None, voting_proposals=[])
-    row = _main_row("XYZ", "0000000001", _fake_filing(), proxy)
+    row = _main_row("XYZ", "0000000001", _fake_filing(), proxy, [], _FILED)
     assert row["has_xbrl"] == 0.0
     assert pd.isna(row["ceo_pay_ratio"])
     assert pd.isna(row["auditor_name"]) or row["auditor_name"] is None
@@ -144,7 +152,7 @@ def test_main_row_survives_attribute_errors():
         mnpi_disclosure_timed_for_comp_value = None
         has_individual_executive_data = False
 
-    row = _main_row("AAPL", "0000320193", _fake_filing(), BrokenProxy())
+    row = _main_row("AAPL", "0000320193", _fake_filing(), BrokenProxy(), [], _FILED)
     assert pd.isna(row["has_xbrl"])
 
 
@@ -159,7 +167,7 @@ def test_exec_comp_rows_reads_summary_compensation_table_and_skips_blank_rows():
          "pension_change": None, "other_compensation": None, "total": None},
     ])
     proxy = _fake_proxy(summary_compensation_table=df)
-    rows = _exec_comp_rows("AAPL", "0000320193", _fake_filing(), proxy)
+    rows = _exec_comp_rows("AAPL", "0000320193", _fake_filing(), proxy, _FILED)
     assert len(rows) == 1
     assert rows[0]["name"] == "Jane Doe"
     assert rows[0]["year"] == 2024.0
@@ -173,7 +181,7 @@ def test_director_comp_rows_reads_director_compensation_table():
          "other_compensation": 0, "total": 300_000},
     ])
     proxy = _fake_proxy(director_compensation_table=df)
-    rows = _director_comp_rows("AAPL", "0000320193", _fake_filing(), proxy)
+    rows = _director_comp_rows("AAPL", "0000320193", _fake_filing(), proxy, _FILED)
     assert len(rows) == 1
     assert rows[0]["name"] == "John Smith"
     assert rows[0]["total"] == 300_000.0
@@ -187,7 +195,7 @@ def test_ownership_rows_reads_beneficial_ownership_table():
          "shares": 3_000_000, "percent_of_class": 0.02},
     ])
     proxy = _fake_proxy(beneficial_ownership=df)
-    rows = _ownership_rows("AAPL", "0000320193", _fake_filing(), proxy)
+    rows = _ownership_rows("AAPL", "0000320193", _fake_filing(), proxy, _FILED)
     assert {r["holder_name"] for r in rows} == {"The Vanguard Group", "Jane Doe"}
     assert {r["holder_type"] for r in rows} == {"5pct_holder", "director_officer"}
 
@@ -196,7 +204,7 @@ def test_votes_rows_reads_voting_proposals():
     proposals = [_proposal(1, "Election of Directors", "FOR", "director_election"),
                 _proposal(2, "Say-on-Pay", "FOR", "say_on_pay")]
     proxy = _fake_proxy(voting_proposals=proposals)
-    rows = _votes_rows("AAPL", "0000320193", _fake_filing(), proxy)
+    rows = _votes_rows("AAPL", "0000320193", _fake_filing(), proxy.voting_proposals, _FILED)
     assert [r["proposal_number"] for r in rows] == [1.0, 2.0]
     assert rows[1]["proposal_type"] == "say_on_pay"
 
@@ -211,15 +219,15 @@ def test_build_ticker_def14a_edgar_skips_done_accessions_and_pre_since_filings(m
         f.obj = lambda p=proxy: p
     fake_company = SimpleNamespace(get_filings=lambda form: [old_filing, done_filing, new_filing])
     monkeypatch.setattr(
-        "src.data_extract.utils.structure.fetch_def14a_edgar.Company",
+        "src.data_extract.utils.common.edgar_driver.Company",
         lambda ticker: fake_company,
     )
 
-    main_df, *_ = build_ticker_def14a_edgar(
+    main_df = build_ticker_def14a_edgar(
         "AAPL", "0000320193",
         since=pd.Timestamp("2024-01-01"),
         done_accessions=frozenset({"0001-done"}),
-    )
+    )[Tables.def14a_edgar]
     assert set(main_df["accession_number"]) == {"0001-new"}
 
 
@@ -237,11 +245,11 @@ def test_build_ticker_def14a_edgar_skips_non_proxy_obj_results(monkeypatch):
     fake_company = SimpleNamespace(
         get_filings=lambda form: [good_filing, non_proxy_filing, failing_filing])
     monkeypatch.setattr(
-        "src.data_extract.utils.structure.fetch_def14a_edgar.Company",
+        "src.data_extract.utils.common.edgar_driver.Company",
         lambda ticker: fake_company,
     )
 
-    main_df, *_ = build_ticker_def14a_edgar("AAPL", "0000320193")
+    main_df = build_ticker_def14a_edgar("AAPL", "0000320193")[Tables.def14a_edgar]
     assert set(main_df["accession_number"]) == {"0001-good"}
 
 

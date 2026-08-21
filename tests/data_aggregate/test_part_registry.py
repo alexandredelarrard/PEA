@@ -79,14 +79,17 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
     from src.data_aggregate.utils.common.parts import CUBE_PARTS as REG
 
     sqlite_store.replace("sp500_tickers", pd.DataFrame({"ticker": ["AAA", "BBB"]}))
-    ctx = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test"),
-                          paths={"DATA_STORE": Path("."), "SECTOR_PEERS_PATH": Path("peers.json")})
     config = OmegaConf.create({
         # no market_ticker / other_tickers: the market and commodity/FX series are named
         # rows in `prices_macro` now, not config-selected tickers inside `prices`
         "build_cube": {"targets": {"horizons": [30, 60, 90]},
                        "composites": {"enabled": False}},
+        "data_extract": {"redundant_ticks": []},
     })
+    # `config` on the context too: sub-steps resolve their universe through
+    # `load_universe_tickers`, which reads `data_extract.redundant_ticks` off `context.config`.
+    ctx = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test"), config=config,
+                          paths={"DATA_STORE": Path("."), "SECTOR_PEERS_PATH": Path("peers.json")})
     owned = {cmd: [p.name for p in REG if p.command == cmd] for cmd in OWNER}
     for cmd, cls in OWNER.items():
         step = cls(context=ctx, config=config)

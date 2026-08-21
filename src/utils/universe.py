@@ -14,11 +14,15 @@ from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 
 def load_universe_tickers(context: Context) -> list[str]:
     """The analysis universe: sorted, de-duplicated, upper-cased tickers from the
-    `sp500_tickers` table, EXCLUDING names with insufficient history."""
-    duplicates_tickers = set(context.config.data_extract.redundant_ticks)
+    `sp500_tickers` table, EXCLUDING names with insufficient history and the
+    redundant share classes listed in `data_extract.redundant_ticks`."""
+    # Guard BEFORE touching the frame: `optional=True` returns None on a cold/empty table,
+    # which is the seeding run's own first call -- it must get [] back, not an AttributeError.
     df = context.store.load(Tables.sp500_tickers, columns=["ticker"], optional=True)
-    df = df.loc[~df['ticker'].isin(duplicates_tickers)]
     if df is None or "ticker" not in df.columns:
         return []
+    # Exclude after normalising, so a lower-cased "goog" is dropped like "GOOG".
+    excluded = INSUFFICIENT_HISTORY_TICKERS | {
+        str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
     return sorted({t for raw in df["ticker"].dropna()
-                   if (t := str(raw).strip().upper()) and t not in INSUFFICIENT_HISTORY_TICKERS})
+                   if (t := str(raw).strip().upper()) and t not in excluded})

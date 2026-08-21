@@ -1,50 +1,92 @@
 """
 fetch_8k_edgar.py (src/data_extract/utils/structure/fetch_8k_edgar.py)
 ------------------------------------------------------------------------
-Extracts SEC Form 8-K filings into `sec_8k` using `edgartools` (`filing.obj()`).
-Replaces legacy submission JSONs by capturing item codes along with typed 
-`CurrentReport` metadata (`has_earnings`, `has_press_release`, `is_amendment`).
+SEC Form 8-K filings -> `sec_8k`, one row per (ticker, accession, item code).
+Item codes come from the filing index; `has_earnings` / `has_press_release` and
+the per-item text come from edgartools' typed `CurrentReport` (`filing.obj()`).
 
-Data Grain:
-- One row per (ticker, accession_number).
-
-Scope Note:
-- Exhibit Financial Parsing Out of Scope: Parsing financial statements directly 
-  from attached earnings releases (`get_income_statement()`) is intentionally 
-  excluded to avoid storing unstandardized, duplicate data that competes with 
-  `fundamentals_facts`.
+Parsing financial statements out of an attached earnings release is deliberately
+out of scope -- it would store unstandardized figures competing with
+`fundamentals_facts`.
 """
-
 from __future__ import annotations
 
-import pandas as pd
-from edgar import Company
 import itertools
 
-from src.data_store.schema import Tables
-from src.constants.constants import SEC_8K_FORMS, SEC_8K_HIGH_SIGNAL_ITEMS
+import pandas as pd
+
+from src.constants.constants import SEC_8K_FORMS
 from src.context import Context
-from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.run_manifest import manifest_window, record_run
-from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
-from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
+from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
+from src.data_store.schema import Table, Tables
 
 _COLS = ["ticker", "cik", "accession_number", "form", "filing_date", "period_of_report",
         "n_items", "is_amendment", "has_earnings", "has_press_release",
         "primary_document", "item", "item_tag", "item_text"]
 
+# Curated leading distress/governance codes for the feature layer; any other code is
+# tagged `other_unclassified_item` rather than dropped.
+_HIGH_SIGNAL_ITEMS = {
+    # 1: registrant's business and operations
+    "1.01": "material_agreement_entered",
+    "1.02": "material_agreement_terminated",
+    "1.03": "bankruptcy_or_receivership",
+    "1.04": "mine_safety_reporting",
+    "1.05": "cybersecurity_incidents",
+    # 2: financial information
+    "2.01": "completion_acquisition_or_disposition",
+    "2.02": "results_of_operations_and_financial_condition",
+    "2.03": "creation_of_direct_financial_obligation",
+    "2.04": "triggering_events_accelerating_financial_obligation",
+    "2.05": "restructuring_costs",
+    "2.06": "impairment",
+    # 3: securities and trading markets
+    "3.01": "delisting_or_covenant",
+    "3.02": "unregistered_sales_of_equity",
+    "3.03": "material_modification_to_security_rights",
+    # 4: accountants and financial statements
+    "4.01": "auditor_change",
+    "4.02": "non_reliance_restatement",
+    # 5: corporate governance and management
+    "5.01": "change_in_control",
+    "5.02": "exec_or_director_change",
+    "5.03": "bylaw_change",
+    "5.04": "employee_benefit_plan_trading_suspension",
+    "5.05": "code_of_ethics_amendment_or_waiver",
+    "5.06": "change_in_shell_company_status",
+    "5.07": "vote_of_security_holders",
+    "5.08": "shareholder_director_nominations",
+    # 6: asset-backed securities
+    "6.01": "abs_informational_computational_material",
+    "6.02": "change_of_servicer_or_trustee",
+    "6.03": "change_in_credit_enhancement",
+    "6.04": "failure_to_make_required_distribution",
+    "6.05": "securities_act_updating_disclosure",
+    # 7: Regulation FD
+    "7.01": "regulation_fd_disclosure",
+    # 8: other events
+    "8.01": "other_events",
+    # 9: financial statements and exhibits
+    "9.01": "financial_statements_and_exhibits",
+}
 
-def _n_items(items: str) -> int:
-    return sum(1 for x in str(items or "").split(",") if x.strip())
 
+def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
+    """One 8-K -> one row per item code. `has_earnings`/`has_press_release` are
+    best-effort: a filing whose `.obj()` parse fails keeps its item rows (those come
+    straight from the filing index) with both flags NaN.
 
-def _filing_row(ticker: str, cik : str, filing) -> dict:
-    """One 8-K filing -> one `sec_8k` row. `has_earnings`/`has_press_release` come
-    from edgartools' typed `CurrentReport` (`filing.obj()`) on a best-effort basis:
-    a filing whose `.obj()` parse fails keeps its item-code row (still ~100%
-    reliable, straight from the filing index), just with both flags null rather
-    than losing the row entirely."""
-    has_earnings = has_press_release = obj = None
+    NaN rather than None: `store.ensure_table` infers column types from the first frame
+    written to a cold table, so an all-None column would be created TEXT for good."""
+    # Item codes come free off the filing index. Read them BEFORE `.obj()`: with no item codes
+    # this filing yields no rows at all, so the parse would be thrown away.
+    items = getattr(filing, "items", "") or ""
+    item_list = [i.strip() for i in str(items).split(",") if i.strip()]
+    if not item_list:
+        return []
+
+    has_earnings = has_press_release = float("nan")
+    obj = None
     try:
         obj = filing.obj()
         has_earnings = float(bool(obj.has_earnings))
@@ -52,104 +94,48 @@ def _filing_row(ticker: str, cik : str, filing) -> dict:
     except Exception:                                   # noqa: BLE001 -- best-effort only
         pass
 
-    items = getattr(filing, "items", "") or ""
-    item_list = [i.strip() for i in items.split(",") if i.strip()]
-
-    base_row = {
-        "ticker": ticker, 
-        "cik": cik, 
+    base = {
+        "ticker": ticker,
+        "cik": cik,
         "accession_number": filing.accession_number,
-        "form": filing.form, 
+        "form": filing.form,
         "filing_date": pd.Timestamp(filing.filing_date),
         "period_of_report": filing.period_of_report,
-        "n_items": _n_items(items),
+        "n_items": len(item_list),
         "is_amendment": 1.0 if str(filing.form).upper().endswith("/A") else 0.0,
-        "has_earnings": has_earnings, "has_press_release": has_press_release,
+        "has_earnings": has_earnings,
+        "has_press_release": has_press_release,
         "primary_document": getattr(filing, "primary_document", None),
     }
 
-    results = []
+    rows = []
     for item_code in item_list:
-        # Create an independent dictionary copy for each item
-        row = base_row.copy()
-
-        # 1. Map item code to human-readable tag safely
-        row["item"] = item_code
-        row["item_tag"] = SEC_8K_HIGH_SIGNAL_ITEMS.get(
-            item_code, "other_unclassified_item"
-        )
-
-        # 2. Safely extract item text from CurrentReport (obj) or fallback
         item_text = None
         if obj is not None:
             try:
                 item_text = obj["Item " + item_code]
-            except Exception:
+            except Exception:                           # noqa: BLE001 -- best-effort only
                 item_text = None
-
-        row["item_text"] = item_text or ""
-        results.append(row)
-
-    return results
-
-def build_ticker_8k_edgar(ticker: str, cik :str, since: pd.Timestamp | None = None,
-                         done_accessions: frozenset[str] = frozenset()) -> pd.DataFrame:
-    """Walks `Company(ticker).get_filings(form=SEC_8K_FORMS)`, skips accessions
-    already in `done_accessions` or filed before `since`, and builds one row per
-    filing via `_filing_row`."""
-
-    company = Company(ticker)
-    filings = company.get_filings(form=list(SEC_8K_FORMS))
-    sorted_filings = sorted(filings, key=lambda f: f.filing_date)
-    if since is not None:
-        sorted_filings = [f for f in sorted_filings if pd.Timestamp(f.filing_date) >= since]
-
-    rows = [_filing_row(ticker, cik, f) for f in sorted_filings if f.accession_number not in done_accessions]
-    rows = list(itertools.chain.from_iterable(rows))
-    return pd.DataFrame(rows, columns=_COLS)
+        rows.append({**base,
+                     "item": item_code,
+                     "item_tag": _HIGH_SIGNAL_ITEMS.get(item_code, "other_unclassified_item"),
+                     "item_text": item_text or ""})
+    return rows
 
 
-def fetch_8k_edgar(context: Context, tickers: list[str], years: int | None = None) -> pd.DataFrame:
-    """Public entry point (mirrors `fetch_fundamentals_edgartools`'s conventions):
-    per-ticker try/except so one bad ticker cannot abort the batch, incremental via
-    `existing_filings` (dedup by accession) PLUS a `since` cutoff from the
-    extraction manifest (see `run_manifest.py`) -- a routine run only relists
-    filings from the last run's date onward, while a ticker-count change or the
-    `manifest_full_rescan_days` self-heal window falls back to the FULL `years`
-    window (falls back to `data_extract.years_history`, matching every sibling
-    fetcher's default window), gap-filling instead of trusting the cutoff alone.
-    Tickers are walked CONCURRENTLY on a thread pool (`run_per_ticker`) -- the walk
-    is network I/O bound (SEC filing downloads via edgartools), not CPU bound, so
-    this is a pure speed win with no change to the extracted rows (see
-    parallel_fetch.py's module docstring)."""
-    _configure_identity()
-    years = int(years if years is not None else context.config.data_extract.years_history)
-    full_since = pd.Timestamp.today() - pd.DateOffset(years=years)
-    cik_map = load_cik_mapping(context)
-    cik_map = cik_map[cik_map["ticker"].isin(tickers)]
+def build_ticker_8k_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None = None,
+                          done_accessions: frozenset[str] = frozenset(),
+                          ) -> dict[Table, pd.DataFrame]:
+    rows = itertools.chain.from_iterable(
+        _filing_row(ticker, cik, f)
+        for f in new_filings(ticker, SEC_8K_FORMS, since, done_accessions))
+    df = pd.DataFrame(list(rows), columns=_COLS)
+    # A filing repeating a code in its `items` string (two officer changes -> "5.02,5.02")
+    # would make the upsert touch one PK row twice, which Postgres rejects outright.
+    return {Tables.sec_8k: df.drop_duplicates(subset=list(Tables.sec_8k.pk), keep="last")}
 
-    rescan_days = int(getattr(context.config.data_extract, "manifest_full_rescan_days", 30))
-    since, is_full_rescan = manifest_window(
-        context, Tables.sec_8k, len(cik_map), fallback_since=full_since,
-        full_rescan_days=rescan_days)
 
-    seen = existing_filings(context, Tables.sec_8k)
-
-    def _worker(ticker: str, cik: str) -> tuple[int, bool]:
-        try:
-            out = build_ticker_8k_edgar(ticker, cik, since=since, done_accessions=seen)
-        except Exception as e:                          # noqa: BLE001
-            context.log.warning("fetch_8k_edgar: %s failed (%s)", ticker, e)
-            return 0, False
-        if not out.empty:
-            context.store.save(Tables.sec_8k, out)
-        return len(out), True
-
-    results = run_per_ticker(cik_map, _worker, desc="8-K (edgartools)")
-    total_rows = sum(n for n, _ in results)
-    failed = sum(1 for _, ok in results if not ok)
-
-    context.log.info("fetch_8k_edgar: +%d filings across %d/%d ticker(s) (%d failed) -> '%s'",
-                     total_rows, len(results), len(cik_map), failed, Tables.sec_8k)
-    record_run(context, Tables.sec_8k, len(cik_map), total_rows, is_full_rescan=is_full_rescan)
-    return context.store.load(Tables.sec_8k)
+def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int) -> None:
+    run_edgar_fetch(context, tickers, years_history,
+                    tables=(Tables.sec_8k,), build=build_ticker_8k_edgar,
+                    desc="8-K (edgartools)")

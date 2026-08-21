@@ -49,6 +49,10 @@ from src.utils.step import Step
 
 class StepCubeFundamentals(Step):
 
+    # The price fields this step projects, declared like every sibling sub-step so the
+    # projection stays visible and testable (valuation ratios need the close only).
+    _FIELDS = ("close",)
+
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
@@ -106,7 +110,7 @@ class StepCubeFundamentals(Step):
         return load_price_frames(
             self._store, 
             peers=load_peers_or_raise(self._context, self._config),
-            fields=("close",), 
+            fields=self._FIELDS,
             since=since)
 
     def _load_fundamentals(self) -> pd.DataFrame | None:

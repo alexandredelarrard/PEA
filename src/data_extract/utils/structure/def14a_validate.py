@@ -44,10 +44,14 @@ from typing import Any
 
 import pandas as pd
 
-from src.constants.constants import (
-    DEF14A_AUDIT_FEE_MIN_PLAUSIBLE, DEF14A_COMP_RECONCILE_TOLERANCE, DEF14A_FISCAL_YEAR_MIN,
-    DEF14A_NET_INCOME_MIN_PLAUSIBLE, DEF14A_PAY_RATIO_TOLERANCE, DEF14A_PLACEHOLDER_PERCENT,
-)
+# Sanity bounds separating "implausible for an S&P 500 issuer, therefore mis-scaled or
+# fabricated by the parser" from "small but real" -- the repair layer only fires on the former.
+DEF14A_AUDIT_FEE_MIN_PLAUSIBLE = 1e5     # a sub-$100k TOTAL auditor fee => block is in thousands
+DEF14A_NET_INCOME_MIN_PLAUSIBLE = 1e4    # a sub-$10k net income => figure is in millions/billions
+DEF14A_FISCAL_YEAR_MIN = 1990            # fee-table year labels outside [min, today+1] are junk
+DEF14A_PAY_RATIO_TOLERANCE = 0.02        # ceo_comp / median_comp must reproduce ratio within 2%
+DEF14A_COMP_RECONCILE_TOLERANCE = 1.0    # comp components must sum to `total` within $1 (rounding)
+DEF14A_PLACEHOLDER_PERCENT = 0.5         # edgartools' fabricated stand-in for a "*" percent cell
 
 __all__ = [
     "clean_text", "clean_person_name", "repair_main_row", "repair_exec_comp_rows",

@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 import click
 
 from src.context import get_config_context
-from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import _configure_identity
+from src.data_extract.utils.common.edgar_driver import configure_identity
 from tests.data_extract.test_fundamentals_edgartools_integration import (
     INTEGRATION_TICKERS, build_ticker_integration_report,
 )
@@ -32,7 +32,7 @@ from tests.data_extract.test_fundamentals_edgartools_integration import (
 @click.option("--config", "config_path", default="./configs")
 def main(tickers: str | None, config_path: str) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=True)   # loads .env
-    _configure_identity()
+    configure_identity()
     ticker_list = [t.strip().upper() for t in tickers.split(",")] if tickers else INTEGRATION_TICKERS
 
     for t in ticker_list:

@@ -30,18 +30,18 @@ CREATE TABLE IF NOT EXISTS "prices" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] dividends  (pk: ticker, date)
+-- [extract] prices_dividends  (pk: ticker, date)
 
-CREATE TABLE IF NOT EXISTS "dividends" (
+CREATE TABLE IF NOT EXISTS "prices_dividends" (
     "date" TIMESTAMP NOT NULL,
     "ticker" TEXT NOT NULL,
     "dividends" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] short_interest  (pk: ticker, date)
+-- [extract] sec_short_interest  (pk: ticker, date)
 
-CREATE TABLE IF NOT EXISTS "short_interest" (
+CREATE TABLE IF NOT EXISTS "sec_short_interest" (
     "date" TIMESTAMP NOT NULL,
     "ticker" TEXT NOT NULL,
     "short_volume" DOUBLE PRECISION,
@@ -49,9 +49,9 @@ CREATE TABLE IF NOT EXISTS "short_interest" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] fails_to_deliver  (pk: ticker, date)
+-- [extract] sec_fails_to_deliver  (pk: ticker, date)
 
-CREATE TABLE IF NOT EXISTS "fails_to_deliver" (
+CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver" (
     "ticker" TEXT NOT NULL,
     "date" DATE NOT NULL,
     "fails_quantity" DOUBLE PRECISION,
@@ -489,7 +489,7 @@ CREATE TABLE IF NOT EXISTS "insider_transactions" (
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_ticker ON "insider_transactions" ("ticker");
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_transaction_date ON "insider_transactions" ("transaction_date");
 
--- [extract] sec_13d  (pk: ticker, accession_number, rp_seq) -- CARRIED OVER: not present in the database that generated this file, so its previous DDL is preserved verbatim.
+-- [extract] sec_13d  (pk: ticker, accession_number, rp_seq)
 
 CREATE TABLE IF NOT EXISTS "sec_13d" (
     "ticker" TEXT NOT NULL,
@@ -508,20 +508,39 @@ CREATE TABLE IF NOT EXISTS "sec_13d" (
     "reporting_person_cik" TEXT,
     "reporting_person_citizenship" TEXT,
     "type_of_reporting_person" TEXT,
+    "is_group_member" TEXT,
     "sole_voting_power" DOUBLE PRECISION,
     "shared_voting_power" DOUBLE PRECISION,
     "sole_dispositive_power" DOUBLE PRECISION,
     "shared_dispositive_power" DOUBLE PRECISION,
     "aggregate_amount" DOUBLE PRECISION,
     "percent_of_class" DOUBLE PRECISION,
+    "item3_source_of_funds" TEXT,
     "item4_purpose_of_transaction" TEXT,
+    "item5_interest_in_securities" TEXT,
+    "item6_contracts_understandings" TEXT,
     "primary_document" TEXT,
     "doc_url" TEXT,
     PRIMARY KEY ("ticker", "accession_number", "rp_seq")
 );
 CREATE INDEX IF NOT EXISTS ix_sec_13d_filing_date ON "sec_13d" ("filing_date");
 
--- SKIPPED (no live schema and no previous DDL): sec_13d_transactions
+-- [extract] sec_13d_transactions  (pk: ticker, accession_number, trade_seq)
+
+CREATE TABLE IF NOT EXISTS "sec_13d_transactions" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "filing_date" DATE,
+    "trade_seq" BIGINT NOT NULL,
+    "reporting_person_name" TEXT,
+    "trade_date" DATE,
+    "transaction_type" TEXT,
+    "quantity" DOUBLE PRECISION,
+    "price_per_share" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number", "trade_seq")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_13d_transactions_filing_date ON "sec_13d_transactions" ("filing_date");
 
 -- [extract] def14a_llm  (pk: ticker, accession_number)
 
@@ -575,9 +594,9 @@ CREATE TABLE IF NOT EXISTS "def14a_llm" (
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_llm_as_of ON "def14a_llm" ("as_of");
 
--- [extract] def14a_edgar  (pk: ticker, accession_number)
+-- [extract] sec_def14a  (pk: ticker, accession_number)
 
-CREATE TABLE IF NOT EXISTS "def14a_edgar" (
+CREATE TABLE IF NOT EXISTS "sec_def14a" (
     "ticker" TEXT NOT NULL,
     "cik" TEXT,
     "accession_number" TEXT NOT NULL,
@@ -626,11 +645,11 @@ CREATE TABLE IF NOT EXISTS "def14a_edgar" (
     "n_board_against_recommendations" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "accession_number")
 );
-CREATE INDEX IF NOT EXISTS ix_def14a_edgar_filing_date ON "def14a_edgar" ("filing_date");
+CREATE INDEX IF NOT EXISTS ix_sec_def14a_filing_date ON "sec_def14a" ("filing_date");
 
--- [extract] def14a_edgar_executive_comp  (pk: ticker, accession_number, name, year)
+-- [extract] sec_def14a_executive_comp  (pk: ticker, accession_number, name, year)
 
-CREATE TABLE IF NOT EXISTS "def14a_edgar_executive_comp" (
+CREATE TABLE IF NOT EXISTS "sec_def14a_executive_comp" (
     "ticker" TEXT NOT NULL,
     "cik" TEXT,
     "accession_number" TEXT NOT NULL,
@@ -648,11 +667,11 @@ CREATE TABLE IF NOT EXISTS "def14a_edgar_executive_comp" (
     "total" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "accession_number", "name", "year")
 );
-CREATE INDEX IF NOT EXISTS ix_def14a_edgar_executive_comp_filing_date ON "def14a_edgar_executive_comp" ("filing_date");
+CREATE INDEX IF NOT EXISTS ix_sec_def14a_executive_comp_filing_date ON "sec_def14a_executive_comp" ("filing_date");
 
--- [extract] def14a_edgar_director_comp  (pk: ticker, accession_number, name)
+-- [extract] sec_def14a_director_comp  (pk: ticker, accession_number, name)
 
-CREATE TABLE IF NOT EXISTS "def14a_edgar_director_comp" (
+CREATE TABLE IF NOT EXISTS "sec_def14a_director_comp" (
     "ticker" TEXT NOT NULL,
     "cik" TEXT,
     "accession_number" TEXT NOT NULL,
@@ -667,11 +686,11 @@ CREATE TABLE IF NOT EXISTS "def14a_edgar_director_comp" (
     "total" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "accession_number", "name")
 );
-CREATE INDEX IF NOT EXISTS ix_def14a_edgar_director_comp_filing_date ON "def14a_edgar_director_comp" ("filing_date");
+CREATE INDEX IF NOT EXISTS ix_sec_def14a_director_comp_filing_date ON "sec_def14a_director_comp" ("filing_date");
 
--- [extract] def14a_edgar_ownership  (pk: ticker, accession_number, holder_name, holder_type)
+-- [extract] sec_def14a_ownership  (pk: ticker, accession_number, holder_name, holder_type)
 
-CREATE TABLE IF NOT EXISTS "def14a_edgar_ownership" (
+CREATE TABLE IF NOT EXISTS "sec_def14a_ownership" (
     "ticker" TEXT NOT NULL,
     "cik" TEXT,
     "accession_number" TEXT NOT NULL,
@@ -682,11 +701,11 @@ CREATE TABLE IF NOT EXISTS "def14a_edgar_ownership" (
     "percent_of_class" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "accession_number", "holder_name", "holder_type")
 );
-CREATE INDEX IF NOT EXISTS ix_def14a_edgar_ownership_filing_date ON "def14a_edgar_ownership" ("filing_date");
+CREATE INDEX IF NOT EXISTS ix_sec_def14a_ownership_filing_date ON "sec_def14a_ownership" ("filing_date");
 
--- [extract] def14a_edgar_votes  (pk: ticker, accession_number, proposal_number)
+-- [extract] sec_def14a_votes  (pk: ticker, accession_number, proposal_number)
 
-CREATE TABLE IF NOT EXISTS "def14a_edgar_votes" (
+CREATE TABLE IF NOT EXISTS "sec_def14a_votes" (
     "ticker" TEXT NOT NULL,
     "cik" TEXT,
     "accession_number" TEXT NOT NULL,
@@ -697,9 +716,9 @@ CREATE TABLE IF NOT EXISTS "def14a_edgar_votes" (
     "proposal_type" TEXT,
     PRIMARY KEY ("ticker", "accession_number", "proposal_number")
 );
-CREATE INDEX IF NOT EXISTS ix_def14a_edgar_votes_filing_date ON "def14a_edgar_votes" ("filing_date");
+CREATE INDEX IF NOT EXISTS ix_sec_def14a_votes_filing_date ON "sec_def14a_votes" ("filing_date");
 
--- [extract] sec_8k  (pk: ticker, accession_number)
+-- [extract] sec_8k  (pk: ticker, accession_number, item)
 
 CREATE TABLE IF NOT EXISTS "sec_8k" (
     "ticker" TEXT NOT NULL,
@@ -713,16 +732,16 @@ CREATE TABLE IF NOT EXISTS "sec_8k" (
     "has_earnings" DOUBLE PRECISION,
     "has_press_release" DOUBLE PRECISION,
     "primary_document" TEXT,
-    "item" TEXT,
+    "item" TEXT NOT NULL,
     "item_tag" TEXT,
     "item_text" TEXT,
-    PRIMARY KEY ("ticker", "accession_number")
+    PRIMARY KEY ("ticker", "accession_number", "item")
 );
 CREATE INDEX IF NOT EXISTS ix_sec_8k_filing_date ON "sec_8k" ("filing_date");
 
--- [extract] filing_risk_text  (pk: ticker, accession_number, section)
+-- [extract] sec_filing_text  (pk: ticker, accession_number, section)
 
-CREATE TABLE IF NOT EXISTS "filing_risk_text" (
+CREATE TABLE IF NOT EXISTS "sec_filing_text" (
     "ticker" TEXT NOT NULL,
     "cik" TEXT,
     "accession_number" TEXT NOT NULL,
@@ -734,7 +753,7 @@ CREATE TABLE IF NOT EXISTS "filing_risk_text" (
     "n_words" BIGINT,
     PRIMARY KEY ("ticker", "accession_number", "section")
 );
-CREATE INDEX IF NOT EXISTS ix_filing_risk_text_filed ON "filing_risk_text" ("filed");
+CREATE INDEX IF NOT EXISTS ix_sec_filing_text_filed ON "sec_filing_text" ("filed");
 
 -- [extract] google_trends  (pk: ticker, date)
 

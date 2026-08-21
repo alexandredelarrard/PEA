@@ -73,23 +73,18 @@ def today_iso() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
-def existing_filings(context: Context, table: str) -> set[str]:
+def existing_filings(context: Context, table) -> frozenset[str]:
     """Accession numbers already stored in a filing table -- the dedup set every
-    per-filing fetcher (13D, 8-K, DEF 14A edgar, ...) uses to skip a filing it has
-    already extracted. Returns empty when the table does not exist yet, so a first
-    run fetches full history.
+    per-filing fetcher (13D, 8-K, DEF 14A, filing text) uses to skip a filing it has
+    already extracted. Empty when the table does not exist yet, so a first run
+    fetches full history.
 
-    Deliberately accession-only, NOT a per-ticker max-filing-date cutoff: an earlier
-    version also returned a `{ticker: max(filing_date)}` dict so each ticker's listing
-    window could start from its own last-seen date, but that silently never re-checks
-    any date range already scanned -- a filing missed by a prior bug, or one that
-    posts to EDGAR out of date order, stays missing forever. Every run now lists each
-    ticker's FULL `years_history` window and relies solely on this accession set to
-    avoid re-work, matching `fetch_def14a_llm.py`'s gap-filling convention."""
-    df = context.store.load(table, columns=["accession_number"], optional=True)
-    if df is None:
-        return set()
-    return set(df["accession_number"].dropna().astype(str))
+    Deliberately accession-only, NOT a per-ticker max-filing-date cutoff: that was
+    tried and reverted, because it never re-checks a date range already scanned --
+    a filing missed by a prior bug, or one that posts to EDGAR out of date order,
+    stays missing forever. Each run lists a ticker's whole window and relies solely
+    on this set to avoid re-work."""
+    return frozenset(str(a) for a in context.store.distinct(table, "accession_number"))
 
 
 def bulk_ingested_quarters(store, table: str) -> set[str]:
@@ -119,21 +114,22 @@ def save_processed_universe(cache_dir: Path, table: str, universe: set[str]) -> 
         encoding="utf-8")
 
 
-def load_cik_mapping(context: Context) -> pd.DataFrame:
-    """Ticker -> CIK (+ name / GICS) resolution for the SEC EDGAR fetchers.
+def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.DataFrame:
+    """Ticker -> CIK (+ name / GICS) resolution for the SEC EDGAR fetchers, filtered
+    server-side to `tickers` when given. `company_name` is aliased from `name` for
+    callers that log it.
 
     Single source of truth is `sp500_tickers` (built by fetch_prices), which already
     carries `cik` alongside `name` / `sector` / `industry_group` / `sub_industry`.
-    `company_name` is exposed (aliased from `name`) for callers that log it.
-
-    Formerly a separate `cik_mapping` table rebuilt from SEC's company_tickers.json;
-    dropped because it merely duplicated `sp500_tickers` AND its CIK source mismapped
-    active tickers (e.g. XOM -> a non-filing "ExxonMobil Holdings Corp" shell), while
-    sp500_tickers already held the correct CIKs.
+    A separate `cik_mapping` table rebuilt from SEC's company_tickers.json was dropped:
+    it duplicated `sp500_tickers` AND mismapped active tickers (e.g. XOM -> a non-filing
+    "ExxonMobil Holdings Corp" shell).
     """
-    # No `optional=True`: every SEC fetcher needs CIKs, so an absent/empty universe is a fault to
-    # surface here rather than an empty mapping that silently fetches nothing.
-    df = context.store.load(Tables.sp500_tickers)
+    # No `optional=True`: every SEC fetcher needs CIKs, so an absent universe -- or a ticker
+    # list that resolves to nothing -- is a fault to surface here rather than an empty
+    # mapping that silently fetches nothing.
+    df = context.store.load(Tables.sp500_tickers,
+                            where={"ticker": list(tickers)} if tickers is not None else None)
     if "cik" not in df.columns:
         return df
     df = df.copy()

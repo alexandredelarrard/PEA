@@ -1,0 +1,167 @@
+{
+  "_README": {
+    "purpose": "Which statement TEMPLATE a filer's numbers should be read against. Drives the per-regime overrides in configs/fundamentals/fundamentals_kpis.json and the expected-absence register in configs/fundamentals/fundamentals_exceptions.json.",
+    "primary_signal": "THE FILER'S OWN STATEMENT ROLE URI. A filer that presents a deposit-based balance sheet has told us it is a bank, in its own filing, for that period. That is evidence; a GICS label is a third-party classification applied to the whole company today and back-dated over its entire history.",
+    "tiebreak_signal": "GICS, from sp500_tickers (sector / industry_group / sub_industry), used ONLY when no role URI matches -- older filings and small filers often ship no recognisable role.",
+    "why_role_uri_first": "GICS routes a company; a role URI routes a FILING. A company that changed business mix (or was reclassified) keeps one GICS label across a history in which its statements genuinely changed shape.",
+    "resolution": [
+      "1. Match the filing's presentation role URIs against `role_patterns` below. First regime with a match wins, in the declared order.",
+      "2. Otherwise match GICS `sub_industry`, then `industry_group`, then `sector`, against each regime's `gics` block -- most specific first.",
+      "3. Otherwise `industrial`, the default template.",
+      "`exceptions.force_regime` overrides BOTH, by sub_industry, and is how the Article-5 fee businesses are kept out of the financial templates."
+    ],
+    "measured_on": "sp500_tickers, 491 tickers, read 2026-08-21. Every ticker list below is the LIVE membership, not an illustration."
+  },
+
+  "regimes": {
+    "bank": {
+      "description": "Deposit-taking lender. Unclassified balance sheet, net-revenue top line, capex not reconstructible.",
+      "role_patterns": ["sfp-dbo", "108000", "soi-int", "132001", "scf-dbo", "160000"],
+      "role_note": "`sfp-dbo` = Statement of Financial Position, Deposit Based Operations (FASB role 108000). `soi-int` (132001) is the interest-based statement of income; `scf-dbo` (160000) the deposit-based cash flow.",
+      "gics": {
+        "industry_group": ["Banks"],
+        "sub_industry": ["Diversified Banks", "Regional Banks", "Consumer Finance"]
+      },
+      "tickers_measured": {
+        "Diversified Banks": ["BAC", "C", "JPM", "PNC", "TFC", "USB", "WFC"],
+        "Regional Banks": ["CFG", "FITB", "HBAN", "KEY", "MTB", "RF"],
+        "Consumer Finance": ["AXP", "COF", "SYF"]
+      },
+      "consumer_finance_note": "Card issuers and consumer lenders are routed here because they present a lender's statements, not because GICS calls them Financial Services. AXP is the already-confirmed case: its total revenue runs the 'net of interest expense' convention while its netIncome and totalAssets tie to an external source at 0.000% on the same rows."
+    },
+
+    "insurer": {
+      "description": "Underwriter. Premiums-plus-investment-income top line; insurance contracts are scoped out of ASC 606.",
+      "role_patterns": ["sfp-ibo", "108200", "soi-ins", "136000"],
+      "role_note": "`sfp-ibo` = Statement of Financial Position, Insurance Based Operations (108200); `soi-ins` the insurance statement of income (136000).",
+      "gics": {
+        "sub_industry": ["Life & Health Insurance", "Property & Casualty Insurance", "Multi-line Insurance", "Reinsurance"]
+      },
+      "tickers_measured": {
+        "Life & Health Insurance": ["AFL", "GL", "MET", "PFG", "PRU"],
+        "Property & Casualty Insurance": ["ACGL", "ALL", "CB", "CINF", "HIG", "PGR", "TRV", "WRB"],
+        "Multi-line Insurance": ["AIG", "AIZ", "L"],
+        "Reinsurance": ["EG"]
+      },
+      "regime_break": {"field_change": "LDTI (ASU 2018-12)", "effective": "2021-01-01", "reason": "long-duration contract measurement changed, so insurer equity and reserve-linked lines step at adoption."},
+      "insurance_brokers_excluded": "Insurance Brokers are NOT here -- see exceptions.force_regime. A broker earns commission, holds no reserves and files an Article 5 statement."
+    },
+
+    "broker_dealer": {
+      "description": "Securities-based operations. Unclassified balance sheet, trading-revenue top line.",
+      "role_patterns": ["sfp-sbo", "112000"],
+      "role_note": "`sfp-sbo` = Statement of Financial Position, Securities Based Operations (112000).",
+      "gics": {"sub_industry": ["Investment Banking & Brokerage"]},
+      "tickers_measured": {"Investment Banking & Brokerage": ["GS", "HOOD", "IBKR", "MS", "RJF", "SCHW"]},
+      "note": "GS's capex uses a narrower financial-sector definition than an industrial's -- already a confirmed known-definitional-difference case against external sources."
+    },
+
+    "real_estate": {
+      "description": "Property owner/lessor. Often an unclassified balance sheet; rental top line; Up-C and operating-partnership structures are common.",
+      "role_patterns": ["sfp-clreo", "110000", "sfp-ucreo", "110200", "soi-reit", "145000"],
+      "role_note": "`sfp-clreo` / `sfp-ucreo` = classified / unclassified Real Estate Operations (110000 / 110200); `soi-reit` the REIT statement of income (145000).",
+      "gics": {
+        "industry_group": ["Equity Real Estate Investment Trusts (REITs)", "Real Estate Management & Development"]
+      },
+      "tickers_measured": {
+        "Health Care REITs": ["DOC", "VTR", "WELL"],
+        "Hotel & Resort REITs": ["HST", "VICI"],
+        "Industrial REITs": ["PLD"],
+        "Multi-Family Residential REITs": ["CPT", "ESS", "MAA", "UDR", "VMRK"],
+        "Office REITs": ["ARE", "BXP"],
+        "Other Specialized REITs": ["IRM"],
+        "Retail REITs": ["FRT", "KIM", "O", "REG", "SPG"],
+        "Self-Storage REITs": ["EXR", "PSA"],
+        "Single-Family Residential REITs": ["INVH"],
+        "Real Estate Services": ["CBRE", "CSGP"]
+      },
+      "_roster_correction": "PLD (Prologis, Industrial REITs) was MISSING from this roster until 2026-08-21, giving 23 entries where the live membership is 24. The absence register's arithmetic was unaffected -- its real_estate._n of 19 already counted PLD among the 24 candidates minus 5 with no facts -- but this file's README calls these lists 'the LIVE membership, not an illustration', so the gap was real. It is also the single most predictable omission available: Industrial REITs (GICS 601025) is the sub-industry the first research already flagged as the one a contiguous-code-range scan silently drops, which is why this file matches sub-industry NAMES instead.",
+      "not_contiguous_note": "The equity-REIT sub-industry set is NOT one contiguous GICS block -- Industrial REITs sits apart from the residential/retail run. Matching a code RANGE silently drops it. This config therefore matches sub-industry NAMES, which is also what sp500_tickers actually stores.",
+      "entity_scope_note": "Up-C / operating-partnership filers scope the LP along `LegalEntityAxis`, frequently with a COMPANY-EXTENSION member (MAA uses `maa:LimitedPartnershipMember`). Filter on the AXIS, never on a fixed member list."
+    },
+
+    "utility": {
+      "description": "Rate-regulated utility. Regulated-revenue top line, regulatory assets, AFUDC-equity in income.",
+      "role_patterns": ["sfp-ucreo", "soi-re"],
+      "role_patterns_note": "Utilities rarely ship a distinctive FASB role; GICS is the practical signal here and the role list is deliberately weak rather than invented.",
+      "gics": {"sector": ["Utilities"]},
+      "tickers_measured": {"count": 31, "examples": ["DTE", "NEE", "SO"]},
+      "multi_registrant_note": "A utility holding company files ONE instance covering several registrant CIKs -- Southern Company carries six, with 3,579 `LegalEntityAxis` occurrences and all identifiers set to the parent. Consolidated (default-member) facts only."
+    },
+
+    "energy": {
+      "description": "Oil and gas. Article 5 statements, but a distinctive revenue root and a depletion-bearing D&A line.",
+      "role_patterns": [],
+      "gics": {"sector": ["Energy"]},
+      "tickers_measured": {"count": 21, "examples": ["APA", "DVN", "EOG", "VLO", "XOM"]},
+      "note": "Not a FASB template regime -- it exists because the revenue ROOT varies (`Revenues` for XOM, `RevenuesAndOther` for APA) and because depletion makes `DepreciationDepletionAndAmortization` the only correct D&A aggregate. Both are handled by reading the linkbase, so this regime mostly carries the expected-absence profile."
+    },
+
+    "industrial": {
+      "description": "The DEFAULT template: Article 5 classified balance sheet, Rule 5-03 income statement.",
+      "role_patterns": ["sfp-cls", "104000", "soi", "124000"],
+      "gics": {},
+      "is_default": true,
+      "note": "Anything with no matching role and no more specific GICS match lands here. That is correct: Article 5 IS the general rule, and the other regimes are Reg S-X's enumerated specialised-industry exceptions."
+    },
+
+    "hybrid": {
+      "description": "A conglomerate whose single statement genuinely spans several templates.",
+      "role_patterns": [],
+      "gics": {"sub_industry": ["Multi-Sector Holdings"]},
+      "tickers_measured": {"Multi-Sector Holdings": ["BRK-B"]},
+      "excluded_from_regime_relative_scoring": true,
+      "note": "Berkshire underwrites insurance, owns a railroad and runs an equity book from one balance sheet. Forcing it into any one template produces a confidently wrong number, so it is EXCLUDED from regime-relative scoring rather than classified. Its absolute values are still extracted."
+    }
+  },
+
+  "exceptions": {
+    "force_regime": {
+      "_why": "The four verified GICS traps. Each of these sits inside a financial-sector GICS block but files ARTICLE 5 statements -- a fee business with revenue, cost of revenue and a classified balance sheet. Routing GICS sector 'Financials' wholesale to a bank or insurer template is the single largest classification error available here, and it would hit 36 live tickers (Insurance Brokers 6 + Financial Exchanges & Data 9 + Transaction & Payment Processing 9 + Asset Management & Custody Banks 12 = 36; an earlier draft of this file said 37, an arithmetic slip in the prose only -- the ticker lists themselves matched the live data exactly).",
+      "_gics_financials_reconciliation": "Live query of sp500_tickers WHERE sector = 'Financials' returns 13 sub-industries / 76 tickers, reconciling exactly: bank 16 + insurer 17 + broker_dealer 6 + industrial-via-force_regime 36 + hybrid 1 (BRK-B, Multi-Sector Holdings) = 76. So GICS Financials resolves to FIVE destinations, not four. `hybrid` is a legitimate fifth bucket; it is easy to overlook only because it is explicitly carved out of regime-relative scoring. (Those 16/17 counts are GICS membership; the absence register's per-regime denominators are lower because they count only tickers that HAVE facts.)",
+      "Insurance Brokers": {
+        "regime": "industrial",
+        "tickers": ["AJG", "AON", "BRO", "ERIE", "MRSH", "WTW"],
+        "reason": "Commission and fee revenue. No underwriting reserves, no premiums earned, no investment float to speak of. `PremiumsEarnedNet` would resolve to nothing and the insurer top-line roll-up would return null for a company with billions in revenue."
+      },
+      "Financial Exchanges & Data": {
+        "regime": "industrial",
+        "tickers": ["CBOE", "CME", "COIN", "FDS", "ICE", "MCO", "MSCI", "NDAQ", "SPGI"],
+        "reason": "Transaction, listing and data-subscription revenue. These are Article 5 fee businesses -- MSCI and SPGI are subscription publishers that happen to be classified under Financials."
+      },
+      "Transaction & Payment Processing Services": {
+        "regime": "industrial",
+        "tickers": ["CPAY", "FIS", "FISV", "GPN", "JKHY", "MA", "PYPL", "V", "XYZ"],
+        "reason": "Network and processing fees. Visa and Mastercard take no credit risk and hold no deposits; they are fee businesses with a classified balance sheet."
+      },
+      "Asset Management & Custody Banks": {
+        "regime": "industrial",
+        "tickers": ["AMP", "APO", "ARES", "BEN", "BLK", "BNY", "BX", "IVZ", "KKR", "NTRS", "STT", "TROW"],
+        "reason": "Management and performance fees. 'Custody Banks' in the GICS NAME is what makes this trap dangerous -- BNY and STT do take deposits and would partly fit a bank template, but BLK, TROW and the private-market managers emphatically do not, and they share the sub-industry. Routed to Article 5 as the safer uniform choice; the role-URI branch still overrides for the two custodians whenever they ship a deposit-based role, which is the correct outcome and the reason role URI is checked FIRST."
+      },
+      "Telecom Tower REITs": {
+        "regime": "industrial",
+        "tickers": ["AMT", "CCI", "SBAC"],
+        "reason": "A tower REIT files like an infrastructure operator: classified balance sheet, cost of revenue, operating income. It is a REIT for TAX purposes, which does not change the statement shape."
+      },
+      "Data Center REITs": {
+        "regime": "industrial",
+        "tickers": ["DLR", "EQIX"],
+        "reason": "Same as tower REITs -- Equinix reports revenue and cost of revenue like a colocation operator."
+      },
+      "Timber REITs": {
+        "regime": "industrial",
+        "tickers": ["WY"],
+        "reason": "Weyerhaeuser runs manufacturing segments with inventory and cost of goods sold."
+      }
+    },
+
+    "mortgage_reits": {
+      "_status": "RULE ENCODED, ZERO CURRENT MEMBERS.",
+      "regime": "broker_dealer",
+      "measured": "The plan flags mortgage REITs as classified under FINANCIALS rather than Real Estate (a real GICS property). Verified against the live roster on 2026-08-21: the S&P 500 currently contains NO mortgage-REIT sub-industry at all, so this trap has no members to mis-route today. The rule is kept so a future index addition is handled rather than silently routed to a bank template.",
+      "sub_industry": ["Mortgage REITs", "Commercial Mortgage REITs", "Residential Mortgage REITs"],
+      "reason": "A mortgage REIT holds a levered securities portfolio, not property. Its statements look like a securities-based operation, never like a lessor -- so neither the real_estate nor the bank template fits."
+    }
+  }
+}

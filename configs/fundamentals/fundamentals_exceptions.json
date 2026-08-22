@@ -1,0 +1,163 @@
+{
+  "_README": {
+    "purpose": "The EXPECTED-ABSENCE register: (regime, field) -> is a missing value structural, or a regression? Without this, the two look identical and a null count cannot tell them apart -- which is defect #5 of the five this rebuild designs out.",
+    "consumed_by": "The validator's `coverage_field` check. A field absent where `expected_absent` is true gets dc_code = not_applicable_for_regime and NO finding; absent where it is false is a real coverage finding.",
+    "authority": "17 CFR 210.1-02(bb)(1)(i) defines the exception class: 'specialized industries in which classified balance sheets are normally not presented'. Reg S-X Rule 5-02 captions 9 and 21 (total current assets / total current liabilities) are required only 'when appropriate'; Rule 5-03 never required 'gross profit' (0 occurrences in its text) or 'operating income' (1 occurrence, inside caption 7 'Non-operating income') from anyone.",
+    "how_measured": {
+      "substrate": "fundamentals_facts_legacy, 7,776,870 undimensioned+dimensioned facts, measured 2026-08-21 at zero network cost.",
+      "method": "Per ticker: does ANY undimensioned (is_dimensioned = false) fact exist for the concept, anywhere in its history? Then the share of a regime's tickers for which the answer is no.",
+      "scope": "442 tickers -- those that have facts AND are classifiable by the documented GICS method. See `_substrate_caveat` and `_unclassifiable_tickers`. An earlier draft of this README said 441, which was off by one against this file's own by_regime block; the block itself was always right and sums exactly to 442 (bank 14 + insurer 16 + broker_dealer 6 + real_estate 19 + utility 28 + energy 18 + hybrid 1 + industrial 340).",
+      "regime_assignment": "The same sub_industry rules as configs/fundamentals/fundamentals_regimes.json, applied to sp500_tickers."
+    },
+    "_substrate_caveat": {
+      "finding": "fundamentals_facts_legacy covers only 445 of the 500 tickers in sp500_tickers, and the 58 with no facts at all are ALPHABETICALLY CLUSTERED -- essentially everything from U/V/W onward (UNH, UNP, UPS, USB, V, VLO, VRT, VZ, WFC, WMT, WY, ...) plus a handful of recent additions (GEHC, GEV, KVUE, RDDT, SOLV, VLTO). That is the signature of a TRUNCATED BACKFILL, not of genuine absence.",
+      "consequences": [
+        "The rates below are computed over the 442 classifiable covered tickers only. Counting the missing 58 as 'absent' inflated every rate -- e.g. bank AssetsCurrent absence read 16/16 including two tickers that simply have no facts.",
+        "PHASE 7: 'calibrate thresholds offline on fundamentals_facts_legacy' is still the right move, but the sample is alphabetically biased. A threshold calibrated on it has not seen the U-W tail.",
+        "PHASE 9: four of the 32 acceptance-slice tickers -- USB, VLO, VRT and V -- have NO legacy facts, so there is no baseline to regress them against. Expect and explain that rather than reading it as a rebuild failure."
+      ]
+    },
+    "_unclassifiable_tickers": {
+      "_status": "KNOWN, ACCEPTED, NOT A BLOCKER.",
+      "tickers": ["AVB", "EA", "EQR"],
+      "finding": "`fundamentals_facts_legacy` covers 445 distinct tickers, but 3 of them have facts and NO row in the current `sp500_tickers` table, so the documented GICS-driven method cannot assign them a regime. 445 - 3 = 442, the scope figure above.",
+      "decision": "Accepted as out of scope (user, 2026-08-21): their fact history is too short to be worth chasing, so they are simply not classified rather than special-cased. They contribute to no rate in this file and must not be counted as 'missing a field' anywhere.",
+      "consequence": "Any code that joins facts to `sp500_tickers` for a regime must tolerate an unmatched ticker by SKIPPING it, not by defaulting it to `industrial` -- defaulting would silently add three unclassified names to the 340-ticker industrial denominator and shift every industrial rate in this file."
+    },
+    "rule": "expected_absent is set true only where BOTH a structural authority explains the absence AND the measured rate is high (>= ~0.75). Everything else stays false, so a real coverage regression is still a finding. A cell below the bar may still be excused, but ONLY with a written `override_reason` -- see bank.capex, the one such cell. `measured_absent_rate` is recorded for EVERY cell, present or not: a number that moves is itself evidence.",
+    "_independently_re_verified": "2026-08-21, second pass. Every rate cell re-derived from `fundamentals_facts_legacy` + `sp500_tickers` reproduced EXACTLY: bank capex (0.43 / 6), utility and energy currentAssets (0.00 / 0 both), insurer sellingGeneralAdmin (0.69 / 11, with the exact 5-ticker tagging list AFL/AIG/AIZ/HIG/TRV), real_estate operatingIncome (0.21 / 4, exact tickers ARE/CPT/DOC/O), industrial researchAndDevelopment (0.44 / 150). The arithmetic and the method are sound; what the second pass corrected was prose -- the 441 denominator, the three unclassifiable tickers, and bank capex's 'intermittent' label.",
+    "universal_finding": "`Assets` is present for 442 of 442 tickers, in EVERY regime. It is the only balance-sheet total with no regime variant, which is exactly why totalAssets is Tier 1 with no fallback."
+  },
+
+  "by_regime": {
+    "bank": {
+      "_n": 14,
+      "_authority": "FASB ships StatementOfFinancialPosition-DepositBasedOperations (role 108000). A deposit-based balance sheet is UNCLASSIFIED -- it contains zero occurrences of AssetsCurrent while still carrying Assets. Measured: every single covered bank is missing all four of the classified/manufacturing lines.",
+      "currentAssets":          {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 14},
+      "currentLiabilities":     {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 14},
+      "inventory":              {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 14, "note": "a bank holds no inventory; the concept is meaningless, not missing."},
+      "researchAndDevelopment": {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 14, "note": "Compustat's own XRD definition ends 'This item is not available for banks'."},
+      "grossProfit":            {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 14},
+      "sellingGeneralAdmin":    {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 14, "note": "a bank's cost base is noninterest EXPENSE, not SG&A."},
+      "costOfRevenue":          {"expected_absent": true,  "measured_absent_rate": 0.93, "n_absent": 13},
+      "operatingIncome":        {"expected_absent": true,  "measured_absent_rate": 0.93, "n_absent": 13},
+      "capex":                  {"expected_absent": true,  "measured_absent_rate": 0.43, "n_absent": 6,
+                                 "override_reason": "BELOW the register's own >=0.75 bar, excused deliberately, and the reason is a THREE-WAY SPLIT rather than uniform intermittency. Measuring WHICH years each of the 8 tagging banks uses `PaymentsToAcquirePropertyPlantAndEquipment`: (1) ALWAYS, every covered year -- AXP, C, COF, FITB, HBAN: five banks whose capex is fully reliable and not intermittent at all; (2) SPORADIC -- CFG (1 of 13 years), KEY (3 of 16, 2011-13 only), TFC (6 of 16, 2011-13 and 2020-22): three banks where a TTM really would mix tagged and untagged quarters; (3) NEVER -- BAC, JPM, MTB, PNC, RF, SYF: the six that make up the 0.43 rate. The plan's and this register's earlier 'intermittency' reasoning is real but describes only group (2), 3 of the 8 tagging banks, and applying it to all 8 overstated how unreliable bank capex is. Kept expected_absent: true because the mixed-TTM risk in group (2) is real and silent, and because a field whose reliability differs this much WITHIN one regime cannot be treated as uniformly present. The refinement matters downstream: a consumer should treat AXP/C/COF/FITB/HBAN capex as usable and CFG/KEY/TFC as genuinely spotty. Bank freeCashflow stays null BY DESIGN. Revisit per-ticker rather than per-regime if bank capex ever needs to be usable.",
+                                 "tagging_pattern": {"always": ["AXP", "C", "COF", "FITB", "HBAN"], "sporadic": ["CFG", "KEY", "TFC"], "never": ["BAC", "JPM", "MTB", "PNC", "RF", "SYF"]}},
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+    },
+
+    "insurer": {
+      "_n": 16,
+      "_authority": "FASB ships StatementOfFinancialPosition-InsuranceBasedOperations (role 108200), also unclassified. Insurance contracts are scoped OUT of ASC 606 (ASC 606-10-15-2), which is why the revenue-from-contracts element captures only 3.2% of MetLife's revenue.",
+      "currentAssets":          {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 16},
+      "currentLiabilities":     {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 16},
+      "inventory":              {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 16},
+      "researchAndDevelopment": {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 16},
+      "grossProfit":            {"expected_absent": true,  "measured_absent_rate": 0.94, "n_absent": 15},
+      "costOfRevenue":          {"expected_absent": true,  "measured_absent_rate": 0.94, "n_absent": 15},
+      "operatingIncome":        {"expected_absent": true,  "measured_absent_rate": 0.75, "n_absent": 12},
+      "sellingGeneralAdmin":    {"expected_absent": false, "measured_absent_rate": 0.69, "n_absent": 11,
+                                 "note": "5 of 16 DO tag SG&A -- below the bar, so a newly missing SG&A on one of those five is still a finding."},
+      "capex":                  {"expected_absent": false, "measured_absent_rate": 0.56, "n_absent": 9},
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+    },
+
+    "broker_dealer": {
+      "_n": 6,
+      "_authority": "FASB ships StatementOfFinancialPosition-SecuritiesBasedOperations (role 112000). A securities-based balance sheet is unclassified. Small regime -- 6 tickers -- so treat every rate here as indicative, not settled.",
+      "currentAssets":          {"expected_absent": true,  "measured_absent_rate": 0.83, "n_absent": 5},
+      "currentLiabilities":     {"expected_absent": true,  "measured_absent_rate": 0.83, "n_absent": 5},
+      "grossProfit":            {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 6},
+      "costOfRevenue":          {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 6},
+      "operatingIncome":        {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 6},
+      "inventory":              {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 6},
+      "sellingGeneralAdmin":    {"expected_absent": true,  "measured_absent_rate": 0.83, "n_absent": 5},
+      "researchAndDevelopment": {"expected_absent": true,  "measured_absent_rate": 0.83, "n_absent": 5},
+      "capex":                  {"expected_absent": false, "measured_absent_rate": 0.50, "n_absent": 3,
+                                 "note": "GS's capex uses a narrower financial-sector definition -- already a confirmed known-definitional-difference case against external sources."},
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+    },
+
+    "real_estate": {
+      "_n": 19,
+      "_authority": "FASB ships classified and UNclassified Real Estate Operations roles (110000 / 110200) and most equity REITs use the unclassified one -- a property portfolio has no meaningful operating cycle. 17 CFR 210.1-02(bb)(1)(i) is the citable exception.",
+      "currentAssets":          {"expected_absent": true,  "measured_absent_rate": 0.84, "n_absent": 16},
+      "currentLiabilities":     {"expected_absent": true,  "measured_absent_rate": 0.84, "n_absent": 16},
+      "inventory":              {"expected_absent": true,  "measured_absent_rate": 0.89, "n_absent": 17},
+      "researchAndDevelopment": {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 19,
+                                 "note": "A REIT spends nothing on R&D. This cell is why PaymentsToAcquireInProcessResearchAndDevelopment must never resolve researchAndDevelopment -- MAA tags $272M of development capex with it, and a name-keyed extractor would book a REIT as the sector's biggest R&D spender."},
+      "sellingGeneralAdmin":    {"expected_absent": true,  "measured_absent_rate": 0.95, "n_absent": 18},
+      "grossProfit":            {"expected_absent": true,  "measured_absent_rate": 0.79, "n_absent": 15},
+      "capex":                  {"expected_absent": false, "measured_absent_rate": 0.74, "n_absent": 14,
+                                 "note": "Just under the bar, and deliberately so: a REIT's real capex IS reconstructible, it is simply tagged with real-estate-specific elements (development, improvements) rather than PaymentsToAcquirePropertyPlantAndEquipment. The linkbase branch should find it -- so absence stays a finding rather than being excused."},
+      "costOfRevenue":          {"expected_absent": false, "measured_absent_rate": 0.63, "n_absent": 12},
+      "operatingIncome":        {"expected_absent": false, "measured_absent_rate": 0.21, "n_absent": 4,
+                                 "note": "REITs DO present operating income -- 15 of 19. The research's sector-level table read 0 of 31 absent; the difference is that tower/data-centre/timber REITs are routed to `industrial` here."},
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+    },
+
+    "utility": {
+      "_n": 28,
+      "_authority": "A rate-regulated utility files a CLASSIFIED balance sheet under Article 5 -- measured: 0 of 28 are missing currentAssets or currentLiabilities. It is NOT one of Reg S-X's unclassified specialised industries, and grouping it with banks/insurers for that exception would be wrong. What a utility does not use is the Rule 5-03 SG&A / gross-profit caption structure: its income statement runs on operation-and-maintenance and fuel costs.",
+      "sellingGeneralAdmin":    {"expected_absent": true,  "measured_absent_rate": 0.96, "n_absent": 27},
+      "researchAndDevelopment": {"expected_absent": true,  "measured_absent_rate": 0.93, "n_absent": 26},
+      "grossProfit":            {"expected_absent": true,  "measured_absent_rate": 0.89, "n_absent": 25},
+      "inventory":              {"expected_absent": false, "measured_absent_rate": 0.54, "n_absent": 15,
+                                 "note": "13 of 28 tag inventory -- fuel and materials stocks. Genuinely mixed, so absence stays a finding."},
+      "costOfRevenue":          {"expected_absent": false, "measured_absent_rate": 0.64, "n_absent": 18},
+      "currentAssets":          {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+      "currentLiabilities":     {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+      "operatingIncome":        {"expected_absent": false, "measured_absent_rate": 0.07, "n_absent": 2},
+      "capex":                  {"expected_absent": false, "measured_absent_rate": 0.18, "n_absent": 5},
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+    },
+
+    "energy": {
+      "_n": 18,
+      "_authority": "Article 5, classified -- measured 0 of 18 missing currentAssets. Like utilities, an E&P simply does not use the gross-profit caption; its cost base is lease operating expense plus DD&A.",
+      "grossProfit":            {"expected_absent": true,  "measured_absent_rate": 0.78, "n_absent": 14},
+      "researchAndDevelopment": {"expected_absent": false, "measured_absent_rate": 0.67, "n_absent": 12},
+      "sellingGeneralAdmin":    {"expected_absent": false, "measured_absent_rate": 0.56, "n_absent": 10},
+      "costOfRevenue":          {"expected_absent": false, "measured_absent_rate": 0.28, "n_absent": 5},
+      "operatingIncome":        {"expected_absent": false, "measured_absent_rate": 0.22, "n_absent": 4},
+      "inventory":              {"expected_absent": false, "measured_absent_rate": 0.17, "n_absent": 3},
+      "capex":                  {"expected_absent": false, "measured_absent_rate": 0.44, "n_absent": 8},
+      "currentAssets":          {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+      "currentLiabilities":     {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+    },
+
+    "industrial": {
+      "_n": 340,
+      "_authority": "The Article 5 general case. Nothing is structurally excused here: this is the regime against which the others are exceptions, so EVERY absence is a finding. The rates below are recorded as a BASELINE, not as permission -- a field that jumps from 36% to 60% absent is a regression even though neither number is small.",
+      "grossProfit":            {"expected_absent": false, "measured_absent_rate": 0.36, "n_absent": 122,
+                                 "note": "Rule 5-03 never required it (0 occurrences in the rule's text), so a third of Article-5 filers omitting it is correct behaviour -- reconstruct from captions 1-9 rather than flagging 122 tickers."},
+      "researchAndDevelopment": {"expected_absent": false, "measured_absent_rate": 0.44, "n_absent": 150,
+                                 "note": "regime_gated on the FIELD instead: R&D is universal only in Info Tech (65/72), Materials (17/26) and Health Care (42/57), and is never universe-z-scored."},
+      "sellingGeneralAdmin":    {"expected_absent": false, "measured_absent_rate": 0.30, "n_absent": 103},
+      "inventory":              {"expected_absent": false, "measured_absent_rate": 0.28, "n_absent": 94},
+      "costOfRevenue":          {"expected_absent": false, "measured_absent_rate": 0.16, "n_absent": 53},
+      "capex":                  {"expected_absent": false, "measured_absent_rate": 0.16, "n_absent": 55,
+                                 "note": "PaymentsToAcquirePropertyPlantAndEquipment alone. The superset PaymentsToAcquireProductiveAssets and the linkbase branch both reach further, so the resolved-field rate must come out well below this."},
+      "operatingIncome":        {"expected_absent": false, "measured_absent_rate": 0.11, "n_absent": 36},
+      "currentAssets":          {"expected_absent": false, "measured_absent_rate": 0.05, "n_absent": 18},
+      "currentLiabilities":     {"expected_absent": false, "measured_absent_rate": 0.05, "n_absent": 18},
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+    },
+
+    "hybrid": {
+      "_n": 1,
+      "_authority": "BRK-B only. Excluded from regime-relative scoring entirely (see configs/fundamentals/fundamentals_regimes.json), so this block records what it files rather than gating anything.",
+      "currentAssets":          {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 1},
+      "currentLiabilities":     {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 1},
+      "grossProfit":            {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 1},
+      "costOfRevenue":          {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 1},
+      "sellingGeneralAdmin":    {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 1},
+      "researchAndDevelopment": {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 1},
+      "operatingIncome":        {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+      "inventory":              {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+    }
+  }
+}

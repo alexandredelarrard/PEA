@@ -1,0 +1,545 @@
+{
+  "_README": {
+    "purpose": "THE contract for fundamentals extraction. One entry per field; no tag list in Python. Loaded and validated by src/data_extract/utils/fundamentals/kpi_catalogue.py; schema enforced by tests/data_extract/test_kpi_catalogue.py.",
+    "why_json_not_yaml": "This file is a machine-readable REGISTRY that a schema test validates key by key, not a set of tunable knobs a human edits between runs (which is what configs/*.yml are for). JSON has no implicit typing, no anchor/merge indirection and no significant whitespace, so a diff on one field's `authority` cannot silently change another field's meaning.",
+    "resolution_order": [
+      "linkbase_total: the filer's own calculation linkbase declares `total_concept` as a parent -- use its value. `total_adjustment` is then applied if the definition requires it (e.g. stripping lease legs out of DebtCurrent).",
+      "linkbase_sum: no total is declared, but the filer declares the children of `roll_up` -- sum them WITH THEIR WEIGHTS (24 of JPM's 108 Statements arcs carry weight -1.0, so the sign is data, not noise).",
+      "tag_fallback: the filing has no calculation linkbase for this concept -- take `fallback_concepts` in the order given."
+    ],
+    "field_keys": {
+      "tier": "1-3 = a scored KPI. 0 = a CALCULATION INPUT, carried only because a chosen definition requires it; excluded from z-scores and peer ranks.",
+      "kind": "instant = a balance-sheet level (point in time). duration = a flow (summed to TTM from four discrete quarters). ratio = never TTM-summed, computed on the instant path. derived = not extracted at all; computed from other fields.",
+      "sign": "non_negative | non_positive | any. Consumed by the validator's hard-guard layer, which may ONLY null physically-impossible values.",
+      "unit": "USD | shares | count | ratio.",
+      "definition": "What the number means, in one sentence. MANDATORY.",
+      "authority": "A quote from or citation of a PRIMARY source (FASB element documentation, Reg S-X, ASC, an SEC C&DI or rule). MANDATORY. The literal string \"UNVERIFIED\" is the only permitted placeholder, and every occurrence must have a matching entry in the plan's Open items -- a schema test enforces this so no definition can rest on a silent guess.",
+      "authority_note": "Present only alongside authority == \"UNVERIFIED\": what IS known and which document would close it. Makes the gap cheap to close instead of merely flagged.",
+      "authority_caveat": "Present on a SOURCED field whose citation has a weaker sub-claim -- typically an ASC paragraph whose NUMBER comes from FASB's own reference linkbase (primary) but whose PROSE could only be read in a secondary reproduction, because asc.fasb.org is login-walled (403). Not a placeholder and not a gap: the field is verified, and this records exactly which part of it is one notch below fully primary. Never a reason to re-open the definition.",
+      "fallback_concept_notes": "concept -> why THAT concept is in the fallback list, where it is not obvious. Used for deprecated elements retained for historical filings, so nobody deletes one for 'not existing' in the current taxonomy.",
+      "total_adjustment._only_when": "A condition, read off the filer's own calculation linkbase, under which the adjustment applies. A tag alone cannot say whether an amount is INSIDE the total or presented beside it; the linkbase can, and that is what it is for.",
+      "roll_up": "{\"sum\": [concepts]} -- what the linkbase is CHECKED AGAINST, never a substitute for reading it.",
+      "total_concept": "The concept to prefer when the filer declares it as a linkbase parent.",
+      "total_adjustment": "{\"subtract\"|\"add\": [concepts]} applied to `total_concept` so it matches this field's definition.",
+      "fallback_concepts": "Priority-ordered, used ONLY on the tag_fallback branch.",
+      "regimes": "Per-regime overrides, keyed by the regime names in configs/fundamentals/fundamentals_regimes.json.",
+      "components": "tier-0 field names that carry this field's legs separately, so a roll-up is auditable after the fact.",
+      "derived_from": "For kind == derived: the expression, in field names.",
+      "regime_gated": "true = the field is only defined for some regimes; never universe-z-scored. Outside them the value is absent with dc_code = not_applicable_for_regime.",
+      "never_use": "Concepts that must NEVER resolve this field, with the reason. These are the traps the old priority lists walked into; they are part of the contract, not commentary.",
+      "authority_inherits_from": "For a tier-0 calculation input or a ratio: the field name(s) whose SOURCED authority justifies carrying this one. A calculation input has no primary source of its own -- it exists because another field's cited definition requires it -- so naming that field is the honest citation, and a schema test follows the chain. Not interchangeable with UNVERIFIED, which means nobody has established the definition at all.",
+      "feeds": "For a tier-0 input: which field or derived column consumes it. Every input must declare one, or it has no reason to be carried."
+    },
+    "counts": {"tier_1": 11, "tier_2": 12, "tier_3": 17, "tier_0": 13, "total": 53},
+    "note_on_tier_3": "16 Tier-3 fields plus researchAndDevelopment, which decision #10 re-added as a regime-gated 17th ('Tier 3R' in the plan). It carries tier 3 + regime_gated so nothing has to special-case a fourth tier value."
+  },
+
+  "_derived_columns": {
+    "_purpose": "The 10 columns fundamentals_history COMPUTES rather than extracts. Declared here because they are part of the same contract -- a `feeds` reference must be able to name one, and the history build needs the formula in one place -- but they are NOT catalogue fields: nothing resolves them against a concept.",
+    "grossMargins": "grossProfit_ttm / totalRevenue_ttm",
+    "operatingMargins": "operatingIncome_ttm / totalRevenue_ttm",
+    "profitMargins": "netIncome_ttm / totalRevenue_ttm",
+    "returnOnEquity": "netIncome_ttm / stockholdersEquity",
+    "debtToEquity": "totalDebt / stockholdersEquity",
+    "revenue_q": "the DISCRETE quarter's totalRevenue",
+    "netIncome_q": "the DISCRETE quarter's netIncome",
+    "revenueGrowth": "totalRevenue_ttm year-on-year, on a 365-DAY as_of offset rather than a 4-ROW offset -- an amendment row makes a row offset ~9 months instead of 12",
+    "earningsGrowth": "netIncome_ttm year-on-year, same 365-day offset",
+    "optionOverhang": "dilutedShares / basicShares - 1",
+    "_dropped": {
+      "_why": "Their inputs leave with the 171 removed columns; consumers are repaired in the plan's Phase 6.",
+      "fields": ["totalAssetsExLease", "nonServicePensionCost", "exciseTaxAdjustment", "debtMaturity5yTotal"]
+    },
+    "_ttm_rule": "A TTM is emitted ONLY from four discrete quarters. Where they do not exist the value is NULL with dc_code = insufficient_quarters -- never a carried-forward annual. That fallback froze 1,622 of 26,242 consecutive totalRevenue pairs (6.2%; APA 100%, XOM 36%), making revenueGrowth exactly 0 for three quarters in four."
+  },
+
+  "totalAssets": {
+    "tier": 1, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Total consolidated assets, including the portion attributable to non-controlling interests.",
+    "authority": "Reg S-X Rule 5-02 balance-sheet total. Measured across all 491 tickers: the ONLY balance-sheet total with no regime variant -- FASB's deposit-based and securities-based statement roles still carry `Assets` while carrying zero occurrences of `AssetsCurrent`.",
+    "total_concept": "Assets",
+    "fallback_concepts": ["Assets"],
+    "never_use": {"AssetsNet": "a net-of-liabilities presentation used by some investment vehicles; not the gross total."}
+  },
+  "totalLiabilities": {
+    "tier": 1, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Total consolidated liabilities; where the filer does not tag it, totalAssets minus equity-including-NCI.",
+    "authority": "Reg S-X Rule 5-02 contains NO 'Total liabilities' caption, so tagging it is elective and its absence is not a filing defect. The fallback is correct by construction: Assets = Liabilities + Equity(incl NCI) is the balance-sheet identity itself.",
+    "total_concept": "Liabilities",
+    "fallback_concepts": ["Liabilities"],
+    "derived_fallback": "totalAssets - stockholdersEquity"
+  },
+  "stockholdersEquity": {
+    "tier": 1, "kind": "instant", "sign": "any", "unit": "USD",
+    "definition": "Total equity on the CONSOLIDATED basis -- including the non-controlling interest, not the parent-only figure.",
+    "authority": "FASB us-gaap-doc-2025 partitions the two elements exactly: `StockholdersEquity` = 'Amount of equity (deficit) attributable to parent. EXCLUDES ... equity attributable to noncontrolling interest.'; `StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest` = 'Amount of equity (deficit) attributable to parent AND noncontrolling interest.' us-gaap-ref-2025 ties `StockholdersEquity` to Reg S-X 5-02(29)/(30) and `MinorityInterest` to 5-02(31). eCFR 17 CFR 210.5-02 has NO single caption for equity-including-NCI: captions 29+30 (parent) and 31 (NCI) are separate lines that both roll into caption 32, 'Total liabilities and equity'. So the roll-up StockholdersEquity + MinorityInterest is confirmed by BOTH the FASB documentation labels and the Reg S-X caption structure -- the incl-NCI basis is a sourced convention, not merely a chosen one.",
+    "authority_caveat": "ASC 810-10-45-16 ('NCI shall be reported within equity, separately from the parent's equity') is confirmed only via a secondary reproduction (Deloitte DART); asc.fasb.org is login-walled (403). Stable and frequently quoted, but not independently re-fetched.",
+    "total_concept": "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    "roll_up": {"sum": ["StockholdersEquity", "MinorityInterest"]},
+    "fallback_concepts": ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "StockholdersEquity"],
+    "components": ["minorityInterest"]
+  },
+  "cash": {
+    "tier": 1, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Cash and cash equivalents PLUS restricted cash PLUS short-term investments (decision #5).",
+    "authority": "ASU 2016-18 amended ASC 230-10-45-4 to make the restricted-cash-INCLUSIVE total the amount the statement of cash flows must reconcile to (public business entities: fiscal years beginning after 2017-12-15, applied RETROSPECTIVELY). So the restricted-inclusive figure is the cash-flow anchor, not an enlargement of it.",
+    "total_concept": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    "roll_up": {"sum": ["CashAndCashEquivalentsAtCarryingValue", "RestrictedCashAndCashEquivalents", "ShortTermInvestments"]},
+    "fallback_concepts": ["CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", "CashAndCashEquivalentsAtCarryingValue"],
+    "components": ["restrictedCash", "shortTermInvestments"],
+    "regimes": {
+      "bank": {
+        "note": "`CashAndDueFromBanks` is the FIRST LINE of a bank balance sheet, not the cash total -- taking it as the total understates bank liquidity by the interest-bearing-deposits and fed-funds legs.",
+        "roll_up": {"sum": ["CashAndDueFromBanks", "InterestBearingDepositsInBanks", "FederalFundsSoldAndSecuritiesPurchasedUnderAgreementsToResell"]}
+      }
+    },
+    "never_use": {"CashAndDueFromBanks": "the first line of a bank balance sheet, never the cash total -- see the bank regime override."},
+    "regime_break": {"field_change": "ASU 2016-18", "effective": "2018-01-01", "reason": "restricted cash enters the total retrospectively, so pre-adoption vintages of the same filer are on a narrower basis."}
+  },
+  "totalDebt": {
+    "tier": 1, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Gross debt EXCLUDING lease obligations, plus finance-lease liabilities, plus operating-lease liabilities (decision #4).",
+    "authority": "FASB us-gaap 2025 documentation, verbatim: `LongTermDebt`/`LongTermDebtNoncurrent` = '...of long-term debt. EXCLUDES lease obligation.'; `LongTermDebtAndCapitalLeaseObligations` = 'long-term debt AND lease obligation, noncurrent'; `DebtCurrent` = 'Amount of debt AND lease obligation, classified as current.' Both legs must therefore be put on the SAME basis before adding, or an ex-lease long leg is summed with an incl-lease short leg -- a taxonomy asymmetry that produced 79% of the old table's rows. Including operating leases is the S&P/Moody's treatment; FASB's own ASC 842 Basis for Conclusions BC264 argues operating leases are NOT debt-like, and Fitch agrees -- the user chose the rating-agency-adjusted view knowingly.",
+    "roll_up": {"sum": ["longTermDebt", "shortTermDebt", "financeLeaseLiability", "operatingLeaseLiability"]},
+    "components": ["financeLeaseLiability", "operatingLeaseLiability"],
+    "regime_break": {"field_change": "ASC 842", "effective": "2019-01-01", "reason": "operating leases were OFF balance sheet before adoption, so this field steps up at the transition for every lessee. Not an extraction error -- flagged, never smoothed."},
+    "never_use": {"DebtInstrumentFaceAmount": "a per-instrument dimensioned disclosure, not a balance-sheet total."}
+  },
+  "sharesOutstanding": {
+    "tier": 1, "kind": "instant", "sign": "non_negative", "unit": "shares",
+    "definition": "Common shares outstanding as stated on the filing cover page.",
+    "authority": "`dei:EntityCommonStockSharesOutstanding` is the cover-page tag and the ONLY one that is summable across a multi-class capital structure: for a dual-class filer the cover page states each class and the classes add, whereas the balance-sheet `CommonStockSharesOutstanding` is tagged per class along a dimension and mixing the two double-counts or drops a class. Verified against the 36 tickers whose consolidated share count was NULL until the cover-page tag was used.",
+    "fallback_concepts": ["dei:EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"],
+    "never_use": {"WeightedAverageNumberOfSharesOutstandingBasic": "a period AVERAGE for EPS, not a point-in-time count -- that is `basicShares`."}
+  },
+  "totalRevenue": {
+    "tier": 1, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "The filer's own top line, on the basis its own statement of income declares (regime-dependent).",
+    "authority": "Verified from each filer's calculation linkbase (`menucat == 'Statements'`) across all six regimes: JPM declares `RevenuesNetOfInterestExpense`, XOM `Revenues`, APA `RevenuesAndOther`, DTE `RegulatedAndUnregulatedOperatingRevenue`. There is no single universal element, which is why the linkbase and not a priority list is the resolution primitive. The ASC-606 cutover (annual periods beginning after 2017-12-15) is a dated, universe-wide taxonomy event, not per-filer drift.",
+    "fallback_concepts": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet"],
+    "regimes": {
+      "bank": {
+        "definition": "Net revenue: net interest income plus noninterest income.",
+        "authority": "JPM's linkbase declares `RevenuesNetOfInterestExpense <- +1.0 InterestIncomeExpenseNet, +1.0 NoninterestIncome` (re-confirmed on edgartools 5.51.0). NOTE that `Revenues` for a bank ALREADY means net revenue -- JPM CY2024 `Revenues` = $177,556M -- so the same element silently switches basis by regime.",
+        "roll_up": {"sum": ["InterestIncomeExpenseNet", "NoninterestIncome"]},
+        "total_concept": "RevenuesNetOfInterestExpense",
+        "fallback_concepts": ["RevenuesNetOfInterestExpense", "Revenues", "InterestIncomeExpenseNet"],
+        "never_use": {"InterestAndDividendIncomeOperating": "GROSS interest income. Using it inflates bank revenue by the entire interest-EXPENSE leg -- the single largest available error in this field."}
+      },
+      "insurer": {
+        "definition": "Premiums earned net, plus net investment income, plus realized investment gains and losses.",
+        "authority": "Measured: the ASC-606 element captures 3.2% of MetLife's revenue, so preferring it understates a life insurer by roughly 30x. Insurance contracts are scoped OUT of ASC 606 (ASC 606-10-15-2), which is why the revenue-from-contracts element cannot be the insurer top line.",
+        "roll_up": {"sum": ["PremiumsEarnedNet", "NetInvestmentIncome", "RealizedInvestmentGainsLosses"]},
+        "fallback_concepts": ["Revenues"]
+      },
+      "real_estate": {
+        "definition": "Total revenues; where untagged, operating-lease (rental) income.",
+        "authority": "`OperatingLeaseLeaseIncome` is the ASC-842 LESSOR revenue element and is the only rental top line many equity REITs tag. Its position is the mirror image of the lessee ROU-asset finding recorded on ppeNet: ASC 842 is the operative standard for both sides of a lease, and the lessor income element is what FASB provides for the revenue side.",
+        "authority_caveat": "Weaker than the other regime overrides in this field: ASC 842-30-45's presentation guidance was NOT independently fetched (asc.fasb.org is login-walled), so this rests on the element's own definition and its measured use by REITs rather than on a quoted presentation paragraph. `Revenues` stays FIRST in the fallback order precisely because it is the better-anchored element.",
+        "roll_up": {"sum": ["OperatingLeaseLeaseIncome"]},
+        "fallback_concepts": ["Revenues", "OperatingLeaseLeaseIncome"]
+      }
+    },
+    "known_broken_baseline": {"APA": "19 rows stored as exactly 0.00 -- its linkbase declares `RevenuesAndOther`, absent from the old tag list, so resolution fell through to an element APA tags as $0.00", "ETN": "16 rows at 0", "VRT": "5 rows at 0"}
+  },
+  "netIncome": {
+    "tier": 1, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "Consolidated net income INCLUDING the non-controlling interest (`ProfitLoss`), not the parent-only `NetIncomeLoss`.",
+    "authority": "FASB's own cash-flow calculation linkbase `us-gaap-stm-scf-indir-cal-2025.xml` (766 arcs) contains exactly ONE arc feeding a bottom-line income concept into operating cash flow: `NetCashProvidedByUsedInOperatingActivities <- +1 ProfitLoss`. Operating cash flow therefore officially reconciles from the CONSOLIDATED figure, so preferring `ProfitLoss` is what makes the accruals family compare like with like. A VALIDATED EXISTING DECISION -- do not 'fix' it toward NetIncomeLoss.",
+    "total_concept": "ProfitLoss",
+    "fallback_concepts": ["ProfitLoss", "NetIncomeLoss"],
+    "components": ["minorityInterest"]
+  },
+  "operatingCashFlow": {
+    "tier": 1, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "Net cash provided by (used in) operating activities, continuing plus discontinued.",
+    "authority": "ASC 230-10-45-24 requires the statement of cash flows to report operating, investing and financing activities separately; `NetCashProvidedByUsedInOperatingActivities` is the FASB total including discontinued operations, and `...ContinuingOperations` is its subset -- they are superset and subset, NOT substitutes.",
+    "total_concept": "NetCashProvidedByUsedInOperatingActivities",
+    "fallback_concepts": ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"]
+  },
+  "ebitda": {
+    "tier": 1, "kind": "derived", "sign": "any", "unit": "USD",
+    "definition": "Operating income plus depreciation, depletion and amortization. NON-GAAP: there is no us-gaap element for it.",
+    "authority": "SEC Regulation G / Item 10(e)(1)(ii)(A) of Regulation S-K names EBITDA only by EXCEPTION -- it is a non-GAAP measure the Commission tolerates rather than defines, so no taxonomy element exists and the construction must be stated rather than resolved.",
+    "derived_from": "operatingIncome + depAmort"
+  },
+  "freeCashflow": {
+    "tier": 1, "kind": "derived", "sign": "any", "unit": "USD",
+    "definition": "Operating cash flow minus capital expenditure. NON-GAAP.",
+    "authority": "SEC Non-GAAP C&DI 102.07, verbatim: free cash flow 'does not have a uniform definition'. The same C&DI classifies it as a LIQUIDITY measure, which is why it must NEVER be presented per share. Null by design wherever capex is not reconstructible (see capex's bank regime).",
+    "derived_from": "operatingCashFlow - capex"
+  },
+
+  "pretaxIncome": {
+    "tier": 2, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "Income (loss) from continuing operations before income taxes and before equity-method earnings and non-controlling interests.",
+    "authority": "No ASC or Reg-S-X cross-reference exists for EITHER candidate element in FASB's own reference linkbase (confirmed empirically: zero entries for both), so this was settled from the us-gaap-doc-2025 documentation labels -- and it settles cleanly. `IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest` = 'Amount of income (loss) from continuing operations, INCLUDING income (loss) from equity method investments, before deduction of income tax expense...'; `IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments` = '...before deduction of income tax expense... and ADDITION OF income (loss) from equity method investments.' 'including' versus 'and addition of' is the tell: the first already has equity-method earnings folded in (the SUPERSET/aggregate); the second is BEFORE that addition (the subset, for filers presenting equity-in-affiliates as a separate line below). The fallback order -- superset first -- is therefore correct. Also confirmed: no bare `IncomeLossFromContinuingOperationsBeforeIncomeTaxes` element exists in the 2025 schema, only the ...Domestic/...Foreign geographic siblings, which are not totals.",
+    "fallback_concepts": ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"]
+  },
+  "incomeTaxExpense": {
+    "tier": 2, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "Total income tax expense (benefit), current plus deferred.",
+    "authority": "FASB us-gaap-doc-2025 for `IncomeTaxExpenseBenefit`: 'Amount of current income tax expense (benefit) and deferred income tax expense (benefit) pertaining to continuing operations.' -- confirming it as the AGGREGATE, consistent with its role as `total_concept`. us-gaap-ref-2025 ties it to ASC 740-10-50-10 and 740-10-50-12 (the components-of-tax-expense and rate-reconciliation disclosure paragraphs). Measured coverage: 43,130 undimensioned facts across 442 tickers, 2011-06-25 to 2026-07-05.",
+    "total_concept": "IncomeTaxExpenseBenefit",
+    "fallback_concepts": ["IncomeTaxExpenseBenefit", "IncomeTaxExpenseBenefitContinuingOperations"],
+    "fallback_concept_notes": {
+      "IncomeTaxExpenseBenefitContinuingOperations": "A DEPRECATED PRE-2014 ELEMENT, retained deliberately. Research part 2 reported this tag as a bug -- 'does not exist anywhere in the 2025 FASB taxonomy', confirmed by exhaustive grep of the 2025 schema, doc and label linkbases -- and that is correct FOR 2025. But the tag ledger shows filers really did use it: 276 undimensioned facts across 82 tickers, and the window closes hard at 2011-06-30 .. 2013-12-31. So it is an element that existed in an earlier taxonomy year and was withdrawn, not a typo and not a name that can never match. Since the facts table already holds those pre-2014 filings and the rebuild reads history back to 2009, dropping it would lose a real second candidate for 82 tickers' early years while gaining nothing -- it simply can never fire on a modern filing. Distinguish it from the SIMILARLY-NAMED compound elements that DO exist in 2025 and are NOT substitutes: `FederalIncomeTaxExpenseBenefitContinuingOperations` (839 facts / 97 tickers), `...IncomeTaxExpenseBenefitContinuingOperationsAdjustmentOfDeferredTaxAssetLiability` (289 / 73), `...ContinuingOperationsDiscontinuedOperationsExtraordinaryItems` (65 / 10) -- the first is a jurisdictional LEG, the others are reconciliation items."
+    }
+  },
+  "longTermDebt": {
+    "tier": 2, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Noncurrent gross debt EXCLUDING lease obligations.",
+    "authority": "FASB us-gaap 2025, verbatim: `LongTermDebtNoncurrent` = '...of long-term debt. EXCLUDES lease obligation'; `LongTermDebtAndCapitalLeaseObligations` = 'long-term debt AND lease obligation, noncurrent'. Where only the incl-lease element is tagged (21.0% of rows / 156 tickers in the legacy table), the noncurrent finance-lease leg MUST be subtracted to reach this field's basis.",
+    "total_concept": "LongTermDebtNoncurrent",
+    "total_adjustment": {"note": "applies only when the resolved concept is LongTermDebtAndCapitalLeaseObligations", "subtract": ["FinanceLeaseLiabilityNoncurrent"]},
+    "fallback_concepts": ["LongTermDebtNoncurrent", "LongTermDebt", "LongTermDebtAndCapitalLeaseObligations"],
+    "components": ["financeLeaseLiability"]
+  },
+  "shortTermDebt": {
+    "tier": 2, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Gross debt due within one year, EXCLUDING lease obligations.",
+    "authority": "FASB us-gaap 2025, verbatim: `DebtCurrent` = 'Amount of debt AND lease obligation, classified as current.' `LongTermDebtCurrent` (current maturities of long-term debt) and `ShortTermBorrowings` (revolver / commercial paper) are DISJOINT LEGS whose sum is DebtCurrent -- not substitutes. Measured: 2,017 (ticker, period) cells across 111 tickers tag BOTH legs with no total; the old priority order kept one and discarded the other, and the discarded leg was the LARGER one 54.4% of the time and exceeded 25% of the kept leg in 86.1% of cells.",
+    "roll_up": {"sum": ["LongTermDebtCurrent", "ShortTermBorrowings"]},
+    "total_concept": "DebtCurrent",
+    "total_adjustment": {"subtract": ["FinanceLeaseLiabilityCurrent", "OperatingLeaseLiabilityCurrent"]},
+    "fallback_concepts": ["LongTermDebtCurrent", "ShortTermBorrowings"],
+    "components": ["longTermDebtCurrentOnly", "shortTermBorrowingsOnly"]
+  },
+  "dilutedShares": {
+    "tier": 2, "kind": "duration", "sign": "non_negative", "unit": "shares",
+    "definition": "Weighted-average diluted share count for the period.",
+    "authority": "FASB us-gaap-doc-2025: 'The average number of shares or units issued and outstanding that are used in calculating diluted EPS ..., determined based on the timing of issuance of shares or units in the period.' us-gaap-ref-2025 ties it to ASC 260-10-45-16 and disclosure paragraph 260-10-50-1(a). NOT a superset/subset case -- a single weighted-average concept -- which is why the correct guard is the non-additivity flag rather than a roll-up: summing four quarterly averages does not give the annual average, and that is the whole basis of decision #9's epsDiluted construction.",
+    "authority_caveat": "ASC 260-10-45-16's paragraph NUMBER is primary (FASB's own reference linkbase); its prose ('the denominator is increased to include ... dilutive potential common shares') is a secondary reproduction (Deloitte DART), asc.fasb.org being login-walled.",
+    "fallback_concepts": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
+    "not_additive": true
+  },
+  "epsDiluted": {
+    "tier": 2, "kind": "derived", "sign": "any", "unit": "USD",
+    "definition": "netIncome_ttm divided by dilutedShares_ttm (decision #9) -- NOT the sum of four quarterly EPS figures.",
+    "authority": "EPS is not additive: four summed quarterly EPS figures drift from annual EPS as the share count moves. edgartools met the same non-additivity from the other side -- its naive Q4-EPS derivation matched Apple in only 5 of 17 years (edgartools GH #690). The as-reported `EarningsPerShareDiluted` IS still extracted into fundamentals_facts and used by the validator as an independent cross-check on the computed value; it is simply not the published number.",
+    "derived_from": "netIncome_ttm / dilutedShares_ttm",
+    "cross_check_concepts": ["EarningsPerShareDiluted"]
+  },
+  "depAmort": {
+    "tier": 2, "kind": "duration", "sign": "non_negative", "unit": "USD",
+    "definition": "Aggregate depreciation, depletion and amortization for the period.",
+    "authority": "FASB us-gaap 2025, verbatim: `DepreciationAndAmortization` covers 'long-lived, physical assets NOT USED IN PRODUCTION' -- i.e. non-production D&A only -- while `DepreciationDepletionAndAmortization` is 'the AGGREGATE'. The aggregate is therefore the correct element, and any deny-list entry that forces the narrower one contradicts the taxonomy.",
+    "total_concept": "DepreciationDepletionAndAmortization",
+    "fallback_concepts": ["DepreciationDepletionAndAmortization", "DepreciationAmortizationAndAccretionNet", "DepreciationAndAmortization"],
+    "anchor_tie_break": "Prefer the concept the filer's own linkbase declares even when a rival concept carries a discrete-quarter context and the winner is YTD-only. Valero's true D&A is `DepreciationAmortizationAndAccretionNet` at ~$2,405M/yr (tagged YTD-only) while a $47M/yr `DepreciationAndAmortization` line carries discrete quarters -- picking on context shape rather than on the linkbase is a ~200x error."
+  },
+  "retainedEarnings": {
+    "tier": 2, "kind": "instant", "sign": "any", "unit": "USD",
+    "definition": "Retained earnings (accumulated deficit).",
+    "authority": "FASB us-gaap-doc-2025: 'Amount of accumulated undistributed earnings (deficit).' us-gaap-ref-2025 ties `RetainedEarningsAccumulatedDeficit` not to the general caption but to the exact sub-clause Reg S-X 210.5-02(30)(a)(3). eCFR 210.5-02(30)(a) verbatim: 'Separate captions shall be shown for (1) additional paid-in capital, (2) other additional capital, (3) retained earnings, (i) appropriated and (ii) unappropriated ..., and (4) accumulated other comprehensive income.'",
+    "fallback_concepts": ["RetainedEarningsAccumulatedDeficit"]
+  },
+  "stockBasedComp": {
+    "tier": 2, "kind": "duration", "sign": "non_negative", "unit": "USD",
+    "definition": "Share-based compensation expense recognised in the period, as added back in the cash-flow statement.",
+    "authority": "us-gaap-ref-2025: `ShareBasedCompensation` -> ASC 230-10-45-28(a), the cash-flow-statement noncash-add-back reconciliation paragraph -- confirming it is presented and used as the aggregate add-back line, which is what supports reading it undimensioned as the total. `AllocatedShareBasedCompensationExpense` -> ASC 718-10-50-2(h)(1)(i), a disaggregated-disclosure paragraph requiring a breakdown by award type and line item, consistent with (not merely asserted by) this field's never_use guard.",
+    "authority_caveat": "The paragraph NUMBER 718-10-50-2(h)(1)(i) is primary, from FASB's reference linkbase; the specific claim that it 'typically' produces per-award-type DIMENSIONING is inferred from secondary guides describing that paragraph's disclosure table, not from quoted primary prose. One notch below full verification.",
+    "fallback_concepts": ["ShareBasedCompensation"],
+    "never_use": {"AllocatedShareBasedCompensationExpense": "usually dimensioned by award type; an undimensioned read of it is a partial line."}
+  },
+  "effectiveTaxRate": {
+    "tier": 2, "kind": "ratio", "sign": "any", "unit": "ratio",
+    "definition": "incomeTaxExpense divided by pretaxIncome for the period.",
+    "authority": "A ratio, so it is computed on the INSTANT path and never TTM-summed: summing four quarterly rates is meaningless. Both legs must come from the same period, or the rate mixes bases.",
+    "authority_inherits_from": ["incomeTaxExpense", "pretaxIncome"],
+    "derived_from": "incomeTaxExpense / pretaxIncome",
+    "not_additive": true
+  },
+  "capex": {
+    "tier": 2, "kind": "duration", "sign": "non_negative", "unit": "USD",
+    "definition": "Cash paid to acquire productive long-lived assets: property, plant and equipment plus capitalised software and other intangibles, as reported in investing activities.",
+    "authority": "FASB us-gaap 2025, verbatim: `PaymentsToAcquireProductiveAssets` = 'property, plant and equipment (capital expenditures), SOFTWARE, AND OTHER INTANGIBLE ASSETS' -- officially a SUPERSET of `PaymentsToAcquirePropertyPlantAndEquipment`, which is why the two disagree 37.1% of the time while sitting at priority 1 and 0 of the same old list. FASB's calculation linkbase makes the superset the total-capex node (PP&E + Software + Intangibles + MineralRights + CryptoAsset + EquipmentOnLease + Other). ASC 230-10-45-13(c) pushes seller-financed principal into FINANCING, so this is a CASH-PAID figure and NOT gross PP&E additions.",
+    "total_concept": "PaymentsToAcquireProductiveAssets",
+    "roll_up": {"sum": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireSoftware", "PaymentsToAcquireIntangibleAssets"]},
+    "fallback_concepts": ["PaymentsToAcquireProductiveAssets", "PaymentsToAcquirePropertyPlantAndEquipment"],
+    "regimes": {
+      "bank": {
+        "definition": "Not reliably reconstructible.",
+        "authority": "JPM, BAC and USB do not appear in the `PaymentsToAcquirePropertyPlantAndEquipment` CY2024 frame at all. Rather than resolve to a partial or unrelated line, the field is absent with dc_code = not_applicable -- and bank freeCashflow is therefore null BY DESIGN.",
+        "dc_code": "not_applicable"
+      }
+    },
+    "never_use": {
+      "PaymentsToAcquireInProcessResearchAndDevelopment": "MAA tags $272M of multifamily DEVELOPMENT capex with this element. It is neither R&D nor a reliable capex line -- a name-keyed extractor books a REIT as an R&D spender.",
+      "PaymentsForCapitalImprovements": "a real-estate-specific improvement line, not the acquisition total."
+    }
+  },
+  "employees": {
+    "tier": 2, "kind": "instant", "sign": "non_negative", "unit": "count",
+    "definition": "Total headcount as stated in the 10-K body text, as of the fiscal year end.",
+    "authority": "There is NO GAAP concept for headcount. `dei:EntityNumberOfEmployees` exists but US filers essentially never tag it, so the number can only come from the Item 1 prose ('As of December 31, we had approximately N employees'). Produced by fundamentals_employees.py, which is headcount's only producer; disclosed ANNUALLY, so it must be carried forward into the interim quarters.",
+    "fallback_concepts": [],
+    "source": "text:10-K",
+    "annual_only": true
+  },
+
+  "ppeNet": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Property, plant and equipment, net of accumulated depreciation, EXCLUDING finance-lease right-of-use assets wherever those are separately detectable (decision: research part 2, Open item #1, option b).",
+    "authority": "FASB us-gaap-doc-2025: the same construction as ppeGross, 'after accumulated depreciation...' instead of 'before'. Reg S-X caption 13 (see ppeGross), with accumulated depreciation as the separate caption 14, so the net figure is a derivable identity. THE LEASE CAVEAT IS REAL AND TAXONOMY-PERMITTED: us-gaap-ref-2025 ties `PropertyPlantAndEquipmentNet` to ASC 842-20-50-7A(a), the lessee ROU-asset presentation paragraph, and ASC 842-20-45-4 lets a filer show a finance-lease ROU asset EITHER as its own line item OR folded into an existing line (commonly PP&E) with a note saying which. So the element is NOT guaranteed to exclude finance-lease ROU assets, and this is a filer-level presentation choice the taxonomy permits -- not a bug in the element.",
+    "authority_caveat": "ASC 842-20-45-4's prose (the either/or presentation permission) is a secondary reproduction; the 842-20-50-7A(a) cross-reference is primary, from FASB's own reference linkbase.",
+    "fallback_concepts": ["PropertyPlantAndEquipmentNet"],
+    "roll_up": {"sum": ["ppeGross", "accumulatedDepreciation"]},
+    "total_adjustment": {
+      "subtract": ["FinanceLeaseRightOfUseAsset"],
+      "_decision": "Option (b) of research part 2, Open item #1: net the finance-lease ROU asset out of ppeNet wherever it is separately tagged, for consistency with totalDebt's existing lease-separation logic (decision #4 already treats the lease legs as their own components).",
+      "_only_when": "The filer's calculation linkbase does NOT declare `FinanceLeaseRightOfUseAsset` as a SIBLING of `PropertyPlantAndEquipmentNet` under Assets. This is the disambiguation the plain tag cannot give: a filer that presents the ROU asset as its OWN balance-sheet line also tags it, and subtracting there would remove an amount that was never inside ppeNet in the first place. The linkbase distinguishes the two presentations directly -- parent/child means folded in, sibling means separate -- which is exactly what the linkbase-driven architecture exists for.",
+      "_measured": "`FinanceLeaseRightOfUseAsset`: 2,157 undimensioned facts / 192 tickers, 2017-09-30 onward (ASC-842 era only). 182 of the 417 tickers that tag `PropertyPlantAndEquipmentNet` also tag it, so the adjustment is DETECTABLE for 44% of them and invisible for the other 56% -- a filer that folds the ROU asset in without tagging it separately cannot be corrected. `FinanceLeaseRightOfUseAssetNet` is effectively unused (6 facts / 2 tickers) and is not a fallback.",
+      "_residual": "Accepted cost of option (b): cross-filer comparability improves for the 44% and is unchanged for the rest, so the field gets closer to one basis without ever becoming exactly one basis. The 56% keep the taxonomy-permitted ambiguity; that is recorded, not fixed."
+    },
+    "regime_break": {"field_change": "ASC 842", "effective": "2019-01-01", "reason": "Finance-lease ROU assets did not exist as a tagged balance-sheet amount before adoption, so pre-2019 ppeNet has no ROU ambiguity at all and needs no adjustment. The adjustment therefore begins mid-series, which is a basis change on the SAME footing as totalDebt's."}
+  },
+  "interestExpense": {
+    "tier": 3, "kind": "duration", "sign": "non_negative", "unit": "USD",
+    "definition": "Total interest expense for the period. Regime-dependent, because Reg S-X gives industrials and banks different caption chains built from different element families (decision: research part 2, Open item #2, option b).",
+    "authority": "FASB's reference linkbase draws a sharp line the old single fallback list did not reflect. `InterestExpense`'s doc label is the broadest catch-all -- '...classified as operating and nonoperating. Includes, but is not limited to...' -- and its ONLY ref-linkbase ties are ASC 280-10-50 (segment reporting), 835-20-50-1(a) (capitalized interest) and 946-220-45-3(i) (investment companies): NO Reg-S-X tag at all, industrial or bank. `InterestExpenseDebt` -> SX 210.5-03(8), eCFR-confirmed as 'Interest and amortization of debt discount and expense', the Article-5 industrial caption. For banks, Reg S-X Rule 9-04's caption chain reads (eCFR verbatim) '6. Interest on deposits. 7. Interest on short-term borrowings. 8. Interest on long-term debt. 9. Total interest expense (total of lines 6 through 8). 10. Net interest income (line 5 minus line 9).' -- and FASB tags those to `InterestExpenseDeposits` (6), the short/long-term borrowing elements (7, 8), `InterestExpenseOperating` (9, the bank 'Total interest expense' line) and `InterestIncomeExpenseNet` (10, already this repo's netInterestIncome source). `InterestExpense` itself appears NOWHERE in that chain. So the generic element is untethered from Reg S-X while a caption-anchored element exists for each regime -- the same shape of gap the first research closed for totalRevenue and netInterestIncome, simply never extended to interestExpense.",
+    "total_concept": "InterestExpense",
+    "fallback_concepts": ["InterestExpense", "InterestExpenseDebt"],
+    "industrial_order_note": "Kept `InterestExpense` ahead of the caption-anchored `InterestExpenseDebt` for non-banks on measured coverage, not on authority: 353 tickers tag `InterestExpense` against 107 for `InterestExpenseDebt` (undimensioned, non-bank). Reversing the order to follow SX 5-03(8) would trade 3.3x the coverage for a cleaner citation. Revisit if the linkbase branch makes the fallback order rarely load-bearing.",
+    "regimes": {
+      "bank": {
+        "definition": "Total interest expense per Reg S-X Rule 9-04 caption 9 -- the sum of interest on deposits, short-term borrowings and long-term debt.",
+        "authority": "Reg S-X Rule 9-04 captions 6-9 (quoted in this field's top-level authority). `InterestExpenseOperating` IS caption 9, 'Total interest expense'.",
+        "total_concept": "InterestExpenseOperating",
+        "roll_up": {"sum": ["InterestExpenseDeposits", "InterestExpenseShortTermBorrowings", "InterestExpenseLongTermDebt"]},
+        "fallback_concepts": ["InterestExpenseOperating", "InterestExpense"],
+        "_decision": "Option (b) of research part 2, Open item #2: build the bank branch from the Rule 9-04 caption elements instead of the generic ones, mirroring the bank overrides totalRevenue and netInterestIncome already have.",
+        "_measured_correction_to_the_research": "The research proposed the legs as `InterestExpenseDeposits` + `InterestExpenseBorrowings` and explicitly asked for a coverage measurement before committing. Measured on the 14 covered banks (undimensioned facts): `InterestExpenseBorrowings` reaches only 2 of 14 tickers, so that roll-up would fail for 12 of them. The elements filers ACTUALLY use for captions 7 and 8 are `InterestExpenseShortTermBorrowings` (10/14, 656 facts) and `InterestExpenseLongTermDebt` (11/14, 923 facts), alongside `InterestExpenseDeposits` for caption 6 (13/14, 1,141 facts). The roll-up above uses those three.",
+        "_why_InterestExpense_is_retained": "The decision as stated was to stop using `InterestExpense`/`InterestExpenseDebt` for banks entirely. Doing that literally would blank 2011-2024 for ALL 14 banks, because the two elements PARTITION the timeline with no overlap: `InterestExpenseOperating` covers 14/14 tickers but only from 2024-06-30 (188 facts), while `InterestExpense` covers 14/14 from 2011-09-30 to 2024-06-30 (1,064 facts). That is a clean taxonomy handover, not a coverage choice. `InterestExpense` is therefore kept as the PRE-2024 historical fallback only -- second in the list, so it is never preferred where the caption-9 element exists. `InterestExpenseDebt` IS dropped for banks: 1 ticker, 58 facts, no Reg-S-X anchor for this regime.",
+        "never_use": {"InterestExpenseDebt": "the Article-5 industrial caption element (SX 5-03(8)); it has no place in the Rule 9-04 bank chain and reaches only 1 of 14 banks anyway."}
+      }
+    }
+  },
+  "goodwill": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Goodwill, net of accumulated impairment.",
+    "authority": "FASB us-gaap-doc-2025: 'Amount, after accumulated impairment loss, of asset representing future economic benefit ... not individually identified and separately recognized.' us-gaap-2025.xsd: balance='debit', periodType='instant' -- confirming it is carried NET of impairment. us-gaap-ref-2025 ties `Goodwill` to ASC 350-20-45-1: 'The aggregate amount of goodwill shall be presented as a separate line item in the statement of financial position.' IMPORTANT, so nobody 'corrects' this later: FASB also cross-tags the element to SX 210.5-02(15), but that caption's actual eCFR text is titled generically 'Intangible assets' -- Reg S-X has NO goodwill-specific caption. The separate-line mandate is GAAP (ASC), not Reg S-X.",
+    "authority_caveat": "ASC 350-20-45-1's prose is a Deloitte DART reproduction (asc.fasb.org 403'd); the paragraph number itself is primary, from FASB's own reference linkbase.",
+    "fallback_concepts": ["Goodwill"]
+  },
+  "operatingIncome": {
+    "tier": 3, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "Operating income (loss): the subtotal after operating costs and expenses and before non-operating items.",
+    "authority": "Reg S-X Rule 5-03 was run against its own text: 'operating income' appears exactly ONCE, and inside caption 7 ('Non-operating income') -- it was NEVER a required line item, for anyone. Its absence is therefore NOT a filing defect, and the correct response is to reconstruct it from captions 1-9 rather than to record a coverage gap.",
+    "total_concept": "OperatingIncomeLoss",
+    "fallback_concepts": ["OperatingIncomeLoss"],
+    "derived_fallback": "totalRevenue - costOfRevenue - sellingGeneralAdmin - researchAndDevelopment - depAmort",
+    "expected_absent_note": "0 of 491 tickers in Real Estate/Utilities/Industrials lack it, but 38 of 76 Financials do -- structural, not a regression."
+  },
+  "ppeGross": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Property, plant and equipment at cost, before accumulated depreciation.",
+    "authority": "FASB us-gaap-doc-2025: 'Amount before accumulated depreciation, depletion and amortization of physical assets used in the normal conduct of business and not intended for resale.' us-gaap-ref-2025 AND a direct eCFR fetch of 17 CFR 210.5-02 independently agree on caption 13: 'Property, plant and equipment. (a) State the basis of determining the amounts.' Not a superset/subset case -- Reg S-X presents gross PP&E (caption 13) and accumulated depreciation (caption 14) as two SEPARATE captions specifically so the net figure is derivable, which is exactly the checkable identity this field's roll-up relies on.",
+    "fallback_concepts": ["PropertyPlantAndEquipmentGross"]
+  },
+  "accumulatedDepreciation": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Accumulated depreciation, depletion and amortization on property, plant and equipment, as a positive magnitude.",
+    "authority": "FASB us-gaap-doc-2025: 'Amount of accumulated depreciation, depletion and amortization for physical assets used in the normal conduct of business.' us-gaap-2025.xsd, DIRECTLY rather than by inference: balance='credit', periodType='instant' -- it is genuinely a contra-asset, so storing it as a positive magnitude is a documented deviation that must be applied consistently or the ppeNet identity inverts. us-gaap-ref-2025 AND a direct eCFR fetch agree on Reg S-X caption 14: 'Accumulated depreciation, depletion, and amortization of property, plant and equipment. The amount is to be set forth separately in the balance sheet or in a note thereto.' Confirmed DISTINCT from depAmort's `DepreciationDepletionAndAmortization` (balance='debit', periodType='duration'): a different periodType and an opposite balance prove these cannot be the same tag reused across statements, so the name overlap is family naming and not a resolution hazard.",
+    "fallback_concepts": ["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"],
+    "contra_account": true
+  },
+  "intangiblesExGoodwill": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Intangible assets other than goodwill, net of amortisation.",
+    "authority": "FASB us-gaap-doc-2025 for `IntangibleAssetsNetExcludingGoodwill` opens 'Sum of the carrying amounts of all intangible assets, excluding goodwill' -- settling directly from FASB's own text, rather than by inference from the element name, that it genuinely IS a total and not a synonym for one of its legs. The two legs are finite-lived versus indefinite-lived, mutually exclusive by construction (an intangible asset is one or the other), so the roll-up cannot double-count. us-gaap-ref-2025 ties ASC 350-30-45-1 directly to this element.",
+    "authority_caveat": "ASC 350-30-45-1's prose ('At a minimum, all intangible assets shall be aggregated and presented as a separate line item ... that requirement does not preclude presentation of individual intangible assets ... as separate line items') is a Deloitte DART reproduction; the paragraph number is primary.",
+    "total_concept": "IntangibleAssetsNetExcludingGoodwill",
+    "roll_up": {"sum": ["FiniteLivedIntangibleAssetsNet", "IndefiniteLivedIntangibleAssetsExcludingGoodwill"]},
+    "fallback_concepts": ["IntangibleAssetsNetExcludingGoodwill"]
+  },
+  "currentAssets": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Total current assets, where the filer presents a classified balance sheet.",
+    "authority": "Reg S-X Rule 5-02 caption 9 ('Total current assets') is required only 'when appropriate'. 17 CFR 210.1-02(bb)(1)(i) is the citable authority for the exception: 'specialized industries in which classified balance sheets are normally not presented'. Measured: 78 tickers legitimately never file `AssetsCurrent` -- 48 of 76 Financials, 23 of 31 Real Estate -- while still filing `Assets`. This is a STRUCTURAL FLAG, never a null count.",
+    "fallback_concepts": ["AssetsCurrent"],
+    "regime_gated": true
+  },
+  "currentLiabilities": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Total current liabilities, where the filer presents a classified balance sheet.",
+    "authority": "Reg S-X Rule 5-02 caption 21 ('Total current liabilities'), required only 'when appropriate'; same 17 CFR 210.1-02(bb)(1)(i) exception as currentAssets. An unclassified balance sheet has no current/noncurrent split at all, so absence is structural.",
+    "fallback_concepts": ["LiabilitiesCurrent"],
+    "regime_gated": true
+  },
+  "sellingGeneralAdmin": {
+    "tier": 3, "kind": "duration", "sign": "non_negative", "unit": "USD",
+    "definition": "Selling, general and administrative expense.",
+    "authority": "FASB us-gaap-doc-2025 for `SellingGeneralAndAdministrativeExpense`: 'The aggregate total costs related to selling a firm's product and services, AS WELL AS all other general and administrative expenses.' That wording is by construction the UNION of the two legs' own definitions (`GeneralAndAdministrativeExpense`: 'expenses... not directly or indirectly associated with the manufacture, sale or creation of a product'; `SellingAndMarketingExpense`: 'expenses directly related to the marketing or selling of products or services') -- not an independent third concept. us-gaap-ref-2025: the combined element -> SX 210.5-03(4), eCFR-confirmed as a SINGLE combined caption with no SEC-mandated selling/G&A split. So the roll-up is a legitimate disaggregation of one statutory caption rather than a guess at how filers split it.",
+    "total_concept": "SellingGeneralAndAdministrativeExpense",
+    "roll_up": {"sum": ["GeneralAndAdministrativeExpense", "SellingAndMarketingExpense"]},
+    "fallback_concepts": ["SellingGeneralAndAdministrativeExpense"]
+  },
+  "accountsReceivable": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Trade accounts receivable, net of allowance for credit losses.",
+    "authority": "FASB us-gaap-doc-2025 settles the superset/subset question directly: `AccountsReceivableNetCurrent` = '...of right to consideration from customer for product sold and service rendered in normal course of business...' (trade only), while `ReceivablesNetCurrent` = '...due to the entity ... INCLUDING trade accounts receivable, notes and loans receivable, as well as any other types of receivables...'. The broader element's own definition names trade AR as one of several things it includes, confirming AccountsReceivableNetCurrent is a strict SUBSET of ReceivablesNetCurrent. Reg S-X caption 210.5-02(3), 'Accounts and notes receivable'.",
+    "authority_caveat": "One notch weaker than the other Reg-S-X citations in this file: NEITHER element carries FASB's own SX cross-reference tag for caption (3) -- the linkbase's only tie for AccountsReceivableNetCurrent is a commonPracticeRef to ASC 310-10-45-2 -- so the caption number is confirmed independently via eCFR/Cornell LII rather than by FASB's own cross-reference.",
+    "fallback_concepts": ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"]
+  },
+  "accountsPayable": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Trade accounts payable.",
+    "authority": "FASB's own reference-linkbase TAGS confirm the bundling more directly than a definition could: `AccountsPayableCurrent` -> SX 210.5-02(19)(a) ONLY (the narrow trade/vendor subpart), while `AccountsPayableAndAccruedLiabilitiesCurrent` -> BOTH SX 210.5-02(19) AND 210.5-02(20), and its doc label lists 'taxes, interest, rent and utilities, accrued salaries and bonuses, payroll taxes and fringe benefits' -- language echoing caption (20)'s own text almost verbatim. eCFR: 210.5-02(19) 'Accounts and notes payable' (subpart (a)(4) is specifically 'trade creditors'); 210.5-02(20) 'Other current liabilities: ... accrued payrolls, accrued interest, taxes...'. FASB tagging the combined element to BOTH captions is the strongest available confirmation that mixing the two across tickers breaks DPO comparability.",
+    "fallback_concepts": ["AccountsPayableCurrent", "AccountsPayableAndAccruedLiabilitiesCurrent"]
+  },
+  "grossProfit": {
+    "tier": 3, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "Total revenue less cost of revenue.",
+    "authority": "Reg S-X Rule 5-03 was run against its own text: 'gross profit' appears ZERO times. It was NEVER a required line item, for anyone, so its absence is NOT a filing defect -- reconstruct it from captions 1-9. Measured: 59 of 76 Financials and 13 of 31 Real Estate tickers never file it.",
+    "total_concept": "GrossProfit",
+    "fallback_concepts": ["GrossProfit"],
+    "derived_fallback": "totalRevenue - costOfRevenue",
+    "regime_gated": true
+  },
+  "costOfRevenue": {
+    "tier": 3, "kind": "duration", "sign": "non_negative", "unit": "USD",
+    "definition": "Cost of revenue: cost of goods sold plus cost of services.",
+    "authority": "Reg S-X Rule 5-03 captions 1 and 2 are a MATCHED FIVE-WAY PAIR and Rule 5-03(b) enforces the pairing, so unlike grossProfit and operatingIncome this line IS required whenever the corresponding revenue caption is presented. Its absence in 61 of 76 Financials reflects those filers presenting no product/service revenue caption at all, not an omission.",
+    "total_concept": "CostOfRevenue",
+    "roll_up": {"sum": ["CostOfGoodsSold", "CostOfServices"]},
+    "fallback_concepts": ["CostOfRevenue", "CostOfGoodsAndServicesSold"],
+    "authority_gap": "Whether Compustat's COGS includes depreciation (DP) was NOT closed by the research, so any COGS-based factor ported from a paper is approximate."
+  },
+  "inventory": {
+    "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Total inventory, net.",
+    "authority": "FASB us-gaap-doc-2025: 'Amount after valuation and LIFO reserves of inventory...' us-gaap-ref-2025: `InventoryNet` -> SX 210.5-02(6). CORRECTION to this entry's earlier note, which guessed at ASC 330-10-50: the LIFO-reserve disclosure requirement is Reg S-X Rule 5-02(6)(c) ITSELF -- eCFR verbatim, 'If the LIFO inventory method is used, the excess of replacement or current cost over stated LIFO value shall, if material, be stated parenthetically or in a note...' -- and the dedicated elements (`InventoryLIFOReserve`, `ExcessOfReplacementOrCurrentCostsOverStatedLIFOValue`) are tagged specifically to 5-02(6)(c). No independent ASC 330-10-50 disclosure tie was found in the taxonomy; it may exist as a parallel GAAP requirement, but the operative FASB-confirmed citation is the Reg-S-X rule, reproduced in the Codification only as ASC 210-10-S99-1 (the SEC-materials cross-reference section), not as a native ASC 330 paragraph.",
+    "fallback_concepts": ["InventoryNet"]
+  },
+  "minorityInterest": {
+    "tier": 3, "kind": "instant", "sign": "any", "unit": "USD",
+    "definition": "Non-controlling interests presented within consolidated equity.",
+    "authority": "FASB us-gaap-doc-2025: 'Amount of equity (deficit) attributable to noncontrolling interest.' Standard label: 'Equity, Attributable to Noncontrolling Interest'. us-gaap-ref-2025 ties it to Reg S-X 210.5-02(31), eCFR verbatim: '31. Noncontrolling interests in consolidated subsidiaries.' Checked us-gaap-lab-2025 for a `deprecatedLabel` role on `MinorityInterest`: NONE found -- it is not deprecated in the 2025 taxonomy and remains the correct input to stockholdersEquity's roll-up.",
+    "fallback_concepts": ["MinorityInterest"]
+  },
+  "researchAndDevelopment": {
+    "tier": 3, "kind": "duration", "sign": "non_negative", "unit": "USD",
+    "regime_gated": true,
+    "definition": "Research and development expense on the AGGREGATE basis -- including acquired in-process R&D write-offs.",
+    "authority": "Compustat's own XRD definition ends 'This item is not available for banks', which is why this field is regime-gated rather than universe-scored. FASB ships two elements that are SUPERSET and SUBSET, not substitutes: `ResearchAndDevelopmentExpense` (the aggregate, including acquired IPR&D write-offs) and `ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost`. Measured on the 7.8M-fact dump: of 21 pairs across 4 tickers where both are tagged for the same period, 0.0% agree within 1%, 23.8% are off by more than 50%, and the mean aggregate/ex-IPR&D ratio is 1.675. But the field is well-behaved over TIME -- 198 of 212 tickers (93%) use exactly one concept across their full history -- so the danger is CROSS-TICKER basis mixing, not within-ticker drift.",
+    "basis_choice": "ONE basis universe-wide: `ResearchAndDevelopmentExpense`. Chosen over the economically cleaner ex-IPR&D basis purely on coverage -- 10,429 undimensioned facts against 1,284, so mandating the narrow concept would collapse the field to ~4% of filers.",
+    "total_concept": "ResearchAndDevelopmentExpense",
+    "fallback_concepts": ["ResearchAndDevelopmentExpense", "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
+    "dc_code_on_fallback": {"ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost": "basis_ex_iprd"},
+    "no_bridge": "Do NOT attempt an IPR&D bridge. `ResearchAndDevelopmentInProcess` (130 facts) was co-tagged in 0 of the 21 overlap pairs, so the two bases cannot be reconciled from a third element. With co-tagging at 1.0% of ticker-years there is no overlap year to reconcile against either, so a concept switch is an unreconcilable level step -- exactly as for revenue and capex. The 14 switchers get a tag_switch_break flag from the validator.",
+    "coverage": "225 of 491 tickers; universal only in Info Tech (65/72), Materials (17/26) and Health Care (42/57).",
+    "never_use": {
+      "ResearchAndDevelopmentExpenseSoftwareExcludingAcquiredInProcessCost": "ASC 985-20 software R&D is a DIFFERENT measure (532 facts); coalescing it in mixes bases.",
+      "PaymentsToAcquireInProcessResearchAndDevelopment": "an INVESTING CASH OUTFLOW, and the element MAA uses to tag $272M of multifamily development capex. A name-keyed R&D extractor books a REIT as an R&D spender."
+    },
+    "known_residual": "Capitalised software (ASC 350-40 / 985-20) depresses reported R&D expense, so a capitalising filer looks like it spends less than an economically identical expensing one. NOT recoverable from the R&D tag. Re-add `capitalizedSoftware` as a tier-0 companion if the R&D factor turns out to be sensitive to capitalisation policy."
+  },
+
+  "longTermDebtCurrentOnly": {
+    "tier": 0, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Current maturities of long-term debt, as its own leg.",
+    "authority": "Carried so shortTermDebt's two-leg roll-up is auditable after the fact: 2,017 cells across 111 tickers tag this leg and ShortTermBorrowings with no total, and the old resolver silently discarded one of them.",
+    "authority_inherits_from": ["shortTermDebt"],
+    "fallback_concepts": ["LongTermDebtCurrent"],
+    "feeds": ["shortTermDebt"]
+  },
+  "shortTermBorrowingsOnly": {
+    "tier": 0, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Revolver and commercial-paper borrowings, as its own leg.",
+    "authority": "The disjoint counterpart to longTermDebtCurrentOnly; median ShortTermBorrowings / LongTermDebtCurrent = 1.103, so neither leg dominates and neither may be dropped.",
+    "authority_inherits_from": ["shortTermDebt"],
+    "fallback_concepts": ["ShortTermBorrowings"],
+    "feeds": ["shortTermDebt"]
+  },
+  "financeLeaseLiability": {
+    "tier": 0, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Total finance-lease liability, current plus noncurrent.",
+    "authority": "Required by decision #4's totalDebt definition, and required again to put longTermDebt on an ex-lease basis when a filer tags only `LongTermDebtAndCapitalLeaseObligations`.",
+    "authority_inherits_from": ["totalDebt", "longTermDebt"],
+    "roll_up": {"sum": ["FinanceLeaseLiabilityCurrent", "FinanceLeaseLiabilityNoncurrent"]},
+    "fallback_concepts": ["FinanceLeaseLiability"],
+    "feeds": ["totalDebt", "longTermDebt"]
+  },
+  "operatingLeaseLiability": {
+    "tier": 0, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Total operating-lease liability, current plus noncurrent.",
+    "authority": "Enters totalDebt per decision #4 (the S&P/Moody's treatment). Deliberately NOT z-scored on its own: it reaches 486 tickers but coverage is only .513 because it exists solely in the ASC-842 era, so a cross-sectional z-score would rank adoption timing rather than leverage.",
+    "authority_inherits_from": ["totalDebt"],
+    "roll_up": {"sum": ["OperatingLeaseLiabilityCurrent", "OperatingLeaseLiabilityNoncurrent"]},
+    "fallback_concepts": ["OperatingLeaseLiability"],
+    "feeds": ["totalDebt"],
+    "regime_break": {"field_change": "ASC 842", "effective": "2019-01-01", "reason": "off balance sheet before adoption; the series begins, it does not jump."}
+  },
+  "shortTermInvestments": {
+    "tier": 0, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Short-term investments and current marketable securities.",
+    "authority": "Required by decision #5's cash definition.",
+    "authority_inherits_from": ["cash"],
+    "fallback_concepts": ["ShortTermInvestments", "AvailableForSaleSecuritiesDebtSecuritiesCurrent", "MarketableSecuritiesCurrent"],
+    "feeds": ["cash"]
+  },
+  "restrictedCash": {
+    "tier": 0, "kind": "instant", "sign": "non_negative", "unit": "USD",
+    "definition": "Restricted cash and restricted cash equivalents, current plus noncurrent.",
+    "authority": "Required by decision #5's cash definition; ASU 2016-18 (ASC 230-10-45-4) is what makes the restricted-inclusive total the cash-flow anchor.",
+    "roll_up": {"sum": ["RestrictedCashCurrent", "RestrictedCashNoncurrent"]},
+    "fallback_concepts": ["RestrictedCashAndCashEquivalents", "RestrictedCash"],
+    "feeds": ["cash"]
+  },
+  "netInterestIncome": {
+    "tier": 0, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "Interest income net of interest expense -- a bank's net interest income.",
+    "authority": "One of the two legs JPM's own linkbase declares under `RevenuesNetOfInterestExpense` (weight +1.0). Measured: 34 of 76 Financials tag it, and 11 of those tag NO noninterest income -- which is why the bank top line was understated by roughly a third for those tickers.",
+    "fallback_concepts": ["InterestIncomeExpenseNet"],
+    "feeds": ["totalRevenue"],
+    "never_use": {"InterestAndDividendIncomeOperating": "GROSS interest income, not net."}
+  },
+  "noninterestIncome": {
+    "tier": 0, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "A bank's noninterest (fee) income.",
+    "authority": "The second leg of JPM's declared `RevenuesNetOfInterestExpense` roll-up (weight +1.0). Typically 30-45% of a US bank's net revenue, so dropping it is a first-order error. Measured: only 23 of 76 Financials tag it.",
+    "fallback_concepts": ["NoninterestIncome"],
+    "feeds": ["totalRevenue"]
+  },
+  "premiumsEarned": {
+    "tier": 0, "kind": "duration", "sign": "non_negative", "unit": "USD",
+    "definition": "Premiums earned, net of reinsurance ceded.",
+    "authority": "First leg of the insurer top line. Insurance contracts are scoped out of ASC 606 (ASC 606-10-15-2), so the revenue-from-contracts element captures only 3.2% of MetLife. Measured: 25 of 76 Financials tag it, 6 of those with no net investment income.",
+    "fallback_concepts": ["PremiumsEarnedNet"],
+    "feeds": ["totalRevenue"]
+  },
+  "netInvestmentIncome": {
+    "tier": 0, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "Net investment income on an insurer's investment portfolio.",
+    "authority": "Second leg of the insurer top line.",
+    "authority_inherits_from": ["totalRevenue"],
+    "fallback_concepts": ["NetInvestmentIncome"],
+    "feeds": ["totalRevenue"]
+  },
+  "realizedInvestmentGains": {
+    "tier": 0, "kind": "duration", "sign": "any", "unit": "USD",
+    "definition": "Realized gains and losses on investments.",
+    "authority": "Third leg of the insurer top line. Genuinely signed -- a loss year is not an extraction error.",
+    "authority_inherits_from": ["totalRevenue"],
+    "fallback_concepts": ["RealizedInvestmentGainsLosses"],
+    "feeds": ["totalRevenue"]
+  },
+  "rentalIncome": {
+    "tier": 0, "kind": "duration", "sign": "non_negative", "unit": "USD",
+    "definition": "Operating-lease (rental) income earned as lessor.",
+    "authority": "The REIT top-line fallback where `Revenues` is untagged. `OperatingLeaseLeaseIncome` is the ASC-842 lessor element. NOTE it is used by non-REITs too, so it must never by itself route a ticker into the real-estate regime.",
+    "authority_inherits_from": ["totalRevenue"],
+    "fallback_concepts": ["OperatingLeaseLeaseIncome"],
+    "feeds": ["totalRevenue"]
+  },
+  "basicShares": {
+    "tier": 0, "kind": "duration", "sign": "non_negative", "unit": "shares",
+    "definition": "Weighted-average basic share count for the period.",
+    "authority": "Carried only so optionOverhang = dilutedShares / basicShares - 1 is computable. A weighted average, so not additive across quarters.",
+    "authority_inherits_from": ["dilutedShares"],
+    "fallback_concepts": ["WeightedAverageNumberOfSharesOutstandingBasic"],
+    "feeds": ["optionOverhang"],
+    "not_additive": true
+  }
+}

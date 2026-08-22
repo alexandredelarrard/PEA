@@ -46,7 +46,7 @@ Break down the implementation into logical phases:
 
 ### 4. **Create Detailed Plan Document**
 
-Save to: `docs-internal/planning/active-tasks/YYYY-MM-DD-{topic}-plan.md`
+Save to: `reports/planning/active-tasks/YYYY-MM-DD-{topic}-plan.md`
 
 Structure:
 ```markdown
@@ -84,7 +84,7 @@ Structure:
 **Goal**: [What this phase accomplishes]
 
 **Changes**:
-1. `SRC/module.py`:
+1. `src/module.py`:
    - [ ] Add method `new_functionality()`
    - [ ] Update class initialization
    ```python

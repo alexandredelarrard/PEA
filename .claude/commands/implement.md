@@ -25,19 +25,19 @@ Please provide the path to your implementation plan from Phase 2.
 ### 2. **Pre-Implementation Checks**
 ```bash
 # Ensure clean working state
-git status
-git diff
+rtk git status
+rtk git diff
 
 # Run existing tests to ensure baseline
-python -m pytest
+rtk python -m pytest
 
 # Check current branch
-git branch --show-current
+rtk git branch --show-current
 ```
 
 If not on a feature branch, suggest creating one:
 ```bash
-git checkout -b feature/{description}
+rtk git checkout -b feature/{description}
 ```
 
 ### 3. **Phase-by-Phase Implementation**
@@ -60,13 +60,13 @@ For each phase marked ⬜ in the plan:
 Run the verification steps from the plan:
 ```bash
 # Run specific tests
-python -m pytest tests/test_module.py::TestClass -xvs
+rtk python -m pytest tests/test_module.py::TestClass -xvs
 
 # Check functionality
-python -c "from src.xxx import Module; Module().test_new_feature()"
+rtk python -c "from src.xxx import Module; Module().test_new_feature()"
 
 # Verify no regressions
-python -m pytest tests/ -x
+rtk python -m pytest tests/ -x
 ```
 
 #### D. Handle Issues
@@ -93,7 +93,7 @@ If verification fails:
 
 **After completing each major phase:**
 1. Update the plan document with progress
-2. If context is getting large (>60% usage):
+2. If context is getting large (>50% usage):
    ```
    📊 Context usage high. Compacting progress into plan...
 
@@ -135,33 +135,6 @@ Plan document updated: [path to plan with all ✅]
 ```
 
 ## Implementation Guidelines:
-
-### PEA-Specific Patterns:
-
-1. **Rich Output Formatting**:
-   ```python
-   # Use rich for beautiful console output
-   from rich.console import Console
-   from rich.table import Table
-   console = Console()
-   ```
-
-2. **Error Handling**:
-   ```python
-   # Handle SEC API errors gracefully
-   try:
-       filing = company.get_filing()
-   except Exception as e:
-       console.print(f"[red]Error: {e}[/red]")
-   ```
-
-3. **Test Patterns**:
-   ```python
-   # Use fixtures for SEC data
-   @pytest.fixture
-   def sample_xbrl():
-       return Path("tests/fixtures/xbrl/sample.xml").read_text()
-   ```
 
 ### Following the Plan's Intent:
 

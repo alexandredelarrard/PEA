@@ -8,25 +8,21 @@ the SAME 10-K the fundamentals walk already opens, so there is no reason to list
 download and date those filings a second time in a separate pass.
 
 Why text and not a tag: there is NO GAAP concept for headcount (`dei:Entity-
-NumberOfEmployees` exists but US filers essentially never tag it), so the
-`field: [candidate tags]` machinery in `fundamentals_tags.py` has nothing to
-resolve. `employees` is therefore declared there with an EMPTY candidate list --
-`build_tag_frames` skips it entirely, while every DOWNSTREAM consumer
-(`_assemble_base`'s latest-value ffill, `_derive_history`'s output column,
-`fundamentals_derive`'s per-field series) picks it up from the same dict as any
-other field. This module only produces the FACT ROW; nothing else changes.
+NumberOfEmployees` exists but US filers essentially never tag it), so no amount of
+concept resolution reaches it. `employees` is a Tier 2 KPI whose only producer is this
+module: it emits the FACT ROW directly, and every downstream consumer reads it out of
+`fundamentals_facts` like any other field.
 
-Everything that made the old fetcher accurate is preserved, only re-shaped:
+Everything that made the old standalone fetcher accurate is preserved, only re-shaped:
   * the in-document scoring parser (`edgar_extract.extract_employee_count`),
     unchanged and still unit-tested on its own;
   * the per-ticker CONTINUITY guard (`is_continuous`), the last line of defence
     against a parse artifact that survives every in-document heuristic.
 
 What is DROPPED as redundant: the filing listing, the per-ticker `as_of` cutoff,
-the meta sidecar and the annual-cadence gate. `fetch_fundamentals_edgar` already
-skips accessions present in `fundamentals_facts`, so a re-run never re-opens a
-10-K it has parsed -- the same incremental property, from one mechanism instead
-of two.
+the meta sidecar and the annual-cadence gate. The fundamentals fetcher already skips
+accessions present in `fundamentals_facts`, so a re-run never re-opens a 10-K it has
+parsed -- the same incremental property, from one mechanism instead of two.
 """
 from __future__ import annotations
 
@@ -36,14 +32,17 @@ import pandas as pd
 
 from src.constants.constants import HEADCOUNT_CONTINUITY_MAX, HEADCOUNT_CONTINUITY_MIN
 from src.data_extract.utils.common.edgar_extract import extract_employee_count, html_to_text
-from src.data_extract.utils.fundamentals.fundamentals_tags import EMPLOYEES_FIELD
+
+#: The `fundamentals_facts.field` value this module writes. Declared here because this
+#: module is headcount's only producer; the KPI catalogue records its tier and definition.
+EMPLOYEES_FIELD = "employees"
 
 # Only the ANNUAL report states a headcount ("As of December 31, we had
 # approximately N employees"); a 10-Q never does. The amendment is included
 # because a 10-K/A that restates the year restates the workforce disclosure
-# with it -- it produces its own row (is_amendment=1.0) and
-# `fundamentals_derive._resolve_latest_per_period` prefers it from its own
-# filing date onward, exactly like a restated financial figure.
+# with it -- it produces its own row (is_amendment=1.0), and under the
+# publication-event history grain that row takes effect from its own filing
+# date onward, exactly like a restated financial figure.
 HEADCOUNT_FORMS: tuple[str, ...] = ("10-K", "10-K/A")
 # Not a real XBRL unit (headcount is dimensionless) -- a marker that makes the
 # scale of `value` obvious to anyone reading `fundamentals_facts` directly, where
@@ -131,7 +130,7 @@ def employee_fact_frame(
     Shaped as an INSTANT fact (`period_type='instant'`, no `period_start`): a
     headcount is a point-in-time level stated as of the fiscal year end, exactly
     like a balance-sheet line, and the missing `period_start` is what tells
-    `fundamentals_periods.instant_stock` to normalize this filing's native 'FY'
+    `periods.instant_stock` to normalize this filing's native 'FY'
     label to 'Q4' (the year-end snapshot) instead of treating it as a duration
     measure that legitimately has both an FY and a Q4 flavour.
 

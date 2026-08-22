@@ -222,7 +222,6 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     flatten to transactions, keep the universe, upsert to `insider_transactions`.
     Returns the number of rows upserted."""
     
-    store = context.store
     cikmap = load_cik_mapping(context)
     cik2tkr = ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
                if not cikmap.empty and "ticker" in cikmap.columns else {})
@@ -230,7 +229,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     cache = cache_dir(context, "sec_insider_transactions")
 
     tickers = {str(t).upper() for t in tickers}          # universe as an uppercased set
-    done_q = bulk_ingested_quarters(store, Tables.insider_transactions)
+    done_q = bulk_ingested_quarters(context.store, Tables.insider_transactions)
     new_tickers = tickers - load_processed_universe(cache, Tables.insider_transactions)   # empty once converged
     if new_tickers:
         logger.info("insider: %d new/changed tickers -> re-parsing cached quarters",
@@ -252,7 +251,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
         if df.empty:
             continue
         df["quarter"] = q
-        saved += store.save(Tables.insider_transactions, df[[c for c in _OUT_COLS if c in df.columns]])
+        saved += context.store.save(Tables.insider_transactions, df[[c for c in _OUT_COLS if c in df.columns]])
 
     save_processed_universe(cache, Tables.insider_transactions, tickers)   # so a converged re-run skips
     logger.info("insider_transactions: upserted %d rows (%d quarters scanned)",

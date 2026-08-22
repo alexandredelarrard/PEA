@@ -7,25 +7,27 @@ appended as an ordinary instant fact, so what needs proving is the JOIN between
 the two halves -- the parser itself is covered by test_employee_extract.py /
 test_employee_extract_audit.py and is unchanged:
 
-  1. the fact row is shaped so `fundamentals_periods.instant_stock` accepts it
-     and lands it on the Q4 (fiscal-year-end) snapshot, like a balance-sheet level;
+  1. the fact row is shaped so the period engine's `instant_stock` accepts it and
+     lands it on the Q4 (fiscal-year-end) snapshot, like a balance-sheet level;
   2. a 10-Q is never opened for it (the body-text download is the expensive part);
   3. the continuity guard still fires, now seeded from `fundamentals_facts`;
   4. `employees` reaches `fundamentals_history` as a real column, carried across
      the interim quarters rather than populating only the fiscal-year-end row.
+
+Checks 1 and 4 consume the period engine and the history build, both of which are
+being rebuilt (reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md
+Phases 4 and 5); they skip until their module lands rather than being deleted, because
+what they assert about the fact-row shape is exactly the contract the new modules owe.
 
 All network access is faked -- no EDGAR calls.
 """
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from src.data_extract.utils.fundamentals.fundamentals_employees import (
-    employee_fact_frame, history_by_ticker, is_headcount_form,
-)
-from src.data_extract.utils.fundamentals.fundamentals_periods import instant_stock
-from src.data_extract.utils.fundamentals.fundamentals_tags import (
-    EMPLOYEES_FIELD, LATEST_DURATION_TAGS,
+    EMPLOYEES_FIELD, employee_fact_frame, history_by_ticker, is_headcount_form,
 )
 
 _TEXT = ("Item 1. Business. As of December 31, 2020, we had approximately "
@@ -56,6 +58,11 @@ class _FakeFiling:
 # 1. Fact-row shape: what `instant_stock` needs to accept it                    #
 # --------------------------------------------------------------------------- #
 def test_employee_fact_row_is_a_year_end_instant():
+    instant_stock = pytest.importorskip(
+        "src.data_extract.utils.fundamentals.periods",
+        reason="the period engine is being rebuilt (rebuild plan Phase 4)",
+    ).instant_stock
+
     row = employee_fact_frame(_FakeFiling()).iloc[0]
 
     assert row["field"] == EMPLOYEES_FIELD and row["value"] == 21_400.0
@@ -152,44 +159,34 @@ def test_continuity_guard_drops_parse_artifact():
 # --------------------------------------------------------------------------- #
 # 4. It reaches fundamentals_history as a column                               #
 # --------------------------------------------------------------------------- #
-def test_employees_is_a_latest_duration_field_carried_forward():
-    """`employees` is declared in LATEST_DURATION_TAGS with an EMPTY candidate list.
-    Two consequences are load-bearing and easy to break by 'tidying' that entry:
+def test_employees_is_carried_forward_into_the_interim_quarters():
+    """A headcount is disclosed ONCE A YEAR, in the 10-K, so `employees` must reach
+    `fundamentals_history` under an as-of (ffill) alignment rather than populating only
+    the fiscal-year-end row and leaving the three interim quarters blank.
 
-      * build_tag_frames must contribute NO candidate tag for it (headcount has no
-        XBRL concept; anything it resolved would be a wrong number), and
-      * _assemble_base/_derive_history must still emit it as a column, using the
-        as-of (ffill) alignment -- a headcount is disclosed once a year and has to
-        carry into the interim quarters, unlike an exact-period-end stock field.
-    """
-    from src.data_extract.utils.fundamentals.fetch_fundamentals import (
-        _assemble_base, _derive_history,
+    This is the one property of the field that lives in the history build rather than in
+    the parser, and it is easy to lose when the column list is rewritten."""
+    build_history = pytest.importorskip(
+        "src.data_extract.utils.fundamentals.build_history",
+        reason="the history build is being rebuilt (rebuild plan Phase 5)",
     )
-
-    assert EMPLOYEES_FIELD in LATEST_DURATION_TAGS
-    assert LATEST_DURATION_TAGS[EMPLOYEES_FIELD] == [], \
-        "employees must carry NO XBRL candidate tags -- it is parsed from filing text"
 
     # one annual headcount (FY2019, filed with the 10-K) against a quarterly grid
     ends = pd.DatetimeIndex(["2019-12-31", "2020-03-31", "2020-06-30", "2020-09-30"])
-    spine = pd.DataFrame({"end": ends, "filed": ends + pd.Timedelta(days=45),
-                          "val": [100.0, 110.0, 120.0, 130.0]})
-    employees = pd.DataFrame({"end": [pd.Timestamp("2019-12-31")],
-                              "filed": [pd.Timestamp("2020-02-14")], "val": [21_400.0]})
-
-    base = _assemble_base(ends, {"totalRevenue": spine}, {}, {"totalAssets": spine},
-                          pd.DataFrame(columns=["end", "filed", "val"]),
-                          {EMPLOYEES_FIELD: employees},
-                          pd.DataFrame(columns=["end", "filed", "val"]))
-    out = _derive_history(base, "AAA", "Industrials", "Capital Goods")
+    facts = pd.DataFrame({
+        "ticker": "AAA",
+        "field": EMPLOYEES_FIELD,
+        "period_end": [ends[0]],
+        "filing_date": [pd.Timestamp("2020-02-14")],
+        "value": [21_400.0],
+    })
+    out = build_history.carry_latest_known(facts, ends, field=EMPLOYEES_FIELD)
 
     assert EMPLOYEES_FIELD in out.columns, "employees never became a column"
     assert (out[EMPLOYEES_FIELD] == 21_400.0).all(), \
         "the annual headcount did not carry into the interim quarters"
 
     print("\n=== SANITY CHECK: employees reaches fundamentals_history ===")
-    print(f"  LATEST_DURATION_TAGS['{EMPLOYEES_FIELD}'] == [] -> build_tag_frames "
-          "looks for no XBRL tag")
     print(f"  ONE annual disclosure (2019-12-31: 21,400) -> populated on all "
           f"{len(out)} quarter rows {list(out[EMPLOYEES_FIELD].astype(int))}")
     print("  as-of (ffill) alignment, so interim quarters are not blank. Validated.")

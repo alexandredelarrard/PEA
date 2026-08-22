@@ -110,9 +110,10 @@ What to assert: output shape & dtypes · NaN rate within bounds · values make e
 ## Running tests
 
 ```bash
+cd "c:/Users/de larrard alexandre/OneDrive - The Boston Consulting Group, Inc/Documents/repos_github/PEA" 
 PY="$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3.13/Scripts/python.exe"
 
-"$PY" -m pytest tests/data_aggregate/test_targets.py -v -s          # one file
+"$PY" -m pytest tests/data_extract/test_form_registry.py -v -s          # one file
 "$PY" -m pytest tests/data_aggregate/test_targets.py::test_fn -v -s  # one test
 ```
 

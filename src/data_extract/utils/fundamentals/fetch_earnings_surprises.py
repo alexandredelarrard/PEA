@@ -14,12 +14,6 @@ its estimate and a NaN actual: that row is the live forward EPS.
     2026-05-05    | 1.29         | 1.37       | 5.82           <- reported (beat)
     ...
 
-INCREMENTAL (DB table `earnings_surprises`, keyed on (ticker, earnings_date)): each run
-only fetches tickers that are (a) missing entirely, or (b) due -- their next earnings
-date (the forward row yfinance returns with eps_actual = NaN) has already passed, so
-the actual should now be available. Tickers whose next earnings is still in the future
-are skipped (nothing new to fetch yet); a due ticker is re-pulled with a small limit to
-append the new quarter and fill the actual for the prior forward-estimate row.
 """
 from __future__ import annotations
 
@@ -30,6 +24,7 @@ import pandas as pd
 import yfinance as yf
 from tqdm import tqdm
 
+from src.data_store.schema import Tables
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_extract.utils.common.run_manifest import record_run
@@ -115,17 +110,17 @@ def fetch_earnings_surprises(
     tickers: list[str],
     pause: float = 0.3,
     refetch_window_days: int = 95,      # > one quarter; fallback only when no forward date is known
-) -> pd.DataFrame:
+) -> None:
     """Build/refresh the incremental earnings-surprise history and upsert it into the
     `earnings_surprises` DB table. Returns the full merged history."""
-    log = context.log
-    existing = context.store.load("earnings_surprises", optional=True)
+    
+    existing = context.store.load(Tables.earnings_surprises, optional=True)
     if existing is not None:
         existing["earnings_date"] = pd.to_datetime(existing["earnings_date"]).dt.normalize()
 
     full_limit = int(context.config.data_extract.years_history) * 4 + 4
     plan = _plan_fetch(tickers, existing, full_limit, refetch_window_days)
-    log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)",
+    context.log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)",
              len(plan), len(tickers), len(tickers) - len(plan))
 
     new_frames = []
@@ -134,7 +129,7 @@ def fetch_earnings_surprises(
         try:
             df = _download_one(tkr, limit)
         except Exception as e:  # noqa: BLE001 - network/parse issues are per-ticker
-            log.warning("%s: earnings history failed (%s)", tkr, e)
+            context.log.warning("%s: earnings history failed (%s)", tkr, e)
             failed.append(tkr)
             continue
         if df is not None:
@@ -142,31 +137,20 @@ def fetch_earnings_surprises(
         else:
             empty.append(tkr)          # Yahoo returned no calendar (genuine gap)
         time.sleep(pause)
+
     if empty or failed:
-        log.warning("Earnings: %d empty (no Yahoo calendar) + %d failed after retries "
+        context.log.warning("Earnings: %d empty (no Yahoo calendar) + %d failed after retries "
                     "out of %d fetched. Empty e.g.: %s", len(empty), len(failed),
                     len(plan), empty[:15])
 
     parts = [df for df in (existing, *new_frames) if df is not None and not df.empty]
     if not parts:
-        log.warning("No earnings-surprise data available (nothing fetched, no cache).")
-        record_run(context, "earnings_surprises", len(tickers), 0)
-        return existing if existing is not None else pd.DataFrame(columns=_COLUMNS)
-
-    out = pd.concat(parts, ignore_index=True)[_COLUMNS]
-    # keep="last" so a freshly fetched row (actual now filled) beats the old
-    # forward-estimate row for the same (ticker, earnings_date).
-    out = (out.sort_values(["ticker", "earnings_date"])
-              .drop_duplicates(subset=["ticker", "earnings_date"], keep="last")
-              .reset_index(drop=True))
+        context.log.warning("No earnings-surprise data available (nothing fetched, no cache).")
+        record_run(context, Tables.earnings_surprises, len(tickers), 0)
 
     # upsert the freshly-fetched rows; the DB merges on (ticker, earnings_date),
     # so a now-filled actual overwrites the old forward-estimate row.
     new = pd.concat(new_frames, ignore_index=True)[_COLUMNS] if new_frames else pd.DataFrame()
-    if not new.empty:
-        context.store.save("earnings_surprises", new)
-    reported = int(out["eps_actual"].notna().sum())
-    log.info("Saved %d new earnings rows (history %d rows, %d reported) for %d tickers to DB",
-             len(new), len(out), reported, out["ticker"].nunique())
-    record_run(context, "earnings_surprises", len(tickers), len(new))
-    return out
+    context.store.save(Tables.earnings_surprises, new)
+    context.log.info(f"Saved {len(new)} new earnings rows for {new['ticker'].nunique()} tickers to DB")
+    record_run(context, Tables.earnings_surprises, len(tickers), len(new))

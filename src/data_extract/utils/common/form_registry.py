@@ -22,10 +22,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from src.constants.constants import (
-    DEF14A_FORMS, FUNDAMENTALS_FORMS, SEC_8K_FORMS, SEC_13D_FORMS, SEC_13F_FORMS,
-)
-from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import (
-    fetch_fundamentals_edgartools,
+    DEF14A_FORMS, SEC_8K_FORMS, SEC_13D_FORMS, SEC_13F_FORMS,
 )
 from src.data_extract.utils.prices.fetch_13f import fetch_13f
 from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
@@ -49,14 +46,10 @@ class FormHandlerSpec:
     notes: str = ""
 
 
+# NOTE: the "fundamentals" entry is absent while the fundamentals stack is being rebuilt
+# (see reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md). Phase 3
+# re-adds it pointing at `fetch_fundamentals_sec.fetch_fundamentals_sec`.
 FORM_REGISTRY: dict[str, FormHandlerSpec] = {
-    "fundamentals": FormHandlerSpec(
-        name="fundamentals", sec_forms=tuple(FUNDAMENTALS_FORMS),
-        discovery="per_cik_accession", table="fundamentals_facts",
-        handler=fetch_fundamentals_edgartools, call_shape="(context, tickers)",
-        years_config_key="fundamentals_years_history", step_chain_wired=True,
-        notes="derives fundamentals_history (unchanged shape/PK) from this raw table "
-             "via fundamentals_derive.rebuild_fundamentals_history"),
     "sec_8k": FormHandlerSpec(
         name="sec_8k", sec_forms=tuple(SEC_8K_FORMS),
         discovery="per_cik_accession", table="sec_8k",

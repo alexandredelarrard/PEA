@@ -2,7 +2,7 @@
 Server-side filtering for `read_table` / `DataStore.load` (`where=`).
 
 Motivation, measured on the live table: `fundamentals_facts` holds 2,326,371 rows
-across 491 tickers, and `fundamentals_derive._load_facts_for_ticker` reads it ONCE
+across 491 tickers, and the history build reads it ONCE
 PER TICKER. Loading the whole table and filtering in pandas cost 27.5s and 2.33M x 19
 cells per call -- ~3.7 hours for one `rebuild_fundamentals_history` pass -- against
 0.042s for the scoped read, since the registry PK is `btree (ticker,

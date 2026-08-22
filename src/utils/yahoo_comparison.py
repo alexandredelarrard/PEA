@@ -10,7 +10,7 @@ reconstitution added -- fail too), so "not in Tiingo" cannot be predicted from
 `DOW_30_TICKERS` and is only ever discovered by a live 400/empty response.
 
 Mirrors `tiingo_comparison.py`'s architecture exactly (field map -> bucket a/b/c ->
-`ratio_outlier_check` reusing `analyze_history.detect_level_outliers`) rather than
+`ratio_outlier_check` reusing `outliers.detect_level_outliers`) rather than
 reinventing the classification logic -- only the source and its field names differ.
 
 Uses the `yfinance` library directly (already a pinned project dependency, not a new
@@ -49,7 +49,7 @@ from src.constants.constants import (
     YAHOO_RATIO_OUTLIERS_FILENAME,
 )
 from src.context import Context
-from src.validate.analyze_history import detect_level_outliers
+from src.utils.outliers import detect_level_outliers
 
 _LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -170,7 +170,7 @@ def fetch_yahoo_statements(
 
 
 # Position-finding helpers, duplicated (not imported) from `tiingo_comparison.py`'s
-# private equivalents -- same rationale `analyze_history.py` already documents for its
+# private equivalents -- same rationale `outliers.py` already documents for its
 # own small duplicated mapping: this is a generic, tiny, stable piece of positional
 # logic, and cross-importing another module's underscore-private names is worse than
 # re-stating 10 lines.
@@ -293,7 +293,7 @@ def classify_bucket(ticker: str, field: str, kind: str | None) -> str:
 def ratio_outlier_check(
     comparison_frame: pd.DataFrame, *, threshold: float = 3.5,
 ) -> pd.DataFrame:
-    """Reuses `analyze_history.detect_level_outliers` UNMODIFIED on the ratio series
+    """Reuses `outliers.detect_level_outliers` UNMODIFIED on the ratio series
     (our_value / yahoo_value) per (ticker, field) -- identical logic and caveats to
     `tiingo_comparison.ratio_outlier_check`. With only ~4-5 quarters of Yahoo history
     per ticker, most series here are too short for the level-outlier machinery

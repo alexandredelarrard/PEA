@@ -113,10 +113,15 @@ def test_as_of_never_precedes_fiscal_end_unit():
     MEDIAN itself landed pre-period-end. That is a look-ahead leak, not a lag — the row
     asserts the full-year numbers were public while the year was still running.
 
-    `_assemble_base` now repairs such a row to the earliest spine filing that is actually
-    on/after the period end, and drops it if no filing qualifies.
+    Under the publication-event grain (rebuild plan §5.0) this becomes structural rather
+    than repaired: `as_of` IS a filing date, so it cannot precede the period it reports on
+    unless the filer itself dated the filing early. Skips until the history build lands.
     """
-    from src.data_extract.utils.fundamentals.fetch_fundamentals import build_ticker_history
+    build_history = pytest.importorskip(
+        "src.data_extract.utils.fundamentals.build_history",
+        reason="the history build is being rebuilt (rebuild plan Phase 5)",
+    )
+    build_ticker_history = build_history.build_ticker_history
 
     def facts_for(filed_early: bool) -> dict:
         """Four quarters of a calendar-year filer. When `filed_early`, the Q4/FY facts carry

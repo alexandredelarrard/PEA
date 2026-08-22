@@ -76,5 +76,5 @@ def test_list_filings_since_filters_to_after_D(monkeypatch):
 # (`_last_asof_by_ticker`) tests were REMOVED with the machinery they covered.
 # Employee headcount is now a `fundamentals_facts` field parsed from the same 10-K
 # as the fundamentals (`fundamentals_employees.py`), so its incremental behaviour is
-# `fetch_fundamentals_edgar`'s `done_accessions` skip -- one mechanism for every
+# the fundamentals fetcher's `done_accessions` skip -- one mechanism for every
 # field, exercised by tests/data_extract/test_fundamentals_employees.py.

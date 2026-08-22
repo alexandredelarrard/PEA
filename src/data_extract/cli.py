@@ -30,8 +30,6 @@ from src.data_extract.utils.prices.fetch_13f import fetch_13f
 from src.data_extract.utils.prices.fetch_superinvestors import build_superinvestors_json
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 # --- fundamentals ----------------------------------------------------------- #
-from src.data_extract.utils.fundamentals.fetch_fundamentals_edgar import fetch_fundamentals_edgartools
-from src.data_extract.utils.fundamentals.fundamentals_derive import rebuild_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
@@ -146,16 +144,9 @@ def superinvestors(config_path: str) -> None:
 # --------------------------------------------------------------------------- #
 # Fundamentals                                                                  #
 # --------------------------------------------------------------------------- #
-@cli.command(help="SEC fundamentals (balance sheet / income / cash flow), edgartools per-filing. HEAVY.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def fundamentals(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
-    resolved = _tickers(context, tickers)
-    fetch_fundamentals_edgartools(context, tickers=resolved)
-    rebuild_fundamentals_history(context, resolved)
-
-
+# NOTE: the `fundamentals` command is absent while the fundamentals stack is being
+# rebuilt (reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md).
+# Phase 5 re-adds it over `fetch_fundamentals_sec` + `build_history`.
 @cli.command(help="Earnings surprises -> historical forward P/E.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

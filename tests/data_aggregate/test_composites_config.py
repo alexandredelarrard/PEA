@@ -29,10 +29,8 @@ from src.data_aggregate.utils.assemble.composites import (
 )
 from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
-from src.data_extract.utils.fundamentals.fetch_fundamentals import build_ticker_history
 
 ROOT = Path(__file__).resolve().parents[2]
-CACHE = ROOT / "data" / "sec_bulk_cache"
 SEED, N_TICKERS = 20260727, 10
 
 # metrics whose LEVEL is a property of the industry, not the firm: a universe
@@ -202,28 +200,30 @@ def test_goodwill_roic_drag_keeps_its_positive_sign(groups):
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def real_panel() -> pd.DataFrame:
+    """The two fundamentals panels built from the real `fundamentals_history` table.
+
+    Reads the persisted table rather than rebuilding history from cached companyfacts
+    JSON: that cache is gone, and reading the table is what the cube itself does, so
+    this fixture now exercises the same input the pipeline sees.
+    """
+    from src.data_store.schema import Tables
     from src.data_store.store import DataStore
     from src.utils.db import get_engine
     try:
-        uni = DataStore(get_engine()).load("sp500_tickers")
+        store = DataStore(get_engine())
+        uni = store.load("sp500_tickers")
     except Exception as exc:                       # pragma: no cover - env without the DB
         pytest.skip(f"sp500_tickers unavailable ({type(exc).__name__})")
     if uni is None or uni.empty:
         pytest.skip("sp500_tickers is empty")
-    uni = uni.dropna(subset=["cik", "ticker"])
-    meta = {r.ticker: (r.cik, r.sector, r.industry_group) for r in uni.itertuples()}
-    avail = sorted(t for t, (cik, _, _) in meta.items()
-                   if (CACHE / f"companyfacts_CIK{cik}.json").exists())
-    if len(avail) < N_TICKERS:
-        pytest.skip("not enough cached companyfacts")
-    picked = sorted(random.Random(SEED).sample(avail, N_TICKERS))
+    universe = sorted(uni["ticker"].dropna().unique())
+    if len(universe) < N_TICKERS:
+        pytest.skip("universe smaller than the draw")
+    picked = sorted(random.Random(SEED).sample(universe, N_TICKERS))
 
-    frames = []
-    for t in picked:
-        cik, sector, group = meta[t]
-        facts = json.loads((CACHE / f"companyfacts_CIK{cik}.json").read_text(encoding="utf-8"))
-        frames.append(build_ticker_history(t, facts, sector, group))
-    fund = pd.concat(frames, ignore_index=True)
+    fund = store.load(Tables.fundamentals_history, where={"ticker": picked}, optional=True)
+    if fund is None or fund.empty:
+        pytest.skip("fundamentals_history is empty for the drawn tickers")
 
     idx = pd.bdate_range("2022-01-03", "2026-06-30")
     close = pd.DataFrame(100.0, index=idx, columns=picked)

@@ -25,7 +25,7 @@ Design notes
     the metrics block, and a partial scope is BLOCKED from overwriting the baseline
     (see baseline.is_full_scope) so a two-ticker smoke run cannot neuter D2.
   * THE OUTLIER COUNT REUSES THE AUDIT'S KERNEL (`src/utils/outliers.modified_zscore`), so the
-    profiler and `analyze_history` can never disagree about what an outlier is.
+    profiler and the FundamentalsValidator can never disagree about what an outlier is.
   * `store.load` RAISES on an empty read by design, so every read here passes `optional=True`
     and branches on `is None` -- an empty table is a legitimate thing for a profiler to report.
 """

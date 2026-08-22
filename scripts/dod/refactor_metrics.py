@@ -20,7 +20,7 @@ Design notes
   * STDLIB `ast` ONLY. Measuring code must not add a dependency, and `ast` gives exactly what
     is needed: which lines are docstring, which names are public.
   * LOC IS A METRIC, NEVER A GATE. It appears only in §3. G6 is the counterweight: this
-    codebase's docstrings are load-bearing (`analyze_history.detect_level_outliers` documents
+    codebase's docstrings are load-bearing (`outliers.detect_level_outliers` documents
     two false-positive bugs a shorter version reintroduces), so an agent rewarded for fewer
     lines would delete precisely the most valuable text. Shrinking is allowed -- it just has
     to be SAID in §5.

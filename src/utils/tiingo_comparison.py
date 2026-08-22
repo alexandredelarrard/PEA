@@ -3,21 +3,19 @@ tiingo_comparison.py  (src/utils/tiingo_comparison.py)
 --------------------------------------------------------
 External ground-truth cross-check for `fundamentals_history`: compares our
 SEC-EDGAR-derived figures against Tiingo's `/tiingo/fundamentals/{ticker}/statements`
-API, so a Tiingo disagreement is a THIRD, independent signal alongside the
-same-source diagnostics in `analyze_history.py`/`fundamentals_tag_ledger.py`/
-`fundamentals_validation.py` (all of which can only ever check our own pipeline
+API, so a Tiingo disagreement is an independent signal alongside the same-source checks
+in `src/validate/fundamentals_validator.py` (which can only ever check our own pipeline
 against itself).
 
-Lives in `src/utils/` beside those three, for the same reason stated in
-`fundamentals_tag_ledger.py`: a read-only diagnostic over an already-persisted
-table must not make `src/utils` import from `src/data_extract`. Not a fetcher --
-purely reads `fundamentals_history` and an external API; never writes to the DB.
+Lives in `src/utils/` because a read-only diagnostic over an already-persisted table must
+not make `src/utils` import from `src/data_extract`. Not a fetcher -- purely reads
+`fundamentals_history` and an external API; never writes to the DB.
 
 Two kinds of fields, requiring two different checks (never conflate them):
 
   * SAME-DEFINITION fields (bucket "a"): totalRevenue, netIncome, totalAssets, ...
     Most of `fundamentals_history`'s flow fields are TTM SUMS (`ttm_a` in
-    `fetch_fundamentals.py::_derive_history`), while Tiingo's `statementData`
+    `build_history.py`), while Tiingo's `statementData`
     reports the DISCRETE quarter -- so a flow field is compared against the sum
     of Tiingo's matched quarter + its 3 PRECEDING quarters, not the bare quarter
     value (`kind="flow"`/`"flow_abs"` below). An instant/balance-sheet field
@@ -31,7 +29,7 @@ Two kinds of fields, requiring two different checks (never conflate them):
     counts sit at Tiingo's ~2.00x, plausibly a retroactive split-adjustment
     Tiingo applies that our as-filed XBRL data never does) never get scored
     against the exact-match bar. Instead `ratio_outlier_check` reuses
-    `analyze_history.detect_level_outliers`' Modified-Z-score machinery on the
+    `outliers.detect_level_outliers`' Modified-Z-score machinery on the
     RATIO series (our_value / tiingo_value) per (ticker, field): a stable
     structural gap keeps a flat ratio and stays quiet, while a NEW discrepancy
     (or a break in a previously-stable ratio) shows up as a level/YoY outlier --
@@ -43,7 +41,7 @@ Two kinds of fields, requiring two different checks (never conflate them):
     `changeInPayables` -- no working-capital-delta dataCodes exist in Tiingo's
     cash-flow taxonomy --, `dividendsPerShare` -- Tiingo only has the aggregate
     $ `payDiv`, no per-share figure) are marked `tiingo_code=None` and simply
-    skipped by both checks above; they already get `analyze_history.py`'s plain
+    skipped by both checks above; they already get `outliers.py`'s plain
     (non-ratio) `detect_level_outliers` treatment on our own series.
 """
 from __future__ import annotations
@@ -61,7 +59,7 @@ from src.constants.constants import (
     TIINGO_RATIO_OUTLIERS_FILENAME, TIINGO_STATEMENTS_URL_TEMPLATE,
 )
 from src.context import Context
-from src.validate.analyze_history import detect_level_outliers
+from src.utils.outliers import detect_level_outliers
 from src.utils.polite_http import get_json
 
 _LOG: logging.Logger = logging.getLogger(__name__)
@@ -175,7 +173,7 @@ BUCKET_B_OVERRIDES: dict[tuple[str, str], str] = {
 #     lease liabilities, which this schema deliberately tracks as their OWN fields
 #     (`financeLeaseLiability(Current|Noncurrent)`, `operatingLeaseLiability(Current|
 #     Noncurrent)`) rather than folding into the bond/loan-only debt concept -- see
-#     `fundamentals_tags.py`'s own EXTRA_STOCK_TAGS comments on why leases are kept
+#     `configs/fundamentals/fundamentals_kpis.json`'s lease entries record why leases are kept
 #     separate (flexible leverage/EV construction in `utils/capital.py`). Verified
 #     exactly: WMT 2024-07-31 longTermDebt $35,364M + financeLeaseLiabilityNoncurrent
 #     $6,161M + operatingLeaseLiabilityNoncurrent $12,811M = $54,336M = Tiingo's
@@ -371,7 +369,7 @@ def classify_bucket(ticker: str, field: str, kind: str | None) -> str:
 def ratio_outlier_check(
     comparison_frame: pd.DataFrame, *, threshold: float = 3.5,
 ) -> pd.DataFrame:
-    """Reuses `analyze_history.detect_level_outliers` UNMODIFIED on the ratio series
+    """Reuses `outliers.detect_level_outliers` UNMODIFIED on the ratio series
     (our_value / tiingo_value) per (ticker, field) -- a flag means the ratio moved
     off its OWN historical level, which is the right test for a field whose
     definition may legitimately differ from Tiingo's by a stable structural gap
@@ -449,7 +447,7 @@ def run_tiingo_audit(
     Tiingo's plan-coverage gate (confirmed live: Free/Power = the PRE-2024 Dow roster
     only) is discovered per-ticker at fetch time, not predicted from `DOW_30_TICKERS`,
     so there is no reason to default to that constant anymore; pass it explicitly for a
-    cheap smoke test instead. `fundamentals_audit.py`'s `run_universe_audit` is the
+    cheap smoke test instead. `FundamentalsValidator.check_external_sources` is the
     caller that adds the Yahoo fallback for whatever this leaves uncovered."""
     if tickers is None:
         from src.utils.universe import load_universe_tickers

@@ -4,8 +4,9 @@ step_extract_fundamentals.py  (src/data_extract/step_extract_fundamentals.py)
 Fundamentals / financials extraction:
   * company fundamentals (balance sheet, income, cash flow) -- REBUILD IN PROGRESS, see
     reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md. The
-    linkbase-driven fetcher (`fetch_fundamentals_sec.py`), the publication-event history
-    build (`build_history.py`) and `FundamentalsValidator` are wired back in at Phase 3/5/7.
+    linkbase-driven facts layer (`fetch_fundamentals_sec.py`) is wired in as of Phase 3;
+    the publication-event history build (`build_history.py`) and `FundamentalsValidator`
+    follow at Phase 5 / Phase 7.
   * earnings surprises
   * insider transactions
   * footnote (notes) pension detail + note text
@@ -16,6 +17,7 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.utils.step import Step
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 
@@ -26,6 +28,14 @@ class StepExtractFundamentals(Step):
         super().__init__(context=context, config=config)
 
     def run(self, tickers: list[str]) -> None:
+
+        # Per-filing SEC XBRL -> fundamentals_facts, each KPI resolved from the filer's own
+        # calculation linkbase. Append-only and accession-grain, so a nightly re-run is
+        # idempotent and an amendment lands as its own row at its own filing date.
+        # (Phase 5 adds the fundamentals_history build immediately after this call.)
+        fetch_fundamentals_sec(
+            self._context, tickers=tickers,
+            years_history=int(self._config.data_extract.years_history))
 
         # earnings surprises
         fetch_earnings_surprises(self._context, tickers=tickers)

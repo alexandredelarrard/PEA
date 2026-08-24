@@ -133,6 +133,19 @@ SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
 # default) so a 10-K/A or 10-Q/A restatement is always discovered as its own accession.
 FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
 
+# The three JSON files that ARE the fundamentals contract -- one entry per KPI (tier, kind,
+# sign, unit, definition, primary-source authority, and how to resolve it), the regime ->
+# statement-template map, and the measured (regime, field) expected-absence register. JSON
+# rather than YAML because they are machine-generated-adjacent, deeply nested and diff-heavy;
+# see docs/config.md. Loaded and validated once by
+# `data_extract/utils/fundamentals/kpi_catalogue.py`.
+FUNDAMENTALS_CATALOGUE_SUBDIR = "fundamentals"
+FUNDAMENTALS_KPIS_FILENAME = "fundamentals_kpis.json"
+FUNDAMENTALS_REGIMES_FILENAME = "fundamentals_regimes.json"
+FUNDAMENTALS_EXCEPTIONS_FILENAME = "fundamentals_exceptions.json"
+FUNDAMENTALS_CIK_CUTOVER_FILENAME = "fundamentals_cik_cutover.json"
+FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
+
 # DEF 14A proxy + the DEF 14C information-statement equivalent that CONTROLLED companies file
 # instead. Centralized here so the form-dispatch registry (form_registry.py) has one source of
 # truth, matching SEC_8K_FORMS / SEC_13D_FORMS above.

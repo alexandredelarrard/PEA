@@ -22,8 +22,9 @@ from dataclasses import dataclass
 from typing import Callable
 
 from src.constants.constants import (
-    DEF14A_FORMS, SEC_8K_FORMS, SEC_13D_FORMS, SEC_13F_FORMS,
+    DEF14A_FORMS, FUNDAMENTALS_FORMS, SEC_8K_FORMS, SEC_13D_FORMS, SEC_13F_FORMS,
 )
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
 from src.data_extract.utils.prices.fetch_13f import fetch_13f
 from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
 from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
@@ -46,10 +47,19 @@ class FormHandlerSpec:
     notes: str = ""
 
 
-# NOTE: the "fundamentals" entry is absent while the fundamentals stack is being rebuilt
-# (see reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md). Phase 3
-# re-adds it pointing at `fetch_fundamentals_sec.fetch_fundamentals_sec`.
 FORM_REGISTRY: dict[str, FormHandlerSpec] = {
+    "fundamentals": FormHandlerSpec(
+        name="fundamentals", sec_forms=tuple(FUNDAMENTALS_FORMS),
+        discovery="per_cik_accession", table="fundamentals_facts",
+        handler=fetch_fundamentals_sec, call_shape="(context, tickers, years_history)",
+        years_config_key="years_history", step_chain_wired=True,
+        notes="Phase 3 of the fundamentals rebuild. Resolves each KPI from the FILER'S OWN "
+             "XBRL calculation linkbase (xbrl_linkbase.py) rather than from a "
+             "priority-ordered candidate-tag list, which measured as substitutes only "
+             "30-56% of the time. Grain is (ticker, accession, field, fiscal_year, "
+             "fiscal_period, duration_type): one row per catalogue field PER PERIOD, "
+             "strictly as-filed -- no derived quarter is ever written here. Amendments "
+             "append as their own accession and never overwrite the original"),
     "sec_8k": FormHandlerSpec(
         name="sec_8k", sec_forms=tuple(SEC_8K_FORMS),
         discovery="per_cik_accession", table="sec_8k",

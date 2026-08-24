@@ -17,6 +17,8 @@ Please provide the path to your implementation plan from Phase 2.
 
 ### 1. **Load and Review Plan**
 - Read the entire plan document
+- Read Claude.md and Agents.md
+- **always use rtk in all your commands**, it saves a lot of token and make you more efficient
 - Identify all phases and their checkboxes (⬜)
 - Note which phases are already complete (✅)
 - Create a TodoWrite list matching the plan phases

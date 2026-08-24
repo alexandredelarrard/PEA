@@ -143,18 +143,25 @@ class Tables:
     fundamentals_history = Table(
         "fundamentals_history", ("ticker", "as_of"), date_col="as_of",
         date_type_cols=("as_of", "fiscal_end"), freshness="quarterly")
-    # Accession-grain, amendment-aware raw fundamentals facts (edgartools per-filing XBRL
-    # walk). One row per (ticker, accession, field, fiscal period, duration shape);
-    # ORIGINAL and AMENDED (10-K/A, 10-Q/A) filings coexist as separate rows -- never
-    # overwritten -- so `fundamentals_derive` can answer "what was known as of date D"
-    # without ever exposing an amendment's value before its own filing date.
-    # `fundamentals_history` above is DERIVED from this table.
+    # Accession-grain, amendment-aware fundamentals facts: one row per catalogue FIELD per
+    # period per filing, resolved from the filer's own XBRL calculation linkbase (see
+    # data_extract/utils/fundamentals/xbrl_linkbase.py) rather than from a priority-ordered
+    # candidate-tag list.
+    #
+    # STRICTLY AS-FILED. Every row carries a number the filer actually tagged, on the
+    # period shape it tagged it with; nothing here is derived. Q4 = FY - YTD9 and the YTD
+    # decumulation happen in memory during the history build, so this table stays a
+    # faithful record of what was published -- which is what makes the publication-event
+    # grain and the no-leakage property of `fundamentals_history` provable rather than
+    # asserted. ORIGINAL and AMENDED (10-K/A, 10-Q/A) filings coexist as separate rows and
+    # are never overwritten, so "what was knowable on date D" is answerable by filtering
+    # `filing_date <= D`.
     fundamentals_facts = Table(
         "fundamentals_facts",
         ("ticker", "accession_number", "field", "fiscal_year", "fiscal_period",
          "duration_type"),
         date_col="filing_date",
-        date_type_cols=("filing_date", "period_start", "period_end"),
+        date_type_cols=("filing_date", "period_start", "period_end", "period_of_report"),
         freshness="quarterly")
     earnings_surprises = Table("earnings_surprises", ("ticker", "earnings_date"),
                                date_col="earnings_date", freshness="quarterly")

@@ -1,0 +1,54 @@
+{
+  "_README": [
+    "The registrant boundary register. `Company(ticker)` resolves only the CURRENT",
+    "registrant, so a predecessor's decade of filings is invisible with no error and no gap",
+    "signal -- APA arrives with 22 filings where its peers have 62 and nothing says why.",
+    "",
+    "`cutover_date` means: THE FIRST DATE ON WHICH THE SUCCESSOR IS THE REPORTING",
+    "REGISTRANT. Predecessor filings are kept strictly BEFORE it, successor filings on or",
+    "after it, so the two sets are disjoint by construction. That is deliberately NOT a",
+    "union of the two CIKs: Apache Corp kept filing its own 10-K/10-Q through 2024-11-07",
+    "because it retains registered public debt, so a union would double-cover 2021-2024",
+    "with two DIFFERENT legal entities -- ~15 duplicated filings and a subsidiary's",
+    "statements blended into the parent's. A fuller-looking history that is quietly wrong is",
+    "the dangerous direction, which is why this register is dated rather than additive.",
+    "",
+    "A RENAME IS NOT A CUTOVER AND BELONGS NOWHERE IN THIS FILE. CVS Caremark -> CVS Health",
+    "and Facebook -> Meta keep their CIK; an entry for either would walk one CIK twice and",
+    "duplicate every filing. `kind` may only be `reorganisation` or `domestication`, and the",
+    "loader rejects `kind: rename` by name so the mistake cannot be made quietly.",
+    "",
+    "A curated JSON rather than an `sp500_tickers` column: that table is rebuilt from",
+    "Wikipedia, so a roster refresh would silently overwrite hand-established evidence.",
+    "",
+    "Every figure below was measured against live EDGAR on 2026-08-23 and each split",
+    "produced 0 duplicate accessions and no gap at the boundary. Phase 5b's",
+    "`filing_continuity` check is the standing enforcement: once this register is in place,",
+    "the only acceptable short histories are VRT's 2018 SPAC listing and META's 2012 IPO,",
+    "so any other truncation it reports is a MISSING ENTRY HERE, i.e. a work item."
+  ],
+  "APA": {
+    "cutover_date": "2021-03-01",
+    "predecessor_cik": "0000006769",
+    "successor_cik": "0001841666",
+    "kind": "reorganisation",
+    "evidence": "Apache Corp (CIK 6769) became a subsidiary of the new holding company APA Corp (CIK 1841666) in the reorganisation effective 2021-03-01. Measured 2026-08-23: 125 predecessor 10-K/10-Q filings before the date (1994-03-21 .. 2021-02-26) and 22 successor filings after (2021-05-07 ..), 0 duplicate accessions, no gap -- the 2021-02-26 10-K is followed directly by the 2021-05-07 10-Q. CRITICAL: Apache Corp continued filing its OWN 10-K/10-Q through 2024-11-07 as a subsidiary with registered public debt, so those ~15 filings are correctly EXCLUDED by the date test; admitting them would blend a subsidiary's statements with the parent's.",
+    "_expect": "APA's Phase 3/4/4b numbers all move and that is not a regression: it currently carries 22 filings, none before 2021, and should reach the ~62 every other in-sample ticker has. Its pre-2021 Apache Corp filings may resolve totalRevenue on concepts the 2021+ filings never use, so the `apa:RevenuesAndOther` result (71 rows, $596M-12,132M) becomes a SUBSET of a longer series. Re-baseline deliberately."
+  },
+  "GOOGL": {
+    "cutover_date": "2015-10-02",
+    "predecessor_cik": "0001288776",
+    "successor_cik": "0001652044",
+    "kind": "reorganisation",
+    "evidence": "Google Inc (CIK 1288776) became a subsidiary of Alphabet Inc (CIK 1652044) on 2015-10-02, when the holding-company structure took effect. Measured 2026-08-23: 48 predecessor filings before the date (2004-08-16 .. 2015-07-23) and 46 successor filings after (2015-10-29 ..), 0 duplicate accessions, no gap at the Q3-2015 boundary.",
+    "_expect": "Recovers 2011-2015, which Phase 9's out-of-sample roster lists as a known truncation."
+  },
+  "ETN": {
+    "cutover_date": "2012-11-01",
+    "predecessor_cik": "0000031277",
+    "successor_cik": "0001551182",
+    "kind": "domestication",
+    "evidence": "Eaton Corp (Ohio, CIK 31277) re-registered as Eaton Corp plc (Ireland, CIK 1551182) in the 2012 Cooper Industries transaction. The date is set at 2012-11-01 rather than the transaction's own late-November closing because the successor's FIRST filing is the 2012-11-14 10-Q while the predecessor's LAST is the 2012-10-31 10-Q: 2012-11-01 is the only boundary that is both gapless and non-overlapping. Measured 2026-08-23: 78 predecessor filings (1994-03-28 .. 2012-10-31), 56 successor filings (2012-11-14 ..), 0 duplicate accessions. Unlike APA, the predecessor stopped filing entirely, so there is no subsidiary double-coverage to exclude.",
+    "_expect": "Recovers the pre-domestication decade, including the 2012 filings whose `fp='FY'` runs 370 and 97 days -- the in-sample calendar edge case ETN is on the roster for."
+  }
+}

@@ -6,19 +6,22 @@ is no longer imported by this module, so it is never called (not exercised
 here); the active sequence is earnings_surprises -> insider_transactions ->
 financial_notes.
 
-The fundamentals fetch and history build are absent from that sequence while the
-fundamentals stack is rebuilt (reports/planning/active-tasks/
-2026-08-21-fundamentals-rebuild-plan.md); Phase 5 re-adds them at the head of the
-list, and `EXPECTED_SOURCES` below is the one place this test records the order.
+Phase 3 of the fundamentals rebuild (reports/planning/active-tasks/
+2026-08-21-fundamentals-rebuild-plan.md) put `fetch_fundamentals_sec` back at the
+HEAD of that sequence -- the facts layer must land before anything derived from it.
+The `fundamentals_history` build follows at Phase 5, immediately after it.
+`EXPECTED_SOURCES` below is the one place this test records the order.
 """
 from __future__ import annotations
 
 import pytest
+from omegaconf import OmegaConf
 
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 
 #: (module attribute, label) for every source `run()` is expected to call, in call order.
 EXPECTED_SOURCES: tuple[tuple[str, str], ...] = (
+    ("fetch_fundamentals_sec", "fundamentals_sec"),
     ("fetch_earnings_surprises", "earnings_surprises"),
     ("fetch_insider_transactions", "insider_transactions"),
     ("fetch_financial_notes", "financial_notes"),
@@ -45,6 +48,8 @@ def _patched_step(monkeypatch, calls: list[str], *, boom: str | None = None):
     context = object.__new__(object)   # not touched: every dependency is monkeypatched
     step = object.__new__(StepExtractFundamentals)
     step._context = context
+    # `run()` reads years_history off the config to size the EDGAR listing window.
+    step._config = OmegaConf.create({"data_extract": {"years_history": 15}})
     return step
 
 
@@ -55,6 +60,12 @@ def test_run_calls_its_active_sources_directly_in_order(monkeypatch):
     # "financial_statements" is NOT in this list -- fetch_financial_statements
     # is no longer imported/called by run().
     assert calls == [label for _, label in EXPECTED_SOURCES]
+    assert calls[0] == "fundamentals_sec", (
+        "the facts layer must run FIRST -- everything else in this step is either "
+        "independent of it or, from Phase 5, derived from it")
+    print("\n=== SANITY CHECK: StepExtractFundamentals call order ===")
+    print(f"  {' -> '.join(calls)}")
+    print("  OK: facts layer first, no per-source error isolation.")
 
 
 def test_a_failing_source_aborts_the_rest(monkeypatch):

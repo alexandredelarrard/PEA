@@ -46,10 +46,7 @@
     "revenueGrowth": "totalRevenue_ttm year-on-year, on a 365-DAY as_of offset rather than a 4-ROW offset -- an amendment row makes a row offset ~9 months instead of 12",
     "earningsGrowth": "netIncome_ttm year-on-year, same 365-day offset",
     "optionOverhang": "dilutedShares / basicShares - 1",
-    "_dropped": {
-      "_why": "Their inputs leave with the 171 removed columns; consumers are repaired in the plan's Phase 6.",
-      "fields": ["totalAssetsExLease", "nonServicePensionCost", "exciseTaxAdjustment", "debtMaturity5yTotal"]
-    },
+    "_dropped": {"_why": "Their inputs leave with the 171 removed columns; consumers are repaired in the plan's Phase 6.", "fields": ["totalAssetsExLease", "nonServicePensionCost", "exciseTaxAdjustment", "debtMaturity5yTotal"]},
     "_ttm_rule": "A TTM is emitted ONLY from four discrete quarters. Where they do not exist the value is NULL with dc_code = insufficient_quarters -- never a carried-forward annual. That fallback froze 1,622 of 26,242 consecutive totalRevenue pairs (6.2%; APA 100%, XOM 36%), making revenueGrowth exactly 0 for three quarters in four."
   },
 
@@ -100,7 +97,11 @@
     "tier": 1, "kind": "instant", "sign": "non_negative", "unit": "USD",
     "definition": "Gross debt EXCLUDING lease obligations, plus finance-lease liabilities, plus operating-lease liabilities (decision #4).",
     "authority": "FASB us-gaap 2025 documentation, verbatim: `LongTermDebt`/`LongTermDebtNoncurrent` = '...of long-term debt. EXCLUDES lease obligation.'; `LongTermDebtAndCapitalLeaseObligations` = 'long-term debt AND lease obligation, noncurrent'; `DebtCurrent` = 'Amount of debt AND lease obligation, classified as current.' Both legs must therefore be put on the SAME basis before adding, or an ex-lease long leg is summed with an incl-lease short leg -- a taxonomy asymmetry that produced 79% of the old table's rows. Including operating leases is the S&P/Moody's treatment; FASB's own ASC 842 Basis for Conclusions BC264 argues operating leases are NOT debt-like, and Fitch agrees -- the user chose the rating-agency-adjusted view knowingly.",
-    "roll_up": {"sum": ["longTermDebt", "shortTermDebt", "financeLeaseLiability", "operatingLeaseLiability"]},
+    "roll_up": {
+      "sum": ["longTermDebt", "shortTermDebt", "financeLeaseLiability", "operatingLeaseLiability"],
+      "require_any": ["longTermDebt", "shortTermDebt"],
+      "_require_any": "At least one DEBT leg must resolve. The lease legs are genuinely optional -- a filer with no finance leases must still get a totalDebt -- but with both debt legs missing the sum silently becomes the LEASE LIABILITY and reports it as total debt. Measured on the 2026-08-22 sweeps: 213 of 2,655 in-sample rows (8.0%) and 29 of 3,096 out-of-sample, incl. BRK-B $4.9-6.3bn, GS $2.1-2.4bn, META $7.6-16.7bn. PGR shows the whole arc: correct at $1.9-2.7bn to 2016, NULL 2017-18, then $179-211M from 2019 once longTermDebt stops resolving. A reason-coded NULL is the only honest answer there."
+    },
     "components": ["financeLeaseLiability", "operatingLeaseLiability"],
     "regime_break": {"field_change": "ASC 842", "effective": "2019-01-01", "reason": "operating leases were OFF balance sheet before adoption, so this field steps up at the transition for every lessee. Not an extraction error -- flagged, never smoothed."},
     "never_use": {"DebtInstrumentFaceAmount": "a per-instrument dimensioned disclosure, not a balance-sheet total."}
@@ -113,8 +114,14 @@
     "never_use": {"WeightedAverageNumberOfSharesOutstandingBasic": "a period AVERAGE for EPS, not a point-in-time count -- that is `basicShares`."}
   },
   "totalRevenue": {
-    "tier": 1, "kind": "duration", "sign": "any", "unit": "USD",
+    "tier": 1,
+    "kind": "duration",
+    "sign": "any",
+    "sign_rationale": "`sign: any`, and the reason is NOT the usual one. Measured across both 26-ticker rosters, `totalRevenue` is negative in 0 of 12,960 AS-FILED rows -- including five insurers (MET, AFL, PGR, CB) and BRK-B -- so the standing justification, that an insurer's top line carries realized investment losses, is not evidenced at the as-filed annual or quarterly grain. It is still the right setting for a different and better reason: the sign guard protects a DERIVED quarter, and `Q4 = FY - YTD9` on a restated year can legitimately go negative for an insurer whose realized losses land in Q4. The legacy `NON_NEGATIVE_FLOW_FIELDS` included revenue and would have nulled that quarter. Phase 7's `sign_convention` check owns the as-filed side, where a negative IS a finding.",
+    "unit": "USD",
     "definition": "The filer's own top line, on the basis its own statement of income declares (regime-dependent).",
+    "linkbase_root_discovery": true,
+    "_linkbase_root_discovery": "The ONLY field that opts into structural discovery (xbrl_linkbase.discover_root), and the reason is measured: a candidate list cannot express two real filers. APA reports its total as `apa:RevenuesAndOther` -- a COMPANY EXTENSION element, $9.220B FY2025, declared in its linkbase as the +1.0 child of the pretax node -- while `us-gaap:Revenues` exists in the same filing with 84 facts, EVERY ONE dimensioned (segment detail). No tag list can ever contain `apa:RevenuesAndOther`; it is company-private, which is why the old resolver fell through to an element APA tags as literally $0.00 for 19 consecutive rows. DTE declares `RegulatedAndUnregulatedOperatingRevenue` as a PARENTLESS root of its income-statement role, its `OperatingIncomeLoss` arc set carrying only the `-1 CostsAndExpenses` side. Discovery anchors on standard SUBTOTALS (GrossProfit / OperatingIncomeLoss / the pretax variants), which filers extend far less often than line items, and excludes the anchors themselves -- without that exclusion DTE's operating margin would be stored as its revenue. No other field opts in: an earlier general 'climb to the parent' rule was measured to over-climb catastrophically (cash -> AssetsCurrent, ppeNet -> AssetsNoncurrent, netIncome -> ComprehensiveIncomeNetOfTax), because the catalogue names too few concepts to supply a dense enough boundary. Balance-sheet concepts are stable and need no discovery; revenue is the field the research measured at 56% of tickers using three or more concepts.",
     "authority": "Verified from each filer's calculation linkbase (`menucat == 'Statements'`) across all six regimes: JPM declares `RevenuesNetOfInterestExpense`, XOM `Revenues`, APA `RevenuesAndOther`, DTE `RegulatedAndUnregulatedOperatingRevenue`. There is no single universal element, which is why the linkbase and not a priority list is the resolution primitive. The ASC-606 cutover (annual periods beginning after 2017-12-15) is a dated, universe-wide taxonomy event, not per-filer drift.",
     "fallback_concepts": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet"],
     "regimes": {
@@ -124,7 +131,13 @@
         "roll_up": {"sum": ["InterestIncomeExpenseNet", "NoninterestIncome"]},
         "total_concept": "RevenuesNetOfInterestExpense",
         "fallback_concepts": ["RevenuesNetOfInterestExpense", "Revenues", "InterestIncomeExpenseNet"],
-        "never_use": {"InterestAndDividendIncomeOperating": "GROSS interest income. Using it inflates bank revenue by the entire interest-EXPENSE leg -- the single largest available error in this field."}
+        "never_use": {
+          "InterestAndDividendIncomeOperating": "GROSS interest income. Using it inflates bank revenue by the entire interest-EXPENSE leg -- the single largest available error in this field.",
+          "TotalRevenuesNetOfInterestExpenseAfterProvisionsForLosses": "Revenue AFTER the credit provision, and a COMPANY EXTENSION rather than a us-gaap concept -- `axp:TotalRevenuesNetOfInterestExpenseAfterProvisionsForLosses`, which is why it appears in NONE of AXP's four companyfacts namespaces (dei, us-gaap, srt, ffd) and why a us-gaap-only search reports it absent. Same defect class as MTB's `InterestIncomeExpenseAfterProvisionForLoanLoss` above: a different basis from Reg S-X Rule 9-04 caption 10, so it is not comparable with JPM's `RevenuesNetOfInterestExpense`. Measured 2026-08-23 on AXP's 2013 10-K: 3 undimensioned facts, $25,375M / $28,850M / $29,592M. It wins through route 2 (`discover_root`), not the candidate walk, so the ban has to reach `banned` -- which it does, because `_resolve_once` bare()s every `never_use` key. SAFE TO BAN because AXP tags BOTH Rule 9-04 legs for its whole history (`InterestIncomeExpenseNet` and `NoninterestIncome`, 225 facts each, fy2009-2026), so this regime's two-leg `roll_up.sum` takes over via route 3 exactly as it did for MTB rather than turning 91 rows into nulls; and from fy2017 AXP also tags `RevenuesNetOfInterestExpense` (143 facts), which route 1 already prefers. AXP-ONLY, not a cohort fix: COF carries `us-gaap:InterestIncomeExpenseAfterProvisionForLoanLoss` and is already covered by the entry above, and SYF tags no post-provision concept at all.",
+          "InterestIncomeExpenseAfterProvisionForLoanLoss": "Net interest income AFTER the credit provision -- a different basis from Reg S-X Rule 9-04 caption 10, and not comparable with JPM's `RevenuesNetOfInterestExpense`. Measured on the 26-ticker x 2011-2026 sweep: MTB resolved 110 rows to it, overlapping 2015-2026 with `Revenues`, so one ticker carried two bases at once.",
+          "NoninterestIncome": "ONE LEG OF TWO. It stays a child of this regime's `roll_up.sum` (InterestIncomeExpenseNet + NoninterestIncome), which `never_use` does not filter -- this bans it only as a STANDALONE TOTAL, which is how MTB stored 6 rows of roughly half its revenue in 2025-2026.",
+          "NoninterestExpense": "A bank EXPENSE subtotal. It is the one wrong root that survives `discover_root`'s duration + income-statement-role test, because it sits legitimately on `ConsolidatedStatementOfIncome`: structure alone cannot tell a revenue subtotal from an expense one, so this has to be named. USB, 2 rows."
+        }
       },
       "insurer": {
         "definition": "Premiums earned net, plus net investment income, plus realized investment gains and losses.",
@@ -169,7 +182,6 @@
     "authority": "SEC Non-GAAP C&DI 102.07, verbatim: free cash flow 'does not have a uniform definition'. The same C&DI classifies it as a LIQUIDITY measure, which is why it must NEVER be presented per share. Null by design wherever capex is not reconstructible (see capex's bank regime).",
     "derived_from": "operatingCashFlow - capex"
   },
-
   "pretaxIncome": {
     "tier": 2, "kind": "duration", "sign": "any", "unit": "USD",
     "definition": "Income (loss) from continuing operations before income taxes and before equity-method earnings and non-controlling interests.",
@@ -191,8 +203,36 @@
     "definition": "Noncurrent gross debt EXCLUDING lease obligations.",
     "authority": "FASB us-gaap 2025, verbatim: `LongTermDebtNoncurrent` = '...of long-term debt. EXCLUDES lease obligation'; `LongTermDebtAndCapitalLeaseObligations` = 'long-term debt AND lease obligation, noncurrent'. Where only the incl-lease element is tagged (21.0% of rows / 156 tickers in the legacy table), the noncurrent finance-lease leg MUST be subtracted to reach this field's basis.",
     "total_concept": "LongTermDebtNoncurrent",
-    "total_adjustment": {"note": "applies only when the resolved concept is LongTermDebtAndCapitalLeaseObligations", "subtract": ["FinanceLeaseLiabilityNoncurrent"]},
-    "fallback_concepts": ["LongTermDebtNoncurrent", "LongTermDebt", "LongTermDebtAndCapitalLeaseObligations"],
+    "total_adjustment": {
+      "_only_when_concept": ["LongTermDebtAndCapitalLeaseObligations"],
+      "note": "Applies ONLY when the resolved concept is `LongTermDebtAndCapitalLeaseObligations`, whose own element name says it contains the capital-lease leg -- subtracting there is definitional, not a guess. This was prose in a `note` key that no code read, so the leg was removed from `LongTermDebtNoncurrent` as well and AMT 2021 resolved to -$22.1M. Now enforced by `_only_when_concept`.",
+      "subtract": ["FinanceLeaseLiabilityNoncurrent"]
+    },
+    "fallback_concepts": ["LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations", "LongTermDebt"],
+    "_fallback_order": "`LongTermDebt` is LAST for the classified regimes because it is a DIFFERENT BASIS, not a coarser one: FASB defines it as the total INCLUDING the current portion, so on a sheet with a current/noncurrent split it overstates this field by the current maturities. Measured on the 52-ticker x 2011-2026 sweep (2026-08-23): it won 488 of 4,151 classified rows and produced the concept-boundary steps AMT x11,545 then -99.99%, NVDA +249.5%, ETN +144.3%, BA +74.2%, UNP 28 boundaries at median 4.1%, VLO median 5.7%. Demotion moves 385 of those 488 rows (79%) onto a declared noncurrent line, and `LongTermDebtAndCapitalLeaseObligations` -- now ahead of it -- reaches this field's exact basis via the lease subtraction above. It stays in the list rather than being deleted because on the 103 residual rows it is the only concept the filer tags, and a last-resort value on a 4-8% wider basis beats a NULL.",
+    "_fallback_order_residual": "The residual is EQIX 60 rows, SWKS 42, ORCL 1. Measured why NO subtraction is offered: SWKS and ORCL never tag `LongTermDebtCurrent` at all -- their current leg is `us-gaap:DebtCurrent`, which is ALL current debt (revolver, commercial paper) and not the current maturities of long-term debt, so subtracting it would manufacture a wrong number rather than recover the basis. EQIX exposes a current leg on only 4 of its rows, at 7.8% of the total. There is no cheap deduction here, so the as-tagged total is the honest answer.",
+    "regimes": {
+      "bank": {
+        "_why": "Reg S-X Article 9 prescribes no classified balance sheet, so a bank has no current/noncurrent debt split and `LongTermDebtNoncurrent` is not a caption it files. On an unclassified sheet `LongTermDebt` IS the noncurrent figure -- there is nothing current to exclude -- so it is the correct and usually the only concept, and putting it first removes the basis oscillation. Measured across the unclassified regimes: it won 1,326 rows against 78 on `LongTermDebtNoncurrent` and 92 on the incl-lease element, so it was already winning in practice; this makes the PRIORITY match the accounting instead of leaving it to whichever concept the filer happened to tag.",
+        "total_concept": "LongTermDebt",
+        "fallback_concepts": ["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]
+      },
+      "insurer": {
+        "_why": "Reg S-X Article 7 likewise prescribes an unclassified sheet. On an unclassified sheet `LongTermDebt` IS the noncurrent figure -- there is nothing current to exclude -- so it is the correct and usually the only concept, and putting it first removes the basis oscillation. Measured across the unclassified regimes: it won 1,326 rows against 78 on `LongTermDebtNoncurrent` and 92 on the incl-lease element, so it was already winning in practice; this makes the PRIORITY match the accounting instead of leaving it to whichever concept the filer happened to tag.",
+        "total_concept": "LongTermDebt",
+        "fallback_concepts": ["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]
+      },
+      "broker_dealer": {
+        "_why": "Reg S-X Article 12 / Rule 17a-5 likewise; SCHW's +74.0% concept-boundary step was this inconsistency, not a restatement. On an unclassified sheet `LongTermDebt` IS the noncurrent figure -- there is nothing current to exclude -- so it is the correct and usually the only concept, and putting it first removes the basis oscillation. Measured across the unclassified regimes: it won 1,326 rows against 78 on `LongTermDebtNoncurrent` and 92 on the incl-lease element, so it was already winning in practice; this makes the PRIORITY match the accounting instead of leaving it to whichever concept the filer happened to tag.",
+        "total_concept": "LongTermDebt",
+        "fallback_concepts": ["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]
+      },
+      "real_estate": {
+        "_why": "17 CFR 210.1-02(bb)(1)(i): a filer whose operating cycle makes a current/noncurrent split meaningless files unclassified, which is the norm for REITs. On an unclassified sheet `LongTermDebt` IS the noncurrent figure -- there is nothing current to exclude -- so it is the correct and usually the only concept, and putting it first removes the basis oscillation. Measured across the unclassified regimes: it won 1,326 rows against 78 on `LongTermDebtNoncurrent` and 92 on the incl-lease element, so it was already winning in practice; this makes the PRIORITY match the accounting instead of leaving it to whichever concept the filer happened to tag.",
+        "total_concept": "LongTermDebt",
+        "fallback_concepts": ["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]
+      }
+    },
     "components": ["financeLeaseLiability"]
   },
   "shortTermDebt": {
@@ -201,7 +241,12 @@
     "authority": "FASB us-gaap 2025, verbatim: `DebtCurrent` = 'Amount of debt AND lease obligation, classified as current.' `LongTermDebtCurrent` (current maturities of long-term debt) and `ShortTermBorrowings` (revolver / commercial paper) are DISJOINT LEGS whose sum is DebtCurrent -- not substitutes. Measured: 2,017 (ticker, period) cells across 111 tickers tag BOTH legs with no total; the old priority order kept one and discarded the other, and the discarded leg was the LARGER one 54.4% of the time and exceeded 25% of the kept leg in 86.1% of cells.",
     "roll_up": {"sum": ["LongTermDebtCurrent", "ShortTermBorrowings"]},
     "total_concept": "DebtCurrent",
-    "total_adjustment": {"subtract": ["FinanceLeaseLiabilityCurrent", "OperatingLeaseLiabilityCurrent"]},
+    "total_adjustment": {
+      "subtract": ["FinanceLeaseLiabilityCurrent", "OperatingLeaseLiabilityCurrent"],
+      "_only_when_test": "declared_descendant",
+      "_only_when": "The filer's calculation linkbase DECLARES the lease liability beneath the resolved debt concept -- POSITIVE evidence of containment, which is a stronger test than the one `ppeNet` uses. The asymmetry is the standards', not a preference: ASC 842-20-45-1 REQUIRES operating lease liabilities to be presented separately from other liabilities, so the prior is that a lease leg is OUTSIDE the debt total, whereas ASC 842-20-45-4 PERMITS a finance-lease ROU asset to be folded into PP&E, so ppeNet's prior runs the other way. Nothing is subtracted where the resolved concept is absent from the linkbase (the tag routes) or where there is no single resolved concept at all (a `linkbase_sum` of two legs, neither of which contains leases by construction).",
+      "_measured": "158 negative values across 10 tickers on the 26-ticker x 2011-2026 sweep, worst -$893M, with the subtraction applied unconditionally. Verified: ALL 158 carry a lease subtraction and not one negative occurs without one, so leases are the sole cause. Verified also that the RESOLVED CONCEPT is not the discriminator, which is why this is a structural test and not a concept whitelist -- `DebtCurrent`, the concept that most ought to be safe (FASB defines it as 'debt AND lease obligation'), produces 51 of the 158 on its own, 9% of its 546 subtracted rows; `LongTermDebtCurrent` 86 of 594 (14%); `ShortTermBorrowings` 17 of 862 (2%)."
+    },
     "fallback_concepts": ["LongTermDebtCurrent", "ShortTermBorrowings"],
     "components": ["longTermDebtCurrentOnly", "shortTermBorrowingsOnly"]
   },
@@ -226,7 +271,21 @@
     "authority": "FASB us-gaap 2025, verbatim: `DepreciationAndAmortization` covers 'long-lived, physical assets NOT USED IN PRODUCTION' -- i.e. non-production D&A only -- while `DepreciationDepletionAndAmortization` is 'the AGGREGATE'. The aggregate is therefore the correct element, and any deny-list entry that forces the narrower one contradicts the taxonomy.",
     "total_concept": "DepreciationDepletionAndAmortization",
     "fallback_concepts": ["DepreciationDepletionAndAmortization", "DepreciationAmortizationAndAccretionNet", "DepreciationAndAmortization"],
-    "anchor_tie_break": "Prefer the concept the filer's own linkbase declares even when a rival concept carries a discrete-quarter context and the winner is YTD-only. Valero's true D&A is `DepreciationAmortizationAndAccretionNet` at ~$2,405M/yr (tagged YTD-only) while a $47M/yr `DepreciationAndAmortization` line carries discrete quarters -- picking on context shape rather than on the linkbase is a ~200x error."
+    "anchor_tie_break": "Prefer the concept the filer's own linkbase declares even when a rival concept carries a discrete-quarter context and the winner is YTD-only. Valero's true D&A is `DepreciationAmortizationAndAccretionNet` at ~$2,405M/yr (tagged YTD-only) while a $47M/yr `DepreciationAndAmortization` line carries discrete quarters -- picking on context shape rather than on the linkbase is a ~200x error.",
+    "roll_up": {
+      "_why_any_of": "The nine tickers with no `DepreciationDepletionAndAmortization` tag `Depreciation` and `AmortizationOfIntangibleAssets` as SEPARATE cash-flow lines and never the aggregate, so there is no total to resolve and no complete roll-up to sum. Measured on 727 filings x 24,897 operating-node arc rows across the nine plus AAPL, VLO, CSCO, AFL, DTE and NEE as controls.",
+      "anchor": ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
+      "anchor_role": "cash_flow",
+      "leaf_weight": 1.0,
+      "_leaf_weight_note": "D&A is a POSITIVE non-cash add-back to net income, so the filer declares it at +1.0. The sign is the whole guard here: PGR, MET and CB each carry a -1.0 `AccretionAmortizationOfDiscountsAndPremiumsInvestments` contra in the same node ($124M, $1,840M and $409M), and a name filter admits it because the name contains 'Amortization'.",
+      "any_of": [["Depreciation", "DepreciationNonproduction", "DepreciationPremisesAndEquipment"], ["AmortizationOfIntangibleAssets", "FiniteLivedIntangibleAssetsAmortizationExpense", "OtherDepreciationAndAmortization"]],
+      "_any_of_note": "TWO groups, not three. Plan section 4b.5(c) proposed `OtherDepreciationAndAmortization` as its own group; measured, it is an ERA VARIANT of `AmortizationOfIntangibleAssets` and belongs with it -- SWKS uses `AmortizationOfIntangibleAssets` in 4 filings, `OtherDepreciationAndAmortization` in 13 and `swks:AmortizationOfIntangibleAssetsIncludingInventoryStepUp` in 17, and NO TWO OF THE THREE EVER CO-OCCUR (4 + 13 + 17 + 1 = 35 of its 38 filings). A separate group would double-count the moment a filer tagged both. MET, whose only D&A line is `OtherDepreciationAndAmortization` ($795M), is unaffected either way.",
+      "_excluded_deliberately": {
+        "AmortizationOfFinancingCostsAndDiscounts": "Amortisation of DEFERRED FINANCING COSTS AND DEBT DISCOUNT, which ASC 835-30 puts in interest expense, not depreciation of long-lived assets. Plan section 4b.2 listed it among SWKS's leaves; excluded here because the definition excludes it and because the magnitude makes the difference material elsewhere -- $6M for SWKS but $694M for CB, where admitting it would manufacture a D&A line for a filer that has none.",
+        "PresentValueOfFutureInsuranceProfitsAmortizationExpense1": "CB's only amortisation-named line ($339M, 26 filings): amortisation of VOBA, an insurance-contract intangible recognised in a business combination, not depreciation of productive assets. Leaving it out is what keeps CB correctly `not_disclosed`.",
+        "DeferredPolicyAcquisitionCostAmortizationExpense": "AFL's only amortisation-named line ($1,282M, 35 filings): DAC amortisation under ASC 944, an acquisition-cost asset, not PP&E or an intangible. AFL's real D&A is the $36-82M it tags as `DepreciationAndAmortization` on the annual window only -- see the AFL/CSCO periodicity exception in fundamentals_exceptions.json."
+      }
+    }
   },
   "retainedEarnings": {
     "tier": 2, "kind": "instant", "sign": "any", "unit": "USD",
@@ -255,13 +314,101 @@
     "definition": "Cash paid to acquire productive long-lived assets: property, plant and equipment plus capitalised software and other intangibles, as reported in investing activities.",
     "authority": "FASB us-gaap 2025, verbatim: `PaymentsToAcquireProductiveAssets` = 'property, plant and equipment (capital expenditures), SOFTWARE, AND OTHER INTANGIBLE ASSETS' -- officially a SUPERSET of `PaymentsToAcquirePropertyPlantAndEquipment`, which is why the two disagree 37.1% of the time while sitting at priority 1 and 0 of the same old list. FASB's calculation linkbase makes the superset the total-capex node (PP&E + Software + Intangibles + MineralRights + CryptoAsset + EquipmentOnLease + Other). ASC 230-10-45-13(c) pushes seller-financed principal into FINANCING, so this is a CASH-PAID figure and NOT gross PP&E additions.",
     "total_concept": "PaymentsToAcquireProductiveAssets",
-    "roll_up": {"sum": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireSoftware", "PaymentsToAcquireIntangibleAssets"]},
+    "roll_up": {
+      "_why_any_of": "route 3's `sum` is ALL-OR-NOTHING (`_linkbase_weights` returns () unless every declared child is reported), which is right for shortTermDebt's two disjoint legs and wrong here: FASB's roll-up under PaymentsToAcquireProductiveAssets has ~7 members (PP&E + Software + Intangibles + MineralRights + CryptoAsset + EquipmentOnLease + Other) and every filer reports a different subset. Measured, route 3 fired for capex ZERO times in 3,163 filings. `any_of` takes the first reported alternative WITHIN a group and sums ACROSS groups.",
+      "_grouping_is_measured": "Every group below was set by measuring CO-OCCURRENCE across 941 filings x 19,001 investing-node arc rows, not by reading element names. Two concepts that never appear in the same filing are era or naming variants of one line and share a group; two that do co-occur are disjoint legs and get separate groups. Worked example: DTE's `PlantAndEquipmentExpendituresUtility` (60 filings) and `PaymentsToAcquirePropertyPlantAndEquipmentUtility` (3) never co-occur and sum to exactly its 63 filings, while `...Utility` and `...NonUtility` co-occur in all 60.",
+      "sum": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireSoftware", "PaymentsToAcquireIntangibleAssets"],
+      "_sum_note": "Kept as the route-3 declaration and, through `_resolve_once`'s `legs` set, as the reason a LEG can never satisfy route 1 -- without it `PaymentsToAcquirePropertyPlantAndEquipment` would win route 1 outright and the leaf route would never run for a filer that splits its capex across several lines.",
+      "anchor": ["NetCashProvidedByUsedInInvestingActivities", "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations"],
+      "anchor_role": "cash_flow",
+      "leaf_weight": -1.0,
+      "_leaf_weight_note": "A capex payment REDUCES net investing cash, so the filer declares it at -1.0. Used as an ADMISSION test only, never as a coefficient: the fact itself is tagged positive. PGR, MET and CB each park a -1.0 accretion contra in their operating node, which is the mirror case for depAmort.",
+      "any_of": [
+        ["PaymentsToAcquirePropertyPlantAndEquipment"],
+        ["PaymentsToAcquireOtherPropertyPlantAndEquipment"],
+        ["PaymentsToAcquireSoftware"],
+        ["PaymentsToAcquireIntangibleAssets"],
+        ["PaymentsToAcquireEquipmentOnLease"],
+        ["PaymentsToAcquireMineralRights"]
+      ]
+    },
     "fallback_concepts": ["PaymentsToAcquireProductiveAssets", "PaymentsToAcquirePropertyPlantAndEquipment"],
     "regimes": {
       "bank": {
         "definition": "Not reliably reconstructible.",
         "authority": "JPM, BAC and USB do not appear in the `PaymentsToAcquirePropertyPlantAndEquipment` CY2024 frame at all. Rather than resolve to a partial or unrelated line, the field is absent with dc_code = not_applicable -- and bank freeCashflow is therefore null BY DESIGN.",
         "dc_code": "not_applicable"
+      },
+      "insurer": {
+        "definition": "PP&E capex only, where the filer tags one. An insurer's investing section is portfolio flows; its own premises-and-equipment line is the only capex in it.",
+        "authority": "Measured on 63 filings each: PGR tags `PaymentsToAcquirePropertyPlantAndEquipment` in 63 of 63 ($65-364M, on annual, ytd9, ytd6 and quarterly windows alike), while AFL, MET and CB tag NO capex line anywhere -- AFL nothing at all in 155 filings, MET only portfolio flows (`PaymentsToAcquireAvailableForSaleSecuritiesDebt` $148.8bn; its `PaymentsToAcquireRealEstateAndRealEstateJointVentures` $2,282M is an INVESTED ASSET, not PP&E), CB only TBA mortgage-backed and affiliate lines.",
+        "dc_code_when_absent": "not_applicable",
+        "_dc_code_when_absent": "NOT the bank treatment. `bank.dc_code` short-circuits the field before resolution because all 6 swept banks tag nothing; the insurer regime cannot do that, because one of its four swept members tags capex in EVERY filing. So the code attaches to the ABSENCE rather than to the field: PGR keeps a real number, AFL/MET/CB get `not_applicable` instead of an unexplained `not_disclosed`. Plan section 4b.5(c) proposed the bank treatment here; the measurement above refutes its stated reason (an intermittently-tagged capex yielding a TTM that mixes tagged and untagged quarters) for PGR specifically, which is tagged in 63 of 63.",
+        "roll_up": {
+          "sum": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireSoftware", "PaymentsToAcquireIntangibleAssets"],
+          "anchor": ["NetCashProvidedByUsedInInvestingActivities", "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations"],
+          "anchor_role": "cash_flow",
+          "leaf_weight": -1.0,
+          "any_of": [["PaymentsToAcquirePropertyPlantAndEquipment"], ["PaymentsToAcquireOtherPropertyPlantAndEquipment"], ["PaymentsToAcquireSoftware"], ["PaymentsToAcquireIntangibleAssets"]]
+        }
+      },
+      "energy": {
+        "definition": "Cash paid to acquire and develop oil-and-gas properties, plus refinery turnaround and other productive assets.",
+        "authority": "Measured from each filer's own investing node: EOG declares `PaymentsToAcquireOilAndGasPropertyAndEquipment` ($6,115M FY2025) and `PaymentsToAcquireOtherPropertyPlantAndEquipment` ($479M) as separate legs in all 53 of its filings that carry the node -- sum $6,594M. APA declares `PaymentsToExploreAndDevelopOilAndGasProperties` ($2,740M) in all 22, plus four `apa:` legs. VLO declares `PaymentsToAcquirePropertyPlantAndEquipment` and `PaymentsForCapitalImprovements` (its deferred turnaround and catalyst line) together in 18 filings; a refinery turnaround is capitalised, so both are capex.",
+        "roll_up": {
+          "sum": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireSoftware", "PaymentsToAcquireIntangibleAssets"],
+          "anchor": ["NetCashProvidedByUsedInInvestingActivities", "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations"],
+          "anchor_role": "cash_flow",
+          "leaf_weight": -1.0,
+          "any_of": [
+            ["PaymentsToAcquireOilAndGasPropertyAndEquipment", "PaymentsToAcquireOilAndGasProperty"],
+            ["PaymentsToExploreAndDevelopOilAndGasProperties"],
+            ["PaymentsToAcquirePropertyPlantAndEquipment"],
+            ["PaymentsToAcquireOtherPropertyPlantAndEquipment"],
+            ["PaymentsForCapitalImprovements"],
+            ["PaymentsToAcquireOtherProductiveAssets"],
+            ["PaymentsToAcquireSoftware"],
+            ["PaymentsToAcquireIntangibleAssets"],
+            ["PaymentsToAcquireMineralRights"]
+          ],
+          "_any_of_note": "`PaymentsToAcquireOilAndGasPropertyAndEquipment` and `PaymentsToAcquireOilAndGasProperty` share a group: no swept ticker reports both (EOG 53f and VLO 13f use the first, APA 6f the second). `PaymentsToExploreAndDevelopOilAndGasProperties` is its own group because it co-occurs with `PaymentsToAcquireOilAndGasProperty` in all 6 of APA's filings that tag it -- drilling and acquisition are disjoint legs.",
+          "_never_use_are_legs_here": "`PaymentsForCapitalImprovements` is in this field's `never_use`, banned there as a standalone TOTAL. Admitting it as a LEG is a different claim -- see the same note in the `real_estate` block for the precedent. For VLO it is the deferred turnaround and catalyst line, and the filer's own arithmetic proves it belongs: fiscal 2016 `PaymentsToAcquireProductiveAssets` $1,996M = PP&E $1,278M + CapImp $718M to the dollar, and fiscal 2015 and 2017 close the same way once `vlo:VariableInterestEntityConsolidatedPaymentsforCapitalExpenditures` ($59M, $72M) is included. Before this, VLO's QUARTERS were PP&E-only while its ANNUAL figure was the combined total -- a 45-53% intra-ticker basis inconsistency that no external check would have caught."
+        }
+      },
+      "utility": {
+        "definition": "Utility and non-utility plant expenditures, plus nuclear fuel.",
+        "authority": "DTE declares only `dte:PlantAndEquipmentExpenditures{Utility,NonUtility}` -- $4,343M + $86M = $4,429M FY2025 -- and its own arithmetic confirms the sum exactly: `dte:PaymentsToAcquireProductiveAssetsIncludingPaymentsToAcquireBusinessesNetOfCashAcquired` $4,639M less `us-gaap:PaymentsToAcquireBusinessesNetOfCashAcquired` $210M = $4,429M. NEE splits its programme across five extension legs plus `us-gaap:PaymentsForProceedsFromNuclearFuel` ($553M). ASC 980 and FERC Form 1 both treat nuclear fuel as a capital asset, so it is capex and not an investment.",
+        "roll_up": {
+          "sum": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireSoftware", "PaymentsToAcquireIntangibleAssets"],
+          "anchor": ["NetCashProvidedByUsedInInvestingActivities", "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations"],
+          "anchor_role": "cash_flow",
+          "leaf_weight": -1.0,
+          "any_of": [["PaymentsToAcquirePropertyPlantAndEquipment"], ["PaymentsToAcquireOtherPropertyPlantAndEquipment"], ["PaymentsForProceedsFromNuclearFuel"], ["PaymentsToAcquireSoftware"], ["PaymentsToAcquireIntangibleAssets"]]
+        }
+      },
+      "real_estate": {
+        "definition": "Real-estate acquisition, development, improvement and tenant-improvement spend.",
+        "authority": "17 CFR 210.1-02(bb)(1)(i)'s unclassified specialised industry: a REIT's capex is tagged with real-estate-specific elements, never `PaymentsToAcquirePropertyPlantAndEquipment`. Measured: MAA declares `PaymentsForCapitalImprovements` in 41 of 41 ($360M FY2025), `PaymentsToAcquireInProcessResearchAndDevelopment` in 19 ($272M) and `maa:PaymentsToAcquireRealEstateAndOtherAssets` in 38 ($133M); PLD declares `PaymentsToAcquireRealEstate` in 41, `PaymentsToDevelopRealEstateAssets` in 27, `PaymentsForLeasingCostsCommissionsAndTenantImprovements` in 44 and `pld:PaymentForPropertyImprovements` in 28.",
+        "roll_up": {
+          "sum": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireSoftware", "PaymentsToAcquireIntangibleAssets"],
+          "anchor": ["NetCashProvidedByUsedInInvestingActivities", "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations"],
+          "anchor_role": "cash_flow",
+          "leaf_weight": -1.0,
+          "any_of": [
+            ["PaymentsToAcquireRealEstate"],
+            ["PaymentsToDevelopRealEstateAssets", "PaymentsToAcquireAndDevelopRealEstate", "PaymentsToAcquireInProcessResearchAndDevelopment"],
+            ["PaymentsForCapitalImprovements"],
+            ["PaymentsToAcquireOtherRealEstate"],
+            ["PaymentsForLeasingCostsCommissionsAndTenantImprovements"],
+            ["PaymentsForProceedsFromProductiveAssets"],
+            ["PaymentsToAcquirePropertyPlantAndEquipment"],
+            ["PaymentsToAcquireOtherPropertyPlantAndEquipment"],
+            ["PaymentsToAcquireSoftware"],
+            ["PaymentsToAcquireIntangibleAssets"]
+          ],
+          "_any_of_note": "The development group holds three mutually-exclusive spellings of one line, each measured: MAA's `PaymentsToAcquireInProcessResearchAndDevelopment` (19f) and `PaymentsToDevelopRealEstateAssets` (12f) never co-occur, and PLD's `PaymentsToAcquireAndDevelopRealEstate` (16f) and `PaymentsToDevelopRealEstateAssets` (27f) never co-occur either. `PaymentsToAcquireRealEstateAndRealEstateJointVentures` is deliberately ABSENT: it mixes property with partnership interests, and it is the element MET uses for $2,282M of INVESTED ASSETS.",
+          "_never_use_are_legs_here": "`PaymentsForCapitalImprovements` and `PaymentsToAcquireInProcessResearchAndDevelopment` are both in this field's `never_use`. Those bans are correct AS BANS ON A STANDALONE TOTAL -- a name-keyed extractor booking MAA's $272M as R&D spend is the measured trap -- and admitting them as LEGS OF A SUM is a different claim. Same precedent as bank `totalRevenue`, which bans `NoninterestIncome` as a total while keeping it a child of the regime roll-up. `_leaf_sum` reads `never_use` only as evidence that a sibling is a KNOWN concept, never as a leaf ban."
+        }
       }
     },
     "never_use": {
@@ -277,14 +424,17 @@
     "source": "text:10-K",
     "annual_only": true
   },
-
   "ppeNet": {
     "tier": 3, "kind": "instant", "sign": "non_negative", "unit": "USD",
     "definition": "Property, plant and equipment, net of accumulated depreciation, EXCLUDING finance-lease right-of-use assets wherever those are separately detectable (decision: research part 2, Open item #1, option b).",
     "authority": "FASB us-gaap-doc-2025: the same construction as ppeGross, 'after accumulated depreciation...' instead of 'before'. Reg S-X caption 13 (see ppeGross), with accumulated depreciation as the separate caption 14, so the net figure is a derivable identity. THE LEASE CAVEAT IS REAL AND TAXONOMY-PERMITTED: us-gaap-ref-2025 ties `PropertyPlantAndEquipmentNet` to ASC 842-20-50-7A(a), the lessee ROU-asset presentation paragraph, and ASC 842-20-45-4 lets a filer show a finance-lease ROU asset EITHER as its own line item OR folded into an existing line (commonly PP&E) with a note saying which. So the element is NOT guaranteed to exclude finance-lease ROU assets, and this is a filer-level presentation choice the taxonomy permits -- not a bug in the element.",
     "authority_caveat": "ASC 842-20-45-4's prose (the either/or presentation permission) is a secondary reproduction; the 842-20-50-7A(a) cross-reference is primary, from FASB's own reference linkbase.",
     "fallback_concepts": ["PropertyPlantAndEquipmentNet"],
-    "roll_up": {"sum": ["ppeGross", "accumulatedDepreciation"]},
+    "roll_up": {
+      "sum": ["ppeGross", "accumulatedDepreciation"],
+      "require_all": true,
+      "_require_all": "Net PP&E is a DIFFERENCE, so a one-legged sum is not a smaller version of it -- it is a different quantity. Measured: 86 GS rows and 2 DTE rows emitted `accumulatedDepreciation` alone as net PP&E ($7.7-40.8bn), and 8 PG rows emitted `ppeGross` alone. The direct `PropertyPlantAndEquipmentNet` concept is tried first and carries the overwhelming majority of rows, so requiring both legs here costs almost no coverage."
+    },
     "total_adjustment": {
       "subtract": ["FinanceLeaseRightOfUseAsset"],
       "_decision": "Option (b) of research part 2, Open item #1: net the finance-lease ROU asset out of ppeNet wherever it is separately tagged, for consistency with totalDebt's existing lease-separation logic (decision #4 already treats the lease legs as their own components).",
@@ -292,7 +442,11 @@
       "_measured": "`FinanceLeaseRightOfUseAsset`: 2,157 undimensioned facts / 192 tickers, 2017-09-30 onward (ASC-842 era only). 182 of the 417 tickers that tag `PropertyPlantAndEquipmentNet` also tag it, so the adjustment is DETECTABLE for 44% of them and invisible for the other 56% -- a filer that folds the ROU asset in without tagging it separately cannot be corrected. `FinanceLeaseRightOfUseAssetNet` is effectively unused (6 facts / 2 tickers) and is not a fallback.",
       "_residual": "Accepted cost of option (b): cross-filer comparability improves for the 44% and is unchanged for the rest, so the field gets closer to one basis without ever becoming exactly one basis. The 56% keep the taxonomy-permitted ambiguity; that is recorded, not fixed."
     },
-    "regime_break": {"field_change": "ASC 842", "effective": "2019-01-01", "reason": "Finance-lease ROU assets did not exist as a tagged balance-sheet amount before adoption, so pre-2019 ppeNet has no ROU ambiguity at all and needs no adjustment. The adjustment therefore begins mid-series, which is a basis change on the SAME footing as totalDebt's."}
+    "regime_break": {
+      "field_change": "ASC 842",
+      "effective": "2019-01-01",
+      "reason": "Finance-lease ROU assets did not exist as a tagged balance-sheet amount before adoption, so pre-2019 ppeNet has no ROU ambiguity at all and needs no adjustment. The adjustment therefore begins mid-series, which is a basis change on the SAME footing as totalDebt's."
+    }
   },
   "interestExpense": {
     "tier": 3, "kind": "duration", "sign": "non_negative", "unit": "USD",
@@ -435,7 +589,6 @@
     },
     "known_residual": "Capitalised software (ASC 350-40 / 985-20) depresses reported R&D expense, so a capitalising filer looks like it spends less than an economically identical expensing one. NOT recoverable from the R&D tag. Re-add `capitalizedSoftware` as a tier-0 companion if the R&D factor turns out to be sensitive to capitalisation policy."
   },
-
   "longTermDebtCurrentOnly": {
     "tier": 0, "kind": "instant", "sign": "non_negative", "unit": "USD",
     "definition": "Current maturities of long-term debt, as its own leg.",

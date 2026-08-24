@@ -324,41 +324,42 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
 );
 
 -- [extract] fundamentals_facts  (pk: ticker, accession_number, field, fiscal_year, fiscal_period, duration_type)
+-- One row per catalogue FIELD per period per filing, resolved from the filer's own XBRL
+-- calculation linkbase. STRICTLY AS-FILED: no derived quarter is ever written here (Q4 =
+-- FY - YTD9 happens in memory during the history build), and amendments append rather than
+-- overwrite -- so `filing_date <= D` answers "what was knowable on D" exactly.
 
 CREATE TABLE IF NOT EXISTS "fundamentals_facts" (
     "ticker" TEXT NOT NULL,
-    "cik" TEXT,
     "accession_number" TEXT NOT NULL,
+    "field" TEXT NOT NULL,
+    "fiscal_year" BIGINT NOT NULL,
+    "fiscal_period" TEXT NOT NULL,
+    "duration_type" TEXT NOT NULL,
+    "cik" TEXT,
     "form" TEXT,
     "filing_date" DATE,
-    "is_amendment" DOUBLE PRECISION,
-    "fiscal_period_source" TEXT,
-    "period_of_report" TIMESTAMP,
-    "cover_fiscal_year" BIGINT,
-    "cover_fiscal_period" TEXT,
-    "concept" TEXT,
-    "taxonomy" TEXT,
-    "bare_tag" TEXT,
-    "period_type" TEXT,
+    "is_amendment" BOOLEAN,
+    "period_of_report" DATE,
+    "regime" TEXT,
     "period_start" DATE,
     "period_end" DATE,
-    "period_key" TEXT,
-    "duration_shape" TEXT,
-    "fiscal_year" TEXT NOT NULL,
-    "fiscal_period" TEXT NOT NULL,
+    "period_days" BIGINT,
     "value" DOUBLE PRECISION,
     "unit" TEXT,
     "decimals" TEXT,
-    "is_dimensioned" BOOLEAN,
-    "axis" TEXT,
-    "member" TEXT,
-    "member_label" TEXT,
-    "dim_count" BIGINT,
-    "dim_key" TEXT,
-    "dim_admission" TEXT,
+    "resolution_method" TEXT,
+    "source_concept" TEXT,
+    "roll_up_children" TEXT,
+    "root_anchor" TEXT,
+    "adjustment" TEXT,
+    "role_uri" TEXT,
+    "is_extension" BOOLEAN,
+    "dc_code" TEXT,
     PRIMARY KEY ("ticker", "accession_number", "field", "fiscal_year", "fiscal_period", "duration_type")
 );
 CREATE INDEX IF NOT EXISTS ix_fundamentals_facts_filing_date ON "fundamentals_facts" ("filing_date");
+CREATE INDEX IF NOT EXISTS ix_fundamentals_facts_field ON "fundamentals_facts" ("ticker", "field");
 
 -- [extract] earnings_surprises  (pk: ticker, earnings_date)
 

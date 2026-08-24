@@ -57,9 +57,13 @@ def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None,
 
 
 def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
-                    tables: tuple[Table, ...], build: BuildFn, desc: str) -> None:
+                    tables: tuple[Table, ...], build: BuildFn, desc: str,
+                    max_workers: int | None = None) -> None:
     """Fetch `tables` for `tickers` using `build(ticker, cik, since, done_accessions)
     -> {table: frame}`.
+
+    `max_workers` overrides the shared pool width for fetchers that need their own
+    (fundamentals: its from-scratch backfill is the only one measured in hours).
 
     `tables[0]` is the primary: it keys the manifest window and the accession dedup
     set. Every declared table gets a `record_run` entry even when no ticker produced
@@ -113,7 +117,8 @@ def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
             counts[table] = len(df)
         return counts
 
-    results = run_per_ticker(cik_map, _worker, desc=desc)
+    results = run_per_ticker(cik_map, _worker, desc=desc,
+                             **({} if max_workers is None else {"max_workers": max_workers}))
     failed = sum(1 for r in results if r is None)
     totals = {table: 0 for table in tables}
     for result in results:

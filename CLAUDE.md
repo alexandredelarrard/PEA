@@ -1,6 +1,6 @@
 This project uses AGENTS.md as its source of truth for instructions.
 Always start by reading ./AGENTS.md.
-Always use rtk for all your commands. See examples below. 
+Always use rtk before all your commands. See examples below. 
 
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
@@ -9,16 +9,9 @@ Always use rtk for all your commands. See examples below.
 
 **Always prefix commands with `rtk`**. If RTK has a dedicated filter, it uses it. If not, it passes through unchanged. This means RTK is always safe to use.
 
-**Important**: Even in command chains with `&&`, use `rtk`:
-```bash
-# ❌ Wrong
-git add . && git commit -m "msg" && git push
+**Important**: Even in command chains with `&&`, use `rtk`.
 
-# ✅ Correct
-rtk git add . && rtk git commit -m "msg" && rtk git push
-```
-
-### Files & Search (60-75% savings)
+## Files & Search (60-75% savings)
 ```bash
 rtk ls <path>           # Tree format, compact (65%)
 rtk read <file>         # Code reading with filtering (60%)

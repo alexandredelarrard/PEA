@@ -7,7 +7,8 @@
       "substrate": "fundamentals_facts_legacy, 7,776,870 undimensioned+dimensioned facts, measured 2026-08-21 at zero network cost.",
       "method": "Per ticker: does ANY undimensioned (is_dimensioned = false) fact exist for the concept, anywhere in its history? Then the share of a regime's tickers for which the answer is no.",
       "scope": "442 tickers -- those that have facts AND are classifiable by the documented GICS method. See `_substrate_caveat` and `_unclassifiable_tickers`. An earlier draft of this README said 441, which was off by one against this file's own by_regime block; the block itself was always right and sums exactly to 442 (bank 14 + insurer 16 + broker_dealer 6 + real_estate 19 + utility 28 + energy 18 + hybrid 1 + industrial 340).",
-      "regime_assignment": "The same sub_industry rules as configs/fundamentals/fundamentals_regimes.json, applied to sp500_tickers."
+      "regime_assignment": "The same sub_industry rules as configs/fundamentals/fundamentals_regimes.json, applied to sp500_tickers.",
+      "substrate_sweep_2026_08_23": "A SECOND substrate, used only by the cells that carry `\"_basis\": \"sweep_2026_08_23\"`. Those were measured on the Phase 4c resolution sweep -- 52 tickers (26 in-sample + 26 out-of-sample, see configs/fundamentals/fundamentals_rosters.json), 3,493 filings, 188,186 valued rows, 2011-2026 -- and they mean something DIFFERENT from the legacy cells above. Legacy asks 'does any undimensioned FACT exist for the concept'; the sweep asks 'does the FIELD ever resolve to a value for this ticker', which is the end-to-end question the validator actually cares about but which also folds in resolution defects. The denominators differ too and are far smaller, so each sweep cell states its own `_n_basis` rather than inheriting the block's `_n`. Do not average or compare a rate across the two bases."
     },
     "_substrate_caveat": {
       "finding": "fundamentals_facts_legacy covers only 445 of the 500 tickers in sp500_tickers, and the 58 with no facts at all are ALPHABETICALLY CLUSTERED -- essentially everything from U/V/W onward (UNH, UNP, UPS, USB, V, VLO, VRT, VZ, WFC, WMT, WY, ...) plus a handful of recent additions (GEHC, GEV, KVUE, RDDT, SOLV, VLTO). That is the signature of a TRUNCATED BACKFILL, not of genuine absence.",
@@ -44,7 +45,37 @@
       "capex":                  {"expected_absent": true,  "measured_absent_rate": 0.43, "n_absent": 6,
                                  "override_reason": "BELOW the register's own >=0.75 bar, excused deliberately, and the reason is a THREE-WAY SPLIT rather than uniform intermittency. Measuring WHICH years each of the 8 tagging banks uses `PaymentsToAcquirePropertyPlantAndEquipment`: (1) ALWAYS, every covered year -- AXP, C, COF, FITB, HBAN: five banks whose capex is fully reliable and not intermittent at all; (2) SPORADIC -- CFG (1 of 13 years), KEY (3 of 16, 2011-13 only), TFC (6 of 16, 2011-13 and 2020-22): three banks where a TTM really would mix tagged and untagged quarters; (3) NEVER -- BAC, JPM, MTB, PNC, RF, SYF: the six that make up the 0.43 rate. The plan's and this register's earlier 'intermittency' reasoning is real but describes only group (2), 3 of the 8 tagging banks, and applying it to all 8 overstated how unreliable bank capex is. Kept expected_absent: true because the mixed-TTM risk in group (2) is real and silent, and because a field whose reliability differs this much WITHIN one regime cannot be treated as uniformly present. The refinement matters downstream: a consumer should treat AXP/C/COF/FITB/HBAN capex as usable and CFG/KEY/TFC as genuinely spotty. Bank freeCashflow stays null BY DESIGN. Revisit per-ticker rather than per-regime if bank capex ever needs to be usable.",
                                  "tagging_pattern": {"always": ["AXP", "C", "COF", "FITB", "HBAN"], "sporadic": ["CFG", "KEY", "TFC"], "never": ["BAC", "JPM", "MTB", "PNC", "RF", "SYF"]}},
-      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+    "accountsPayable": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 7, "_n_basis": 7, "_basis": "sweep_2026_08_23",
+      "_why": "The us-gaap concept is literally a CURRENT caption -- `AccountsPayableCurrent` / `AccountsPayableAndAccruedLiabilitiesCurrent` -- so 17 CFR 210.1-02(bb)(1)(i) applies verbatim: a filer that presents no classified balance sheet files no current payable line. These filers carry the economically equivalent balances under regime-specific captions instead (`OtherLiabilities`, `PayableToCustomers`, `PayablesToBrokerDealersAndClearingOrganizations`, insurance loss reserves), none of which is this field."
+    },
+    "accountsReceivable": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 7, "_n_basis": 7, "_basis": "sweep_2026_08_23",
+      "_why": "Same mechanism as accountsPayable: `AccountsReceivableNetCurrent` is a current caption. The equivalent balances sit in `LoansAndLeasesReceivableNetReportedAmount` (bank), `ReceivablesFromCustomers` / `ReceivablesFromBrokerDealersAndClearingOrganizations` (broker-dealer), `PremiumsAndOtherReceivablesNet` (insurer) and straight-line rent receivables (real estate)."
+    },
+    "ppeGross": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.5714,
+      "n_absent": 4, "_n_basis": 7, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 57.1% (AXP, BAC, C, JPM absent; MTB, USB, WFC present). Banks DO file premises and equipment -- Reg S-X Rule 9-03 caption 7 -- so the split is a tagging choice (net-only on `PropertyPlantAndEquipmentNet`), not an exemption. Not silenced."
+    },
+    "accumulatedDepreciation": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.4286,
+      "n_absent": 3, "_n_basis": 7, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 42.9% (BAC, C, JPM). The counterpart of ppeGross above -- net-only tagging, not an exemption."
+    },
+    "intangiblesExGoodwill": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.1429,
+      "n_absent": 1, "_n_basis": 7, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 14.3% (AXP). Not a rule."
+    }
     },
 
     "insurer": {
@@ -60,7 +91,37 @@
       "sellingGeneralAdmin":    {"expected_absent": false, "measured_absent_rate": 0.69, "n_absent": 11,
                                  "note": "5 of 16 DO tag SG&A -- below the bar, so a newly missing SG&A on one of those five is still a finding."},
       "capex":                  {"expected_absent": false, "measured_absent_rate": 0.56, "n_absent": 9},
-      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+    "accountsPayable": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 4, "_n_basis": 4, "_basis": "sweep_2026_08_23",
+      "_why": "The us-gaap concept is literally a CURRENT caption -- `AccountsPayableCurrent` / `AccountsPayableAndAccruedLiabilitiesCurrent` -- so 17 CFR 210.1-02(bb)(1)(i) applies verbatim: a filer that presents no classified balance sheet files no current payable line. These filers carry the economically equivalent balances under regime-specific captions instead (`OtherLiabilities`, `PayableToCustomers`, `PayablesToBrokerDealersAndClearingOrganizations`, insurance loss reserves), none of which is this field."
+    },
+    "accountsReceivable": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 4, "_n_basis": 4, "_basis": "sweep_2026_08_23",
+      "_why": "Same mechanism as accountsPayable: `AccountsReceivableNetCurrent` is a current caption. The equivalent balances sit in `LoansAndLeasesReceivableNetReportedAmount` (bank), `ReceivablesFromCustomers` / `ReceivablesFromBrokerDealersAndClearingOrganizations` (broker-dealer), `PremiumsAndOtherReceivablesNet` (insurer) and straight-line rent receivables (real estate)."
+    },
+    "ppeGross": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.25,
+      "n_absent": 1, "_n_basis": 4, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 25% (CB absent). Not a rule."
+    },
+    "accumulatedDepreciation": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.25,
+      "n_absent": 1, "_n_basis": 4, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 25% (CB). Not a rule."
+    },
+    "intangiblesExGoodwill": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.5,
+      "n_absent": 2, "_n_basis": 4, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 50% (AFL, MET absent; CB, PGR present). Split; not a rule."
+    }
     },
 
     "broker_dealer": {
@@ -76,7 +137,25 @@
       "researchAndDevelopment": {"expected_absent": true,  "measured_absent_rate": 0.83, "n_absent": 5},
       "capex":                  {"expected_absent": false, "measured_absent_rate": 0.50, "n_absent": 3,
                                  "note": "GS's capex uses a narrower financial-sector definition -- already a confirmed known-definitional-difference case against external sources."},
-      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+    "accountsPayable": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 2, "_n_basis": 2, "_basis": "sweep_2026_08_23",
+      "_why": "The us-gaap concept is literally a CURRENT caption -- `AccountsPayableCurrent` / `AccountsPayableAndAccruedLiabilitiesCurrent` -- so 17 CFR 210.1-02(bb)(1)(i) applies verbatim: a filer that presents no classified balance sheet files no current payable line. These filers carry the economically equivalent balances under regime-specific captions instead (`OtherLiabilities`, `PayableToCustomers`, `PayablesToBrokerDealersAndClearingOrganizations`, insurance loss reserves), none of which is this field."
+    },
+    "accountsReceivable": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 2, "_n_basis": 2, "_basis": "sweep_2026_08_23",
+      "_why": "Same mechanism as accountsPayable: `AccountsReceivableNetCurrent` is a current caption. The equivalent balances sit in `LoansAndLeasesReceivableNetReportedAmount` (bank), `ReceivablesFromCustomers` / `ReceivablesFromBrokerDealersAndClearingOrganizations` (broker-dealer), `PremiumsAndOtherReceivablesNet` (insurer) and straight-line rent receivables (real estate)."
+    },
+    "ppeGross": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.5,
+      "n_absent": 1, "_n_basis": 2, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 50% (GS absent, SCHW present). n=2 and split; not a rule."
+    }
     },
 
     "real_estate": {
@@ -94,7 +173,37 @@
       "costOfRevenue":          {"expected_absent": false, "measured_absent_rate": 0.63, "n_absent": 12},
       "operatingIncome":        {"expected_absent": false, "measured_absent_rate": 0.21, "n_absent": 4,
                                  "note": "REITs DO present operating income -- 15 of 19. The research's sector-level table read 0 of 31 absent; the difference is that tower/data-centre/timber REITs are routed to `industrial` here."},
-      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+    "accountsPayable": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 3, "_n_basis": 3, "_basis": "sweep_2026_08_23",
+      "_why": "The us-gaap concept is literally a CURRENT caption -- `AccountsPayableCurrent` / `AccountsPayableAndAccruedLiabilitiesCurrent` -- so 17 CFR 210.1-02(bb)(1)(i) applies verbatim: a filer that presents no classified balance sheet files no current payable line. These filers carry the economically equivalent balances under regime-specific captions instead (`OtherLiabilities`, `PayableToCustomers`, `PayablesToBrokerDealersAndClearingOrganizations`, insurance loss reserves), none of which is this field."
+    },
+    "accountsReceivable": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 3, "_n_basis": 3, "_basis": "sweep_2026_08_23",
+      "_why": "Same mechanism as accountsPayable: `AccountsReceivableNetCurrent` is a current caption. The equivalent balances sit in `LoansAndLeasesReceivableNetReportedAmount` (bank), `ReceivablesFromCustomers` / `ReceivablesFromBrokerDealersAndClearingOrganizations` (broker-dealer), `PremiumsAndOtherReceivablesNet` (insurer) and straight-line rent receivables (real estate)."
+    },
+    "ppeGross": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 3, "_n_basis": 3, "_basis": "sweep_2026_08_23",
+      "_why": "A REIT's operating assets are tagged in the real-estate concept family -- `RealEstateInvestmentPropertyAtCost` and `RealEstateInvestmentPropertyAccumulatedDepreciation` -- not the `PropertyPlantAndEquipment*` family this field reads. The absence is a tagging-family fact, not a missing disclosure: the gross basis and the accumulated depreciation are both disclosed, under different elements."
+    },
+    "accumulatedDepreciation": {
+      "expected_absent": true,
+      "measured_absent_rate": 1.0,
+      "n_absent": 3, "_n_basis": 3, "_basis": "sweep_2026_08_23",
+      "_why": "A REIT's operating assets are tagged in the real-estate concept family -- `RealEstateInvestmentPropertyAtCost` and `RealEstateInvestmentPropertyAccumulatedDepreciation` -- not the `PropertyPlantAndEquipment*` family this field reads. The absence is a tagging-family fact, not a missing disclosure: the gross basis and the accumulated depreciation are both disclosed, under different elements."
+    },
+    "intangiblesExGoodwill": {
+      "expected_absent": false,
+      "measured_absent_rate": 1.0,
+      "n_absent": 3, "_n_basis": 3, "_basis": "sweep_2026_08_23",
+      "_why": "MEASURED 3/3 absent (MAA, PLD, SPG) but DELIBERATELY NOT SILENCED: unlike ppeGross there is no established structural reason. REITs commonly DO carry acquired in-place lease and above/below-market lease intangibles (ASC 805 allocations), so 3 absences out of 3 on a sample of 3 is at least as likely to be a RESOLUTION gap as a disclosure fact. Silencing it here would hide exactly the defect the register exists to expose. Flagged for Phase 5 to re-measure on the full roster before any cell is set true."
+    }
     },
 
     "utility": {
@@ -110,7 +219,19 @@
       "currentLiabilities":     {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
       "operatingIncome":        {"expected_absent": false, "measured_absent_rate": 0.07, "n_absent": 2},
       "capex":                  {"expected_absent": false, "measured_absent_rate": 0.18, "n_absent": 5},
-      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+    "accountsPayable": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.25,
+      "n_absent": 1, "_n_basis": 4, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL: NEE alone is absent, on `AccountsPayableCurrent`. A utility files a classified sheet, so absence here is a coverage finding to investigate, not a structural exemption."
+    },
+    "accountsReceivable": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.25,
+      "n_absent": 1, "_n_basis": 4, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL: SO alone is absent. Same reasoning as accountsPayable -- a classified filer with no receivable line is a finding."
+    }
     },
 
     "energy": {
@@ -125,7 +246,13 @@
       "capex":                  {"expected_absent": false, "measured_absent_rate": 0.44, "n_absent": 8},
       "currentAssets":          {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
       "currentLiabilities":     {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
-      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+    "intangiblesExGoodwill": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.75,
+      "n_absent": 3, "_n_basis": 4, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 75% (APA, EOG, XOM absent; VLO present). Consistent with E&P accounting -- acquisition costs are capitalised into oil and gas properties under ASC 932, so there is often no separate intangible -- but a refiner in the same regime does report them, so this is not a regime-wide exemption."
+    }
     },
 
     "industrial": {
@@ -143,7 +270,37 @@
       "operatingIncome":        {"expected_absent": false, "measured_absent_rate": 0.11, "n_absent": 36},
       "currentAssets":          {"expected_absent": false, "measured_absent_rate": 0.05, "n_absent": 18},
       "currentLiabilities":     {"expected_absent": false, "measured_absent_rate": 0.05, "n_absent": 18},
-      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+    "accountsPayable": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.037,
+      "n_absent": 1, "_n_basis": 27, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL: DE alone is absent -- a captive-finance parent whose payables sit in `AccountsPayableAndAccruedLiabilitiesCurrentAndNoncurrent`. One ticker in 27 is a candidate for a by_ticker entry, not a regime rule."
+    },
+    "accountsReceivable": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.0741,
+      "n_absent": 2, "_n_basis": 27, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL: DE and MCD. MCD tags `NotesAndLoansReceivableNetCurrent` for franchisee receivables; DE as above. Two in 27 is a by_ticker matter."
+    },
+    "ppeGross": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.0741,
+      "n_absent": 2, "_n_basis": 27, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 7.4% (DE, UNH). Net-only tagging; a coverage finding."
+    },
+    "accumulatedDepreciation": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.037,
+      "n_absent": 1, "_n_basis": 27, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 3.7% (DE). Not a rule."
+    },
+    "intangiblesExGoodwill": {
+      "expected_absent": false,
+      "measured_absent_rate": 0.1852,
+      "n_absent": 5, "_n_basis": 27, "_basis": "sweep_2026_08_23",
+      "_why": "PARTIAL at 18.5% (COST, HCA, MCD, UNP, WMT). Low-intangible business models rather than a structural exemption."
+    }
     },
 
     "hybrid": {
@@ -157,7 +314,360 @@
       "researchAndDevelopment": {"expected_absent": true,  "measured_absent_rate": 1.00, "n_absent": 1},
       "operatingIncome":        {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
       "inventory":              {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
-      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0}
+      "totalAssets":            {"expected_absent": false, "measured_absent_rate": 0.00, "n_absent": 0},
+    "accountsPayable": {
+      "expected_absent": false,
+      "measured_absent_rate": 1.0,
+      "n_absent": 1, "_n_basis": 1, "_basis": "sweep_2026_08_23",
+      "_why": "Absent for the single hybrid ticker (BRK-B), but n=1: one observation cannot establish a structural rule, so this stays false and any BRK-B absence remains a finding. See `by_ticker` if it needs silencing."
+    },
+    "accountsReceivable": {
+      "expected_absent": false,
+      "measured_absent_rate": 1.0,
+      "n_absent": 1, "_n_basis": 1, "_basis": "sweep_2026_08_23",
+      "_why": "n=1; see accountsPayable."
+    },
+    "ppeGross": {
+      "expected_absent": false,
+      "measured_absent_rate": 1.0,
+      "n_absent": 1, "_n_basis": 1, "_basis": "sweep_2026_08_23",
+      "_why": "n=1; see accountsPayable."
+    },
+    "accumulatedDepreciation": {
+      "expected_absent": false,
+      "measured_absent_rate": 1.0,
+      "n_absent": 1, "_n_basis": 1, "_basis": "sweep_2026_08_23",
+      "_why": "n=1; see accountsPayable."
+    },
+    "intangiblesExGoodwill": {
+      "expected_absent": false,
+      "measured_absent_rate": 1.0,
+      "n_absent": 1, "_n_basis": 1, "_basis": "sweep_2026_08_23",
+      "_why": "n=1; see accountsPayable."
+    }
+    }
+  },
+
+  "by_ticker": {
+    "_README": {
+      "purpose": "COMPANY-EXTENSION leaves, per filer, per field. Read by `Catalogue.filer_leaves` and fed to the same route-3b `_leaf_sum` as the catalogue's own `roll_up.any_of`.",
+      "why_this_exists": "There is NO structural rule that identifies a company-extension capex or D&A leaf, and two plausible ones were measured and refuted. 'A negative-weight extension child of the investing node is capex' admits `apa:EquityMethodInvestmentContribution` ($501M, an investment), `nee:PurchasesOfSecuritiesInSpecialUseFunds` ($1.4-2.6bn, securities), `dte:ConsolidationOfVIES`, `dte:RefundsToSynfuelPartners` and `eog:ChangesInComponentsOfWorkingCapitalAssociatedWithInvestingActivities`; the inverse framing ('everything that is not a named non-capex standard concept') fails on the same rows. And `companyfacts` cannot even see these elements: it publishes no company-extension taxonomy at all, so DTE's and NEE's entire capital programme is invisible there. So an extension leaf is DECLARED here with its evidence, or the filer is reason-coded. There is no third answer.",
+      "shape": "`leaves` has the same shape as `roll_up.any_of`: a list of GROUPS, where the first reported alternative within a group is taken and groups are summed. `not_leaves` is flat, and is what makes this a CLOSED statement about the filer -- route 3b's partial-leaf guard refuses a sum whenever the anchor node carries an extension in the field's direction that appears in neither list, so listing only the leaves would leave the guard refusing every filer that parks an unrelated extension in the node.",
+      "grouping_rule": "Two concepts that NEVER co-occur in the same filing are era or naming variants of one line and share a group; two that DO co-occur are disjoint legs and get separate groups. Every group below cites its counts.",
+      "not_registered_is_not_a_gap": "A filer absent from this register is not broken. Route 3b DECLINES rather than nulls: it hands control to the tag routes, so an unregistered filer keeps exactly the value it had before. AMT, DUK, SO and EQIX are deliberately absent for that reason -- registering them would change the resolution METHOD without changing any number. CSCO WAS in that list and no longer is: once 4c.1's declaredness test stops an undeclared tag beating the filer's own declared statement lines, registering CSCO's extension moves its D&A from $700M-1,200M to $2,811M, so it changes the NUMBER and not merely the route.",
+      "scope_caveat": "17 tickers / 18 (ticker, field) entries, out of a ~500-ticker universe. The register is populated only for filers whose extensions were actually swept and read; anything outside the two 26-ticker rosters is unmeasured and therefore unlisted, which is the honest state rather than a deficiency to paper over. Phase 9 should extend it as it widens the roster."
+    },
+    "APA": {
+      "capex": {
+        "leaves": [
+          [
+            "apa:PaymentsToAcquireOilAndGasPropertiesUnprovedLeasehold",
+            "apa:PaymentsToAcquireOilAndGasPropertiesLeaseholdAndProperty"
+          ],
+          [
+            "apa:PaymentsToAcquireOilAndGasPropertiesProved"
+          ],
+          [
+            "apa:AdditionsToGasGatheringProcessingAndTransmissionFacilities"
+          ]
+        ],
+        "not_leaves": [
+          "apa:EquityMethodInvestmentContribution"
+        ],
+        "evidence": "22 filings carry the investing node. `us-gaap:PaymentsToExploreAndDevelopOilAndGasProperties` ($2,740M FY2025) is in all 22 and comes from the energy regime's own `any_of`; the four `apa:` legs above are the acquisition side. Unproved-leasehold (9f) and leasehold-and-property (7f) NEVER co-occur, so they are one group; proved (6f) co-occurs with unproved in 5, so it is its own. Gas-gathering (5f) co-occurs with explore-and-develop in all 5. `apa:EquityMethodInvestmentContribution` (6f, up to $501M) is an INVESTMENT and is the single clearest counter-example to the refuted 'negative-weight extension' rule.",
+        "verified": "2026-08-23"
+      }
+    },
+    "DTE": {
+      "capex": {
+        "leaves": [
+          [
+            "dte:PlantAndEquipmentExpendituresUtility",
+            "dte:PaymentsToAcquirePropertyPlantAndEquipmentUtility"
+          ],
+          [
+            "dte:PlantAndEquipmentExpendituresNonUtility",
+            "dte:PaymentsToAcquirePropertyPlantAndEquipmentNonUtility"
+          ]
+        ],
+        "not_leaves": [
+          "dte:PaymentsForProceedsFromNotesReceivableAndOtherInvestingActivities",
+          "dte:ConsolidationOfVIES",
+          "dte:ConsolidationOfVies",
+          "dte:DistributionsToContributionsFromAffiliatesForNotesReceivables",
+          "dte:RefundsToSynfuelPartners"
+        ],
+        "evidence": "GROUND TRUTH, from the filer's own arithmetic: utility $4,343M + non-utility $86M = $4,429M FY2025, and `dte:PaymentsToAcquireProductiveAssetsIncludingPaymentsToAcquireBusinessesNetOfCashAcquired` $4,639M less `us-gaap:PaymentsToAcquireBusinessesNetOfCashAcquired` $210M = $4,429M exactly. Grouping: `PlantAndEquipmentExpenditures*` (60 filings each) and `PaymentsToAcquirePropertyPlantAndEquipment*` (3 each) never co-occur and sum to exactly DTE's 63 filings, so each pair is one group; Utility and NonUtility co-occur in all 60 and so are legs. A TRAP worth naming: DTE also tags `us-gaap:PaymentsToAcquirePropertyPlantAndEquipment` at $3,686M, but ONLY dimensioned to `dte:DTEElectricMember` -- the subsidiary registrant. `entity_scope.consolidated_facts` drops it and must keep doing so; anyone relaxing the dimensional filter to 'fix' capex would store the SUBSIDIARY's number as the group's, 17% low and entirely plausible.",
+        "verified": "2026-08-23"
+      }
+    },
+    "NEE": {
+      "capex": {
+        "leaves": [
+          [
+            "nee:CapitalExpendituresOfPublicUtility",
+            "nee:CapitalExpendituresOfFPL",
+            "nee:CapitalExpendituresOfFPLSegment",
+            "nee:CapitalExpendituresOfPublicUtilitiesFPLConsolidated"
+          ],
+          [
+            "nee:CapitalExpendituresOfGulfPowerSegment"
+          ],
+          [
+            "nee:IndependentPowerInvestments"
+          ],
+          [
+            "nee:OtherCapitalExpenditures",
+            "nee:ProceedsPaymentsFromOtherCapitalExpenditures"
+          ]
+        ],
+        "not_leaves": [
+          "nee:PurchasesOfOtherSecurities",
+          "nee:PurchasesOfSecuritiesInSpecialUseFunds",
+          "nee:PaymentsToAcquireBusinessesGrossAndRelatedCapitalExpenditures"
+        ],
+        "evidence": "Four groups plus `us-gaap:PaymentsForProceedsFromNuclearFuel` ($553M, 63 of 63) from the utility regime's `any_of`. The regulated-utility group is exact: PublicUtility (41f) + FPL (18f) + FPLSegment (4f) = 63, its full filing count, with zero co-occurrence -- they are one line renamed twice. GulfPower (4f) co-occurs with FPLSegment in all 4, so the 2019-20 segment split is two legs. Other-capex (49f) and its Proceeds/Payments spelling (14f) sum to exactly 63 with zero co-occurrence. `IndependentPowerInvestments` ($16.2bn, 63f) is NEER's programme. EXCLUDED: the two securities lines (both tagged NEGATIVE, up to -$2,315M, which would also corrupt a non-negative field), and `PaymentsToAcquireBusinessesGrossAndRelatedCapitalExpenditures` (8f, $5,165M) because it MIXES a business acquisition with capex and the catalogue's definition is cash paid for productive assets. That exclusion understates NEE's 2018-19 capex by up to $5.2bn in 8 filings and is the largest known cost of any decision in this register.",
+        "verified": "2026-08-23"
+      }
+    },
+    "MAA": {
+      "capex": {
+        "leaves": [
+          [
+            "maa:PaymentsToAcquireRealEstateAndOtherAssets"
+          ],
+          [
+            "maa:RenovationsToExistingRealEstateAssets"
+          ],
+          [
+            "maa:ConstructionCapitalandOtherImprovements"
+          ]
+        ],
+        "not_leaves": [],
+        "evidence": "41 filings carry the investing node. The real-estate regime's `any_of` supplies `PaymentsForCapitalImprovements` (41 of 41, $360M FY2025), the development group (`PaymentsToAcquireInProcessResearchAndDevelopment` 19f $272M and `PaymentsToDevelopRealEstateAssets` 12f, which never co-occur) and the small `PaymentsToAcquireOtherRealEstate` (5f) and `PaymentsToAcquireOtherPropertyPlantAndEquipment` (3f) legs. `maa:PaymentsToAcquireRealEstateAndOtherAssets` (38f, $133M FY2025) is its own group and never co-occurs with `us-gaap:PaymentsToAcquireRealEstate` (3f) -- 38 + 3 = 41, so the two are era variants and the separate groups are safe only because of that measured disjointness. No `maa:` extension in the node runs in the capex direction without being a capex line, so `not_leaves` is empty.",
+        "verified": "2026-08-23"
+      }
+    },
+    "PLD": {
+      "capex": {
+        "leaves": [
+          [
+            "pld:PaymentForPropertyImprovements"
+          ],
+          [
+            "pld:PaymentsToRealEstateAndOtherDevelopment"
+          ]
+        ],
+        "not_leaves": [
+          "pld:PaymentsToInvestmentsInAndAdvancesToUnconsolidatedEntities",
+          "pld:InvestmentsInAndAdvancesToUnconsolidatedInvestees",
+          "pld:PaymentsToAcquisitionOfControllingInterestInUnconsolidatedEntitiesNet",
+          "pld:AcquisitionOfPropertiesNetOfCash",
+          "amb:RepaymentOfMortgageAndLoanReceivables"
+        ],
+        "evidence": "44 filings carry the node. `pld:PaymentForPropertyImprovements` (28f, $386M) co-occurs with `PaymentsToAcquireRealEstate` in all 28, so it is a leg. `pld:PaymentsToRealEstateAndOtherDevelopment` (1f, $3,399M) carries the same value as `us-gaap:PaymentsToDevelopRealEstateAssets` and never co-occurs with it, so it is that line renamed. EXCLUDED: the three unconsolidated-entity lines (JV investments, not capex -- up to $798M), the legacy `amb:` (pre-merger AMB Property) receivable line, and `pld:AcquisitionOfPropertiesNetOfCash` (4f) which is tagged NEGATIVE (-$1,025M) and would drive a non-negative field below zero. That last exclusion understates 4 of PLD's 2011-12 filings.",
+        "verified": "2026-08-23"
+      }
+    },
+    "VLO": {
+      "capex": {
+        "leaves": [
+          [
+            "vlo:VariableInterestEntityConsolidatedPaymentsforCapitalExpenditures"
+          ]
+        ],
+        "not_leaves": [],
+        "evidence": "VLO's only investing-node extension (4f, $26M): the capex of consolidated VIEs, which its own cash-flow statement presents as a capex line beside the parent's. Registered so route 3b is not refused in those 4 filings; without it VLO would fall back to the tag list there and lose the $26M plus whichever other leg the sum would have added.",
+        "verified": "2026-08-23"
+      }
+    },
+    "XOM": {
+      "capex": {
+        "leaves": [],
+        "not_leaves": [
+          "xom:AdditionalInvestmentsAndAdvances",
+          "xom:NetIntercompanyInvesting"
+        ],
+        "evidence": "No extension capex leaf: XOM tags its whole programme as `us-gaap:PaymentsToAcquirePropertyPlantAndEquipment` ($34.3bn, 47 of 63 filings). `xom:AdditionalInvestmentsAndAdvances` (45f, up to $5,507M, weight -1.0) is an INVESTMENT and would otherwise make route 3b refuse a sum it can compute correctly.",
+        "verified": "2026-08-23"
+      }
+    },
+    "SPG": {
+      "capex": {
+        "leaves": [],
+        "not_leaves": [
+          "spg:CashFromAcquisitionsAndCashImpactOfPropertyConsolidationAndDeconsolidation",
+          "spg:PaymentsToAcquireRealEstateAndInterestsInRealEstatePartnerships",
+          "spg:OriginationOfNotesReceivableFromRelatedPartiesNetOfRepayments"
+        ],
+        "evidence": "No extension capex leaf. SPG's own total `us-gaap:PaymentsToAcquireProductiveAssets` wins route 1 in 39 of its 60 node-carrying filings; in the other 21 route 3b reads `PaymentsForProceedsFromProductiveAssets` ($1,021M). `spg:PaymentsToAcquireRealEstateAndInterestsInRealEstatePartnerships` (10f) carries the same $3,736M as `us-gaap:PaymentsToAcquireRealEstateAndRealEstateJointVentures`: a MIXED property-and-partnership line, excluded on both spellings for the same reason MET's is.",
+        "verified": "2026-08-23"
+      }
+    },
+    "EOG": {
+      "capex": {
+        "leaves": [],
+        "not_leaves": [
+          "eog:ChangesInComponentsOfWorkingCapitalAssociatedWithInvestingActivities"
+        ],
+        "evidence": "No extension capex leaf: `PaymentsToAcquireOilAndGasPropertyAndEquipment` ($6,115M) and `PaymentsToAcquireOtherPropertyPlantAndEquipment` ($479M) are declared in all 53 node-carrying filings and co-occur in all 53, so they are legs -- sum $6,594M FY2025. The excluded extension is WORKING CAPITAL and is declared at +1.0 in 49 filings and -1.0 in 4; the 4 are what would otherwise refuse the sum.",
+        "verified": "2026-08-23"
+      }
+    },
+    "PGR": {
+      "capex": {
+        "leaves": [],
+        "not_leaves": [
+          "pgr:PaymentsToAcquireAvailableForSaleSecuritiesShortTermInvestmentsAuctionRateSecurities"
+        ],
+        "evidence": "No extension capex leaf. PGR is the insurer that DOES tag capex: `us-gaap:PaymentsToAcquirePropertyPlantAndEquipment` in 63 of 63 filings ($65-364M). The one excluded extension (1f, $632M, weight -1.0) is auction-rate securities and would refuse the sum in that single filing.",
+        "verified": "2026-08-23"
+      },
+      "depAmort": {
+        "leaves": [],
+        "not_leaves": [
+          "pgr:IncreaseDecreaseInIncomeTaxesNet"
+        ],
+        "evidence": "No extension D&A leaf: `us-gaap:Depreciation` ($313M, 62 of 63) and `us-gaap:AmortizationOfIntangibleAssets` ($72M, 35) are separate legs co-occurring in all 35, plus `us-gaap:DepreciationPremisesAndEquipment` in the one filing that uses that spelling instead. The excluded extension is an income-tax add-back (1f, $48M). PGR's -1.0 accretion contra ($124M, 63 of 63) is dropped by the weight guard.",
+        "verified": "2026-08-23"
+      }
+    },
+    "MSFT": {
+      "depAmort": {
+        "leaves": [
+          [
+            "msft:DepreciationAmortizationAndOther"
+          ]
+        ],
+        "not_leaves": [
+          "msft:IncreaseDecreaseInUnearnedRevenue",
+          "msft:IncreaseDecreaseOtherCurrentLiabilities",
+          "msft:IncreaseDecreaseOtherNoncurrentLiabilities"
+        ],
+        "evidence": "MSFT tags NO `DepreciationDepletionAndAmortization` and no `Depreciation`: its whole D&A is the single extension `msft:DepreciationAmortizationAndOther` ($38,534M FY2025), declared at +1.0 in all 45 node-carrying filings. This is the case no candidate list can ever reach, and the reason `ebitda` was null for the largest company on either roster. `msft:GainLossOnInvestmentsAndDerivativeInstruments` is declared at -1.0 and the weight guard drops it without needing a name rule; the three working-capital extensions above are at +1.0 in one filing each and do need naming.",
+        "verified": "2026-08-23"
+      }
+    },
+    "GOOGL": {
+      "depAmort": {
+        "leaves": [
+          [
+            "goog:DepreciationAndImpairmentOnDispositionOfPropertyAndEquipment",
+            "goog:DepreciationandImpairmentonDispositionofPropertyandEquipment"
+          ],
+          [
+            "goog:AmortizationAndImpairmentOfIntangibleAssets",
+            "goog:AmortizationandImpairmentofIntangibleAssets",
+            "goog:AmortizationandImpairmentofIntangibleandOtherAssets"
+          ]
+        ],
+        "not_leaves": [
+          "goog:IncreaseDecreaseInAccruedRevenueShare"
+        ],
+        "evidence": "Alphabet moved to `us-gaap:Depreciation` ($21,136M) only in its last 11 filings; the other 33 use the extensions above. Depreciation: 11 + 26 + 7 = 44, its full filing count, with zero co-occurrence -- one line under three spellings, two of them differing only in letter case. Amortisation: 26 + 5 + 2 = 33, likewise disjoint. CAVEAT ON BASIS: both extension names include IMPAIRMENT, so 33 of 44 filings carry D&A-plus-impairment while the last 11 carry depreciation alone. That is the filer's own line either way, and it is a `tag_switch_break` candidate for Phase 7 rather than something this register can resolve.",
+        "verified": "2026-08-23"
+      }
+    },
+    "SWKS": {
+      "depAmort": {
+        "leaves": [
+          [
+            "swks:AmortizationOfIntangibleAssetsIncludingInventoryStepUp",
+            "swks:AmortizationForIntangiblesAssets"
+          ]
+        ],
+        "not_leaves": [
+          "swks:ContributionOfCommonSharesToSavingsAndRetirementPlansRelatedExpense",
+          "swks:ContributionOfCommonSharesToSavingsAndRetirementPlans",
+          "swks:FairValueAdjustmentOfContingentConsideration"
+        ],
+        "evidence": "THE partial-leaf case, and the measurement that justifies guard 3. The standard leaves alone give SWKS $392M against a true ~$618M -- 37% low -- because its intangible amortisation is tagged `swks:AmortizationOfIntangibleAssetsIncludingInventoryStepUp` ($296M, 17 filings). That element, `us-gaap:AmortizationOfIntangibleAssets` (4f) and `us-gaap:OtherDepreciationAndAmortization` (13f) never co-occur, and the last two carry the same $296M: one line under three names. `us-gaap:Depreciation` ($394M) is in all 38 and comes from the field's own `any_of`.",
+        "verified": "2026-08-23"
+      }
+    },
+    "ORCL": {
+      "depAmort": {
+        "leaves": [
+          [
+            "orcl:AmortizationIntangibleAssetsInCashFlowStatement"
+          ]
+        ],
+        "not_leaves": [
+          "orcl:IncreaseDecreaseInDeferredRevenuesFromCustomerPrepaymentsWithSignificantFinancingComponent",
+          "orcl:IncreaseDecreaseInOtherDeferredRevenues",
+          "orcl:ProfitLossAttributableToParent"
+        ],
+        "evidence": "ORCL declares `us-gaap:Depreciation` ($7,623M, 43 of 43) and `us-gaap:AmortizationOfIntangibleAssets` ($3,582M, 42) as separate legs -- they co-occur in all 42 -- and never the aggregate. The one extension leaf ($2,428M, 1f) is the same amortisation line under a filing-specific name and never co-occurs with the standard one.",
+        "verified": "2026-08-23"
+      }
+    },
+    "UNP": {
+      "depAmort": {
+        "leaves": [],
+        "not_leaves": [
+          "unp:DeferredIncomeTaxesAndUnrecognizedTaxBenefits"
+        ],
+        "evidence": "No extension D&A leaf: `us-gaap:Depreciation` ($2,465M) is declared at +1.0 in all 40 node-carrying filings and is UNP's whole D&A -- a railroad has no material intangible amortisation. The excluded extension is a deferred-tax add-back (16f, $986M) and is the only thing that would refuse the sum.",
+        "verified": "2026-08-23"
+      }
+    },
+    "USB": {
+      "depAmort": {
+        "leaves": [
+          [
+            "usb:DepreciationAndAmortizationOfPremisesAndEquipment"
+          ]
+        ],
+        "not_leaves": [
+          "usb:GainLossOnSaleOfLoansHeldForSale",
+          "usb:GainOnSalesOfSecuritiesAndOtherAssetsNet",
+          "usb:GainLossOnSaleOfSecuritiesAndOtherAssets"
+        ],
+        "evidence": "USB uses the bank spelling `us-gaap:DepreciationNonproduction` ($382M, 39 of 41) plus `us-gaap:AmortizationOfIntangibleAssets` ($636M, 41 of 41) -- sum $1,018M -- and never the aggregate. Both come from the field's own `any_of`; the extension above ($229M, 1f) is the combined premises line for the one filing that uses it and never co-occurs with `DepreciationNonproduction`. The three excluded extensions are gains on sale, declared at +1.0 in one filing each.",
+        "verified": "2026-08-23"
+      }
+    },
+    "MET": {
+      "depAmort": {
+        "leaves": [],
+        "not_leaves": [
+          "met:InterestCreditedtopolicyholdersaccountbalances1"
+        ],
+        "evidence": "No extension D&A leaf: `us-gaap:OtherDepreciationAndAmortization` ($795M) is declared at +1.0 in all 16 node-carrying filings and is MET's only D&A line. The excluded extension (4f, $6,464M) is interest credited to policyholder accounts. MET also carries a -1.0 `AccretionAmortizationOfDiscountsAndPremiumsInvestments` ($1,840M) that the weight guard drops without a name rule.",
+        "verified": "2026-08-23"
+      }
+    },
+    "CSCO": {
+      "depAmort": {
+        "leaves": [
+          [
+            "csco:DepreciationAmortizationAndOther"
+          ]
+        ],
+        "not_leaves": [
+          "csco:AccountsReceivableAndFinancingReceivableCreditLossExpenseReversal"
+        ],
+        "evidence": "CSCO's cash-flow D&A line is the extension `csco:DepreciationAmortizationAndOther`, declared at +1.0 beneath the operating-activities node in 45 of 48 node-carrying filings, at $2,811M for FY2025. What route 1 was taking instead is `us-gaap:DepreciationDepletionAndAmortization` at EXACTLY $700,000,000 with `decimals=-8` in FY2023, FY2024 AND FY2025 alike -- one rounded narrative figure repeated three years, 2.3x-4x smaller, and almost certainly the PP&E-note amount. It carries NO calculation arc anywhere, which is why no statement-ROLE test can see it and why 4c.1's second half keys on DECLAREDNESS instead: an undeclared tag now loses to the filer's own declared statement lines. The single group, not two: CSCO tags one aggregate line, not separate depreciation and amortisation legs. `csco:AccountsReceivableAndFinancingReceivableCreditLossExpenseReversal` is the only other positive-weight extension in the node and is a CREDIT-LOSS provision, not D&A -- without naming it here route 3b refuses the whole sum with `partial_leaf_sum` on the FY2025 filing.",
+        "supersedes": "This entry was considered and REJECTED in Phase 4b, correctly at the time: route 1 kept winning on the 12 filings that tag the note figure, so registering the extension would have left the series carrying two bases 2.3x apart and every growth rate across the boundary wrong. 4c.1's declaredness test is what removes route 1 from the contest, so the register entry is now safe and is the second half of the same fix.",
+        "retired_periodicity_entry": "CSCO previously carried a `by_ticker_periodicity` entry declaring `depAmort` ANNUAL-ONLY, on the grounds that `us-gaap:DepreciationDepletionAndAmortization` had 36 annual facts and zero quarterly. That entry is DELETED, because it was a property of the wrong concept. Measured over the full 2011-2026 sweep, the registered extension resolves 132 valued rows -- 42 annual from 10-Ks and 90 quarterly/ytd6/ytd9 from 10-Qs -- all via `statement_leaf_sum` on `csco:DepreciationAmortizationAndOther`, in every fiscal year and on both forms. So a complete four-quarter run closes and the four derived quarters foot to CSCO's own FY2025 annual TO THE DOLLAR (789 + 761 + 626 + 635 = 2,811). There is no structural gap left to excuse, and an excuse for a gap that does not exist would silence a real coverage regression later.",
+        "verified": "2026-08-23"
+      }
+    }
+  },
+
+  "by_ticker_periodicity": {
+    "_README": {
+      "purpose": "A field the filer tags on SOME period shapes only. Distinct from an ABSENCE exception -- the value exists, it simply has no discrete quarter -- and the `by_regime` register had no key for that.",
+      "consumed_by": "Phase 7's `coverage_quarters` gate, which must read a structural periodicity gap as structural rather than as a regression."
+    },
+    "AFL": {
+      "depAmort": {
+        "shapes": [
+          "annual"
+        ],
+        "evidence": "AFL tags `us-gaap:DepreciationAndAmortization` on the ANNUAL window only -- 48 annual facts across 63 filings, ZERO quarterly, ytd6 or ytd9 -- so no discrete quarter exists and `ebitda` is annual-only for AFL. Correct behaviour, not a defect. Its operating node's only amortisation-named line is `DeferredPolicyAcquisitionCostAmortizationExpense` ($1,282M, 35 filings), which is DAC under ASC 944 and deliberately not a D&A leaf, so route 3b cannot and should not rescue the quarters.",
+        "verified": "2026-08-23"
+      }
     }
   }
 }

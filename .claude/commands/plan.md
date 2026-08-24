@@ -8,7 +8,7 @@ When this command is invoked, respond with:
 ```
 📋 Starting implementation planning (Phase 2 of FIC workflow)
 
-I'll create a detailed implementation plan based on the research findings.
+I'll create a detailed implementation plan based on the research findings and grill-me iterations.
 
 Please provide either:
 1. The path to your research document from Phase 1, or
@@ -30,15 +30,17 @@ If starting fresh:
 - Understand current implementation
 
 ### 2. **Analyze Requirements**
-- Clarify the desired outcome
+- Do A relentless interview with the user to sharpen a plan or design 
+- Grill-me with all the questions needed to ensure 100% alignment on all the details of the plan. 
 - Identify constraints and dependencies
-- Consider PEA principles:
+- Challenge the request if unclear or terms / glossary is not fully clear.
+- When building plan, consider PEA principles:
   - Simple yet powerful
   - Beginner-friendly
-  - Accurate financials
+  - Accurate data extraction & preparation for best financial quant strategies
 
 ### 3. **Design Solution**
-Break down the implementation into logical phases:
+Break down the implementation into logical phases after the grill-me phase:
 - Each phase should be independently testable
 - Phases should build on each other
 - Include verification steps for each phase

@@ -40,14 +40,10 @@ from functools import cache
 from pathlib import Path
 from typing import Any, Literal
 
-#: Subdirectory of the config directory holding the three files. TODO(rebuild Phase 3): move
-#: these four literals to `src/constants/constants.py` alongside the other `*_FILENAME`
-#: entries, as part of the batched risk-zone diff -- the plan directs it there and
-#: `constants/` needs approval.
-CATALOGUE_SUBDIR = "fundamentals"
-KPIS_FILENAME = "fundamentals_kpis.json"
-REGIMES_FILENAME = "fundamentals_regimes.json"
-EXCEPTIONS_FILENAME = "fundamentals_exceptions.json"
+from src.constants.constants import (
+    FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_EXCEPTIONS_FILENAME,
+    FUNDAMENTALS_KPIS_FILENAME, FUNDAMENTALS_REGIMES_FILENAME,
+)
 
 #: Default config directory, matching the `-c ./configs` CLI default.
 DEFAULT_CONFIG_DIR = "./configs"
@@ -94,7 +90,17 @@ class FieldSpec:
 
     @property
     def is_extracted(self) -> bool:
-        """Is this field resolved against XBRL concepts at all, or computed from others?"""
+        """Is this field resolved against XBRL CONCEPTS at all?
+
+        False for a field computed from others, and false for one the catalogue sources
+        somewhere else entirely: `employees` declares `"source": "text:10-K"` and is parsed
+        out of the 10-K narrative by `fundamentals_employees.py`, so it has no
+        `fallback_concepts` and can never resolve here. Left in, it resolved 0 times on all
+        52 swept tickers and emitted one reason-coded row per filing -- ~1,600 rows a sweep
+        asserting that a field the XBRL walk was never going to find was not found.
+        """
+        if str(self.raw.get("source", "")).startswith("text"):
+            return False
         return self.kind in EXTRACTED_KINDS
 
     @property
@@ -160,6 +166,8 @@ class Catalogue:
     regimes: dict[str, Any]
     regime_exceptions: dict[str, Any]
     force_regime_by_sub_industry: dict[str, str]
+    ticker_exceptions: dict[str, Any]
+    ticker_periodicity: dict[str, Any]
 
     @property
     def all_column_names(self) -> set[str]:
@@ -214,15 +222,80 @@ class Catalogue:
 
         Returns None when nothing matches, so the caller applies the role-URI result or the
         `industrial` default rather than being handed a silent guess."""
-        if not sub_industry:
-            return None
-        forced = self.force_regime_by_sub_industry.get(sub_industry)
+        return self.regime_for_gics(sub_industry=sub_industry)
+
+    def regime_for_gics(self, sector: str | None = None, industry_group: str | None = None,
+                        sub_industry: str | None = None) -> str | None:
+        """The GICS tiebreak, most-specific level first, INCLUDING the forced overrides.
+
+        The regimes config declares its GICS membership at whichever level is the natural
+        one: `bank` and `insurer` enumerate sub-industries, `real_estate` claims a whole
+        industry group, `utility` and `energy` claim a whole sector. Reading only
+        `sub_industry` -- as this accessor originally did -- silently returned None for
+        every energy, utility and REIT ticker, which then fell through to the `industrial`
+        default and read a utility's income statement against Rule 5-03.
+
+        Order is specificity, not convenience: a forced sub-industry override beats an
+        explicit sub-industry, which beats an industry group, which beats a sector. That
+        is what lets Telecom Tower / Data Center / Timber REITs be pulled OUT of the
+        `real_estate` industry-group claim -- they file like industrials (AMT reports
+        `AssetsCurrent`, `OperatingIncomeLoss` and PP&E capex).
+        """
+        forced = self.force_regime_by_sub_industry.get(sub_industry or "")
         if forced:
             return forced
-        for name, spec in self.regimes.items():
-            if sub_industry in spec.get("gics", {}).get("sub_industry", []):
-                return name
+        for level, value in (("sub_industry", sub_industry),
+                             ("industry_group", industry_group),
+                             ("sector", sector)):
+            if not value:
+                continue
+            for name, spec in self.regimes.items():
+                declared = spec.get("gics", {}).get(level, [])
+                if value in (declared if isinstance(declared, list) else [declared]):
+                    return name
         return None
+
+    def regime_for_role_uris(self, role_uris: list[str]) -> str | None:
+        """The regime implied by the STATEMENT ROLES the filer actually used.
+
+        Checked before GICS because it is evidence from the filing itself: FASB's role URIs
+        name the template (`sfp-dbo` 108000 = deposit-based, `sfp-ibo` 108200 =
+        insurance-based, `sfp-sbo` 112000 = securities-based), so a filer shipping a
+        deposit-based balance sheet IS a bank however GICS classifies it. That is what
+        makes routing `Asset Management & Custody Banks` to Article 5 safe: BNY and STT
+        genuinely take deposits, and if they ship a deposit-based role this overrides the
+        GICS default rather than being overridden by it.
+
+        Returns None -- not the default -- when no role matches, which is the common case:
+        most filers use their own role URIs (`http://www.exxonmobil.com/role/...`) rather
+        than FASB's, so the GICS tiebreak carries most of the universe.
+        """
+        blob = " ".join(role_uris).lower()
+        for name, spec in self.regimes.items():
+            for pattern in spec.get("role_patterns", []):
+                if str(pattern).lower() in blob:
+                    return name
+        return None
+
+    def regime_for(self, gics: dict[str, str | None] | None,
+                   role_uris: list[str]) -> str | None:
+        """The filing's regime: role URI first, GICS as tiebreak, `industrial` as the
+        Article 5 default -- but ONLY for a ticker that has a GICS row at all.
+
+        The distinction matters and is not cosmetic. A ticker IN the universe whose
+        sub-industry matches no regime is an ordinary Article 5 filer, and Reg S-X 5-01
+        makes Article 5 the rule with the other regimes its enumerated exceptions, so
+        defaulting is correct. A ticker with NO universe row (AVB, EA and EQR have facts
+        but no `sp500_tickers` row) is *unclassified*, and defaulting it would add
+        unclassified names to the 340-ticker industrial denominator and shift every
+        industrial rate in the expected-absence register. Skip, never default.
+        """
+        from_role = self.regime_for_role_uris(role_uris)
+        if from_role:
+            return from_role
+        if not gics:
+            return None
+        return self.regime_for_gics(**gics) or self.default_regime()
 
     def default_regime(self) -> str:
         """The Article 5 general case. Reg S-X makes it the RULE and the other regimes its
@@ -240,6 +313,53 @@ class Catalogue:
         register becomes a way to silence coverage checks."""
         block = self.regime_exceptions.get(regime, {}).get(field)
         return bool(block.get("expected_absent", False)) if isinstance(block, dict) else False
+
+    def filer_leaves(self, ticker: str | None,
+                     field: str) -> tuple[list[list[str]], frozenset[str]]:
+        """One filer's DECLARED company-extension leaves for a field, as
+        `(leaf_groups, not_leaves)`.
+
+        The whole of §4b.4's conclusion in one accessor: **there is no structural rule that
+        identifies a company-extension capex or D&A leaf.** Every candidate rule was
+        measured and refuted -- "a negative-weight extension child of the investing node"
+        admits `apa:EquityMethodInvestmentContribution` ($501M, an investment),
+        `nee:PurchasesOfSecuritiesInSpecialUseFunds` ($1.4-2.6bn, securities),
+        `dte:ConsolidationOfVIES` and `eog:ChangesInComponentsOfWorkingCapital...`; and the
+        inverse framing fails on the same rows. So an extension leaf is either DECLARED
+        here, per filer, with its evidence, or the filer stays reason-coded. There is no
+        third answer.
+
+        `leaf_groups` has exactly the shape of `roll_up.any_of` (alternatives within a
+        group, a sum across groups) and is APPENDED to it -- DTE needs both, because its
+        `PlantAndEquipmentExpenditures{Utility,NonUtility}` pair and its
+        `PaymentsToAcquirePropertyPlantAndEquipment{Utility,NonUtility}` pair are era
+        variants of each other.
+
+        `not_leaves` is the other half and is what makes the register a CLOSED statement:
+        it names the extensions in the same node that are NOT this field, so route 3b's
+        partial-leaf guard can tell "classified as excluded" from "never looked at". Listing
+        only the leaves would leave the guard refusing every filer that parks any unrelated
+        extension in the node.
+        """
+        block = self.ticker_exceptions.get(ticker or "", {}).get(field)
+        if not isinstance(block, dict):
+            return [], frozenset()
+        return ([list(g) for g in block.get("leaves", [])],
+                frozenset(block.get("not_leaves", [])))
+
+    def periodicity_shapes(self, ticker: str | None, field: str) -> list[str] | None:
+        """The period SHAPES a filer tags this field on, where that is structurally
+        limited. None where nothing is declared, which is the common case.
+
+        A separate register from `filer_leaves` because it answers a different question:
+        the value EXISTS, it simply has no discrete quarter. AFL and CSCO tag
+        `DepreciationDepletionAndAmortization` on the annual window only -- 48 and 36
+        annual facts, zero quarterly -- so `ebitda` is annual-only for them and Phase 7's
+        `coverage_quarters` gate must read that as structural, not as a regression. The
+        `by_regime` register has no key for a periodicity gap, only for an absence.
+        """
+        block = self.ticker_periodicity.get(ticker or "", {}).get(field)
+        return list(block.get("shapes", [])) if isinstance(block, dict) else None
 
     def measured_absent_rate(self, regime: str, field: str) -> float | None:
         """The share of the regime's tickers with no fact for this field, as measured on
@@ -286,10 +406,10 @@ def load_catalogue(config_dir: str = DEFAULT_CONFIG_DIR) -> Catalogue:
     Validation is deliberately strict and happens HERE rather than in a test, so a
     malformed contract fails at the first call in a nightly run instead of producing a
     quietly wrong number thousands of filings later."""
-    root = Path(config_dir) / CATALOGUE_SUBDIR
-    kpis_blob = _read_json(root, KPIS_FILENAME)
-    regimes_blob = _read_json(root, REGIMES_FILENAME)
-    exceptions_blob = _read_json(root, EXCEPTIONS_FILENAME)
+    root = Path(config_dir) / FUNDAMENTALS_CATALOGUE_SUBDIR
+    kpis_blob = _read_json(root, FUNDAMENTALS_KPIS_FILENAME)
+    regimes_blob = _read_json(root, FUNDAMENTALS_REGIMES_FILENAME)
+    exceptions_blob = _read_json(root, FUNDAMENTALS_EXCEPTIONS_FILENAME)
 
     kpis = _data_items(kpis_blob)
     fields = {name: _build_field(name, entry) for name, entry in kpis.items()}
@@ -317,12 +437,44 @@ def load_catalogue(config_dir: str = DEFAULT_CONFIG_DIR) -> Catalogue:
         for regime, block in _data_items(exceptions_blob.get("by_regime", {})).items()
     }
 
+    ticker_exceptions = {
+        ticker: _data_items(block)
+        for ticker, block in _data_items(exceptions_blob.get("by_ticker", {})).items()
+    }
+    periodicity = {
+        ticker: _data_items(block)
+        for ticker, block in
+        _data_items(exceptions_blob.get("by_ticker_periodicity", {})).items()
+    }
+
     # A field named in the exception register but absent from the catalogue is a typo that
     # would otherwise silently excuse nothing at all.
     for regime, block in regime_exceptions.items():
         unknown = sorted(set(block) - set(fields))
         if unknown:
             raise ValueError(f"exceptions[{regime}] names unknown field(s) {unknown}")
+    for label, register in (("by_ticker", ticker_exceptions),
+                            ("by_ticker_periodicity", periodicity)):
+        for ticker, block in register.items():
+            unknown = sorted(set(block) - set(fields))
+            if unknown:
+                raise ValueError(f"exceptions.{label}[{ticker}] names unknown field(s) "
+                                 f"{unknown}")
+        # A declared leaf that is ALSO declared not-a-leaf is a contradiction the resolver
+        # would silently resolve in favour of the leaf. Fail loudly instead.
+        for field, entry in block.items():
+            if not isinstance(entry, dict):
+                continue
+            leaves = {c for g in entry.get("leaves", []) for c in g}
+            both = sorted(leaves & set(entry.get("not_leaves", [])))
+            if both:
+                raise ValueError(f"exceptions.by_ticker[{ticker}][{field}]: {both} is "
+                                 "declared both a leaf and not a leaf")
+            if leaves and "evidence" not in entry:
+                raise ValueError(
+                    f"exceptions.by_ticker[{ticker}][{field}]: declares extension leaves "
+                    "with no `evidence` key. A per-filer override with no written evidence "
+                    "is exactly the guess this register exists to replace.")
 
     # Likewise a regime-keyed override in the KPI catalogue must name a real regime.
     known_regimes = set(regimes)
@@ -333,4 +485,6 @@ def load_catalogue(config_dir: str = DEFAULT_CONFIG_DIR) -> Catalogue:
 
     return Catalogue(fields=fields, derived_columns=derived_columns, regimes=regimes,
                      regime_exceptions=regime_exceptions,
-                     force_regime_by_sub_industry=force)
+                     force_regime_by_sub_industry=force,
+                     ticker_exceptions=ticker_exceptions,
+                     ticker_periodicity=periodicity)

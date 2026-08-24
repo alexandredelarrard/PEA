@@ -20,7 +20,7 @@ OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI,
 
 ## Hard rules (always apply)
 
-- Always use `rtk` in all your bash, grep, git scripts to, save tokens.
+- Always use `rtk` in all your bash, grep, git scripts to, save tokens: `rtk grep xxx && rtk read xxx`.
 - All tabular I/O via `self._context.store`. No `sqlalchemy` / `pd.read_sql` / `to_sql` /
   `store.engine` outside `src/data_store/` — a test enforces this.
 - Never read a large table unprojected: `columns=`/`project=True` **and** `where=`/`since=`;
@@ -65,6 +65,6 @@ utils/ context.py constants/ dags/ cli.py   |   repo: configs/ docs/ tests/ app/
 ```bash
 PY="$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3.13/Scripts/python.exe"
 "$PY" -m pytest tests/path/test.py::test_fn -v -s      # -s shows the sanity print
-"$PY" -m src <package> <command> [-c ./configs] [-t AAPL] [-F]
+rtk "$PY" -m src <package> <command> [-c ./configs] [-t AAPL] [-F]
 MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea -c "…"   # DB, no password
 ```

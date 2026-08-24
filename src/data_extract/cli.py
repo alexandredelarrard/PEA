@@ -31,6 +31,7 @@ from src.data_extract.utils.prices.fetch_superinvestors import build_superinvest
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 # --- fundamentals ----------------------------------------------------------- #
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
@@ -144,9 +145,21 @@ def superinvestors(config_path: str) -> None:
 # --------------------------------------------------------------------------- #
 # Fundamentals                                                                  #
 # --------------------------------------------------------------------------- #
-# NOTE: the `fundamentals` command is absent while the fundamentals stack is being
-# rebuilt (reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md).
-# Phase 5 re-adds it over `fetch_fundamentals_sec` + `build_history`.
+# NOTE: the combined `fundamentals` command (facts THEN history) is still absent while the
+# stack is rebuilt (reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md).
+# Phase 3 landed the facts layer and exposes it on its own below; Phase 5 adds the history
+# build and re-joins the two under one command.
+@cli.command(name="fundamentals-facts",
+             help="SEC per-filing XBRL -> fundamentals_facts, resolved from each filer's "
+                  "own calculation linkbase. As-filed only; append-only.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+def fundamentals_facts(config_path: str, tickers: str | None) -> None:
+    config, context = _ctx(config_path)
+    fetch_fundamentals_sec(context, tickers=_tickers(context, tickers),
+                           years_history=int(config.data_extract.years_history))
+
+
 @cli.command(help="Earnings surprises -> historical forward P/E.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

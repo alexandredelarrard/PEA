@@ -1,40 +1,40 @@
 
-## Ask / request - research best way to extract fundamentals
+You are the best SEC filling expert also quant and python beast. 
+Your role is to come up with best research plan to build the best, most accurate and fast running validator on SEC fundamentals extracted and compiled in PEA codebase.
 
-My goal is to have a step, extracting all key financial fields from the SEC (revenue, income, assets, shareoutstanding, etc.) very consistently for all tickers in a ticker list (sp500 for now, but soon russell 1000).
+## Ask / request - research best way to validate extracted fields / computed fundamentals
+
+My goal is to have a step, validating all key financial fields from the SEC (revenue, income, assets, shareoutstanding, etc.) very consistently for all tickers in a ticker list (sp500 for now, but soon russell 1000), for all quarters.
+
+I am doing all this data extract check to build best possible quant models, because I think my edge vs quant large firms is that I own end to end from data extraction, aggregation, model, etc. 
+So I need you to create the most bullet proof strategy to validate extraction fundamentals are rigorous.
 
 Consistence means that each financial KPI is :
 - comparable quarter to quarter amongst the sam ticker 
 - is equivalent between tickers (same information) 
-- Null value if the value is not existing at all 
-- Same accounting definitions
+- Null value if the value is not existing at all or can be explained clearly (expexted)
+- time series makes sense, no strange outliers due to wrong definition or modification in accounting filling standard from the ticker or the norm
 
-For context, they will be used down the road to create a zscore or a rank vs peers, so need to have same scale, same information. 
+Several research and plan has been conducted to build a strong extraction scheme from SEC leveraging edgartools. 
+- The build of the fundamentals extraction is done up to phase 3 from the plan (cf below), missing the Q4 deduction to have a robust TTM extraction (expected)
 
-Each KPI to be extracted will have to pass 3 checks : 
-- extracted for all quarters of same ticker (until today) 
-- No weird kicks due to change of definition or field tag modified 
-- Deduction of Q4 from Y -(Q1+Q2+Q3) should align with previous quarter -> avoid kincks. 
-
-I already spent some time to have a strong implementation of edgartools financial KPIs but bumped into lots of issues: 
-- code was huge and difficult to understand 
-- when looking at example of tickers and KPI, the time series was wront (missing quarters, value off, definition not homogeneous over time because ticker filled it differently over time).
-- I started with a too large list of KPIs.
-
-Before doing any implementation or plan, here is what I need you to do.
+I want you to build a FundamentalsValidator class that : 
+- ensure all quarters expected are extracted (quarterly, yearly)
+- create a tool agent will use to assess that a list of tickers and list of fundamentals have all the values right, accurate and aligned between tickers. 
 
 ## What the research needs to do
 
-- Review the first research result @2026-08-21-fundamentals-extraction.md -> conclusion of the specs/2026-08-21_research_how to extract_Edgartools.md request 
-- Review the first 2 parts of the plan @2026-08-21-fundamentals-rebuild-plan.md, implemented so far. 
-- Review and research17 of 53 fields carry authority: "UNVERIFIED". The research established verbatim FASB/Reg S-X/ASC authority for what it investigated (revenue, debt, capex, D&A, cash, R&D, the required-vs-elective captions) and never touched the ordinary Tier-2/3 lines. I will need you to produce a new research .md answering those questions pending. 
-- Research the reason why the following: 
-3. The absence register is measured per regime, not per GICS sector — the sector matrix couldn't be translated since "Financials" spans four regimes. Re-measured off the 7.8M facts: Assets present for 441/441 in every regime; bank/insurer 100% absent for currentAssets/currentLiabilities/inventory/R&D (exactly as 17 CFR 210.1-02(bb)(1)(i) predicts); but utility/energy 0% absent for currentAssets — they do file classified balance sheets, so they must not be grouped with banks for that exception. And bank.capex is .43 absent, not ~1.0 — the plan's "not reliably reconstructible" is about intermittency, which I kept excused with a written override because a mixed TTM makes FCF wrong rather than missing.
-- Give all the elements to refine / enrich the created jsons, and verify first information given there is correct : 
-    - fundamentals_kpis 
-    - fundamentals_regimes
-    - fundamentals_exceptions 
-- Create a research .md file answering all the comments, that implementation will be able to leverage from. (I will skip the plan phase since It is mostly information retreival to have best KPI construction).
+- Start by reading the 3 reports @reports/research/financial-data giving all the context and findings regarding how the data is extracted and limitations seen along the way 
+- Then read the @reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md -> which is the plan currently built (end of step 3 right now)
+- Then check in the internet what are best strategies to put in place to verify extracted values are meaningful : 
+    - no missing value between quarters
+    - the tickers value's are consistent over time, quarter to quarter, seen as TTM 
+    - the fundamentals are comparable between tickers of the same sector, enabling strong quant strategy down the road 
+- Look at how best quant and data sec fundamentals provider structurally and automatically check millions of value's consistency, over time, ticker universe and fundamental space 
+- Read the code regarding fundamentals/ and tests/ to check what is already in place
+- Then come up with the key findings such that the plan phase (next phase) can propose a very strong way to build the validation tool (to be called valiudation_toolkit.py) that any agent will call to double check the numbers are fully correct.
+
+**Garbage in = garbage out** in a model, you need to fully think of how to identify the data extracted is robust, after running function fetch_fundamentals_sec on tickers.
 
 
 ## What not to do

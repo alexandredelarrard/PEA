@@ -199,6 +199,35 @@ and `POSTGRES_HOST=db` (the compose service name, not `localhost`).
 
 Pools created by `airflow-init`: `sec_bulk` 2, `sec_api` 2, `scrape` 2, `aggregate` 3.
 
+## Auditing fundamentals resolution — the 52-ticker sweep
+
+Two committed instruments, because every acceptance number in the rebuild's Phases 3b, 4 and 4b
+came from scratchpad scripts that no longer exist. The sweep pays the network cost once; the
+report is offline and re-derivable in seconds.
+
+```bash
+"$PY" scripts/sweep_fundamentals_resolution.py --roster both --workers 4 --limit 4
+"$PY" scripts/report_fundamentals_sweep.py [--roster in_sample|out_of_sample|both]
+```
+
+`--roster` names a list in `configs/fundamentals/fundamentals_rosters.json`. One network pass
+resolves each filing **twice** — with and without 4c.1's `prefer_structure` guard — off a single
+`filing.xbrl()`, which is what makes a before/after acceptance one sweep rather than two. Ledgers
+land as one parquet per ticker under `data/fundamentals_sweep/` (gitignored), so a run resumes;
+`--refresh` re-sweeps tickers that are already cached.
+
+- **`--limit N` in a shell loop is mandatory, not a convenience.** edgartools never releases its
+  per-filing caches inside a process: an all-52 single run reached **14.7 GB RSS**. One process
+  per 4 tickers keeps it under ~4 GB, and a killed batch costs at most 4 tickers.
+- **Run one driver at a time.** `to_parquet` is not atomic, so two drivers writing the same
+  ticker corrupt the ledger rather than merely wasting CPU. Stopping a shell task leaves the
+  loop's python children alive — kill them **by PID** (never by image name; that has destroyed a
+  multi-hour SEC download here before) and confirm none remain before restarting.
+- Wall clock: ~5-9 min per batch of 4 at `--workers 4`, so ~60-90 min for all 52. It is
+  CPU-bound in XBRL parsing, not network-bound, so more workers than cores does not help.
+- The sweep honours `fundamentals_cik_cutover.json`. Without that it would walk only the current
+  registrant and measure APA at 22 filings instead of 65 — a pipeline nobody runs.
+
 ## Finishing a task — the definition-of-done report
 
 Contract and rationale: [definition_of_done.md](definition_of_done.md). Pick the generator that

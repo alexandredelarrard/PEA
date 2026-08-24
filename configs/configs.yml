@@ -14,3 +14,38 @@ data_extract:
   # Self-heal cadence for the EDGAR filing-listing fetchers (13D, 8-K, DEF 14A
   # edgar + LLM, fundamentals edgartools): each uses the extraction manifest's
   manifest_full_rescan_days: 30
+  # Thread-pool width for the fundamentals per-filing XBRL walk. Its own knob rather than
+  # parallel_fetch's DEFAULT_WORKERS because this is the only fetcher whose from-scratch
+  # backfill is measured in HOURS (~490 tickers x ~60 filings ~= 30k filing.xbrl() calls at
+  # 1.4-5.8s each). edgartools' shared client already caps ~9 req/sec globally, so raising
+  # this past ~8 buys nothing; lower it when running alongside another EDGAR pull.
+  fundamentals_workers: 8
+  # Guards on a DERIVED discrete quarter (`fundamentals/periods.py`). Both are calibrated
+  # against confirmed as-filed quarters, not preference -- loosening either lets a wrong
+  # number through, tightening either nulls a real one.
+  fundamentals_periods:
+    # How far a derived quarter whose sign matches NONE of its siblings may exceed the
+    # largest quarter already observed that year, for a SIGNED field. Raised from 1.0 after
+    # the 1.0 bar was measured rejecting real, as-filed quarters at 1.03-2.6x: Allstate
+    # FY2023 (1.10x), Gilead FY2017 (1.26x, the TCJA writedown), S&P Global FY2014 (2.41x,
+    # the $1.6B legal settlement), Genuine Parts 2025 (2.39x), Zimmer Biomet 2018 (2.59x),
+    # Johnson Controls 2012 (2.59x), J.M. Smucker 2023 (1.99x). A charge-driven quarter
+    # legitimately dwarfs the run-rate, so magnitude alone cannot tell it from a data
+    # error; the `non_negative` SIGN test does the real work and this only backstops the
+    # genuinely signed fields.
+    max_opposite_sign_q4_ratio: 3.0
+    # Ceiling on |annual| / (the periods' own annualised scale) before an annual fact that
+    # resolved a DIFFERENT concept than the periods it is differenced against is treated as
+    # an unrelated line. Only an UPPER bound: a year of offsetting quarters legitimately
+    # foots to a small annual figure, and an annual that is too SMALL because it is the
+    # wrong concept yields a negative quarter the sign test already rejects.
+    q4_tag_mismatch_fy_max: 2.0
+    # The same test applied to a weighted-average SHARE COUNT, where it is two-sided and
+    # must be much tighter. A share count moves a few percent a year organically, so
+    # anything near a whole multiple is a corporate action that rebased every prior figure.
+    # 2.0 was measured to be exactly the wrong bound: a 2-for-1 split -- the commonest
+    # ratio there is -- lands at 1.996-2.003 and half of them slipped through, putting
+    # KR's fiscal-2013 Q4 at 2.74bn shares against a true 511M and EOG's fiscal-2012 at
+    # 1.35bn against 269M. 1.5 clears every real annual move on both rosters (the largest
+    # organic one is under 1.15) and rejects every split.
+    share_basis_max_ratio: 1.5

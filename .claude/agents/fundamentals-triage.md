@@ -187,26 +187,95 @@ Agent(subagent_type="fundamentals-validate",
 A different scope produces an incomparable `run_id` and the delta is meaningless — the tooling
 will refuse to compare them, and it is right to.
 
-**The delta is the proof. Report it as a number: `14 → 0`. A fix with no measured drop is not
-a fix.**
+**The delta is the proof. Report it as a number: `55 → 4`, on QUEUE severities.** It does not
+have to reach zero — a cluster settles when the residue is `info` or explicitly waived. But a
+fix with no measured drop **cannot settle the cluster**, however sound the reasoning: record it
+if it is real, and say plainly that it closed nothing.
 
 ## Step 8 — record the outcome
 
-- **`fixed`** — requires a commit AND a regression test. Nothing else to write: the ledger's
-  row-count drop IS the record. Nothing is subtracted from the ledger any more, so a smaller
-  count between two runs of one scope has exactly one cause.
+**A `fixed` outcome is NOT complete until it is recorded.** The row-count drop is not the
+record and never was: it proves *something* changed, not what you did, at which layer, against
+which filings, or whether the rows that survived were assessed. Cluster `1c9a517eaa47` was
+fixed on 2026-08-25 and its only trace anywhere was a commit sha — that is the gap this step
+now closes.
+
+- **`fixed`** — requires a commit, a regression test, **and a `fix record` row**:
+
+```bash
+rtk "$PY" -m src validate fix record <cluster_id> \
+    --layer extraction \
+    --root-cause "route 1 took a total the filer declares beside its own leg" \
+    --evidence '{"accessions": [...], "concepts": {...}, "figures": {...}}' \
+    --commit <sha> --test tests/<path>_<cluster_id>.py \
+    --waive "peer_ratio:2 findings, 8.3% capex/revenue vs 3.5% peer median"
+```
+
+  **You supply only what no machine can know.** Both run ids, the ticker, the field, the scope
+  hash and all four before/after counts are DERIVED from the ledger. If the derived runs are
+  not the pair you measured against, say so — do not paper over it with `--after`/`--before`.
+
+  `--layer` is closed and describes what your EDIT DID, not which file it lives in:
+  `check` (the check was wrong) · `catalogue` (the field spec was wrong) · `extraction` (any
+  code that PRODUCES a value — `xbrl_linkbase`, `build_history`, `periods`) · `rows` (the code
+  was already right and the stored data was stale).
+
+  `--evidence` is **JSON, never prose** — prose goes in `--root-cause`. Required keys vary by
+  layer: `accessions` for extraction/rows/catalogue; `examined` + `benign` for a `check` fix,
+  which has no filing at fault and cites the false-positive population it was measured against.
+
+  The CLI enforces every invariant, so **an unproven fix cannot be recorded**: it refuses an
+  unknown layer, unparseable evidence, missing evidence keys, a commit `git rev-parse` cannot
+  resolve, a `--test` that is not on disk, two runs whose `scope_hash` differs, and a `--waive`
+  for a check that is not firing. If it refuses you, it is right — read the message, it names
+  the rule.
+
+  A fix that closed **no** queue finding still records, with a loud warning, and **cannot
+  settle the cluster**. That path exists for a real case: correcting a wrong-but-plausible
+  value where no check was firing. Permissive to record, strict to settle.
+
+- **Benign residue is waived PER CHECK, in the same call.** A cluster does not have to reach
+  zero to settle. `--waive "check:note"` is repeatable, the note must carry a **NUMBER**, and
+  each waiver expires against *its own* population — a `peer_ratio` waiver reopens when
+  `peer_ratio` grows, not when some unrelated check fires. The fix row and its waivers land
+  together or not at all: recording a fix and tolerating its residue is ONE decision.
+
+  Do **not** waive `info` findings. They never enter the queue and never block a settlement;
+  waiving one is paperwork, and if a settlement seems to need it, report that instead — it
+  means the queue-severity filter is wrong.
+
 - **`wontfix`** — real, known, not worth repairing. Requires a **QUANTIFIED cost** — a number,
   not an adjective. NEE's $5.2bn capex understatement is a defensible wontfix only because the
   number is written down:
 
 ```bash
-rtk "$PY" -m src validate status set <cluster_id> --note "<quantified evidence + accession>"
+rtk "$PY" -m src validate status set <cluster_id> [--check peer_ratio] --note "<quantified evidence + accession>"
 ```
 
-  It captures `findings_at_decision` automatically, **auto-reopens if the cluster grows**, and
-  appears in every future report's footer. The CLI refuses a note with no numeral in it.
+  It captures `findings_at_decision` automatically, **auto-reopens if that population grows**,
+  and appears in every future report's footer. The CLI refuses a note with no numeral in it.
   **Never `wontfix` a wide cluster** — a `likely-check-or-catalogue` family means the spec is
   wrong and the fix is the spec.
+
+### ⚠ Waiving everything does NOT settle a cluster
+
+Settlement requires a **fix row that measurably reduced the queue**, at the same scope. Without
+that rule, waiving each check in turn manufactures a SETTLED with nobody having fixed anything
+— which is the deleted suppression register, reassembled from parts.
+
+So a cluster you could not fix reads **`wontfix`: tolerated, not solved**, and the report says
+exactly that. It is a different, visible outcome from `fixed`, and reporting it honestly is the
+job. Do not reach for waivers to make a cluster look closed.
+
+Read back what you wrote before you close:
+
+```bash
+rtk "$PY" -m src validate fix show <cluster_id>
+```
+
+Nothing you write here ever removes a row from `fundamentals_check`. Every waived finding is
+still written, still counted and still fires; a waiver is applied when the report is RENDERED.
+That is what keeps a row-count drop usable as proof, and it is not negotiable.
 
 There is no JSON register any more: `configs/fundamentals/fundamentals_check.json` and
 `check_register.py` are deleted, and `accepted` / `config_proposed` / `regression_swept` are
@@ -218,6 +287,7 @@ evidence lives in your turn's report and in the regression test.
 A `fixed` outcome must leave a named test in `tests/` pinning the case forever. Mandatory, not
 a nicety: it is the acceptance corpus and it grows with every fix. **Name the file with the
 `cluster_id`** so the test traces back to the cluster it closed.
+
 
 ---
 
@@ -244,3 +314,16 @@ State: the `cluster_id` and what it was; **how many checks agreed**; whether you
 check and what you concluded; what you read and in which accession; the outcome with its
 evidence; what you changed; how you rebuilt; **the measured delta**; and the regression test you
 added. If you proposed a `configs/` diff, show it and say plainly that the cluster remains OPEN.
+
+For a `fixed` outcome, also state — because a turn that omits these has not closed the loop:
+
+- the **`fix record` command you ran**, and the layer you chose with one line on why;
+- the **derived run pair and counts** the CLI reported back (`findings X → Y, queue A → B`),
+  and confirmation they are the runs you actually measured against;
+- **every `--waive`**, with the quantified note, and what is left unwaived;
+- what `validate fix show <cluster_id>` prints — the read-back is the proof the record is
+  usable, not just present.
+
+If the fix closed no queue findings, say so plainly and say the cluster is not settled. If you
+waived residue but recorded no fix, the outcome is **`wontfix`, not `fixed`** — report it that
+way.

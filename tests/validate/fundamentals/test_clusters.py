@@ -19,9 +19,30 @@ import pandas as pd
 import pytest
 
 from src.validate.fundamentals.clusters import (
-    LIKELY_CHECK, LIKELY_FILER, OPEN, REOPENED, SEVERITY_WEIGHTS, TIER_WEIGHTS, WONTFIX,
-    build_clusters, build_families, corroboration, derive_status, settled_clusters)
+    CLUSTER_WIDE, LIKELY_CHECK, LIKELY_FILER, OPEN, REOPENED, SEVERITY_WEIGHTS,
+    TIER_WEIGHTS, WONTFIX, build_clusters, build_families, corroboration, derive_status,
+    settled_clusters)
 from src.validate.fundamentals.finding import cluster_id
+
+
+class _Fix:
+    """The minimum of a `FixRecord` that `settled_clusters` reads.
+
+    A stand-in rather than the real dataclass: `clusters.py` deliberately knows nothing about
+    the ledger layer, and a test that imported `FixRecord` here would quietly assert a
+    coupling the module does not have.
+    """
+
+    def __init__(self, queued_before: int = 55, queued_after: int = 4) -> None:
+        self.layer, self.root_cause = "extraction", "route 1 took a sibling total"
+        self.commit_sha, self.test_path = "2fb6ef2", "tests/data_extract/test_x.py"
+        self.queued_before, self.queued_after = queued_before, queued_after
+
+
+def _waiver(check: str, at_decision: int, note: str = "measured at 8.3% vs 3.5% peer median"):
+    """One `fundamentals_check_status` row as `status_map` hands it to the cluster build."""
+    return {check: {"cluster_id": "c", "check_name": check, "status": WONTFIX,
+                    "note": note, "findings_at_decision": at_decision}}
 
 
 def _rows(*specs) -> pd.DataFrame:
@@ -174,8 +195,7 @@ def test_a_wide_family_reads_as_our_spec_and_a_narrow_one_as_the_filer() -> None
 
 def test_a_wontfix_reopens_when_the_cluster_GROWS() -> None:
     """D8: a decision cannot outlive the evidence it was made on."""
-    decided = {"status": WONTFIX, "note": "measured at $5.2bn; 3 periods",
-               "findings_at_decision": 3}
+    decided = _waiver(CLUSTER_WIDE, 3, "measured at $5.2bn; 3 periods")
     same, _n, _d = derive_status("abc", 3, decided)
     grown, _n2, _d2 = derive_status("abc", 4, decided)
     none_yet, _n3, _d3 = derive_status("abc", 9, None)
@@ -189,18 +209,180 @@ def test_a_wontfix_reopens_when_the_cluster_GROWS() -> None:
     assert same == WONTFIX and grown == REOPENED and none_yet == OPEN
 
 
+def test_a_PER_CHECK_waiver_expires_against_its_OWN_population() -> None:
+    """The ripple of the widened key, and the reason it is worth having.
+
+    Measured against the CLUSTER total a `peer_ratio` waiver would reopen every time an
+    unrelated check fired once more -- which is not what anybody decided.
+    """
+    waived = _waiver("peer_ratio", 2)
+    counts_same = {"peer_ratio": 2, "series_shape": 1}
+    counts_other_grew = {"peer_ratio": 2, "series_shape": 40}
+    counts_own_grew = {"peer_ratio": 3, "series_shape": 1}
+
+    still, _n, _d = derive_status("c", 3, waived, counts_same)
+    unrelated, _n2, _d2 = derive_status("c", 42, waived, counts_other_grew, unwaived_queue=40)
+    own, _n3, _d3 = derive_status("c", 4, waived, counts_own_grew, unwaived_queue=1)
+
+    print(f"\npeer_ratio 2 at decision, 2 now, cluster 3   -> {still}")
+    print(f"peer_ratio 2 at decision, 2 now, cluster 42  -> {unrelated}")
+    print(f"peer_ratio 2 at decision, 3 now              -> {own}")
+    print("  SANITY: only its OWN growth reopens it. The middle case is OPEN because 40 "
+          "unwaived queue findings are live -- not because the waiver expired.")
+    assert still == WONTFIX and unrelated == OPEN and own == REOPENED
+
+
 def test_a_cluster_absent_from_the_LATEST_comparable_run_is_settled() -> None:
     """The delta. "Fewer rows" is proof only between two runs of one scope."""
     before = pd.concat([_MCD, _VRT], ignore_index=True)
     after = _VRT
-    closed = settled_clusters(before, after)
+    mcd = cluster_id("MCD", "capex")
+    closed = settled_clusters(before, after, fixes={mcd: _Fix()})
 
     print(f"\nbefore: {before['cluster_id'].nunique()} cluster(s); "
           f"after: {after['cluster_id'].nunique()}; settled: {len(closed)}")
-    print(f"  closed: {closed} == MCD capex ({cluster_id('MCD', 'capex')})")
+    print(f"  closed: {[c.cluster_id for c in closed]} == MCD capex ({mcd}), "
+          f"basis={closed[0].basis}")
     print("  SANITY: a cluster missing from a NARROWER run did not close -- it was never "
           "looked at. ledger.comparable_runs is what makes this query sound.")
-    assert closed == [cluster_id("MCD", "capex")]
+    assert [c.cluster_id for c in closed] == [mcd]
+    assert closed[0].basis == "clean"
+
+
+# --------------------------------------------------------------------------- #
+# the settlement algebra -- seven cases, each blocking a different way to fake #
+# a closed defect                                                              #
+# --------------------------------------------------------------------------- #
+
+#: MCD `capex` AFTER the 2026-08-25 fix: the 4 findings that survived. Two `peer_ratio` on a
+#: documented blind spot, one `series_shape` interior gap, one weighted-zero `info`. The exact
+#: residue that a strict set difference calls OPEN forever.
+_RESIDUE = _rows(("MCD", "capex", "peer_ratio", "medium", 2, "2019-06-30"),
+                 ("MCD", "capex", "peer_ratio", "medium", 2, "2020-06-30"),
+                 ("MCD", "capex", "series_shape", "medium", 3, "2011..2026"),
+                 ("MCD", "capex", "catalogue_exclusion_cost", "info", 1, ""))
+
+_MCD_ID = cluster_id("MCD", "capex")
+
+#: The two waivers agent B recorded beside the fix, each quantified, each on its own check.
+_RESIDUE_WAIVERS = {_MCD_ID: {**_waiver("peer_ratio", 2),
+                              **_waiver("series_shape", 1, "1 interior-gap coverage finding")}}
+
+
+def test_waived_residue_plus_a_qualifying_fix_SETTLES() -> None:
+    """The case this whole design exists for. 55 -> 4, all 4 assessed and tolerated."""
+    closed = settled_clusters(_MCD, _RESIDUE, waivers=_RESIDUE_WAIVERS,
+                              fixes={_MCD_ID: _Fix()})
+
+    print(f"\n{len(_MCD)} findings before -> {len(_RESIDUE)} after")
+    print(f"  settled: {[(c.cluster_id, c.basis) for c in closed]}")
+    print(f"  findings still on the ledger: {closed[0].findings_after}")
+    print("  SANITY: it settles WITHOUT reaching zero, and says on what basis. A strict set "
+          "difference calls this OPEN forever, which is how today's fix left no record.")
+    assert len(closed) == 1
+    assert closed[0].waived_findings == 3
+    assert closed[0].waived_checks == ("peer_ratio", "series_shape")
+    assert closed[0].findings_after == 4
+
+
+def test_waived_residue_with_NO_fix_row_does_not_settle() -> None:
+    """Decision 1. Waiving every check one at a time is the suppression register, rebuilt."""
+    closed = settled_clusters(_MCD, _RESIDUE, waivers=_RESIDUE_WAIVERS, fixes={})
+    cluster = build_clusters(_RESIDUE, waivers=_RESIDUE_WAIVERS, roster_size=54)[0]
+
+    print(f"\nsettled with no fix row: {closed}")
+    print(f"  the cluster instead reads: {cluster.status} "
+          f"({cluster.waiver_summary})")
+    print("  SANITY: tolerated, not solved -- and it says so. Without this rule a settlement "
+          "can be manufactured by waiving each check in turn, with nobody having fixed "
+          "anything.")
+    assert closed == []
+    assert cluster.status == WONTFIX
+
+
+def test_a_NO_IMPROVEMENT_fix_row_cannot_settle() -> None:
+    """Decision 8. Recordable, warned about on write, and powerless here.
+
+    `settled_clusters` never sees such a row: `Ledger.qualifying_fix` filters it out, which is
+    what keeps the rule in one place. This pins the consequence -- an empty `fixes` map.
+    """
+    closed = settled_clusters(_MCD, _RESIDUE, waivers=_RESIDUE_WAIVERS, fixes={})
+
+    print(f"\nqualifying_fix rejected the 4->4 row, so fixes={{}} -> settled={closed}")
+    print("  SANITY: permissive to record, strict to settle. The row stays readable through "
+          "`fixes_for`; it simply proves nothing was closed.")
+    assert closed == []
+
+
+def test_an_INFO_only_residue_settles_with_NO_waiver_at_all() -> None:
+    """`catalogue_exclusion_cost` needs no paperwork. If it did, the filter would be wrong.
+
+    An `info` finding is declared, quantified and expected, its severity weight is 0, and
+    nothing reads it as work -- so it can neither block a settlement nor conceal one.
+    """
+    info_only = _rows(("MCD", "capex", "catalogue_exclusion_cost", "info", 1, ""))
+    closed = settled_clusters(_MCD, info_only, waivers={}, fixes={_MCD_ID: _Fix()})
+
+    print(f"\nresidue: 1 `info` finding, 0 waivers -> settled={[c.cluster_id for c in closed]}"
+          f", basis={closed[0].basis}")
+    print("  SANITY: no waiver was needed or written. Requiring one for `info` would turn "
+          "the benign residue into paperwork and would mean the queue-severity filter is "
+          "not doing its job.")
+    assert len(closed) == 1 and closed[0].waived_findings == 0
+    assert closed[0].basis == "clean"
+
+
+def test_one_unwaived_HIGH_finding_blocks_a_settlement_whatever_the_fix_says() -> None:
+    """Condition 1. A fix row is not a licence to stop looking."""
+    residue = pd.concat([_RESIDUE,
+                         _rows(("MCD", "capex", "cross_identity", "high", 1, "2026-06-30"))],
+                        ignore_index=True)
+    closed = settled_clusters(_MCD, residue, waivers=_RESIDUE_WAIVERS,
+                              fixes={_MCD_ID: _Fix()})
+    cluster = build_clusters(residue, waivers=_RESIDUE_WAIVERS, roster_size=54)[0]
+
+    print(f"\none unwaived `high` added -> settled={closed}, cluster reads {cluster.status}")
+    print(f"  waived: {cluster.waived_findings} across {list(cluster.waived_checks)}")
+    print("  SANITY: real work is still live, so the cluster is plainly OPEN -- whatever has "
+          "been tolerated beside it and whatever the fix row proved.")
+    assert closed == [] and cluster.status == OPEN
+
+
+def test_a_waiver_that_GREW_past_its_decision_un_settles_the_cluster() -> None:
+    """Condition 2. A settlement resting on an expired judgement is not a settlement."""
+    grown = pd.concat([_RESIDUE,
+                       _rows(("MCD", "capex", "peer_ratio", "medium", 2, "2021-06-30"))],
+                      ignore_index=True)
+    closed = settled_clusters(_MCD, grown, waivers=_RESIDUE_WAIVERS, fixes={_MCD_ID: _Fix()})
+    cluster = build_clusters(grown, waivers=_RESIDUE_WAIVERS, roster_size=54)[0]
+
+    print(f"\npeer_ratio was waived at 2 findings; it now has 3")
+    print(f"  settled={closed}; cluster reads {cluster.status}")
+    print("  SANITY: the judgement expired by itself. Nobody had to remember to revisit it, "
+          "and the cluster cannot settle on it in the meantime.")
+    assert closed == [] and cluster.status == REOPENED
+
+
+def test_the_LEDGER_is_untouched_by_every_waiver_and_fix_row() -> None:
+    """THE anti-suppression test. Everything else here reverts with `git revert`.
+
+    If waivers or fix rows ever change what `fundamentals_check` contains, a row-count drop
+    stops being proof of anything and the whole loop's premise collapses.
+    """
+    plain = build_clusters(_RESIDUE, roster_size=54)
+    waived = build_clusters(_RESIDUE, waivers=_RESIDUE_WAIVERS, roster_size=54)
+    settled_clusters(_MCD, _RESIDUE, waivers=_RESIDUE_WAIVERS, fixes={_MCD_ID: _Fix()})
+
+    print(f"\nledger rows in: {len(_RESIDUE)}")
+    print(f"  findings counted, no waivers : {plain[0].findings}")
+    print(f"  findings counted, waived     : {waived[0].findings}")
+    print(f"  check mix unchanged          : {dict(plain[0].checks) == dict(waived[0].checks)}")
+    print("  SANITY: identical. A waived finding is still written, still counted and still "
+          "fires -- it is applied when the report is RENDERED, never when the row is "
+          "written. That is what keeps 'fewer rows than last time' usable as proof.")
+    assert plain[0].findings == waived[0].findings == len(_RESIDUE)
+    assert dict(plain[0].checks) == dict(waived[0].checks)
+    assert waived[0].waived_findings == 3
 
 
 def test_the_handoff_contract_carries_every_field_agent_B_needs() -> None:

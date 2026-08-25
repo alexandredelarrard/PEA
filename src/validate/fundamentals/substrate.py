@@ -66,15 +66,27 @@ from src.data_extract.utils.fundamentals.kpi_catalogue import (
     HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue)
 from src.data_store.schema import Tables
 
-#: The `fundamentals_facts` columns Tiers 2 and 3 actually read. A projection, not a
-#: convenience: the table is ~28M rows universe-wide and `adjustment` / `unit` / `decimals`
-#: are read by no check. AGENTS.md forbids an unprojected read of a table this size outright.
+#: The `fundamentals_facts` columns the checks actually read. A projection, not a
+#: convenience: the table is ~28M rows universe-wide, and AGENTS.md forbids an unprojected
+#: read of a table this size outright.
+#:
+#: `adjustment` IS READ -- by `adjustment_unguarded` (tier1_value.py), which audits whether an
+#: adjustment fired on positive evidence or on silence. This comment previously asserted the
+#: opposite ("read by no check"), which was false, and the check consequently returned early
+#: on every run for want of the column. It reported ABSTAINED, which looks like a clean
+#: abstention rather than a broken check, so nothing surfaced it.
+#:
+#: THE RULE, not the exception: every column any check subscripts off `sub.facts` must be
+#: here. `test_substrate_contract.py` pins that generally rather than pinning `adjustment`,
+#: because a test that named one column would not catch the next instance of this class.
+#:
+#: `unit` and `decimals` remain excluded, and those two really are read by nothing.
 FACTS_COLUMNS: tuple[str, ...] = (
     "ticker", "accession_number", "field", "duration_type", "period_end", "period_start",
     "period_days", "fiscal_year", "fiscal_period", "cik", "form", "filing_date",
     "is_amendment", "period_of_report", "regime", "value", "resolution_method",
     "source_concept", "roll_up_children", "root_anchor", "role_uri", "is_extension",
-    "dc_code")
+    "dc_code", "adjustment")
 
 #: Date columns per frame, forced to `datetime64[ns]` on load. See the module docstring.
 _DATE_COLUMNS: dict[str, tuple[str, ...]] = {

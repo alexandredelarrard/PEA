@@ -1312,34 +1312,102 @@ def catalogue_override_coverage(sub: Substrates) -> list[Finding]:
     return out
 
 
+#: The adjustment markers the extraction layer writes, and what EVIDENCE each one rested on.
+#: MEASURED off the live table on 2026-08-25, not assumed -- `SELECT jsonb_object_keys(...)`
+#: over `fundamentals_facts.adjustment`: duplicate_fact 639, subtract 440,
+#: undeclared_rejected 324, role_rejected 296, basis_qualifier 255, role_only_retained 190,
+#: zero_only_retained 142, sibling_rejected 61. The last did not exist when this check was
+#: written and is entirely the 2026-08-25 MCD `capex` fix, written into the very column the
+#: check could not read.
+#:
+#: `on silence` is the class the check is actually about -- the resolver acted because a
+#: concept was missing. `on evidence` means the filing said something and we read it. An
+#: unclassified marker is reported as such rather than assumed benign.
+ADJUSTMENT_KINDS: dict[str, str] = {
+    "duplicate_fact": "on evidence -- two tagged facts disagreed and the finer one was kept",
+    "subtract": "on evidence -- the subtracted concept was PRESENT and tagged",
+    "sibling_rejected": "on evidence -- the filer declared both legs and we took the leg",
+    "role_rejected": "on evidence -- the concept was present in a role we do not accept",
+    "undeclared_rejected": "on silence -- the concept was not in the filer's own declaration",
+    "basis_qualifier": "on evidence -- the filing states the basis",
+    "zero_only_retained": "on evidence -- the only tagged value was zero",
+    "role_only_retained": "on evidence -- the only acceptable value came from one role",
+}
+
+
+def _adjustment_kind(marker: str | None) -> str:
+    """The FIRST key of an adjustment marker, or `''`. The marker is JSON, so read it as JSON.
+
+    A substring match would classify `role_only_retained` as `role_rejected`, which are
+    opposite verdicts about the same concept.
+    """
+    if not marker:
+        return ""
+    try:
+        blob = json.loads(marker)
+    except (TypeError, ValueError):
+        return ""
+    return next(iter(blob), "") if isinstance(blob, dict) else ""
+
+
 @check(name="adjustment_unguarded", tier=1, substrate=FACTS, severity=INFO, grain=GRAIN_CELL,
        expected_fire_rate_ceiling=1.0)
 def adjustment_unguarded(sub: Substrates) -> list[Finding]:
-    """An adjustment that fired on SILENCE rather than on positive evidence.
+    """Every adjustment the resolver applied, and WHAT EVIDENCE it rested on.
 
-    `info`, and the population is known: all 128 `ppeNet` lease adjustments. The distinction
-    matters because an adjustment applied because a concept was ABSENT is an inference, while
-    one applied because a concept was PRESENT and said so is a reading. Absence of a tag is
-    not evidence -- the same principle that makes `not_disclosed` a statement about our concept
-    map rather than about the filing.
+    `info`: an adjustment is not a defect, it is a decision, and this check exists so the
+    decisions are countable rather than buried in a JSON column nobody reads. The distinction
+    that matters is between an adjustment applied because a concept was ABSENT -- an
+    inference -- and one applied because a concept was PRESENT and said so, which is a
+    reading. Absence of a tag is not evidence: the same principle that makes `not_disclosed`
+    a statement about our concept map rather than about the filing.
+
+    The populations are named in `ADJUSTMENT_KINDS` and measured, not guessed. The docstring
+    formerly claimed "the population is known: all 128 `ppeNet` lease adjustments", which was
+    already stale -- the live table carries eight kinds, including 61 `sibling_rejected`
+    markers written by the 2026-08-25 MCD `capex` fix into the very column this check could
+    not read.
+
+    THE DENOMINATOR IS REPORTED BEFORE THE EARLY RETURN, deliberately. It used to come after,
+    so a missing `adjustment` column returned zero findings against no denominator and the
+    health gate rendered ABSTAINED -- which reads as "nothing to examine", not as "this check
+    is broken". A check that cannot run must say so as a FAILURE, never as a clean abstention.
     """
     out: list[Finding] = []
     facts = sub.facts
+    sub.denominator("adjustment_unguarded", len(facts))
     if facts.empty or "adjustment" not in facts.columns:
         return out
     adjusted = facts[facts["adjustment"].notna() & (facts["adjustment"] != "")]
-    sub.denominator("adjustment_unguarded", len(facts))
-    for _, row in adjusted.iterrows():
+    if adjusted.empty:
+        return out
+    # ONE FINDING PER (ticker, field, period_end), never per fact row. `finding_id` hashes
+    # exactly the `fundamentals_check` PK, and a period has as many fact rows as it has
+    # as-filed VINTAGES -- AAPL `ppeNet` alone carries five. Emitting per row made 296 of them
+    # upsert onto each other, so the run reported more findings than it stored. What was
+    # collapsed is recorded in `detail` rather than dropped.
+    for (ticker, field, period_end), rows in adjusted.groupby(
+            ["ticker", "field", "period_end"], sort=False):
+        latest = (rows.sort_values("filing_date").iloc[-1]
+                  if "filing_date" in rows.columns else rows.iloc[0])
+        markers = sorted({m for m in (_text(v) for v in rows["adjustment"]) if m})
+        kinds = sorted({k for k in (_adjustment_kind(m) for m in markers) if k})
+        on_silence = [k for k in kinds if ADJUSTMENT_KINDS.get(k, "").startswith("on silence")]
         out.append(Finding(
-            check_name="adjustment_unguarded", ticker=str(row["ticker"]), severity=INFO,
-            tier=1, substrate=FACTS, field=str(row["field"]),
-            period_key=str(pd.Timestamp(row["period_end"]).date()),
-            observed=_float(row["value"]),
-            source_concept=_text(row.get("source_concept")),
-            resolution_method=_text(row.get("resolution_method")),
-            accession_number=_text(row.get("accession_number")),
-            cik=sub.cik_for(str(row["ticker"])),
-            detail={"adjustment": _text(row.get("adjustment")),
+            check_name="adjustment_unguarded", ticker=str(ticker), severity=INFO,
+            tier=1, substrate=FACTS, field=str(field),
+            period_key=str(pd.Timestamp(period_end).date()),
+            observed=_float(latest["value"]),
+            source_concept=_text(latest.get("source_concept")),
+            resolution_method=_text(latest.get("resolution_method")),
+            accession_number=_text(latest.get("accession_number")),
+            cik=sub.cik_for(str(ticker)),
+            detail={"adjustments": markers, "kinds": kinds,
+                    "evidence": [ADJUSTMENT_KINDS.get(k, "unclassified") for k in kinds],
+                    "rests_on_silence": on_silence,
+                    # What the collapse absorbed: how many as-filed vintages of this period
+                    # carried an adjustment, so the count is auditable from the finding.
+                    "vintages": int(len(rows)),
                     "why": "an adjustment applied because a concept was ABSENT is an "
                            "inference, not a reading"}))
     return out

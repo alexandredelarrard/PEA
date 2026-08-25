@@ -49,9 +49,10 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `fundamentals_reason_codes` | 76,004 | 12 MB | 5 | **54** | `as_of` | 2009-07-31 → 2026-08-10 |
 | `fundamentals_history` | **3,267** | 1.8 MB | **69** | **54** | `as_of` | 2009-07-31 → 2026-08-10 |
 | `fundamentals_employees` | 745 | 112 kB | 3 | **54** | `as_of` | 2002-03-20 → 2026-07-29 |
-| `fundamentals_check` | 11,926 | 20 MB | 23 | **54** | `run_date` | one run: 2026-08-24 |
-| `fundamentals_check_run` | 35 | 104 kB | 17 | — | `run_date` | one run: 2026-08-24 |
-| `fundamentals_check_status` | **0** | 32 kB | 7 | — | `decided_at` | nothing decided yet |
+| `fundamentals_check` | 23,656 | 31 MB | 23 | **54** | `run_date` | two runs: 2026-08-24 → 2026-08-25 |
+| `fundamentals_check_run` | 70 | 136 kB | 17 | — | `run_date` | two runs: 2026-08-24 → 2026-08-25 |
+| `fundamentals_check_status` | 2 | 48 kB | 8 | — | `decided_at` | MCD `capex`: `peer_ratio` + `series_shape` waived |
+| `fundamentals_check_fix` | 1 | 64 kB | 16 | — | `decided_at` | MCD `capex` `1c9a517eaa47`, 2026-08-25 |
 | `google_trends` | 388,336 | 32 MB | 3 | 500 | `date` | 2011-07-17 → **2026-07-12** |
 | `cusip_ticker_map` | 145,748 | 14 MB | 2 | 19,824 | — | — |
 | `notes_num` | 40,587 | 14 MB | 14 | — | `ddate` | 2007-12-31 → **2026-04-30** |
@@ -70,13 +71,21 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `sec_def14a` | **329** | 160 kB | 46 | **23** | `filing_date` | 2011-09-23 → 2026-05-06 |
 | `sp500_tickers` | 500 | 128 kB | 6 | 500 | — | — |
 
-- **The three validator tables hold ONE run** (`3df52ae9af75`, 54 tickers, all tiers). They are
-  written only by `src/validate/` and gate nothing. `fundamentals_check` is a LEDGER: nothing is
-  ever subtracted from it, so a row-count drop against a later run of the same scope has exactly
-  one cause. Runs are comparable only when their `scope_hash` matches, which is why `run_id` is
-  in the primary key — two runs of different scope on one day would otherwise collide on every
-  ticker they share. `fundamentals_check_status` is empty because no `wontfix` has been recorded;
-  that is the only mutable state in the package.
+- **The four validator tables hold TWO comparable runs** (`3df52ae9af75` → `725bae7bf8ed`,
+  54 tickers, all tiers). They are written only by `src/validate/` and gate nothing.
+  `fundamentals_check` is a LEDGER: nothing is ever subtracted from it, so a row-count drop
+  against a later run of the same scope has exactly one cause. Runs are comparable only when
+  their `scope_hash` matches, which is why `run_id` is in the primary key — two runs of
+  different scope on one day would otherwise collide on every ticker they share.
+- **`fundamentals_check_status` is the only MUTABLE state**, keyed `(cluster_id, check_name)`
+  with `''` meaning the whole cluster. Its 2 rows tolerate MCD `capex`'s benign residue one
+  check at a time.
+- **`fundamentals_check_fix` is APPEND-ONLY** and holds the one backfilled record: cluster
+  `1c9a517eaa47` (MCD `capex`), layer `extraction`, commit `2fb6ef2`, findings 55 → 4 and queue
+  54 → 3 between the two runs above. It exists because a fix previously had nowhere to be
+  recorded — that one left only a commit sha. **Neither table filters a finding**: a waiver is
+  applied when a report is RENDERED, and `fundamentals_check` still carries all 4 of that
+  cluster's rows with every check firing.
 
 ## Coverage gotchas worth knowing before you build a feature
 

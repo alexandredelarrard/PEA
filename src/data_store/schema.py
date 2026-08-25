@@ -464,17 +464,57 @@ class Tables:
         KIND_AGGREGATE, date_col="run_date", ticker_col=None,
         date_type_cols=("run_date",))
 
-    # `wontfix`, keyed on `cluster_id` -- one `(ticker, field)` defect. The ONLY mutable
-    # state in the validator, and the replacement for the deleted JSON register.
+    # `wontfix`, keyed on `(cluster_id, check_name)` -- a TOLERANCE for one `(ticker, field)`
+    # defect. The ONLY mutable state in the validator, and the replacement for the deleted
+    # JSON register.
+    #
+    # `check_name` IS IN THE KEY and `''` means the WHOLE cluster. Keyed on `cluster_id`
+    # alone a waiver is all-or-nothing: MCD `capex` retains two benign `peer_ratio` findings
+    # on a documented blind spot, and tolerating those at cluster grain would also silence
+    # the eight other checks still live on the same defect. Per-check is the narrowest
+    # tolerance expressible, so it is the one stored.
     #
     # `open` and `settled` are NOT stored: they are DERIVED from the ledger, because a status
     # column that says `settled` while the check still fires is exactly the suppression list
     # the register became. The only thing a human can assert here is "I have looked at this,
     # it is real, and it is not worth repairing" -- and `findings_at_decision` makes even that
-    # self-expiring: the cluster REOPENS automatically the moment it grows past the size that
+    # self-expiring: the entry REOPENS automatically the moment it grows past the size that
     # was actually assessed.
+    #
+    # Waiving every check still does NOT settle a cluster. Settlement additionally requires a
+    # `fundamentals_check_fix` row that measurably reduced the queue; without that rule the
+    # suppression list is simply reassembled one check at a time.
     fundamentals_check_status = Table(
-        "fundamentals_check_status", ("cluster_id",),
+        "fundamentals_check_status", ("cluster_id", "check_name"),
+        KIND_AGGREGATE, date_col="decided_at",
+        date_type_cols=("decided_at",))
+
+    # An INTERVENTION, keyed `(cluster_id, run_id_after)`. A DIFFERENT KIND OF THING from the
+    # table above: a fix is an EVENT that happened, and a waiver is a STATE that persists. So
+    # this table is append-only and nothing here is ever revised -- two fixes of one cluster
+    # are two rows, because the second did not un-happen the first.
+    #
+    # NO RENDERER MAY FILTER FINDINGS USING THIS TABLE. It records what was done and what it
+    # measurably closed; it never subtracts a row from `fundamentals_check`. That separation
+    # is the entire reason a fix is stored apart from a waiver, and it is what keeps a
+    # row-count drop usable as proof.
+    #
+    # `run_id_after` is in the key because it is the run that PROVED the fix. Both runs must
+    # share a `scope_hash` or the before/after counts are not a comparison at all -- the same
+    # test `fundamentals_check_run` exists to make.
+    #
+    # `layer` is a CLOSED four-term vocabulary (`constants.FIX_LAYERS`) defined by what the
+    # edit DOES, never by which file it lives in: `check` = the check was wrong;
+    # `catalogue` = the field specification was wrong; `extraction` = any code that PRODUCES
+    # a value (xbrl_linkbase, build_history, periods); `rows` = the code was already right
+    # and the stored data was stale. Coarse grouping; `root_cause` carries the precision.
+    #
+    # `evidence` is JSON, never prose, and its required keys vary BY LAYER
+    # (`constants.FIX_EVIDENCE_KEYS`): a `check` fix has no filing to cite, so demanding an
+    # accession would force it to name an irrelevant one. Its evidence is the false-positive
+    # population it was measured against.
+    fundamentals_check_fix = Table(
+        "fundamentals_check_fix", ("cluster_id", "run_id_after"),
         KIND_AGGREGATE, date_col="decided_at",
         date_type_cols=("decided_at",))
 

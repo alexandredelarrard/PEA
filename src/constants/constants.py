@@ -723,6 +723,41 @@ PPE_NET_MIN_SHARE_OF_ROLLFORWARD = 0.20
 DILUTED_SHARES_MIN_SHARE_OF_BASIC = 0.99
 
 # --------------------------------------------------------------------------- #
+# VALIDATOR FIX RECORDING (src/validate/, fundamentals_check_fix)                         #
+# --------------------------------------------------------------------------- #
+# A fix to a validator cluster is an EVENT, recorded once and never revised. These two
+# constants are what `validate fix record` refuses on, so they are a closed vocabulary
+# rather than a suggestion -- the same discipline as `reason_codes.ALL_CODES`, and for the
+# same reason: an unpoliced free-text field stops being queryable within a month.
+
+# What the fix DID, in four coarse terms. Defined by the EFFECT of the edit, never by which
+# file it lives in -- otherwise every judgement call becomes an argument about directories.
+#
+#   check       the check was wrong. The data was fine and the finding was a false positive
+#   catalogue   the FIELD SPECIFICATION was wrong (configs/fundamentals/*.json)
+#   extraction  any code that PRODUCES a value -- xbrl_linkbase, build_history, periods
+#   rows        the code was already right and the STORED DATA was stale; a refetch fixed it
+#
+# `root_cause` carries the precision. This is grouping, not a taxonomy: four terms stay
+# countable in a `GROUP BY`, and a fifth would need a measured reason to exist.
+FIX_LAYERS: frozenset[str] = frozenset({"check", "catalogue", "extraction", "rows"})
+
+# The `evidence` JSON keys each layer must supply. They differ because the layers cite
+# different KINDS of proof, and a universal requirement would force the wrong one.
+#
+# An `extraction` / `rows` / `catalogue` fix changed how a FILING is read, so it must name
+# the filings: `accessions`. A `check` fix changed a THRESHOLD or a predicate, and there is
+# no filing at fault -- demanding an accession would make it cite an irrelevant one. Its
+# evidence is the false-positive population it was measured against: how many findings were
+# `examined` and how many of those were `benign`.
+FIX_EVIDENCE_KEYS: dict[str, frozenset[str]] = {
+    "extraction": frozenset({"accessions"}),
+    "rows": frozenset({"accessions"}),
+    "catalogue": frozenset({"accessions"}),
+    "check": frozenset({"examined", "benign"}),
+}
+
+# --------------------------------------------------------------------------- #
 # TIINGO CROSS-VALIDATION (src/validate/external/tiingo_comparison.py)                    #
 # --------------------------------------------------------------------------- #
 # External ground-truth check for `fundamentals_history`/`fundamentals_facts`. The

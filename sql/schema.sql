@@ -1490,15 +1490,27 @@ CREATE TABLE IF NOT EXISTS "fundamentals_check_run" (
 );
 CREATE INDEX IF NOT EXISTS ix_fundamentals_check_run_scope ON "fundamentals_check_run" ("scope_hash");
 
--- [aggregate] fundamentals_check_status  (pk: cluster_id)
+-- [aggregate] fundamentals_check_status  (pk: cluster_id, check_name)
 -- A HUMAN DECISION about one (ticker, field) defect. The only mutable state in the validator,
 -- and the replacement for the deleted configs/fundamentals/fundamentals_check.json register.
 --
--- `status` carries 'wontfix' AND NOTHING ELSE. `open` and `settled` are DERIVED from the
--- ledger -- open by default, settled when a cluster present in a prior COMPARABLE run is
--- absent from the latest one. A stored `settled` that says so while the check still fires is
--- exactly the suppression list the JSON register was becoming, which is why the vocabulary
--- here is one word long.
+-- `status` carries 'wontfix' AND NOTHING ELSE. `open`, `settled` and `reopened` are DERIVED
+-- from the ledger -- open by default, settled when a cluster's queue findings are all either
+-- gone or waived AND a fundamentals_check_fix row proves an intervention reduced them. A
+-- stored `settled` that says so while the check still fires is exactly the suppression list
+-- the JSON register was becoming, which is why the vocabulary here is one word long. A fully
+-- waived cluster with no fix row behind it reads 'wontfix' -- tolerated, not solved.
+--
+-- `check_name` IS IN THE KEY and '' means the WHOLE cluster. Keyed on cluster_id alone a
+-- waiver is all-or-nothing: MCD capex retains two benign `peer_ratio` findings on a
+-- documented blind spot, and tolerating those at cluster grain would also silence the eight
+-- other checks still live on the same defect. Per-check is the narrowest tolerance that can
+-- be expressed, so it is the one stored -- and each entry expires on its OWN
+-- findings_at_decision rather than on the cluster's total.
+--
+-- WAIVING EVERY CHECK STILL DOES NOT SETTLE A CLUSTER. Without that rule the suppression
+-- list is simply reassembled one check at a time, which is the exact failure this schema
+-- was redesigned to prevent.
 --
 -- `findings_at_decision` is what makes even a wontfix self-expiring: it records how big the
 -- cluster was when somebody actually assessed it, and the cluster REOPENS automatically the
@@ -1512,11 +1524,84 @@ CREATE INDEX IF NOT EXISTS ix_fundamentals_check_run_scope ON "fundamentals_chec
 
 CREATE TABLE IF NOT EXISTS "fundamentals_check_status" (
     "cluster_id" TEXT NOT NULL,
+    "check_name" TEXT NOT NULL,
     "ticker" TEXT,
     "field" TEXT,
     "status" TEXT,
     "note" TEXT,
     "findings_at_decision" BIGINT,
     "decided_at" DATE,
-    PRIMARY KEY ("cluster_id")
+    PRIMARY KEY ("cluster_id", "check_name")
 );
+CREATE INDEX IF NOT EXISTS ix_fundamentals_check_status_cluster ON "fundamentals_check_status" ("cluster_id");
+
+-- [aggregate] fundamentals_check_fix  (pk: cluster_id, run_id_after)
+-- AN INTERVENTION: what somebody actually did to a cluster, and what it measurably closed.
+-- Append-only, and a DIFFERENT KIND OF THING from fundamentals_check_status above -- a fix
+-- is an EVENT that happened, a waiver is a STATE that persists. Two fixes of one cluster are
+-- two rows, because the second did not un-happen the first.
+--
+-- NO RENDERER MAY FILTER FINDINGS USING THIS TABLE. It records what was done; it never
+-- subtracts a row from fundamentals_check, and a settlement computed from it never hides a
+-- finding. That separation is the whole reason a fix is stored apart from a waiver, and it
+-- is what keeps "fewer rows than the last comparable run" usable as proof. A test pins the
+-- invariant directly: fundamentals_check row counts are byte-identical with and without any
+-- of these rows present.
+--
+-- This table exists because a fix had NOWHERE TO BE RECORDED. Cluster 1c9a517eaa47 (MCD
+-- capex) was fixed on 2026-08-25 and left no machine-readable trace anywhere: not in
+-- _check_status (which accepts 'wontfix' and nothing else), not in the settled set (a strict
+-- difference that a 55->4 drop does not satisfy), not in the rendered report (it fell off
+-- the top-50). The only record was a commit sha.
+--
+-- `run_id_after` IS IN THE KEY because it is the run that PROVED the fix. Both runs must
+-- share a `scope_hash` -- pinned here rather than looked up, so the proof survives even if
+-- the runs are later pruned -- or the before/after counts are not a comparison at all. That
+-- is the same test fundamentals_check_run exists to make.
+--
+-- `queued_before` / `queued_after` are the counts SETTLEMENT IS JUDGED ON: queue-severity
+-- findings only, `info` excluded, because nothing reads an `info` finding as work. A row
+-- with queued_after >= queued_before is still RECORDABLE -- a wrong-but-plausible value
+-- corrected where no check was firing is a legitimate fix -- but it can never settle the
+-- cluster. Permissive to record, strict to settle.
+--
+-- `layer` is a CLOSED four-term vocabulary (constants.FIX_LAYERS: check | catalogue |
+-- extraction | rows) defined by what the edit DOES, never by which file it lives in --
+-- otherwise every judgement call becomes an argument about directories. `check` = the check
+-- was wrong; `catalogue` = the field specification was wrong; `extraction` = any code that
+-- PRODUCES a value (xbrl_linkbase, build_history, periods); `rows` = the code was already
+-- right and the stored data was stale. `root_cause` carries the precision; this is coarse
+-- grouping, not a taxonomy.
+--
+-- `evidence` is JSON, NEVER PROSE -- the same rule fundamentals_check.detail follows, for
+-- the same reason: an agent parsing English to decide what to trust is the failure mode this
+-- whole subsystem exists to remove. Prose goes in `root_cause`. Required keys vary BY LAYER
+-- (constants.FIX_EVIDENCE_KEYS): extraction/rows/catalogue must name `accessions`, while a
+-- `check` fix has no filing at fault and cites the false-positive population it was measured
+-- against instead (`examined`, `benign`).
+--
+-- `commit_sha` and `test_path` are BOTH REQUIRED and both verified on write: the sha against
+-- `git rev-parse`, the path against the filesystem. An unreproducible fix record is worse
+-- than a missing one in a table whose entire purpose is evidence.
+
+CREATE TABLE IF NOT EXISTS "fundamentals_check_fix" (
+    "cluster_id" TEXT NOT NULL,
+    "run_id_after" TEXT NOT NULL,
+    "run_id_before" TEXT,
+    "scope_hash" TEXT,
+    "ticker" TEXT,
+    "field" TEXT,
+    "findings_before" BIGINT,
+    "findings_after" BIGINT,
+    "queued_before" BIGINT,
+    "queued_after" BIGINT,
+    "layer" TEXT,
+    "root_cause" TEXT,
+    "evidence" TEXT,
+    "commit_sha" TEXT,
+    "test_path" TEXT,
+    "decided_at" DATE,
+    PRIMARY KEY ("cluster_id", "run_id_after")
+);
+CREATE INDEX IF NOT EXISTS ix_fundamentals_check_fix_ticker ON "fundamentals_check_fix" ("ticker");
+CREATE INDEX IF NOT EXISTS ix_fundamentals_check_fix_decided_at ON "fundamentals_check_fix" ("decided_at");

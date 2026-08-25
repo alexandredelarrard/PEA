@@ -27,6 +27,7 @@ import pytest
 from src.validate.fundamentals import report as report_module
 from src.validate.fundamentals.clusters import WONTFIX, build_clusters, build_families
 from src.validate.fundamentals.finding import cluster_id
+from src.validate.fundamentals.clusters import SettledCluster
 from src.validate.fundamentals.report import MENU_SIZE, ReportModel, render, render_json
 
 
@@ -53,11 +54,23 @@ def _health(*, abstained: bool = False, over_ceiling: bool = False) -> pd.DataFr
     ])
 
 
+class _Fix:
+    """The minimum of a `FixRecord` the renderers read. See `test_clusters._Fix`."""
+
+    def __init__(self, queued_before: int = 55, queued_after: int = 4) -> None:
+        self.layer, self.root_cause = "extraction", "route 1 took a sibling total"
+        self.commit_sha, self.test_path = "2fb6ef2", "tests/data_extract/test_x.py"
+        self.queued_before, self.queued_after = queued_before, queued_after
+        self.findings_before, self.findings_after = 55, 4
+        self.run_id_before, self.run_id_after = "3df52ae9af75", "725bae7bf8ed"
+        self.evidence_json, self.decided_at = {"accessions": ["0000063908-18-000010"]}, None
+
+
 def _model(**kwargs) -> ReportModel:
     findings = kwargs.pop("findings", _findings())
     health = kwargs.pop("health", _health())
-    status = kwargs.pop("status", None)
-    clusters = build_clusters(findings, status=status, roster_size=8)
+    waivers = kwargs.pop("waivers", None)
+    clusters = build_clusters(findings, waivers=waivers, roster_size=8)
     return ReportModel(
         run_id="abc123def456", run_date=pd.Timestamp("2026-08-24"), findings=findings,
         health=health, clusters=clusters,
@@ -114,13 +127,62 @@ def test_no_comparable_run_says_so_rather_than_omitting_the_section() -> None:
 
 
 def test_a_comparable_run_reports_the_settled_clusters_as_the_proof() -> None:
-    """`14 -> 0` is the evidence. A fix with no measured drop is not a fix."""
-    closed = [cluster_id("T9", "capex"), cluster_id("T10", "capex")]
-    text = render(_model(previous_label="2026-08-20 (8 tickers, in_sample)", settled=closed))
+    """`55 -> 4` is the evidence, and the report prints the BASIS beside every settlement."""
+    clean = SettledCluster(cluster_id=cluster_id("T9", "capex"), ticker="T9", field="capex",
+                           fix=_Fix())
+    waived = SettledCluster(cluster_id=cluster_id("T10", "capex"), ticker="T10",
+                            field="capex", findings_after=4, waived_findings=3,
+                            waived_checks=("peer_ratio", "series_shape"), fix=_Fix())
+    text = render(_model(previous_label="2026-08-20 (8 tickers, in_sample)",
+                         settled=[clean, waived]))
 
-    print(f"\nsettled clusters rendered: {[c in text for c in closed]}")
+    print(f"\nclean settlement rendered as : {clean.basis}")
+    print(f"waived settlement rendered as: {waived.basis}")
+    print("  SANITY: the waived count is printed beside the cluster, so the basis of a "
+          "settlement is never invisible. A settlement whose waivers are not shown is a "
+          "suppression with better manners.")
     assert "## delta vs 2026-08-20 (8 tickers, in_sample)" in text
-    assert "2 cluster(s) SETTLED" in text and all(c in text for c in closed)
+    assert "2 cluster(s) SETTLED" in text
+    assert "(clean)" in text and "(3 finding(s) waived across 2 check(s))" in text
+    assert "route 1 took a sibling total" in text and "55 -> 4" in text
+
+
+def test_a_settled_cluster_leaves_the_MENU_but_keeps_its_findings() -> None:
+    """A settled cluster still carries rows now. Without the SETTLED stamp it would keep its
+    score and outrank real work on agent B's menu indefinitely."""
+    target = cluster_id("T0", "capex")
+    findings = _findings()
+    model = _model(findings=findings, previous_label="2026-08-20 (8 tickers, in_sample)",
+                   settled=[SettledCluster(cluster_id=target, ticker="T0", field="capex",
+                                           findings_after=3, waived_findings=3,
+                                           waived_checks=("check_0",), fix=_Fix())])
+    ledger_rows = len(model.findings)
+
+    print(f"\nmenu: {[c.cluster_id for c in model.menu]}")
+    print(f"  {target} status: "
+          f"{ {c.cluster_id: c.status for c in model.clusters}[target] }")
+    print(f"  ledger rows still present for it: "
+          f"{int((findings['cluster_id'] == target).sum())} of {ledger_rows}")
+    print("  SANITY: off the work list, still on the ledger. Nothing was subtracted.")
+    assert target not in {c.cluster_id for c in model.menu}
+    assert int((findings["cluster_id"] == target).sum()) == 3
+
+
+def test_the_fix_history_section_names_what_was_actually_done() -> None:
+    """The gap this table was added to close: a fix whose only record was a commit sha."""
+    target = cluster_id("T0", "capex")
+    text = render(_model(previous_label="2026-08-20 (8 tickers, in_sample)",
+                         settled=[SettledCluster(cluster_id=target, ticker="T0",
+                                                 field="capex", findings_after=3,
+                                                 fix=_Fix())]))
+    section = text.split("## recorded fixes")[1]
+
+    print(f"\n{chr(10).join(section.strip().splitlines()[:6])}")
+    print("  SANITY: layer, before -> after, commit and test are all on the page. "
+          "`validate fix show` carries root_cause and evidence.")
+    assert "## recorded fixes" in text
+    assert "extraction" in section and "2fb6ef2" in section and "55 -> 4" in section
+    assert "never subtracts a row" in section
 
 
 # --------------------------------------------------------------------------- #
@@ -135,11 +197,12 @@ def test_the_wontfix_footer_is_never_omitted() -> None:
 
 
 def test_a_wontfix_leaves_the_menu_and_enters_the_footer() -> None:
-    """A settled cluster is not work -- but it stays VISIBLE, which is the whole point."""
+    """A wontfix cluster is not work -- but it stays VISIBLE, which is the whole point."""
     target = cluster_id("T0", "capex")
-    status = {target: {"status": WONTFIX, "note": "measured at $0 over 3 periods",
-                       "findings_at_decision": 3}}
-    model = _model(status=status)
+    waivers = {target: {"": {"cluster_id": target, "check_name": "", "status": WONTFIX,
+                             "note": "measured at $0 over 3 periods",
+                             "findings_at_decision": 3}}}
+    model = _model(waivers=waivers)
     text = render(model)
 
     print(f"\nmenu: {[c.cluster_id for c in model.menu]}")
@@ -215,7 +278,12 @@ def test_the_report_is_pure_ascii() -> None:
     terminal got a traceback instead of the report, and only the files were readable.
     """
     text = render(_model(health=_health(abstained=True, over_ceiling=True),
-                         previous_label="2026-08-20 (8 tickers)", settled=["abc"]))
+                         previous_label="2026-08-20 (8 tickers)",
+                         settled=[SettledCluster(cluster_id="abc", ticker="T0",
+                                                 field="capex", findings_after=4,
+                                                 waived_findings=3,
+                                                 waived_checks=("peer_ratio", "series_shape"),
+                                                 fix=_Fix())]))
     offenders = sorted({c for c in text if ord(c) > 127})
 
     print(f"\nnon-ASCII characters in a fully-populated report: {offenders}")

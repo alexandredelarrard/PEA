@@ -49,6 +49,34 @@ XBRL-US says it plainly of DQC_0118: *"inconsistencies reported to filers can be
 as many don't represent real errors."* A family spanning most of the roster is far more likely
 to be our specification than a simultaneous failure by forty independent filers, and
 `routing_hint` says so BEFORE an agent has spent an hour reading 10-Ks.
+
+## SETTLEMENT: what it takes to claim a defect is closed
+
+A cluster does not have to reach zero to be settled. MCD `capex` went from 55 findings to 4
+and every one of the 4 is benign -- one weighted-zero `info`, two `peer_ratio` on a documented
+blind spot, one `series_shape` coverage gap. A strict set difference calls that OPEN forever,
+which is how a real fix ends up with no record anywhere.
+
+So settlement has four conditions and each exists to block a specific way of faking it:
+
+  1. no UNWAIVED queue-severity finding is left. `info` never needs a waiver -- nothing reads
+     it as work, so it cannot be hiding any;
+  2. every waiver is still WITHIN the size it was decided against. One that grew has expired,
+     and a cluster resting on an expired judgement is REOPENED, not settled;
+  3. a FIX ROW EXISTS at this scope. Without this, waiving every check one at a time
+     manufactures a settlement with nobody having fixed anything -- the deleted suppression
+     register, reassembled from parts;
+  4. that fix row REDUCED THE QUEUE. A row that moved nothing stays on the record and proves
+     nothing.
+
+Fail 3 or 4 with 1 and 2 satisfied and the cluster reads WONTFIX: tolerated, not solved, and
+it says so. That is why no new status word was added -- a fully-waived, unfixed cluster
+already IS what `wontfix` means.
+
+NOTHING HERE SUBTRACTS A ROW. A waived finding is still written, still counted, still fires,
+and still appears in `fundamentals_check`. Waivers and fixes are read when a report is
+RENDERED. That is the property that keeps a row-count drop usable as proof, and a test pins
+it directly by counting ledger rows with and without any of this present.
 """
 from __future__ import annotations
 
@@ -59,7 +87,13 @@ from typing import Any
 
 import pandas as pd
 
-from src.validate.fundamentals.finding import CRITICAL, HIGH, INFO, MEDIUM, SEVERITY_ORDER
+from src.validate.fundamentals.finding import (
+    CRITICAL, HIGH, INFO, MEDIUM, QUEUE_SEVERITIES, SEVERITY_ORDER)
+
+#: What `check_name` means in a waiver row when it is empty: the waiver covers the WHOLE
+#: cluster. Mirrors `ledger.CLUSTER_WIDE`; re-declared rather than imported because
+#: `clusters.py` is pure frame logic and must not depend on the store-reading layer.
+CLUSTER_WIDE = ""
 
 # --------------------------------------------------------------------------- #
 # the scoring policy (D3/D4) -- starting values, printed, meant to be retuned  #
@@ -125,6 +159,11 @@ class Cluster:
     status: str = OPEN
     note: str = ""
     findings_at_decision: int | None = None
+    #: Queue-severity findings a human has explicitly tolerated, and the checks they sit on.
+    #: Carried on the cluster so a renderer can say "SETTLED (3 findings waived across 2
+    #: checks)" without recomputing the waiver algebra and risking a different answer.
+    waived_findings: int = 0
+    waived_checks: tuple[str, ...] = ()
     first_seen: str = ""
     last_seen: str = ""
     runs_open: int = 1
@@ -147,6 +186,18 @@ class Cluster:
         """Does this cluster contain anything an agent works? A score of 0 is all-`info`."""
         return self.score > 0
 
+    @property
+    def waiver_summary(self) -> str:
+        """`3 finding(s) waived across 2 check(s)`, or `clean` when nothing was tolerated.
+
+        Rendered beside every settled cluster so the BASIS of a settlement is never invisible
+        -- a settlement whose waivers are not printed is a suppression with better manners.
+        """
+        if not self.waived_findings:
+            return "clean"
+        return (f"{self.waived_findings} finding(s) waived across "
+                f"{len(self.waived_checks)} check(s)")
+
     def as_dict(self) -> dict[str, Any]:
         """The agent handoff contract, exactly. See `.claude/agents/fundamentals-triage.md`.
 
@@ -166,9 +217,42 @@ class Cluster:
             # D8's reopen trigger. B needs the DISTANCE, not just the label: a wontfix sitting
             # exactly on its threshold reopens on the next finding and is not really settled.
             "findings_at_decision": self.findings_at_decision,
+            "waived_findings": self.waived_findings,
+            "waived_checks": list(self.waived_checks),
             "first_seen": self.first_seen, "last_seen": self.last_seen,
             "runs_open": self.runs_open,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class SettledCluster:
+    """One cluster that CLOSED, and the evidence for saying so.
+
+    Richer than the bare `cluster_id` this used to be, because "settled" now has a basis that
+    a reader is entitled to see: how many findings remain, how many of those were tolerated
+    rather than fixed, and which intervention earned the claim. A renderer that had to
+    recompute those would be a second copy of the settlement rule.
+    """
+
+    cluster_id: str
+    ticker: str = ""
+    field: str = ""
+    #: Findings still on the ledger for this cluster in the LATEST run. Zero is the clean
+    #: case; non-zero means the residue was assessed and tolerated, never hidden.
+    findings_after: int = 0
+    waived_findings: int = 0
+    waived_checks: tuple[str, ...] = ()
+    #: The `FixRecord` that carried the settlement. Typed loosely on purpose: `clusters.py`
+    #: stays free of the ledger layer, and the renderer only reads attributes off it.
+    fix: Any = None
+
+    @property
+    def basis(self) -> str:
+        """`clean` or `3 finding(s) waived across 2 check(s)` -- printed beside the id."""
+        if not self.waived_findings:
+            return "clean"
+        return (f"{self.waived_findings} finding(s) waived across "
+                f"{len(self.waived_checks)} check(s)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,18 +299,23 @@ class Family:
 # --------------------------------------------------------------------------- #
 
 def build_clusters(findings: pd.DataFrame, *,
-                   status: dict[str, dict[str, Any]] | None = None,
+                   waivers: dict[str, dict[str, dict[str, Any]]] | None = None,
                    history: pd.DataFrame | None = None,
                    roster_size: int = 0) -> list[Cluster]:
     """Every cluster in `findings`, ranked by score, worst first.
 
-    `status` applies a human's `wontfix` (and reopens it if the cluster grew -- D8). `history`
-    carries `first_seen` / `last_seen` / `runs_open` across comparable runs. Both optional:
-    a first run has neither, and must still produce a usable ranking.
+    `waivers` is the NESTED map `{cluster_id: {check_name: row}}` from `Ledger.status_map`,
+    `''` meaning the whole cluster. It applies a human's `wontfix` (and reopens it if the
+    waived population grew -- D8). `history` carries `first_seen` / `last_seen` /
+    `runs_open` across comparable runs. Both optional: a first run has neither and must still
+    produce a usable ranking.
+
+    SETTLED is never assigned here. It needs the PREVIOUS comparable run and a fix row, and
+    neither is knowable from one run's findings -- see `settled_clusters`.
     """
     if findings is None or findings.empty:
         return []
-    status = status or {}
+    waivers = waivers or {}
     seen = _history_map(history)
     families = _family_sizes(findings, roster_size)
 
@@ -234,7 +323,7 @@ def build_clusters(findings: pd.DataFrame, *,
     for cluster_id, rows in findings.groupby("cluster_id", sort=False):
         field = str(rows["field"].iloc[0] or "")
         family = families.get(field)
-        clusters.append(_one(str(cluster_id), rows, status.get(str(cluster_id)),
+        clusters.append(_one(str(cluster_id), rows, waivers.get(str(cluster_id)),
                              seen.get(str(cluster_id)),
                              hint=family[0] if family else LIKELY_FILER,
                              breadth=family[1] if family else ""))
@@ -254,52 +343,107 @@ def build_families(clusters: list[Cluster], roster_size: int = 0) -> list[Family
     return sorted(families, key=lambda f: (-f.total_score, -f.findings, f.field))
 
 
-def settled_clusters(previous: pd.DataFrame, latest: pd.DataFrame) -> list[str]:
-    """Cluster ids present in the PREVIOUS comparable run and absent from the latest.
+def settled_clusters(previous: pd.DataFrame, latest: pd.DataFrame, *,
+                     waivers: dict[str, dict[str, dict[str, Any]]] | None = None,
+                     fixes: dict[str, Any] | None = None) -> list[SettledCluster]:
+    """Every cluster that CLOSED between two comparable runs, with the basis for saying so.
 
-    This is what "the fix worked" looks like as a query, and it is only sound because both
-    frames come from runs of one scope -- `ledger.comparable_runs` enforces that. A cluster
-    missing from a NARROWER run did not close; it was never looked at.
+    Sound only because both frames come from runs of ONE scope -- `ledger.comparable_runs`
+    enforces that. A cluster missing from a NARROWER run did not close; it was never looked
+    at.
+
+    The four conditions are in the module docstring. Two of them are worth restating at the
+    call site because they are the ones somebody will later be tempted to relax:
+
+      * `fixes` is REQUIRED for a settlement. It maps `cluster_id -> FixRecord` and the
+        caller builds it from `Ledger.qualifying_fix`, which is where the scope and
+        improvement tests live. Passing `{}` settles NOTHING -- deliberately. Waivers alone
+        settling a cluster is the suppression list reassembled one check at a time;
+      * only QUEUE severities are considered. An `info` residue needs no waiver, because
+        nothing reads `info` as work and it therefore cannot be concealing any.
+
+    Backward-compatible in the case that matters: a cluster that went to ZERO findings still
+    needs a fix row, because "it vanished and nobody knows why" is not proof either. What
+    changed is that a cluster can now settle while still carrying assessed, tolerated rows.
     """
     if previous is None or previous.empty:
         return []
+    waivers, fixes = waivers or {}, fixes or {}
     before = set(previous["cluster_id"].dropna().astype(str))
-    after = (set(latest["cluster_id"].dropna().astype(str))
-             if latest is not None and not latest.empty else set())
-    return sorted(before - after)
+    has_latest = latest is not None and not latest.empty
+
+    settled: list[SettledCluster] = []
+    for cluster_id in sorted(before):
+        fix = fixes.get(cluster_id)
+        if fix is None:                      # condition 3+4, tested by the caller's predicate
+            continue
+        rows = (latest[latest["cluster_id"].astype(str) == cluster_id]
+                if has_latest else latest)
+        rows = rows if rows is not None and not rows.empty else None
+        if rows is None:                                    # closed outright, nothing to weigh
+            settled.append(SettledCluster(cluster_id=cluster_id, fix=fix))
+            continue
+        entries = waivers.get(cluster_id, {})
+        unwaived, waived, checks = _weigh_residue(rows, entries)
+        if unwaived or _expired(rows, entries, len(rows)):   # conditions 1 and 2
+            continue
+        settled.append(SettledCluster(
+            cluster_id=cluster_id, ticker=str(rows["ticker"].iloc[0]),
+            field=str(rows["field"].iloc[0] or ""), findings_after=len(rows),
+            waived_findings=waived, waived_checks=checks, fix=fix))
+    return settled
 
 
 def derive_status(cluster_id: str, findings: int,
-                  status: dict[str, Any] | None) -> tuple[str, str, int | None]:
+                  waivers: dict[str, dict[str, Any]] | None,
+                  check_counts: dict[str, int] | None = None,
+                  unwaived_queue: int = 0) -> tuple[str, str, int | None]:
     """`(status, note, findings_at_decision)` for one cluster. D6 and D8.
 
-    `open` unless a human has written a `wontfix` -- and that `wontfix` EXPIRES BY ITSELF the
-    moment the cluster grows past the size that was actually assessed. A judgement made about
-    3 findings is not a judgement about 30, and nobody should have to remember to revisit it.
+    THREE VALUES, and no more (decision 2). `open` unless a human has written a `wontfix` --
+    and that `wontfix` EXPIRES BY ITSELF the moment the population it covers grows past the
+    size that was actually assessed. A judgement made about 3 findings is not a judgement
+    about 30, and nobody should have to remember to revisit it.
 
     That auto-reopen is what replaces the deleted register's STALENESS REPORT, which listed
     every settled finding whose check had stopped firing so the register "decayed visibly
     instead of accumulating suppressions nobody can justify". The same job, done by the data
     rather than by a reader noticing a line in a report: a decision here cannot outlive the
     evidence it was made on, and the report's wontfix footer is never omitted.
+
+    `waivers` is PER CHECK now (`''` = the whole cluster), and each entry expires against its
+    OWN population: a cluster-wide entry against `findings`, a per-check entry against that
+    check's count in `check_counts`. Measuring a `peer_ratio` waiver against the cluster total
+    would reopen it every time an unrelated check fired once more, which is not what anybody
+    decided.
+
+    `unwaived_queue` is what keeps a PARTIAL waiver honest: with real work still uncovered the
+    cluster is plainly OPEN, whatever has been tolerated beside it. No SETTLED is returned
+    here -- that needs the previous run and a fix row, neither visible from one cluster.
     """
-    if not status:
+    if not waivers:
         return OPEN, "", None
-    at_decision = status.get("findings_at_decision")
-    at_decision = int(at_decision) if pd.notna(at_decision) else None
-    note = str(status.get("note") or "")
-    if str(status.get("status") or "") != WONTFIX:
+    counts = check_counts or {}
+    note, at_decision = _first_note(waivers, findings, counts)
+    live = {check: entry for check, entry in waivers.items()
+            if str(entry.get("status") or "") == WONTFIX}
+    if not live:
         return OPEN, note, at_decision
-    if at_decision is not None and findings > at_decision:
-        return REOPENED, note, at_decision
-    return WONTFIX, note, at_decision
+
+    for check, entry in sorted(live.items()):
+        size = findings if check == CLUSTER_WIDE else counts.get(check, 0)
+        decided = entry.get("findings_at_decision")
+        decided = int(decided) if pd.notna(decided) else None
+        if decided is not None and size > decided:
+            return REOPENED, str(entry.get("note") or ""), decided
+    return (OPEN if unwaived_queue else WONTFIX), note, at_decision
 
 
 # --------------------------------------------------------------------------- #
 # internals                                                                    #
 # --------------------------------------------------------------------------- #
 
-def _one(cluster_id: str, rows: pd.DataFrame, status: dict[str, Any] | None,
+def _one(cluster_id: str, rows: pd.DataFrame, waivers: dict[str, dict[str, Any]] | None,
          seen: dict[str, Any] | None, *, hint: str, breadth: str) -> Cluster:
     """One cluster from its findings. The score is computed here and nowhere else."""
     severities = Counter(str(s) for s in rows["severity"])
@@ -311,7 +455,10 @@ def _one(cluster_id: str, rows: pd.DataFrame, status: dict[str, Any] | None,
     score = base * corroboration(len(checks))
 
     worst = _worst_row(rows)
-    state, note, at_decision = derive_status(cluster_id, len(rows), status)
+    entries = waivers or {}
+    unwaived, waived, waived_checks = _weigh_residue(rows, entries)
+    state, note, at_decision = derive_status(cluster_id, len(rows), entries,
+                                             dict(checks), unwaived)
     return Cluster(
         cluster_id=cluster_id,
         ticker=str(rows["ticker"].iloc[0]), field=str(rows["field"].iloc[0] or ""),
@@ -323,10 +470,76 @@ def _one(cluster_id: str, rows: pd.DataFrame, status: dict[str, Any] | None,
         edgar_url=_first_url(rows),
         why=_why(worst.get("detail") if worst is not None else None),
         status=state, note=note, findings_at_decision=at_decision,
+        waived_findings=waived, waived_checks=waived_checks,
         first_seen=(seen or {}).get("first_seen", ""),
         last_seen=(seen or {}).get("last_seen", ""),
         runs_open=int((seen or {}).get("runs_open", 1) or 1),
         routing_hint=hint, family_breadth=breadth)
+
+
+def _weigh_residue(rows: pd.DataFrame,
+                   waivers: dict[str, dict[str, Any]]) -> tuple[int, int, tuple[str, ...]]:
+    """`(unwaived_queue, waived_queue, waived_checks)` for one cluster's findings.
+
+    QUEUE SEVERITIES ONLY. An `info` finding is declared, quantified and expected, nothing
+    reads it as work, and its severity weight is 0 -- so it can neither block a settlement nor
+    hide behind a waiver, and requiring one for it would turn the benign `catalogue_exclusion_
+    cost` residue into paperwork. That is deliberate and is pinned by its own test.
+
+    A `''` entry covers every check on the cluster; a named entry covers only its own. Only
+    `wontfix` entries count: a row whose status says anything else is not a tolerance.
+    """
+    live = {check for check, entry in waivers.items()
+            if str(entry.get("status") or "") == WONTFIX}
+    if "severity" not in rows.columns:
+        return 0, 0, ()
+    queue = rows[rows["severity"].astype(str).isin(QUEUE_SEVERITIES)]
+    if queue.empty:
+        return 0, 0, ()
+    if CLUSTER_WIDE in live:
+        covered = queue
+    else:
+        covered = queue[queue["check_name"].astype(str).isin(live)]
+    checks = tuple(sorted({str(c) for c in covered["check_name"]})) if len(covered) else ()
+    return len(queue) - len(covered), len(covered), checks
+
+
+def _expired(rows: pd.DataFrame, waivers: dict[str, dict[str, Any]], findings: int) -> bool:
+    """Has ANY live waiver on this cluster grown past the size it was decided against?
+
+    Per entry, against its OWN population -- a `peer_ratio` waiver against `peer_ratio`'s
+    count, a cluster-wide one against the total. An expired judgement cannot carry a
+    settlement, which is what stops a stale `wontfix` from quietly closing a growing defect.
+    """
+    counts = Counter(str(c) for c in rows["check_name"]) if len(rows) else Counter()
+    for check, entry in waivers.items():
+        if str(entry.get("status") or "") != WONTFIX:
+            continue
+        decided = entry.get("findings_at_decision")
+        if decided is None or not pd.notna(decided):
+            continue
+        size = findings if check == CLUSTER_WIDE else counts.get(check, 0)
+        if size > int(decided):
+            return True
+    return False
+
+
+def _first_note(waivers: dict[str, dict[str, Any]], findings: int,
+                counts: dict[str, int]) -> tuple[str, int | None]:
+    """The note and `findings_at_decision` a single-valued render shows for a cluster.
+
+    A cluster can now carry several waivers with several notes, and the footer has one column
+    for it. The CLUSTER-WIDE entry wins when present -- it is the broadest statement anyone
+    made -- otherwise the largest per-check population, which is the one a reader most needs
+    to see. `waived_checks` carries the rest, so nothing is lost, only ordered.
+    """
+    if CLUSTER_WIDE in waivers:
+        chosen = waivers[CLUSTER_WIDE]
+    else:
+        chosen = max(waivers.values(),
+                     key=lambda e: counts.get(str(e.get("check_name") or ""), 0))
+    decided = chosen.get("findings_at_decision")
+    return str(chosen.get("note") or ""), (int(decided) if pd.notna(decided) else None)
 
 
 def corroboration(n_checks: int) -> float:
@@ -427,8 +640,8 @@ def _date(value) -> str:
     return str(pd.Timestamp(value).date())
 
 
-__all__ = ["CORROBORATION_BONUS", "Cluster", "Family", "FAMILY_BREADTH_MIN_SHARE", "FAMILY_BREADTH_MIN_TICKERS",
+__all__ = ["CLUSTER_WIDE", "CORROBORATION_BONUS", "Cluster", "Family",
+           "FAMILY_BREADTH_MIN_SHARE", "FAMILY_BREADTH_MIN_TICKERS",
            "LIKELY_CHECK", "LIKELY_FILER", "OPEN", "REOPENED", "SETTLED", "SEVERITY_WEIGHTS",
-           "TIER_WEIGHTS", "WONTFIX", "build_clusters", "build_families", "corroboration",
-           "derive_status",
-           "settled_clusters"]
+           "SettledCluster", "TIER_WEIGHTS", "WONTFIX", "build_clusters", "build_families",
+           "corroboration", "derive_status", "settled_clusters"]

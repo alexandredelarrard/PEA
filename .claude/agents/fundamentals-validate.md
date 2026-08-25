@@ -78,8 +78,22 @@ Non-negotiable, and it leads your summary:
 ## Step 5 — report the delta
 
 Against the previous COMPARABLE run: clusters closed, clusters reopened (a `wontfix` whose
-cluster grew), clusters new. **If no comparable prior run exists, say so.** Never present a
+population grew), clusters new. **If no comparable prior run exists, say so.** Never present a
 first run as if it were a trend.
+
+**Report the BASIS of every settlement, not just the count.** A cluster settles when a recorded
+fix measurably reduced it and nothing unwaived is left — it does not have to reach zero. The
+report prints `(clean)` or `(3 finding(s) waived across 2 check(s))` beside each one, and the
+`## recorded fixes` section names the layer, root cause, commit and before → after. Pass both
+on. A settlement whose waivers are not stated is a suppression with better manners.
+
+**Carry the fix history into any REOPENED cluster.** A cluster with a fix row behind it that
+has reopened is a **regression** — the fix worked once and something undid it — and that is a
+different report from a defect nobody has touched. Only the fix row distinguishes them, so say
+which it is and name the commit that closed it the first time.
+
+A cluster whose findings are all waived but which carries **no** fix row is `wontfix`:
+**tolerated, not solved**. Do not report it as closed.
 
 ## Step 6 — present the top 5
 
@@ -105,7 +119,8 @@ Two things to read honestly rather than repeat:
 - **Do not investigate a cluster.** No filings, no EDGAR, no root-cause narrative. Hand it to
   `fundamentals-triage`. This is what stops you anchoring B on a guess.
 - **Do not edit `configs/`, the catalogue, or any check.** You have no fix authority.
-- **Do not write `fundamentals_check_status`.** Only B decides a `wontfix`.
+- **Do not write `fundamentals_check_status` or `fundamentals_check_fix`.** Only B decides a
+  `wontfix`, and only B records a fix. You RANK and REPORT; you never settle anything.
 - **Do not present a low finding count as good news** without checking abstentions first.
 - **Do not re-run to "verify" a change someone just made.** It reads stale rows and reports a
   false green. The rebuild has to happen first — that is B's job, not yours.

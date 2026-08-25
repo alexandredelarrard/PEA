@@ -27,11 +27,22 @@ quietly reintroduce an unactionable finding.
 """
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
 from src.validate.fundamentals.checks import CHECK_REGISTRY
+from src.validate.fundamentals.substrate import FACTS_COLUMNS
 from tests.validate.fundamentals.conftest import TICKER
+
+#: Where the checks live. Scanned rather than listed, so a fourth tier module is covered the
+#: day it is added instead of the day somebody remembers this file.
+CHECKS_DIR = Path("src/validate/fundamentals/checks")
+
+#: How `sub.facts` is spelled inside a check. Both forms occur and both must be followed.
+FACTS_NAMES = {"facts", "sub.facts"}
 
 #: The six checks that legitimately read `fundamentals_history`. Adding to this set is a
 #: DESIGN DECISION -- it means "this check tests a property `fundamentals_facts` cannot
@@ -148,3 +159,141 @@ def test_a_tier_1_facts_check_names_the_filing(name, catalogue, dirty_facts) -> 
         print(f"  first offender: {without[0]['ticker']} {without[0]['field']}")
     print("  SANITY: a Tier-1 finding a reviewer cannot open is a finding nobody can settle.")
     assert not without
+
+# --------------------------------------------------------------------------- #
+# the PROJECTION contract -- a column a check reads must be a column we load    #
+# --------------------------------------------------------------------------- #
+
+def _base_label(node) -> str | None:
+    """`facts` / `sub.facts` for a subscript or call target, else None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return f"{node.value.id}.{node.attr}"
+    return None
+
+
+def _string_arg(node) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _columns_read() -> dict[str, set[str]]:
+    """`{module: columns subscripted off `facts`}` across every check module.
+
+    `facts["x"]` and `facts.get("x")` only. A derived frame (`adjusted = facts[mask]`) is not
+    followed, deliberately: chasing aliases makes the scan clever and therefore wrong in ways
+    nobody notices, and every instance of this bug so far has been a direct subscript.
+    """
+    found: dict[str, set[str]] = {}
+    for module in sorted(CHECKS_DIR.glob("*.py")):
+        hits: set[str] = set()
+        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Subscript):
+                name = _string_arg(node.slice)
+                if name and _base_label(node.value) in FACTS_NAMES:
+                    hits.add(name)
+            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                  and node.func.attr == "get" and node.args
+                  and _base_label(node.func.value) in FACTS_NAMES):
+                name = _string_arg(node.args[0])
+                if name:
+                    hits.add(name)
+        if hits:
+            found[module.name] = hits
+    return found
+
+
+def _columns_guarded() -> dict[str, set[str]]:
+    """`{module: columns tested with `"x" in facts.columns`}`.
+
+    A separate scan because a GUARD is the more dangerous shape. A missing subscript raises
+    and somebody sees a traceback; a missing guard just makes the branch permanently true, and
+    the check returns nothing forever while the health gate calls it ABSTAINED.
+    """
+    found: dict[str, set[str]] = {}
+    for module in sorted(CHECKS_DIR.glob("*.py")):
+        hits: set[str] = set()
+        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Compare) or not node.comparators:
+                continue
+            name = _string_arg(node.left)
+            target = node.comparators[0]
+            if (name and isinstance(target, ast.Attribute) and target.attr == "columns"
+                    and _base_label(target.value) in FACTS_NAMES):
+                hits.add(name)
+        if hits:
+            found[module.name] = hits
+    return found
+
+
+def test_every_facts_column_a_check_READS_is_in_the_projection() -> None:
+    """The general rule, not a pin on one column name.
+
+    `adjustment_unguarded` read `facts["adjustment"]` while `FACTS_COLUMNS` omitted it on the
+    stated grounds that it was "read by no check" -- which was false. Pinning `adjustment`
+    specifically would restore that one column and catch none of the next instances, so the
+    scan asks the question generally: which columns do the checks actually subscript?
+    """
+    read = _columns_read()
+    every = set().union(*read.values())
+    missing = sorted(every - set(FACTS_COLUMNS))
+
+    for module, columns in read.items():
+        print(f"\n{module}: {sorted(columns)}")
+    print(f"\n{len(every)} distinct column(s) read across {len(read)} module(s); "
+          f"projection carries {len(FACTS_COLUMNS)}")
+    print(f"  read but NOT projected: {missing or 'none'}")
+    print("  SANITY: a column a check reads and the projection omits is a KeyError at best "
+          "and a permanently dead check at worst -- which is exactly what happened.")
+    assert not missing, (
+        f"{missing} are read off `sub.facts` but missing from FACTS_COLUMNS. Add them to the "
+        f"projection in substrate.py, or stop reading them.")
+
+
+def test_a_check_that_GUARDS_on_a_facts_column_must_have_it_projected() -> None:
+    """The shape that fails SILENTLY, and the reason this bug survived a full run.
+
+    `if "adjustment" not in facts.columns: return out` is a defensive guard that reads as
+    careful. With the column absent from the projection it is unconditionally true, so the
+    check returned zero findings on every run -- and because the early return also skipped its
+    denominator, the health gate rendered ABSTAINED. An abstention looks like "nothing to
+    examine", not like "this check has never run".
+    """
+    guarded = _columns_guarded()
+    every = set().union(*guarded.values()) if guarded else set()
+    missing = sorted(every - set(FACTS_COLUMNS))
+
+    print(f"\ncolumns guarded on: { {m: sorted(c) for m, c in guarded.items()} }")
+    print(f"  guarded but NOT projected: {missing or 'none'}")
+    print("  SANITY: a guard on a column we never load is a check that can never fire, and "
+          "nothing in the report distinguishes that from a clean pass.")
+    assert not missing, (
+        f"{missing} are guarded against but never loaded, so those branches are permanently "
+        f"true and the checks behind them can never fire.")
+
+
+def test_adjustment_unguarded_reports_its_denominator_even_when_it_cannot_run() -> None:
+    """A check that cannot run must fail LOUDLY, never as a clean-looking abstention.
+
+    The denominator now precedes the early return, so a substrate missing the column reports
+    a real `examined` count with zero findings -- a 0% fire rate, not an abstention.
+    """
+    from src.validate.fundamentals.checks.tier1_value import adjustment_unguarded
+
+    class _Sub:
+        def __init__(self, frame):
+            self.facts, self.seen = frame, {}
+
+        def denominator(self, name, n):
+            self.seen[name] = n
+
+    frame = pd.DataFrame([{"ticker": TICKER, "field": "capex", "value": 1.0}])
+    without = _Sub(frame)
+    found = adjustment_unguarded(without)
+
+    print(f"\ncolumn absent -> {len(found)} finding(s), denominator="
+          f"{without.seen.get('adjustment_unguarded')}")
+    print("  SANITY: examined is REAL and non-zero, so the check reads as a 0% fire rate "
+          "rather than as ABSTAINED. The abstention is what hid this for an entire run.")
+    assert without.seen.get("adjustment_unguarded") == len(frame)
+    assert found == []

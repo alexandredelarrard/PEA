@@ -44,7 +44,7 @@ Families are listed in full -- there are ~50 of them and breadth is the routing 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field as dataclass_field, replace
 from typing import Any
 
 import pandas as pd
@@ -52,7 +52,8 @@ import pandas as pd
 from src.validate.fundamentals.clusters import (
     Cluster, CORROBORATION_BONUS, Family, FAMILY_BREADTH_MIN_SHARE,
     FAMILY_BREADTH_MIN_TICKERS, REOPENED, SEVERITY_WEIGHTS, TIER_WEIGHTS, WONTFIX,
-    build_clusters, build_families, corroboration, settled_clusters)
+    SETTLED, SettledCluster, build_clusters, build_families, corroboration,
+    settled_clusters)
 from src.validate.fundamentals.finding import SEVERITY_ORDER
 
 #: How many clusters get a FULL packet in the markdown file. Everything else is one table row.
@@ -95,17 +96,21 @@ class ReportModel:
     fields: tuple[str, ...] = ()
     tiers: tuple[int, ...] = ()
     previous_label: str = ""
-    settled: list[str] = dataclass_field(default_factory=list)
+    settled: list[SettledCluster] = dataclass_field(default_factory=list)
     persisted: bool = True
     #: Set when there is no comparable prior run: WHY there is no delta, in words.
     no_delta_reason: str = ""
 
     # ------------------------------------------------------------------ construction ---
     @classmethod
-    def from_run(cls, run, *, status: dict[str, dict[str, Any]] | None = None,
+    def from_run(cls, run, *, waivers: dict[str, dict[str, dict[str, Any]]] | None = None,
                  persisted: bool = False) -> "ReportModel":
-        """From an in-memory run. No delta and no cluster history -- see the class docstring."""
-        clusters = build_clusters(run.findings, status=status,
+        """From an in-memory run. No delta and no cluster history -- see the class docstring.
+
+        No settlements either, and for the same reason: settling needs a PREVIOUS comparable
+        run and a fix row proved against it, and an unpersisted run has neither.
+        """
+        clusters = build_clusters(run.findings, waivers=waivers,
                                   roster_size=len(run.scope.tickers))
         return cls(
             run_id=run.run_id, run_date=run.run_date, findings=run.findings,
@@ -134,12 +139,25 @@ class ReportModel:
                            f"Known runs: {known}")
         findings = ledger.findings_for(run_id)
         previous = ledger.previous_comparable(run_id)
+        waivers = ledger.status_map()
         clusters = build_clusters(
-            findings, status=ledger.status_map(),
+            findings, waivers=waivers,
             history=ledger.cluster_history(record.scope_hash),
             roster_size=record.scope_tickers)
-        settled = (settled_clusters(ledger.findings_for(previous.run_id), findings)
-                   if previous else [])
+        # The settlement predicate lives in ONE place. This builds the `cluster_id -> fix`
+        # map by ASKING the ledger per candidate rather than reimplementing the scope and
+        # improvement tests here, which is exactly how two copies of a rule start to drift.
+        settled: list[SettledCluster] = []
+        if previous:
+            before = ledger.findings_for(previous.run_id)
+            candidates = (sorted(before["cluster_id"].dropna().astype(str).unique())
+                          if not before.empty else [])
+            fixes = {cid: ledger.qualifying_fix(cid, record.scope_hash)
+                     for cid in candidates}
+            settled = settled_clusters(
+                before, findings, waivers=waivers,
+                fixes={cid: fix for cid, fix in fixes.items() if fix is not None})
+        clusters = _mark_settled(clusters, settled)
         return cls(
             run_id=run_id, run_date=record.run_date, findings=findings,
             health=ledger.check_health(run_id), clusters=clusters,
@@ -157,9 +175,25 @@ class ReportModel:
     # ------------------------------------------------------------------------ views ---
     @property
     def menu(self) -> list[Cluster]:
-        """The top clusters agent B chooses from. `wontfix` ones are not on the menu."""
+        """The top clusters agent B chooses from.
+
+        `wontfix` and `settled` ones are not on it. A settled cluster still CARRIES findings
+        now -- assessed, tolerated and still on the ledger -- so without this it would keep
+        its score and outrank real work indefinitely.
+
+        The settlement is read from `settled` as well as from the cluster's own status. Only
+        `from_ledger` stamps the status, and a model built any other way would otherwise put
+        a cluster on the work list that this same report has just declared closed.
+        """
+        settled = self.settled_map
         return [c for c in self.clusters
-                if c.is_work and c.status != WONTFIX][:MENU_SIZE]
+                if c.is_work and c.status not in (WONTFIX, SETTLED)
+                and c.cluster_id not in settled][:MENU_SIZE]
+
+    @property
+    def settled_map(self) -> dict[str, SettledCluster]:
+        """`{cluster_id: SettledCluster}` -- what the packets and the JSON join against."""
+        return {s.cluster_id: s for s in self.settled}
 
     @property
     def reopened(self) -> list[Cluster]:
@@ -199,6 +233,7 @@ def render(model: ReportModel, *, packets: int = FILE_PACKETS,
         _families(model),
         _clusters(model, limit=clusters),
         _packets(model, limit=packets),
+        _fix_history(model),
         _wontfix(model),
     ]
     return "\n\n".join(p for p in parts if p) + "\n"
@@ -288,11 +323,20 @@ def _delta(model: ReportModel) -> str:
                 "re-validation would report ~11,800 findings \"closed\".*")
     lines = [f"## delta vs {model.previous_label}", ""]
     if model.settled:
-        lines.append(f"- **{len(model.settled)} cluster(s) SETTLED** -- present in that run, "
-                     f"absent from this one. That is the proof a fix worked:")
-        lines += [f"    - `{cid}`" for cid in model.settled[:20]]
+        lines.append(f"- **{len(model.settled)} cluster(s) SETTLED** -- a recorded fix "
+                     f"measurably reduced them and nothing unwaived is left:")
+        for entry in model.settled[:20]:
+            fix = entry.fix
+            trail = (f" -- {fix.layer}, {fix.root_cause}, `{fix.commit_sha}` "
+                     f"({fix.queued_before} -> {fix.queued_after} queue finding(s))"
+                     if fix is not None else "")
+            name = (f" {entry.ticker} `{entry.field}`" if entry.ticker else "")
+            lines.append(f"    - `{entry.cluster_id}`{name} **({entry.basis})**{trail}")
         if len(model.settled) > 20:
             lines.append(f"    - *... and {len(model.settled) - 20} more.*")
+        lines.append("    - *`(clean)` means zero findings remain. A waived count means the "
+                     "residue was ASSESSED and tolerated -- every one of those rows is still "
+                     "in `fundamentals_check`, still counted and still firing.*")
     else:
         lines.append("- no cluster closed since that run")
     if model.reopened:
@@ -432,6 +476,10 @@ def _packet(rank: int, cluster: Cluster) -> str:
     if cluster.runs_open > 1:
         lines.append(f"- seen in {cluster.runs_open} comparable run(s), "
                      f"{cluster.first_seen} -> {cluster.last_seen}")
+    if cluster.waived_findings:
+        lines.append(f"- {cluster.waiver_summary}: "
+                     f"{', '.join(f'`{c}`' for c in cluster.waived_checks)}. "
+                     f"*Those findings are STILL on the ledger and still fire.*")
     if cluster.edgar_url:
         lines.append(f"- {cluster.edgar_url}")
     else:
@@ -441,6 +489,39 @@ def _packet(rank: int, cluster: Cluster) -> str:
     if cluster.why:
         lines.append(f"- _{cluster.why}_")
     return "\n".join(lines) + "\n"
+
+
+def _fix_history(model: ReportModel) -> str:
+    """Every recorded INTERVENTION on a cluster this report shows. Never omitted once one
+    exists, because a fix with no rendered trace is the exact gap this table was added to
+    close: cluster `1c9a517eaa47` was fixed and its only record was a commit sha.
+
+    Attached to settled, wontfix AND reopened clusters alike. A reopened cluster carrying a
+    fix row is a REGRESSION rather than a new defect, and only the fix row says which.
+    """
+    recorded = [s for s in model.settled if s.fix is not None]
+    if not recorded:
+        return ""
+    # `ticker`/`field` are blank on a cluster that closed OUTRIGHT -- there are no findings
+    # left to read them off. The cluster list still knows them if it saw the cluster at all.
+    named = {c.cluster_id: c for c in model.clusters}
+    lines = ["## recorded fixes", "",
+             "| cluster_id | ticker | field | layer | root cause | queue before -> after "
+             "| commit | test |",
+             "|---|---|---|---|---|---|---|---|"]
+    for entry in recorded:
+        fix, cluster = entry.fix, named.get(entry.cluster_id)
+        ticker = entry.ticker or (cluster.ticker if cluster else "")
+        field = entry.field or (cluster.field if cluster else "")
+        lines.append(f"| `{entry.cluster_id}` | {ticker} | `{field}` | {fix.layer} | "
+                     f"{fix.root_cause} | {fix.queued_before} -> {fix.queued_after} | "
+                     f"`{fix.commit_sha}` | `{fix.test_path}` |")
+    lines += ["", "*`fundamentals_check_fix` is APPEND-ONLY and NOTHING here filters a "
+                  "finding. A fix row records what was done and what it measurably closed; "
+                  "it never subtracts a row, which is what keeps a row-count drop usable as "
+                  "proof. `root_cause` and `evidence` are in the table -- "
+                  "`validate fix show <cluster_id>`.*"]
+    return "\n".join(lines)
 
 
 def _wontfix(model: ReportModel) -> str:
@@ -465,8 +546,14 @@ def _wontfix(model: ReportModel) -> str:
                      f"{cluster.findings} | {cluster.findings_at_decision} | "
                      f"{cluster.runs_open} | {state}{near} | {cluster.note} |")
     lines += ["", "*A `wontfix` records how many findings it was decided against and REOPENS "
-                  "by itself the moment the cluster grows past that. A judgement made about 3 "
-                  "findings is not a judgement about 30.*"]
+                  "by itself the moment its own population grows past that -- per check, not "
+                  "per cluster. A judgement made about 3 findings is not a judgement about "
+                  "30.*",
+              "",
+              "*A cluster listed here with everything waived is TOLERATED, NOT SOLVED: no "
+              "recorded fix reduced it. Waiving every check one at a time can never settle a "
+              "cluster, which is the rule that stops this footer from becoming the "
+              "suppression register it replaced.*"]
     return "\n".join(lines)
 
 
@@ -508,7 +595,7 @@ def render_json(model: ReportModel, *, clusters: int = JSON_CLUSTERS) -> str:
             "previous_run": model.previous_label or None,
             "comparable": bool(model.previous_label),
             "reason": model.no_delta_reason or None,
-            "settled_clusters": model.settled,
+            "settled_clusters": [_settled_json(s) for s in model.settled],
             "reopened_clusters": [c.cluster_id for c in model.reopened],
         },
         "routing_hint_discriminating": not _hint_degeneracy(
@@ -523,10 +610,20 @@ def render_json(model: ReportModel, *, clusters: int = JSON_CLUSTERS) -> str:
                     "note": "a policy, not a fact. score = (sum of w(severity)*w(tier)) * "
                             "(1 + bonus*(checks-1)). Retunable; the corroboration term exists "
                             "because volume alone ranked a 2-check cluster above a 10-check one"},
+        "settlement_rule": {
+            "conditions": ["no unwaived queue-severity finding remains",
+                           "every waiver is still within its own findings_at_decision",
+                           "a fundamentals_check_fix row exists at this scope_hash",
+                           "that fix row shows queued_after < queued_before"],
+            "note": "waivers ALONE never settle a cluster -- a fully waived cluster with no "
+                    "qualifying fix row reads `wontfix`: tolerated, not solved. No waiver or "
+                    "fix row ever removes a finding from `fundamentals_check`.",
+        },
         "menu": [c.cluster_id for c in model.menu],
         "clusters": [{**c.as_dict(), "menu": c.cluster_id in menu, "run_id": model.run_id}
                      for c in work[:clusters]],
         "wontfix": [c.as_dict() for c in model.wontfix + model.reopened],
+        "fixes": [_settled_json(s) for s in model.settled if s.fix is not None],
     }
     return json.dumps(payload, indent=2, sort_keys=False, default=str) + "\n"
 
@@ -534,6 +631,44 @@ def render_json(model: ReportModel, *, clusters: int = JSON_CLUSTERS) -> str:
 # --------------------------------------------------------------------------- #
 # internals                                                                    #
 # --------------------------------------------------------------------------- #
+
+def _mark_settled(clusters: list[Cluster], settled: list[SettledCluster]) -> list[Cluster]:
+    """Stamp `SETTLED` on the clusters that closed, keeping everything else about them.
+
+    Needed because a settled cluster can still CARRY findings now. Without the stamp it keeps
+    its score and its `wontfix`/`open` label, and would sit in the ranked table -- and even on
+    agent B's menu -- as though nobody had touched it.
+
+    `replace` rather than a mutable field: `Cluster` is frozen because a scored, ranked object
+    that a renderer can edit is how two sections of one report end up disagreeing.
+    """
+    if not settled:
+        return clusters
+    ids = {s.cluster_id for s in settled}
+    return [replace(c, status=SETTLED) if c.cluster_id in ids else c for c in clusters]
+
+
+def _settled_json(entry: SettledCluster) -> dict[str, Any]:
+    """One settlement as structured data -- the agent artifact, never scraped prose."""
+    fix = entry.fix
+    return {
+        "cluster_id": entry.cluster_id, "ticker": entry.ticker or None,
+        "field": entry.field or None,
+        "findings_remaining": entry.findings_after,
+        "waived_findings": entry.waived_findings,
+        "waived_checks": list(entry.waived_checks),
+        "basis": entry.basis,
+        "fix": None if fix is None else {
+            "run_id_before": fix.run_id_before, "run_id_after": fix.run_id_after,
+            "layer": fix.layer, "root_cause": fix.root_cause,
+            "evidence": fix.evidence_json,
+            "commit_sha": fix.commit_sha, "test_path": fix.test_path,
+            "findings_before": fix.findings_before, "findings_after": fix.findings_after,
+            "queued_before": fix.queued_before, "queued_after": fix.queued_after,
+            "decided_at": (str(fix.decided_at.date()) if fix.decided_at is not None else None),
+        },
+    }
+
 
 def _flagged(health: pd.DataFrame, column: str) -> pd.DataFrame:
     """The rows where a stored boolean flag is set, or an empty frame OF THE SAME SHAPE.

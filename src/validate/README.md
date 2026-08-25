@@ -15,6 +15,7 @@ src/data_extract/       src/validate/           an agent + configs/
       │                       │  fundamentals_check   │
       │                       │  fundamentals_check_run
       │                       │  fundamentals_check_status
+      │                       │  fundamentals_check_fix
       │                       │  (MUTATES NOTHING ELSE)
       │◄──────────────────────┴───────────────────────┤
       │   rebuild, then re-run part 2 at the SAME     │  the ROW-COUNT DROP
@@ -70,7 +71,10 @@ PY="$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3
 | **both designed rosters** (the flag repeats) | `"$PY" -m src validate fundamentals --roster in_sample --roster out_of_sample` |
 | **re-read a recorded run — no re-run, no writes** | `"$PY" -m src validate report --run-id 3df52ae9af75` |
 | **record a wontfix** (a NUMBER in the note is enforced) | `"$PY" -m src validate status set <cluster_id> --note "..."` |
-| undo one | `"$PY" -m src validate status clear <cluster_id>` |
+| tolerate only ONE check's findings on a cluster | `"$PY" -m src validate status set <cluster_id> --check peer_ratio --note "..."` |
+| undo one (all of them, or just one check's) | `"$PY" -m src validate status clear <cluster_id> [--check peer_ratio]` |
+| **record a FIX and waive its benign residue, atomically** | `"$PY" -m src validate fix record <cluster_id> --layer extraction --root-cause "..." --evidence '{"accessions": [...]}' --commit SHA --test PATH --waive "peer_ratio:2 findings, 8.3% vs 3.5% median"` |
+| what was done to this cluster, and what is still pending | `"$PY" -m src validate fix show <cluster_id>` |
 | what does this tool even test? | `"$PY" -m src validate checks` |
 
 Reports land in `reports/validate/YYYY-MM-DD/<scope>.md`, with a `.json` beside it carrying the
@@ -148,13 +152,43 @@ checks) on top and left MCD `capex` (55 findings, **ten** checks) off the menu e
 check firing 62 times is one opinion repeated; ten independent checks agreeing is ten arguments
 for the same conclusion. With the corroboration term MCD leads at 481 and HCA sits at 305.
 
-### The three tables
+### The four tables
 
 | table | grain | what it is for |
 |---|---|---|
 | `fundamentals_check` | one FINDING per run | the ledger. Nothing is ever subtracted |
 | `fundamentals_check_run` | one `(run_id, check_name)` | WHAT the run looked at, and what each check did |
-| `fundamentals_check_status` | one `cluster_id` | a human's `wontfix`, and nothing else |
+| `fundamentals_check_status` | one `(cluster_id, check_name)` | a human's `wontfix`, and nothing else. `check_name = ''` is the whole cluster |
+| `fundamentals_check_fix` | one `(cluster_id, run_id_after)` | an INTERVENTION: what was done, at which layer, and what it measurably closed |
+
+A **waiver** is a STATE — mutable, self-expiring, and it says "this finding is real and we
+tolerate it". A **fix** is an EVENT — append-only, never revised, and it says "we intervened,
+here is what and why". They are separate tables because they are separate kinds of claim, and
+because **neither ever removes a row from `fundamentals_check`**. A waiver is applied when a
+report is RENDERED; a fix row is read only to decide whether a settlement is claimable.
+
+### What it takes to call a cluster SETTLED
+
+A cluster does not have to reach zero. MCD `capex` went 55 → 4 and all 4 are benign. Four
+conditions, each blocking a different way to fake a closed defect:
+
+1. **no UNWAIVED queue-severity finding is left.** `info` never needs a waiver — nothing reads
+   it as work, so it cannot be hiding any;
+2. **every waiver is still within its own `findings_at_decision`.** One that grew has expired,
+   and a cluster resting on an expired judgement is `reopened`, not settled;
+3. **a fix row exists at this `scope_hash`.** Without this, waiving each check in turn
+   manufactures a settlement with nobody having fixed anything — the deleted suppression
+   register, reassembled from parts;
+4. **that fix row reduced the queue** (`queued_after < queued_before`).
+
+Fail 3 or 4 with 1 and 2 satisfied and the cluster reads `wontfix`: **tolerated, not solved**,
+and the report says so. That is why no new status word was added — a fully-waived, unfixed
+cluster already *is* what `wontfix` means. `Ledger.qualifying_fix` is the only place conditions
+3 and 4 are written down; two copies of a rule this load-bearing drift.
+
+A **no-improvement fix row is still recordable** — correcting a wrong-but-plausible value where
+no check was firing is a real fix — but `fix record` warns loudly and it can never settle
+anything. Permissive to record, strict to settle.
 
 **`run_id` is what makes a delta mean anything.** It hashes (date, tickers, fields, tiers), and
 `scope_hash` is the same without the date. Two runs are comparable **iff their scope hashes
@@ -318,6 +352,13 @@ abstained is not a pass.
    automatically the moment the cluster grows past that** — a judgement made about 3 findings
    is not a judgement about 30. The report's `wontfix` footer is never omitted. Between them,
    those two properties are what the deleted register's staleness report used to do by hand.
+
+   `fundamentals_check_fix` was added for the same reason in reverse: a FIX had nowhere to be
+   recorded, so cluster `1c9a517eaa47` was fixed and its only trace was a commit sha. It is
+   append-only, `fix record` refuses what it cannot verify, and **no renderer may filter
+   findings using it** — which is pinned by a test that counts `fundamentals_check` rows with
+   and without any of it present. Everything else here reverts with `git revert`; a suppression
+   leak does not.
 6. **Thresholds live in code with their measurement in the docstring. Baselines live in
    `configs/fundamentals/fundamentals_baselines.json` and only move with evidence.** A
    threshold is *behaviour* and will be retuned repeatedly; a baseline is a *measurement* and a
@@ -333,12 +374,20 @@ abstained is not a pass.
    | `xbrl_linkbase.py`, `periods.py`, `fundamentals_kpis.json` — a RESOLUTION bug | `fundamentals --rebuild -t X` (deletes four tables for X, refetches) | network |
    | a check module or a threshold | none — re-validate directly | seconds |
 
-   Then re-validate **at the ORIGINAL scope** and report the delta as a number: `14 → 0`. A
-   different scope produces an incomparable `run_id` and the tooling refuses to difference
-   them. **A fix with no measured drop is not a fix.**
+   Then re-validate **at the ORIGINAL scope** and report the delta as a number: `55 → 4`, on
+   QUEUE severities. A different scope produces an incomparable `run_id` and the tooling
+   refuses to difference them. The drop does not have to reach zero — see the settlement rule
+   above — but **a fix with no measured drop cannot settle the cluster**.
+
+   Then **record it**, because the drop alone cannot say what you did:
+   `validate fix record <cluster_id> --layer L --root-cause "..." --evidence '{...}'
+   --commit SHA --test PATH [--waive "check:quantified note"]`. Everything but those flags is
+   derived from the ledger, the CLI refuses what it cannot verify, and the fix row plus its
+   waivers land atomically.
 
    To READ a run that already happened, use `validate report --run-id X`, which re-renders from
-   the tables without re-running anything.
+   the tables without re-running anything. To read what was DONE to a cluster, use
+   `validate fix show <cluster_id>`.
 
 ---
 

@@ -63,7 +63,7 @@ MANDATORY, non-empty
 **1. Gates are not metrics.** §2 carries a PASS/FAIL column; §3 must not. **`loc` may appear only in
 §3.** LOC is an observation, never a target: an agent optimising it would delete this codebase's
 load-bearing docstrings — `xs.py` exists to explain why three clip constants must *not* be unified,
-and `analyze_history.py::detect_level_outliers` documents two false-positive bugs that a shorter
+and `src/validate/outliers.py::detect_level_outliers` documents two false-positive bugs that a shorter
 version reintroduces. `refactor_metrics.py` gate **G6** fails when docstring lines shrink in a
 touched file unless §5 justifies it.
 

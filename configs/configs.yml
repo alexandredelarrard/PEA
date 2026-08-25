@@ -2,7 +2,7 @@ data_mode: remote
 seed: 4325
 
 data_extract:
-  years_history: 15
+  years_history: 15 # 25 extended only when fundamentals are all good / well extracted 
   # `prices_macro`'s only window. Deeper than years_history on purpose: the risk-parity and
   # trend sleeves backtest through the dot-com and GFC drawdowns. The SERIES LIST is not a
   # config key -- it cannot be separated from its symbol->name mapping without creating two

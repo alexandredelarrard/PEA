@@ -39,8 +39,12 @@ from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fe
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.cik_cutover import (
     Cutover, cutover_filings, load_cutovers)
+from src.data_extract.utils.fundamentals.fundamentals_employees import (
+    employee_fact_frame, history_by_ticker, is_headcount_form)
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import OTHER_SHAPE, period_shape
+from src.data_extract.utils.fundamentals.reason_codes import (
+    NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL)
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     FIELD_SUM, INCOMPLETE_ROLL_UP, LINKBASE_SUM, NO_USABLE_PERIOD, STATEMENT_LEAF_SUM,
     UNRESOLVED, ArcGraph, Resolution, resolve_field, statement_arcs)
@@ -53,8 +57,9 @@ _COLS = ["ticker", "accession_number", "field", "fiscal_year", "fiscal_period",
          "roll_up_children", "root_anchor", "adjustment", "role_uri", "is_extension",
          "dc_code"]
 
-#: Fiscal period recorded when the filer tagged none. A NOT NULL PK column cannot hold a
-#: real NULL, and an empty string would sort and join as a silent third state.
+#: Fiscal period recorded when the filer tagged none. No longer a PK column -- the key is the
+#: calendar window now -- but kept, because an empty string and a NULL would sort and join as
+#: two silent extra states where a named one reads as what it is.
 UNLABELLED_PERIOD = "NA"
 
 
@@ -160,8 +165,9 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
     return out
 
 
-def _materialise(resolution: Resolution, facts: pd.DataFrame) -> dict[tuple, dict]:
-    """Turn one field's resolution into {period key: value + provenance}.
+def _materialise(resolution: Resolution,
+                 facts: pd.DataFrame) -> tuple[dict[tuple, dict], dict[tuple, dict]]:
+    """Turn one field's resolution into `({period key: value + provenance}, {refused})`.
 
     A `linkbase_sum` emits a period ONLY where every leg is reported for that same period.
     A partial sum is not the total: dropping a leg is precisely the `shortTermDebt` defect
@@ -175,10 +181,26 @@ def _materialise(resolution: Resolution, facts: pd.DataFrame) -> dict[tuple, dic
     each quarter, which is worse than absent because it survives every level check and
     corrupts only the growth rate. The cost is a dropped period, which
     `insufficient_quarters` already reports honestly.
+
+    Keeping the intersection STRICT survives this change; what changes (register item 9 /
+    B.6.6) is that the periods it drops are now RETURNED rather than discarded. Until
+    Phase 5 a partial intersection produced no row and no code, and `rows_from_xbrl` only
+    reason-coded a field with no periods AT ALL -- so a field that resolved for fourteen
+    windows and was refused for the fifteenth said nothing about the fifteenth. Measured:
+    **128 rows** across EQIX `capex` (40), EQIX `depAmort` (40), SCHW `cash` (34), NEE
+    `ppeNet` (8) and VRT `depAmort` (6). The plan's estimate was 31.
+
+    The SCHW case is the one a null-gate could never have caught: `cash` is an INSTANT
+    field, so a dropped period does not leave a null in the history snapshot -- it leaves
+    the previous balance carried forward, which is correct behaviour under the snapshot
+    contract and indistinguishable from a genuinely unchanged balance. The refusal has to
+    be recorded where it happens or it is not observable anywhere at all.
     """
     if resolution.method in (LINKBASE_SUM, STATEMENT_LEAF_SUM):
         legs = {c: _values_by_period(facts, c) for c, _ in resolution.children}
+        every = set().union(*(set(v) for v in legs.values())) if legs else set()
         shared = set.intersection(*(set(v) for v in legs.values())) if legs else set()
+        refused = {key: _refused_period(legs, key) for key in sorted(every - shared)}
         out = {}
         for key in shared:
             total = sum(legs[c][key]["value"] * w for c, w in resolution.children)
@@ -194,15 +216,32 @@ def _materialise(resolution: Resolution, facts: pd.DataFrame) -> dict[tuple, dic
             else:
                 out[key].pop("duplicate_fact", None)
     elif resolution.concept:
-        out = _values_by_period(facts, resolution.concept)
+        out, refused = _values_by_period(facts, resolution.concept), {}
     else:
-        return {}
+        return {}, {}
 
     for concept in resolution.subtract:
         for key, adjustment in _values_by_period(facts, concept).items():
             if key in out:
                 out[key] = {**out[key], "value": out[key]["value"] - adjustment["value"]}
-    return out
+    return out, refused
+
+
+def _refused_period(legs: dict[str, dict[tuple, dict]], key: tuple) -> dict:
+    """A value-less period stub for a window the strict intersection refused.
+
+    Every PK column is already inside the period key, so the stub needs no second pass over
+    the facts frame; `period_days` and `unit` come from whichever leg DID report the window,
+    since all of them describe the same one.
+    """
+    reported = next(legs[c][key] for c in legs if key in legs[c])
+    return {"fiscal_year": reported["fiscal_year"],
+            "fiscal_period": reported["fiscal_period"],
+            "duration_type": reported["duration_type"],
+            "period_start": reported["period_start"],
+            "period_end": reported["period_end"],
+            "period_days": reported["period_days"],
+            "value": None, "unit": reported.get("unit"), "decimals": None}
 
 
 def _compose(spec, component_fields: tuple[str, ...],
@@ -262,7 +301,7 @@ def _compose(spec, component_fields: tuple[str, ...],
         else:
             out[key].pop("duplicate_fact", None)
     if not out:
-        return {}, (INCOMPLETE_ROLL_UP if keys else "not_disclosed")
+        return {}, (INCOMPLETE_ROLL_UP if keys else NOT_DISCLOSED)
     return out, None
 
 
@@ -275,8 +314,9 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
     named risk zone and this needs no schema change to stay auditable --
     `adjustment::jsonb ? 'undeclared_rejected'` finds every row 4c.1 actually reordered,
     `? 'role_rejected'` every row its note-role half withheld a candidate on,
-    `? 'zero_only_retained'` every row the zero guard did, and `? 'duplicate_fact'` every
-    (concept, period) this filer tagged twice at two different values.
+    `? 'zero_only_retained'` every row the zero guard did, `? 'basis_qualifier'` every row
+    that answered on a concept the catalogue declares non-comparable (`basis_ex_iprd`), and
+    `? 'duplicate_fact'` every (concept, period) this filer tagged twice at two values.
 
     `duplicate_fact` is the one PERIOD-level key: resolution is period-agnostic by design,
     but a duplicate is a property of one fact, so it arrives on the materialised period
@@ -293,13 +333,36 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
         blob["role_only_retained"] = True
     if resolution.undeclared_rejected:
         blob["undeclared_rejected"] = list(resolution.undeclared_rejected)
+    if resolution.basis_qualifier:
+        blob["basis_qualifier"] = resolution.basis_qualifier
     if period and period.get("duplicate_fact"):
         blob["duplicate_fact"] = period["duplicate_fact"]
     return json.dumps(blob) if blob else None
 
 
+def _period_end(period: dict | None, filing) -> pd.Timestamp:
+    """The row's `period_end`, guaranteed non-NULL because it is part of the PK.
+
+    Falls back through the filing's `period_of_report` to its filing date. Both fallbacks are
+    only ever reached by a row that carries no value -- a reason-coded absence, or the handful
+    of duration facts (10 in 109,267) whose window is unreadable -- so a fallback can never
+    displace a real measurement.
+    """
+    if period is not None and pd.notna(period.get("period_end")):
+        return pd.Timestamp(period["period_end"])
+    reported = pd.to_datetime(getattr(filing, "period_of_report", None), errors="coerce")
+    return reported if pd.notna(reported) else pd.Timestamp(filing.filing_date)
+
+
 def _row(ticker: str, cik: str, filing, regime: str | None, field: str,
-         resolution: Resolution, period: dict | None) -> dict:
+         resolution: Resolution, period: dict | None, *,
+         dc_code: str | None = None) -> dict:
+    """One `fundamentals_facts` row.
+
+    `dc_code` overrides the resolution's own, for the one case where they differ: a period
+    the strict intersection refused on a field that resolved perfectly well elsewhere in the
+    same filing. The resolution has no code (it resolved); the PERIOD does.
+    """
     children = ([[c, w] for c, w in resolution.children] if resolution.children
                 else None)
     return {
@@ -317,11 +380,19 @@ def _row(ticker: str, cik: str, filing, regime: str | None, field: str,
                                            errors="coerce"),
         "regime": regime,
         "period_start": period["period_start"] if period else pd.NaT,
-        "period_end": period["period_end"] if period else pd.NaT,
+        # `period_end` is a PK column, so it cannot be NULL -- and a REASON-CODED row has no
+        # period of its own by definition. It falls back to the filing's own period of report,
+        # which is the honest reading ("this field was absent as of the period this filing
+        # covers") and cannot collide: a field with any usable period emits no such row, and
+        # the key already contains `field`.
+        "period_end": _period_end(period, filing),
         "period_days": period["period_days"] if period else None,
         "value": period["value"] if period else None,
         "unit": period.get("unit") if period else None,
-        "decimals": str(period.get("decimals")) if period else None,
+        # `str(NaN)` is the string "nan", which joins and compares as a real value.
+        "decimals": (str(period["decimals"])
+                     if period and period.get("decimals") is not None
+                     and pd.notna(period.get("decimals")) else None),
         "resolution_method": resolution.method,
         "source_concept": resolution.source_concept,
         "roll_up_children": json.dumps(children) if children else None,
@@ -329,7 +400,7 @@ def _row(ticker: str, cik: str, filing, regime: str | None, field: str,
         "adjustment": _adjustment_json(resolution, period),
         "role_uri": resolution.role_uri,
         "is_extension": resolution.is_extension,
-        "dc_code": resolution.dc_code,
+        "dc_code": dc_code or resolution.dc_code,
     }
 
 
@@ -379,6 +450,9 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
     # then read those results rather than the facts.
     resolutions: dict[str, Resolution] = {}
     values: dict[str, dict[tuple, dict]] = {}
+    #: field -> the periods route 3b's strict intersection refused (B.6.6). Kept separate
+    #: from `values` so a composed field cannot accidentally sum a refused stub.
+    refused: dict[str, dict[tuple, dict]] = {}
     for name in catalogue.extracted_fields:
         resolution = resolve_field(catalogue.field(name), graph, available,
                                    catalogue, regime, duration_concepts=durations,
@@ -386,7 +460,7 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
                                    prefer_structure=prefer_structure)
         resolutions[name] = resolution
         if resolution.method != FIELD_SUM:
-            values[name] = _materialise(resolution, facts)
+            values[name], refused[name] = _materialise(resolution, facts)
     for name, resolution in list(resolutions.items()):
         if resolution.method == FIELD_SUM:
             composed, reason = _compose(catalogue.field(name),
@@ -421,6 +495,17 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
             continue
         rows.extend(_row(ticker, cik, filing, regime, name, resolution, period)
                     for period in periods.values())
+    # The periods route 3b refused, each as a value-less row carrying its own code. Emitted
+    # for EVERY field, including the ones that resolved -- that is the whole of B.6.6.
+    for name, periods in refused.items():
+        # Disjoint by construction -- `refused` is `union - intersection` and `values` is the
+        # intersection -- but asserted, because a key in both would write the same PK twice
+        # and the dedup in `build_ticker_fundamentals` would silently keep the value-less one.
+        assert not (set(periods) & set(values.get(name, {}))), (
+            f"{ticker} {filing.accession_number} {name}: a refused period is also resolved")
+        rows.extend(_row(ticker, cik, filing, regime, name, resolutions[name], period,
+                         dc_code=PERIOD_INTERSECTION_PARTIAL)
+                    for period in periods.values())
     return rows
 
 
@@ -428,6 +513,7 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
                               done_accessions: frozenset[str] = frozenset(),
                               catalogue: Catalogue, gics_by_ticker: dict[str, dict],
                               cutovers: dict[str, Cutover] | None = None,
+                              headcounts: dict[str, list[int]] | None = None,
                               ) -> dict[Table, pd.DataFrame]:
     """One ticker's facts, walking BOTH registrants where it re-registered.
 
@@ -445,15 +531,34 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
                if cutover else new_filings(ticker, FUNDAMENTALS_FORMS, since,
                                            done_accessions))
     rows: list[dict] = []
+    # Headcount rides the SAME walk (decision 35): the number is in the 10-K prose this loop
+    # already has a handle on, so a separate fetcher would list, download and date those
+    # filings a second time. The continuity guard is seeded from what is already stored and
+    # grows as the walk goes -- `new_filings` is oldest-first, so each 10-K is judged against
+    # every earlier one exactly as a full-history pass would judge it.
+    accepted = list((headcounts or {}).get(ticker, []))
+    staff: list[dict] = []
     for filing in filings:
         filing_cik = (cutover.cik_for(filing.filing_date) if cutover else cik)
         rows.extend(filing_rows(ticker, filing_cik, filing, catalogue,
                                 gics_by_ticker.get(ticker)))
+        if not is_headcount_form(getattr(filing, "form", None)):
+            continue
+        parsed = employee_fact_frame(filing, accepted)
+        if parsed is None:
+            continue
+        count = float(parsed["value"].iloc[0])
+        accepted.append(int(count))
+        staff.append({"ticker": ticker,
+                      "as_of": pd.Timestamp(filing.filing_date), "employees": count})
+    employees = pd.DataFrame(staff, columns=["ticker", "as_of", "employees"])
     df = pd.DataFrame(rows, columns=_COLS)
     if df.empty:
-        return {Tables.fundamentals_facts: df}
-    # One filing can tag the same field for the same period twice (a re-presented
-    # comparative). Postgres rejects an upsert touching one PK row twice, so collapse here.
+        return {Tables.fundamentals_facts: df, Tables.fundamentals_employees: employees}
+    # One filing can tag the same field on the same WINDOW twice (a nudged boundary day).
+    # Postgres rejects an upsert touching one PK row twice, so collapse here. Measured over
+    # 337,190 swept facts, this now costs **3 rows** -- against 18,604 under the old
+    # fiscal-label PK, of which 16,340 collisions held two genuinely different values.
     #
     # A CUTOVER cannot introduce a duplicate here -- the two CIK walks are split on a date
     # and are disjoint by construction -- but assert it rather than assume it: a silent
@@ -465,11 +570,13 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
             f"{ticker}: the {cutover.predecessor_cik} -> {cutover.successor_cik} cutover at "
             f"{cutover.cutover_date.date()} lost accessions in dedup "
             f"({before} -> {df['accession_number'].nunique()}); the two walks overlap")
-    return {Tables.fundamentals_facts: df}
+    # Two 10-K/A amendments filed the same day would collide on the employees PK.
+    employees = employees.drop_duplicates(subset=["ticker", "as_of"], keep="last")
+    return {Tables.fundamentals_facts: df, Tables.fundamentals_employees: employees}
 
 
 def fetch_fundamentals_sec(context: Context, tickers: list[str],
-                           years_history: int) -> None:
+                           years_history: int, *, full: bool = False) -> None:
     # `Context` exposes no config directory (it is a named risk zone, and the CLI's `-c`
     # never reaches it), so the catalogue loads from its own default -- which is the same
     # `./configs` the CLI defaults to.
@@ -482,6 +589,13 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str],
                                   optional=True)
     gics = ({row.ticker: {lvl: getattr(row, lvl) for lvl in levels}
              for row in universe.itertuples()} if universe is not None else {})
+    # The headcount continuity guard's seed. Read from the employees table itself rather
+    # than from `fundamentals_facts`, where headcount no longer lives.
+    stored = context.store.load(Tables.fundamentals_employees,
+                                columns=["ticker", "as_of", "employees"], optional=True)
+    headcounts = history_by_ticker(
+        stored.rename(columns={"as_of": "filing_date", "employees": "value"})
+        if stored is not None else None)
     cutovers = load_cutovers()
     if cutovers:
         context.log.info("fundamentals: %d CIK cutover(s) declared -- %s", len(cutovers),
@@ -489,8 +603,10 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str],
                                    for t, c in sorted(cutovers.items())))
     run_edgar_fetch(
         context, tickers, years_history,
-        tables=(Tables.fundamentals_facts,),
+        # `fundamentals_facts` stays FIRST: it keys the manifest window and the accession
+        # dedup set, and headcount is a by-product of the same filings.
+        tables=(Tables.fundamentals_facts, Tables.fundamentals_employees),
         build=partial(build_ticker_fundamentals, catalogue=catalogue,
-                      gics_by_ticker=gics, cutovers=cutovers),
-        desc="fundamentals (linkbase)",
+                      gics_by_ticker=gics, cutovers=cutovers, headcounts=headcounts),
+        desc="fundamentals (linkbase)", full=full,
         max_workers=int(context.config.data_extract.fundamentals_workers))

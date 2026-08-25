@@ -115,7 +115,9 @@ price-history              # prices + dividends (HEAVY)
 short-interest  fails-to-deliver  macro
 thirteen-f                 # 13F bulk + OpenFIGI cusip map (HEAVY)
 superinvestors             # needs 13F
-fundamentals               # SEC XBRL per-filing + rebuild fundamentals_history (HEAVY)
+fundamentals               # both layers: facts (network, HEAVY) then history (replay)
+fundamentals-facts         # SEC XBRL per-filing -> fundamentals_facts (+ headcount). HEAVY
+fundamentals-history       # fundamentals_facts -> fundamentals_history + _reason_codes. No network
 earnings-surprises  financial-statements  insider-transactions
 financial-notes            # VERY HEAVY
 def14a                     # LLM-parsed governance (costs OpenAI calls)
@@ -227,6 +229,63 @@ land as one parquet per ticker under `data/fundamentals_sweep/` (gitignored), so
   CPU-bound in XBRL parsing, not network-bound, so more workers than cores does not help.
 - The sweep honours `fundamentals_cik_cutover.json`. Without that it would walk only the current
   registrant and measure APA at 22 filings instead of 65 — a pipeline nobody runs.
+
+`measure_total_liabilities_legs.py` used to sit here as a third instrument. It was DELETED in
+plan-5b: its finding is now a standing constraint in `cross_identity`'s docstring -- 0 of 44
+10-Ks declare a `Liabilities` total, leg-sets vary by filer *and* by year, and an unlisted
+us-gaap sibling is dropped silently, so `totalLiabilities` stays an identity and never a
+leg-sum. Note that the CONSTRAINT is preserved and the MEASUREMENT is not: the script read the
+calculation linkbase over the network, which no check does. Recover it from git history if the
+leg-set question is ever reopened.
+
+## Backfilling fundamentals from scratch — chunk it, and pass `-F`
+
+```bash
+for CHUNK in "AAPL,CSCO,KR,XOM,APA,EOG" "VLO,JPM,BAC,MTB,USB,MET" ...; do
+  "$PY" -m src data_extract fundamentals-facts -F -t "$CHUNK"
+done
+"$PY" -m src data_extract fundamentals-history -t "<all of them>"
+```
+
+- **Chunk into separate PROCESSES** for the same reason the sweep does: edgartools never releases
+  its per-filing caches inside one.
+- **`-F/--full` is not optional.** The run manifest's incremental test is "did the ticker universe
+  change size since the last run?", so two consecutive 6-ticker chunks look like a repeat of one
+  run and the second gets `since = last run`, i.e. nothing. Measured: chunk 1 wrote 31,540 rows
+  and chunks 2-9 wrote **0**.
+- The history build is a separate command because it costs no network: a bug in the history layer
+  is fixed with `fundamentals-history --rebuild-history -t APA`, and only a bug in the RESOLUTION
+  layer needs `fundamentals --rebuild -t APA`, which deletes all four tables and refetches.
+- Wall clock: ~7 min per 6-ticker chunk of facts, ~2.5 min per ticker for the history replay.
+- **A SCHEMA change to any of the four tables needs `scripts/recreate_fundamentals_tables.py`
+  first.** `sql/schema.sql` runs only when Postgres initialises a volume; on a live one
+  `store.save` creates a missing table by inferring dtypes from the first frame it is handed, so
+  an all-None column becomes TEXT and every later ticker's number is stored as a string. The
+  script drops and re-creates the four tables from the committed DDL -- destructive, `--dry-run`
+  first, `--yes` to apply -- and is what a PK or column-contract change is applied with.
+
+Then check what you built -- with the VALIDATOR, which absorbed the eight gates that used to
+live in `scripts/verify_fundamentals_history.py`:
+
+```bash
+"$PY" -m src validate fundamentals --tier 1 [-t AAPL,JPM]
+"$PY" -m src validate fundamentals --roster in_sample --report reports/$(date +%F)/validate.md
+"$PY" -m src validate checks                      # what does this tool actually test?
+```
+
+Read-only against every table but `fundamentals_check`, and **it gates nothing** -- the nightly
+build runs to completion whatever it finds (plan-5b decision 45). The eight §5.8 gates are now
+Tier-1 checks: `grain` (no duplicate `(ticker, as_of)`, `fiscal_end` monotone, no look-ahead),
+`column_contract` (the 69 columns, IN ORDER), `unexplained_null` (no NULL cell without a
+`fundamentals_reason_codes` row for its own `(ticker, as_of, field)`), `filing_lag`,
+`amendment_ledger` (how much the 365-day cutoff refuses), `same_day_collapse`, `coverage_field`
+(per-regime coverage, with the absence oracle absorbed from `audit_absence_evidence.py`) and
+`code_vocabulary`.
+
+**Read the fire-rate table before the queue.** A check marked ABSTAINED examined nothing, which
+is not a pass; a check marked THRESHOLD BUG is above its own declared ceiling and is burying
+real findings under itself. `src/validate/README.md` is the operating manual, and its §4 --
+"when it does not work" -- is the part worth reading twice.
 
 ## Finishing a task — the definition-of-done report
 

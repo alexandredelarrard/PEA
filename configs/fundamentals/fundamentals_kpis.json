@@ -35,7 +35,7 @@
   },
 
   "_derived_columns": {
-    "_purpose": "The 10 columns fundamentals_history COMPUTES rather than extracts. Declared here because they are part of the same contract -- a `feeds` reference must be able to name one, and the history build needs the formula in one place -- but they are NOT catalogue fields: nothing resolves them against a concept.",
+    "_purpose": "The 8 columns fundamentals_history COMPUTES rather than extracts. Declared here because they are part of the same contract -- a `feeds` reference must be able to name one, and the history build needs the formula in one place -- but they are NOT catalogue fields: nothing resolves them against a concept. build_history._FORMULAS is the single implementation and a test asserts it against these strings.",
     "grossMargins": "grossProfit_ttm / totalRevenue_ttm",
     "operatingMargins": "operatingIncome_ttm / totalRevenue_ttm",
     "profitMargins": "netIncome_ttm / totalRevenue_ttm",
@@ -43,9 +43,12 @@
     "debtToEquity": "totalDebt / stockholdersEquity",
     "revenue_q": "the DISCRETE quarter's totalRevenue",
     "netIncome_q": "the DISCRETE quarter's netIncome",
-    "revenueGrowth": "totalRevenue_ttm year-on-year, on a 365-DAY as_of offset rather than a 4-ROW offset -- an amendment row makes a row offset ~9 months instead of 12",
-    "earningsGrowth": "netIncome_ttm year-on-year, same 365-day offset",
     "optionOverhang": "dilutedShares / basicShares - 1",
+    "_cube_time_columns": {
+      "_why": "Computed by pit.py at CUBE time, not by the history build (decision 33), and therefore NOT columns of fundamentals_history. The bug is in the OFFSET, not the numerator: at cube time the offset can be a fixed 365 DAYS, while a history-build version can only be 4 ROWS -- and under the publication-event grain an amendment row makes four rows ~9 months, not 12. Computing them here would fix two columns and leave infer_yoy_periods' row-offset in every other cube growth feature (fundamental_features.py:515-516,653, governance_features.py:95); moving them fixes all of them at once. That repair is Phase 6 section 6.1. Mirrored in code by kpi_catalogue.CUBE_TIME_COLUMNS, which subtracts them defensively so the contract cannot regrow by a config edit alone.",
+      "revenueGrowth": "totalRevenue_ttm year-on-year, on a 365-DAY as_of offset rather than a 4-ROW offset",
+      "earningsGrowth": "netIncome_ttm year-on-year, same 365-day offset"
+    },
     "_dropped": {"_why": "Their inputs leave with the 171 removed columns; consumers are repaired in the plan's Phase 6.", "fields": ["totalAssetsExLease", "nonServicePensionCost", "exciseTaxAdjustment", "debtMaturity5yTotal"]},
     "_ttm_rule": "A TTM is emitted ONLY from four discrete quarters. Where they do not exist the value is NULL with dc_code = insufficient_quarters -- never a carried-forward annual. That fallback froze 1,622 of 26,242 consecutive totalRevenue pairs (6.2%; APA 100%, XOM 36%), making revenueGrowth exactly 0 for three quarters in four."
   },

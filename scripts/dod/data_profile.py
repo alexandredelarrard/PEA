@@ -24,7 +24,7 @@ Design notes
     which tickers, over which window". `--tickers`/`--since`/`--limit` all land in §1 and in
     the metrics block, and a partial scope is BLOCKED from overwriting the baseline
     (see baseline.is_full_scope) so a two-ticker smoke run cannot neuter D2.
-  * THE OUTLIER COUNT REUSES THE AUDIT'S KERNEL (`src/utils/outliers.modified_zscore`), so the
+  * THE OUTLIER COUNT REUSES THE AUDIT'S KERNEL (`src/validate/outliers.modified_zscore`), so the
     profiler and the FundamentalsValidator can never disagree about what an outlier is.
   * `store.load` RAISES on an empty read by design, so every read here passes `optional=True`
     and branches on `is None` -- an empty table is a legitimate thing for a profiler to report.
@@ -49,7 +49,7 @@ from scripts.dod.report_common import (                               # noqa: E4
 from src.context import get_config_context                            # noqa: E402
 from src.data_aggregate.utils.common.part_status import part_status_report   # noqa: E402
 from src.data_store import schema                                     # noqa: E402
-from src.utils.outliers import count_mad_outliers, mad_center_scale    # noqa: E402
+from src.validate.outliers import count_mad_outliers, mad_center_scale    # noqa: E402
 
 GENERATOR = "scripts/dod/data_profile.py@1"
 #: Safety rail on an unscoped profile. `sec13f_hr` is ~21.7M rows; reading it whole to compute

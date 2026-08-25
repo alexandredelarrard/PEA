@@ -723,7 +723,7 @@ PPE_NET_MIN_SHARE_OF_ROLLFORWARD = 0.20
 DILUTED_SHARES_MIN_SHARE_OF_BASIC = 0.99
 
 # --------------------------------------------------------------------------- #
-# TIINGO CROSS-VALIDATION (src/utils/tiingo_comparison.py)                    #
+# TIINGO CROSS-VALIDATION (src/validate/external/tiingo_comparison.py)                    #
 # --------------------------------------------------------------------------- #
 # External ground-truth check for `fundamentals_history`/`fundamentals_facts`. The
 # `.env` key's plan is capped to the Dow 30 (confirmed live: any other ticker returns
@@ -750,7 +750,7 @@ TIINGO_EXACT_MATCH_TOLERANCE_FLOW = 0.02
 TIINGO_EXACT_MATCH_TOLERANCE_LEVEL = 0.01
 
 # --------------------------------------------------------------------------- #
-# YAHOO CROSS-VALIDATION (src/utils/yahoo_comparison.py)                      #
+# YAHOO CROSS-VALIDATION (src/validate/external/yahoo_comparison.py)                      #
 # --------------------------------------------------------------------------- #
 # Fallback external ground-truth check for tickers Tiingo's Free/Power plan does not
 # cover. Same shape as the Tiingo constants above; `yfinance` quarterly statements only

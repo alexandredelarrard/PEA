@@ -43,8 +43,10 @@ docstring still saying otherwise is stale).
 │   ├── modelling/               # long_short/, trend/, long_book/ — signal engines
 │   ├── strategies/              # self-contained sleeves + analysis plots
 │   ├── portfolio/               # StepPortfolio (ERC blend), StepStrategyMoves (trade ledger)
-│   ├── validate/                # post-hoc audits of extracted data (fundamentals_audit,
-│   │                            #   fundamentals_validation, analyze_history) — read-only
+│   ├── validate/                # THE home for validation code, all domains. Part 2 of 3
+│   │                            #   (extract -> VALIDATE -> bugfix). CHECK_REGISTRY drives
+│   │                            #   35 checks over 3 tiers -> fundamentals_check. Read-only
+│   │                            #   everywhere else; gates nothing. See its README.md
 │   ├── dags/                    # 4 Airflow DAGs
 │   └── utils/                   # cross-package shared code (step, db, config, universe, http…)
 ├── tests/                    # mirrors src/; 160 test files; conftest.py has the shared fixtures

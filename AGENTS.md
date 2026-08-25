@@ -20,15 +20,12 @@ OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI,
 
 ## Hard rules (always apply)
 
-- Always use `rtk` in all your bash, grep, git scripts to, save tokens: `rtk grep xxx && rtk read xxx`.
+- **Compulsory to use `rtk` before all shell commands to save tokens**.
 - All tabular I/O via `self._context.store`. No `sqlalchemy` / `pd.read_sql` / `to_sql` /
   `store.engine` outside `src/data_store/` — a test enforces this.
 - Never read a large table unprojected: `columns=`/`project=True` **and** `where=`/`since=`;
   `iter_load` for cube-sized reads.
-- `load` RAISES on missing/empty. `optional=True` only where nothing is legitimate → branch on
-  `is None`, not `.empty`.
 - Table names live only in `src/data_store/schema.py` → `Tables.<name>`, never a string literal.
-  Likewise never hand-list what a registry drives (`CUBE_PARTS`, `STRATEGY_REGISTRY`, `FORM_REGISTRY`).
 - Literals (URLs, formats, thresholds) → `src/constants/constants.py`. Tunable numbers → `configs/`. Always tighten the prose in docstrings / comments, in all files.
 - Logging: `self._log` in a Step/Strategy, `context.log` in a helper taking `context`. Never
   `print()`. `Context` has `.log` — there is **no** `.logger`.
@@ -56,7 +53,8 @@ data_aggregate/ StepBuildCube: 7 sub-steps -> cube_part_*   -> cube
 modelling/    long_short/ (trained ensemble), trend/, long_book/
 strategies/   sleeves: ls_equity, eq_long_only, long_book, trend_cta
 portfolio/    StepPortfolio (ERC blend), StepStrategyMoves (`strategy` ledger)
-validate/     read-only audits: fundamentals_audit, fundamentals_validation, analyze_history
+validate/     ALL validation code. Read-only; writes `fundamentals_check`, gates nothing.
+              CHECK_REGISTRY drives everything — read src/validate/README.md before editing
 utils/ context.py constants/ dags/ cli.py   |   repo: configs/ docs/ tests/ app/ scripts/ sql/ main.py
 ```
 

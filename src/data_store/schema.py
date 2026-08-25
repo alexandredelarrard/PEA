@@ -140,9 +140,36 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Extract -- fundamentals                                           #
     # ----------------------------------------------------------------- #
+    # PUBLICATION-EVENT grain: `as_of` is a FILING DATE, one row per date on which >=1
+    # extracted value became newly public, each row a COMPLETE snapshot of every column's
+    # latest-known value. Append-only -- an earlier row keeps its as-filed numbers forever,
+    # which is where the no-leakage property lives. Exactly 69 columns, enumerated by
+    # `Catalogue.history_columns`. See fundamentals/build_history.py.
     fundamentals_history = Table(
         "fundamentals_history", ("ticker", "as_of"), date_col="as_of",
-        date_type_cols=("as_of", "fiscal_end"), freshness="quarterly")
+        date_type_cols=("as_of", "fiscal_end", "amended_fiscal_end"),
+        freshness="quarterly")
+    # WHY a `fundamentals_history` cell is null, or why its value is off-basis. DENSE -- one
+    # row per null-or-qualified cell at every publication event -- so the
+    # zero-unexplained-nulls gate is a LEFT JOIN on (ticker, as_of, field) rather than a
+    # reconstruction. The code vocabulary is closed and lives in fundamentals/reason_codes.py.
+    #
+    # Two PAYLOAD columns, both NULL for every code but the one that owns them:
+    # `combined_into` names the destination field for `combined_into`, and `rejected_value`
+    # carries the number a `failed_hard_guard` refused (plan-5b decision 46). The second one
+    # exists because a nulled DERIVED value -- a TTM, a `derived_identity` total -- has no
+    # fact row anywhere, so without it the rejected number is simply lost and "what did the
+    # guard actually throw away?" becomes unanswerable after the fact. That question is the
+    # whole lesson of the 745 correct rows an over-strict guard once nulled.
+    fundamentals_reason_codes = Table(
+        "fundamentals_reason_codes", ("ticker", "as_of", "field", "dc_code"),
+        date_col="as_of", date_type_cols=("as_of",), freshness="quarterly")
+    # Headcount, parsed from 10-K BODY TEXT. Its own table because the source is prose: in the
+    # wide table one failed regex would fail the whole snapshot. Annual, so `as_of` is a 10-K
+    # filing date and consumers forward-fill (`build_history.carry_latest_known`).
+    fundamentals_employees = Table(
+        "fundamentals_employees", ("ticker", "as_of"), date_col="as_of",
+        date_type_cols=("as_of",), freshness="quarterly")
     # Accession-grain, amendment-aware fundamentals facts: one row per catalogue FIELD per
     # period per filing, resolved from the filer's own XBRL calculation linkbase (see
     # data_extract/utils/fundamentals/xbrl_linkbase.py) rather than from a priority-ordered
@@ -156,10 +183,23 @@ class Tables:
     # asserted. ORIGINAL and AMENDED (10-K/A, 10-Q/A) filings coexist as separate rows and
     # are never overwritten, so "what was knowable on date D" is answerable by filtering
     # `filing_date <= D`.
+    #
+    # THE PK IS THE CALENDAR WINDOW, not the filer's fiscal LABEL. edgartools tags a 10-K's
+    # current year and its first comparative with the SAME `fiscal_year`, so a PK keyed on
+    # (fiscal_year, fiscal_period, duration_type) collided them and the upsert dedup silently
+    # dropped one -- with frame order deciding which. Measured over 337,190 swept facts:
+    # **18,604 rows (5.5%) lost, 16,340 of the collisions holding two DIFFERENT values, and
+    # 1,522 ANNUAL facts** gone, concentrated in the non-calendar filers (KR 25%, COST 24.5%,
+    # CSCO 21%, JNJ 20%, AAPL 18%). AAPL's FY2025 10-K kept FY2023 and FY2024 and dropped
+    # FY2025 -- the FY fact that is Phase 4's PRIMARY Q4 input. Keyed on `period_end` the same
+    # sweep loses 3 rows of 337,190 (0.001%), and those three are the one case
+    # `_latest_per_window` already exists to collapse: one window tagged twice with a nudged
+    # start date. `fiscal_year` / `fiscal_period` stay as PAYLOAD, which is what periods.py
+    # already assumes -- "Nothing in this module reads `fiscal_period`"; every input there is
+    # selected by its calendar window.
     fundamentals_facts = Table(
         "fundamentals_facts",
-        ("ticker", "accession_number", "field", "fiscal_year", "fiscal_period",
-         "duration_type"),
+        ("ticker", "accession_number", "field", "duration_type", "period_end"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_start", "period_end", "period_of_report"),
         freshness="quarterly")
@@ -182,9 +222,10 @@ class Tables:
     notes_text = Table("notes_text", ("adsh", "tag", "ddate", "qtrs"), date_col="ddate",
                        date_type_cols=("ddate", "filed"), freshness="biweekly",
                        freshness_date_col="filed")
-    # NOTE: `employees_history` was RETIRED. Employee headcount is a `fundamentals_facts`
-    # field now (10-K body text, see fundamentals_employees.py) and is read as
-    # fundamentals_history."employees".
+    # NOTE: `employees_history` was RETIRED, and so was the `fundamentals_history."employees"`
+    # column that briefly replaced it. Headcount now has its own `fundamentals_employees`
+    # table above (decision 35) -- one producer, `fundamentals_employees.py`, parsing the
+    # 10-K prose inside the walk the fundamentals fetch already performs.
 
     # ----------------------------------------------------------------- #
     # Extract -- ownership & institutional                              #
@@ -349,6 +390,38 @@ class Tables:
     strategy = Table("strategy", ("trading_day", "sleeve", "ticker"), KIND_AGGREGATE,
                      date_col="trading_day",
                      date_type_cols=("trading_day", "closed_on"))
+
+    # ----------------------------------------------------------------- #
+    # Validate -- the finding ledger                                    #
+    # ----------------------------------------------------------------- #
+    # One row per FINDING per RUN: the fundamentals validator's append-only queue (plan-5b
+    # decision 42). `src/validate/` writes this and mutates nothing else -- the nightly
+    # build of `fundamentals_facts` / `fundamentals_history` runs to completion whatever
+    # lands here, because nothing gates (decision 45).
+    #
+    # `run_date` IS IN THE KEY, so a re-run appends rather than overwriting: "did this check
+    # fire yesterday?" stays answerable, and a check whose threshold moved leaves both
+    # verdicts on the record. What survives across runs is `finding_id`, a deterministic
+    # hash of (check_name, ticker, field, period_key) -- that is what
+    # `configs/fundamentals/fundamentals_check.json` matches settled findings on, so a
+    # finding keeps its identity even though its rows do not.
+    #
+    # `period_key` IS TEXT AND POLYMORPHIC, by grain: the `as_of` for a history-grain check,
+    # the `period_end` for a facts-grain one, `''` for a ticker-level check
+    # (`register_coverage`, `filing_continuity`), and a `start..end` range for a
+    # series-grain one (`series_shape`). One key column rather than three nullable ones,
+    # because a PK cannot contain a NULL in Postgres and a sentinel date would be a lie.
+    #
+    # The payload is decision 47's SELF-CONTAINED INVESTIGATION PACKET: identity, observed
+    # vs expected, the full provenance the fact row carried, the EDGAR URL, and a
+    # check-specific `detail` JSON. Deliberately denormalised -- a Tier-2/3 finding on a
+    # DERIVED value (a TTM, a `derived_identity` total) has no single fact row to join back
+    # to, so an identity-only row plus an on-demand join cannot reconstruct it at all.
+    fundamentals_check = Table(
+        "fundamentals_check",
+        ("run_date", "check_name", "ticker", "field", "period_key"),
+        KIND_AGGREGATE, date_col="run_date",
+        date_type_cols=("run_date", "as_of"))
 
     # ----------------------------------------------------------------- #
     # Parts -- private plumbing between the cube sub-steps               #

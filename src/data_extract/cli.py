@@ -32,6 +32,7 @@ from src.data_extract.utils.prices.fetch_macro import fetch_macro
 # --- fundamentals ----------------------------------------------------------- #
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
+from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
@@ -145,19 +146,72 @@ def superinvestors(config_path: str) -> None:
 # --------------------------------------------------------------------------- #
 # Fundamentals                                                                  #
 # --------------------------------------------------------------------------- #
-# NOTE: the combined `fundamentals` command (facts THEN history) is still absent while the
-# stack is rebuilt (reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md).
-# Phase 3 landed the facts layer and exposes it on its own below; Phase 5 adds the history
-# build and re-joins the two under one command.
+# The two layers are separate commands AND joined by one, because their costs differ by three
+# orders of magnitude: the facts walk is network-bound (~2h for 52 tickers), the history build
+# is a pure in-memory replay of what that walk already stored. A bug in the history layer must
+# not cost a re-download, which is exactly what the two rebuild flags encode (decision 27).
+#: `-F/--full` on the fundamentals commands. The manifest's incremental window keys on the
+#: TICKER COUNT, so a chunked from-scratch backfill reads as a repeat of the previous chunk and
+#: fetches nothing; this bypasses it. See `run_edgar_fetch`.
+_FULL_ARGS = ("-F", "--full")
+_FULL_KWARGS = dict(is_flag=True, default=False,
+                    help="Ignore the run manifest and take the whole years-history window. "
+                         "Needed for a chunked from-scratch backfill.")
+
+
 @cli.command(name="fundamentals-facts",
-             help="SEC per-filing XBRL -> fundamentals_facts, resolved from each filer's "
-                  "own calculation linkbase. As-filed only; append-only.")
+             help="SEC per-filing XBRL -> fundamentals_facts (+ headcount from the same "
+                  "10-K), resolved from each filer's own calculation linkbase. As-filed "
+                  "only; append-only.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def fundamentals_facts(config_path: str, tickers: str | None) -> None:
+@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+def fundamentals_facts(config_path: str, tickers: str | None, full: bool) -> None:
     config, context = _ctx(config_path)
-    fetch_fundamentals_sec(context, tickers=_tickers(context, tickers),
+    fetch_fundamentals_sec(context, tickers=_tickers(context, tickers), full=full,
                            years_history=int(config.data_extract.years_history))
+
+
+@cli.command(name="fundamentals-history",
+             help="fundamentals_facts -> fundamentals_history + _reason_codes, on the "
+                  "publication-event grain. No network. Append-only: refuses to overwrite "
+                  "an already-published row unless --rebuild-history is passed.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option("--rebuild-history", is_flag=True,
+              help="Delete these tickers' fundamentals_history / _reason_codes rows and "
+                   "rebuild from the facts ALREADY STORED. For a bug in the history layer; "
+                   "costs no network. (Use `fundamentals --rebuild` for a resolution bug.)")
+def fundamentals_history(config_path: str, tickers: str | None,
+                         rebuild_history: bool) -> None:
+    _, context = _ctx(config_path)
+    build_fundamentals_history(context, tickers=_tickers(context, tickers),
+                               rebuild_history=rebuild_history)
+
+
+@cli.command(help="Both fundamentals layers in order: facts (network) then history (replay).")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option("--rebuild", is_flag=True,
+              help="Delete these tickers' rows from BOTH layers and refetch every filing. "
+                   "For a bug in the RESOLUTION layer, where the stored facts are themselves "
+                   "wrong. A deleted ticker looks exactly like a never-fetched one to the "
+                   "fetcher's accession-set resume, so there is no third state to reason "
+                   "about. There is no build_version column: the rebuild IS the version.")
+@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: bool) -> None:
+    config, context = _ctx(config_path)
+    names = _tickers(context, tickers)
+    if rebuild:
+        for ticker in names:
+            for table in (Tables.fundamentals_facts, Tables.fundamentals_history,
+                          Tables.fundamentals_reason_codes, Tables.fundamentals_employees):
+                context.store.delete(table, {"ticker": ticker})
+        context.log.warning("fundamentals: --rebuild deleted all four tables for %d "
+                            "ticker(s); every filing will be refetched", len(names))
+    fetch_fundamentals_sec(context, tickers=names, full=full or rebuild,
+                           years_history=int(config.data_extract.years_history))
+    build_fundamentals_history(context, tickers=names, rebuild_history=rebuild)
 
 
 @cli.command(help="Earnings surprises -> historical forward P/E.")
@@ -202,9 +256,9 @@ YEARS_KWARGS = dict(
 # --------------------------------------------------------------------------- #
 # Structure (governance)                                                        #
 # --------------------------------------------------------------------------- #
-# NOTE: there is no `employees` command any more. Employee counts are extracted
-# from the same 10-K as the fundamentals (`fundamentals_employees.py`), so the
-# `fundamentals` command above now covers them.
+# NOTE: there is no `employees` command any more. Headcount is parsed out of the same 10-K
+# the fundamentals walk already opens (`fundamentals_employees.py`) and lands in
+# `fundamentals_employees`, so `fundamentals-facts` above covers it.
 @cli.command(help="DEF 14A governance / executive pay (LLM-parsed). SEC-api + LLM.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

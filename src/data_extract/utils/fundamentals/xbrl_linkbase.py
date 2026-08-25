@@ -325,6 +325,20 @@ class Resolution:
     #: COMPANY EXTENSION, so no candidate list can ever name it. Only "the filer declared its
     #: own lines and did not declare this" separates the two.
     undeclared_rejected: tuple[str, ...] = ()
+    #: The field HAS a value, but on a basis the catalogue declares non-comparable -- the
+    #: winning concept is named in the field's `dc_code_on_fallback` map. Today's only
+    #: entry: `researchAndDevelopment` resolving on
+    #: `ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost` instead of the
+    #: aggregate, which is a SUBSET, not a substitute (of 21 both-tagged pairs, 0.0% agree
+    #: within 1%; mean aggregate/ex-IPR&D ratio 1.675).
+    #:
+    #: Deliberately NOT `dc_code`: `resolved` is defined as "no dc_code", so a qualifier
+    #: riding that column would turn every ex-IPR&D row into an absence and delete a real
+    #: number. It rides the `adjustment` JSON instead -- the same seam 4c.1 used for
+    #: `undeclared_rejected` -- and the history build lifts it into
+    #: `fundamentals_reason_codes`, where a qualified cell and a null cell are both
+    #: findable and still distinguishable.
+    basis_qualifier: str | None = None
 
     @property
     def resolved(self) -> bool:
@@ -863,7 +877,7 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     strict = _resolve_once(spec, graph, available - zero_only, available, catalogue,
                            regime, duration_concepts, ticker, prefer_structure=prefer_structure)
     if strict.resolved:
-        return strict
+        return _stamp_basis(spec, strict)
 
     # Relax the statement-role guard before the zero guard, because the two relaxations
     # are not equally palatable: a note-level fact is a real amount on a narrow basis,
@@ -875,14 +889,32 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
         if relaxed.resolved:
             # Carry the strict pass's ledger through, so the row says BOTH what was
             # withheld and that it had to be put back -- either half alone is unreadable.
-            return replace(relaxed, role_only_retained=True,
-                           role_rejected=strict.role_rejected)
+            return _stamp_basis(spec, replace(relaxed, role_only_retained=True,
+                                              role_rejected=strict.role_rejected))
 
     if not zero_only:
         return strict
     retry = _resolve_once(spec, graph, available, available, catalogue, regime,
                           duration_concepts, ticker, prefer_structure=False)
-    return replace(retry, zero_only_retained=True) if retry.resolved else strict
+    return (_stamp_basis(spec, replace(retry, zero_only_retained=True))
+            if retry.resolved else strict)
+
+
+def _stamp_basis(spec: FieldSpec, resolution: Resolution) -> Resolution:
+    """Flag a resolution that answered on a concept the catalogue declares non-comparable.
+
+    Keyed on the CONCEPT rather than on the route, because the basis is a property of the
+    element the filer used and not of how we found it: the ex-IPR&D element is a genuine
+    narrower measure whether route 1 or route 5 picks it up.
+
+    Only a field that declares `dc_code_on_fallback` can be stamped, and only one does, so
+    this is a dict lookup on a missing key for 52 of 53 fields.
+    """
+    declared = spec.raw.get("dc_code_on_fallback") or {}
+    if not declared or not resolution.concept:
+        return resolution
+    code = declared.get(bare(resolution.concept))
+    return replace(resolution, basis_qualifier=code) if code else resolution
 
 
 def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],

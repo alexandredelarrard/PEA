@@ -79,263 +79,200 @@ CREATE TABLE IF NOT EXISTS "cusip_ticker_map" (
 CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ticker");
 
 -- [extract] fundamentals_history  (pk: ticker, as_of)
+-- The PUBLICATION-EVENT grain: `as_of` is a FILING DATE, not a period end, and a row exists
+-- for every date on which this ticker made >=1 extracted value newly public. Each row is a
+-- COMPLETE SNAPSHOT (every column carries its latest-known value at that date), so a plain
+-- `asof` merge needs no reconstruction -- and rows are append-only, so an earlier row keeps
+-- its as-filed numbers forever. See data_extract/utils/fundamentals/build_history.py.
+--
+-- EXACTLY 69 columns, enumerated: 4 keys + 52 catalogue fields + 8 derived + `regime` +
+-- 4 provenance, and the 60 value columns are in STATEMENT order rather than in the
+-- tier-then-name order they are resolved in -- reading the table reads like the
+-- statements it came from. `fiscal_quarter` labels which quarter of the ISSUER's own
+-- year `fiscal_end` closes, on every row including the TTM and instant ones: a filer's
+-- Q4 is not its Q1, and the calendar month of `fiscal_end` does not say which is which
+-- for a 52/53-week or non-December filer. A `duration` field's column holds the TRAILING TWELVE MONTHS and an
+-- `instant` field's the latest instant, on bare names -- `totalRevenue` always was the TTM,
+-- which is why build_cube.yml and SECTOR_KPI_SCOPE need no renaming.
+--
+-- Gone from the legacy shape, each deliberately: `sector` / `industry_group` (a
+-- slowly-changing dimension, joined from sp500_tickers rather than duplicated into a
+-- point-in-time table); `revenueGrowth` / `earningsGrowth` (computed by pit.py at cube time
+-- on a fixed 365-day as_of offset -- a row offset is ~9 months once an amendment row exists);
+-- `employees` (text-sourced, so it lives in fundamentals_employees and a failed parse cannot
+-- fail this build); `ebitda_q` / `freeCashflow_q` / `capexGlobal` and the ~170 columns whose
+-- inputs left with the rebuild.
 
 CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "ticker" TEXT NOT NULL,
     "as_of" DATE NOT NULL,
     "fiscal_end" DATE,
+    "fiscal_quarter" BIGINT,
+    -- the 60 value columns, in STATEMENT order (HISTORY_STATEMENT_ORDER)
+    -- income statement -- revenue, general top line then the regime-specific ones
     "totalRevenue" DOUBLE PRECISION,
-    "netIncome" DOUBLE PRECISION,
-    "grossMargins" DOUBLE PRECISION,
-    "operatingMargins" DOUBLE PRECISION,
-    "profitMargins" DOUBLE PRECISION,
-    "returnOnEquity" DOUBLE PRECISION,
-    "debtToEquity" DOUBLE PRECISION,
-    "ebitda" DOUBLE PRECISION,
-    "operatingIncome" DOUBLE PRECISION,
-    "depAmort" DOUBLE PRECISION,
-    "capex" DOUBLE PRECISION,
-    "capexGlobal" DOUBLE PRECISION,
-    "freeCashflow" DOUBLE PRECISION,
-    "operatingCashFlow" DOUBLE PRECISION,
-    "researchAndDevelopment" DOUBLE PRECISION,
-    "stockholdersEquity" DOUBLE PRECISION,
-    "sharesOutstanding" DOUBLE PRECISION,
-    "cash" DOUBLE PRECISION,
-    "longTermDebt" DOUBLE PRECISION,
-    "shortTermDebt" DOUBLE PRECISION,
-    "totalDebt" DOUBLE PRECISION,
-    "totalLiabilities" DOUBLE PRECISION,
-    "currentAssets" DOUBLE PRECISION,
-    "currentLiabilities" DOUBLE PRECISION,
-    "goodwill" DOUBLE PRECISION,
-    "totalAssets" DOUBLE PRECISION,
-    "sellingGeneralAdmin" DOUBLE PRECISION,
-    "stockBasedComp" DOUBLE PRECISION,
-    "acquisitions" DOUBLE PRECISION,
-    "interestExpense" DOUBLE PRECISION,
-    "revenue_q" DOUBLE PRECISION,
-    "netIncome_q" DOUBLE PRECISION,
-    "ebitda_q" DOUBLE PRECISION,
-    "freeCashflow_q" DOUBLE PRECISION,
-    "revenueGrowth" DOUBLE PRECISION,
-    "earningsGrowth" DOUBLE PRECISION,
-    "costOfRevenue" DOUBLE PRECISION,
-    "grossProfit" DOUBLE PRECISION,
-    "optionOverhang" DOUBLE PRECISION,
-    "dilutedShares" DOUBLE PRECISION,
-    "basicShares" DOUBLE PRECISION,
-    "reportableSegments" DOUBLE PRECISION,
-    "effectiveTaxRate" DOUBLE PRECISION,
-    "employees" DOUBLE PRECISION,
-    "incomeTaxExpense" DOUBLE PRECISION,
-    "revenuesTotal" DOUBLE PRECISION,
-    "pretaxIncome" DOUBLE PRECISION,
-    "costsAndExpenses" DOUBLE PRECISION,
-    "marketingExpense" DOUBLE PRECISION,
-    "interestIncome" DOUBLE PRECISION,
-    "amortizationIntangibles" DOUBLE PRECISION,
-    "epsDiluted" DOUBLE PRECISION,
-    "epsBasic" DOUBLE PRECISION,
-    "dividendsPerShare" DOUBLE PRECISION,
-    "incomeTaxesPaid" DOUBLE PRECISION,
-    "deferredIncomeTaxExpense" DOUBLE PRECISION,
-    "interestPaid" DOUBLE PRECISION,
-    "cashPeriodChange" DOUBLE PRECISION,
-    "otherInvestingCashFlow" DOUBLE PRECISION,
-    "otherFinancingCashFlow" DOUBLE PRECISION,
-    "operatingLeasePayments" DOUBLE PRECISION,
-    "currentTaxExpense" DOUBLE PRECISION,
-    "currentFederalTax" DOUBLE PRECISION,
-    "currentForeignTax" DOUBLE PRECISION,
-    "deferredFederalTax" DOUBLE PRECISION,
-    "otherComprehensiveIncome" DOUBLE PRECISION,
-    "equityMethodIncome" DOUBLE PRECISION,
-    "otherNonoperating" DOUBLE PRECISION,
-    "debtExtinguishment" DOUBLE PRECISION,
-    "nciIncome" DOUBLE PRECISION,
-    "comprehensiveIncome" DOUBLE PRECISION,
-    "goodwillAcquired" DOUBLE PRECISION,
-    "operatingLeaseAdditions" DOUBLE PRECISION,
-    "operatingLeaseCost" DOUBLE PRECISION,
-    "exciseTaxes" DOUBLE PRECISION,
-    "revenueExcludingAssessedTax" DOUBLE PRECISION,
-    "revenueIncludingAssessedTax" DOUBLE PRECISION,
-    "pensionNetPeriodicCost" DOUBLE PRECISION,
-    "pensionServiceCost" DOUBLE PRECISION,
-    "pensionInterestCost" DOUBLE PRECISION,
-    "pensionExpectedReturn" DOUBLE PRECISION,
-    "pensionAmortPriorService" DOUBLE PRECISION,
-    "pensionAmortGainsLosses" DOUBLE PRECISION,
-    "dividendsPaid" DOUBLE PRECISION,
-    "buybacks" DOUBLE PRECISION,
-    "equityIssuance" DOUBLE PRECISION,
-    "debtIssued" DOUBLE PRECISION,
-    "debtRepaid" DOUBLE PRECISION,
-    "financeLeaseAdditions" DOUBLE PRECISION,
-    "investingCashFlow" DOUBLE PRECISION,
-    "financingCashFlow" DOUBLE PRECISION,
-    "changeInInventory" DOUBLE PRECISION,
-    "changeInReceivables" DOUBLE PRECISION,
-    "changeInPayables" DOUBLE PRECISION,
-    "impairment" DOUBLE PRECISION,
-    "restructuring" DOUBLE PRECISION,
-    "goodwillImpairment" DOUBLE PRECISION,
-    "gainOnSaleGeneric" DOUBLE PRECISION,
-    "litigationExpense" DOUBLE PRECISION,
-    "discontinuedOps" DOUBLE PRECISION,
-    "unusualItems" DOUBLE PRECISION,
-    "bargainPurchaseGain" DOUBLE PRECISION,
-    "interestIncomeBank" DOUBLE PRECISION,
-    "netInterestIncome" DOUBLE PRECISION,
-    "provisionForCreditLosses" DOUBLE PRECISION,
-    "provisionDoubtfulAccounts" DOUBLE PRECISION,
-    "noninterestIncome" DOUBLE PRECISION,
-    "noninterestExpense" DOUBLE PRECISION,
-    "netChargeOffs" DOUBLE PRECISION,
     "premiumsEarned" DOUBLE PRECISION,
-    "premiumsWritten" DOUBLE PRECISION,
-    "claimsIncurred" DOUBLE PRECISION,
+    "netInterestIncome" DOUBLE PRECISION,
+    "noninterestIncome" DOUBLE PRECISION,
     "netInvestmentIncome" DOUBLE PRECISION,
-    "dacAmortization" DOUBLE PRECISION,
     "realizedInvestmentGains" DOUBLE PRECISION,
     "rentalIncome" DOUBLE PRECISION,
-    "straightLineRent" DOUBLE PRECISION,
-    "aboveBelowMarketLeaseAmort" DOUBLE PRECISION,
-    "gainOnDispositions" DOUBLE PRECISION,
-    "realEstateImpairment" DOUBLE PRECISION,
-    "oilGasRevenue" DOUBLE PRECISION,
-    "explorationExpense" DOUBLE PRECISION,
-    "depletionDDA" DOUBLE PRECISION,
-    "longTermDebtTotal" DOUBLE PRECISION,
-    "debtCombined" DOUBLE PRECISION,
-    "notesPayable" DOUBLE PRECISION,
-    "commercialPaper" DOUBLE PRECISION,
-    "operatingLeaseLiability" DOUBLE PRECISION,
-    "operatingLeaseLiabilityCurrent" DOUBLE PRECISION,
-    "operatingLeaseLiabilityNoncurrent" DOUBLE PRECISION,
-    "financeLeaseLiability" DOUBLE PRECISION,
-    "financeLeaseLiabilityCurrent" DOUBLE PRECISION,
-    "financeLeaseLiabilityNoncurrent" DOUBLE PRECISION,
-    "capitalLeaseObligationCurrent" DOUBLE PRECISION,
-    "capitalLeaseObligationNoncurrent" DOUBLE PRECISION,
-    "operatingLeaseRouAsset" DOUBLE PRECISION,
-    "financeLeaseRouAsset" DOUBLE PRECISION,
+    -- cost of sales and gross result
+    "costOfRevenue" DOUBLE PRECISION,
+    "grossProfit" DOUBLE PRECISION,
+    "grossMargins" DOUBLE PRECISION,
+    -- operating expense
+    "sellingGeneralAdmin" DOUBLE PRECISION,
+    "researchAndDevelopment" DOUBLE PRECISION,
+    "depAmort" DOUBLE PRECISION,
+    "stockBasedComp" DOUBLE PRECISION,
+    -- operating result
+    "operatingIncome" DOUBLE PRECISION,
+    "operatingMargins" DOUBLE PRECISION,
+    "ebitda" DOUBLE PRECISION,
+    -- below the operating line, down to the bottom line
+    "interestExpense" DOUBLE PRECISION,
+    "pretaxIncome" DOUBLE PRECISION,
+    "incomeTaxExpense" DOUBLE PRECISION,
+    "effectiveTaxRate" DOUBLE PRECISION,
+    "netIncome" DOUBLE PRECISION,
+    "profitMargins" DOUBLE PRECISION,
+    "epsDiluted" DOUBLE PRECISION,
+    -- single-quarter slices, beside the TTM lines they are cut from
+    "revenue_q" DOUBLE PRECISION,
+    "netIncome_q" DOUBLE PRECISION,
+    -- cash flow
+    "operatingCashFlow" DOUBLE PRECISION,
+    "capex" DOUBLE PRECISION,
+    "freeCashflow" DOUBLE PRECISION,
+    -- balance sheet -- assets, current then long-lived
+    "cash" DOUBLE PRECISION,
     "restrictedCash" DOUBLE PRECISION,
-    "restrictedCashCurrent" DOUBLE PRECISION,
-    "restrictedCashNoncurrent" DOUBLE PRECISION,
-    "cashInclRestricted" DOUBLE PRECISION,
-    "cashAndShortTermInvestments" DOUBLE PRECISION,
-    "marketableSecuritiesCurrent" DOUBLE PRECISION,
-    "investmentSecurities" DOUBLE PRECISION,
-    "redeemableNCI" DOUBLE PRECISION,
-    "lifoReserve" DOUBLE PRECISION,
-    "assetRetirementObligation" DOUBLE PRECISION,
-    "aroCurrent" DOUBLE PRECISION,
-    "aroNoncurrent" DOUBLE PRECISION,
-    "debtMaturity1y" DOUBLE PRECISION,
-    "debtMaturity2y" DOUBLE PRECISION,
-    "debtMaturity3y" DOUBLE PRECISION,
-    "debtMaturity4y" DOUBLE PRECISION,
-    "debtMaturity5y" DOUBLE PRECISION,
-    "debtMaturityAfter5y" DOUBLE PRECISION,
-    "leaseMaturity1y" DOUBLE PRECISION,
-    "leaseMaturity2y" DOUBLE PRECISION,
-    "leaseMaturity3y" DOUBLE PRECISION,
-    "leaseMaturity4y" DOUBLE PRECISION,
-    "leaseMaturity5y" DOUBLE PRECISION,
-    "leaseMaturityAfter5y" DOUBLE PRECISION,
-    "leaseMaturityTotal" DOUBLE PRECISION,
-    "leaseUndiscountedExcess" DOUBLE PRECISION,
-    "balanceSheetFooting" DOUBLE PRECISION,
-    "otherAssetsNoncurrent" DOUBLE PRECISION,
-    "otherLiabilitiesNoncurrent" DOUBLE PRECISION,
-    "commonSharesIssued" DOUBLE PRECISION,
-    "commonSharesAuthorized" DOUBLE PRECISION,
-    "commonStockValue" DOUBLE PRECISION,
-    "preferredSharesAuthorized" DOUBLE PRECISION,
-    "antidilutiveShares" DOUBLE PRECISION,
-    "deferredTaxAssetsGross" DOUBLE PRECISION,
-    "deferredTaxNet" DOUBLE PRECISION,
-    "intangibleAmort1y" DOUBLE PRECISION,
-    "intangibleAmort2y" DOUBLE PRECISION,
-    "intangibleAmort3y" DOUBLE PRECISION,
-    "intangibleAmort4y" DOUBLE PRECISION,
-    "intangibleAmort5y" DOUBLE PRECISION,
-    "deferredTaxAssets" DOUBLE PRECISION,
-    "deferredTaxLiabilities" DOUBLE PRECISION,
-    "valuationAllowance" DOUBLE PRECISION,
-    "unrecognizedTaxBenefits" DOUBLE PRECISION,
-    "allowanceDoubtfulAccounts" DOUBLE PRECISION,
-    "intangiblesGross" DOUBLE PRECISION,
-    "intangiblesAccumAmort" DOUBLE PRECISION,
+    "shortTermInvestments" DOUBLE PRECISION,
     "accountsReceivable" DOUBLE PRECISION,
     "inventory" DOUBLE PRECISION,
-    "inventoryFifoReported" DOUBLE PRECISION,
-    "accountsPayable" DOUBLE PRECISION,
-    "ppeNet" DOUBLE PRECISION,
+    "currentAssets" DOUBLE PRECISION,
     "ppeGross" DOUBLE PRECISION,
     "accumulatedDepreciation" DOUBLE PRECISION,
+    "ppeNet" DOUBLE PRECISION,
+    "goodwill" DOUBLE PRECISION,
     "intangiblesExGoodwill" DOUBLE PRECISION,
-    "capitalizedSoftware" DOUBLE PRECISION,
-    "pensionDeficit" DOUBLE PRECISION,
-    "retainedEarnings" DOUBLE PRECISION,
-    "treasuryStock" DOUBLE PRECISION,
-    "preferredEquity" DOUBLE PRECISION,
-    "minorityInterest" DOUBLE PRECISION,
-    "accumulatedOCI" DOUBLE PRECISION,
-    "shortTermInvestments" DOUBLE PRECISION,
-    "longTermInvestments" DOUBLE PRECISION,
-    "deferredRevenue" DOUBLE PRECISION,
-    "deferredRevenueCurrent" DOUBLE PRECISION,
-    "deferredRevenueNoncurrent" DOUBLE PRECISION,
-    "remainingPerformanceObligation" DOUBLE PRECISION,
-    "loans" DOUBLE PRECISION,
-    "deposits" DOUBLE PRECISION,
-    "interestBearingDepositsInBanks" DOUBLE PRECISION,
-    "depositsDomestic" DOUBLE PRECISION,
-    "allowanceCreditLosses" DOUBLE PRECISION,
-    "htmSecurities" DOUBLE PRECISION,
-    "htmSecuritiesFairValue" DOUBLE PRECISION,
-    "htmUnrealizedLoss" DOUBLE PRECISION,
-    "nonaccrualLoans" DOUBLE PRECISION,
-    "tier1CapitalRatio" DOUBLE PRECISION,
-    "insuranceReserves" DOUBLE PRECISION,
-    "deferredAcqCosts" DOUBLE PRECISION,
-    "realEstateNet" DOUBLE PRECISION,
-    "realEstateGross" DOUBLE PRECISION,
-    "oilGasPropertyNet" DOUBLE PRECISION,
-    "oilGasPropertyGross" DOUBLE PRECISION,
-    "regulatoryAssets" DOUBLE PRECISION,
-    "regulatoryAssetsCurrent" DOUBLE PRECISION,
-    "regulatoryAssetsNoncurrent" DOUBLE PRECISION,
-    "regulatoryLiabilities" DOUBLE PRECISION,
-    "regulatoryLiabilitiesCurrent" DOUBLE PRECISION,
-    "regulatoryLiabilitiesNoncurrent" DOUBLE PRECISION,
-    "totalAssetsExLease" DOUBLE PRECISION,
-    "nonServicePensionCost" DOUBLE PRECISION,
-    "exciseTaxAdjustment" DOUBLE PRECISION,
-    "debtMaturity5yTotal" DOUBLE PRECISION,
-    "sector" TEXT,
-    "industry_group" TEXT,
+    "totalAssets" DOUBLE PRECISION,
+    -- liabilities and debt, current then long-term, components then roll-ups
+    "accountsPayable" DOUBLE PRECISION,
+    "currentLiabilities" DOUBLE PRECISION,
+    "shortTermDebt" DOUBLE PRECISION,
     "shortTermBorrowingsOnly" DOUBLE PRECISION,
+    "longTermDebt" DOUBLE PRECISION,
     "longTermDebtCurrentOnly" DOUBLE PRECISION,
+    "operatingLeaseLiability" DOUBLE PRECISION,
+    "financeLeaseLiability" DOUBLE PRECISION,
+    "totalDebt" DOUBLE PRECISION,
+    "totalLiabilities" DOUBLE PRECISION,
+    -- equity, and the two ratios that read off it
+    "retainedEarnings" DOUBLE PRECISION,
+    "minorityInterest" DOUBLE PRECISION,
+    "stockholdersEquity" DOUBLE PRECISION,
+    "returnOnEquity" DOUBLE PRECISION,
+    "debtToEquity" DOUBLE PRECISION,
+    -- share counts -- denominators, not statements
+    "basicShares" DOUBLE PRECISION,
+    "dilutedShares" DOUBLE PRECISION,
+    "sharesOutstanding" DOUBLE PRECISION,
+    "optionOverhang" DOUBLE PRECISION,
+    "regime" TEXT,
+    "publication_form" TEXT,
+    "is_amendment" BOOLEAN,
+    "amended_fiscal_end" DATE,
+    "amended_fields" TEXT,
+    PRIMARY KEY ("ticker", "as_of")
+);
+CREATE INDEX IF NOT EXISTS ix_fundamentals_history_ticker ON "fundamentals_history" ("ticker");
+
+-- [extract] fundamentals_reason_codes  (pk: ticker, as_of, field, dc_code)
+-- WHY a `fundamentals_history` cell is null, or why the value it does carry is not on the
+-- field's nominal basis. Long rather than 39 `_DC` companion columns (which would be a ~50%
+-- wider table, almost entirely NULL); the deviation from the Compustat-style shape the spec
+-- asked for is reversible.
+--
+-- DENSE: one row per null-or-qualified cell at EVERY publication event, so the
+-- zero-unexplained-nulls gate is a one-line LEFT JOIN on (ticker, as_of, field) and
+-- "was this null explained on 2019-05-02?" stays a lookup rather than a window function.
+-- Mostly repetition -- APA's totalLiabilities earns a row at all ~62 of its filing dates --
+-- and that is the price of the snapshot contract, which a sparse state-change grain would
+-- contradict. ~150-200k rows universe-wide.
+--
+-- The code vocabulary is closed and declared once, in
+-- data_extract/utils/fundamentals/reason_codes.py; the build asserts every code against it.
+--
+-- TWO PAYLOAD COLUMNS, each NULL for every code but the one that owns it. `combined_into`
+-- names the destination field for the `combined_into` code. `rejected_value` carries the
+-- number a `failed_hard_guard` refused (plan-5b decision 46) -- it exists because a nulled
+-- DERIVED value (a TTM, a `derived_identity` total) has no fact row anywhere, so without it
+-- the refused number is simply lost and "did that guard null something CORRECT?" becomes
+-- archaeology instead of a query. That question is the whole lesson of the 745 correct rows
+-- an over-strict guard once nulled. Neither is part of the key: a field is folded into at
+-- most one destination and refused at most one number per (field, code), so keying on either
+-- would let two rows disagree rather than making the second impossible to write.
+
+CREATE TABLE IF NOT EXISTS "fundamentals_reason_codes" (
+    "ticker" TEXT NOT NULL,
+    "as_of" DATE NOT NULL,
+    "field" TEXT NOT NULL,
+    "dc_code" TEXT NOT NULL,
+    "combined_into" TEXT,
+    "rejected_value" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "as_of", "field", "dc_code")
+);
+CREATE INDEX IF NOT EXISTS ix_fundamentals_reason_codes_code ON "fundamentals_reason_codes" ("dc_code");
+
+-- [extract] fundamentals_employees  (pk: ticker, as_of)
+-- Employee headcount, parsed out of the 10-K BODY TEXT (there is no GAAP concept for it and
+-- US filers essentially never tag `dei:EntityNumberOfEmployees`). Its own table because the
+-- source is prose: in the wide table one failed regex would fail the whole snapshot, and a
+-- text-parsed number sitting among 67 XBRL-sourced columns reads as if it were one.
+--
+-- Disclosed ANNUALLY, so `as_of` is a 10-K (or 10-K/A) filing date and a consumer
+-- forward-fills into the interim quarters -- `build_history.carry_latest_known` is that
+-- alignment. `employees` keeps its tier and authority in the KPI catalogue; it is only out
+-- of the wide table's column contract.
+
+CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
+    "ticker" TEXT NOT NULL,
+    "as_of" DATE NOT NULL,
+    "employees" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "as_of")
 );
 
--- [extract] fundamentals_facts  (pk: ticker, accession_number, field, fiscal_year, fiscal_period, duration_type)
+-- [extract] fundamentals_facts  (pk: ticker, accession_number, field, duration_type, period_end)
 -- One row per catalogue FIELD per period per filing, resolved from the filer's own XBRL
 -- calculation linkbase. STRICTLY AS-FILED: no derived quarter is ever written here (Q4 =
 -- FY - YTD9 happens in memory during the history build), and amendments append rather than
 -- overwrite -- so `filing_date <= D` answers "what was knowable on D" exactly.
+--
+-- THE KEY IS THE CALENDAR WINDOW, NOT THE FISCAL LABEL. edgartools tags a 10-K's current year
+-- and its first comparative with the SAME `fiscal_year`, so the original PK
+-- (fiscal_year, fiscal_period, duration_type) collided them and the upsert dedup dropped one,
+-- with frame order deciding which. Measured over 337,190 swept facts: 18,604 rows (5.5%) lost,
+-- 16,340 of those collisions holding two DIFFERENT values, and 1,522 ANNUAL facts gone --
+-- concentrated in the non-calendar filers (KR 25%, COST 24.5%, CSCO 21%, JNJ 20%, AAPL 18%).
+-- AAPL's FY2025 10-K kept FY2023 and FY2024 and dropped FY2025, i.e. the FY fact that is the
+-- primary Q4 input. Keyed on `period_end` the same sweep loses 3 rows (0.001%), and those are
+-- the one case `periods._latest_per_window` already exists to collapse.
+--
+-- `period_end` is therefore NOT NULL. A reason-coded row (a field the filing tags nowhere) has
+-- no period of its own and falls back to the filing's `period_of_report` -- see `_period_end`.
+-- `fiscal_year` / `fiscal_period` are PAYLOAD: periods.py selects every input by calendar
+-- window and its own docstring records why ("Nothing in this module reads `fiscal_period`").
 
 CREATE TABLE IF NOT EXISTS "fundamentals_facts" (
     "ticker" TEXT NOT NULL,
     "accession_number" TEXT NOT NULL,
     "field" TEXT NOT NULL,
-    "fiscal_year" BIGINT NOT NULL,
-    "fiscal_period" TEXT NOT NULL,
     "duration_type" TEXT NOT NULL,
+    "period_end" DATE NOT NULL,
+    "fiscal_year" BIGINT,
+    "fiscal_period" TEXT,
     "cik" TEXT,
     "form" TEXT,
     "filing_date" DATE,
@@ -343,7 +280,6 @@ CREATE TABLE IF NOT EXISTS "fundamentals_facts" (
     "period_of_report" DATE,
     "regime" TEXT,
     "period_start" DATE,
-    "period_end" DATE,
     "period_days" BIGINT,
     "value" DOUBLE PRECISION,
     "unit" TEXT,
@@ -356,7 +292,7 @@ CREATE TABLE IF NOT EXISTS "fundamentals_facts" (
     "role_uri" TEXT,
     "is_extension" BOOLEAN,
     "dc_code" TEXT,
-    PRIMARY KEY ("ticker", "accession_number", "field", "fiscal_year", "fiscal_period", "duration_type")
+    PRIMARY KEY ("ticker", "accession_number", "field", "duration_type", "period_end")
 );
 CREATE INDEX IF NOT EXISTS ix_fundamentals_facts_filing_date ON "fundamentals_facts" ("filing_date");
 CREATE INDEX IF NOT EXISTS ix_fundamentals_facts_field ON "fundamentals_facts" ("ticker", "field");
@@ -1424,3 +1360,58 @@ CREATE TABLE IF NOT EXISTS "cube" (
 -- SKIPPED (no live schema and no previous DDL): trend_asset_returns
 
 -- SKIPPED (no live schema and no previous DDL): strategy
+
+-- [aggregate] fundamentals_check  (pk: run_date, check_name, ticker, field, period_key)
+-- The fundamentals validator's APPEND-ONLY finding ledger (plan-5b decision 42). Written by
+-- src/validate/; nothing else in that package mutates any table, and NOTHING HERE GATES -- the
+-- nightly build of fundamentals_facts / fundamentals_history runs to completion whatever lands
+-- in this table (decision 45, the SEC's own warn-over-reject precedent).
+--
+-- `run_date` IS IN THE KEY, so a re-run appends rather than overwrites: "did this check fire
+-- yesterday?" stays answerable, and a check whose threshold moved leaves both verdicts on the
+-- record. What survives across runs is `finding_id`, a deterministic hash of
+-- (check_name, ticker, field, period_key) -- that is what
+-- configs/fundamentals/fundamentals_check.json matches settled findings on, so a finding keeps
+-- its identity even though its rows do not. Deliberately NOT hashed from run_date, severity or
+-- observed: a threshold retune must not resurrect a settled finding.
+--
+-- `period_key` IS TEXT AND POLYMORPHIC, by the check's grain: the `as_of` for a history-grain
+-- check, the `period_end` for a facts-grain one, '' for a ticker-level check
+-- (register_coverage, filing_continuity), and 'start..end' for a series-grain one
+-- (series_shape). ONE key column rather than three nullable ones, because a Postgres PK cannot
+-- contain a NULL and a sentinel date would be a lie about which period the finding is about.
+--
+-- The payload is decision 47's SELF-CONTAINED INVESTIGATION PACKET, and it is denormalised on
+-- purpose. An identity-only row plus an on-demand join back to fundamentals_facts does not
+-- work: a Tier-2/3 finding on a DERIVED value (a TTM, a derived_identity total, a computed
+-- ratio) has NO single fact row to join to, so half the queue would arrive with an empty
+-- provenance block and the reviewing agent would have to re-derive the number before it could
+-- read the finding. `detail` is JSON, never prose -- an agent parsing English to decide what to
+-- fix is the failure mode this rebuild exists to remove.
+
+CREATE TABLE IF NOT EXISTS "fundamentals_check" (
+    "run_date" DATE NOT NULL,
+    "check_name" TEXT NOT NULL,
+    "ticker" TEXT NOT NULL,
+    "field" TEXT NOT NULL,
+    "period_key" TEXT NOT NULL,
+    "finding_id" TEXT,
+    "tier" BIGINT,
+    "severity" TEXT,
+    "substrate" TEXT,
+    "observed" DOUBLE PRECISION,
+    "expected" DOUBLE PRECISION,
+    "deviation" DOUBLE PRECISION,
+    "as_of" DATE,
+    "source_concept" TEXT,
+    "resolution_method" TEXT,
+    "roll_up_children" TEXT,
+    "root_anchor" TEXT,
+    "role_uri" TEXT,
+    "accession_number" TEXT,
+    "edgar_url" TEXT,
+    "detail" TEXT,
+    PRIMARY KEY ("run_date", "check_name", "ticker", "field", "period_key")
+);
+CREATE INDEX IF NOT EXISTS ix_fundamentals_check_finding ON "fundamentals_check" ("finding_id");
+CREATE INDEX IF NOT EXISTS ix_fundamentals_check_severity ON "fundamentals_check" ("severity");

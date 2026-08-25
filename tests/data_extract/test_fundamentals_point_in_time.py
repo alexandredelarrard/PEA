@@ -39,7 +39,8 @@ def _history() -> pd.DataFrame:
     try:
         from src.context import get_config_context
         _, context = get_config_context("./configs", use_cache=False, save=False)
-        df = context.store.load("fundamentals_history", columns=["ticker", "as_of", "fiscal_end"])
+        df = context.store.load("fundamentals_history",
+                                columns=["ticker", "as_of", "fiscal_end", "is_amendment"])
     except Exception as exc:                                        # noqa: BLE001
         pytest.skip(f"fundamentals_history unavailable: {exc}")
     if df is None or df.empty:
@@ -86,18 +87,68 @@ def test_filing_lag_is_inside_a_real_sec_window():
         "— those features read a stale quarter as current")
 
 
-def test_one_row_per_ticker_fiscal_period():
-    """The grain is one row per (ticker, fiscal period). A duplicated fiscal_end means two
-    `as_of` stamps for the same quarter, so a QoQ diff can see the same quarter twice."""
+def test_the_grain_is_one_row_per_publication_event_and_every_repeat_is_explained():
+    """The grain is one row per `(ticker, as_of)` — a PUBLICATION EVENT — and a repeated
+    `fiscal_end` is legitimate only where something explains it.
+
+    This test asserted one row per `(ticker, fiscal_end)` until 2026-08-24, which was the OLD
+    grain and is now provably the wrong question. Under the publication-event grain (Phase 5
+    §5.0 rule 1) a row exists for every date on which >=1 extracted value became newly public,
+    so the SAME fiscal period is reported twice whenever a filer republishes it — and that is
+    the feature, not the defect: it is what keeps an amendment from overwriting the numbers a
+    model would actually have seen at the earlier date. Asserting uniqueness on `fiscal_end`
+    demanded that the table throw away either the original or the restatement.
+
+    What must still hold, and is asserted here:
+
+      1. `(ticker, as_of)` is UNIQUE. That is the table's primary key and the real grain.
+      2. Every repeated `fiscal_end` is EXPLAINED — by an amendment row (`is_amendment`), or by
+         a declared registrant boundary in `fundamentals_cik_cutover.json`, where two legal
+         entities each filed for a period that straddles the cutover. Anything else is a
+         genuine duplicate and fails.
+
+    Consumers that need one row per fiscal period should take the LAST row per
+    `(ticker, fiscal_end)` — which is `merge_asof`'s natural behaviour anyway — rather than
+    expecting this table to have pre-collapsed it.
+    """
     df = _history()
-    dup = df.duplicated(["ticker", "fiscal_end"], keep=False)
-    n = int(dup.sum())
-    print("\n=== SANITY CHECK: one row per (ticker, fiscal period) ===")
-    print(f"  duplicated (ticker, fiscal_end) rows: {n:,}")
-    if n:
-        ex = df[dup].head(4)[["ticker", "fiscal_end", "as_of"]]
-        print(ex.to_string(index=False))
-    assert n == 0, f"{n} rows share a (ticker, fiscal_end) — the quarterly grain is not unique"
+
+    duplicate_events = int(df.duplicated(["ticker", "as_of"]).sum())
+    repeated = df.duplicated(["ticker", "fiscal_end"], keep=False)
+    groups = df[repeated].groupby(["ticker", "fiscal_end"])
+
+    try:
+        from src.data_extract.utils.fundamentals.cik_cutover import load_cutovers
+        cutovers = load_cutovers("./configs")
+    except Exception:                                               # noqa: BLE001
+        cutovers = {}
+
+    unexplained = []
+    for (ticker, fiscal_end), group in groups:
+        if bool(group["is_amendment"].fillna(False).any()):
+            continue                                    # a restatement: the whole point
+        cutover = cutovers.get(ticker)
+        if cutover is not None and abs(
+                (pd.Timestamp(fiscal_end) - cutover.cutover_date).days) <= 400:
+            continue        # two registrants either side of a DECLARED, evidenced boundary
+        unexplained.append((ticker, str(fiscal_end.date()), len(group)))
+
+    print("\n=== SANITY CHECK: one row per publication event ===")
+    print(f"  {len(df):,} rows / {df['ticker'].nunique()} tickers")
+    print(f"  duplicate (ticker, as_of) — the actual grain: {duplicate_events}")
+    print(f"  repeated fiscal_end: {int(repeated.sum())} rows in {groups.ngroups} group(s)")
+    print(f"    explained by an amendment or a declared cutover: "
+          f"{groups.ngroups - len(unexplained)}")
+    print(f"    UNEXPLAINED: {len(unexplained)}")
+    for ticker, fiscal_end, n in unexplained[:6]:
+        print(f"      {ticker} {fiscal_end} x{n}")
+
+    assert duplicate_events == 0, (
+        f"{duplicate_events} rows share a (ticker, as_of) — that is the PRIMARY KEY, so the "
+        "publication-event grain is broken")
+    assert not unexplained, (
+        f"{len(unexplained)} repeated fiscal_end group(s) with no amendment and no declared "
+        f"registrant cutover to explain them: {unexplained[:6]}")
 
 
 if __name__ == "__main__":

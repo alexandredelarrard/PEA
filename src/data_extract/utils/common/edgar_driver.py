@@ -58,7 +58,7 @@ def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None,
 
 def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
                     tables: tuple[Table, ...], build: BuildFn, desc: str,
-                    max_workers: int | None = None) -> None:
+                    max_workers: int | None = None, full: bool = False) -> None:
     """Fetch `tables` for `tickers` using `build(ticker, cik, since, done_accessions)
     -> {table: frame}`.
 
@@ -72,10 +72,22 @@ def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
     """
     configure_identity()
     cik_map = load_cik_mapping(context, tickers)
-    since, is_full_rescan = manifest_window(
-        context, tables[0], len(cik_map),
-        fallback_since=pd.Timestamp.today() - pd.DateOffset(years=years_history),
-        full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days))
+    fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
+    if full:
+        # `-F/--full`: take the whole years-history window and do not consult the manifest.
+        #
+        # Needed for a CHUNKED from-scratch backfill, which the manifest cannot express. Its
+        # incremental test is "did the ticker universe change size since the last run?", so
+        # running `-t A,B,C,D,E,F` twice in a row -- two different chunks, six tickers each --
+        # looks like a repeat of the same run and the second chunk gets `since = last run`,
+        # i.e. nothing. Measured the hard way: chunk 1 wrote 31,540 rows and chunks 2-9 wrote
+        # 0. Chunking is not optional here (edgartools never releases its per-filing caches,
+        # and an all-52 single process reached 14.7 GB RSS), so the flag is the fix.
+        since, is_full_rescan = fallback_since, True
+    else:
+        since, is_full_rescan = manifest_window(
+            context, tables[0], len(cik_map), fallback_since=fallback_since,
+            full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days))
     done = existing_filings(context, tables[0])
     declared = set(tables)
 

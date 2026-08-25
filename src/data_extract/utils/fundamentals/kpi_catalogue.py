@@ -40,6 +40,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any, Literal
 
+import pandas as pd
+
 from src.constants.constants import (
     FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_EXCEPTIONS_FILENAME,
     FUNDAMENTALS_KPIS_FILENAME, FUNDAMENTALS_REGIMES_FILENAME,
@@ -99,9 +101,21 @@ class FieldSpec:
         52 swept tickers and emitted one reason-coded row per filing -- ~1,600 rows a sweep
         asserting that a field the XBRL walk was never going to find was not found.
         """
-        if str(self.raw.get("source", "")).startswith("text"):
+        if self.is_text_sourced:
             return False
         return self.kind in EXTRACTED_KINDS
+
+    @property
+    def is_text_sourced(self) -> bool:
+        """Is the value parsed out of NARRATIVE TEXT rather than XBRL?
+
+        True only for `employees`, whose `source` is `"text:10-K"`. It is the discriminator
+        that keeps that field out of the wide history table (decision 35): a text parse can
+        fail in ways an XBRL walk cannot, and in the wide table one failed regex would fail
+        the whole snapshot. It goes to `fundamentals_employees` instead, and the field keeps
+        its tier and its authority in the catalogue.
+        """
+        return str(self.raw.get("source", "")).startswith("text")
 
     @property
     def regime_gated(self) -> bool:
@@ -157,6 +171,88 @@ class FieldSpec:
         return self.raw.get("regimes", {}).get(regime, {})
 
 
+#: `fundamentals_history`'s own key columns. `sector` / `industry_group` are NOT here
+#: (decision 32): they are a slowly-changing dimension joinable from `sp500_tickers`, and
+#: carrying them inside a point-in-time table duplicates a non-vintaged roster into every
+#: row. The residual is stated rather than hidden -- `regime` stays, and it is derived from
+#: `sub_industry` off that same roster, so the look-ahead this removes from two columns is
+#: still present in one. Accepted because `regime` drives RESOLUTION and therefore cannot be
+#: joined at cube time.
+#:
+#: `fiscal_quarter` labels which quarter of the ISSUER's OWN year `fiscal_end` closes -- Q1-Q4
+#: on every row, including the ones whose values are TTM or balance-sheet instants. A TTM
+#: spans four quarters, but the row still reports as of one of them, and that is what a
+#: seasonal comparison needs: a filer's Q4 is not its Q1, and `fiscal_end`'s calendar month
+#: does not say which is which for the 52/53-week and non-December filers on the roster.
+HISTORY_KEYS: tuple[str, ...] = ("ticker", "as_of", "fiscal_end", "fiscal_quarter")
+
+#: The 60 value columns in STATEMENT order: income statement top-down, then cash flow, then
+#: the balance sheet, then the share counts. Each ratio sits immediately after the line it is
+#: computed from, so a reader can check it in place -- `grossMargins` under `grossProfit`,
+#: `returnOnEquity` under `stockholdersEquity`.
+#:
+#: Declared, not derived. The resolution order is tier-then-name (`history_fields`), which is
+#: what the BUILD needs and reads as noise in a table: `basicShares` first and `totalRevenue`
+#: twenty-four columns later, with `costOfRevenue` in a different tier from the revenue it is
+#: subtracted from. `history_columns` asserts this list against the catalogue, so a new field
+#: in the JSON fails loudly here rather than being appended to the end of the table.
+HISTORY_STATEMENT_ORDER: tuple[str, ...] = (
+    # -- revenue: the general top line, then the regime-specific ones that replace it
+    "totalRevenue",
+    "premiumsEarned", "netInterestIncome", "noninterestIncome", "netInvestmentIncome",
+    "realizedInvestmentGains", "rentalIncome",
+    # -- cost of sales and gross result
+    "costOfRevenue", "grossProfit", "grossMargins",
+    # -- operating expense
+    "sellingGeneralAdmin", "researchAndDevelopment", "depAmort", "stockBasedComp",
+    # -- operating result
+    "operatingIncome", "operatingMargins", "ebitda",
+    # -- below the operating line, down to the bottom line
+    "interestExpense", "pretaxIncome", "incomeTaxExpense", "effectiveTaxRate",
+    "netIncome", "profitMargins", "epsDiluted",
+    # -- the two single-quarter slices, next to the TTM lines they are cut from
+    "revenue_q", "netIncome_q",
+    # -- cash flow
+    "operatingCashFlow", "capex", "freeCashflow",
+    # -- assets, in Reg S-X current-then-long-lived order
+    "cash", "restrictedCash", "shortTermInvestments", "accountsReceivable", "inventory",
+    "currentAssets", "ppeGross", "accumulatedDepreciation", "ppeNet", "goodwill",
+    "intangiblesExGoodwill", "totalAssets",
+    # -- liabilities and debt, current then long-term, components before the roll-ups
+    "accountsPayable", "currentLiabilities", "shortTermDebt", "shortTermBorrowingsOnly",
+    "longTermDebt", "longTermDebtCurrentOnly", "operatingLeaseLiability",
+    "financeLeaseLiability", "totalDebt", "totalLiabilities",
+    # -- equity, and the two ratios that read off it
+    "retainedEarnings", "minorityInterest", "stockholdersEquity", "returnOnEquity",
+    "debtToEquity",
+    # -- share counts last: the denominators, not the statements
+    "basicShares", "dilutedShares", "sharesOutstanding", "optionOverhang",
+)
+
+#: The publication-event provenance, scalar by precedence (decision 37) so every column
+#: stays queryable: `publication_form` is the highest-precedence form filed that day
+#: (`10-K` > `10-K/A` > `10-Q` > `10-Q/A`), `is_amendment` is an OR, `amended_fiscal_end` the
+#: latest restated period and `amended_fields` the union. Accession-level detail always
+#: remains recoverable from `fundamentals_facts`.
+HISTORY_PROVENANCE: tuple[str, ...] = ("publication_form", "is_amendment",
+                                       "amended_fiscal_end", "amended_fields")
+
+#: The filing's resolution regime, taken off `fundamentals_facts` where the facts layer
+#: already stamped it per filing rather than re-derived here.
+HISTORY_REGIME = "regime"
+
+#: Declared columns computed at CUBE time, not by the history build (decision 33).
+#:
+#: Both are year-on-year ratios, and the bug is in the OFFSET, not in the numerator: at cube
+#: time `pit.py` can take a fixed 365-DAY `as_of` offset, while a history-build version can
+#: only take a 4-ROW one -- and under the publication-event grain an amendment row makes four
+#: rows ~9 months, not 12. Computing them here would fix two columns and leave
+#: `infer_yoy_periods`' row-offset in every other cube growth feature; moving them fixes all
+#: of them at once. That repair is Phase 6's (§6.1); Phase 5's job is not to ship the two
+#: columns whose definition it cannot satisfy.
+CUBE_TIME_COLUMNS: frozenset[str] = frozenset({"revenueGrowth", "earningsGrowth"})
+
+
 @dataclass(frozen=True)
 class Catalogue:
     """The three loaded files, validated, with lookups precomputed."""
@@ -171,9 +267,63 @@ class Catalogue:
 
     @property
     def all_column_names(self) -> set[str]:
-        """Every name `fundamentals_history` can carry: extracted fields plus the columns
-        it computes. A `feeds` reference may name either."""
+        """Every name the CONTRACT declares: catalogue fields plus the computed columns.
+
+        The reference-resolution set, for `feeds` / `components`. Deliberately WIDER than
+        `history_columns`: `employees` is a real catalogue field that another field may
+        legitimately reference, it simply lives in its own table.
+        """
         return set(self.fields) | set(self.derived_columns)
+
+    # ------------------------------------------------- the history contract --- #
+    @property
+    def side_table_fields(self) -> list[str]:
+        """Catalogue fields the WIDE history table does not carry, because their source is
+        not XBRL. Today: `employees` -> `fundamentals_employees` (decision 35)."""
+        return sorted(n for n, s in self.fields.items() if s.is_text_sourced)
+
+    @property
+    def history_fields(self) -> list[str]:
+        """The catalogue fields `fundamentals_history` carries, ordered TIER then name.
+
+        One column per field, BARE NAME, on the TTM basis for a `duration` field and the
+        latest instant for an `instant` one (decision 31). That matches the legacy naming
+        exactly -- `totalRevenue` always WAS the TTM -- so `build_cube.yml` and
+        `SECTOR_KPI_SCOPE` need no renaming, and the `_ttm` suffix in the KPI JSON's prose
+        names the CONCEPT, never a column.
+        """
+        side = set(self.side_table_fields)
+        return sorted((n for n in self.fields if n not in side),
+                      key=lambda n: (self.fields[n].tier, n))
+
+    @property
+    def history_derived_columns(self) -> list[str]:
+        """The computed columns the history build owns -- everything declared minus the
+        cube-time ones. Subtracted defensively as well as excluded in the config, so the
+        contract cannot silently regrow by a config edit alone."""
+        return sorted(set(self.derived_columns) - CUBE_TIME_COLUMNS)
+
+    @property
+    def history_columns(self) -> list[str]:
+        """The `fundamentals_history` column contract, in table order: 4 keys + 52 catalogue
+        fields + 8 derived + `regime` + 4 provenance = **69**.
+
+        The number was "~71" twice and "68" once in the rebuild plan with no enumeration
+        behind either, while *"column count is exactly as contracted"* was a verification
+        item. This property IS the contract; `build_history` builds its frame from it and
+        asserts the length, so the two can never disagree again.
+
+        Column ORDER is `HISTORY_STATEMENT_ORDER`, not the tier-then-name order the fields
+        are RESOLVED in: reading the table should read like the statements it came from.
+        """
+        fields = [*self.history_fields, *self.history_derived_columns]
+        missing = sorted(set(fields) - set(HISTORY_STATEMENT_ORDER))
+        stale = sorted(set(HISTORY_STATEMENT_ORDER) - set(fields))
+        assert not missing and not stale, (
+            f"HISTORY_STATEMENT_ORDER is out of step with the catalogue: "
+            f"unordered {missing}, ordered-but-absent {stale}")
+        return [*HISTORY_KEYS, *HISTORY_STATEMENT_ORDER,
+                HISTORY_REGIME, *HISTORY_PROVENANCE]
 
     # ---------------------------------------------------------------- fields --- #
     def field(self, name: str) -> FieldSpec:
@@ -360,6 +510,37 @@ class Catalogue:
         """
         block = self.ticker_periodicity.get(ticker or "", {}).get(field)
         return list(block.get("shapes", [])) if isinstance(block, dict) else None
+
+    def combined_into(self, regime: str | None, ticker: str | None,
+                      field: str) -> str | None:
+        """The field this one is FOLDED INTO for this filer or regime, where a register cell
+        declares one -- the destination that makes `combined_into` a usable reason code
+        rather than a shrug. A ticker cell wins over a regime cell, matching every other
+        override in this class.
+
+        No cell declares one today, so this returns None for every (regime, ticker, field)
+        in the universe. The mechanism ships anyway because the alternative is a reason code
+        with no producer, and §B.6.4 writes the cells the validator's findings demand rather
+        than a speculative sweep of them.
+        """
+        for register, key in ((self.ticker_exceptions, ticker),
+                              (self.regime_exceptions, regime)):
+            block = register.get(key or "", {}).get(field)
+            if isinstance(block, dict) and block.get("combined_into"):
+                return str(block["combined_into"])
+        return None
+
+    def regime_break_effective(self, field: str) -> pd.Timestamp | None:
+        """The date a definitional discontinuity took effect for `field`, or None.
+
+        Four fields declare one: `cash` (ASU 2016-18, restricted cash enters the total
+        retrospectively), and `totalDebt` / `ppeNet` / `operatingLeaseLiability` (ASC 842,
+        which put operating leases on the balance sheet). The value is real on both sides
+        and comparable across neither, which is a qualifier rather than an absence.
+        """
+        block = self.field(field).raw.get("regime_break") or {}
+        effective = block.get("effective")
+        return pd.Timestamp(effective) if effective else None
 
     def measured_absent_rate(self, regime: str, field: str) -> float | None:
         """The share of the regime's tickers with no fact for this field, as measured on

@@ -6,10 +6,12 @@ is no longer imported by this module, so it is never called (not exercised
 here); the active sequence is earnings_surprises -> insider_transactions ->
 financial_notes.
 
-Phase 3 of the fundamentals rebuild (reports/planning/active-tasks/
-2026-08-21-fundamentals-rebuild-plan.md) put `fetch_fundamentals_sec` back at the
-HEAD of that sequence -- the facts layer must land before anything derived from it.
-The `fundamentals_history` build follows at Phase 5, immediately after it.
+The fundamentals rebuild put `fetch_fundamentals_sec` at the HEAD of that sequence --
+the facts layer must land before anything derived from it -- and Phase 5 pinned
+`build_fundamentals_history` IMMEDIATELY after it rather than anywhere later. The
+adjacency is the property under test: the replay reads only what the walk just
+stored, so a run that fetched a 10-K without replaying it would leave the newest
+filing invisible to every consumer of `fundamentals_history`.
 `EXPECTED_SOURCES` below is the one place this test records the order.
 """
 from __future__ import annotations
@@ -22,6 +24,7 @@ from src.data_extract.transformers.step_extract_fundamentals import StepExtractF
 #: (module attribute, label) for every source `run()` is expected to call, in call order.
 EXPECTED_SOURCES: tuple[tuple[str, str], ...] = (
     ("fetch_fundamentals_sec", "fundamentals_sec"),
+    ("build_fundamentals_history", "fundamentals_history"),
     ("fetch_earnings_surprises", "earnings_surprises"),
     ("fetch_insider_transactions", "insider_transactions"),
     ("fetch_financial_notes", "financial_notes"),
@@ -62,7 +65,10 @@ def test_run_calls_its_active_sources_directly_in_order(monkeypatch):
     assert calls == [label for _, label in EXPECTED_SOURCES]
     assert calls[0] == "fundamentals_sec", (
         "the facts layer must run FIRST -- everything else in this step is either "
-        "independent of it or, from Phase 5, derived from it")
+        "independent of it or derived from it")
+    assert calls[1] == "fundamentals_history", (
+        "the history replay must run IMMEDIATELY after the facts walk, not later in the "
+        "sequence: it reads exactly what that walk stored")
     print("\n=== SANITY CHECK: StepExtractFundamentals call order ===")
     print(f"  {' -> '.join(calls)}")
     print("  OK: facts layer first, no per-source error isolation.")

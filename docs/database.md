@@ -23,8 +23,10 @@ Container `pea_db` (postgres **16.14**), database `pea`, owner role **`alexandre
 | `notes_embedding`, `ticker_descriptions` | `notes_embedding` has no downstream reader anyway |
 
 **Present but not in the registry** (legacy, superseded — do not read, do not extend):
-`fundamentals_facts_legacy` (2.3M rows, 817 MB, 19 cols) ·
-`fundamentals_history_old` (30k rows, 32 MB, 234 cols).
+`fundamentals_facts_legacy` (2.3M rows, 817 MB, 19 cols). `fundamentals_history_old` is GONE
+(verified absent 2026-08-24) -- the Phase 5 rebuild dropped and recreated the four
+`fundamentals_*` tables from `sql/schema.sql`, so there is no longer an old-shape history table
+to read by mistake.
 
 ## Populated tables
 
@@ -43,7 +45,10 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `wiki_pageviews` | 1,699,202 | 136 MB | 3 | 500 | `date` | **2016-07-16** → 2026-07-23 |
 | `fails_to_deliver` | 993,775 | 98 MB | 5 | 499 | `date` | 2010-01-04 → **2026-07-14** |
 | `short_interest` | 963,115 | 84 MB | 4 | 502 | `date` | **2017-12-29** → 2026-07-31 |
-| `fundamentals_history` | 27,602 | 36 MB | **239** | 491 | `as_of` | 2009-07-31 → 2026-08-10 |
+| `fundamentals_facts` | 317,036 | 118 MB | 26 | **54** | `filing_date` | 2009-07-31 → 2026-08-10 |
+| `fundamentals_reason_codes` | 76,004 | 12 MB | 5 | **54** | `as_of` | 2009-07-31 → 2026-08-10 |
+| `fundamentals_history` | **3,267** | 1.8 MB | **69** | **54** | `as_of` | 2009-07-31 → 2026-08-10 |
+| `fundamentals_employees` | 745 | 112 kB | 3 | **54** | `as_of` | 2002-03-20 → 2026-07-29 |
 | `google_trends` | 388,336 | 32 MB | 3 | 500 | `date` | 2011-07-17 → **2026-07-12** |
 | `cusip_ticker_map` | 145,748 | 14 MB | 2 | 19,824 | — | — |
 | `notes_num` | 40,587 | 14 MB | 14 | — | `ddate` | 2007-12-31 → **2026-04-30** |
@@ -67,9 +72,25 @@ Ordered by size. `tickers` = distinct non-null tickers.
 - **`sec_def14a` covers only 23 of 500 tickers** (329 filings). The deterministic proxy path is
   barely seeded; `def14a_llm` (497 tickers) is the one with real coverage. Any `f_ceo_*` /
   governance feature built off `sec_def14a` will be ~95% NaN.
-- **`fundamentals_facts` covers 445 tickers, `fundamentals_history` 491.** The derived table has
-  more names than the raw one because `fundamentals_history` still holds rows from an earlier
-  extraction path. Do not treat their ticker sets as equal.
+- **The four `fundamentals_*` tables cover 54 tickers, not 500 — this is the Phase 5 rebuild
+  scope, not a defect.** All four were dropped and rebuilt from scratch on 2026-08-24
+  (`scripts/recreate_fundamentals_tables.py`), so the earlier 491-ticker / 239-column
+  `fundamentals_history` and its 445-ticker facts table no longer exist. Their ticker sets are
+  now identical by construction. Widening to the full roster is Phase 9's acceptance step; until
+  then any cube built off these tables covers 54 names and every coverage rate computed against a
+  500-ticker denominator will read ~11%.
+- **`fundamentals_history` went 27,602 rows → 3,267 and 239 columns → 69.** Both are deliberate.
+  The row count fell because the grain changed from a computed period spine to the
+  **publication-event** grain (one row per date on which ≥1 extracted value became newly public)
+  AND the scope narrowed to 54 tickers; the column count fell because the contract is now
+  enumerated by `Catalogue.history_columns` rather than accreted. Nulls are 36.7% of value cells
+  and **every one carries a `fundamentals_reason_codes` row** — the table is honest about what it
+  does not know rather than forward-filling a stale value.
+- **`fundamentals_facts` is strictly as-filed and keyed on `period_end`, not on fiscal labels.**
+  A single filing legitimately reports the same `(fiscal_year, fiscal_period)` more than once
+  (AAPL's FY2025 10-K carries FY2023, FY2024 and FY2025 annual revenue), so a label-keyed PK
+  silently dropped 18,604 of 337,190 rows. Do not join or dedupe these facts on the fiscal
+  labels.
 - **Short history is genuinely short for some sources**: `short_interest` starts 2017-12,
   `wiki_pageviews` 2016-07. A 1260-day (5y) rolling window on those covers far less of the panel
   than the same window on prices.

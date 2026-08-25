@@ -1,7 +1,7 @@
 """
-Tests for src/utils/yahoo_comparison.py: yfinance dataframe kind-dispatch
+Tests for src/validate/external/yahoo_comparison.py: yfinance dataframe kind-dispatch
 (flow/flow_abs/instant/latest_q), bucket classification, the ratio-outlier check
-(reusing analyze_history.detect_level_outliers on the our/yahoo ratio series), and the
+(reusing outliers.detect_level_outliers on the our/yahoo ratio series), and the
 alignment-summary tolerance scoring.
 
 Pure-synthetic, no network / no DB -- `yf.Ticker` is monkeypatched at the module seam
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.utils import yahoo_comparison as yc
+from src.validate.external import yahoo_comparison as yc
 
 
 def _quarterly_df(rows: dict[str, list[float]], dates: list[str]) -> pd.DataFrame:
@@ -138,8 +138,18 @@ def test_ratio_outlier_check_flags_a_spike_but_stays_quiet_on_a_stable_structura
 
     assert out[out["ticker"] == "AXP"].empty, "a stable structural gap must not be flagged"
     flagged = out[out["ticker"] == "ZZZ"]
-    assert len(flagged) == 1
-    assert flagged.iloc[0]["fiscal_year"] == 2023 and flagged.iloc[0]["fiscal_period"] == "Q4"
+    # TWO rows, and that is the post-decision-60 contract: the kernel scores the STEP, so a
+    # one-quarter spike is anomalous going in AND coming back out. Before the log-change fix
+    # this returned one row because it scored the LEVEL -- which is the same rule that flagged
+    # the whole recent era of any growing company. One defect, its two boundaries.
+    assert len(flagged) == 2, f"expected the spike and its reversion, got {len(flagged)}"
+    periods = list(zip(flagged["fiscal_year"], flagged["fiscal_period"]))
+    # quarters[3] = 2023-12-31 (the spike) and quarters[4] = 2024-03-31 (the reversion)
+    assert periods == [(2023, "Q4"), (2024, "Q1")], periods
+    print(f"\n  ratio spike 1.0x -> 5.0x -> 1.0x flagged at {periods}; "
+          f"the stable 1.08x AXP gap: {len(out[out['ticker'] == 'AXP'])} findings")
+    print("  SANITY: a STABLE structural difference is not a defect and a one-quarter jump "
+          "is -- and the jump owns both of its edges.")
 
 
 def test_alignment_summary_scores_bucket_a_only_within_tolerance():

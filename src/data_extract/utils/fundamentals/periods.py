@@ -48,6 +48,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
+import numpy as np
 import pandas as pd
 
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, FieldSpec
@@ -125,14 +126,32 @@ TTM_FOUR_QUARTERS = "sum_4q"
 TTM_FOUR_QUARTER_MEAN = "mean_4q"
 TTM_AS_REPORTED_ANNUAL = "as_reported_annual"
 
-#: `dc_code`s this module attaches to a TTM it refuses to emit.
+#: `dc_code`s this module attaches to a value it refuses to emit.
 #:
-#: A refused *quarter* carries no code -- `_derived` returns None and the window simply has
-#: no row. That is a genuine hole against the plan's "zero unexplained nulls", and it is
-#: Phase 5's to close: `fundamentals_reason_codes` is the table that records why a value is
-#: absent, and inventing a second mechanism here would give it two sources of truth.
+#: Until Phase 5 a refused *quarter* carried no code at all -- `_derived` returned None and
+#: the window simply had no row -- which was the last structural hole in "zero unexplained
+#: nulls" (register item 7). Every refusal now travels through the `refusals` out-parameter
+#: to `fundamentals_reason_codes`, which stays the single source of truth for why a value is
+#: absent: this module records, the history build writes.
 INSUFFICIENT_QUARTERS = "insufficient_quarters"
 SPLIT_BASIS_MISMATCH = "split_basis_mismatch"
+
+#: The two QUARTER-level refusals `_derived` makes (register item 7). Neither name is in the
+#: plan's code table, which listed only the codes that already existed -- and routing them
+#: through one that did would have been worse than adding two: `insufficient_quarters` means
+#: the window was not there, and these mean it WAS there and the arithmetic was refused.
+#:
+#:   * `derived_basis_mismatch` -- the scale test refused the subtraction. The total and the
+#:     subtrahend are not the same measure: either the concept switched between the two
+#:     windows (two different statement lines), or the field is a weighted-average share
+#:     count whose two windows sit on two SPLIT bases. The second case keeps the older and
+#:     more specific `split_basis_mismatch`, because it is literally the same defect
+#:     `_one_share_basis` names one level up.
+#:   * `derived_sign_implausible` -- `_is_coherent` refused it: a `non_negative` field came
+#:     out negative (proof the two inputs measured different things), or the value's sign
+#:     opposes every sibling quarter by more than the guard allows.
+DERIVED_BASIS_MISMATCH = "derived_basis_mismatch"
+DERIVED_SIGN_IMPLAUSIBLE = "derived_sign_implausible"
 
 #: `dc_code` for the D1b refusal (4c.8): a duration fact tagged into a QUARTERLY context
 #: whose value is the whole fiscal year, where the filer publishes NO annual-window fact for
@@ -213,7 +232,7 @@ def _shape(frame: pd.DataFrame, shape: str) -> pd.DataFrame:
 _CONTIGUOUS_DAYS = 4
 
 
-def _is_ambiguous_duration(q, ytd9: pd.DataFrame) -> bool:
+def _is_ambiguous_duration(q, ends: np.ndarray, values: np.ndarray) -> bool:
     """D1b: is this `quarterly`-shaped fact really the whole fiscal year?
 
     Called only where D1 found NO annual fact to compare against, so this is the last
@@ -232,20 +251,22 @@ def _is_ambiguous_duration(q, ytd9: pd.DataFrame) -> bool:
     which is how the annual-footing report caught it. Note the catalogue cannot help here:
     `netIncome` AND `totalRevenue` both declare `sign: any`, so gating on the field's sign
     would have disabled the ORCL case this guard exists for.
+
+    `ends` / `values` are the nine-month cumulatives as NUMPY arrays rather than a frame --
+    see `_drop_annual_masquerading_as_quarter`, which is called once per (ticker, field) but
+    loops over every quarterly row, so a per-row DataFrame filter here made this the single
+    most expensive function in the period engine.
     """
-    if ytd9.empty or pd.isna(q.period_start) or pd.isna(q.value):
+    if ends.size == 0 or pd.isna(q.period_start) or pd.isna(q.value):
         return False
-    gap = (q.period_start - ytd9["period_end"]).dt.days
-    contiguous = ytd9[(gap >= 0) & (gap <= _CONTIGUOUS_DAYS)]
-    if contiguous.empty:
-        return False
+    gap = (np.datetime64(q.period_start, "ns") - ends) / np.timedelta64(1, "D")
     quarter = float(q.value)
-    # Compare against the SAME-DIRECTION cumulative. A cumulative of the opposite sign is
-    # evidence the year turned, not evidence the window is mislabelled.
-    same_sign = contiguous[contiguous["value"] * quarter > 0]
-    if same_sign.empty:
+    # Contiguous AND same-direction. A cumulative of the opposite sign is evidence the year
+    # turned, not evidence the window is mislabelled.
+    keep = (gap >= 0) & (gap <= _CONTIGUOUS_DAYS) & (values * quarter > 0)
+    if not keep.any():
         return False
-    nine = same_sign["value"].abs().max()
+    nine = float(np.abs(values[keep]).max())
     return bool(nine > 0.01 * abs(quarter) and abs(quarter) > nine)
 
 
@@ -311,11 +332,26 @@ def _drop_annual_masquerading_as_quarter(frame: pd.DataFrame,
     if quarters.empty or (annual.empty and ytd9.empty):
         return frame
     drop: list = []
+    # The three comparison frames as NUMPY, taken once. The loop is O(quarters x annual) by
+    # nature and that is fine; what was not fine is that each iteration built a boolean mask,
+    # a block manager and a fancy take over a 15-year frame. Profiled on AAPL, this one
+    # function was **>50% of the entire period engine**, and the engine runs once per
+    # publication event -- so it was the dominant cost of the whole history build. The
+    # arithmetic below is the same arithmetic; `quarterize` has already dropped every row
+    # with a null value, start or end, so no NaN-skipping reduction is needed.
+    a_end = annual["period_end"].to_numpy("datetime64[ns]")
+    a_start = annual["period_start"].to_numpy("datetime64[ns]")
+    a_value = annual["value"].to_numpy(float)
+    y9_end = ytd9["period_end"].to_numpy("datetime64[ns]")
+    y9_value = ytd9["value"].to_numpy(float)
+    i_end = interim["period_end"].to_numpy("datetime64[ns]")
+    i_value = interim["value"].to_numpy(float)
+    same_period = np.timedelta64(_SAME_PERIOD_DAYS, "D")
     for q in quarters.itertuples():
-        near = annual[(annual["period_end"] - q.period_end).abs()
-                      <= pd.Timedelta(days=_SAME_PERIOD_DAYS)]
-        if near.empty:
-            if _is_ambiguous_duration(q, ytd9):
+        q_end = np.datetime64(q.period_end, "ns")
+        near = np.abs(a_end - q_end) <= same_period
+        if not near.any():
+            if _is_ambiguous_duration(q, y9_end, y9_value):
                 drop.append(q.Index)
                 if refusals is not None:
                     refusals.append({
@@ -324,16 +360,16 @@ def _drop_annual_masquerading_as_quarter(frame: pd.DataFrame,
                         "known_from": q.filing_date, "dc_code": AMBIGUOUS_DURATION,
                         "source_concept": getattr(q, "source_concept", None)})
             continue
-        scale = near["value"].abs().max()
-        if scale < 1 or (near["value"] - q.value).abs().min() > 0.001 * scale:
+        near_value = a_value[near]
+        scale = float(np.abs(near_value).max())
+        if scale < 1 or float(np.abs(near_value - float(q.value)).min()) > 0.001 * scale:
             continue
         # Scoped to the ANNUAL window, not to the quarter's: a nine-month cumulative ends
         # exactly where the fourth quarter begins, so anchoring on `q.period_start` would
         # exclude the one fact that proves the year accumulated.
-        year_start = near["period_start"].min()
-        accumulated = interim[(interim["period_end"] > year_start)
-                              & (interim["period_end"] <= q.period_end)]
-        if (accumulated["value"].abs() > 0.01 * scale).any():
+        year_start = a_start[near].min()
+        accumulated = (i_end > year_start) & (i_end <= q_end)
+        if (np.abs(i_value[accumulated]) > 0.01 * scale).any():
             drop.append(q.Index)
     return frame.drop(index=drop) if drop else frame
 
@@ -436,11 +472,38 @@ def _is_coherent(derived: float, siblings: list[float], spec: FieldSpec,
 # ----------------------------------------------------------------------- the ladder ---
 
 def _derived(total, subtrahend, basis: str, spec: FieldSpec, siblings: list[float],
-             guards: PeriodGuards) -> dict | None:
+             guards: PeriodGuards,
+             refusals: list[dict] | None = None) -> dict | None:
     """One subtraction, guarded. Returns None where the guards refuse it, because a NULL
-    the validator can explain is worth more than a plausible wrong number."""
+    the validator can explain is worth more than a plausible wrong number.
+
+    A refusal is now RECORDED rather than merely returned (register item 7). The record
+    carries the window the quarter would have occupied and the value that was refused --
+    both of which the caller has no other way of knowing, since the whole point is that no
+    row is emitted -- so `fundamentals_reason_codes` can say "this quarter was refused, at
+    this size, for this reason" instead of leaving a hole a null-gate reports as unexplained.
+
+    One caveat worth stating rather than discovering: for a NON-ADDITIVE field `quarterize`
+    has already transformed the frame into SHARE-DAYS, so the refused `value` recorded here
+    is a share-day product, not a share count. It is diagnostic only -- the reason code is
+    what the table stores -- and converting it back would need the window's day count to
+    mean something it does not for a refused window.
+    """
     value = float(total["value"]) - float(subtrahend["value"])
     switched = str(total["source_concept"]) != str(subtrahend["source_concept"])
+    start = pd.Timestamp(subtrahend["period_end"]) + pd.Timedelta(days=1)
+    end = pd.Timestamp(total["period_end"])
+
+    def refuse(code: str) -> None:
+        if refusals is None:
+            return
+        refusals.append({
+            "period_start": start, "period_end": end, "period_days": (end - start).days,
+            "value": value, "basis": basis,
+            "known_from": max(pd.Timestamp(total["filing_date"]),
+                              pd.Timestamp(subtrahend["filing_date"])),
+            "source_concept": total["source_concept"], "dc_code": code})
+
     # The scale test runs on a concept switch (the legs may be two different lines) and
     # ALWAYS for a non-additive share count (the legs may be two different SPLIT BASES --
     # same concept, same line, incompatible units).
@@ -448,11 +511,12 @@ def _derived(total, subtrahend, basis: str, spec: FieldSpec, siblings: list[floa
         if not _scale_agrees(total["value"], total["period_days"], subtrahend["value"],
                              subtrahend["period_days"], guards,
                              two_sided=not spec.is_additive):
+            refuse(SPLIT_BASIS_MISMATCH if not spec.is_additive
+                   else DERIVED_BASIS_MISMATCH)
             return None
     if not _is_coherent(value, siblings, spec, guards):
+        refuse(DERIVED_SIGN_IMPLAUSIBLE)
         return None
-    start = pd.Timestamp(subtrahend["period_end"]) + pd.Timedelta(days=1)
-    end = pd.Timestamp(total["period_end"])
     return {
         "period_start": start, "period_end": end, "period_days": (end - start).days,
         "value": value, "basis": basis,
@@ -491,9 +555,11 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
     Ratios and per-share amounts never reach here at all -- `build_periods` only walks
     fields whose `kind` is `duration`, and both are `ratio`/`derived`.
 
-    `refusals`, when a list is passed, collects the D1b `ambiguous_duration` rows this call
-    declined -- an out-parameter rather than a fourth return value because it is empty on
-    essentially every (ticker, field) and Phase 5 is the only consumer.
+    `refusals`, when a list is passed, collects EVERY window this call declined -- the D1b
+    `ambiguous_duration` rows and, since register item 7, the ladder's own
+    `derived_basis_mismatch` / `split_basis_mismatch` / `derived_sign_implausible`
+    refusals. An out-parameter rather than a fourth return value because the list is empty
+    on most (ticker, field) pairs and the history build is the only consumer.
     """
     guards = guards or load_guards()
     if facts.empty:
@@ -519,7 +585,7 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
     } for r in quarters.itertuples()]                # still in share-days if weighted
 
     y6, y9, annual = (_shape(frame, s) for s in (YTD6, YTD9, ANNUAL))
-    rows.extend(_ladder(quarters, y6, y9, annual, spec, guards))
+    rows.extend(_ladder(quarters, y6, y9, annual, spec, guards, refusals))
 
     out = pd.DataFrame(rows, columns=[c for c in _QUARTER_COLUMNS
                                       if c not in ("ticker", "field", "fiscal_year",
@@ -547,8 +613,15 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
 
 def _ladder(quarters: pd.DataFrame, y6: pd.DataFrame, y9: pd.DataFrame,
             annual: pd.DataFrame, spec: FieldSpec,
-            guards: PeriodGuards) -> list[dict]:
-    """The three decumulation rungs plus the two Q4 routes, in that order."""
+            guards: PeriodGuards,
+            refusals: list[dict] | None = None) -> list[dict]:
+    """The three decumulation rungs plus the two Q4 routes, in that order.
+
+    `refusals` is forwarded to every `_derived` call, so a rung that declines a window is
+    recorded once, at the rung that declined it. A window the LADDER never reaches -- no
+    cumulative fact, or no prior fact to difference against -- is not a refusal and is not
+    recorded: nothing was rejected, the input was simply never published.
+    """
     out: list[dict] = []
     for cumulative, earlier, basis in ((y6, quarters, Q2_FROM_YTD6),
                                        (y9, y6, Q3_FROM_YTD9)):
@@ -557,7 +630,7 @@ def _ladder(quarters: pd.DataFrame, y6: pd.DataFrame, y9: pd.DataFrame,
             if prior is None:
                 continue
             derived = _derived(row._asdict(), prior, basis, spec,
-                               [float(prior["value"])], guards)
+                               [float(prior["value"])], guards, refusals)
             if derived:
                 out.append(derived)
 
@@ -573,7 +646,8 @@ def _ladder(quarters: pd.DataFrame, y6: pd.DataFrame, y9: pd.DataFrame,
 
         ytd9 = _same_start_before(y9, fy.period_start, fy.period_end)
         if ytd9 is not None:
-            derived = _derived(fy_row, ytd9, FY_MINUS_YTD9, spec, siblings, guards)
+            derived = _derived(fy_row, ytd9, FY_MINUS_YTD9, spec, siblings, guards,
+                               refusals)
             if derived:
                 out.append(derived)
                 continue
@@ -589,7 +663,7 @@ def _ladder(quarters: pd.DataFrame, y6: pd.DataFrame, y9: pd.DataFrame,
                                     "period_days": float(inside["period_days"].sum()),
                                     "filing_date": inside["filing_date"].max(),
                                     "source_concept": last["source_concept"]},
-                           FY_MINUS_QUARTERS, spec, siblings, guards)
+                           FY_MINUS_QUARTERS, spec, siblings, guards, refusals)
         if derived:
             out.append(derived)
     return out
@@ -633,6 +707,47 @@ def fiscal_year_ends(facts: pd.DataFrame) -> list[pd.Timestamp]:
     return [*filled, last + pd.Timedelta(days=span)]
 
 
+def _fiscal_bounds(
+        year_ends: list[pd.Timestamp]) -> tuple[list[pd.Timestamp], list[pd.Timestamp]]:
+    """The fiscal years as (end, start) pairs: each year starts the day after the previous
+    one ended, and the first is back-dated 364 days because there is no earlier end to
+    anchor it on.
+
+    Shared by `label_fiscal_periods` and `fiscal_quarter_of_end` so a quarter cannot be
+    labelled one way inside a quarters frame and another way from its end date alone.
+    """
+    ends = sorted(pd.Timestamp(e) for e in year_ends)
+    starts = [ends[0] - pd.Timedelta(days=364), *[e + pd.Timedelta(days=1) for e in ends[:-1]]]
+    return ends, starts
+
+
+def fiscal_quarter_of_end(end, year_ends: list[pd.Timestamp]) -> int | None:
+    """Which fiscal quarter (1-4) does a period **ending** on `end` sit in?
+
+    The mirror of `label_fiscal_periods`, for the caller that has only an end date -- the
+    history layer stamps one `fiscal_end` per publication event and has no `period_start`
+    to offset from. Measuring the span the year-start covers UP TO `end` and rounding is
+    the same arithmetic seen from the other side: a period ending exactly on the year end
+    covers 4 quarter-lengths and lands on Q4, one ending a quarter in covers 1 and lands
+    on Q1.
+
+    Answers for a TTM or an instant too, which is the point: the row still reports *as of*
+    a quarter of the filer's year even when the number on it spans four of them.
+    """
+    if not year_ends or end is None or pd.isna(end):
+        return None
+    ends, starts = _fiscal_bounds(year_ends)
+    end = pd.Timestamp(end)
+    # side='left' puts a period ending exactly ON a year end into that year, where Q4 lives.
+    position = int(pd.Series(ends).searchsorted(end, side="left"))
+    if position >= len(ends):
+        return None
+    year_start, year_end = starts[position], ends[position]
+    quarter_length = max((year_end - year_start).days + 1, 1) / TTM_QUARTERS
+    covered = (end - year_start).days + 1
+    return int(min(max(round(covered / quarter_length), 1), TTM_QUARTERS))
+
+
 def label_fiscal_periods(quarters: pd.DataFrame,
                          year_ends: list[pd.Timestamp]) -> pd.DataFrame:
     """Attach `fiscal_year` and `fiscal_quarter`, positioned against the fiscal year's own
@@ -657,8 +772,7 @@ def label_fiscal_periods(quarters: pd.DataFrame,
     out["fiscal_quarter"] = pd.NA
     if not year_ends or out.empty:
         return out[list(_QUARTER_COLUMNS)]
-    ends = sorted(pd.Timestamp(e) for e in year_ends)
-    starts = [ends[0] - pd.Timedelta(days=364), *[e + pd.Timedelta(days=1) for e in ends[:-1]]]
+    ends, starts = _fiscal_bounds(year_ends)
     bounds = pd.Series(ends)
     # side='left' puts a quarter ending exactly ON a year end into that year, where Q4 lives.
     slot = bounds.searchsorted(out["period_end"].values, side="left")
@@ -838,9 +952,10 @@ def build_periods(facts: pd.DataFrame, catalogue,
     grain. Nothing here is written to a table: a derived quarter is not a fact the filer
     published, and `fundamentals_facts` stays a faithful record of what was.
 
-    `refusals`, when a list is passed, collects every D1b `ambiguous_duration` row, tagged
-    with its field, for Phase 5 to write to `fundamentals_reason_codes`. Left None it is
-    simply not collected -- a caller that does not reason-code must not be forced to.
+    `refusals`, when a list is passed, collects every refused window -- D1b's
+    `ambiguous_duration` and the ladder's three quarter-level codes -- tagged with its
+    field, for the history build to write to `fundamentals_reason_codes`. Left None it is
+    simply not collected: a caller that does not reason-code must not be forced to.
     """
     if facts.empty:
         return (pd.DataFrame(columns=list(_QUARTER_COLUMNS)),

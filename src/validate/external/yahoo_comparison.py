@@ -1,5 +1,5 @@
 """
-yahoo_comparison.py  (src/utils/yahoo_comparison.py)
+yahoo_comparison.py  (src/validate/external/yahoo_comparison.py)
 ------------------------------------------------------
 FALLBACK external ground-truth cross-check for `fundamentals_history`, for tickers
 Tiingo's Free/Power plan does not cover -- confirmed live (2026-08 probe):
@@ -49,7 +49,7 @@ from src.constants.constants import (
     YAHOO_RATIO_OUTLIERS_FILENAME,
 )
 from src.context import Context
-from src.utils.outliers import detect_level_outliers
+from src.validate.outliers import detect_level_outliers
 
 _LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -295,11 +295,17 @@ def ratio_outlier_check(
 ) -> pd.DataFrame:
     """Reuses `outliers.detect_level_outliers` UNMODIFIED on the ratio series
     (our_value / yahoo_value) per (ticker, field) -- identical logic and caveats to
-    `tiingo_comparison.ratio_outlier_check`. With only ~4-5 quarters of Yahoo history
-    per ticker, most series here are too short for the level-outlier machinery
-    (`detect_level_outliers` requires >= 3 points); this mainly catches an outright sign
-    flip or order-of-magnitude miss, not a subtle drift -- a structural limit of the
-    depth Yahoo exposes, not a bug in the check itself."""
+    `tiingo_comparison.ratio_outlier_check`, including decision 60's log-change kernel:
+    a permanent step flags only its boundary quarter, and a one-quarter spike flags
+    twice (in and back out).
+
+    With only ~4-5 quarters of Yahoo history per ticker, most series here are too short
+    for the level-outlier machinery at all -- `detect_level_outliers` needs >= 3 points
+    and the log-change kernel spends one of them on the undefined first period, so it
+    needs 4. This mainly catches an outright order-of-magnitude miss, not a subtle
+    drift, and an outright SIGN flip is now invisible rather than caught: no log ratio
+    exists across zero. Both are structural limits of the depth Yahoo exposes and of a
+    scale-free statistic, not bugs in the check itself."""
     cols = ["ticker", "field", "fiscal_year", "fiscal_period", "value",
            "is_level_outlier", "level_z_score", "is_yoy_outlier"]
     usable = comparison_frame[

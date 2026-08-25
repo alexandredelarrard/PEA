@@ -1,5 +1,5 @@
 """
-tiingo_comparison.py  (src/utils/tiingo_comparison.py)
+tiingo_comparison.py  (src/validate/external/tiingo_comparison.py)
 --------------------------------------------------------
 External ground-truth cross-check for `fundamentals_history`: compares our
 SEC-EDGAR-derived figures against Tiingo's `/tiingo/fundamentals/{ticker}/statements`
@@ -59,7 +59,7 @@ from src.constants.constants import (
     TIINGO_RATIO_OUTLIERS_FILENAME, TIINGO_STATEMENTS_URL_TEMPLATE,
 )
 from src.context import Context
-from src.utils.outliers import detect_level_outliers
+from src.validate.outliers import detect_level_outliers
 from src.utils.polite_http import get_json
 
 _LOG: logging.Logger = logging.getLogger(__name__)
@@ -376,12 +376,16 @@ def ratio_outlier_check(
     (AXP's steady revenue premium, GS's capex convention, HON's ~2.00x share
     count) but should not drift or suddenly jump.
 
-    Caveat (documented, not fixed here): a genuine one-time step -- a real stock
-    split moving the ratio from 1.0x to 2.0x permanently -- will register as an
-    outlier right at the boundary, same as any other level shift. A human
-    spot-check of whether flags cluster at one date and then stay flat (benign)
-    vs. scatter continuously (worth investigating) is the right read; building a
-    second, era-aware detector is out of scope for this pass."""
+    Since plan-5b decision 60 the kernel scores the RATIO'S QoQ LOG CHANGE rather
+    than its level, which changes what a flag means here in two ways worth stating:
+
+      * a genuine one-time step -- a real stock split moving the ratio from 1.0x
+        to 2.0x permanently -- now flags EXACTLY the boundary quarter and nothing
+        after it. Under the old raw-level kernel it flagged the whole post-split
+        era, which is what made "do the flags cluster at one date?" a judgement
+        call rather than a reading;
+      * a one-quarter spike flags TWICE, at the step up and the step back down.
+        Two rows, one defect, and its two edges are where the information is."""
     cols = ["ticker", "field", "fiscal_year", "fiscal_period", "value",
            "is_level_outlier", "level_z_score", "is_yoy_outlier"]
     usable = comparison_frame[

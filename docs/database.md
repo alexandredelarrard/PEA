@@ -49,6 +49,9 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `fundamentals_reason_codes` | 76,004 | 12 MB | 5 | **54** | `as_of` | 2009-07-31 → 2026-08-10 |
 | `fundamentals_history` | **3,267** | 1.8 MB | **69** | **54** | `as_of` | 2009-07-31 → 2026-08-10 |
 | `fundamentals_employees` | 745 | 112 kB | 3 | **54** | `as_of` | 2002-03-20 → 2026-07-29 |
+| `fundamentals_check` | 11,926 | 20 MB | 23 | **54** | `run_date` | one run: 2026-08-24 |
+| `fundamentals_check_run` | 35 | 104 kB | 17 | — | `run_date` | one run: 2026-08-24 |
+| `fundamentals_check_status` | **0** | 32 kB | 7 | — | `decided_at` | nothing decided yet |
 | `google_trends` | 388,336 | 32 MB | 3 | 500 | `date` | 2011-07-17 → **2026-07-12** |
 | `cusip_ticker_map` | 145,748 | 14 MB | 2 | 19,824 | — | — |
 | `notes_num` | 40,587 | 14 MB | 14 | — | `ddate` | 2007-12-31 → **2026-04-30** |
@@ -66,6 +69,14 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `sec_def14a_votes` | 1,177 | 368 kB | 8 | — | `filing_date` | — |
 | `sec_def14a` | **329** | 160 kB | 46 | **23** | `filing_date` | 2011-09-23 → 2026-05-06 |
 | `sp500_tickers` | 500 | 128 kB | 6 | 500 | — | — |
+
+- **The three validator tables hold ONE run** (`3df52ae9af75`, 54 tickers, all tiers). They are
+  written only by `src/validate/` and gate nothing. `fundamentals_check` is a LEDGER: nothing is
+  ever subtracted from it, so a row-count drop against a later run of the same scope has exactly
+  one cause. Runs are comparable only when their `scope_hash` matches, which is why `run_id` is
+  in the primary key — two runs of different scope on one day would otherwise collide on every
+  ticker they share. `fundamentals_check_status` is empty because no `wontfix` has been recorded;
+  that is the only mutable state in the package.
 
 ## Coverage gotchas worth knowing before you build a feature
 

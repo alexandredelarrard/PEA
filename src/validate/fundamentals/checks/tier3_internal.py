@@ -49,7 +49,7 @@ import pandas as pd
 from src.data_extract.utils.fundamentals.periods import ANNUAL, QUARTERLY, YTD9
 from src.validate.fundamentals.checks import FACTS, GRAIN_CELL, GRAIN_SERIES, check
 from src.validate.fundamentals.finding import (
-    CRITICAL, Finding, HIGH, INFO, MEDIUM, period_key_for_range)
+    CRITICAL, Finding, collapse_by_id, HIGH, INFO, MEDIUM, period_key_for_range)
 from src.validate.fundamentals.substrate import Substrates
 
 # --------------------------------------------------------------------------- #
@@ -129,7 +129,7 @@ def q4_footing(sub: Substrates) -> list[Finding]:
                     "tolerance": FOOTING_TOLERANCE,
                     "why": "all four quarters are the FILER'S OWN, so this is not an "
                            "identity -- ORCL's FY2020 Q4 at $39,068M is this shape"}))
-    return out
+    return _collapse(out)
 
 
 @check(name="annual_footing", tier=3, substrate=FACTS, severity=HIGH, grain=GRAIN_CELL,
@@ -292,7 +292,7 @@ def cross_vintage(sub: Substrates) -> list[Finding]:
                             "at the time"
                             if as_reported_only else
                             "at least one vintage was DERIVED, so our arithmetic is in play")}))
-    return out
+    return _collapse(out)
 
 
 @check(name="restatement_ledger", tier=3, substrate=FACTS, severity=INFO, grain=GRAIN_SERIES,
@@ -414,7 +414,7 @@ def leaf_vs_total(sub: Substrates) -> list[Finding]:
 
     keys = ["ticker", "field", "duration_type", "period_end"]
     grouped = _multi_row_groups(valued, keys).groupby(keys, sort=False)
-    for _key, rows in grouped:
+    for (_ticker, _field, duration, _period_end), rows in grouped:
         methods = rows["resolution_method"].astype(str)
         leaves = rows[methods.str.contains("leaf", case=False, na=False)]
         totals = rows[methods.str.contains("total|as_reported", case=False, na=False)]
@@ -429,12 +429,13 @@ def leaf_vs_total(sub: Substrates) -> list[Finding]:
             severity=HIGH, tier=3, observed=leaf_value, expected=total_value,
             deviation=_relative(leaf_value, total_value),
             detail={"leaf_sum": leaf_value, "declared_total": total_value,
+                    "duration_type": str(duration),
                     "total_accession": str(totals.sort_values("filing_date")
                                            .iloc[-1]["accession_number"]),
                     "tolerance": HOLDOUT_TOLERANCE,
                     "why": "two routes to one number, taken by two filings. A genuine gap is "
                            "a property of the FILER'S linkbase, not necessarily of ours"}))
-    return out
+    return _collapse(out)
 
 
 @check(name="derived_vs_asreported", tier=3, substrate=FACTS, severity=HIGH, grain=GRAIN_CELL,
@@ -596,6 +597,18 @@ def _relative(observed: float, expected: float) -> float:
 def _date(value) -> str:
     """A date as `YYYY-MM-DD` -- Postgres DATE arrives as `datetime.date`, not `Timestamp`."""
     return "" if value is None or pd.isna(value) else str(pd.Timestamp(value).date())
+
+
+def _collapse(findings: list[Finding]) -> list[Finding]:
+    """`collapse_by_id` with THIS module's reason. See `finding.collapse_by_id`.
+
+    Tier 3's collision is the duration shape: three checks here group on
+    `(ticker, field, duration_type, period_end)` while `finding_id` stops at `period_end`.
+    """
+    return collapse_by_id(findings, why=(
+        "this period end carries more than one duration shape; the worst is reported here "
+        "and the rest are listed above, because the finding's grain is "
+        "(ticker, field, period_end)"))
 
 
 def _finding_from(row: pd.Series, sub: Substrates, *, check_name: str, severity: str,

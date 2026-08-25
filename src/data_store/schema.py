@@ -402,26 +402,81 @@ class Tables:
     # `run_date` IS IN THE KEY, so a re-run appends rather than overwriting: "did this check
     # fire yesterday?" stays answerable, and a check whose threshold moved leaves both
     # verdicts on the record. What survives across runs is `finding_id`, a deterministic
-    # hash of (check_name, ticker, field, period_key) -- that is what
-    # `configs/fundamentals/fundamentals_check.json` matches settled findings on, so a
-    # finding keeps its identity even though its rows do not.
+    # hash of (check_name, ticker, field, period_key), so a finding keeps its identity even
+    # though its rows do not -- which is what makes differencing two runs meaningful.
     #
     # `period_key` IS TEXT AND POLYMORPHIC, by grain: the `as_of` for a history-grain check,
     # the `period_end` for a facts-grain one, `''` for a ticker-level check
-    # (`register_coverage`, `filing_continuity`), and a `start..end` range for a
-    # series-grain one (`series_shape`). One key column rather than three nullable ones,
+    # (`filing_continuity`), and a `start..end` range for a series-grain one
+    # (`series_shape`). One key column rather than three nullable ones,
     # because a PK cannot contain a NULL in Postgres and a sentinel date would be a lie.
+    #
+    # `cluster_id` is a hash of (ticker, field) ALONE -- the DEFECT, of which every row here
+    # is one witness. It is not in the PK and is not meant to be unique: MCD `capex` trips
+    # nine checks over dozens of periods and that is ONE thing to fix. `run_id` records which
+    # scope produced the row, so two runs can be differenced honestly. See
+    # `fundamentals_check_run` below.
+    #
+    # NOTHING IS SUBTRACTED ON THE WAY IN. Every finding of every run is written, including
+    # ones a human has already settled, because a ledger that suppresses rows makes its own
+    # row count meaningless -- a drop would be ambiguous between "fixed" and "hidden". A
+    # `wontfix` is recorded in `fundamentals_check_status` and applied when the report is
+    # RENDERED, never when the row is written.
     #
     # The payload is decision 47's SELF-CONTAINED INVESTIGATION PACKET: identity, observed
     # vs expected, the full provenance the fact row carried, the EDGAR URL, and a
     # check-specific `detail` JSON. Deliberately denormalised -- a Tier-2/3 finding on a
     # DERIVED value (a TTM, a `derived_identity` total) has no single fact row to join back
     # to, so an identity-only row plus an on-demand join cannot reconstruct it at all.
+    # `run_id` IS IN THE KEY, and that was learned the hard way rather than designed in.
+    # Without it the key is (run_date, check_name, ticker, field, period_key), so TWO RUNS OF
+    # DIFFERENT SCOPE ON ONE DAY collide on every ticker they share: a `-t MCD` run wrote 270
+    # rows, a 54-ticker roster run an hour later upserted over 269 of them, and the first run
+    # was left claiming 35 checks and one surviving finding. Every delta computed against it
+    # would have been nonsense. Two runs that looked at different things must be able to
+    # coexist, so the run is part of the row's identity.
     fundamentals_check = Table(
         "fundamentals_check",
-        ("run_date", "check_name", "ticker", "field", "period_key"),
+        ("run_date", "run_id", "check_name", "ticker", "field", "period_key"),
         KIND_AGGREGATE, date_col="run_date",
         date_type_cols=("run_date", "as_of"))
+
+    # One row per (run_id, check_name): WHAT THE RUN LOOKED AT, and what each check did with
+    # it. Without this table a row-count drop in `fundamentals_check` is ambiguous between
+    # "the fix worked" and "the second run was scoped to fewer tickers", so the whole
+    # fix-then-measure loop rests on it.
+    #
+    # `run_id` is a hash of (run_date, tickers, fields, tiers); `scope_hash` is the same hash
+    # WITHOUT the date. Two runs are COMPARABLE iff their `scope_hash` matches -- that is the
+    # single equality test `ledger.comparable_runs` makes, rather than a fragile three-column
+    # text comparison.
+    #
+    # The scope columns repeat on every check row. Denormalised deliberately: it matches this
+    # repo's flat-table convention and keeps "what did this run cover, and did any check
+    # abstain?" a single unprojected read of a table with ~35 rows per run.
+    #
+    # `abstained` and `over_ceiling` are STORED rather than recomputed on read. They are the
+    # check-health gate the report renders ABOVE its rankings, and a gate that has to be
+    # re-derived from a ceiling that has since moved would answer a different question than
+    # the one the run asked.
+    fundamentals_check_run = Table(
+        "fundamentals_check_run", ("run_id", "check_name"),
+        KIND_AGGREGATE, date_col="run_date", ticker_col=None,
+        date_type_cols=("run_date",))
+
+    # `wontfix`, keyed on `cluster_id` -- one `(ticker, field)` defect. The ONLY mutable
+    # state in the validator, and the replacement for the deleted JSON register.
+    #
+    # `open` and `settled` are NOT stored: they are DERIVED from the ledger, because a status
+    # column that says `settled` while the check still fires is exactly the suppression list
+    # the register became. The only thing a human can assert here is "I have looked at this,
+    # it is real, and it is not worth repairing" -- and `findings_at_decision` makes even that
+    # self-expiring: the cluster REOPENS automatically the moment it grows past the size that
+    # was actually assessed.
+    fundamentals_check_status = Table(
+        "fundamentals_check_status", ("cluster_id",),
+        KIND_AGGREGATE, date_col="decided_at",
+        date_type_cols=("decided_at",))
 
     # ----------------------------------------------------------------- #
     # Parts -- private plumbing between the cube sub-steps               #

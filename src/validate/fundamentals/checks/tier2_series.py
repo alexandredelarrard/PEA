@@ -106,15 +106,37 @@ PEER_RATIO_Z = 3.5
 #: `series_shape`: a series shorter than this has no shape to classify.
 SERIES_SHAPE_MIN_EVENTS = 8
 
+#: `series_shape`'s ceiling, RE-DERIVED after the severity ladder was fixed -- not loosened.
+#:
+#: The old value was 0.15, measured on run 2 at 587 queue findings out of 5,616 series =
+#: 10.45%. That measurement was taken while the ladder was mislabelling 347 real findings as
+#: `info`, so it was a rate for a check that was suppressing part of its own output. With the
+#: shape tested before the code those 347 enter the queue: 934 / 5,616 = **16.63%**.
+#:
+#: Raising a ceiling to fit a number the check just produced is normally the exact anti-pattern
+#: the ceiling exists to prevent, so the distinction matters and is recorded here: nothing
+#: about the check got noisier and no threshold moved. The same data, correctly classified,
+#: sits at 16.63%, and 0.15 would now report a CORRECTED check as a threshold bug -- which
+#: would in turn tell the reader to distrust every cluster it contributes to.
+#:
+#: 0.18 leaves ~8% relative headroom over the measurement. Re-measure it, do not adjust it.
+SERIES_SHAPE_CEILING = 0.18
+
 #: `peer_ratio`'s denominators. A BALANCE-SHEET field is scaled by total assets and a FLOW by
 #: total revenue -- the two quantities every filer in every regime reports, so the ratio is
 #: comparable across a peer group without importing a second field's coverage problems.
 _BALANCE_DENOMINATOR = "totalAssets"
 _FLOW_DENOMINATOR = "totalRevenue"
 
+#: `series_shape`'s vocabulary. Declared here rather than beside the check because the benign
+#: tables below are keyed on it, and a table that cannot name the shape it applies to is how
+#: an order-dependent bug like the one those tables document gets written in the first place.
+COMPLETE, INTERIOR_GAP, LATE_START, EARLY_STOP, SPARSE = (
+    "complete", "interior_gap", "late_start", "early_stop", "sparse")
+
 #: Reason codes that make a gap in a series BENIGN BY CONSTRUCTION, with what each means.
-#: `series_shape` reads the modal code inside the gap, and this is what turns the shape from a
-#: noisy observation into a diagnosis.
+#: `series_shape` reads the modal code for the (ticker, field), and this is what turns the
+#: shape from a noisy observation into a diagnosis.
 _BENIGN_GAP_CODES: dict[str, str] = {
     rc.INSUFFICIENT_QUARTERS: "the TTM window: fewer than four discrete quarters are visible, "
                               "which is benign by construction at the start of a history",
@@ -122,6 +144,51 @@ _BENIGN_GAP_CODES: dict[str, str] = {
     rc.NOT_APPLICABLE: "the catalogue declares the field structurally absent for this filer",
     rc.REGIME_BREAK: "a definitional discontinuity in the field itself (ASC 842 / 606 / "
                      "ASU 2016-18 / LDTI), real accounting rather than a data defect",
+}
+
+#: WHICH benign codes excuse WHICH shape. A flat set was wrong, and measurably so: on run 2 it
+#: sent 347 findings to `info` that no rationale in the table above actually covers -- 340
+#: `interior_gap` across 45 tickers and 7 `early_stop`, including every one of `early_stop`'s
+#: HIGH branch, which was unreachable in practice.
+#:
+#: The bug was ORDER. The code was tested before the shape, so `insufficient_quarters` -- whose
+#: own rationale reads "at the start of a history" -- was silently excusing holes in the MIDDLE
+#: of one and series that went dark at the END of one.
+#:
+#: There is a second reason to condition on shape, and it is the deeper one: the modal code is
+#: measured over the WHOLE (ticker, field) series, not inside the gap. On a late start that is
+#: fine, because the absent stretch IS the start. On an interior gap it is weak evidence about
+#: the wrong periods entirely.
+_BENIGN_BY_SHAPE: dict[str, frozenset[str]] = {
+    # The start of a history is exactly what every one of these codes describes.
+    LATE_START: frozenset(_BENIGN_GAP_CODES),
+    # A field can genuinely CEASE to apply -- a regime the filer left, a caption a standard
+    # retired. What cannot end a series is the TTM warm-up window.
+    EARLY_STOP: frozenset({rc.NOT_APPLICABLE_FOR_REGIME, rc.NOT_APPLICABLE, rc.REGIME_BREAK}),
+    # NONE. Values on BOTH sides of the hole contradict every rationale in the table.
+    INTERIOR_GAP: frozenset(),
+}
+
+#: The one benign-looking code an EARLY STOP does not get to use. The other three describe a
+#: field that genuinely ceased to apply, which is exactly what an early stop looks like.
+_EARLY_STOP_REJECTIONS: dict[str, str] = {
+    rc.INSUFFICIENT_QUARTERS: "the TTM window is a start-of-history condition and cannot end "
+                              "a series",
+}
+
+#: Why each benign code fails to excuse an INTERIOR gap, said explicitly rather than left as a
+#: silent fallthrough. An `info` with no stated reason is indistinguishable from a check that
+#: gave up -- and so is a `high` that ignores a code the reader can see in the payload.
+_INTERIOR_REJECTIONS: dict[str, str] = {
+    rc.INSUFFICIENT_QUARTERS: "the TTM window is a START-of-history condition by its own "
+                              "rationale, and cannot open a hole in the middle of one",
+    rc.NOT_APPLICABLE_FOR_REGIME: "a field the regime register calls absent here cannot be "
+                                  "reported on BOTH sides of the hole",
+    rc.NOT_APPLICABLE: "a field the catalogue calls structurally absent for this filer cannot "
+                       "be reported on BOTH sides of the hole",
+    rc.REGIME_BREAK: "a standard's adoption is a STEP, not a hole that closes again -- and "
+                     "this code is the modal one over the whole series, so it does not "
+                     "testify about these periods at all",
 }
 
 
@@ -264,12 +331,8 @@ def _provenance_break(sub: Substrates, *, column: str, check_name: str,
 # series_shape -- the missing dimension                                        #
 # --------------------------------------------------------------------------- #
 
-COMPLETE, INTERIOR_GAP, LATE_START, EARLY_STOP, SPARSE = (
-    "complete", "interior_gap", "late_start", "early_stop", "sparse")
-
-
 @check(name="series_shape", tier=2, substrate=FACTS, severity=HIGH, grain=GRAIN_SERIES,
-       expected_fire_rate_ceiling=0.15)
+       expected_fire_rate_ceiling=SERIES_SHAPE_CEILING)
 def series_shape(sub: Substrates) -> list[Finding]:
     """Classify each (ticker, field) series against the filer's own period grid.
 
@@ -386,14 +449,23 @@ def _shape_severity(sub: Substrates, ticker: str, field: str, shape: str,
                     gap_code: str | None, span: tuple) -> tuple[str, str]:
     """`(severity, the reason in words)` -- the oracle ladder of decision 56.
 
+    ## THE SHAPE IS TESTED BEFORE THE CODE, and that order is the whole correctness of this
+
+    It used to be the other way round, and it mislabelled 347 findings as `info` on run 2:
+    340 `interior_gap` and 7 `early_stop`, the latter being every finding that should have
+    reached `early_stop`'s HIGH branch, which was therefore dead code. A benign code short-
+    circuited before anything had asked what shape it was excusing -- so `insufficient_
+    quarters`, whose own rationale says "at the start of a history", was excusing holes in the
+    middle of one. `_BENIGN_BY_SHAPE` is what makes that unrepresentable.
+
     The reason string goes into the finding, so an agent reads WHY it is `info` rather than
     having to re-derive the ladder. An `info` with no stated reason is indistinguishable from
-    a check that gave up.
+    a check that gave up -- and, now, so is a `high` that ignores a code the reader can see
+    sitting in the payload, which is why the interior branch names the code it rejected.
     """
     if shape == SPARSE:
-        return INFO, ("no contiguous run at all -- this is a periodicity question "
-                      "(an annual-only field), not a gap; 5b-stats' `periodicity` owns it")
-    if gap_code in _BENIGN_GAP_CODES:
+        return INFO, _sparse_reason(gap_code)
+    if gap_code in _BENIGN_BY_SHAPE.get(shape, frozenset()):
         return INFO, _BENIGN_GAP_CODES[gap_code]
     if gap_code == rc.PERIOD_INTERSECTION_PARTIAL:
         return MEDIUM, ("route 3b's strict period intersection refused these windows: the "
@@ -416,9 +488,44 @@ def _shape_severity(sub: Substrates, ticker: str, field: str, shape: str,
     if shape == EARLY_STOP:
         return HIGH, ("a field that goes dark mid-history is almost always a defect -- VLO's "
                       "capex from 2023-07 tags neither concept undimensioned in 21 of 63 "
-                      "filings, and nothing else in the tier detects a shape")
+                      "filings, and nothing else in the tier detects a shape"
+                      + _rejected(gap_code, _EARLY_STOP_REJECTIONS))
     return HIGH, (f"an interior gap with modal code {gap_code!r} -- present before AND after, "
-                  "so the filer kept reporting and we stopped resolving. A MISSING TAG")
+                  "so the filer kept reporting and we stopped resolving. A MISSING TAG"
+                  + _rejected(gap_code, _INTERIOR_REJECTIONS))
+
+
+def _rejected(gap_code: str | None, reasons: dict[str, str]) -> str:
+    """The clause naming a benign-looking code this shape does NOT excuse, or nothing.
+
+    Appended rather than replacing the shape's own sentence: the reader needs both the
+    mechanism and the reason the obvious excuse was refused, and a `high` finding whose
+    payload shows `insufficient_quarters` reads as a false positive without the second half.
+    """
+    reason = reasons.get(gap_code or "")
+    if not reason:
+        return ""
+    return f". Its modal code is `{gap_code}`, which does NOT excuse this: {reason}"
+
+
+def _sparse_reason(gap_code: str | None) -> str:
+    """Why a `sparse` series is `info` -- and, when it carries NO code at all, that it does.
+
+    `info` either way: `periodicity` (5b-stats) owns the shape question, and that deferral is
+    correct. But a NULL code is not the same claim as `not_disclosed`, and rendering them
+    identically is how 186 of run 2's 686 sparse series -- series for which no reason code was
+    ever recorded, so their nulls are simply UNEXPLAINED -- read as a diagnosis rather than as
+    the absence of one. That is a gap in `fundamentals_reason_codes`, not a periodicity
+    question, and it is worth saying so where somebody will read it.
+    """
+    if not gap_code:
+        return ("no contiguous run at all, AND no reason code was ever recorded for this "
+                "(ticker, field) -- so its nulls are UNEXPLAINED. That is a coverage gap in "
+                "fundamentals_reason_codes rather than a periodicity question. 186 of run 2's "
+                "686 sparse series were this shape. `info` because `periodicity` (5b-stats) "
+                "owns the shape, NOT because a null code is a diagnosis")
+    return (f"no contiguous run at all, modal code {gap_code!r} -- this is a periodicity "
+            "question (an annual-only field), not a gap; 5b-stats' `periodicity` owns it")
 
 
 def _within_a_year(effective, date) -> bool:

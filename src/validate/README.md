@@ -13,15 +13,23 @@ src/data_extract/       src/validate/           an agent + configs/
       │  fundamentals_reason_codes                    │
       │                       ├─ writes ─────────────►│
       │                       │  fundamentals_check   │
+      │                       │  fundamentals_check_run
+      │                       │  fundamentals_check_status
       │                       │  (MUTATES NOTHING ELSE)
-      │                       │                       ├─ records the outcome in
-      │◄──────────────────────┴───────────────────────┤  configs/fundamentals/
-      │   rebuild, then re-run part 2 to PROVE it     │  fundamentals_check.json
+      │◄──────────────────────┴───────────────────────┤
+      │   rebuild, then re-run part 2 at the SAME     │  the ROW-COUNT DROP
+      │   scope — the DELTA is the proof              │  is the record
 ```
 
 Each part names the artifact it hands to the next. Part 2 — this package — reads the tables
-part 1 wrote, writes a ranked queue of findings, and **changes nothing else, ever**. Part 3 is
-an agent that reads the queue, challenges it, fixes what is real, and records what it decided.
+part 1 wrote, writes a ranked list of clusters, and **changes nothing else, ever**. Part 3 is
+an agent that reads the list, challenges it, fixes what is real, and proves it by re-running
+part 2 at the same scope and measuring the drop.
+
+**There is no outcome file.** A git-tracked JSON register used to record every settled finding
+and the validator subtracted them before writing. That is gone (see §5): the ledger records
+every finding of every run, so a smaller row count between two comparable runs has exactly one
+cause. The only thing a human still asserts is a `wontfix`, and it expires by itself.
 
 ---
 
@@ -59,7 +67,18 @@ PY="$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3
 | **a new field's acceptance sheet** | `"$PY" -m src validate fundamentals --field capex --roster in_sample` |
 | explore a threshold, touch no table | `"$PY" -m src validate fundamentals -t AAPL --no-write --report /tmp/r.md` |
 | one check only | `"$PY" -m src validate fundamentals --check peer_ratio --roster all` |
+| **both designed rosters** (the flag repeats) | `"$PY" -m src validate fundamentals --roster in_sample --roster out_of_sample` |
+| **re-read a recorded run — no re-run, no writes** | `"$PY" -m src validate report --run-id 3df52ae9af75` |
+| **record a wontfix** (a NUMBER in the note is enforced) | `"$PY" -m src validate status set <cluster_id> --note "..."` |
+| undo one | `"$PY" -m src validate status clear <cluster_id>` |
 | what does this tool even test? | `"$PY" -m src validate checks` |
+
+Reports land in `reports/validate/YYYY-MM-DD/<scope>.md`, with a `.json` beside it carrying the
+same content as structured data — markdown is the HUMAN artifact, JSON is the AGENT artifact.
+
+**`validate report` re-renders from the tables and never re-runs the checks.** That distinction
+matters: re-running to read a report is how a stale-row false green happens. To learn what a
+recorded run found, read it; to test a fix, rebuild first and then run again.
 
 ### The rosters are not interchangeable
 
@@ -76,20 +95,76 @@ of having a roster rather than a list.
 1. The field is born `status: probation`. Its findings are recorded at `info` and are excluded
    from the work queue, so a half-finished field cannot drown the review.
 2. Run `validate fundamentals --field X --roster in_sample`. That is the acceptance sheet.
-3. Promotion to `status: active` requires the sheet clean **or** its gaps recorded in
-   `configs/fundamentals/fundamentals_check.json` with evidence.
+3. Promotion to `status: active` requires the sheet clean **or** its gaps recorded as
+   `wontfix` clusters with quantified evidence (`validate status set`).
 
-Requiring the register cells to be authored up front was rejected: you would have to guess the
-register before measuring it, which is exactly how the withdrawn "UNH has no premiums" edit
-nearly got written.
+Requiring the catalogue's exception cells to be authored up front was rejected: you would have
+to guess them before measuring anything, which is exactly how the withdrawn "UNH has no
+premiums" edit nearly got written.
 
 ---
 
 ## 3. What the output is
 
-Findings land in `fundamentals_check`, **append-only, `run_date` in the primary key**. A re-run
-appends rather than overwriting, so "did this fire yesterday?" stays answerable and a
-recalibrated check leaves both verdicts on the record.
+A **ranked list of clusters**, plus the three tables it is derived from.
+
+### The unit of work is a CLUSTER, not a finding
+
+One `(ticker, field)` defect. Every check that fired on it is a WITNESS to the same thing, not
+a separate job.
+
+This is the single most important shape in the package, and it was learned by measurement.
+Calibration run 2 produced **11,926 findings** — which were never 11,926 bugs. 739 of 1,893
+`(ticker, field)` series carried 8,160 of the queue; MCD `capex` alone tripped **nine checks**
+for 54 findings. Ordered by severity and then alphabetically, as the old report did, nothing in
+that list said which fix closed the most rows.
+
+`cluster_id` is a 12-hex hash of `(ticker, field)` and nothing else. `check_name` and
+`period_key` are excluded on purpose: a field that is wrong for 40 quarters is one fix, not
+forty, and nine checks agreeing is the CORROBORATION signal — the strongest prior an agent gets
+before opening a filing.
+
+Clusters roll up by field into **families**, because breadth is diagnostic: one ticker with a
+broken `capex` means fix the filer; forty tickers with a broken `incomeTaxExpense` means the
+catalogue is wrong. `routing_hint` says which, from constants in `clusters.py`. *Read its
+caveat: on a roster where a broad statistical check touches nearly every ticker, the hint goes
+flat and the report says so rather than pretending it is evidence.*
+
+### The score is a POLICY, not a fact
+
+```
+cluster_score = (Σ over findings of w(severity) × w(tier)) × corroboration(n_checks)
+tier 1/2/3 = 4/2/1   critical/high/medium/info = 4/2/1/0   corroboration = 1 + 0.25×(checks−1)
+```
+
+`info` is weighted **zero**, not small, so no volume of declared-and-expected findings can bury
+real work — and because corroboration MULTIPLIES, ten checks agreeing that something is benign
+is still benign.
+
+The weights are module constants **printed in every report** precisely so they can be argued
+with, and they are meant to be retuned once somebody has read a list and disagreed. That has
+already happened once: volume-only scoring put HCA `minorityInterest` (62 findings, **two**
+checks) on top and left MCD `capex` (55 findings, **ten** checks) off the menu entirely. One
+check firing 62 times is one opinion repeated; ten independent checks agreeing is ten arguments
+for the same conclusion. With the corroboration term MCD leads at 481 and HCA sits at 305.
+
+### The three tables
+
+| table | grain | what it is for |
+|---|---|---|
+| `fundamentals_check` | one FINDING per run | the ledger. Nothing is ever subtracted |
+| `fundamentals_check_run` | one `(run_id, check_name)` | WHAT the run looked at, and what each check did |
+| `fundamentals_check_status` | one `cluster_id` | a human's `wontfix`, and nothing else |
+
+**`run_id` is what makes a delta mean anything.** It hashes (date, tickers, fields, tiers), and
+`scope_hash` is the same without the date. Two runs are comparable **iff their scope hashes
+match** — differencing a 54-ticker baseline against a one-ticker re-validation would report
+~11,800 findings "closed". When no comparable prior run exists the report omits the delta and
+says why; a first run must never render as a trend.
+
+`run_id` is also in the primary key, and that was learned the hard way: without it a `-t MCD`
+run and a roster run on the same day collided on every shared ticker, and the first run was
+left claiming 35 checks and one surviving finding.
 
 ### The finding payload — a self-contained investigation packet
 
@@ -98,7 +173,7 @@ re-deriving anything:
 
 | group | columns |
 |---|---|
-| identity | `run_date`, `check_name`, `ticker`, `field`, `period_key`, `finding_id` |
+| identity | `run_date`, `run_id`, `check_name`, `ticker`, `field`, `period_key`, `finding_id`, `cluster_id` |
 | classification | `tier`, `severity`, `substrate` |
 | the claim | `observed`, `expected`, `deviation` |
 | provenance | `as_of`, `source_concept`, `resolution_method`, `roll_up_children`, `root_anchor`, `role_uri`, `accession_number`, `edgar_url` |
@@ -116,8 +191,13 @@ report.
 ### `finding_id` is the identity that survives runs
 
 A 16-hex hash of `(check_name, ticker, field, period_key)` — and deliberately **not** of
-`run_date`, `severity` or `observed`. A threshold retune must not resurrect a settled finding,
-and a re-measured value must not orphan one.
+`run_date`, `severity` or `observed`. A threshold retune moves severities in bulk (347 of them
+in one change) and must not re-key a finding, or every delta would read as a mass close-and-
+reopen.
+
+It also **is** the primary key, hashed, so two findings sharing one id are two rows that would
+upsert onto each other. `findings_frame` refuses them outright: run 2 emitted 12,462 findings
+and stored 11,926, and the 536 that vanished did so in silence.
 
 ### `period_key` is polymorphic, by grain
 
@@ -135,7 +215,7 @@ answers is *how sure are we the number is wrong*:
 | `critical` | **provably** wrong, or a structural contract is broken | Work it first. A PIT leak, a `dimensional_scope` hit, `Assets != Liabilities + Equity`, a duplicate `(ticker, as_of)`. These should be zero, and a non-zero is a regression somewhere upstream. |
 | `high` | probably wrong, and a **named mechanism** says so | Work it. `basis_step`, `tag_switch_break`, unexplained `series_shape`, `peer_ratio`, a `coverage_field` hole the register does not excuse. |
 | `medium` | a statistical **candidate** | Look; do not assume. `level_outlier`, `scale`, `series_shape` gaps with a known benign `dc_code`. |
-| `info` | declared, quantified, no action expected | **Never enters the queue.** `register_cost`, `restatement_ledger`, `expected_absent_drift`, abstentions, every probation-field finding. |
+| `info` | declared, quantified, no action expected | **Never enters the queue.** `catalogue_exclusion_cost`, `restatement_ledger`, `expected_absent_drift`, abstentions, every probation-field finding. Weighted **zero** in the cluster score, so no volume of it can bury real work. |
 
 An impact ladder was rejected: it needs a per-field weighting nobody has measured, and it hides
 small provable defects that indicate a systematic bug.
@@ -219,26 +299,46 @@ abstained is not a pass.
    `expected_fire_rate_ceiling`, and the report labels anything above it a **threshold bug**.
 2. **Never accept a finding without filing-level evidence.** A reason code is the resolver's
    verdict, not evidence. Open the accession and read the statement.
-3. **A `fixed` outcome must leave a regression test.** Four defects were once *created by* a
-   set of fixes and were visible only on a full re-sweep. Per-finding closes are provisional
-   (`regression_swept: false`) until a batched full-roster sweep has seen them.
+3. **A `fixed` outcome must leave a regression test**, named with the `cluster_id`. Four
+   defects were once *created by* a set of fixes and were visible only on a full re-sweep, so
+   a close on the affected tickers alone is provisional until a wider run has seen it.
 4. **`configs/` is a risk zone: PROPOSE, never apply.** A large share of real fundamentals fixes
    *are* config — the `never_use` entry that closed MTB and AXP, a `by_ticker` widening, a
-   cutover entry. Record `fix_kind: config_proposed`; the finding stays OPEN until approved.
-5. **Thresholds live in code with their measurement in the docstring. Baselines live in
+   cutover entry. The cluster stays OPEN until a human approves the diff.
+5. **NOTHING IS SUBTRACTED FROM THE LEDGER, and a `wontfix` expires by itself.** This replaced
+   a git-tracked JSON register that recorded every settled finding and was subtracted before
+   the write. Its own documentation opened with "THE REGISTER IS NOT A SUPPRESSION LIST" —
+   which is the kind of thing a design only has to say when its shape makes the opposite easy —
+   and it made the ledger's row count ambiguous between "fixed" and "hidden".
+
+   Now every finding of every run is written. A human's only assertion is a `wontfix` in
+   `fundamentals_check_status`, applied when the report is **rendered** and never when a row is
+   written, so the table and the checks always agree. It requires a QUANTIFIED note (the CLI
+   refuses one with no numeral in it), it records `findings_at_decision`, and it **REOPENS
+   automatically the moment the cluster grows past that** — a judgement made about 3 findings
+   is not a judgement about 30. The report's `wontfix` footer is never omitted. Between them,
+   those two properties are what the deleted register's staleness report used to do by hand.
+6. **Thresholds live in code with their measurement in the docstring. Baselines live in
    `configs/fundamentals/fundamentals_baselines.json` and only move with evidence.** A
    threshold is *behaviour* and will be retuned repeatedly; a baseline is a *measurement* and a
    test fails on its degradation.
-6. **Never hand-list what `CHECK_REGISTRY` drives.** The CLI, the report, the fire-rate table
+7. **Never hand-list what `CHECK_REGISTRY` drives.** The CLI, the report, the fire-rate table
    and the calibration pass all enumerate it.
-7. **Re-running the validator is NOT verification of a fix.** It reads stale rows and reports a
+8. **Re-running the validator is NOT verification of a fix.** It reads stale rows and reports a
    false green. The rebuild path branches on what you touched:
 
    | changed | rebuild before re-validating | cost |
    |---|---|---|
    | `build_history.py`, `reason_codes.py`, a `_FORMULAS` entry | `fundamentals-history --rebuild-history -t X` | ~2.5 min/ticker, **no network** |
    | `xbrl_linkbase.py`, `periods.py`, `fundamentals_kpis.json` — a RESOLUTION bug | `fundamentals --rebuild -t X` (deletes four tables for X, refetches) | network |
-   | a register the validator itself reads | none | seconds |
+   | a check module or a threshold | none — re-validate directly | seconds |
+
+   Then re-validate **at the ORIGINAL scope** and report the delta as a number: `14 → 0`. A
+   different scope produces an incomparable `run_id` and the tooling refuses to difference
+   them. **A fix with no measured drop is not a fix.**
+
+   To READ a run that already happened, use `validate report --run-id X`, which re-renders from
+   the tables without re-running anything.
 
 ---
 
@@ -252,15 +352,68 @@ src/validate/
   external/                   Tier 4 adapters. DEFERRED; see external/__init__.py
   fundamentals/
     validator.py              FundamentalsValidator -- the ONE implementation
-    substrate.py              every frame, loaded ONCE, projected, passed down
-    finding.py                the investigation packet + `finding_id`
-    check_register.py         configs/fundamentals/fundamentals_check.json
-    report.py                 fire rates, the queue, register health
+    scope.py                  RunScope -- what a run covered, hashed, so runs can be differenced
+    substrate.py              every frame a CHECK reads, loaded ONCE, projected, passed down
+    finding.py                the investigation packet, `finding_id`, `cluster_id`
+    ledger.py                 the only READ-BACK of the three tables; comparable runs
+    clusters.py               findings -> clusters -> field families, scored and routed
+    report.py                 the health gate, the delta, the rankings, the wontfix footer
     checks/__init__.py        CHECK_REGISTRY
-    checks/tier1_value.py     deterministic per-value rules, on `fundamentals_history`
+    checks/tier1_value.py     deterministic rules. SIX contract checks on
+                              `fundamentals_history`, the other 13 on `fundamentals_facts`
     checks/tier2_series.py    series behaviour, on `fundamentals_facts`
     checks/tier3_internal.py  the filer's own disjoint evidence, on `fundamentals_facts`
 ```
+
+### Which table a check reads, and why it is not a matter of taste
+
+**A check that asks about the TABLE reads `history`. A check that asks about a NUMBER reads
+`facts`.** Six checks are on the first side of that line -- `grain`, `column_contract`,
+`code_vocabulary`, `unexplained_null`, `pit_leak`, `coverage_universe` -- and everything else
+in all three tiers is on the second.
+
+The line was drawn by a measurement. `Finding.edgar_url` is built from
+`(cik, accession_number)`, and `fundamentals_history` carries neither: it has 69 columns and
+its only provenance is `publication_form` / `is_amendment` / `amended_fields`, which is a form
+TYPE and never a document. So on the 2026-08-24 calibration run:
+
+| tier | substrate | findings | with `edgar_url` |
+|---|---|---|---|
+| 1 | history | 1,427 | **0 -- 0.0%** |
+| 1 | facts | 10 | 0 -- 0.0% |
+| 2 | facts | 7,369 | 5,731 -- 77.8% |
+| 3 | facts | 3,120 | 3,120 -- **100%** |
+
+Not a partial gap. **No Tier-1 finding could be traced to a filing**, criticals included, so
+the tier was unactionable however well it was ranked -- agent B's first move is to open the
+filing, and there was nothing to open. After the move, Tier 1 reads **876 of 1,386 (63.2%)**,
+and every check that implicates a filing at all is at **100%**. The 510 without a URL are the
+500 catalogue-configuration diagnostics, where no accession caused a `never_use` entry, and 10
+pre-existing ticker-grain checks.
+
+Nothing was lost by moving and something was gained. The balance-sheet identity fails on the
+SAME seven filers on either substrate (UNH, PGR, AMT, EQIX, VRT, SPG, NVDA), but `facts`
+exposes 4,763 testable statements against history's 3,229 -- a filing carries comparatives and
+each is a separate published claim -- so it finds 144 breaks to history's 64. `filing_lag`
+went from 1 finding to 11, all real: SMCI's delisting-era restatements, ADM's 2024 accounting
+investigation, an SPG 10-Q/A. History missed them because an amendment that changes no
+extracted value never becomes a history row.
+
+**The six that stayed test properties `facts` cannot express** -- a 69-column ORDERED contract
+(facts is long), a null CELL (in facts a missing fact is an absent ROW), the reason-code
+vocabulary, and the no-leakage snapshot grain. Porting them would delete them, not relocate
+them. All six carry `expected_fire_rate_ceiling=0.0` and all six fired **zero** on the live
+roster, which is what a tripwire is meant to do: they exist to catch a bug in `build_history`,
+the one defect class genuinely history's own.
+
+ETN's 2012-11-14 row is the specimen. `totalLiabilities` of **-$8,237,223,652** against
+`totalAssets` of **$4,776,348**, tagged `derived_identity` -- computed across the Irish
+redomicile's holdco shell and a carried-forward equity from the operating company. It has no
+counterpart anywhere in `facts`, because no filer ever tagged it. That row is why history
+keeps its tripwires, and why it keeps nothing else.
+
+The split is pinned by `tests/validate/fundamentals/test_substrate_contract.py`, which fails
+if a Tier-1 value check is ever added back on the history substrate.
 
 Tests live in `tests/validate/`, not here. A check is instantiated against a synthetic
 `Substrates` — **no DB, no CLI, no network** — and the bar for every check is: *plant exactly
@@ -268,7 +421,9 @@ one violation; it fires exactly once and nothing else does.* A check that cannot
 cannot be trusted.
 
 Three scripts were absorbed and deleted: `verify_fundamentals_history.py` (its 8 gates are
-Tier 1), `audit_absence_evidence.py` (it is `coverage_field`'s oracle) and
+Tier 1 -- and note that the six still on the history substrate are exactly the ones that gate
+the TABLE), `audit_absence_evidence.py` (it is `coverage_field`'s oracle, and it always read
+`fundamentals_facts`, which is half of why that check moved) and
 `measure_total_liabilities_legs.py` (it is `cross_identity`'s evidence).
 `sweep_fundamentals_resolution.py` and `report_fundamentals_sweep.py` stay — they are
 threadpool EDGAR fetches, a different job with a different cost model.

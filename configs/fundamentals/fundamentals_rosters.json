@@ -46,7 +46,7 @@
     "AMT": "industrial BY OVERRIDE: a Telecom Tower REIT that files like an industrial -- the GICS regime trap; also the $1.9M note-level longTermDebt against a $21,127M balance-sheet line",
     "DTE": "utility: parentless revenue root (RegulatedAndUnregulatedOperatingRevenue); capex tagged ONLY dimensioned to dte:DTEElectricMember; the era-variant extension capex pair",
     "SO": "utility: six registrant CIKs in one filing -- the entity-scope stress case",
-    "NEE": "utility: absent from frames; the mixed acquisition-plus-capex line whose exclusion understates 2018-19 capex by up to $5.2bn (register_cost's headline)",
+    "NEE": "utility: absent from frames; the mixed acquisition-plus-capex line whose exclusion understates 2018-19 capex by up to $5.2bn (catalogue_exclusion_cost's headline)",
     "ETN": "industrial: totalRevenue == 0 on an unrealised-FX root; fp='FY' running 370 and 97 days; the 2012 Irish domestication cutover",
     "VRT": "industrial: totalRevenue == 0 that is CORRECT -- the 2018-2020 filings are the GS Acquisition Holdings blank-cheque shell pre-merger; also no legacy facts",
     "SWKS": "industrial: the extension D&A leg whose exclusion reads $392M against a true ~$463M (-37%)",

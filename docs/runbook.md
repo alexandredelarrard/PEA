@@ -269,11 +269,23 @@ live in `scripts/verify_fundamentals_history.py`:
 
 ```bash
 "$PY" -m src validate fundamentals --tier 1 [-t AAPL,JPM]
-"$PY" -m src validate fundamentals --roster in_sample --report reports/$(date +%F)/validate.md
+"$PY" -m src validate fundamentals --roster in_sample --roster out_of_sample  # --roster REPEATS
+"$PY" -m src validate report --run-id 3df52ae9af75   # re-render a run; NO re-run, NO writes
+"$PY" -m src validate status set <cluster_id> --note "..."   # a wontfix; a NUMBER is enforced
+"$PY" -m src validate status clear <cluster_id>
 "$PY" -m src validate checks                      # what does this tool actually test?
 ```
 
-Read-only against every table but `fundamentals_check`, and **it gates nothing** -- the nightly
+Reports default to `reports/validate/YYYY-MM-DD/<scope>.md` with a `.json` beside it -- markdown
+for a human, JSON for an agent. Findings are ranked as **clusters**: one `(ticker, field)`
+defect, with every check that fired on it as corroborating evidence rather than as separate
+work. 11,926 findings on the calibration roster are 2,323 clusters in 50 field families.
+
+Two runs can only be differenced when their **scope hashes match** (same tickers, fields and
+tiers). The report omits the delta, with a reason, when no comparable prior run exists -- a
+first run must never render as a trend.
+
+Read-only against every table but the three the validator owns, and **it gates nothing** -- the nightly
 build runs to completion whatever it finds (plan-5b decision 45). The eight §5.8 gates are now
 Tier-1 checks: `grain` (no duplicate `(ticker, as_of)`, `fiscal_end` monotone, no look-ahead),
 `column_contract` (the 69 columns, IN ORDER), `unexplained_null` (no NULL cell without a
@@ -282,9 +294,11 @@ Tier-1 checks: `grain` (no duplicate `(ticker, as_of)`, `fiscal_end` monotone, n
 (per-regime coverage, with the absence oracle absorbed from `audit_absence_evidence.py`) and
 `code_vocabulary`.
 
-**Read the fire-rate table before the queue.** A check marked ABSTAINED examined nothing, which
-is not a pass; a check marked THRESHOLD BUG is above its own declared ceiling and is burying
-real findings under itself. `src/validate/README.md` is the operating manual, and its §4 --
+**Read the check-health gate before the rankings.** It renders above them for a reason: a
+cluster list drawn from a mis-calibrated run reads as authoritative regardless. A check marked
+ABSTAINED examined nothing, which is not a pass; a check marked THRESHOLD BUG is above its own
+declared ceiling and is burying real findings under itself. When either is present the report
+banners that the rankings may be inflated. `src/validate/README.md` is the operating manual, and its §4 --
 "when it does not work" -- is the part worth reading twice.
 
 ## Finishing a task — the definition-of-done report

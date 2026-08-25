@@ -1,11 +1,56 @@
 """
 tier1_value.py  (src/validate/fundamentals/checks/)
 --------------------------------------------------------------------------------------------
-TIER 1 -- the deterministic per-value tier, on `fundamentals_history`.
+TIER 1 -- the deterministic tier. SIX contract checks on `fundamentals_history`, everything
+else on `fundamentals_facts`.
 
 Every check here is a RULE, not a statistic: it either holds or it does not, and a finding is
 a statement about a contract rather than about a distribution. That is what makes the tier
 cheap enough to run nightly over the whole table.
+
+## THE SUBSTRATE SPLIT, and why it is not arbitrary
+
+    fundamentals_history   grain, column_contract, code_vocabulary, unexplained_null,
+                           pit_leak, coverage_universe
+    fundamentals_facts     everything else, all 13 of them
+
+The rule is: a check that asks about the TABLE reads history; a check that asks about a
+NUMBER reads facts.
+
+The eight value and coverage checks were moved here from history, and the reason is
+provenance. `Finding.edgar_url` is built from `(cik, accession_number)`; `fundamentals_history`
+has 69 columns and carries neither. Measured on the last history-based run: **0 of 1,437
+Tier-1 findings had a URL**, against 77.8% on Tier 2 and 100% on Tier 3. A finding an agent
+cannot trace to a filing cannot be investigated, so the whole tier was unactionable however
+well it was ranked.
+
+Nothing is lost by the move and something is gained. On the live 54-ticker table the balance
+sheet fails to foot for the same seven filers on either substrate -- UNH, PGR, AMT, EQIX, VRT,
+SPG, NVDA -- but facts exposes 4,763 testable statements against history's 3,229, because a
+filing carries comparatives and each comparative is a separate published claim that can be
+restated on its own. 144 breaks against 64, every one with an accession.
+
+The SIX that stayed are the ones facts cannot express: a 69-column ORDERED contract (facts is
+long), a null CELL (in facts a missing fact is an absent ROW), the reason-code vocabulary, and
+the no-leakage snapshot grain. They all carry `expected_fire_rate_ceiling=0.0` and all fired
+zero on the calibration run, which is exactly what a tripwire should do -- they exist to catch
+a bug in `build_history`, which is the only defect class that is genuinely history's own.
+
+ETN's 2012-11-14 row is the specimen of that class: `totalLiabilities` of -$8,237,223,652
+against `totalAssets` of $4,776,348, tagged `derived_identity`, computed across the Irish
+redomicile's holdco shell and a carried-forward equity from the operating company. It has no
+counterpart in `facts` because no filer ever tagged it. That row is why history keeps its
+tripwires, and why it keeps nothing else.
+
+## `facts` is strictly as-filed, so the derived-total skip is gone
+
+`cross_identity` on history had to read `fundamentals_reason_codes` and skip every row whose
+`totalLiabilities` was `derived_identity` -- testing `A - E + E == A` is arithmetic and passes
+on any numbers at all. On facts that cannot arise: all eight `resolution_method` values
+(`linkbase_total`, `tag_primary`, `tag_fallback`, `linkbase_sum`, `linkbase_root`,
+`field_sum`, `statement_leaf_sum`, `unresolved`) resolve from concepts the filer tagged, and
+nothing in the table is computed from the identity being tested. The skip and its helper are
+deleted.
 
 ## This module ABSORBED `scripts/verify_fundamentals_history.py`
 
@@ -44,7 +89,7 @@ from src.data_extract.utils.fundamentals.kpi_catalogue import (
 from src.validate.fundamentals.checks import (
     FACTS, GRAIN_CELL, GRAIN_ROW, GRAIN_SERIES, GRAIN_TICKER, HISTORY, check)
 from src.validate.fundamentals.finding import (
-    CRITICAL, Finding, HIGH, INFO, MEDIUM, period_key_for_range)
+    CRITICAL, Finding, HIGH, INFO, MEDIUM, collapse_by_id, period_key_for_range)
 from src.validate.fundamentals.substrate import Substrates
 
 # --------------------------------------------------------------------------- #
@@ -67,6 +112,11 @@ FILINGS_PER_YEAR_BAND: tuple[float, float] = (3.0, 5.5)
 #: `epsDiluted` beyond this is not a per-share amount -- it is a units error. BRK-A's ~$40,000
 #: EPS is the highest real figure in the S&P 500 and it is not in this universe (BRK-B is);
 #: $1,000 leaves an order of magnitude of headroom over every plausible filer here.
+#:
+#: CURRENTLY UNUSED, and kept deliberately. `impossible_value` moved to `fundamentals_facts`,
+#: where `epsDiluted` does not exist -- it is one of the twelve columns `build_history`
+#: DERIVES. The bound is still the right one and costs nothing to keep; it becomes live again
+#: the moment EPS is either tagged into facts or given a derived-value check of its own.
 MAX_ABS_EPS = 1_000.0
 
 #: `cross_identity` tolerance. Balance sheets foot exactly in the filing; the slack is for
@@ -109,9 +159,80 @@ COVERAGE_NULL_RATE = 0.5
 _TOP_LINES: tuple[str, ...] = ("totalRevenue", "stockholdersEquity", "totalAssets",
                                "totalLiabilities")
 
+#: The balance-sheet identity's four legs. Tagged INSTANT: a balance sheet is a point in
+#: time, and a duration-tagged `totalAssets` is a different measurement.
+_IDENTITY_FIELDS: tuple[str, ...] = ("totalAssets", "totalLiabilities",
+                                     "stockholdersEquity", "minorityInterest")
+
+#: The gross-profit relation's three legs. DURATION-tagged, and the pivot keys on
+#: `duration_type` and `period_start` as well as `period_end` so all three legs are read off
+#: the SAME window -- an annual `grossProfit` against a quarterly `costOfRevenue` is a units
+#: error dressed up as a finding, and on this table it would fire on nearly every filer.
+_GROSS_PROFIT_FIELDS: tuple[str, ...] = ("grossProfit", "totalRevenue", "costOfRevenue")
+
+#: The duration shapes an income-statement line can be tagged with. `other` is excluded: it
+#: is the shape `unresolved` rows carry, and they hold no value by construction.
+_DURATION_TYPES: tuple[str, ...] = ("quarterly", "annual", "ytd6", "ytd9")
+
 #: A dimension MEMBER, AXIS or DOMAIN in a concept name. `dimensional_scope`'s detector -- see
 #: that check for why this, and not a `dim_*` column, is what is checkable here.
 _MEMBER_RE = re.compile(r"(Member|Axis|Domain)$")
+
+
+# --------------------------------------------------------------------------- #
+# 0. the statement pivot -- what makes a Tier-1 finding traceable to a filing  #
+# --------------------------------------------------------------------------- #
+
+def _statements(sub: Substrates, fields: tuple[str, ...], duration_types: tuple[str, ...],
+                *, extra_keys: tuple[str, ...] = ()) -> pd.DataFrame:
+    """`fundamentals_facts` pivoted to one row per FILED STATEMENT, wide over `fields`.
+
+    The key is `(ticker, accession_number, period_end)` -- one balance sheet or one income
+    statement as the filer actually published it, carrying its own `cik` and
+    `accession_number`. That last part is the entire reason the value checks moved here: a
+    finding on this grain yields an `edgar_url` a reviewer can open, and a finding on the
+    history grain never can.
+
+    ONE ACCESSION YIELDS SEVERAL STATEMENTS, and that is correct rather than duplication. A
+    10-K carries its comparatives, each is a separate published claim, and a filer can restate
+    one while leaving the others alone -- which is why `fundamentals_facts` keys on
+    `period_end` and not on the fiscal LABELS, after those labels were measured losing 18,604
+    rows to collisions.
+
+    Rows with a NULL `value` are dropped before the pivot. They are the `unresolved` shape --
+    64,462 of them, all tagged `other` and all carrying a `dc_code` -- and they mean "we
+    looked and found nothing", which is a coverage fact rather than a value.
+    """
+    facts = sub.facts
+    if facts.empty:
+        return pd.DataFrame()
+    rows = facts[facts["field"].isin(fields)
+                 & facts["duration_type"].isin(duration_types)
+                 & facts["value"].notna()]
+    if rows.empty:
+        return pd.DataFrame()
+    keys = ["ticker", "accession_number", "period_end", "cik", "filing_date", *extra_keys]
+    wide = rows.groupby(keys + ["field"])["value"].last().unstack("field").reset_index()
+    for name in fields:
+        if name not in wide.columns:
+            wide[name] = np.nan
+    return wide
+
+
+def _filings(sub: Substrates) -> pd.DataFrame:
+    """One row per `(ticker, accession_number)` -- the FILING, not its contents.
+
+    `period_of_report` and not `period_end`: a 10-K's comparatives end years before the
+    filing, so a lag measured against `period_end` reports every comparative in every annual
+    report as a delinquent filing. `period_of_report` is the filing's own reporting date and
+    is populated on all 316,136 rows.
+    """
+    facts = sub.facts
+    if facts.empty:
+        return pd.DataFrame()
+    columns = ["cik", "form", "filing_date", "period_of_report", "is_amendment"]
+    available = [c for c in columns if c in facts.columns]
+    return (facts.groupby(["ticker", "accession_number"], as_index=False)[available].first())
 
 
 # --------------------------------------------------------------------------- #
@@ -401,10 +522,10 @@ def coverage_universe(sub: Substrates) -> list[Finding]:
         for ticker in sub.tickers if ticker not in present]
 
 
-@check(name="coverage_quarters", tier=1, substrate=HISTORY, severity=HIGH, grain=GRAIN_SERIES,
+@check(name="coverage_quarters", tier=1, substrate=FACTS, severity=HIGH, grain=GRAIN_SERIES,
        expected_fire_rate_ceiling=0.10)
 def coverage_quarters(sub: Substrates) -> list[Finding]:
-    """A filer's publication events are contiguous on ITS OWN filing cadence.
+    """A filer's FILINGS are contiguous on ITS OWN filing cadence.
 
     RE-SPECIFIED against v2, which compared to a calendar. A calendar grid is wrong for a
     52/53-week filer, for KR's 16-week Q1, and for every Jan / May / Sep year-end on the
@@ -418,14 +539,25 @@ def coverage_quarters(sub: Substrates) -> list[Finding]:
     single finding is already 1.85% and a 2% ceiling could not survive two of them. Measured:
     4 findings, 7.41%. The old number was a rate borrowed from a per-ROW check and applied to
     a per-ticker one.
+
+    ## ON FACTS: distinct FILING DATES, which is the same series history reshaped
+
+    `fundamentals_history` emits one row per date on which a value became public, so its
+    `as_of` series and the filer's distinct `filing_date` series are the same dates -- the
+    history grain IS this cadence, collapsed. Reading it here means the finding names the
+    accession that CLOSED the gap, so a reviewer opens the filing on one side of the hole
+    instead of being handed a bare date range.
     """
     out: list[Finding] = []
-    if sub.history.empty:
+    filings = _filings(sub)
+    if filings.empty:
         return out
-    sub.denominator("coverage_quarters", sub.history["ticker"].nunique())
+    sub.denominator("coverage_quarters", filings["ticker"].nunique())
 
-    for ticker, rows in sub.history.sort_values("as_of").groupby("ticker"):
-        dates = pd.to_datetime(rows["as_of"]).sort_values()
+    for ticker, rows in filings.sort_values("filing_date").groupby("ticker"):
+        events = (rows.drop_duplicates("filing_date")
+                  .sort_values("filing_date").reset_index(drop=True))
+        dates = pd.to_datetime(events["filing_date"])
         if len(dates) < 4:
             continue                      # too short to have a cadence; not a hole
         gaps = dates.diff().dt.days.dropna()
@@ -435,20 +567,26 @@ def coverage_quarters(sub: Substrates) -> list[Finding]:
         for position, gap in gaps.items():
             if gap <= 2 * typical:
                 continue
-            start = dates[dates < dates.loc[position]].iloc[-1]
+            closing = events.loc[position]
             out.append(Finding(
                 check_name="coverage_quarters", ticker=str(ticker), severity=HIGH, tier=1,
-                substrate=HISTORY, field="",
-                period_key=period_key_for_range(start, dates.loc[position]),
-                as_of=dates.loc[position], observed=float(gap), expected=typical,
-                deviation=float(gap) / typical,
+                substrate=FACTS, field="",
+                period_key=period_key_for_range(dates.loc[position - 1], dates.loc[position]),
+                as_of=dates.loc[position],
+                accession_number=str(closing["accession_number"]),
+                cik=str(closing.get("cik") or ""),
+                observed=float(gap), expected=typical, deviation=float(gap) / typical,
                 detail={"typical_gap_days": typical,
+                        "gap_opens": str(dates.loc[position - 1].date()),
+                        "gap_closes": str(dates.loc[position].date()),
+                        "closing_form": str(closing.get("form") or ""),
                         "why": "measured against the FILER'S OWN cadence, not a calendar -- "
-                               "a 52/53-week or non-December year-end is not a hole"}))
+                               "a 52/53-week or non-December year-end is not a hole. The "
+                               "accession named here is the filing that CLOSED the gap"}))
     return out
 
 
-@check(name="coverage_field", tier=1, substrate=HISTORY, severity=HIGH, grain=GRAIN_SERIES,
+@check(name="coverage_field", tier=1, substrate=FACTS, severity=HIGH, grain=GRAIN_SERIES,
        expected_fire_rate_ceiling=0.25)
 def coverage_field(sub: Substrates) -> list[Finding]:
     """A field is expected for a filer unless its REGIME's own filers say otherwise.
@@ -482,40 +620,85 @@ def coverage_field(sub: Substrates) -> list[Finding]:
 
     A deviation from the plan's letter, forced by arithmetic: 71,857 null cells on a 54-ticker
     roster would be 71,857 findings, which is the DQC_0118 drowning this whole design exists to
-    prevent. One finding per (ticker, field) carries the null count and rate in `detail`, and
+    prevent. One finding per (ticker, field) carries the miss count and rate in `detail`, and
     the SHAPE of the gap -- interior hole vs late start vs went dark -- is `series_shape`'s
     job, which is exactly the division of labour the plan's own critique of per-cell firing
     argues for.
+
+    ## ON FACTS, WHERE THE ORACLE ALREADY LIVED
+
+    `_absence_verdicts` has always read `sub.facts` -- the peer evidence could never have come
+    from history, because history stores a filer's own snapshot and says nothing about what
+    its peers resolve. Only the null RATE was measured on history, so the check straddled two
+    substrates and could report a rate its own oracle had no way to see.
+
+    The denominator changes shape, and it is the honest one: in `fundamentals_facts` a missing
+    field is an ABSENT ROW, not a null cell, so coverage is measured over the filer's own
+    distinct `period_of_report` values -- how many of its reporting periods produced a number
+    for this field. `modal_dc_code` now comes from facts' own `dc_code` column, which is
+    populated on all 64,462 `unresolved` rows, so the diagnosis and the rate are finally read
+    off the same table.
     """
     out: list[Finding] = []
-    if sub.history.empty:
+    facts = sub.facts
+    if facts.empty:
         return out
 
     regimes = sub.regime_by_ticker
     verdicts = _absence_verdicts(sub)
-    value_columns = [c for c in sub.value_columns if c in sub.history.columns]
-    sub.denominator("coverage_field", sub.history["ticker"].nunique() * len(value_columns))
+    fields = sub.facts_fields
+    sub.denominator("coverage_field", facts["ticker"].nunique() * len(fields))
 
-    for ticker, rows in sub.history.groupby("ticker"):
+    for ticker, rows in facts.groupby("ticker"):
         regime = regimes.get(str(ticker))
-        for field in value_columns:
-            null_rate = float(rows[field].isna().mean())
+        periods = rows["period_of_report"].nunique()
+        if not periods:
+            continue
+        resolved = (rows[rows["value"].notna()]
+                    .groupby("field")["period_of_report"].nunique())
+        # ONE pass per ticker for both the diagnosis and the exhibit. Doing either per
+        # FINDING costs a full mask of the 316k-row facts frame each time, and this check
+        # produces ~682 of them.
+        misses = rows[rows["value"].isna()].sort_values("filing_date")
+        modal = (misses.dropna(subset=["dc_code"]).groupby("field")["dc_code"]
+                 .agg(lambda codes: codes.mode().iloc[0]) if len(misses) else {})
+        exhibits = misses.groupby("field").last() if len(misses) else None
+        fallback = rows.sort_values("filing_date").iloc[-1]
+
+        for field in fields:
+            covered = int(resolved.get(field, 0))
+            null_rate = 1.0 - covered / periods
             if null_rate < COVERAGE_NULL_RATE:
                 continue
             verdict = verdicts.get((regime, field))
             if verdict in (None, "STRUCTURAL", "TOO FEW PEERS"):
                 continue                       # no evidence, or evidence that it is expected
+            # The EXHIBIT: the most recent filing in which this field failed to resolve. The
+            # finding is series-grain, so no single accession "caused" it -- but a reviewer
+            # has to open SOMETHING, and "the last filing we looked in and did not find it"
+            # is the one that settles whether the caption is there and we missed it.
+            hit = (exhibits.loc[field]
+                   if exhibits is not None and field in exhibits.index else None)
+            exhibit = hit if hit is not None else fallback
             out.append(Finding(
                 check_name="coverage_field", ticker=str(ticker),
                 severity=HIGH if verdict == "UNIVERSAL" else MEDIUM, tier=1,
-                substrate=HISTORY, field=field,
-                period_key=period_key_for_range(rows["as_of"].min(), rows["as_of"].max()),
-                as_of=rows["as_of"].max(), observed=null_rate, expected=0.0,
+                substrate=FACTS, field=field,
+                period_key=period_key_for_range(rows["period_of_report"].min(),
+                                                rows["period_of_report"].max()),
+                as_of=exhibit["filing_date"],
+                accession_number=_text(exhibit["accession_number"]),
+                cik=_text(exhibit.get("cik")),
+                observed=null_rate, expected=0.0,
                 detail={"verdict": verdict, "regime": regime,
-                        "null_events": int(rows[field].isna().sum()),
-                        "total_events": int(len(rows)),
-                        "modal_dc_code": _modal_code(sub, str(ticker), field),
-                        "why": ("every filer in this regime resolves this field, so a null "
+                        "periods_covered": covered,
+                        "periods_reported": int(periods),
+                        "modal_dc_code": _text(modal.get(field)) if len(misses) else None,
+                        "exhibit_is": ("the latest filing in which this field did not resolve"
+                                       if hit is not None else
+                                       "the filer's latest filing -- this field produced no "
+                                       "row at all, resolved or unresolved"),
+                        "why": ("every filer in this regime resolves this field, so a miss "
                                 "is a defect in OUR extraction"
                                 if verdict == "UNIVERSAL" else
                                 "some filers in this regime resolve it and some do not -- "
@@ -551,20 +734,14 @@ def _absence_verdicts(sub: Substrates) -> dict[tuple[str | None, str], str]:
     return verdicts
 
 
-def _modal_code(sub: Substrates, ticker: str, field: str) -> str | None:
-    """The most common `dc_code` on this (ticker, field)'s null cells -- the DIAGNOSIS.
-
-    A `not_disclosed` here is a statement about our concept MAP, never about the filing. That
-    distinction is what the E-4 absence-evidence work exists to close, and until it lands this
-    is the best mechanical answer available.
-    """
-    if sub.codes.empty:
-        return None
-    rows = sub.codes[(sub.codes["ticker"] == ticker) & (sub.codes["field"] == field)]
-    return str(rows["dc_code"].mode().iloc[0]) if len(rows) else None
+# TOMBSTONE: `_modal_code(sub, ticker, field)` is deleted. It masked the whole 316k-row facts
+# frame once per FINDING, and `coverage_field` -- its only caller -- produces ~682 of them.
+# The diagnosis is now grouped once per ticker inside the check, alongside the exhibit
+# accession, which needs the same scan. A `not_disclosed` code remains a statement about our
+# concept MAP and never about the filing; that is what the exhibit is for.
 
 
-@check(name="expected_absent_drift", tier=1, substrate=HISTORY, severity=INFO,
+@check(name="expected_absent_drift", tier=1, substrate=FACTS, severity=INFO,
        grain=GRAIN_SERIES, expected_fire_rate_ceiling=1.0)
 def expected_absent_drift(sub: Substrates) -> list[Finding]:
     """A value is PRESENT where the register says the field is `expected_absent`.
@@ -572,36 +749,46 @@ def expected_absent_drift(sub: Substrates) -> list[Finding]:
     `info`, always. The register is a measurement, so it decays: a filer that starts tagging a
     caption its regime template does not require has not done anything wrong, and our register
     cell has simply gone stale. Reporting it is how the register stays honest without anyone
-    having to re-derive it -- which is the same reasoning that makes `register_cost` visible
+    having to re-derive it -- the same reasoning that makes `catalogue_exclusion_cost` visible
     every run rather than filed in a report nobody re-reads.
     """
     out: list[Finding] = []
-    if sub.history.empty:
+    facts = sub.facts
+    if facts.empty:
         return out
     regimes = sub.regime_by_ticker
-    value_columns = [c for c in sub.value_columns if c in sub.history.columns]
-    sub.denominator("expected_absent_drift",
-                    sub.history["ticker"].nunique() * len(value_columns))
+    fields = sub.facts_fields
+    sub.denominator("expected_absent_drift", facts["ticker"].nunique() * len(fields))
 
-    for ticker, rows in sub.history.groupby("ticker"):
+    for ticker, rows in facts.groupby("ticker"):
         regime = regimes.get(str(ticker))
         if not regime:
             continue
-        for field in value_columns:
+        tagged = rows[rows["value"].notna()]
+        counts = tagged.groupby("field").size()
+        for field in fields:
             if not sub.catalogue.expected_absent(regime, field):
                 continue
-            present = int(rows[field].notna().sum())
+            present = int(counts.get(field, 0))
             if not present:
                 continue
+            latest = tagged[tagged["field"] == field].sort_values("filing_date").iloc[-1]
             out.append(Finding(
                 check_name="expected_absent_drift", ticker=str(ticker), severity=INFO, tier=1,
-                substrate=HISTORY, field=field,
-                period_key=period_key_for_range(rows["as_of"].min(), rows["as_of"].max()),
-                as_of=rows["as_of"].max(), observed=float(present), expected=0.0,
-                detail={"regime": regime, "events": int(len(rows)),
+                substrate=FACTS, field=field,
+                period_key=period_key_for_range(rows["period_of_report"].min(),
+                                                rows["period_of_report"].max()),
+                as_of=latest["filing_date"],
+                accession_number=str(latest["accession_number"]),
+                cik=str(latest.get("cik") or ""),
+                source_concept=_text(latest.get("source_concept")),
+                observed=float(present), expected=0.0,
+                detail={"regime": regime, "facts_tagged": present,
+                        "latest_concept": _text(latest.get("source_concept")),
                         "why": "the register declares this field absent for the regime and "
                                "the filer tags it anyway -- the register has drifted, and "
-                               "PGR really does tag capex"}))
+                               "PGR really does tag capex. `latest_concept` names the tag "
+                               "the filer actually used, which is what settles it"}))
     return out
 
 
@@ -609,25 +796,41 @@ def expected_absent_drift(sub: Substrates) -> list[Finding]:
 # 4. identities and impossible values                                          #
 # --------------------------------------------------------------------------- #
 
-@check(name="cross_identity", tier=1, substrate=HISTORY, severity=CRITICAL, grain=GRAIN_ROW,
-       expected_fire_rate_ceiling=0.03)
+@check(name="cross_identity", tier=1, substrate=FACTS, severity=CRITICAL, grain=GRAIN_CELL,
+       expected_fire_rate_ceiling=0.05)
 def cross_identity(sub: Substrates) -> list[Finding]:
     """`Assets == Liabilities + Equity`, and the gross-profit relation -- at DIFFERENT severities.
 
-    ## A DERIVED total is an INPUT, never corroboration (hand-off E-1)
+    ## ON FACTS, PER FILED STATEMENT -- which is what makes a break investigable
 
-    `totalLiabilities` is computed as `totalAssets - stockholdersEquity` for the filers who
-    never tag `us-gaap:Liabilities` -- 901 rows across 18 tickers on the rebuilt roster, 152 of
-    them resting additionally on the assumption that a missing NCI is zero. Testing the
-    balance-sheet identity on those rows would be testing `A - E + E == A`, which is arithmetic
-    and passes on any numbers at all, including wrong ones.
+    Each finding names one `(accession_number, period_end)`: one balance sheet, as the filer
+    published it, with an `edgar_url` attached. The history version could not do that -- it
+    had no accession to attach -- so its 254 findings, including all seven criticals, arrived
+    with a NULL URL and no way for an agent to reach the filing.
 
-    So the reason code is READ, and a row carrying `derived_identity` or
-    `derived_identity_nci_assumed_zero` is SKIPPED with the skip recorded. This is also the
-    check the plan warns must not "helpfully" propose summing the liability legs to fix it:
-    0 of 44 10-Ks declare a `Liabilities` total, leg-sets vary by filer and by year, and an
-    unlisted sibling is dropped SILENTLY -- a balance-sheet total short by a caption that looks
-    entirely plausible.
+    Measured on the live 54-ticker table, the move is strictly additive: the SAME seven filers
+    fail on either substrate (UNH, PGR, AMT, EQIX, VRT, SPG, NVDA), and facts finds 144 breaks
+    to history's 64 because it tests 4,763 statements to history's 3,229. A filing carries
+    comparatives and each is a separate published claim.
+
+    ## The derived-total skip is GONE, because facts cannot contain a derived total
+
+    On history, `totalLiabilities` was computed as `totalAssets - stockholdersEquity` for the
+    filers who never tag `us-gaap:Liabilities`, and testing the identity on such a row is
+    testing `A - E + E == A` -- arithmetic, which passes on any numbers at all, including
+    wrong ones. So the check read `fundamentals_reason_codes` and skipped every
+    `derived_identity` row.
+
+    `fundamentals_facts` is strictly as-filed: every `resolution_method` it carries resolves
+    from a concept the filer tagged, and nothing in it is computed from the identity under
+    test. The skip is not merely unnecessary, it is unexpressible -- and its absence is why
+    ETN's -$8.2bn `derived_identity` liability, the loudest break on the history substrate,
+    correctly has no facts counterpart at all.
+
+    This remains the check the plan warns must not "helpfully" propose summing the liability
+    legs to fix it: 0 of 44 10-Ks declare a `Liabilities` total, leg-sets vary by filer and by
+    year, and an unlisted sibling is dropped SILENTLY -- a balance-sheet total short by a
+    caption that looks entirely plausible.
 
     HCA's negative stockholders' equity is CORRECT and must pass; the identity is signed
     arithmetic and never assumes a sign.
@@ -665,36 +868,47 @@ def cross_identity(sub: Substrates) -> list[Finding]:
     but at `medium`: a candidate, look, do not assume.
     """
     out: list[Finding] = []
-    history = sub.history
-    if history.empty:
-        return out
-    sub.denominator("cross_identity", len(history))
-    derived = _derived_liability_rows(sub)
+    sheets = _statements(sub, _IDENTITY_FIELDS, ("instant",))
+    income = _statements(sub, _GROSS_PROFIT_FIELDS, _DURATION_TYPES,
+                         extra_keys=("duration_type", "period_start"))
+    sub.denominator("cross_identity", len(sheets) + len(income))
 
-    for _, row in history.iterrows():
-        if (row["ticker"], row["as_of"]) not in derived:
-            out.extend(_balance_sheet_finding(row))
+    for row in sheets.itertuples():
+        out.extend(_balance_sheet_finding(row))
+    for row in income.itertuples():
         out.extend(_gross_profit_finding(row))
-    return out
+    # A FILING CARRIES COMPARATIVES, so one balance-sheet date appears in several accessions
+    # -- AMT's 2016-12-31 sheet is in five of them, and all five report the same break.
+    # `finding_id` stops at `period_key`, so without this they upsert onto each other: 174
+    # findings, 83 ids, 91 silently lost. Collapsing is also the honest shape -- one broken
+    # balance sheet is one thing to look at, however many filings repeated it.
+    return collapse_by_id(out, why=(
+        "this (ticker, field, period_end) appears in more than one filing, because a 10-K "
+        "carries its comparatives. The worst is reported here with its accession; the other "
+        "filings that repeat it are listed above"))
 
 
-def _balance_sheet_finding(row: pd.Series) -> list[Finding]:
+def _balance_sheet_finding(row) -> list[Finding]:
     """`Assets == Liabilities + Equity`, tested on BOTH equity bases. Empty if either foots.
+
+    `row` is one FILED balance sheet from `_statements` -- an `itertuples` record, not a
+    history `Series`, so it carries the accession and CIK the finding needs.
 
     Both bases, because we cannot tell from the stored row which element `stockholdersEquity`
     resolved through -- and asserting a rule we cannot verify is exactly what this check was
-    just corrected for. If the books foot with NCI included OR excluded, they foot.
+    once corrected for. If the books foot with NCI included OR excluded, they foot.
     """
-    assets, liabilities = row.get("totalAssets"), row.get("totalLiabilities")
-    equity, nci = row.get("stockholdersEquity"), row.get("minorityInterest")
-    if any(v is None or pd.isna(v) for v in (assets, liabilities, equity)):
+    assets, liabilities = _float(getattr(row, "totalAssets", None)), \
+        _float(getattr(row, "totalLiabilities", None))
+    equity = _float(getattr(row, "stockholdersEquity", None))
+    nci = _float(getattr(row, "minorityInterest", None))
+    if assets is None or liabilities is None or equity is None:
         return []
-    assets = float(assets)
     if abs(assets) < IDENTITY_MIN_MAGNITUDE:
         return []                     # a shell too small for a relative gap to mean anything
 
-    ex_nci = float(liabilities) + float(equity)
-    with_nci = ex_nci + (0.0 if nci is None or pd.isna(nci) else float(nci))
+    ex_nci = liabilities + equity
+    with_nci = ex_nci + (nci or 0.0)
     scale = max(abs(assets), abs(ex_nci), IDENTITY_MIN_MAGNITUDE)
     gaps = {"ex_nci": (assets - ex_nci) / scale, "with_nci": (assets - with_nci) / scale}
     if min(abs(g) for g in gaps.values()) <= IDENTITY_TOLERANCE:
@@ -704,18 +918,20 @@ def _balance_sheet_finding(row: pd.Series) -> list[Finding]:
     # equity basis explains, which is the quantity a reviewer actually has to account for.
     basis, gap = min(gaps.items(), key=lambda kv: abs(kv[1]))
     return [Finding(
-        check_name="cross_identity", ticker=str(row["ticker"]),
+        check_name="cross_identity", ticker=str(row.ticker),
         severity=CRITICAL if abs(gap) > IDENTITY_GROSS_BREAK else HIGH, tier=1,
-        substrate=HISTORY, field="totalAssets",
-        period_key=str(pd.Timestamp(row["as_of"]).date()), as_of=row["as_of"],
-        observed=assets, expected=float(ex_nci if basis == "ex_nci" else with_nci),
+        substrate=FACTS, field="totalAssets",
+        period_key=str(pd.Timestamp(row.period_end).date()), as_of=row.filing_date,
+        accession_number=str(row.accession_number), cik=str(row.cik),
+        observed=assets, expected=(ex_nci if basis == "ex_nci" else with_nci),
         deviation=gap,
         detail={"identity": "totalAssets == totalLiabilities + stockholdersEquity [+ NCI]",
                 "best_basis": basis,
                 "gap_ex_nci": gaps["ex_nci"], "gap_with_nci": gaps["with_nci"],
-                "parts": {"totalLiabilities": _float(liabilities),
-                          "stockholdersEquity": _float(equity),
-                          "minorityInterest": _float(nci)},
+                "period_end": str(pd.Timestamp(row.period_end).date()),
+                "parts": {"totalLiabilities": liabilities,
+                          "stockholdersEquity": equity,
+                          "minorityInterest": nci},
                 "tolerance": IDENTITY_TOLERANCE,
                 "candidate_mechanisms": [
                     "TEMPORARY / MEZZANINE EQUITY -- redeemable NCI and REIT OP units sit "
@@ -728,24 +944,34 @@ def _balance_sheet_finding(row: pd.Series) -> list[Finding]:
                        "PROVABLY wrong -- the missing column is a catalogue decision"})]
 
 
-def _gross_profit_finding(row: pd.Series) -> list[Finding]:
+def _gross_profit_finding(row) -> list[Finding]:
     """`grossProfit` vs `totalRevenue - costOfRevenue`. `medium` -- a basis difference, not an
-    identity. See `cross_identity`'s docstring for the five filers that proved it."""
-    gross, revenue, cost = (row.get("grossProfit"), row.get("totalRevenue"),
-                            row.get("costOfRevenue"))
-    if any(v is None or pd.isna(v) for v in (gross, revenue, cost)):
+    identity. See `cross_identity`'s docstring for the five filers that proved it.
+
+    All three legs come from ONE window of ONE filing: `_statements` keys the income pivot on
+    `duration_type` and `period_start` as well as `period_end`, so an annual `grossProfit` is
+    never differenced against a quarterly `costOfRevenue`. On the history substrate the row was
+    a carry-forward snapshot and that guarantee did not exist.
+    """
+    gross = _float(getattr(row, "grossProfit", None))
+    revenue = _float(getattr(row, "totalRevenue", None))
+    cost = _float(getattr(row, "costOfRevenue", None))
+    if gross is None or revenue is None or cost is None:
         return []
-    observed, expected = float(gross), float(revenue) - float(cost)
+    observed, expected = gross, revenue - cost
     scale = max(abs(observed), abs(expected), IDENTITY_MIN_MAGNITUDE)
     if abs(observed - expected) <= IDENTITY_TOLERANCE * scale:
         return []
     return [Finding(
-        check_name="cross_identity", ticker=str(row["ticker"]), severity=MEDIUM, tier=1,
-        substrate=HISTORY, field="grossProfit",
-        period_key=str(pd.Timestamp(row["as_of"]).date()), as_of=row["as_of"],
+        check_name="cross_identity", ticker=str(row.ticker), severity=MEDIUM, tier=1,
+        substrate=FACTS, field="grossProfit",
+        period_key=str(pd.Timestamp(row.period_end).date()), as_of=row.filing_date,
+        accession_number=str(row.accession_number), cik=str(row.cik),
         observed=observed, expected=expected, deviation=(observed - expected) / scale,
         detail={"relation": "grossProfit ~ totalRevenue - costOfRevenue",
-                "parts": {"totalRevenue": _float(revenue), "costOfRevenue": _float(cost)},
+                "duration_type": str(row.duration_type),
+                "period_end": str(pd.Timestamp(row.period_end).date()),
+                "parts": {"totalRevenue": revenue, "costOfRevenue": cost},
                 "tolerance": IDENTITY_TOLERANCE,
                 "known_false_positive_population":
                     "filers whose own us-gaap:GrossProfit tag uses a different cost basis "
@@ -756,16 +982,15 @@ def _gross_profit_finding(row: pd.Series) -> list[Finding]:
                        "worth a look: a large gap can indicate a mis-resolved costOfRevenue"})]
 
 
-def _derived_liability_rows(sub: Substrates) -> set[tuple]:
-    """`{(ticker, as_of)}` whose `totalLiabilities` is an identity rather than a fact."""
-    if sub.codes.empty:
-        return set()
-    mask = ((sub.codes["field"] == "totalLiabilities")
-            & sub.codes["dc_code"].isin({rc.DERIVED_IDENTITY, rc.DERIVED_IDENTITY_NCI_ZERO}))
-    return set(zip(sub.codes.loc[mask, "ticker"], sub.codes.loc[mask, "as_of"]))
+# TOMBSTONE: `_derived_liability_rows` is deleted. It skipped history rows whose
+# `totalLiabilities` carried `derived_identity` / `derived_identity_nci_assumed_zero`, because
+# testing `A - E + E == A` on them was arithmetic rather than a check. `fundamentals_facts` is
+# strictly as-filed and holds no derived total, so there is nothing to skip -- and the check
+# is stronger for it, since a filer that never tags `us-gaap:Liabilities` is now simply absent
+# from the identity's population rather than silently excused inside it.
 
 
-@check(name="impossible_value", tier=1, substrate=HISTORY, severity=HIGH, grain=GRAIN_CELL,
+@check(name="impossible_value", tier=1, substrate=FACTS, severity=HIGH, grain=GRAIN_CELL,
        expected_fire_rate_ceiling=0.01)
 def impossible_value(sub: Substrates) -> list[Finding]:
     """Values no filer could report and be right -- FLAG ONLY, nothing is nulled.
@@ -782,36 +1007,49 @@ def impossible_value(sub: Substrates) -> list[Finding]:
     A negative revenue or cost line IS reported and IS sometimes correct (APA's -$467M revenue
     on an unrealised-FX root was a defect; VRT's zeros were not). That is what `high` means:
     probably wrong, a named mechanism says so, go and look.
+
+    ## ON FACTS, so the finding names the tag that produced the number
+
+    Each finding now carries `source_concept`, `resolution_method` and an `accession_number`.
+    That is the difference between "APA's revenue is negative somewhere in 2015" and "APA
+    tagged THIS concept in THIS filing and it resolved to -$467M" -- the second is a work item,
+    the first is a rumour.
+
+    THE `epsDiluted` RULE IS DROPPED. `epsDiluted` is one of the twelve columns
+    `build_history` derives and it exists nowhere in `fundamentals_facts`, so the rule has no
+    substrate to run on. `MAX_ABS_EPS` is kept with its reasoning intact against the day EPS
+    gets a derived-value check. Nothing else is lost: the other three rules run on as-filed
+    numbers and always could.
     """
     out: list[Finding] = []
-    history = sub.history
-    if history.empty:
+    facts = sub.facts
+    if facts.empty:
         return out
-    value_columns = [c for c in sub.value_columns if c in history.columns]
-    sub.denominator("impossible_value", len(history) * len(value_columns))
+    sub.denominator("impossible_value", int(facts["value"].notna().sum()))
 
     rules: list[tuple[str, object, str]] = [
-        ("epsDiluted", lambda v: abs(v) > MAX_ABS_EPS,
-         f"|epsDiluted| > {MAX_ABS_EPS:,.0f} is a units error, not a per-share amount"),
         ("totalRevenue", lambda v: v < 0,
          "a negative top line -- APA's -$467M came from an unrealised-FX root"),
         ("costOfRevenue", lambda v: v < 0, "a negative cost of sales"),
         ("totalAssets", lambda v: v < 0, "negative total assets"),
     ]
     for field, is_impossible, why in rules:
-        if field not in history.columns:
-            continue
-        for _, row in history[history[field].notna()].iterrows():
-            value = float(row[field])
+        rows = facts[(facts["field"] == field) & facts["value"].notna()]
+        for row in rows.itertuples():
+            value = float(row.value)
             if not is_impossible(value):
                 continue
             out.append(Finding(
-                check_name="impossible_value", ticker=str(row["ticker"]), severity=HIGH,
-                tier=1, substrate=HISTORY, field=field,
-                period_key=str(pd.Timestamp(row["as_of"]).date()), as_of=row["as_of"],
+                check_name="impossible_value", ticker=str(row.ticker), severity=HIGH,
+                tier=1, substrate=FACTS, field=field,
+                period_key=str(pd.Timestamp(row.period_end).date()), as_of=row.filing_date,
+                accession_number=str(row.accession_number), cik=str(row.cik),
+                source_concept=_text(getattr(row, "source_concept", None)),
+                resolution_method=_text(getattr(row, "resolution_method", None)),
                 observed=value,
                 detail={"rule": why,
                         "flag_only": True,
+                        "duration_type": _text(getattr(row, "duration_type", None)),
                         "why": "reported, NOT nulled -- only the four impossible rules in "
                                "build_history.HARD_GUARDS ever delete a value"}))
     return out
@@ -821,33 +1059,45 @@ def impossible_value(sub: Substrates) -> list[Finding]:
 # 5. filing continuity, lag, amendments                                        #
 # --------------------------------------------------------------------------- #
 
-@check(name="filing_lag", tier=1, substrate=HISTORY, severity=MEDIUM, grain=GRAIN_ROW,
+@check(name="filing_lag", tier=1, substrate=FACTS, severity=MEDIUM, grain=GRAIN_ROW,
        expected_fire_rate_ceiling=0.01)
 def filing_lag(sub: Substrates) -> list[Finding]:
-    """`as_of - fiscal_end` inside a real SEC filing window.
+    """`filing_date - period_of_report` inside a real SEC filing window, per FILING.
 
-    Past `MAX_FILING_LAG_DAYS` the row is stamped with a date at which its number was not the
-    freshest available. `medium` and not `high`: a delinquent filer is a real thing, and the
-    one row beyond the bound on the rebuilt roster is SMCI's FY2017 10-K at 686 days, filed
-    during its Nasdaq delisting. The check exists because the PREVIOUS build had a median lag
-    of 401 days for ATO and lags out to 1,884 -- a broken grain, not a delinquent filer.
+    Past `MAX_FILING_LAG_DAYS` the filing reports a period for which a fresher number already
+    existed. `medium` and not `high`: a delinquent filer is a real thing, and the one case
+    beyond the bound on the rebuilt roster is SMCI's FY2017 10-K at 686 days, filed during its
+    Nasdaq delisting. The check exists because an earlier build had a median lag of 401 days
+    for ATO and lags out to 1,884 -- a broken grain, not a delinquent filer.
+
+    ## `period_of_report`, NEVER `period_end` -- the trap this check would otherwise fall into
+
+    A 10-K carries its comparatives, so `period_end` on a single accession ranges over several
+    years while `filing_date` does not. Differencing those reports EVERY comparative in EVERY
+    annual report as a delinquent filing -- thousands of findings, all of them arithmetic.
+    `period_of_report` is the filing's own reporting date, it is populated on all 316,136 rows
+    of the live table, and it is the only correct left-hand side here.
     """
     out: list[Finding] = []
-    if sub.history.empty:
+    filings = _filings(sub)
+    if filings.empty or "period_of_report" not in filings.columns:
         return out
-    sub.denominator("filing_lag", len(sub.history))
-    lag = (sub.history["as_of"] - sub.history["fiscal_end"]).dt.days
+    sub.denominator("filing_lag", len(filings))
+    lag = (filings["filing_date"] - filings["period_of_report"]).dt.days
     for position in lag[lag > MAX_FILING_LAG_DAYS].index:
-        row = sub.history.loc[position]
+        row = filings.loc[position]
         out.append(Finding(
             check_name="filing_lag", ticker=str(row["ticker"]), severity=MEDIUM, tier=1,
-            substrate=HISTORY, field="", period_key=str(pd.Timestamp(row["as_of"]).date()),
-            as_of=row["as_of"], observed=float(lag[position]),
+            substrate=FACTS, field="",
+            period_key=str(pd.Timestamp(row["period_of_report"]).date()),
+            as_of=row["filing_date"], accession_number=str(row["accession_number"]),
+            cik=str(row.get("cik") or ""), observed=float(lag[position]),
             expected=float(MAX_FILING_LAG_DAYS),
-            detail={"fiscal_end": str(pd.Timestamp(row["fiscal_end"]).date()),
+            detail={"period_of_report": str(pd.Timestamp(row["period_of_report"]).date()),
+                    "form": str(row.get("form") or ""),
                     "why": "a 10-Q lands ~35-45 days after quarter end and a 10-K ~60-90; "
-                           "beyond 200 the row is stamped at a date when a fresher number "
-                           "already existed -- or the filer is genuinely delinquent"}))
+                           "beyond 200 the filing reports a period for which a fresher "
+                           "number already existed -- or the filer is genuinely delinquent"}))
     return out
 
 
@@ -979,19 +1229,35 @@ def same_day_collapse(sub: Substrates) -> list[Finding]:
 # --------------------------------------------------------------------------- #
 # 6. the declared costs -- `info`, visible every run                           #
 # --------------------------------------------------------------------------- #
+#
+# NAMED FOR THE CATALOGUE, not for the finding ledger. Both checks below read
+# `configs/fundamentals/fundamentals_kpis.json` -- its `never_use` exclusions and its
+# `by_ticker` overrides. They were once called `register_cost` and `register_coverage`, and
+# that name meant the CATALOGUE's exclusion register; when the separate settled-findings
+# register (`fundamentals_check.json`) was retired, the collision was very nearly enough to
+# get both of these deleted along with it. Renamed so the next reader cannot make that
+# mistake: the only "register" left in this package is the CHECK_REGISTRY.
 
-@check(name="register_cost", tier=1, substrate=HISTORY, severity=INFO, grain=GRAIN_SERIES,
-       expected_fire_rate_ceiling=1.0)
-def register_cost(sub: Substrates) -> list[Finding]:
-    """The QUANTIFIED cost of each register exclusion, republished every run.
+@check(name="catalogue_exclusion_cost", tier=1, substrate=FACTS, severity=INFO,
+       grain=GRAIN_SERIES, expected_fire_rate_ceiling=1.0)
+def catalogue_exclusion_cost(sub: Substrates) -> list[Finding]:
+    """The QUANTIFIED cost of each catalogue `never_use` exclusion, republished every run.
 
     A `never_use` entry or an excluded extension leg buys correctness somewhere and costs
     coverage somewhere else, and the cost is only defensible while somebody can still see it.
+    This check is the only place that number is published, which is why it survived the
+    retirement of the similarly-named finding register.
     NEE's mixed acquisition-plus-capex line is the headline: excluding it understates 2018-19
     capex by up to **$5.2bn**. That number belongs in the nightly output, not in a plan.
 
     Reads the catalogue's own `never_use` blocks, so it cannot drift from what the resolver
     actually does. `info` -- no action expected, and none wanted.
+
+    NO `edgar_url`, AND THAT IS CORRECT. This check and `catalogue_override_coverage` are
+    diagnostics about OUR configuration, not about a filing: the subject is a `never_use`
+    entry, and no accession caused it. They are marked `FACTS` because that is where their
+    regime map is read from now, not because a filing is implicated. Every other check in this
+    tier names an accession, and one that cannot should say why rather than look broken.
     """
     out: list[Finding] = []
     regimes = sub.regime_by_ticker
@@ -1000,15 +1266,16 @@ def register_cost(sub: Substrates) -> list[Finding]:
     # tickers x FIELDS. The first calibration run divided by tickers alone and reported an
     # 825.9% "fire rate" -- arithmetic, not behaviour, but it is precisely the kind of nonsense
     # that trains a reader to ignore the ceiling column.
-    sub.denominator("register_cost", len(regimes) * len(sub.catalogue.history_fields))
+    sub.denominator("catalogue_exclusion_cost",
+                    len(regimes) * len(sub.catalogue.history_fields))
     for ticker, regime in sorted(regimes.items()):
         for field in sub.catalogue.history_fields:
             never_use = sub.catalogue.field(field).never_use(regime)
             if not never_use:
                 continue
             out.append(Finding(
-                check_name="register_cost", ticker=ticker, severity=INFO, tier=1,
-                substrate=HISTORY, field=field, observed=float(len(never_use)),
+                check_name="catalogue_exclusion_cost", ticker=ticker, severity=INFO, tier=1,
+                substrate=FACTS, field=field, observed=float(len(never_use)),
                 detail={"regime": regime, "excluded_concepts": sorted(never_use),
                         "reasons": {k: str(v) for k, v in never_use.items()},
                         "why": "an exclusion buys correctness and costs coverage; the cost "
@@ -1016,10 +1283,10 @@ def register_cost(sub: Substrates) -> list[Finding]:
     return out
 
 
-@check(name="register_coverage", tier=1, substrate=HISTORY, severity=INFO, grain=GRAIN_TICKER,
-       expected_fire_rate_ceiling=1.0)
-def register_coverage(sub: Substrates) -> list[Finding]:
-    """Which filers run on a PARTIAL register -- i.e. carry per-ticker overrides.
+@check(name="catalogue_override_coverage", tier=1, substrate=FACTS, severity=INFO,
+       grain=GRAIN_TICKER, expected_fire_rate_ceiling=1.0)
+def catalogue_override_coverage(sub: Substrates) -> list[Finding]:
+    """Which filers run on a PARTIAL catalogue -- i.e. carry per-ticker overrides.
 
     `info`. 17 of ~500 filers have a `by_ticker` cell somewhere, which means their numbers rest
     on a hand-authored exception rather than on the general rule. That is not wrong; it is a
@@ -1029,7 +1296,7 @@ def register_coverage(sub: Substrates) -> list[Finding]:
     regimes = sub.regime_by_ticker
     if not regimes:
         return out
-    sub.denominator("register_coverage", len(regimes))
+    sub.denominator("catalogue_override_coverage", len(regimes))
     for ticker in sorted(regimes):
         overridden = [f for f in sub.catalogue.history_fields
                       if sub.catalogue.filer_leaves(ticker, f) is not None
@@ -1037,8 +1304,8 @@ def register_coverage(sub: Substrates) -> list[Finding]:
         if not overridden:
             continue
         out.append(Finding(
-            check_name="register_coverage", ticker=ticker, severity=INFO, tier=1,
-            substrate=HISTORY, observed=float(len(overridden)),
+            check_name="catalogue_override_coverage", ticker=ticker, severity=INFO, tier=1,
+            substrate=FACTS, observed=float(len(overridden)),
             detail={"fields_with_by_ticker_overrides": overridden,
                     "why": "this filer's numbers rest on a hand-authored exception rather "
                            "than the general rule -- a smaller evidence base, declared"}))
@@ -1081,6 +1348,18 @@ def adjustment_unguarded(sub: Substrates) -> list[Finding]:
 # --------------------------------------------------------------------------- #
 # shared helpers                                                               #
 # --------------------------------------------------------------------------- #
+
+def _text(value) -> str | None:
+    """A payload string as `str`, or None -- never the string "nan".
+
+    `itertuples` and `.get` on a facts row hand back `float('nan')` for a missing object
+    column, and `str(nan)` is "nan", which then travels into `source_concept` and reads as a
+    concept name. The same shape as `_float`, for the same reason.
+    """
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+    return str(value)
+
 
 def _float(value) -> float | None:
     """A cell as a plain float, or None for NULL/NaN. Never propagates NaN into a payload."""

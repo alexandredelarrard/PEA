@@ -36,13 +36,27 @@ if TYPE_CHECKING:                                   # pragma: no cover - typing 
     from src.validate.fundamentals.finding import Finding
     from src.validate.fundamentals.substrate import Substrates
 
-#: Which table a check reads (decision 41).
+#: Which table a check reads (decision 41, revised 2026-08-25).
 #:
-#: TIER 1 RUNS ON `history`; TIERS 2 AND 3 RUN ON `facts`. Not a preference -- neither works
-#: the other way round. On the history grain `frozen_series` and `level_outlier` fire BY
-#: CONSTRUCTION over the ~20 forward-filled instant columns, and `q4_footing` / `holdout_q4`
-#: cannot run at all because history stores TTM levels rather than discrete quarters. On the
-#: facts grain alone, the validator would never check the table the cube actually reads.
+#: THE RULE IS: a check that asks about the TABLE reads `history`; a check that asks about a
+#: NUMBER reads `facts`. Six checks are on the first side of it -- `grain`, `column_contract`,
+#: `code_vocabulary`, `unexplained_null`, `pit_leak`, `coverage_universe` -- and every other
+#: check in all three tiers is on the second.
+#:
+#: Neither side works the other way round, in BOTH directions:
+#:
+#:   * on the history grain `frozen_series` and `level_outlier` fire BY CONSTRUCTION over the
+#:     ~20 forward-filled instant columns, `q4_footing` / `holdout_q4` cannot run at all
+#:     because history stores TTM levels rather than discrete quarters, and NOTHING there
+#:     carries an accession -- so a finding on that substrate has no `edgar_url` and cannot be
+#:     investigated. Measured: 0 of 1,437 Tier-1 findings had one before the value checks moved;
+#:   * on the facts grain there is no 69-column ORDERED contract to test, a missing fact is an
+#:     absent ROW rather than a null CELL, and the no-leakage snapshot grain does not exist --
+#:     so the six contract checks would be DELETED rather than relocated.
+#:
+#: The six are the tripwires for a `build_history` bug, which is the only defect class
+#: genuinely history's own. They are all `expected_fire_rate_ceiling=0.0` and they all fire
+#: zero. `tests/validate/fundamentals/test_substrate_contract.py` pins the split.
 HISTORY = "history"
 FACTS = "facts"
 SUBSTRATES: frozenset[str] = frozenset({HISTORY, FACTS})

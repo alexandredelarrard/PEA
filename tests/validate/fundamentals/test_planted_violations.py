@@ -16,8 +16,11 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.validate.fundamentals.checks import CHECK_REGISTRY
-from src.validate.fundamentals.finding import QUEUE_SEVERITIES
+from src.validate.fundamentals.checks.tier2_series import (
+    _BENIGN_GAP_CODES, _shape_severity, EARLY_STOP, INTERIOR_GAP, LATE_START, SPARSE)
+from src.validate.fundamentals.finding import HIGH, INFO, MEDIUM, QUEUE_SEVERITIES
 from src.validate.fundamentals.validator import FundamentalsValidator
 from tests.validate.fundamentals.conftest import TICKER, build_substrates
 
@@ -109,29 +112,62 @@ def test_cross_identity_fires_when_the_balance_sheet_does_not_foot(catalogue,
     assert len(out) == 1 and out.iloc[0]["severity"] == "critical"
 
 
-def test_cross_identity_skips_a_derived_totalLiabilities(catalogue, clean_facts) -> None:
-    """A `derived_identity` total is an INPUT, never corroboration (hand-off E-1).
+def test_a_cross_identity_finding_NAMES_THE_FILING_it_broke_on(catalogue,
+                                                                clean_facts) -> None:
+    """THE reason Tier 1's value checks moved to `fundamentals_facts`.
 
-    The identity would be `A - E + E == A`, which passes on any numbers at all -- so testing it
-    there is not a weak check, it is no check, and reporting it as a pass would be a false
-    claim about 901 rows across 18 tickers.
+    `Finding.edgar_url` is built from `(cik, accession_number)` and `fundamentals_history`
+    carries neither, so on the history substrate every one of the run's 1,437 Tier-1 findings
+    arrived with a NULL url -- against 100% on Tier 3. An agent handed such a finding cannot
+    open the filing that caused it, which is the first move the triage loop requires, so the
+    whole tier was unactionable however well it was ranked.
     """
-    substrates = build_substrates(catalogue, clean_facts.copy())
-    # bend the row AND mark its totalLiabilities derived
-    last = substrates.history["as_of"].max()
-    mask = (substrates.history["ticker"] == TICKER) & (substrates.history["as_of"] == last)
-    substrates.history.loc[mask, "totalAssets"] *= 1.5
+    def bend(facts):
+        mask = ((facts["ticker"] == TICKER) & (facts["field"] == "totalAssets")
+                & (facts["period_end"] == facts["period_end"].max()))
+        facts.loc[mask, "value"] = facts.loc[mask, "value"] * 1.5
+
+    out = _findings(_plant(catalogue, clean_facts, bend), "cross_identity")
+    row = out.iloc[0]
+
+    print(f"\naccession {row['accession_number']!r} -> {row['edgar_url']}")
+    print("  SANITY: a Tier-1 finding a reviewer can OPEN. On the history substrate this "
+          "column was NULL for all 1,437 of them, criticals included.")
+    assert row["accession_number"] and str(row["accession_number"]) != "nan"
+    assert row["edgar_url"] and "sec.gov" in row["edgar_url"]
+    assert row["substrate"] == "facts"
+
+
+def test_a_derived_identity_reason_code_no_longer_suppresses_anything(catalogue,
+                                                                     clean_facts) -> None:
+    """The `derived_identity` SKIP is deleted, and this pins why that is safe.
+
+    On history, `totalLiabilities` was computed as `totalAssets - stockholdersEquity` for the
+    filers who never tag `us-gaap:Liabilities`, so the identity read `A - E + E == A` --
+    arithmetic, which passes on any numbers at all. The check therefore read
+    `fundamentals_reason_codes` and skipped those rows.
+
+    `fundamentals_facts` is strictly as-filed and holds no derived total, so the code cannot
+    apply: a filer that never tags a `Liabilities` total is simply ABSENT from the identity's
+    population rather than silently excused inside it. A stray reason code must NOT reach back
+    and suppress a genuine facts-grain break.
+    """
+    def bend(facts):
+        mask = ((facts["ticker"] == TICKER) & (facts["field"] == "totalAssets")
+                & (facts["period_end"] == facts["period_end"].max()))
+        facts.loc[mask, "value"] = facts.loc[mask, "value"] * 1.5
+
+    substrates = _plant(catalogue, clean_facts, bend)
     substrates.codes = pd.concat([substrates.codes, pd.DataFrame([{
-        "ticker": TICKER, "as_of": last, "field": "totalLiabilities",
-        "dc_code": "derived_identity", "combined_into": None,
-        "rejected_value": float("nan")}])], ignore_index=True)
+        "ticker": TICKER, "as_of": substrates.history["as_of"].max(),
+        "field": "totalLiabilities", "dc_code": "derived_identity",
+        "combined_into": None, "rejected_value": float("nan")}])], ignore_index=True)
 
     out = _findings(substrates, "cross_identity")
-    print(f"\nsame bent row, but totalLiabilities carries `derived_identity`: "
-          f"{len(out)} finding(s)")
-    print("  SANITY: skipped, because A - E + E == A is arithmetic and would 'pass' on any "
-          "numbers, including wrong ones.")
-    assert out.empty
+    print(f"\na `derived_identity` code on the same (ticker, field) -> {len(out)} finding(s)")
+    print("  SANITY: still fires. The code describes a HISTORY cell; the finding is about a "
+          "filed statement, and the two are no longer wired together.")
+    assert len(out) == 1 and out.iloc[0]["severity"] == "critical"
 
 
 def test_impossible_value_flags_a_negative_top_line_without_nulling_it(catalogue,
@@ -460,96 +496,88 @@ def test_finding_id_is_stable_across_runs_and_moves_with_its_key(catalogue,
     assert first == second and first != other
 
 
-def test_a_settled_finding_is_subtracted_from_the_queue(catalogue, clean_facts) -> None:
-    """The register is what makes the queue SHRINK. `fundamentals_check` only ever grows."""
-    from src.validate.fundamentals.check_register import CheckRegister, parse_entry
+def test_the_run_records_every_finding_including_info(catalogue, clean_facts) -> None:
+    """D5: the frame that is WRITTEN carries everything; only the QUEUE view drops `info`.
 
+    The JSON register that used to subtract settled findings before the write is deleted, so
+    this is now a property of the run itself rather than of a config. It is the property the
+    whole loop rests on: a row-count drop between two runs of one scope has exactly one cause,
+    because nothing else can remove a row.
+
+    A `wontfix` is applied when the REPORT is rendered, never when the row is written, so the
+    table and the checks always agree about what fired.
+    """
     def bend(facts):
         mask = (facts["ticker"] == TICKER) & (facts["field"] == "capex")
         facts.loc[facts[mask].index[-1], "value"] *= 5.0
 
-    substrates = _plant(catalogue, clean_facts, bend)
-    before = _findings(substrates, "trend_break")
-    settled = CheckRegister([parse_entry({
-        "finding_id": before.iloc[0]["finding_id"], "check": "trend_break",
-        "ticker": TICKER, "field": "capex", "period_key": before.iloc[0]["period_key"],
-        "outcome": "accepted",
-        "evidence": "planted for the test; verified in accession TST-0011",
-        "decided_on": "2026-08-24", "decided_by": "tests"})])
-    after = FundamentalsValidator(substrates, register=settled).run(names=["trend_break"])
+    run = FundamentalsValidator(_plant(catalogue, clean_facts, bend)).run()
+    written, queued = len(run.findings), len(run.queue)
+    info = int((run.findings["severity"] == "info").sum())
 
-    print(f"\nbefore settling: {len(before)} finding(s); after: {len(after.findings)}; "
-          f"subtracted={after.settled_total}")
-    print("  SANITY: settled once, forever. Nothing is ever re-investigated.")
-    assert len(before) == 1 and after.findings.empty and after.settled_total == 1
+    print(f"{written} finding(s) written, {queued} in the queue, {info} `info`")
+    print(f"  written == queued + info: {written == queued + info}")
+    print("  SANITY: D5. Nothing is subtracted on the way in, so the ledger's row count "
+          "means one thing. `info` is filtered by the QUEUE VIEW, not by the writer.")
+    assert written == queued + info and info > 0
+    assert set(run.findings["run_id"]) == {run.run_id}
+    assert run.findings["cluster_id"].notna().all()
 
 
-def test_a_config_proposed_fix_does_NOT_close_a_finding(catalogue, clean_facts) -> None:
-    """Decision 65: `configs/` is proposed, never applied -- so the data is still wrong."""
-    from src.validate.fundamentals.check_register import CheckRegister, parse_entry
 
-    def bend(facts):
-        mask = (facts["ticker"] == TICKER) & (facts["field"] == "capex")
-        facts.loc[facts[mask].index[-1], "value"] *= 5.0
+def test_two_runs_of_one_scope_share_a_run_id_and_a_narrower_scope_does_not(
+        catalogue, clean_facts) -> None:
+    """`run_id` is the comparability key. Widening the scope MUST change it.
 
-    substrates = _plant(catalogue, clean_facts, bend)
-    before = _findings(substrates, "trend_break")
-    proposed = CheckRegister([parse_entry({
-        "finding_id": before.iloc[0]["finding_id"], "check": "trend_break",
-        "ticker": TICKER, "field": "capex", "period_key": before.iloc[0]["period_key"],
-        "outcome": "fixed", "fix_kind": "config_proposed",
-        "commit": "abc1234", "regression_test": "tests/validate/x.py::y",
-        "regression_swept": False,
-        "evidence": "a never_use entry is proposed for the extension leg",
-        "decided_on": "2026-08-24", "decided_by": "fundamentals-triage"})])
-    after = FundamentalsValidator(substrates, register=proposed).run(names=["trend_break"])
+    Without this, re-validating a one-ticker fix against a 54-ticker baseline would report
+    ~11,800 findings "closed" and every one of them would read as a triumph.
+    """
+    from src.validate.fundamentals.scope import RunScope
 
-    print(f"\na config_proposed fix is on file -> the finding is STILL OPEN: "
-          f"{len(after.findings)} finding(s); "
-          f"{len(proposed.open_proposals())} proposal(s) awaiting approval")
-    print("  SANITY: the register is the one artifact where a wrong entry is invisible "
-          "forever. The withdrawn 'UNH has no premiums' edit was one approval away.")
-    assert len(after.findings) == 1 and len(proposed.open_proposals()) == 1
+    wide = RunScope.build(tickers=["AAA", "BBB"], fields=None, tiers=[1, 2, 3])
+    same = RunScope.build(tickers=["BBB", "AAA"], fields=None, tiers=[3, 2, 1])
+    narrow = RunScope.build(tickers=["AAA"], fields=None, tiers=[1, 2, 3])
+    by_field = RunScope.build(tickers=["AAA", "BBB"], fields=["capex"], tiers=[1, 2, 3])
+    relabelled = RunScope.build(tickers=["AAA", "BBB"], fields=None, tiers=[1, 2, 3],
+                                roster="renamed_overnight")
+    day = pd.Timestamp("2026-08-24")
 
-
-@pytest.mark.parametrize("bad,why", [
-    ({"outcome": "fixed", "commit": None},
-     "a fix with no commit"),
-    ({"outcome": "fixed", "commit": "abc", "regression_test": None},
-     "a fix with no regression test -- the 3c.8 failure mode with a resolved label"),
-    ({"outcome": "wontfix", "evidence": "not worth it"},
-     "a wontfix with no QUANTIFIED cost"),
-    ({"outcome": "ignored"},
-     "an outcome outside the closed vocabulary"),
-])
-def test_the_register_schema_refuses_a_suppression(bad, why) -> None:
-    """Every rule that keeps `fundamentals_check.json` from becoming a suppression list."""
-    from src.validate.fundamentals.check_register import RegisterError, parse_entry
-
-    entry = {"finding_id": "a" * 16, "check": "trend_break", "ticker": "TST",
-             "field": "capex", "period_key": "2023-03-31", "outcome": "accepted",
-             "fix_kind": "code", "commit": "abc1234",
-             "regression_test": "tests/validate/x.py::y",
-             "evidence": "read accession 0001-23 and the line is genuinely absent",
-             "decided_on": "2026-08-24", "decided_by": "tests"}
-    entry.update(bad)
-    with pytest.raises(RegisterError):
-        parse_entry(entry)
-    print(f"  REFUSED: {why}")
+    print(f"\nwide={wide.run_id(day)}  same-scope-other-order={same.run_id(day)}  "
+          f"narrow={narrow.run_id(day)}  field-scoped={by_field.run_id(day)}")
+    print(f"  same day, next day: {wide.run_id(day)} vs "
+          f"{wide.run_id(day + pd.Timedelta(days=1))}")
+    print("  SANITY: scope order does not matter, scope CONTENT does, the roster NAME does "
+          "not, and the date separates two runs of one scope.")
+    assert wide.run_id(day) == same.run_id(day)
+    assert wide.scope_hash == relabelled.scope_hash
+    assert len({wide.run_id(day), narrow.run_id(day), by_field.run_id(day)}) == 3
+    assert wide.run_id(day) != wide.run_id(day + pd.Timedelta(days=1))
+    assert wide.scope_hash == wide.scope_hash and narrow.scope_hash != wide.scope_hash
 
 
-def test_the_committed_register_parses(catalogue) -> None:
-    """`configs/fundamentals/fundamentals_check.json` is loadable and schema-valid as shipped."""
-    from src.validate.fundamentals.check_register import load_register
+def test_a_duplicated_finding_id_raises_instead_of_silently_upserting(catalogue) -> None:
+    """The 536-row gap: 12,462 emitted, 11,926 stored, and nothing said so.
 
-    register = load_register("./configs")
-    print(f"\nconfigs/fundamentals/fundamentals_check.json: {len(register)} settled finding(s), "
-          f"{len(register.open_proposals())} open proposal(s), "
-          f"{len(register.unswept_fixes())} unswept fix(es)")
-    print("  SANITY: empty on purpose -- 5b-core.1 ships the mechanism; the first entries are "
-          "written by the agent loop against REAL findings. An entry invented before a "
-          "finding exists would be a guess about a measurement.")
-    assert len(register) == 0
+    `finding_id` hashes exactly the `fundamentals_check` PK, so two findings sharing one id
+    UPSERT onto each other -- the second overwrites the first and the run reports a number it
+    did not write.
+    """
+    from src.validate.fundamentals.finding import DuplicateFindingError, Finding, findings_frame
+
+    twins = [Finding(check_name="cross_vintage", ticker=TICKER, severity="high",
+                     field="capex", period_key="2019-09-28", tier=3, substrate="facts",
+                     observed=v, detail={"duration_type": d})
+             for v, d in ((1.0, "instant"), (2.0, "quarterly"))]
+    singleton = findings_frame(twins[:1], pd.Timestamp("2026-08-24"), "abc123")
+
+    with pytest.raises(DuplicateFindingError) as caught:
+        findings_frame(twins, pd.Timestamp("2026-08-24"), "abc123")
+
+    print(f"\none finding writes {len(singleton)} row(s); two sharing an id RAISE:")
+    print(f"  {str(caught.value)[:180]}")
+    print("  SANITY: the emitted count and the stored count can no longer disagree in "
+          "silence -- the run fails loudly and names the offending key.")
+    assert twins[0].id == twins[1].id and len(singleton) == 1
 
 
 def test_the_validator_loads_each_substrate_exactly_once(catalogue, clean_facts) -> None:
@@ -586,6 +614,12 @@ def test_the_validator_loads_each_substrate_exactly_once(catalogue, clean_facts)
 # Challenged before the data was -- and the check lost both arguments. These pin the two
 # corrections so neither can regress, which is the acceptance-corpus rule: a fix that leaves
 # no test is a defect waiting to come back.
+#
+# THEY ALL PLANT INTO `facts` NOW. They used to bend `substrates.history` directly, and when
+# `cross_identity` moved substrates three of them failed loudly -- but two went on PASSING
+# while asserting nothing at all, because a check that no longer reads history is trivially
+# silent about anything planted there. A vacuous green is worse than a red: it is a claim
+# nobody re-checks. If a plant here stops firing, bend the FACTS frame.
 
 def test_a_balance_sheet_footing_only_WITH_nci_is_silent(catalogue, clean_facts) -> None:
     """An EX-NCI equity element is not a defect: if the books foot on either basis, they foot.
@@ -594,12 +628,23 @@ def test_a_balance_sheet_footing_only_WITH_nci_is_silent(catalogue, clean_facts)
     from a stored row which element `stockholdersEquity` resolved through, and asserting a rule
     we cannot verify is precisely what this check was corrected for.
     """
-    substrates = build_substrates(catalogue, clean_facts.copy())
-    mask = substrates.history["ticker"] == TICKER
-    # shift NCI out of equity: the books now foot only when NCI is added back
-    nci = substrates.history.loc[mask, "totalAssets"] * 0.04
-    substrates.history.loc[mask, "stockholdersEquity"] -= nci
-    substrates.history.loc[mask, "minorityInterest"] = nci
+    def bend(facts):
+        # shift 4% of assets out of equity and into a minorityInterest line the fixture does
+        # not otherwise carry: the books now foot only when NCI is added back
+        assets = facts[(facts["ticker"] == TICKER) & (facts["field"] == "totalAssets")]
+        nci_rows = assets.copy()
+        nci_rows["field"] = "minorityInterest"
+        nci_rows["value"] = nci_rows["value"] * 0.04
+        nci_rows["source_concept"] = "us-gaap:MinorityInterest"
+        equity = ((facts["ticker"] == TICKER) & (facts["field"] == "stockholdersEquity"))
+        shift = dict(zip(assets["period_end"], assets["value"] * 0.04))
+        facts.loc[equity, "value"] = (facts.loc[equity, "value"]
+                                      - facts.loc[equity, "period_end"].map(shift))
+        return pd.concat([facts, nci_rows], ignore_index=True)
+
+    planted = clean_facts.copy()
+    planted = bend(planted)
+    substrates = build_substrates(catalogue, planted)
 
     out = _findings(substrates, "cross_identity")
     print(f"\nequity moved onto an ex-NCI basis with minorityInterest carrying the 4% "
@@ -618,9 +663,11 @@ def test_an_unexplained_balance_sheet_gap_is_high_not_critical(catalogue,
     this ladder, and a gap we cannot decompose is not that. The live population is UNH 1.68%,
     EQIX 1.48%, PGR 1.41%, AMT 3.28%, SPG 1.06%, NVDA 1.15% -- all this shape.
     """
-    substrates = build_substrates(catalogue, clean_facts.copy())
-    mask = substrates.history["ticker"] == TICKER
-    substrates.history.loc[mask, "stockholdersEquity"] *= 0.92   # ~3% of assets goes missing
+    def bend(facts):
+        mask = (facts["ticker"] == TICKER) & (facts["field"] == "stockholdersEquity")
+        facts.loc[mask, "value"] = facts.loc[mask, "value"] * 0.92   # ~3% of assets goes missing
+
+    substrates = _plant(catalogue, clean_facts, bend)
 
     out = _findings(substrates, "cross_identity")
     ours = out[(out["ticker"] == TICKER) & (out["field"] == "totalAssets")]
@@ -633,9 +680,11 @@ def test_an_unexplained_balance_sheet_gap_is_high_not_critical(catalogue,
 
 def test_a_shell_scale_gap_stays_critical(catalogue, clean_facts) -> None:
     """ETN's 2012 redomicile holdco and VRT's SPAC: no mezzanine explains a gap that size."""
-    substrates = build_substrates(catalogue, clean_facts.copy())
-    mask = substrates.history["ticker"] == TICKER
-    substrates.history.loc[mask, "totalAssets"] *= 3.0
+    def bend(facts):
+        mask = (facts["ticker"] == TICKER) & (facts["field"] == "totalAssets")
+        facts.loc[mask, "value"] = facts.loc[mask, "value"] * 3.0
+
+    substrates = _plant(catalogue, clean_facts, bend)
 
     out = _findings(substrates, "cross_identity")
     ours = out[(out["ticker"] == TICKER) & (out["field"] == "totalAssets")]
@@ -654,9 +703,11 @@ def test_a_gross_profit_basis_difference_is_medium_not_critical(catalogue,
     own cost basis -- CVS excludes benefit costs, COST nets membership fees. Both numbers were
     right and the PREMISE was wrong.
     """
-    substrates = build_substrates(catalogue, clean_facts.copy())
-    mask = substrates.history["ticker"] == TICKER
-    substrates.history.loc[mask, "grossProfit"] *= 0.65     # a CVS-shaped basis difference
+    def bend(facts):
+        mask = (facts["ticker"] == TICKER) & (facts["field"] == "grossProfit")
+        facts.loc[mask, "value"] = facts.loc[mask, "value"] * 0.65     # a CVS-shaped basis difference
+
+    substrates = _plant(catalogue, clean_facts, bend)
 
     out = _findings(substrates, "cross_identity")
     ours = out[(out["ticker"] == TICKER) & (out["field"] == "grossProfit")]
@@ -671,7 +722,7 @@ def test_info_findings_do_not_count_toward_a_ceiling(catalogue, clean_facts) -> 
     """The ceiling asks "is this check burying real findings?" -- `info` cannot bury anything.
 
     Run 1 reported `series_shape` at 29.1% (1,045 of its 1,632 findings were benign `info` gap
-    codes) and `register_cost`, which is info-ONLY, at 825.9%. Both were the METRIC misreading
+    codes) and `catalogue_exclusion_cost`, info-ONLY, at 825.9%. Both were the METRIC misreading
     the check rather than the check misreading the data.
     """
     substrates = build_substrates(catalogue, clean_facts.copy())
@@ -686,3 +737,100 @@ def test_info_findings_do_not_count_toward_a_ceiling(catalogue, clean_facts) -> 
     print("  SANITY: the rate counts QUEUE findings only, so an info-only check can never be "
           "labelled a threshold bug for doing exactly its job.")
     assert outcome.queued == 0 and outcome.fire_rate == 0.0 and not outcome.over_ceiling
+
+# --------------------------------------------------------------------------- #
+# series_shape -- the severity ladder, every shape against every benign code   #
+# --------------------------------------------------------------------------- #
+
+#: (shape, modal gap code) -> the severity the ladder MUST return, and why.
+#:
+#: The whole point of enumerating the matrix rather than testing the two bugs: the old ladder
+#: tested the CODE before the SHAPE, so the defect was never in one cell -- it was in the
+#: order, and any cell could have been the next one to go wrong. Four of these combinations
+#: were mislabelled `info` on run 2 and account for all 347 of the reclassified findings.
+_SHAPE_LADDER = [
+    # LATE START -- the start of a history is exactly what these codes describe. Unchanged.
+    (LATE_START, rc.INSUFFICIENT_QUARTERS, INFO, "the TTM warm-up window IS the late start"),
+    (LATE_START, rc.NOT_APPLICABLE, INFO, "declared structurally absent for this filer"),
+    (LATE_START, rc.NOT_APPLICABLE_FOR_REGIME, INFO, "the regime register declares it absent"),
+    (LATE_START, rc.REGIME_BREAK, INFO, "a standard's adoption is real accounting"),
+    (LATE_START, rc.NOT_DISCLOSED, HIGH, "a missing tag at the start -- open the filing"),
+
+    # EARLY STOP -- a field CAN cease to apply, but a TTM warm-up cannot end a series.
+    (EARLY_STOP, rc.INSUFFICIENT_QUARTERS, HIGH,
+     "REGRESSION: 7 findings sat in `info` here and this HIGH branch was unreachable"),
+    (EARLY_STOP, rc.NOT_APPLICABLE, INFO, "the field genuinely stopped applying"),
+    (EARLY_STOP, rc.REGIME_BREAK, INFO, "a standard retired the caption"),
+    (EARLY_STOP, rc.NOT_DISCLOSED, HIGH, "it went dark -- VLO capex, 2023-07"),
+
+    # INTERIOR GAP -- values on BOTH sides contradict every one of the benign rationales.
+    (INTERIOR_GAP, rc.INSUFFICIENT_QUARTERS, HIGH,
+     "REGRESSION: 268 findings -- a start-of-history rationale on a mid-history hole"),
+    (INTERIOR_GAP, rc.REGIME_BREAK, HIGH,
+     "REGRESSION: 71 findings -- an adoption is a STEP, and the modal code is measured "
+     "over the whole series rather than inside the gap"),
+    (INTERIOR_GAP, rc.NOT_APPLICABLE_FOR_REGIME, HIGH,
+     "REGRESSION: 1 finding -- absent here, yet reported on both sides of the hole"),
+    (INTERIOR_GAP, rc.NOT_APPLICABLE, HIGH, "same contradiction, catalogue-declared"),
+    (INTERIOR_GAP, rc.NOT_DISCLOSED, HIGH, "a missing tag -- the 212 that were already right"),
+    (INTERIOR_GAP, rc.PERIOD_INTERSECTION_PARTIAL, MEDIUM, "route 3b refused these windows"),
+
+    # SPARSE -- `periodicity` (5b-stats) owns the shape. That deferral is correct and stays.
+    (SPARSE, rc.NOT_DISCLOSED, INFO, "an annual-only field is not a series with holes"),
+    (SPARSE, rc.INSUFFICIENT_QUARTERS, INFO, "still a periodicity question"),
+    (SPARSE, None, INFO, "info, but it must NOT render as a diagnosis -- see below"),
+]
+
+
+@pytest.mark.parametrize("shape,code,expected,why",
+                         _SHAPE_LADDER,
+                         ids=[f"{s}-{c or 'NULL'}" for s, c, _e, _w in _SHAPE_LADDER])
+def test_series_shape_severity_matrix(clean, shape, code, expected, why) -> None:
+    """Every shape against every benign code. The ORDER bug is unrepresentable now."""
+    severity, reason = _shape_severity(clean, TICKER, "capex", shape, code,
+                                       (pd.Timestamp("2015-01-01"), pd.Timestamp("2016-01-01")))
+    print(f"{shape:13s} + {str(code):28s} -> {severity:6s}  ({why})")
+    assert severity == expected, f"{shape} + {code}: got {severity}, want {expected}"
+    assert reason, "an info with no stated reason is indistinguishable from a check that gave up"
+    if expected is HIGH and code in _BENIGN_GAP_CODES:
+        assert str(code) in reason, ("a HIGH whose payload shows a benign code must say why "
+                                     "the code was rejected, or it reads as a false positive")
+
+
+def test_series_shape_reclassification_counts(clean) -> None:
+    """The measured consequence: exactly the 347 run-2 findings move, and nothing else does."""
+    moved = [(shape, code) for shape, code, expected, _why in _SHAPE_LADDER
+             if code in _BENIGN_GAP_CODES and expected is not INFO]
+    run2 = {(INTERIOR_GAP, rc.INSUFFICIENT_QUARTERS): 268,
+            (INTERIOR_GAP, rc.REGIME_BREAK): 71,
+            (INTERIOR_GAP, rc.NOT_APPLICABLE_FOR_REGIME): 1,
+            (EARLY_STOP, rc.INSUFFICIENT_QUARTERS): 7}
+    counted = sum(run2.get(pair, 0) for pair in moved)
+
+    print(f"\n{len(moved)} (shape, code) combination(s) leave `info`: {moved}")
+    print(f"  run-2 findings they carried: {counted}")
+    print("  SANITY: 347 = 340 interior_gap + 7 early_stop, measured off fundamentals_check "
+          "before the change. `sparse` keeps its info deferral to `periodicity`.")
+    # `moved` is a superset of `run2`: (interior_gap, not_applicable) also stops being benign
+    # but happened to carry 0 rows on that roster. A combination the data has not exercised
+    # yet still has to be RIGHT, so the matrix above pins it either way.
+    assert counted == 347
+    assert set(run2) <= set(moved)
+    assert (SPARSE, rc.INSUFFICIENT_QUARTERS) not in moved
+
+
+def test_a_sparse_series_with_NO_code_does_not_render_as_a_diagnosis(clean) -> None:
+    """A null code is not `not_disclosed`. 186 of run 2's 686 sparse series carried none."""
+    _sev_none, reason_none = _shape_severity(clean, TICKER, "capex", SPARSE, None,
+                                             (pd.Timestamp("2015-01-01"),
+                                              pd.Timestamp("2016-01-01")))
+    _sev_code, reason_code = _shape_severity(clean, TICKER, "capex", SPARSE, rc.NOT_DISCLOSED,
+                                             (pd.Timestamp("2015-01-01"),
+                                              pd.Timestamp("2016-01-01")))
+    print(f"\nno code : {reason_none[:120]}")
+    print(f"a code  : {reason_code[:120]}")
+    print("  SANITY: an UNEXPLAINED null is a coverage gap in fundamentals_reason_codes, not "
+          "a periodicity finding. Both stay `info`; only the rendering differs.")
+    assert reason_none != reason_code
+    assert "UNEXPLAINED" in reason_none and "UNEXPLAINED" not in reason_code
+

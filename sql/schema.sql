@@ -1361,7 +1361,7 @@ CREATE TABLE IF NOT EXISTS "cube" (
 
 -- SKIPPED (no live schema and no previous DDL): strategy
 
--- [aggregate] fundamentals_check  (pk: run_date, check_name, ticker, field, period_key)
+-- [aggregate] fundamentals_check  (pk: run_date, run_id, check_name, ticker, field, period_key)
 -- The fundamentals validator's APPEND-ONLY finding ledger (plan-5b decision 42). Written by
 -- src/validate/; nothing else in that package mutates any table, and NOTHING HERE GATES -- the
 -- nightly build of fundamentals_facts / fundamentals_history runs to completion whatever lands
@@ -1370,16 +1370,33 @@ CREATE TABLE IF NOT EXISTS "cube" (
 -- `run_date` IS IN THE KEY, so a re-run appends rather than overwrites: "did this check fire
 -- yesterday?" stays answerable, and a check whose threshold moved leaves both verdicts on the
 -- record. What survives across runs is `finding_id`, a deterministic hash of
--- (check_name, ticker, field, period_key) -- that is what
--- configs/fundamentals/fundamentals_check.json matches settled findings on, so a finding keeps
--- its identity even though its rows do not. Deliberately NOT hashed from run_date, severity or
--- observed: a threshold retune must not resurrect a settled finding.
+-- (check_name, ticker, field, period_key), so a finding keeps its identity even though its rows
+-- do not -- which is what makes differencing two comparable runs meaningful at all.
+-- Deliberately NOT hashed from run_date, severity or observed: a threshold retune moves
+-- severities in bulk (347 of them in one change) and must not re-key a finding.
 --
 -- `period_key` IS TEXT AND POLYMORPHIC, by the check's grain: the `as_of` for a history-grain
 -- check, the `period_end` for a facts-grain one, '' for a ticker-level check
--- (register_coverage, filing_continuity), and 'start..end' for a series-grain one
+-- (filing_continuity), and 'start..end' for a series-grain one
 -- (series_shape). ONE key column rather than three nullable ones, because a Postgres PK cannot
 -- contain a NULL and a sentinel date would be a lie about which period the finding is about.
+--
+-- `run_id` IS IN THE KEY, and that was learned rather than designed. Without it the key is
+-- (run_date, check_name, ticker, field, period_key), so TWO RUNS OF DIFFERENT SCOPE ON ONE DAY
+-- collide on every ticker they share: a `-t MCD` run wrote 270 rows and a 54-ticker roster run
+-- an hour later upserted over 269 of them, leaving the first run claiming 35 checks and one
+-- surviving finding. Two runs that looked at different things have to be able to coexist.
+--
+-- `cluster_id` is a hash of (ticker, field) ALONE -- the DEFECT, of which every row here is one
+-- witness. Not in the key and not unique by design: MCD capex trips NINE checks over dozens of
+-- periods and that is ONE thing to fix, not nine jobs. `run_id` records which SCOPE produced
+-- the row, so two runs can be differenced honestly -- see fundamentals_check_run below.
+--
+-- NOTHING IS SUBTRACTED ON THE WAY IN. Every finding of every run is written, including ones a
+-- human has already settled, because a ledger that suppresses rows makes its own row count
+-- meaningless: a drop would be ambiguous between "fixed" and "hidden". A wontfix is recorded in
+-- fundamentals_check_status and applied when the report is RENDERED, never when the row is
+-- written. That is what makes "fewer rows than the last comparable run" usable as proof.
 --
 -- The payload is decision 47's SELF-CONTAINED INVESTIGATION PACKET, and it is denormalised on
 -- purpose. An identity-only row plus an on-demand join back to fundamentals_facts does not
@@ -1411,7 +1428,95 @@ CREATE TABLE IF NOT EXISTS "fundamentals_check" (
     "accession_number" TEXT,
     "edgar_url" TEXT,
     "detail" TEXT,
-    PRIMARY KEY ("run_date", "check_name", "ticker", "field", "period_key")
+    "run_id" TEXT NOT NULL,
+    "cluster_id" TEXT,
+    PRIMARY KEY ("run_date", "run_id", "check_name", "ticker", "field", "period_key")
 );
 CREATE INDEX IF NOT EXISTS ix_fundamentals_check_finding ON "fundamentals_check" ("finding_id");
 CREATE INDEX IF NOT EXISTS ix_fundamentals_check_severity ON "fundamentals_check" ("severity");
+CREATE INDEX IF NOT EXISTS ix_fundamentals_check_cluster ON "fundamentals_check" ("cluster_id");
+CREATE INDEX IF NOT EXISTS ix_fundamentals_check_run_id ON "fundamentals_check" ("run_id");
+
+-- [aggregate] fundamentals_check_run  (pk: run_id, check_name)
+-- WHAT THE RUN LOOKED AT, and what each check did with it: one row per (run_id, check_name).
+--
+-- The validator's whole proposition is that a row-count drop in fundamentals_check PROVES a
+-- fix worked. That proposition is FALSE unless the two runs looked at the same thing -- a
+-- follow-up scoped to the one ticker somebody was fixing would report ~11,800 fewer findings
+-- than a 54-ticker baseline and every one of them would read as a triumph. So the scope is
+-- recorded here and hashed, and a run whose scope_hash differs is INCOMPARABLE: the report
+-- omits the delta and says why rather than rendering a number that means nothing.
+--
+-- TWO HASHES, and one cannot do both jobs. `run_id` = 12 hex of (run_date, tickers, fields,
+-- tiers) and IDENTIFIES a run; `scope_hash` = the same without the date and decides
+-- COMPARABILITY. Including the date in the comparability key makes every run incomparable
+-- with every other; excluding it makes today's run indistinguishable from last week's.
+-- The roster NAME is stored but deliberately not hashed -- two runs covering the same
+-- tickers are comparable whether or not someone renamed the roster in configs/ in between.
+--
+-- The scope columns REPEAT on every check row. Denormalised on purpose: it matches this
+-- repo's flat-table convention and keeps "what did this run cover, and did anything abstain?"
+-- a single read of ~35 rows. `scope_ticker_list` is the full JSON array beside its count,
+-- because the count alone cannot answer "which 54?" -- the first question anyone
+-- differencing two runs asks.
+--
+-- `abstained` and `over_ceiling` are STORED, not recomputed on read. They are the
+-- check-health gate the report renders ABOVE its rankings, and a gate re-derived from a
+-- ceiling that has since moved would answer a different question than the run asked. An
+-- ABSTAINED check examined nothing, which is never a pass; a check over its own declared
+-- ceiling has a threshold bug until proven otherwise and buries real findings under itself
+-- (DQC_0118: "inconsistencies reported to filers can be overwhelming as many don't represent
+-- real errors").
+
+CREATE TABLE IF NOT EXISTS "fundamentals_check_run" (
+    "run_id" TEXT NOT NULL,
+    "run_date" DATE,
+    "check_name" TEXT NOT NULL,
+    "scope_hash" TEXT,
+    "scope_roster" TEXT,
+    "scope_tickers" BIGINT,
+    "scope_ticker_list" TEXT,
+    "scope_fields" TEXT,
+    "scope_tiers" TEXT,
+    "tier" BIGINT,
+    "substrate" TEXT,
+    "examined" BIGINT,
+    "queued" BIGINT,
+    "info" BIGINT,
+    "ceiling" DOUBLE PRECISION,
+    "abstained" BOOLEAN,
+    "over_ceiling" BOOLEAN,
+    PRIMARY KEY ("run_id", "check_name")
+);
+CREATE INDEX IF NOT EXISTS ix_fundamentals_check_run_scope ON "fundamentals_check_run" ("scope_hash");
+
+-- [aggregate] fundamentals_check_status  (pk: cluster_id)
+-- A HUMAN DECISION about one (ticker, field) defect. The only mutable state in the validator,
+-- and the replacement for the deleted configs/fundamentals/fundamentals_check.json register.
+--
+-- `status` carries 'wontfix' AND NOTHING ELSE. `open` and `settled` are DERIVED from the
+-- ledger -- open by default, settled when a cluster present in a prior COMPARABLE run is
+-- absent from the latest one. A stored `settled` that says so while the check still fires is
+-- exactly the suppression list the JSON register was becoming, which is why the vocabulary
+-- here is one word long.
+--
+-- `findings_at_decision` is what makes even a wontfix self-expiring: it records how big the
+-- cluster was when somebody actually assessed it, and the cluster REOPENS automatically the
+-- moment it grows past that. `register_coverage` -- the check that used to police the
+-- register against silently becoming a suppression list -- is deleted, and this column plus
+-- the report's never-omitted wontfix footer is what replaces its guarantee.
+--
+-- `note` is REQUIRED and must carry a QUANTIFIED cost -- a number, not an adjective. NEE's
+-- $5.2bn understatement is a defensible wontfix precisely and only because the number is
+-- written down.
+
+CREATE TABLE IF NOT EXISTS "fundamentals_check_status" (
+    "cluster_id" TEXT NOT NULL,
+    "ticker" TEXT,
+    "field" TEXT,
+    "status" TEXT,
+    "note" TEXT,
+    "findings_at_decision" BIGINT,
+    "decided_at" DATE,
+    PRIMARY KEY ("cluster_id")
+);

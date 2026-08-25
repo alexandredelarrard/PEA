@@ -17,11 +17,35 @@ is the bar the plan sets for every check: "a check that cannot be planted cannot
 
 ## The four frames, and what each is for
 
-  `history`  `fundamentals_history` -- the wide publication-event table, 69 columns. Tier 1.
+  `history`  `fundamentals_history` -- the wide publication-event table, 69 columns. Read
+             ONLY by the six Tier-1 CONTRACT checks (`grain`, `column_contract`,
+             `code_vocabulary`, `unexplained_null`, `pit_leak`, `coverage_universe`).
   `codes`    `fundamentals_reason_codes` -- dense, one row per null-or-qualified cell. The
              thing that makes a NULL checkable rather than merely visible.
-  `facts`    `fundamentals_facts` -- accession-grain, strictly as-filed. Tiers 2 and 3.
+  `facts`    `fundamentals_facts` -- accession-grain, strictly as-filed. EVERY VALUE AND
+             COVERAGE CHECK, all three tiers.
   `employees` -- separate table, annual, read only by the coverage checks.
+
+## Why the value checks all read `facts` now
+
+Because a finding without an accession cannot be acted on. `fundamentals_history` carries no
+`accession_number` and no `cik`, and `Finding.edgar_url` is built from exactly that pair --
+so every one of the 1,437 Tier-1 findings on the last history-based run had a NULL URL,
+against 100% on Tier 3. An agent handed such a finding cannot open the filing that caused it,
+which is the first move the triage loop requires.
+
+The move costs nothing in evidence and gains some: measured on the live 54-ticker table, the
+balance-sheet identity fails on the SAME seven filers either way, but facts exposes 4,763
+testable statements against history's 3,229 (a filing carries comparatives, and each is a
+separate published claim), so it finds 144 breaks where history found 64.
+
+The SIX contract checks stay on history deliberately. They test properties `facts` does not
+have -- a 69-column ordered contract (facts is long), a null CELL (in facts a missing fact is
+an absent ROW), the reason-code vocabulary, and the no-leakage snapshot grain. Porting them
+would delete them rather than relocate them, and they are the tripwires for the one defect
+class that is genuinely history's own: a bug in `build_history`. ETN's 2012 row is the
+specimen -- `totalLiabilities` of -$8,237,223,652 against `totalAssets` of $4,776,348, tagged
+`derived_identity`, with no counterpart anywhere in `facts` because no filer ever tagged it.
 
 ## Date columns are `datetime.date`, and that is a trap this repo has already paid for
 
@@ -89,10 +113,39 @@ class Substrates:
         return [c for c in self.history.columns if c not in skip]
 
     @property
+    def facts_fields(self) -> list[str]:
+        """The catalogue fields that actually appear in `fundamentals_facts` -- the
+        denominator of every coverage claim now that the coverage checks read facts.
+
+        Deliberately NOT `value_columns`. Twelve of history's 69 columns exist nowhere in
+        facts because they are DERIVED there -- `grossMargins`, `operatingMargins`,
+        `profitMargins`, `effectiveTaxRate`, `returnOnEquity`, `debtToEquity`,
+        `optionOverhang`, `freeCashflow`, `ebitda`, `epsDiluted`, `revenue_q`, `netIncome_q`.
+        A ported check must not ask facts for a column facts does not have and then report
+        the absence as a coverage defect.
+        """
+        if self.facts.empty or "field" not in self.facts.columns:
+            return []
+        return sorted(self.facts["field"].dropna().unique())
+
+    @property
     def regime_by_ticker(self) -> dict[str, str]:
-        """Each ticker's LATEST regime. Latest and not modal: a filer that redomiciled or was
-        reclassified is in its current regime now, and `peer_ratio` compares it to the peers
-        it has today."""
+        """Each ticker's LATEST regime -- from FACTS where any were loaded, history otherwise.
+
+        Facts first, because Tier 1's value and coverage checks moved there: a run scoped to
+        facts alone must still know what regime a filer is in, and `fundamentals_facts.regime`
+        is fully populated (316,136 of 316,136 rows on the live table). History remains the
+        fallback so the six contract checks still work on a facts-less run.
+
+        Latest and not modal: a filer that redomiciled or was reclassified is in its current
+        regime now, and `peer_ratio` compares it to the peers it has today.
+        """
+        if not self.facts.empty and "regime" in self.facts.columns:
+            latest = (self.facts.sort_values("filing_date")
+                      .groupby("ticker")["regime"].last())
+            from_facts = {t: r for t, r in latest.items() if isinstance(r, str)}
+            if from_facts:
+                return from_facts
         if self.history.empty or HISTORY_REGIME not in self.history.columns:
             return {}
         latest = self.history.sort_values("as_of").groupby("ticker")[HISTORY_REGIME].last()
@@ -133,8 +186,10 @@ def load(context, catalogue: Catalogue, tickers: list[str] | None,
          *, since=None, need_facts: bool = True) -> Substrates:
     """Read every substrate ONCE, projected and ticker-scoped. The only DB access in the package.
 
-    `need_facts` is False for a Tier-1-only run: `fundamentals_facts` is by far the largest
-    read here, and the nightly Tier-1 pass over the full table has no reason to pay for it.
+    `need_facts` exists for a run that reads only the six Tier-1 CONTRACT checks. It is no
+    longer implied by "Tier 1": the eight value and coverage checks in that tier read facts,
+    so `validator.py` requests them for any tier at all. Left in place because the contract
+    checks genuinely do not need the largest read in this function.
     `since` scopes the FACTS read to tickers that received a filing recently, which is
     decision 53's nightly shape -- a series can only change where a filing landed.
     """

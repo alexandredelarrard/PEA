@@ -743,6 +743,10 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
     the filing is being read, so `build_periods` never sees them and D1b has nothing left to
     refuse. The evidence is therefore in the fact rows, not in the `refusals` list.
 
+    Since `_retry_without`, those three filings no longer produce a value-less stub either:
+    withholding `us-gaap:Revenues` lets the ASC 606 element resolve and the annual windows
+    come back, so the fixture now carries ORCL's real fiscal 2020-2022 top line.
+
     Scoped to filings from 2017-06 rather than the full history, but no tighter -- and the
     lower bound is load-bearing in a way worth recording, because getting it wrong changes
     the answer. ORCL stamps the full year into a Q4 context in fiscal 2018 through 2022, and
@@ -774,32 +778,32 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
     return quarters, refusals, facts
 
 
-def test_orcls_fiscal_2020_fourth_quarter_is_refused_and_no_other_year_is(orcl_quarters):
-    """The real-data pairing for D1b, and the fire-rate check the plan asks for.
+def test_orcls_mislabelled_years_never_become_quarters(orcl_quarters):
+    """The real-data pairing for cluster `2603621e89ab`, and the fire-rate check.
 
     ORCL stamps its full-year `us-gaap:Revenues` into a 91-day Q4 context in fiscal 2018,
-    2019, 2020, 2021 AND 2022 -- nine facts across three 10-Ks. Four of those five years
-    also carry a proper annual-window fact, so **D1 would handle them** and their Q4 comes
-    out as `fy_minus_ytd9`. Fiscal 2020 is the only year with no annual fact anywhere.
+    2019, 2020, 2021 AND 2022 -- nine facts across three 10-Ks, fiscal 2022 carrying $42,440M
+    where the quarter is $11,840M.
 
-    **The refusal now happens a layer earlier (cluster `2603621e89ab`).** D1b ran on the way
-    to HISTORY and so left `fundamentals_facts` -- the substrate every Tier-2/3 check reads
-    -- still asserting a $39-42bn "quarter"; that cost 47 findings across 7 checks.
-    `_drop_note_only_quarter` now refuses all nine while the filing is read, dating them
-    against the FILING's annual windows rather than the field's own. So D1b correctly has
-    nothing to do here, and the assertion is that the refusal is RECORDED, not that a
-    particular layer made it: the emptied field reaches `fundamentals_facts` as one
-    value-less stub per filing carrying `ambiguous_duration`.
+    This test used to assert that fiscal 2020's Q4 was REFUSED, because D1b was the only guard
+    that could reach it and refusing was the best it could do. That is no longer the outcome
+    and it was never a good one: a refused year leaves `Q4 = FY - YTD9` uncomputable, and the
+    point-in-time quarter then carries the PRIOR quarter with nothing to say so. What the
+    guards owe is stronger -- **no window ever carries a year's value as a quarter, and every
+    year that can be derived is** -- so that is what is pinned here.
+
+    All five years now come out at $10-12bn against the $39-42bn the mislabelled facts carry,
+    fiscal 2020 included, and fiscal 2020 is the load-bearing one: no other vintage reaches
+    back to it, so it derives only because `_retry_without` recovered its annual from the
+    fiscal 2020 10-K itself.
     """
     quarters, refusals, facts = orcl_quarters
     revenue = quarters[quarters["field"] == "totalRevenue"]
-    fy2020_q4 = revenue[revenue["period_end"] == pd.Timestamp("2020-05-31")]
-    stubs = facts[(facts["field"] == "totalRevenue")
-                  & (facts["dc_code"] == P.AMBIGUOUS_DURATION)]
     coded = [r for r in refusals if r["dc_code"] == P.AMBIGUOUS_DURATION]
+    years = ("2018-05-31", "2019-05-31", "2020-05-31", "2021-05-31", "2022-05-31")
 
     print("\n=== SANITY CHECK: ORCL's Q4-windowed annuals, fiscal 2018-2022 ===")
-    for year_end in ("2018-05-31", "2019-05-31", "2020-05-31", "2021-05-31", "2022-05-31"):
+    for year_end in years:
         got = revenue[revenue["period_end"] == pd.Timestamp(year_end)]
         if got.empty:
             print(f"  {year_end}  REFUSED -- no Q4 row")
@@ -807,29 +811,82 @@ def test_orcls_fiscal_2020_fourth_quarter_is_refused_and_no_other_year_is(orcl_q
             row = got.iloc[0]
             print(f"  {year_end}  ${row.value / 1e9:6.3f}bn via {row.basis}")
     print(f"  D1b refusals: {len(coded)} (expected 0 -- the facts layer refused first)")
-    print(f"  ambiguous_duration stubs in facts: {len(stubs)} across "
-          f"{sorted(stubs['accession_number'].unique())}")
 
-    assert fy2020_q4.empty, "fiscal 2020's $39,068M Q4 must not survive"
     assert not coded, (
         "D1b saw a mislabelled year -- `_drop_note_only_quarter` should have refused it "
         "while the filing was read, before `fundamentals_facts` could assert it")
-    assert len(stubs) == 3, (
-        "the refusal must be reason-coded, not silent: one value-less `ambiguous_duration` "
-        "stub per 10-K whose `Revenues` is nothing but mislabelled years")
-    assert set(stubs["accession_number"]) == {"0001564590-20-030125",
-                                              "0001564590-21-033616",
-                                              "0001564590-22-023675"}
-    assert stubs["value"].isna().all(), "a refused stub carries no value"
-    # The four years D1 already handles must come out DERIVED and the right size: ORCL's
-    # real fourth quarters run $11-12bn, against the ~$39-42bn the mislabelled fact carries.
-    for year_end in ("2019-05-31", "2021-05-31", "2022-05-31"):
+    for year_end in years:
         row = revenue[revenue["period_end"] == pd.Timestamp(year_end)]
         assert len(row) == 1, f"{year_end}: expected exactly one Q4 row"
-        assert row.iloc[0].basis == P.FY_MINUS_YTD9
+        assert row.iloc[0].basis == P.FY_MINUS_YTD9, (
+            f"{year_end}: a fourth quarter here can only be derived, never as-reported -- "
+            f"the only as-reported candidate is the mislabelled year")
         assert 8e9 < row.iloc[0].value < 20e9, (
             f"{year_end}: ${row.iloc[0].value / 1e9:.3f}bn is not a fourth quarter")
-    print("  OK: exactly one period refused; the D1-handled years keep an $11-12bn Q4.")
+
+    as_filed = facts[(facts["field"] == "totalRevenue")
+                     & (facts["duration_type"] == P.QUARTERLY)
+                     & (facts["period_end"].isin([pd.Timestamp(y) for y in years]))]
+    assert as_filed.empty, (
+        f"{len(as_filed)} mislabelled year(s) still stored as a quarter in "
+        f"fundamentals_facts -- the substrate every Tier-2/3 check reads")
+    print("  OK: 0 of 9 mislabelled years survive as quarters; all 5 fourth quarters derive")
+
+
+def test_the_retry_recovers_the_annual_the_filer_tagged_under_the_other_element(
+        orcl_quarters):
+    """The second half of cluster `2603621e89ab`: refusing the lie is not recovering the truth.
+
+    Dropping the nine mislabelled years left `totalRevenue` resolving to NOTHING in three
+    10-Ks, and that is not a fixed field -- it is a quieter broken one. Fiscal 2020's annual
+    existed in NO filing we stored, so `Q4 = FY - YTD9` could not run for three years and the
+    point-in-time fourth quarter silently carried the PRIOR quarter instead: 9,796 / 10,085 /
+    10,513 $M at `as_of` 2020-06-22, 2021-06-21 and 2022-06-21, against true quarters of
+    ~10,440 / ~11,259 / 11,840. No check fires on a carried-forward quarter, because
+    `revenue_q` has no period of its own to disagree with.
+
+    Oracle tags the correct figure in those same filings under the ASC 606 element, on proper
+    364/365-day windows, and the catalogue already ranks it second in `fallback_concepts`.
+    `_retry_without` withholds the concept whose every period was refused and re-resolves, so
+    the second candidate finally gets asked.
+
+    Fiscal 2020 is the assertion that matters: its annual is recoverable ONLY from the
+    fiscal 2020 10-K itself, because the later vintages that rescue 2021 and 2022 do not
+    reach back that far.
+    """
+    quarters, _refusals, facts = orcl_quarters
+    revenue = facts[facts["field"] == "totalRevenue"]
+    annual = revenue[revenue["duration_type"] == P.ANNUAL]
+    broken = {"0001564590-20-030125", "0001564590-21-033616", "0001564590-22-023675"}
+
+    recovered = annual[annual["accession_number"].isin(broken)]
+    print("\n=== SANITY CHECK: annuals recovered from the three broken 10-Ks ===")
+    for r in recovered.sort_values(["accession_number", "period_end"]).itertuples():
+        print(f"  {r.accession_number}  {str(r.period_end)[:10]}  "
+              f"${r.value / 1e9:6.3f}bn  {r.source_concept.split(':')[-1]}")
+
+    assert len(recovered) == 9, "3 fiscal years x 3 filings, every one an annual window"
+    assert set(recovered["source_concept"]) == {
+        "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax"}, (
+        "the retry must land on the ASC 606 element, not back on `Revenues`")
+    assert recovered["value"].notna().all(), "a recovered annual is not a value-less stub"
+
+    fy2020 = annual[annual["period_end"] == pd.Timestamp("2020-05-31")]
+    assert not fy2020.empty, (
+        "fiscal 2020's annual is in NO other vintage -- if the retry misses it, Q4 2020 is "
+        "unrecoverable and the point-in-time row keeps carrying Q3")
+    assert fy2020["value"].min() == fy2020["value"].max() == 39_068_000_000.0
+    assert str(fy2020["accession_number"].min()) == "0001564590-20-030125", (
+        "recovered from the fiscal 2020 10-K itself, not from a later restatement")
+
+    q4_2020 = quarters[(quarters["field"] == "totalRevenue")
+                       & (quarters["period_end"] == pd.Timestamp("2020-05-31"))]
+    assert len(q4_2020) == 1 and q4_2020.iloc[0].basis == P.FY_MINUS_YTD9
+    assert 10.3e9 < q4_2020.iloc[0].value < 10.6e9, (
+        f"Q4 2020 is ${q4_2020.iloc[0].value / 1e9:.3f}bn, not the ~$10.44bn "
+        f"$39,068M - YTD9 implies")
+    print(f"  fiscal 2020 Q4 now DERIVES at ${q4_2020.iloc[0].value / 1e9:.3f}bn "
+          f"(was: no row at all, and the PIT quarter carried Q3's $9.796bn)")
 
 
 def test_d1b_keeps_a_genuine_loss_quarter_bigger_than_the_nine_months():

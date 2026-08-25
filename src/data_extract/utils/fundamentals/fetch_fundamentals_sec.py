@@ -48,7 +48,7 @@ from src.data_extract.utils.fundamentals.reason_codes import (
     NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL)
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     FIELD_SUM, INCOMPLETE_ROLL_UP, LINKBASE_SUM, NO_USABLE_PERIOD, STATEMENT_LEAF_SUM,
-    UNRESOLVED, ArcGraph, Resolution, resolve_field, statement_arcs)
+    UNRESOLVED, ArcGraph, Resolution, bare, resolve_field, statement_arcs)
 from src.data_store.schema import Table, Tables
 
 _COLS = ["ticker", "accession_number", "field", "fiscal_year", "fiscal_period",
@@ -345,6 +345,56 @@ def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str,
                          "value": dropped["value"]})
         out[year] = {**host, "note_quarter_rejected": rejected}
     return out
+
+
+def _retry_without(name, resolution, catalogue, graph, available, regime, facts,
+                   durations, zero_only, magnitudes, ticker, prefer_structure,
+                   form: str, filing_windows: list[_Window],
+                   ) -> tuple[Resolution, dict[tuple, dict], dict[tuple, dict]] | None:
+    """Re-resolve `name` with the concept that yielded NOTHING withheld, or None.
+
+    A concept every one of whose periods was refused did not resolve the field -- it only
+    looked like it did, because `resolve_field` is period-agnostic by design and so ranks a
+    tag on whether the filer USES it, not on whether what it says is usable. The catalogue
+    already ranks a second answer; nothing was ever asking for it.
+
+    ORCL is the measured case and the whole reason this exists. `totalRevenue` lists
+    `fallback_concepts: ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
+    ...]`. `us-gaap:Revenues` wins in the fiscal 2020-2022 10-Ks because it is present -- but
+    every period it offers is a full year stamped into a 91-day context, so
+    `_drop_note_only_quarter` refuses all three and the field resolves to nothing. The ASC 606
+    element sits in the SAME filings on proper 364/365-day windows carrying the same figures,
+    and is the very next candidate. Without the retry, fiscal 2020's $39,068M annual is in no
+    filing we store, and `Q4 = FY - YTD9` cannot run for three years: the point-in-time Q4 at
+    `as_of` 2020-06-22, 2021-06-21 and 2022-06-21 silently carried the PRIOR quarter instead
+    (9,796 / 10,085 / 10,513 $M against ~10,440 / ~11,259 / 11,840).
+
+    Withheld via `available` rather than a new resolver argument: that set is the filing's
+    reported concepts keyed BARE, it is already the lever `resolve_field` reads to decide what
+    a filing offers, and removing a name from it is exactly "pretend the filer never tagged
+    this". No change to the resolver, and the retry runs the same two-pass zero guard.
+
+    Returns None -- leaving the caller to record the refusal -- when the field has no second
+    candidate, when the retry lands on the same concept, or when the retry's periods are
+    refused in their turn. A retry that resolves to nothing is not an improvement over an
+    honest `ambiguous_duration` stub.
+
+    Deliberately NOT a loop over every remaining candidate. One retry covers the measured
+    population (4 value-less stubs table-wide: ORCL x3, JPM x1) and a loop would need its own
+    termination story; if a filer ever needs two, the finding will say so.
+    """
+    dead = resolution.concept
+    if not dead:
+        return None
+    retry = resolve_field(catalogue.field(name), graph, available - {bare(dead)},
+                          catalogue, regime, duration_concepts=durations,
+                          zero_only=zero_only, magnitudes=magnitudes,
+                          ticker=ticker, prefer_structure=prefer_structure)
+    if not retry.resolved or retry.concept == dead:
+        return None
+    periods, refused = _materialise(retry, facts)
+    kept = _drop_note_only_quarter(periods, form=form, filing_windows=filing_windows)
+    return (retry, kept, refused) if kept else None
 
 
 def _materialise(resolution: Resolution,
@@ -679,6 +729,12 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
             kept = _drop_note_only_quarter(periods, form=form,
                                            filing_windows=filing_windows)
             if periods and not kept:
+                retry = _retry_without(name, resolutions[name], catalogue, graph, available,
+                                       regime, facts, durations, zero_only, magnitudes,
+                                       ticker, prefer_structure, form, filing_windows)
+                if retry is not None:
+                    resolutions[name], values[name], refused[name] = retry
+                    continue
                 note_refused.add(name)
             values[name] = kept
     for name, resolution in list(resolutions.items()):

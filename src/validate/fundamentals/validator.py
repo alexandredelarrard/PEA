@@ -263,7 +263,9 @@ class FundamentalsValidator:
         the scope hash, because two runs covering the same tickers are comparable whether or
         not someone renamed the roster in between.
         """
-        run_date = pd.Timestamp(run_date or pd.Timestamp.today().normalize())
+        # NOT `.normalize()`-d: `run_id` hashes the hour (see `RunScope.run_id`), so the
+        # default run_date must carry real clock time or every run of a day would hash alike.
+        run_date = pd.Timestamp(run_date) if run_date is not None else pd.Timestamp.today()
         wanted_fields = set(fields) if fields else None
         selected = checks_for(tiers=tiers, names=names)
         # The tiers ACTUALLY RUN, not the flag: `--tier` unset and `--tier 1,2,3` cover the
@@ -298,8 +300,9 @@ class FundamentalsValidator:
 
         ## The run REPLACES ITS OWN ROWS before writing them
 
-        `run_id` is (run_date, scope), so a re-run on the same day at the same scope carries
-        the same id -- which is exactly the shape of "fix it, rebuild, re-validate". Without
+        `run_id` is (run_hour, scope), so a re-run within the same clock-hour at the same
+        scope carries the same id -- which is exactly the shape of "fix it, rebuild,
+        re-validate". A re-run more than an hour later gets a fresh id instead. Without
         the delete, findings that STOPPED firing would survive as leftovers from the morning's
         run and the measured delta would read 0. An upsert cannot remove a row that is no
         longer produced, so the run clears its own footprint and nobody else's.

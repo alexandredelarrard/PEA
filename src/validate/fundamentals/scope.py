@@ -16,11 +16,17 @@ nothing.
 
 ## Two hashes, and why not one
 
-  `scope_hash`  (tickers, fields, tiers)             -- COMPARABILITY. Deliberately no date.
-  `run_id`      (run_date, tickers, fields, tiers)   -- IDENTITY of one run.
+  `scope_hash`  (tickers, fields, tiers)                  -- COMPARABILITY. Deliberately no date.
+  `run_id`      (run_hour, tickers, fields, tiers)        -- IDENTITY of one run.
 
 One hash cannot do both jobs. Including the date makes every run incomparable with every other
 run; excluding it makes today's run indistinguishable from last week's in a table keyed on it.
+
+`run_id` hashes the HOUR, not the day, so two runs of one scope more than an hour apart are
+distinct runs even on the same calendar day -- a morning fix-and-revalidate cycle no longer
+silently clobbers an afternoon one. Re-runs inside the same clock-hour still collapse onto one
+id, which is what lets a tight fix/rebuild/re-validate loop replace its own rows instead of
+piling up duplicates.
 
 `roster` is carried but NOT hashed. It is a label for a ticker list, and two runs that cover
 the same tickers are comparable whether or not someone renamed the roster in between --
@@ -68,12 +74,15 @@ class RunScope:
         return _digest(self._payload())
 
     def run_id(self, run_date) -> str:
-        """This run's identity: 12 hex of (run_date, scope).
+        """This run's identity: 12 hex of (run_hour, scope).
 
-        Same day, same scope -> same id, deliberately. That is what makes a re-run after a
-        fix REPLACE its own rows instead of appending a second, half-stale copy of them.
+        Same clock-hour, same scope -> same id, deliberately. That is what makes a re-run
+        after a fix REPLACE its own rows instead of appending a second, half-stale copy of
+        them. Crossing an hour boundary changes the id, so two runs more than an hour apart
+        -- even on the same day -- are recorded as distinct runs instead of one clobbering
+        the other.
         """
-        return _digest({"run_date": _date(run_date), **self._payload()})
+        return _digest({"run_date": _hour(run_date), **self._payload()})
 
     def _payload(self) -> dict[str, Any]:
         return {"tickers": list(self.tickers), "fields": list(self.fields),
@@ -112,6 +121,12 @@ def _digest(payload: dict[str, Any]) -> str:
 
 def _date(value) -> str:
     return str(pd.Timestamp(value).date())
+
+
+def _hour(value) -> str:
+    """`YYYY-MM-DD HH`, the granularity `run_id` hashes on. Not used for the stored
+    `run_date` column, which stays date-only -- only the identity hash needs the hour."""
+    return pd.Timestamp(value).strftime("%Y-%m-%d %H")
 
 
 __all__ = ["RunScope"]

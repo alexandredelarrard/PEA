@@ -43,7 +43,7 @@ from src.data_extract.utils.fundamentals.fundamentals_employees import (
     employee_fact_frame, history_by_ticker, is_headcount_form)
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
-    ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape)
+    AMBIGUOUS_DURATION, ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape)
 from src.data_extract.utils.fundamentals.reason_codes import (
     NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL)
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
@@ -213,7 +213,8 @@ def _covering_annual(windows: list[_Window], period: dict) -> tuple | None:
     return None
 
 
-def _lone_quarters(periods: dict[tuple, dict]) -> dict[tuple, tuple]:
+def _lone_quarters(periods: dict[tuple, dict],
+                   filing_windows: list[_Window] | None = None) -> dict[tuple, tuple]:
     """`{key of a quarter that is the ONLY one of its fiscal year: key of that year}`.
 
     A 10-K carries quarterly contexts from a note, and there are only two notes that put a
@@ -235,10 +236,29 @@ def _lone_quarters(periods: dict[tuple, dict]) -> dict[tuple, tuple]:
     carries `us-gaap:TaxAdjustmentsSettlementsAndUnusualProvisions` at -$397M, the same
     magnitude signed as what it is.
 
-    A quarter with NO covering annual fact in the filing is not judged and is kept: silence
-    is not evidence, the same rule `xbrl_linkbase.is_note_only` and D1's condition 1 apply.
+    **The fiscal calendar is the FILING's, not the field's own.** `filing_windows` is the
+    union of every annual window the filing declares across ALL fields, and it is consulted
+    only where THIS field declares none -- exactly the case the field-local rule could not
+    judge, so it kept the row. ORCL's fiscal 2020-2022 10-Ks tag the full-year
+    `us-gaap:Revenues` into a 91-day fourth-quarter context and publish no annual-window
+    `Revenues` at all, so `_annual_windows` came back empty and the guard returned before
+    reading a single quarter: **9 rows across 3 filings**, fiscal 2022 Q4 stored at $42,440M
+    against a true $11,840M. The year is not in doubt and no inference is needed to date it
+    -- the same filings carry the correct annual figure under
+    `RevenueFromContractWithCustomerExcludingAssessedTax` on 2021-06-01..2022-05-31, the
+    same $42,440M -- only the context the filer hung it on is wrong.
+
+    Scoped to fields with no annual window of their own rather than unioned unconditionally,
+    because the two differ and the difference is unread: replayed over the 54-ticker table
+    the fallback drops **9 rows, all ORCL**, while an unconditional union drops **16 across
+    7 (ticker, field) pairs** -- 7 further rows on DTE, EQIX, META and VLO that have the
+    same prose-aside shape but no filing-level evidence behind them yet.
+
+    A quarter with NO covering annual fact anywhere in the filing is still not judged and is
+    kept: silence is not evidence, the same rule `xbrl_linkbase.is_note_only` and D1's
+    condition 1 apply.
     """
-    windows = _annual_windows(periods)
+    windows = _annual_windows(periods) or filing_windows or []
     if not windows:
         return {}
     years: dict[tuple, list[tuple]] = {}
@@ -251,7 +271,24 @@ def _lone_quarters(periods: dict[tuple, dict]) -> dict[tuple, tuple]:
     return {keys[0]: year for year, keys in years.items() if len(keys) == 1}
 
 
-def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str) -> dict[tuple, dict]:
+def _filing_annual_windows(values: dict[str, dict[tuple, dict]]) -> list[_Window]:
+    """Every ANNUAL window the filing declares, over all fields, deduplicated by span.
+
+    One filing states one fiscal calendar, so a window is worth keeping once however many
+    fields tag it. Deduplicated on `(start, end)` rather than on the period key, which
+    carries the field and would therefore repeat the same year ~50 times on a full
+    catalogue and make `_covering_annual`'s scan that much longer for no extra evidence.
+    """
+    by_span: dict[tuple, _Window] = {}
+    for periods in values.values():
+        for key, low, high in _annual_windows(periods):
+            by_span.setdefault((low, high), (key, low, high))
+    return list(by_span.values())
+
+
+def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str,
+                            filing_windows: list[_Window] | None = None,
+                            ) -> dict[tuple, dict]:
     """Refuse a quarterly fact an ANNUAL report published ALONE for its fiscal year.
 
     The value is a discrete item disclosed in prose, never the quarter's total, and storing
@@ -265,8 +302,18 @@ def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str) -> dict[tu
     is 2 of them. Q4 2010 was stored at $371M against a true $1,196M - $1,359M = **-$163M**
     and Q4 2011 at $397M against $1,382M - $1,325M = **+$57M** -- both signs wrong, because
     a settlement BENEFIT was tagged with the expense element. Only 11 of the 19 are the sole
-    source of their period (BA 2, ORCL 9) and all 11 are provably wrong; the other 8 are
-    exact duplicates of the same period from a 10-Q, so no window loses its number.
+    source of their period and all 11 are provably wrong; the other 8 are exact duplicates
+    of the same period from a 10-Q, so no window loses its number.
+
+    **`filing_windows` -- the fiscal calendar is the filing's (cluster `2603621e89ab`).**
+    That 11 was first written down as "BA 2, ORCL 9", and the ORCL half was never true: the
+    rule dates a quarter by a covering annual window of THE SAME FIELD, and ORCL's fiscal
+    2020-2022 10-Ks publish no annual-window `us-gaap:Revenues` at all, so `_lone_quarters`
+    hit `if not windows: return {}` and judged nothing. The 9 rows survived the fix that
+    claimed them and went on carrying a full year in a 91-day context -- 47 findings across
+    7 checks. Passing the filing's own annual windows in as a fallback dates them without
+    inference. Measured over the same table, the fallback drops **exactly those 9 rows and
+    nothing else**.
 
     The form gate is load-bearing, not a nicety. A 10-Q's face statement carries exactly one
     quarterly context per fiscal year -- the current quarter, plus the prior-year comparative
@@ -277,11 +324,15 @@ def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str) -> dict[tu
     neither subsumes the other: D1/D1b test the quarter's value against the filer's own
     annual (agreement within 0.1%) and so cannot see $397M beside $1,382M, while this tests
     the note's SHAPE and cannot see a full-year number tagged into a quarterly context that
-    the table publishes alongside its three siblings.
+    the table publishes alongside its three siblings. The two overlap on ORCL and the layer
+    is what separates them: D1b already refused those rows in `periods.py`, which is why
+    `fundamentals_history` never showed $42,440M as a quarter, but it runs on the way to
+    HISTORY and leaves `fundamentals_facts` -- the substrate every Tier-2/3 check reads --
+    still asserting the bad quarter. Refusing at the facts layer is what closes the cluster.
     """
     if str(form or "").upper() not in _ANNUAL_FORMS:
         return periods
-    lone = _lone_quarters(periods)
+    lone = _lone_quarters(periods, filing_windows)
     if not lone:
         return periods
     out = {key: period for key, period in periods.items() if key not in lone}
@@ -606,8 +657,30 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
         resolutions[name] = resolution
         if resolution.method != FIELD_SUM:
             values[name], refused[name] = _materialise(resolution, facts)
-            # Before `_compose` reads these, so a composed field inherits the cleaned legs.
-            values[name] = _drop_note_only_quarter(values[name], form=str(filing.form))
+    # Before `_compose` reads these, so a composed field inherits the cleaned legs, and
+    # after the loop rather than inside it: a lone quarter is dated against the FILING's
+    # fiscal calendar, so every field has to be materialised before the first one is judged.
+    # The gate here only skips the union scan on a quarterly report; the RULE it encodes
+    # lives in `_drop_note_only_quarter`, which re-checks the form itself.
+    #
+    #: Fields the note guard emptied OUTRIGHT. They reach the stub below with a resolved
+    #: concept and no period, which is `NO_USABLE_PERIOD`'s shape but not its meaning -- that
+    #: code says `_materialise` FOUND none, and here we found some and refused them. ORCL is
+    #: the whole population: `us-gaap:Revenues` resolves in three 10-Ks and every period it
+    #: offers is a mislabelled year, so without this the only trace of the refusal would be a
+    #: code that misdescribes it. The `note_quarter_rejected` marker cannot carry this and it
+    #: is worth saying so, because it is the first thing a reader will reach for: that marker
+    #: lands on the covering annual OF THE SAME FIELD, and having none is the whole premise.
+    note_refused: set[str] = set()
+    form = str(filing.form or "").upper()
+    if form in _ANNUAL_FORMS:
+        filing_windows = _filing_annual_windows(values)
+        for name, periods in list(values.items()):
+            kept = _drop_note_only_quarter(periods, form=form,
+                                           filing_windows=filing_windows)
+            if periods and not kept:
+                note_refused.add(name)
+            values[name] = kept
     for name, resolution in list(resolutions.items()):
         if resolution.method == FIELD_SUM:
             composed, reason = _compose(catalogue.field(name),
@@ -637,7 +710,8 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
             # of the class visible instead of silent.
             if resolution.resolved:
                 resolution = replace(resolution, method=UNRESOLVED,
-                                     dc_code=NO_USABLE_PERIOD)
+                                     dc_code=(AMBIGUOUS_DURATION if name in note_refused
+                                              else NO_USABLE_PERIOD))
             rows.append(_row(ticker, cik, filing, regime, name, resolution, None))
             continue
         rows.extend(_row(ticker, cik, filing, regime, name, resolution, period)

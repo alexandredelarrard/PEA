@@ -735,8 +735,13 @@ def test_d1b_leaves_a_normal_fourth_quarter_alone_when_no_annual_exists():
 
 
 @pytest.fixture(scope="module")
-def orcl_quarters() -> tuple[pd.DataFrame, list[dict]]:
-    """ORCL's real revenue quarters plus the D1b refusals, from its own filings.
+def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
+    """ORCL's real revenue quarters, the D1b refusals, and the FACTS they were built from.
+
+    The facts frame is returned because the refusal moved layers (cluster `2603621e89ab`):
+    `fetch_fundamentals_sec._drop_note_only_quarter` now drops the mislabelled years while
+    the filing is being read, so `build_periods` never sees them and D1b has nothing left to
+    refuse. The evidence is therefore in the fact rows, not in the `refusals` list.
 
     Scoped to filings from 2017-06 rather than the full history, but no tighter -- and the
     lower bound is load-bearing in a way worth recording, because getting it wrong changes
@@ -766,7 +771,7 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict]]:
     facts = pd.DataFrame(rows)
     refusals: list[dict] = []
     quarters, _ttm, _instants = P.build_periods(facts, CATALOGUE, refusals=refusals)
-    return quarters, refusals
+    return quarters, refusals, facts
 
 
 def test_orcls_fiscal_2020_fourth_quarter_is_refused_and_no_other_year_is(orcl_quarters):
@@ -774,14 +779,23 @@ def test_orcls_fiscal_2020_fourth_quarter_is_refused_and_no_other_year_is(orcl_q
 
     ORCL stamps its full-year `us-gaap:Revenues` into a 91-day Q4 context in fiscal 2018,
     2019, 2020, 2021 AND 2022 -- nine facts across three 10-Ks. Four of those five years
-    also carry a proper annual-window fact, so **D1 already handles them** and their Q4
-    comes out as `fy_minus_ytd9`. Fiscal 2020 is the only year with no annual fact anywhere,
-    which is precisely what makes it D1b. So the guard must fire on that year and no other:
-    if it fires more widely, the nine-month comparison is too loose.
+    also carry a proper annual-window fact, so **D1 would handle them** and their Q4 comes
+    out as `fy_minus_ytd9`. Fiscal 2020 is the only year with no annual fact anywhere.
+
+    **The refusal now happens a layer earlier (cluster `2603621e89ab`).** D1b ran on the way
+    to HISTORY and so left `fundamentals_facts` -- the substrate every Tier-2/3 check reads
+    -- still asserting a $39-42bn "quarter"; that cost 47 findings across 7 checks.
+    `_drop_note_only_quarter` now refuses all nine while the filing is read, dating them
+    against the FILING's annual windows rather than the field's own. So D1b correctly has
+    nothing to do here, and the assertion is that the refusal is RECORDED, not that a
+    particular layer made it: the emptied field reaches `fundamentals_facts` as one
+    value-less stub per filing carrying `ambiguous_duration`.
     """
-    quarters, refusals = orcl_quarters
+    quarters, refusals, facts = orcl_quarters
     revenue = quarters[quarters["field"] == "totalRevenue"]
     fy2020_q4 = revenue[revenue["period_end"] == pd.Timestamp("2020-05-31")]
+    stubs = facts[(facts["field"] == "totalRevenue")
+                  & (facts["dc_code"] == P.AMBIGUOUS_DURATION)]
     coded = [r for r in refusals if r["dc_code"] == P.AMBIGUOUS_DURATION]
 
     print("\n=== SANITY CHECK: ORCL's Q4-windowed annuals, fiscal 2018-2022 ===")
@@ -792,15 +806,21 @@ def test_orcls_fiscal_2020_fourth_quarter_is_refused_and_no_other_year_is(orcl_q
         else:
             row = got.iloc[0]
             print(f"  {year_end}  ${row.value / 1e9:6.3f}bn via {row.basis}")
-    print(f"  D1b refusals: {len(coded)} "
-          f"{sorted({str(pd.Timestamp(r['period_end']).date()) for r in coded})}")
-    print(f"  fields refused: {sorted({r['field'] for r in coded})}")
+    print(f"  D1b refusals: {len(coded)} (expected 0 -- the facts layer refused first)")
+    print(f"  ambiguous_duration stubs in facts: {len(stubs)} across "
+          f"{sorted(stubs['accession_number'].unique())}")
 
     assert fy2020_q4.empty, "fiscal 2020's $39,068M Q4 must not survive"
-    assert coded, "the refusal must be reason-coded, not silent"
-    assert {pd.Timestamp(r["period_end"]) for r in coded} == {pd.Timestamp("2020-05-31")}, (
-        "D1b fired outside fiscal 2020 -- the nine-month comparison is too loose")
-    assert {r["field"] for r in coded} == {"totalRevenue"}
+    assert not coded, (
+        "D1b saw a mislabelled year -- `_drop_note_only_quarter` should have refused it "
+        "while the filing was read, before `fundamentals_facts` could assert it")
+    assert len(stubs) == 3, (
+        "the refusal must be reason-coded, not silent: one value-less `ambiguous_duration` "
+        "stub per 10-K whose `Revenues` is nothing but mislabelled years")
+    assert set(stubs["accession_number"]) == {"0001564590-20-030125",
+                                              "0001564590-21-033616",
+                                              "0001564590-22-023675"}
+    assert stubs["value"].isna().all(), "a refused stub carries no value"
     # The four years D1 already handles must come out DERIVED and the right size: ORCL's
     # real fourth quarters run $11-12bn, against the ~$39-42bn the mislabelled fact carries.
     for year_end in ("2019-05-31", "2021-05-31", "2022-05-31"):

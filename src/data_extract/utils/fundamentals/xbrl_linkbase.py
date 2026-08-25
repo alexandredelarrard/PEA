@@ -15,7 +15,12 @@ weights.
 The routes a field can resolve by, in the order they are tried (`Resolution.method`):
 
   1. ``linkbase_total``  a catalogue candidate is BOTH declared in the filer's statement
-                         structure and actually reported -- use it.
+                         structure and actually reported -- use it, UNLESS the filer
+                         declares it as a SIBLING of one of this field's own roll-up legs,
+                         which is the filer stating that its "total" is just another leaf
+                         (MCD tags `PaymentsToAcquireProductiveAssets` as "Purchases of
+                         restaurant and other businesses", beside its real "Capital
+                         expenditures"). See `sibling_leg`.
   2. ``linkbase_root``   no candidate is reported, so discover the filer's own top node
                          STRUCTURALLY (see below). Opt-in per field via
                          ``linkbase_root_discovery``.
@@ -325,6 +330,18 @@ class Resolution:
     #: COMPANY EXTENSION, so no candidate list can ever name it. Only "the filer declared its
     #: own lines and did not declare this" separates the two.
     undeclared_rejected: tuple[str, ...] = ()
+    #: `(total, leg)` pairs route 1 DECLINED because the filer declares the catalogue's
+    #: total as a SIBLING of one of this field's own roll-up legs instead of as its parent
+    #: -- so the filer has said they are disjoint lines and its "total" is another leaf.
+    #:
+    #: Kept apart from `undeclared_rejected` because the two are different epistemic states
+    #: and the module keeps its populations countable: that one means "the filer never put
+    #: this concept in its statement structure", this one means "the filer put it there and
+    #: told us it is not the parent". Measured at 2 of 12 route-1 `capex` filers -- MCD,
+    #: whose `PaymentsToAcquireProductiveAssets` is "Purchases of restaurant and other
+    #: businesses" ($540.9M FY2019) beside a $2,393.7M "Capital expenditures", and EQIX,
+    #: whose is "Purchase of real estate". See `sibling_leg`.
+    sibling_rejected: tuple[tuple[str, str], ...] = ()
     #: The field HAS a value, but on a basis the catalogue declares non-comparable -- the
     #: winning concept is named in the field's `dc_code_on_fallback` map. Today's only
     #: entry: `researchAndDevelopment` resolving on
@@ -617,6 +634,78 @@ class ArcGraph:
         return any(child == sibling for child, _ in self.children_of(parent))
 
 
+def sibling_leg(graph: ArcGraph, concept: str, legs: frozenset[str] | set[str],
+                available: frozenset[str], magnitudes: dict[str, float]) -> str | None:
+    """The field's own declared roll-up LEG that proves `concept` is not this field's
+    total -- or None, which is the overwhelmingly common answer.
+
+    `total_concept` is documented as "the concept to prefer when the filer declares it as a
+    linkbase PARENT", but route 1 only ever asked `graph.knows` -- *is it in the statement
+    structure at all* -- so any filer that tags the superset element on a DIFFERENT line
+    handed route 1 that line as the field's total. MCD tags
+    `PaymentsToAcquireProductiveAssets` as **"Purchases of restaurant and other
+    businesses"** and route 1 stored its franchisee-acquisition line as capex for 67 rows.
+
+    TWO conditions, and BOTH are required. Each is necessary and neither is sufficient:
+
+    1. **The filer declares the leg BESIDE the total, not beneath it.** FASB's own
+       calculation linkbase makes `PaymentsToAcquirePropertyPlantAndEquipment` a CHILD of
+       `PaymentsToAcquireProductiveAssets`, which is what `capex.roll_up.sum` declares. A
+       filer that puts both under one parent at one weight has stated they are disjoint
+       lines. `has_descendant` wins over `has_sibling`: a filer that declares the leg both
+       beneath and beside really is rolling up, and route 1 keeps it.
+    2. **The filer reports the leg LARGER than the total.** A concept FASB defines as
+       PP&E + software + intangibles cannot be smaller than the PP&E it contains, so when
+       it is, the element is being used for some other line. This is the filer's own
+       arithmetic contradicting the filer's own structure, with no appeal to a label.
+
+    **Condition 2 is not decoration -- without it this rule destroys correct data, and the
+    measurement is why it is here.** Condition 1 alone also fires on AAPL and SWKS, which
+    declare `PaymentsToAcquireIntangibleAssets` beside the total and are entirely correct:
+    AAPL's `PaymentsToAcquireProductiveAssets` IS its $9,571M "Payments for acquisition of
+    property, plant and equipment" (0001193125-14-383437), with intangibles a separate
+    ~$242M line. Refusing there would have handed route 3b the intangibles leg alone and
+    cut AAPL's FY2014 capex from **$9,571M to $242M** -- a 97.5% understatement, the same
+    class of self-inflicted damage as the 745 correct rows once nulled by over-strict Q4
+    guards. Condition 2 keeps both filers on route 1, because their total is the larger
+    number, which is exactly what a real superset looks like.
+
+    MEASURED on the 12 roster tickers resolving `capex` by route 1 on
+    `PaymentsToAcquireProductiveAssets` (one filing each, calculation linkbase + facts).
+    **10 correct, 2 mistaggers**, and both mistaggers declare the leg as a sibling at the
+    same -1.0 weight under `NetCashProvidedByUsedInInvestingActivities` AND report it
+    several times larger:
+
+      * **MCD** 0000063908-20-000022 -- total "Purchases of restaurant and other
+        businesses" **$540.9M** beside leg "Capital expenditures" **$2,393.7M** (FY2019).
+        Excluding the restaurant line is DEFINITIONAL, not convenient: it is a business
+        acquisition, the same ground on which NEE's
+        `PaymentsToAcquireBusinessesGrossAndRelatedCapitalExpenditures` is excluded in
+        `fundamentals_exceptions.json`.
+      * **EQIX** 0001193125-12-317379 -- "Purchase of real estate" **$24.0M** beside
+        "Purchases of property, plant and equipment" **$342.0M**.
+
+    The remaining 10 (AMT, CAT, KR, NVDA, SPG, VLO, LLY, APA on condition 1; AAPL and SWKS
+    on condition 2) keep `linkbase_total` untouched.
+
+    Two further guards make a NULL impossible: the leg must be REPORTED (`available`), so
+    a refusal always has a real number behind it, and the caller requires route 3b to have
+    leaves, so a refusal hands off to an answer rather than to nothing.
+    """
+    total_peak = magnitudes.get(concept)
+    if total_peak is None:
+        return None
+    for leg in sorted(legs):
+        leg_peak = magnitudes.get(leg)
+        if leg_peak is None or leg not in available:
+            continue
+        if leg_peak <= total_peak:
+            continue                                    # a real superset -- AAPL, SWKS
+        if graph.has_sibling(concept, leg) and not graph.has_descendant(concept, leg):
+            return leg
+    return None
+
+
 def bare(concept: str) -> str:
     """`dei:EntityCommonStockSharesOutstanding` -> `EntityCommonStockSharesOutstanding`.
 
@@ -838,6 +927,7 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
                   catalogue: Catalogue, regime: str | None = None,
                   duration_concepts: frozenset[str] | None = None,
                   zero_only: frozenset[str] = frozenset(),
+                  magnitudes: dict[str, float] | None = None,
                   ticker: str | None = None,
                   prefer_structure: bool = True) -> Resolution:
     """Decide how `spec` resolves for one filing, in TWO passes over the zero guard.
@@ -875,7 +965,8 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     `xbrl()` call. Nothing in `src/` ever passes False.
     """
     strict = _resolve_once(spec, graph, available - zero_only, available, catalogue,
-                           regime, duration_concepts, ticker, prefer_structure=prefer_structure)
+                           regime, duration_concepts, magnitudes=magnitudes, ticker=ticker,
+                           prefer_structure=prefer_structure)
     if strict.resolved:
         return _stamp_basis(spec, strict)
 
@@ -885,7 +976,8 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     # are the reason a field has no answer, prefer the narrow number to the zero.
     if strict.role_rejected:
         relaxed = _resolve_once(spec, graph, available - zero_only, available, catalogue,
-                                regime, duration_concepts, ticker, prefer_structure=False)
+                                regime, duration_concepts, magnitudes=magnitudes,
+                                ticker=ticker, prefer_structure=False)
         if relaxed.resolved:
             # Carry the strict pass's ledger through, so the row says BOTH what was
             # withheld and that it had to be put back -- either half alone is unreadable.
@@ -895,7 +987,8 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     if not zero_only:
         return strict
     retry = _resolve_once(spec, graph, available, available, catalogue, regime,
-                          duration_concepts, ticker, prefer_structure=False)
+                          duration_concepts, magnitudes=magnitudes, ticker=ticker,
+                          prefer_structure=False)
     return (_stamp_basis(spec, replace(retry, zero_only_retained=True))
             if retry.resolved else strict)
 
@@ -921,6 +1014,7 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
                   available: frozenset[str], catalogue: Catalogue,
                   regime: str | None = None,
                   duration_concepts: frozenset[str] | None = None,
+                  magnitudes: dict[str, float] | None = None,
                   ticker: str | None = None, prefer_structure: bool = True) -> Resolution:
     """One resolution pass.
 
@@ -1014,6 +1108,17 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
         if prefer_structure and not declared and leaves:
             return _leaf_resolution(
                 (candidate if ":" in candidate else qualify(name, "us-gaap"),))
+        # Declared -- but declared BESIDE this field's own leg AND reported smaller than
+        # it, which is the filer's structure and the filer's arithmetic agreeing that its
+        # "total" is another leaf. Route 3b's sum of the declared lines is the field.
+        # `leaves` is required here, so a refusal always hands off to an answer rather than
+        # to a NULL. See `sibling_leg` for the 12-filing measurement behind both halves.
+        if prefer_structure and declared and leaves:
+            beside = sibling_leg(graph, name, legs, available, magnitudes or {})
+            if beside is not None:
+                return replace(
+                    _leaf_resolution(),
+                    sibling_rejected=((graph.qualified(name), graph.qualified(beside)),))
         return Resolution(
             field=spec.name,
             method=LINKBASE_TOTAL if declared else TAG_PRIMARY,

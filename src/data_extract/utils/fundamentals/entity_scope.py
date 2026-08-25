@@ -206,6 +206,29 @@ def zero_only_concepts(facts: pd.DataFrame) -> frozenset[str]:
     return frozenset(str(name) for name in zero.index)
 
 
+def peak_magnitudes(facts: pd.DataFrame) -> dict[str, float]:
+    """Bare name -> the LARGEST absolute consolidated value this filing reports for it.
+
+    A filing-level summary, in the same family as `zero_only_concepts` and for the same
+    reason: resolution is period-agnostic, so anything the resolver needs from the facts
+    has to collapse to one number per concept before it gets there.
+
+    Its only consumer is `xbrl_linkbase.sibling_leg`, which asks whether a filer's declared
+    "total" is reported SMALLER than a component FASB declares to be inside it -- a
+    contradiction that identifies a misused element without any reference to labels. The
+    maximum across periods (rather than a period-matched pair) is deliberate: a 10-Q tags
+    quarterly, year-to-date and prior-year comparatives for the same concept, so there is
+    no single period to compare on, and the peak is the one summary that cannot be moved by
+    a filer reporting the two lines over different period sets.
+    """
+    if facts.empty or "numeric_value" not in facts.columns:
+        return {}
+    peaks = (facts.assign(_bare=[bare_concept(c) for c in facts["concept"]])
+             .groupby("_bare")["numeric_value"].apply(lambda s: s.abs().max()))
+    return {str(name): float(value)
+            for name, value in peaks.items() if pd.notna(value)}
+
+
 def dimensioned_facts(facts: pd.DataFrame, axis: str) -> pd.DataFrame:
     """Facts qualified by exactly `axis` -- the escape hatch `DIMENSIONED_EXCEPTIONS`
     documents. Separate from the default path so that reading a legal-entity-scoped value

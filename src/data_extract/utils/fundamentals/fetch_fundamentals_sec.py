@@ -316,7 +316,11 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
     `? 'role_rejected'` every row its note-role half withheld a candidate on,
     `? 'zero_only_retained'` every row the zero guard did, `? 'basis_qualifier'` every row
     that answered on a concept the catalogue declares non-comparable (`basis_ex_iprd`), and
-    `? 'duplicate_fact'` every (concept, period) this filer tagged twice at two values.
+    `? 'duplicate_fact'` every (concept, period) this filer tagged twice at two values,
+    and `? 'sibling_rejected'` every row where route 1 declined the catalogue's total
+    because the filer declared it BESIDE one of this field's roll-up legs rather than above
+    it -- each entry a `[total, leg]` pair, so "which filers mistag the superset element,
+    and as what?" is one query rather than an archaeology exercise.
 
     `duplicate_fact` is the one PERIOD-level key: resolution is period-agnostic by design,
     but a duplicate is a property of one fact, so it arrives on the materialised period
@@ -333,6 +337,8 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
         blob["role_only_retained"] = True
     if resolution.undeclared_rejected:
         blob["undeclared_rejected"] = list(resolution.undeclared_rejected)
+    if resolution.sibling_rejected:
+        blob["sibling_rejected"] = [list(pair) for pair in resolution.sibling_rejected]
     if resolution.basis_qualifier:
         blob["basis_qualifier"] = resolution.basis_qualifier
     if period and period.get("duplicate_fact"):
@@ -442,6 +448,12 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
     # zero is not thrown away). Both are computed once per filing, like the graph itself.
     durations = scope.duration_concepts(facts)
     zero_only = scope.zero_only_concepts(facts)
+    # Peak |value| per concept. Route 1 needs it to see a filer reporting its declared
+    # "total" SMALLER than a component FASB puts inside it -- MCD's
+    # `PaymentsToAcquireProductiveAssets` is $540.9M of restaurant acquisitions beside a
+    # $2,393.7M capex line. Filing-level like the two above, so resolution stays
+    # period-agnostic. See `xbrl_linkbase.sibling_leg`.
+    magnitudes = scope.peak_magnitudes(facts)
     graph = ArcGraph(statement_arcs(xbrl))
     regime = catalogue.regime_for(
         gics, [str(r) for r in graph.arcs.get("role_uri", pd.Series(dtype=str))])
@@ -456,8 +468,8 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
     for name in catalogue.extracted_fields:
         resolution = resolve_field(catalogue.field(name), graph, available,
                                    catalogue, regime, duration_concepts=durations,
-                                   zero_only=zero_only, ticker=ticker,
-                                   prefer_structure=prefer_structure)
+                                   zero_only=zero_only, magnitudes=magnitudes,
+                                   ticker=ticker, prefer_structure=prefer_structure)
         resolutions[name] = resolution
         if resolution.method != FIELD_SUM:
             values[name], refused[name] = _materialise(resolution, facts)

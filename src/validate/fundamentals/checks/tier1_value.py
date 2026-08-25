@@ -1327,6 +1327,8 @@ ADJUSTMENT_KINDS: dict[str, str] = {
     "duplicate_fact": "on evidence -- two tagged facts disagreed and the finer one was kept",
     "subtract": "on evidence -- the subtracted concept was PRESENT and tagged",
     "sibling_rejected": "on evidence -- the filer declared both legs and we took the leg",
+    "note_quarter_rejected": "on evidence -- an annual report published this quarter ALONE, "
+                             "so it is an ASC 270-10-50-2 narrative, not the quarter's total",
     "role_rejected": "on evidence -- the concept was present in a role we do not accept",
     "undeclared_rejected": "on silence -- the concept was not in the filer's own declaration",
     "basis_qualifier": "on evidence -- the filing states the basis",

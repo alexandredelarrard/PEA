@@ -42,7 +42,8 @@ from src.data_extract.utils.fundamentals.cik_cutover import (
 from src.data_extract.utils.fundamentals.fundamentals_employees import (
     employee_fact_frame, history_by_ticker, is_headcount_form)
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
-from src.data_extract.utils.fundamentals.periods import OTHER_SHAPE, period_shape
+from src.data_extract.utils.fundamentals.periods import (
+    ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape)
 from src.data_extract.utils.fundamentals.reason_codes import (
     NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL)
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
@@ -162,6 +163,114 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
                          "dropped_decimals": str(loser["decimals"])})
             winner = {**winner, "duplicate_fact": seen}
         out[key] = winner
+    return out
+
+
+#: Forms whose STATEMENT periods are all ANNUAL. A quarterly-shaped fact in one of these did
+#: not come off the face of a statement -- an annual report has no quarterly column -- so it
+#: came from a note, and the notes publish quarters in exactly two shapes (`_lone_quarters`).
+_ANNUAL_FORMS: tuple[str, ...] = ("10-K",)
+
+
+def _covering_annual(periods: dict[tuple, dict], period: dict) -> tuple | None:
+    """The key of the ANNUAL period in the same filing whose window CONTAINS `period`.
+
+    The containment relation rather than the filer's `fiscal_year` label, because the label
+    is per-fact and edgartools does not always populate it (three KR filings ship neither
+    `fiscal_year` nor `fiscal_period`), while the windows are the PK and always present. It
+    also settles a 52/53-week and a non-calendar issuer without a special case: ORCL's fourth
+    quarter ends 2018-05-31 and so does its fiscal 2018, and containment simply holds.
+    """
+    start, end = pd.Timestamp(period["period_start"]), pd.Timestamp(period["period_end"])
+    if pd.isna(start) or pd.isna(end):
+        return None
+    for key, candidate in periods.items():
+        if candidate.get("duration_type") != ANNUAL:
+            continue
+        low, high = (pd.Timestamp(candidate["period_start"]),
+                     pd.Timestamp(candidate["period_end"]))
+        if pd.notna(low) and pd.notna(high) and low <= start and end <= high:
+            return key
+    return None
+
+
+def _lone_quarters(periods: dict[tuple, dict]) -> dict[tuple, tuple]:
+    """`{key of a quarter that is the ONLY one of its fiscal year: key of that year}`.
+
+    A 10-K carries quarterly contexts from a note, and there are only two notes that put a
+    quarterly window on an income-statement concept:
+
+      * the **ASC 270 / Item 302 quarterly financial data table**, which is a SERIES -- it
+        publishes all four quarters of the year (usually of two years), so the concept lands
+        with three siblings inside its own fiscal year; and
+      * an **ASC 270-10-50-2 fourth-quarter-adjustment narrative**, which is a SENTENCE about
+        a DISCRETE ITEM inside a quarter, and lands alone.
+
+    So the count of same-year siblings separates a published quarter from a prose aside, with
+    no list of concepts, no role-name matching and no second request. Boeing's fiscal 2011
+    10-K (0001193125-12-048565) tags `us-gaap:Revenues` for all four quarters of 2010 AND
+    2011 off the table, and `us-gaap:IncomeTaxExpenseBenefit` for Q4 of each year ALONE, off
+    the sentence "during the fourth quarters of 2011 and 2010, we recorded tax benefits of
+    $397 and $371 as a result of settling the 2004-2006 and 1998-2003 federal audits" -- and
+    that filing's quarterly data table has no income tax row at all. The same context also
+    carries `us-gaap:TaxAdjustmentsSettlementsAndUnusualProvisions` at -$397M, the same
+    magnitude signed as what it is.
+
+    A quarter with NO covering annual fact in the filing is not judged and is kept: silence
+    is not evidence, the same rule `xbrl_linkbase.is_note_only` and D1's condition 1 apply.
+    """
+    quarters = [(key, period) for key, period in periods.items()
+                if period.get("duration_type") == QUARTERLY]
+    covering = {key: _covering_annual(periods, period) for key, period in quarters}
+    years: dict[tuple, list[tuple]] = {}
+    for key, year in covering.items():
+        if year is not None:
+            years.setdefault(year, []).append(key)
+    return {keys[0]: year for year, keys in years.items() if len(keys) == 1}
+
+
+def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str) -> dict[tuple, dict]:
+    """Refuse a quarterly fact an ANNUAL report published ALONE for its fiscal year.
+
+    The value is a discrete item disclosed in prose, never the quarter's total, and storing
+    it makes `fundamentals_facts` assert an as-filed quarter the filer never stated. It then
+    does two further kinds of damage downstream, because `periods.py` ranks an `AS_REPORTED`
+    quarter above every derived one and keeps the LATEST filing per window: the note quarter
+    both DISPLACES the 10-Q's own face-statement quarter and PRE-EMPTS the `FY - YTD9`
+    ladder, then propagates into four TTM windows.
+
+    Measured over the 54-ticker table before the fix: **19 rows**, and BA `incomeTaxExpense`
+    is 2 of them. Q4 2010 was stored at $371M against a true $1,196M - $1,359M = **-$163M**
+    and Q4 2011 at $397M against $1,382M - $1,325M = **+$57M** -- both signs wrong, because
+    a settlement BENEFIT was tagged with the expense element. Only 11 of the 19 are the sole
+    source of their period (BA 2, ORCL 9) and all 11 are provably wrong; the other 8 are
+    exact duplicates of the same period from a 10-Q, so no window loses its number.
+
+    The form gate is load-bearing, not a nicety. A 10-Q's face statement carries exactly one
+    quarterly context per fiscal year -- the current quarter, plus the prior-year comparative
+    in its own year -- so every quarter in a 10-Q is "lone" and an ungated rule would delete
+    the entire quarterly grain.
+
+    This is a DIFFERENT mechanism from `periods._drop_annual_masquerading_as_quarter` and
+    neither subsumes the other: D1/D1b test the quarter's value against the filer's own
+    annual (agreement within 0.1%) and so cannot see $397M beside $1,382M, while this tests
+    the note's SHAPE and cannot see a full-year number tagged into a quarterly context that
+    the table publishes alongside its three siblings.
+    """
+    if not str(form).startswith(_ANNUAL_FORMS):
+        return periods
+    lone = _lone_quarters(periods)
+    if not lone:
+        return periods
+    out = {key: period for key, period in periods.items() if key not in lone}
+    for key, year in lone.items():
+        if year not in out:
+            continue
+        dropped, host = periods[key], out[year]
+        rejected = list(host.get("note_quarter_rejected", []))
+        rejected.append({"period_end": str(pd.Timestamp(dropped["period_end"]).date()),
+                         "value": dropped["value"]})
+        out[year] = {**host, "note_quarter_rejected": rejected}
     return out
 
 
@@ -341,6 +450,8 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
         blob["sibling_rejected"] = [list(pair) for pair in resolution.sibling_rejected]
     if resolution.basis_qualifier:
         blob["basis_qualifier"] = resolution.basis_qualifier
+    if period and period.get("note_quarter_rejected"):
+        blob["note_quarter_rejected"] = period["note_quarter_rejected"]
     if period and period.get("duplicate_fact"):
         blob["duplicate_fact"] = period["duplicate_fact"]
     return json.dumps(blob) if blob else None
@@ -473,6 +584,8 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
         resolutions[name] = resolution
         if resolution.method != FIELD_SUM:
             values[name], refused[name] = _materialise(resolution, facts)
+            # Before `_compose` reads these, so a composed field inherits the cleaned legs.
+            values[name] = _drop_note_only_quarter(values[name], form=str(filing.form))
     for name, resolution in list(resolutions.items()):
         if resolution.method == FIELD_SUM:
             composed, reason = _compose(catalogue.field(name),

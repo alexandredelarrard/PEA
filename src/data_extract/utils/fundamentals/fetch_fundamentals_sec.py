@@ -169,11 +169,34 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
 #: Forms whose STATEMENT periods are all ANNUAL. A quarterly-shaped fact in one of these did
 #: not come off the face of a statement -- an annual report has no quarterly column -- so it
 #: came from a note, and the notes publish quarters in exactly two shapes (`_lone_quarters`).
-_ANNUAL_FORMS: tuple[str, ...] = ("10-K",)
+#: Spelled out and matched EXACTLY, like `FORM_PRECEDENCE` and `HEADCOUNT_FORMS`: only the four
+#: forms in `FUNDAMENTALS_FORMS` are ever fetched, so a `startswith` prefix bought nothing and
+#: read as though `10-KT`/`10-K405` had been considered and admitted, which they had not.
+_ANNUAL_FORMS: tuple[str, ...] = ("10-K", "10-K/A")
 
 
-def _covering_annual(periods: dict[tuple, dict], period: dict) -> tuple | None:
-    """The key of the ANNUAL period in the same filing whose window CONTAINS `period`.
+_Window = tuple[tuple, pd.Timestamp, pd.Timestamp]
+
+
+def _annual_windows(periods: dict[tuple, dict]) -> list[_Window]:
+    """`(key, start, end)` for every ANNUAL period in the filing, coerced once.
+
+    Hoisted out of `_covering_annual`, which runs once per quarter: every call used to re-walk
+    the whole `periods` dict and rebuild the same `Timestamp`s, so an ASC 270 table of eight
+    quarters re-parsed its handful of annual windows eight times over.
+    """
+    out = []
+    for key, period in periods.items():
+        if period.get("duration_type") != ANNUAL:
+            continue
+        low, high = pd.Timestamp(period["period_start"]), pd.Timestamp(period["period_end"])
+        if pd.notna(low) and pd.notna(high):
+            out.append((key, low, high))
+    return out
+
+
+def _covering_annual(windows: list[_Window], period: dict) -> tuple | None:
+    """The key of the ANNUAL window in the same filing that CONTAINS `period`.
 
     The containment relation rather than the filer's `fiscal_year` label, because the label
     is per-fact and edgartools does not always populate it (three KR filings ship neither
@@ -184,12 +207,8 @@ def _covering_annual(periods: dict[tuple, dict], period: dict) -> tuple | None:
     start, end = pd.Timestamp(period["period_start"]), pd.Timestamp(period["period_end"])
     if pd.isna(start) or pd.isna(end):
         return None
-    for key, candidate in periods.items():
-        if candidate.get("duration_type") != ANNUAL:
-            continue
-        low, high = (pd.Timestamp(candidate["period_start"]),
-                     pd.Timestamp(candidate["period_end"]))
-        if pd.notna(low) and pd.notna(high) and low <= start and end <= high:
+    for key, low, high in windows:
+        if low <= start and end <= high:
             return key
     return None
 
@@ -219,11 +238,14 @@ def _lone_quarters(periods: dict[tuple, dict]) -> dict[tuple, tuple]:
     A quarter with NO covering annual fact in the filing is not judged and is kept: silence
     is not evidence, the same rule `xbrl_linkbase.is_note_only` and D1's condition 1 apply.
     """
-    quarters = [(key, period) for key, period in periods.items()
-                if period.get("duration_type") == QUARTERLY]
-    covering = {key: _covering_annual(periods, period) for key, period in quarters}
+    windows = _annual_windows(periods)
+    if not windows:
+        return {}
     years: dict[tuple, list[tuple]] = {}
-    for key, year in covering.items():
+    for key, period in periods.items():
+        if period.get("duration_type") != QUARTERLY:
+            continue
+        year = _covering_annual(windows, period)
         if year is not None:
             years.setdefault(year, []).append(key)
     return {keys[0]: year for year, keys in years.items() if len(keys) == 1}
@@ -257,7 +279,7 @@ def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str) -> dict[tu
     the note's SHAPE and cannot see a full-year number tagged into a quarterly context that
     the table publishes alongside its three siblings.
     """
-    if not str(form).startswith(_ANNUAL_FORMS):
+    if str(form or "").upper() not in _ANNUAL_FORMS:
         return periods
     lone = _lone_quarters(periods)
     if not lone:

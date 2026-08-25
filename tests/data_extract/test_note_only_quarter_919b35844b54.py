@@ -42,9 +42,11 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pytest
 
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import (
     _adjustment_json, _drop_note_only_quarter, _period_frame, _values_by_period)
+from src.data_extract.utils.fundamentals.periods import ANNUAL, QUARTERLY
 from src.data_extract.utils.fundamentals.xbrl_linkbase import LINKBASE_TOTAL, Resolution
 
 TAX = "us-gaap:IncomeTaxExpenseBenefit"
@@ -87,27 +89,35 @@ def _periods(facts: list[tuple[str, str, str, float]], concept: str) -> dict[tup
     return _values_by_period(_period_frame(frame), concept)
 
 
+def _by_end(periods: dict[tuple, dict]) -> dict[str, dict]:
+    """`{'YYYY-MM-DD': period}`. The window end is what the filing's own note is keyed by,
+    and it reads at the assertion site as the date it is."""
+    return {str(pd.Timestamp(p["period_end"]).date()): p for p in periods.values()}
+
+
 def _quarter_ends(periods: dict[tuple, dict]) -> set[str]:
-    return {str(pd.Timestamp(p["period_end"]).date())
-            for p in periods.values() if p["duration_type"] == "quarterly"}
+    return {end for end, p in _by_end(periods).items()
+            if p["duration_type"] == QUARTERLY}
 
 
 # --------------------------------------------------------------------------- #
 # The defect                                                                   #
 # --------------------------------------------------------------------------- #
-def test_ba_shape_a_lone_quarter_in_a_10k_is_refused():
+@pytest.mark.parametrize("form", ["10-K", "10-K/A"])
+def test_ba_shape_a_lone_quarter_in_a_10k_is_refused(form):
     """BA: a fourth quarter with no sibling quarter in its own fiscal year is a sentence.
 
     Both years are refused, and every annual window survives untouched -- the guard must
-    never cost the filing the numbers it actually came for.
+    never cost the filing the numbers it actually came for. Parametrised over `10-K/A`
+    because an amendment restates the same notes and so carries the same defect.
     """
     before = _periods(_BA_TAX, TAX)
     assert _quarter_ends(before) == {"2010-12-31", "2011-12-31"}
 
-    after = _drop_note_only_quarter(before, form="10-K")
+    after = _drop_note_only_quarter(before, form=form)
 
     assert _quarter_ends(after) == set(), "the audit-settlement sentence is not a quarter"
-    annual = sorted(p["value"] for p in after.values() if p["duration_type"] == "annual")
+    annual = sorted(p["value"] for p in after.values() if p["duration_type"] == ANNUAL)
     assert annual == [396_000_000.0, 1_196_000_000.0, 1_382_000_000.0]
     print(f"BA shape: {len(before)} periods -> {len(after)}; the $371M/$397M Q4 tax rows are "
           f"gone (true Q4s are -$163M and +$57M by FY-YTD9), all 3 annual windows kept")
@@ -121,16 +131,16 @@ def test_the_refusal_is_recorded_on_the_covering_annual():
     `adjustment::jsonb ? 'note_quarter_rejected'` finds every row the guard acted on with no
     schema change.
     """
-    after = _drop_note_only_quarter(_periods(_BA_TAX, TAX), form="10-K")
-    hosts = {str(pd.Timestamp(p["period_end"]).date()): p.get("note_quarter_rejected")
-             for p in after.values()}
+    hosts = _by_end(_drop_note_only_quarter(_periods(_BA_TAX, TAX), form="10-K"))
 
-    assert hosts["2010-12-31"] == [{"period_end": "2010-12-31", "value": 371_000_000.0}]
-    assert hosts["2011-12-31"] == [{"period_end": "2011-12-31", "value": 397_000_000.0}]
-    assert hosts["2009-12-31"] is None, "a year with no refusal carries no marker"
+    assert hosts["2010-12-31"]["note_quarter_rejected"] == [
+        {"period_end": "2010-12-31", "value": 371_000_000.0}]
+    assert hosts["2011-12-31"]["note_quarter_rejected"] == [
+        {"period_end": "2011-12-31", "value": 397_000_000.0}]
+    assert "note_quarter_rejected" not in hosts["2009-12-31"], (
+        "a year with no refusal carries no marker")
 
-    host = next(p for p in after.values()
-                if str(pd.Timestamp(p["period_end"]).date()) == "2011-12-31")
+    host = hosts["2011-12-31"]
     blob = json.loads(_adjustment_json(
         Resolution(field="incomeTaxExpense", method=LINKBASE_TOTAL, concept=TAX), host))
     assert blob == {"note_quarter_rejected": [{"period_end": "2011-12-31",
@@ -184,9 +194,13 @@ def test_a_quarter_with_no_covering_annual_is_not_judged():
     print("no covering annual: the quarter is kept, not guessed at")
 
 
-def test_amended_annual_forms_are_gated_too():
-    """A 10-K/A restates the same notes, so it carries the same defect."""
+def test_an_unfetched_form_is_not_gated():
+    """The gate is an EXACT match over `FUNDAMENTALS_FORMS`, not a `10-K` prefix.
+
+    Only four forms are ever fetched, so nothing reaches this code as `10-KT`; pinning it
+    keeps the tuple honest about what it was actually reasoned over.
+    """
     before = _periods(_BA_TAX, TAX)
 
-    assert _quarter_ends(_drop_note_only_quarter(before, form="10-K/A")) == set()
-    print("10-K/A is gated with 10-K")
+    assert _drop_note_only_quarter(before, form="10-KT") == before
+    print("form gate: 10-KT is not one of the four fetched forms and is left alone")

@@ -69,16 +69,14 @@
     ]
   },
   "totals": {
-    "findings": 11730,
-    "clusters": 2334,
+    "findings": 12864,
+    "clusters": 2335,
     "clusters_with_work": 1951,
     "families": 55
   },
   "check_health": {
     "healthy": false,
-    "abstained": [
-      "adjustment_unguarded"
-    ],
+    "abstained": [],
     "over_ceiling": [
       {
         "check": "coverage_field",
@@ -93,7 +91,48 @@
     "comparable": true,
     "reason": null,
     "settled_clusters": [
-      "10f02d649538"
+      {
+        "cluster_id": "1c9a517eaa47",
+        "ticker": "MCD",
+        "field": "capex",
+        "findings_remaining": 28,
+        "waived_findings": 3,
+        "waived_checks": [
+          "peer_ratio",
+          "series_shape"
+        ],
+        "basis": "3 finding(s) waived across 2 check(s)",
+        "fix": {
+          "run_id_before": "3df52ae9af75",
+          "run_id_after": "725bae7bf8ed",
+          "layer": "extraction",
+          "root_cause": "route 1 took PaymentsToAcquireProductiveAssets, a total the filer declares BESIDE its own PaymentsToAcquirePropertyPlantAndEquipment leg in the same calculation link, so capex was resolved to the parent rather than the leg",
+          "evidence": {
+            "accessions": [
+              "0000063908-18-000010",
+              "0000063908-20-000022"
+            ],
+            "concepts": {
+              "correct_leg": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+              "taken_wrongly": "us-gaap:PaymentsToAcquireProductiveAssets"
+            },
+            "figures": {
+              "us-gaap:PaymentsToAcquireProductiveAssets": 540900000.0,
+              "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment": 2393700000.0
+            },
+            "markers_written": {
+              "sibling_rejected": 61
+            }
+          },
+          "commit_sha": "2fb6ef2",
+          "test_path": "tests/data_extract/test_linkbase_sibling_total_1c9a517eaa47.py",
+          "findings_before": 55,
+          "findings_after": 4,
+          "queued_before": 54,
+          "queued_after": 3,
+          "decided_at": "2026-08-25"
+        }
+      }
     ],
     "reopened_clusters": []
   },
@@ -101,8 +140,8 @@
   "families": [
     {
       "field": "incomeTaxExpense",
-      "score": 5500.0,
-      "findings": 920,
+      "score": 5497.5,
+      "findings": 960,
       "clusters": 53,
       "tickers": 53,
       "roster_size": 54,
@@ -111,8 +150,8 @@
     },
     {
       "field": "netIncome",
-      "score": 4475.0,
-      "findings": 755,
+      "score": 4477.0,
+      "findings": 754,
       "clusters": 53,
       "tickers": 53,
       "roster_size": 54,
@@ -121,8 +160,8 @@
     },
     {
       "field": "pretaxIncome",
-      "score": 4138.5,
-      "findings": 738,
+      "score": 4208.0,
+      "findings": 744,
       "clusters": 53,
       "tickers": 53,
       "roster_size": 54,
@@ -131,8 +170,8 @@
     },
     {
       "field": "basicShares",
-      "score": 3321.0,
-      "findings": 740,
+      "score": 3187.0,
+      "findings": 728,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -141,8 +180,8 @@
     },
     {
       "field": "dilutedShares",
-      "score": 3243.5,
-      "findings": 722,
+      "score": 3105.5,
+      "findings": 710,
       "clusters": 53,
       "tickers": 53,
       "roster_size": 54,
@@ -151,8 +190,8 @@
     },
     {
       "field": "operatingIncome",
-      "score": 2813.0,
-      "findings": 530,
+      "score": 2804.0,
+      "findings": 529,
       "clusters": 44,
       "tickers": 44,
       "roster_size": 54,
@@ -161,8 +200,8 @@
     },
     {
       "field": "interestExpense",
-      "score": 2637.5,
-      "findings": 507,
+      "score": 2720.5,
+      "findings": 520,
       "clusters": 53,
       "tickers": 53,
       "roster_size": 54,
@@ -171,8 +210,8 @@
     },
     {
       "field": "operatingCashFlow",
-      "score": 2063.5,
-      "findings": 439,
+      "score": 2073.5,
+      "findings": 451,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -181,28 +220,18 @@
     },
     {
       "field": "totalRevenue",
-      "score": 1739.5,
-      "findings": 439,
-      "clusters": 49,
-      "tickers": 49,
+      "score": 1743.0,
+      "findings": 461,
+      "clusters": 50,
+      "tickers": 50,
       "roster_size": 54,
-      "breadth": "49 of 54 tickers",
-      "routing_hint": "likely-check-or-catalogue"
-    },
-    {
-      "field": "totalDebt",
-      "score": 1428.5,
-      "findings": 403,
-      "clusters": 54,
-      "tickers": 54,
-      "roster_size": 54,
-      "breadth": "54 of 54 tickers",
+      "breadth": "50 of 54 tickers",
       "routing_hint": "likely-check-or-catalogue"
     },
     {
       "field": "depAmort",
-      "score": 1428.5,
-      "findings": 346,
+      "score": 1475.0,
+      "findings": 438,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -210,9 +239,9 @@
       "routing_hint": "likely-check-or-catalogue"
     },
     {
-      "field": "totalAssets",
-      "score": 1124.5,
-      "findings": 196,
+      "field": "totalDebt",
+      "score": 1455.0,
+      "findings": 453,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -221,8 +250,8 @@
     },
     {
       "field": "capex",
-      "score": 1103.5,
-      "findings": 265,
+      "score": 1141.5,
+      "findings": 376,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -230,9 +259,9 @@
       "routing_hint": "likely-check-or-catalogue"
     },
     {
-      "field": "cash",
-      "score": 1072.5,
-      "findings": 307,
+      "field": "totalAssets",
+      "score": 1129.5,
+      "findings": 271,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -241,8 +270,8 @@
     },
     {
       "field": "stockBasedComp",
-      "score": 1052.5,
-      "findings": 263,
+      "score": 1100.0,
+      "findings": 274,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -250,9 +279,29 @@
       "routing_hint": "likely-check-or-catalogue"
     },
     {
+      "field": "cash",
+      "score": 1084.0,
+      "findings": 388,
+      "clusters": 54,
+      "tickers": 54,
+      "roster_size": 54,
+      "breadth": "54 of 54 tickers",
+      "routing_hint": "likely-check-or-catalogue"
+    },
+    {
+      "field": "ppeNet",
+      "score": 1045.0,
+      "findings": 374,
+      "clusters": 51,
+      "tickers": 51,
+      "roster_size": 54,
+      "breadth": "51 of 54 tickers",
+      "routing_hint": "likely-check-or-catalogue"
+    },
+    {
       "field": "minorityInterest",
-      "score": 992.5,
-      "findings": 225,
+      "score": 995.5,
+      "findings": 230,
       "clusters": 52,
       "tickers": 52,
       "roster_size": 54,
@@ -260,13 +309,13 @@
       "routing_hint": "likely-check-or-catalogue"
     },
     {
-      "field": "ppeNet",
-      "score": 956.0,
-      "findings": 226,
-      "clusters": 51,
-      "tickers": 51,
+      "field": "operatingLeaseLiability",
+      "score": 932.0,
+      "findings": 205,
+      "clusters": 54,
+      "tickers": 54,
       "roster_size": 54,
-      "breadth": "51 of 54 tickers",
+      "breadth": "54 of 54 tickers",
       "routing_hint": "likely-check-or-catalogue"
     },
     {
@@ -280,18 +329,8 @@
       "routing_hint": "likely-check-or-catalogue"
     },
     {
-      "field": "operatingLeaseLiability",
-      "score": 918.0,
-      "findings": 152,
-      "clusters": 54,
-      "tickers": 54,
-      "roster_size": 54,
-      "breadth": "54 of 54 tickers",
-      "routing_hint": "likely-check-or-catalogue"
-    },
-    {
       "field": "grossProfit",
-      "score": 910.5,
+      "score": 909.5,
       "findings": 172,
       "clusters": 33,
       "tickers": 33,
@@ -300,19 +339,9 @@
       "routing_hint": "likely-check-or-catalogue"
     },
     {
-      "field": "netInterestIncome",
-      "score": 745.5,
-      "findings": 195,
-      "clusters": 54,
-      "tickers": 54,
-      "roster_size": 54,
-      "breadth": "54 of 54 tickers",
-      "routing_hint": "likely-check-or-catalogue"
-    },
-    {
       "field": "longTermDebt",
-      "score": 729.5,
-      "findings": 176,
+      "score": 753.0,
+      "findings": 285,
       "clusters": 52,
       "tickers": 52,
       "roster_size": 54,
@@ -320,9 +349,19 @@
       "routing_hint": "likely-check-or-catalogue"
     },
     {
+      "field": "netInterestIncome",
+      "score": 743.5,
+      "findings": 194,
+      "clusters": 54,
+      "tickers": 54,
+      "roster_size": 54,
+      "breadth": "54 of 54 tickers",
+      "routing_hint": "likely-check-or-catalogue"
+    },
+    {
       "field": "costOfRevenue",
-      "score": 724.5,
-      "findings": 153,
+      "score": 739.5,
+      "findings": 155,
       "clusters": 43,
       "tickers": 43,
       "roster_size": 54,
@@ -361,8 +400,8 @@
     },
     {
       "field": "sellingGeneralAdmin",
-      "score": 589.5,
-      "findings": 171,
+      "score": 592.0,
+      "findings": 172,
       "clusters": 37,
       "tickers": 37,
       "roster_size": 54,
@@ -371,8 +410,8 @@
     },
     {
       "field": "researchAndDevelopment",
-      "score": 502.5,
-      "findings": 159,
+      "score": 590.0,
+      "findings": 256,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -381,8 +420,8 @@
     },
     {
       "field": "shortTermDebt",
-      "score": 452.5,
-      "findings": 129,
+      "score": 455.5,
+      "findings": 165,
       "clusters": 50,
       "tickers": 50,
       "roster_size": 54,
@@ -391,8 +430,8 @@
     },
     {
       "field": "inventory",
-      "score": 444.0,
-      "findings": 102,
+      "score": 445.0,
+      "findings": 105,
       "clusters": 38,
       "tickers": 38,
       "roster_size": 54,
@@ -401,8 +440,8 @@
     },
     {
       "field": "retainedEarnings",
-      "score": 439.0,
-      "findings": 127,
+      "score": 440.0,
+      "findings": 140,
       "clusters": 53,
       "tickers": 53,
       "roster_size": 54,
@@ -411,7 +450,7 @@
     },
     {
       "field": "noninterestIncome",
-      "score": 408.5,
+      "score": 421.0,
       "findings": 95,
       "clusters": 8,
       "tickers": 8,
@@ -421,8 +460,8 @@
     },
     {
       "field": "longTermDebtCurrentOnly",
-      "score": 391.0,
-      "findings": 99,
+      "score": 393.0,
+      "findings": 117,
       "clusters": 41,
       "tickers": 41,
       "roster_size": 54,
@@ -431,8 +470,8 @@
     },
     {
       "field": "shortTermBorrowingsOnly",
-      "score": 383.0,
-      "findings": 96,
+      "score": 384.0,
+      "findings": 106,
       "clusters": 46,
       "tickers": 46,
       "roster_size": 54,
@@ -440,9 +479,9 @@
       "routing_hint": "likely-check-or-catalogue"
     },
     {
-      "field": "totalLiabilities",
-      "score": 368.0,
-      "findings": 102,
+      "field": "goodwill",
+      "score": 372.5,
+      "findings": 150,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -450,9 +489,9 @@
       "routing_hint": "likely-check-or-catalogue"
     },
     {
-      "field": "goodwill",
-      "score": 363.5,
-      "findings": 108,
+      "field": "totalLiabilities",
+      "score": 368.0,
+      "findings": 102,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -471,8 +510,8 @@
     },
     {
       "field": "restrictedCash",
-      "score": 335.0,
-      "findings": 95,
+      "score": 339.5,
+      "findings": 168,
       "clusters": 53,
       "tickers": 53,
       "roster_size": 54,
@@ -501,8 +540,8 @@
     },
     {
       "field": "accountsReceivable",
-      "score": 304.5,
-      "findings": 86,
+      "score": 305.5,
+      "findings": 123,
       "clusters": 37,
       "tickers": 37,
       "roster_size": 54,
@@ -541,8 +580,8 @@
     },
     {
       "field": "sharesOutstanding",
-      "score": 233.0,
-      "findings": 115,
+      "score": 233.5,
+      "findings": 116,
       "clusters": 54,
       "tickers": 54,
       "roster_size": 54,
@@ -605,92 +644,23 @@
     "corroboration_bonus_per_extra_check": 0.25,
     "note": "a policy, not a fact. score = (sum of w(severity)*w(tier)) * (1 + bonus*(checks-1)). Retunable; the corroboration term exists because volume alone ranked a 2-check cluster above a 10-check one"
   },
+  "settlement_rule": {
+    "conditions": [
+      "no unwaived queue-severity finding remains",
+      "every waiver is still within its own findings_at_decision",
+      "a fundamentals_check_fix row exists at this scope_hash",
+      "that fix row shows queued_after < queued_before"
+    ],
+    "note": "waivers ALONE never settle a cluster -- a fully waived cluster with no qualifying fix row reads `wontfix`: tolerated, not solved. No waiver or fix row ever removes a finding from `fundamentals_check`."
+  },
   "menu": [
-    "919b35844b54",
-    "f38ec1daf240",
     "2603621e89ab",
     "a423325138c3",
-    "18a8dd2430be"
+    "2943d47a9b6b",
+    "02926a01f9dd",
+    "9d0ebfbe91bb"
   ],
   "clusters": [
-    {
-      "cluster_id": "919b35844b54",
-      "ticker": "BA",
-      "field": "incomeTaxExpense",
-      "score": 403.0,
-      "findings": 40,
-      "checks_agreeing": {
-        "trend_break": 18,
-        "cross_vintage": 5,
-        "scale": 5,
-        "level_outlier": 3,
-        "annual_footing": 2,
-        "holdout_q4": 2,
-        "peer_ratio": 2,
-        "basis_step": 1,
-        "q4_footing": 1,
-        "series_shape": 1
-      },
-      "severity_mix": {
-        "high": 32,
-        "medium": 8
-      },
-      "tier_mix": {
-        "2": 30,
-        "3": 10
-      },
-      "period_range": "2010-12-31..2026-03-31",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "53 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/12927/000001292721000040/0000012927-21-000040-index.htm",
-      "why": "the RESOLUTION ROUTE changed at this boundary and the level stepped with it -- the number now means something different, which no cross-vintage test can see",
-      "status": "open",
-      "note": "",
-      "findings_at_decision": null,
-      "first_seen": "2026-08-24",
-      "last_seen": "2026-08-25",
-      "runs_open": 2,
-      "menu": true,
-      "run_id": "725bae7bf8ed"
-    },
-    {
-      "cluster_id": "f38ec1daf240",
-      "ticker": "MCD",
-      "field": "dilutedShares",
-      "score": 363.0,
-      "findings": 59,
-      "checks_agreeing": {
-        "scale": 11,
-        "annual_footing": 10,
-        "holdout_q4": 10,
-        "q4_footing": 10,
-        "level_outlier": 6,
-        "cross_vintage": 5,
-        "trend_break": 5,
-        "peer_ratio": 2
-      },
-      "severity_mix": {
-        "high": 42,
-        "medium": 17
-      },
-      "tier_mix": {
-        "2": 24,
-        "3": 35
-      },
-      "period_range": "2010-12-31..2026-06-30",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "53 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/63908/000006390817000017/0000063908-17-000017-index.htm",
-      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
-      "status": "open",
-      "note": "",
-      "findings_at_decision": null,
-      "first_seen": "2026-08-24",
-      "last_seen": "2026-08-25",
-      "runs_open": 2,
-      "menu": true,
-      "run_id": "725bae7bf8ed"
-    },
     {
       "cluster_id": "2603621e89ab",
       "ticker": "ORCL",
@@ -716,12 +686,14 @@
       },
       "period_range": "2018-05-31..2022-08-31",
       "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "49 of 54 tickers",
+      "family_breadth": "50 of 54 tickers",
       "edgar_url": "https://www.sec.gov/Archives/edgar/data/1341439/000156459020030125/0001564590-20-030125-index.htm",
       "why": "the RESOLUTION ROUTE changed at this boundary and the level stepped with it -- the number now means something different, which no cross-vintage test can see",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -759,44 +731,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
-      "first_seen": "2026-08-24",
-      "last_seen": "2026-08-25",
-      "runs_open": 2,
-      "menu": true,
-      "run_id": "725bae7bf8ed"
-    },
-    {
-      "cluster_id": "18a8dd2430be",
-      "ticker": "MCD",
-      "field": "basicShares",
-      "score": 357.5,
-      "findings": 58,
-      "checks_agreeing": {
-        "scale": 11,
-        "annual_footing": 10,
-        "holdout_q4": 10,
-        "q4_footing": 10,
-        "level_outlier": 6,
-        "trend_break": 5,
-        "cross_vintage": 4,
-        "peer_ratio": 2
-      },
-      "severity_mix": {
-        "high": 41,
-        "medium": 17
-      },
-      "tier_mix": {
-        "2": 24,
-        "3": 34
-      },
-      "period_range": "2010-12-31..2026-06-30",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "54 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/63908/000006390817000017/0000063908-17-000017-index.htm",
-      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
-      "status": "open",
-      "note": "",
-      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -831,14 +767,16 @@
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "44 of 54 tickers",
       "edgar_url": "https://www.sec.gov/Archives/edgar/data/12927/000001292721000094/0000012927-21-000094-index.htm",
-      "why": "a flat 3x rule, because for a lumpy field the MAD is wide enough that a real 3x jump scores under 3.5",
+      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
-      "menu": false,
+      "menu": true,
       "run_id": "725bae7bf8ed"
     },
     {
@@ -871,10 +809,53 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
-      "menu": false,
+      "menu": true,
+      "run_id": "725bae7bf8ed"
+    },
+    {
+      "cluster_id": "9d0ebfbe91bb",
+      "ticker": "C",
+      "field": "interestExpense",
+      "score": 325.0,
+      "findings": 38,
+      "checks_agreeing": {
+        "peer_ratio": 20,
+        "trend_break": 6,
+        "cross_vintage": 5,
+        "level_outlier": 4,
+        "basis_step": 1,
+        "catalogue_exclusion_cost": 1,
+        "series_shape": 1
+      },
+      "severity_mix": {
+        "high": 33,
+        "medium": 4,
+        "info": 1
+      },
+      "tier_mix": {
+        "1": 1,
+        "2": 32,
+        "3": 5
+      },
+      "period_range": "2010-09-30..2024-03-31",
+      "routing_hint": "likely-check-or-catalogue",
+      "family_breadth": "53 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/831001/000083100123000097/0000831001-23-000097-index.htm",
+      "why": "the RESOLUTION ROUTE changed at this boundary and the level stepped with it -- the number now means something different, which no cross-vintage test can see",
+      "status": "open",
+      "note": "",
+      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
+      "first_seen": "2026-08-24",
+      "last_seen": "2026-08-25",
+      "runs_open": 2,
+      "menu": true,
       "run_id": "725bae7bf8ed"
     },
     {
@@ -907,6 +888,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -914,38 +897,76 @@
       "run_id": "725bae7bf8ed"
     },
     {
-      "cluster_id": "9d0ebfbe91bb",
-      "ticker": "C",
-      "field": "interestExpense",
-      "score": 315.0,
-      "findings": 37,
+      "cluster_id": "5e4107839207",
+      "ticker": "UNP",
+      "field": "ppeNet",
+      "score": 318.0,
+      "findings": 63,
       "checks_agreeing": {
-        "peer_ratio": 19,
-        "trend_break": 6,
-        "cross_vintage": 5,
-        "level_outlier": 4,
-        "basis_step": 1,
-        "catalogue_exclusion_cost": 1,
+        "peer_ratio": 53,
+        "adjustment_unguarded": 9,
         "series_shape": 1
       },
       "severity_mix": {
-        "high": 32,
-        "medium": 4,
-        "info": 1
+        "high": 53,
+        "info": 10
       },
       "tier_mix": {
-        "1": 1,
-        "2": 31,
+        "1": 9,
+        "2": 54
+      },
+      "period_range": "2010-12-31..2024-09-30",
+      "routing_hint": "likely-check-or-catalogue",
+      "family_breadth": "51 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/100885/000010088520000065/0000100885-20-000065-index.htm",
+      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
+      "status": "open",
+      "note": "",
+      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
+      "first_seen": "2026-08-24",
+      "last_seen": "2026-08-25",
+      "runs_open": 2,
+      "menu": false,
+      "run_id": "725bae7bf8ed"
+    },
+    {
+      "cluster_id": "919b35844b54",
+      "ticker": "BA",
+      "field": "incomeTaxExpense",
+      "score": 313.5,
+      "findings": 37,
+      "checks_agreeing": {
+        "trend_break": 18,
+        "cross_vintage": 5,
+        "scale": 5,
+        "level_outlier": 3,
+        "adjustment_unguarded": 2,
+        "peer_ratio": 2,
+        "basis_step": 1,
+        "series_shape": 1
+      },
+      "severity_mix": {
+        "high": 27,
+        "medium": 8,
+        "info": 2
+      },
+      "tier_mix": {
+        "1": 2,
+        "2": 30,
         "3": 5
       },
-      "period_range": "2010-12-31..2024-03-31",
+      "period_range": "2010-12-31..2026-03-31",
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "53 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/831001/000083100123000097/0000831001-23-000097-index.htm",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/12927/000119312512048565/0001193125-12-048565-index.htm",
       "why": "the RESOLUTION ROUTE changed at this boundary and the level stepped with it -- the number now means something different, which no cross-vintage test can see",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -972,7 +993,7 @@
         "2": 45,
         "3": 5
       },
-      "period_range": "2010-09-30..2026-03-31",
+      "period_range": "2010-09-30..2026-06-30",
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "54 of 54 tickers",
       "edgar_url": "https://www.sec.gov/Archives/edgar/data/1053507/000119312513418850/0001193125-13-418850-index.htm",
@@ -980,6 +1001,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1016,6 +1039,47 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
+      "first_seen": "2026-08-24",
+      "last_seen": "2026-08-25",
+      "runs_open": 2,
+      "menu": false,
+      "run_id": "725bae7bf8ed"
+    },
+    {
+      "cluster_id": "f38ec1daf240",
+      "ticker": "MCD",
+      "field": "dilutedShares",
+      "score": 310.0,
+      "findings": 57,
+      "checks_agreeing": {
+        "scale": 11,
+        "annual_footing": 10,
+        "holdout_q4": 10,
+        "q4_footing": 10,
+        "level_outlier": 6,
+        "cross_vintage": 5,
+        "trend_break": 5
+      },
+      "severity_mix": {
+        "high": 40,
+        "medium": 17
+      },
+      "tier_mix": {
+        "2": 22,
+        "3": 35
+      },
+      "period_range": "2010-12-31..2026-06-30",
+      "routing_hint": "likely-check-or-catalogue",
+      "family_breadth": "53 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/63908/000006390817000017/0000063908-17-000017-index.htm",
+      "why": "three numbers the filer published independently, on three different bases, that must reconcile",
+      "status": "open",
+      "note": "",
+      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1047,6 +1111,47 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
+      "first_seen": "2026-08-24",
+      "last_seen": "2026-08-25",
+      "runs_open": 2,
+      "menu": false,
+      "run_id": "725bae7bf8ed"
+    },
+    {
+      "cluster_id": "18a8dd2430be",
+      "ticker": "MCD",
+      "field": "basicShares",
+      "score": 305.0,
+      "findings": 56,
+      "checks_agreeing": {
+        "scale": 11,
+        "annual_footing": 10,
+        "holdout_q4": 10,
+        "q4_footing": 10,
+        "level_outlier": 6,
+        "trend_break": 5,
+        "cross_vintage": 4
+      },
+      "severity_mix": {
+        "high": 39,
+        "medium": 17
+      },
+      "tier_mix": {
+        "2": 22,
+        "3": 34
+      },
+      "period_range": "2010-12-31..2026-06-30",
+      "routing_hint": "likely-check-or-catalogue",
+      "family_breadth": "54 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/63908/000006390817000017/0000063908-17-000017-index.htm",
+      "why": "three numbers the filer published independently, on three different bases, that must reconcile",
+      "status": "open",
+      "note": "",
+      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1079,6 +1184,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1114,6 +1221,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1150,6 +1259,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1187,6 +1298,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1194,30 +1307,82 @@
       "run_id": "725bae7bf8ed"
     },
     {
-      "cluster_id": "5e4107839207",
-      "ticker": "UNP",
-      "field": "ppeNet",
-      "score": 265.0,
-      "findings": 54,
+      "cluster_id": "929e5f23bfea",
+      "ticker": "EQIX",
+      "field": "capex",
+      "score": 276.0,
+      "findings": 79,
       "checks_agreeing": {
-        "peer_ratio": 53,
+        "adjustment_unguarded": 51,
+        "peer_ratio": 10,
+        "basis_step": 5,
+        "tag_switch_break": 5,
+        "cross_vintage": 3,
+        "level_outlier": 2,
+        "catalogue_exclusion_cost": 1,
+        "scale": 1,
         "series_shape": 1
       },
       "severity_mix": {
-        "high": 53,
-        "info": 1
+        "high": 23,
+        "medium": 3,
+        "info": 53
       },
       "tier_mix": {
-        "2": 54
+        "1": 52,
+        "2": 24,
+        "3": 3
       },
-      "period_range": "2010-12-31..2024-09-30",
+      "period_range": "2011-03-31..2026-03-31",
       "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "51 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/100885/000119312512170664/0001193125-12-170664-index.htm",
+      "family_breadth": "54 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1101239/000119312513304769/0001193125-13-304769-index.htm",
       "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
+      "first_seen": "2026-08-24",
+      "last_seen": "2026-08-25",
+      "runs_open": 2,
+      "menu": false,
+      "run_id": "725bae7bf8ed"
+    },
+    {
+      "cluster_id": "bce977dfe86a",
+      "ticker": "NVDA",
+      "field": "incomeTaxExpense",
+      "score": 261.0,
+      "findings": 47,
+      "checks_agreeing": {
+        "trend_break": 18,
+        "scale": 11,
+        "adjustment_unguarded": 8,
+        "level_outlier": 6,
+        "cross_vintage": 3,
+        "series_shape": 1
+      },
+      "severity_mix": {
+        "high": 22,
+        "medium": 17,
+        "info": 8
+      },
+      "tier_mix": {
+        "1": 8,
+        "2": 36,
+        "3": 3
+      },
+      "period_range": "2011-01-30..2026-04-26",
+      "routing_hint": "likely-check-or-catalogue",
+      "family_breadth": "53 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000316/0001045810-24-000316-index.htm",
+      "why": "a flat 3x rule, because for a lumpy field the MAD is wide enough that a real 3x jump scores under 3.5",
+      "status": "open",
+      "note": "",
+      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1244,10 +1409,12 @@
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "51 of 54 tickers",
       "edgar_url": "https://www.sec.gov/Archives/edgar/data/4962/000119312512077400/0001193125-12-077400-index.htm",
-      "why": "an interior gap with modal code 'regime_break' -- present before AND after, so the filer kept reporting and we stopped resolving. A MISSING TAG. Its modal code is `regime_break`, which does NOT excuse this: a standard's adoption is a STEP, not a hole that closes again -- and this code is the modal one over the whole series, so it does not testify about these periods at all",
+      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1278,6 +1445,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1285,39 +1454,38 @@
       "run_id": "725bae7bf8ed"
     },
     {
-      "cluster_id": "929e5f23bfea",
-      "ticker": "EQIX",
-      "field": "capex",
-      "score": 253.0,
-      "findings": 28,
+      "cluster_id": "5dcc2a60db55",
+      "ticker": "BAC",
+      "field": "pretaxIncome",
+      "score": 255.0,
+      "findings": 37,
       "checks_agreeing": {
-        "peer_ratio": 10,
-        "basis_step": 5,
-        "tag_switch_break": 5,
-        "cross_vintage": 3,
-        "level_outlier": 2,
-        "catalogue_exclusion_cost": 1,
-        "scale": 1,
-        "series_shape": 1
+        "cross_vintage": 14,
+        "level_outlier": 6,
+        "trend_break": 6,
+        "peer_ratio": 5,
+        "scale": 3,
+        "tag_switch_break": 2,
+        "basis_step": 1
       },
       "severity_mix": {
-        "high": 23,
-        "medium": 3,
-        "info": 2
+        "high": 28,
+        "medium": 9
       },
       "tier_mix": {
-        "1": 1,
-        "2": 24,
-        "3": 3
+        "2": 23,
+        "3": 14
       },
-      "period_range": "2011-03-31..2026-03-31",
+      "period_range": "2011-03-31..2025-06-30",
       "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "54 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1101239/000119312513178095/0001193125-13-178095-index.htm",
+      "family_breadth": "53 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/70858/000007085812000191/0000070858-12-000191-index.htm",
       "why": "the RESOLUTION ROUTE changed at this boundary and the level stepped with it -- the number now means something different, which no cross-vintage test can see",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1354,43 +1522,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
-      "first_seen": "2026-08-24",
-      "last_seen": "2026-08-25",
-      "runs_open": 2,
-      "menu": false,
-      "run_id": "725bae7bf8ed"
-    },
-    {
-      "cluster_id": "5dcc2a60db55",
-      "ticker": "BAC",
-      "field": "pretaxIncome",
-      "score": 245.0,
-      "findings": 36,
-      "checks_agreeing": {
-        "cross_vintage": 14,
-        "level_outlier": 6,
-        "trend_break": 6,
-        "peer_ratio": 4,
-        "scale": 3,
-        "tag_switch_break": 2,
-        "basis_step": 1
-      },
-      "severity_mix": {
-        "high": 27,
-        "medium": 9
-      },
-      "tier_mix": {
-        "2": 22,
-        "3": 14
-      },
-      "period_range": "2011-03-31..2025-06-30",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "53 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/70858/000007085812000191/0000070858-12-000191-index.htm",
-      "why": "the RESOLUTION ROUTE changed at this boundary and the level stepped with it -- the number now means something different, which no cross-vintage test can see",
-      "status": "open",
-      "note": "",
-      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1422,11 +1555,13 @@
       "period_range": "2009-06-30..2026-06-30",
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "54 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1063761/000104746914001416/0001047469-14-001416-index.htm",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1063761/000104746912001667/0001047469-12-001667-index.htm",
       "why": "the derivation the build performs everywhere, re-run where the answer is independently known",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1464,6 +1599,47 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
+      "first_seen": "2026-08-24",
+      "last_seen": "2026-08-25",
+      "runs_open": 2,
+      "menu": false,
+      "run_id": "725bae7bf8ed"
+    },
+    {
+      "cluster_id": "d102e4b5ac81",
+      "ticker": "BA",
+      "field": "netIncome",
+      "score": 235.0,
+      "findings": 28,
+      "checks_agreeing": {
+        "trend_break": 15,
+        "cross_vintage": 6,
+        "peer_ratio": 2,
+        "scale": 2,
+        "basis_step": 1,
+        "level_outlier": 1,
+        "series_shape": 1
+      },
+      "severity_mix": {
+        "high": 25,
+        "medium": 3
+      },
+      "tier_mix": {
+        "2": 22,
+        "3": 6
+      },
+      "period_range": "2011-06-30..2026-03-31",
+      "routing_hint": "likely-check-or-catalogue",
+      "family_breadth": "53 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/12927/000001292713000023/0000012927-13-000023-index.htm",
+      "why": "the RESOLUTION ROUTE changed at this boundary and the level stepped with it -- the number now means something different, which no cross-vintage test can see",
+      "status": "open",
+      "note": "",
+      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1498,6 +1674,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1537,6 +1715,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1544,108 +1724,35 @@
       "run_id": "725bae7bf8ed"
     },
     {
-      "cluster_id": "bce977dfe86a",
-      "ticker": "NVDA",
-      "field": "incomeTaxExpense",
-      "score": 232.0,
-      "findings": 39,
+      "cluster_id": "aab5ed91fde3",
+      "ticker": "AXP",
+      "field": "noninterestIncome",
+      "score": 224.0,
+      "findings": 35,
       "checks_agreeing": {
-        "trend_break": 18,
-        "scale": 11,
-        "level_outlier": 6,
-        "cross_vintage": 3,
+        "peer_ratio": 28,
+        "cross_vintage": 5,
+        "level_outlier": 1,
         "series_shape": 1
       },
       "severity_mix": {
-        "high": 22,
-        "medium": 17
-      },
-      "tier_mix": {
-        "2": 36,
-        "3": 3
-      },
-      "period_range": "2011-01-30..2026-04-26",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "53 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581014000085/0001045810-14-000085-index.htm",
-      "why": "a flat 3x rule, because for a lumpy field the MAD is wide enough that a real 3x jump scores under 3.5",
-      "status": "open",
-      "note": "",
-      "findings_at_decision": null,
-      "first_seen": "2026-08-24",
-      "last_seen": "2026-08-25",
-      "runs_open": 2,
-      "menu": false,
-      "run_id": "725bae7bf8ed"
-    },
-    {
-      "cluster_id": "d7c1802a4e98",
-      "ticker": "MSFT",
-      "field": "netIncome",
-      "score": 225.0,
-      "findings": 28,
-      "checks_agreeing": {
-        "peer_ratio": 14,
-        "cross_vintage": 7,
-        "trend_break": 3,
-        "annual_footing": 1,
-        "holdout_q4": 1,
-        "q4_footing": 1,
-        "scale": 1
-      },
-      "severity_mix": {
-        "high": 27,
+        "high": 34,
         "medium": 1
       },
       "tier_mix": {
-        "2": 18,
-        "3": 10
+        "2": 30,
+        "3": 5
       },
-      "period_range": "2010-09-30..2024-09-30",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "53 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312513310206/0001193125-13-310206-index.htm",
+      "period_range": "2010-09-30..2026-03-31",
+      "routing_hint": "likely-filer",
+      "family_breadth": "8 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/4962/000000496221000042/0000004962-21-000042-index.htm",
       "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
-      "first_seen": "2026-08-24",
-      "last_seen": "2026-08-25",
-      "runs_open": 2,
-      "menu": false,
-      "run_id": "725bae7bf8ed"
-    },
-    {
-      "cluster_id": "d102e4b5ac81",
-      "ticker": "BA",
-      "field": "netIncome",
-      "score": 225.0,
-      "findings": 27,
-      "checks_agreeing": {
-        "trend_break": 15,
-        "cross_vintage": 6,
-        "scale": 2,
-        "basis_step": 1,
-        "level_outlier": 1,
-        "peer_ratio": 1,
-        "series_shape": 1
-      },
-      "severity_mix": {
-        "high": 24,
-        "medium": 3
-      },
-      "tier_mix": {
-        "2": 21,
-        "3": 6
-      },
-      "period_range": "2011-06-30..2026-03-31",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "53 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/12927/000001292713000023/0000012927-13-000023-index.htm",
-      "why": "the RESOLUTION ROUTE changed at this boundary and the level stepped with it -- the number now means something different, which no cross-vintage test can see",
-      "status": "open",
-      "note": "",
-      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1680,6 +1787,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1690,19 +1799,19 @@
       "cluster_id": "e8b6b6dc172c",
       "ticker": "AMT",
       "field": "interestExpense",
-      "score": 216.0,
-      "findings": 37,
+      "score": 222.0,
+      "findings": 38,
       "checks_agreeing": {
-        "peer_ratio": 34,
+        "peer_ratio": 35,
         "level_outlier": 2,
         "series_shape": 1
       },
       "severity_mix": {
-        "high": 35,
+        "high": 36,
         "medium": 2
       },
       "tier_mix": {
-        "2": 37
+        "2": 38
       },
       "period_range": "2010-09-30..2024-03-31",
       "routing_hint": "likely-check-or-catalogue",
@@ -1712,6 +1821,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1743,6 +1854,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1769,10 +1882,51 @@
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "52 of 54 tickers",
       "edgar_url": "https://www.sec.gov/Archives/edgar/data/4962/000119312512077400/0001193125-12-077400-index.htm",
-      "why": "an interior gap with modal code None -- present before AND after, so the filer kept reporting and we stopped resolving. A MISSING TAG",
+      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
+      "first_seen": "2026-08-24",
+      "last_seen": "2026-08-25",
+      "runs_open": 2,
+      "menu": false,
+      "run_id": "725bae7bf8ed"
+    },
+    {
+      "cluster_id": "d7c1802a4e98",
+      "ticker": "MSFT",
+      "field": "netIncome",
+      "score": 215.0,
+      "findings": 27,
+      "checks_agreeing": {
+        "peer_ratio": 13,
+        "cross_vintage": 7,
+        "trend_break": 3,
+        "annual_footing": 1,
+        "holdout_q4": 1,
+        "q4_footing": 1,
+        "scale": 1
+      },
+      "severity_mix": {
+        "high": 26,
+        "medium": 1
+      },
+      "tier_mix": {
+        "2": 17,
+        "3": 10
+      },
+      "period_range": "2010-12-31..2023-09-30",
+      "routing_hint": "likely-check-or-catalogue",
+      "family_breadth": "53 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312513310206/0001193125-13-310206-index.htm",
+      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
+      "status": "open",
+      "note": "",
+      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1809,6 +1963,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1841,10 +1997,50 @@
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "53 of 54 tickers",
       "edgar_url": "https://www.sec.gov/Archives/edgar/data/56873/000110465916108277/0001104659-16-108277-index.htm",
-      "why": "three numbers the filer published independently, on three different bases, that must reconcile",
+      "why": "the derivation the build performs everywhere, re-run where the answer is independently known",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
+      "first_seen": "2026-08-24",
+      "last_seen": "2026-08-25",
+      "runs_open": 2,
+      "menu": false,
+      "run_id": "725bae7bf8ed"
+    },
+    {
+      "cluster_id": "0c1e7c8b6fee",
+      "ticker": "BA",
+      "field": "pretaxIncome",
+      "score": 211.5,
+      "findings": 30,
+      "checks_agreeing": {
+        "trend_break": 14,
+        "level_outlier": 7,
+        "cross_vintage": 4,
+        "peer_ratio": 2,
+        "scale": 2,
+        "series_shape": 1
+      },
+      "severity_mix": {
+        "high": 21,
+        "medium": 9
+      },
+      "tier_mix": {
+        "2": 26,
+        "3": 4
+      },
+      "period_range": "2010-12-31..2026-03-31",
+      "routing_hint": "likely-check-or-catalogue",
+      "family_breadth": "53 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/12927/000001292721000094/0000012927-21-000094-index.htm",
+      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
+      "status": "open",
+      "note": "",
+      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1882,6 +2078,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1920,6 +2118,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1955,6 +2155,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -1991,6 +2193,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -2027,6 +2231,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -2059,6 +2265,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -2094,6 +2302,47 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
+      "first_seen": "2026-08-24",
+      "last_seen": "2026-08-25",
+      "runs_open": 2,
+      "menu": false,
+      "run_id": "725bae7bf8ed"
+    },
+    {
+      "cluster_id": "8a489eff375c",
+      "ticker": "EQIX",
+      "field": "depAmort",
+      "score": 200.0,
+      "findings": 78,
+      "checks_agreeing": {
+        "adjustment_unguarded": 49,
+        "peer_ratio": 20,
+        "cross_vintage": 6,
+        "level_outlier": 2,
+        "series_shape": 1
+      },
+      "severity_mix": {
+        "high": 27,
+        "medium": 2,
+        "info": 49
+      },
+      "tier_mix": {
+        "1": 49,
+        "2": 23,
+        "3": 6
+      },
+      "period_range": "2010-09-30..2026-03-31",
+      "routing_hint": "likely-check-or-catalogue",
+      "family_breadth": "54 of 54 tickers",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1101239/000119312514402944/0001193125-14-402944-index.htm",
+      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
+      "status": "open",
+      "note": "",
+      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -2126,11 +2375,13 @@
       "period_range": "2012-09-30..2026-03-31",
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "53 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1375365/000137536526000014/0001375365-26-000014-index.htm",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1375365/000137536519000076/0001375365-19-000076-index.htm",
       "why": "the RESOLUTION ROUTE changed at this boundary and the level stepped with it -- the number now means something different, which no cross-vintage test can see",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -2167,6 +2418,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -2203,6 +2456,8 @@
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -2234,10 +2489,12 @@
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "54 of 54 tickers",
       "edgar_url": "https://www.sec.gov/Archives/edgar/data/4962/000119312512200270/0001193125-12-200270-index.htm",
-      "why": "an interior gap with modal code 'regime_break' -- present before AND after, so the filer kept reporting and we stopped resolving. A MISSING TAG. Its modal code is `regime_break`, which does NOT excuse this: a standard's adoption is a STEP, not a hole that closes again -- and this code is the modal one over the whole series, so it does not testify about these periods at all",
+      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -2268,111 +2525,13 @@
       "period_range": "2010-08-01..2026-04-26",
       "routing_hint": "likely-check-or-catalogue",
       "family_breadth": "53 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581011000056/0001045810-11-000056-index.htm",
-      "why": "a flat 3x rule, because for a lumpy field the MAD is wide enough that a real 3x jump scores under 3.5",
+      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000021/0001045810-26-000021-index.htm",
+      "why": "at least one vintage was DERIVED, so our arithmetic is in play",
       "status": "open",
       "note": "",
       "findings_at_decision": null,
-      "first_seen": "2026-08-24",
-      "last_seen": "2026-08-25",
-      "runs_open": 2,
-      "menu": false,
-      "run_id": "725bae7bf8ed"
-    },
-    {
-      "cluster_id": "335101334c10",
-      "ticker": "UNH",
-      "field": "totalAssets",
-      "score": 192.0,
-      "findings": 18,
-      "checks_agreeing": {
-        "cross_identity": 16,
-        "catalogue_exclusion_cost": 1,
-        "series_shape": 1
-      },
-      "severity_mix": {
-        "high": 16,
-        "info": 2
-      },
-      "tier_mix": {
-        "1": 17,
-        "2": 1
-      },
-      "period_range": "2009-12-31..2026-06-30",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "54 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/731766/000073176613000005/0000731766-13-000005-index.htm",
-      "why": "the books do not foot on EITHER equity basis. Not `critical` below 10% because a gap we cannot decompose is not PROVABLY wrong -- the missing column is a catalogue decision",
-      "status": "open",
-      "note": "",
-      "findings_at_decision": null,
-      "first_seen": "2026-08-24",
-      "last_seen": "2026-08-25",
-      "runs_open": 2,
-      "menu": false,
-      "run_id": "725bae7bf8ed"
-    },
-    {
-      "cluster_id": "39dbd1c96634",
-      "ticker": "UNH",
-      "field": "minorityInterest",
-      "score": 190.0,
-      "findings": 39,
-      "checks_agreeing": {
-        "peer_ratio": 38,
-        "series_shape": 1
-      },
-      "severity_mix": {
-        "high": 38,
-        "info": 1
-      },
-      "tier_mix": {
-        "2": 39
-      },
-      "period_range": "2014-12-31..2026-06-30",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "52 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/731766/000073176617000016/0000731766-17-000016-index.htm",
-      "why": "the only rule that catches a value resolved to an entirely wrong concept without a human noticing first",
-      "status": "open",
-      "note": "",
-      "findings_at_decision": null,
-      "first_seen": "2026-08-24",
-      "last_seen": "2026-08-25",
-      "runs_open": 2,
-      "menu": false,
-      "run_id": "725bae7bf8ed"
-    },
-    {
-      "cluster_id": "579b039b2061",
-      "ticker": "APA",
-      "field": "totalRevenue",
-      "score": 189.0,
-      "findings": 41,
-      "checks_agreeing": {
-        "cross_vintage": 18,
-        "holdout_q4": 6,
-        "q4_footing": 6,
-        "annual_footing": 5,
-        "level_outlier": 5,
-        "series_shape": 1
-      },
-      "severity_mix": {
-        "high": 36,
-        "medium": 5
-      },
-      "tier_mix": {
-        "2": 6,
-        "3": 35
-      },
-      "period_range": "2012-12-31..2022-03-31",
-      "routing_hint": "likely-check-or-catalogue",
-      "family_breadth": "49 of 54 tickers",
-      "edgar_url": "https://www.sec.gov/Archives/edgar/data/1841666/000167337916000004/0001673379-16-000004-index.htm",
-      "why": "three numbers the filer published independently, on three different bases, that must reconcile",
-      "status": "open",
-      "note": "",
-      "findings_at_decision": null,
+      "waived_findings": 0,
+      "waived_checks": [],
       "first_seen": "2026-08-24",
       "last_seen": "2026-08-25",
       "runs_open": 2,
@@ -2380,5 +2539,49 @@
       "run_id": "725bae7bf8ed"
     }
   ],
-  "wontfix": []
+  "wontfix": [],
+  "fixes": [
+    {
+      "cluster_id": "1c9a517eaa47",
+      "ticker": "MCD",
+      "field": "capex",
+      "findings_remaining": 28,
+      "waived_findings": 3,
+      "waived_checks": [
+        "peer_ratio",
+        "series_shape"
+      ],
+      "basis": "3 finding(s) waived across 2 check(s)",
+      "fix": {
+        "run_id_before": "3df52ae9af75",
+        "run_id_after": "725bae7bf8ed",
+        "layer": "extraction",
+        "root_cause": "route 1 took PaymentsToAcquireProductiveAssets, a total the filer declares BESIDE its own PaymentsToAcquirePropertyPlantAndEquipment leg in the same calculation link, so capex was resolved to the parent rather than the leg",
+        "evidence": {
+          "accessions": [
+            "0000063908-18-000010",
+            "0000063908-20-000022"
+          ],
+          "concepts": {
+            "correct_leg": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+            "taken_wrongly": "us-gaap:PaymentsToAcquireProductiveAssets"
+          },
+          "figures": {
+            "us-gaap:PaymentsToAcquireProductiveAssets": 540900000.0,
+            "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment": 2393700000.0
+          },
+          "markers_written": {
+            "sibling_rejected": 61
+          }
+        },
+        "commit_sha": "2fb6ef2",
+        "test_path": "tests/data_extract/test_linkbase_sibling_total_1c9a517eaa47.py",
+        "findings_before": 55,
+        "findings_after": 4,
+        "queued_before": 54,
+        "queued_after": 3,
+        "decided_at": "2026-08-25"
+      }
+    }
+  ]
 }

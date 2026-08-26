@@ -56,7 +56,8 @@ import pandas as pd
 
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.build_history import (
-    TTM_STALENESS_DAYS, _is_stale)
+    GROSS_PROFIT_IDENTITY_TOLERANCE, TTM_STALENESS_DAYS, _contradicts_gross_profit,
+    _gross_profit_identity, _is_stale)
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     SEGMENT_ONLY_CONCEPT, TAG_PRIMARY, ArcGraph, is_note_only, resolve_field,
@@ -280,3 +281,120 @@ def test_the_stale_code_is_an_absence_not_a_qualifier():
     print("\n=== SANITY CHECK: stale_ttm is an absence code ===")
     print(f"  in ALL_CODES={rc.STALE_TTM in rc.ALL_CODES}, "
           f"in IS_QUALIFIER={rc.STALE_TTM in rc.IS_QUALIFIER}. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# Defect 3: the derivation that should have filled the hole                    #
+# --------------------------------------------------------------------------- #
+def _facts(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
+    """(field, period_end, value) -> the `visible` frame the identity guard reads."""
+    return pd.DataFrame(
+        [{"field": f, "period_end": pd.Timestamp(pe), "duration_type": "annual",
+          "value": v} for f, pe, v in rows])
+
+
+def test_a_filer_that_never_tags_gross_profit_gets_the_derived_number():
+    """ORCL's real end state. Deleting the wrong number is only half the job.
+
+    Reg S-X Rule 5-03 never required a gross-profit line -- the phrase appears zero times in
+    its text -- so Oracle presenting none is not a filing defect, and every data vendor
+    publishes an Oracle gross margin by computing it. FY2026: 67,357 - (17,597 + 868 +
+    4,556) = 44,336, a 65.8% margin.
+    """
+    row = {"totalRevenue": 67_357e6, "costOfRevenue": 23_021e6, "grossProfit": None}
+    visible = _facts([("totalRevenue", "2026-05-31", 67_357e6),
+                      ("costOfRevenue", "2026-05-31", 23_021e6)])
+    got = _gross_profit_identity(row, visible)
+    assert got == 44_336e6
+    print("\n=== SANITY CHECK: the derivation, on ORCL's FY2026 numbers ===")
+    print(f"  67,357 - 23,021 = {got / 1e6:,.0f}  ->  margin "
+          f"{got / row['totalRevenue']:.1%}")
+    print("  Oracle files no gross-profit line; this is how every vendor has the number.")
+    print("  Validated.")
+
+
+def test_the_identity_is_refused_where_the_filer_s_own_tags_break_it():
+    """CAT and COST, measured: their tagged `grossProfit` is well below revenue minus our
+    `costOfRevenue`, so our cost figure is short and a derived number would overstate.
+
+    On the as-filed facts, 11 of 13 tickers that tag all three satisfy the identity in
+    100% of rows; CAT breaks it on 24 rows by +22.5% and COST on 6 by +20.3%.
+    """
+    visible = _facts([("totalRevenue", "2024-12-31", 100.0),
+                      ("costOfRevenue", "2024-12-31", 60.0),
+                      ("grossProfit", "2024-12-31", 25.0)])       # 40 != 25
+    assert _contradicts_gross_profit(visible)
+    row = {"totalRevenue": 110.0, "costOfRevenue": 66.0, "grossProfit": None}
+    assert _gross_profit_identity(row, visible) is None
+    print("\n=== SANITY CHECK: a filer that contradicts the identity is refused ===")
+    print("  filed gross profit 25 vs revenue-cost 40 -> contradiction -> no derivation.")
+    print("  Validated.")
+
+
+def test_a_filer_that_agrees_within_rounding_still_gets_the_derivation():
+    """The guard must not fire on `decimals=-6` rounding, only on a real disagreement."""
+    visible = _facts([("totalRevenue", "2024-12-31", 100.0),
+                      ("costOfRevenue", "2024-12-31", 60.0),
+                      ("grossProfit", "2024-12-31", 40.2)])       # 0.5% out
+    assert not _contradicts_gross_profit(visible)
+    row = {"totalRevenue": 110.0, "costOfRevenue": 66.0, "grossProfit": None}
+    assert _gross_profit_identity(row, visible) == 44.0
+    print("\n=== SANITY CHECK: the tolerance absorbs rounding, not disagreement ===")
+    print(f"  0.5% apart vs a {GROSS_PROFIT_IDENTITY_TOLERANCE:.0%} band -> derived. "
+          "Validated.")
+
+
+def test_an_identity_short_one_term_is_not_an_approximation_of_itself():
+    """No `costOfRevenue`, no derivation. This is the rule that keeps a leg-sum from
+    silently standing in for a total -- the same one that forbids a `totalLiabilities`
+    `roll_up.any_of`."""
+    visible = _facts([("totalRevenue", "2026-05-31", 67_357e6)])
+    assert _gross_profit_identity(
+        {"totalRevenue": 67_357e6, "costOfRevenue": None, "grossProfit": None},
+        visible) is None
+    assert _gross_profit_identity(
+        {"totalRevenue": None, "costOfRevenue": 23_021e6, "grossProfit": None},
+        visible) is None
+    print("\n=== SANITY CHECK: a missing term refuses rather than approximates ===")
+    print("  no cost -> None; no revenue -> None. Validated.")
+
+
+def test_silence_from_a_filer_is_not_a_contradiction():
+    """A filer that simply never tags `grossProfit` has not disagreed with anything.
+
+    The distinction the `minorityInterest` bridge had to learn: absence of a tag is not
+    evidence against, and a lifetime rule asserted over a regime is what nearly claimed UNH
+    earns no premiums.
+    """
+    visible = _facts([("totalRevenue", "2026-05-31", 67_357e6),
+                      ("costOfRevenue", "2026-05-31", 23_021e6)])
+    assert not _contradicts_gross_profit(visible)
+    assert not _contradicts_gross_profit(pd.DataFrame(
+        columns=["field", "period_end", "duration_type", "value"]))
+    print("\n=== SANITY CHECK: never tagging it is not disagreeing with it ===")
+    print("  two of three tags present -> no contradiction; empty frame -> none.")
+    print("  Validated.")
+
+
+def test_operating_income_is_deliberately_not_derived():
+    """Its declared `derived_fallback` is NOT an identity and must stay unwired.
+
+    Measured on the same substrate: `revenue - cost - SG&A - R&D - D&A` lands within 1% of
+    the filed figure in **0.5% of 550 rows**, mean absolute error 29.3%, mean signed bias
+    -18.1% -- it omits restructuring, impairment, acquisition-related and
+    intangible-amortisation lines. Wiring it would inject exactly the plausible-but-wrong
+    number this cluster exists to remove.
+    """
+    import inspect
+
+    from src.data_extract.utils.fundamentals import build_history as bh
+
+    source = inspect.getsource(bh._snapshot)
+    assert "_gross_profit_identity" in source
+    assert "_operating_income_identity" not in source
+    catalogue_says = CATALOGUE.field("operatingIncome").raw.get("derived_fallback")
+    assert catalogue_says, "the catalogue still declares it, and that is fine -- as prose"
+    print("\n=== SANITY CHECK: operatingIncome stays unwired, on purpose ===")
+    print(f"  catalogue declares: {catalogue_says}")
+    print("  0.5% of 550 rows land within 1% of the filed value -> not an identity.")
+    print("  Validated.")

@@ -386,6 +386,69 @@ def _qualifiers(visible: pd.DataFrame, field: str) -> list[str]:
 _EQUITY_INCL_NCI = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
 
 
+#: How far the filer's own three tags may disagree before its arithmetic counts as a
+#: CONTRADICTION of `grossProfit = totalRevenue - costOfRevenue`. 1% is the same band the
+#: acceptance measurement used, and it is wide enough to absorb rounding at `decimals=-6`
+#: while being far narrower than the two real dissenters (CAT +22.5%, COST +20.3%).
+GROSS_PROFIT_IDENTITY_TOLERANCE = 0.01
+
+
+def _contradicts_gross_profit(visible: pd.DataFrame) -> bool:
+    """Has this filer, in anything visible by now, tagged all three and broken the identity?
+
+    POINT-IN-TIME and per-FILER, never per-regime. That is the shape decision the
+    `minorityInterest` bridge already had to learn: a rule asserted across a regime is what
+    nearly claimed UNH earns no premiums, and a lifetime test would let a 2024 filing decide
+    a 2013 row. Here the same rule keeps CAT and COST -- whose own filings show our
+    `costOfRevenue` is short of their tagged gross profit -- from being handed a derived
+    number, while a filer that simply never tags `grossProfit` is not condemned by silence.
+
+    Joined on `(period_end, duration_type)` because that pair IS the fact identity; the
+    fiscal LABELS collide 5.5% of the time and would compare two different windows.
+    """
+    wanted = ("grossProfit", "totalRevenue", "costOfRevenue")
+    rows = visible[visible["field"].isin(wanted) & visible["value"].notna()]
+    if rows.empty:
+        return False
+    wide = rows.pivot_table(index=["period_end", "duration_type"], columns="field",
+                            values="value", aggfunc="max")
+    if not all(field in wide.columns for field in wanted):
+        return False
+    wide = wide.dropna(subset=list(wanted))
+    wide = wide[wide["grossProfit"] != 0]
+    if wide.empty:
+        return False
+    error = ((wide["totalRevenue"] - wide["costOfRevenue"] - wide["grossProfit"]).abs()
+             / wide["grossProfit"].abs())
+    return bool((error > GROSS_PROFIT_IDENTITY_TOLERANCE).any())
+
+
+def _gross_profit_identity(row: dict, visible: pd.DataFrame) -> float | None:
+    """`grossProfit` from the catalogue's own `derived_fallback`, where no filer tag gave it.
+
+    **Reg S-X Rule 5-03 never required a gross-profit line from anyone** -- the phrase
+    appears zero times in its text -- so its absence is not a filing defect and a coverage
+    gap is the wrong response. Reconstructing it from captions 1-9 is, and that is what
+    every data vendor does: Oracle presents no gross-profit and no total-cost-of-revenue
+    subtotal at all, yet its gross margin is a published number everywhere, because
+    revenue minus the cost block IS the definition.
+
+    The catalogue has declared `"derived_fallback": "totalRevenue - costOfRevenue"` since the
+    rebuild and NOTHING read it -- the key was prose. This is the implementation, kept here
+    rather than in the facts layer for the same reason `_total_liabilities_identity` is: the
+    inputs are TTM cells, and an identity over two as-filed windows of different lengths is
+    not the same number.
+
+    Returns None rather than a value whenever either input is missing -- an identity short
+    one term is not an approximation of itself -- or where `_contradicts_gross_profit` says
+    the filer's own tags disagree.
+    """
+    revenue, cost = row.get("totalRevenue"), row.get("costOfRevenue")
+    if revenue is None or cost is None or _contradicts_gross_profit(visible):
+        return None
+    return float(revenue) - float(cost)
+
+
 def _total_liabilities_identity(
         row: dict, visible: pd.DataFrame) -> tuple[float | None, str | None]:
     """`totalLiabilities` from the balance sheet's own identity, where no filer tag gave it.
@@ -614,6 +677,19 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
             codes[:] = [c for c in codes if c["field"] != "totalLiabilities"
                         or c["dc_code"] in rc.IS_QUALIFIER]
             code("totalLiabilities", basis)
+
+    # Before `_FORMULAS`, so `grossMargins` divides a derived numerator rather than a null.
+    # `operatingIncome` declares a `derived_fallback` too and is deliberately NOT wired to
+    # one: measured, its formula lands within 1% of the filed figure in 0.5% of 550 rows.
+    # See `rc.DERIVED_FALLBACK`.
+    if row.get("grossProfit") is None:
+        row["grossProfit"] = _gross_profit_identity(row, visible)
+        if row["grossProfit"] is not None:
+            # The absence code the loop just wrote is now false: the cell is not absent, it
+            # is derived. Replace rather than accumulate, or the row says both.
+            codes[:] = [c for c in codes if c["field"] != "grossProfit"
+                        or c["dc_code"] in rc.IS_QUALIFIER]
+            code("grossProfit", rc.DERIVED_FALLBACK)
 
     for column, (inputs, _) in _FORMULAS.items():
         row[column] = _ratio(column, *(row.get(name) for name in inputs))

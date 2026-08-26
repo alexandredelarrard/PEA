@@ -137,6 +137,27 @@ DERIVED_IDENTITY_NCI_ZERO = "derived_identity_nci_assumed_zero"
 #: staircase wearing the other guard's uniform.
 STALE_TTM = "stale_ttm"
 
+#: The cell is the catalogue's own `derived_fallback` arithmetic over cells that WERE
+#: resolved, applied because no filer tag gave the field. A qualifier, not an absence: the
+#: number is right, it is simply not independent evidence -- the same contract as
+#: `derived_identity`, and Phase 5b's `cross_identity` must treat a row carrying it as an
+#: INPUT, never as corroboration of the identity it came from.
+#:
+#: Measured on the as-filed facts, where no forward-fill can confound it: of 13 tickers that
+#: tag `grossProfit`, `totalRevenue` and `costOfRevenue` in the same filing, **11 satisfy
+#: `revenue - cost = grossProfit` EXACTLY in 100% of rows** (AAPL 195, NVDA 267, ADM 211,
+#: MSFT 184, SMCI 192, BA/CSCO 195, CVS 95, SWKS 95, JNJ 101, EQIX 2). CAT (24 rows, +22.5%)
+#: and COST (6 rows, +20.3%) contradict it, which is why the derivation is gated on the
+#: filer's OWN arithmetic, point-in-time, rather than applied as a blanket rule.
+#:
+#: Only `grossProfit` uses it. `operatingIncome` declares a `derived_fallback` too and it is
+#: NOT an identity -- measured on the same substrate, `revenue - cost - SG&A - R&D - D&A`
+#: lands within 1% of the filed figure in **0.5% of 550 rows**, mean absolute error 29.3%,
+#: mean signed bias -18.1%, because it silently omits restructuring, impairment,
+#: acquisition-related and intangible-amortisation lines. Enabling it would inject exactly
+#: the class of plausible-but-wrong number this pipeline keeps having to remove.
+DERIVED_FALLBACK = "derived_fallback"
+
 #: Reserved for Phase 5b Layer A: a physically-impossible value the validator nulled.
 #: Declared now so the validator adds no vocabulary of its own.
 FAILED_HARD_GUARD = "failed_hard_guard"
@@ -146,7 +167,7 @@ FAILED_HARD_GUARD = "failed_hard_guard"
 #: Codes that describe a value that IS present. Everything else means the cell is NULL.
 IS_QUALIFIER: frozenset[str] = frozenset({
     PERIOD_INTERSECTION_PARTIAL, ZERO_ONLY_RETAINED, BASIS_EX_IPRD, REGIME_BREAK,
-    DERIVED_IDENTITY, DERIVED_IDENTITY_NCI_ZERO})
+    DERIVED_IDENTITY, DERIVED_IDENTITY_NCI_ZERO, DERIVED_FALLBACK})
 
 #: Every legal `dc_code`. A code outside this set is a typo, and a typo in a reason code is
 #: worse than no code at all: the null-gate's `LEFT JOIN` still finds a row, so the cell
@@ -161,7 +182,7 @@ ALL_CODES: frozenset[str] = frozenset({
     NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL, ZERO_ONLY_RETAINED, BASIS_EX_IPRD,
     # the history build
     NOT_APPLICABLE_FOR_REGIME, NOT_APPLICABLE, COMBINED_INTO, REGIME_BREAK,
-    DERIVED_IDENTITY, DERIVED_IDENTITY_NCI_ZERO, STALE_TTM,
+    DERIVED_IDENTITY, DERIVED_IDENTITY_NCI_ZERO, STALE_TTM, DERIVED_FALLBACK,
     # Phase 5b
     FAILED_HARD_GUARD,
 })

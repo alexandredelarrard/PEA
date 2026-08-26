@@ -599,6 +599,38 @@
         ],
         "evidence": "ORCL declares `us-gaap:Depreciation` ($7,623M, 43 of 43) and `us-gaap:AmortizationOfIntangibleAssets` ($3,582M, 42) as separate legs -- they co-occur in all 42 -- and never the aggregate. The one extension leaf ($2,428M, 1f) is the same amortisation line under a filing-specific name and never co-occurs with the standard one.",
         "verified": "2026-08-23"
+      },
+      "costOfRevenue": {
+        "leaves": [
+          [
+            "orcl:CloudAndSoftwareExpenses",
+            "orcl:CloudServicesAndLicenseSupportExpenses"
+          ],
+          [
+            "orcl:CloudInfrastructureAsAServiceCost",
+            "orcl:CloudPlatformAsServiceAndInfrastructureAsServiceExpenses"
+          ],
+          [
+            "orcl:CloudSoftwareSubscriptionsCosts",
+            "orcl:CloudSoftwareAsServiceExpenses"
+          ],
+          [
+            "orcl:HardwareExpenses",
+            "orcl:HardwareSystemsProductsCost"
+          ],
+          [
+            "orcl:HardwareSystemsSupportCost",
+            "orcl:HardwareSupportCost"
+          ],
+          [
+            "orcl:ServicesExpense"
+          ]
+        ],
+        "not_leaves": [
+          "orcl:RestructuringAndOtherExpenses"
+        ],
+        "evidence": "ORCL presents NO cost-of-revenue total and NO gross-profit line -- Reg S-X 5-03 never required either -- so its three cost captions sit inside `Operating expenses` beside SG&A and R&D. Measured on all 17 ORCL 10-K calculation linkbases 2010-2026, children of `CostsAndExpenses`, weight +1.0 on `Role_StatementCONSOLIDATEDSTATEMENTSOFOPERATIONS`. GROUPING IS BY ERA, not by name: within each group the members hold DISJOINT year ranges and so can never double-count -- CloudAndSoftware (2026) succeeds CloudServicesAndLicenseSupport (2018-2026, blank in FY2026); CloudInfrastructureAsAService / CloudSoftwareSubscriptions (2014-2016) are succeeded by CloudPlatformAsService / CloudSoftwareAsService (2017); HardwareExpenses (2017-2026) succeeds HardwareSystemsProductsCost (2012-2016); HardwareSystemsSupportCost (2012-2015) succeeds into HardwareSupportCost (2016); ServicesExpense (2019-2026) succeeds `us-gaap:CostOfServices` (2010-2018), which the catalogue any_of already carries as its own group. `orcl:RestructuringAndOtherExpenses` is the ONE extension under the anchor that is not a cost of revenue, and naming it is what lets guard 3 tell `classified as excluded` from `never looked at`. Reproduces the filed statements exactly: FY2026 17,597+868+4,556 = 23,021; FY2025 11,569+782+4,576 = 16,927; FY2024 9,427+891+4,825 = 15,143. Gross profit then reads 44,336 / 40,472 / 37,818 -- margins 65.8% / 70.5% / 71.4%.",
+        "verified": "2026-08-25"
       }
     },
     "UNP": {

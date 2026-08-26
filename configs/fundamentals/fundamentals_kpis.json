@@ -559,7 +559,23 @@
     "definition": "Cost of revenue: cost of goods sold plus cost of services.",
     "authority": "Reg S-X Rule 5-03 captions 1 and 2 are a MATCHED FIVE-WAY PAIR and Rule 5-03(b) enforces the pairing, so unlike grossProfit and operatingIncome this line IS required whenever the corresponding revenue caption is presented. Its absence in 61 of 76 Financials reflects those filers presenting no product/service revenue caption at all, not an omission.",
     "total_concept": "CostOfRevenue",
-    "roll_up": {"sum": ["CostOfGoodsSold", "CostOfServices"]},
+    "roll_up": {
+      "sum": ["CostOfGoodsSold", "CostOfServices"],
+      "_why_route_3b": "A filer may present its cost block as SEVERAL captions under total operating expenses and never a cost total, in which case routes 1 and 3 both come away empty and the field reads `not_disclosed` -- a statement about our concept map, not about the filing. ORCL is the measured case: no `CostOfRevenue`, no gross-profit line, and its cloud / hardware / services costs sit under `CostsAndExpenses` as `orcl:` EXTENSIONS that no candidate list can ever name. The leaves come from `fundamentals_exceptions.by_ticker`, per filer and with evidence, exactly as capex and depAmort already do.",
+      "anchor": ["CostsAndExpenses"],
+      "anchor_role": "income_statement",
+      "leaf_weight": 1.0,
+      "_leaf_weight_note": "A cost ADDS to total operating expenses, so the filer declares it at +1.0 -- the opposite sign to capex under the investing node. Verified on ORCL 0001193125-26-277521 and 0001193125-18-201034: every child of `CostsAndExpenses` carries weight 1.0 on `Role_StatementCONSOLIDATEDSTATEMENTSOFOPERATIONS`. Used as an ADMISSION test only, never as a coefficient.",
+      "any_of": [
+        ["CostOfGoodsAndServicesSold", "CostOfGoodsSold"],
+        ["CostOfServices"],
+        ["CostOfServicesMaintenanceCosts"],
+        ["LicenseCosts"],
+        ["TechnologyServicesCosts"]
+      ],
+      "_any_of_excludes_the_total": "`CostOfRevenue` is deliberately NOT a group. It is this field's `total_concept`, so where a filer declares it route 1 takes it and route 3b never runs; listing it here as well would let a filer that declares it as one LEG beside others have it counted twice.",
+      "_measured_blast_radius": "11 control tickers x 6 filings = 66 filing-level resolutions, ZERO changed: AAPL / NVDA / CAT / CVS / PG / WMT / KR / ETN keep their route-1 `linkbase_total`, and AMT / EQIX / TMO stay unresolved because guard 3 still refuses an anchor carrying unclassified extension siblings. Only ORCL moves."
+    },
     "fallback_concepts": ["CostOfRevenue", "CostOfGoodsAndServicesSold"],
     "authority_gap": "Whether Compustat's COGS includes depreciation (DP) was NOT closed by the research, so any COGS-based factor ported from a paper is approximate."
   },

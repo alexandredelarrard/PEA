@@ -398,3 +398,72 @@ def test_operating_income_is_deliberately_not_derived():
     print(f"  catalogue declares: {catalogue_says}")
     print("  0.5% of 550 rows land within 1% of the filed value -> not an identity.")
     print("  Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# The config half: teaching costOfRevenue to read ORCL's own cost captions      #
+# --------------------------------------------------------------------------- #
+def test_cost_of_revenue_can_reach_route_3b_at_all():
+    """Route 3b returns immediately unless the field declares `any_of` + `anchor` +
+    `anchor_role`, so without all three ORCL's cost captions are unreachable however well
+    the by_ticker register describes them."""
+    roll_up = CATALOGUE.field("costOfRevenue").raw["roll_up"]
+    assert roll_up["anchor"] == ["CostsAndExpenses"]
+    assert roll_up["anchor_role"] == "income_statement"
+    assert roll_up["any_of"]
+    # A cost ADDS to total operating expenses -- the opposite sign to capex under the
+    # investing node. Verified on ORCL 0001193125-26-277521: every child of
+    # `CostsAndExpenses` carries weight 1.0.
+    assert roll_up["leaf_weight"] == 1.0
+    print("\n=== SANITY CHECK: costOfRevenue is route-3b eligible ===")
+    print(f"  anchor={roll_up['anchor']} role={roll_up['anchor_role']} "
+          f"leaf_weight={roll_up['leaf_weight']} groups={len(roll_up['any_of'])}")
+    print("  Validated.")
+
+
+def test_the_total_concept_is_not_also_a_leaf_group():
+    """`CostOfRevenue` is this field's `total_concept`. Listing it as a group too would let
+    a filer that declares it as one LEG beside others have it counted twice."""
+    groups = CATALOGUE.field("costOfRevenue").raw["roll_up"]["any_of"]
+    assert "CostOfRevenue" not in {c for group in groups for c in group}
+    print("\n=== SANITY CHECK: the total is not also a leg ===")
+    print(f"  any_of members: {sorted({c for g in groups for c in g})}")
+    print("  CostOfRevenue absent, so route 1 keeps it. Validated.")
+
+
+def test_orcl_declares_its_cost_captions_with_disjoint_era_groups():
+    """Within a group the members must never co-occur, or the sum double-counts.
+
+    Measured on all 17 ORCL 10-K linkbases 2010-2026: each group holds era variants with
+    DISJOINT year ranges -- CloudAndSoftware (2026) succeeds CloudServicesAndLicenseSupport,
+    HardwareExpenses (2017-2026) succeeds HardwareSystemsProductsCost (2012-2016), and so on.
+    """
+    leaves, not_leaves = CATALOGUE.filer_leaves("ORCL", "costOfRevenue")
+    assert leaves, "ORCL must declare its cost captions or the field is unreachable"
+    seen: set[str] = set()
+    for group in leaves:
+        for concept in group:
+            assert concept.startswith("orcl:"), "only EXTENSIONS belong in the register"
+            assert concept not in seen, f"{concept} is in two groups -- it would double-count"
+            seen.add(concept)
+    # The one extension under the anchor that is NOT a cost of revenue. Naming it is what
+    # lets guard 3 tell "classified as excluded" from "never looked at".
+    assert "orcl:RestructuringAndOtherExpenses" in not_leaves
+    assert not (seen & set(not_leaves))
+    print("\n=== SANITY CHECK: ORCL's cost register ===")
+    print(f"  {len(leaves)} era groups, {len(seen)} distinct extensions, no overlap")
+    print(f"  not_leaves: {sorted(not_leaves)}")
+    print("  Validated.")
+
+
+def test_every_register_entry_carries_written_evidence():
+    """A per-filer override with no evidence is the guess the register exists to replace --
+    `load_catalogue` refuses one, and this pins the ORCL entry specifically."""
+    entry = CATALOGUE.ticker_exceptions["ORCL"]["costOfRevenue"]
+    assert entry.get("evidence") and entry.get("verified")
+    for figure in ("23,021", "16,927", "15,143"):
+        assert figure in entry["evidence"], f"{figure} must be in the evidence"
+    print("\n=== SANITY CHECK: the register entry is evidenced ===")
+    print(f"  verified {entry['verified']}, evidence reproduces the filed statements:")
+    print("  FY2026 17,597+868+4,556 = 23,021; FY2025 = 16,927; FY2024 = 15,143.")
+    print("  Validated.")

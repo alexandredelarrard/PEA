@@ -143,6 +143,29 @@ NON_STATEMENT_ROLE = re.compile(
     r"detail|disclosure|polic|parenthetical|schedule|tables?$|uncategor|highlight",
     re.IGNORECASE)
 
+#: A role URI that names the SEGMENT-INFORMATION note. A strict subset of
+#: `NON_STATEMENT_ROLE`, and separated from it because the two carry different verdicts: an
+#: ordinary note-level fact is a real amount on a NARROW basis, so `resolve_field` relaxes
+#: the note guard rather than return a null. A segment-note total is a DIFFERENT MEASURE --
+#: the filer's own management aggregate, reconciled to a statement line rather than equal to
+#: one -- so relaxing to it silently swaps the measure and nothing downstream can tell.
+#:
+#: ORCL is the measured case. Its `us-gaap:GrossProfit` is declared on exactly one arc,
+#: `DisclosureSEGMENTINFORMATIONRECONCILIATIONDetails`, labelled "Margin": the total margin
+#: for its three reportable segments (FY2018 21,825 + 1,807 + 655 = **24,287**, which is
+#: precisely what this pipeline stored as consolidated gross profit for 26 rows). Oracle
+#: presents no gross-profit and no total-cost-of-revenue subtotal on the face of its income
+#: statement at all, so the correct answer for the field is a reason-coded NULL.
+#:
+#: Measured cost of the narrowness, on a 25-filing sample of the 54-ticker roster: of 192
+#: resolved rows whose concept is note-only in the FULL linkbase, **3** sit on a segment
+#: role. The other 189 are `WeightedAverageNumberOfSharesOutstandingBasic`,
+#: `ShareBasedCompensation` and `CashCashEquivalentsRestrictedCash...` -- EPS-note and
+#: cash-flow-supplement elements whose arcs genuinely live in notes and whose values are
+#: right. Banning note-only concepts outright would have nulled all 192, which is the
+#: 745-correct-rows-nulled precedent repeating itself.
+SEGMENT_ROLE = re.compile(r"segment", re.IGNORECASE)
+
 #: Which of the two tests admitted an arc: `menucat`, `role_uri`, or `both`. Carried so the
 #: two populations stay separable -- the role test is a naming heuristic over filer-authored
 #: strings and its output must remain auditable, not merged invisibly into the SEC's own
@@ -183,6 +206,14 @@ INCOMPLETE_ROLL_UP = "incomplete_roll_up"
 #: `not_disclosed` -- the amount IS disclosed, in an element no list can name (see
 #: `_leaf_sum` guard 3, and the `by_ticker` register that closes it per filer).
 PARTIAL_LEAF_SUM = "partial_leaf_sum"
+
+#: `dc_code` for the segment-role refusal: the filer tags this field's concept, but every
+#: calculation arc it carries sits on a SEGMENT-INFORMATION role, so the only number on
+#: offer is a segment aggregate rather than the consolidated line. Distinct from
+#: `not_disclosed`, which would be a false statement about the filing -- the concept IS
+#: tagged -- and distinct from `partial_leaf_sum`, where the amount is disclosed and merely
+#: unnameable. Here the amount on offer is a DIFFERENT MEASURE, and the null is correct.
+SEGMENT_ONLY_CONCEPT = "segment_only_concept"
 
 #: `dc_code` for a field that RESOLVED -- a concept was chosen -- but for which
 #: `_materialise` found no period. Nothing upstream calls such a field absent, so without
@@ -311,6 +342,12 @@ class Resolution:
     #: reorders resolution for the whole universe and "how often did it fire, and on what?"
     #: must be a query rather than an archaeology exercise.
     role_rejected: tuple[str, ...] = ()
+    #: Candidates withheld because every calculation arc the filer gives them sits on a
+    #: SEGMENT-INFORMATION role -- see `SEGMENT_ROLE`. Unlike `role_rejected` this is
+    #: NOT relaxable: a segment aggregate is a different measure, not a narrower basis, so
+    #: there is no pass that puts it back. Carried so the population stays countable
+    #: (`adjustment::jsonb ? 'segment_rejected'`) rather than vanishing into a null.
+    segment_rejected: tuple[str, ...] = ()
     #: The field resolved ONLY after those rejections were put back in play, i.e. the
     #: note-level concept is the filer's whole answer for this field. The value is kept --
     #: a narrow real number beats a null, and 745 correct rows nulled by an over-strict
@@ -380,6 +417,61 @@ class Resolution:
         return None
 
 
+#: The columns `statement_arcs` and `calculation_arcs` guarantee, so a filing with no
+#: linkbase returns an empty frame of the right SHAPE rather than one nothing can index.
+ARC_COLUMNS = ["concept", "concept_taxonomy", "parent_concept", "parent_taxonomy",
+               "weight", "role_uri", "menucat", "is_abstract", ARC_FILTER]
+
+
+def calculation_arcs(xbrl) -> pd.DataFrame:
+    """The filer's calculation linkbase, UNFILTERED, or an empty frame.
+
+    The raw read that `statement_arcs` narrows. Split out because two questions need
+    OPPOSITE views of the same linkbase and conflating them is how `is_note_only` came to be
+    structurally blind: STRUCTURE must be read off face-statement arcs only, while "where
+    does this filer declare this concept?" must be read off ALL of them. Ask the second
+    question of the filtered frame and every note-only concept answers "nowhere", which
+    `is_note_only` then reads as silence rather than as evidence.
+    """
+    try:
+        arcs = xbrl.calculation_linkbase()
+    except Exception:                                   # noqa: BLE001 -- absent linkbase
+        return pd.DataFrame(columns=ARC_COLUMNS)
+    if arcs is None or arcs.empty:
+        return pd.DataFrame(columns=ARC_COLUMNS)
+    return arcs
+
+
+def segment_only_concepts(arcs: pd.DataFrame) -> frozenset[str]:
+    """Bare names whose EVERY calculation arc sits on a SEGMENT-INFORMATION role.
+
+    Read off the UNFILTERED linkbase -- `statement_arcs` has already dropped these arcs by
+    the time an `ArcGraph` exists, which is exactly why `is_note_only` cannot see them.
+
+    A filing-level property, like `entity_scope.zero_only_concepts`, so resolution stays
+    period-agnostic. **Silence is not evidence** here too, and for the same reason: a
+    concept carrying no arc at all is absent from the result, because a leaf that can never
+    carry a calculation arc (a `dei:` cover-page tag, `goodwill`) would otherwise be
+    condemned by having no roles rather than by having only segment ones.
+
+    Indexed on the CHILD end only, unlike `ArcGraph._all_roles` which reads both. In a
+    segment RECONCILIATION arc the child is the segment aggregate and the parent is the
+    consolidated statement line it reconciles TO, so reading both ends condemns exactly the
+    concept the note is reconciling to. Measured: it cost ORCL its `pretaxIncome` for
+    2017-08-31 ($2,500M) and 2018-08-31 ($2,540M), because in 10-Q 0001564590-18-023315
+    `IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrolling
+    Interest` carries no arc except as the parent of the segment note's `GrossProfit`. The
+    values were right and the element was the filer's real consolidated pretax line.
+    """
+    if arcs.empty or "role_uri" not in arcs.columns or "concept" not in arcs.columns:
+        return frozenset()
+    roles: dict[str, set[str]] = {}
+    for concept, role in zip(arcs["concept"], arcs["role_uri"]):
+        roles.setdefault(bare(str(concept)), set()).add(str(role))
+    return frozenset(concept for concept, seen in roles.items()
+                     if seen and all(SEGMENT_ROLE.search(role) for role in seen))
+
+
 def statement_arcs(xbrl) -> pd.DataFrame:
     """The face-statement slice of a filing's calculation linkbase.
 
@@ -407,14 +499,9 @@ def statement_arcs(xbrl) -> pd.DataFrame:
     linkbase -- a real and expected case (older filings), and precisely what routes a
     field to `tag_fallback` rather than to an error.
     """
-    cols = ["concept", "concept_taxonomy", "parent_concept", "parent_taxonomy",
-            "weight", "role_uri", "menucat", "is_abstract", ARC_FILTER]
-    try:
-        arcs = xbrl.calculation_linkbase()
-    except Exception:                                   # noqa: BLE001 -- absent linkbase
-        return pd.DataFrame(columns=cols)
-    if arcs is None or arcs.empty:
-        return pd.DataFrame(columns=cols)
+    arcs = calculation_arcs(xbrl)
+    if arcs.empty:
+        return pd.DataFrame(columns=ARC_COLUMNS)
 
     empty = pd.Series(False, index=arcs.index)
     by_menucat = (arcs["menucat"] == STATEMENTS_MENUCAT
@@ -929,7 +1016,8 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
                   zero_only: frozenset[str] = frozenset(),
                   magnitudes: dict[str, float] | None = None,
                   ticker: str | None = None,
-                  prefer_structure: bool = True) -> Resolution:
+                  prefer_structure: bool = True,
+                  segment_only: frozenset[str] = frozenset()) -> Resolution:
     """Decide how `spec` resolves for one filing, in TWO passes over the zero guard.
 
     `zero_only` is the set of bare names this filing reports as **exactly 0 in every
@@ -957,6 +1045,12 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     was itself wrong, and now reads: *no zero unless the filer reports no other non-zero
     concept for the field anywhere in the filing.*
 
+    `segment_only` is the set of bare names whose every calculation arc sits on a
+    segment-information role (`segment_only_concepts`). It is withheld from `available`
+    before the first pass and never restored, which is what separates it from the other two
+    guards: they refuse a real number on a narrow basis and so earn a relaxation, while this
+    one refuses a management aggregate posing as a statement line.
+
     `prefer_structure=False` disables BOTH halves of 4c.1 -- the statement-role test and the
     declaredness test. It exists as a MEASUREMENT SEAM, not a production knob: 4c.1 reorders
     resolution across the whole universe, and its acceptance is a before/after on the same
@@ -964,11 +1058,18 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     network sweeps of 3,200 filings; with it, one sweep resolves each filing both ways off one
     `xbrl()` call. Nothing in `src/` ever passes False.
     """
+    # Withheld from `available` itself, so no later pass can put them back. The zero and
+    # role guards both have a relaxation because their refusals cost a real number; this one
+    # has none, because the number it refuses is a DIFFERENT MEASURE and keeping it is the
+    # defect. See `SEGMENT_ROLE` for the ORCL measurement.
+    withheld = frozenset(bare(c) for c in _candidates(spec, regime)) & segment_only
+    available = available - segment_only
+
     strict = _resolve_once(spec, graph, available - zero_only, available, catalogue,
                            regime, duration_concepts, magnitudes=magnitudes, ticker=ticker,
                            prefer_structure=prefer_structure)
     if strict.resolved:
-        return _stamp_basis(spec, strict)
+        return _stamp_basis(spec, _segment_stamp(strict, withheld))
 
     # Relax the statement-role guard before the zero guard, because the two relaxations
     # are not equally palatable: a note-level fact is a real amount on a narrow basis,
@@ -981,16 +1082,34 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
         if relaxed.resolved:
             # Carry the strict pass's ledger through, so the row says BOTH what was
             # withheld and that it had to be put back -- either half alone is unreadable.
-            return _stamp_basis(spec, replace(relaxed, role_only_retained=True,
-                                              role_rejected=strict.role_rejected))
+            return _stamp_basis(spec, _segment_stamp(
+                replace(relaxed, role_only_retained=True,
+                        role_rejected=strict.role_rejected), withheld))
 
     if not zero_only:
-        return strict
+        return _segment_stamp(strict, withheld)
     retry = _resolve_once(spec, graph, available, available, catalogue, regime,
                           duration_concepts, magnitudes=magnitudes, ticker=ticker,
                           prefer_structure=False)
-    return (_stamp_basis(spec, replace(retry, zero_only_retained=True))
-            if retry.resolved else strict)
+    return (_stamp_basis(spec, _segment_stamp(replace(retry, zero_only_retained=True),
+                                              withheld))
+            if retry.resolved else _segment_stamp(strict, withheld))
+
+
+def _segment_stamp(resolution: Resolution, withheld: frozenset[str]) -> Resolution:
+    """Record the segment-role refusal, and make it the REASON where it caused the null.
+
+    Two different rows come out of here. A field that still resolved keeps its value and
+    merely carries the withheld names -- the filer tagged a segment aggregate AND a real
+    statement line, and we took the statement line. A field that resolved nowhere else gets
+    `segment_only_concept` in place of `not_disclosed`, because the concept IS tagged and
+    calling it undisclosed would be a false statement about the filing.
+    """
+    if not withheld:
+        return resolution
+    resolution = replace(resolution, segment_rejected=tuple(sorted(withheld)))
+    return (resolution if resolution.resolved
+            else replace(resolution, dc_code=SEGMENT_ONLY_CONCEPT))
 
 
 def _stamp_basis(spec: FieldSpec, resolution: Resolution) -> Resolution:

@@ -48,7 +48,8 @@ from src.data_extract.utils.fundamentals.reason_codes import (
     NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL)
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     FIELD_SUM, INCOMPLETE_ROLL_UP, LINKBASE_SUM, NO_USABLE_PERIOD, STATEMENT_LEAF_SUM,
-    UNRESOLVED, ArcGraph, Resolution, bare, resolve_field, statement_arcs)
+    UNRESOLVED, ArcGraph, Resolution, bare, calculation_arcs, resolve_field,
+    segment_only_concepts, statement_arcs)
 from src.data_store.schema import Table, Tables
 
 _COLS = ["ticker", "accession_number", "field", "fiscal_year", "fiscal_period",
@@ -546,6 +547,9 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
     named risk zone and this needs no schema change to stay auditable --
     `adjustment::jsonb ? 'undeclared_rejected'` finds every row 4c.1 actually reordered,
     `? 'role_rejected'` every row its note-role half withheld a candidate on,
+    `? 'segment_rejected'` every row where a concept was withheld because the filer declares
+    it ONLY on a segment-information role -- the one withholding with no relaxation behind
+    it, so on an unresolved row it is also the `dc_code`,
     `? 'zero_only_retained'` every row the zero guard did, `? 'basis_qualifier'` every row
     that answered on a concept the catalogue declares non-comparable (`basis_ex_iprd`), and
     `? 'duplicate_fact'` every (concept, period) this filer tagged twice at two values,
@@ -567,6 +571,8 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
         blob["role_rejected"] = list(resolution.role_rejected)
     if resolution.role_only_retained:
         blob["role_only_retained"] = True
+    if resolution.segment_rejected:
+        blob["segment_rejected"] = list(resolution.segment_rejected)
     if resolution.undeclared_rejected:
         blob["undeclared_rejected"] = list(resolution.undeclared_rejected)
     if resolution.sibling_rejected:
@@ -688,7 +694,12 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
     # $2,393.7M capex line. Filing-level like the two above, so resolution stays
     # period-agnostic. See `xbrl_linkbase.sibling_leg`.
     magnitudes = scope.peak_magnitudes(facts)
+    arcs = calculation_arcs(xbrl)
     graph = ArcGraph(statement_arcs(xbrl))
+    # Read off the UNFILTERED linkbase, because `statement_arcs` has already dropped every
+    # segment-note arc by the time the graph exists -- which is precisely why the graph's own
+    # `is_note_only` cannot see this population. See `xbrl_linkbase.SEGMENT_ROLE`.
+    segment_only = segment_only_concepts(arcs)
     regime = catalogue.regime_for(
         gics, [str(r) for r in graph.arcs.get("role_uri", pd.Series(dtype=str))])
 
@@ -703,7 +714,8 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
         resolution = resolve_field(catalogue.field(name), graph, available,
                                    catalogue, regime, duration_concepts=durations,
                                    zero_only=zero_only, magnitudes=magnitudes,
-                                   ticker=ticker, prefer_structure=prefer_structure)
+                                   ticker=ticker, prefer_structure=prefer_structure,
+                                   segment_only=segment_only)
         resolutions[name] = resolution
         if resolution.method != FIELD_SUM:
             values[name], refused[name] = _materialise(resolution, facts)

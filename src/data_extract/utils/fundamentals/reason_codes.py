@@ -37,7 +37,7 @@ from src.data_extract.utils.fundamentals.periods import (
     AMBIGUOUS_DURATION, DERIVED_BASIS_MISMATCH, DERIVED_SIGN_IMPLAUSIBLE,
     INSUFFICIENT_QUARTERS, SPLIT_BASIS_MISMATCH)
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
-    INCOMPLETE_ROLL_UP, NO_USABLE_PERIOD, PARTIAL_LEAF_SUM)
+    INCOMPLETE_ROLL_UP, NO_USABLE_PERIOD, PARTIAL_LEAF_SUM, SEGMENT_ONLY_CONCEPT)
 
 # --------------------------------------------------------------- absence codes ---
 
@@ -119,6 +119,24 @@ DERIVED_IDENTITY = "derived_identity"
 #: asserted rule here is what nearly claimed UNH earns no premiums.
 DERIVED_IDENTITY_NCI_ZERO = "derived_identity_nci_assumed_zero"
 
+#: The newest trailing-twelve window this field could assemble ends in a DIFFERENT fiscal
+#: quarter from the row's own `fiscal_end`, so carrying it would date another period's number
+#: to this one. `build_history._latest` had no freshness bound at all until this code existed:
+#: it returned the newest TTM row that had EVER been computed, which is a forward-fill with no
+#: cap and no trace.
+#:
+#: Measured on the 54-ticker roster before the cap: **27 (ticker, field) pairs frozen for 5+
+#: years** and 49 for 2+. ORCL `grossProfit` sat at 24,238,000,000 from 2018-11-30 to
+#: 2026-05-31 -- 32 consecutive rows -- while `grossMargins` divided it by a growing revenue
+#: and manufactured a margin collapse from 0.609 to 0.360 that never happened. BRK-B
+#: `operatingIncome` was frozen for 54 of its 57 rows, XOM `dilutedShares` for all 51.
+#:
+#: The module comment claimed duration fields were "NOT forward-filled". That was true only
+#: of a REFUSED TTM, which stays null with its own code; a TTM that simply stops being
+#: computable because its input quarters dried up was carried silently, which is the same
+#: staircase wearing the other guard's uniform.
+STALE_TTM = "stale_ttm"
+
 #: Reserved for Phase 5b Layer A: a physically-impossible value the validator nulled.
 #: Declared now so the validator adds no vocabulary of its own.
 FAILED_HARD_GUARD = "failed_hard_guard"
@@ -139,11 +157,11 @@ ALL_CODES: frozenset[str] = frozenset({
     INSUFFICIENT_QUARTERS, SPLIT_BASIS_MISMATCH, AMBIGUOUS_DURATION,
     DERIVED_BASIS_MISMATCH, DERIVED_SIGN_IMPLAUSIBLE,
     # xbrl_linkbase.py / the facts layer
-    INCOMPLETE_ROLL_UP, PARTIAL_LEAF_SUM, NO_USABLE_PERIOD,
+    INCOMPLETE_ROLL_UP, PARTIAL_LEAF_SUM, NO_USABLE_PERIOD, SEGMENT_ONLY_CONCEPT,
     NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL, ZERO_ONLY_RETAINED, BASIS_EX_IPRD,
     # the history build
     NOT_APPLICABLE_FOR_REGIME, NOT_APPLICABLE, COMBINED_INTO, REGIME_BREAK,
-    DERIVED_IDENTITY, DERIVED_IDENTITY_NCI_ZERO,
+    DERIVED_IDENTITY, DERIVED_IDENTITY_NCI_ZERO, STALE_TTM,
     # Phase 5b
     FAILED_HARD_GUARD,
 })

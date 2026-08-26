@@ -256,6 +256,19 @@ def carry_latest_known(facts: pd.DataFrame, ends, field: str,
     return pd.merge_asof(out, ordered.sort_values(on), on=on, direction="backward")
 
 
+#: How far a trailing-twelve window's end may sit from the `fiscal_end` it is reported
+#: against before it stops being this period's number. HALF A QUARTER, so the tolerance can
+#: only ever admit the SAME fiscal quarter and never the previous one -- which is the whole
+#: job, since a one-quarter carry is already a silent basis error.
+#:
+#: A tolerance rather than exact equality because the two dates come from different columns
+#: and legitimately disagree by days: `fiscal_end` is `_latest_period_known`, read off
+#: `period_of_report`, while the TTM grid is built on the facts' own `period_end`. A 52/53-week
+#: filer's ends walk, and ORCL files a quarter ending 2014-01-31 against a 2014-02-28 calendar
+#: -- 28 days apart, unambiguously the same quarter.
+TTM_STALENESS_DAYS = 45
+
+
 def _latest(frame: pd.DataFrame, field: str, column: str = "period_end") -> pd.Series | None:
     """The newest row `frame` holds for `field`, or None. `frame` is a `build_periods`
     output, so "newest" is the newest period end this ticker has reached for that field."""
@@ -265,6 +278,19 @@ def _latest(frame: pd.DataFrame, field: str, column: str = "period_end") -> pd.S
     if rows.empty:
         return None
     return rows.loc[pd.to_datetime(rows[column]).idxmax()]
+
+
+def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
+    """Does this trailing-twelve window belong to a different quarter than `period`?
+
+    False when `period` is unknown: a row with no `fiscal_end` has nothing to be stale
+    against, and inventing a refusal there would null the first publication event of every
+    ticker. Absence of a bound is not a bound of zero.
+    """
+    if pd.isna(period):
+        return False
+    end = pd.to_datetime(newest.get("period_end"), errors="coerce")
+    return pd.notna(end) and abs((period - end).days) > TTM_STALENESS_DAYS
 
 
 def _facts_code(visible: pd.DataFrame, field: str) -> str | None:
@@ -537,16 +563,28 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
             # would delete `sharesOutstanding` for the current period on every filer.
             value, reason = _instant(instants, field, as_of), None
         else:
-            # The newest quarter end this field has reached. A refused TTM stays NULL with
-            # its own code and is NOT forward-filled: `trailing_twelve`'s contract is four
-            # discrete quarters or nothing, and carrying the last computable TTM forward is
-            # precisely the staircase (1,622 of 26,242 consecutive `totalRevenue` pairs
-            # frozen) that this rebuild removed. Coverage drops on purpose.
+            # The newest quarter end this field has reached, REQUIRED to be this row's own
+            # quarter. `trailing_twelve`'s contract is four discrete quarters or nothing, and
+            # carrying the last computable TTM forward is precisely the staircase (1,622 of
+            # 26,242 consecutive `totalRevenue` pairs frozen) that this rebuild removed.
+            # Coverage drops on purpose.
+            #
+            # Two ways a TTM goes missing, and only the first used to be handled: a REFUSED
+            # window stays NULL with its own code, but a window that stops being COMPUTABLE
+            # because its input quarters dried up left `_latest` returning the newest row
+            # that had ever existed -- an uncapped forward-fill. `_is_stale` is the cap.
             newest = _latest(ttm, field)
+            if newest is not None and _is_stale(newest, period):
+                # A window from another quarter is not this row's value. Without this the
+                # cell reads as a live measurement forever after the field stops resolving:
+                # see `rc.STALE_TTM` for the 27 pairs it was frozen on.
+                newest = None
+                reason = rc.STALE_TTM
+            else:
+                reason = (str(newest["dc_code"]) if newest is not None
+                          and pd.notna(newest.get("dc_code")) else None)
             value = (None if newest is None or pd.isna(newest["value"])
                      else float(newest["value"]))
-            reason = (str(newest["dc_code"]) if newest is not None
-                      and pd.notna(newest.get("dc_code")) else None)
         if value is None and reason is None:
             reason = _facts_code(visible, field)
         if value is None and reason is None and _has_valued_fact(visible, field):

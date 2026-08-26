@@ -134,9 +134,13 @@ def test_every_formula_matches_the_one_declared_in_the_config():
 def test_the_reason_code_vocabulary_is_closed_and_singly_defined():
     """A typo in a reason code is worse than no code: the null-gate's LEFT JOIN still finds a
     row, so the cell reads as explained while nothing can interpret the explanation."""
-    assert len(rc.ALL_CODES) == 19, sorted(rc.ALL_CODES)
+    assert len(rc.ALL_CODES) == 21, sorted(rc.ALL_CODES)
     assert rc.IS_QUALIFIER < rc.ALL_CODES
     assert rc.NOT_DISCLOSED in rc.ALL_CODES and rc.NOT_DISCLOSED not in rc.IS_QUALIFIER
+    # Both are ABSENCES, not qualifiers: each names a cell that has no value precisely
+    # BECAUSE the code fired. Cluster 876ab8a57bd8 added them together.
+    for code in (rc.SEGMENT_ONLY_CONCEPT, rc.STALE_TTM):
+        assert code in rc.ALL_CODES and code not in rc.IS_QUALIFIER
     print("\n=== SANITY CHECK: the dc_code vocabulary ===")
     print(f"  {len(rc.ALL_CODES)} codes, {len(rc.IS_QUALIFIER)} of them QUALIFIERS "
           f"(a value is present): {sorted(rc.IS_QUALIFIER)}")

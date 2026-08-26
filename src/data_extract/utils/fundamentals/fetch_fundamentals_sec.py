@@ -9,7 +9,7 @@ One row per catalogue FIELD per period per filing. **Strictly as-filed**: every 
 number the filer actually tagged, on the period shape it tagged it with. Q4 = FY - YTD9 and
 the YTD decumulation are Phase 4's job and happen in memory during the history build, so
 this table stays a faithful record of what was published -- which is what makes the
-publication-event grain and the no-leakage property of `fundamentals_history` provable
+publication-event grain and the no-leakage property of `fundamentals_history_sec` provable
 rather than merely asserted.
 
 Division of labour:
@@ -327,7 +327,7 @@ def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str,
     the note's SHAPE and cannot see a full-year number tagged into a quarterly context that
     the table publishes alongside its three siblings. The two overlap on ORCL and the layer
     is what separates them: D1b already refused those rows in `periods.py`, which is why
-    `fundamentals_history` never showed $42,440M as a quarter, but it runs on the way to
+    `fundamentals_history_sec` never showed $42,440M as a quarter, but it runs on the way to
     HISTORY and leaves `fundamentals_facts` -- the substrate every Tier-2/3 check reads --
     still asserting the bad quarter. Refusing at the facts layer is what closes the cluster.
     """

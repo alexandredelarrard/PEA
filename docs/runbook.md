@@ -117,7 +117,7 @@ thirteen-f                 # 13F bulk + OpenFIGI cusip map (HEAVY)
 superinvestors             # needs 13F
 fundamentals               # both layers: facts (network, HEAVY) then history (replay)
 fundamentals-facts         # SEC XBRL per-filing -> fundamentals_facts (+ headcount). HEAVY
-fundamentals-history       # fundamentals_facts -> fundamentals_history + _reason_codes. No network
+fundamentals-history-sec   # fundamentals_facts -> fundamentals_history_sec + _reason_codes. No network
 earnings-surprises  financial-statements  insider-transactions
 financial-notes            # VERY HEAVY
 def14a                     # LLM-parsed governance (costs OpenAI calls)
@@ -244,7 +244,7 @@ leg-set question is ever reopened.
 for CHUNK in "AAPL,CSCO,KR,XOM,APA,EOG" "VLO,JPM,BAC,MTB,USB,MET" ...; do
   "$PY" -m src data_extract fundamentals-facts -F -t "$CHUNK"
 done
-"$PY" -m src data_extract fundamentals-history -t "<all of them>"
+"$PY" -m src data_extract fundamentals-history-sec -t "<all of them>"
 ```
 
 - **Chunk into separate PROCESSES** for the same reason the sweep does: edgartools never releases
@@ -254,7 +254,7 @@ done
   run and the second gets `since = last run`, i.e. nothing. Measured: chunk 1 wrote 31,540 rows
   and chunks 2-9 wrote **0**.
 - The history build is a separate command because it costs no network: a bug in the history layer
-  is fixed with `fundamentals-history --rebuild-history -t APA`, and only a bug in the RESOLUTION
+  is fixed with `fundamentals-history-sec --rebuild-history -t APA`, and only a bug in the RESOLUTION
   layer needs `fundamentals --rebuild -t APA`, which deletes all four tables and refetches.
 - Wall clock: ~7 min per 6-ticker chunk of facts, ~2.5 min per ticker for the history replay.
 - **A SCHEMA change to any of the four tables needs `scripts/recreate_fundamentals_tables.py`

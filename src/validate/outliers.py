@@ -3,8 +3,8 @@ outliers.py  (src/validate/outliers.py)
 --------------------------------------------------------------------------------------------
 The MAD-based modified Z-score and the one `detect_level_outliers` built on it, shared by
 every place that needs to judge whether a number sits far from its own history: the
-`FundamentalsValidator`'s `level_outlier` check, the external-source ratio checks in
-`external/tiingo_comparison.py` / `external/yahoo_comparison.py`, and the Definition-of-Done
+`FundamentalsValidator`'s `level_outlier` check, the external-source ratio check in
+`external/yahoo_comparison.py`, and the Definition-of-Done
 data profiler (`scripts/dod/data_profile.py`).
 
 Moved here from `src/utils/` by plan-5b decision 62: `src/validate/` is the ONE home for

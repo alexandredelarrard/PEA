@@ -1,38 +1,39 @@
 """
 yahoo_comparison.py  (src/validate/external/yahoo_comparison.py)
 ------------------------------------------------------
-FALLBACK external ground-truth cross-check for `fundamentals_history`, for tickers
-Tiingo's Free/Power plan does not cover -- confirmed live (2026-08 probe):
-`GET /tiingo/fundamentals/{ticker}/statements` on a non-Dow-30 ticker returns HTTP 400,
-`{"detail": "Error: Free and Power plans are limited to the DOW 30. ..."}`. Its
-whitelist is also the PRE-2024 Dow roster (AMZN/NVDA/SHW -- the tickers the 2024
-reconstitution added -- fail too), so "not in Tiingo" cannot be predicted from
-`DOW_30_TICKERS` and is only ever discovered by a live 400/empty response.
+External ground-truth cross-check for `fundamentals_history_sec`: compares our stored
+figures against Yahoo Finance and reports where they disagree. Never writes to the DB.
 
-Mirrors `tiingo_comparison.py`'s architecture exactly (field map -> bucket a/b/c ->
-`ratio_outlier_check` reusing `outliers.detect_level_outliers`) rather than
-reinventing the classification logic -- only the source and its field names differ.
+THE ONLY EXTERNAL ADAPTER, and it excludes no ticker subset -- its audit covers the whole
+universe it is handed. For an independent fundamentals cross-source WITH point-in-time
+depth, use `fundamentals_sharadar`; this module cannot supply that (see the depth caveat).
 
-Uses the `yfinance` library directly (already a pinned project dependency, not a new
-one) -- `Ticker.quarterly_income_stmt` / `quarterly_balance_sheet` / `quarterly_cashflow`
--- rather than scraping.
+Uses the `yfinance` library directly (already a pinned project dependency, not a new one)
+-- `Ticker.quarterly_income_stmt` / `quarterly_balance_sheet` / `quarterly_cashflow` --
+rather than scraping.
 
-DEPTH CAVEAT (load-bearing -- read before trusting a "no discrepancy" result here):
+⚠ DEPTH CAVEAT (load-bearing -- read before trusting a "no discrepancy" result here):
 yfinance's quarterly statements typically expose only ~4-5 TRAILING quarters of
-CURRENT-RESTATED values, no as-filed point-in-time depth, nowhere near
-`fundamentals_history`'s 2007-2026 span. This module can only validate the MOST RECENT
-few quarters for the tickers it covers -- it is a coverage-gap filler for tickers
-Tiingo cannot reach, never a substitute for Tiingo's deeper history where Tiingo IS
-available (the orchestrator in `tiingo_comparison.run_universe_audit` tries Tiingo
-first for exactly this reason).
+CURRENT-RESTATED values. There is **no as-filed point-in-time depth**, nowhere near
+`fundamentals_history_sec`'s 2007-2026 span. This module can therefore validate only the
+MOST RECENT few quarters, and it can NEVER check a historical as-filed value -- which is
+precisely the property the validator cares about most. A clean result here is weak
+evidence, not a clearance. For as-filed history, cross-check against
+`fundamentals_sharadar` instead.
 
-FIELD MAP CAVEAT: `YAHOO_FIELD_MAP`'s `yahoo_row` labels are yfinance's own statement
-row names, which have shifted across yfinance releases and are NOT re-verified here
-against a live pull at authoring time. `fetch_yahoo_statements` returns whatever rows
-exist and `_row_value` returns `None` (never raises) for a row that isn't present, so a
-stale label degrades to "no comparison for this field" rather than a crash -- expect to
-correct a handful of labels against real output on the first live run, the same way
-`tiingo_comparison.py`'s bucket-b entries were only added after live dollar evidence.
+STRUCTURE: field map -> bucket a/b/c -> `ratio_outlier_check` (reusing
+`outliers.detect_level_outliers`). Buckets partition fields by whether Yahoo's DEFINITION
+matches ours: (a) same basis, so a gap is a real discrepancy and is scored against a
+tolerance; (b) known basis difference, so only a CHANGE in the ratio is meaningful;
+(c) unmapped.
+
+FIELD MAP CAVEAT: `YAHOO_FIELD_MAP`'s `yahoo_row` labels are yfinance's own statement row
+names, which have shifted across yfinance releases and are NOT re-verified here against a
+live pull at authoring time. `fetch_yahoo_statements` returns whatever rows exist and
+`_row_value` returns `None` (never raises) for a row that is not present, so a stale label
+degrades to "no comparison for this field" rather than a crash -- expect to correct a
+handful of labels against real output on the first live run. Bucket-b entries should only
+ever be added on live dollar evidence, never on suspicion.
 """
 from __future__ import annotations
 
@@ -44,11 +45,12 @@ import pandas as pd
 import yfinance as yf
 
 from src.constants.constants import (
-    DOW_30_TICKERS, YAHOO_CACHE_DIRNAME, YAHOO_COMPARISON_FILENAME,
+    YAHOO_CACHE_DIRNAME, YAHOO_COMPARISON_FILENAME,
     YAHOO_EXACT_MATCH_TOLERANCE_FLOW, YAHOO_EXACT_MATCH_TOLERANCE_LEVEL,
     YAHOO_RATIO_OUTLIERS_FILENAME,
 )
 from src.context import Context
+from src.data_store.schema import Tables
 from src.validate.outliers import detect_level_outliers
 
 _LOG: logging.Logger = logging.getLogger(__name__)
@@ -56,10 +58,10 @@ _LOG: logging.Logger = logging.getLogger(__name__)
 __all__ = [
     "YAHOO_FIELD_MAP", "BUCKET_B_OVERRIDES", "BUCKET_B_FIELDS", "classify_bucket",
     "fetch_yahoo_statements", "build_comparison_frame", "ratio_outlier_check",
-    "alignment_summary", "run_non_tiingo_audit",
+    "alignment_summary", "run_yahoo_audit",
 ]
 
-# `kind`, identical vocabulary to `tiingo_comparison.TIINGO_FIELD_MAP`:
+# `kind` vocabulary:
 #   "flow"     -- TTM sum (4 trailing yfinance quarters) vs our TTM figure, same sign.
 #   "flow_abs" -- same, but yfinance carries the OPPOSITE sign convention.
 #   "instant"  -- single-quarter balance-sheet compare, no summing.
@@ -108,8 +110,8 @@ YAHOO_FIELD_MAP: dict[str, dict[str, str | None]] = {
     "revenue_q": {"statement": "income", "yahoo_row": "Total Revenue", "kind": "latest_q"},
     "netIncome_q": {"statement": "income", "yahoo_row": "Net Income", "kind": "latest_q"},
     "employees": {"statement": None, "yahoo_row": None, "kind": None},
-    # Yahoo DOES carry a distinct balance-sheet NCI line, unlike Tiingo -- a real
-    # improvement in coverage this fallback adds, not just a copy of the Tiingo map.
+    # Yahoo carries a distinct balance-sheet NCI line, which most aggregators fold into
+    # equity -- so this field is genuinely checkable here.
     "minorityInterest": {"statement": "balance", "yahoo_row": "Minority Interest",
                         "kind": "instant"},
     "nciIncome": {"statement": None, "yahoo_row": None, "kind": None},
@@ -117,7 +119,7 @@ YAHOO_FIELD_MAP: dict[str, dict[str, str | None]] = {
 
 # Bucket "b": whole-field conventions Yahoo's OWN row naming already tells us differ,
 # flagged provisionally by that naming alone -- NOT yet dollar-reconciled on two
-# independent tickers the way `tiingo_comparison.BUCKET_B_OVERRIDES` requires. Treat
+# independent tickers, which is the bar a bucket-b entry must clear. Treat
 # these as "expected to need bucket b" pending confirmation on the first live run, not
 # settled evidence; demote to bucket "a" if the live run shows no discrepancy at all.
 BUCKET_B_FIELDS: frozenset[str] = frozenset({
@@ -136,11 +138,10 @@ def fetch_yahoo_statements(
     df}`, each yfinance's own shape (rows = statement line labels, columns = quarter-end
     Timestamps, most-recent first). Returns `None` (logs, never raises) when yfinance has
     nothing for this ticker -- delisted/wrong symbol/transport failure are all
-    indistinguishable from "not covered" from this module's point of view, same as
-    `tiingo_comparison.fetch_tiingo_statements`'s `None` contract.
+    indistinguishable from "not covered" from this module's point of view.
 
-    Cached under `cache_dir/{ticker}_{income,balance,cashflow}.parquet` when given (no
-    TTL -- delete to force a refresh, same convention as the Tiingo cache)."""
+    Cached under `cache_dir/{ticker}_{income,balance,cashflow}.parquet` when given
+    (no TTL -- delete to force a refresh)."""
     if cache_dir is not None:
         paths = {k: cache_dir / f"{ticker}_{k}.parquet" for k in ("income", "balance", "cashflow")}
         if all(p.exists() for p in paths.values()):
@@ -169,15 +170,12 @@ def fetch_yahoo_statements(
     return out
 
 
-# Position-finding helpers, duplicated (not imported) from `tiingo_comparison.py`'s
-# private equivalents -- same rationale `outliers.py` already documents for its
-# own small duplicated mapping: this is a generic, tiny, stable piece of positional
-# logic, and cross-importing another module's underscore-private names is worse than
-# re-stating 10 lines.
+# Position-finding helpers. Small, generic, stable positional logic kept local to this
+# module rather than hoisted -- the same rationale `outliers.py` documents for its own
+# duplicated mapping.
 def _yf_index(df: pd.DataFrame | None) -> pd.DataFrame:
-    """Transpose to date-ascending rows / line-item columns -- the same shape
-    `tiingo_comparison._tiingo_index` builds, so the trailing-4-quarter / nearest-date
-    logic below reads identically for both sources."""
+    """Transpose to date-ascending rows / line-item columns, the shape the
+    trailing-4-quarter and nearest-date logic below expects."""
     if df is None or df.empty:
         return pd.DataFrame()
     idx = df.T
@@ -234,13 +232,12 @@ def build_comparison_frame(
     cache_dir: Path | None = None,
 ) -> pd.DataFrame:
     """Per (ticker, field, fiscal_end): `our_value`/`yahoo_value`/`delta_pct`,
-    kind-dispatched per `YAHOO_FIELD_MAP` -- same shape as
-    `tiingo_comparison.build_comparison_frame`, so downstream consumers (the ranked
-    findings artifact) treat both sources identically."""
+    kind-dispatched per `YAHOO_FIELD_MAP`. This frame IS the contract the ranked
+    findings artifact consumes; keep the column list stable."""
     cols = ["ticker", "field", "quarter", "our_value", "yahoo_value", "delta_pct",
            "kind", "bucket", "note"]
     hist = context.store.load(
-        "fundamentals_history",
+        Tables.fundamentals_history_sec,
         columns=["ticker", "fiscal_end"] + list(field_map.keys()),
         where={"ticker": list(tickers)}, optional=True,
     )
@@ -294,8 +291,7 @@ def ratio_outlier_check(
     comparison_frame: pd.DataFrame, *, threshold: float = 3.5,
 ) -> pd.DataFrame:
     """Reuses `outliers.detect_level_outliers` UNMODIFIED on the ratio series
-    (our_value / yahoo_value) per (ticker, field) -- identical logic and caveats to
-    `tiingo_comparison.ratio_outlier_check`, including decision 60's log-change kernel:
+    (our_value / yahoo_value) per (ticker, field), including decision 60's log-change kernel:
     a permanent step flags only its boundary quarter, and a one-quarter spike flags
     twice (in and back out).
 
@@ -337,8 +333,7 @@ def ratio_outlier_check(
 
 
 def alignment_summary(comparison_frame: pd.DataFrame) -> pd.DataFrame:
-    """Bucket-"a" alignment %, per field and pooled -- identical convention to
-    `tiingo_comparison.alignment_summary`."""
+    """Bucket-"a" alignment %, per field and pooled."""
     a = comparison_frame[(comparison_frame["bucket"] == "a")
                         & comparison_frame["delta_pct"].notna()].copy()
     if a.empty:
@@ -357,14 +352,14 @@ def alignment_summary(comparison_frame: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def run_non_tiingo_audit(
+def run_yahoo_audit(
     context: Context, tickers: list[str], *, field_map: dict = YAHOO_FIELD_MAP,
     threshold: float = 3.5, cache_dir: Path | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Same `run_audit`-shaped orchestrator as `tiingo_comparison.run_universe_audit`,
-    for the ticker subset Tiingo could not cover. Called by
-    `tiingo_comparison.run_universe_audit`'s fallback chain -- never invoked directly
-    with `DOW_30_TICKERS` (Tiingo already covers those it can)."""
+    """`run_audit`-shaped orchestrator: comparison frame + ratio outliers + alignment,
+    over whatever tickers it is handed.
+
+    Pass the FULL universe: no subset is reserved for another adapter."""
     comparison = build_comparison_frame(context, list(tickers), field_map=field_map,
                                        cache_dir=cache_dir)
     ratio_outliers = ratio_outlier_check(comparison, threshold=threshold)
@@ -377,18 +372,19 @@ if __name__ == "__main__":
     from src.utils.universe import load_universe_tickers
 
     _, context = get_config_context(config_path="./configs", use_cache=True, save=False)
+    # The FULL universe -- no subset is excluded, so the most liquid and best-covered
+    # names are checked too.
     universe = load_universe_tickers(context)
-    non_dow30 = [t for t in universe if t not in set(DOW_30_TICKERS)]
     cache_dir = context.paths["DATA_STORE"] / "gaps" / YAHOO_CACHE_DIRNAME
 
-    result = run_non_tiingo_audit(context, non_dow30, cache_dir=cache_dir)
+    result = run_yahoo_audit(context, universe, cache_dir=cache_dir)
 
     out_dir = context.paths["DATA_STORE"] / "gaps"
     out_dir.mkdir(parents=True, exist_ok=True)
     result["comparison"].to_csv(out_dir / YAHOO_COMPARISON_FILENAME, index=False)
     result["ratio_outliers"].to_csv(out_dir / YAHOO_RATIO_OUTLIERS_FILENAME, index=False)
 
-    print("\n=== SANITY CHECK: Yahoo cross-validation (non-Tiingo tickers) ===")
+    print("\n=== SANITY CHECK: Yahoo cross-validation ===")
     print(result["alignment"].to_string(index=False))
     n_ratio_flags = len(result["ratio_outliers"])
     print(f"  bucket-b/c ratio-outlier flags: {n_ratio_flags}")

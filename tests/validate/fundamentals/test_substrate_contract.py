@@ -4,9 +4,9 @@ test_substrate_contract.py  (tests/validate/fundamentals/)
 WHICH TABLE EACH CHECK READS, and whether its findings can be acted on.
 
 This file exists because of a measurement. On the 2026-08-24 calibration run, Tier 1 read
-`fundamentals_history` for 14 of its 19 checks and produced 1,437 findings -- **0 of which
+`fundamentals_history_sec` for 14 of its 19 checks and produced 1,437 findings -- **0 of which
 carried an `edgar_url`**, against 77.8% on Tier 2 and 100% on Tier 3. `Finding.edgar_url` is
-built from `(cik, accession_number)` and `fundamentals_history` carries neither, so an agent
+built from `(cik, accession_number)` and `fundamentals_history_sec` carries neither, so an agent
 handed a Tier-1 finding could not open the filing that caused it. That is the first move the
 triage loop requires, so the entire tier was unactionable however well it was ranked.
 
@@ -44,7 +44,7 @@ CHECKS_DIR = Path("src/validate/fundamentals/checks")
 #: How `sub.facts` is spelled inside a check. Both forms occur and both must be followed.
 FACTS_NAMES = {"facts", "sub.facts"}
 
-#: The six checks that legitimately read `fundamentals_history`. Adding to this set is a
+#: The six checks that legitimately read `fundamentals_history_sec`. Adding to this set is a
 #: DESIGN DECISION -- it means "this check tests a property `fundamentals_facts` cannot
 #: express" -- so it must be a deliberate edit with a failing test to update.
 CONTRACT_CHECKS = {"grain", "column_contract", "code_vocabulary", "unexplained_null",

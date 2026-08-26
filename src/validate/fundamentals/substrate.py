@@ -17,7 +17,7 @@ is the bar the plan sets for every check: "a check that cannot be planted cannot
 
 ## The four frames, and what each is for
 
-  `history`  `fundamentals_history` -- the wide publication-event table, 69 columns. Read
+  `history`  `fundamentals_history_sec` -- the wide publication-event table, 69 columns. Read
              ONLY by the six Tier-1 CONTRACT checks (`grain`, `column_contract`,
              `code_vocabulary`, `unexplained_null`, `pit_leak`, `coverage_universe`).
   `codes`    `fundamentals_reason_codes` -- dense, one row per null-or-qualified cell. The
@@ -28,7 +28,7 @@ is the bar the plan sets for every check: "a check that cannot be planted cannot
 
 ## Why the value checks all read `facts` now
 
-Because a finding without an accession cannot be acted on. `fundamentals_history` carries no
+Because a finding without an accession cannot be acted on. `fundamentals_history_sec` carries no
 `accession_number` and no `cik`, and `Finding.edgar_url` is built from exactly that pair --
 so every one of the 1,437 Tier-1 findings on the last history-based run had a NULL URL,
 against 100% on Tier 3. An agent handed such a finding cannot open the filing that caused it,
@@ -119,7 +119,7 @@ class Substrates:
     # ------------------------------------------------------------------ derived views ---
     @property
     def value_columns(self) -> list[str]:
-        """The 60-odd VALUE columns of `fundamentals_history` -- everything that is not a key,
+        """The 60-odd VALUE columns of `fundamentals_history_sec` -- everything that is not a key,
         the regime, or provenance. The denominator of every coverage claim."""
         skip = {*HISTORY_KEYS, HISTORY_REGIME, *HISTORY_PROVENANCE}
         return [c for c in self.history.columns if c not in skip]
@@ -206,7 +206,7 @@ def load(context, catalogue: Catalogue, tickers: list[str] | None,
     decision 53's nightly shape -- a series can only change where a filing landed.
     """
     where = {"ticker": tickers} if tickers else None
-    history = context.store.load(Tables.fundamentals_history, columns=None, where=where)
+    history = context.store.load(Tables.fundamentals_history_sec, columns=None, where=where)
     codes = context.store.load(Tables.fundamentals_reason_codes, columns=None, where=where,
                                optional=True)
     facts = (context.store.load(Tables.fundamentals_facts, columns=list(FACTS_COLUMNS),

@@ -1,4 +1,4 @@
-"""What an AMENDMENT does to `fundamentals_history`, and what it must not do.
+"""What an AMENDMENT does to `fundamentals_history_sec`, and what it must not do.
 
 Rebuild plan §5.0 rule 2 and decision 34. Three properties, each of which was violated by the
 period-grain table this replaces:

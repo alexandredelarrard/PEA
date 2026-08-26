@@ -132,7 +132,10 @@ def _resolve_one(ticker: str, gics: dict, filing) -> list[dict]:
                               ticker=ticker)
             resolutions[name] = r
             if r.method != FIELD_SUM:
-                values[name] = _materialise(r, facts)
+                # ({accepted}, {refused}) -- `_compose` and the row builder below both
+                # want the accepted dict, and a tuple is truthy so the mistake survives
+                # as an AttributeError further down rather than here.
+                values[name], _ = _materialise(r, facts)
         for name, r in list(resolutions.items()):
             if r.method == FIELD_SUM:
                 composed, reason = _compose(CATALOGUE.field(name), r.component_fields, values)

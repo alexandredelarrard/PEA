@@ -1,5 +1,5 @@
 """
-The fundamentals validator: `fundamentals_facts` / `fundamentals_history` -> a ranked list of
+The fundamentals validator: `fundamentals_facts` / `fundamentals_history_sec` -> a ranked list of
 FIXABLE ISSUES, written to `fundamentals_check` and read back out of it.
 
     validator.py   FundamentalsValidator -- the ONE implementation that judges a value

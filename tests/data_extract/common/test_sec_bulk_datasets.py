@@ -18,7 +18,14 @@ from src.data_store.store import DataStore
 from src.data_extract.utils.prices import fetch_insider_transactions as ins
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 
-REPO = Path(__file__).resolve().parents[2]
+# Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
+# This file moved down one directory level once already (into the mirrored
+# tests/data_extract/<area>/ layout) and the hard index silently repointed this at
+# tests/configs/ -- a hard index would silently point the fixture ZIPs at a
+# tests/data/ that does not exist, and the tests would skip rather than fail.
+_ROOT = next(p for p in Path(__file__).resolve().parents
+             if (p / "pyproject.toml").exists())
+REPO = _ROOT
 INSIDER_ZIP = REPO / "data" / "sec_insider_transactions" / "2024q1_form345.zip"
 FINSTMT_ZIP = REPO / "data" / "sec_financial_statements" / "2024q1.zip"
 

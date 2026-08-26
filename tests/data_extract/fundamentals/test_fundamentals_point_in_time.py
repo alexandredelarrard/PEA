@@ -1,4 +1,4 @@
-"""The point-in-time contract of `fundamentals_history`.
+"""The point-in-time contract of `fundamentals_history_sec`.
 
 `as_of` is meant to be "the date this fiscal period's numbers became public", and the table is
 keyed `(ticker, as_of)`. Two invariants follow, and BOTH are currently violated:
@@ -39,12 +39,13 @@ def _history() -> pd.DataFrame:
     try:
         from src.context import get_config_context
         _, context = get_config_context("./configs", use_cache=False, save=False)
-        df = context.store.load("fundamentals_history",
+        from src.data_store.schema import Tables
+        df = context.store.load(Tables.fundamentals_history_sec,
                                 columns=["ticker", "as_of", "fiscal_end", "is_amendment"])
     except Exception as exc:                                        # noqa: BLE001
-        pytest.skip(f"fundamentals_history unavailable: {exc}")
+        pytest.skip(f"fundamentals_history_sec unavailable: {exc}")
     if df is None or df.empty:
-        pytest.skip("fundamentals_history is empty")
+        pytest.skip("fundamentals_history_sec is empty")
     df["as_of"] = pd.to_datetime(df["as_of"])
     df["fiscal_end"] = pd.to_datetime(df["fiscal_end"])
     return df.dropna(subset=["as_of", "fiscal_end"]).sort_values(["ticker", "fiscal_end"])

@@ -47,7 +47,7 @@ class RunScope:
     """The tickers, fields and tiers one run covered. Immutable; hashed on demand."""
 
     #: The tickers ACTUALLY LOADED, not the ones requested. A roster naming 54 tickers of
-    #: which 3 are absent from `fundamentals_history` covers 51, and a hash of the request
+    #: which 3 are absent from `fundamentals_history_sec` covers 51, and a hash of the request
     #: would declare two runs comparable that examined different data.
     tickers: tuple[str, ...] = ()
     #: `--field` narrowing, empty for a full run. Empty and "every field" are the same thing

@@ -13,8 +13,8 @@ debugging time. All free or freemium. For the tables they land in, see
 | S&P 500 constituents | Wikipedia | no | `sp500_tickers` | `prices/fetch_tickers.py` |
 | Benchmark / commodity / energy | yfinance (`SPY`, `^VIX`, `CL=F`, `GC=F`, `XLE`) | no | `prices_macro` | `prices/fetch_macro.py` (close only, via `download_ohlcv`) |
 | Rates / credit / breakeven / FX + derived legs (~1995→) | FRED (incl. `DEXUSEU` for FX) | `FRED_API_KEY` | `prices_macro` | `prices/fetch_macro.py` (same fetcher — one table, one source per series) |
-| Fundamentals history | SEC EDGAR per-filing XBRL (edgartools) | `SEC_USER_AGENT` | `fundamentals_facts` → `fundamentals_history` | `fundamentals/fetch_fundamentals_edgar.py` |
-| Employee headcount | SEC 10-K **body text** | `SEC_USER_AGENT` | `fundamentals_history.employees` | `fundamentals/fundamentals_employees.py` |
+| Fundamentals history | SEC EDGAR per-filing XBRL (edgartools) | `SEC_USER_AGENT` | `fundamentals_facts` → `fundamentals_history_sec` | `fundamentals/fetch_fundamentals_edgar.py` |
+| Employee headcount | SEC 10-K **body text** | `SEC_USER_AGENT` | `fundamentals_history_sec.employees` | `fundamentals/fundamentals_employees.py` |
 | Earnings surprises / forward P/E | yfinance | no | `earnings_surprises` | `fundamentals/fetch_earnings_surprises.py` |
 | Pension facts | SEC Financial Statement Data Sets (zip) | `SEC_USER_AGENT` | `pension_facts` | `fundamentals/fetch_financial_statements.py` |
 | Footnote numbers + narrative | SEC Financial Statement **and Notes** sets (zip, `.tsv`) | `SEC_USER_AGENT` | `notes_num`, `notes_text` | `fundamentals/fetch_financial_notes.py` |

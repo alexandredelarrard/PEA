@@ -9,7 +9,7 @@ src/data_extract/       src/validate/           an agent + configs/
       │                       │                       │
       ├─ writes ─────────────►│                       │
       │  fundamentals_facts   │                       │
-      │  fundamentals_history │                       │
+      │  fundamentals_history_sec │                       │
       │  fundamentals_reason_codes                    │
       │                       ├─ writes ─────────────►│
       │                       │  fundamentals_check   │
@@ -47,7 +47,7 @@ forever, and still ships errors. The job here is to produce a **short, ranked, e
 that a reviewer can actually work — not to certify anything.
 
 **Nothing gates.** Not one finding blocks the nightly fill of `fundamentals_facts` or
-`fundamentals_history`. This is the SEC's own warn-over-reject precedent, taken deliberately
+`fundamentals_history_sec`. This is the SEC's own warn-over-reject precedent, taken deliberately
 (decision 45): one filer's bad quarter must never stall the other 499.
 
 ---
@@ -370,7 +370,7 @@ abstained is not a pass.
 
    | changed | rebuild before re-validating | cost |
    |---|---|---|
-   | `build_history.py`, `reason_codes.py`, a `_FORMULAS` entry | `fundamentals-history --rebuild-history -t X` | ~2.5 min/ticker, **no network** |
+   | `build_history.py`, `reason_codes.py`, a `_FORMULAS` entry | `fundamentals-history-sec --rebuild-history -t X` | ~2.5 min/ticker, **no network** |
    | `xbrl_linkbase.py`, `periods.py`, `fundamentals_kpis.json` — a RESOLUTION bug | `fundamentals --rebuild -t X` (deletes four tables for X, refetches) | network |
    | a check module or a threshold | none — re-validate directly | seconds |
 
@@ -409,7 +409,7 @@ src/validate/
     report.py                 the health gate, the delta, the rankings, the wontfix footer
     checks/__init__.py        CHECK_REGISTRY
     checks/tier1_value.py     deterministic rules. SIX contract checks on
-                              `fundamentals_history`, the other 13 on `fundamentals_facts`
+                              `fundamentals_history_sec`, the other 13 on `fundamentals_facts`
     checks/tier2_series.py    series behaviour, on `fundamentals_facts`
     checks/tier3_internal.py  the filer's own disjoint evidence, on `fundamentals_facts`
 ```
@@ -422,7 +422,7 @@ src/validate/
 in all three tiers is on the second.
 
 The line was drawn by a measurement. `Finding.edgar_url` is built from
-`(cik, accession_number)`, and `fundamentals_history` carries neither: it has 69 columns and
+`(cik, accession_number)`, and `fundamentals_history_sec` carries neither: it has 69 columns and
 its only provenance is `publication_form` / `is_amendment` / `amended_fields`, which is a form
 TYPE and never a document. So on the 2026-08-24 calibration run:
 

@@ -256,7 +256,7 @@ def _header(model: ReportModel) -> str:
                "> *`--no-write`: nothing was persisted, so this run has no ledger row and no "
                "delta.*\n\n")
             + "*Nothing here gates. The nightly build of `fundamentals_facts` / "
-              "`fundamentals_history` runs to completion regardless.*")
+              "`fundamentals_history_sec` runs to completion regardless.*")
 
 
 def _health(model: ReportModel) -> str:
@@ -484,7 +484,7 @@ def _packet(rank: int, cluster: Cluster) -> str:
         lines.append(f"- {cluster.edgar_url}")
     else:
         lines.append("- **no `edgar_url`** -- a Tier-1-only cluster reads "
-                     "`fundamentals_history`, which carries no accession. Resolve it manually "
+                     "`fundamentals_history_sec`, which carries no accession. Resolve it manually "
                      "and say so: this is Phase 7's trigger.")
     if cluster.why:
         lines.append(f"- _{cluster.why}_")

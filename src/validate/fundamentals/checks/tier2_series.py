@@ -19,7 +19,7 @@ the overlap is the design rather than redundancy:
 |                 | interior holes -- the SHAPE, which no per-cell   | and wrong                    |
 |                 | check can see                                    |                              |
 
-## WHY THE FACTS GRAIN AND NOT `fundamentals_history` (decision 41)
+## WHY THE FACTS GRAIN AND NOT `fundamentals_history_sec` (decision 41)
 
 On the history grain `level_outlier` and `frozen_series` fire BY CONSTRUCTION over the ~20
 forward-filled instant columns -- a balance-sheet line carried unchanged between filings is

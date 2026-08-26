@@ -1,9 +1,10 @@
 # Phase 1 — Extraction ✅
 
-**Goal**: four Sharadar tables populated with real rows for the 29 entitled DJIA tickers, via a
+**Goal**: four Sharadar tables populated with real rows for the **30** entitled DJIA tickers, via a
 resumable per-ticker fetcher wired into a new step and the CLI.
 
-**Prerequisite**: phase 0 (the user's rename) is done — `fundamentals_history` is a free name.
+**Prerequisite**: phase 0 is DONE (2026-08-26) — `fundamentals_history` is free and is now the
+forward-declared name of the phase-4 merged table.
 **Read first**: [README.md](README.md) — decisions D1–D13 govern this phase.
 **Next**: [phase-2-diagnostics.md](phase-2-diagnostics.md)
 
@@ -88,7 +89,9 @@ sharadar_fundamentals = Table(
 - [x] `sharadar_tickers` — pk `("table", "permaticker", "ticker")`, no `date_col`,
       `kind=KIND_REFERENCE`, no freshness. Carries `permaticker`, `currency`, `category`,
       `firstquarter`, `isdelisted`.
-- [x] `sharadar_actions` — pk `("date", "ticker", "name", "action")`, `date_col="date"`.
+- [x] `sharadar_actions` — pk `("date", "ticker", "action", "contraticker")`, `date_col="date"`.
+      ⚠ CHANGED from the plan's `("date","ticker","name","action")`, which was measured to
+      collapse 11 rows into 3. See deviation 1.
 - [x] `sharadar_sp500` — pk `("date", "ticker", "action")`, `date_col="date"`.
 
 ⚠ **`date` is a reserved-ish column name and it is in three PKs.** Every `store` call must pass the
@@ -313,20 +316,12 @@ after `redundant_ticks`), ~3 min:
 
 ---
 
-## ⚠ Phase 0 is HALF done — blocks phase 4, not phase 1
+## Phase 0 — DONE (2026-08-26)
 
-Measured against the live DB and the tree on 2026-08-26:
-
-- **DB half: DONE.** `fundamentals_history_sec` exists; `fundamentals_history` does **not**
-  (also present: `fundamentals_history_legacy`, `fundamentals_facts_legacy`).
-- **Code half: NOT DONE.** `fundamentals_history_sec` appears **nowhere** in `src/`.
-  `src/data_store/schema.py` still declares `Tables.fundamentals_history`, and all ~30 Group-A
-  files still reference it.
-
-So `Tables.fundamentals_history` currently points at a table that no longer exists. Phase 1 is
-unaffected (it touches none of those names), but **the SEC history build and its validator are
-pointing at a dropped table right now**, and phase 4 cannot start until the Group-A rename in
-the README is finished.
+Resolved after this phase was written. The user renamed the live table in DBeaver; the code
+half was completed in the same session. `Tables.fundamentals_history_sec` reads 3,258 rows;
+`Tables.fundamentals_history` is forward-declared for the phase-4 merged table and reads 0.
+See the README's phase-0 section for the full record.
 
 ---
 

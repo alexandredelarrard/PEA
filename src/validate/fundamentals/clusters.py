@@ -100,7 +100,7 @@ CLUSTER_WIDE = ""
 # --------------------------------------------------------------------------- #
 
 #: What a TIER is worth. Tier IS the field-importance proxy, deliberately: Tier 1 runs on
-#: `fundamentals_history`, which is the table the cube actually reads, so a Tier-1 defect is
+#: `fundamentals_history_sec`, which is the table the cube actually reads, so a Tier-1 defect is
 #: already in the model. Tier 3 is an internal-consistency signal about the as-filed facts.
 #: Weighting fields individually was rejected -- nobody has measured a per-field importance,
 #: and an unmeasured weight would quietly become the ranking.
@@ -609,7 +609,7 @@ def _first_url(rows: pd.DataFrame) -> str | None:
     """An EDGAR url from anywhere in the cluster, or None.
 
     None is common and is not a defect in this function: 1,427 of run 2's findings are
-    Tier-1-only, and Tier-1 checks read `fundamentals_history`, which carries no accession.
+    Tier-1-only, and Tier-1 checks read `fundamentals_history_sec`, which carries no accession.
     That is Phase 7's trigger, and the agent is told to say so plainly rather than guess.
     """
     if "edgar_url" not in rows.columns:

@@ -3,30 +3,48 @@
 Scope: what is **actually in the local Postgres right now**. For what each table *means*, see
 [data_schema.md](data_schema.md). For how to connect, see [runbook.md](runbook.md).
 
-> **Snapshot taken 2026-08-17** by querying the running `pea_db` container. Re-verify before relying
+> **Snapshot re-measured 2026-08-26.** Rows/size/coverage in the tables below were taken on
+> **2026-08-17** unless a row says otherwise; the global counts, the missing-table list and the
+> whole `fundamentals_*` / `sharadar_*` block were re-queried on 08-26. Re-verify before relying
 > on a number — `MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea -c "…"`.
 
-Container `pea_db` (postgres **16.14**), database `pea`, owner role **`alexandre`**, volume
-`stock_pick_strat_pgdata`. **24 GB**, **31 tables**, all in schema `public`.
+> **What changed on 2026-08-26:**
+> - `fundamentals_history` was **renamed to `fundamentals_history_sec`** (the SEC producer's
+>   table). The bare name `fundamentals_history` is now a *declared but not-yet-built* entry for
+>   the merged Sharadar+SEC table that Sharadar-integration phase 4 produces, so a read of it
+>   returns EMPTY rather than raising.
+> - **Four Sharadar tables added and populated.**
+> - **`fundamentals_facts_legacy` (5.2 GB) and `fundamentals_history_legacy` (36 MB) were
+>   DROPPED.** They had no registry entry, no reader, no view and no foreign key. That is where
+>   24 GB -> 19 GB came from. ⚠ Their loss is not free: `fundamentals_facts_legacy` was the only
+>   445-ticker fundamentals substrate and the declared provenance of every measured rate in
+>   `configs/fundamentals/fundamentals_exceptions.json`, which can no longer be re-derived.
 
-## Read this first: the registry declares 48 tables, the DB has 31
+Container `pea_db` (postgres **16.14**), database `pea`, owner role **`alexandre`**, volume
+`stock_pick_strat_pgdata`. **19 GB**, **41 tables**, all in schema `public` (measured 2026-08-26).
+
+## Read this first: the registry declares 57 tables, the DB has 41
+
+**Nothing live is unregistered** — the 41 live tables are all in `Tables` (verified 2026-08-26), so there is no orphan to read by mistake.
 
 **Missing entirely** — every read of these raises `TableMissingError`:
 
 | Missing | Consequence |
 |---|---|
-| **`prices`** | The single most load-bearing gap. `StepCubePrices` is its only reader, and every other cube sub-step reads the *part* it produces — so **the whole cube build is blocked**, as are `tests/conftest.py::real_frames` and every fixture derived from it (they call `pytest.skip`). |
-| `cube`, `cube_part_*` (all 8) | no features, no training, no prediction |
-| `predictions`, `predictions_latest`, `cube_signal` | no model output |
+| `cube`, `cube_part_*` (all 7) | no features, no training, no prediction |
+| `cube_signal`, `predictions`, `predictions_latest` | no model output |
 | `strategy`, `trend_asset_returns` | no ledger, no trend sleeve |
-| `sec_13d`, `sec_13d_transactions` | 13D activist features unavailable |
+| **`fundamentals_history`** | **Expected, not a defect.** It is the DECLARED-but-unbuilt merged Sharadar+SEC table; phase 4 populates it. `store.load` returns EMPTY rather than raising, so `src/data_aggregate/` degrades instead of crashing. The SEC data is in `fundamentals_history_sec`. |
 | `notes_embedding`, `ticker_descriptions` | `notes_embedding` has no downstream reader anyway |
 
-**Present but not in the registry** (legacy, superseded — do not read, do not extend):
-`fundamentals_facts_legacy` (2.3M rows, 817 MB, 19 cols). `fundamentals_history_old` is GONE
-(verified absent 2026-08-24) -- the Phase 5 rebuild dropped and recreated the four
-`fundamentals_*` tables from `sql/schema.sql`, so there is no longer an old-shape history table
-to read by mistake.
+**No longer missing** (they were, in the 2026-08-17 snapshot): **`prices`** is populated —
+1,777,827 rows, 500 tickers, 2011-08-19 → 2026-08-19 — so the "the whole cube build is blocked"
+warning that used to head this list no longer applies. `sec_13d` and `sec_13d_transactions` also
+exist now.
+
+**Present but not in the registry**: **none.** All 41 live tables are declared in `Tables`.
+`fundamentals_facts_legacy` and `fundamentals_history_legacy` — the last two orphans — were
+dropped on 2026-08-26.
 
 ## Populated tables
 
@@ -35,8 +53,8 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | Table | Rows | Size | Cols | Tickers | Date column | Coverage |
 |---|---|---|---|---|---|---|
 | `earning_calls_embedding` | 1,375,495 | **8.6 GB** | 13 | 494 | `as_of` | 2005-10-30 → 2026-07-24 |
+| `prices` | 1,777,827 | — | — | **500** | `date` | 2011-08-19 → 2026-08-19 *(08-26)* |
 | `sec13f_hr` | 21,659,435 | **6.1 GB** | 15 | 497 | `period` | 1987-03-31 → 2026-03-31 |
-| `fundamentals_facts` | 7,776,870 | **5.2 GB** | 30 | 445 | `filing_date` | 2011-08-12 → 2026-08-12 |
 | `earnings_call_sections` | 109,899 | 1.5 GB | 6 | 494 | `as_of` | 2005-10-13 → 2026-07-24 |
 | `sec_filing_text` | 34,127 | 1.2 GB | 9 | 498 | `filed` | 2011-07-27 → 2026-08-03 |
 | `insider_transactions` | 1,381,478 | 497 MB | 26 | 491 | `transaction_date` | 1990-05-07 → **2026-03-31** |
@@ -45,10 +63,14 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `wiki_pageviews` | 1,699,202 | 136 MB | 3 | 500 | `date` | **2016-07-16** → 2026-07-23 |
 | `fails_to_deliver` | 993,775 | 98 MB | 5 | 499 | `date` | 2010-01-04 → **2026-07-14** |
 | `short_interest` | 963,115 | 84 MB | 4 | 502 | `date` | **2017-12-29** → 2026-07-31 |
-| `fundamentals_facts` | 317,036 | 118 MB | 26 | **54** | `filing_date` | 2009-07-31 → 2026-08-10 |
-| `fundamentals_reason_codes` | 76,004 | 12 MB | 5 | **54** | `as_of` | 2009-07-31 → 2026-08-10 |
-| `fundamentals_history` | **3,267** | 1.8 MB | **69** | **54** | `as_of` | 2009-07-31 → 2026-08-10 |
-| `fundamentals_employees` | 745 | 112 kB | 3 | **54** | `as_of` | 2002-03-20 → 2026-07-29 |
+| `fundamentals_facts` | 316,245 | 131 MB | 26 | **54** | `filing_date` | 2009-07-31 → 2026-08-10 *(08-26)* |
+| `sharadar_tickers` | 17,826 | 15 MB | 28 | 17,826 | — | Sharadar entity dimension *(08-26)* |
+| `fundamentals_reason_codes` | 78,239 | 13 MB | 6 | **54** | `as_of` | 2009-07-31 → 2026-08-10 *(08-26)* |
+| `fundamentals_history_sec` | **3,258** | 1.8 MB | **69** | **54** | `as_of` | 2009-07-31 → 2026-08-10 *(08-26)* |
+| `fundamentals_sharadar` | 1,346 | 1.3 MB | **112** | **30** | `date` | 2021-08-27 → 2026-08-10 *(08-26)* |
+| `sharadar_sp500` | 3,306 | 432 kB | 7 | 30 | `date` | 1992-01-02 → 2026-08-25 *(08-26)* |
+| `sharadar_actions` | 594 | 128 kB | 7 | 30 | `date` | 2021-08-27 → 2026-08-25 *(08-26)* |
+| `fundamentals_employees` | 754 | 112 kB | 3 | **54** | `as_of` | 2002-03-20 → 2026-07-29 *(08-26)* |
 | `fundamentals_check` | 23,656 | 31 MB | 23 | **54** | `run_date` | two runs: 2026-08-24 → 2026-08-25 |
 | `fundamentals_check_run` | 70 | 136 kB | 17 | — | `run_date` | two runs: 2026-08-24 → 2026-08-25 |
 | `fundamentals_check_status` | 2 | 48 kB | 8 | — | `decided_at` | MCD `capex`: `peer_ratio` + `series_shape` waived |
@@ -95,11 +117,11 @@ Ordered by size. `tickers` = distinct non-null tickers.
 - **The four `fundamentals_*` tables cover 54 tickers, not 500 — this is the Phase 5 rebuild
   scope, not a defect.** All four were dropped and rebuilt from scratch on 2026-08-24
   (`scripts/recreate_fundamentals_tables.py`), so the earlier 491-ticker / 239-column
-  `fundamentals_history` and its 445-ticker facts table no longer exist. Their ticker sets are
+  `fundamentals_history_sec` and its 445-ticker facts table no longer exist. Their ticker sets are
   now identical by construction. Widening to the full roster is Phase 9's acceptance step; until
   then any cube built off these tables covers 54 names and every coverage rate computed against a
   500-ticker denominator will read ~11%.
-- **`fundamentals_history` went 27,602 rows → 3,267 and 239 columns → 69.** Both are deliberate.
+- **`fundamentals_history_sec` went 27,602 rows → 3,258 and 239 columns → 69.** Both are deliberate.
   The row count fell because the grain changed from a computed period spine to the
   **publication-event** grain (one row per date on which ≥1 extracted value became newly public)
   AND the scope narrowed to 54 tickers; the column count fell because the contract is now

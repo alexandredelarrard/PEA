@@ -174,7 +174,9 @@ def test_maa_shares_outstanding_is_the_parents(maa_filing):
     resolution = resolve_field(catalogue.field("sharesOutstanding"),
                                ArcGraph(statement_arcs(xbrl)),
                                scope.reported_concepts(facts), catalogue, "real_estate")
-    periods = _materialise(resolution, _period_frame(facts))
+    # `_materialise` returns ({accepted}, {refused}) -- the second element carries the
+    # periods a hard guard threw away, which is exactly what must NOT be counted here.
+    periods, refused = _materialise(resolution, _period_frame(facts))
     values = sorted({p["value"] for p in periods.values()})
 
     assert values, "MAA produced no share count after scoping"
@@ -183,6 +185,7 @@ def test_maa_shares_outstanding_is_the_parents(maa_filing):
     print("\n=== SANITY CHECK: MAA share count after scoping ===")
     print(f"  concept : {resolution.concept} ({resolution.method})")
     print(f"  value(s): {[f'{v:,.0f}' for v in values]}")
+    print(f"  refused : {len(refused)} period(s)")
     print("  OK: the parent's cover-page count, on the only multi-class-summable tag.")
 
 

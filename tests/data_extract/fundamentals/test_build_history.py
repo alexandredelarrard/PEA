@@ -1,4 +1,4 @@
-"""The `fundamentals_history` CONTRACT: the 69 columns, the reason-code vocabulary, the
+"""The `fundamentals_history_sec` CONTRACT: the 69 columns, the reason-code vocabulary, the
 publication-event grain and the append-only guard.
 
 Synthetic where the question is arithmetic or grain (a known-truth fixture is the only way to

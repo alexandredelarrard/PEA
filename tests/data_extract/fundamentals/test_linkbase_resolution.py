@@ -626,7 +626,9 @@ def test_apa_revenue_is_a_real_number_and_comes_from_an_extension(resolved_regim
     assert resolution.method == LINKBASE_ROOT
 
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _period_frame
-    periods = _materialise(resolution, _period_frame(got["facts"]))
+    # `_materialise` returns ({accepted}, {refused}); only the accepted periods are the
+    # filer's real top line.
+    periods, refused = _materialise(resolution, _period_frame(got["facts"]))
     values = [p["value"] for p in periods.values()]
     assert values, "APA resolved a concept but produced no periods"
     assert all(v > 1e9 for v in values), f"APA revenue implausible: {values}"
@@ -636,6 +638,7 @@ def test_apa_revenue_is_a_real_number_and_comes_from_an_extension(resolved_regim
     print(f"  resolved       : {resolution.concept} (extension={resolution.is_extension})")
     print(f"  anchor         : {resolution.anchor}")
     print(f"  values         : {[f'${v/1e9:.3f}B' for v in sorted(values, reverse=True)]}")
+    print(f"  refused        : {len(refused)} period(s)")
     print(f"  us-gaap:Revenues undimensioned? "
           f"{'Revenues' in got['available']}  <- the old resolver's target")
     print("  OK: Non-zero, non-null, and sourced from the filer's own declared total.")

@@ -1,7 +1,7 @@
 """
 tier1_value.py  (src/validate/fundamentals/checks/)
 --------------------------------------------------------------------------------------------
-TIER 1 -- the deterministic tier. SIX contract checks on `fundamentals_history`, everything
+TIER 1 -- the deterministic tier. SIX contract checks on `fundamentals_history_sec`, everything
 else on `fundamentals_facts`.
 
 Every check here is a RULE, not a statistic: it either holds or it does not, and a finding is
@@ -10,7 +10,7 @@ cheap enough to run nightly over the whole table.
 
 ## THE SUBSTRATE SPLIT, and why it is not arbitrary
 
-    fundamentals_history   grain, column_contract, code_vocabulary, unexplained_null,
+    fundamentals_history_sec   grain, column_contract, code_vocabulary, unexplained_null,
                            pit_leak, coverage_universe
     fundamentals_facts     everything else, all 13 of them
 
@@ -18,7 +18,7 @@ The rule is: a check that asks about the TABLE reads history; a check that asks 
 NUMBER reads facts.
 
 The eight value and coverage checks were moved here from history, and the reason is
-provenance. `Finding.edgar_url` is built from `(cik, accession_number)`; `fundamentals_history`
+provenance. `Finding.edgar_url` is built from `(cik, accession_number)`; `fundamentals_history_sec`
 has 69 columns and carries neither. Measured on the last history-based run: **0 of 1,437
 Tier-1 findings had a URL**, against 77.8% on Tier 2 and 100% on Tier 3. A finding an agent
 cannot trace to a filing cannot be investigated, so the whole tier was unactionable however
@@ -71,7 +71,7 @@ going through the builder.
 
 ## NOTHING HERE GATES (decision 45)
 
-Not one finding blocks the nightly fill of `fundamentals_facts` / `fundamentals_history`. This
+Not one finding blocks the nightly fill of `fundamentals_facts` / `fundamentals_history_sec`. This
 is the SEC's own warn-over-reject precedent, and it is a decision rather than an oversight:
 one filer's bad quarter must never stall the other 499.
 """
@@ -247,7 +247,7 @@ def grain(sub: Substrates) -> list[Finding]:
     A ZERO ceiling, and that is the point. `build_history._assert_grain` already fails the
     build on all three, so under the publication-event grain none of them can fire -- which is
     exactly what makes this a good check rather than a redundant one. A hit means something
-    wrote to `fundamentals_history` without going through the builder.
+    wrote to `fundamentals_history_sec` without going through the builder.
 
     The third rule is the LOOK-AHEAD LEAK, and it is why the grain was rebuilt at all: the
     previous build computed `as_of` as a median-of-spine heuristic and put ROP's 2009 year 59
@@ -296,7 +296,7 @@ def grain(sub: Substrates) -> list[Finding]:
 @check(name="column_contract", tier=1, substrate=HISTORY, severity=CRITICAL,
        grain=GRAIN_TICKER, expected_fire_rate_ceiling=0.0)
 def column_contract(sub: Substrates) -> list[Finding]:
-    """`fundamentals_history` has exactly the catalogue's columns, in the catalogue's order.
+    """`fundamentals_history_sec` has exactly the catalogue's columns, in the catalogue's order.
 
     ORDER, not just membership. The stored order IS the contract: a consumer reading the table
     positionally, or a `store.save` against a table whose columns drifted, produces values in
@@ -517,7 +517,7 @@ def coverage_universe(sub: Substrates) -> list[Finding]:
     return [Finding(
         check_name="coverage_universe", ticker=str(ticker), severity=HIGH, tier=1,
         substrate=HISTORY, observed=0.0, expected=1.0,
-        detail={"why": "the roster names this ticker and fundamentals_history has no row "
+        detail={"why": "the roster names this ticker and fundamentals_history_sec has no row "
                        "for it -- the fetch or the build never reached it"})
         for ticker in sub.tickers if ticker not in present]
 
@@ -542,7 +542,7 @@ def coverage_quarters(sub: Substrates) -> list[Finding]:
 
     ## ON FACTS: distinct FILING DATES, which is the same series history reshaped
 
-    `fundamentals_history` emits one row per date on which a value became public, so its
+    `fundamentals_history_sec` emits one row per date on which a value became public, so its
     `as_of` series and the filer's distinct `filing_date` series are the same dates -- the
     history grain IS this cadence, collapsed. Reading it here means the finding names the
     accession that CLOSED the gap, so a reviewer opens the filing on one side of the hole

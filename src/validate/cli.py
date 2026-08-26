@@ -174,7 +174,7 @@ def _write_report(context: Context, model: ReportModel, path: Path, fmt: str) ->
         context.log.info("validate: json report -> %s", json_path)
 
 
-@cli.command(help="Validate fundamentals_history / fundamentals_facts. Read-only; gates nothing.",
+@cli.command(help="Validate fundamentals_history_sec / fundamentals_facts. Read-only; gates nothing.",
              help_priority=1)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

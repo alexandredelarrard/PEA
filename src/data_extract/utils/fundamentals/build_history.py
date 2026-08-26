@@ -1,7 +1,7 @@
 """
 build_history.py  (src/data_extract/utils/fundamentals/build_history.py)
 --------------------------------------------------------------------------------------------
-`fundamentals_facts` -> `fundamentals_history` + `fundamentals_reason_codes`, on the
+`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, on the
 PUBLICATION-EVENT grain.
 
 `as_of` is a FILING DATE, not a period end. That one change is the whole phase: the previous
@@ -772,7 +772,7 @@ def _break_code(catalogue: Catalogue, field: str, period, code) -> None:
 
 def build_ticker_history(ticker: str, facts, *, catalogue: Catalogue | None = None,
                          guards: PeriodGuards | None = None) -> pd.DataFrame:
-    """One ticker's `fundamentals_history` frame -- 69 columns, one row per publication event.
+    """One ticker's `fundamentals_history_sec` frame -- 69 columns, one row per publication event.
 
     The signature the acceptance test has pinned since Phase 1
     (`tests/data_extract/test_fundamentals_point_in_time.py`). `facts` is normally the
@@ -1036,7 +1036,7 @@ def _keyed_by_as_of(frame: pd.DataFrame) -> pd.DataFrame:
 
 def build_fundamentals_history(context, tickers: list[str], *,
                               rebuild_history: bool = False) -> None:
-    """`fundamentals_facts` -> `fundamentals_history` + `fundamentals_reason_codes`.
+    """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`.
 
     Append-only in normal operation: a second run over unchanged facts appends **0** rows and
     raises nothing. Where a stored row WOULD change, the run stops on that ticker and prints
@@ -1058,11 +1058,11 @@ def build_fundamentals_history(context, tickers: list[str], *,
         built = build_ticker(ticker, facts, catalogue=catalogue, guards=guards)
         if built.history.empty:
             continue
-        stored = context.store.load(Tables.fundamentals_history, columns=None,
+        stored = context.store.load(Tables.fundamentals_history_sec, columns=None,
                                     where={"ticker": ticker}, optional=True)
         history, codes = built.history, built.reason_codes
         if rebuild_history:
-            deleted = context.store.delete(Tables.fundamentals_history, {"ticker": ticker})
+            deleted = context.store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
             context.store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
             context.log.warning("history: %s REBUILT -- %d row(s) deleted and recomputed. "
                                 "Log this in the phase report: a rebuild re-derives numbers "
@@ -1076,7 +1076,7 @@ def build_fundamentals_history(context, tickers: list[str], *,
                                   "--rebuild-history to accept:\n%s", ticker, len(drift),
                                   drift["as_of"].nunique(), drift.head(20).to_string())
                 raise ValueError(
-                    f"{ticker}: {len(drift)} stored fundamentals_history cell(s) would "
+                    f"{ticker}: {len(drift)} stored fundamentals_history_sec cell(s) would "
                     "change; history is append-only (pass --rebuild-history to rebuild)")
             known = set(pd.to_datetime(stored["as_of"]))
             new = ~pd.to_datetime(history["as_of"]).isin(known)
@@ -1085,7 +1085,7 @@ def build_fundamentals_history(context, tickers: list[str], *,
         if history.empty:
             context.log.info("history: %s already current (0 new events)", ticker)
             continue
-        context.store.save(Tables.fundamentals_history, history)
+        context.store.save(Tables.fundamentals_history_sec, history)
         if not codes.empty:
             context.store.save(Tables.fundamentals_reason_codes, codes)
         context.log.info("history: %s +%d event row(s), %d reason code(s)",

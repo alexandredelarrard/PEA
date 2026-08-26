@@ -11,7 +11,7 @@ Phases are consecutive: do not start phase N+1 until phase N's verification bloc
 
 | phase | file | goal | depends on |
 |---|---|---|---|
-| ⬜ 0 | *(user-owned, see below)* | rename `fundamentals_history` → `fundamentals_history_sec` | — |
+| ✅ 0 | *(done 2026-08-26)* | rename `fundamentals_history` → `fundamentals_history_sec` | — |
 | ✅ 1 | [phase-1-extract.md](phase-1-extract.md) | 4 Sharadar tables + fetcher + step + CLI, real rows on DJIA-**30** | phase 0 |
 | ⬜ 2 | [phase-2-diagnostics.md](phase-2-diagnostics.md) | measure the acceptance gates **from the DB**; decide the per-field zero rule | phase 1 |
 | ⬜ 3 | [phase-3-field-map.md](phase-3-field-map.md) | the 112 → repo-camelCase map + basis translations + TTM build | phase 2 |
@@ -89,6 +89,48 @@ MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea \
 
 plus renaming each `ix_fundamentals_history_*` index, and editing the `-- [extract]` block in
 `sql/schema.sql` so a fresh DB matches.
+
+### ✅ DONE 2026-08-26 — what was actually changed
+
+The user renamed the live table in DBeaver; the code half was done here.
+
+- **Registry now holds BOTH entries.** `fundamentals_history_sec` is the SEC producer's output
+  (3,258 rows live). `fundamentals_history` is **forward-declared** for the phase-4 merged
+  table — nothing writes it yet, so every read returns empty. It is declared now so all 12
+  Group-B files are ALREADY pointed at the right name and phase 4 only has to POPULATE it,
+  rather than re-point every consumer a second time.
+- **Group A: 5 code references + 53 prose occurrences across 25 files** renamed. The sweep used
+  `(?<![A-Za-z0-9_])fundamentals_history(?![A-Za-z0-9_])`, which cannot touch the FUNCTION
+  `build_fundamentals_history` or the data_aggregate KEYWORD ARGUMENT `fundamentals_history=`.
+  Both were the real risk in a naive find-replace; neither was touched.
+- **Group B untouched**, as specified.
+- **Two string literals became registry objects** (`tiingo_comparison.py`,
+  `yahoo_comparison.py` passed `"fundamentals_history"` to `store.load`, violating the
+  "never a string literal" rule). Same for `test_fundamentals_point_in_time.py`.
+- **`sql/schema.sql`**: the block, its `CREATE TABLE` and its ticker index renamed. Index count
+  unchanged at 30 — the file was NOT regenerated (see phase-1 deviation 3).
+- **⚠ The live indexes had to be renamed too, and this was NOT cosmetic.** A Postgres table
+  rename keeps the old index names, so `fundamentals_history_sec` still owned
+  `fundamentals_history_pkey`. Index names are schema-global, so phase 4's
+  `CREATE TABLE fundamentals_history` would have failed with "relation
+  fundamentals_history_pkey already exists". Fixed:
+  `ALTER INDEX fundamentals_history_pkey RENAME TO fundamentals_history_sec_pkey` and
+  `ix_fundamentals_history_ticker -> ix_fundamentals_history_sec_ticker`.
+- **The plan's file list was incomplete.** It missed `configs/fundamentals/fundamentals_kpis.json`,
+  `tests/conftest.py`, `tests/validate/**` (4 files) and `tests/data_store/test_store_where.py`.
+  Working from the plan's 30-file list alone would have left stragglers.
+
+**Verification**: `tests/validate` + `tests/data_store` + `tests/data_extract/sharadar` =
+**179 passed, 11 skipped, 0 failed**. `Tables.fundamentals_history_sec` reads 3,258 rows;
+`Tables.fundamentals_history` reads 0 (declared, unbuilt) — the intended state.
+
+**CLI renamed too**: `fundamentals-history` -> **`fundamentals-history-sec`**, so the command
+names the table it writes and the bare name stays free for the phase-4 merged builder. Safe to
+do: the Airflow extraction DAG schedules the JOINED `fundamentals` command, not this one
+(`dag_data_extraction.py:95`). Six references updated -- `docs/runbook.md` (3),
+`scripts/recreate_fundamentals_tables.py` (2), `src/validate/README.md`,
+`.claude/agents/fundamentals-triage.md`. `--rebuild-history` KEPT its name: it describes the
+LAYER being rebuilt (the history replay), not the table.
 
 **Tell the implementing agent when phase 0 is done** — phase 1 assumes `fundamentals_history` is a
 free name.

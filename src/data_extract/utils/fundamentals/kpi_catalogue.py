@@ -171,7 +171,7 @@ class FieldSpec:
         return self.raw.get("regimes", {}).get(regime, {})
 
 
-#: `fundamentals_history`'s own key columns. `sector` / `industry_group` are NOT here
+#: `fundamentals_history_sec`'s own key columns. `sector` / `industry_group` are NOT here
 #: (decision 32): they are a slowly-changing dimension joinable from `sp500_tickers`, and
 #: carrying them inside a point-in-time table duplicates a non-vintaged roster into every
 #: row. The residual is stated rather than hidden -- `regime` stays, and it is derived from
@@ -284,7 +284,7 @@ class Catalogue:
 
     @property
     def history_fields(self) -> list[str]:
-        """The catalogue fields `fundamentals_history` carries, ordered TIER then name.
+        """The catalogue fields `fundamentals_history_sec` carries, ordered TIER then name.
 
         One column per field, BARE NAME, on the TTM basis for a `duration` field and the
         latest instant for an `instant` one (decision 31). That matches the legacy naming
@@ -305,7 +305,7 @@ class Catalogue:
 
     @property
     def history_columns(self) -> list[str]:
-        """The `fundamentals_history` column contract, in table order: 4 keys + 52 catalogue
+        """The `fundamentals_history_sec` column contract, in table order: 4 keys + 52 catalogue
         fields + 8 derived + `regime` + 4 provenance = **69**.
 
         The number was "~71" twice and "68" once in the rebuild plan with no enumeration
@@ -543,8 +543,17 @@ class Catalogue:
         return pd.Timestamp(effective) if effective else None
 
     def measured_absent_rate(self, regime: str, field: str) -> float | None:
-        """The share of the regime's tickers with no fact for this field, as measured on
-        `fundamentals_facts_legacy`. None where it was not measured."""
+        """The share of the regime's tickers with no fact for this field. None where it was
+        not measured.
+
+        Measured once, on 2026-08-21, against `fundamentals_facts_legacy` (7.8M facts, 442
+        classifiable tickers). ⚠ That table was DROPPED on 2026-08-26, so these rates are a
+        frozen historical record: they cannot be re-derived. The current `fundamentals_facts`
+        carries no dimension metadata (no `is_dimensioned` / `axis` / `member`), so the
+        "does an undimensioned fact exist for this concept?" method that produced them is not
+        reproducible against it. Re-deriving needs a fresh multi-hour SEC walk AND a method
+        that works without dimension columns.
+        """
         block = self.regime_exceptions.get(regime, {}).get(field)
         return block.get("measured_absent_rate") if isinstance(block, dict) else None
 

@@ -24,7 +24,14 @@ from src.data_extract.utils.fundamentals.kpi_catalogue import (
     INPUT_TIER, UNVERIFIED, load_catalogue,
 )
 
-CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "configs")
+# Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
+# This file moved down one directory level once already (into the mirrored
+# tests/data_extract/<area>/ layout) and the hard index silently repointed this at
+# tests/configs/ -- 8 tests then errored with "KPI catalogue file missing", which reads
+# as a config bug rather than a moved file.
+_ROOT = next(p for p in Path(__file__).resolve().parents
+             if (p / "pyproject.toml").exists())
+CONFIG_DIR = str(_ROOT / "configs")
 #: Where the three JSONs actually live, for the raw-text checks that bypass the loader.
 CATALOGUE_DIR = Path(CONFIG_DIR) / "fundamentals"
 

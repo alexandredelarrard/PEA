@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS "cusip_ticker_map" (
 );
 CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ticker");
 
--- [extract] fundamentals_history  (pk: ticker, as_of)
+-- [extract] fundamentals_history_sec  (pk: ticker, as_of)
 -- The PUBLICATION-EVENT grain: `as_of` is a FILING DATE, not a period end, and a row exists
 -- for every date on which this ticker made >=1 extracted value newly public. Each row is a
 -- COMPLETE SNAPSHOT (every column carries its latest-known value at that date), so a plain
@@ -103,7 +103,7 @@ CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ti
 -- fail this build); `ebitda_q` / `freeCashflow_q` / `capexGlobal` and the ~170 columns whose
 -- inputs left with the rebuild.
 
-CREATE TABLE IF NOT EXISTS "fundamentals_history" (
+CREATE TABLE IF NOT EXISTS "fundamentals_history_sec" (
     "ticker" TEXT NOT NULL,
     "as_of" DATE NOT NULL,
     "fiscal_end" DATE,
@@ -187,10 +187,10 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "amended_fields" TEXT,
     PRIMARY KEY ("ticker", "as_of")
 );
-CREATE INDEX IF NOT EXISTS ix_fundamentals_history_ticker ON "fundamentals_history" ("ticker");
+CREATE INDEX IF NOT EXISTS ix_fundamentals_history_sec_ticker ON "fundamentals_history_sec" ("ticker");
 
 -- [extract] fundamentals_reason_codes  (pk: ticker, as_of, field, dc_code)
--- WHY a `fundamentals_history` cell is null, or why the value it does carry is not on the
+-- WHY a `fundamentals_history_sec` cell is null, or why the value it does carry is not on the
 -- field's nominal basis. Long rather than 39 `_DC` companion columns (which would be a ~50%
 -- wider table, almost entirely NULL); the deviation from the Compustat-style shape the spec
 -- asked for is reversible.
@@ -1542,7 +1542,7 @@ CREATE TABLE IF NOT EXISTS "cube" (
 -- [aggregate] fundamentals_check  (pk: run_date, run_id, check_name, ticker, field, period_key)
 -- The fundamentals validator's APPEND-ONLY finding ledger (plan-5b decision 42). Written by
 -- src/validate/; nothing else in that package mutates any table, and NOTHING HERE GATES -- the
--- nightly build of fundamentals_facts / fundamentals_history runs to completion whatever lands
+-- nightly build of fundamentals_facts / fundamentals_history_sec runs to completion whatever lands
 -- in this table (decision 45, the SEC's own warn-over-reject precedent).
 --
 -- `run_date` IS IN THE KEY, so a re-run appends rather than overwrites: "did this check fire

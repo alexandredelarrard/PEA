@@ -11,7 +11,7 @@ test_employee_extract_audit.py and is unchanged:
      lands it on the Q4 (fiscal-year-end) snapshot, like a balance-sheet level;
   2. a 10-Q is never opened for it (the body-text download is the expensive part);
   3. the continuity guard still fires, now seeded from `fundamentals_facts`;
-  4. `employees` reaches `fundamentals_history` as a real column, carried across
+  4. `employees` reaches `fundamentals_history_sec` as a real column, carried across
      the interim quarters rather than populating only the fiscal-year-end row.
 
 Checks 1 and 4 consume the period engine and the history build, both of which are
@@ -157,11 +157,11 @@ def test_continuity_guard_drops_parse_artifact():
 
 
 # --------------------------------------------------------------------------- #
-# 4. It reaches fundamentals_history as a column                               #
+# 4. It reaches fundamentals_history_sec as a column                               #
 # --------------------------------------------------------------------------- #
 def test_employees_is_carried_forward_into_the_interim_quarters():
     """A headcount is disclosed ONCE A YEAR, in the 10-K, so `employees` must reach
-    `fundamentals_history` under an as-of (ffill) alignment rather than populating only
+    `fundamentals_history_sec` under an as-of (ffill) alignment rather than populating only
     the fiscal-year-end row and leaving the three interim quarters blank.
 
     This is the one property of the field that lives in the history build rather than in
@@ -186,7 +186,7 @@ def test_employees_is_carried_forward_into_the_interim_quarters():
     assert (out[EMPLOYEES_FIELD] == 21_400.0).all(), \
         "the annual headcount did not carry into the interim quarters"
 
-    print("\n=== SANITY CHECK: employees reaches fundamentals_history ===")
+    print("\n=== SANITY CHECK: employees reaches fundamentals_history_sec ===")
     print(f"  ONE annual disclosure (2019-12-31: 21,400) -> populated on all "
           f"{len(out)} quarter rows {list(out[EMPLOYEES_FIELD].astype(int))}")
     print("  as-of (ffill) alignment, so interim quarters are not blank. Validated.")

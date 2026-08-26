@@ -116,7 +116,7 @@ def test_a_cross_identity_finding_NAMES_THE_FILING_it_broke_on(catalogue,
                                                                 clean_facts) -> None:
     """THE reason Tier 1's value checks moved to `fundamentals_facts`.
 
-    `Finding.edgar_url` is built from `(cik, accession_number)` and `fundamentals_history`
+    `Finding.edgar_url` is built from `(cik, accession_number)` and `fundamentals_history_sec`
     carries neither, so on the history substrate every one of the run's 1,437 Tier-1 findings
     arrived with a NULL url -- against 100% on Tier 3. An agent handed such a finding cannot
     open the filing that caused it, which is the first move the triage loop requires, so the

@@ -7,7 +7,7 @@ findings, what each check examined, and the SCOPE the run covered.
 ## THE ONE THING THIS CLASS PROMISES: IT NEVER MUTATES ANYTHING BUT ITS OWN THREE TABLES
 
 Decision 40, and it is load-bearing rather than stylistic. v2's design had a "Layer A" that
-nulled impossible values by UPDATE-ing `fundamentals_history` after the fact. That contradicts
+nulled impossible values by UPDATE-ing `fundamentals_history_sec` after the fact. That contradicts
 the table's append-only contract in the most damaging possible way: a historical row would
 change value after publication, so yesterday's cube and today's would disagree about the same
 event, and `build_history.diff_against_stored` -- the guard that makes the append-only property

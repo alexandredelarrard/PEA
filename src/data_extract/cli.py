@@ -176,18 +176,18 @@ def fundamentals_facts(config_path: str, tickers: str | None, full: bool) -> Non
                            years_history=int(config.data_extract.years_history))
 
 
-@cli.command(name="fundamentals-history",
-             help="fundamentals_facts -> fundamentals_history + _reason_codes, on the "
+@cli.command(name="fundamentals-history-sec",
+             help="fundamentals_facts -> fundamentals_history_sec + _reason_codes, on the "
                   "publication-event grain. No network. Append-only: refuses to overwrite "
                   "an already-published row unless --rebuild-history is passed.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option("--rebuild-history", is_flag=True,
-              help="Delete these tickers' fundamentals_history / _reason_codes rows and "
+              help="Delete these tickers' fundamentals_history_sec / _reason_codes rows and "
                    "rebuild from the facts ALREADY STORED. For a bug in the history layer; "
                    "costs no network. (Use `fundamentals --rebuild` for a resolution bug.)")
-def fundamentals_history(config_path: str, tickers: str | None,
-                         rebuild_history: bool) -> None:
+def fundamentals_history_sec(config_path: str, tickers: str | None,
+                             rebuild_history: bool) -> None:
     _, context = _ctx(config_path)
     build_fundamentals_history(context, tickers=_tickers(context, tickers),
                                rebuild_history=rebuild_history)
@@ -208,7 +208,7 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
     names = _tickers(context, tickers)
     if rebuild:
         for ticker in names:
-            for table in (Tables.fundamentals_facts, Tables.fundamentals_history,
+            for table in (Tables.fundamentals_facts, Tables.fundamentals_history_sec,
                           Tables.fundamentals_reason_codes, Tables.fundamentals_employees):
                 context.store.delete(table, {"ticker": ticker})
         context.log.warning("fundamentals: --rebuild deleted all four tables for %d "

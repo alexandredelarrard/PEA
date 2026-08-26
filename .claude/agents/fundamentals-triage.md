@@ -24,12 +24,12 @@ Prefix every shell command with `rtk`.
 
 | you changed | rebuild before re-validating | cost |
 |---|---|---|
-| `build_history.py`, `reason_codes.py`, a `_FORMULAS` entry | `fundamentals-history --rebuild-history -t X` | ~2.5 min/ticker, **no network** |
+| `build_history.py`, `reason_codes.py`, a `_FORMULAS` entry | `fundamentals-history-sec --rebuild-history -t X` | ~2.5 min/ticker, **no network** |
 | `xbrl_linkbase.py`, `periods.py`, `fundamentals_kpis.json` — a RESOLUTION bug | `fundamentals --rebuild -t X` (deletes the four tables for X and refetches) | network, minutes |
 | a check module or a threshold | none — re-validate directly | seconds |
 
 **A Tier-1 VALUE finding is a FACTS finding.** Only six checks still read
-`fundamentals_history` (`grain`, `column_contract`, `code_vocabulary`, `unexplained_null`,
+`fundamentals_history_sec` (`grain`, `column_contract`, `code_vocabulary`, `unexplained_null`,
 `pit_leak`, `coverage_universe`) and they are zero-ceiling tripwires for a `build_history`
 bug — if one of THOSE fires, the history rebuild is the relevant one. For everything else in
 Tier 1, rebuilding history proves nothing: rebuild the layer that produced the fact.
@@ -116,7 +116,7 @@ the filing.
 > be measured off `filing.xbrl()`.
 
 **Tier-1 findings carry an `edgar_url` now.** They used to not: 13 of the tier's checks read
-`fundamentals_history`, which has no accession, so all 1,427 Tier-1 findings on the 2026-08-24
+`fundamentals_history_sec`, which has no accession, so all 1,427 Tier-1 findings on the 2026-08-24
 run had a NULL url — criticals included. Eight checks moved to `fundamentals_facts`, and every
 one that implicates a filing is now at 100%.
 
@@ -296,7 +296,7 @@ a nicety: it is the acceptance corpus and it grows with every fix. **Name the fi
 
 - **Never accept a cluster without filing-level evidence.**
 - **Never apply a `configs/` edit.** Propose it.
-- **Never mutate `fundamentals_history` or `fundamentals_facts` directly.** They are
+- **Never mutate `fundamentals_history_sec` or `fundamentals_facts` directly.** They are
   append-only; the fix is upstream and the rebuild is the mechanism.
 - **Never claim a fix is verified without the rebuild AND the re-validation delta.**
 - **Do not "helpfully" add a `roll_up.any_of` for `totalLiabilities`** so a leg-sum can replace

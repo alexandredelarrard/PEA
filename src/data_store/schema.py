@@ -140,16 +140,40 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Extract -- fundamentals                                           #
     # ----------------------------------------------------------------- #
-    # PUBLICATION-EVENT grain: `as_of` is a FILING DATE, one row per date on which >=1
-    # extracted value became newly public, each row a COMPLETE snapshot of every column's
-    # latest-known value. Append-only -- an earlier row keeps its as-filed numbers forever,
-    # which is where the no-leakage property lives. Exactly 69 columns, enumerated by
-    # `Catalogue.history_columns`. See fundamentals/build_history.py.
-    fundamentals_history = Table(
-        "fundamentals_history", ("ticker", "as_of"), date_col="as_of",
+    # The SEC producer's output. PUBLICATION-EVENT grain: `as_of` is a FILING DATE, one row
+    # per date on which >=1 extracted value became newly public, each row a COMPLETE snapshot
+    # of every column's latest-known value. Append-only -- an earlier row keeps its as-filed
+    # numbers forever, which is where the no-leakage property lives. Exactly 69 columns,
+    # enumerated by `Catalogue.history_columns`. See fundamentals/build_history.py.
+    #
+    # RENAMED from `fundamentals_history` on 2026-08-26 (Sharadar-integration phase 0). The
+    # bare name now belongs to the MERGED table below, so that every consumer of "the
+    # fundamentals history" keeps reading the strongest available dataset without being
+    # re-pointed. This entry is the SEC half of that merge and nothing else: it is what
+    # `build_history.py` writes, what `src/validate/` reads, and what
+    # `fundamentals_reason_codes` explains.
+    fundamentals_history_sec = Table(
+        "fundamentals_history_sec", ("ticker", "as_of"), date_col="as_of",
         date_type_cols=("as_of", "fiscal_end", "amended_fiscal_end"),
         freshness="quarterly")
-    # WHY a `fundamentals_history` cell is null, or why its value is off-basis. DENSE -- one
+    # THE MERGED TABLE, and the one every consumer should read: Sharadar owns a declared
+    # block of columns for all history, the SEC table above owns the rest, and no column ever
+    # switches source mid-series (D14/D15).
+    #
+    # ⚠ DECLARED HERE, BUILT IN PHASE 4. Nothing writes it yet, so every read returns empty
+    # until then -- that is deliberate and visible rather than silent. It is declared now so
+    # that `src/data_aggregate/` (all 12 files) is ALREADY pointed at the right name: phase 4
+    # then only has to populate it, instead of re-pointing every consumer a second time.
+    #
+    # NOT carried over from the SEC table: `is_amendment` / `amended_fiscal_end` /
+    # `amended_fields` are pure SEC reconciliation columns and stay there, since Sharadar has
+    # no amendment events and they would be permanently null here (D15). There is no `source`
+    # column either -- precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
+    fundamentals_history = Table(
+        "fundamentals_history", ("ticker", "as_of"), date_col="as_of",
+        date_type_cols=("as_of", "fiscal_end"),
+        freshness="quarterly")
+    # WHY a `fundamentals_history_sec` cell is null, or why its value is off-basis. DENSE -- one
     # row per null-or-qualified cell at every publication event -- so the
     # zero-unexplained-nulls gate is a LEFT JOIN on (ticker, as_of, field) rather than a
     # reconstruction. The code vocabulary is closed and lives in fundamentals/reason_codes.py.
@@ -161,6 +185,12 @@ class Tables:
     # fact row anywhere, so without it the rejected number is simply lost and "what did the
     # guard actually throw away?" becomes unanswerable after the fact. That question is the
     # whole lesson of the 745 correct rows an over-strict guard once nulled.
+    #
+    # ⚠ THIS EXPLAINS `fundamentals_history_sec`, NOT the merged `fundamentals_history`
+    # (decision D24). Reason codes are a property of the SEC resolution layer -- they name
+    # which SEC concept was combined, derived or rejected -- and Sharadar has no equivalent.
+    # Accepted consequence: `unexplained_null` stops being a universal zero-ceiling gate on
+    # the merged table; the phase-4 gap check is that table's instrument instead.
     fundamentals_reason_codes = Table(
         "fundamentals_reason_codes", ("ticker", "as_of", "field", "dc_code"),
         date_col="as_of", date_type_cols=("as_of",), freshness="quarterly")
@@ -179,7 +209,7 @@ class Tables:
     # period shape it tagged it with; nothing here is derived. Q4 = FY - YTD9 and the YTD
     # decumulation happen in memory during the history build, so this table stays a
     # faithful record of what was published -- which is what makes the publication-event
-    # grain and the no-leakage property of `fundamentals_history` provable rather than
+    # grain and the no-leakage property of `fundamentals_history_sec` provable rather than
     # asserted. ORIGINAL and AMENDED (10-K/A, 10-Q/A) filings coexist as separate rows and
     # are never overwritten, so "what was knowable on date D" is answerable by filtering
     # `filing_date <= D`.
@@ -222,7 +252,7 @@ class Tables:
     notes_text = Table("notes_text", ("adsh", "tag", "ddate", "qtrs"), date_col="ddate",
                        date_type_cols=("ddate", "filed"), freshness="biweekly",
                        freshness_date_col="filed")
-    # NOTE: `employees_history` was RETIRED, and so was the `fundamentals_history."employees"`
+    # NOTE: `employees_history` was RETIRED, and so was the `fundamentals_history_sec."employees"`
     # column that briefly replaced it. Headcount now has its own `fundamentals_employees`
     # table above (decision 35) -- one producer, `fundamentals_employees.py`, parsing the
     # 10-K prose inside the walk the fundamentals fetch already performs.
@@ -485,7 +515,7 @@ class Tables:
     # ----------------------------------------------------------------- #
     # One row per FINDING per RUN: the fundamentals validator's append-only queue (plan-5b
     # decision 42). `src/validate/` writes this and mutates nothing else -- the nightly
-    # build of `fundamentals_facts` / `fundamentals_history` runs to completion whatever
+    # build of `fundamentals_facts` / `fundamentals_history_sec` runs to completion whatever
     # lands here, because nothing gates (decision 45).
     #
     # `run_date` IS IN THE KEY, so a re-run appends rather than overwriting: "did this check

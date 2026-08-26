@@ -4,9 +4,8 @@ Tests for src/validate/external/yahoo_comparison.py: yfinance dataframe kind-dis
 (reusing outliers.detect_level_outliers on the our/yahoo ratio series), and the
 alignment-summary tolerance scoring.
 
-Pure-synthetic, no network / no DB -- `yf.Ticker` is monkeypatched at the module seam
-(same convention as test_tiingo_comparison.py's `get_json` monkeypatch), and
-`context.store.load` is a plain stub returning a synthetic fundamentals_history-shaped
+Pure-synthetic, no network / no DB -- `yf.Ticker` is monkeypatched at the module seam, and
+`context.store.load` is a plain stub returning a synthetic fundamentals_history_sec-shaped
 frame.
 """
 from __future__ import annotations

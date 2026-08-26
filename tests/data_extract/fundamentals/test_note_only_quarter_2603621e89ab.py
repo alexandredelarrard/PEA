@@ -35,7 +35,7 @@ they cover the bad quarters exactly, so passing the FILING's calendar in as a fa
 them off the filer's own contexts.
 
 `periods._drop_annual_masquerading_as_quarter` (D1b) already refused these rows downstream,
-which is why `fundamentals_history` never showed $42,440M as a quarter. But D1b runs on the
+which is why `fundamentals_history_sec` never showed $42,440M as a quarter. But D1b runs on the
 way to HISTORY, and `fundamentals_facts` -- the substrate all 47 findings read -- kept
 asserting the bad quarter. Refusing at the facts layer is what closes the cluster.
 

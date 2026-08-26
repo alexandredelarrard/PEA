@@ -10,7 +10,7 @@ later ticker's number was stored as a string. A schema change to any of these ta
 has to be applied deliberately, and this is the deliberate application.
 
 DESTRUCTIVE. Every row in the named tables is deleted; they are rebuilt by
-`fundamentals-facts -F` (network) and `fundamentals-history` (local). Nothing else is touched.
+`fundamentals-facts -F` (network) and `fundamentals-history-sec` (local). Nothing else is touched.
 
     "$PY" scripts/recreate_fundamentals_tables.py --dry-run
     "$PY" scripts/recreate_fundamentals_tables.py --yes
@@ -73,7 +73,7 @@ def main() -> None:
                 if statement.strip():
                     conn.execute(text(statement))
             print(f"  CREATED {table}")
-    print("\nDone. Now: `fundamentals-facts -F` per chunk, then `fundamentals-history`.")
+    print("\nDone. Now: `fundamentals-facts -F` per chunk, then `fundamentals-history-sec`.")
 
 
 if __name__ == "__main__":

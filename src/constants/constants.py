@@ -34,41 +34,6 @@ INSUFFICIENT_HISTORY_TICKERS: frozenset[str] = frozenset({
     "GEHC",   # GE HealthCare spin-off (2022, ~3.6y -- closest to the 4y cutoff)
 })
 
-# Companies that LEFT the S&P 500 in the last ~15 years (removed 2011+ and not since re-added).
-FORMER_SP500_TICKERS: frozenset[str] = frozenset({
-    "AA", "AAL", "AAP", "ABMD", "ACE", "ADS", "ADT", "AET", "AGN", "AIV",
-    "AKS", "ALK", "ALTR", "ALXN", "AMG", "AMTM", "AN", "ANDV", "ANF", "ANR",
-    "ANSS", "APC", "APOL", "ARG", "ARNC", "ATI", "ATVI", "AVP", "AYE", "AYI",
-    "BBBY", "BBWI", "BCR", "BEAM", "BHF", "BHI", "BIG", "BIO", "BMC", "BMS",
-    "BRCM", "BTU", "BWA", "BXLT", "CA", "CAG", "CAM", "CBE", "CCE", "CDAY",
-    "CE", "CELG", "CEPH", "CERN", "CFN", "CHK", "CLF", "CMA", "CMCSK", "CNX",
-    "COL", "COTY", "COV", "CPB", "CPGX", "CPRI", "CPWR", "CSC", "CSRA", "CTLT",
-    "CTRA", "CTXS", "CVC", "CVH", "CXO", "CZR", "DAY", "DF", "DFS", "DISCA",
-    "DISCK", "DISH", "DNB", "DNR", "DO", "DPS", "DRE", "DTV", "DV", "DWDP",
-    "DXC", "EMC", "EMN", "ENDP", "ENPH", "EP", "EPAM", "ESRX", "ESV", "ETFC",
-    "ETSY", "EVHC", "FBHS", "FDO", "FHN", "FII", "FL", "FLIR", "FLR", "FLS",
-    "FLT", "FMC", "FOSL", "FOX", "FRC", "FRX", "FTI", "FTR", "GAS", "GENZ",
-    "GGP", "GHC", "GMCR", "GME", "GNW", "GPS", "GR", "GT", "HAR", "HBI",
-    "HCBK", "HES", "HFC", "HNZ", "HOG", "HOLX", "HOT", "HP", "HRB", "HSP",
-    "IGT", "ILMN", "INFO", "IPG", "IPGP", "ITT", "JCP", "JDSU", "JEF", "JNPR",
-    "JNS", "JOY", "JWN", "K", "KFT", "KMX", "KRFT", "KSS", "KSU", "LEG",
-    "LIFE", "LKQ", "LLL", "LLTC", "LM", "LNC", "LO", "LSI", "LUMN", "LVLT",
-    "LW", "LXK", "M", "MAC", "MAT", "MBC", "MDP", "MEE", "MFE", "MHK",
-    "MHS", "MI", "MJN", "MKTX", "MMI", "MNK", "MOH", "MOLX", "MON", "MRO",
-    "MTCH", "MUR", "MWW", "MXIM", "NAVI", "NBL", "NBR", "NE", "NFX", "NKTR",
-    "NLSN", "NOV", "NOVL", "NSM", "NVLS", "NWL", "NYX", "OGN", "OI", "PAYC",
-    "PBCT", "PBI", "PCL", "PCP", "PCS", "PDCO", "PENN", "PETM", "PGN", "PLL",
-    "POM", "POOL", "PRGO", "PVH", "PXD", "QEP", "QRVO", "R", "RAI", "RDC",
-    "RE", "RHI", "RHT", "RIG", "RRC", "RRD", "RSH", "RTN", "S", "SAI",
-    "SBNY", "SCG", "SE", "SEDG", "SEE", "SHLD", "SIAL", "SIG", "SIVB", "SLE",
-    "SLG", "SLM", "SNI", "SOLS", "SPLS", "SRCL", "STI", "STJ", "SUN", "SVU",
-    "SWN", "SWY", "TDC", "TE", "TEG", "TFX", "TGNA", "THC", "TIE", "TIF",
-    "TLAB", "TRIP", "TSS", "TWC", "TWTR", "TWX", "TYC", "UA", "UAA", "UNM",
-    "URBN", "VAR", "VFC", "VIAB", "VNO", "VNT", "WBA", "WCG", "WFM", "WFR",
-    "WHR", "WIN", "WLTW", "WPX", "WU", "WYN", "X", "XEC", "XL", "XLNX",
-    "XRAY", "XRX", "YHOO", "ZION",
-})
-
 # --------------------------------------------------------------------------- #
 # SEC EDGAR endpoints (free, no key; require a descriptive User-Agent)         #
 # --------------------------------------------------------------------------- #
@@ -129,7 +94,7 @@ SEC_13D_FORMS = ["SC 13D", "SC 13D/A"]   # activist (13G = passive is deliberate
 SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
 
 # Fundamentals (financial-statement) forms walked per-filing via edgartools -> `fundamentals_facts`
-# / `fundamentals_history`. Amendments included explicitly (never inferred from a form-filter
+# / `fundamentals_history_sec`. Amendments included explicitly (never inferred from a form-filter
 # default) so a 10-K/A or 10-Q/A restatement is always discovered as its own accession.
 FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
 
@@ -566,7 +531,7 @@ PANEL_KEYS = ["date", "ticker"]
 
 # --------------------------------------------------------------------------- #
 # GICS sectors / industry groups (values as stored in `sp500_tickers`, carried  #
-# onto every `fundamentals_history` row by the extractor)                      #
+# onto every `fundamentals_history_sec` row by the extractor)                  #
 # --------------------------------------------------------------------------- #
 GICS_SECTOR_ENERGY = "Energy"
 GICS_SECTOR_FINANCIALS = "Financials"
@@ -590,7 +555,7 @@ GICS_GROUP_PHARMA_BIOTECH = "Pharmaceuticals, Biotechnology & Life Sciences"
 #   * a tag that IS sector-exclusive but rarely tagged starved it -- only 3 of 21
 #     Energy names tag `OilAndGasProperty*`, so EBITDAX / DD&A intensity were empty
 #     for 86% of the sector.
-# `fundamentals_history` carries sector + industry_group only (no sub-industry), so
+# `fundamentals_history_sec` carries sector + industry_group only (no sub-industry), so
 # `energy` is scoped at sector level: services / refiners simply report no exploration
 # expense or oil&gas property, leaving those KPIs NaN as before.
 SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -612,7 +577,7 @@ SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
 # from legitimate data — none of them clips a real value. See the per-constant
 # notes for the observed evidence.
 
-# `sharesOutstanding` for an S&P 500 name. 1.3% of fundamentals_history rows sat
+# `sharesOutstanding` for an S&P 500 name. 1.3% of fundamentals_history_sec rows sat
 # outside this: 57 rows above 2e10 (ORCL 2012 stored 4.819e15 vs a true 4.819e9 —
 # exactly 1e6x), 147 rows in 1..1e6 and 166 zeros. The real maximum in the table
 # among plausible rows is ~1.6e10 (BAC/T era), so 2e10 is a safe ceiling and 1e6 a
@@ -835,50 +800,39 @@ FIX_EVIDENCE_KEYS: dict[str, frozenset[str]] = {
 }
 
 # --------------------------------------------------------------------------- #
-# TIINGO CROSS-VALIDATION (src/validate/external/tiingo_comparison.py)                    #
+# The Dow Jones Industrial Average constituents                                #
 # --------------------------------------------------------------------------- #
-# External ground-truth check for `fundamentals_history`/`fundamentals_facts`. The
-# `.env` key's plan is capped to the Dow 30 (confirmed live: any other ticker returns
-# HTTP 400 "Free and Power plans are limited to the DOW 30") -- this is only today's
-# DEFAULT ticker argument, never hardcoded into the fetch itself, so widening it later
-# (a Tiingo plan upgrade) needs no other code change.
-TIINGO_STATEMENTS_URL_TEMPLATE = "https://api.tiingo.com/tiingo/fundamentals/{ticker}/statements"
+# A REFERENCE SET, not a policy. Two independent things happen to be capped to it, which is
+# why it is declared once here rather than inside either consumer:
+#   * the Sharadar free tier -- measured 2026-08-26, all 30 of these are entitled and every
+#     other S&P 500 ticker returns HTTP 403 "Exceeds free tier" (see fundamentals_sharadar);
+#   * `yahoo_comparison.py`, which uses it as the liquid, well-covered reference subset.
+# Kept current: `SHW` replaced `DOW` in the index, so `DOW` is NOT here -- and `DOW` is
+# consequently one of the tickers Sharadar denies.
 DOW_30_TICKERS = (
     "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
     "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
     "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT",
 )
-TIINGO_CACHE_DIRNAME = "tiingo_cache"
-TIINGO_COMPARISON_FILENAME = "tiingo_comparison.csv"
-TIINGO_RATIO_OUTLIERS_FILENAME = "tiingo_ratio_outliers.csv"
-
-# "95%+ aligned" tolerance bands for fields whose DEFINITION matches Tiingo's exactly
-# (bucket (a) in the field classification -- see tiingo_comparison.py's module
-# docstring). Wider for TTM-summed flows than instant/level fields: our figure sums 4
-# TRAILING TIINGO QUARTERS to approximate the same TTM window `fetch_fundamentals.
-# _derive_history`'s `ttm_a` computes, so a few basis points of fiscal-calendar/rounding
-# drift is expected even when both sides agree on the underlying concept.
-TIINGO_EXACT_MATCH_TOLERANCE_FLOW = 0.02
-TIINGO_EXACT_MATCH_TOLERANCE_LEVEL = 0.01
 
 # --------------------------------------------------------------------------- #
 # YAHOO CROSS-VALIDATION (src/validate/external/yahoo_comparison.py)                      #
 # --------------------------------------------------------------------------- #
-# Fallback external ground-truth check for tickers Tiingo's Free/Power plan does not
-# cover. Same shape as the Tiingo constants above; `yfinance` quarterly statements only
-# expose ~4-5 trailing, CURRENT-RESTATED quarters (no as-filed point-in-time depth), so
-# this is a coverage-gap filler, not a substitute for Tiingo's deeper history.
+# The ONLY external ground-truth check: Sharadar (`fundamentals_sharadar`) is the
+# independent fundamentals cross-source. ⚠ `yfinance` quarterly
+# statements expose only ~4-5 trailing, CURRENT-RESTATED quarters -- there is no as-filed
+# point-in-time depth -- so this validates the MOST RECENT quarters only and can never check
+# a historical as-filed value.
 YAHOO_CACHE_DIRNAME = "yahoo_cache"
 YAHOO_COMPARISON_FILENAME = "yahoo_comparison.csv"
 YAHOO_RATIO_OUTLIERS_FILENAME = "yahoo_ratio_outliers.csv"
 YAHOO_EXACT_MATCH_TOLERANCE_FLOW = 0.02
 YAHOO_EXACT_MATCH_TOLERANCE_LEVEL = 0.01
 
-# Tickers the universe-wide audit could validate against NEITHER Tiingo NOR Yahoo --
-# logged aside as informational, never treated as a blocking failure.
+# Tickers the universe-wide audit could not validate against Yahoo -- logged aside as
+# informational, never treated as a blocking failure.
 NO_EXTERNAL_VALIDATION_FILENAME = "no_external_validation.csv"
 
-# Single ranked review queue combining Tiingo/Yahoo bucket-a misses, Tiingo/Yahoo
-# ratio-outlier flags, tag-ledger switch breaks and internal level/YoY outliers --
-# see fundamentals_findings.py.
+# Single ranked review queue combining Yahoo bucket-a misses, Yahoo ratio-outlier flags,
+# tag-ledger switch breaks and internal level/YoY outliers -- see fundamentals_findings.py.
 FUNDAMENTALS_FINDINGS_RANKED_FILENAME = "fundamentals_findings_ranked.csv"

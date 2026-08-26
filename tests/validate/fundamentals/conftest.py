@@ -90,7 +90,7 @@ def make_facts(ticker: str = TICKER, *, scale: float = 1.0, leverage: float = 0.
 
 
 def make_history(facts: pd.DataFrame, catalogue) -> pd.DataFrame:
-    """A `fundamentals_history`-shaped frame consistent with `facts`.
+    """A `fundamentals_history_sec`-shaped frame consistent with `facts`.
 
     Built from the catalogue's own `history_columns`, so it has the real 69-column contract and
     `column_contract` passes on the clean base instead of firing on a hand-written subset.

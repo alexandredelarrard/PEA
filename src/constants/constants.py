@@ -194,6 +194,143 @@ SHARADAR_ZERO_FILLED_FIELDS: frozenset[str] = frozenset({
 })
 
 # --------------------------------------------------------------------------- #
+# Sharadar phase-2 DIAGNOSTICS -- the vocabulary the read-only gate runner      #
+# needs to interpret SF1 without fooling itself.                                #
+#                                                                               #
+# ⚠ THIS IS NOT THE SEC CHECK SCHEME. Nothing here registers a check, is read   #
+# by `src/validate/`, or writes a `fundamentals_check` row (D25). These names    #
+# exist for `data_extract/utils/fundamentals_sharadar/diagnostics.py` and for    #
+# the phase-3 field map that consumes its output.                               #
+# --------------------------------------------------------------------------- #
+#: Where the human-approved per-field zero rule lives. Its own subdirectory rather than
+#: `configs/fundamentals/`, because that directory is the SEC KPI catalogue's contract and
+#: `kpi_catalogue.py` validates every file it finds against a schema this one does not have.
+SHARADAR_CONFIG_SUBDIR = "sharadar"
+SHARADAR_ZERO_RULES_FILENAME = "sharadar_zero_rules.json"
+
+#: The 4 zero-filled fields `Tables.sharadar_fundamentals.read_columns` deliberately omits --
+#: three `*usd` conversions and one vendor ratio, all excluded from `fundamentals_history` by
+#: D21. The diagnostic still has to MEASURE them: every one of the 41 documented zero-filled
+#: fields must get a rule, and a field nobody projected would otherwise be silently missing.
+SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS = ("revenueusd", "cashnequsd", "debtusd", "divyield")
+
+#: DURATION fields: a value covering the PERIOD, so ARQ rows of one fiscal year sum to the
+#: ARY row. This is what makes the Q4 identity measurable at all -- summing a balance-sheet
+#: field across four quarters is meaningless, and comparing that sum to ARY would manufacture
+#: a "deviation" out of arithmetic that was never supposed to hold.
+#:
+#: Per-share (`eps`, `epsdil`, `dps`), weighted-average share counts (`shareswa`,
+#: `shareswadil`) and ratios (`divyield`) are EXCLUDED even though they are period figures:
+#: they are averages and quotients, not sums, so ΣQ != FY for them by construction.
+SHARADAR_FLOW_FIELDS: frozenset[str] = frozenset({
+    # income statement
+    "revenue", "revenueusd", "cor", "gp", "opex", "sgna", "rnd", "opinc", "intexp", "ebit",
+    "ebitda", "ebt", "taxexp", "consolinc", "netincnci", "netinc", "prefdivis", "netinccmn",
+    "netincdis",
+    # cash flow
+    "ncfo", "depamor", "sbcomp", "ncfi", "capex", "ncfbus", "ncfinv", "ncff", "ncfcommon",
+    "ncfdebt", "ncfdiv", "ncfx", "ncf", "fcf",
+})
+
+#: Fields where a NEGATIVE value is an artefact, never a fact. This is the ABT failure mode:
+#: Sharadar CONSTRUCTS Q4 as `ARY - Σ(Q1..Q3)`, and the legacy Quandl documentation shows that
+#: construction yielding ABT 2011 Q4 revenue of -$7.1bn, annotated as intentional "to ensure
+#: that the quarterly and annual financials are aligned".
+#:
+#: Deliberately EXCLUDED because a negative is real there: `equity` (buybacks put MCD, HD and
+#: BA below zero), `retearn`, `accoci`, `workingcapital`, `gp` (a pre-revenue biotech),
+#: `taxexp` (a tax benefit), every `netinc*`, `ebit`/`ebitda`, `fcf`, and all `ncf*` --
+#: those are signed by design. `capex` is excluded too: Sharadar stores it NEGATIVE, and its
+#: sign is asserted separately by `confirm_sign_conventions`.
+SHARADAR_NON_NEGATIVE_FIELDS: frozenset[str] = frozenset({
+    "revenue", "revenueusd", "cor", "sgna", "rnd", "opex", "intexp",
+    "assets", "assetsc", "assetsnc", "cashneq", "cashnequsd", "investments", "investmentsc",
+    "investmentsnc", "receivables", "inventory", "intangibles", "ppnenet", "taxassets",
+    "liabilities", "liabilitiesc", "liabilitiesnc", "debt", "debtc", "debtnc", "debtusd",
+    "deferredrev", "payables", "deposits", "taxliabilities",
+    "depamor", "sbcomp", "prefdivis", "dps", "divyield",
+    "shareswa", "shareswadil", "sharesbas",
+})
+
+#: Sharadar field -> (the `fundamentals_history_sec` columns that make up its counterpart,
+#: how comparable the two bases are). The SECOND element is the whole point of this map: a
+#: zero-fill verdict is only as strong as the basis behind it, and this repo has already
+#: measured what happens when a comparison is made across two definitions that were never the
+#: same thing.
+#:
+#:   "exact"     -- the same accounting line on both sides. A disagreement is a real defect.
+#:   "sec_wider" -- the SEC column is a documented SUPERSET, so "SEC is non-zero while
+#:                  Sharadar is zero" is EVIDENCE, never proof: the difference may live
+#:                  entirely in the components Sharadar's column does not carry.
+#:
+#: The three `sec_wider` entries and why: `cash` is cash + restricted cash + short-term
+#: investments (SEC decision #5) against Sharadar's `cashneq` alone; `totalDebt` includes
+#: finance- and operating-lease liabilities (SEC decision #4) against Sharadar's lease-free
+#: `debt`; `intangibles` is Sharadar's single goodwill-inclusive line against two SEC columns.
+#:
+#: 20 of the 41 zero-filled fields appear here. The other 21 -- `deposits`, `accoci`,
+#: `taxassets`, `taxliabilities`, `prefdivis`, `netincnci`, `netincdis`, `deferredrev`,
+#: `divyield`, `dps`, `investments`, `investmentsnc` and the 9 remaining `ncf*` legs -- have
+#: NO counterpart in the 60-field SEC catalogue, so their zeros can only be judged on
+#: Sharadar-internal evidence. Say so in the report rather than implying a check ran.
+SHARADAR_SEC_COUNTERPART: dict[str, tuple[tuple[str, ...], str]] = {
+    "revenue":      (("totalRevenue",), "exact"),
+    "revenueusd":   (("totalRevenue",), "exact"),
+    "cor":          (("costOfRevenue",), "exact"),
+    "sgna":         (("sellingGeneralAdmin",), "exact"),
+    "rnd":          (("researchAndDevelopment",), "exact"),
+    "intexp":       (("interestExpense",), "exact"),
+    "taxexp":       (("incomeTaxExpense",), "exact"),
+    "depamor":      (("depAmort",), "exact"),
+    "capex":        (("capex",), "exact"),
+    "cashneq":      (("cash",), "sec_wider"),
+    "cashnequsd":   (("cash",), "sec_wider"),
+    "investmentsc": (("shortTermInvestments",), "exact"),
+    "receivables":  (("accountsReceivable",), "exact"),
+    "inventory":    (("inventory",), "exact"),
+    "intangibles":  (("goodwill", "intangiblesExGoodwill"), "sec_wider"),
+    "ppnenet":      (("ppeNet",), "exact"),
+    "debt":         (("totalDebt",), "sec_wider"),
+    "debtusd":      (("totalDebt",), "sec_wider"),
+    "debtc":        (("shortTermDebt",), "exact"),
+    "debtnc":       (("longTermDebt",), "exact"),
+    "payables":     (("accountsPayable",), "exact"),
+}
+
+#: Fields describing a DISCRETE EVENT rather than a continuing state or flow. A zero here is a
+#: fact -- "no business was acquired this quarter", "no debt was issued" -- and the mixed-ticker
+#: heuristic below is exactly WRONG for them: of course a company that acquired something in Q2
+#: reports zero in Q1. Only a SEC contradiction can null one of these.
+#:
+#: `ncfdiv` and `dps` are deliberately NOT here even though they look similar. Every DJIA
+#: constituent pays a dividend every quarter, so a zero in those is a gap, not a quiet quarter.
+SHARADAR_EVENT_FIELDS: frozenset[str] = frozenset({
+    "ncfbus", "ncfinv", "ncfcommon", "ncfdebt", "ncfx", "netincdis",
+})
+
+#: Share of the zeros THE SEC LAYER COULD ACTUALLY JUDGE (a non-null counterpart) that must be
+#: contradicted before the diagnostic proposes `"null"`. A rate over the judged cells, not over
+#: all zeros: a field where 4 of 4 checkable zeros are wrong is a broken column, and dividing
+#: those 4 by the 140 zeros nobody could check would hide it.
+#:
+#: Low on purpose. The question is "can a 0 in this column be read as a real 0?", and once any
+#: measurable slice is provably wrong with nothing in the payload distinguishing those cells
+#: from the rest, the answer is no for the whole column. Nulling also moves Sharadar TOWARDS
+#: the SEC layer's own treatment: where the SEC path has no value it stores NULL, never 0.
+SHARADAR_ZERO_RULE_CONTRADICTION_SHARE = 0.02
+
+#: How many zeros the SEC layer must be able to judge before its verdict is used at all. Three
+#: cells is not a rate, it is an anecdote.
+SHARADAR_ZERO_RULE_MIN_CHECKED = 3
+
+#: Share of a field's zeros sitting in tickers that report the SAME field non-zero in another
+#: quarter. This is the Sharadar-INTERNAL signal, and it is the only one available for the 21
+#: fields with no SEC counterpart: a bank has no inventory in any quarter (structural, and
+#: `"keep"` is right), but a bank with 4.2bn of interest expense in Q2 and 0 in Q1 is a fill,
+#: not a fact. Not applied to `SHARADAR_EVENT_FIELDS`.
+SHARADAR_ZERO_RULE_MIXED_SHARE = 0.5
+
+# --------------------------------------------------------------------------- #
 # Google Trends (unofficial API — retail-attention proxy). The explore call    #
 # returns widget tokens; the multiline call returns the interest-over-time     #
 # series for a token. Priming the home URL first sets the required NID cookie.  #

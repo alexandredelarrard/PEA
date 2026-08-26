@@ -13,7 +13,7 @@ Phases are consecutive: do not start phase N+1 until phase N's verification bloc
 |---|---|---|---|
 | ✅ 0 | *(done 2026-08-26)* | rename `fundamentals_history` → `fundamentals_history_sec` | — |
 | ✅ 1 | [phase-1-extract.md](phase-1-extract.md) | 4 Sharadar tables + fetcher + step + CLI, real rows on DJIA-**30** | phase 0 |
-| ⬜ 2 | [phase-2-diagnostics.md](phase-2-diagnostics.md) | measure the acceptance gates **from the DB**; decide the per-field zero rule | phase 1 |
+| ✅ 2 | [phase-2-diagnostics.md](phase-2-diagnostics.md) | measure the acceptance gates **from the DB**; decide the per-field zero rule | phase 1 |
 | ⬜ 3 | [phase-3-field-map.md](phase-3-field-map.md) | the 112 → repo-camelCase map + basis translations + TTM build | phase 2 |
 | ⬜ 4 | [phase-4-merge.md](phase-4-merge.md) | merged `fundamentals_history` + gap check + override register | phase 3 |
 | ⬜ 5 | [phase-5-docs-dod.md](phase-5-docs-dod.md) | docs, AGENTS.md, DoD report | phase 4 |
@@ -198,7 +198,7 @@ differently.
 | `stockholdersEquity` | **Two explicit columns**: `stockholdersEquity` (Sharadar parent-only, universal, one basis) and `stockholdersEquityInclNci` (parent + SEC `minorityInterest`, 54 tickers). |
 | `totalRevenue` (banks) | **Not a blanket rule.** A measured gap check proposes; you adjudicate case by case; the decision lands in an override register. JPM matches exactly; AXP is 6.6–8.1% low. |
 | `netIncome` | ← **`consolinc`** (incl. NCI), not `netinc`. Measured on JPM's 11 dates. |
-| `sharesOutstanding` | ← **`sharesbas`**, cross-checked against SEC on the overlap. Whether it sums share classes is undocumented — phase 2 measures it. |
+| `sharesOutstanding` | ⚠ **REVISED BY PHASE 2 — do not map `sharesbas` as a point-in-time count.** It does *not* sum share classes (12/14 overlap tickers agree with the SEC cover page at ratio exactly 1.0), but it **is retroactively split-adjusted**: NVDA's 2021 rows carry ~25bn shares against the ~2.5bn then outstanding, and `sharefactor` is `1.0` on every one of them. Phase 3 takes this column from the SEC layer on the overlap, or de-adjusts using `sharadar_actions`. |
 | `freeCashflow` | ← **`fcf`**. Measured: `capex` is **negative** and `fcf == ncfo + capex` **exactly**. No reconstruction needed. |
 
 ### Governance
@@ -221,16 +221,29 @@ differently.
 The research doc was written before the key existed. These were measured on 2026-08-26 against the
 live API and supersede it.
 
-1. **`fcf == ncfo + capex`, exactly**, on AAPL ARQ. `capex` is stored **negative**
-   (`-2,455,000,000`). So are `ncfi`, `ncff`, `ncfdiv`, `ncfcommon`, `ncfinv`, `ncfdebt`.
+> ⚠ **Facts 1–3 were taken from a 14-ticker / 279-row API sample. Phase 2 re-measured all three
+> against the full stored table (30 tickers, 1,346 rows) and TWO OF THEM ARE WRONG.** The
+> corrected numbers are in [phase-2-findings.md](phase-2-findings.md); the strikethroughs below
+> exist so nobody re-derives a decision from the superseded version.
+
+1. **`fcf == ncfo + capex`, exactly** — ✅ **confirmed on all 1,346 stored rows.** `capex` is
+   stored **negative**. So are `ncfi`, `ncff`, `ncfdiv`, `ncfcommon`, `ncfinv`, `ncfdebt`.
    Sign conventions are as-filed, not absolute values.
+   ⚠ But `capex <= 0` is **NOT universal** — 13 of 1,346 rows are positive (11 of them GS).
+   The original claim was measured on AAPL alone. Phase 3 must guard the sign flip.
 
-2. **ΣARQ == ARY to the cent** — AAPL FY2024 and FY2025, CAT FY2024 and FY2025, JPM FY2024 and
-   FY2025, all at `+0.000%`. This **confirms the research's §4.3 prediction**: the spec's acceptance
-   check #3 (Q4 = FY − 9M) is *tautological* on Sharadar. It can never fail, therefore it can never
-   inform you. Phase 2 replaces it per D28.
+2. ~~**ΣARQ == ARY to the cent**, all at `+0.000%`.~~ ⚠ **Partly wrong.** Measured over 3,532
+   triples: exactly zero on **96.1%**, but **58 deviate materially** (max 136%), clustering into
+   17 (ticker, fiscal year) pairs — MMM FY2024 moves 14 fields at once. Those are Sharadar
+   **restating a year** between publishing its quarters and its annual row. The conclusion for
+   the spec's check #3 is unchanged (dead as a gate: where it holds it holds *exactly*), but
+   "it can never fail" is not true and phase 4's gap check will meet these same years.
 
-3. **Zero-fill prevalence, ARQ, 14 DJIA tickers, 279 rows:**
+3. ~~**Zero-fill prevalence, ARQ, 14 DJIA tickers, 279 rows.**~~ ⚠ **Superseded** — every rate
+   below differs from the full-table measurement, some by a lot (`inventory` 23.4% not 36%,
+   `intexp` 16.6% not 25%, `deposits` 87% not 71%). Use the table in
+   [phase-2-findings.md](phase-2-findings.md) and the rules in
+   `configs/sharadar/sharadar_zero_rules.json`, never these:
 
    | field | zeros | field | zeros | field | zeros |
    |---|---|---|---|---|---|
@@ -239,9 +252,10 @@ live API and supersede it.
    | `inventory` | 35.8% | `capex` | 14.3% | `dps` | 4.3% |
    | `sbcomp` | 28.7% | `debtc` | 8.0% | `revenue`, `debt`, `sgna`, `receivables`, `cashneq`, `accoci`, `debtnc` | **0.0%** |
 
-   Most of these zeros are *correctly* "not applicable" — a bank has no inventory, a retailer has no
-   R&D. **But `intexp = 0` for JPM and GS is provably false**; banks have enormous interest expense.
-   This is exactly why the rule is per-field and measured, not global.
+   The *reasoning* held: **`intexp = 0` is provably false** — confirmed on 58/58 judgeable
+   cells, on AXP, GS and JPM. But the guess about which fields would be defensible did not.
+   `inventory` is **not** defensible (SEC contradicts 4/4, on UNH) while `rnd` **is**
+   (140/140 overlap zeros have no SEC value either). Measuring beat predicting on both.
 
 4. **`fields=` silently drops an unavailable field** rather than erroring — a typo yields a missing
    column and no warning. Every response header must be validated against the expected set.
@@ -283,7 +297,7 @@ live API and supersede it.
 
 - [ ] `python -m src data_extract fundamentals-sharadar` populates 4 tables with real rows for 29 DJIA tickers.
 - [ ] Re-running it is idempotent and pulls only new rows.
-- [ ] The phase-2 diagnostic answers all three acceptance gates (D28) with printed numbers.
+- [x] The phase-2 diagnostic answers all three acceptance gates (D28) with printed numbers.
 - [ ] `fundamentals_history` is rebuilt Sharadar-first with the ~14 SEC columns merged in.
 - [ ] Every basis fork in the table above is implemented as decided, with a test pinning it.
 - [ ] The override register exists, is human-approved, and the merge is deterministic given it.

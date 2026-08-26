@@ -52,9 +52,6 @@ class StepExtractAllData(Step):
 
         # self._prices.run(tickers=tickers)
         self._structure.run(tickers=tickers)
-        # Sharadar BEFORE the SEC layer (D11): independent producers, and the merged
-        # fundamentals_history that consumes both is field-block precedence with Sharadar
-        # first. A ticker outside the subscription costs one 403 and is counted, not retried.
         # self._fundamentals_sharadar.run(tickers=tickers)
         # self._fundamentals.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)

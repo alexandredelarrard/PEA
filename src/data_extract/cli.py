@@ -39,6 +39,9 @@ from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions, fetch_sharadar_fundamentals, fetch_sharadar_sp500,
     fetch_sharadar_tickers,
 )
+from src.data_extract.utils.fundamentals_sharadar.diagnostics import (
+    DEFAULT_REPORT_PATH, run_diagnostics,
+)
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 # --- structure -------------------------------------------------------------- #
 from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
@@ -274,6 +277,28 @@ def sharadar_actions(config_path: str, full: bool) -> None:
 def sharadar_sp500(config_path: str, full: bool) -> None:
     _, context = _ctx(config_path)
     fetch_sharadar_sp500(context, full=full)
+
+
+@cli.command(name="sharadar-diagnostics",
+             help="READ-ONLY acceptance gates on fundamentals_sharadar -> a markdown report "
+                  "+ a PROPOSED per-field zero rule. Writes no production data and is NOT "
+                  "the SEC check scheme (D25).")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option("--out", "report_path", default=DEFAULT_REPORT_PATH, show_default=True,
+              help="Where to write the findings markdown.")
+def sharadar_diagnostics(config_path: str, tickers: str | None, report_path: str) -> None:
+    """Completeness, implausible quarters and per-field zero-fill prevalence (D28), measured
+    from POSTGRES rather than from the API (D29).
+
+    `--tickers` is optional and defaults to EVERY ticker already stored, not to the sp500
+    universe: the entitlement covers a subset, and asking for the rest would report a gate
+    failure on tickers that were never fetched. Nothing here registers a check, writes a
+    `fundamentals_check` row or imports `src/validate/`.
+    """
+    _, context = _ctx(config_path)
+    names = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
+    run_diagnostics(context, tickers=names, report_path=report_path, config_dir=config_path)
 
 
 @cli.command(help="Earnings surprises -> historical forward P/E.")

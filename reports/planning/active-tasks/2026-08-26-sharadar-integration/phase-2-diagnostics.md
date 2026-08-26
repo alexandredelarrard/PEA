@@ -1,4 +1,10 @@
-# Phase 2 — Diagnostics, measured from the DB ⬜
+# Phase 2 — Diagnostics, measured from the DB ✅
+
+> **DONE 2026-08-26.** All six diagnostics implemented, run against Postgres, report and rule
+> file generated. 5 tests pass, 1 skips with a printed reason (D19, as designed).
+> **See ["What the measurement actually found"](#what-the-measurement-actually-found) at the
+> bottom — four of this plan's assumptions were wrong, and one of them (`sharesbas`) changes a
+> D-decision.**
 
 **Goal**: answer the three acceptance gates (D28) with printed numbers read **from Postgres**, not
 from the API, and turn the zero-fill measurement into a per-field rule you approve.
@@ -55,12 +61,12 @@ drop it.
 
 All reads through `self._context.store` with `columns=` and `where=`/`since=`. No `pd.read_sql`.
 
-- [ ] `gate_completeness(context, tickers) -> pd.DataFrame`
+- [x] `gate_completeness(context, tickers) -> pd.DataFrame`
       Per ticker: expected quarter count over its own observed window vs actual ARQ rows; every gap
       listed with its `reportperiod` boundary. A ticker whose history simply starts late is not a
       gap — measure against each ticker's own first row, not a global start.
 
-- [ ] `gate_implausible_quarters(context, tickers) -> pd.DataFrame`
+- [x] `gate_implausible_quarters(context, tickers) -> pd.DataFrame`
       Per (ticker, field) over ARQ, flag:
       - a **negative** value in a field that cannot be negative (`revenue`, `assets`, `cor`,
         `inventory`, `receivables`, `cashneq`, …) — the ABT failure mode;
@@ -72,7 +78,7 @@ All reads through `self._context.store` with `columns=` and `where=`/`since=`. N
         construction artefact rather than a real charge.
       Report the count, and the worst 20 with their actual numbers.
 
-- [ ] `gate_zero_fill(context, tickers) -> pd.DataFrame`
+- [x] `gate_zero_fill(context, tickers) -> pd.DataFrame`
       For each of the 41 documented zero-filled fields: `n_rows`, `n_zero`, `pct_zero`, and
       `n_tickers_all_zero` (a ticker where the field is 0 in **every** row — the strongest signal
       that it means "not applicable" rather than "zero this quarter").
@@ -85,32 +91,32 @@ All reads through `self._context.store` with `columns=` and `where=`/`since=`. N
       R&D. **`intexp` at 25% will not be**: `intexp = 0` for JPM and GS is provably false. If the
       DB-side numbers disagree materially with these, stop — something in phase 1 is wrong.
 
-- [ ] `cross_check_shares(context) -> pd.DataFrame`
+- [x] `cross_check_shares(context) -> pd.DataFrame`
       D-decision on `sharesOutstanding ← sharesbas`. Compare `sharesbas` against the SEC layer's
       share count on the 14 overlapping tickers. The question is whether `sharesbas` **sums multiple
       share classes**, which is undocumented and which this repo already solved painfully for 36
       multi-class tickers by summing the cover-page `dei:EntityCommonStockSharesOutstanding`.
       A systematic ratio (not noise) is the answer. Report the per-ticker median ratio.
 
-- [ ] `confirm_sign_conventions(context) -> dict`
+- [x] `confirm_sign_conventions(context) -> dict`
       Assert from stored data what was measured from the API: `capex <= 0` throughout, and
       `fcf == ncfo + capex` to the cent. **If either fails, the phase-3 field map is wrong and you
       must stop.** These are cheap assertions that protect an expensive mistake.
 
-- [ ] `confirm_q4_tautology(context, tickers) -> pd.DataFrame`
+- [x] `confirm_q4_tautology(context, tickers) -> pd.DataFrame`
       ΣARQ vs ARY per (ticker, fiscal year, field). Expected: `0.000%` everywhere. This is not a
       quality check — it is **evidence for the record** that the spec's acceptance check #3 is
       tautological on this vendor and must not be relied on. Report the max absolute deviation.
 
 ### 2. `src/data_extract/cli.py`
 
-- [ ] `sharadar-diagnostics` — runs all six, prints a rich summary, writes the markdown report.
+- [x] `sharadar-diagnostics` — runs all six, prints a rich summary, writes the markdown report.
 
 ### 3. Outputs
 
-- [ ] **`reports/planning/active-tasks/2026-08-26-sharadar-integration/phase-2-findings.md`** —
+- [x] **`reports/planning/active-tasks/2026-08-26-sharadar-integration/phase-2-findings.md`** —
       the generated report. One section per gate, every claim a number.
-- [ ] **`configs/sharadar/sharadar_zero_rules.json`** — the per-field decision, machine-proposed
+- [x] **`configs/sharadar/sharadar_zero_rules.json`** — the per-field decision, machine-proposed
       and **human-approved**. Shape:
 
 ```json
@@ -134,13 +140,13 @@ not a naive dump.
 
 `tests/data_extract/test_sharadar_diagnostics.py` — real data, and each prints its conclusion.
 
-- [ ] `test_completeness_gate_runs` — asserts the frame is non-empty and prints the per-ticker gap count.
-- [ ] `test_sign_conventions_hold` — the `capex <= 0` and `fcf == ncfo + capex` assertions. Prints both.
-- [ ] `test_q4_identity_is_tautological` — asserts max deviation `< 0.01%` and **prints that this
+- [x] `test_completeness_gate_runs` — asserts the frame is non-empty and prints the per-ticker gap count.
+- [x] `test_sign_conventions_hold` — the `capex <= 0` and `fcf == ncfo + capex` assertions. Prints both.
+- [x] `test_q4_identity_is_tautological` — asserts max deviation `< 0.01%` and **prints that this
       means check #3 carries no information**. A test that documents a dead check is worth having.
-- [ ] `test_zero_rules_cover_every_flagged_field` — every field in `SHARADAR_ZERO_FILLED_FIELDS`
+- [x] `test_zero_rules_cover_every_flagged_field` — every field in `SHARADAR_ZERO_FILLED_FIELDS`
       has an entry in `sharadar_zero_rules.json`. Prints any missing.
-- [ ] `test_cik_cutover_continuity` — written now, `skipif` no cutover ticker is in the roster.
+- [x] `test_cik_cutover_continuity` — written now, `skipif` no cutover ticker is in the roster.
       Prints the skip reason so the gap is visible rather than invisible.
 
 ---
@@ -153,12 +159,12 @@ rtk "$PY" -m pytest tests/data_extract/test_sharadar_diagnostics.py -v -s
 rtk "$PY" -m src data_extract sharadar-diagnostics -c ./configs
 ```
 
-- [ ] `phase-2-findings.md` exists and every gate has numbers.
-- [ ] `sharadar_zero_rules.json` covers all 41 fields, each with a reason.
-- [ ] Sign conventions confirmed from stored data.
-- [ ] Q4 tautology confirmed (max deviation < 0.01%).
-- [ ] The `sharesbas` cross-check reports a per-ticker median ratio, and you have read it.
-- [ ] The CIK-cutover test is present and **skipped with a printed reason**.
+- [x] `phase-2-findings.md` exists and every gate has numbers.
+- [x] `sharadar_zero_rules.json` covers all 41 fields, each with a reason.
+- [x] Sign conventions confirmed from stored data.
+- [x] Q4 tautology confirmed (max deviation < 0.01%).
+- [x] The `sharesbas` cross-check reports a per-ticker median ratio, and you have read it.
+- [x] The CIK-cutover test is present and **skipped with a printed reason**.
 
 ---
 
@@ -173,3 +179,74 @@ Written as three findings and a recommendation, not as a table dump. Specificall
 - which fields must be NULL-ruled, and what fraction of cells that removes.
 
 **Do not proceed to phase 3 until you have read this and said go.**
+
+---
+
+## What the measurement actually found
+
+Full report: [phase-2-findings.md](phase-2-findings.md). Rule file:
+`configs/sharadar/sharadar_zero_rules.json` (41/41 fields, 4 nulled).
+
+### The answer to the purchase question
+
+**Buy** — nothing disqualifying was found. 0 missing quarters across 30 tickers,
+0 duplicates, and `fcf == ncfo + capex` exactly on all 1,346 rows. But **four of this plan's
+stated assumptions were wrong**, and phase 3 must not map a field blind.
+
+### ⚠ Four plan assumptions that did not survive contact with the data
+
+| # | the plan said | the data says |
+|---|---|---|
+| 1 | `sharesbas`'s open question is whether it **sums share classes** | It does **not** — 12/14 overlap tickers sit at ratio exactly 1.0. The real defect is that **`sharesbas` is retroactively SPLIT-ADJUSTED**: NVDA's 2021 rows carry ~25bn shares against the ~2.5bn then outstanding (10-for-1, June 2024); WMT the same at 3x. `sharefactor` is `1.0` on every one and does not flag it. **`sharesbas` is not point-in-time.** |
+| 2 | `capex <= 0` throughout | **13 of 1,346 rows are positive** (0.97%), 11 of them GS. The plan's claim came from AAPL alone. An unconditional sign flip would write a negative into a `non_negative` SEC column. |
+| 3 | ΣARQ == ARY at `+0.000%` **everywhere** | Exactly zero on **3,395/3,532 (96.1%)**, but **58 triples deviate materially** (max 136%). They cluster — MMM FY2024 alone moves 14 fields together, its quarters summing to $26.56bn of revenue against a $24.58bn annual row. Those are **restated years**, not drift. The check is still dead as a gate, but the exceptions are real and phase 4's gap check will meet them again. |
+| 4 | `inventory` at 36% zero will be "almost entirely defensible" | Zero-fill rates are all **lower** than the API pre-measurement (`inventory` 23.4% not 36%, `intexp` 16.6% not 25%, `deposits` 87% not 71%), and `inventory` is **not** defensible: SEC contradicts it on 4/4 judgeable cells (UNH). `rnd` at 51% *is* defensible — 140/140 overlap zeros have no SEC value either. |
+
+`intexp` was the one prediction that held exactly: **58/58** judgeable zeros contradicted, on
+AXP, GS and JPM. `ppnenet` joins it (12/12, all GS).
+
+### Implementation deviations
+
+1. **`fiscalperiod`, not a derived fiscal year.** The first implementation derived the fiscal
+   year from `calendardate` and was **measurably wrong**: for an ARY row Sharadar sets
+   `calendardate` to **December of the assigned calendar year, not the fiscal year end**
+   (AAPL `2022-FY` carries `2022-12-31` against `reportperiod 2022-09-24`). Deriving the
+   year-end quarter from the annual rows therefore returns Q4 for every filer, and all seven
+   non-December DJIA filers had their quarters split across two labels — 849 spurious
+   deviations. Sharadar's own `fiscalperiod` (`2022-Q1` … `2022-FY`) is clean and is used
+   directly. Documented on `with_fiscal_period`.
+2. **Gate 2 reshaped to long form**, after the per-field `groupby.transform(lambda)` version
+   took ~3 minutes. Same arithmetic, ~4 seconds.
+3. **Three rule-ladder refinements the plan did not specify**, each forced by the data:
+   `SHARADAR_EVENT_FIELDS` (a zero in `ncfbus`/`ncfdebt` means "no transaction", so the
+   mixed-ticker heuristic is wrong for them — without this, 4 cash-flow legs were nulled
+   spuriously); contradiction measured **over the cells SEC could judge**, not over all zeros
+   (4/4 wrong is a broken column, 4/140 looks like nothing); and SEC **absence counted as
+   agreement**, since the SEC path stores NULL where it finds nothing and never 0.
+4. **Tests live at `tests/data_extract/sharadar/`**, matching phase 1, not the plan's
+   `tests/data_extract/`. A **6th test** was added for the split-adjustment finding.
+5. **`test_sign_conventions_hold` asserts a bounded exception rate for capex**, not the
+   universal the plan wrote — asserting `capex <= 0` everywhere would be asserting something
+   false. `fcf == ncfo + capex` is still asserted strictly.
+6. **Scope is 30 tickers, not 29.** The stored roster is the current DJIA-30 (SHW replaced DOW).
+7. The test module is **pure ASCII**: a `Σ` in a `print()` and a `∩` in another crashed the
+   cp1252 Windows console, and a failing test's docstring is echoed through the same encoder.
+
+### What phase 3 must carry forward
+
+- Guard the `capex` sign flip; NULL the 13 positive rows rather than flipping them.
+- Do **not** map `sharesOutstanding <- sharesbas` as a point-in-time count. Take it from the
+  SEC layer on the overlap, or de-adjust with `sharadar_actions` (ingested, carries the splits).
+- Read `sharadar_zero_rules.json`, skip `_`-prefixed keys, fail loudly on a missing field.
+- `intexp` carries a **second defect the null rule cannot reach**, because it is never a zero.
+  NKE has **0 zeros and 14 negative quarters**: Sharadar passes through Nike's own
+  *"Interest expense (income), net"* line, and `ebt - ebit == -intexp` exactly on all 20 rows
+  confirms it. That is a **BASIS** mismatch (net vs the repo's gross `non_negative`
+  definition), **not** a sign convention like `capex` — negating it would report an interest
+  expense NKE never incurred, so it is not lossless. NKE is not on the SEC roster, so there is
+  no fallback value. Phase 3 decides: NULL the negatives, or a separate column.
+
+### Still unverified
+
+**D19 (CIK-cutover continuity) did not run.** None of APA / GOOGL / ETN is in the DJIA, so the
+test skips with a printed reason. It must run on day one of a wider entitlement.

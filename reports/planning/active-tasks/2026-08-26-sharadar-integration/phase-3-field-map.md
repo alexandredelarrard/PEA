@@ -11,6 +11,74 @@ This phase **writes no table**. It produces a pure, testable transform plus its 
 
 ---
 
+## ✅ Phase-2 hand-back, and what it added to this phase (2026-08-26)
+
+**The 4 `null` rules are APPROVED** — `intexp`, `inventory`, `ppnenet`, `dps`. The approval is
+recorded as an `_APPROVED` block in `configs/sharadar/sharadar_zero_rules.json`, and
+**`apply_zero_rules` must refuse to run against a file that lacks one**: a regenerated proposal
+is byte-identical to a reviewed decision otherwise, and the whole point of the file is that a
+human looked at those four.
+
+Phase 2 also found three defects that the zero rule **cannot express**, because none of them is
+a zero. They are the reason for §0 below.
+
+| defect | measured | why the zero rule cannot reach it |
+|---|---|---|
+| `capex` positive | 13 / 1,346 rows (BA, CVX, GS ×11, IBM) | the cells are positive, not zero |
+| `intexp` net-basis | NKE 14 negative quarters, **0 zeros**; MMM 1 | the cells are negative, not zero |
+| `sharesbas` split-adjusted | NVDA 10×, WMT 3× on pre-split dates | the cells are correct numbers on the *wrong basis* |
+
+### 0. `configs/sharadar/sharadar_corrections.json` — the correction register ⬜
+
+**Decided 2026-08-26: build a proper correction mechanism in the Sharadar layer**, rather than
+scattering `if ticker == "GS"` guards through the field map. Same governance as D22 —
+machine-proposed, human-approved, and the transform only *reads* it, so the map stays
+deterministic given the register.
+
+Grain is **(field, ticker)** — deliberately not (field), which is the zero rule's grain, and not
+(field, ticker, date), which would be an unmaintainable cell-level patch list. Proposed shape:
+
+```json
+{
+  "intexp": {"NKE": {"action": "null", "reason": "filer tags 'Interest expense (income), net'; basis is net, the repo column is gross", "evidence": "ebt - ebit == -intexp on 20/20 rows"}},
+  "capex":  {"GS":  {"action": "null_if_positive", "reason": "Sharadar's bank cash-flow mapping; 11 positive rows"}}
+}
+```
+
+Every entry needs an `action`, a `reason` and an **`evidence`** field naming what was measured
+or which filing was read — this repo has been burned by fallbacks with no stated authority.
+Actions stay a **closed vocabulary** (`null`, `null_if_positive`, …); a free-form expression
+field would become code in a config file.
+
+Applied **in the Sharadar layer, before the field map**, so `fundamentals_sharadar` stays a
+faithful record of what the vendor sent (D7: a mapping mistake must be re-derivable without
+refetching) and every correction is one auditable, reversible step.
+
+### 0b. `intexp` — INVESTIGATE BEFORE RULING ⬜
+
+**Do not write an `intexp` correction from the phase-2 numbers alone.** They establish *that*
+NKE is on a net basis, not *how many filers are*, and a rule built on one ticker will not
+survive the S&P 500. The investigation, before any entry is written:
+
+- [ ] How many of the 30 tickers tag a **net** interest line? `ebt - ebit == -intexp` holds for
+      NKE on 20/20 — run that identity across the whole roster and see who else it fits.
+- [ ] Does the SEC layer resolve **gross** interest expense for the same filers? It declares
+      `interestExpense` gross and `non_negative`, and its regime machinery already distinguishes
+      bank from industrial caption chains. If it does, the answer is "SEC owns this column",
+      not a correction — but NKE is **not** on the 54-ticker SEC roster, so measure coverage
+      before assuming a fallback exists.
+- [ ] Is a negative `intexp` always net-basis, or sometimes a genuine credit (a capitalised-
+      interest reversal)? Read MMM's single negative quarter against its 10-Q, since it is the
+      one case that does not fit the NKE pattern.
+- [ ] Decide between: NULL the negatives; carry the net line as a **separate column**
+      (`interestExpenseNet`, one basis per column, the repo's rule); or move `interestExpense`
+      to SEC-owned in D18.
+
+Only then write the register entry. **This is a blocker for `interestExpense` specifically, not
+for the rest of the field map** — the other 59 columns are unaffected.
+
+---
+
 ## The contract it must produce
 
 The repo's vocabulary is `HISTORY_STATEMENT_ORDER` in
@@ -36,11 +104,16 @@ Three entry kinds:
 ```json
 {
   "totalRevenue":  {"from": "revenue",  "kind": "direct"},
-  "capex":         {"from": "capex",    "kind": "direct", "negate": true},
+  "capex":         {"from": "capex",    "kind": "direct", "negate": "if_non_positive"},
   "ebitda":        {"kind": "derived",  "formula": "opinc + depamor"},
   "goodwill":      {"kind": "sec"}
 }
 ```
+
+⚠ `"negate": true` was the plan's original spelling and phase 2 killed it: 13 of 1,346 stored
+rows carry a POSITIVE `capex`, so an unconditional flip writes a negative into a column the SEC
+catalogue declares `non_negative`. `"if_non_positive"` flips where the sign convention holds and
+NULLs where it does not, which must be **counted and logged**, never silent.
 
 ### 2. The map itself
 
@@ -71,15 +144,15 @@ reader does not "fix" it:
 | `shortTermDebt` | `debtc` | lease-**inclusive**; the repo's is lease-exclusive. |
 | `longTermDebt` | `debtnc` | lease-**inclusive**. |
 | `pretaxIncome` | `ebt` | Sharadar tags `ebt` as `[Metrics]`, not `[Income Statement]`. |
-| `interestExpense` | `intexp` | **25.4% zero-filled and provably wrong for banks** (JPM, GS). Governed by `sharadar_zero_rules.json`. |
-| `sharesOutstanding` | `sharesbas` | whether it sums share classes is undocumented; phase 2 measured it. SF1 covers the **primary class only**. |
+| `interestExpense` | `intexp` | **16.6% zero-filled** (not 25.4% — phase 2 re-measured on the full table) **and provably wrong on 58/58 judgeable cells** (AXP, GS, JPM). Ruled `"null"` in `sharadar_zero_rules.json`. ⚠ **The null rule does not cover this column's second defect, because that defect is never a zero.** `intexp` is whatever single interest line the filer tags, and for NKE that line is **"Interest expense (income), net"** — negative in 14 of 20 quarters, and 0 zeros, so the null rule never inspects a single NKE row. Verified: `ebt - ebit == -intexp` exactly on all 20. This is a **BASIS** mismatch, not a sign convention — unlike `capex`, negating is *not* lossless, because it would report an $8m interest expense NKE never incurred against a column defined as **gross** ("Total interest expense for the period", `sign: non_negative`). NKE is not on the 54-ticker SEC roster, so there is no fallback value. Decide: NULL the negatives, or carry the net line under a different name. Do **not** negate. Census across 30 tickers: NKE 14 neg / 0 zero, MMM 1 neg / 9 zero, AAPL 11 zero, CRM 19 zero, AXP+GS+JPM 20 zero each. |
+| `sharesOutstanding` | ⚠ **NOT `sharesbas`** | **Phase 2 answered this, and the answer is no.** `sharesbas` does not sum share classes — 12/14 overlap tickers match the SEC cover page at ratio exactly 1.0 — but it **is retroactively SPLIT-ADJUSTED**: NVDA's 2021 rows carry ~25bn shares against the ~2.5bn then outstanding (10-for-1, June 2024), WMT the same at 3x. `sharefactor` is `1.0` on every one and does not flag it. **`sharesbas` is not point-in-time.** Take this column from the SEC layer on the overlap, or de-adjust with `sharadar_actions` (ingested, carries the splits) — and pin whichever you choose with a test on NVDA's 2021 rows. |
 
 **Sign flip — measured, and the easiest silent bug in this phase:**
 
 | repo | Sharadar | |
 |---|---|---|
-| `capex` | `capex` | The repo declares `capex` as **`sign: non_negative`** ([fundamentals_kpis.json]). Sharadar stores it **negative** (`-2,455,000,000` on AAPL). **`negate: true`.** |
-| `freeCashflow` | `fcf` | No transform. Measured: `fcf == ncfo + capex_sharadar` **exactly**, which is `ncfo − capex_repo`. Consistent by construction. |
+| `capex` | `capex` | The repo declares `capex` as **`sign: non_negative`** ([fundamentals_kpis.json]). Sharadar stores it negative. ⚠ **`negate: true` IS NOT SAFE UNCONDITIONALLY** — phase 2 measured **13 of 1,346 rows with a POSITIVE `capex`** (11 of them GS; also BA, CVX, IBM), so a blind flip writes a *negative* into a `non_negative` column. **Flip where `capex <= 0`, NULL the rest**, and count what you nulled. |
+| `freeCashflow` | `fcf` | No transform. ✅ Confirmed by phase 2 on **all 1,346 stored rows**, zero violations: `fcf == ncfo + capex_sharadar` **exactly**, which is `ncfo − capex_repo`. Consistent by construction. |
 
 **Derived — the basis decisions, implemented:**
 

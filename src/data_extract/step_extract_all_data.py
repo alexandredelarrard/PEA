@@ -20,6 +20,9 @@ from src.utils.universe import load_universe_tickers
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
+from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
+    StepExtractFundamentalsSharadar,
+)
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.transformers.step_extract_behavioral import StepExtractBehavioral
 
@@ -30,6 +33,8 @@ class StepExtractAllData(Step):
         super().__init__(context=context, config=config)
         
         self._prices = StepExtractPrices(context=context, config=config)
+        self._fundamentals_sharadar = StepExtractFundamentalsSharadar(context=context,
+                                                                      config=config)
         self._fundamentals = StepExtractFundamentals(context=context, config=config)
         self._structure = StepExtractStructure(context=context, config=config)
         self._behavioral = StepExtractBehavioral(context=context, config=config)
@@ -47,6 +52,10 @@ class StepExtractAllData(Step):
 
         # self._prices.run(tickers=tickers)
         self._structure.run(tickers=tickers)
+        # Sharadar BEFORE the SEC layer (D11): independent producers, and the merged
+        # fundamentals_history that consumes both is field-block precedence with Sharadar
+        # first. A ticker outside the subscription costs one 403 and is counted, not retried.
+        # self._fundamentals_sharadar.run(tickers=tickers)
         # self._fundamentals.run(tickers=tickers)
         # self._behavioral.run(tickers=tickers)
        

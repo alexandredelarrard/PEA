@@ -35,6 +35,10 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fun
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
+from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
+    fetch_sharadar_actions, fetch_sharadar_fundamentals, fetch_sharadar_sp500,
+    fetch_sharadar_tickers,
+)
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 # --- structure -------------------------------------------------------------- #
 from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
@@ -212,6 +216,64 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
     fetch_fundamentals_sec(context, tickers=names, full=full or rebuild,
                            years_history=int(config.data_extract.years_history))
     build_fundamentals_history(context, tickers=names, rebuild_history=rebuild)
+
+
+# --------------------------------------------------------------------------- #
+# Fundamentals -- Sharadar (SF1), the OTHER producer                            #
+# --------------------------------------------------------------------------- #
+# One command per Sharadar table so the Airflow extraction DAG can schedule them
+# separately, plus a joined one that runs all four in dependency order. `-F/--full` re-pulls
+# the whole configured window instead of resuming from the stored max date.
+#
+# History depth is `data_extract.sharadar_years_history`, NOT `years_history`: the SEC walk
+# is limited by patience, Sharadar by subscription tier (D3).
+@cli.command(name="fundamentals-sharadar",
+             help="ALL FOUR Sharadar tables in dependency order: tickers -> SF1 "
+                  "fundamentals -> actions -> sp500. A ticker outside the subscription "
+                  "returns 403, costs one request and is counted, never retried.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> None:
+    config, context = _ctx(config_path)
+    years = int(config.data_extract.sharadar_years_history)
+    # tickers FIRST and unconditionally: the SF1 fetch reads `currency` from it to assert
+    # USD (D20) and refuses to run against an empty dimension.
+    fetch_sharadar_tickers(context)
+    fetch_sharadar_fundamentals(context, tickers=_tickers(context, tickers),
+                                years_history=years, full=full)
+    fetch_sharadar_actions(context, years_history=years, full=full)
+    fetch_sharadar_sp500(context, full=full)
+
+
+@cli.command(name="sharadar-tickers",
+             help="Sharadar entity dimension (permaticker, currency, category) -> "
+                  "sharadar_tickers. Full refresh. Prerequisite of fundamentals-sharadar.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+def sharadar_tickers(config_path: str) -> None:
+    _, context = _ctx(config_path)
+    fetch_sharadar_tickers(context)
+
+
+@cli.command(name="sharadar-actions",
+             help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, "
+                  "relations) -> sharadar_actions.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+def sharadar_actions(config_path: str, full: bool) -> None:
+    config, context = _ctx(config_path)
+    fetch_sharadar_actions(context, full=full,
+                           years_history=int(config.data_extract.sharadar_years_history))
+
+
+@cli.command(name="sharadar-sp500",
+             help="S&P 500 membership events (added / removed / historical, from 1992) -> "
+                  "sharadar_sp500. Ingested only; universe.py is NOT re-pointed (D27).")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+def sharadar_sp500(config_path: str, full: bool) -> None:
+    _, context = _ctx(config_path)
+    fetch_sharadar_sp500(context, full=full)
 
 
 @cli.command(help="Earnings surprises -> historical forward P/E.")

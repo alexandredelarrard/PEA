@@ -239,6 +239,7 @@ If the user wants to refine the plan:
 5. Update the plan document
 
 The plan should be thorough enough that implementation can proceed with minimal questions.
+If the plan is too big (more than 700 lines) Split the plan in following phases, with a readme to reconcile them. Agents will work better with clear well scope phases plan.
 
 ## Plan Templates for Common Tasks:
 

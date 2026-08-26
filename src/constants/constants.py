@@ -152,6 +152,83 @@ FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 DEF14A_FORMS = ["DEF 14A", "DEF 14C"]
 
 # --------------------------------------------------------------------------- #
+# Sharadar SF1 fundamentals (Sharadar DIRECT, api.sharadar.com).               #
+# NOT data.nasdaq.com and NOT the nasdaqdatalink / quandl client libraries:    #
+# the Direct channel names the filing-date column `date` (Nasdaq Data Link     #
+# calls it `datekey`) and ships `fiscalperiod`, which Nasdaq Data Link omits.  #
+# The column name is inside the primary key, so the two channels are not       #
+# interchangeable. See reports/research/financial-data/                        #
+# 2026-08-26-sharadar-fundamentals.md.                                         #
+# --------------------------------------------------------------------------- #
+SHARADAR_BASE_URL = "https://api.sharadar.com/v1.0"
+SHARADAR_API_KEY_ENV = "SHARADAR_API_KEY"
+
+# The AS-REPORTED dimensions only. Sharadar also publishes MRQ/MRY/MRT ("most recent
+# reported"), which RESTATE IN PLACE when a filer amends -- a row's numbers change under a key
+# that did not, so an append-only store cannot tell an amendment from a bug and
+# `diff_against_stored` would fire forever. AR* rows are point-in-time and immutable.
+SHARADAR_DIMENSIONS = ("ARQ", "ARY", "ART")
+
+# The response-header CONTRACT, in delivered order (captured live 2026-08-26). Every response
+# is validated against this: `fields=` SILENTLY DROPS an unavailable field rather than
+# erroring, so a typo yields a missing column and no warning. A header that disagrees with
+# this tuple is an error, not a shrug.
+SHARADAR_SF1_COLUMNS: tuple[str, ...] = (
+    # identifiers (7)
+    "ticker", "dimension", "calendardate", "date", "reportperiod", "fiscalperiod",
+    "lastupdated",
+    # the 105 value columns, alphabetical as Sharadar delivers them
+    "accoci", "assets", "assetsavg", "assetsc", "assetsnc", "assetturnover", "bvps",
+    "capex", "cashneq", "cashnequsd", "cor", "consolinc", "currentratio", "de", "debt",
+    "debtc", "debtnc", "debtusd", "deferredrev", "depamor", "deposits", "divyield", "dps",
+    "ebit", "ebitda", "ebitdamargin", "ebitdausd", "ebitusd", "ebt", "eps", "epsdil",
+    "epsusd", "equity", "equityavg", "equityusd", "ev", "evebit", "evebitda", "fcf",
+    "fcfps", "fxusd", "gp", "grossmargin", "intangibles", "intexp", "invcap", "invcapavg",
+    "inventory", "investments", "investmentsc", "investmentsnc", "liabilities",
+    "liabilitiesc", "liabilitiesnc", "marketcap", "ncf", "ncfbus", "ncfcommon", "ncfdebt",
+    "ncfdiv", "ncff", "ncfi", "ncfinv", "ncfo", "ncfx", "netinc", "netinccmn",
+    "netinccmnusd", "netincdis", "netincnci", "netmargin", "opex", "opinc", "payables",
+    "payoutratio", "pb", "pe", "pe1", "ppnenet", "prefdivis", "price", "ps", "ps1",
+    "receivables", "retearn", "revenue", "revenueusd", "rnd", "roa", "roe", "roic", "ros",
+    "sbcomp", "sgna", "sharefactor", "sharesbas", "shareswa", "shareswadil", "sps",
+    "tangibles", "taxassets", "taxexp", "taxliabilities", "tbvps", "workingcapital",
+)
+
+# The 7 NON-NUMERIC columns. EVERYTHING ELSE IN SF1 IS A VALUE COLUMN AND MUST BE CAST TO
+# float64 BEFORE THE FIRST WRITE -- `ensure_table` infers SQL types from the FIRST frame it
+# sees, so a column the first ticker never populates lands as an all-None object column,
+# becomes TEXT, and every later ticker's real number is then stored as a string. Measured
+# live on `minorityInterest` / `restrictedCash`: VRT created them TEXT and APA's values came
+# back as '1997000000.0'.
+SHARADAR_ID_COLUMNS = ("ticker", "dimension", "calendardate", "date", "reportperiod",
+                       "fiscalperiod", "lastupdated")
+
+# History floor for `sharadar_sp500`. Membership events are only useful at FULL depth -- the
+# survivorship-bias fix needs the whole series, and the entire table is ~3.3k rows (earliest
+# event measured 1992-01-02), so the cold pull is a single request. There is no years-history
+# knob for it for that reason.
+SHARADAR_SP500_FIRST_DATE = "1990-01-01"
+
+# The 41 indicators Sharadar documents as ZERO-FILLED: "Where this item is not contained on
+# the company consolidated financial statements and cannot otherwise be imputed the value of
+# 0 is used". Cross-validated -- exactly the set whose `NA Value` read 0 in the official 2019
+# indicators.txt, a perfect match in both directions.
+#
+# A 0 here can mean "genuinely not applicable" (a bank has no inventory) or "absent, and we
+# wrote a zero anyway" -- and the two are indistinguishable in the payload. Measured over 279
+# ARQ rows: `intexp = 0` for JPM and GS, which is provably false. So the rule must be
+# PER-FIELD and measured, never global. Phase 1 only records the list; phase 2 measures its
+# prevalence and phase 3 acts on it.
+SHARADAR_ZERO_FILLED_FIELDS: frozenset[str] = frozenset({
+    "revenue", "revenueusd", "cor", "sgna", "rnd", "intexp", "taxexp", "netincnci",
+    "prefdivis", "netincdis", "dps", "cashneq", "cashnequsd", "investments", "investmentsc",
+    "investmentsnc", "receivables", "inventory", "intangibles", "ppnenet", "taxassets",
+    "debt", "debtc", "debtnc", "debtusd", "deferredrev", "payables", "deposits",
+    "taxliabilities", "accoci", "depamor", "ncfi", "capex", "ncfbus", "ncfinv", "ncff",
+    "ncfcommon", "ncfdebt", "ncfdiv", "ncfx", "divyield",
+})
+
+# --------------------------------------------------------------------------- #
 # Google Trends (unofficial API — retail-attention proxy). The explore call    #
 # returns widget tokens; the multiline call returns the interest-over-time     #
 # series for a token. Priming the home URL first sets the required NID cookie.  #

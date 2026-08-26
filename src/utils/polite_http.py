@@ -138,6 +138,20 @@ def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
         return None
 
 
+def get_once(url, *, params=None, headers=None, timeout=30, impersonate=True):
+    """ONE GET, no retry, returning the response WHATEVER its status (None only on a
+    transport error) -- for callers that must CLASSIFY the status themselves.
+
+    `http_get` collapses every non-200 into None, which is right when a non-200 is a
+    failure. It is wrong when a status is a ROUTINE, EXPECTED, NON-RETRYABLE answer: the
+    Sharadar API returns 403 "Exceeds free tier" for every ticker outside the subscription,
+    and http_get would both hide that it was a 403 and burn 4 exponential-backoff retries
+    per ticker on an answer that will never change.
+    """
+    return _raw_get(url, params=params, headers=headers, timeout=timeout,
+                    impersonate=impersonate)
+
+
 def http_get(url, *, params=None, headers=None, timeout=30, retries=4, backoff=3.0,
              impersonate=True, log_missing=True):
     """Adaptive GET: rotated browser impersonation + retry with exponential backoff + jitter,

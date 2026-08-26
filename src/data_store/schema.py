@@ -228,6 +228,95 @@ class Tables:
     # 10-K prose inside the walk the fundamentals fetch already performs.
 
     # ----------------------------------------------------------------- #
+    # Extract -- fundamentals (Sharadar)                                #
+    # ----------------------------------------------------------------- #
+    # Sharadar SF1, ALL 112 COLUMNS AS DELIVERED. Stored vendor-shaped and unmapped on
+    # purpose: the repo-camelCase field map is a separate layer, and a mapping mistake must
+    # be re-derivable without refetching (decision D7).
+    #
+    # `dimension` is in the PK because the same (ticker, date) is published on three
+    # as-reported bases -- ARQ (discrete quarter), ARY (annual), ART (trailing twelve
+    # months). Only the AR* three are ever written: MRQ/MRY/MRT restate in place, so their
+    # rows mutate under an unchanged key and `diff_against_stored` could not tell an
+    # amendment from a bug (D8).
+    #
+    # ⚠ `date` HERE IS THE FILING DATE, not the period end -- that is `reportperiod`. The
+    # Sharadar DIRECT channel names it `date`; Nasdaq Data Link calls the same column
+    # `datekey`. Both are in the PK, so the two channels are not interchangeable.
+    #
+    # `read_columns` is REQUIRED: 112 columns x 3 dimensions is the widest extract table in
+    # the schema. The projection is the 7 identifiers plus the line items the field map
+    # consumes, and deliberately EXCLUDES the 35 vendor-computed ratios (`pe`, `roe`, `de`,
+    # `ev`, `marketcap`, ...) and the 8 `*usd` conversions -- those live in the raw table
+    # only and never reach `fundamentals_history` (D21). A consumer needing one passes
+    # `columns=` explicitly.
+    sharadar_fundamentals = Table(
+        "fundamentals_sharadar", ("ticker", "dimension", "date", "reportperiod"),
+        date_col="date",
+        date_type_cols=("date", "reportperiod", "calendardate", "lastupdated"),
+        freshness="quarterly",
+        read_columns=(
+            "ticker", "dimension", "calendardate", "date", "reportperiod", "fiscalperiod",
+            "lastupdated",
+            # income statement
+            "revenue", "cor", "gp", "opex", "sgna", "rnd", "opinc", "intexp", "ebit",
+            "ebitda", "ebt", "taxexp", "consolinc", "netincnci", "netinc", "prefdivis",
+            "netinccmn", "netincdis", "eps", "epsdil", "dps",
+            # share counts
+            "shareswa", "shareswadil", "sharesbas", "sharefactor",
+            # balance sheet
+            "assets", "assetsc", "assetsnc", "cashneq", "investments", "investmentsc",
+            "investmentsnc", "receivables", "inventory", "intangibles", "ppnenet",
+            "taxassets", "liabilities", "liabilitiesc", "liabilitiesnc", "debt", "debtc",
+            "debtnc", "deferredrev", "payables", "deposits", "taxliabilities", "equity",
+            "retearn", "accoci",
+            # cash flow
+            "ncfo", "depamor", "sbcomp", "ncfi", "capex", "ncfbus", "ncfinv", "ncff",
+            "ncfcommon", "ncfdebt", "ncfdiv", "ncfx", "ncf", "fcf",
+        ))
+    # Sharadar's own ticker dimension, filtered to `table=fundamentals` (17,826 rows
+    # measured 2026-08-26). Kept vendor-shaped and SEPARATE from `sp500_tickers`: this one
+    # carries `permaticker` -- Sharadar's stable entity id, which survives a ticker change
+    # and is NOT a column in SF1 -- plus `currency`, which the fundamentals fetch reads to
+    # enforce the USD assertion (D20). There is no `cik` column in any Sharadar table.
+    #
+    # ⚠ `table` is a COLUMN here (the Sharadar table the row describes) and it is in the PK.
+    # It is also SQL-reserved-ish, so every call must pass this `Table` object rather than a
+    # string literal, and the store must quote it.
+    sharadar_tickers = Table(
+        "sharadar_tickers", ("table", "permaticker", "ticker"), KIND_REFERENCE,
+        date_type_cols=("firstadded", "firstpricedate", "lastpricedate", "firstquarter",
+                        "lastquarter", "lastupdated"),
+        read_columns=("table", "permaticker", "ticker", "name", "exchange", "isdelisted",
+                      "category", "currency", "sector", "industry", "siccode", "location",
+                      "firstquarter", "lastquarter"))
+    # Corporate actions: dividends, splits, spinoffs, acquisitions, name/SIC changes and
+    # `relation` (the link from a common share to a sibling security).
+    #
+    # ⚠ `contraticker` -- the OTHER side of the action -- IS A PK MEMBER, and the plan's
+    # original (date, ticker, name, action) was not unique. A company links several sibling
+    # securities on one day: measured over 1,927 live rows, GS emitted three `relation` rows
+    # dated 2026-08-25 differing only in `contraticker` (GS-PD / GS-PA / GS-PC, its
+    # preferred series D / A / C), and JPM eight more. That PK collapsed 11 rows into 3 on
+    # upsert, silently. With `contraticker` the same 1,927 rows have zero duplicates.
+    # `contraticker` is the literal string "N/A" when there is no other side, never NULL --
+    # which is what makes it safe in a PK, and why the reader must not let pandas coerce
+    # "N/A" to NaN (see fetch_sharadar.py's `keep_default_na=False`).
+    sharadar_actions = Table(
+        "sharadar_actions", ("date", "ticker", "action", "contraticker"), date_col="date",
+        date_type_cols=("date",),
+        read_columns=("date", "action", "ticker", "name", "value", "contraticker",
+                      "contraname"))
+    # S&P 500 index membership events (added / removed / historical), back to 1992. Ingested
+    # for the survivorship-bias fix, which is a SEPARATE task: `src/utils/universe.py` still
+    # resolves the universe from `sp500_tickers` and is deliberately not touched here (D27).
+    sharadar_sp500 = Table(
+        "sharadar_sp500", ("date", "ticker", "action"), date_col="date",
+        date_type_cols=("date",),
+        read_columns=("date", "action", "ticker", "name", "contraticker", "contraname",
+                      "note"))
+
+    # ----------------------------------------------------------------- #
     # Extract -- ownership & institutional                              #
     # ----------------------------------------------------------------- #
     # Renamed from `institutional_holdings` to match the form-dispatch registry's logical

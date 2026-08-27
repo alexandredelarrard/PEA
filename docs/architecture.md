@@ -90,6 +90,10 @@ Rules:
 ```
 StepExtractAllData              src/data_extract/step_extract_all_data.py
   ├─ StepExtractStructure         DEF 14A (LLM + edgartools), 8-K, 13D, filing text
+  ├─ StepExtractFundamentalsSharadar  Sharadar SF1 + tickers/actions/sp500 -> the MERGED
+  │                               `fundamentals_history`. Runs BEFORE the SEC step: the two
+  │                               producers are independent, and the merge it ends with reads
+  │                               whatever `fundamentals_history_sec` already holds
   ├─ StepExtractFundamentals      SEC XBRL per-filing facts, earnings surprises, macro, notes
   ├─ StepExtractPrices            prices+dividends, short interest, FTD, 13F, superinvestors,
   │                               market/macro-asset series

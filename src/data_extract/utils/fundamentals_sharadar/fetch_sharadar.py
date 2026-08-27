@@ -29,13 +29,14 @@ Sharadar restatement is picked up by `-F/--full`, not by an incremental run.
 from __future__ import annotations
 
 import pandas as pd
+from tqdm import tqdm
 
 from src.constants.constants import (
     DATE_FORMAT, SHARADAR_BASE_URL, SHARADAR_DIMENSIONS, SHARADAR_SF1_COLUMNS,
     SHARADAR_SP500_FIRST_DATE,
 )
 from src.context import Context
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.data_extract.utils.fundamentals_sharadar.client import (
     NotEntitled, cast_value_columns, coerce_date_columns, sharadar_get,
 )
@@ -125,7 +126,7 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
     non_usd: list[str] = []
     total_rows = 0
 
-    for ticker in tickers:
+    for ticker in tqdm(tickers, desc="Downloading tickers"):
         currency = currencies.get(ticker)
         if currency is not None and currency != "USD":
             # Refuse to write rather than write-and-flag: only 8 of the 112 columns are
@@ -177,7 +178,8 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
 # --------------------------------------------------------------------------- #
 # 3. actions / 4. sp500 -- market-wide, resumed on the table's global max date  #
 # --------------------------------------------------------------------------- #
-def _fetch_dated_table(context: Context, table, endpoint: str, since: str) -> None:
+def _fetch_dated_table(context: Context, table: Table, endpoint: str,
+                       since: str) -> None:
     """Shared body for the two market-wide, date-resumed side tables."""
     frame = sharadar_get(context, endpoint, keep_default_na=False,
                          sort="date.asc", **{"date.gte": since})

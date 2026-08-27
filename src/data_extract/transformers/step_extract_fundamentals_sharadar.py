@@ -14,10 +14,13 @@ reads `currency` out of `sharadar_tickers` to enforce the USD assertion (D20) an
 that table is empty.
 """
 
+from __future__ import annotations
+
 from omegaconf import DictConfig
 
 from src.context import Context
 from src.utils.step import Step
+from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions, fetch_sharadar_fundamentals, fetch_sharadar_sp500,
     fetch_sharadar_tickers,
@@ -30,8 +33,15 @@ class StepExtractFundamentalsSharadar(Step):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
 
-    def run(self, tickers: list[str]) -> None:
+    def run(self, tickers: list[str], *, full: bool = False,
+            config_dir: str = DEFAULT_CONFIG_DIR) -> None:
+        """The five stages, in dependency order. `full` re-pulls the whole configured window
+        instead of resuming, and makes the merge DELETE before it rebuilds.
 
+        The CLI's `fundamentals-sharadar` command calls THIS, rather than restating the
+        sequence: a second copy of the order drifted once already, and the copy that omitted
+        the merge left `fundamentals_history` silently one run behind its own inputs.
+        """
         years = int(self._config.data_extract.sharadar_years_history)
 
         # 1. The entity dimension FIRST -- `permaticker`, `currency`, `category`. A full
@@ -43,15 +53,16 @@ class StepExtractFundamentalsSharadar(Step):
         #    the two sources are limited by different things -- the SEC walk by patience,
         #    Sharadar by subscription tier. A ticker outside the subscription returns 403,
         #    costs one request and is counted, never retried.
-        fetch_sharadar_fundamentals(self._context, tickers=tickers, years_history=years)
+        fetch_sharadar_fundamentals(self._context, tickers=tickers, years_history=years,
+                                    full=full)
 
         # 3. Corporate actions: dividends, splits, spinoffs, acquisitions, relations.
-        fetch_sharadar_actions(self._context, years_history=years)
+        fetch_sharadar_actions(self._context, years_history=years, full=full)
 
         # 4. S&P 500 membership events. Ingested only -- `src/utils/universe.py` still
         #    resolves the universe from `sp500_tickers`, and the survivorship-bias fix that
         #    would consume this table is a separate task (D27).
-        fetch_sharadar_sp500(self._context)
+        fetch_sharadar_sp500(self._context, full=full)
 
         # 5. The MERGED `fundamentals_history` -- Sharadar's declared column block plus the
         #    15 SEC-owned ones, joined backward as of each publication date (D14/D18).
@@ -64,4 +75,5 @@ class StepExtractFundamentalsSharadar(Step):
         #    It reads `fundamentals_history_sec` too, which THIS step does not produce -- so
         #    the SEC-owned block is as fresh as the last `StepExtractFundamentals` run, not as
         #    this one. That is the stated coverage/freshness asymmetry (D14), not a bug.
-        build_merged_history(self._context, tickers=tickers)
+        build_merged_history(self._context, tickers=tickers, full=full,
+                             config_dir=config_dir)

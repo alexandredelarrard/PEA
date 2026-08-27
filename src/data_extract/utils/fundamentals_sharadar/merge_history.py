@@ -71,10 +71,10 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import (
-    SHARADAR_COLLAPSE_KEY, SHARADAR_COLLAPSE_ORDER, SHARADAR_CONFIG_SUBDIR,
-    SHARADAR_OVERRIDE_APPROVED_KEY, SHARADAR_OVERRIDE_SOURCE_SEC,
-    SHARADAR_REGISTER_DOC_PREFIX, SHARADAR_SEC_ASOF_TOLERANCE_DAYS,
-    SHARADAR_SOURCE_OVERRIDES_FILENAME,
+    SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT, SHARADAR_COLLAPSE_KEY,
+    SHARADAR_COLLAPSE_ORDER, SHARADAR_CONFIG_SUBDIR, SHARADAR_OVERRIDE_APPROVED_KEY,
+    SHARADAR_OVERRIDE_SOURCE_SEC, SHARADAR_REGISTER_DOC_PREFIX,
+    SHARADAR_SEC_ASOF_TOLERANCE_DAYS, SHARADAR_SOURCE_OVERRIDES_FILENAME,
 )
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
@@ -82,6 +82,7 @@ from src.data_extract.utils.fundamentals_sharadar.field_map import (
     FieldMap, TranslationReport, apply_derived, load_field_map, translate)
 # Top-level, not deferred. `src/data_store/schema.py` imports only `data_store.errors`, so
 # there is no package cycle to dodge here -- a local import would only hide the dependency.
+from src.context import Context
 from src.data_store.schema import Tables
 
 log = logging.getLogger(__name__)
@@ -268,6 +269,26 @@ def collapse_same_date(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]
     return ordered[~duplicated].reset_index(drop=True), ordered[duplicated].copy()
 
 
+def _asof_join(left: pd.DataFrame, right: pd.DataFrame, *, tolerance_days: int,
+               also_to_datetime: tuple[str, ...] = ()) -> pd.DataFrame:
+    """Backward as-of join on `as_of`, within a ticker, capped at `tolerance_days`.
+
+    Both sides go to nanoseconds and are globally sorted by `on` first: `merge_asof` REFUSES
+    two datetime resolutions rather than coercing them, and a Postgres DATE column round-trips
+    as `datetime.date` -- so this normalisation is the difference between working and raising.
+    """
+    left = left.copy()
+    right = right.copy()
+    left["as_of"] = pd.to_datetime(left["as_of"]).astype("datetime64[ns]")
+    for column in ("as_of", *also_to_datetime):
+        right[column] = pd.to_datetime(right[column]).astype("datetime64[ns]")
+    right = right.dropna(subset=["as_of"])
+    return pd.merge_asof(
+        left.sort_values("as_of"), right.sort_values("as_of"),
+        on="as_of", by="ticker", direction="backward",
+        tolerance=pd.Timedelta(days=tolerance_days)).reset_index(drop=True)
+
+
 def join_sec_block(sharadar: pd.DataFrame, sec: pd.DataFrame, *,
                    tolerance_days: int = SHARADAR_SEC_ASOF_TOLERANCE_DAYS) -> pd.DataFrame:
     """Attach the SEC-owned columns AS OF each Sharadar publication date, BACKWARD only.
@@ -282,35 +303,26 @@ def join_sec_block(sharadar: pd.DataFrame, sec: pd.DataFrame, *,
         return out
     right = sec.rename(columns={"as_of": SEC_AS_OF}).copy()
     right["as_of"] = right[SEC_AS_OF]
-    # Both sides to nanoseconds and globally sorted by `on`. `merge_asof` REFUSES two
-    # resolutions rather than coercing, and a Postgres DATE column round-trips as
-    # `datetime.date` -- so this normalisation is the difference between working and raising.
-    left = sharadar.copy()
-    for frame, column in ((left, "as_of"), (right, "as_of"), (right, SEC_AS_OF)):
-        frame[column] = pd.to_datetime(frame[column]).astype("datetime64[ns]")
-    return pd.merge_asof(
-        left.sort_values("as_of"), right.sort_values("as_of"),
-        on="as_of", by="ticker", direction="backward",
-        tolerance=pd.Timedelta(days=tolerance_days)).reset_index(drop=True)
+    return _asof_join(sharadar, right, tolerance_days=tolerance_days,
+                      also_to_datetime=(SEC_AS_OF,))
 
 
-def attach_employees(frame: pd.DataFrame, employees: pd.DataFrame | None) -> pd.DataFrame:
+def attach_employees(frame: pd.DataFrame, employees: pd.DataFrame | None, *,
+                     tolerance_days: int = SHARADAR_SEC_ASOF_TOLERANCE_DAYS) -> pd.DataFrame:
     """Headcount, forward-filled onto the filing grain.
 
     Annual 10-K PROSE: it was never on the filing cadence, so a value stated once in the 10-K
     must reach the following three quarters. Same backward as-of alignment as the SEC block,
-    for the same no-leakage reason, and the same cap on the carry.
+    for the same no-leakage reason, and THE SAME CAP ON THE CARRY -- 370 days admits the three
+    quarters that follow a 10-K and refuses a headcount stale by more than a year, which an
+    uncapped join would carry forward forever for a ticker the SEC producer has dropped.
     """
-    out = frame.copy()
     if employees is None or employees.empty:
+        out = frame.copy()
         out[EMPLOYEES_COLUMN] = np.nan
         return out
-    right = employees[["ticker", "as_of", EMPLOYEES_COLUMN]].copy()
-    right["as_of"] = pd.to_datetime(right["as_of"]).astype("datetime64[ns]")
-    out["as_of"] = pd.to_datetime(out["as_of"]).astype("datetime64[ns]")
-    right = right.dropna(subset=["as_of"]).sort_values("as_of")
-    return pd.merge_asof(out.sort_values("as_of"), right, on="as_of", by="ticker",
-                         direction="backward").reset_index(drop=True)
+    right = employees[["ticker", "as_of", EMPLOYEES_COLUMN]]
+    return _asof_join(frame, right, tolerance_days=tolerance_days)
 
 
 def apply_overrides(frame: pd.DataFrame, overrides: Overrides) -> tuple[pd.DataFrame, set[str]]:
@@ -345,9 +357,11 @@ def apply_overrides(frame: pd.DataFrame, overrides: Overrides) -> tuple[pd.DataF
                     ticker, field, entry.get(SHARADAR_OVERRIDE_APPROVED_KEY),
                     covered, int(rows.sum()), entry.get("reason", ""))
     if overrides.pending:
-        log.warning("%d override proposal(s) awaiting a decision and IGNORED: %s",
-                    len(overrides.pending),
-                    sorted(f"{t}/{f}" for t, f in overrides.pending))
+        # the COUNT is the actionable part; enumerating 29 proposals on every merge run buries
+        # the rest of the log, so the list itself drops to DEBUG
+        log.warning("%d override proposal(s) awaiting a decision and IGNORED",
+                    len(overrides.pending))
+        log.debug("pending overrides: %s", sorted(f"{t}/{f}" for t, f in overrides.pending))
     return out, changed
 
 
@@ -463,7 +477,7 @@ def _cast(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
     return out
 
 
-def build_merged_history(context, tickers: list[str], *, full: bool = False,
+def build_merged_history(context: Context, tickers: list[str], *, full: bool = False,
                          config_dir: str = DEFAULT_CONFIG_DIR) -> None:
     """`fundamentals_sharadar` + `fundamentals_history_sec` -> `fundamentals_history`.
 
@@ -489,10 +503,15 @@ def build_merged_history(context, tickers: list[str], *, full: bool = False,
         context.log.warning("merged history: no ARQ rows for %d requested ticker(s) -- "
                             "run `fundamentals-sharadar` first", len(names))
         return
-    
-    actions = context.store.load(Tables.sharadar_actions, project=True, optional=True)
+
+    # `sharadar_actions` is MARKET-WIDE -- every ticker Sharadar covers, every action type.
+    # Only these tickers' splits and spinoffs move a share count, so both halves of the filter
+    # are needed; `project=True` alone would still drag the whole market back.
+    actions = context.store.load(
+        Tables.sharadar_actions, project=True, optional=True,
+        where={"ticker": names, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]})
     employees = context.store.load(Tables.fundamentals_employees, where={"ticker": names},
-                                       optional=True)
+                                   optional=True)
 
     # The SEC projection is built FROM the register, so an approved override can never name a
     # column the join did not bring. `employees` is NOT a column of this table (see

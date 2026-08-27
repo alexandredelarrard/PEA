@@ -41,17 +41,19 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import (
-    SHARADAR_GAP_EXPECTED_FIELDS, SHARADAR_GAP_MIN_DATES,
-    SHARADAR_GAP_RELATIVE_THRESHOLD, SHARADAR_GAP_SYSTEMATIC_SHARE,
+    SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT, SHARADAR_GAP_EXPECTED_FIELDS,
+    SHARADAR_GAP_MIN_DATES, SHARADAR_GAP_RELATIVE_THRESHOLD, SHARADAR_GAP_SYSTEMATIC_SHARE,
     SHARADAR_OVERRIDE_APPROVED_KEY, SHARADAR_OVERRIDE_SOURCE_SEC,
 )
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
     DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER)
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
+from src.data_extract.utils.fundamentals_sharadar.diagnostics import md_table
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
     FieldMap, load_field_map, translate)
 from src.data_extract.utils.fundamentals_sharadar.merge_history import (
     _KEY_FROM_VENDOR, collapse_same_date, load_overrides, write_overrides)
+from src.context import Context
 from src.data_store.schema import Tables
 
 log = logging.getLogger(__name__)
@@ -127,7 +129,7 @@ def sharadar_history(vendor_arq: pd.DataFrame, field_map: FieldMap,
     return collapsed
 
 
-def measure_gaps(context, tickers: Sequence[str] | None = None, *,
+def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *,
                  config_dir: str = DEFAULT_CONFIG_DIR) -> pd.DataFrame:
     """One row per `(ticker, field)` both sources carry, over their SHARED `as_of` dates.
 
@@ -144,7 +146,11 @@ def measure_gaps(context, tickers: Sequence[str] | None = None, *,
                                 where={**where, "dimension": ARQ}, optional=True)
     if vendor is None or vendor.empty:
         raise RuntimeError("gap check: no stored Sharadar ARQ rows to measure")
-    actions = context.store.load(Tables.sharadar_actions, project=True, optional=True)
+    # market-wide table: filter to these tickers AND to the two actions that move a share
+    # count, or the read drags back every action of every ticker Sharadar covers
+    actions = context.store.load(
+        Tables.sharadar_actions, project=True, optional=True,
+        where={**where, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]})
     fields = comparable_fields(field_map)
     sec = context.store.load(Tables.fundamentals_history_sec,
                              columns=["ticker", "as_of", *fields],
@@ -299,9 +305,9 @@ def format_report(gaps: pd.DataFrame, *, overlap: int, fields: int) -> str:
         for column in ("median_pct_gap", "min_pct_gap", "max_pct_gap"):
             head[column] = head[column].map(lambda v: f"{v:.2%}")
         head["median_abs_gap"] = head["median_abs_gap"].map(lambda v: f"{v:,.0f}")
-        return head.to_markdown(index=False) + (
-            f"\n\n_{len(frame)} row(s) total; {WORST_ROWS} shown._\n"
-            if len(frame) > WORST_ROWS else "\n")
+        return md_table(head) + (
+            f"\n_{len(frame)} row(s) total; {WORST_ROWS} shown._\n"
+            if len(frame) > WORST_ROWS else "")
 
     return "\n".join([
         "# Phase 4 — Sharadar vs SEC gap check",
@@ -338,7 +344,7 @@ def format_report(gaps: pd.DataFrame, *, overlap: int, fields: int) -> str:
     ])
 
 
-def run_gap_check(context, tickers: Sequence[str] | None = None, *,
+def run_gap_check(context: Context, tickers: Sequence[str] | None = None, *,
                   report_path: str | Path = DEFAULT_REPORT_PATH,
                   propose_overrides: bool = False,
                   config_dir: str = DEFAULT_CONFIG_DIR) -> pd.DataFrame:

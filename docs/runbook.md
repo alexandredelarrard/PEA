@@ -118,6 +118,12 @@ superinvestors             # needs 13F
 fundamentals               # both layers: facts (network, HEAVY) then history (replay)
 fundamentals-facts         # SEC XBRL per-filing -> fundamentals_facts (+ headcount). HEAVY
 fundamentals-history-sec   # fundamentals_facts -> fundamentals_history_sec + _reason_codes. No network
+fundamentals-sharadar      # the WHOLE Sharadar producer: tickers -> SF1 -> actions -> sp500
+                           #   -> the MERGED fundamentals_history. Needs SHARADAR_API_KEY
+sharadar-tickers  sharadar-actions  sharadar-sp500   # one table each, for a targeted refresh
+fundamentals-history-merged # rebuild ONLY the merged table. No network; -F deletes first
+sharadar-gap-check         # READ-ONLY: where Sharadar and the SEC layer disagree. --propose
+sharadar-diagnostics       # READ-ONLY acceptance gates -> a markdown report. Writes no data
 earnings-surprises  financial-statements  insider-transactions
 financial-notes            # VERY HEAVY
 def14a                     # LLM-parsed governance (costs OpenAI calls)

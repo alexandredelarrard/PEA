@@ -8,12 +8,22 @@ Scope: what is **actually in the local Postgres right now**. For what each table
 > whole `fundamentals_*` / `sharadar_*` block were re-queried on 08-26. Re-verify before relying
 > on a number — `MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea -c "…"`.
 
+> ⚠ **THE SHARADAR TABLES BELOW ARE PRE-UPGRADE AND KNOWINGLY STALE.** Every Sharadar row count
+> here was measured while the key was on the **free DJIA tier** — 30 tickers, history from 2021.
+> The subscription was upgraded on **2026-08-26** and the key now covers the **whole SF1
+> universe** (measured: no 403 on any ticker, 5,780 distinct tickers in 2024 alone, history back
+> to filing date **1993-12-22**). **A full re-extraction is pending**; until it runs, treat the
+> Sharadar and `fundamentals_history` numbers below as a floor, not as coverage. Re-run
+> `python -m src data_extract fundamentals-sharadar -F` and re-measure this section.
+
 > **What changed on 2026-08-26:**
 > - `fundamentals_history` was **renamed to `fundamentals_history_sec`** (the SEC producer's
->   table). The bare name `fundamentals_history` is now a *declared but not-yet-built* entry for
->   the merged Sharadar+SEC table that Sharadar-integration phase 4 produces, so a read of it
->   returns EMPTY rather than raising.
+>   table). The bare name `fundamentals_history` is now the **merged Sharadar+SEC table**, and it
+>   is **built and populated** — `fundamentals_sharadar` + `fundamentals_history_sec` via
+>   `merge_history.py`.
 > - **Four Sharadar tables added and populated.**
+> - The Sharadar subscription was **upgraded from the free DJIA tier to the full universe** (see
+>   the warning above).
 > - **`fundamentals_facts_legacy` (5.2 GB) and `fundamentals_history_legacy` (36 MB) were
 >   DROPPED.** They had no registry entry, no reader, no view and no foreign key. That is where
 >   24 GB -> 19 GB came from. ⚠ Their loss is not free: `fundamentals_facts_legacy` was the only
@@ -34,7 +44,7 @@ Container `pea_db` (postgres **16.14**), database `pea`, owner role **`alexandre
 | `cube`, `cube_part_*` (all 7) | no features, no training, no prediction |
 | `cube_signal`, `predictions`, `predictions_latest` | no model output |
 | `strategy`, `trend_asset_returns` | no ledger, no trend sleeve |
-| **`fundamentals_history`** | **Expected, not a defect.** It is the DECLARED-but-unbuilt merged Sharadar+SEC table; phase 4 populates it. `store.load` returns EMPTY rather than raising, so `src/data_aggregate/` degrades instead of crashing. The SEC data is in `fundamentals_history_sec`. |
+| ~~`fundamentals_history`~~ | **No longer missing** — the merged Sharadar+SEC table is built and populated (598 rows / 30 tickers as of 2026-08-26, pre-upgrade). |
 | `notes_embedding`, `ticker_descriptions` | `notes_embedding` has no downstream reader anyway |
 
 **No longer missing** (they were, in the 2026-08-17 snapshot): **`prices`** is populated —
@@ -64,10 +74,11 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `fails_to_deliver` | 993,775 | 98 MB | 5 | 499 | `date` | 2010-01-04 → **2026-07-14** |
 | `short_interest` | 963,115 | 84 MB | 4 | 502 | `date` | **2017-12-29** → 2026-07-31 |
 | `fundamentals_facts` | 316,245 | 131 MB | 26 | **54** | `filing_date` | 2009-07-31 → 2026-08-10 *(08-26)* |
-| `sharadar_tickers` | 17,826 | 15 MB | 28 | 17,826 | — | Sharadar entity dimension *(08-26)* |
+| `sharadar_tickers` | 17,827 | 15 MB | 28 | 17,827 | — | Sharadar entity dimension *(08-26)* |
 | `fundamentals_reason_codes` | 78,239 | 13 MB | 6 | **54** | `as_of` | 2009-07-31 → 2026-08-10 *(08-26)* |
 | `fundamentals_history_sec` | **3,258** | 1.8 MB | **69** | **54** | `as_of` | 2009-07-31 → 2026-08-10 *(08-26)* |
-| `fundamentals_sharadar` | 1,346 | 1.3 MB | **112** | **30** | `date` | 2021-08-27 → 2026-08-10 *(08-26)* |
+| `fundamentals_sharadar` | 1,346 | 1.3 MB | **112** | **30** ⚠ | `date` | 2021-08-27 → 2026-08-10 *(08-26, PRE-UPGRADE)* |
+| `fundamentals_history` | 598 | — | **91** | **30** ⚠ | `as_of` | 2021-08-27 → 2026-08-10 *(08-26, PRE-UPGRADE)* |
 | `sharadar_sp500` | 3,306 | 432 kB | 7 | 30 | `date` | 1992-01-02 → 2026-08-25 *(08-26)* |
 | `sharadar_actions` | 594 | 128 kB | 7 | 30 | `date` | 2021-08-27 → 2026-08-25 *(08-26)* |
 | `fundamentals_employees` | 754 | 112 kB | 3 | **54** | `as_of` | 2002-03-20 → 2026-07-29 *(08-26)* |

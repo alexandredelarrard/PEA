@@ -1,8 +1,9 @@
 # Data sources
 
 Scope: the external sources, their keys, their real limits, and the quirks that have already cost
-debugging time. All free or freemium. For the tables they land in, see
-[data_schema.md](data_schema.md); for current coverage, [database.md](database.md).
+debugging time. All free or freemium **except Sharadar**, which is a paid subscription. For the
+tables they land in, see [data_schema.md](data_schema.md); for current coverage,
+[database.md](database.md).
 
 ## The sources
 
@@ -14,6 +15,8 @@ debugging time. All free or freemium. For the tables they land in, see
 | Benchmark / commodity / energy | yfinance (`SPY`, `^VIX`, `CL=F`, `GC=F`, `XLE`) | no | `prices_macro` | `prices/fetch_macro.py` (close only, via `download_ohlcv`) |
 | Rates / credit / breakeven / FX + derived legs (~1995→) | FRED (incl. `DEXUSEU` for FX) | `FRED_API_KEY` | `prices_macro` | `prices/fetch_macro.py` (same fetcher — one table, one source per series) |
 | Fundamentals history | SEC EDGAR per-filing XBRL (edgartools) | `SEC_USER_AGENT` | `fundamentals_facts` → `fundamentals_history_sec` | `fundamentals/fetch_fundamentals_edgar.py` |
+| Fundamentals (vendor, **paid**) | **Sharadar SF1** via the DIRECT API `api.sharadar.com` | `SHARADAR_API_KEY` | `fundamentals_sharadar` → `fundamentals_history` | `fundamentals_sharadar/fetch_sharadar.py` |
+| Entity dimension / corporate actions / index membership | Sharadar `tickers`, `actions`, `sp500` | `SHARADAR_API_KEY` | `sharadar_tickers`, `sharadar_actions`, `sharadar_sp500` | `fundamentals_sharadar/fetch_sharadar.py` |
 | Employee headcount | SEC 10-K **body text** | `SEC_USER_AGENT` | `fundamentals_history_sec.employees` | `fundamentals/fundamentals_employees.py` |
 | Earnings surprises / forward P/E | yfinance | no | `earnings_surprises` | `fundamentals/fetch_earnings_surprises.py` |
 | Pension facts | SEC Financial Statement Data Sets (zip) | `SEC_USER_AGENT` | `pension_facts` | `fundamentals/fetch_financial_statements.py` |
@@ -72,6 +75,70 @@ availability** and normalized at the GICS industry-group level. See
 `utils/common/sector_gates.py` and `constants.SECTOR_KPI_SCOPE`.
 
 ## Known traps, by source
+
+### Sharadar SF1 (the paid vendor layer)
+
+**The channel.** Direct API only — `https://api.sharadar.com/v1.0`. **Never** `data.nasdaq.com`,
+and never the `nasdaqdatalink` / `quandl` libraries with this key: those speak a different channel
+that names the filing-date column **`datekey`** and ships no `fiscalperiod`. Our filing-date column
+is **`date`**, and it sits inside the primary key, so the two channels are not interchangeable.
+
+**Request shape — three defaults that silently truncate:**
+- **`from` defaults to "1 year ago"**, `limit` to 10000, `sort` to `date.desc`. Always pass
+  `date.gte` and `sort` explicitly; an omitted bound quietly returns one year of history.
+- **`fields=` drops an unavailable field with no warning** — a typo yields a missing column, not an
+  error. `client._validate_header` asserts the response header against the stored contract both
+  ways for exactly this reason.
+- `limit` **above** 10000 *is* honoured on `/data/fundamentals` (50000 returned all 22,530 rows of
+  2024 ARQ), and `offset` paging works with no duplicate keys. Paging is belt-and-braces.
+- The `tickers` endpoint has a **filter** called `table`, which collides with the wrapper's own
+  first argument — hence `sharadar_get`'s positional-only `/`.
+
+**Entitlement — measured 2026-08-26, after the upgrade to the paid tier:**
+- **The whole SF1 universe is entitled.** No ticker returns 403; a ticker-less query spans 5,780
+  distinct tickers in 2024 alone, and arbitrary micro-caps return rows.
+- **History reaches filing date 1993-12-22** (earliest `calendardate` 1993-03-31). Megacaps start
+  1994: AAPL 1994-01-26, MSFT 1994-02-14, GE 1994-03-11, JPM 1994-03-25.
+- `configs.yml`'s `sharadar_years_history: 31` therefore sets a cold-start floor of ~1995-08 and
+  leaves ~2,700 ARQ rows across 539 tickers unfetched **by choice**. Raise the knob to ~34 to take
+  the full depth; it costs no extra requests, only larger responses.
+- **`bulk/fundamentals` still returns 404** — the bulk download is not part of this subscription.
+- **403 means NOT ENTITLED, not throttled.** It should no longer occur, but the classification path
+  is kept: `polite_http.http_get` retries 403 four times with exponential backoff, so a roster loop
+  would burn minutes per denied ticker. Classify off a single `get_once`, never the retrying path.
+
+**Units and conventions — the ones that produce plausible-looking wrong numbers:**
+- **Only 8 columns are USD-converted.** Everything else is the filer's reporting currency while
+  `marketcap`/`price` are always USD, so a non-USD row mixes units *within itself*. We assert USD
+  off `sharadar_tickers.currency` and REFUSE to write a non-USD filer (D20).
+- Money columns are **actual units** in SF1 but **USD millions** in the `daily` table — a 10⁶ factor
+  between two tables of the same subscription.
+- Ratio columns are **decimal fractions**, not percentages, despite the 2019 dictionary typing them
+  `%`. `evebit` is `bigint` and comes back integer-truncated.
+- **`de` is liabilities/equity**, not debt/equity, despite the name.
+- `capex` and the `ncf*` legs are stored **negative**; the repo's `capex` is `non_negative`, so the
+  map flips the sign — and NULLs the ~1% of rows (mostly GS) that are positive rather than writing a
+  negative into a column that cannot hold one.
+- **The whole share-count and per-share block is retroactively SPLIT-ADJUSTED**, and `sharefactor`
+  is 1.0 on those rows so it does not flag it. `build_ttm.deadjust_splits` corrects it *after* the
+  four-quarter aggregation — de-adjusting the quarters first mixes two bases inside one window.
+- **`lastupdated` is a per-TICKER reprocessing stamp, not a per-row change stamp**, so it is useless
+  as an incremental watermark. A Sharadar restatement is picked up by `-F/--full`, not by a resume.
+
+**Grain:**
+- **Only the `AR*` dimensions are point-in-time.** `MR*` rows mutate in place and are not stored.
+- **Q4 is CONSTRUCTED** as `ARY - Σ(Q1..Q3)`, so `ΣARQ == ARY` is a tautology (measured `+0.000%`)
+  and can never be a quality check. It can still produce absurd LEVELS — that is what
+  `gate_implausible_quarters` measures instead.
+- **Quarterly dimensions are US-domestic-only.** ADR (form 20) and Canadian (form 40) filers have no
+  ARQ/MRQ at all — relevant the moment the universe widens past the S&P 500.
+- SF1 covers the **primary share class only**.
+- **41 fields are zero-filled**, and a `0` may mean "not applicable" (a bank has no inventory) or
+  "absent, and we wrote a zero" (`intexp = 0` for JPM is provably false). The verdict is per-field
+  and human-approved in `configs/sharadar/sharadar_zero_rules.json`.
+- ⚠ `contraticker` is the literal string **`"N/A"`**, not NULL, and it is a PK member of
+  `sharadar_actions` — so the side tables must be read with `keep_default_na=False` or a PK value
+  becomes NULL.
 
 ### Fundamentals / XBRL
 

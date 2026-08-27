@@ -52,6 +52,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field as dataclass_field
+from functools import cached_property
 from pathlib import Path
 
 import numpy as np
@@ -65,7 +66,7 @@ from src.constants.constants import (
     SHARADAR_SF1_COLUMNS, SHARADAR_ZERO_FILLED_FIELDS, SHARADAR_ZERO_RULES_FILENAME,
 )
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
-    DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER, load_catalogue)
+    DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER, Catalogue, load_catalogue)
 
 log = logging.getLogger(__name__)
 
@@ -112,21 +113,24 @@ class FieldMap:
     zero_rules: dict[str, str]
     corrections: dict[str, dict[str, dict]]
 
-    @property
+    # `cached_property` rather than `property`: these are read inside per-field loops, and
+    # rebuilding an 88-key dict on every access made `measure_gaps` do it ~120 times per run.
+    # It writes through `__dict__`, which a frozen dataclass still permits.
+    @cached_property
     def outputs(self) -> dict[str, ColumnSpec]:
         """Every column the transform emits: the 60 contract names, the 3 added ones, and
         the Sharadar extras under their own names."""
         return {**self.columns, **self.added, **self.extras}
 
-    @property
+    @cached_property
     def direct(self) -> dict[str, ColumnSpec]:
         return {n: s for n, s in self.outputs.items() if s.kind == "direct"}
 
-    @property
+    @cached_property
     def derived(self) -> dict[str, ColumnSpec]:
         return {n: s for n, s in self.outputs.items() if s.kind == "derived"}
 
-    @property
+    @cached_property
     def sec_owned(self) -> list[str]:
         """The columns the SEC layer owns (D18). NaN here; phase 4 merges them in."""
         return sorted(n for n, s in self.outputs.items() if s.kind == "sec")
@@ -233,7 +237,7 @@ def load_corrections(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, dict[str
     return register
 
 
-def _basis_for(name: str, source: str, catalogue) -> str:
+def _basis_for(name: str, source: str, catalogue: Catalogue) -> str:
     """A direct column's TTM basis, taken from the CATALOGUE where it has an opinion.
 
     The catalogue is the authority for the 60 contract names, so the basis cannot drift from
@@ -599,17 +603,20 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *,
     cleaned = apply_zero_rules(frame, field_map.zero_rules, report=report)
     cleaned = apply_corrections(cleaned, field_map.corrections, report=report)
 
-    out = cleaned[[c for c in KEY_COLUMNS if c in cleaned.columns]].copy()
+    # Accumulated then concatenated ONCE: ~90 single-column inserts refragment the block
+    # manager on every assignment and make pandas warn about it.
+    columns: dict[str, pd.Series] = {}
     for name, spec in field_map.direct.items():
         values = cleaned[spec.source].astype("float64")
         if spec.negate == SHARADAR_NEGATE_IF_NON_POSITIVE:
             values = _negate_if_non_positive(values, name, report)
-        out[name] = values
+        columns[name] = values
     for name, spec in field_map.outputs.items():
         if spec.kind in ("sec", "null"):
-            out[name] = np.nan
+            columns[name] = pd.Series(np.nan, index=cleaned.index)
 
-    return out
+    keys = cleaned[[c for c in KEY_COLUMNS if c in cleaned.columns]]
+    return pd.concat([keys, pd.DataFrame(columns, index=cleaned.index)], axis=1)
 
 
 def _negate_if_non_positive(values: pd.Series, name: str,
@@ -652,19 +659,21 @@ def apply_derived(frame: pd.DataFrame, field_map: FieldMap,
     be left exactly as built -- a blanket re-run would quietly undo a registered override.
     One evaluator, two callers, so the formulas cannot drift apart.
     """
-    out = frame.copy()
+    computed: dict[str, pd.Series] = {}
     for name, spec in field_map.derived.items():
         if spec.op == "quarter" or (only is not None and name not in only):
             continue
-        missing = [c for c in spec.inputs if c not in out.columns]
+        missing = [c for c in spec.inputs if c not in frame.columns]
         if missing:
             raise RuntimeError(f"{name} needs {missing}, absent from the TTM frame")
-        parts = [out[c].astype("float64") for c in spec.inputs]
+        parts = [frame[c].astype("float64") for c in spec.inputs]
         if spec.op == "sum":
-            out[name] = sum(parts[1:], start=parts[0])
+            computed[name] = sum(parts[1:], start=parts[0])
         else:
             numerator, denominator = parts[0], parts[1].replace(0.0, np.nan)
-            out[name] = numerator / denominator
-            if spec.op == "ratio_minus_one":
-                out[name] = out[name] - 1.0
-    return out
+            values = numerator / denominator
+            computed[name] = values - 1.0 if spec.op == "ratio_minus_one" else values
+    if not computed:
+        return frame.copy()
+    # every derived name either replaces an existing column or is new; assign in one pass
+    return frame.assign(**computed)

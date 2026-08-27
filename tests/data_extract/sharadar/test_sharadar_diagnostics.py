@@ -1,21 +1,24 @@
-"""Tests for the Sharadar phase-2 acceptance gates
+"""Tests for the Sharadar acceptance gates
 (src/data_extract/utils/fundamentals_sharadar/diagnostics.py).
 
 REAL data, from POSTGRES -- the whole point of the phase is that the gates are measured
 against what was stored, not against what the API said (D29). Every test prints its
-conclusion, and two of them exist specifically to make an ABSENCE visible: one records that
-the spec's acceptance check #3 carries no information, the other that D19 is unverified until
-the roster widens. A gap nobody printed is a gap nobody knows about.
+conclusion, including one that exists specifically to make an ABSENCE visible: D19 is
+unverified until the stored roster covers a CIK-cutover ticker. A gap nobody printed is a gap
+nobody knows about.
+
+The gates are PURE functions of frames, so the fixture performs the one projected read the
+production path performs and every test shares it. Nothing here calls `run_diagnostics`, so a
+test run can never overwrite the report.
 
 !! Nothing here touches `src/validate/` or the `fundamentals_check*` tables (D25). The
-diagnostic writes no production data, and this module writes no files at all -- it calls the
-gate functions directly rather than `run_diagnostics`, so a test run can never overwrite the
-human-approved rule file.
+diagnostic writes no production data.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -26,8 +29,8 @@ from src.constants.constants import (
 )
 from src.data_store.schema import Tables
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import (
-    Q4_TAUTOLOGY_MAX_PCT, confirm_q4_tautology, confirm_sign_conventions, cross_check_shares,
-    gate_completeness, gate_zero_fill, q4_tautology_summary,
+    confirm_sign_conventions, cross_check_shares, gate_completeness, gate_zero_fill,
+    load_sec, load_sharadar,
 )
 
 CONFIG_DIR = Path("./configs")
@@ -36,10 +39,6 @@ CONFIG_DIR = Path("./configs")
 #: 11 of them GS) on 2026-08-26. Bounded rather than zero because the plan's universal claim
 #: was taken from AAPL alone and is false; see `test_sign_conventions_hold`.
 MAX_POSITIVE_CAPEX_RATE = 0.05
-
-#: Floor on the share of sum ARQ-vs-ARY triples that are EXACTLY zero. Measured at 96.1%. This is
-#: the number that keeps the spec's acceptance check #3 dead.
-MIN_EXACT_TAUTOLOGY_SHARE = 0.90
 
 #: Ratio span (max/min of `sharesbas / sharesOutstanding` across a ticker's dates) above which
 #: the history has been retroactively re-based. A real share-class or reporting difference is
@@ -62,13 +61,32 @@ def context():
     return ctx
 
 
+@pytest.fixture(scope="module")
+def frames(context):
+    """The ONE projected read the gates run off, sliced per dimension.
+
+    Mirrors `run_diagnostics`: the table is 112 columns x 3 dimensions, so reading it once per
+    test would re-read the widest extract table in the schema five times.
+    """
+    frame = load_sharadar(context, None)
+    by_dimension = {dim: group for dim, group in frame.groupby("dimension", sort=False)}
+    arq = by_dimension.get("ARQ", frame.iloc[:0])
+    if arq.empty:
+        pytest.skip(f"{Tables.sharadar_fundamentals} has no ARQ rows")
+    return SimpleNamespace(
+        all=frame,
+        arq=arq,
+        art=by_dimension.get("ART", frame.iloc[:0]),
+        sec=load_sec(context, sorted(arq["ticker"].astype(str).unique())))
+
+
 # --------------------------------------------------------------------------- #
 # Gate 1 -- completeness                                                       #
 # --------------------------------------------------------------------------- #
-def test_completeness_gate_runs(context):
+def test_completeness_gate_runs(frames):
     """Every stored ticker is measured against ITS OWN observed window, so the only thing this
-    can report is a hole -- a late start is not a gap on a 5-year entitlement."""
-    frame = gate_completeness(context)
+    can report is a hole -- a late start (an IPO, or a shallower entitlement) is not a gap."""
+    frame = gate_completeness(frames.arq)
     with_gaps = frame[frame["n_missing"] > 0]
 
     print("\n=== SANITY CHECK: gate 1, completeness ===")
@@ -88,9 +106,9 @@ def test_completeness_gate_runs(context):
 
 
 # --------------------------------------------------------------------------- #
-# Sign conventions -- the stop condition for phase 3                           #
+# Sign conventions -- the stop condition for the field map                     #
 # --------------------------------------------------------------------------- #
-def test_sign_conventions_hold(context):
+def test_sign_conventions_hold(frames):
     """`fcf == ncfo + capex` to the cent, and `capex <= 0` on all but a bounded few.
 
     !! The plan asserted `capex <= 0` UNIVERSALLY, off a measurement taken on AAPL alone. It is
@@ -102,10 +120,10 @@ def test_sign_conventions_hold(context):
         `freeCashflow <- fcf` depends on it entirely;
       * `capex <= 0` is asserted as a BOUNDED exception rate, with every offending row printed.
         Asserting the universal would be asserting something false; asserting nothing would let
-        the rate grow silently on a wider roster. The bound is what makes phase 3's guarded
-        sign flip safe.
+        the rate grow silently on a wider roster. The bound is what makes the guarded sign flip
+        in `field_map._negate_if_non_positive` safe.
     """
-    result = confirm_sign_conventions(context)
+    result = confirm_sign_conventions(frames.all)
     rate = result["capex_positive_total"] / max(result["capex_rows_total"], 1)
 
     print("\n=== SANITY CHECK: sign conventions, from stored data ===")
@@ -119,7 +137,7 @@ def test_sign_conventions_hold(context):
     print(f"  capex <= 0 throughout : {result['capex_sign_holds']}  "
           f"({result['capex_positive_total']} of {result['capex_rows_total']} rows positive "
           f"= {rate:.2%}, on {result['capex_positive_tickers']})")
-    for row in result["capex_positive_rows"].itertuples(index=False):
+    for row in result["capex_positive_rows"].head(20).itertuples(index=False):
         print(f"    +capex  {row.ticker:5s} {row.dimension} {row.fiscalperiod} "
               f"{pd.Timestamp(row.date).date()}  {row.capex:>16,.0f}")
 
@@ -127,65 +145,21 @@ def test_sign_conventions_hold(context):
         "fcf is not ncfo + capex -- `freeCashflow <- fcf` needs a reconstruction after all")
     assert rate < MAX_POSITIVE_CAPEX_RATE, (
         f"positive-capex rows are {rate:.2%} of the table, over the {MAX_POSITIVE_CAPEX_RATE:.0%} "
-        f"bound. A guarded sign flip is no longer good enough -- phase 3 needs a real "
+        f"bound. A guarded sign flip is no longer good enough -- the map needs a real "
         f"capex mapping, not an exception list")
-    print(f"  OK: fcf identity exact; capex sign violated on {rate:.2%} of rows, which phase 3 "
+    print(f"  OK: fcf identity exact; capex sign violated on {rate:.2%} of rows, which the map "
           f"handles by NULLing the exceptions rather than flipping them.")
-
-
-# --------------------------------------------------------------------------- #
-# The Q4 identity -- a test that documents a DEAD check                        #
-# --------------------------------------------------------------------------- #
-def test_q4_identity_is_tautological(context):
-    """sum ARQ == ARY holds by arithmetic, because Sharadar CONSTRUCTS Q4 as `ARY - sum (Q1..Q3)`.
-
-    This test exists to keep the spec's acceptance check #3 dead. A check that cannot fail
-    cannot inform, and the only way that stays known is to measure it once and write the number
-    down where the next reader will find it.
-    """
-    frame = confirm_q4_tautology(context)
-    if frame.empty:
-        pytest.skip("no fiscal year has all four ARQ quarters AND an ARY row in this window")
-    summary = q4_tautology_summary(frame)
-    worst = frame.iloc[0]
-
-    print("\n=== SANITY CHECK: the Q4 identity is a TAUTOLOGY, not a check ===")
-    print(f"  (ticker, fiscal year, field) triples : {summary['n']:,}")
-    print(f"  EXACTLY zero      : {summary['n_exact']:,} ({summary['share_exact']:.2%})")
-    print(f"  float noise only  : {summary['n_float_noise']:,} "
-          f"(0 < dev <= {Q4_TAUTOLOGY_MAX_PCT:.2%})")
-    print(f"  materially off    : {summary['n_over_bar']:,}, max {summary['max_dev']:.2%}")
-    print(f"  worst triple      : {worst['ticker']} FY{worst['fiscal_year']} {worst['field']}"
-          f"  sum ARQ={worst['sum_arq']:,.0f} vs ARY={worst['ary']:,.0f}")
-    print("  where the deviations sit:")
-    for row in summary["concentration"].head(6).itertuples(index=False):
-        print(f"    {row.ticker:6s} FY{row.fiscal_year}  {row.n_fields} field(s)")
-    print("  => the spec's acceptance check #3 (Q4 = FY - 9M) CARRIES NO INFORMATION on this")
-    print("     vendor: Sharadar builds Q4 by SUBTRACTION, so wherever the identity holds it")
-    print("     holds EXACTLY -- it can never detect a bad quarter, only a restatement.")
-    print("     gate_implausible_quarters replaces it (D28).")
-
-    assert summary["share_exact"] >= MIN_EXACT_TAUTOLOGY_SHARE, (
-        f"only {summary['share_exact']:.1%} of triples are exactly zero, under the "
-        f"{MIN_EXACT_TAUTOLOGY_SHARE:.0%} bound. If Q4 is no longer built by subtraction, "
-        f"check #3 would start carrying information and this whole finding needs redoing")
-    # the residual is restatements, which cluster; drift would be spread evenly instead
-    assert summary["n_over_bar"] == 0 or len(summary["concentration"]) < summary["n_over_bar"], (
-        "the non-zero deviations are one-per-(ticker, year), which looks like drift rather "
-        "than the restatement clustering this finding claims")
-    print(f"  OK: exact on {summary['share_exact']:.2%}; the {summary['n_over_bar']} exceptions "
-          f"cluster into {len(summary['concentration'])} (ticker, year) restatements.")
 
 
 # --------------------------------------------------------------------------- #
 # The zero rule covers every flagged field                                     #
 # --------------------------------------------------------------------------- #
-def test_zero_rules_cover_every_flagged_field(context):
-    """Phase 3 reads `sharadar_zero_rules.json` and fails loudly on a field with no entry, so
-    the file must cover all 41 documented zero-filled fields -- no defaults, no omissions."""
+def test_zero_rules_cover_every_flagged_field(frames):
+    """`field_map` reads `sharadar_zero_rules.json` and fails loudly on a field with no entry,
+    so the file must cover all 41 documented zero-filled fields -- no defaults, no omissions."""
     path = CONFIG_DIR / SHARADAR_CONFIG_SUBDIR / SHARADAR_ZERO_RULES_FILENAME
     if not path.exists():
-        pytest.skip(f"{path} not written yet -- run `data_extract sharadar-diagnostics`")
+        pytest.skip(f"{path} is missing -- the transform cannot run without it")
     blob = json.loads(path.read_text(encoding="utf-8"))
     rules = {k: v for k, v in blob.items() if not k.startswith("_")}
     missing = sorted(SHARADAR_ZERO_FILLED_FIELDS - set(rules))
@@ -193,7 +167,7 @@ def test_zero_rules_cover_every_flagged_field(context):
     bad_rule = {k: v.get("rule") for k, v in rules.items()
                 if v.get("rule") not in ("null", "keep")}
     no_reason = sorted(k for k, v in rules.items() if not str(v.get("reason", "")).strip())
-    measured = gate_zero_fill(context)
+    measured = gate_zero_fill(frames.arq, frames.art, frames.sec)
     nulled = sorted(k for k, v in rules.items() if v["rule"] == "null")
 
     print("\n=== SANITY CHECK: the zero rule covers every flagged field ===")
@@ -217,7 +191,7 @@ def test_zero_rules_cover_every_flagged_field(context):
         "reviewed decision, so without this marker `human-approved` is only a claim in a "
         "docstring -- and the one thing this file exists to guarantee is that somebody looked "
         "at the `null` rules before they nulled real cells")
-    assert not missing, f"phase 3 would fail loudly on {len(missing)} field(s): {missing}"
+    assert not missing, f"the transform would fail loudly on {len(missing)} field(s): {missing}"
     assert not extra, f"the rule file names fields Sharadar does not zero-fill: {extra}"
     assert not bad_rule, f"only 'null' and 'keep' are valid rules, found: {bad_rule}"
     assert not no_reason, f"every rule needs a stated reason, missing on: {no_reason}"
@@ -225,9 +199,9 @@ def test_zero_rules_cover_every_flagged_field(context):
 
 
 # --------------------------------------------------------------------------- #
-# `sharesbas` is NOT point-in-time -- the finding phase 3 must not walk past    #
+# `sharesbas` is NOT point-in-time -- the finding the field map must not skip   #
 # --------------------------------------------------------------------------- #
-def test_sharesbas_is_split_adjusted_not_point_in_time(context):
+def test_sharesbas_is_split_adjusted_not_point_in_time(frames):
     """Not in the plan's test list, and added because the cross-check answered a DIFFERENT
     question than the one D-decision `sharesOutstanding <- sharesbas` asked.
 
@@ -238,9 +212,9 @@ def test_sharesbas_is_split_adjusted_not_point_in_time(context):
     before its June 2024 10-for-1. `sharefactor` is 1.0 on every one of those rows.
 
     That makes `sharesbas` unusable as a point-in-time count without de-adjustment, and this
-    test exists so phase 3 cannot map it as one by accident.
+    test exists so it cannot be mapped as one by accident.
     """
-    frame = cross_check_shares(context)
+    frame = cross_check_shares(frames.arq, frames.sec)
     if frame.empty:
         pytest.skip("no overlapping ticker has both a sharesbas and a SEC sharesOutstanding")
     split = frame[frame["ratio_span"] >= SPLIT_RATIO_SPAN]
@@ -250,29 +224,28 @@ def test_sharesbas_is_split_adjusted_not_point_in_time(context):
     print(f"  tickers compared            : {len(frame)}")
     print(f"  median ratio == 1.0         : {len(agree)}  <- so NOT a share-class problem")
     print(f"  ratio_span >= {SPLIT_RATIO_SPAN}          : {len(split)}  <- SPLIT-ADJUSTED history")
-    for row in frame.itertuples(index=False):
+    for row in frame.head(30).itertuples(index=False):
         print(f"    {row.ticker:5s} n={row.n_dates:3d} median={row.median_ratio:8.4f} "
               f"span={row.ratio_span:7.4f} sharefactor={row.median_sharefactor:.1f}  "
               f"{row.verdict}")
     if len(split):
         print("  => `sharesbas` is NOT point-in-time for "
-              f"{', '.join(split['ticker'])}. Multiplying it by an as-filed price yields a")
-        print("     market cap wrong by the split factor for every date before the split.")
-        print("     Phase 3 must take sharesOutstanding from the SEC layer on the overlap, or")
-        print("     de-adjust using sharadar_actions (already ingested, carries the splits).")
+              f"{', '.join(split['ticker'].head(10))}. Multiplying it by an as-filed price")
+        print("     yields a market cap wrong by the split factor for every pre-split date.")
+        print("     `build_ttm` de-adjusts using sharadar_actions, which carries the splits.")
 
     assert len(agree) >= len(frame) - len(split), (
         "a ticker disagrees with the SEC cover-page count for a reason that is NOT a split -- "
         "that would be the share-class summing question D-decision actually asked about")
     assert (frame["median_sharefactor"] == 1.0).all(), (
         "`sharefactor` is no longer uniformly 1.0 -- it may now encode the split adjustment, "
-        "which would change how phase 3 should de-adjust")
+        "which would change how the de-adjustment has to work")
     print(f"  OK: {len(agree)}/{len(frame)} agree on level; {len(split)} carry a split-adjusted "
-          f"history that phase 3 must de-adjust.")
+          f"history that `build_ttm` de-adjusts.")
 
 
 # --------------------------------------------------------------------------- #
-# D19 -- written now, SKIPPED with a printed reason                            #
+# D19 -- verified the moment a cutover ticker is stored                        #
 # --------------------------------------------------------------------------- #
 def _cutover_tickers() -> dict[str, str]:
     """`{ticker: cutover_date}` from the registrant-boundary register."""
@@ -281,18 +254,17 @@ def _cutover_tickers() -> dict[str, str]:
     return {k: v["cutover_date"] for k, v in blob.items() if not k.startswith("_")}
 
 
-def test_cik_cutover_continuity(context):
+def test_cik_cutover_continuity(context, frames):
     """D19 joins Sharadar to the SEC layer on `ticker`. A CIK cutover is exactly where that
     join could silently lose half a history: the SEC side resolves per REGISTRANT, so a
     predecessor's filings hang off a different CIK, while Sharadar's series is ticker-keyed and
     continuous. This asserts both sides span the cutover date without a hole.
 
-    It is expected to SKIP today -- none of APA / GOOGL / ETN is in the DJIA, and the free tier
-    entitles the DJIA only. The skip prints its reason rather than vanishing, because D19 being
-    UNVERIFIED is a fact the phase has to report, not a test that quietly did not run.
+    It SKIPS with a printed reason when no cutover ticker is stored, because D19 being
+    UNVERIFIED is a fact to report, not a test that quietly did not run.
     """
     cutovers = _cutover_tickers()
-    stored = set(context.store.distinct(Tables.sharadar_fundamentals, "ticker"))
+    stored = set(frames.arq["ticker"].astype(str).unique())
     testable = sorted(set(cutovers) & stored)
 
     print("\n=== SANITY CHECK: D19, CIK-cutover continuity ===")
@@ -300,13 +272,13 @@ def test_cik_cutover_continuity(context):
     print(f"  tickers stored in {Tables.sharadar_fundamentals} : {len(stored)}")
     print(f"  testable (register and stored)    : {testable or 'NONE'}")
     if not testable:
-        print("  => D19 IS UNVERIFIED. The free tier entitles the DJIA only, and none of")
-        print(f"     {sorted(cutovers)} is a DJIA member. This test runs the day the roster")
-        print("      widens (the Full tier, or an S&P 500 entitlement) and not before.")
-        pytest.skip(f"no cutover ticker is entitled: register={sorted(cutovers)} "
-                    f"and stored={len(stored)} tickers = empty. D19 UNVERIFIED.")
+        print("  => D19 IS UNVERIFIED. None of the register's cutover tickers has been")
+        print("     extracted yet. This test runs as soon as one of them is stored.")
+        pytest.skip(f"no cutover ticker stored: register={sorted(cutovers)} "
+                    f"vs {len(stored)} stored tickers. D19 UNVERIFIED.")
 
-    completeness = gate_completeness(context, testable).set_index("ticker")
+    completeness = gate_completeness(
+        frames.arq[frames.arq["ticker"].isin(testable)]).set_index("ticker")
     sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of"],
                              where={"ticker": testable}, optional=True)
     for ticker in testable:

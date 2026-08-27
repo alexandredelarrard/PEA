@@ -35,9 +35,11 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fun
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
+from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
+    StepExtractFundamentalsSharadar,
+)
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
-    fetch_sharadar_actions, fetch_sharadar_fundamentals, fetch_sharadar_sp500,
-    fetch_sharadar_tickers,
+    fetch_sharadar_actions, fetch_sharadar_sp500, fetch_sharadar_tickers,
 )
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import (
     DEFAULT_REPORT_PATH, run_diagnostics,
@@ -228,29 +230,29 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
 # --------------------------------------------------------------------------- #
 # Fundamentals -- Sharadar (SF1), the OTHER producer                            #
 # --------------------------------------------------------------------------- #
-# One command per Sharadar table so the Airflow extraction DAG can schedule them
-# separately, plus a joined one that runs all four in dependency order. `-F/--full` re-pulls
-# the whole configured window instead of resuming from the stored max date.
+# The joined command runs the whole producer; the three single-table commands exist for a
+# TARGETED refresh when only one dimension is stale, which is a manual operation -- nothing in
+# `src/dags/` schedules them. `-F/--full` re-pulls the whole configured window instead of
+# resuming from the stored max date, and makes the merge DELETE before it rebuilds.
 #
 # History depth is `data_extract.sharadar_years_history`, NOT `years_history`: the SEC walk
 # is limited by patience, Sharadar by subscription tier (D3).
 @cli.command(name="fundamentals-sharadar",
-             help="ALL FOUR Sharadar tables in dependency order: tickers -> SF1 "
-                  "fundamentals -> actions -> sp500. A ticker outside the subscription "
-                  "returns 403, costs one request and is counted, never retried.")
+             help="The whole Sharadar producer in dependency order: tickers -> SF1 "
+                  "fundamentals -> actions -> sp500 -> the MERGED fundamentals_history.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*_FULL_ARGS, **_FULL_KWARGS)
 def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> None:
+    """Delegates to `StepExtractFundamentalsSharadar` rather than restating the order.
+
+    The two used to be written out separately and had already diverged: this command stopped
+    before the merge, so it refreshed the vendor tables and left `fundamentals_history` a run
+    behind them -- exactly the staleness the step's own comment warns about.
+    """
     config, context = _ctx(config_path)
-    years = int(config.data_extract.sharadar_years_history)
-    # tickers FIRST and unconditionally: the SF1 fetch reads `currency` from it to assert
-    # USD (D20) and refuses to run against an empty dimension.
-    fetch_sharadar_tickers(context)
-    fetch_sharadar_fundamentals(context, tickers=_tickers(context, tickers),
-                                years_history=years, full=full)
-    fetch_sharadar_actions(context, years_history=years, full=full)
-    fetch_sharadar_sp500(context, full=full)
+    StepExtractFundamentalsSharadar(context=context, config=config).run(
+        tickers=_tickers(context, tickers), full=full, config_dir=config_path)
 
 
 @cli.command(name="sharadar-tickers",
@@ -335,8 +337,8 @@ def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str,
 
 @cli.command(name="sharadar-diagnostics",
              help="READ-ONLY acceptance gates on fundamentals_sharadar -> a markdown report "
-                  "+ a PROPOSED per-field zero rule. Writes no production data and is NOT "
-                  "the SEC check scheme (D25).")
+                  "of what this run measured. Writes no production data and is NOT the SEC "
+                  "check scheme (D25).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option("--out", "report_path", default=DEFAULT_REPORT_PATH, show_default=True,
@@ -352,7 +354,7 @@ def sharadar_diagnostics(config_path: str, tickers: str | None, report_path: str
     """
     _, context = _ctx(config_path)
     names = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
-    run_diagnostics(context, tickers=names, report_path=report_path, config_dir=config_path)
+    run_diagnostics(context, tickers=names, report_path=report_path)
 
 
 @cli.command(help="Earnings surprises -> historical forward P/E.")

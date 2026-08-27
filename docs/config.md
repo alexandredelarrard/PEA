@@ -27,7 +27,7 @@ never replace OmegaConf.
 
 | Key | File | Owns |
 |---|---|---|
-| *(root)* `data_mode`, `seed` | `configs.yml` | `seed: 4325` — the global RNG seed, read as `context.random_state` |
+| *(root)* `seed` | `configs.yml` | `seed: 4325` — the global RNG seed, read as `context.random_state` |
 | `data_extract` | `configs.yml` | extraction scope & cadence |
 | `local.paths` | `paths.yml` | `root: ./`, `data_store: data`, `logs: .log` — resolved into `context.paths` |
 | `logging` | `logging.yml` | stdlib `dictConfig` tree; `formatters.file.format` also feeds the in-memory log buffer |

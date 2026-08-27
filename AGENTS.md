@@ -26,6 +26,8 @@ OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI,
 - Never read a large table unprojected: `columns=`/`project=True` **and** `where=`/`since=`;
   `iter_load` for cube-sized reads.
 - Table names live only in `src/data_store/schema.py` → `Tables.<name>`, never a string literal.
+- **Two fundamentals tables**: `fundamentals_history` = the Sharadar-first MERGED table every
+  consumer reads; `fundamentals_history_sec` = the SEC replay, and the only one `src/validate/` sees.
 - Literals (URLs, formats, thresholds) → `src/constants/constants.py`. Tunable numbers → `configs/`. Always tighten the prose in docstrings / comments, in all files.
 - Logging: `self._log` in a Step/Strategy, `context.log` in a helper taking `context`. Never
   `print()`. `Context` has `.log` — there is **no** `.logger`.
@@ -47,7 +49,7 @@ Every `src/` subfolder owns a `step_*.py` orchestrator: inherit `Step`, call
 
 ```
 data_store/   the ONLY SQL — schema.py (table registry), store.py (DataStore), ddl.py
-data_extract/ StepExtractAllData + 4 sub-steps + fetchers   -> raw tables
+data_extract/ StepExtractAllData + 5 sub-steps + fetchers (incl. fundamentals_sharadar/)
 data_peers/   StepDeducePeers                               -> sector_peers.json
 data_aggregate/ StepBuildCube: 7 sub-steps -> cube_part_*   -> cube
 modelling/    long_short/ (trained ensemble), trend/, long_book/

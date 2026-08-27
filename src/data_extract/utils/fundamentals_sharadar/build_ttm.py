@@ -50,6 +50,7 @@ from src.data_extract.utils.fundamentals.build_history import TTM_STALENESS_DAYS
 from src.data_extract.utils.fundamentals.periods import TTM_QUARTERS
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
     DURATION, INSTANT, MEAN, FieldMap, TranslationReport, apply_derived, deadjust_splits)
+from src.utils.quarters import quarter_ordinal
 
 log = logging.getLogger(__name__)
 
@@ -61,13 +62,6 @@ ARQ = "ARQ"
 TTM_KEYS: tuple[str, ...] = ("ticker", "date", "reportperiod", "calendardate", "fiscalperiod")
 
 
-def _quarter_ordinal(dates: pd.Series) -> pd.Series:
-    """Each row's normalised calendar quarter as a monotone integer, so "consecutive" is a
-    subtraction rather than a date-arithmetic special case at year boundaries."""
-    stamps = pd.to_datetime(dates, errors="coerce")
-    return stamps.dt.year * 4 + stamps.dt.quarter - 1
-
-
 def _window_is_whole(frame: pd.DataFrame) -> pd.Series:
     """Is each row the end of FOUR CONSECUTIVE normalised quarters, within its own ticker?
 
@@ -77,7 +71,7 @@ def _window_is_whole(frame: pd.DataFrame) -> pd.Series:
     12-month label. The shift is per TICKER, so one issuer's first quarters can never borrow
     the previous issuer's last ones.
     """
-    ordinals = _quarter_ordinal(frame["calendardate"])
+    ordinals = quarter_ordinal(frame["calendardate"])
     prior = ordinals.groupby(frame["ticker"], sort=False).shift(TTM_QUARTERS - 1)
     return (ordinals - prior) == (TTM_QUARTERS - 1)
 
@@ -140,53 +134,55 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
         out = out[sane].reset_index(drop=True)
 
     whole = _window_is_whole(out)
-    tickers = out["ticker"]
 
-    result = out[[c for c in TTM_KEYS if c in out.columns]].copy()
+    # Classify every output ONCE, then aggregate per class. Rolling is the slowest path in
+    # pandas and there are only two aggregations, so the ~88 mapped columns cost two grouped
+    # passes rather than one apiece.
+    basis_of: dict[str, str] = {}
     for name, spec in field_map.outputs.items():
-        if spec.kind in ("sec", "null"):
-            result[name] = np.nan
-            continue
         if spec.kind == "derived":
             continue
-        values = out[name].astype("float64")
-        if spec.basis == INSTANT:
-            result[name] = values
+        if spec.kind in ("sec", "null"):
+            basis_of[name] = "null"
             continue
-        if spec.basis not in (DURATION, MEAN):
+        if spec.basis not in (DURATION, INSTANT, MEAN):
             raise RuntimeError(f"{name} has basis {spec.basis!r}; expected one of "
                                f"{(DURATION, INSTANT, MEAN)}")
+        basis_of[name] = spec.basis
+
+    rolling_names = [n for n, basis in basis_of.items() if basis in (DURATION, MEAN)]
+    out[rolling_names] = out[rolling_names].astype("float64")
+    grouped = out.groupby("ticker", sort=False)
+    rolled: dict[str, pd.DataFrame] = {}
+    for basis, how in ((DURATION, "sum"), (MEAN, "mean")):
+        names = [n for n, b in basis_of.items() if b == basis]
+        if not names:
+            continue
         # `rolling(4)` without `min_periods` already NULLs a window holding a NaN, which IS
         # the contract: a quarter the zero rule or a correction removed must NOT contribute
         # silently to a sum, it must null the trailing twelve it belongs to.
-        rolled = values.groupby(tickers, sort=False).rolling(TTM_QUARTERS)
-        rolled = (rolled.sum() if spec.basis == DURATION else rolled.mean())
-        result[name] = rolled.reset_index(level=0, drop=True).where(whole, np.nan)
+        window = grouped[names].rolling(TTM_QUARTERS)
+        frame_out = (window.sum() if how == "sum" else window.mean())
+        rolled[basis] = frame_out.reset_index(level=0, drop=True).reindex(out.index)
 
+    # Assembled in the map's own order, then concatenated ONCE -- inserting ~90 columns one at
+    # a time refragments the block manager on every insert.
+    columns: dict[str, pd.Series] = {}
+    for name, basis in basis_of.items():
+        if basis == "null":
+            columns[name] = pd.Series(np.nan, index=out.index)
+        elif basis == INSTANT:
+            columns[name] = out[name].astype("float64")
+        else:
+            columns[name] = rolled[basis][name].where(whole, np.nan)
     for name, source in quarter_columns.items():
-        result[name] = out[source].astype("float64")
+        columns[name] = out[source].astype("float64")
+
+    keys = out[[c for c in TTM_KEYS if c in out.columns]]
+    result = pd.concat([keys, pd.DataFrame(columns, index=out.index)], axis=1)
 
     # De-adjust the AGGREGATE, then derive. Both orderings matter: after the rolling window so
     # the window is on one basis, and before `apply_derived` so `epsDiluted` reads a corrected
     # `dilutedShares` rather than being computed from a hybrid one.
     result = deadjust_splits(result, field_map, actions, report=report)
     return apply_derived(result, field_map)
-
-
-def ttm_coverage(result: pd.DataFrame, field_map: FieldMap) -> pd.DataFrame:
-    """Per-column non-null coverage of a built frame, for the phase-4 report.
-
-    Duration columns are structurally NULL for a ticker's first three quarters -- that is the
-    four-discrete-quarter contract, not a defect -- so the count is reported beside the number
-    of rows that HAD a whole window, never as a bare percentage of all rows.
-    """
-    rows = len(result)
-    records = []
-    for name, spec in field_map.outputs.items():
-        if name not in result.columns:
-            continue
-        records.append({"column": name, "kind": spec.kind, "basis": spec.basis,
-                        "n_non_null": int(result[name].notna().sum()),
-                        "n_rows": rows,
-                        "pct_non_null": round(float(result[name].notna().mean()), 4)})
-    return pd.DataFrame(records).sort_values(["kind", "column"]).reset_index(drop=True)

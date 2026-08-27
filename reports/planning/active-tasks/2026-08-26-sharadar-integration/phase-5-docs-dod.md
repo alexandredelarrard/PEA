@@ -1,4 +1,4 @@
-# Phase 5 — Documentation and definition of done ⬜
+# Phase 5 — Documentation and simplify ✅
 
 **Goal**: leave the repo's docs telling the truth about a two-source fundamentals stack, and write
 the DATA DoD report.
@@ -12,60 +12,60 @@ the DATA DoD report.
 
 ### `AGENTS.md` — **cap 70 lines**, so this is a rewrite of existing lines, not an append
 
-- [ ] The code map's `data_extract/` line gains `fundamentals_sharadar/`.
-- [ ] Add one line making the two-table split unmissable, because a future agent reading
+- [x] The code map's `data_extract/` line gains `fundamentals_sharadar/`.
+- [x] Add one line making the two-table split unmissable, because a future agent reading
       "fundamentals_history" will otherwise assume it is the SEC table it has always been:
       `fundamentals_history` = Sharadar-first merged; `fundamentals_history_sec` = the SEC replay.
-- [ ] Propose the wording before editing — `AGENTS.md` is a declared risk zone and has a hard cap.
+- [x] Propose the wording before editing — `AGENTS.md` is a declared risk zone and has a hard cap.
 
 ### `docs/data_sources.md`
 
 A new Sharadar section. The quirks that cost a day each if undocumented:
 
-- [ ] Direct API only; **never** `data.nasdaq.com`, never `nasdaqdatalink` / `quandl` with this key.
-- [ ] The filing-date column is **`date`**, not `datekey` (the Nasdaq channel's name, and the
+- [x] Direct API only; **never** `data.nasdaq.com`, never `nasdaqdatalink` / `quandl` with this key.
+- [x] The filing-date column is **`date`**, not `datekey` (the Nasdaq channel's name, and the
       research doc's notation throughout).
-- [ ] **`from` defaults to "1 year ago"**, `limit` to 10000, `sort` to `date.desc` — always explicit.
-- [ ] **`fields=` silently drops an unavailable field** with no warning.
-- [ ] **403 means not entitled**, not throttled — and `polite_http.http_get` retries 403 four times
+- [x] **`from` defaults to "1 year ago"**, `limit` to 10000, `sort` to `date.desc` — always explicit.
+- [x] **`fields=` silently drops an unavailable field** with no warning.
+- [x] **403 means not entitled**, not throttled — and `polite_http.http_get` retries 403 four times
       by default, so it must be called with `retries=0`.
-- [ ] Only **8 columns are USD-converted**; everything else is the filer's reporting currency while
+- [x] Only **8 columns are USD-converted**; everything else is the filer's reporting currency while
       `marketcap`/`price` are always USD. We assert USD and refuse non-USD filers (D20).
-- [ ] Money columns are **actual units** in SF1 but **USD millions** in the `daily` table — a 10⁶
+- [x] Money columns are **actual units** in SF1 but **USD millions** in the `daily` table — a 10⁶
       factor between two tables in the same subscription.
-- [ ] Ratio columns are **decimal fractions**, not percentages, despite the 2019 dictionary typing
+- [x] Ratio columns are **decimal fractions**, not percentages, despite the 2019 dictionary typing
       them `%`. `evebit` is `bigint` and returns integer-truncated.
-- [ ] **`de` is liabilities/equity**, not debt/equity, despite its name.
-- [ ] `capex` and the `ncf*` legs are stored **negative**; the repo's `capex` is `non_negative`.
-- [ ] `lastupdated` is a **per-ticker reprocessing stamp**, not a per-row change stamp.
-- [ ] **Only AR\* is point-in-time.** MR\* rows mutate in place and are not stored.
-- [ ] **Quarterly dimensions are US-domestic-only** — ADR (form 20) and Canadian (form 40) filers
+- [x] **`de` is liabilities/equity**, not debt/equity, despite its name.
+- [x] `capex` and the `ncf*` legs are stored **negative**; the repo's `capex` is `non_negative`.
+- [x] `lastupdated` is a **per-ticker reprocessing stamp**, not a per-row change stamp.
+- [x] **Only AR\* is point-in-time.** MR\* rows mutate in place and are not stored.
+- [x] **Quarterly dimensions are US-domestic-only** — ADR (form 20) and Canadian (form 40) filers
       have no ARQ/MRQ at all. Relevant the moment the universe widens past the S&P 500.
-- [ ] SF1 covers the **primary share class only**.
-- [ ] The measured entitlement of the current key (29 DJIA tickers, ~5y, no bulk).
+- [x] SF1 covers the **primary share class only**.
+- [x] The measured entitlement of the current key (29 DJIA tickers, ~5y, no bulk).
 
 ### `docs/data_schema.md`
 
-- [ ] Rows for `fundamentals_sharadar`, `sharadar_tickers`, `sharadar_actions`, `sharadar_sp500`.
-- [ ] `fundamentals_history` rewritten: new column set, new grain semantics, **and the explicit note
+- [x] Rows for `fundamentals_sharadar`, `sharadar_tickers`, `sharadar_actions`, `sharadar_sp500`.
+- [x] `fundamentals_history` rewritten: new column set, new grain semantics, **and the explicit note
       that the 4 amendment/provenance columns are gone by decision**.
-- [ ] `fundamentals_history_sec` documented as the SEC replay — **still reason-coded, still the only
+- [x] `fundamentals_history_sec` documented as the SEC replay — **still reason-coded, still the only
       table `src/validate/` looks at, and still the sole owner of `is_amendment` /
       `amended_fiscal_end` / `amended_fields`**, which are SEC reconciliation columns and do not
       cross into the merged table.
 
 ### `docs/database.md`
 
-- [ ] Refresh the fundamentals section with measured row counts, ticker counts and date ranges from
+- [x] Refresh the fundamentals section with measured row counts, ticker counts and date ranges from
       the phase-4 verification query.
 
 ### `docs/architecture.md`
 
-- [ ] `StepExtractFundamentalsSharadar` in the extraction stage, before `StepExtractFundamentals`.
+- [x] `StepExtractFundamentalsSharadar` in the extraction stage, before `StepExtractFundamentals`.
 
 ### `README.md` (repo root)
 
-- [ ] One line if it enumerates data sources.
+- [x] One line if it enumerates data sources.
 
 ---
 
@@ -86,13 +86,13 @@ rtk "$PY" -m pytest tests/data_extract -v -s
 rtk "$PY" -m pytest tests/test_no_sql_outside_data_store.py -v -s
 ```
 
-- [ ] All new tests pass and each prints a sanity conclusion.
-- [ ] No `sqlalchemy` / `pd.read_sql` / `to_sql` / `store.engine` outside `src/data_store/`.
-- [ ] No table-name string literals — every call passes a `Tables.<name>` object.
-- [ ] No `print()` in `src/`; `self._log` in steps, `context.log` in helpers.
-- [ ] Full type annotations, imports at top, no cross-imports between `src/` subfolders.
-- [ ] `AGENTS.md` is still ≤ 70 lines.
-- [ ] The DoD report exists at `reports/<YYYY-MM-DD>/<slug>__DATA.md`.
+- [x] All new tests pass and each prints a sanity conclusion.
+- [x] No `sqlalchemy` / `pd.read_sql` / `to_sql` / `store.engine` outside `src/data_store/`.
+- [x] No table-name string literals — every call passes a `Tables.<name>` object.
+- [x] No `print()` in `src/`; `self._log` in steps, `context.log` in helpers.
+- [x] Full type annotations, imports at top, no cross-imports between `src/` subfolders.
+- [x] `AGENTS.md` is still ≤ 70 lines.
+- [x] The DoD report exists at `reports/<YYYY-MM-DD>/<slug>__DATA.md`.
 
 ---
 

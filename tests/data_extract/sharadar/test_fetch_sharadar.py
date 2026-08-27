@@ -30,7 +30,13 @@ from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
 
 CONFIG_DIR = "./configs"
 ENTITLED = "AAPL"          # measured entitled on the current key
-NOT_ENTITLED = "ADBE"      # measured 403 "Exceeds free tier"
+#: ⚠ There is no longer a non-entitled ticker to point at. Measured 2026-08-26 after the
+#: subscription was upgraded: the key covers the WHOLE SF1 universe (5,780 distinct tickers in
+#: 2024 alone) and nothing returns 403. `ADBE` used to sit here and used to 403 on the free
+#: DJIA tier. The 403 PATH still has to work -- an entitlement can lapse or be downgraded, and
+#: `polite_http.http_get` retries 403 four times -- so the classification is now tested
+#: against a stubbed response instead of a live ticker.
+NOT_ENTITLED_TICKER_EXISTS = False
 
 
 @pytest.fixture(scope="module")
@@ -127,32 +133,40 @@ def test_response_header_matches_contract(context):
 # 3. A 403 costs ONE request, not five (real call)                             #
 # --------------------------------------------------------------------------- #
 def test_not_entitled_is_not_a_retry_storm(context, monkeypatch):
-    """`polite_http.http_get` treats 403 as rate-limiting and retries 4 times with
-    exponential backoff. Every ticker outside the subscription returns 403, so routing them
-    through that path would cost MINUTES PER TICKER doing nothing."""
+    """A 403 must be CLASSIFIED off one GET, never routed to the retrying path.
+
+    `polite_http.http_get` treats 403 as rate-limiting and retries 4 times with exponential
+    backoff, so a roster loop over non-entitled tickers would burn minutes per ticker doing
+    nothing. Control flow, not economics -- and since the upgrade there is no live ticker that
+    403s, so the status is stubbed. `http_get` is stubbed too, and asserting it was never
+    called is the actual property under test.
+    """
+    class Forbidden:
+        status_code = 403
+        text = '{"error":"Exceeds free tier"}'
+
     calls: list[str] = []
-    real_get_once = client_mod.get_once
-
-    def counting_get_once(url, **kwargs):
-        calls.append(url)
-        return real_get_once(url, **kwargs)
-
-    monkeypatch.setattr(client_mod, "get_once", counting_get_once)
+    retries: list[str] = []
+    monkeypatch.setattr(client_mod, "get_once",
+                        lambda url, **kwargs: (calls.append(url), Forbidden())[1])
+    monkeypatch.setattr(client_mod, "http_get",
+                        lambda url, **kwargs: (retries.append(url), None)[1])
 
     started = time.time()
     with pytest.raises(NotEntitled) as raised:
-        sharadar_get(context, "fundamentals", ticker=NOT_ENTITLED, dimension="ARQ",
+        sharadar_get(context, "fundamentals", ticker="ANY", dimension="ARQ",
                      sort="date.asc", **{"date.gte": "2021-01-01"})
     elapsed = time.time() - started
 
-    print("\n=== SANITY CHECK: a non-entitled ticker costs one request ===")
-    print(f"  ticker            : {NOT_ENTITLED} (outside the subscription)")
+    print("\n=== SANITY CHECK: a 403 costs one request, not five ===")
+    print(f"  stubbed status    : 403 (no live ticker 403s since the tier upgrade)")
     print(f"  raised            : {type(raised.value).__name__}({raised.value})")
-    print(f"  requests issued   : {len(calls)}  (the retrying path would issue 5)")
-    print(f"  elapsed           : {elapsed:.2f}s  (4 exponential backoffs would be >45s)")
+    print(f"  get_once calls    : {len(calls)}")
+    print(f"  http_get calls    : {len(retries)}  (the retrying path -- must be 0)")
+    print(f"  elapsed           : {elapsed:.3f}s  (4 exponential backoffs would be >45s)")
 
     assert len(calls) == 1, f"a 403 must cost exactly one request, issued {len(calls)}"
-    assert elapsed < 30, f"took {elapsed:.1f}s -- that is a retry storm, not a classification"
+    assert not retries, "a 403 reached the RETRYING path -- that is the retry storm"
     print("  OK: classified as not-entitled off a single GET, no backoff burned.")
 
 

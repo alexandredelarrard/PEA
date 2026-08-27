@@ -27,7 +27,7 @@ from src.constants.constants import (
     SHARADAR_ZERO_RULES_FILENAME,
 )
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_STATEMENT_ORDER
-from src.data_extract.utils.fundamentals_sharadar.build_ttm import build_ttm, ttm_coverage
+from src.data_extract.utils.fundamentals_sharadar.build_ttm import build_ttm
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
     DURATION, INSTANT, MEAN, TranslationReport, apply_derived, load_corrections,
     load_field_map, load_zero_rules, split_events, translate,
@@ -41,6 +41,21 @@ CONFIG_DIR = Path("./configs")
 #: fails on rounding alone -- NVDA's 25,020,000,000 de-adjusts to 2,502,000,000 against a true
 #: 2,500,000,000, which is 0.08% and is not a de-adjustment error.
 VENDOR_ROUNDING = 0.005
+
+
+def ttm_coverage(result: pd.DataFrame, field_map) -> pd.DataFrame:
+    """Per-column non-null coverage of a built frame. A TEST instrument, not a production one.
+
+    Duration columns are structurally NULL for a ticker's first three quarters -- that is the
+    four-discrete-quarter contract, not a defect -- so the count is reported beside the number
+    of rows that HAD a whole window, never as a bare percentage of all rows.
+    """
+    rows = len(result)
+    records = [{"column": name, "kind": spec.kind, "basis": spec.basis,
+                "n_non_null": int(result[name].notna().sum()), "n_rows": rows,
+                "pct_non_null": round(float(result[name].notna().mean()), 4)}
+               for name, spec in field_map.outputs.items() if name in result.columns]
+    return pd.DataFrame(records).sort_values(["kind", "column"]).reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------- #

@@ -1056,18 +1056,3 @@ FIX_EVIDENCE_KEYS: dict[str, frozenset[str]] = {
     "catalogue": frozenset({"accessions"}),
     "check": frozenset({"examined", "benign"}),
 }
-
-# --------------------------------------------------------------------------- #
-# The Dow Jones Industrial Average constituents                                #
-# --------------------------------------------------------------------------- #
-# A REFERENCE SET, not a policy. Two independent things happen to be capped to it, which is
-# why it is declared once here rather than inside either consumer:
-#   * the Sharadar free tier -- measured 2026-08-26, all 30 of these are entitled and every
-#     other S&P 500 ticker returns HTTP 403 "Exceeds free tier" (see fundamentals_sharadar);
-# Kept current: `SHW` replaced `DOW` in the index, so `DOW` is NOT here -- and `DOW` is
-# consequently one of the tickers Sharadar denies.
-DOW_30_TICKERS = (
-    "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
-    "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
-    "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT",
-)

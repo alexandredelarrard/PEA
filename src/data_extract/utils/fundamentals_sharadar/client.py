@@ -131,10 +131,11 @@ def sharadar_get(context: Context, table: str, /, *,
     legitimate call, and without the `/` it would raise "got multiple values for argument".
     """
     url = f"{SHARADAR_BASE_URL}/data/{table}"
+    key = _api_key()
     frames: list[pd.DataFrame] = []
     offset = 0
     while True:
-        params = {"api_key": _api_key(), "limit": _PAGE_LIMIT, "offset": offset, **filters}
+        params = {"api_key": key, "limit": _PAGE_LIMIT, "offset": offset, **filters}
         text = _page(context, url, params)
         if text is None:
             return pd.concat(frames, ignore_index=True) if frames else None

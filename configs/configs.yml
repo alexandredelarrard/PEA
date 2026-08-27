@@ -1,11 +1,16 @@
-data_mode: remote
 seed: 4325
 
 data_extract:
-  years_history: 31 
+  years_history: 31
+  # `prices_macro`'s only window. The SERIES LIST is not a config key -- it cannot be
+  # separated from its symbol->name mapping without creating two places to edit, so it lives
+  # in constants.MACRO_PRICE_SERIES / MACRO_FRED_SERIES.
   macro_years_history: 31
   notes_years_history: 31
-  ### Sharadar's own history knob
+  # Sharadar's OWN history knob, separate from `years_history` because the two sources are
+  # limited by different things: the SEC walk by patience, Sharadar by subscription tier.
+  # Measured 2026-08-26 on the paid tier: SF1's earliest filing date is 1993-12-22, so a
+  # window past ~33 years buys nothing and 31 leaves 1993-12..1995-08 unfetched by choice.
   sharadar_years_history: 31
   sharadar_request_pace: 0.35
   redundant_ticks: ["GOOG", "FOX", "NWS", "EA"] #EA got acquired
@@ -37,7 +42,12 @@ data_extract:
     # How far a derived quarter whose sign matches NONE of its siblings may exceed the
     # largest quarter already observed that year, for a SIGNED field. Raised from 1.0 after
     # the 1.0 bar was measured rejecting real, as-filed quarters at 1.03-2.6x: Allstate
-    # FY2023 (1.10x), Gilead FY2017 (1.26x, the TCJA writedown)
+    # FY2023 (1.10x), Gilead FY2017 (1.26x, the TCJA writedown), S&P Global FY2014 (2.41x,
+    # the $1.6B legal settlement), Genuine Parts 2025 (2.39x), Zimmer Biomet 2018 (2.59x),
+    # Johnson Controls 2012 (2.59x), J.M. Smucker 2023 (1.99x). A charge-driven quarter
+    # legitimately dwarfs the run-rate, so magnitude alone cannot tell it from a data
+    # error; the `non_negative` SIGN test does the real work and this only backstops the
+    # genuinely signed fields.
     max_opposite_sign_q4_ratio: 3.0
     # Ceiling on |annual| / (the periods' own annualised scale) before an annual fact that
     # resolved a DIFFERENT concept than the periods it is differenced against is treated as

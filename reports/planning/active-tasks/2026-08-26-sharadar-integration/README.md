@@ -14,9 +14,9 @@ Phases are consecutive: do not start phase N+1 until phase N's verification bloc
 | ✅ 0 | *(done 2026-08-26)* | rename `fundamentals_history` → `fundamentals_history_sec` | — |
 | ✅ 1 | [phase-1-extract.md](phase-1-extract.md) | 4 Sharadar tables + fetcher + step + CLI, real rows on DJIA-**30** | phase 0 |
 | ✅ 2 | [phase-2-diagnostics.md](phase-2-diagnostics.md) | measure the acceptance gates **from the DB**; decide the per-field zero rule | phase 1 |
-| ⬜ 3 | [phase-3-field-map.md](phase-3-field-map.md) | the 112 → repo-camelCase map + basis translations + TTM build | phase 2 |
-| ⬜ 4 | [phase-4-merge.md](phase-4-merge.md) | merged `fundamentals_history` + gap check + override register | phase 3 |
-| ⬜ 5 | [phase-5-docs-dod.md](phase-5-docs-dod.md) | docs, AGENTS.md, DoD report | phase 4 |
+| ✅ 3 | [phase-3-field-map.md](phase-3-field-map.md) | the 112 → repo-camelCase map + basis translations + TTM build | phase 2 |
+| ✅ 4 | [phase-4-merge.md](phase-4-merge.md) | merged `fundamentals_history` + gap check + override register | phase 3 |
+| ⬜ 5 | [phase-5-docs-dod.md](phase-5-docs-dod.md) | docs, AGENTS.md, simplify | phase 4 |
 
 ---
 
@@ -201,6 +201,23 @@ differently.
 | `sharesOutstanding` | ⚠ **REVISED BY PHASE 2 — do not map `sharesbas` as a point-in-time count.** It does *not* sum share classes (12/14 overlap tickers agree with the SEC cover page at ratio exactly 1.0), but it **is retroactively split-adjusted**: NVDA's 2021 rows carry ~25bn shares against the ~2.5bn then outstanding, and `sharefactor` is `1.0` on every one of them. Phase 3 takes this column from the SEC layer on the overlap, or de-adjusts using `sharadar_actions`. |
 | `freeCashflow` | ← **`fcf`**. Measured: `capex` is **negative** and `fcf == ncfo + capex` **exactly**. No reconstruction needed. |
 
+> **✅ Phase 3 resolved the two open forks (2026-08-26)** — see
+> [phase-3-field-map.md](phase-3-field-map.md)'s DONE section for the measurements.
+>
+> - `sharesOutstanding` ← **de-adjusted `sharesbas`**, not the SEC layer: 30/30 ticker coverage
+>   instead of 14/30, pinned at ratio 1.0000 against the SEC cover page on 39 of 39 overlap
+>   rows. ⚠ The defect is **wider than `sharesbas`** — `shareswa`, `shareswadil`, `eps`,
+>   `epsdil` and `dps` carry the same retroactive adjustment, so `basicShares` and
+>   `dilutedShares` are de-adjusted too. AMZN is 20x adjusted and phase 2 never saw it.
+>   ⚠ And a `sharadar_actions` `split` row is **not always a split**: HON's 0.5 is a spinoff
+>   price factor and applying it would double every HON share count.
+> - `epsDiluted` is **derived** (`netIncome / dilutedShares`), not mapped from `epsdil`, which
+>   is on the `netinccmn` basis — a different numerator from the repo's `consolinc` on
+>   **208 of 549 rows (37.9%)**.
+> - `interestExpense` **stays Sharadar-owned**, with NKE NULLed (net basis, whole series) and
+>   MMM's one negative NULLed (a Q4-by-subtraction artefact, not a credit). ⚠ The plan's
+>   proposed evidence — `ebt - ebit == -intexp` — is a **tautology** that holds on 598/598 rows.
+
 ### Governance
 
 | # | decision |
@@ -303,4 +320,3 @@ live API and supersede it.
 - [ ] The override register exists, is human-approved, and the merge is deterministic given it.
 - [ ] Zero `sqlalchemy` / `pd.read_sql` / `to_sql` outside `src/data_store/` (a test enforces this).
 - [ ] Every new test prints a sanity-check conclusion.
-- [ ] A DATA DoD report is written.

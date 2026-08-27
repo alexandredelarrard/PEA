@@ -189,6 +189,164 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history_sec" (
 );
 CREATE INDEX IF NOT EXISTS ix_fundamentals_history_sec_ticker ON "fundamentals_history_sec" ("ticker");
 
+-- [extract] fundamentals_history  (pk: ticker, as_of)
+-- THE MERGED TABLE, and the one every consumer should read. Field-block precedence (D14):
+-- Sharadar owns a declared set of columns for ALL history, `fundamentals_history_sec` owns
+-- the 15 named below, and no column ever switches source mid-series. Built by
+-- data_extract/utils/fundamentals_sharadar/merge_history.py from two READ-ONLY sources;
+-- neither is written by that build.
+--
+-- Same PUBLICATION-EVENT grain as the SEC table: `as_of` is a FILING DATE. Here it is
+-- Sharadar's own `date`, which the AR dimensions document as the SEC filing date -- measured
+-- against `fundamentals_history_sec.as_of` on 14 tickers x 5 years it matched 279 of 280
+-- (99.64%), the single miss being a 10-K/A Sharadar has no row for.
+--
+-- EXACTLY 91 columns: 3 keys + the 60 HISTORY_STATEMENT_ORDER names +
+-- `stockholdersEquityInclNci` + `employees` + `regime` + the 25 Sharadar extras. The list
+-- is declared in `schema.py`'s `read_columns` and asserted by the builder.
+--
+-- NAMING, and it is load-bearing rather than cosmetic:
+--   * every SEC-SOURCED column carries a `_sec` SUFFIX (`goodwill_sec`, `regime_sec`, ...).
+--     The two producers have different coverage -- Sharadar spans every entitled ticker,
+--     the SEC block only the ones both sources have -- so without the suffix a NULL says
+--     nothing about WHICH source failed to supply it. The column name carries its own
+--     provenance instead, which is also why there is no `source` column.
+--   * every Sharadar column is repo camelCase, including the 25 EXTRAS, which are keyed by
+--     their vendor spelling in `sharadar_field_map.json` and emitted under a repo name
+--     (`cashneq` -> `cashAndEquivalents`, `ncfx` -> `exchangeRateEffect`). The vendor
+--     spelling survives only in `fundamentals_sharadar`, which is the table it belongs to.
+--
+-- The 15 SEC-OWNED columns (D18): `goodwill`, `intangiblesExGoodwill`, `ppeGross`,
+-- `accumulatedDepreciation`, `minorityInterest`, `operatingLeaseLiability`,
+-- `financeLeaseLiability`, the 6 regime top-line legs (`premiumsEarned`,
+-- `netInterestIncome`, `noninterestIncome`, `netInvestmentIncome`,
+-- `realizedInvestmentGains`, `rentalIncome`), `employees` and `regime`. They carry the SEC
+-- roster's coverage, not Sharadar's, and that ASYMMETRY IS THE DESIGN: a ticker outside the
+-- SEC roster has them NULL rather than falling back, because a per-row fallback is exactly
+-- the mid-series source switch D14 forbids.
+--
+-- NOT here, each deliberately (D15): `publication_form`, `is_amendment`,
+-- `amended_fiscal_end`, `amended_fields` -- pure SEC RECONCILIATION columns that stay on
+-- `fundamentals_history_sec`, where the amendment grain is real and the validator uses them.
+-- Sharadar publishes no amendment events, so carrying them here would be four permanently
+-- NULL columns that lie about what the table knows. There is no `source` column either:
+-- precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
+--
+-- ⚠ `fundamentals_reason_codes` explains `fundamentals_history_sec`, NOT this table (D24).
+
+CREATE TABLE IF NOT EXISTS "fundamentals_history" (
+    "ticker" TEXT NOT NULL,
+    "as_of" DATE NOT NULL,
+    "fiscal_end" DATE,
+    -- the 60 value columns, in STATEMENT order (HISTORY_STATEMENT_ORDER), same vocabulary
+    -- and same TTM/instant contract as fundamentals_history_sec above
+    -- income statement -- revenue, general top line then the regime-specific SEC-owned ones
+    "totalRevenue" DOUBLE PRECISION,
+    "premiumsEarned_sec" DOUBLE PRECISION,
+    "netInterestIncome_sec" DOUBLE PRECISION,
+    "noninterestIncome_sec" DOUBLE PRECISION,
+    "netInvestmentIncome_sec" DOUBLE PRECISION,
+    "realizedInvestmentGains_sec" DOUBLE PRECISION,
+    "rentalIncome_sec" DOUBLE PRECISION,
+    -- cost of sales and gross result
+    "costOfRevenue" DOUBLE PRECISION,
+    "grossProfit" DOUBLE PRECISION,
+    "grossMargins" DOUBLE PRECISION,
+    -- operating expense
+    "sellingGeneralAdmin" DOUBLE PRECISION,
+    "researchAndDevelopment" DOUBLE PRECISION,
+    "depAmort" DOUBLE PRECISION,
+    "stockBasedComp" DOUBLE PRECISION,
+    -- operating result
+    "operatingIncome" DOUBLE PRECISION,
+    "operatingMargins" DOUBLE PRECISION,
+    "ebitda" DOUBLE PRECISION,
+    -- below the operating line, down to the bottom line
+    "interestExpense" DOUBLE PRECISION,
+    "pretaxIncome" DOUBLE PRECISION,
+    "incomeTaxExpense" DOUBLE PRECISION,
+    "effectiveTaxRate" DOUBLE PRECISION,
+    "netIncome" DOUBLE PRECISION,
+    "profitMargins" DOUBLE PRECISION,
+    "epsDiluted" DOUBLE PRECISION,
+    -- the two single-quarter slices, next to the TTM lines they are cut from
+    "revenue_q" DOUBLE PRECISION,
+    "netIncome_q" DOUBLE PRECISION,
+    -- cash flow
+    "operatingCashFlow" DOUBLE PRECISION,
+    "capex" DOUBLE PRECISION,
+    "freeCashflow" DOUBLE PRECISION,
+    -- assets, in Reg S-X current-then-long-lived order
+    "cash" DOUBLE PRECISION,
+    "restrictedCash" DOUBLE PRECISION,
+    "shortTermInvestments" DOUBLE PRECISION,
+    "accountsReceivable" DOUBLE PRECISION,
+    "inventory" DOUBLE PRECISION,
+    "currentAssets" DOUBLE PRECISION,
+    "ppeGross_sec" DOUBLE PRECISION,
+    "accumulatedDepreciation_sec" DOUBLE PRECISION,
+    "ppeNet" DOUBLE PRECISION,
+    "goodwill_sec" DOUBLE PRECISION,
+    "intangiblesExGoodwill_sec" DOUBLE PRECISION,
+    -- liabilities and debt, current then long-term, components before the roll-ups
+    "totalAssets" DOUBLE PRECISION,
+    "accountsPayable" DOUBLE PRECISION,
+    "currentLiabilities" DOUBLE PRECISION,
+    "shortTermDebt" DOUBLE PRECISION,
+    "shortTermBorrowingsOnly" DOUBLE PRECISION,
+    "longTermDebt" DOUBLE PRECISION,
+    "longTermDebtCurrentOnly" DOUBLE PRECISION,
+    "operatingLeaseLiability_sec" DOUBLE PRECISION,
+    "financeLeaseLiability_sec" DOUBLE PRECISION,
+    "totalDebt" DOUBLE PRECISION,
+    -- equity, and the two ratios that read off it
+    "totalLiabilities" DOUBLE PRECISION,
+    "retainedEarnings" DOUBLE PRECISION,
+    "minorityInterest_sec" DOUBLE PRECISION,
+    "stockholdersEquity" DOUBLE PRECISION,
+    "returnOnEquity" DOUBLE PRECISION,
+    -- share counts last: the denominators, not the statements
+    "debtToEquity" DOUBLE PRECISION,
+    "basicShares" DOUBLE PRECISION,
+    "dilutedShares" DOUBLE PRECISION,
+    "sharesOutstanding" DOUBLE PRECISION,
+    -- the roll-up that needs BOTH sources (its NCI leg is SEC-owned), then the two
+    -- SEC-owned added columns. `regime` is the ONE TEXT column among the 88 values.
+    "optionOverhang" DOUBLE PRECISION,
+    "stockholdersEquityInclNci" DOUBLE PRECISION,
+    "employees_sec" DOUBLE PRECISION,
+    -- the 25 Sharadar EXTRAS, under their own vendor names (D16: there is nothing to
+    -- rename them to). Eight of these revive currently-dead cube inputs.
+    "regime_sec" TEXT,
+    "cashAndEquivalents" DOUBLE PRECISION,
+    "accumulatedOtherComprehensiveIncome" DOUBLE PRECISION,
+    "nonCurrentAssets" DOUBLE PRECISION,
+    "nonCurrentLiabilities" DOUBLE PRECISION,
+    "totalInvestments" DOUBLE PRECISION,
+    "longTermInvestments" DOUBLE PRECISION,
+    "taxAssets" DOUBLE PRECISION,
+    "taxLiabilities" DOUBLE PRECISION,
+    "deferredRevenue" DOUBLE PRECISION,
+    "deposits" DOUBLE PRECISION,
+    "operatingExpenses" DOUBLE PRECISION,
+    "netIncomeToNci" DOUBLE PRECISION,
+    "netIncomeDiscontinued" DOUBLE PRECISION,
+    "netIncomeCommon" DOUBLE PRECISION,
+    "preferredDividends" DOUBLE PRECISION,
+    "dividendsPerShare" DOUBLE PRECISION,
+    "investingCashFlow" DOUBLE PRECISION,
+    "financingCashFlow" DOUBLE PRECISION,
+    "dividendsPaid" DOUBLE PRECISION,
+    "equityIssuanceNet" DOUBLE PRECISION,
+    "businessAcquisitionsNet" DOUBLE PRECISION,
+    "investmentAcquisitionsNet" DOUBLE PRECISION,
+    "debtIssuanceNet" DOUBLE PRECISION,
+    "exchangeRateEffect" DOUBLE PRECISION,
+    "netCashFlow" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "as_of")
+);
+CREATE INDEX IF NOT EXISTS ix_fundamentals_history_ticker ON "fundamentals_history" ("ticker");
+
 -- [extract] fundamentals_reason_codes  (pk: ticker, as_of, field, dc_code)
 -- WHY a `fundamentals_history_sec` cell is null, or why the value it does carry is not on the
 -- field's nominal basis. Long rather than 39 `_DC` companion columns (which would be a ~50%

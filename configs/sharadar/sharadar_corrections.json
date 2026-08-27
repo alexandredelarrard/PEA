@@ -1,0 +1,67 @@
+{
+  "_README": [
+    "PER-(FIELD, TICKER) CORRECTIONS applied to `fundamentals_sharadar` in the SHARADAR LAYER,",
+    "BEFORE the field map runs. Three defects phase 2 measured cannot be expressed as a zero",
+    "rule, because none of them is a zero: a positive `capex`, a net-basis `intexp`, and a",
+    "split-adjusted share count. This file is where they live.",
+    "",
+    "GRAIN is (field, ticker) -- deliberately NOT (field), which is `sharadar_zero_rules.json`'s",
+    "grain, and NOT (field, ticker, date), which would be an unmaintainable cell-level patch list.",
+    "",
+    "The raw table is NEVER rewritten (D7: a mapping mistake must be re-derivable without",
+    "refetching). The correction is one auditable, reversible step in the transform.",
+    "",
+    "ACTIONS are a CLOSED VOCABULARY. A free-form expression field would be code in a config",
+    "file, so `apply_corrections` refuses an action it does not know:",
+    "  \"null\"             -- every value of this (field, ticker) is unusable; NULL the series.",
+    "  \"null_if_positive\" -- NULL only the cells whose sign is impossible for this column.",
+    "  \"null_if_negative\" -- the mirror image.",
+    "",
+    "EVERY entry needs `action`, `reason` and `evidence`. `evidence` names what was MEASURED or",
+    "which filing was read -- this repo has been burned by fallbacks with no stated authority,",
+    "and a correction with no evidence is indistinguishable from a guess.",
+    "",
+    "MACHINE-PROPOSED, HUMAN-APPROVED, same governance as D22. `apply_corrections` REFUSES to",
+    "run against a file with no `_APPROVED` block, for the same reason the zero rules do.",
+    "",
+    "Keys starting with _ are documentation and must be skipped by the reader.",
+    "generated: 2026-08-26",
+    "scope: 30 ticker(s), 2021-08-27..2026-08-10, `fundamentals_sharadar` ARQ/ART/ARY"
+  ],
+  "_APPROVED": {
+    "on": "2026-08-26",
+    "scope": "3 entries: intexp/NKE, intexp/MMM, capex/GS",
+    "note": [
+      "⚠ THE PLAN'S PROPOSED EVIDENCE FOR intexp/NKE WAS WRONG AND IS NOT USED HERE.",
+      "phase-3-field-map.md proposed `evidence: ebt - ebit == -intexp on 20/20 rows`. That",
+      "identity is a TAUTOLOGY: Sharadar defines `ebit = ebt + intexp`, and the identity was",
+      "re-measured at 598 of 598 ARQ rows across all 30 tickers -- it holds for every filer on",
+      "either basis and therefore distinguishes nothing. The evidence recorded below is the",
+      "measurement that actually separates the two bases.",
+      "",
+      "`capex` is corrected for GS ONLY, not for BA/CVX/IBM. Those three carry one positive",
+      "quarter each and are handled by the field map's `negate: if_non_positive` guard, which",
+      "NULLs a cell whose sign convention does not hold and counts what it nulled. A ticker",
+      "entry is for a SYSTEMATIC defect; a single quarter is not one."
+    ]
+  },
+  "intexp": {
+    "NKE": {
+      "action": "null",
+      "reason": "NKE's income statement carries ONE interest caption and it is a NET line ('Interest expense (income), net'). The repo's `interestExpense` is defined GROSS ('Total interest expense for the period', sign: non_negative), so the whole series is on the wrong basis -- not just the negative quarters. Negating is NOT lossless here: it would report an $8m interest expense NKE never incurred. NKE is not on the 54-ticker SEC roster, so there is no fallback value and the honest answer is NULL.",
+      "evidence": "Measured on all 20 stored ARQ rows: `intexp` slides monotonically from +57,000,000 (FY2022-Q1) to -8,000,000 (FY2026-Q4) and CROSSES ZERO at FY2023-Q3, while `debt` is flat at 12,790,000,000 -> 11,033,000,000 (-14%) over the same window. A GROSS interest expense on flat debt cannot cross zero; a net line can, and does, as interest income rises with the 2022-2024 rate cycle. The annual rows agree: ARY `intexp` = +205,000,000 (FY2022) then -6,000,000, -161,000,000, -107,000,000, -50,000,000."
+    },
+    "MMM": {
+      "action": "null_if_negative",
+      "reason": "MMM's single negative quarter is NOT a net basis and NOT a genuine interest credit -- it is Sharadar's Q4-by-subtraction construction meeting a ZERO-FILLED annual row. The zero rule cannot reach it because the cell is negative, and the annual row it was derived from is the zero the rule does null.",
+      "evidence": "Arithmetic, closed on stored rows: MMM FY2023 ARQ `intexp` = 123,000,000 + 144,000,000 + 304,000,000 for Q1..Q3 and the ARY row for FY2023 is 0. Sharadar builds Q4 as ARY - sum(Q1..Q3) = 0 - 571,000,000 = -571,000,000, which is EXACTLY the stored FY2023-Q4 value. MMM's ARY `intexp` is 0 for FY2023, FY2024 and FY2025 (against 488,000,000 for FY2021 and 462,000,000 for FY2022), which is why every quarter from FY2024-Q2 onward is 0 as well."
+    }
+  },
+  "capex": {
+    "GS": {
+      "action": "null_if_positive",
+      "reason": "Sharadar's cash-flow mapping for a bank puts a positive number in `capex`. The repo's `capex` is declared `sign: non_negative` AFTER the field map's sign flip, so a positive Sharadar cell would be flipped into a negative repo value -- a sign the column cannot hold.",
+      "evidence": "Phase 2's `confirm_sign_conventions` over all 1,346 stored rows: 13 carry a positive `capex` and 10 of the 13 are GS, spread across ARQ (2021-Q3 1,493,000,000; 2022-Q4 680,000,000; 2023-Q4 1,581,000,000), ART (6 rows) and ARY (2023-FY 962,000,000). No other ticker has more than one."
+    }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "_README": [
+    "PER-(TICKER, FIELD) SOURCE OVERRIDES for the merged `fundamentals_history` (D22).",
+    "",
+    "MACHINE-PROPOSED, HUMAN-APPROVED. `sharadar-gap-check --propose` writes candidates here",
+    "with `approved: null`; `merge_history.load_overrides` IGNORES those and logs how many are",
+    "awaiting a decision. An unapproved proposal must never silently change data. Set",
+    "`approved` to the date you adjudicated it -- and replace the proposed `reason` with what",
+    "you actually found, because the generated one only says a gap exists, not what it is.",
+    "",
+    "⚠ A GAP DOES NOT SAY WHICH SIDE IS WRONG, and the proposer cannot tell. Measured on the",
+    "first run: MCD `depAmort` gaps by ~480% because the SEC layer stores ~460M against MCD's",
+    "own ~2.2bn annual D&A -- the SHARADAR value is the correct one there, so approving that",
+    "proposal would import the defect. Read the filing before setting `approved`; a proposal",
+    "is a question, not an answer.",
+    "",
+    "THE ONLY LEGAL DIRECTION is `\"source\": \"sec\"`. Moving a column the other way is not an",
+    "override but a field-BLOCK change (D14) and belongs in `sharadar_field_map.json`.",
+    "",
+    "⚠ COVERAGE COST. An override moves a (ticker, field) to a source with the SEC roster's",
+    "coverage. If that ticker is outside the roster the column becomes NULL -- it does NOT",
+    "fall back to Sharadar, because a per-row fallback is exactly the mid-series source switch",
+    "D14 forbids. The merge logs the cost per entry at build time.",
+    "",
+    "⚠ EIGHT FIELDS ARE EXPECTED TO GAP and are never proposed: stockholdersEquity, ppeNet,",
+    "shortTermDebt, longTermDebt, accountsReceivable, accountsPayable, cash, ebitda. Those are",
+    "the bases phase 3 chose on purpose; `sharadar_field_map.json` states why for each.",
+    "",
+    "Unlike the other two Sharadar registers this file needs NO `_APPROVED` block: approval is",
+    "per ENTRY here, so a fresh proposal is inert rather than fatal."
+  ],
+
+  "AXP": {
+    "profitMargins": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 15 of 17 shared dates (median 7.9%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.0786, "n_dates": 17, "approved": null},
+    "revenue_q": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 20 shared dates (median 7.3%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.0732, "n_dates": 20, "approved": null},
+    "totalRevenue": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 15 of 17 shared dates (median 7.3%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.0729, "n_dates": 17, "approved": null}
+  },
+
+  "CAT": {
+    "capex": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 24.4%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.2443, "n_dates": 17, "approved": null},
+    "debtToEquity": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 5 of 5 shared dates (median 17.8%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.178, "n_dates": 5, "approved": null},
+    "freeCashflow": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 9.5%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.0949, "n_dates": 17, "approved": null},
+    "totalDebt": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 5 of 5 shared dates (median 17.8%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.178, "n_dates": 5, "approved": null}
+  },
+
+  "CSCO": {
+    "debtToEquity": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 20 of 20 shared dates (median 8.6%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.086, "n_dates": 20, "approved": null},
+    "shortTermInvestments": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 20 of 20 shared dates (median 30.1%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.301, "n_dates": 20, "approved": null},
+    "totalDebt": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 20 of 20 shared dates (median 8.6%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.086, "n_dates": 20, "approved": null}
+  },
+
+  "GS": {
+    "capex": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 8 of 8 shared dates (median 48.2%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.4823, "n_dates": 8, "approved": null},
+    "debtToEquity": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 8 of 8 shared dates (median 1081.1%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 10.8112, "n_dates": 8, "approved": null},
+    "freeCashflow": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 14 of 17 shared dates (median 6.1%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.0612, "n_dates": 17, "approved": null},
+    "totalDebt": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 8 of 8 shared dates (median 1081.1%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 10.8112, "n_dates": 8, "approved": null}
+  },
+
+  "JPM": {
+    "debtToEquity": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 20 of 20 shared dates (median 1160.7%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 11.607, "n_dates": 20, "approved": null},
+    "stockBasedComp": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 100.0%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 1.0, "n_dates": 17, "approved": null},
+    "totalDebt": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 20 of 20 shared dates (median 1160.7%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 11.607, "n_dates": 20, "approved": null}
+  },
+
+  "MCD": {
+    "depAmort": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 404.1%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 4.0406, "n_dates": 17, "approved": null},
+    "sellingGeneralAdmin": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 4 of 4 shared dates (median 14.9%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.1488, "n_dates": 4, "approved": null}
+  },
+
+  "MSFT": {
+    "debtToEquity": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 20 of 20 shared dates (median 24.1%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.241, "n_dates": 20, "approved": null},
+    "totalDebt": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 20 of 20 shared dates (median 24.1%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.241, "n_dates": 20, "approved": null}
+  },
+
+  "UNH": {
+    "costOfRevenue": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 613.0%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 6.1301, "n_dates": 17, "approved": null},
+    "debtToEquity": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 20 shared dates (median 5.6%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.056, "n_dates": 20, "approved": null},
+    "grossMargins": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 73.7%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.7366, "n_dates": 17, "approved": null},
+    "grossProfit": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 73.7%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.7366, "n_dates": 17, "approved": null},
+    "returnOnEquity": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 6.1%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.0605, "n_dates": 17, "approved": null}
+  },
+
+  "WMT": {
+    "debtToEquity": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 20 of 20 shared dates (median 7.8%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.0778, "n_dates": 20, "approved": null},
+    "interestExpense": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 20.4%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.2037, "n_dates": 17, "approved": null},
+    "returnOnEquity": {"source": "sec", "reason": "PROPOSED 2026-08-26: Sharadar differs from the SEC layer on 17 of 17 shared dates (median 7.7%). Systematic, so a basis fork rather than a restatement. REPLACE THIS with what the filer's own caption says before approving.", "measured_gap_pct": 0.0771, "n_dates": 17, "approved": null}
+  }
+}

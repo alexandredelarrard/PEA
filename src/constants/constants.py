@@ -208,6 +208,69 @@ SHARADAR_ZERO_FILLED_FIELDS: frozenset[str] = frozenset({
 SHARADAR_CONFIG_SUBDIR = "sharadar"
 SHARADAR_ZERO_RULES_FILENAME = "sharadar_zero_rules.json"
 
+# --------------------------------------------------------------------------- #
+# Sharadar phase-3 FIELD MAP -- SF1's 112 vendor columns -> the repo's          #
+# `HISTORY_STATEMENT_ORDER` vocabulary, plus the two registers that clean the   #
+# vendor frame BEFORE the rename.                                               #
+# --------------------------------------------------------------------------- #
+#: The map itself. Data, not code: `field_map.py` is deterministic given this file.
+SHARADAR_FIELD_MAP_FILENAME = "sharadar_field_map.json"
+
+#: The per-(field, ticker) correction register. Separate from the zero rules because none of
+#: the three defects it exists for IS a zero -- a positive `capex`, a net-basis `intexp`, a
+#: split-adjusted share count -- so the zero rule's per-FIELD grain cannot reach any of them.
+SHARADAR_CORRECTIONS_FILENAME = "sharadar_corrections.json"
+
+#: The block a human adds to a machine-PROPOSED register to approve it. Both registers are
+#: refused without one: a regenerated proposal is byte-identical to a reviewed decision
+#: otherwise, and the whole point of the files is that a human looked at the entries.
+SHARADAR_APPROVAL_KEY = "_APPROVED"
+
+#: Keys in either register that are DOCUMENTATION, not entries. Prose lives beside the
+#: decision it justifies so the two cannot drift into separate files.
+SHARADAR_REGISTER_DOC_PREFIX = "_"
+
+#: The correction register's CLOSED action vocabulary. Closed on purpose: a free-form
+#: expression field would be code in a config file, and `apply_corrections` raises on an
+#: action it does not know rather than skipping it silently.
+SHARADAR_CORRECTION_ACTIONS: frozenset[str] = frozenset({
+    "null", "null_if_positive", "null_if_negative",
+})
+
+#: The field map's CLOSED vocabularies, for the same reason.
+SHARADAR_MAP_KINDS: frozenset[str] = frozenset({"direct", "derived", "sec", "null"})
+SHARADAR_MAP_OPS: frozenset[str] = frozenset({"sum", "ratio", "ratio_minus_one", "quarter"})
+SHARADAR_MAP_SPLIT_BASES: frozenset[str] = frozenset({"count", "per_share"})
+
+#: The only `negate` spelling the map accepts. `true` was the plan's original and phase 2
+#: killed it: 13 of 1,346 stored rows carry a POSITIVE `capex`, so an unconditional flip
+#: writes a NEGATIVE into a column the SEC catalogue declares `non_negative`. This spelling
+#: flips where the convention holds and NULLs where it does not, and the NULLs are counted.
+SHARADAR_NEGATE_IF_NON_POSITIVE = "if_non_positive"
+
+# --------------------------------------------------------------------------- #
+# Sharadar SPLIT DE-ADJUSTMENT.                                                 #
+#                                                                               #
+# SF1's whole per-share and share-count block is RETROACTIVELY SPLIT-ADJUSTED:  #
+# `sharesbas`, `shareswa`, `shareswadil`, `eps`, `epsdil` and `dps` all report  #
+# a pre-split quarter on the POST-split basis, and `sharefactor` is 1.0 on      #
+# every one of those rows and does not flag it. Measured 2026-08-26: NVDA's     #
+# 2021 rows carry 25.0bn shares against the ~2.5bn then outstanding (10-for-1,  #
+# June 2024), WMT 3x, AMZN 20x. De-adjusted, `sharesbas` matches the SEC cover  #
+# page EXACTLY on 10 of 10 WMT rows and 10 of 11 NVDA rows (the 11th differs by #
+# Sharadar's own 4-significant-figure rounding).                                #
+# --------------------------------------------------------------------------- #
+#: The `sharadar_actions.action` value naming a share split, and the one naming a spinoff.
+#:
+#: ⚠ A `split` row is NOT always a share split, and reading it as one is a 100%-error trap.
+#: HON carries `split` = 0.5 dated 2026-06-29 CO-DATED with `spinoff` = 1 and
+#: `spinoffdividend` = 221.01 (Honeywell Aerospace): it is the spinoff's PRICE adjustment
+#: factor, not a share-count event. HON's own as-filed cover page proves it -- `sharesbas` is
+#: 316,826,560 on 2026-04-23 and 316,940,010 on 2026-07-23, unchanged across the date. So a
+#: split candidate counts only when NO spinoff row shares its (ticker, date).
+SHARADAR_ACTION_SPLIT = "split"
+SHARADAR_ACTION_SPINOFF = "spinoff"
+
 #: The 4 zero-filled fields `Tables.sharadar_fundamentals.read_columns` deliberately omits --
 #: three `*usd` conversions and one vendor ratio, all excluded from `fundamentals_history` by
 #: D21. The diagnostic still has to MEASURE them: every one of the 41 documented zero-filled
@@ -329,6 +392,64 @@ SHARADAR_ZERO_RULE_MIN_CHECKED = 3
 #: `"keep"` is right), but a bank with 4.2bn of interest expense in Q2 and 0 in Q1 is a fill,
 #: not a fact. Not applied to `SHARADAR_EVENT_FIELDS`.
 SHARADAR_ZERO_RULE_MIXED_SHARE = 0.5
+
+# --------------------------------------------------------------------------- #
+# Sharadar phase-4 MERGE -- the Sharadar TTM frame + the SEC-owned block ->     #
+# `fundamentals_history`, plus the gap check that proposes overrides and the    #
+# register that records the human decision (D14/D22/D23).                       #
+# --------------------------------------------------------------------------- #
+#: The override register. Machine-PROPOSED, human-APPROVED: `merge_history` only READS it and
+#: never decides at runtime, so the merge stays deterministic given this file. Same
+#: `_APPROVED` refusal as the other two registers.
+SHARADAR_SOURCE_OVERRIDES_FILENAME = "sharadar_source_overrides.json"
+
+#: The only `source` an override entry may name. There is exactly one legal direction: a
+#: Sharadar-owned column may be moved to SEC for a named ticker. The reverse is not an
+#: override but a field-block change (D14), which belongs in the field map, and an
+#: open vocabulary here would let one become the other silently.
+SHARADAR_OVERRIDE_SOURCE_SEC = "sec"
+
+#: The key whose presence -- not its truthiness -- distinguishes a REVIEWED entry from a
+#: freshly PROPOSED one. `--propose` writes `null`; a human writes the date they adjudicated
+#: it. An unapproved proposal must never change data.
+SHARADAR_OVERRIDE_APPROVED_KEY = "approved"
+
+#: `as_of` is Sharadar's `date`, the SEC block is joined BACKWARD onto it (never forward --
+#: that is the leak), and this caps how stale the carried SEC snapshot may be. One year: the
+#: SEC block is quarterly, so anything past four quarters means the SEC producer has stopped
+#: covering that ticker and a carried value would be a fabricated present, not a lag.
+SHARADAR_SEC_ASOF_TOLERANCE_DAYS = 370
+
+#: How a duplicate publication date is resolved, in MERGED names (the vendor columns behind
+#: them are `date` and `reportperiod`). Sharadar documents its AR dimensions as possibly
+#: carrying several observations in one quarter and ships NO form column, so
+#: `FORM_PRECEDENCE` has no analogue here: the vendor's own rule is to keep the GREATEST
+#: period end, i.e. the most recent period the filer published that day.
+SHARADAR_COLLAPSE_KEY: tuple[str, ...] = ("ticker", "as_of")
+SHARADAR_COLLAPSE_ORDER = "fiscal_end"
+
+#: The gap check's RELATIVE threshold (D23): |shar - sec| / |sec|. Paired with an absolute
+#: floor from `configs.yml`, because either alone is useless -- a 3% relative test fires on
+#: every rounding difference in a small number, and an absolute floor alone fires on every
+#: large one.
+SHARADAR_GAP_RELATIVE_THRESHOLD = 0.03
+
+#: Share of a `(ticker, field)`'s shared dates that must be flagged before the gap is called
+#: SYSTEMATIC -- i.e. a BASIS conflict rather than a one-off restatement. AXP `totalRevenue`
+#: was 6.6-8.1% low on ALL 11 dates; that persistence is the whole signal. A gap on 1 of 11
+#: dates is not an override candidate, and only a systematic gap is ever proposed.
+SHARADAR_GAP_SYSTEMATIC_SHARE = 0.8
+
+#: How many shared dates a `(ticker, field)` needs before "most dates" means anything.
+SHARADAR_GAP_MIN_DATES = 4
+
+#: The basis forks phase 3 DESIGNED IN. Each of these gaps is expected, is explained in
+#: `sharadar_field_map.json`, and is NOT an override candidate -- the report names them so
+#: they do not drown the real finding, which is anything gapping that is not on this list.
+SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset({
+    "stockholdersEquity", "ppeNet", "shortTermDebt", "longTermDebt", "accountsReceivable",
+    "accountsPayable", "cash", "ebitda",
+})
 
 # --------------------------------------------------------------------------- #
 # Google Trends (unofficial API — retail-attention proxy). The explore call    #

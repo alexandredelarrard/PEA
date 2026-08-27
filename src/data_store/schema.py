@@ -169,10 +169,52 @@ class Tables:
     # `amended_fields` are pure SEC reconciliation columns and stay there, since Sharadar has
     # no amendment events and they would be permanently null here (D15). There is no `source`
     # column either -- precedence is per-COLUMN and fixed, so a per-ROW source would be a lie.
+    #
+    # `read_columns` IS the column contract, declared here rather than only in the builder:
+    # 3 keys + the 60 `HISTORY_STATEMENT_ORDER` names + `stockholdersEquityInclNci` +
+    # `employees` + `regime` + the 25 Sharadar extras = 91. `merge_history` asserts its own
+    # frame against this tuple, so a drift on either side fails the build instead of
+    # surfacing as an empty feature -- `pit.fundamentals_to_daily` returns an EMPTY FRAME for
+    # a column it cannot find rather than raising, which makes silent column loss invisible
+    # all the way to the model.
+    #
+    # ⚠ `regime` is the ONE non-float column among the 88 values (a label). Anything casting
+    # "the value columns" must exclude it by NAME, never by a looks-numeric heuristic.
     fundamentals_history = Table(
         "fundamentals_history", ("ticker", "as_of"), date_col="as_of",
         date_type_cols=("as_of", "fiscal_end"),
-        freshness="quarterly")
+        freshness="quarterly",
+        read_columns=(
+            "ticker", "as_of", "fiscal_end",
+            # -- the 60 contract columns, in HISTORY_STATEMENT_ORDER
+            "totalRevenue", "premiumsEarned_sec", "netInterestIncome_sec", "noninterestIncome_sec",
+            "netInvestmentIncome_sec", "realizedInvestmentGains_sec", "rentalIncome_sec",
+            "costOfRevenue", "grossProfit", "grossMargins",
+            "sellingGeneralAdmin", "researchAndDevelopment", "depAmort", "stockBasedComp",
+            "operatingIncome", "operatingMargins", "ebitda",
+            "interestExpense", "pretaxIncome", "incomeTaxExpense", "effectiveTaxRate",
+            "netIncome", "profitMargins", "epsDiluted",
+            "revenue_q", "netIncome_q",
+            "operatingCashFlow", "capex", "freeCashflow",
+            "cash", "restrictedCash", "shortTermInvestments", "accountsReceivable",
+            "inventory", "currentAssets", "ppeGross_sec", "accumulatedDepreciation_sec", "ppeNet",
+            "goodwill_sec", "intangiblesExGoodwill_sec", "totalAssets",
+            "accountsPayable", "currentLiabilities", "shortTermDebt",
+            "shortTermBorrowingsOnly", "longTermDebt", "longTermDebtCurrentOnly",
+            "operatingLeaseLiability_sec", "financeLeaseLiability_sec", "totalDebt",
+            "totalLiabilities",
+            "retainedEarnings", "minorityInterest_sec", "stockholdersEquity", "returnOnEquity",
+            "debtToEquity",
+            "basicShares", "dilutedShares", "sharesOutstanding", "optionOverhang",
+            # -- the roll-up that needs BOTH sources, then the 2 SEC-owned added columns
+            "stockholdersEquityInclNci", "employees_sec", "regime_sec",
+            # -- the 25 Sharadar EXTRAS, renamed to repo camelCase. They are keyed by their
+            #    VENDOR column in sharadar_field_map.json (`cashneq` -> cashAndEquivalents)
+            "cashAndEquivalents", "accumulatedOtherComprehensiveIncome", "nonCurrentAssets", "nonCurrentLiabilities", "totalInvestments", "longTermInvestments",
+            "taxAssets", "taxLiabilities", "deferredRevenue", "deposits",
+            "operatingExpenses", "netIncomeToNci", "netIncomeDiscontinued", "netIncomeCommon", "preferredDividends", "dividendsPerShare",
+            "investingCashFlow", "financingCashFlow", "dividendsPaid", "equityIssuanceNet", "businessAcquisitionsNet", "investmentAcquisitionsNet", "debtIssuanceNet", "exchangeRateEffect",
+            "netCashFlow"))
     # WHY a `fundamentals_history_sec` cell is null, or why its value is off-basis. DENSE -- one
     # row per null-or-qualified cell at every publication event -- so the
     # zero-unexplained-nulls gate is a LEFT JOIN on (ticker, as_of, field) rather than a

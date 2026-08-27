@@ -22,6 +22,7 @@ from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions, fetch_sharadar_fundamentals, fetch_sharadar_sp500,
     fetch_sharadar_tickers,
 )
+from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 
 
 class StepExtractFundamentalsSharadar(Step):
@@ -51,3 +52,16 @@ class StepExtractFundamentalsSharadar(Step):
         #    resolves the universe from `sp500_tickers`, and the survivorship-bias fix that
         #    would consume this table is a separate task (D27).
         fetch_sharadar_sp500(self._context)
+
+        # 5. The MERGED `fundamentals_history` -- Sharadar's declared column block plus the
+        #    15 SEC-owned ones, joined backward as of each publication date (D14/D18).
+        #
+        #    LAST, and never on its own schedule, for the same reason the SEC step already
+        #    documents: a snapshot is only as fresh as the rows it reads. Running this beside
+        #    the fetchers rather than after them would publish a table that silently lags its
+        #    own inputs by one run, and every row it wrote would look perfectly normal.
+        #
+        #    It reads `fundamentals_history_sec` too, which THIS step does not produce -- so
+        #    the SEC-owned block is as fresh as the last `StepExtractFundamentals` run, not as
+        #    this one. That is the stated coverage/freshness asymmetry (D14), not a bug.
+        build_merged_history(self._context, tickers=tickers)

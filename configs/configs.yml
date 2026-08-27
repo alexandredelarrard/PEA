@@ -2,12 +2,12 @@ data_mode: remote
 seed: 4325
 
 data_extract:
-  years_history: 15 
+  years_history: 31 
   macro_years_history: 31
-  notes_years_history: 15
+  notes_years_history: 31
   ### Sharadar's own history knob
-  sharadar_years_history: 5
-  sharadar_request_pace: 0.5
+  sharadar_years_history: 31
+  sharadar_request_pace: 0.35
   redundant_ticks: ["GOOG", "FOX", "NWS", "EA"] #EA got acquired
   llm_model: "gpt-5-mini"
   # Self-heal cadence for the EDGAR filing-listing fetchers (13D, 8-K, DEF 14A
@@ -19,6 +19,17 @@ data_extract:
   # 1.4-5.8s each). edgartools' shared client already caps ~9 req/sec globally, so raising
   # this past ~8 buys nothing; lower it when running alongside another EDGAR pull.
   fundamentals_workers: 8
+  # The Sharadar/SEC GAP CHECK's absolute floor (phase-4 D23). It is ANDed with the 3%
+  # relative threshold in constants.py, and both halves are load-bearing: 3% alone fires on
+  # every rounding difference in a small number, an absolute floor alone fires on every large
+  # one. THREE floors, because the merged table's columns are not all in dollars -- a $1m bar
+  # is meaningless on a margin and 0.005 is meaningless on totalAssets. A field's class is
+  # read off `sharadar_field_map.json` (`op: ratio*` -> ratio, `split_basis: count` ->
+  # shares, everything else money), never guessed from its name.
+  sharadar_gap_floor:
+    money: 1000000.0
+    shares: 100000.0
+    ratio: 0.005
   # Guards on a DERIVED discrete quarter (`fundamentals/periods.py`). Both are calibrated
   # against confirmed as-filed quarters, not preference -- loosening either lets a wrong
   # number through, tightening either nulls a real one.

@@ -42,6 +42,10 @@ from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import (
     DEFAULT_REPORT_PATH, run_diagnostics,
 )
+from src.data_extract.utils.fundamentals_sharadar.gap_check import (
+    DEFAULT_REPORT_PATH as GAP_REPORT_PATH, run_gap_check,
+)
+from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 # --- structure -------------------------------------------------------------- #
 from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
@@ -277,6 +281,56 @@ def sharadar_actions(config_path: str, full: bool) -> None:
 def sharadar_sp500(config_path: str, full: bool) -> None:
     _, context = _ctx(config_path)
     fetch_sharadar_sp500(context, full=full)
+
+
+# --------------------------------------------------------------------------- #
+# Fundamentals -- the MERGED table, and the instrument that governs it           #
+# --------------------------------------------------------------------------- #
+@cli.command(name="fundamentals-history-merged",
+             help="fundamentals_sharadar + fundamentals_history_sec -> fundamentals_history, "
+                  "the MERGED table every consumer reads. Build only, no network. Both "
+                  "inputs are read-only, so the rollback is a drop-and-rebuild.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+def fundamentals_history_merged(config_path: str, tickers: str | None, full: bool) -> None:
+    """Field-block precedence (D14): Sharadar owns a declared column block for ALL history,
+    the SEC table owns 15, and no column ever switches source mid-series.
+
+    `--full` DELETES these tickers' rows before rebuilding. The default upsert refreshes every
+    row it rebuilds but cannot REMOVE one that no longer exists -- a row the same-date collapse
+    now drops would otherwise survive as a fossil under an unchanged key.
+    """
+    _, context = _ctx(config_path)
+    build_merged_history(context, tickers=_tickers(context, tickers), full=full,
+                         config_dir=config_path)
+
+
+@cli.command(name="sharadar-gap-check",
+             help="READ-ONLY: where Sharadar and the SEC layer disagree on their SHARED "
+                  "dates, and which gaps are SYSTEMATIC enough to be a basis conflict. "
+                  "Writes a markdown report and, with --propose, INERT override candidates.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option("--out", "report_path", default=GAP_REPORT_PATH, show_default=True,
+              help="Where to write the findings markdown.")
+@click.option("--propose", is_flag=True,
+              help="Merge candidate entries into sharadar_source_overrides.json with "
+                   "`approved: null`. They change NOTHING until a human adjudicates them, "
+                   "and an entry that already exists is never touched.")
+def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str,
+                       propose: bool) -> None:
+    """The merged table's instrument, and it replaces one: reason codes stay with the SEC
+    table (D24), so `unexplained_null` no longer gates `fundamentals_history`.
+
+    `--tickers` defaults to EVERY stored ticker rather than the sp500 universe -- the two
+    sources overlap on a subset, and asking for the rest would report a gap on tickers one of
+    them never had. Nothing here imports `src/validate/` (D25).
+    """
+    _, context = _ctx(config_path)
+    names = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
+    run_gap_check(context, tickers=names, report_path=report_path,
+                  propose_overrides=propose, config_dir=config_path)
 
 
 @cli.command(name="sharadar-diagnostics",

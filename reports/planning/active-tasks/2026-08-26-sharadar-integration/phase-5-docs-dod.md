@@ -69,30 +69,12 @@ A new Sharadar section. The quirks that cost a day each if undocumented:
 
 ---
 
-## The DoD report
+## The Simplify code
 
-Use the `dod-data-report` skill. It is a **DATA** task: new fetchers, four new tables, a rebuilt
-table, a schema change.
-
-The report must state plainly, not bury:
-
-1. **The measured entitlement** — this was built and proven on **29 DJIA tickers over ~5 years**,
-   not the S&P 500 and not 28 years. Everything is universe- and depth-parameterised, so the scale-up
-   is a config change; but nothing at scale has been *run*.
-2. **`unexplained_null` no longer gates `fundamentals_history`** (D24). This is a deliberate loss of
-   a zero-ceiling invariant. The gap check is its replacement, and it is a weaker instrument:
-   it only works on the 14 tickers both sources cover.
-3. **The 15 SEC-owned columns** (the 6 regime legs, goodwill split, PP&E gross/accum, NCI, the two
-   lease liabilities, `employees`, `regime`) are populated for **14 of the 29 tickers** here — the
-   DJIA ∩ SEC-roster overlap — and NULL for the other 15. Structural, not a defect.
-   `regime` in particular is SEC-sourced by decision (D18b), **not** derived from GICS.
-4. **Acceptance check #3 is dead.** ΣARQ == ARY at `+0.000%` on every year measured, because
-   Sharadar constructs Q4 that way. The spec named it as a gate; it cannot fail, so it gates nothing.
-   The implausible-quarter detector replaces it.
-5. **D19 is unverified.** The CIK-cutover continuity test exists but skips — APA, GOOGL and ETN are
-   none of them in the DJIA. It will first run when the roster widens.
-6. **Every approved override**, with its measured gap and its coverage cost.
-7. **The Full-tier recommendation** — the phase-2 gates, answered, with a yes or a no.
+Run the agent via `/simplify` to refactor the code where it can. 
+Use the diff for all the commits done on the branch feature/sharadar-fundamentals. 
+EFFICIENCY-focused code quality review step which reviews  an in-progress refactor in the Python repo. Get the diff with: `git diff`. 
+YOUR ANGLE — EFFICIENCY / CONSISTENCY: Flag wasted work the diff introduces. (sub agent to run it) 
 
 ---
 

@@ -1,4 +1,4 @@
-# Phase 3 — The field map and basis translation ⬜
+# Phase 3 — The field map and basis translation ✅
 
 **Goal**: turn `fundamentals_sharadar` (112 vendor columns, ARQ grain) into a repo-vocabulary frame
 on the repo's TTM/instant contract, with every basis fork implemented as decided.
@@ -28,7 +28,7 @@ a zero. They are the reason for §0 below.
 | `intexp` net-basis | NKE 14 negative quarters, **0 zeros**; MMM 1 | the cells are negative, not zero |
 | `sharesbas` split-adjusted | NVDA 10×, WMT 3× on pre-split dates | the cells are correct numbers on the *wrong basis* |
 
-### 0. `configs/sharadar/sharadar_corrections.json` — the correction register ⬜
+### 0. `configs/sharadar/sharadar_corrections.json` — the correction register ✅
 
 **Decided 2026-08-26: build a proper correction mechanism in the Sharadar layer**, rather than
 scattering `if ticker == "GS"` guards through the field map. Same governance as D22 —
@@ -54,23 +54,23 @@ Applied **in the Sharadar layer, before the field map**, so `fundamentals_sharad
 faithful record of what the vendor sent (D7: a mapping mistake must be re-derivable without
 refetching) and every correction is one auditable, reversible step.
 
-### 0b. `intexp` — INVESTIGATE BEFORE RULING ⬜
+### 0b. `intexp` — INVESTIGATE BEFORE RULING ✅
 
 **Do not write an `intexp` correction from the phase-2 numbers alone.** They establish *that*
 NKE is on a net basis, not *how many filers are*, and a rule built on one ticker will not
 survive the S&P 500. The investigation, before any entry is written:
 
-- [ ] How many of the 30 tickers tag a **net** interest line? `ebt - ebit == -intexp` holds for
+- [x] How many of the 30 tickers tag a **net** interest line? `ebt - ebit == -intexp` holds for
       NKE on 20/20 — run that identity across the whole roster and see who else it fits.
-- [ ] Does the SEC layer resolve **gross** interest expense for the same filers? It declares
+- [x] Does the SEC layer resolve **gross** interest expense for the same filers? It declares
       `interestExpense` gross and `non_negative`, and its regime machinery already distinguishes
       bank from industrial caption chains. If it does, the answer is "SEC owns this column",
       not a correction — but NKE is **not** on the 54-ticker SEC roster, so measure coverage
       before assuming a fallback exists.
-- [ ] Is a negative `intexp` always net-basis, or sometimes a genuine credit (a capitalised-
+- [x] Is a negative `intexp` always net-basis, or sometimes a genuine credit (a capitalised-
       interest reversal)? Read MMM's single negative quarter against its 10-Q, since it is the
       one case that does not fit the NKE pattern.
-- [ ] Decide between: NULL the negatives; carry the net line as a **separate column**
+- [x] Decide between: NULL the negatives; carry the net line as a **separate column**
       (`interestExpenseNet`, one basis per column, the repo's rule); or move `interestExpense`
       to SEC-owned in D18.
 
@@ -217,24 +217,24 @@ happen to correlate.
 
 ### 4. `src/data_extract/utils/fundamentals_sharadar/field_map.py`
 
-- [ ] `load_field_map() -> FieldMap` — loads and validates the JSON. **Fails loudly** if any of the
+- [x] `load_field_map() -> FieldMap` — loads and validates the JSON. **Fails loudly** if any of the
       60 `HISTORY_STATEMENT_ORDER` names is unmapped, or if a mapped Sharadar column is absent from
       `SHARADAR_SF1_COLUMNS`.
-- [ ] `apply_zero_rules(df) -> df` — reads `sharadar_zero_rules.json`; for every field ruled
+- [x] `apply_zero_rules(df) -> df` — reads `sharadar_zero_rules.json`; for every field ruled
       `"null"`, replaces `0.0` with `NaN`. **Fails loudly** on a field missing from the register.
-- [ ] `translate(df_arq) -> pd.DataFrame` — direct maps, negations, derived formulas, in that order.
+- [x] `translate(df_arq) -> pd.DataFrame` — direct maps, negations, derived formulas, in that order.
       Zero rules apply **before** any derived formula, so a nulled input propagates instead of
       silently contributing a zero to a sum.
 
 ### 5. `src/data_extract/utils/fundamentals_sharadar/build_ttm.py`
 
-- [ ] `build_ttm(df_arq) -> pd.DataFrame` — per ticker, per `date`: duration fields become the sum of
+- [x] `build_ttm(df_arq) -> pd.DataFrame` — per ticker, per `date`: duration fields become the sum of
       the four most recent discrete quarters; instant fields take the period-end value.
-- [ ] Reuse the SEC path's staleness contract rather than inventing one: fewer than four available
+- [x] Reuse the SEC path's staleness contract rather than inventing one: fewer than four available
       quarters → **NULL**, matching `insufficient_quarters`. Read
       [build_history.py](../../../../src/data_extract/utils/fundamentals/build_history.py) for the
       45-day cap and mirror it.
-- [ ] ⚠ Do **not** use Sharadar's `ART` (D17). It is documented as *not* equal to the sum of four
+- [x] ⚠ Do **not** use Sharadar's `ART` (D17). It is documented as *not* equal to the sum of four
       ARQ, and it would silently redefine every duration column.
 
 ---
@@ -244,19 +244,19 @@ happen to correlate.
 `tests/data_extract/test_sharadar_field_map.py` — parsing math gets synthetic known-truth fixtures;
 the basis decisions get real data. Each prints its conclusion.
 
-- [ ] `test_every_history_column_is_mapped` — all 60 names resolve to direct / derived / sec / null.
+- [x] `test_every_history_column_is_mapped` — all 60 names resolve to direct / derived / sec / null.
       Prints any unmapped.
-- [ ] `test_capex_sign_is_flipped` — real AAPL row: Sharadar negative in, repo-positive out, and
+- [x] `test_capex_sign_is_flipped` — real AAPL row: Sharadar negative in, repo-positive out, and
       `freeCashflow == operatingCashFlow - capex` on the repo's signs. Prints all three numbers.
-- [ ] `test_netincome_is_consolinc_not_netinc` — real JPM: assert the mapped `netIncome` equals
+- [x] `test_netincome_is_consolinc_not_netinc` — real JPM: assert the mapped `netIncome` equals
       `consolinc` and differs from `netinc` on every date. Prints both series.
-- [ ] `test_ebitda_is_top_down` — assert `ebitda == opinc + depamor` and that it **differs** from
+- [x] `test_ebitda_is_top_down` — assert `ebitda == opinc + depamor` and that it **differs** from
       Sharadar's own `ebitda` column on at least one ticker. Prints the gap distribution.
-- [ ] `test_debt_to_equity_is_not_vendor_de` — assert the recomputed value differs from `de`.
+- [x] `test_debt_to_equity_is_not_vendor_de` — assert the recomputed value differs from `de`.
       Prints both, because this is the trap most likely to be "helpfully" reverted later.
-- [ ] `test_ttm_is_four_discrete_quarters` — synthetic four-quarter fixture with known sum; assert
+- [x] `test_ttm_is_four_discrete_quarters` — synthetic four-quarter fixture with known sum; assert
       the TTM equals it and that three quarters yields NULL. Prints both cases.
-- [ ] `test_zero_rules_propagate_into_derived` — a field ruled `"null"` and used in a derived
+- [x] `test_zero_rules_propagate_into_derived` — a field ruled `"null"` and used in a derived
       formula produces NaN, not a zero-contaminated result. Prints the before/after.
 
 ---
@@ -268,9 +268,135 @@ PY="$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3
 rtk "$PY" -m pytest tests/data_extract/test_sharadar_field_map.py -v -s
 ```
 
-- [ ] All 60 contract columns resolve; the loader fails loudly on a gap.
-- [ ] `capex` positive out, `freeCashflow` identity holds on real data.
-- [ ] `netIncome == consolinc` on JPM, all dates.
-- [ ] `ebitda` measurably differs from the vendor column.
-- [ ] TTM equals the four-quarter sum; three quarters is NULL.
-- [ ] `regime` resolves as `{"kind": "sec"}`, not as a GICS derivation.
+- [x] All 60 contract columns resolve; the loader fails loudly on a gap.
+- [x] `capex` positive out, `freeCashflow` identity holds on real data.
+- [x] `netIncome == consolinc` on JPM, all dates.
+- [x] `ebitda` measurably differs from the vendor column.
+- [x] TTM equals the four-quarter sum; three quarters is NULL.
+- [x] `regime` resolves as `{"kind": "sec"}`, not as a GICS derivation.
+
+---
+
+# ✅ DONE 2026-08-26 — what was actually implemented
+
+**Verification**: `tests/data_extract/sharadar/test_sharadar_field_map.py` — **20 passed**.
+Every test prints its conclusion; the numbers below are that output, not estimates.
+
+## Files
+
+| file | what it is |
+|---|---|
+| `configs/sharadar/sharadar_corrections.json` | §0's register — 3 approved entries, each with `evidence` |
+| `configs/sharadar/sharadar_field_map.json` | the map: 60 contract columns + 3 added + 25 extras + 42 excluded |
+| `src/data_extract/utils/fundamentals_sharadar/field_map.py` | loader, both registers, the cleaning stages, `translate`, `apply_derived` |
+| `src/data_extract/utils/fundamentals_sharadar/build_ttm.py` | the TTM/instant contract + `ttm_coverage` |
+| `src/constants/constants.py` | the two filenames, the closed vocabularies, the split-action names |
+
+Measured on all 598 stored ARQ rows, 30 tickers:
+
+```
+zero-rule NULLs         : 375 over 4 field(s) {dps 96, intexp 99, inventory 140, ppnenet 40}
+correction NULLs        : 24 {intexp/NKE 20, intexp/MMM 1, capex/GS 3}
+sign-guard NULLs        : 3  {capex}
+split de-adjusted cells : 89 {basicShares 24, dilutedShares 24, sharesOutstanding 24, dps 17}
+splits applied          : AMZN x20, WMT x3, NVDA x10     splits rejected: HON x0.5
+rows out 598 | totalRevenue non-null 508 (= 598 - 3 per ticker cold start) | totalAssets 598
+```
+
+## §0b `intexp` — INVESTIGATED AND SETTLED, and the plan's proposed evidence was wrong
+
+⚠ **`ebt - ebit == -intexp` is a TAUTOLOGY.** The plan proposed it as the evidence that NKE is
+on a net basis. Sharadar *defines* `ebit = ebt + intexp`, so it holds on **598 of 598 ARQ rows
+across all 30 tickers** — for every filer, on either basis. It distinguishes nothing, and
+`test_the_ebt_minus_ebit_identity_is_a_tautology` records that so nobody re-derives a decision
+from it. The four questions, answered from stored data:
+
+1. **How many filers tag a net line?** Only NKE shows the signature. Sign census over 20 ARQ
+   quarters each: NKE 14 neg / 0 zero, MMM 1 neg / 9 zero, AAPL 0 / 11, CRM 0 / 19,
+   AXP+GS+JPM 0 / 20 each. The other 23 tickers are clean.
+2. **Does the SEC layer cover the same filers?** Not usefully. **NKE has 0 rows** on
+   `fundamentals_history_sec`, and of the 14 overlap tickers **CAT and BA have 0 non-null
+   `interestExpense` in 60 rows each**. There is no fallback to fall back to.
+3. **Is MMM's negative a net line or a genuine credit?** *Neither* — it is Sharadar's
+   Q4-by-subtraction meeting a zero-filled annual row, and the arithmetic closes exactly:
+   MMM FY2023 Q1..Q3 = 123 + 144 + 304 = 571M, ARY FY2023 = **0**, so Q4 = 0 − 571 = **−571M**,
+   the stored value to the dollar. MMM's ARY `intexp` is 0 for FY2023/24/25 (against 488M and
+   462M for FY2021/22), which is also why every quarter from FY2024-Q2 on is 0. **No filing
+   needed to be read.**
+4. **Decision — NULL, and `interestExpense` stays Sharadar-owned.** NKE gets a ticker-level
+   `"null"`: the whole series is net, not just the negatives. Evidence is the one measurement
+   that separates the bases — `intexp` slides +57M → −8M and **crosses zero** while `debt` is
+   flat at 12.8bn → 11.0bn (−14%); a *gross* expense on flat debt cannot cross zero, a net line
+   can as interest income rises with the rate cycle. MMM gets `null_if_negative`.
+   Moving the column to SEC-owned was rejected on coverage: it would drop 30 tickers to 14,
+   two of which carry no value at all. Result: **401 of 598 rows survive (67%)**, every removed
+   cell removed for a stated, measured reason.
+
+## Deviations from the plan, each with the measurement behind it
+
+| # | plan said | implemented | why |
+|---|---|---|---|
+| 1 | `epsDiluted ← epsdil`, direct | **derived**, `netIncome / dilutedShares` | `epsdil` is on the `netinccmn` basis: over 549 rows it matches `netinccmn/shareswadil` on 426, `netinc` on 412, `consolinc` on only **296** — and `netinccmn ≠ consolinc` on **208 rows (37.9%)**. A direct map imports a second net-income basis into the same row as `netIncome ← consolinc`. Matches the SEC path's `_FORMULAS`. |
+| 2 | `sharesbas` is split-adjusted | **the whole share block is** — `sharesbas`, `shareswa`, `shareswadil`, `eps`, `epsdil`, `dps` | Phase 2 only saw `sharesbas` because it cross-checked 14 SEC-roster tickers. Measured: NVDA `shareswadil` 25.35bn (ART) vs SEC 2.535bn — exactly 10x; `epsdil` 0.097 vs 0.97 as filed; `dps` 0.004 vs $0.04. **AMZN is 20x adjusted from 2021 and phase 2 never saw it** (not on the SEC roster). So the plan's "Direct, no basis question" table is wrong for `basicShares`, `dilutedShares` and (had it stayed direct) `epsDiluted`. |
+| 3 | "take from SEC **or** de-adjust" | **de-adjust**, via `sharadar_actions` | 30/30 ticker coverage instead of 14/30, and the same mechanism is needed anyway for the three sibling columns SEC cannot supply for 16 tickers. Pinned: de-adjusted `sharesOutstanding` matches the SEC cover page on **39 of 39 overlap rows**, 38 at ratio exactly 1.00000 and one at 1.00080 (Sharadar's own 4-significant-figure rounding). |
+| 4 | — | ⚠ **the HON trap**, new | A `split` row is **not** always a share split. `sharadar_actions` has 4: AMZN 20, WMT 3, NVDA 10 and **HON 0.5**, and HON's is co-dated with `spinoff=1` / `spinoffdividend=221.01` (Honeywell Aerospace) — it is the spinoff's *price* factor. HON's own cover page proves it: `sharesbas` is 316,826,560 on 2026-04-23 and 316,940,010 on 2026-07-23, **unchanged**. Applying it would have DOUBLED every HON share count — a 100% error on 19 of 20 rows manufactured from a correct number. A candidate is used only when no `spinoff` shares its `(ticker, date)`. |
+| 5 | two bases (duration / instant) | **three** — `duration`, `instant`, `mean` | `basicShares`/`dilutedShares` are weighted averages the catalogue declares `not_additive`; summing four gives 4x the year's average. `_basis_for` reads that flag off the catalogue, so the two layers cannot drift. |
+| 6 | `"formula": "opinc + depamor"` | `op` + `inputs` execute; `formula` is prose, **asserted against them** by the loader | An eval-able expression string is code in a config file. The loader recomputes the prose from `op`/`inputs` and refuses a mismatch, so the comment cannot drift. |
+| 7 | `cash` = `cashneq + investmentsc` (Sharadar names) | `cashneq` **carried as a 25th extra**; `cash = cashneq + shortTermInvestments` | Otherwise the file needs two evaluation spaces (one formula in vendor names, the rest in repo names). `cashneq` genuinely has no repo counterpart — the repo's `cash` is the wider concept — so D16 already covers carrying it. **Every derived formula now runs in one pass on the TTM frame.** |
+| 8 | `tests/data_extract/test_sharadar_field_map.py` | `tests/data_extract/`**`sharadar/`**`test_sharadar_field_map.py` | Matches where phase 1 and 2 put their tests. |
+| 9 | "permanently NULL … **all four**" | there are **three** | `restrictedCash`, `shortTermBorrowingsOnly`, `longTermDebtCurrentOnly`. The prose said four and listed three; the list is right. |
+
+## A gap the plan did not anticipate
+
+⚠ **`shareswadil` is missing for 4 of the 30 tickers** — HON 0/20, PG 6/20, CVX 15/20, BA 10/20
+— so `dilutedShares` reaches **440 of 598 rows against `basicShares`' 508**, and `epsDiluted`
+and `optionOverhang` inherit that ceiling. It is a vendor gap, not a transform defect
+(`test_diluted_share_count_gaps_are_the_vendors` prints it). **Phase 4 decides** whether the SEC
+layer supplies it for the overlap — BA and PG are on that roster, HON and CVX are not — which
+would be a per-ticker override, not a field-block switch (D14).
+
+## Two residuals, stated rather than discovered later
+
+- **`freeCashflow` is kept where `capex` was nulled.** `fcf == ncfo + capex_vendor` exactly on
+  all 1,346 rows, so the two are consistent by construction — but on the 6 ARQ rows whose
+  `capex` the sign guard or the GS correction removed, `freeCashflow` survives and the identity
+  is no longer checkable there. Not corrected: phase 2 measured `fcf` at **zero violations**,
+  and nulling a validated column to match an invalidated one needs its own evidence.
+- **`stockholdersEquityInclNci` is 0/598 here by construction.** Its NCI leg is SEC-owned, so it
+  populates at the phase-4 merge, on the 54-ticker roster. That is the point of it being a
+  second column rather than a modification of the first.
+
+## Verification block — results
+
+- [x] All 60 contract columns resolve (32 direct, 12 derived, 13 sec, 3 null); the loader fails
+      loudly on a gap, on a `from` SF1 does not deliver, on a derived input it cannot produce,
+      and on a register with no `_APPROVED` block. **All 112 SF1 columns are accounted for** —
+      mapped, extra, excluded or identifier; none silently dropped.
+- [x] `capex` positive out (AAPL: vendor −3,223M → repo +3,223M), `freeCashflow` identity holds
+      to 0.00, and all 6 vendor rows with a positive `capex` are NULL rather than negative.
+- [x] `netIncome == consolinc` on JPM, **20 of 20 dates**, and differs from `netinc` on all 20.
+- [x] `ebitda` measurably differs from bottom-up on the **same trailing twelve**: >1% on 282 of
+      401 rows over 22 tickers, median 3.03%, p90 20.03%. ⚠ Comparing against the vendor's own
+      `ebitda` COLUMN is a trap — on ARQ it is a *quarter*, so the ~4x period gap swamps the
+      definitional one; the test builds the bottom-up leg from the TTM frame instead.
+- [x] TTM equals the four-quarter sum (1000.0 from 100/200/300/400); three quarters is NULL;
+      a window with a missing quarter is NULL, **not** the 4-row splice.
+- [x] `debtToEquity` differs from vendor `de` on >90% of rows, and `de` reproduces
+      `liabilities/equity` on **598 of 598** — it is not a debt ratio.
+- [x] `regime` resolves as `{"kind": "sec"}`, one of the 15 SEC-owned columns, not a GICS
+      derivation.
+
+---
+
+## ⚠ Amendment 2026-08-26 — `deadjust_splits` MOVED to `build_ttm`
+
+Deviation 3 above (de-adjust rather than take from SEC) stands. Its **stage** did not.
+
+Running the de-adjustment on the DISCRETE quarters put two split bases inside one
+four-quarter window, overstating `epsDiluted` by up to **3.48x** for the three filings after
+every split (AMZN 3.96 → 1.13, NVDA 6.56 → 2.13, WMT 4.01 → 2.01). `translate()` no longer
+de-adjusts and no longer takes `actions=`; `build_ttm(..., actions=...)` does it between the
+aggregation and `apply_derived`.
+
+Full measurement, before/after table and the two new tests:
+[phase-4-merge.md](phase-4-merge.md) — "the split de-adjustment ran at the wrong STAGE".

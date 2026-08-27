@@ -28,7 +28,7 @@ class StepExtractFundamentals(Step):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
 
-    def run(self, tickers: list[str]) -> None:
+    def run(self, tickers: list[str], full : bool=False) -> None:
 
         # Per-filing SEC XBRL -> fundamentals_facts (+ fundamentals_employees from the same
         # 10-K prose), each KPI resolved from the filer's own calculation linkbase.
@@ -36,7 +36,8 @@ class StepExtractFundamentals(Step):
         # amendment lands as its own row at its own filing date.
         fetch_fundamentals_sec(
             self._context, tickers=tickers,
-            years_history=int(self._config.data_extract.years_history))
+            years_history=int(self._config.data_extract.years_history),
+            full=full)
 
         # ... then the publication-event replay over exactly those facts. Immediately after,
         # and never on its own schedule: the snapshot is only as fresh as the facts it reads,
@@ -44,7 +45,7 @@ class StepExtractFundamentals(Step):
         # filing invisible to every consumer. Refuses to overwrite an already-published row
         # (see `diff_against_stored`), so a resolution change surfaces here rather than in a
         # cube six months later.
-        build_fundamentals_history(self._context, tickers=tickers)
+        build_fundamentals_history(self._context, tickers=tickers, rebuild_history=full)
 
         # earnings surprises
         fetch_earnings_surprises(self._context, tickers=tickers)

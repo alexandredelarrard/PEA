@@ -1064,7 +1064,6 @@ FIX_EVIDENCE_KEYS: dict[str, frozenset[str]] = {
 # why it is declared once here rather than inside either consumer:
 #   * the Sharadar free tier -- measured 2026-08-26, all 30 of these are entitled and every
 #     other S&P 500 ticker returns HTTP 403 "Exceeds free tier" (see fundamentals_sharadar);
-#   * `yahoo_comparison.py`, which uses it as the liquid, well-covered reference subset.
 # Kept current: `SHW` replaced `DOW` in the index, so `DOW` is NOT here -- and `DOW` is
 # consequently one of the tickers Sharadar denies.
 DOW_30_TICKERS = (
@@ -1072,25 +1071,3 @@ DOW_30_TICKERS = (
     "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
     "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT",
 )
-
-# --------------------------------------------------------------------------- #
-# YAHOO CROSS-VALIDATION (src/validate/external/yahoo_comparison.py)                      #
-# --------------------------------------------------------------------------- #
-# The ONLY external ground-truth check: Sharadar (`fundamentals_sharadar`) is the
-# independent fundamentals cross-source. ⚠ `yfinance` quarterly
-# statements expose only ~4-5 trailing, CURRENT-RESTATED quarters -- there is no as-filed
-# point-in-time depth -- so this validates the MOST RECENT quarters only and can never check
-# a historical as-filed value.
-YAHOO_CACHE_DIRNAME = "yahoo_cache"
-YAHOO_COMPARISON_FILENAME = "yahoo_comparison.csv"
-YAHOO_RATIO_OUTLIERS_FILENAME = "yahoo_ratio_outliers.csv"
-YAHOO_EXACT_MATCH_TOLERANCE_FLOW = 0.02
-YAHOO_EXACT_MATCH_TOLERANCE_LEVEL = 0.01
-
-# Tickers the universe-wide audit could not validate against Yahoo -- logged aside as
-# informational, never treated as a blocking failure.
-NO_EXTERNAL_VALIDATION_FILENAME = "no_external_validation.csv"
-
-# Single ranked review queue combining Yahoo bucket-a misses, Yahoo ratio-outlier flags,
-# tag-ledger switch breaks and internal level/YoY outliers -- see fundamentals_findings.py.
-FUNDAMENTALS_FINDINGS_RANKED_FILENAME = "fundamentals_findings_ranked.csv"

@@ -1,5 +1,5 @@
 """
-gics.py  (src/data_extract/utils/gics.py)
+gics.py  (src/data_extract/utils/common/gics.py)
 -----------------------------------------
 Map a GICS **Sub-Industry** (the finest level, ~150, which Wikipedia gives) up to
 its **Industry Group** (the 24-level, which Wikipedia does NOT give) so the

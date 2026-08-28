@@ -184,6 +184,39 @@ def test_run_edgar_fetch_isolates_a_failing_ticker(tmp_path, sqlite_store, monke
     print("  AAPL raised, MSFT's row still landed and the run was recorded. Validated.")
 
 
+def test_run_edgar_fetch_reraises_a_programming_error_instead_of_warning(
+        tmp_path, sqlite_store, monkeypatch):
+    """The contrast with `..._isolates_a_failing_ticker` above, and the reason that test's
+    `RuntimeError` is not a `NameError`.
+
+    A `NameError` in `xbrl_linkbase.statement_arcs` was logged as "fundamentals: NEM failed"
+    by the very handler that isolates a bad ticker, so three tickers lost every fact they had
+    while the run reported success for 10.6 h. A defect in this repo is not a bad ticker: it
+    will hit every remaining ticker too, so the pool must abort and the run must fail.
+    """
+    ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
+    monkeypatch.setattr(edgar_driver, "configure_identity", lambda: None)
+
+    def build(ticker, cik, *, since, done_accessions):
+        if ticker == "AAPL":
+            raise NameError("name 'cols' is not defined")
+        return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
+
+    with pytest.raises(NameError, match="cols"):
+        run_edgar_fetch(ctx, ["AAPL", "MSFT"], 15, tables=(_T_MAIN,), build=build,
+                        desc="test")
+
+    assert ctx.warnings == []                            # not downgraded to a warning
+    assert get_entry(ctx, _T_MAIN) is None               # nothing recorded -> the run retries
+
+    print("\n=== SANITY CHECK: driver re-raises a programming error ===")
+    print(f"  build raised NameError -> run_edgar_fetch propagated it; "
+          f"warnings logged: {len(ctx.warnings)}, manifest entry: "
+          f"{get_entry(ctx, _T_MAIN)}.")
+    print("  -> A repo defect now FAILS the run; a bad ticker (RuntimeError, test above) "
+          "is still isolated.")
+
+
 def test_run_edgar_fetch_survives_a_save_failure_without_aborting_the_pool(
         tmp_path, sqlite_store, monkeypatch):
     """The regression guard for the pre-refactor bug: every fetcher saved OUTSIDE its

@@ -147,6 +147,11 @@ def fetch_earnings_surprises(
     if not parts:
         context.log.warning("No earnings-surprise data available (nothing fetched, no cache).")
         record_run(context, Tables.earnings_surprises, len(tickers), 0)
+        # `return`, not a fall-through: `not parts` means no cache AND no fetched rows, so
+        # `new` below is a COLUMN-LESS frame and `new["ticker"]` raises `KeyError: 'ticker'`.
+        # The branch recorded the run and then crashed, which is why its double `record_run`
+        # was never observed.
+        return
 
     # upsert the freshly-fetched rows; the DB merges on (ticker, earnings_date),
     # so a now-filled actual overwrites the old forward-estimate row.

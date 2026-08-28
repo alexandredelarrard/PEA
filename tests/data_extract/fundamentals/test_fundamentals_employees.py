@@ -14,18 +14,21 @@ test_employee_extract_audit.py and is unchanged:
   4. `employees` reaches `fundamentals_history_sec` as a real column, carried across
      the interim quarters rather than populating only the fiscal-year-end row.
 
-Checks 1 and 4 consume the period engine and the history build, both of which are
-being rebuilt (reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md
-Phases 4 and 5); they skip until their module lands rather than being deleted, because
-what they assert about the fact-row shape is exactly the contract the new modules owe.
+Checks 1 and 4 consume the period engine (`periods.instant_stock`) and the history build
+(`build_history.carry_latest_known`). Both are imported at TOP LEVEL, deliberately: they
+were once pinned with `importorskip` on a dotted module string while those modules were
+being rebuilt, which turns a rename into a SKIP -- a test that asserts nothing while
+reporting green. The modules have landed, so a missing symbol must fail at collection.
 
 All network access is faked -- no EDGAR calls.
 """
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
+from src.data_extract.utils.fundamentals.periods import instant_stock
+
+from src.data_extract.utils.fundamentals.build_history import carry_latest_known
 from src.data_extract.utils.fundamentals.fundamentals_employees import (
     EMPLOYEES_FIELD, employee_fact_frame, history_by_ticker, is_headcount_form,
 )
@@ -58,11 +61,6 @@ class _FakeFiling:
 # 1. Fact-row shape: what `instant_stock` needs to accept it                    #
 # --------------------------------------------------------------------------- #
 def test_employee_fact_row_is_a_year_end_instant():
-    instant_stock = pytest.importorskip(
-        "src.data_extract.utils.fundamentals.periods",
-        reason="the period engine is being rebuilt (rebuild plan Phase 4)",
-    ).instant_stock
-
     row = employee_fact_frame(_FakeFiling()).iloc[0]
 
     assert row["field"] == EMPLOYEES_FIELD and row["value"] == 21_400.0
@@ -166,11 +164,6 @@ def test_employees_is_carried_forward_into_the_interim_quarters():
 
     This is the one property of the field that lives in the history build rather than in
     the parser, and it is easy to lose when the column list is rewritten."""
-    build_history = pytest.importorskip(
-        "src.data_extract.utils.fundamentals.build_history",
-        reason="the history build is being rebuilt (rebuild plan Phase 5)",
-    )
-
     # one annual headcount (FY2019, filed with the 10-K) against a quarterly grid
     ends = pd.DatetimeIndex(["2019-12-31", "2020-03-31", "2020-06-30", "2020-09-30"])
     facts = pd.DataFrame({
@@ -180,7 +173,7 @@ def test_employees_is_carried_forward_into_the_interim_quarters():
         "filing_date": [pd.Timestamp("2020-02-14")],
         "value": [21_400.0],
     })
-    out = build_history.carry_latest_known(facts, ends, field=EMPLOYEES_FIELD)
+    out = carry_latest_known(facts, ends, field=EMPLOYEES_FIELD)
 
     assert EMPLOYEES_FIELD in out.columns, "employees never became a column"
     assert (out[EMPLOYEES_FIELD] == 21_400.0).all(), \

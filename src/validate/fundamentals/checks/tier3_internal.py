@@ -102,8 +102,8 @@ def q4_footing(sub: Substrates) -> list[Finding]:
     facts = sub.facts
     if facts.empty:
         return out
-    quarters = _latest_per_window(facts, QUARTERLY)
-    annuals = _latest_per_window(facts, ANNUAL)
+    quarters = _latest_vintage_per_period_end(facts, QUARTERLY)
+    annuals = _latest_vintage_per_period_end(facts, ANNUAL)
     if quarters.empty or annuals.empty:
         return out
     sub.denominator("q4_footing", len(annuals))
@@ -148,9 +148,9 @@ def annual_footing(sub: Substrates) -> list[Finding]:
     facts = sub.facts
     if facts.empty:
         return out
-    annuals = _latest_per_window(facts, ANNUAL)
-    ytd9 = _latest_per_window(facts, YTD9)
-    quarters = _latest_per_window(facts, QUARTERLY)
+    annuals = _latest_vintage_per_period_end(facts, ANNUAL)
+    ytd9 = _latest_vintage_per_period_end(facts, YTD9)
+    quarters = _latest_vintage_per_period_end(facts, QUARTERLY)
     if annuals.empty or ytd9.empty:
         return out
     sub.denominator("annual_footing", len(annuals))
@@ -198,9 +198,9 @@ def holdout_q4(sub: Substrates) -> list[Finding]:
     facts = sub.facts
     if facts.empty:
         return out
-    annuals = _latest_per_window(facts, ANNUAL)
-    ytd9 = _latest_per_window(facts, YTD9)
-    quarters = _latest_per_window(facts, QUARTERLY)
+    annuals = _latest_vintage_per_period_end(facts, ANNUAL)
+    ytd9 = _latest_vintage_per_period_end(facts, YTD9)
+    quarters = _latest_vintage_per_period_end(facts, QUARTERLY)
     if annuals.empty or ytd9.empty or quarters.empty:
         return out
     sub.denominator("holdout_q4", len(annuals))
@@ -505,12 +505,17 @@ def _multi_row_groups(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     return frame[frame.duplicated(subset=keys, keep=False)]
 
 
-def _latest_per_window(facts: pd.DataFrame, duration_type: str) -> pd.DataFrame:
+def _latest_vintage_per_period_end(facts: pd.DataFrame, duration_type: str) -> pd.DataFrame:
     """The LATEST-filed valued row per (ticker, field, period_end) at one duration shape.
 
     Amendments and re-presentations collapse to one observation, which is what makes a footing
     comparison well-defined. `cross_vintage` and `restatement_ledger` deliberately do NOT use
     this -- disagreement across vintages is the thing they are looking at.
+
+    NOT `periods._latest_per_window`, which shares neither contract: that one buckets period
+    ends within `_SAME_PERIOD_DAYS` of each other so a nudged boundary day reads as one
+    window, while this one groups on an EXACT `period_end` and takes a `duration_type`
+    argument. Two different window identities; do not unify them.
     """
     scoped = facts[(facts["duration_type"] == duration_type) & facts["value"].notna()]
     if scoped.empty:

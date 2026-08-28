@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 import pandas as pd
+from pandas.api.types import is_datetime64_any_dtype
 
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
@@ -110,11 +111,13 @@ _FORMULAS: dict[str, tuple[tuple[str, ...], object]] = {
     "optionOverhang": (("dilutedShares", "basicShares"), lambda a, b: a / b - 1),
 }
 
-#: Columns taken from the DISCRETE quarter rather than from the trailing twelve. The only
-#: two that survive the contract: the legacy table had four `_q` columns and `ebitda_q` /
-#: `freeCashflow_q` are declared casualties (Phase 6 §6.1 reconciles them).
-_QUARTER_COLUMNS: dict[str, str] = {"revenue_q": "totalRevenue",
-                                    "netIncome_q": "netIncome"}
+#: History columns taken from the DISCRETE quarter rather than from the trailing twelve,
+#: mapped to the field each reads. Not `periods._QUARTER_COLUMNS`, which is the quarter
+#: FRAME's 12-column contract -- same name, different type, and this module imports that
+#: one. The only two that survive the contract: the legacy table had four `_q` columns and
+#: `ebitda_q` / `freeCashflow_q` are declared casualties (Phase 6 §6.1 reconciles them).
+_QUARTER_LABEL_COLUMNS: dict[str, str] = {"revenue_q": "totalRevenue",
+                                          "netIncome_q": "netIncome"}
 
 #: Formulas whose second operand is a denominator. A zero denominator is not a ratio, and
 #: `x / 0` is an infinity that survives every plausibility check downstream.
@@ -293,15 +296,28 @@ def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
     return pd.notna(end) and abs((period - end).days) > TTM_STALENESS_DAYS
 
 
-def _facts_code(visible: pd.DataFrame, field: str) -> str | None:
+def _split_by_field(visible: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """`visible` cut once into one frame per field, in filing order.
+
+    Every helper below wants "this field's visible rows", and each of them used to re-run
+    `visible["field"] == field` over the whole prefix -- three of them once per field, so
+    ~150 boolean masks and fancy-takes per publication event over a 27-column frame. One
+    `groupby` per event answers all of them. `sort=False` keeps each group in the parent's
+    order, which is `filing_date` (`_normalise_facts` sorts) -- and the `.iloc[-1]` reads
+    below depend on it.
+    """
+    return dict(tuple(visible.groupby("field", sort=False)))
+
+
+def _facts_code(by_field: dict[str, pd.DataFrame], field: str) -> str | None:
     """The facts layer's own reason for this field having nothing usable.
 
     Read off the LATEST filing that mentions the field, never off the whole history: an
     absence explained by a 2011 filing says nothing about a 2024 one, and a code that
     outlives its filing is how a reason table becomes decorative.
     """
-    rows = visible[visible["field"] == field]
-    if rows.empty:
+    rows = by_field.get(field)
+    if rows is None:
         return rc.NOT_DISCLOSED
     latest = rows[rows["filing_date"] == rows["filing_date"].max()]
     coded = latest["dc_code"].dropna()
@@ -311,7 +327,7 @@ def _facts_code(visible: pd.DataFrame, field: str) -> str | None:
     return str(coded.iloc[-1]) if not coded.empty else None
 
 
-def _deduced_nci(visible: pd.DataFrame) -> float | None:
+def _deduced_nci(by_field: dict[str, pd.DataFrame]) -> float | None:
     """The non-controlling interest DEDUCED from the filer's own two equity elements.
 
     Where a filing tags equity on BOTH bases at the same `period_end`, the difference IS the
@@ -328,7 +344,10 @@ def _deduced_nci(visible: pd.DataFrame) -> float | None:
     filer tagged for the field, and injecting a computed value would make it non-as-filed. The
     deduction is local to the identity that needs it.
     """
-    rows = visible[(visible["field"] == "stockholdersEquity") & visible["value"].notna()]
+    equity = by_field.get("stockholdersEquity")
+    if equity is None:
+        return None
+    rows = equity[equity["value"].notna()]
     if rows.empty:
         return None
     concepts = rows["source_concept"].fillna("").astype(str)
@@ -346,17 +365,17 @@ def _deduced_nci(visible: pd.DataFrame) -> float | None:
     return float(incl_by_end.loc[latest]) - float(ex_by_end.loc[latest])
 
 
-def _has_valued_fact(visible: pd.DataFrame, field: str) -> bool:
+def _has_valued_fact(by_field: dict[str, pd.DataFrame], field: str) -> bool:
     """Did the filer actually tag a NUMBER for this field in anything visible?
 
     The difference between "we found nothing" and "we found it and could not use it", which
     `not_disclosed` cannot express and a reader would act on differently.
     """
-    rows = visible[visible["field"] == field]
-    return bool(len(rows)) and bool(rows["value"].notna().any())
+    rows = by_field.get(field)
+    return rows is not None and bool(rows["value"].notna().any())
 
 
-def _qualifiers(visible: pd.DataFrame, field: str) -> list[str]:
+def _qualifiers(by_field: dict[str, pd.DataFrame], field: str) -> list[str]:
     """Codes that describe a value which IS present but is not on the field's nominal basis.
 
     All three sources are properties of the latest filing that touched the field: a
@@ -364,8 +383,8 @@ def _qualifiers(visible: pd.DataFrame, field: str) -> list[str]:
     value-less stub route 3b's strict intersection now emits), and the `adjustment` JSON's
     `basis_qualifier` and `zero_only_retained` keys.
     """
-    rows = visible[visible["field"] == field]
-    if rows.empty:
+    rows = by_field.get(field)
+    if rows is None:
         return []
     latest = rows[rows["filing_date"] == rows["filing_date"].max()]
     found = {str(c) for c in latest["dc_code"].dropna() if str(c) in rc.IS_QUALIFIER}
@@ -450,14 +469,16 @@ def _gross_profit_identity(row: dict, visible: pd.DataFrame) -> float | None:
 
 
 def _total_liabilities_identity(
-        row: dict, visible: pd.DataFrame) -> tuple[float | None, str | None]:
+        row: dict, by_field: dict[str, pd.DataFrame]) -> tuple[float | None, str | None]:
     """`totalLiabilities` from the balance sheet's own identity, where no filer tag gave it.
 
     **§5.1, and the measurement that redirected it.** Register item 8 prescribed exactly this
     identity; the planning interview (decision 30) rejected it as the PRIMARY route on the
     grounds that the filer's own liability legs -- Reg S-X 5-02 captions 21-31 -- had never
     been read, and asked for a route-3b leg-sum measured first. That measurement was run
-    (`scripts/measure_total_liabilities_legs.py`, 11 zero-coverage tickers x 4 10-Ks) and it
+    (11 zero-coverage tickers x 4 10-Ks; the artefact of record is
+    `data/total_liabilities_legs.json` -- the script that produced it is no longer in
+    the tree) and it
     refutes the leg-sum, though not for the reason the plan anticipated:
 
       * **All 44 filings declare a leg-set and NONE declares a `Liabilities` total.** So the
@@ -493,8 +514,9 @@ def _total_liabilities_identity(
     assets, equity = row.get("totalAssets"), row.get("stockholdersEquity")
     if assets is None or equity is None:
         return None, None
-    rows = visible[visible["field"] == "stockholdersEquity"]
-    concepts = rows[rows["value"].notna()]["source_concept"].dropna()
+    rows = by_field.get("stockholdersEquity")
+    concepts = (rows[rows["value"].notna()]["source_concept"].dropna()
+                if rows is not None else pd.Series(dtype=object))
     incl_nci = bool(len(concepts)) and _EQUITY_INCL_NCI in str(concepts.iloc[-1])
     basis = rc.DERIVED_IDENTITY
     if not incl_nci:
@@ -504,7 +526,7 @@ def _total_liabilities_identity(
             # period end, their difference is the NCI, and that is two filed facts rather than
             # a claim about absence. Keeps the plain `derived_identity` code, because nothing
             # here rests on interpreting a NULL.
-            nci = _deduced_nci(visible)
+            nci = _deduced_nci(by_field)
         if nci is None:
             # Nothing tagged and nothing deducible. A NULL `minorityInterest` conflates "not
             # tagged" with "genuinely zero", and ex-NCI equity plus an UNKNOWN NCI would
@@ -525,12 +547,20 @@ def _total_liabilities_identity(
             # for everyone else, only the events before their first deducible or tagged NCI.
             # Where the quantity IS observable it is negligible -- EOG's two bases agree to the
             # dollar on 6 of 7 dates, TMO's differ by 0.02-0.12% of equity.
-            if _has_valued_fact(visible, "minorityInterest"):
+            if _has_valued_fact(by_field, "minorityInterest"):
                 return None, None
             basis = rc.DERIVED_IDENTITY_NCI_ZERO
         else:
             equity = equity + nci
     return float(assets) - float(equity), basis
+
+
+def _as_datetime(column: pd.Series) -> pd.Series:
+    """`column` as timestamps, converting only where it is not already. A no-op on the
+    production path -- `_normalise_facts` has done it -- and a real conversion for a
+    synthetic fixture that hands in strings."""
+    return column if is_datetime64_any_dtype(column) else pd.to_datetime(
+        column, errors="coerce")
 
 
 def _latest_period_known(visible: pd.DataFrame, as_of: pd.Timestamp) -> pd.Timestamp:
@@ -549,9 +579,11 @@ def _latest_period_known(visible: pd.DataFrame, as_of: pd.Timestamp) -> pd.Times
     restating an older quarter therefore keeps the LATEST known period here and carries the
     restated one in `amended_fiscal_end`.
     """
-    periods = pd.to_datetime(visible["period_of_report"], errors="coerce")
+    # `_normalise_facts` coerces both columns once per ticker; re-coercing them here ran
+    # once per event over the whole visible prefix, which is the quadratic shape.
+    periods = _as_datetime(visible["period_of_report"])
     if periods.isna().all():
-        periods = pd.to_datetime(visible["period_end"], errors="coerce")
+        periods = _as_datetime(visible["period_end"])
     known = periods[periods <= as_of]
     return known.max() if not known.empty else pd.NaT
 
@@ -594,14 +626,22 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
     refusals: list[dict] = []
     as_of = pd.Timestamp(event["as_of"])
     facts = narrow if narrow is not None else visible
-    quarters, ttm, instants = build_periods(facts, catalogue, guards, refusals)
-    period = _latest_period_known(visible, as_of)
-    regime = visible.sort_values("filing_date")["regime"].dropna()
-    regime = str(regime.iloc[-1]) if not regime.empty else None
-
+    by_field = _split_by_field(visible)
     # Off the filer's own year ends as of THIS event, not a global calendar: the label has to
     # be knowable from what was filed by `as_of`, and a 52/53-week filer's year ends walk.
-    quarter = fiscal_quarter_of_end(period, fiscal_year_ends(facts))
+    # Built here and handed to `build_periods`, which needs the same calendar: it selects the
+    # annual-shaped facts identically (instants and unbanded shapes carry no ANNUAL row), so
+    # deriving it twice per event was two answers that could never differ.
+    year_ends = fiscal_year_ends(facts)
+    quarters, ttm, instants = build_periods(facts, catalogue, guards, refusals,
+                                            year_ends=year_ends)
+    period = _latest_period_known(visible, as_of)
+    # No re-sort: `_normalise_facts` sorted by `filing_date` and `visible` is a positional
+    # PREFIX of that frame, so the last non-null regime is already the latest-filed one.
+    regime = visible["regime"].dropna()
+    regime = str(regime.iloc[-1]) if not regime.empty else None
+
+    quarter = fiscal_quarter_of_end(period, year_ends)
 
     row: dict = {"ticker": ticker, "as_of": event["as_of"], "fiscal_end": period,
                  "fiscal_quarter": quarter,
@@ -649,8 +689,8 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
             value = (None if newest is None or pd.isna(newest["value"])
                      else float(newest["value"]))
         if value is None and reason is None:
-            reason = _facts_code(visible, field)
-        if value is None and reason is None and _has_valued_fact(visible, field):
+            reason = _facts_code(by_field, field)
+        if value is None and reason is None and _has_valued_fact(by_field, field):
             # The facts ARE there and the window still could not be assembled, so
             # `not_disclosed` would be a false statement: the filer disclosed it. The only
             # way a duration field reaches here is a window short of four discrete quarters
@@ -662,7 +702,7 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
         if row[field] is None:
             code(field, gated or reason or rc.NOT_DISCLOSED)
         else:
-            for qualifier in _qualifiers(visible, field):
+            for qualifier in _qualifiers(by_field, field):
                 code(field, qualifier)
         _break_code(catalogue, field, period, code)
 
@@ -670,7 +710,7 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
     # bridge needs it and `history_fields` is tier-ordered, which puts tier-1
     # `totalLiabilities` first.
     if row.get("totalLiabilities") is None:
-        row["totalLiabilities"], basis = _total_liabilities_identity(row, visible)
+        row["totalLiabilities"], basis = _total_liabilities_identity(row, by_field)
         if row["totalLiabilities"] is not None:
             # The absence code the loop just wrote is now false: the cell is not absent, it
             # is derived. Replace rather than accumulate, or the row says both.
@@ -698,12 +738,12 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
             code(column, next((c["dc_code"] for c in codes if c["field"] == missing),
                               rc.NOT_DISCLOSED))
 
-    for column, source in _QUARTER_COLUMNS.items():
+    for column, source in _QUARTER_LABEL_COLUMNS.items():
         newest = _latest(quarters, source)
         row[column] = (None if newest is None or pd.isna(newest["value"])
                        else float(newest["value"]))
         if row[column] is None:
-            code(column, _facts_code(visible, source) or rc.NOT_DISCLOSED)
+            code(column, _facts_code(by_field, source) or rc.NOT_DISCLOSED)
 
     for refusal in refusals:
         code(refusal["field"], str(refusal["dc_code"]))
@@ -795,7 +835,7 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None,
     """
     catalogue = catalogue or load_catalogue()
     guards = guards or load_guards()
-    frame = _normalise(facts, catalogue)
+    frame = _normalise_facts(facts, catalogue)
     columns = catalogue.history_columns
     assert len(columns) == 69, f"the column contract is {len(columns)}, not 69"
     events = publication_events(frame)
@@ -809,8 +849,8 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None,
     for _, event in events.iterrows():
         # A POSITIONAL slice of a filing-date-sorted frame, not a boolean mask: the mask
         # allocates and then fancy-takes all 27 columns once per event, and `iloc[:n]` on a
-        # sorted frame is a view. Correct because `_normalise` sorts by `filing_date`, so
-        # "filed on or before as_of" is a prefix by construction.
+        # sorted frame is a view. Correct because `_normalise_facts` sorts by
+        # `filing_date`, so "filed on or before as_of" is a prefix by construction.
         upto = int(filed.searchsorted(event["as_of"].to_datetime64(), side="right"))
         row, row_codes = _snapshot(ticker, frame.iloc[:upto], event, catalogue, guards,
                                    narrow.iloc[:upto])
@@ -911,7 +951,7 @@ def _period_projection(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _normalise(facts, catalogue: Catalogue) -> pd.DataFrame:
+def _normalise_facts(facts, catalogue: Catalogue) -> pd.DataFrame:
     """The facts frame with its dates as timestamps, and the missing columns a synthetic
     fixture may not carry filled in."""
     if not isinstance(facts, pd.DataFrame):

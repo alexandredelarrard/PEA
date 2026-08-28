@@ -52,7 +52,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field as dataclass_field
-from functools import cached_property
+from functools import cache, cached_property
 from pathlib import Path
 
 import numpy as np
@@ -66,7 +66,8 @@ from src.constants.constants import (
     SHARADAR_SF1_COLUMNS, SHARADAR_ZERO_FILLED_FIELDS, SHARADAR_ZERO_RULES_FILENAME,
 )
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
-    DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER, Catalogue, load_catalogue)
+    DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER, Catalogue, load_catalogue,
+    resolve_config_dir)
 
 log = logging.getLogger(__name__)
 
@@ -312,7 +313,15 @@ def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula
                            f"compute {expected!r}")
 
 
-def load_field_map(config_dir: str = DEFAULT_CONFIG_DIR) -> FieldMap:
+def load_field_map(config_dir: str | None = DEFAULT_CONFIG_DIR) -> FieldMap:
+    """The validated map, built once per (process, config DIRECTORY). It was the only loader
+    in the family with no cache at all, while calling the cached `load_catalogue` inside
+    itself -- so every caller re-read and re-validated both registers."""
+    return _field_map_at(resolve_config_dir(config_dir))
+
+
+@cache
+def _field_map_at(config_dir: str) -> FieldMap:
     """Load and validate the map, both registers and the contract they must satisfy.
 
     FAILS LOUDLY, and the two failures worth naming: a `HISTORY_STATEMENT_ORDER` name with no

@@ -472,7 +472,7 @@ def segment_only_concepts(arcs: pd.DataFrame) -> frozenset[str]:
                      if seen and all(SEGMENT_ROLE.search(role) for role in seen))
 
 
-def statement_arcs(xbrl) -> pd.DataFrame:
+def statement_arcs(xbrl, arcs: pd.DataFrame | None = None) -> pd.DataFrame:
     """The face-statement slice of a filing's calculation linkbase.
 
     **The UNION of two tests, because each is lossy where the other is not.** Measured on
@@ -498,8 +498,13 @@ def statement_arcs(xbrl) -> pd.DataFrame:
     Returns an empty frame with the expected columns when the filing ships no calculation
     linkbase -- a real and expected case (older filings), and precisely what routes a
     field to `tag_fallback` rather than to an error.
+
+    `arcs` lets a caller that already read the UNFILTERED linkbase hand it in.
+    `edgar.xbrl.XBRL.calculation_linkbase` carries no cache, so the fetch path -- which
+    needs both views, one for `segment_only_concepts` and one for the graph -- was paying
+    for the same parse twice on every filing.
     """
-    arcs = calculation_arcs(xbrl)
+    arcs = calculation_arcs(xbrl) if arcs is None else arcs
     if arcs.empty:
         return pd.DataFrame(columns=ARC_COLUMNS)
 
@@ -511,7 +516,7 @@ def statement_arcs(xbrl) -> pd.DataFrame:
 
     keep = by_menucat | by_role
     if not keep.any():
-        return pd.DataFrame(columns=cols)
+        return pd.DataFrame(columns=ARC_COLUMNS)
     out = arcs[keep].copy()
     out[ARC_FILTER] = [
         "both" if m and r else ("menucat" if m else "role_uri")
@@ -822,9 +827,9 @@ def _candidates(spec: FieldSpec, regime: str | None) -> list[str]:
     return out
 
 
-#: The two structural tests a field may name in `total_adjustment._only_when_test`, in
-#: order of how much evidence they demand. The default is the weaker one, which is what
-#: `ppeNet` has always used.
+#: The two structural tests a field may name in `total_adjustment._only_when_test`. Only the
+#: stronger one has a name to declare: the weaker sibling test is what a field gets by NOT
+#: naming a test, which is what `ppeNet` has always relied on.
 #:
 #: They differ because the two standards differ, not as a matter of taste:
 #:
@@ -836,7 +841,6 @@ def _candidates(spec: FieldSpec, regime: str | None) -> list[str]:
 #:     liabilities to be presented separately from other liabilities, so the prior runs the
 #:     other way: an operating lease leg is presumed OUTSIDE the debt total unless the
 #:     filer's own linkbase says otherwise.
-ONLY_WHEN_SIBLING = "not_a_declared_sibling"
 ONLY_WHEN_DESCENDANT = "declared_descendant"
 
 
@@ -1020,6 +1024,10 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
                   segment_only: frozenset[str] = frozenset()) -> Resolution:
     """Decide how `spec` resolves for one filing, in TWO passes over the zero guard.
 
+    The candidate list is built ONCE here and threaded through every pass: it is a property
+    of `(spec, regime)` alone, and the three passes plus route 3b asked for it up to seven
+    times per (filing, field).
+
     `zero_only` is the set of bare names this filing reports as **exactly 0 in every
     period it reports them at all** (`entity_scope.zero_only_concepts`). Measured, that is
     the whole discriminator between a tagging artefact and a real zero -- there is no
@@ -1062,12 +1070,13 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     # role guards both have a relaxation because their refusals cost a real number; this one
     # has none, because the number it refuses is a DIFFERENT MEASURE and keeping it is the
     # defect. See `SEGMENT_ROLE` for the ORCL measurement.
-    withheld = frozenset(bare(c) for c in _candidates(spec, regime)) & segment_only
+    candidates = _candidates(spec, regime)
+    withheld = frozenset(bare(c) for c in candidates) & segment_only
     available = available - segment_only
 
     strict = _resolve_once(spec, graph, available - zero_only, available, catalogue,
                            regime, duration_concepts, magnitudes=magnitudes, ticker=ticker,
-                           prefer_structure=prefer_structure)
+                           prefer_structure=prefer_structure, candidates=candidates)
     if strict.resolved:
         return _stamp_basis(spec, _segment_stamp(strict, withheld))
 
@@ -1078,7 +1087,8 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     if strict.role_rejected:
         relaxed = _resolve_once(spec, graph, available - zero_only, available, catalogue,
                                 regime, duration_concepts, magnitudes=magnitudes,
-                                ticker=ticker, prefer_structure=False)
+                                ticker=ticker, prefer_structure=False,
+                                candidates=candidates)
         if relaxed.resolved:
             # Carry the strict pass's ledger through, so the row says BOTH what was
             # withheld and that it had to be put back -- either half alone is unreadable.
@@ -1090,7 +1100,7 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
         return _segment_stamp(strict, withheld)
     retry = _resolve_once(spec, graph, available, available, catalogue, regime,
                           duration_concepts, magnitudes=magnitudes, ticker=ticker,
-                          prefer_structure=False)
+                          prefer_structure=False, candidates=candidates)
     return (_stamp_basis(spec, _segment_stamp(replace(retry, zero_only_retained=True),
                                               withheld))
             if retry.resolved else _segment_stamp(strict, withheld))
@@ -1134,8 +1144,12 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
                   regime: str | None = None,
                   duration_concepts: frozenset[str] | None = None,
                   magnitudes: dict[str, float] | None = None,
-                  ticker: str | None = None, prefer_structure: bool = True) -> Resolution:
+                  ticker: str | None = None, prefer_structure: bool = True,
+                  candidates: list[str] | None = None) -> Resolution:
     """One resolution pass.
+
+    `candidates` is `_candidates(spec, regime)`, handed down by `resolve_field` so the three
+    passes share one list rather than each rebuilding it.
 
     `usable` is what a SINGLE-concept route (1, 2, 5) may pick; `available` is everything
     the filing reports. They differ only by the zero guard, and route 3 deliberately reads
@@ -1158,7 +1172,7 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
         return Resolution(field=spec.name, method=UNRESOLVED,
                           dc_code=regime_block["dc_code"])
 
-    candidates = _candidates(spec, regime)
+    candidates = _candidates(spec, regime) if candidates is None else candidates
     # bare()d to match `_candidates`, which bares its own copy. Left namespaced, a
     # `never_use` entry written with a prefix would silently fail to ban anything in
     # `discover_root`.
@@ -1193,11 +1207,12 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
     # and only `capex` and `depAmort` are eligible at all.
     #
     # Route 3b is therefore computed HERE rather than in its own block -- it is needed as
-    # evidence during route 1 and it is free when it does not apply (`_leaf_sum` returns
-    # immediately unless the field declares `any_of` + `anchor` + `anchor_role`).
+    # evidence during route 1, and `_leaf_sum` returns on its first statement for the 45 of
+    # 48 fields that declare no `roll_up.any_of` and carry no `by_ticker` leaf register
+    # entry. Only `capex`, `costOfRevenue` and `depAmort` get past it.
     leaves, leaf_refusal, leaf_provenance = _leaf_sum(
         spec, graph, available, regime,
-        *catalogue.filer_leaves(ticker, spec.name))
+        *catalogue.filer_leaves(ticker, spec.name), candidates=candidates)
 
     # Candidates withheld by the note-role test. Carried onto whatever route does answer, so
     # the guard's blast radius is measurable rather than invisible. Declared before
@@ -1347,8 +1362,9 @@ def _roll_up(spec: FieldSpec, regime: str | None) -> dict:
 
 
 def _leaf_sum(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
-              regime: str | None, filer_leaves: list[list[str]],
+              regime: str | None, filer_leaves: tuple[tuple[str, ...], ...],
               filer_not_leaves: frozenset[str],
+              candidates: list[str] | None = None,
               ) -> tuple[tuple[tuple[str, float], ...], str | None,
                          tuple[str, str] | None]:
     """Route 3b: sum the field's constituent STATEMENT LINES, chosen from the filer's own
@@ -1417,7 +1433,12 @@ def _leaf_sum(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     guard safe to leave strict.
     """
     roll_up = _roll_up(spec, regime)
-    groups = [list(g) for g in roll_up.get("any_of", [])] + [list(g) for g in filer_leaves]
+    declared = roll_up.get("any_of") or ()
+    # First, because this route applies to 3 of the 48 fields and the other 45 were paying
+    # for the anchor and role reads below only to learn that they do not.
+    if not declared and not filer_leaves:
+        return (), None, None
+    groups = [list(g) for g in declared] + [list(g) for g in filer_leaves]
     # A LIST of anchors, because FASB ships two spellings of the same node and filers split
     # between them: `NetCashProvidedByUsedInInvestingActivities` and
     # `...InvestingActivitiesContinuingOperations`. Their children are unioned rather than
@@ -1449,7 +1470,8 @@ def _leaf_sum(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     # capex. So a `never_use` entry does NOT disqualify a leaf; it is only consulted as
     # evidence that the concept is a KNOWN one, i.e. not an unclassifiable sibling.
     classified |= {bare(c) for c in spec.never_use(regime)}
-    classified |= {bare(c) for c in _candidates(spec, regime)}
+    classified |= {bare(c) for c in (candidates if candidates is not None
+                                     else _candidates(spec, regime))}
 
     # Weight 1.0, not the filer's declared one, because `_materialise` MULTIPLIES what it
     # is given and the declared weight is an admission test rather than a coefficient: a

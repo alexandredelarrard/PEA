@@ -23,6 +23,19 @@ from src.data_extract.utils.common.run_manifest import manifest_window, record_r
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
 
 
+#: Exception classes that mean THIS pipeline is broken, not the filing. They are re-raised
+#: wherever a per-ticker or per-filing handler would otherwise swallow them, because a
+#: programming error and a malformed filing are indistinguishable once both are logged as a
+#: warning -- and the walk that started 2026-08-27 00:06 proved the cost: a one-word
+#: `NameError` in `xbrl_linkbase.statement_arcs` cost NEM, MO and AIZ every fact they had
+#: while the run reported success for 10 hours.
+#:
+#: `KeyError` is on the list deliberately: on these paths it means a frame's column contract
+#: broke, which is ours. The narrow `except` around a LIBRARY parse (`filing.xbrl()`) keeps
+#: swallowing everything, since malformed XBRL is exactly what it exists to absorb.
+PROGRAMMING_ERRORS = (NameError, AttributeError, TypeError, KeyError, ImportError)
+
+
 class BuildFn(Protocol):
     def __call__(self, ticker: str, cik: str, *, since: pd.Timestamp | None,
                  done_accessions: frozenset[str]) -> dict[Table, pd.DataFrame]: ...
@@ -109,7 +122,13 @@ def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
     def _worker(ticker: str, cik: str) -> dict[Table, int] | None:
         try:
             frames = build(ticker, cik, since=since, done_accessions=done)
-        except Exception as e:                                   # noqa: BLE001
+        except PROGRAMMING_ERRORS:
+            # Our bug, not this ticker's data: let it escape the pool and fail the run.
+            # `run_per_ticker` re-raises whatever escapes a worker, which is the point --
+            # every remaining ticker would hit the same defect, and each already-saved
+            # ticker's rows are upserted and keep.
+            raise
+        except Exception as e:                                   # noqa: BLE001 -- one ticker
             context.log.warning("%s: %s failed (%s)", desc, ticker, e)
             return None
         counts: dict[Table, int] = {}

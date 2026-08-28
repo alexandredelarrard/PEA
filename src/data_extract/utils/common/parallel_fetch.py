@@ -41,6 +41,11 @@ def run_per_ticker(cik_map: pd.DataFrame, worker: Callable[[str, str], R],
     `worker` must catch its own per-ticker exceptions (matching every
     fetcher's "one bad ticker can't abort the batch" convention): an uncaught
     exception here still aborts the whole pool once `.result()` re-raises it.
+
+    `edgar_driver._worker` leaves ONE class uncaught on purpose --
+    `edgar_driver.PROGRAMMING_ERRORS` -- and relies on exactly that abort: a defect in
+    this repo will hit every remaining ticker too, so failing the run beats logging 490
+    warnings and reporting success.
     """
     rows = list(cik_map[["ticker", "cik"]].itertuples(index=False, name=None))
     results: list[R] = []

@@ -39,6 +39,7 @@ import pandas as pd
 from src.constants.constants import (
     FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_CIK_CUTOVER_FILENAME,
 )
+from src.data_extract.utils.fundamentals.kpi_catalogue import resolve_config_dir
 
 #: `kind` values. `reorganisation` = a new legal parent (APA -> APA Corp holding company);
 #: `domestication` = the same business re-registered in another jurisdiction (ETN's 2012
@@ -73,8 +74,14 @@ def _normalise_cik(value: Any) -> str:
     return str(value).strip().zfill(10)
 
 
+def load_cutovers(config_dir: str | None = None) -> dict[str, Cutover]:
+    """The cutover register, keyed by ticker, cached per config DIRECTORY rather than per
+    spelling of it -- see `resolve_config_dir`."""
+    return _cutovers_at(resolve_config_dir(config_dir))
+
+
 @cache
-def load_cutovers(config_dir: str = "./configs") -> dict[str, Cutover]:
+def _cutovers_at(config_dir: str) -> dict[str, Cutover]:
     """The cutover register, validated, keyed by ticker. `{}` when the file is absent --
     the common case for a repo that has not needed one yet, and not an error.
 
@@ -84,7 +91,7 @@ def load_cutovers(config_dir: str = "./configs") -> dict[str, Cutover]:
 
     The one check that CANNOT live here is "the date falls inside the predecessor's own
     filing window" -- that needs EDGAR, and a config loader must not make network calls on
-    a nightly path. `tests/data_extract/test_cik_cutover.py` asserts it against live
+    a nightly path. `tests/data_extract/fundamentals/test_cik_cutover.py` asserts it against live
     submissions instead.
     """
     path = Path(config_dir) / FUNDAMENTALS_CATALOGUE_SUBDIR / FUNDAMENTALS_CIK_CUTOVER_FILENAME

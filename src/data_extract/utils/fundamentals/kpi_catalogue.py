@@ -36,8 +36,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, cached_property
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
 import pandas as pd
@@ -157,13 +158,27 @@ class FieldSpec:
         spec = block.get("roll_up", self.raw.get("roll_up")) or {}
         return list(spec.get("sum", []))
 
-    def never_use(self, regime: str | None = None) -> dict[str, str]:
+    @cached_property
+    def _never_use_by_regime(self) -> dict[str | None, MappingProxyType]:
+        """`never_use`'s memo, one entry per regime asked for. An instance dict rather than
+        an `lru_cache` on the method: `raw` is a dict, so this frozen dataclass's generated
+        `__hash__` raises and `self` cannot be a cache key."""
+        return {}
+
+    def never_use(self, regime: str | None = None) -> MappingProxyType:
         """concept -> why it must NEVER resolve this field. These are the measured traps
         (MAA's IPR&D-tagged capex, a bank's gross interest income), so they are part of the
-        contract and a resolver MUST consult them, not merely log them."""
-        merged = dict(self.raw.get("never_use", {}))
-        merged.update(self._regime_block(regime).get("never_use", {}))
-        return merged
+        contract and a resolver MUST consult them, not merely log them.
+
+        Read-only and shared: the resolver asks the same (field, regime) up to 10 times per
+        filing, and a fresh merged dict per call was pure waste.
+        """
+        cached = self._never_use_by_regime.get(regime)
+        if cached is None:
+            merged = dict(self.raw.get("never_use", {}))
+            merged.update(self._regime_block(regime).get("never_use", {}))
+            cached = self._never_use_by_regime[regime] = MappingProxyType(merged)
+        return cached
 
     def _regime_block(self, regime: str | None) -> dict[str, Any]:
         if not regime:
@@ -255,7 +270,13 @@ CUBE_TIME_COLUMNS: frozenset[str] = frozenset({"revenueGrowth", "earningsGrowth"
 
 @dataclass(frozen=True)
 class Catalogue:
-    """The three loaded files, validated, with lookups precomputed."""
+    """The three loaded files, validated.
+
+    `fields` is the only eager lookup; every derived view below is a `cached_property` or a
+    per-instance memo, computed on first use and free afterwards. They have to be: the
+    history build reads `history_fields` once per publication event and the resolver reads
+    `extracted_fields` once per filing, and each was a linear scan plus a sort.
+    """
 
     fields: dict[str, FieldSpec]
     derived_columns: dict[str, str]
@@ -265,24 +286,24 @@ class Catalogue:
     ticker_exceptions: dict[str, Any]
     ticker_periodicity: dict[str, Any]
 
-    @property
-    def all_column_names(self) -> set[str]:
+    @cached_property
+    def all_column_names(self) -> frozenset[str]:
         """Every name the CONTRACT declares: catalogue fields plus the computed columns.
 
         The reference-resolution set, for `feeds` / `components`. Deliberately WIDER than
         `history_columns`: `employees` is a real catalogue field that another field may
         legitimately reference, it simply lives in its own table.
         """
-        return set(self.fields) | set(self.derived_columns)
+        return frozenset(self.fields) | frozenset(self.derived_columns)
 
     # ------------------------------------------------- the history contract --- #
-    @property
+    @cached_property
     def side_table_fields(self) -> list[str]:
         """Catalogue fields the WIDE history table does not carry, because their source is
         not XBRL. Today: `employees` -> `fundamentals_employees` (decision 35)."""
         return sorted(n for n, s in self.fields.items() if s.is_text_sourced)
 
-    @property
+    @cached_property
     def history_fields(self) -> list[str]:
         """The catalogue fields `fundamentals_history_sec` carries, ordered TIER then name.
 
@@ -296,14 +317,14 @@ class Catalogue:
         return sorted((n for n in self.fields if n not in side),
                       key=lambda n: (self.fields[n].tier, n))
 
-    @property
+    @cached_property
     def history_derived_columns(self) -> list[str]:
         """The computed columns the history build owns -- everything declared minus the
         cube-time ones. Subtracted defensively as well as excluded in the config, so the
         contract cannot silently regrow by a config edit alone."""
         return sorted(set(self.derived_columns) - CUBE_TIME_COLUMNS)
 
-    @property
+    @cached_property
     def history_columns(self) -> list[str]:
         """The `fundamentals_history_sec` column contract, in table order: 4 keys + 52 catalogue
         fields + 8 derived + `regime` + 4 provenance = **69**.
@@ -335,44 +356,41 @@ class Catalogue:
             raise KeyError(f"{name!r} is not in the KPI catalogue "
                            f"({len(self.fields)} fields declared)") from None
 
-    def by_tier(self, tier: int) -> list[str]:
-        return sorted(n for n, s in self.fields.items() if s.tier == tier)
+    @cached_property
+    def _by_tier(self) -> dict[int, list[str]]:
+        """Every tier's field list in one pass rather than a linear scan and a sort per
+        call. Tiers are 0-3, so the whole map costs one walk of `fields`."""
+        out: dict[int, list[str]] = {}
+        for name in sorted(self.fields):
+            out.setdefault(self.fields[name].tier, []).append(name)
+        return out
 
-    @property
+    def by_tier(self, tier: int) -> list[str]:
+        return list(self._by_tier.get(tier, ()))
+
+    @cached_property
     def scored_fields(self) -> list[str]:
         return sorted(n for n, s in self.fields.items() if s.is_scored)
 
-    @property
+    @cached_property
     def input_fields(self) -> list[str]:
         return sorted(n for n, s in self.fields.items() if s.tier == INPUT_TIER)
 
-    @property
+    @cached_property
     def extracted_fields(self) -> list[str]:
         """Fields resolved against XBRL, i.e. everything the facts layer must produce."""
         return sorted(n for n, s in self.fields.items() if s.is_extracted)
 
-    @property
+    @cached_property
     def unverified_fields(self) -> list[str]:
         """Fields whose `authority` is still the placeholder. Surfaced deliberately -- the
         schema test asserts on this list so the gap is visible rather than forgotten."""
         return sorted(n for n, s in self.fields.items() if s.authority == UNVERIFIED)
 
     # --------------------------------------------------------------- regimes --- #
-    @property
+    @cached_property
     def regime_names(self) -> list[str]:
         return sorted(self.regimes)
-
-    def regime_for_sub_industry(self, sub_industry: str | None) -> str | None:
-        """The GICS tiebreak, INCLUDING the forced overrides.
-
-        The overrides are the four verified traps: Insurance Brokers, Financial Exchanges,
-        Payments and Asset Management all sit inside financial-sector GICS blocks but file
-        ARTICLE 5 statements. Routing GICS 'Financials' wholesale to a bank or insurer
-        template would mis-read 37 live tickers.
-
-        Returns None when nothing matches, so the caller applies the role-URI result or the
-        `industrial` default rather than being handed a silent guess."""
-        return self.regime_for_gics(sub_industry=sub_industry)
 
     def regime_for_gics(self, sector: str | None = None, industry_group: str | None = None,
                         sub_industry: str | None = None) -> str | None:
@@ -390,6 +408,14 @@ class Catalogue:
         is what lets Telecom Tower / Data Center / Timber REITs be pulled OUT of the
         `real_estate` industry-group claim -- they file like industrials (AMT reports
         `AssetsCurrent`, `OperatingIncomeLoss` and PP&E capex).
+
+        The overrides themselves are four verified traps: Insurance Brokers, Financial
+        Exchanges, Payments and Asset Management all sit inside financial-sector GICS blocks
+        but file ARTICLE 5 statements, so routing GICS 'Financials' wholesale to a bank or
+        insurer template would mis-read 37 live tickers.
+
+        Returns None -- never a guess -- when nothing matches, so the caller applies the
+        role-URI result or the `industrial` default.
         """
         forced = self.force_regime_by_sub_industry.get(sub_industry or "")
         if forced:
@@ -464,8 +490,14 @@ class Catalogue:
         block = self.regime_exceptions.get(regime, {}).get(field)
         return bool(block.get("expected_absent", False)) if isinstance(block, dict) else False
 
+    @cached_property
+    def _filer_leaves_memo(self) -> dict[tuple[str | None, str], tuple]:
+        """`filer_leaves`' memo. An instance dict for the same reason as
+        `FieldSpec._never_use_by_regime`: the dataclass is frozen but not hashable."""
+        return {}
+
     def filer_leaves(self, ticker: str | None,
-                     field: str) -> tuple[list[list[str]], frozenset[str]]:
+                     field: str) -> tuple[tuple[tuple[str, ...], ...], frozenset[str]]:
         """One filer's DECLARED company-extension leaves for a field, as
         `(leaf_groups, not_leaves)`.
 
@@ -479,6 +511,9 @@ class Catalogue:
         here, per filer, with its evidence, or the filer stays reason-coded. There is no
         third answer.
 
+        Memoised on `(ticker, field)` and returned as tuples, because route 3b asks for
+        it once per (filing, field) and the answer is a config lookup that never moves.
+
         `leaf_groups` has exactly the shape of `roll_up.any_of` (alternatives within a
         group, a sum across groups) and is APPENDED to it -- DTE needs both, because its
         `PlantAndEquipmentExpenditures{Utility,NonUtility}` pair and its
@@ -491,11 +526,17 @@ class Catalogue:
         only the leaves would leave the guard refusing every filer that parks any unrelated
         extension in the node.
         """
-        block = self.ticker_exceptions.get(ticker or "", {}).get(field)
-        if not isinstance(block, dict):
-            return [], frozenset()
-        return ([list(g) for g in block.get("leaves", [])],
-                frozenset(block.get("not_leaves", [])))
+        key = (ticker, field)
+        cached = self._filer_leaves_memo.get(key)
+        if cached is None:
+            block = self.ticker_exceptions.get(ticker or "", {}).get(field)
+            if isinstance(block, dict):
+                cached = (tuple(tuple(g) for g in block.get("leaves", [])),
+                          frozenset(block.get("not_leaves", [])))
+            else:
+                cached = ((), frozenset())
+            self._filer_leaves_memo[key] = cached
+        return cached
 
     def periodicity_shapes(self, ticker: str | None, field: str) -> list[str] | None:
         """The period SHAPES a filer tags this field on, where that is structurally
@@ -590,8 +631,27 @@ def _build_field(name: str, entry: dict[str, Any]) -> FieldSpec:
 
 
 @cache
-def load_catalogue(config_dir: str = DEFAULT_CONFIG_DIR) -> Catalogue:
-    """The validated catalogue, built once per (process, config_dir).
+def resolve_config_dir(config_dir: str | None = None) -> str:
+    """One canonical absolute path for a config directory, whatever spelling reached us.
+
+    Every `@cache`d loader in this package keys on its ARGUMENT, so `None`, `"./configs"`
+    and an absolute path pointing at the same directory were three cache entries -- and one
+    `StepExtractAllData.run()` parsed the 169 KB catalogue and ran all six validation passes
+    twice, because the no-arg and explicit conventions both exist in the tree. Resolving
+    first makes that mistake cheap instead of doubling the work.
+    """
+    return str(Path(config_dir or DEFAULT_CONFIG_DIR).resolve())
+
+
+def load_catalogue(config_dir: str | None = DEFAULT_CONFIG_DIR) -> Catalogue:
+    """The validated catalogue, built once per (process, config DIRECTORY) -- not per
+    spelling of the directory. See `resolve_config_dir`."""
+    return _catalogue_at(resolve_config_dir(config_dir))
+
+
+@cache
+def _catalogue_at(config_dir: str) -> Catalogue:
+    """`load_catalogue`, keyed on a resolved absolute path.
 
     Validation is deliberately strict and happens HERE rather than in a test, so a
     malformed contract fails at the first call in a nightly run instead of producing a

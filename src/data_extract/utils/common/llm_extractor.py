@@ -1,5 +1,5 @@
 """
-llm_extractor.py  (src/data_extract/utils/llm_extractor.py)
+llm_extractor.py  (src/data_extract/utils/common/llm_extractor.py)
 ------------------------------------------------------------
 Generic structured-output extractor backed by the OpenAI Responses API
 (openai >= 2.45). Accepts any Pydantic BaseModel as the output schema.

@@ -1,0 +1,121 @@
+{
+  "dividends": {
+    "last_full_rescan_date": "2026-08-19",
+    "last_run_date": "2026-08-19",
+    "rows_added": 500,
+    "ticker_count": 500,
+    "updated_at": "2026-08-19T23:28:21.182138+00:00"
+  },
+  "fundamentals_employees": {
+    "last_full_rescan_date": "2026-08-25",
+    "last_run_date": "2026-08-25",
+    "rows_added": 15,
+    "ticker_count": 1,
+    "updated_at": "2026-08-26T03:10:23.570164+00:00"
+  },
+  "fundamentals_facts": {
+    "last_full_rescan_date": "2026-08-25",
+    "last_run_date": "2026-08-25",
+    "rows_added": 5659,
+    "ticker_count": 1,
+    "updated_at": "2026-08-26T03:10:23.504338+00:00"
+  },
+  "prices": {
+    "last_full_rescan_date": "2026-08-19",
+    "last_run_date": "2026-08-19",
+    "rows_added": 1777827,
+    "ticker_count": 500,
+    "updated_at": "2026-08-19T23:27:37.367301+00:00"
+  },
+  "prices_macro": {
+    "last_full_rescan_date": "2026-08-19",
+    "last_run_date": "2026-08-19",
+    "rows_added": 115003,
+    "ticker_count": 15,
+    "updated_at": "2026-08-19T23:28:42.469146+00:00"
+  },
+  "sec13f_hr": {
+    "last_full_rescan_date": "2026-08-19",
+    "last_run_date": "2026-08-19",
+    "rows_added": 297174,
+    "ticker_count": 500,
+    "updated_at": "2026-08-19T23:40:51.231568+00:00"
+  },
+  "sec_13d": {
+    "last_full_rescan_date": "2026-08-21",
+    "last_run_date": "2026-08-21",
+    "rows_added": 0,
+    "ticker_count": 491,
+    "updated_at": "2026-08-21T14:38:36.468530+00:00"
+  },
+  "sec_13d_transactions": {
+    "last_full_rescan_date": "2026-08-21",
+    "last_run_date": "2026-08-21",
+    "rows_added": 0,
+    "ticker_count": 491,
+    "updated_at": "2026-08-21T14:38:36.639141+00:00"
+  },
+  "sec_8k": {
+    "last_full_rescan_date": "2026-08-21",
+    "last_run_date": "2026-08-21",
+    "rows_added": 185142,
+    "ticker_count": 491,
+    "updated_at": "2026-08-21T14:10:38.343027+00:00"
+  },
+  "sec_def14a": {
+    "last_full_rescan_date": "2026-08-20",
+    "last_run_date": "2026-08-20",
+    "rows_added": 398,
+    "ticker_count": 29,
+    "updated_at": "2026-08-20T04:36:43.109186+00:00"
+  },
+  "sec_def14a_director_comp": {
+    "last_full_rescan_date": "2026-08-20",
+    "last_run_date": "2026-08-20",
+    "rows_added": 3107,
+    "ticker_count": 29,
+    "updated_at": "2026-08-20T04:36:43.184037+00:00"
+  },
+  "sec_def14a_executive_comp": {
+    "last_full_rescan_date": "2026-08-20",
+    "last_run_date": "2026-08-20",
+    "rows_added": 1583,
+    "ticker_count": 29,
+    "updated_at": "2026-08-20T04:36:43.148935+00:00"
+  },
+  "sec_def14a_ownership": {
+    "last_full_rescan_date": "2026-08-20",
+    "last_run_date": "2026-08-20",
+    "rows_added": 928,
+    "ticker_count": 29,
+    "updated_at": "2026-08-20T04:36:43.212826+00:00"
+  },
+  "sec_def14a_votes": {
+    "last_full_rescan_date": "2026-08-20",
+    "last_run_date": "2026-08-20",
+    "rows_added": 2023,
+    "ticker_count": 29,
+    "updated_at": "2026-08-20T04:36:43.271015+00:00"
+  },
+  "sec_fails_to_deliver": {
+    "last_full_rescan_date": "2026-08-19",
+    "last_run_date": "2026-08-19",
+    "rows_added": 969853,
+    "ticker_count": 500,
+    "updated_at": "2026-08-19T23:51:46.679826+00:00"
+  },
+  "sec_filing_text": {
+    "last_full_rescan_date": "2026-08-20",
+    "last_run_date": "2026-08-20",
+    "rows_added": 19,
+    "ticker_count": 29,
+    "updated_at": "2026-08-20T04:07:47.184708+00:00"
+  },
+  "short_interest": {
+    "last_full_rescan_date": "2026-08-19",
+    "last_run_date": "2026-08-19",
+    "rows_added": 6463,
+    "ticker_count": 500,
+    "updated_at": "2026-08-19T23:28:48.775700+00:00"
+  }
+}

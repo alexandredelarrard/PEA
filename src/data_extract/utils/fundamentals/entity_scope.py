@@ -33,16 +33,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-#: Axes that scope a fact to something other than the consolidated registrant. Kept for
-#: documentation and for the `dimensioned_facts` escape hatch -- the default path does not
-#: consult it, because ANY dimensional qualification already disqualifies a fact.
-ENTITY_AXES: frozenset[str] = frozenset({
-    "dei:LegalEntityAxis",
-    "srt:ConsolidatedEntitiesAxis",
-    "us-gaap:StatementBusinessSegmentsAxis",
-    "srt:StatementGeographicalAxis",
-})
-
 #: Fields that can only ever be read from DIMENSIONED facts, with the reason. Declared,
 #: not used: adding one means accepting that the value is scoped to a named legal entity
 #: and is therefore not on the same basis as every other column in the table.
@@ -139,16 +129,6 @@ def bare_concept(namespaced: str) -> str:
     return namespaced.split(":", 1)[-1] if namespaced else namespaced
 
 
-def us_gaap_only(facts: pd.DataFrame) -> pd.DataFrame:
-    """Facts tagged with a STANDARD element. A company extension is legitimate reporting
-    but has no cross-filer meaning, and cross-filer comparability is the entire point of
-    the catalogue -- an extension can still foot into a standard total via the linkbase,
-    which is how its amount reaches a KPI."""
-    if facts.empty or "concept" not in facts.columns:
-        return facts
-    return facts[facts["concept"].str.startswith("us-gaap:", na=False)]
-
-
 def reported_concepts(facts: pd.DataFrame) -> frozenset[str]:
     """Bare names of every concept this filing reports a usable consolidated fact for.
 
@@ -228,12 +208,3 @@ def peak_magnitudes(facts: pd.DataFrame) -> dict[str, float]:
     return {str(name): float(value)
             for name, value in peaks.items() if pd.notna(value)}
 
-
-def dimensioned_facts(facts: pd.DataFrame, axis: str) -> pd.DataFrame:
-    """Facts qualified by exactly `axis` -- the escape hatch `DIMENSIONED_EXCEPTIONS`
-    documents. Separate from the default path so that reading a legal-entity-scoped value
-    is always an explicit act."""
-    column = _DIM_PREFIX + axis.replace(":", "_")
-    if facts.empty or column not in facts.columns:
-        return pd.DataFrame()
-    return facts[facts[column].notna()].reset_index(drop=True)

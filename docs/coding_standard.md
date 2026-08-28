@@ -29,7 +29,9 @@ numbers (those live in `configs/` — see [config.md](config.md)).
 
 ## Logging
 
-- **`self._log`** in a `Step` (or a `Strategy` — both set it in `__init__`).
+- **`self._log`** in a `Step` (or a `Strategy` — both set it in `__init__`). It is named
+  after the **subclass's** module (`logging.getLogger(type(self).__module__)`), so a log
+  line names the step that emitted it rather than `src.utils.step`.
 - **`context.log`** in a helper that receives `context`.
 - **Never `print()`** in `src/`. Fix any remaining print if still exists.
 - `logging.getLogger(__name__)` at module level is accepted in the leaf util/builder modules that
@@ -39,6 +41,19 @@ numbers (those live in `configs/` — see [config.md](config.md)).
   [docs/README.md](README.md#known-documentation-drift-verified-2026-08-17).
 
 Prefer `f{}` f-strings in log calls over %s.
+
+## Swallowing exceptions
+
+- The per-ticker / per-filing convention stays: **one bad ticker or filing must not abort
+  a 490-ticker walk**.
+- But a defect in THIS repo is not a bad ticker. `edgar_driver.PROGRAMMING_ERRORS`
+  (`NameError`, `AttributeError`, `TypeError`, `KeyError`, `ImportError`) is **re-raised**
+  by `edgar_driver._worker` and by `filing_rows`, which aborts the pool and fails the run.
+  A `NameError` logged as a per-ticker warning cost NEM, MO and AIZ every fact they had
+  while a 10.6 h run reported success.
+- The exception is a **library** boundary: the `except` around `filing.xbrl()` still
+  swallows every class, because absorbing malformed XBRL is what it is for. Narrow the
+  `except` around OUR code, never around theirs.
 
 ## Typing & imports
 

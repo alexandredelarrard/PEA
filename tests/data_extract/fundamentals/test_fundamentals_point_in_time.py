@@ -31,6 +31,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.fundamentals.build_history import build_ticker_history
+
 MAX_FILING_LAG_DAYS = 200      # generous: 10-K ~90d + late filers + amendments
 TOLERATED_ROW_SHARE = 0.005    # a handful of genuine restatement oddities is acceptable
 
@@ -169,11 +171,6 @@ def test_as_of_never_precedes_fiscal_end_unit():
     than repaired: `as_of` IS a filing date, so it cannot precede the period it reports on
     unless the filer itself dated the filing early. Skips until the history build lands.
     """
-    build_history = pytest.importorskip(
-        "src.data_extract.utils.fundamentals.build_history",
-        reason="the history build is being rebuilt (rebuild plan Phase 5)",
-    )
-    build_ticker_history = build_history.build_ticker_history
 
     def facts_for(filed_early: bool) -> dict:
         """Four quarters of a calendar-year filer. When `filed_early`, the Q4/FY facts carry

@@ -1,5 +1,5 @@
 """
-rate_limit.py  (src/data_extract/utils/rate_limit.py)
+rate_limit.py  (src/data_extract/utils/common/rate_limit.py)
 -----------------------------------------------------
 Shared retry-with-backoff helper for the free data sources (yfinance, Google
 Trends, ...) that rate-limit with HTTP 429. Instead of silently dropping the

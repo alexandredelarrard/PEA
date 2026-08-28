@@ -7,10 +7,14 @@ the refetch window) get a small top-up pull, and up-to-date tickers are skipped.
 """
 from __future__ import annotations
 
+import types
+
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _plan_fetch, _RECENT_LIMIT
+from src.data_extract.utils.fundamentals import fetch_earnings_surprises as surprises
+from src.data_extract.utils.fundamentals.fetch_earnings_surprises import (
+    _plan_fetch, _RECENT_LIMIT)
 
 
 def test_plan_fetch_incremental():
@@ -45,3 +49,38 @@ def test_plan_fetch_no_existing_pulls_all():
     assert plan == {"A": 20, "B": 20, "C": 20}
     print("\n=== SANITY CHECK: cold start ===")
     print("  no history file -> every ticker gets a full pull.")
+
+
+def test_the_no_data_branch_returns_after_recording_exactly_one_run(monkeypatch):
+    """The `not parts` branch: no cache and nothing fetched.
+
+    It recorded the run and then FELL THROUGH to `new["ticker"].nunique()` on a column-less
+    frame -- `KeyError: 'ticker'` every single time -- so the double `record_run` the branch
+    also carried was never observed. Both are the missing `return`.
+    """
+    calls: list[tuple] = []
+    saved: list = []
+
+    context = types.SimpleNamespace(
+        store=types.SimpleNamespace(load=lambda *a, **k: None,
+                                    save=lambda table, df: saved.append((table, df))),
+        log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        config=types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15)))
+
+    monkeypatch.setattr(surprises, "record_run",
+                        lambda ctx, table, n_tickers, rows, **k: calls.append(
+                            (table.name, n_tickers, rows)))
+    monkeypatch.setattr(surprises, "_download_one", lambda tkr, limit: None)
+
+    # No exception is the assertion: this raised KeyError('ticker') before the `return`.
+    surprises.fetch_earnings_surprises(context, ["AAPL", "MSFT"], pause=0.0)
+
+    assert len(calls) == 1, f"expected exactly one recorded run, got {calls}"
+    assert calls[0][2] == 0, "an empty run must record rows_added=0"
+    assert saved == [], "nothing to save -- the empty upsert is skipped with the crash"
+
+    print(f"\n=== SANITY CHECK: earnings-surprises empty branch ===")
+    print(f"  no cache + no Yahoo calendar -> returned cleanly, "
+          f"record_run called {len(calls)} time(s): {calls}")
+    print("  -> One run recorded with rows_added=0; the KeyError('ticker') fall-through is "
+          "gone.")

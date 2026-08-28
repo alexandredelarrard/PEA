@@ -1,5 +1,5 @@
 """
-edgar_filings.py  (src/data_extract/utils/edgar_filings.py)
+edgar_fillings.py  (src/data_extract/utils/common/edgar_fillings.py)
 -----------------------------------------------------------
 List a company's filings of arbitrary form types over the full history,
 INCLUDING the older paginated pages that submissions/CIK{cik}.json splits out

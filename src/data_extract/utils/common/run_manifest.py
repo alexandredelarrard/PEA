@@ -3,7 +3,7 @@ run_manifest.py  (src/data_extract/utils/common/run_manifest.py)
 ------------------------------------------------------------------
 Single JSON checkpoint file (`data/extraction_manifest.json`) tracking, per DB
 table, the last extraction run's date / ticker count / rows added. Two distinct
-uses across the fetchers in `step_extract_all_data.py`:
+uses across the fetchers the five `step_extract_*` sub-steps call:
 
   1. VISIBILITY (most fetchers): `record_run` is called once at the end purely
      for bookkeeping. These fetchers already decide their own extraction window

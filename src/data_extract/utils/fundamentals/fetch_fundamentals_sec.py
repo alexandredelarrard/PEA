@@ -28,14 +28,17 @@ whole tickers' rows.
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+import logging
+from dataclasses import dataclass, replace
 from functools import partial
 
 import pandas as pd
 
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
+from src.data_extract.utils.common.edgar_driver import (
+    PROGRAMMING_ERRORS, new_filings, run_edgar_fetch,
+)
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.cik_cutover import (
     Cutover, cutover_filings, load_cutovers)
@@ -51,6 +54,8 @@ from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     UNRESOLVED, ArcGraph, Resolution, bare, calculation_arcs, resolve_field,
     segment_only_concepts, statement_arcs)
 from src.data_store.schema import Table, Tables
+
+logger = logging.getLogger(__name__)
 
 _COLS = ["ticker", "accession_number", "field", "fiscal_year", "fiscal_period",
          "duration_type", "cik", "form", "filing_date", "is_amendment",
@@ -586,7 +591,7 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
     return json.dumps(blob) if blob else None
 
 
-def _period_end(period: dict | None, filing) -> pd.Timestamp:
+def _period_end(period: dict | None, stamp: "_FilingStamp") -> pd.Timestamp:
     """The row's `period_end`, guaranteed non-NULL because it is part of the PK.
 
     Falls back through the filing's `period_of_report` to its filing date. Both fallbacks are
@@ -596,11 +601,37 @@ def _period_end(period: dict | None, filing) -> pd.Timestamp:
     """
     if period is not None and pd.notna(period.get("period_end")):
         return pd.Timestamp(period["period_end"])
-    reported = pd.to_datetime(getattr(filing, "period_of_report", None), errors="coerce")
-    return reported if pd.notna(reported) else pd.Timestamp(filing.filing_date)
+    return stamp.reported if pd.notna(stamp.reported) else stamp.filed
 
 
-def _row(ticker: str, cik: str, filing, regime: str | None, field: str,
+@dataclass(frozen=True)
+class _FilingStamp:
+    """The five filing-level values every row of a filing repeats.
+
+    Read once per filing rather than once per row, and there are hundreds of rows a filing.
+    `period_of_report` is the one that mattered: it is a plain edgartools `@property` that
+    goes back through `Filing.sgml()`, so asking each row for it re-derived the whole
+    submission header.
+    """
+
+    accession_number: str
+    form: str
+    filed: pd.Timestamp
+    reported: pd.Timestamp
+    is_amendment: bool
+
+    @classmethod
+    def of(cls, filing) -> "_FilingStamp":
+        return cls(
+            accession_number=filing.accession_number,
+            form=filing.form,
+            filed=pd.Timestamp(filing.filing_date),
+            reported=pd.to_datetime(getattr(filing, "period_of_report", None),
+                                    errors="coerce"),
+            is_amendment=str(filing.form).upper().endswith("/A"))
+
+
+def _row(ticker: str, cik: str, stamp: _FilingStamp, regime: str | None, field: str,
          resolution: Resolution, period: dict | None, *,
          dc_code: str | None = None) -> dict:
     """One `fundamentals_facts` row.
@@ -613,17 +644,16 @@ def _row(ticker: str, cik: str, filing, regime: str | None, field: str,
                 else None)
     return {
         "ticker": ticker, "cik": cik,
-        "accession_number": filing.accession_number, "field": field,
+        "accession_number": stamp.accession_number, "field": field,
         "fiscal_year": int(period["fiscal_year"]) if period and pd.notna(
-            period.get("fiscal_year")) else pd.Timestamp(filing.filing_date).year,
+            period.get("fiscal_year")) else stamp.filed.year,
         "fiscal_period": (str(period["fiscal_period"]) if period and pd.notna(
             period.get("fiscal_period")) else UNLABELLED_PERIOD),
         "duration_type": period["duration_type"] if period else OTHER_SHAPE,
-        "form": filing.form,
-        "filing_date": pd.Timestamp(filing.filing_date),
-        "is_amendment": str(filing.form).upper().endswith("/A"),
-        "period_of_report": pd.to_datetime(getattr(filing, "period_of_report", None),
-                                           errors="coerce"),
+        "form": stamp.form,
+        "filing_date": stamp.filed,
+        "is_amendment": stamp.is_amendment,
+        "period_of_report": stamp.reported,
         "regime": regime,
         "period_start": period["period_start"] if period else pd.NaT,
         # `period_end` is a PK column, so it cannot be NULL -- and a REASON-CODED row has no
@@ -631,7 +661,7 @@ def _row(ticker: str, cik: str, filing, regime: str | None, field: str,
         # which is the honest reading ("this field was absent as of the period this filing
         # covers") and cannot collide: a field with any usable period emits no such row, and
         # the key already contains `field`.
-        "period_end": _period_end(period, filing),
+        "period_end": _period_end(period, stamp),
         "period_days": period["period_days"] if period else None,
         "value": period["value"] if period else None,
         "unit": period.get("unit") if period else None,
@@ -651,19 +681,45 @@ def _row(ticker: str, cik: str, filing, regime: str | None, field: str,
 
 
 def filing_rows(ticker: str, cik: str, filing, catalogue: Catalogue,
-                gics: dict[str, str | None] | None) -> list[dict]:
+                gics: dict[str, str | None] | None, *,
+                failures: list[tuple[str, str]] | None = None) -> list[dict]:
     """Every catalogue field, for every period, from one filing.
 
     Returns [] rather than raising on an unreadable filing: one bad filing must not abort a
-    490-ticker walk, and its absence is visible as a gap in the accession set.
+    490-ticker walk, and its absence is visible as a gap in the accession set. It is also
+    APPENDED to `failures` as `(accession, error)` when the caller supplies a list, so the
+    gap is counted and logged rather than inferred later from a hole in the accessions.
+
+    The two `except`s are deliberately different, and the split is the whole point:
+
+      * `filing.xbrl()` is edgartools parsing the filer's XBRL. Anything at all can come out
+        of a malformed submission, so that one swallows everything -- absorbing unreadable
+        filings is what it exists for.
+      * `rows_from_xbrl` is OUR resolver. `PROGRAMMING_ERRORS` out of it is a defect in this
+        repo and is re-raised; only a data failure is swallowed and counted.
     """
     try:
         xbrl = filing.xbrl()
-    except Exception:                                   # noqa: BLE001 -- unreadable XBRL
+    except Exception as exc:                # noqa: BLE001 -- the filer's XBRL, not our code
+        _note_failure(failures, filing, exc)
         return []
     if xbrl is None:
         return []
-    return rows_from_xbrl(ticker, cik, filing, xbrl, catalogue, gics)
+    try:
+        return rows_from_xbrl(ticker, cik, filing, xbrl, catalogue, gics)
+    except PROGRAMMING_ERRORS:
+        raise                                           # our bug, not the filer's
+    except Exception as exc:                            # noqa: BLE001 -- one bad filing
+        _note_failure(failures, filing, exc)
+        return []
+
+
+def _note_failure(failures: list[tuple[str, str]] | None, filing, exc: Exception) -> None:
+    """Record one unreadable filing. `accession_number` is read defensively because a filing
+    object broken enough to fail the parse may not answer for its own accession either."""
+    if failures is None:
+        return
+    failures.append((str(getattr(filing, "accession_number", "unknown")), str(exc)))
 
 
 def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
@@ -694,8 +750,10 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
     # $2,393.7M capex line. Filing-level like the two above, so resolution stays
     # period-agnostic. See `xbrl_linkbase.sibling_leg`.
     magnitudes = scope.peak_magnitudes(facts)
+    stamp = _FilingStamp.of(filing)
+    # ONE `calculation_linkbase()` read, two views of it -- see `statement_arcs`.
     arcs = calculation_arcs(xbrl)
-    graph = ArcGraph(statement_arcs(xbrl))
+    graph = ArcGraph(statement_arcs(xbrl, arcs))
     # Read off the UNFILTERED linkbase, because `statement_arcs` has already dropped every
     # segment-note arc by the time the graph exists -- which is precisely why the graph's own
     # `is_note_only` cannot see this population. See `xbrl_linkbase.SEGMENT_ROLE`.
@@ -780,9 +838,9 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
                 resolution = replace(resolution, method=UNRESOLVED,
                                      dc_code=(AMBIGUOUS_DURATION if name in note_refused
                                               else NO_USABLE_PERIOD))
-            rows.append(_row(ticker, cik, filing, regime, name, resolution, None))
+            rows.append(_row(ticker, cik, stamp, regime, name, resolution, None))
             continue
-        rows.extend(_row(ticker, cik, filing, regime, name, resolution, period)
+        rows.extend(_row(ticker, cik, stamp, regime, name, resolution, period)
                     for period in periods.values())
     # The periods route 3b refused, each as a value-less row carrying its own code. Emitted
     # for EVERY field, including the ones that resolved -- that is the whole of B.6.6.
@@ -792,7 +850,7 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
         # and the dedup in `build_ticker_fundamentals` would silently keep the value-less one.
         assert not (set(periods) & set(values.get(name, {}))), (
             f"{ticker} {filing.accession_number} {name}: a refused period is also resolved")
-        rows.extend(_row(ticker, cik, filing, regime, name, resolutions[name], period,
+        rows.extend(_row(ticker, cik, stamp, regime, name, resolutions[name], period,
                          dc_code=PERIOD_INTERSECTION_PARTIAL)
                     for period in periods.values())
     return rows
@@ -827,10 +885,13 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
     # every earlier one exactly as a full-history pass would judge it.
     accepted = list((headcounts or {}).get(ticker, []))
     staff: list[dict] = []
+    # Unreadable filings, `(accession, error)`. Counted rather than merely skipped: a walk
+    # that quietly drops filings and a walk that finds none look identical in the row count.
+    failures: list[tuple[str, str]] = []
     for filing in filings:
         filing_cik = (cutover.cik_for(filing.filing_date) if cutover else cik)
         rows.extend(filing_rows(ticker, filing_cik, filing, catalogue,
-                                gics_by_ticker.get(ticker)))
+                                gics_by_ticker.get(ticker), failures=failures))
         if not is_headcount_form(getattr(filing, "form", None)):
             continue
         parsed = employee_fact_frame(filing, accepted)
@@ -841,6 +902,17 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
         staff.append({"ticker": ticker,
                       "as_of": pd.Timestamp(filing.filing_date), "employees": count})
     employees = pd.DataFrame(staff, columns=["ticker", "as_of", "employees"])
+    if failures:
+        logger.warning("%s: %d of %d filing(s) unreadable -- %s", ticker, len(failures),
+                       len(filings),
+                       ", ".join(f"{acc} ({err})" for acc, err in failures))
+    # The line that would have caught the `cols` NameError in hour one instead of hour ten:
+    # filings were walked and NOT ONE of them yielded a fact. Never a normal outcome -- every
+    # 10-K/10-Q in `FUNDAMENTALS_FORMS` carries some catalogue field -- so it is an ERROR even
+    # though the walk itself completed and the run will report success.
+    if filings and not rows:
+        logger.error("%s: 0 facts from %d filing(s) (%d unreadable) -- the ticker's whole "
+                     "history is missing, not empty", ticker, len(filings), len(failures))
     df = pd.DataFrame(rows, columns=_COLS)
     if df.empty:
         return {Tables.fundamentals_facts: df, Tables.fundamentals_employees: employees}

@@ -1,0 +1,22 @@
+{
+  "tier_a_filing_cap": 16,
+  "as_of": "2026-08-27",
+  "tickers": [
+    {"ticker": "MCD", "filings": 69,
+     "reason": "cluster 1c9a517eaa47, capex roll-up"},
+    {"ticker": "ORCL", "filings": 68,
+     "reason": "clusters 2603621e89ab (totalRevenue) + 876ab8a57bd8 (grossProfit)"},
+    {"ticker": "BA", "filings": 69,
+     "reason": "cluster 919b35844b54, incomeTaxExpense"},
+    {"ticker": "BAC", "filings": 69,
+     "reason": "value-changing restatement across vintages (periods.py:199-215); bank basis"},
+    {"ticker": "KR", "filings": 70,
+     "reason": "4-4-5 calendar, three variants of one quarter end"},
+    {"ticker": "BRK-B", "filings": 69,
+     "reason": "one quarter tagged with two different start dates"},
+    {"ticker": "APA", "filings": 71,
+     "reason": "the value that once landed as the string '1997000000.0'"},
+    {"ticker": "VRT", "filings": 34,
+     "reason": "no minorityInterest / restrictedCash -> the all-null-column dtype trap; shortest history, so it is the fast smoke test"}
+  ]
+}

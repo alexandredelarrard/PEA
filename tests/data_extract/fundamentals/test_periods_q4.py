@@ -18,6 +18,7 @@ Real-data tests need EDGAR and are skipped without `SEC_USER_AGENT`.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -35,9 +36,13 @@ GUARDS = P.PeriodGuards(max_opposite_sign_ratio=3.0, concept_switch_scale_max=2.
 
 
 def _spec(name: str = "totalRevenue", **overrides) -> FieldSpec:
-    """A catalogue spec, optionally with one attribute bent for the case under test."""
-    real = CATALOGUE.field(name)
-    return FieldSpec(**{**real.__dict__, **overrides})
+    """A catalogue spec, optionally with one attribute bent for the case under test.
+
+    `dataclasses.replace`, not `FieldSpec(**real.__dict__)`: the spec memoises `never_use`
+    per regime in its instance dict, so `__dict__` carries a non-field key as soon as any
+    resolution has asked for it and the constructor rejects it.
+    """
+    return replace(CATALOGUE.field(name), **overrides)
 
 
 def _facts(rows: list[tuple], ticker: str = "TEST", field: str = "totalRevenue",

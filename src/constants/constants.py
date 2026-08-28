@@ -892,10 +892,11 @@ BALANCE_SHEET_IDENTITY_TOLERANCE = 0.5
 # Q4 = FY - (Q1+Q2+Q3) is a SAME-TAG arithmetic identity (four pieces of one filer's own
 # reported number), not a three-concept accounting identity with genuine classification
 # ambiguity like BALANCE_SHEET_IDENTITY_TOLERANCE above -- so it must be far tighter.
-# Anchored on `_TO_COMMON_TOL` (0.02, fetch_fundamentals.py) -- the existing precedent in
-# this codebase for "these two numbers should agree" over a period. Calibrate empirically
-# once real edgartools data is flowing; a genuine reconciliation failure should be FLAGGED
-# (see fundamentals_validation.reconcile_fundamentals_facts), never silently corrected.
+# 2% flat, chosen as the tighter half of `BALANCE_SHEET_IDENTITY_TOLERANCE`'s reasoning
+# rather than inherited from anything: the `_TO_COMMON_TOL` in `fetch_fundamentals.py`
+# this comment used to cite as its precedent does not exist, and neither does that module.
+# A genuine reconciliation failure must be FLAGGED (`src/validate/` owns the checks),
+# never silently corrected.
 Q4_RECONCILIATION_TOLERANCE = 0.02
 
 # A DERIVED Q4 (blank source_tag) is arithmetically forced to satisfy the identity above by

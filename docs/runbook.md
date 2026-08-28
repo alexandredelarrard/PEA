@@ -263,6 +263,17 @@ done
   is fixed with `fundamentals-history-sec --rebuild-history -t APA`, and only a bug in the RESOLUTION
   layer needs `fundamentals --rebuild -t APA`, which deletes all four tables and refetches.
 - Wall clock: ~7 min per 6-ticker chunk of facts, ~2.5 min per ticker for the history replay.
+- **A ticker with 0 rows never self-heals.** `manifest_window` keys on the TABLE, so a nightly
+  run sets `since` = the last run date and lists nothing for a ticker it has never walked. And
+  `-F` on an ALREADY-walked ticker walks nothing either -- `done_accessions` empties it. So `-F`
+  is both necessary and sufficient, but only for the tickers that are genuinely empty. Find them
+  first (measured 2026-08-27: 22 tickers, of which AIZ/MO/NEM were a resolver defect and the rest
+  were an unfinished walk):
+  ```sql
+  SELECT t.ticker FROM sp500_tickers t
+  LEFT JOIN (SELECT DISTINCT ticker FROM fundamentals_facts) f USING (ticker)
+  WHERE f.ticker IS NULL ORDER BY 1;
+  ```
 - **A SCHEMA change to any of the four tables needs `scripts/recreate_fundamentals_tables.py`
   first.** `sql/schema.sql` runs only when Postgres initialises a volume; on a live one
   `store.save` creates a missing table by inferring dtypes from the first frame it is handed, so

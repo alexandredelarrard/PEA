@@ -50,8 +50,10 @@ from functools import lru_cache
 
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_datetime64_any_dtype
 
-from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, FieldSpec
+from src.data_extract.utils.fundamentals.kpi_catalogue import (
+    DEFAULT_CONFIG_DIR, FieldSpec, resolve_config_dir)
 from src.utils.config import read_config
 
 
@@ -66,10 +68,15 @@ class PeriodGuards:
     share_basis_max_ratio: float
 
 
+def load_guards(config_dir: str | None = DEFAULT_CONFIG_DIR) -> PeriodGuards:
+    """Read the guards from `configs.yml`. Cached per config DIRECTORY -- not per spelling
+    of it (`resolve_config_dir`) -- because the period engine runs once per (ticker, field)
+    and must not re-read a YAML tree ~50 times a filing."""
+    return _guards_at(resolve_config_dir(config_dir))
+
+
 @lru_cache(maxsize=4)
-def load_guards(config_dir: str = DEFAULT_CONFIG_DIR) -> PeriodGuards:
-    """Read the guards from `configs.yml`. Cached per config dir -- the period engine runs
-    once per (ticker, field) and must not re-read a YAML tree ~50 times a filing."""
+def _guards_at(config_dir: str) -> PeriodGuards:
     block = read_config(config_dir).data_extract.fundamentals_periods
     return PeriodGuards(
         max_opposite_sign_ratio=float(block.max_opposite_sign_q4_ratio),
@@ -193,8 +200,22 @@ def _inclusive_days(days):
     return days + 1
 
 
-def _latest_per_window(frame: pd.DataFrame) -> pd.DataFrame:
+#: `_latest_per_window`'s order, and therefore its CONTRACT: which row survives a window is
+#: whichever sorts last on these three keys. Named because `quarterize` establishes the order
+#: once and every `_shape` call then reuses it.
+_WINDOW_ORDER: list[str] = ["period_end", "filing_date", "period_days"]
+
+
+def _latest_per_window(frame: pd.DataFrame, *,
+                       presorted: bool = False) -> pd.DataFrame:
     """One row per calendar window, the LATEST filing winning.
+
+    `presorted` says the caller has already ordered the frame by `_WINDOW_ORDER`. Sorting a
+    frame and then filtering it gives the same sequence as filtering and then sorting --
+    pandas' multi-key sort is a `np.lexsort` and therefore stable, and a boolean filter keeps
+    relative order -- so `quarterize` sorts once and the four shape reads it makes are free.
+    Do not pass True on a frame ordered any other way: the bucketing below reads
+    `period_end.diff()` and every result depends on the sort.
 
     A window is re-tagged every time it appears as a comparative in a later filing, and the
     values can differ: `us-gaap:Revenues` for BAC FY2023 is $98,581M as filed and
@@ -216,14 +237,14 @@ def _latest_per_window(frame: pd.DataFrame) -> pd.DataFrame:
     """
     if frame.empty:
         return frame
-    ordered = frame.sort_values(["period_end", "filing_date", "period_days"])
+    ordered = frame if presorted else frame.sort_values(_WINDOW_ORDER)
     ends = pd.to_datetime(ordered["period_end"])
     bucket = (ends.diff().dt.days.fillna(0) > _SAME_PERIOD_DAYS).cumsum()
     return ordered[~bucket.duplicated(keep="last")]
 
 
-def _shape(frame: pd.DataFrame, shape: str) -> pd.DataFrame:
-    return _latest_per_window(frame[frame["duration_type"] == shape])
+def _shape(frame: pd.DataFrame, shape: str, *, presorted: bool = False) -> pd.DataFrame:
+    return _latest_per_window(frame[frame["duration_type"] == shape], presorted=presorted)
 
 
 #: How close a nine-month cumulative's end must sit to a fourth quarter's start for the two
@@ -566,9 +587,14 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
         return pd.DataFrame(columns=list(_QUARTER_COLUMNS))
     frame = facts[facts["value"].notna() & facts["period_start"].notna()
                   & facts["period_end"].notna()].copy()
-    frame["period_start"] = pd.to_datetime(frame["period_start"])
-    frame["period_end"] = pd.to_datetime(frame["period_end"])
-    frame["filing_date"] = pd.to_datetime(frame["filing_date"])
+    # Coerced only if the caller did not. `build_history._normalise_facts` does it once per
+    # ticker, so on the production path all three columns already arrive as `datetime64` and
+    # re-converting them ran once per (event, field) for an answer that never changed. A
+    # synthetic fixture handing in strings is still converted -- and still exactly once,
+    # here, rather than sorted lexicographically further down.
+    for column in ("period_start", "period_end", "filing_date"):
+        if not is_datetime64_any_dtype(frame[column]):
+            frame[column] = pd.to_datetime(frame[column])
     # Before the share-day transform, so the value comparison is on as-filed numbers: a
     # 92-day window and a 365-day one are multiplied by different factors and a mislabelled
     # annual would stop matching its own annual fact.
@@ -576,7 +602,11 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
     if not spec.is_additive:
         frame["value"] = frame["value"] * _inclusive_days(frame["period_days"])
 
-    quarters = _shape(frame, QUARTERLY)
+    # Once, here, for all four shape reads below -- see `_latest_per_window`. After the
+    # share-day transform, so nothing downstream sees a differently ordered `frame`.
+    frame = frame.sort_values(_WINDOW_ORDER)
+
+    quarters = _shape(frame, QUARTERLY, presorted=True)
     rows: list[dict] = [{
         "period_start": r.period_start, "period_end": r.period_end,
         "period_days": r.period_days, "value": float(r.value), "basis": AS_REPORTED,
@@ -584,7 +614,7 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
         "concept_switch": False,
     } for r in quarters.itertuples()]                # still in share-days if weighted
 
-    y6, y9, annual = (_shape(frame, s) for s in (YTD6, YTD9, ANNUAL))
+    y6, y9, annual = (_shape(frame, s, presorted=True) for s in (YTD6, YTD9, ANNUAL))
     rows.extend(_ladder(quarters, y6, y9, annual, spec, guards, refusals))
 
     out = pd.DataFrame(rows, columns=[c for c in _QUARTER_COLUMNS
@@ -707,8 +737,21 @@ def fiscal_year_ends(facts: pd.DataFrame) -> list[pd.Timestamp]:
     return [*filled, last + pd.Timedelta(days=span)]
 
 
+@lru_cache(maxsize=256)
+def _bounds_of(year_ends: tuple[pd.Timestamp, ...]
+               ) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
+    """`_fiscal_bounds` keyed on the calendar itself. One ticker has ONE calendar and every
+    field is labelled against it, so this is asked the same question E*K + E times a replay.
+    Tuples out, not lists: the answer is shared between callers and must not be mutable."""
+    ends = tuple(sorted(pd.Timestamp(e) for e in year_ends))
+    starts = (ends[0] - pd.Timedelta(days=364),
+              *(e + pd.Timedelta(days=1) for e in ends[:-1]))
+    return ends, starts
+
+
 def _fiscal_bounds(
-        year_ends: list[pd.Timestamp]) -> tuple[list[pd.Timestamp], list[pd.Timestamp]]:
+        year_ends: list[pd.Timestamp]) -> tuple[tuple[pd.Timestamp, ...],
+                                                tuple[pd.Timestamp, ...]]:
     """The fiscal years as (end, start) pairs: each year starts the day after the previous
     one ended, and the first is back-dated 364 days because there is no earlier end to
     anchor it on.
@@ -716,9 +759,7 @@ def _fiscal_bounds(
     Shared by `label_fiscal_periods` and `fiscal_quarter_of_end` so a quarter cannot be
     labelled one way inside a quarters frame and another way from its end date alone.
     """
-    ends = sorted(pd.Timestamp(e) for e in year_ends)
-    starts = [ends[0] - pd.Timedelta(days=364), *[e + pd.Timedelta(days=1) for e in ends[:-1]]]
-    return ends, starts
+    return _bounds_of(tuple(year_ends))
 
 
 def fiscal_quarter_of_end(end, year_ends: list[pd.Timestamp]) -> int | None:
@@ -815,7 +856,10 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec,
         return empty
     guards = guards or load_guards()
     ordered = quarters.sort_values("period_end").reset_index(drop=True)
-    reported_annual = _annual_by_end(annual)
+    # Only the non-additive branch below reads it, and a weighted-average share count is
+    # 3 of the 48 fields -- so deriving the annual shape for the other 45 was a
+    # `_latest_per_window` per (event, field) whose result was never looked at.
+    reported_annual = {} if spec.is_additive else _annual_by_end(annual)
     rows = []
     for i in range(len(ordered)):
         window = ordered.iloc[max(0, i - TTM_QUARTERS + 1): i + 1]
@@ -941,6 +985,7 @@ def instant_stock(facts: pd.DataFrame) -> pd.DataFrame:
 def build_periods(facts: pd.DataFrame, catalogue,
                   guards: PeriodGuards | None = None,
                   refusals: list[dict] | None = None,
+                  year_ends: list[pd.Timestamp] | None = None,
                   ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Every field's discrete quarters, TTM values and instants for one ticker's facts.
 
@@ -956,15 +1001,26 @@ def build_periods(facts: pd.DataFrame, catalogue,
     `ambiguous_duration` and the ladder's three quarter-level codes -- tagged with its
     field, for the history build to write to `fundamentals_reason_codes`. Left None it is
     simply not collected: a caller that does not reason-code must not be forced to.
+
+    `year_ends` is the ticker's fiscal calendar, accepted from a caller that already needs
+    it for its own labelling (`build_history._snapshot` stamps one `fiscal_end` per event)
+    so the same annual-shaped facts are not walked twice per event. Derived here when
+    omitted.
     """
+    # Here rather than in `quarterize`/`trailing_twelve`, which are called once per
+    # (event, field) and would each re-resolve the default.
+    guards = guards or load_guards()
     if facts.empty:
         return (pd.DataFrame(columns=list(_QUARTER_COLUMNS)),
                 trailing_twelve(pd.DataFrame(), catalogue.field(
-                    catalogue.extracted_fields[0])), facts)
+                    catalogue.extracted_fields[0]), guards=guards), facts)
     durations = facts[~facts["duration_type"].isin([INSTANT, OTHER_SHAPE])]
     # One calendar for the whole ticker, built from every annual-shaped fact any field
-    # reported -- see `quarterize`.
-    year_ends = fiscal_year_ends(durations)
+    # reported -- see `quarterize`. `durations` rather than `facts` makes no difference to
+    # the answer (only ANNUAL-shaped rows are read), which is what lets a caller hand in its
+    # own.
+    if year_ends is None:
+        year_ends = fiscal_year_ends(durations)
     all_quarters, all_ttm = [], []
     for name, group in durations.groupby("field", sort=True):
         spec = catalogue.field(name)

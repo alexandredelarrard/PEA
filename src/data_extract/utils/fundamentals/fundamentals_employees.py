@@ -86,11 +86,13 @@ def history_by_ticker(facts: pd.DataFrame | None) -> dict[str, list[int]]:
     """Already-accepted headcounts per ticker, in FILING-DATE order -- the anchor
     `is_continuous` compares a newly-parsed value against.
 
-    Seeded from the `employees` rows ALREADY in `fundamentals_facts` (columns
-    ticker / filing_date / value), so an incremental run -- which by construction
-    re-parses only the one new 10-K -- guards it against the ticker's whole
-    stored history rather than against an empty list. Sorted by filing date so
-    the median reflects the series, not the row order the DB happened to return.
+    Seeded from what is ALREADY in `fundamentals_employees` -- headcount no longer
+    lives in `fundamentals_facts` -- whose (ticker, as_of, employees) columns the
+    caller renames to the (ticker, filing_date, value) shape read here. So an
+    incremental run, which by construction re-parses only the one new 10-K, guards
+    it against the ticker's whole stored history rather than against an empty list.
+    Sorted by filing date so the median reflects the series, not the row order the
+    DB happened to return.
     """
     required = {"ticker", "filing_date", "value"}
     if facts is None or facts.empty or not required.issubset(facts.columns):

@@ -1,5 +1,5 @@
 """
-edgar_extract.py  (src/data_extract/utils/edgar_extract.py)
+edgar_extract.py  (src/data_extract/utils/common/edgar_extract.py)
 -----------------------------------------------------------
 Pure parsing helpers for pulling WORKFORCE data straight out of SEC EDGAR
 documents. No API key, no third-party parser dependency (stdlib re / html only),

@@ -384,7 +384,7 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
     the branch is chosen by the resolved concept, and every measured filer took the other one.
     """
     from src.data_extract.utils.fundamentals.build_history import (
-        _total_liabilities_identity)
+        _split_by_field, _total_liabilities_identity)
 
     _INCL = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
 
@@ -393,10 +393,14 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
                                    duration_type="instant", period_start=None,
                                    source_concept=f"us-gaap:{concept}")])
 
+    def visible(frame: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        """The per-field split `_snapshot` hands the identity, not the raw visible frame."""
+        return _split_by_field(frame)
+
     row = {"totalAssets": 1000.0, "stockholdersEquity": 800.0, "minorityInterest": 50.0}
-    ex_nci, ex_code = _total_liabilities_identity(row, equity_row("StockholdersEquity"))
-    incl_nci, incl_code = _total_liabilities_identity(row, equity_row(
-        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"))
+    ex_nci, ex_code = _total_liabilities_identity(row, visible(equity_row("StockholdersEquity")))
+    incl_nci, incl_code = _total_liabilities_identity(row, visible(equity_row(
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest")))
     assert ex_nci == 150.0, "the NCI was not bridged into an ex-NCI equity row"
     assert incl_nci == 200.0, "the NCI was double-counted on an incl-NCI equity row"
     assert ex_code == incl_code == rc.DERIVED_IDENTITY
@@ -404,7 +408,7 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
     # An ex-NCI basis, no NCI resolved, and the filer has NEVER tagged one: absence IS zero,
     # so derive -- but say so with its own code, because that rests on a second inference.
     silent, silent_code = _total_liabilities_identity(
-        {**row, "minorityInterest": None}, equity_row("StockholdersEquity"))
+        {**row, "minorityInterest": None}, visible(equity_row("StockholdersEquity")))
     assert silent == 200.0, "a filer that tags no NCI anywhere should still get the identity"
     assert silent_code == rc.DERIVED_IDENTITY_NCI_ZERO, "the weaker basis is not distinguished"
 
@@ -416,9 +420,10 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
                                              source_concept="us-gaap:MinorityInterest")])],
                         ignore_index=True)
     assert _total_liabilities_identity(
-        {**row, "minorityInterest": None}, has_nci) == (None, None)
-    assert _total_liabilities_identity({**row, "totalAssets": None},
-                                       equity_row("StockholdersEquity")) == (None, None)
+        {**row, "minorityInterest": None}, visible(has_nci)) == (None, None)
+    assert _total_liabilities_identity(
+        {**row, "totalAssets": None},
+        visible(equity_row("StockholdersEquity"))) == (None, None)
 
     # BOTH bases at one period_end -> the NCI is the difference, which is two FILED facts and
     # not an assumption, so the plain `derived_identity` code applies. Preferred over the
@@ -433,7 +438,7 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
         equity_row("StockholdersEquity")],
         ignore_index=True)
     deduced, deduced_code = _total_liabilities_identity(
-        {**row, "minorityInterest": None}, both)
+        {**row, "minorityInterest": None}, visible(both))
     assert deduced == 170.0, "the NCI was not deduced from the two equity bases (830-800=30)"
     assert deduced_code == rc.DERIVED_IDENTITY, "a deduced NCI is evidence, not an assumption"
 

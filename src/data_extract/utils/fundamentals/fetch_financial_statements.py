@@ -15,8 +15,9 @@ Each quarter's zip carries:
 We keep the CONSOLIDATED company-level rows (no dimensional `segments` member, no
 `coreg`) for a curated set of pension tags, join to sub for cik / form / filed,
 map to our tickers, and upsert to `pension_facts` (one row per company / tag /
-period-end / duration). The tag list is easily extended (e.g. to add the footnote
-PBO / plan-asset detail once the Financial Statement AND Notes sets are wired).
+period-end / duration). The tag list is easily extended. The footnote PBO / plan-asset
+detail from the Financial Statement AND Notes sets is already wired -- separately, in
+`fetch_financial_notes.py` (`notes_num` / `notes_text`).
 
 """
 from __future__ import annotations

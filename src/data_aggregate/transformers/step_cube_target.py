@@ -39,7 +39,7 @@ from src.data_aggregate.utils.target.factors import (
 )
 from src.data_aggregate.utils.target.targets import build_targets_multi, fitted_beta_columns
 
-from src.constants.constants import (DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS,
+from src.constants.constants_price import (DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS,
                                      MACRO_MARKET_SERIES)
 from src.context import Context
 from src.utils.macro import load_macro_wide

@@ -24,9 +24,7 @@ from src.data_extract.utils.prices.fetch_prices import download_ohlcv
 
 logger = logging.getLogger(__name__)
 
-
 _COLUMNS = ["date", "ticker", "dividends"]
-
 
 def _extract_dividends(long_prices: pd.DataFrame | None) -> pd.DataFrame:
     """ Keep 0 dividends as a value, since they are informative anyway. Increase table size,

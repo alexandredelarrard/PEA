@@ -33,12 +33,10 @@ for the part that closed.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-
-from src.constants.constants import STRATEGY_SIDE_BUY, STRATEGY_SIDE_SELL
 
 __all__ = ["LEDGER_COLUMNS", "round_trip_ledger"]
 
@@ -49,6 +47,10 @@ LEDGER_COLUMNS = [
     "pnl", "pnl_closed_today", "position_usd", "shares_held",
 ]
 
+# The trading ledger (`Tables.strategy`): one row per (trading day, sleeve, ticker) move, with the
+# FIFO-matched entry/exit price and realized P&L of each round trip.
+STRATEGY_SIDE_BUY = "BUY"
+STRATEGY_SIDE_SELL = "SELL"
 
 @dataclass
 class _Lot:

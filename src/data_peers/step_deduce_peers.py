@@ -2,7 +2,7 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.utils.step import Step
-from src.constants.constants import MACRO_MARKET_SERIES
+from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_series

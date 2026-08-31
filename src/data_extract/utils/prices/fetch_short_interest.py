@@ -7,22 +7,18 @@ total volume) -- a proxy for short interest. Saved long
 [date, ticker, short_volume, total_volume]; each day's file is disseminated the
 next morning, so the aggregation step lags it one trading day (point-in-time).
 
-Resume is on the table's GLOBAL max date, not per ticker: one RegSHO file covers
-the whole market, so once day D is stored every ticker has D and a per-ticker
-frontier would only re-download days already held -- one lagging symbol (index
-churn, a renamed ticker) would drag the loop back over thousands of files on every
-run. `sec_fails_to_deliver` lives in its own table precisely to keep its semi-monthly,
-~2-month-lagged files out of this max (see schema.py).
+Missing the Lit exchange short volumes from NYSE / Nasdaq and CBOE equities.
+Goes back to 2009 as well.
 """
 
 from __future__ import annotations
 
 import io
 import time
-
 import pandas as pd
 import requests
 import logging
+from tqdm import tqdm
 
 from src.constants.constants import DATE_FORMAT_COMPACT, _HEADERS
 from src.context import Context
@@ -61,26 +57,23 @@ def _fetch_day(day: pd.Timestamp) -> str | None:
     return r.text if r.status_code == 200 else None
 
 
-def _resume_day(context: Context, years_history: int) -> pd.Timestamp:
-    """First business day still to download: the day after the table's global max,
-    or `years_history` back on a cold table. One scalar query, no table read."""
-    stored_max = context.store.max_date(Tables.short_interest)
-    if stored_max is None:
-        return pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
-    return stored_max + pd.Timedelta(days=1)
-
-
 def fetch_short_interest(context: Context, tickers: list[str],
                          years_history: int = 15, pause: float = 0.05) -> None:
     """Download the RegSHO daily short-volume files not yet stored, keep only
     `tickers`, and upsert them into `sec_short_interest`."""
 
     today = pd.Timestamp.today().normalize()
-    days = pd.bdate_range(_resume_day(context, years_history), today)
+    stored_max = context.store.max_date(Tables.short_interest)
+    if stored_max is None:
+        history= today - pd.DateOffset(years=years_history)
+    else:
+        history= stored_max + pd.Timedelta(days=1)
+
+    days = pd.bdate_range(history, today)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers")
 
     frames: list[pd.DataFrame] = []
-    for day in days:
+    for day in tqdm(days, "short_interest OffExchange - fetch RegSHO"):
         try:
             text = _fetch_day(day)
         except Exception as e:                     # one bad day must not abort the run

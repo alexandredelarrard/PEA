@@ -12,10 +12,8 @@ from __future__ import annotations
 
 import json
 import types
-
 import pytest
 
-from src.constants.constants import HF_BACKBONE_EARLY_QUARTER, HF_BACKBONE_LATE_QUARTER
 from src.data_extract.utils.behavioral import fetch_hf_transcripts as hf
 
 
@@ -131,7 +129,7 @@ def test_hf_backbone_presence_detection():
     # empty table -> NOT present
     assert hf._hf_backbone_already_ingested(_ctx((None, None)))[0] is False
     print("\n=== SANITY CHECK: HF backbone presence detection ===")
-    print(f"  thresholds: min <= {HF_BACKBONE_EARLY_QUARTER}, max >= {HF_BACKBONE_LATE_QUARTER}")
+    print(f"  thresholds: min <= {hf.HF_BACKBONE_EARLY_QUARTER}, max >= {hf.HF_BACKBONE_LATE_QUARTER}")
     print("  2005Q1..2026Q2 -> present; 2023Q2..2026Q4 -> absent; 2005Q1..2018Q4 -> absent; "
           "empty -> absent. Validated.")
 

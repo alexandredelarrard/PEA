@@ -31,13 +31,13 @@ import logging
 import os
 from pathlib import Path
 from typing import Sequence
+from src.constants.constants import FINBERT_TONE_MODEL
 
-from src.constants.constants import FINBERT_MAX_TOKENS, FINBERT_TONE_MODEL
-
-# torch / transformers are optional; import lazily inside the builder so importing this
-# module (e.g. for the pure helpers or a graceful skip) never requires the ML stack.
-_PROB_KEYS = ("pos", "neg", "neu")
-
+# FinBERT-tone: finance-domain tone classifier (positive / neutral / negative),
+# trained on analyst reports & earnings text. ~440MB, runs locally on GPU (fits 6GB)
+# or CPU; free (HuggingFace). Sections longer than the 512-token BERT window are
+# chunked and length-weighted (see src/utils/nlp_sentiment.py).
+FINBERT_MAX_TOKENS = 512
 
 def ml_stack_available() -> bool:
     """True if both torch and transformers can be imported (does NOT load a model)."""

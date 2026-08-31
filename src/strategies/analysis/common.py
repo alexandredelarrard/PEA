@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import MACRO_MARKET_SERIES
+from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.strategies.utils.accuracy import forward_return
 from src.utils.macro import load_macro_wide
 

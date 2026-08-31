@@ -19,10 +19,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-
 import pandas as pd
+from pathlib import Path
 
-from src.constants.constants import SUPERINVESTORS_JSON
 from src.context import Context
 from src.utils.string import pad_cik
 
@@ -335,7 +334,7 @@ def _load_superinvestor_roster(context: Context) -> dict[str, str]:
     but does not parse is NOT: it silently reduced the whole sleeve to zero managers (the live
     roster had one hand-commented entry, and the swallowed JSONDecodeError made 83 managers
     read as 0 with no error anywhere), so it raises instead."""
-    path = context.paths["DATA_STORE"] / SUPERINVESTORS_JSON
+    path = context.paths["DATA_STORE"] / Path(context.config.local.paths.superinvestors)
     if not path.exists():
         logger.warning("Superinvestors roster missing at %s -> no elite managers; run "
                        "fetch_superinvestors.build_superinvestors_json.", path)

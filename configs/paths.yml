@@ -3,10 +3,18 @@ local:
     root: ./
     data_store: data
     logs: .log
-    insider_transaction: "sec_insider_transactions"
+    insider_transactions: "sec_insider_transactions"
     fails_deliver: "sec_fails_to_deliver"
     financial_notes: "sec_financial_notes"
     financial_statements: "sec_financial_statements"
+    superinvestors: "superinvestors/superinvestors.json"
+    call_transcripts: "call_transcripts"
+    fundamentals_catalogue_subdir: "fundamentals"
   filename:
     extraction: "extraction_manifest.json"
+    fundamentals_kpis_filename : "fundamentals_kpis.json"
+    fundamentals_regimes_filename : "fundamentals_regimes.json"
+    fundamentals_exceptions_filename : "fundamentals_exceptions.json"
+    fundamentals_cik_cutover_filename : "fundamentals_cik_cutover.json"
+    fundamentals_rosters_filename : "fundamentals_rosters.json"
     

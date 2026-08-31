@@ -25,6 +25,8 @@ Incremental (both dimensions the brief asks for):
   * a quarter already in the DB is SKIPPED entirely (no download, no parse) UNLESS
     the universe gained tickers, in which case cached zips are re-parsed (no
     re-download) to back-fill the new names. The upsert de-duplicates on the PK.
+
+TODO: get it from sec instead of zips quarterly
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ from src.data_extract.utils.common.bulk_cache import (
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, bulk_ingested_quarters, load_processed_universe,
-    save_processed_universe)
+    save_processed_universe, cik_to_ticker)
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +64,7 @@ _OUT_COLS = [
 SEC_INSIDER_URL_TEMPLATE = (
     "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
     "{quarter}_form345.zip")
-SEC_INSIDER_FIRST_YEAR = 2011     
-
+SEC_INSIDER_FIRST_YEAR = 2006     
 
 def _col(df: pd.DataFrame, name: str) -> pd.Series:
     """Column `name` if present, else an all-NA series aligned to df (the insider
@@ -223,26 +224,23 @@ def _read_tables(path: Path):
         return None
 
 
-def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
+def fetch_insider_transactions(context: Context, tickers: list[str], years_history:int = 15) -> int:
     """Download (cached) the insider-transactions data sets over `years_history`,
     flatten to transactions, keep the universe, upsert to `insider_transactions`.
     Returns the number of rows upserted."""
     
     cikmap = load_cik_mapping(context)
-    cik2tkr = ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
-               if not cikmap.empty and "ticker" in cikmap.columns else {})
-    years_history = context.config.data_extract.years_history + 1
-    cache = cache_dir(context, context.config.local.paths.insider_transaction)
+    cik2tkr = cik_to_ticker(cikmap)
+    cache = cache_dir(context, context.config.local.paths.insider_transactions)
 
-    tickers = {str(t).upper() for t in tickers}          # universe as an uppercased set
     done_q = bulk_ingested_quarters(context.store, Tables.insider_transactions)
-    new_tickers = tickers - load_processed_universe(cache, Tables.insider_transactions)   # empty once converged
+    new_tickers = set(tickers) - load_processed_universe(cache, Tables.insider_transactions)   # empty once converged
     if new_tickers:
         logger.info("insider: %d new/changed tickers -> re-parsing cached quarters",
                     len(new_tickers))
 
     saved = 0
-    for q in tqdm(quarter_periods(years_history, SEC_INSIDER_FIRST_YEAR), desc="insider data sets"):
+    for q in tqdm(quarter_periods(years_history +1, SEC_INSIDER_FIRST_YEAR), desc="insider data sets"):
         if q in done_q and not new_tickers:
             continue                          # complete quarter already ingested
         path = ensure_zip(context, cache / f"{q}.zip",

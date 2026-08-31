@@ -37,7 +37,14 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import SAY_ON_PAY_MIN_SUPPORT
+# Say-on-pay support below this is dropped by `def14a_impute` (see
+# `_drop_implausible_say_on_pay`). Real votes cluster 0.85-0.99; the 2026-07 audit found
+# 125 of 4,785 values (2.6%) under 0.60, steady at 1-4% every year since 2011, with
+# spot-checks proving them wrong (JPM 2023 stored 0.31 against ~89% actual, SPG 2024
+# 0.111 against ~93%, INTC 2023 0.34). Set at 0.50 rather than 0.60 to keep the genuine
+# shareholder revolts, which do reach the low 50s, while clearing the clear errors. NOTE
+# the field holds a FRACTION (0-1) despite the `_pct` name -- the live max is exactly 1.0.
+SAY_ON_PAY_MIN_SUPPORT = 0.50
 
 CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards",
             "ceo_non_equity_incentive", "ceo_all_other_comp"]

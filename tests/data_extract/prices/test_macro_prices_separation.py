@@ -25,7 +25,7 @@ from types import SimpleNamespace
 import pandas as pd
 from omegaconf import OmegaConf
 
-from src.constants.constants import MACRO_PRICE_SERIES
+from src.constants.constants_price import MACRO_PRICE_SERIES
 from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_extract.utils.prices import fetch_prices as fp

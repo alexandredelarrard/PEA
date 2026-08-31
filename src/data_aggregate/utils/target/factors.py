@@ -48,7 +48,7 @@ import pandas as pd
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.prices import momentum_characteristic, trailing_vol
 from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, xs_z
-from src.constants.constants import DAILY_MACRO_LEVELS
+from src.constants.constants_price import DAILY_MACRO_LEVELS
 
 logger = logging.getLogger(__name__)
 

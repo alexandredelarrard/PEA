@@ -18,8 +18,7 @@ import os
 
 import numpy as np
 
-from src.constants.constants import EMBEDDING_MAX_CHARS
-
+EMBEDDING_MAX_CHARS = 28_000
 
 def openai_api_key() -> str | None:
     return os.getenv("OPEN_AI_API_KEY") or os.getenv("OPENAI_API_KEY")

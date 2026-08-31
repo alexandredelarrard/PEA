@@ -21,18 +21,34 @@ from pathlib import Path
 from curl_cffi import requests as cr
 import pyarrow.parquet as pq
 import requests
-
 import pandas as pd
 
 from src.data_store.schema import Tables
-from src.constants.constants import (EARNINGS_CALL_CACHE_DIR, HF_BACKBONE_EARLY_QUARTER, HF_BACKBONE_LATE_QUARTER, HF_TRANSCRIPTS_CACHE, HF_TRANSCRIPTS_DATASET, HF_TRANSCRIPTS_PARQUET_URL)
 from src.context import Context
 from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
 
 logger = logging.getLogger(__name__)
+
 _TABLE = Tables.earnings_call_sections
 _ROLE_PREFIX = re.compile(r"^[A-Za-z]\s*-\s*")            # "A - Jane Doe" / "E - John Roe" role tags
+
+# HuggingFace backbone: clean S&P 500 earnings-call transcripts 2005-2025 (MIT license,
+# 33k+ transcripts / 685 companies, full verbatim `content` + speaker-segmented
+# `structured_content`). Downloaded ONCE as a single ~1.8 GB parquet, cached under the
+# call_transcripts dir; the Motley Fool crawl then only fills the recent gap past its cut.
+HF_TRANSCRIPTS_DATASET = "kurry/sp500_earnings_transcripts"
+HF_TRANSCRIPTS_PARQUET_URL = (
+    "https://huggingface.co/datasets/kurry/sp500_earnings_transcripts/"
+    "resolve/main/parquet_files/part-0.parquet")
+HF_TRANSCRIPTS_CACHE = "hf_sp500_transcripts.parquet"
+# The HF backbone is a ONE-TIME historical load (2005 .. ~2025Q1). Once earnings_call_sections
+# already spans that range, re-scanning the 1.8 GB parquet only to find every (ticker, quarter)
+# already ingested is pure waste (minutes of "nothing happens"). So ingest_hf_transcripts skips the
+# scan when the table's quarter coverage reaches back to EARLY and forward to LATE. Quarters are
+# fixed-width "YYYYQN", so a plain string MIN/MAX compares chronologically.
+HF_BACKBONE_EARLY_QUARTER = "2005Q4"   # table min quarter must be <= this (deep history is present)
+HF_BACKBONE_LATE_QUARTER = "2025Q1"    # table max quarter must be >= this (HF's ~2025 cut is reached)
 
 # --------------------------------------------------------------------------- #
 # One-time parquet download (streamed; curl_cffi fallback for the corporate proxy CA)
@@ -63,7 +79,7 @@ def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = No
     from fool). Returns {} when the parquet is not cached yet (caller falls back to a date floor).
     `tickers` restricts to a subset (None = all)."""
 
-    dest = cache_dir(context, EARNINGS_CALL_CACHE_DIR) / HF_TRANSCRIPTS_CACHE
+    dest = cache_dir(context, context.config.local.paths.call_transcripts) / HF_TRANSCRIPTS_CACHE
     if not dest.exists() or dest.stat().st_size < 1_000_000:
         logger.info("HF parquet not cached yet -> no per-ticker HF horizon (fool gap uses the date floor)")
         return {}
@@ -89,7 +105,7 @@ def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = No
 
 def download_hf_parquet(context: Context, force: bool = False) -> Path:
     """Cache the dataset parquet under data/call_transcripts/. Skips if already present."""
-    dest = cache_dir(context, EARNINGS_CALL_CACHE_DIR) / HF_TRANSCRIPTS_CACHE
+    dest = cache_dir(context, context.config.local.paths.call_transcripts) / HF_TRANSCRIPTS_CACHE
     if dest.exists() and not force and dest.stat().st_size > 1_000_000:
         logger.info("HF transcripts parquet already cached (%.0f MB) -> %s",
                     dest.stat().st_size / 1e6, dest)

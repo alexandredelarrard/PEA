@@ -28,9 +28,7 @@ import os
 
 import pandas as pd
 
-from src.constants.constants import (
-    SHARADAR_API_KEY_ENV, SHARADAR_BASE_URL, SHARADAR_ID_COLUMNS,
-)
+from src.constants.constants import SHARADAR_BASE_URL
 from src.context import Context
 from src.utils.polite_http import get_once, http_get
 
@@ -40,7 +38,16 @@ from src.utils.polite_http import get_once, http_get
 # re-extraction to discover, and `offset` demonstrably works.
 _PAGE_LIMIT = 10_000
 _TIMEOUT = 60
+SHARADAR_API_KEY_ENV = "SHARADAR_API_KEY"
 
+# The 7 NON-NUMERIC columns. EVERYTHING ELSE IN SF1 IS A VALUE COLUMN AND MUST BE CAST TO
+# float64 BEFORE THE FIRST WRITE -- `ensure_table` infers SQL types from the FIRST frame it
+# sees, so a column the first ticker never populates lands as an all-None object column,
+# becomes TEXT, and every later ticker's real number is then stored as a string. Measured
+# live on `minorityInterest` / `restrictedCash`: VRT created them TEXT and APA's values came
+# back as '1997000000.0'.
+SHARADAR_ID_COLUMNS = ("ticker", "dimension", "calendardate", "date", "reportperiod",
+                       "fiscalperiod", "lastupdated")
 
 class NotEntitled(RuntimeError):
     """HTTP 403 -- the subscription does not cover this ticker/table.

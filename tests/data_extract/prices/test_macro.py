@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.constants.constants import (MACRO_ALL_SERIES, MACRO_FRED_SERIES,
+from src.constants.constants_price import (MACRO_ALL_SERIES, MACRO_FRED_SERIES,
                                      MACRO_PRICE_SERIES, MACRO_SPREAD_SERIES)
 from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_extract.utils.prices.fetch_macro import derive_series, fill_short_gaps, to_long

@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.constants.constants import (MACRO_ALL_SERIES, MACRO_BOND_TR_SERIES,
+from src.constants.constants_price import (MACRO_ALL_SERIES, MACRO_BOND_TR_SERIES,
                                      MACRO_CORE_LEVEL_SERIES, MACRO_MARKET_SERIES)
 from src.data_extract.utils.prices import fetch_macro as fm
 

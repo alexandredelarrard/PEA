@@ -38,7 +38,6 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.data_store.schema import Tables
-from src.constants.constants import (GOOGLE_TRENDS_EXPLORE_URL, GOOGLE_TRENDS_HOME_URL, GOOGLE_TRENDS_MULTILINE_URL)
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.utils import crawler                    # authorized proxy-pool loader (PEA_SCRAPE_PROXIES / PEA_SCRAPE_PROXY)
@@ -78,6 +77,14 @@ _USER_AGENTS = [
 _CHUNK_YEARS = 4
 _OVERLAP_YEARS = 1
 
+# --------------------------------------------------------------------------- #
+# Google Trends (unofficial API — retail-attention proxy). The explore call    #
+# returns widget tokens; the multiline call returns the interest-over-time     #
+# series for a token. Priming the home URL first sets the required NID cookie.  #
+# --------------------------------------------------------------------------- #
+GOOGLE_TRENDS_HOME_URL = "https://trends.google.com/?geo=US"
+GOOGLE_TRENDS_EXPLORE_URL = "https://trends.google.com/trends/api/explore"
+GOOGLE_TRENDS_MULTILINE_URL = "https://trends.google.com/trends/api/widgetdata/multiline"
 
 class TrendsRateLimited(RuntimeError):
     """Raised on an HTTP 429 from Google Trends (message carries '429' so

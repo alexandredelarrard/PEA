@@ -32,7 +32,7 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 from src.data_store.schema import Tables
-from src.constants.constants import (EARNINGS_CALL_CACHE_DIR, EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_CALL_REQUEST_PAUSE, MOTLEY_FOOL_BASE_URL, MOTLEY_FOOL_TRANSCRIPT_INDEX_URL)
+from src.constants.constants import (FOOL_BASE, EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_CALL_REQUEST_PAUSE)
 from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import (
     download_hf_parquet,
@@ -61,15 +61,12 @@ logger = logging.getLogger(__name__)
 # MOVING IPs over PEA_SCRAPE_PROXIES on a Cloudflare block. Shared so a rotated (good) IP persists
 # across the whole crawl instead of resetting to a flagged one on every request.
 
-_BASE = MOTLEY_FOOL_BASE_URL
-_INDEX = MOTLEY_FOOL_TRANSCRIPT_INDEX_URL
-_TABLE = Tables.earnings_call_sections
+_INDEX = "https://www.fool.com/earnings-call-transcripts/"
 
 # transcript-link path + the (year, month, day, slug, quarter, fiscal-year) groups
 _LINK_RE = re.compile(
     r"/earnings/call-transcripts/(\d{4})/(\d{2})/(\d{2})/(.+?)-q([1-4])-(\d{4})-earnings-call-transcript")
 _HREF_RE = re.compile(r'href="(/earnings/call-transcripts/\d{4}/\d{2}/\d{2}/[^"?#]+)"')
-
 
 # --------------------------------------------------------------------------- #
 # Stage 1: discover -> big JSON of transcript links (PURE parse unit-tested)     #
@@ -91,7 +88,7 @@ def _parse_link(href: str, slug_map: dict[str, str]) -> dict | None:
     if tkr is None:
         return None
     return {"ticker": tkr, "quarter": f"{fy}Q{q}", "call_date": f"{yr}-{mo}-{dy}",
-            "url": _BASE + href.rstrip("/") + "/"}
+            "url": FOOL_BASE + href.rstrip("/") + "/"}
 
 
 def _links_on_page(html: str, slug_map: dict[str, str]) -> list[dict]:
@@ -215,7 +212,7 @@ def _quote_page(ticker: str, exchanges: tuple[str, ...]) -> tuple[str | None, st
     exchange 404s -- quietly, since it's an expected probe). `/quote/{exchange}/{ticker}/`
     needs no company slug (MF redirects the slug form to it). Returns (html, exchange)."""
     for exch in exchanges:
-        html = _get(f"{_BASE}/quote/{exch}/{ticker.lower()}/", log_missing=False)
+        html = _get(f"{FOOL_BASE}/quote/{exch}/{ticker.lower()}/", log_missing=False)
         if html:
             return html, exch
     return None, None
@@ -345,7 +342,7 @@ def download_transcripts(context: Context, tickers: list[str] | None = None,
     Returns the number newly downloaded. `tickers` restricts to a subset (None = all);
     `limit` bounds a test run."""
 
-    cache = cache_dir(context, EARNINGS_CALL_CACHE_DIR)
+    cache = cache_dir(context, context.config.local.paths.call_transcripts)
     index = _load_index(_index_path(context))
     keep = set(tickers) if tickers is not None else None
     todo = [r for r in index.values()
@@ -377,7 +374,7 @@ def _existing_section_keys(context: Context) -> set[tuple[str, str]]:
     """(ticker, quarter) already present in `earnings_call_sections` (from ANY source). Lets the MF
     ingest SKIP transcripts already parsed instead of re-reading + re-parsing every cached HTML each
     run. Empty set when the table is missing / unreadable (-> full ingest)."""
-    df = context.store.load(_TABLE, columns=["ticker", "quarter"], optional=True)
+    df = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter"], optional=True)
     if df is None:
         return set()
     return set(map(tuple, df.astype(str).drop_duplicates().to_numpy()))
@@ -392,7 +389,7 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None,
     BeautifulSoup parse) — so a re-run on a full cache is instant instead of silently re-parsing
     thousands of files (the "nothing happens" stall). `force=True` re-parses everything; `tickers`
     restricts to a subset (None = every cached transcript)."""
-    cache = cache_dir(context, EARNINGS_CALL_CACHE_DIR)
+    cache = cache_dir(context, context.config.local.paths.call_transcripts)
     index = {(r["ticker"], r["quarter"]): r for r in _load_index(_index_path(context)).values()}
     keep = set(tickers) if tickers is not None else None
     existing = set() if force else _existing_section_keys(context)
@@ -423,9 +420,9 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None,
         logger.info("MF ingest: nothing new — %d cached transcript(s) already ingested.", skipped)
         return 0
     df = pd.DataFrame(rows)
-    saved = context.store.save(_TABLE, df)
+    saved = context.store.save(Tables.earnings_call_sections, df)
     logger.info("MF ingest: +%d sections from %d NEW transcripts (%d cached skipped, %d tickers) -> '%s'",
-                saved, parsed, skipped, df["ticker"].nunique(), _TABLE)
+                saved, parsed, skipped, df["ticker"].nunique(), Tables.earnings_call_sections)
     return saved
 
 

@@ -32,8 +32,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.constants.constants import (
-    DATE_FORMAT, SHARADAR_BASE_URL, SHARADAR_DIMENSIONS, SHARADAR_SF1_COLUMNS,
-    SHARADAR_SP500_FIRST_DATE,
+    DATE_FORMAT, SHARADAR_BASE_URL, SHARADAR_SF1_COLUMNS
 )
 from src.context import Context
 from src.data_extract.utils.common.run_manifest import record_run
@@ -43,6 +42,17 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
 )
 from src.utils.polite_http import sleep_pace
 
+# The AS-REPORTED dimensions only. Sharadar also publishes MRQ/MRY/MRT ("most recent
+# reported"), which RESTATE IN PLACE when a filer amends -- a row's numbers change under a key
+# that did not, so an append-only store cannot tell an amendment from a bug and
+# `diff_against_stored` would fire forever. AR* rows are point-in-time and immutable.
+SHARADAR_DIMENSIONS = ("ARQ", "ARY", "ART")
+
+# History floor for `sharadar_sp500`. Membership events are only useful at FULL depth -- the
+# survivorship-bias fix needs the whole series, and the entire table is ~3.3k rows (earliest
+# event measured 1992-01-02), so the cold pull is a single request. There is no years-history
+# knob for it for that reason.
+SHARADAR_SP500_FIRST_DATE = "1990-01-01"
 
 def _pace(context: Context) -> float:
     return float(context.config.data_extract.sharadar_request_pace)

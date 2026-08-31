@@ -17,7 +17,7 @@ import pandas.api.types as ptypes
 import pytest
 
 from src.constants.constants import (
-    SHARADAR_DIMENSIONS, SHARADAR_ID_COLUMNS, SHARADAR_SF1_COLUMNS,
+    SHARADAR_SF1_COLUMNS,
 )
 from src.data_store.schema import Tables
 from src.data_extract.utils.fundamentals_sharadar import client as client_mod
@@ -26,6 +26,7 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
 )
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_fundamentals, fetch_sharadar_tickers,
+    SHARADAR_DIMENSIONS
 )
 
 CONFIG_DIR = "./configs"
@@ -77,9 +78,9 @@ def test_value_columns_are_float():
     })
     out = cast_value_columns(first_ticker)
 
-    value_cols = [c for c in out.columns if c not in SHARADAR_ID_COLUMNS]
+    value_cols = [c for c in out.columns if c not in client_mod.SHARADAR_ID_COLUMNS]
     non_float = {c: str(out[c].dtype) for c in value_cols if out[c].dtype != "float64"}
-    id_cols_kept = {c: str(out[c].dtype) for c in out.columns if c in SHARADAR_ID_COLUMNS}
+    id_cols_kept = {c: str(out[c].dtype) for c in out.columns if c in client_mod.SHARADAR_ID_COLUMNS}
 
     print("\n=== SANITY CHECK: SF1 value columns are float64 before the first write ===")
     print(f"  value columns      : {len(value_cols)} -> "
@@ -93,7 +94,7 @@ def test_value_columns_are_float():
     assert out["eps"].tolist() == [1.65, 1.57], "a text number must become a real float"
     # NOT `dtype == object`: this pandas backs string columns with arrow (`str`), so the
     # property to pin is that an identifier stayed NON-NUMERIC, not which string dtype it got.
-    numeric_ids = {c: str(out[c].dtype) for c in SHARADAR_ID_COLUMNS
+    numeric_ids = {c: str(out[c].dtype) for c in client_mod.SHARADAR_ID_COLUMNS
                    if c in out.columns and ptypes.is_numeric_dtype(out[c])}
     assert not numeric_ids, f"identifier columns must NOT be cast to float: {numeric_ids}"
     print(f"  OK: {len(value_cols)}/{len(value_cols)} value columns are float64, including "

@@ -23,9 +23,9 @@ import json
 
 import pandas as pd
 from omegaconf import DictConfig
+from pathlib import Path
 
 from src.data_store.schema import Tables
-from src.constants.constants import SUPERINVESTORS_JSON
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
@@ -197,7 +197,7 @@ class StepCubeExtras(Step):
             shares_out_history=shares, stock_close=frames.close)
 
     def _load_superinvestor_roster(self) -> dict | None:
-        path = self._context.paths["DATA_STORE"] / SUPERINVESTORS_JSON
+        path = self._context.paths["DATA_STORE"] / Path(self._context.config.local.paths.superinvestors)
         if not path.exists():
             return None
         try:

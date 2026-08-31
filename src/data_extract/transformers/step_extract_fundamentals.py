@@ -60,7 +60,7 @@ class StepExtractFundamentals(Step):
 
     def run(self, tickers: list[str], full : bool=False) -> None:
 
-        years_history = self.config.data_extract.years_history
+        years_history = int(self.config.data_extract.years_history)
 
         # Per-filing SEC XBRL -> fundamentals_facts (+ fundamentals_employees from the same
         # 10-K prose), each KPI resolved from the filer's own calculation linkbase.
@@ -69,7 +69,7 @@ class StepExtractFundamentals(Step):
         # with self._stage("fundamentals facts (SEC XBRL)", tickers):
         #     fetch_fundamentals_sec(
         #         self._context, tickers=tickers,
-        #         years_history=int(self._config.data_extract.years_history),
+        #         years_history=years_history,
         #         full=full)
 
         # ... then the publication-event replay over exactly those facts. Immediately after,
@@ -84,7 +84,7 @@ class StepExtractFundamentals(Step):
 
         # earnings surprises
         with self._stage("earnings surprises", tickers):
-            fetch_earnings_surprises(self._context, tickers=tickers)
+            fetch_earnings_surprises(self._context, tickers=tickers, years_history=years_history)
 
         # Footnote (notes) pension detail + note TEXT from the Financial Statement
         # AND Notes data sets -> notes_num / notes_text. Heavy (~26GB back-fill at

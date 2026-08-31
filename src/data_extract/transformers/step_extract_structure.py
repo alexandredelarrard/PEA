@@ -27,10 +27,10 @@ class StepExtractStructure(Step):
 
         years_history = int(self._context.config.data_extract.years_history)
 
-        # fetch_8k_edgar(self._context, tickers=tickers, years_history=years_history)
-        # fetch_13d_edgar(self._context, tickers=tickers, years_history=years_history)
-        # fetch_filing_text(self._context, tickers=tickers, years_history=years_history)
+        fetch_8k_edgar(self._context, tickers=tickers, years_history=years_history)
+        fetch_13d_edgar(self._context, tickers=tickers, years_history=years_history)
+        fetch_filing_text(self._context, tickers=tickers, years_history=years_history)
 
         fetch_def14a_llm(self._context, tickers=tickers,
                          model=self._config.data_extract.llm_model)
-        # fetch_def14a_edgar(self._context, tickers=tickers, years_history=years_history)
+        fetch_def14a_edgar(self._context, tickers=tickers, years_history=years_history)

@@ -93,7 +93,6 @@ FUNDAMENTALS_EXCEPTIONS_FILENAME = "fundamentals_exceptions.json"
 FUNDAMENTALS_CIK_CUTOVER_FILENAME = "fundamentals_cik_cutover.json"
 FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 
-
 # --------------------------------------------------------------------------- #
 # Sharadar SF1 fundamentals (Sharadar DIRECT, api.sharadar.com).               #
 # NOT data.nasdaq.com and NOT the nasdaqdatalink / quandl client libraries:    #
@@ -104,13 +103,6 @@ FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 # 2026-08-26-sharadar-fundamentals.md.                                         #
 # --------------------------------------------------------------------------- #
 SHARADAR_BASE_URL = "https://api.sharadar.com/v1.0"
-SHARADAR_API_KEY_ENV = "SHARADAR_API_KEY"
-
-# The AS-REPORTED dimensions only. Sharadar also publishes MRQ/MRY/MRT ("most recent
-# reported"), which RESTATE IN PLACE when a filer amends -- a row's numbers change under a key
-# that did not, so an append-only store cannot tell an amendment from a bug and
-# `diff_against_stored` would fire forever. AR* rows are point-in-time and immutable.
-SHARADAR_DIMENSIONS = ("ARQ", "ARY", "ART")
 
 # The response-header CONTRACT, in delivered order (captured live 2026-08-26). Every response
 # is validated against this: `fields=` SILENTLY DROPS an unavailable field rather than
@@ -136,21 +128,6 @@ SHARADAR_SF1_COLUMNS: tuple[str, ...] = (
     "sbcomp", "sgna", "sharefactor", "sharesbas", "shareswa", "shareswadil", "sps",
     "tangibles", "taxassets", "taxexp", "taxliabilities", "tbvps", "workingcapital",
 )
-
-# The 7 NON-NUMERIC columns. EVERYTHING ELSE IN SF1 IS A VALUE COLUMN AND MUST BE CAST TO
-# float64 BEFORE THE FIRST WRITE -- `ensure_table` infers SQL types from the FIRST frame it
-# sees, so a column the first ticker never populates lands as an all-None object column,
-# becomes TEXT, and every later ticker's real number is then stored as a string. Measured
-# live on `minorityInterest` / `restrictedCash`: VRT created them TEXT and APA's values came
-# back as '1997000000.0'.
-SHARADAR_ID_COLUMNS = ("ticker", "dimension", "calendardate", "date", "reportperiod",
-                       "fiscalperiod", "lastupdated")
-
-# History floor for `sharadar_sp500`. Membership events are only useful at FULL depth -- the
-# survivorship-bias fix needs the whole series, and the entire table is ~3.3k rows (earliest
-# event measured 1992-01-02), so the cold pull is a single request. There is no years-history
-# knob for it for that reason.
-SHARADAR_SP500_FIRST_DATE = "1990-01-01"
 
 # The 41 indicators Sharadar documents as ZERO-FILLED: "Where this item is not contained on
 # the company consolidated financial statements and cannot otherwise be imputed the value of
@@ -430,23 +407,10 @@ SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset({
 })
 
 # --------------------------------------------------------------------------- #
-# Google Trends (unofficial API — retail-attention proxy). The explore call    #
-# returns widget tokens; the multiline call returns the interest-over-time     #
-# series for a token. Priming the home URL first sets the required NID cookie.  #
-# --------------------------------------------------------------------------- #
-GOOGLE_TRENDS_HOME_URL = "https://trends.google.com/?geo=US"
-GOOGLE_TRENDS_EXPLORE_URL = "https://trends.google.com/trends/api/explore"
-GOOGLE_TRENDS_MULTILINE_URL = "https://trends.google.com/trends/api/widgetdata/multiline"
-
-# --------------------------------------------------------------------------- #
 # Earnings-call transcripts (The Motley Fool — free, full text, no API key)    #
 # and local FinBERT-tone sentiment scoring of the parsed sections.             #
 # --------------------------------------------------------------------------- #
-MOTLEY_FOOL_BASE_URL = "https://www.fool.com"
-MOTLEY_FOOL_TRANSCRIPT_INDEX_URL = "https://www.fool.com/earnings-call-transcripts/"
-
-# raw transcript HTML + link-index cache, relative to DATA_STORE (non-tabular artifact)
-EARNINGS_CALL_CACHE_DIR = "call_transcripts"
+FOOL_BASE = "https://www.fool.com"
 
 # Motley Fool politeness: base inter-request pause (seconds) for the quote-page discovery
 # AND the transcript HTML download. Deliberately slow — fool.com sits behind Cloudflare and
@@ -466,23 +430,6 @@ EARNINGS_REPORT_TO_QUARTER_LAG_DAYS = 45
 # Extend as other no-call names surface.
 NO_EARNINGS_CALL_TICKERS: frozenset[str] = frozenset({"BRK-B", "BRK-A"})
 
-# HuggingFace backbone: clean S&P 500 earnings-call transcripts 2005-2025 (MIT license,
-# 33k+ transcripts / 685 companies, full verbatim `content` + speaker-segmented
-# `structured_content`). Downloaded ONCE as a single ~1.8 GB parquet, cached under the
-# call_transcripts dir; the Motley Fool crawl then only fills the recent gap past its cut.
-HF_TRANSCRIPTS_DATASET = "kurry/sp500_earnings_transcripts"
-HF_TRANSCRIPTS_PARQUET_URL = (
-    "https://huggingface.co/datasets/kurry/sp500_earnings_transcripts/"
-    "resolve/main/parquet_files/part-0.parquet")
-HF_TRANSCRIPTS_CACHE = "hf_sp500_transcripts.parquet"
-# The HF backbone is a ONE-TIME historical load (2005 .. ~2025Q1). Once earnings_call_sections
-# already spans that range, re-scanning the 1.8 GB parquet only to find every (ticker, quarter)
-# already ingested is pure waste (minutes of "nothing happens"). So ingest_hf_transcripts skips the
-# scan when the table's quarter coverage reaches back to EARLY and forward to LATE. Quarters are
-# fixed-width "YYYYQN", so a plain string MIN/MAX compares chronologically.
-HF_BACKBONE_EARLY_QUARTER = "2005Q4"   # table min quarter must be <= this (deep history is present)
-HF_BACKBONE_LATE_QUARTER = "2025Q1"    # table max quarter must be >= this (HF's ~2025 cut is reached)
-
 # Roic AI earnings-call transcripts API — the PRIMARY recent-gap source (after the HF backbone,
 # before Motley Fool): a clean JSON API covering ~2y of history on the FREE tier (5 req/min). Auth
 # is the `apikey` QUERY param (not a header). `list` returns the available (year, quarter, date) per
@@ -491,8 +438,6 @@ ROIC_EARNINGS_LIST_URL = "https://api.roic.ai/v2/company/earnings-calls/list/{ti
 ROIC_EARNINGS_TRANSCRIPT_URL = "https://api.roic.ai/v2/company/earnings-calls/transcript/{ticker}"
 ROIC_REQUEST_PAUSE = 12.5              # free tier = 5 req/min -> >= 12s between calls
 
-
-EARNINGS_CALL_EMBED_MODEL = "text-embedding-3-small"     # cheap, 1536-dim; cost-efficient default
 # per-turn `tag` values in EARNINGS_CALL_EMBEDDING_TABLE
 EARNINGS_CALL_TAG_QUESTION = "question"      # a sell-side analyst turn (asks)
 EARNINGS_CALL_TAG_ANSWER = "answer"          # a management turn answering the current question
@@ -501,62 +446,8 @@ EARNINGS_CALL_TAG_PREPARED = "prepared"      # a prepared-remarks (scripted) man
 # for KPIs ('full' stays in the sections table as a format-proof fallback).
 EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")
 
-# FinBERT-tone: finance-domain tone classifier (positive / neutral / negative),
-# trained on analyst reports & earnings text. ~440MB, runs locally on GPU (fits 6GB)
-# or CPU; free (HuggingFace). Sections longer than the 512-token BERT window are
-# chunked and length-weighted (see src/utils/nlp_sentiment.py).
+# SENTIMENT ANALYSIS
 FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
-FINBERT_MAX_TOKENS = 512
-
-# --------------------------------------------------------------------------- #
-# SEC footnote NARRATIVE (`notes_text`) -> risk/compliance features (data_aggregate).
-# The raw high-signal TextBlocks are embedded (OpenAI) + NLP-scored into per-filing,
-# per-theme rows. These tables ARE extracted and populated, but nothing in the cube reads
-# them yet: the module that was meant to turn them into peer-relative features (narrative
-# drift, risk-anchor similarity, tone/litigious density, disclosure-length dynamics) was
-# never wired into any panel and has been removed, so no cube consumer exists today.
-# --------------------------------------------------------------------------- #       
-NOTES_EMBED_MODEL = "text-embedding-3-small"       # cheap, 1536-dim (shared with the earnings-call layer)
-# risk/compliance THEME <- the footnote TextBlock tags that carry it (see fetch_financial_notes
-# `_NOTES_TEXT_TAGS`). Drift/tone/length are tracked per tag and aggregated to the theme.
-NOTES_THEME_TAGS: dict[str, tuple[str, ...]] = {
-    "litigation": ("CommitmentsAndContingenciesDisclosureTextBlock",
-                   "LegalMattersAndContingenciesTextBlock"),
-    "going_concern": ("SubstantialDoubtAboutGoingConcernTextBlock",),
-    "revenue_rec": ("RevenueFromContractWithCustomerTextBlock",
-                    "RevenueRecognitionPolicyTextBlock", "RevenueRecognitionTextBlock"),
-    # `UseOfEstimates` intentionally EXCLUDED: it is mostly a canned boilerplate paragraph and its
-    # apparent drift is dominated by filers re-tagging content (e.g. ASC 606) -> not a risk signal.
-    "critical_estimates": ("SignificantAccountingPoliciesTextBlock",
-                           "OrganizationConsolidationAndPresentationOfFinancialStatements"
-                           "DisclosureAndSignificantAccountingPoliciesTextBlock"),
-    "concentration": ("ConcentrationRiskDisclosureTextBlock",),
-}
-
-# Named RISK / COMPLIANCE archetypes: each note embedding is scored by cosine to these anchor
-# phrases (feature B) -> "how close is this disclosure to a known risk pattern", trackable over time.
-NOTES_RISK_ANCHORS: dict[str, str] = {
-    "litigation_loss": ("It is probable that the company will incur a material adverse loss from "
-                        "pending litigation, and it recorded a charge or accrual for legal "
-                        "settlements, damages, fines or penalties."),
-    "regulatory_action": ("The company is subject to a government or regulatory investigation, "
-                          "subpoena, consent decree, or enforcement action alleging violations."),
-    "going_concern": ("There is substantial doubt about the company's ability to continue as a "
-                      "going concern due to recurring losses and liquidity problems."),
-    "covenant_breach": ("The company was not in compliance with its debt covenants and obtained a "
-                        "waiver or amendment from its lenders to avoid default."),
-    "impairment": ("The company recognized a goodwill or long-lived asset impairment charge because "
-                   "expected future cash flows and fair value declined."),
-    "control_weakness": ("A material weakness was identified in the company's internal control over "
-                         "financial reporting."),
-    "restatement": ("The company restated previously issued financial statements to correct a "
-                    "material misstatement or accounting error."),
-    "customer_concentration": ("A substantial portion of the company's revenue or credit exposure is "
-                               "concentrated in a single large customer, counterparty, supplier or region."),
-}
-
-# Super investors TODO: in config
-SUPERINVESTORS_JSON = "superinvestors/superinvestors.json"
 
 # --------------------------------------------------------------------------- #
 # CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #
@@ -617,105 +508,9 @@ CUSIP_TICKER_OVERRIDES: dict[str, str] = {
     #    These look like corrupt rows in `sp500_tickers`, not a mapping gap.
 }
 
-
-# --------------------------------------------------------------------------- #
-# MACRO / MARKET series registry -- everything in `prices_macro`               #
-# --------------------------------------------------------------------------- #
-# ONE registry for the single long table (date, ticker, close). It replaced two wide
-# tables (`macro`, FRED features on a 16y window; `macro_asset_prices`, allocation legs
-# on 31y) that double-stored yield_10y and vix from two source paths at two depths, plus
-# the non-equity rows that used to sit in `prices`. The invariant is now: every series
-# exists exactly ONCE, from exactly one source. Breaking it is what made "which gold is
-# this?" a real question.
-#
-# yfinance symbol -> series name. CLOSE only: `fetch_macro` calls `download_ohlcv` and
-# drops OHLV+volume, so nothing here ever reaches the `prices` table (which is the equity
-# universe and nothing else). Auto-adjusted, so each price leg is a total-return proxy.
-#   SPY   = S&P 500 total return (since 1993)     ^VIX = CBOE VIX (since 1990)
-#   CL=F  = WTI front future                      GC=F = COMEX gold front future (2000)
-#   XLE   = Energy Select SPDR (1998), the "commodity via ENERGY EQUITIES" leg (no futures):
-#           the rate/inflation-shock diversifier that was +~60% in the 2022 selloff
-MACRO_PRICE_SERIES = {
-    "SPY": "equity_tr",
-    "^VIX": "vix",
-    "CL=F": "oil",
-    "GC=F": "gold",
-    "XLE": "energy",
-}
-
-# FRED series id -> series name. LEVELS ONLY; the spreads below are derived from these.
-# No DGS3MO: it is the coupon-equivalent quote of the same 3-month bill as DTB3, so the
-# pipeline was fetching one instrument twice. cash_rate (DTB3) is the survivor -- it has a
-# real consumer (allocation.py's cash leg) and drives the freshness gate.
-# FRED no longer serves a broad daily S&P (SP500 is license-truncated to ~10y) or ANY gold
-# series (the London fixes were removed ~2025), which is why those legs are yfinance above.
-MACRO_FRED_SERIES = {
-    "DGS2": "yield_2y",
-    "DGS10": "yield_10y",           # -> bond_10y_tr
-    "DGS30": "yield_30y",
-    "DTB3": "cash_rate",            # 3-month T-bill secondary market rate (cash leg)
-    "BAA10Y": "baa_credit_spread",  # Moody's Baa over 10Y: one consistently-defined series
-    "T10YIE": "breakeven_10y",      # 10Y breakeven inflation (since 2003)
-    # FX from FRED, not Yahoo's USDEUR=X: DEXUSEU starts 1999-01 (the euro's own first
-    # quote) where Yahoo starts 2003-12, and it is already quoted USD per EUR -- the
-    # convention every consumer uses -- so no reciprocal to invert on ingest. Yahoo also
-    # carried stale 2008 bars (2008-12-08 read 1.49 against a real 1.29).
-    # COST: DEXUSEU rides the WEEKLY H.10 release, so FX trails the calendar by up to a
-    # week where Yahoo was same-day. Hence its absence from MACRO_CORE_LEVEL_SERIES -- it
-    # must not hold the freshness gate open -- and the newest ~3 trading days carry no FX.
-    # Consumers see NaN there (never a stale ffill), which is the safe direction.
-    "DEXUSEU": "fx_usdeur",
-}
-# Derived spread -> (minuend, subtrahend). FRED's own T10Y2Y IS DGS10-DGS2, so deriving it
-# is numerically identical; deriving BOTH is what makes every FRED leg a same-cadence level
-# and retires the freshness bug where a same-day-publishing computed spread marked the table
-# current while the 1-BDay-lagged level block was still stale.
-# CAVEAT: yield_curve_10y3m now differs from FRED's T10Y3M by the ~5bp discount-vs-coupon
-# basis between DTB3 and DGS3MO. Free here -- the series swings hundreds of bp and has no
-# consumer; if it gains one it will be as a CHANGE, where a constant offset differences out.
-MACRO_SPREAD_SERIES = {
-    "yield_curve_10y2y": ("yield_10y", "yield_2y"),
-    "yield_curve_10y3m": ("yield_10y", "cash_rate"),
-}
-# Reconstructed 10Y total-return index + its maturity assumption (build_bond_total_return).
-MACRO_BOND_TR_SERIES = "bond_10y_tr"
-MACRO_BOND_MATURITY_YEARS = 10
-# CORE daily level series the freshness gate keys on (all lag ~1 business day). Judging
-# freshness on the overall max let a fast series mask a stale level block.
-MACRO_CORE_LEVEL_SERIES = ("equity_tr", "yield_10y", "cash_rate", "vix")
-
-# The market series: the cube's beta/epsilon reference and every sleeve's benchmark. Named,
-# not configured -- it identifies a row in `prices_macro`, not a tunable.
-MACRO_MARKET_SERIES = "equity_tr"
-# Cube factor-panel column -> prices_macro series. The panel KEYS are preserved from when
-# these came out of `prices` via cube_part_market, so no beta/feature name changes
-# downstream; only USD/EUR actually remaps. `energy` is deliberately absent: wiring it in
-# would add a factor and a beta column, which is a modelling decision, not a refactor.
-MACRO_CUBE_FACTORS = {"oil": "oil", "gold": "gold", "USD/EUR": "fx_usdeur"}
-
-# Macro level -> daily-change factor name. ONLY daily-moving series belong here.
-# NOTE: cpi_yoy_pct (monthly) and fed_balance_sheet (weekly) are deliberately
-# EXCLUDED -- their daily change is ~always zero. Inflation risk is captured by
-# the daily breakeven instead.
-DAILY_MACRO_LEVELS = {
-    "yield_10y": "d_yield_10y",
-    "yield_curve_10y2y": "d_yield_curve",
-    "vix": "d_vix",
-    "breakeven_10y": "d_breakeven_10y",
-    "baa_credit_spread": "d_baa_credit_spread",
-}
-
-# Every series name written to `prices_macro`, derived from the registries above so there is
-# no second list to drift. Used by the freshness gate, the tests and the sanity prints.
-MACRO_ALL_SERIES = (tuple(MACRO_PRICE_SERIES.values()) + tuple(MACRO_FRED_SERIES.values())
-                    + tuple(MACRO_SPREAD_SERIES) + (MACRO_BOND_TR_SERIES,))
-
 # --------------------------------------------------------------------------- #
 # Multi-asset trend (time-series-momentum) sleeve — StepTrendAssetClass output #
 # --------------------------------------------------------------------------- #
-
-# model artifact (params + vol-target calibration) under paths["MODELS_DIR"]
-TREND_ASSET_MODEL_FILE = "trend_asset_model.json"
 
 # --------------------------------------------------------------------------- #
 # Daily prediction + live trading ledger (the `strat_prediction` DAG)          #
@@ -726,10 +521,6 @@ TREND_ASSET_MODEL_FILE = "trend_asset_model.json"
 # `model` values: one per ensemble member, plus these two aggregates.
 PREDICTION_MODEL_ENSEMBLE = "ensemble"      # the per-horizon average of that horizon's members
 PREDICTION_MODEL_BLENDED = "blended"        # the IR-weighted blend ACROSS horizons
-# The trading ledger (`Tables.strategy`): one row per (trading day, sleeve, ticker) move, with the
-# FIFO-matched entry/exit price and realized P&L of each round trip.
-STRATEGY_SIDE_BUY = "BUY"
-STRATEGY_SIDE_SELL = "SELL"
 
 # --------------------------------------------------------------------------- #
 # Data-freshness cadence THRESHOLDS -- declarative metadata, no consumer today. #
@@ -747,14 +538,9 @@ DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
 DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = (
     "daily", "weekly", "biweekly", "monthly", "quarterly", "yearly")
 
-
 # --------------------------------------------------------------------------- #
 # Incremental cube-part builds (Airflow data_aggregation DAG)                  #
 # --------------------------------------------------------------------------- #
-# NOTE: the old single global `CUBE_INCREMENTAL_WARMUP_TRADING_DAYS = 1400` is gone. The
-# warm-up is PER PART now (`parts.py::CubePart.warmup_trading_days`, checked against each
-# part's binding look-backs by tests/data_aggregate/test_part_registry.py), and the global
-# had no remaining reader.
 
 # The join keys every feature panel carries; everything else in a panel is a feature column.
 PANEL_KEYS = ["date", "ticker"]
@@ -803,203 +589,6 @@ SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
     "utilities":  ("sector",         (GICS_SECTOR_UTILITIES,)),
     "pharma":     ("industry_group", (GICS_GROUP_PHARMA_BIOTECH,)),
 }
-
-
-# --------------------------------------------------------------------------- #
-# DATA-PLAUSIBILITY BANDS                                                      #
-# --------------------------------------------------------------------------- #
-# Added after the source-table sanity audit (2026-07-28). Every band below was
-# calibrated on the LIVE table, and each one separates a proven extraction defect
-# from legitimate data — none of them clips a real value. See the per-constant
-# notes for the observed evidence.
-
-# `sharesOutstanding` for an S&P 500 name. 1.3% of fundamentals_history_sec rows sat
-# outside this: 57 rows above 2e10 (ORCL 2012 stored 4.819e15 vs a true 4.819e9 —
-# exactly 1e6x), 147 rows in 1..1e6 and 166 zeros. The real maximum in the table
-# among plausible rows is ~1.6e10 (BAC/T era), so 2e10 is a safe ceiling and 1e6 a
-# safe floor (no S&P 500 constituent has fewer than a million shares outstanding).
-SHARES_OUTSTANDING_MIN = 1_000_000.0
-SHARES_OUTSTANDING_MAX = 2e10
-
-# Per-share figures. Diluted EPS outside ±10,000 is never real (BRK.A, the largest
-# legitimate EPS in the universe, is ~4,000). 21 rows breached it, e.g. ICE 2016
-# eps = 1.2e8 = the diluted SHARE COUNT captured into the EPS field.
-EPS_ABS_MAX = 10_000.0
-# Dividends per share: 19 rows exceeded 100 (ROK 3.88e6, STX 2.8e6 = the dollar
-# dividend TOTAL, 1e6x the per-share figure). The largest real DPS here is ~35.
-DIVIDEND_PER_SHARE_ABS_MAX = 1_000.0
-
-# Derived ratios. `grossMargins` already had GROSS_MARGIN_MIN/MAX; these are its
-# missing siblings, all blown up by a near-zero denominator rather than by a bad
-# input: returnOnEquity reached 5.52e7 (168 rows |ROE|>10), debtToEquity 9.69e7
-# (39 rows >100), operatingMargins -209..81.7 (63 rows), profitMargins -148.7..45.
-# Bands are wide enough to keep genuine distress (negative equity, loss-making
-# quarters) and only null arithmetic artefacts.
-RETURN_ON_EQUITY_ABS_MAX = 10.0
-DEBT_TO_EQUITY_ABS_MAX = 100.0
-OPERATING_MARGIN_ABS_MAX = 5.0
-PROFIT_MARGIN_ABS_MAX = 5.0
-# A ratio is only trustworthy when its denominator is a meaningful fraction of the
-# firm's scale; below this share of |totalRevenue| (or |totalAssets| for equity)
-# the quotient is noise and the ratio is nulled instead of clipped.
-RATIO_DENOMINATOR_MIN_FRACTION = 1e-3
-
-# Balance-sheet scale check. Stub/registration-era filings (spin-off S-4s, a first
-# 10-Q) carry an internally consistent but wrongly-scaled balance sheet — LUV 2011
-# totalAssets 1.788e4 for a real $17.88bn, KMB 1.9e4, SW 108, AMCR 130. A real
-# operating company never reports total assets smaller than this fraction of its
-# own revenue, so the balance-sheet block is dropped for those rows.
-BALANCE_SHEET_MIN_ASSETS_TO_REVENUE = 1e-3
-# |TA - (TL + SE)| / |TA| above this means the totals did not come from one statement.
-# Deliberately LOOSE. Two effects make a tight bound wrong here:
-#   * filers split non-controlling interests either inside or outside
-#     `stockholdersEquity`, so the identity is tested BOTH ways and the better fit wins
-#     (adding NCI unconditionally breaks rows it should not -- ERIE's `minorityInterest`
-#     is the Erie Insurance Exchange's equity, larger than Erie Indemnity's own assets);
-#   * `_assemble_base` carries balance-sheet LEVELS forward up to 4 quarters, so two
-#     totals on one row can legitimately come from different quarter-ends.
-# Measured on the live table: 3,060 rows breach 2% but only 1,928 survive the NCI
-# alternative, and of those 1,479 sit in 2-10% -- ffill drift, not a broken statement.
-# The genuine breaks (SW 7.3e7, ARES 2.3e7, AMCR 5.3e5, LIN 1,613, ICE 24.8, ERIE 5.5)
-# are orders of magnitude away, so 0.5 separates them with room to spare.
-BALANCE_SHEET_IDENTITY_TOLERANCE = 0.5
-
-# --------------------------------------------------------------------------- #
-# FUNDAMENTALS_FACTS RECONCILIATION (edgartools per-filing pipeline)          #
-# --------------------------------------------------------------------------- #
-# Q4 = FY - (Q1+Q2+Q3) is a SAME-TAG arithmetic identity (four pieces of one filer's own
-# reported number), not a three-concept accounting identity with genuine classification
-# ambiguity like BALANCE_SHEET_IDENTITY_TOLERANCE above -- so it must be far tighter.
-# 2% flat, chosen as the tighter half of `BALANCE_SHEET_IDENTITY_TOLERANCE`'s reasoning
-# rather than inherited from anything: the `_TO_COMMON_TOL` in `fetch_fundamentals.py`
-# this comment used to cite as its precedent does not exist, and neither does that module.
-# A genuine reconciliation failure must be FLAGGED (`src/validate/` owns the checks),
-# never silently corrected.
-Q4_RECONCILIATION_TOLERANCE = 0.02
-
-# A DERIVED Q4 (blank source_tag) is arithmetically forced to satisfy the identity above by
-# construction, so `q4_reconciliation_gap` can never catch the case where the ANNUAL fact it
-# was derived against is itself wrong (e.g. a dimensioned/non-consolidated slice slipping
-# through as if it were the whole-company total). This is a SEPARATE, flag-only signal for
-# that blind spot: how much of the derived Q4's own magnitude the fiscal-year total implies.
-# Confirmed live: BA's FY2025 `OperatingIncomeLoss` (+$4.28B) against its own Q3-2025
-# quarterly fact under the IDENTICAL tag (-$4.78B) derives a Q4 of +$8.78B -- 2.05x the FY
-# total. Deliberately loose (not a rejection threshold): `_q4_is_coherent`'s own
-# "arithmetically forced sign-flip" branch (fundamentals_periods.py) already accepts an
-# UNCONDITIONAL magnitude for two confirmed-real cases pinned by a regression test
-# (Citigroup FY2017, Corning FY2017), both of which this ratio would also flag at 2.78x and
-# ~3x respectively -- so this constant can only ever ADVISE (severity="info" in
-# `reconcile_fundamentals_facts`), never null or reject, matching that function's existing
-# "surface, never silently correct" philosophy.
-SIGNED_Q4_FY_DOMINANCE_FLAG_RATIO = 1.5
-
-# --------------------------------------------------------------------------- #
-# EMBEDDING INPUT LIMITS                                                       #
-# --------------------------------------------------------------------------- #
-# text-embedding-3-small accepts 8,191 TOKENS. English prose runs ~3.6 chars per
-# token, so ~29,000 chars is the real ceiling; 28,000 keeps a safety margin for
-# token-dense text (tables, tickers). The previous 8,000-CHAR cap truncated 22.4%
-# of prepared-remarks turns (max 74,550 chars), so the quarter-to-quarter drift
-# feature only ever compared each turn's opening fragment.
-EMBEDDING_MAX_CHARS = 28_000
-# A turn shorter than this is boilerplate ("Thank you.", "Yes.") — 17,281 Q&A turns
-# qualify. Embedding them and taking a cosine against the question is pure noise,
-# so they are excluded from the coherence KPI (they stay in the cache).
-EMBEDDING_MIN_TURN_CHARS = 30
-
-# --------------------------------------------------------------------------- #
-# HEADCOUNT CONTINUITY                                                         #
-# --------------------------------------------------------------------------- #
-# Employee counts come from 10-K PROSE, so a residue of mis-picked numbers survives
-# every in-document heuristic. Headcount is a slow-moving series, which makes a
-# ticker's own history the strongest remaining check: no real company multiplies or
-# divides its workforce by five between two annual filings. The 2026-07 audit measured
-# 6.3% of year-over-year transitions at >2x or <0.5x, and the 30-ticker verification
-# caught CoStar picking up a "2.3 million" phrase (2,300,000) against a stored 1,155.
-# The band is deliberately generous so a genuine transformative merger still passes;
-# it is anchored on the MEDIAN of accepted values, so one bad reading cannot reject the
-# correct ones that follow it.
-HEADCOUNT_CONTINUITY_MIN = 0.2
-HEADCOUNT_CONTINUITY_MAX = 5.0
-
-# --------------------------------------------------------------------------- #
-# FUNDAMENTALS QoQ DISCONTINUITY (flag, never auto-fix)                        #
-# --------------------------------------------------------------------------- #
-# Same shape/reasoning as HEADCOUNT_CONTINUITY_MIN/MAX above: a >5x or <0.2x quarter-
-# over-quarter move is unusual enough to flag for review (a large M&A, a genuine
-# one-off, or a mis-mapped concept/period), but NOT automatically wrong -- a real
-# transformative event legitimately produces one. `reconcile_fundamentals_facts`
-# reports it as a diagnostic; it never nulls or rescales the underlying value.
-FUNDAMENTALS_DISCONTINUITY_MIN = 0.2
-FUNDAMENTALS_DISCONTINUITY_MAX = 5.0
-
-# --------------------------------------------------------------------------- #
-# XBRL TAG-SWITCH LEDGER (flag, never auto-fix)                                #
-# --------------------------------------------------------------------------- #
-# A field's resolved `source_tag` CHANGING mid-history is normal and expected, so the mere
-# switch is not the signal. Measured on the live `fundamentals_facts`, 84.4% of
-# (ticker, field) pairs use exactly ONE tag across 15 years, and nearly every switch in the
-# remaining 15.6% is a US-GAAP TAXONOMY MIGRATION that moved every filer in the same window:
-# `leaseMaturity*` OperatingLeasesFutureMinimumPaymentsDue* -> LesseeOperatingLease-
-# LiabilityPaymentsDue* (ASC 842, old tag through 2020-12-31 and new from 2019-03-31 across
-# all tickers), `cashPeriodChange` (ASU 2016-18 restricted cash), `interestPaid` /
-# `incomeTaxesPaid` (X -> XNet deprecations), `netChargeOffs` / `provisionForCreditLosses` /
-# `allowanceCreditLosses` (CECL, all banks at once). Those are the SAME measure under a new
-# element name and the series is continuous across them.
-#
-# What is NOT benign is a switch where the LEVEL jumps at the boundary: the two tags are then
-# two different MEASURES spliced into one series, which fabricates a regime break for a
-# cross-sectional model. Calibrated on DTE `shortTermDebt`, which shows both shapes: its
-# benign fiscal-2015 -> 2016 switch moves the level $465M -> $499M (1.07x) while the harmful
-# fiscal-2012 -> 2013 switch moves it $240M -> $694M (2.9x) because the second tag is the
-# long-term-debt FOOTNOTE deduction row, not a balance-sheet line. 1.5 sits between the two
-# with room on both sides.
-TAG_SWITCH_LEVEL_BREAK_RATIO = 1.5
-# Periods pooled either side of a boundary before comparing levels. Comparing the two
-# BOUNDARY values alone is unusable on a volatile balance -- DTE's short-term borrowings
-# legitimately swing $0 -> $1,131M quarter-over-quarter WITHIN one tag -- so each side is
-# reduced to a median over up to this many periods (4 = one fiscal year).
-TAG_SWITCH_BASELINE_PERIODS = 4
-# Maximum hole (in days) between the end of one tag era and the start of the next before the
-# level comparison is abandoned. Across a longer gap the two levels are separated by missing
-# periods as well as by the tag change, so a break cannot be attributed to the switch.
-TAG_SWITCH_MAX_BOUNDARY_GAP_DAYS = 100
-
-# Say-on-pay support below this is dropped by `def14a_impute` (see
-# `_drop_implausible_say_on_pay`). Real votes cluster 0.85-0.99; the 2026-07 audit found
-# 125 of 4,785 values (2.6%) under 0.60, steady at 1-4% every year since 2011, with
-# spot-checks proving them wrong (JPM 2023 stored 0.31 against ~89% actual, SPG 2024
-# 0.111 against ~93%, INTC 2023 0.34). Set at 0.50 rather than 0.60 to keep the genuine
-# shareholder revolts, which do reach the low 50s, while clearing the clear errors. NOTE
-# the field holds a FRACTION (0-1) despite the `_pct` name -- the live max is exactly 1.0.
-SAY_ON_PAY_MIN_SUPPORT = 0.50
-
-# Effective tax rate (`EffectiveIncomeTaxRateContinuingOperations`, 481 of 500 tickers).
-# A RATIO, so a near-zero pre-tax income makes it explode: the raw field spans -56.6 to
-# +43.1 while 89.4% of values sit inside 0..0.60 and the median is 0.218 (correct for
-# post-TCJA US corporates). The band is asymmetric on purpose -- a genuine tax BENEFIT
-# year (loss carry-back, valuation-allowance release) is real signal and goes negative,
-# but not by 50x.
-EFFECTIVE_TAX_RATE_MIN = -1.0
-EFFECTIVE_TAX_RATE_MAX = 1.0
-
-# `ppeNet` is rebuilt from (ppeGross - accumulatedDepreciation) when it falls below this
-# share of that roll-forward. Utilities tag their rate base as
-# `PublicUtilitiesPropertyPlantAndEquipment{Transmission,Distribution,GenerationOrProcessing}`
-# and leave `PropertyPlantAndEquipmentNet` holding only a minor non-utility component --
-# AEP reports $0.71bn there against $120bn of gross PP&E and $114bn of total assets, a 99%
-# understatement of the asset base behind asset turnover, capex intensity and Altman Z.
-# 0.20 is far below any real net/gross ratio (even a fully-depreciated base stays well
-# above it), so a genuine old asset base is never rewritten.
-PPE_NET_MIN_SHARE_OF_ROLLFORWARD = 0.20
-
-# Diluted weighted-average shares may never fall below basic -- dilution only adds shares.
-# 415 of 31,580 rows (1.31%) broke this because the diluted count arrived in a different
-# UNIT (T 2010: basic 5.908e9 vs diluted 5,938; GLW: 1.568e9 vs 1,591; ICE: diluted 0),
-# confirmed by `epsDiluted > epsBasic` on only 10.7% of them. The tolerance absorbs genuine
-# rounding (14.2% of the violations are under 0.1% of basic) while catching the unit errors,
-# which are all >= 90% shortfalls.
-DILUTED_SHARES_MIN_SHARE_OF_BASIC = 0.99
 
 # --------------------------------------------------------------------------- #
 # VALIDATOR FIX RECORDING (src/validate/, fundamentals_check_fix)                         #

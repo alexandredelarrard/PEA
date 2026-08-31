@@ -1,4 +1,6 @@
 """
+fetch_earnings_surprises.py
+--------------------------
 Historical earnings surprises = the market's FORWARD EPS expectation vs what the
 company actually delivered, per quarter, going back years.
 
@@ -8,17 +10,11 @@ past earnings date, the consensus **EPS Estimate**, the **Reported EPS**, and th
 **Surprise(%)** -- often close to the full `years_history` window for large,
 long-listed S&P 500 names. It also returns the NEXT (not-yet-reported) date with
 its estimate and a NaN actual: that row is the live forward EPS.
-
-    earnings_date | eps_estimate | eps_actual | surprise_pct
-    2026-08-04    | 1.61         | NaN        | NaN            <- forward (upcoming)
-    2026-05-05    | 1.29         | 1.37       | 5.82           <- reported (beat)
-    ...
-
 """
+
 from __future__ import annotations
 
 import time
-
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -39,6 +35,8 @@ _COLUMNS = ["ticker", "earnings_date", "eps_estimate", "eps_actual", "surprise_p
 # a stale ticker (no new row within this many days) is re-pulled with this limit
 _RECENT_LIMIT = 8
 
+# earnings surprise before this date are sporadic and almost always missing 
+MIGRATION_DATE = "2002-10-01"
 
 def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
     """One ticker's earnings-date table normalized to `_COLUMNS`; None if empty.
@@ -108,6 +106,7 @@ def _plan_fetch(tickers: list[str], existing: pd.DataFrame | None,
 def fetch_earnings_surprises(
     context: Context,
     tickers: list[str],
+    years_history: int = 15,
     pause: float = 0.3,
     refetch_window_days: int = 95,      # > one quarter; fallback only when no forward date is known
 ) -> None:
@@ -116,9 +115,9 @@ def fetch_earnings_surprises(
     
     existing = context.store.load(Tables.earnings_surprises, optional=True)
     if existing is not None:
-        existing["earnings_date"] = pd.to_datetime(existing["earnings_date"]).dt.normalize()
+        existing["earnings_date"] = pd.to_datetime(existing["earnings_date"], format="%Y-%m-%d")
 
-    full_limit = int(context.config.data_extract.years_history) * 4 + 4
+    full_limit = (years_history + 1)*4 
     plan = _plan_fetch(tickers, existing, full_limit, refetch_window_days)
     context.log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)",
              len(plan), len(tickers), len(tickers) - len(plan))
@@ -147,15 +146,12 @@ def fetch_earnings_surprises(
     if not parts:
         context.log.warning("No earnings-surprise data available (nothing fetched, no cache).")
         record_run(context, Tables.earnings_surprises, len(tickers), 0)
-        # `return`, not a fall-through: `not parts` means no cache AND no fetched rows, so
-        # `new` below is a COLUMN-LESS frame and `new["ticker"]` raises `KeyError: 'ticker'`.
-        # The branch recorded the run and then crashed, which is why its double `record_run`
-        # was never observed.
-        return
-
+        
     # upsert the freshly-fetched rows; the DB merges on (ticker, earnings_date),
     # so a now-filled actual overwrites the old forward-estimate row.
-    new = pd.concat(new_frames, ignore_index=True)[_COLUMNS] if new_frames else pd.DataFrame()
-    context.store.save(Tables.earnings_surprises, new)
-    context.log.info(f"Saved {len(new)} new earnings rows for {new['ticker'].nunique()} tickers to DB")
-    record_run(context, Tables.earnings_surprises, len(tickers), len(new))
+    if new_frames:
+        new = pd.concat(new_frames, ignore_index=True)[_COLUMNS]
+        new = new.loc[new['earnings_date']>=MIGRATION_DATE].reset_index(drop=True)
+        context.store.save(Tables.earnings_surprises, new)
+        context.log.info(f"Saved {len(new)} new earnings rows for {new['ticker'].nunique()} tickers to DB")
+        record_run(context, Tables.earnings_surprises, len(tickers), len(new))

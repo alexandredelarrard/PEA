@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.constants.constants import MACRO_MARKET_SERIES
+from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_series, load_macro_wide
 

@@ -30,7 +30,7 @@ from fredapi import Fred
 
 from src.context import Context
 from src.data_store.schema import Tables
-from src.constants.constants import (MACRO_PRICE_SERIES, MACRO_FRED_SERIES,
+from src.constants.constants_price import (MACRO_PRICE_SERIES, MACRO_FRED_SERIES,
                                      MACRO_SPREAD_SERIES, MACRO_BOND_TR_SERIES,
                                      MACRO_BOND_MATURITY_YEARS, MACRO_CORE_LEVEL_SERIES,
                                      MACRO_ALL_SERIES)

@@ -46,9 +46,10 @@ class StepExtractPrices(Step):
         # MARKET + MACRO series -> `prices_macro`: the yfinance legs (SPY / VIX / oil / gold
         # / energy / FX, close only) plus the FRED levels and the derived spreads and 10Y
         # TODO: 5 days off because FRED only downloads weekly -> use yfinance 
+        # 2003 for breakeaven 10Y, oil/gold/fx 2001, rest is 1995
         fetch_macro(self._context, years_history=years_macro)
 
-        # shorting stock 
+        # shorting stock -> Offexchange since 2009
         fetch_short_interest(self._context, tickers=tickers, years_history=years_history)
 
         # 13F institutional holdings (edgartools by filing date + OpenFIGI cusip map). Resumes
@@ -58,8 +59,8 @@ class StepExtractPrices(Step):
         # failing to give a stock in time- Mid 2009 earliest
         fetch_fails_to_deliver(self._context, tickers=tickers, years_history=years_history)
 
+        # insider transactions 
+        fetch_insider_transactions(self._context, tickers=tickers, years_history=years_history)
+
         # Superinvestors roster: curated top managers (Dataroma) -> CIK subset JSON,
         build_superinvestors_json(self._context)
-
-        # insider transactions 
-        fetch_insider_transactions(self._context, tickers=tickers)

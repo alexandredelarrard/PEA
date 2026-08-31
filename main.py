@@ -23,7 +23,14 @@ if __name__ == "__main__":
     # self = StepPortfolio(context=context, config=config)
     # self.run()
 
-##### TODO
+##### 
+
+# extraction date - enrich
+# TODO: short interest : extract also the Lit exchange NYSE /NASDAQ, from 2009 for all (now is 2018)  
+# TODO: insiders trading : sec form 3/4/5 -> sec since 2003, zip since Q1 2006 -> take sec 
+# TODO: earnings surprises starts 1999-08, but empty till ~2003
+
+# other 
 # TODO: check data is consistent over time, even for latest 2026 month ? 
 # TODO: what happens when new data pops between quarters on financials 
 # TODO: include move from peers when new results are avilable -> move all peers info

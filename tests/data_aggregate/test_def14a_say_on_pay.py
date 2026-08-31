@@ -10,9 +10,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import SAY_ON_PAY_MIN_SUPPORT
 from src.data_aggregate.utils.extras.def14a_impute import (
     drop_implausible_def14a, impute_def14a,
+    SAY_ON_PAY_MIN_SUPPORT
 )
 
 

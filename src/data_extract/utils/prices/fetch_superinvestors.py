@@ -27,7 +27,7 @@ import requests
 from bs4 import BeautifulSoup
 from urllib3.exceptions import InsecureRequestWarning
 
-from src.constants.constants import SEC_EDGAR_COMPANY_SEARCH_URL, _HEADERS, SUPERINVESTORS_JSON
+from src.constants.constants import SEC_EDGAR_COMPANY_SEARCH_URL, _HEADERS
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
 from src.utils.string import pad_cik
@@ -159,7 +159,7 @@ def _http_get(url: str) -> requests.Response:
 # Entry points                                                                  #
 # --------------------------------------------------------------------------- #
 def _json_path(context: Context, out_path: str | Path | None) -> Path:
-    return Path(out_path) if out_path else (context.paths["DATA_STORE"] / SUPERINVESTORS_JSON)
+    return Path(out_path) if out_path else (context.paths["DATA_STORE"] / context.config.local.paths.superinvestors)
 
 
 def build_superinvestors_json(

@@ -121,6 +121,7 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, years_history:
     `_read_filing` swallows per-filing failures -- without it, a filing that failed
     transiently would sit behind the advanced watermark and never be retried. A full rescan
     is the wrong self-heal here: 15y is ~528k filings, ~16h."""
+
     context.ensure_edgar_identity()
     today = pd.Timestamp.today().normalize()
 
@@ -136,9 +137,9 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, years_history:
                           filing_date=f"{since:%Y-%m-%d}:{today:%Y-%m-%d}") or []
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read since {since:%Y-%m-%d}")
-    universe = set(tickers) if tickers is not None else set(load_cik_mapping(context)["ticker"])
+
     if not total:
-        record_run(context, Tables.sec13f_hr, len(universe), 0)
+        record_run(context, Tables.sec13f_hr, len(set(tickers)), 0)
         return
 
     saved, suspect, batch, looked_up, cmap = 0, 0, [], set(), None
@@ -155,7 +156,7 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, years_history:
                 # genuinely new cusip -- once per batch would reload it ~44x a quarter
                 cmap = build_cusip_ticker_map(context, sorted(new_cusips))
                 looked_up |= new_cusips
-            out = _resolve_tickers(holdings, cmap, universe)
+            out = _resolve_tickers(holdings, cmap, set(tickers))
             if not out.empty:
                 implied = (out["value_usd"] / out["shares"].where(out["shares"] > 0)).dropna()
                 suspect += int((~implied.between(*_IMPLIED_PRICE_BAND)).sum())
@@ -166,4 +167,4 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, years_history:
                        f"{_IMPLIED_PRICE_BAND} -- check edgartools' per-filing $thousands "
                        f"detection before trusting value_usd")
     logger.info(f"13F: saved {saved} row(s) from {total} filing(s) to {Tables.sec13f_hr}")
-    record_run(context, Tables.sec13f_hr, len(universe), saved)
+    record_run(context, Tables.sec13f_hr, len(set(tickers)), saved)

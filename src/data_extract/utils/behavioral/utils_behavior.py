@@ -7,8 +7,7 @@ from src.utils import polite_http as ph
 from src.utils.crawler import Crawler
 
 from src.constants.constants import (
-    EARNINGS_CALL_CACHE_DIR,
-    MOTLEY_FOOL_BASE_URL
+    FOOL_BASE
     )
 from src.data_extract.utils.common.bulk_cache import cache_dir
 
@@ -18,7 +17,6 @@ from src.data_extract.utils.common.bulk_cache import cache_dir
 _CRAWLER: Crawler | None = None
 
 def _crawler() -> Crawler:
-    global _CRAWLER
     if _CRAWLER is None:
         _CRAWLER = Crawler(retries=5, backoff=1.5, timeout=30, impersonate=True)
     return _CRAWLER
@@ -26,7 +24,7 @@ def _crawler() -> Crawler:
 
 def _index_path(context: Context) -> Path:
     """The fool link index inside the transcript cache (data/call_transcripts/)."""
-    return cache_dir(context, EARNINGS_CALL_CACHE_DIR) / "transcript_index.json"
+    return cache_dir(context, context.config.local.paths.call_transcripts) / "transcript_index.json"
 
 
 def _load_index(path: Path) -> dict[str, dict]:
@@ -50,6 +48,6 @@ def _get(url: str, timeout: int = 30, retries: int = 4, backoff: float = 3.0,
 
 def _sleep_pace(base: float) -> None:
     """Paced inter-request sleep for fool.com (shared per-host slowdown + jitter)."""
-    ph.sleep_pace(base, MOTLEY_FOOL_BASE_URL)
+    ph.sleep_pace(base, FOOL_BASE)
 
 

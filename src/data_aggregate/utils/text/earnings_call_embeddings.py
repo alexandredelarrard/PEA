@@ -44,7 +44,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.data_store.schema import Tables
-from src.constants.constants import (EARNINGS_CALL_EMBED_MODEL, EARNINGS_CALL_TAG_ANSWER, EARNINGS_CALL_TAG_PREPARED, EARNINGS_CALL_TAG_QUESTION)
+from src.constants.constants import (EARNINGS_CALL_TAG_ANSWER, EARNINGS_CALL_TAG_PREPARED, EARNINGS_CALL_TAG_QUESTION)
 from src.context import Context
 from src.utils.openai_embeddings import cosine, embed_texts, openai_api_key
 
@@ -425,7 +425,7 @@ def _yield_call_texts(context: Context, remaining: list[tuple[str, str]],
 
 
 def embed_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
-                         model: str = EARNINGS_CALL_EMBED_MODEL, force: bool = False,
+                         model: str = "text-embedding-3-small", force: bool = False,
                          client=None) -> None:
     """Ensure every call's speaker turns are embedded + cached in `earning_calls_embedding` (one row
     per turn). MEMORY-SAFE + incremental: first the REMAINING calls are found by comparing two

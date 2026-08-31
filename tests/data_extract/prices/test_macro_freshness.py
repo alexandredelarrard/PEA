@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from conftest import FakeStore     # the ONE shared store double
-from src.constants.constants import MACRO_CORE_LEVEL_SERIES
+from src.constants.constants_price import MACRO_CORE_LEVEL_SERIES
 from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_store.schema import Tables
 

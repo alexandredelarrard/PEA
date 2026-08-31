@@ -39,7 +39,7 @@ from src.data_extract.utils.behavioral.utils_behavior import (
     _index_path,
     _load_index)
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.constants.constants import (EARNINGS_CALL_CACHE_DIR, EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_REPORT_TO_QUARTER_LAG_DAYS, NO_EARNINGS_CALL_TICKERS)
+from src.constants.constants import (EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_REPORT_TO_QUARTER_LAG_DAYS, NO_EARNINGS_CALL_TICKERS)
 
 # --- quarter arithmetic (a fiscal quarter as a monotone integer index YYYY*4 + (Q-1)) ---
 _QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$")
@@ -188,7 +188,7 @@ def missing_quarters_by_ticker(context: Context, tickers: list[str] | None = Non
     if tickers is not None:
         keep = set(tickers)
         universe = [t for t in universe if t in keep]
-    cache = cache_dir(context, EARNINGS_CALL_CACHE_DIR)
+    cache = cache_dir(context, context.config.local.paths.call_transcripts)
     end_idx = _latest_expected_quarter_index(grace_days)
     floor_idx = _since_floor_index(str(since))
     hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)

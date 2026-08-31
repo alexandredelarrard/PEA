@@ -5,6 +5,11 @@ SEC Fails-to-Deliver (FTD): semi-monthly settlement-fail files, a signal for
 settlement stress / short-squeeze risk. Kept in its own table, separate from
 `short_interest`, so its ~2-month publication lag doesn't corrupt that table's
 global-max-date incremental sync (see schema.py).
+
+It is a Cumulative Balance, NOT Daily New Fails:
+The number listed on date t represents 
+the total net unsettled balance as of that night.
+$$\text{FTD}_t = \text{FTD}_{t-1} + \text{New Fails}_t - \text{Resolved Fails}_t$$
 """
 
 from __future__ import annotations
@@ -105,10 +110,9 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str], years_history:i
     upserted. Incremental: a file already in the DB is skipped (no re-download)
     unless the universe gained tickers (then cached files are re-parsed)."""
 
-    ticker_set = set(tickers)
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     done = ingested_periods(context, Tables.sec_fails_to_deliver)
-    new_tickers = ticker_set - load_processed_universe(cache, Tables.sec_fails_to_deliver)   # empty once converged
+    new_tickers = set(tickers) - load_processed_universe(cache, Tables.sec_fails_to_deliver)   # empty once converged
     if new_tickers:
         logger.info("FTD: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
 
@@ -132,7 +136,7 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str], years_history:i
         context.store.save(Tables.sec_fails_to_deliver, df[[c for c in _OUT_COLS if c in df.columns]])
         saved +=df.shape[0]
 
-    save_processed_universe(cache, Tables.sec_fails_to_deliver, ticker_set)   # so a converged re-run skips
+    save_processed_universe(cache, Tables.sec_fails_to_deliver, set(tickers))   # so a converged re-run skips
     logger.info(f"sec_fails_to_deliver completed ({len(periods)} files scanned) +{saved}")
     record_run(context, Tables.sec_fails_to_deliver, len(tickers), saved)
     return saved

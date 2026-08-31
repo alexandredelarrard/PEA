@@ -30,7 +30,6 @@ import logging
 
 import pandas as pd
 
-from src.constants.constants import HEADCOUNT_CONTINUITY_MAX, HEADCOUNT_CONTINUITY_MIN
 from src.data_extract.utils.common.edgar_extract import extract_employee_count, html_to_text
 
 #: The `fundamentals_facts.field` value this module writes. Declared here because this
@@ -52,6 +51,21 @@ EMPLOYEES_UNIT = "employees"
 # row uses to record WHERE its number came from, and "this was parsed out of the
 # filing's prose" is exactly the kind of thing a later audit needs to see.
 EMPLOYEES_SOURCE_TAG = "text:10-K"
+
+# --------------------------------------------------------------------------- #
+# HEADCOUNT CONTINUITY                                                         #
+# --------------------------------------------------------------------------- #
+# Employee counts come from 10-K PROSE, so a residue of mis-picked numbers survives
+# every in-document heuristic. Headcount is a slow-moving series, which makes a
+# ticker's own history the strongest remaining check: no real company multiplies or
+# divides its workforce by five between two annual filings. The 2026-07 audit measured
+# 6.3% of year-over-year transitions at >2x or <0.5x, and the 30-ticker verification
+# caught CoStar picking up a "2.3 million" phrase (2,300,000) against a stored 1,155.
+# The band is deliberately generous so a genuine transformative merger still passes;
+# it is anchored on the MEDIAN of accepted values, so one bad reading cannot reject the
+# correct ones that follow it.
+HEADCOUNT_CONTINUITY_MIN = 0.2
+HEADCOUNT_CONTINUITY_MAX = 5.0
 
 
 def is_headcount_form(form: str | None) -> bool:

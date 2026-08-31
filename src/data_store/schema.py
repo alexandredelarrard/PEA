@@ -553,6 +553,27 @@ class Tables:
                      date_type_cols=("trading_day", "closed_on"))
 
     # ----------------------------------------------------------------- #
+    # Extract -- the run ledger                                         #
+    # ----------------------------------------------------------------- #
+    # One row per (table, run): replaces `data/extraction_manifest.json`, a git-ignored,
+    # lock-free, non-atomic read-modify-write whose parse failure silently discarded EVERY
+    # table's history and whose `rows_added` / `updated_at` were write-only (nothing ever
+    # read them back).
+    #
+    # Keyed on `run_id` as well as `table_name`, for the reason `fundamentals_check_run`
+    # learned the hard way (above): two runs of DIFFERENT SCOPE on the same day must be able
+    # to coexist, or the second silently overwrites the first and every delta computed
+    # against it is nonsense.
+    #
+    # `run_id` = 12 hex of (run_date, sorted(tickers), full_flag) -- the
+    # `fundamentals_check_run` pattern. `scope_hash` is the same hash WITHOUT the date, so
+    # two runs are comparable iff it matches.
+    extraction_run = Table(
+        "extraction_run", ("table_name", "run_id"),
+        KIND_AGGREGATE, date_col="run_date", ticker_col=None,
+        date_type_cols=("run_date", "last_full_rescan_date"))
+
+    # ----------------------------------------------------------------- #
     # Validate -- the finding ledger                                    #
     # ----------------------------------------------------------------- #
     # One row per FINDING per RUN: the fundamentals validator's append-only queue (plan-5b

@@ -106,7 +106,7 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str], years_history:i
     unless the universe gained tickers (then cached files are re-parsed)."""
 
     ticker_set = set(tickers)
-    cache = cache_dir(context, "sec_fails_to_deliver")
+    cache = cache_dir(context, context.config.local.paths.fails_deliver)
     done = ingested_periods(context, Tables.sec_fails_to_deliver)
     new_tickers = ticker_set - load_processed_universe(cache, Tables.sec_fails_to_deliver)   # empty once converged
     if new_tickers:
@@ -117,7 +117,7 @@ def fetch_fails_to_deliver(context: Context, tickers: list[str], years_history:i
     for period in tqdm(periods, desc="SEC fails-to-deliver"):
         if period in done and not new_tickers:
             continue
-        path = ensure_zip(cache / f"cnsfails{period}.zip", _period_urls(period),
+        path = ensure_zip(context, cache / f"cnsfails{period}.zip", _period_urls(period),
                           label=f"FTD {period}", timeout=180, log=logger)
         if path is None:
             continue

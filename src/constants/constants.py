@@ -14,6 +14,15 @@ DATE_FORMAT = "%Y-%m-%d"          # ISO day — as_of / filing / query dates
 DATE_FORMAT_COMPACT = "%Y%m%d"    # SEC / FINRA daily-file name stamps
 
 # --------------------------------------------------------------------------- #
+# Config directory                                                            #
+# --------------------------------------------------------------------------- #
+# THE one declaration. `context.py` resolves it into `Context.config_dir`; every fundamentals
+# loader's default parameter, and the CLI's `-c` default, import it from here rather than
+# re-declaring their own copy -- five independent copies is what let the CLI's `-c` flag be
+# silently discarded by `context.py` for years (see `Context.config_dir`'s docstring).
+DEFAULT_CONFIG_DIR = "./configs"
+
+# --------------------------------------------------------------------------- #
 # HEADER for extract                                                          #
 # --------------------------------------------------------------------------- #
 _HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -56,47 +65,20 @@ SEC_EDGAR_COMPANY_SEARCH_URL = (
     "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}"
     "&type=13F-HR&dateb=&owner=include&count=10&output=atom")
 
-# SEC bulk quarterly structured data sets (free TSV zips; {quarter} = e.g. "2024q1").
-# insider = Forms 3/4/5 officer/director transactions; finstmt = primary-statement
-# XBRL facts (num/sub) incl. the balance-sheet net pension liability.
-SEC_INSIDER_URL_TEMPLATE = (
-    "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
-    "{quarter}_form345.zip")
-SEC_FINSTMT_URL_TEMPLATE = (
-    "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip")
-SEC_INSIDER_FIRST_YEAR = 2011      
-SEC_FINSTMT_FIRST_YEAR = 2009     
-
-# SEC "Financial Statement AND Notes" data sets: like finstmt but ALSO carry the
-# NOTES (footnote) facts — numeric (num.tsv, incl. footnote PBO / plan-asset /
-# funded-status detail) AND the narrative TEXT blocks (txt.tsv, for embedding /
-# sentiment). Files are .tsv (not .txt). {period} is either quarterly "YYYYqQ" OR
-# monthly "YYYY_MM": the SEC now consolidates months into a quarter after ~1 year,
-# so at any time only the last ~12 months exist as monthly and older data as
-# quarterly (the fetcher probes both and skips 404s). ~300-450MB per file.
-SEC_FINNOTES_URL_TEMPLATE = (
-    "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/"
-    "{period}_notes.zip")
-SEC_FINNOTES_FIRST_YEAR = 2009     # earliest notes data set (2009q1)
-
-# 8-K events -> `sec_8k`, one row per item code (see fetch_8k_edgar.py, which owns the
-# high-signal item-code -> tag map).
+# 8-K events -> `sec_8k`, one row per item code (see fetch_8k_edgar.py
 SEC_8K_FORMS = ["8-K", "8-K/A"]
 
 # SC 13D activist filings (>5% stake WITH intent to influence) + amendments — the event-driven
-# catalyst signal, read via edgartools' typed Schedule13D object (reporting persons, CUSIP,
-# ownership -- see fetch_13d_edgar.py). One row PER REPORTING PERSON per filing.
 SEC_13D_FORMS = ["SC 13D", "SC 13D/A"]   # activist (13G = passive is deliberately excluded)
 
-# 13F institutional holdings, walked per-filing-date via edgartools (fetch_13f.py). 13F-NT is
-# excluded on purpose: a notice filing reports that holdings appear in ANOTHER manager's filing,
-# so it carries no info table of its own.
+# 13F institutional holdings, walked per-filing-date via edgartools (fetch_13f.py). 
 SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
 
-# Fundamentals (financial-statement) forms walked per-filing via edgartools -> `fundamentals_facts`
-# / `fundamentals_history_sec`. Amendments included explicitly (never inferred from a form-filter
-# default) so a 10-K/A or 10-Q/A restatement is always discovered as its own accession.
+# Fundamentals (financial-statement) via edgartools -> `fundamentals_facts` / `fundamentals_history_sec`.
 FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
+
+# DEF 14A proxy + the DEF 14C information-statement equivalent that CONTROLLED companies file
+DEF14A_FORMS = ["DEF 14A", "DEF 14C"]
 
 # The three JSON files that ARE the fundamentals contract -- one entry per KPI (tier, kind,
 # sign, unit, definition, primary-source authority, and how to resolve it), the regime ->
@@ -111,10 +93,6 @@ FUNDAMENTALS_EXCEPTIONS_FILENAME = "fundamentals_exceptions.json"
 FUNDAMENTALS_CIK_CUTOVER_FILENAME = "fundamentals_cik_cutover.json"
 FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 
-# DEF 14A proxy + the DEF 14C information-statement equivalent that CONTROLLED companies file
-# instead. Centralized here so the form-dispatch registry (form_registry.py) has one source of
-# truth, matching SEC_8K_FORMS / SEC_13D_FORMS above.
-DEF14A_FORMS = ["DEF 14A", "DEF 14C"]
 
 # --------------------------------------------------------------------------- #
 # Sharadar SF1 fundamentals (Sharadar DIRECT, api.sharadar.com).               #

@@ -44,11 +44,9 @@ from src.data_store.schema import Table, name_of
 
 logger = logging.getLogger(__name__)
 
-_MANIFEST_FILENAME = "extraction_manifest.json"
-
 
 def _manifest_path(context: Context) -> Path:
-    return Path(context.paths["DATA_STORE"]) / _MANIFEST_FILENAME
+    return Path(context.paths["DATA_STORE"]) / Path(context.config.local.filename.extraction)
 
 
 def _load_manifest(context: Context) -> dict:

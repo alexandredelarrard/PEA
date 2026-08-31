@@ -11,7 +11,6 @@ limit), while the network transfer happens outside the lock so downloads from a
 ThreadPoolExecutor overlap. This is what lets the EDGAR fetchers parallelize.
 """
 import json
-import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -29,21 +28,6 @@ _rate_lock = threading.Lock()
 _next_slot = [0.0]            # monotonic time of the next allowed request start
 
 
-def _sec_headers() -> dict[str, str]:
-    user_agent = os.getenv("SEC_USER_AGENT", "").strip()
-    if not user_agent:
-        raise RuntimeError(
-            "SEC_USER_AGENT is not set. SEC EDGAR blocks requests without a "
-            "descriptive User-Agent (name + email). Add to your .env file, e.g.\n"
-            '  SEC_USER_AGENT="Your Name your.email@example.com"\n'
-            "See https://www.sec.gov/os/webmaster-faq#developers"
-        )
-    return {
-        "User-Agent": user_agent,
-        "Accept-Encoding": "gzip, deflate",
-    }
-
-
 def _reserve_slot() -> None:
     """Reserve the next evenly-spaced request slot (thread-safe). The wait
     happens OUTSIDE the lock so concurrent transfers overlap while request
@@ -56,12 +40,13 @@ def _reserve_slot() -> None:
         time.sleep(delay)
 
 
-def sec_get(url: str, **kwargs) -> requests.Response:
-    """Rate-limited GET with the required SEC User-Agent header. Safe to call
-    from multiple threads."""
+def sec_get(context: Context, url: str, **kwargs) -> requests.Response:
+    """Rate-limited GET on `context.sec_session` (the required SEC User-Agent header is
+    pre-set on it). Safe to call from multiple threads: the session's connection pool is
+    thread-safe and only request *initiation* is serialized, by `_reserve_slot`."""
     kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
     _reserve_slot()
-    resp = requests.get(url, headers=_sec_headers(), **kwargs)
+    resp = context.sec_session.get(url, **kwargs)
     resp.raise_for_status()
     return resp
 
@@ -125,16 +110,18 @@ def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.D
     it duplicated `sp500_tickers` AND mismapped active tickers (e.g. XOM -> a non-filing
     "ExxonMobil Holdings Corp" shell).
     """
-    # No `optional=True`: every SEC fetcher needs CIKs, so an absent universe -- or a ticker
-    # list that resolves to nothing -- is a fault to surface here rather than an empty
-    # mapping that silently fetches nothing.
-    df = context.store.load(Tables.sp500_tickers,
+    cik_mapping_cols: tuple[str, ...] = ("ticker", "cik", "name", "sector",
+                                        "industry_group", "sub_industry")
+    
+    df = context.store.load(Tables.sp500_tickers, columns=list(cik_mapping_cols),
                             where={"ticker": list(tickers)} if tickers is not None else None)
-    if "cik" not in df.columns:
-        return df
-    df = df.copy()
+    
     # SEC URLs need the 10-digit zero-padded CIK
     df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
     if "company_name" not in df.columns and "name" in df.columns:
         df["company_name"] = df["name"]
     return df
+
+def cik_to_ticker(cikmap : pd.DataFrame) -> dict:
+    return ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
+                   if not cikmap.empty and "ticker" in cikmap.columns else {})

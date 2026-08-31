@@ -480,6 +480,7 @@ def ingest_all_earnings_calls(context: Context, tickers: list[str] | None = None
     fail to import."""
     saved = ingest_hf_transcripts(context, tickers=tickers, force=force)   # cached parquet
     saved += ingest_earnings_calls(context, tickers=tickers, force=force)  # cached MF HTML
+    record_run(context, Tables.earnings_call_sections, len(tickers) if tickers else 0, saved)
     return saved
 
 
@@ -493,6 +494,4 @@ def fetch_earnings_calls(context: Context, tickers: list[str] | None = None,
     download_earnings_calls(context, tickers=tickers, limit=limit,
                             recent_since=recent_since, use_global_crawl=use_global_crawl,
                             mf_history_years=mf_history_years)
-    saved = ingest_all_earnings_calls(context, tickers=tickers)
-    record_run(context, Tables.earnings_call_sections, len(tickers) if tickers else 0, saved)
-    return saved
+    return ingest_all_earnings_calls(context, tickers=tickers)   # records the run itself

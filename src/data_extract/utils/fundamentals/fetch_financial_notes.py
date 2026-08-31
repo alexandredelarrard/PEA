@@ -31,12 +31,6 @@ now (a dim.tsv join to sum members is a documented follow-up). Rows are joined t
 sub for cik / form / filed, mapped to our tickers, and upserted per filing to
 `notes_num` (numeric) and `notes_text` (text).
 
-Rolling granularity: the SEC now consolidates months into a quarter after ~1 year,
-so at any instant only the last ~12 months exist as monthly ("YYYY_MM") and older
-data as quarterly ("YYYYqQ"); the two spans never overlap. We take the authoritative
-period list from the landing page (falling back to a deterministic generator +
-404-skip), so we only request files that exist.
-
 Incremental: zips cached under data/sec_financial_notes/ and only downloaded when
 missing; a period already in the DB is skipped unless the universe gained tickers
 (then cached zips are re-parsed, no re-download). Upsert de-dupes by filing.
@@ -51,24 +45,21 @@ import logging
 import re
 import zipfile
 from pathlib import Path
-
 import pandas as pd
-import requests
 from tqdm import tqdm
 
-from src.constants.constants import (
-    SEC_FINNOTES_URL_TEMPLATE, SEC_FINNOTES_FIRST_YEAR)
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, ingested_periods,
 )
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
-    load_cik_mapping, load_processed_universe, save_processed_universe, _sec_headers)
+    load_cik_mapping, load_processed_universe, save_processed_universe,
+    cik_to_ticker)
+from src.data_store.schema import Tables
+
 logger = logging.getLogger(__name__)
 
-_NUM_TABLE = "notes_num"
-_TXT_TABLE = "notes_text"
 _CHUNK = 500_000
 _LANDING_URL = ("https://www.sec.gov/data-research/sec-markets-data/"
                 "financial-statement-notes-data-sets")
@@ -126,6 +117,10 @@ _NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value",
 _TXT_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "txtlen", "escaped",
             "value", "footnote", "form", "fy", "fp", "filed", "period"]
 
+SEC_FINNOTES_URL_TEMPLATE = (
+    "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/"
+    "{period}_notes.zip")
+SEC_FINNOTES_FIRST_YEAR = 2009     # earliest notes data set (2009q1)
 
 # --------------------------------------------------------------------------- #
 # Period list (rolling quarterly <-> monthly)                                   #
@@ -135,12 +130,12 @@ def _period_year(tag: str) -> int:
     return int(tag[:4])
 
 
-def _scrape_available_periods() -> list[str] | None:
+def _scrape_available_periods(context: Context) -> list[str] | None:
     """Authoritative available-file list from the landing page (robust to the
     rolling quarterly<->monthly boundary). None on any failure -> caller falls
     back to the deterministic generator."""
     try:
-        r = requests.get(_LANDING_URL, headers=_sec_headers(), timeout=60)
+        r = context.sec_session.get(_LANDING_URL, timeout=60)
         if r.status_code != 200:
             return None
         tags = re.findall(r"/(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip", r.text)
@@ -165,11 +160,12 @@ def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> 
     return sorted(set(out))
 
 
-def _notes_periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
+def _notes_periods(context: Context, years_history: int,
+                   today: pd.Timestamp | None = None) -> list[str]:
     """Period tags to fetch, newest last, filtered to the year window."""
     today = (today or pd.Timestamp.today()).normalize()
     start_year = max(SEC_FINNOTES_FIRST_YEAR, today.year - years_history)
-    avail = _scrape_available_periods()
+    avail = _scrape_available_periods(context)
     tags = avail if avail is not None else _generate_periods(years_history, today)
     return sorted(t for t in tags if _period_year(t) >= start_year)
 
@@ -230,8 +226,6 @@ def _join_notes_text(txt: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
-
-
 def _chunk_filter(z: zipfile.ZipFile, name: str, adsh_set: set[str],
                   tags: frozenset[str], usecols: set[str]) -> pd.DataFrame:
     """Stream a huge .tsv member in chunks, keeping only universe filings, curated
@@ -274,50 +268,49 @@ def _read_notes(path: Path, cik2tkr: dict[str, str],
     return _join_notes_num(num, sub_meta), _join_notes_text(txt, sub_meta)
 
 
-def fetch_financial_notes(context: Context, tickers: list[str]) -> int:
+def fetch_financial_notes(context: Context, tickers: list[str], years_history : int = 15) -> int:
     """Download (cached) the SEC Financial Statement & Notes data sets over
     `notes_years_history`, extract footnote pension NUMERICS -> `notes_num` and
     high-signal note TEXT -> `notes_text` for the universe. Returns total rows
     upserted (num + text). Incremental: a period already in the DB is skipped
     (no re-download) unless the universe gained tickers (then cached zips are
     re-parsed, no re-download)."""
-    store = context.store
-    cikmap = load_cik_mapping(context)
-    cik2tkr = ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
-               if not cikmap.empty and "ticker" in cikmap.columns else {})
-    de = context.config.data_extract
-    years_history = getattr(de, "notes_years_history", de.years_history) + 1
-    cache = cache_dir(context, "sec_financial_notes")
-    universe = {str(t).upper() for t in tickers}
 
-    done = ingested_periods(context, (_NUM_TABLE, _TXT_TABLE))
-    new_tickers = universe - load_processed_universe(cache, _NUM_TABLE)   # empty once converged
+    cikmap = load_cik_mapping(context)
+    cik2tkr = cik_to_ticker(cikmap) 
+    cache = cache_dir(context, context.config.local.paths.financial_notes)
+    
+    done = ingested_periods(context, (Tables.notes_num, Tables.notes_text))
+    new_tickers = set(tickers) - load_processed_universe(cache, Tables.notes_num)   # empty once converged
     if new_tickers:
         logger.info("notes: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
 
     n_num = n_txt = 0
-    periods = _notes_periods(years_history)
+    periods = _notes_periods(context, years_history+1)
     for period in tqdm(periods, desc="SEC financial-statement notes"):
+
         if period in done and not new_tickers:
             continue
-        path = ensure_zip(cache / f"{period}_notes.zip",
+
+        path = ensure_zip(context, cache / f"{period}_notes.zip",
                           SEC_FINNOTES_URL_TEMPLATE.format(period=period),
                           label=f"notes {period}", timeout=600, log=logger)
         if path is None:
             continue
-        num, txt = _read_notes(path, cik2tkr, universe)
+
+        num, txt = _read_notes(path, cik2tkr, tickers)
         if not num.empty:
             num = num.sort_values("filed").drop_duplicates(subset=_NUM_PK, keep="last")
             num["period"] = period
-            n_num += store.save(_NUM_TABLE, num[[c for c in _NUM_OUT if c in num.columns]])
+            n_num += context.store.save(Tables.notes_num, num[[c for c in _NUM_OUT if c in num.columns]])
         if not txt.empty:
             txt = txt.sort_values("filed").drop_duplicates(subset=_TXT_PK, keep="last")
             txt["period"] = period
-            n_txt += store.save(_TXT_TABLE, txt[[c for c in _TXT_OUT if c in txt.columns]])
+            n_txt += context.store.save(Tables.notes_text, txt[[c for c in _TXT_OUT if c in txt.columns]])
 
-    save_processed_universe(cache, _NUM_TABLE, universe)   # so a converged re-run skips
+    save_processed_universe(cache, Tables.notes_num, tickers)   # so a converged re-run skips
     logger.info("notes: upserted %d num + %d text rows (%d periods scanned)",
                    n_num, n_txt, len(periods))
-    record_run(context, _NUM_TABLE, len(tickers), n_num)
-    record_run(context, _TXT_TABLE, len(tickers), n_txt)
+    record_run(context, Tables.notes_num, len(tickers), n_num)
+    record_run(context, Tables.notes_text, len(tickers), n_txt)
     return n_num + n_txt

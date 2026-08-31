@@ -29,10 +29,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
-import requests
 
 from src.context import Context
-from src.data_extract.utils.common.sec_utils import _sec_headers
 from src.data_store.schema import Table, name_of
 
 __all__ = ["cache_dir", "ensure_zip", "read_zip_member", "read_zip_members",
@@ -45,17 +43,18 @@ _DEFAULT_TIMEOUT = 300           # seconds; the notes zips are ~380 MB
 def cache_dir(context: Context, key: str) -> Path:
     """The (created) directory a bulk data set caches its archives in.
 
-    `key` is either a registered `context.paths` key (e.g. SEC_13F_INSIDERS_DIR) or a
-    plain sub-directory name under DATA_STORE. Each data set keeps its own directory so
-    the multi-hundred-MB zips never mix with the companyfacts JSON cache."""
+    `key` is either a registered `context.paths` key or a plain sub-directory name under
+    DATA_STORE (every current caller uses the latter, e.g. "sec_financial_notes"). Each
+    data set keeps its own directory so the multi-hundred-MB zips never mix with the
+    companyfacts JSON cache."""
     path = context.paths.get(key)
     directory = Path(path) if path is not None else context.paths["DATA_STORE"] / key
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
 
-def ensure_zip(path: Path, urls: str | tuple[str, ...] | list[str], *, label: str,
-               timeout: int = _DEFAULT_TIMEOUT,
+def ensure_zip(context: Context, path: Path, urls: str | tuple[str, ...] | list[str], *,
+               label: str, timeout: int = _DEFAULT_TIMEOUT,
                log: logging.Logger | None = None) -> Path | None:
     """Local path to a cached archive, downloading it once if absent.
 
@@ -71,8 +70,7 @@ def ensure_zip(path: Path, urls: str | tuple[str, ...] | list[str], *, label: st
 
     for url in candidates:
         try:
-            response = requests.get(url, headers=_sec_headers(), timeout=timeout,
-                                    stream=True)
+            response = context.sec_session.get(url, timeout=timeout, stream=True)
         except Exception as exc:                                    # noqa: BLE001
             log.warning("%s: download failed (%s): %s", label, url, exc)
             continue

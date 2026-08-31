@@ -32,12 +32,10 @@ from __future__ import annotations
 import logging
 import zipfile
 from pathlib import Path
-
 import pandas as pd
 from tqdm import tqdm
 
 from src.data_store.schema import Tables
-from src.constants.constants import SEC_INSIDER_URL_TEMPLATE, SEC_INSIDER_FIRST_YEAR
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, quarter_periods,
@@ -57,6 +55,14 @@ _OUT_COLS = [
     "transaction_code", "acquired_disposed", "shares", "price_per_share",
     "value_usd", "shares_owned_after", "direct_indirect", "quarter",
 ]
+
+# SEC bulk quarterly structured data sets (free TSV zips; {quarter} = e.g. "2024q1").
+# insider = Forms 3/4/5 officer/director transactions; finstmt = primary-statement
+# XBRL facts (num/sub) incl. the balance-sheet net pension liability.
+SEC_INSIDER_URL_TEMPLATE = (
+    "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
+    "{quarter}_form345.zip")
+SEC_INSIDER_FIRST_YEAR = 2011     
 
 
 def _col(df: pd.DataFrame, name: str) -> pd.Series:
@@ -226,7 +232,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     cik2tkr = ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
                if not cikmap.empty and "ticker" in cikmap.columns else {})
     years_history = context.config.data_extract.years_history + 1
-    cache = cache_dir(context, "sec_insider_transactions")
+    cache = cache_dir(context, context.config.local.paths.insider_transaction)
 
     tickers = {str(t).upper() for t in tickers}          # universe as an uppercased set
     done_q = bulk_ingested_quarters(context.store, Tables.insider_transactions)
@@ -239,7 +245,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str]) -> int:
     for q in tqdm(quarter_periods(years_history, SEC_INSIDER_FIRST_YEAR), desc="insider data sets"):
         if q in done_q and not new_tickers:
             continue                          # complete quarter already ingested
-        path = ensure_zip(cache / f"{q}.zip",
+        path = ensure_zip(context, cache / f"{q}.zip",
                           SEC_INSIDER_URL_TEMPLATE.format(quarter=q),
                           label=f"insider {q}", log=logger)
         if path is None:

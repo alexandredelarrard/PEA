@@ -44,12 +44,13 @@ from typing import Any, Literal
 import pandas as pd
 
 from src.constants.constants import (
-    FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_EXCEPTIONS_FILENAME,
+    DEFAULT_CONFIG_DIR, FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_EXCEPTIONS_FILENAME,
     FUNDAMENTALS_KPIS_FILENAME, FUNDAMENTALS_REGIMES_FILENAME,
 )
 
-#: Default config directory, matching the `-c ./configs` CLI default.
-DEFAULT_CONFIG_DIR = "./configs"
+# `DEFAULT_CONFIG_DIR` re-exported (not re-declared): `field_map.py`, `gap_check.py`,
+# `merge_history.py` and `periods.py` all import it from this module rather than from
+# `constants` directly -- one declaration in `constants.py`, one import path here.
 
 #: Keys whose leading underscore marks them as documentation, not data. The JSONs carry
 #: their own rationale inline (a `_README` block, `_authority` notes) so the contract and

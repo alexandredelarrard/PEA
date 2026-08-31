@@ -121,10 +121,11 @@ def _pick_best_match(pairs: list[tuple[str, str]], query: str) -> tuple[str, str
     return pairs[idx]
 
 
-def _edgar_cik_for_name(fund_name: str, get_fn=sec_get) -> tuple[str | None, str | None]:
+def _edgar_cik_for_name(fund_name: str, get_fn) -> tuple[str | None, str | None]:
     """Resolve a fund name to its 13F-manager CIK via SEC EDGAR company search.
     Returns (cik, filer_name) or (None, None). `get_fn(url) -> response` is injected
-    so tests can stub the network."""
+    so tests can stub the network (production always passes a `context`-bound `sec_get`;
+    see `build_superinvestors_json`)."""
     q = _fund_part(fund_name)
     try:
         text = get_fn(SEC_EDGAR_COMPANY_SEARCH_URL.format(company=quote(q))).text
@@ -164,13 +165,17 @@ def _json_path(context: Context, out_path: str | Path | None) -> Path:
 def build_superinvestors_json(
     context: Context,
     out_path: str | Path | None = None,
-    get_fn=sec_get,
+    get_fn=None,
 ) -> dict:
     """Scrape Dataroma's curated superinvestors, resolve each fund name to its 13F
     CIK via SEC EDGAR, and persist a `{cik: investor_name}` roster JSON (also
     returned). CIKs come straight from EDGAR, so this does NOT depend on a local
     13F cache. Fund names EDGAR can't resolve are logged; force a specific CIK via
-    SUPERINVESTOR_CIK_OVERRIDES (keyed by the Dataroma manager code)."""
+    SUPERINVESTOR_CIK_OVERRIDES (keyed by the Dataroma manager code).
+
+    `get_fn` defaults to `sec_get` bound to `context` (which owns the SEC session /
+    rate limiter); tests inject their own single-arg stub instead."""
+    get_fn = get_fn or (lambda url: sec_get(context, url))
 
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))

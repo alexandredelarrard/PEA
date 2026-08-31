@@ -52,15 +52,15 @@ def test_list_filings_since_filters_to_after_D(monkeypatch):
         ("10-K", "2022-02-15"),
         ("10-Q", "2022-05-15"),   # wrong form -> excluded
     ])
-    monkeypatch.setattr(ef, "sec_get", lambda url, **k: _FakeResp(payload))
+    monkeypatch.setattr(ef, "sec_get", lambda context, url, **k: _FakeResp(payload))
 
     # full window: every 10-K (10-Q excluded by form filter)
-    allf = ef.list_filings("320193", ["10-K"], years=20)
+    allf = ef.list_filings(None, "320193", ["10-K"], years=20)
     assert list(allf["filing_date"].dt.strftime("%Y-%m-%d")) == \
         ["2020-02-15", "2021-02-15", "2022-02-15"]
 
     # incremental: since D=2021-02-15 -> only filings STRICTLY after D
-    inc = ef.list_filings("320193", ["10-K"], years=20, since="2021-02-15")
+    inc = ef.list_filings(None, "320193", ["10-K"], years=20, since="2021-02-15")
     assert list(inc["filing_date"].dt.strftime("%Y-%m-%d")) == ["2022-02-15"]
 
     print("\n=== SANITY CHECK: list_filings incremental `since` ===")

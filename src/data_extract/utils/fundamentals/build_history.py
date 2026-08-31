@@ -37,12 +37,13 @@ from typing import Callable
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
     HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue)
 from src.data_extract.utils.fundamentals.periods import (
-    INSTANT, PeriodGuards, build_periods, fiscal_quarter_of_end, fiscal_year_ends,
-    load_guards)
+    INSTANT, InstantLookup, PeriodGuards, build_periods, fiscal_quarter_of_end,
+    fiscal_year_ends, load_guards)
 
 #: Form precedence for a same-day collapse (decision 37). Scalar-with-a-precedence-rule
 #: rather than a pipe-joined string, so a `publication_form == '10-K'` filter can never
@@ -237,6 +238,11 @@ def carry_latest_known(facts: pd.DataFrame, ends, field: str,
     Ties on `on` are broken by `filing_date`, latest wins: a level is re-tagged as a
     comparative in every later filing, and inside a point-in-time replay the freshest
     visible tagging of a period is the right one.
+
+    The frame-at-a-time form. The replay's own per-event read goes through
+    `periods.InstantLookup`, which answers the same question with a `searchsorted` instead
+    of a one-row `merge_asof`; this is the ORACLE that equivalence is pinned against, so it
+    stays even though the hot path no longer calls it.
     """
     # Both sides forced to nanoseconds. A parquet round-trip yields `datetime64[ms]` while a
     # constructed index is `[us]`, and `merge_asof` refuses to join two resolutions rather
@@ -588,17 +594,18 @@ def _latest_period_known(visible: pd.DataFrame, as_of: pd.Timestamp) -> pd.Times
     return known.max() if not known.empty else pd.NaT
 
 
-def _instant(instants: pd.DataFrame, field: str, period) -> float | None:
+def _instant(lookup: InstantLookup, field: str, period) -> float | None:
     """A balance-sheet level's latest known value as of `period`.
 
     NULL only where the field has no instant at all: a level is carried forward because that
     IS its latest known value. Which is also why B.6.6's refused SCHW `cash` period needs a
     qualifier of its own -- there is no null for a gate to find.
+
+    Reads a `searchsorted` rather than `carry_latest_known`'s one-row `merge_asof`, which
+    the two answer identically; `test_instant_lookup_matches_merge_asof` pins that against
+    `carry_latest_known` as the oracle.
     """
-    if pd.isna(period):
-        return None
-    value = carry_latest_known(instants, [period], field)[field].iloc[0]
-    return None if pd.isna(value) else float(value)
+    return lookup.value(field, period)
 
 
 def _ratio(column: str, numerator, denominator):
@@ -635,6 +642,9 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
     year_ends = fiscal_year_ends(facts)
     quarters, ttm, instants = build_periods(facts, catalogue, guards, refusals,
                                             year_ends=year_ends)
+    # Built once per event and asked once per instant field, rather than a `merge_asof` per
+    # (field, event). See `InstantLookup`: 15.4x on the primitive, measured.
+    lookup = InstantLookup(instants)
     period = _latest_period_known(visible, as_of)
     # No re-sort: `_normalise_facts` sorted by `filing_date` and `visible` is a positional
     # PREFIX of that frame, so the last non-null regime is already the latest-filed one.
@@ -664,7 +674,7 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
             # at the filing, days AFTER the period it accompanies -- and it is the only
             # summable count for a multi-class issuer -- so capping instants at `fiscal_end`
             # would delete `sharesOutstanding` for the current period on every filer.
-            value, reason = _instant(instants, field, as_of), None
+            value, reason = _instant(lookup, field, as_of), None
         else:
             # The newest quarter end this field has reached, REQUIRED to be this row's own
             # quarter. `trailing_twelve`'s contract is four discrete quarters or nothing, and
@@ -1087,8 +1097,9 @@ def build_fundamentals_history(context, tickers: list[str], *,
     """
     from src.data_store.schema import Tables            # local: avoids a package cycle
 
-    catalogue = load_catalogue()
-    guards = load_guards()
+    catalogue = load_catalogue(context.config_dir)
+    guards = load_guards(context.config_dir)
+    history_rows = codes_rows = 0
     for ticker in tickers:
         facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS),
                                    where={"ticker": ticker}, optional=True)
@@ -1098,7 +1109,13 @@ def build_fundamentals_history(context, tickers: list[str], *,
         built = build_ticker(ticker, facts, catalogue=catalogue, guards=guards)
         if built.history.empty:
             continue
-        stored = context.store.load(Tables.fundamentals_history_sec, columns=None,
+        # The projection IS the whole table -- `diff_against_stored` compares every value
+        # column, so this buys no bytes. It is stated explicitly anyway: an unprojected read
+        # is forbidden by `AGENTS.md`, and naming the 69 columns makes the read fail loudly
+        # the day the table and the column contract diverge instead of quietly handing the
+        # diff a column it has no rebuilt counterpart for.
+        stored = context.store.load(Tables.fundamentals_history_sec,
+                                    columns=list(catalogue.history_columns),
                                     where={"ticker": ticker}, optional=True)
         history, codes = built.history, built.reason_codes
         if rebuild_history:
@@ -1130,3 +1147,10 @@ def build_fundamentals_history(context, tickers: list[str], *,
             context.store.save(Tables.fundamentals_reason_codes, codes)
         context.log.info("history: %s +%d event row(s), %d reason code(s)",
                          ticker, len(history), len(codes))
+        history_rows += len(history)
+        codes_rows += len(codes)
+
+    record_run(context, Tables.fundamentals_history_sec, len(tickers), history_rows,
+              is_full_rescan=rebuild_history)
+    record_run(context, Tables.fundamentals_reason_codes, len(tickers), codes_rows,
+              is_full_rescan=rebuild_history)

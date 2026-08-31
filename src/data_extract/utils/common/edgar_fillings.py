@@ -17,6 +17,7 @@ import pandas as pd
 from src.constants.constants import (
     SEC_ARCHIVES_BASE_URL, SEC_SUBMISSIONS_PAGE_URL, SEC_SUBMISSIONS_URL,
 )
+from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
 
 
@@ -61,7 +62,7 @@ def _cache_json(cache_dir: Path | None, name: str, payload: dict) -> None:
         pass
 
 
-def list_filings(cik: str, forms: list[str], years: int,
+def list_filings(context: Context, cik: str, forms: list[str], years: int,
                  company_name: str = "", since: pd.Timestamp | str | None = None,
                  cache_dir: Path | None = None) -> pd.DataFrame:
     """All filings of `forms` for one CIK, across the recent page AND older
@@ -81,7 +82,7 @@ def list_filings(cik: str, forms: list[str], years: int,
         # strictly after the last date already parsed
         cutoff = max(cutoff, pd.Timestamp(since).normalize() + pd.Timedelta(days=1))
 
-    data = sec_get(SEC_SUBMISSIONS_URL.format(cik=cik)).json()
+    data = sec_get(context, SEC_SUBMISSIONS_URL.format(cik=cik)).json()
     _cache_json(cache_dir, f"CIK{cik}_submissions.json", data)
     company = company_name or data.get("name", "")
     filings = data.get("filings", {})
@@ -98,7 +99,7 @@ def list_filings(cik: str, forms: list[str], years: int,
         if page_to and pd.Timestamp(page_to) < cutoff:
             continue
         try:
-            page = sec_get(SEC_SUBMISSIONS_PAGE_URL.format(name=older_name)).json()
+            page = sec_get(context, SEC_SUBMISSIONS_PAGE_URL.format(name=older_name)).json()
         except Exception:
             continue
         _cache_json(cache_dir, older_name, page)

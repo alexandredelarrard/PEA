@@ -83,6 +83,7 @@ from src.data_extract.utils.fundamentals_sharadar.field_map import (
 # Top-level, not deferred. `src/data_store/schema.py` imports only `data_store.errors`, so
 # there is no package cycle to dodge here -- a local import would only hide the dependency.
 from src.context import Context
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Tables
 
 log = logging.getLogger(__name__)
@@ -553,3 +554,4 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
         frame["as_of"].max().date(), covered,
         frame.loc[frame[sec_column("regime")].notna(), "ticker"].nunique(),
         len(overrides.approved), len(overrides.pending), report.summary())
+    record_run(context, Tables.fundamentals_history, len(names), written, is_full_rescan=full)

@@ -29,7 +29,6 @@ REPO = _ROOT
 INSIDER_ZIP = REPO / "data" / "sec_insider_transactions" / "2024q1_form345.zip"
 FINSTMT_ZIP = REPO / "data" / "sec_financial_statements" / "2024q1.zip"
 
-
 # --------------------------------------------------------------------------- #
 # Insider transactions                                                          #
 # --------------------------------------------------------------------------- #

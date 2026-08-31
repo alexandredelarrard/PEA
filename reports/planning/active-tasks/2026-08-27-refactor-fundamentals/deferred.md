@@ -56,6 +56,22 @@ refusals, and defer the as-reported-beats-derived dedup to an as-of slice.
 **Gate**: `restatement-census.md` (Phase 3.5). If value-changing restatements and refusal flips
 are both rare, a hybrid becomes attractive and this deserves its own plan.
 
+**GATE RESULT (2026-08-28): FAILED — recommendation is LEAVE IT.** Measured on the 8 sample
+tickers at full history, 9,345 windows / 517 events:
+
+- **8.22 %** of windows carry a materially changed vintage (> 0.1 %), against the < 2 % the
+  gate asked for. Worst filer APA 15.5 %, best MCD 3.2 %. Median lag from first vintage to the
+  changed one is **364 days**, so a truncated sample if anything UNDERSTATES it.
+- The hybrid's actual unit, the `(ticker, field)` pair, is **70 % dirty** — only 32 of 108 are
+  never materially restated. Ticker-agnostic it is worse: **18 of 19 fields** restate on at
+  least one filer.
+- **60 % of refusals REVERSE** as the prefix grows (37 of 62 triples; `split_basis_mismatch`
+  72 %, `derived_basis_mismatch` 62 %, `derived_sign_implausible` 46 %). This is the harder
+  blocker — a verdict that changes has no single `known_from` to be vintaged with.
+
+Do Phase 4's process pool instead (4x, no semantic risk). Revisit only if a whole-table census
+comes in under ~2 % on both measures. See [restatement-census.md](restatement-census.md).
+
 ---
 
 ## D-4. SEC network reliability: no retry, no backoff, no timeout, no `EDGAR_*` env var
@@ -241,3 +257,41 @@ nothing.
 
 Worth a sweep at the same time: how many tickers have pre-XBRL filings permanently in the
 incremental window. XBRL was phased in over 2009-2011, so it is unlikely to be only CPAY.
+
+---
+
+## D-14. `sp500_tickers` has no `read_columns`, so `project=True` cannot be used on it
+
+`sec_utils.load_cik_mapping` read the universe with no projection at all. Phase 3.4 gave it an
+explicit `columns=list(CIK_MAPPING_COLUMNS)` — the union of what its seven callers consume —
+which is correct but is the *manual* form of the mechanism this repo already has:
+`Table(read_columns=(...))` + `store.load(project=True)`, which additionally degrades with a
+logged warning when a column is missing instead of raising.
+
+**Evidence**: the live table has exactly six columns (`ticker, name, sector, industry_group,
+sub_industry, cik`), all six are in the union, so today the projection is the whole table and
+~500 rows. This is a convention fix, not a byte saving.
+
+**Why not here**: `src/data_store/schema.py` is a named risk zone and Phase 3 has no approval
+for it. **Owner**: Phase 5, which does.
+
+---
+
+## D-15. `_latest` re-masks the whole quarters/ttm frame once per field per event
+
+`build_history._snapshot` calls `_latest(ttm, field)` and `_latest(quarters, source)` inside the
+field loop, and each call does `frame[frame["field"] == field]` over the CONCATENATED frame for
+every field in the catalogue. On MCD that is ~120 full-frame boolean masks per event over ~2,600
+rows, ~21 M element comparisons across a 69-event replay.
+
+The fix is the same shape as `_split_by_field`, which already exists two functions away: group
+once per event into a `dict[str, DataFrame]` and index it, rather than re-scanning per field.
+
+**Why not here**: this is a Phase 2 constant-factor item and Phase 2 is closed; Phase 3's
+scope is §3.2–§3.5. It is also **unmeasured** — noticed while reading, not profiled — so it
+needs a CPU-time measurement before anyone spends effort on it. **Owner**: whoever reopens the
+constant-factor work, or Phase 7 if the function split makes it free.
+
+**Method note for whoever takes it**: measure CPU time, not wall clock, and interleave the arms
+in one process. Phase 3.6 records how sequential wall-clock timing produced three mutually
+contradictory verdicts on this machine.

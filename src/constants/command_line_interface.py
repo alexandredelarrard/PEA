@@ -7,9 +7,11 @@ data_aggregate, modelling, portfolio). Each is a `(*ARGS, **KWARGS)` pair so a c
 `python -m src <package> <command> [options]`.
 """
 
+from src.constants.constants import DEFAULT_CONFIG_DIR
+
 # path to the OmegaConf configs directory (every command needs it to build the Context)
 CONFIG_ARGS = ("-c", "--config-path")
-CONFIG_KWARGS = dict(default="./configs", show_default=True,
+CONFIG_KWARGS = dict(default=DEFAULT_CONFIG_DIR, show_default=True,
                      help="Path to the OmegaConf configs directory.")
 
 # optional comma-separated ticker subset; default = the full universe from `sp500_tickers`

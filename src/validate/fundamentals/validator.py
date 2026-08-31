@@ -54,7 +54,8 @@ from typing import Iterable
 
 import pandas as pd
 
-from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
+from src.data_extract.utils.fundamentals.kpi_catalogue import (
+    DEFAULT_CONFIG_DIR, Catalogue, load_catalogue)
 from src.data_store.schema import Tables
 from src.validate.fundamentals.checks import CHECK_REGISTRY, CheckSpec, checks_for
 from src.validate.fundamentals.finding import (
@@ -232,7 +233,7 @@ class FundamentalsValidator:
 
     @classmethod
     def from_context(cls, context, *, tickers: list[str] | None = None,
-                     config_dir: str = "./configs", tiers: Iterable[int] | None = None,
+                     config_dir: str = DEFAULT_CONFIG_DIR, tiers: Iterable[int] | None = None,
                      since=None, catalogue: Catalogue | None = None
                      ) -> "FundamentalsValidator":
         """Build from a live `Context`: the only path that touches the database.

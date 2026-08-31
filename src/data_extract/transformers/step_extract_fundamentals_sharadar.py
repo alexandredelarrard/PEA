@@ -20,7 +20,6 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.utils.step import Step
-from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions, fetch_sharadar_fundamentals, fetch_sharadar_sp500,
     fetch_sharadar_tickers,
@@ -34,14 +33,20 @@ class StepExtractFundamentalsSharadar(Step):
         super().__init__(context=context, config=config)
 
     def run(self, tickers: list[str], *, full: bool = False,
-            config_dir: str = DEFAULT_CONFIG_DIR) -> None:
+            config_dir: str | None = None) -> None:
         """The five stages, in dependency order. `full` re-pulls the whole configured window
         instead of resuming, and makes the merge DELETE before it rebuilds.
 
         The CLI's `fundamentals-sharadar` command calls THIS, rather than restating the
         sequence: a second copy of the order drifted once already, and the copy that omitted
         the merge left `fundamentals_history` silently one run behind its own inputs.
+
+        `config_dir` defaults to `self._config_dir` (the CLI's `-c`, resolved once by
+        `Context`): `main.py`'s pipeline path calls `run()` with no `config_dir` at all, so a
+        module-level default here would silently ignore `-c` for that path exactly as
+        `context.py` used to.
         """
+        config_dir = config_dir or self._config_dir
         years = int(self._config.data_extract.sharadar_years_history)
 
         # 1. The entity dimension FIRST -- `permaticker`, `currency`, `category`. A full

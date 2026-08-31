@@ -39,6 +39,7 @@ from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
     PROGRAMMING_ERRORS, new_filings, run_edgar_fetch,
 )
+from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.cik_cutover import (
     Cutover, cutover_filings, load_cutovers)
@@ -873,6 +874,7 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
     The `cik` recorded on each row is the registrant that actually FILED it, not the
     ticker's current one, so a row's provenance survives the boundary.
     """
+    
     cutover = (cutovers or {}).get(ticker)
     filings = (cutover_filings(cutover, FUNDAMENTALS_FORMS, since, done_accessions)
                if cutover else new_filings(ticker, FUNDAMENTALS_FORMS, since,
@@ -938,26 +940,31 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
 
 def fetch_fundamentals_sec(context: Context, tickers: list[str],
                            years_history: int, *, full: bool = False) -> None:
-    # `Context` exposes no config directory (it is a named risk zone, and the CLI's `-c`
-    # never reaches it), so the catalogue loads from its own default -- which is the same
-    # `./configs` the CLI defaults to.
-    catalogue = load_catalogue()
+    # `context.config_dir` is the CLI's `-c` value, resolved once by `get_config_context`;
+    # threading it explicitly is what lets a non-default `-c` actually reach the catalogue.
+    catalogue = load_catalogue(context.config_dir)
     # All three GICS levels: the regimes config declares its membership at whichever level
     # is natural (bank/insurer by sub-industry, real_estate by industry group, utility and
     # energy by sector), so reading only one level mis-routes whole sectors.
+    #
+    # Off `load_cik_mapping`'s frame, which already carries them, and handed down to
+    # `run_edgar_fetch` -- otherwise the universe is read twice in the same run, once here
+    # for the regimes and once inside the driver for the CIKs.
     levels = ["sector", "industry_group", "sub_industry"]
-    universe = context.store.load(Tables.sp500_tickers, columns=["ticker", *levels],
-                                  optional=True)
-    gics = ({row.ticker: {lvl: getattr(row, lvl) for lvl in levels}
-             for row in universe.itertuples()} if universe is not None else {})
-    # The headcount continuity guard's seed. Read from the employees table itself rather
-    # than from `fundamentals_facts`, where headcount no longer lives.
+    cik_map = load_cik_mapping(context, tickers)
+    gics = {row.ticker: {lvl: getattr(row, lvl) for lvl in levels}
+            for row in cik_map.itertuples()}
+    # The headcount continuity guard's seed, and the ONE read of this table that is
+    # deliberately unfiltered: `history_by_ticker` seeds a per-ticker median from every
+    # stored headcount, and a `where=` on the run's ticker list would silently narrow the
+    # continuity guard to the chunk being fetched. Three columns of an annual, ~500-ticker
+    # table, so the whole-table read is bounded by construction.
     stored = context.store.load(Tables.fundamentals_employees,
                                 columns=["ticker", "as_of", "employees"], optional=True)
     headcounts = history_by_ticker(
         stored.rename(columns={"as_of": "filing_date", "employees": "value"})
         if stored is not None else None)
-    cutovers = load_cutovers()
+    cutovers = load_cutovers(context.config_dir)
     if cutovers:
         context.log.info("fundamentals: %d CIK cutover(s) declared -- %s", len(cutovers),
                          ", ".join(f"{t} @{c.cutover_date.date()}"
@@ -969,5 +976,5 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str],
         tables=(Tables.fundamentals_facts, Tables.fundamentals_employees),
         build=partial(build_ticker_fundamentals, catalogue=catalogue,
                       gics_by_ticker=gics, cutovers=cutovers, headcounts=headcounts),
-        desc="fundamentals (linkbase)", full=full,
+        desc="fundamentals (linkbase)", full=full, cik_map=cik_map,
         max_workers=int(context.config.data_extract.fundamentals_workers))

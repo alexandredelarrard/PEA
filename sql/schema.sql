@@ -1697,6 +1697,39 @@ CREATE TABLE IF NOT EXISTS "cube" (
 
 -- SKIPPED (no live schema and no previous DDL): strategy
 
+-- [aggregate] extraction_run  (pk: table_name, run_id)
+-- One row per (table, run): replaces data/extraction_manifest.json, a git-ignored,
+-- lock-free, non-atomic read-modify-write whose parse failure silently discarded EVERY
+-- table's history and whose rows_added / updated_at were write-only.
+--
+-- `run_id` IS IN THE KEY alongside `table_name`, for the reason fundamentals_check_run
+-- (below) learned the hard way: two runs of DIFFERENT SCOPE on the same day must be able
+-- to coexist, or the second silently overwrites the first and every delta computed
+-- against it is nonsense. `scope_hash` is the same hash WITHOUT the date -- two runs are
+-- COMPARABLE iff it matches.
+--
+-- `tickers_requested` = 0 means "not ticker-scoped" (a market-wide table: macro, 13F, a
+-- bulk data set), never "no tickers". `tickers_failed` is what would have caught a bug
+-- that produced zero rows for a subset of tickers on run one instead of run ten.
+
+CREATE TABLE IF NOT EXISTS "extraction_run" (
+    "table_name" TEXT NOT NULL,
+    "run_id" TEXT NOT NULL,
+    "scope_hash" TEXT,
+    "run_date" DATE,
+    "last_full_rescan_date" DATE,
+    "tickers_requested" BIGINT,
+    "tickers_written" BIGINT,
+    "tickers_failed" BIGINT,
+    "rows_added" BIGINT,
+    "is_full_rescan" BOOLEAN,
+    "started_at" TIMESTAMP,
+    "finished_at" TIMESTAMP,
+    "status" TEXT,
+    PRIMARY KEY ("table_name", "run_id")
+);
+CREATE INDEX IF NOT EXISTS ix_extraction_run_table_date ON "extraction_run" ("table_name", "run_date" DESC);
+
 -- [aggregate] fundamentals_check  (pk: run_date, run_id, check_name, ticker, field, period_key)
 -- The fundamentals validator's APPEND-ONLY finding ledger (plan-5b decision 42). Written by
 -- src/validate/; nothing else in that package mutates any table, and NOTHING HERE GATES -- the

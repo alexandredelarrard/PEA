@@ -980,6 +980,70 @@ def instant_stock(facts: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+class InstantLookup:
+    """`instant_stock`'s output as one sorted `(period_end, value)` array pair per field,
+    so "this level's latest known value at `as_of`" is a `np.searchsorted` instead of a
+    one-row `merge_asof`.
+
+    Same answer as `build_history.carry_latest_known`, which stays as the oracle the
+    equivalence test compares against: `direction="backward"` with exact matches allowed is
+    `searchsorted(..., side="right") - 1`, and the ties `merge_asof` would have to break are
+    already gone -- `instant_stock` emits at most one row per `(field, period_end)`.
+
+    Built once per distinct visible instant set rather than once per (event, field): the
+    one-row `merge_asof` was 312 calls and 12.8% of the profiled replay, all of it spent
+    constructing two DataFrames to answer a single index lookup.
+    """
+
+    __slots__ = ("_by_field",)
+
+    #: The columns a lookup needs. `filing_date` only to break a duplicate `period_end`,
+    #: which `instant_stock` has already done on the production path.
+    _COLUMNS: tuple[str, ...] = ("field", "period_end", "value", "filing_date")
+
+    def __init__(self, instants: pd.DataFrame | None) -> None:
+        self._by_field: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        if instants is None or instants.empty or "field" not in instants.columns:
+            return
+        frame = instants[[c for c in self._COLUMNS if c in instants.columns]].copy()
+        frame["period_end"] = pd.to_datetime(frame["period_end"],
+                                             errors="coerce").astype("datetime64[ns]")
+        frame = frame.dropna(subset=["period_end"])
+        if "filing_date" in frame.columns:
+            frame = (frame.sort_values(["period_end", "filing_date"])
+                          .drop_duplicates(subset=["field", "period_end"], keep="last"))
+        else:
+            frame = frame.sort_values("period_end")
+        values = pd.to_numeric(frame["value"], errors="coerce").to_numpy(dtype=float)
+        frame = frame.assign(_value=values)
+        # `searchsorted` returns nonsense rather than an error on an unsorted array, so the
+        # sort above is asserted, not assumed. Once per frame, not per field: `groupby`
+        # preserves within-group row order, so a globally ascending `period_end` is
+        # ascending inside every group.
+        ends = frame["period_end"].to_numpy("datetime64[ns]")
+        assert bool(np.all(ends[:-1] <= ends[1:])), \
+            "InstantLookup: period_end is not ascending -- searchsorted would be wrong"
+        for name, group in frame.groupby("field", sort=False):
+            self._by_field[str(name)] = (
+                group["period_end"].to_numpy(dtype="datetime64[ns]"),
+                group["_value"].to_numpy(dtype=float))
+
+    def value(self, field: str, as_of) -> float | None:
+        """`field`'s latest value dated on or before `as_of`, or None where the field has
+        no instant at or before it. A level is carried forward because that IS its latest
+        known value -- absence here means the filer never tagged one, not a stale read."""
+        entry = self._by_field.get(field)
+        if entry is None or as_of is None or pd.isna(as_of):
+            return None
+        ends, values = entry
+        index = int(np.searchsorted(ends, np.datetime64(pd.Timestamp(as_of), "ns"),
+                                    side="right")) - 1
+        if index < 0:
+            return None
+        value = values[index]
+        return None if np.isnan(value) else float(value)
+
+
 # ----------------------------------------------------------------------- entry point ---
 
 def build_periods(facts: pd.DataFrame, catalogue,
@@ -1006,6 +1070,13 @@ def build_periods(facts: pd.DataFrame, catalogue,
     it for its own labelling (`build_history._snapshot` stamps one `fiscal_end` per event)
     so the same annual-shaped facts are not walked twice per event. Derived here when
     omitted.
+
+    Not memoised across events, deliberately. A per-field memo keyed on the visible fact
+    count is exact -- the visible set is a prefix -- but measured, it hits on **0.3-15 %**
+    of lookups (mean ~5 %), because every filing re-tags as comparatives the windows it
+    already reported, so almost every field's count grows at almost every event. CPU-time
+    A/B: -5.8 % at an 11 % hit rate, +1.6 % at 0 %. That is not worth a cache whose key
+    every future change to this function's inputs would have to re-prove.
     """
     # Here rather than in `quarterize`/`trailing_twelve`, which are called once per
     # (event, field) and would each re-resolve the default.

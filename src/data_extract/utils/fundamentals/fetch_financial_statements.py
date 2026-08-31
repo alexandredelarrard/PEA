@@ -29,18 +29,18 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import SEC_FINSTMT_URL_TEMPLATE, SEC_FINSTMT_FIRST_YEAR
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, quarter_periods,
 )
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, bulk_ingested_quarters, load_processed_universe,
-    save_processed_universe)
+    save_processed_universe, cik_to_ticker)
+from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
-_TABLE = "pension_facts"
 _CHUNK = 500_000
 
 # Curated defined-benefit pension tags. The first is the recognized NET deficit
@@ -60,6 +60,9 @@ _PENSION_TAGS = frozenset({
 _OUT_COLS = ["cik", "ticker", "tag", "ddate", "qtrs", "uom", "value",
              "adsh", "filed", "form", "fy", "fp", "quarter"]
 
+SEC_FINSTMT_URL_TEMPLATE = (
+    "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip")
+SEC_FINSTMT_FIRST_YEAR = 2009  
 
 # --------------------------------------------------------------------------- #
 # Pure parse (unit-tested)                                                       #
@@ -126,30 +129,26 @@ def _read_pension_facts(path: Path) -> pd.DataFrame | None:
     return _join_pension(num, sub)
 
 
-def fetch_financial_statements(context: Context, tickers: list[str]) -> int:
+def fetch_financial_statements(context: Context, tickers: list[str], years_history: int= 15 ) -> int:
     """Download (cached) the Financial Statement Data Sets over `years_history`,
     extract pension facts for the universe, upsert to `pension_facts`. Returns the
     number of rows upserted."""
 
-    store = context.store
     cikmap = load_cik_mapping(context)
-    cik2tkr = ({c: str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
-               if not cikmap.empty and "ticker" in cikmap.columns else {})
-    years_history = context.config.data_extract.years_history + 1
-    cache = cache_dir(context, "sec_financial_statements")
+    cik2tkr = cik_to_ticker(cikmap) 
+    cache = cache_dir(context, context.config.local.paths.financial_statements)
 
-    tickers = {str(t).upper() for t in tickers}          # universe as an uppercased set
-    done_q = bulk_ingested_quarters(store, _TABLE)
-    new_tickers = tickers - load_processed_universe(cache, _TABLE)   # empty once converged
+    done_q = bulk_ingested_quarters(context.store, Tables.pension_facts)
+    new_tickers = set(tickers) - load_processed_universe(cache, Tables.pension_facts)   # empty once converged
     if new_tickers:
         logger.info("finstmt: %d new/changed tickers -> re-parsing cached quarters",
                     len(new_tickers))
 
     saved = 0
-    for q in tqdm(quarter_periods(years_history, SEC_FINSTMT_FIRST_YEAR), desc="financial-statement data sets"):
+    for q in tqdm(quarter_periods(years_history +1, SEC_FINSTMT_FIRST_YEAR), desc="financial-statement data sets"):
         if q in done_q and not new_tickers:
             continue
-        path = ensure_zip(cache / f"{q}.zip",
+        path = ensure_zip(context, cache / f"{q}.zip",
                           SEC_FINSTMT_URL_TEMPLATE.format(quarter=q),
                           label=f"finstmt {q}", log=logger)
         if path is None:
@@ -165,9 +164,10 @@ def fetch_financial_statements(context: Context, tickers: list[str]) -> int:
         facts = (facts.sort_values("filed")
                  .drop_duplicates(subset=["cik", "tag", "ddate", "qtrs"], keep="last"))
         facts["quarter"] = q
-        saved += store.save(_TABLE, facts[[c for c in _OUT_COLS if c in facts.columns]])
+        saved += context.store.save(Tables.pension_facts, facts[[c for c in _OUT_COLS if c in facts.columns]])
 
-    save_processed_universe(cache, _TABLE, tickers)   # so a converged re-run skips
+    save_processed_universe(cache, Tables.pension_facts, tickers)   # so a converged re-run skips
     logger.info("pension_facts: upserted %d rows (%d quarters scanned)",
                    saved, len(quarter_periods(years_history, SEC_FINSTMT_FIRST_YEAR)))
+    record_run(context, Tables.pension_facts, len(tickers), saved)
     return saved

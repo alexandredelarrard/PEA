@@ -165,12 +165,12 @@ def test_generate_periods_has_quarterly_and_recent_monthly():
 
 def test_notes_periods_uses_scrape_when_available(monkeypatch):
     fake = ["2009q1", "2020q3", "2025_07", "2026_06"]
-    monkeypatch.setattr(fn, "_scrape_available_periods", lambda: fake)
-    got = fn._notes_periods(years_history=3, today=pd.Timestamp("2026-07-19"))
+    monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: fake)
+    got = fn._notes_periods(None, years_history=3, today=pd.Timestamp("2026-07-19"))
     assert got == ["2025_07", "2026_06"]                        # 2009/2020 outside 3y window
 
 
 def test_notes_periods_falls_back_to_generator(monkeypatch):
-    monkeypatch.setattr(fn, "_scrape_available_periods", lambda: None)
-    got = fn._notes_periods(years_history=2, today=pd.Timestamp("2026-07-19"))
+    monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: None)
+    got = fn._notes_periods(None, years_history=2, today=pd.Timestamp("2026-07-19"))
     assert got and all(fn._period_year(p) >= 2024 for p in got)

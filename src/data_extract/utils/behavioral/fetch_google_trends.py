@@ -372,7 +372,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
         client = _TrendsClient(verify=verify, impersonate=impersonate)
     except ImportError as e:
         context.log.warning("Google Trends extraction skipped: %s", e)
-        record_run(context, "google_trends", len(names), 0)
+        record_run(context, Tables.google_trends,len(names), 0)
         return existing if existing is not None else _empty_long()
 
     total_new, touched, skipped = 0, 0, 0
@@ -427,7 +427,7 @@ def fetch_google_trends(context: Context, tickers: list[str] | None = None,
 
     context.log.info("Google Trends: +%d rows across %d tickers (%d already current).",
                      total_new, touched, skipped)
-    record_run(context, "google_trends", len(names), total_new)
+    record_run(context, Tables.google_trends,len(names), total_new)
     out = context.store.load("google_trends", optional=True)
     return out if out is not None else _empty_long()
 

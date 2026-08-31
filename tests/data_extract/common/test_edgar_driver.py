@@ -48,7 +48,8 @@ def _ctx(tmp_path, store, tickers):
         log=types.SimpleNamespace(info=lambda *a, **k: None,
                                   warning=lambda msg, *a: warnings.append(msg % a)),
         config=types.SimpleNamespace(
-            data_extract=types.SimpleNamespace(manifest_full_rescan_days=30)))
+            data_extract=types.SimpleNamespace(manifest_full_rescan_days=30)),
+        ensure_edgar_identity=lambda: None)
     ctx.warnings = warnings
     return ctx
 
@@ -100,7 +101,6 @@ def test_run_edgar_fetch_saves_every_declared_table_and_records_each(tmp_path, s
     # `test_run_edgar_fetch_serializes_writes_until_a_cold_table_exists`, which instruments
     # `save` instead of racing it.
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-    monkeypatch.setattr(edgar_driver, "configure_identity", lambda: None)
 
     def build(ticker, cik, *, since, done_accessions):
         return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1"),
@@ -131,7 +131,6 @@ def test_run_edgar_fetch_serializes_writes_until_a_cold_table_exists(
     table exists, saves run concurrently again."""
     tickers = [f"TK{i}" for i in range(12)]
     ctx = _ctx(tmp_path, sqlite_store, tickers)
-    monkeypatch.setattr(edgar_driver, "configure_identity", lambda: None)
 
     probe_lock = threading.Lock()
     state = {"in_flight": 0, "peak_cold": 0, "peak_warm": 0, "calls": 0}
@@ -167,7 +166,6 @@ def test_run_edgar_fetch_serializes_writes_until_a_cold_table_exists(
 
 def test_run_edgar_fetch_isolates_a_failing_ticker(tmp_path, sqlite_store, monkeypatch):
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
-    monkeypatch.setattr(edgar_driver, "configure_identity", lambda: None)
 
     def build(ticker, cik, *, since, done_accessions):
         if ticker == "AAPL":
@@ -195,7 +193,6 @@ def test_run_edgar_fetch_reraises_a_programming_error_instead_of_warning(
     will hit every remaining ticker too, so the pool must abort and the run must fail.
     """
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
-    monkeypatch.setattr(edgar_driver, "configure_identity", lambda: None)
 
     def build(ticker, cik, *, since, done_accessions):
         if ticker == "AAPL":
@@ -223,7 +220,6 @@ def test_run_edgar_fetch_survives_a_save_failure_without_aborting_the_pool(
     per-ticker try, so one DB error propagated through `future.result()` and killed the
     whole pool."""
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-    monkeypatch.setattr(edgar_driver, "configure_identity", lambda: None)
 
     real_save = sqlite_store.save
 
@@ -251,7 +247,6 @@ def test_run_edgar_fetch_survives_a_save_failure_without_aborting_the_pool(
 def test_run_edgar_fetch_passes_manifest_window_and_dedup_set_to_build(
         tmp_path, sqlite_store, monkeypatch):
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-    monkeypatch.setattr(edgar_driver, "configure_identity", lambda: None)
     sqlite_store.save(_T_MAIN, _rows(_T_MAIN, "AAPL", "already-stored"))
 
     seen: dict = {}
@@ -274,7 +269,6 @@ def test_run_edgar_fetch_passes_manifest_window_and_dedup_set_to_build(
 
 def test_run_edgar_fetch_rejects_an_undeclared_table(tmp_path, sqlite_store, monkeypatch):
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-    monkeypatch.setattr(edgar_driver, "configure_identity", lambda: None)
 
     def build(ticker, cik, *, since, done_accessions):
         return {_T_MAIN: _rows(_T_MAIN, ticker, "x"), _T_CHILD: _rows(_T_CHILD, ticker, "x")}

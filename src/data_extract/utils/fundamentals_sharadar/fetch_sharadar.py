@@ -36,6 +36,7 @@ from src.constants.constants import (
     SHARADAR_SP500_FIRST_DATE,
 )
 from src.context import Context
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Table, Tables
 from src.data_extract.utils.fundamentals_sharadar.client import (
     NotEntitled, cast_value_columns, coerce_date_columns, sharadar_get,
@@ -102,6 +103,9 @@ def fetch_sharadar_tickers(context: Context) -> None:
                      written, Tables.sharadar_tickers,
                      int((frame["currency"] == "USD").sum()),
                      int((frame["currency"] != "USD").sum()))
+    # Market-wide (a full refresh of the whole dimension, not scoped to our universe) --
+    # `ticker_count=0` records that rather than the ~17.8k SF1-covered rows.
+    record_run(context, Tables.sharadar_tickers, 0, written, is_full_rescan=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +171,7 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
 
     context.log.info("Sharadar SF1: %d entitled, %d not entitled (403); %d rows written to %s",
                      len(entitled), len(denied), total_rows, Tables.sharadar_fundamentals)
+    record_run(context, Tables.sharadar_fundamentals, len(tickers), total_rows, is_full_rescan=full)
     if denied:
         context.log.info("Sharadar SF1: not entitled -> %s",
                          ", ".join(denied[:20]) + (" ..." if len(denied) > 20 else ""))
@@ -179,7 +184,7 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
 # 3. actions / 4. sp500 -- market-wide, resumed on the table's global max date  #
 # --------------------------------------------------------------------------- #
 def _fetch_dated_table(context: Context, table: Table, endpoint: str,
-                       since: str) -> None:
+                       since: str, *, full: bool = False) -> None:
     """Shared body for the two market-wide, date-resumed side tables."""
     frame = sharadar_get(context, endpoint, keep_default_na=False,
                          sort="date.asc", **{"date.gte": since})
@@ -197,6 +202,8 @@ def _fetch_dated_table(context: Context, table: Table, endpoint: str,
     context.log.info("Sharadar %s: %d row(s) since %s -> %s (actions: %s)",
                      endpoint, written, since, table,
                      frame["action"].value_counts().to_dict())
+    # Market-wide (one request covers every ticker), so ticker_count=0.
+    record_run(context, table, 0, written, is_full_rescan=full)
 
 
 def fetch_sharadar_actions(context: Context, *, years_history: int,
@@ -205,7 +212,7 @@ def fetch_sharadar_actions(context: Context, *, years_history: int,
     max date: one request covers every ticker, and a per-ticker frontier would only re-pull
     days already held."""
     since = _since(context.store.max_date(Tables.sharadar_actions), years_history, full)
-    _fetch_dated_table(context, Tables.sharadar_actions, "actions", since)
+    _fetch_dated_table(context, Tables.sharadar_actions, "actions", since, full=full)
 
 
 def fetch_sharadar_sp500(context: Context, *, full: bool = False) -> None:
@@ -217,4 +224,4 @@ def fetch_sharadar_sp500(context: Context, *, full: bool = False) -> None:
     stored_max = context.store.max_date(Tables.sharadar_sp500)
     since = (SHARADAR_SP500_FIRST_DATE if full or stored_max is None
              else (stored_max + pd.Timedelta(days=1)).strftime(DATE_FORMAT))
-    _fetch_dated_table(context, Tables.sharadar_sp500, "sp500", since)
+    _fetch_dated_table(context, Tables.sharadar_sp500, "sp500", since, full=full)

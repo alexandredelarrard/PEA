@@ -3,3 +3,10 @@ local:
     root: ./
     data_store: data
     logs: .log
+    insider_transaction: "sec_insider_transactions"
+    fails_deliver: "sec_fails_to_deliver"
+    financial_notes: "sec_financial_notes"
+    financial_statements: "sec_financial_statements"
+  filename:
+    extraction: "extraction_manifest.json"
+    

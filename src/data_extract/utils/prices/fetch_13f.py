@@ -22,7 +22,6 @@ from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
-from src.data_extract.utils.common.edgar_driver import configure_identity
 from src.data_extract.utils.prices.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
@@ -122,7 +121,7 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, years_history:
     `_read_filing` swallows per-filing failures -- without it, a filing that failed
     transiently would sit behind the advanced watermark and never be retried. A full rescan
     is the wrong self-heal here: 15y is ~528k filings, ~16h."""
-    configure_identity()
+    context.ensure_edgar_identity()
     today = pd.Timestamp.today().normalize()
 
     watermark = context.store.max_date(Tables.sec13f_hr, "filing_date")

@@ -24,6 +24,7 @@ from src.data_extract.utils.prices.fetch_fails_to_deliver import fetch_fails_to_
 from src.data_extract.utils.prices.fetch_superinvestors import build_superinvestors_json
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_13f import fetch_13f
+from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 
 
 class StepExtractPrices(Step):
@@ -54,8 +55,11 @@ class StepExtractPrices(Step):
         # from max(filing_date) in sec13f_hr, so a routine run reads only the new filings.
         fetch_13f(self._context, tickers=tickers, years_history=years_history)
 
-        # failing to give a stock in time
+        # failing to give a stock in time- Mid 2009 earliest
         fetch_fails_to_deliver(self._context, tickers=tickers, years_history=years_history)
 
         # Superinvestors roster: curated top managers (Dataroma) -> CIK subset JSON,
         build_superinvestors_json(self._context)
+
+        # insider transactions 
+        fetch_insider_transactions(self._context, tickers=tickers)

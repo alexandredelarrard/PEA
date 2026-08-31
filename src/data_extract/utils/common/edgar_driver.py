@@ -9,12 +9,11 @@ its forms and its row builder.
 
 from __future__ import annotations
 
-import os
 import threading
 from typing import Protocol
 
 import pandas as pd
-from edgar import Company, set_identity
+from edgar import Company
 
 from src.context import Context
 from src.data_store.schema import Table
@@ -41,19 +40,6 @@ class BuildFn(Protocol):
                  done_accessions: frozenset[str]) -> dict[Table, pd.DataFrame]: ...
 
 
-def configure_identity() -> None:
-    """SEC EDGAR blocks requests without a descriptive User-Agent -- fail loudly
-    if unset, matching `sec_utils._sec_headers`."""
-    ua = os.getenv("SEC_USER_AGENT", "").strip()
-    if not ua:
-        raise RuntimeError(
-            "SEC_USER_AGENT is not set. SEC EDGAR blocks requests without a "
-            "descriptive User-Agent (name + email). Add it to your .env file, e.g.\n"
-            '  SEC_USER_AGENT="Your Name your.email@example.com"'
-        )
-    set_identity(ua)
-
-
 def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None,
                 done_accessions: frozenset[str]) -> list:
     """`ticker`'s filings of `forms`, oldest first, already stripped of accessions
@@ -71,20 +57,26 @@ def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None,
 
 def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
                     tables: tuple[Table, ...], build: BuildFn, desc: str,
-                    max_workers: int | None = None, full: bool = False) -> None:
+                    max_workers: int | None = None, full: bool = False,
+                    cik_map: pd.DataFrame | None = None) -> None:
     """Fetch `tables` for `tickers` using `build(ticker, cik, since, done_accessions)
     -> {table: frame}`.
 
     `max_workers` overrides the shared pool width for fetchers that need their own
     (fundamentals: its from-scratch backfill is the only one measured in hours).
 
+    `cik_map` is `load_cik_mapping`'s frame, accepted from a caller that already needed it
+    -- the fundamentals fetch reads the same three GICS levels off it to route regimes --
+    so the universe is read ONCE per run instead of once here and once there.
+
     `tables[0]` is the primary: it keys the manifest window and the accession dedup
     set. Every declared table gets a `record_run` entry even when no ticker produced
     rows for it, so a table that is legitimately empty this run does not read as
     "never run" and force a full rescan forever.
     """
-    configure_identity()
-    cik_map = load_cik_mapping(context, tickers)
+    context.ensure_edgar_identity()
+    if cik_map is None:
+        cik_map = load_cik_mapping(context, tickers)
     fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
     if full:
         # `-F/--full`: take the whole years-history window and do not consult the manifest.

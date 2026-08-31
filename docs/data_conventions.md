@@ -203,8 +203,11 @@ Non-tabular output goes to `context.paths`, never the DB, and never parquet-as-a
 | `OUTPUT_DIR` | `data/output` |
 | `MODELS_DIR` | `data/output/models` — boosters (`.txt`), linear members (`.pkl`), `metadata.json` |
 | `SECTOR_PEERS_PATH` | `data/output/sector_peers.json` — the peer dict |
-| `SEC_13F_INSIDERS_DIR` | cached 13F zips |
-| `CUBE_CV_RESULTS_PATH`, `DEF14A_LLM_PATH` | diagnostics parquet; the second only anchors a `_meta.json` sidecar (no parquet is written to it) |
+| `CUBE_CV_RESULTS_PATH` | diagnostics parquet |
+
+Each bulk-cache fetcher's incremental sidecar lives beside its own cache directory as
+`<cache_dir>/<table>_universe.json` (`sec_utils.load_processed_universe` /
+`save_processed_universe`) — not a shared `_meta.json` anchored off `context.paths`.
 
 Conversely: **never write tabular data to parquet or CSV.** The Postgres volume and `data/` are both
 non-recoverable — treat them as a risk zone.

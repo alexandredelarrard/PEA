@@ -498,10 +498,10 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
 
 
 def _process_filing(
-    ticker: str, filing: pd.Series, extractor: LLMExtractor
+    context: Context, ticker: str, filing: pd.Series, extractor: LLMExtractor
 ) -> dict | None:
     try:
-        raw_html = sec_get(filing["doc_url"]).text
+        raw_html = sec_get(context, filing["doc_url"]).text
         text = html_to_text(raw_html)
         focused = prepare_def14a_sections(text)
         extract = extractor.extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
@@ -566,7 +566,7 @@ def fetch_def14a_llm(
     max_chars: int = 130_000,
     temperature: float = 0.0,
     cache: bool = True,
-) -> pd.DataFrame:
+) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
     For each ticker only filings AFTER its latest stored `as_of` are sent to the
@@ -619,7 +619,7 @@ def fetch_def14a_llm(
         # last run date onward are listed. The accession skip below then sends ONLY the
         # not-yet-stored filings to the LLM (gap-filling, per ticker / per date).
         try:
-            filings = list_filings(cik, _FORM, years, company, since=list_since)
+            filings = list_filings(context, cik, _FORM, years, company, since=list_since)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue
@@ -630,7 +630,7 @@ def fetch_def14a_llm(
             if f["accession_number"] in seen:      # already in the table -> skip this filing
                 skipped += 1
                 continue
-            row = _process_filing(ticker, f, extractor)
+            row = _process_filing(context, ticker, f, extractor)
             if row is not None:
                 ticker_rows.append(row)
                 seen.add(f["accession_number"])
@@ -645,10 +645,4 @@ def fetch_def14a_llm(
                              ticker, len(ticker_rows), skipped)
 
     record_run(context, Tables.def14a_llm, len(cik_map), total_new, is_full_rescan=is_full_rescan)
-    out = context.store.load(Tables.def14a_llm)
-    context.log.info(
-        "DEF 14A LLM: +%d new rows across %d tickers (%d filings already present, skipped); "
-        "table now %d rows, %d tickers", total_new, tickers_touched, total_skipped, len(out),
-        out["ticker"].nunique() if not out.empty else 0,
-    )
-    return out
+   

@@ -6,7 +6,6 @@ data_extract:
   # separated from its symbol->name mapping without creating two places to edit, so it lives
   # in constants.MACRO_PRICE_SERIES / MACRO_FRED_SERIES.
   macro_years_history: 31
-  notes_years_history: 31
   # Sharadar's OWN history knob, separate from `years_history` because the two sources are
   # limited by different things: the SEC walk by patience, Sharadar by subscription tier.
   # Measured 2026-08-26 on the paid tier: SF1's earliest filing date is 1993-12-22, so a

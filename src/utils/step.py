@@ -25,6 +25,7 @@ class Step:
         self._log.info(f"starting step {self}")
         self._today = datetime.today()
         self._context = context
+        self._config_dir = context.config_dir
 
     @property
     def name(self):

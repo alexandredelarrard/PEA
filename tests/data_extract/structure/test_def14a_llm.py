@@ -398,12 +398,12 @@ def test_llm_extractor_real_apple():
     _, ctx = get_config_context("./configs", use_cache=True, save=False)
     model = ctx.config.data_extract.llm_model
 
-    filings = list_filings("0000320193", ["DEF 14A"], years=2, company_name="Apple Inc.")
+    filings = list_filings(ctx, "0000320193", ["DEF 14A"], years=2, company_name="Apple Inc.")
     if filings.empty:
         pytest.skip("No DEF 14A filings found for AAPL via EDGAR")
 
     latest = filings.sort_values("filing_date").iloc[-1]
-    focused = prepare_def14a_sections(html_to_text(sec_get(latest["doc_url"]).text))
+    focused = prepare_def14a_sections(html_to_text(sec_get(ctx, latest["doc_url"]).text))
     result = LLMExtractor(model=model).extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
     row = _flatten("AAPL", latest, result)
 
@@ -543,7 +543,7 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
             def extract(self, schema, text_, instructions=None):
                 return _make_expected()
 
-        def _fake_list_filings(cik, forms, years, company="", since=None):
+        def _fake_list_filings(context, cik, forms, years, company="", since=None):
             captured["since_seen"].append(since)            # must be None now (full window)
             rows = {**have_years, **gap_years}
             return pd.DataFrame([{
@@ -558,14 +558,14 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
         # count which accessions actually reach the LLM
         orig_process = mod._process_filing
 
-        def _spy_process(ticker, filing, extractor):
+        def _spy_process(context, ticker, filing, extractor):
             captured["extracted"].append(filing["accession_number"])
-            return orig_process(ticker, filing, extractor)
+            return orig_process(context, ticker, filing, extractor)
 
         monkeypatch.setattr(mod, "LLMExtractor", _FakeExtractor)
         monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
         monkeypatch.setattr(mod, "_process_filing", _spy_process)
-        monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
+        monkeypatch.setattr(mod, "sec_get", lambda context, url, **k: _Resp())
         monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame(
             {"ticker": [TICKER], "cik": ["0000000001"], "company_name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)

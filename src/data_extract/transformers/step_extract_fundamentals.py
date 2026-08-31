@@ -23,8 +23,8 @@ from src.utils.step import Step
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
-from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
+from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 
 
 def _elapsed(seconds: float) -> str:
@@ -60,15 +60,17 @@ class StepExtractFundamentals(Step):
 
     def run(self, tickers: list[str], full : bool=False) -> None:
 
+        years_history = self.config.data_extract.years_history
+
         # Per-filing SEC XBRL -> fundamentals_facts (+ fundamentals_employees from the same
         # 10-K prose), each KPI resolved from the filer's own calculation linkbase.
         # Append-only and accession-grain, so a nightly re-run is idempotent and an
         # amendment lands as its own row at its own filing date.
-        with self._stage("fundamentals facts (SEC XBRL)", tickers):
-            fetch_fundamentals_sec(
-                self._context, tickers=tickers,
-                years_history=int(self._config.data_extract.years_history),
-                full=full)
+        # with self._stage("fundamentals facts (SEC XBRL)", tickers):
+        #     fetch_fundamentals_sec(
+        #         self._context, tickers=tickers,
+        #         years_history=int(self._config.data_extract.years_history),
+        #         full=full)
 
         # ... then the publication-event replay over exactly those facts. Immediately after,
         # and never on its own schedule: the snapshot is only as fresh as the facts it reads,
@@ -76,21 +78,23 @@ class StepExtractFundamentals(Step):
         # filing invisible to every consumer. Refuses to overwrite an already-published row
         # (see `diff_against_stored`), so a resolution change surfaces here rather than in a
         # cube six months later.
-        with self._stage("fundamentals history replay", tickers):
-            build_fundamentals_history(self._context, tickers=tickers,
-                                       rebuild_history=full)
+        # with self._stage("fundamentals history replay", tickers):
+        #     build_fundamentals_history(self._context, tickers=tickers,
+        #                                rebuild_history=full)
 
         # earnings surprises
         with self._stage("earnings surprises", tickers):
             fetch_earnings_surprises(self._context, tickers=tickers)
-
-        # Officer / director / 10%-owner transactions from the Insider Transactions sets:
-        with self._stage("insider transactions", tickers):
-            fetch_insider_transactions(self._context, tickers=tickers)
 
         # Footnote (notes) pension detail + note TEXT from the Financial Statement
         # AND Notes data sets -> notes_num / notes_text. Heavy (~26GB back-fill at
         # notes_years_history=15); own cache dir + config knob. (fetch_fails_to_deliver
         # lives in StepExtractPrices, alongside the other price/settlement signals.)
         with self._stage("financial notes (pension + note text)", tickers):
-            fetch_financial_notes(self._context, tickers=tickers)
+            fetch_financial_notes(self._context, tickers=tickers, years_history=years_history)
+
+        # Pension facts (SEC Financial Statement Data Sets, the plain sibling of the notes
+        # sets above). Shares the notes fetch's SEC bulk-download cache locality; newly wired
+        # into main.py here -- previously reached only via its own CLI command and the DAG.
+        with self._stage("financial statements (pension facts)", tickers):
+            fetch_financial_statements(self._context, tickers=tickers, years_history=years_history)

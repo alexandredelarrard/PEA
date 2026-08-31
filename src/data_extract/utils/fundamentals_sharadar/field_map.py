@@ -317,7 +317,7 @@ def load_field_map(config_dir: str | None = DEFAULT_CONFIG_DIR) -> FieldMap:
     """The validated map, built once per (process, config DIRECTORY). It was the only loader
     in the family with no cache at all, while calling the cached `load_catalogue` inside
     itself -- so every caller re-read and re-validated both registers."""
-    return _field_map_at(resolve_config_dir(config_dir))
+    return _field_map_at(config_dir)
 
 
 @cache

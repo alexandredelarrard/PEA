@@ -54,7 +54,7 @@ rtk git checkout -b bugfix/cluster_{cluster_if}
 **Read `src/validate/README.md` first** — especially §4, "when it does not work".
 Follow strictly all the phases listed in te agent .claude/agents/fundamentals-triage.md
 
-### 4. ** siimplify after bugfix finished**
+### 4. ** simplify after bugfix finished**
 
 Run the command `/simplify` based on the `git diff` to ensure clean code handover
 ANGLE — EFFICIENCY: Flag wasted work the diff introduces. (sub agent to run it) 

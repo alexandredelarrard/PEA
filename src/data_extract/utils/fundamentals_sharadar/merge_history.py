@@ -129,7 +129,6 @@ _SEC_PREFIX = "__sec__"
 #: MEASURABLE rather than merely argued. Dropped before the write.
 SEC_AS_OF = "__sec_as_of__"
 
-
 # --------------------------------------------------------------------------- #
 # the override register (D22)                                                  #
 # --------------------------------------------------------------------------- #
@@ -408,6 +407,7 @@ def build_frame(sharadar_arq: pd.DataFrame, sec: pd.DataFrame, employees: pd.Dat
             f"declares them SEC-owned (D18). An override moves a SHARADAR-owned column; "
             f"changing which block a column belongs to is a field-map edit, not an override.")
     translated = translate(sharadar_arq, field_map, report=report)
+    
     # `actions` goes to `build_ttm`, not to `translate`: the split de-adjustment runs AFTER
     # the four-quarter aggregation, or a window straddling a split mixes two share bases.
     ttm = build_ttm(translated, field_map, actions=actions, report=report)

@@ -72,7 +72,7 @@ def load_guards(config_dir: str | None = DEFAULT_CONFIG_DIR) -> PeriodGuards:
     """Read the guards from `configs.yml`. Cached per config DIRECTORY -- not per spelling
     of it (`resolve_config_dir`) -- because the period engine runs once per (ticker, field)
     and must not re-read a YAML tree ~50 times a filing."""
-    return _guards_at(resolve_config_dir(config_dir))
+    return _guards_at(config_dir)
 
 
 @lru_cache(maxsize=4)

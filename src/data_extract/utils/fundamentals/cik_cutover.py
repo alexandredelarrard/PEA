@@ -77,7 +77,7 @@ def _normalise_cik(value: Any) -> str:
 def load_cutovers(config_dir: str | None = None) -> dict[str, Cutover]:
     """The cutover register, keyed by ticker, cached per config DIRECTORY rather than per
     spelling of it -- see `resolve_config_dir`."""
-    return _cutovers_at(resolve_config_dir(config_dir))
+    return _cutovers_at(config_dir)
 
 
 @cache

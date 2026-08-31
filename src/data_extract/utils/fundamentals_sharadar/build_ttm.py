@@ -113,6 +113,7 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
     point-in-time. Passing `actions=None` leaves the share block on the vendor's retroactive
     basis, which is NOT point-in-time -- `deadjust_splits` warns when it happens.
     """
+
     if frame.empty:
         return frame.copy()
     if "dimension" in frame.columns:
@@ -175,6 +176,7 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
             columns[name] = out[name].astype("float64")
         else:
             columns[name] = rolled[basis][name].where(whole, np.nan)
+            
     for name, source in quarter_columns.items():
         columns[name] = out[source].astype("float64")
 

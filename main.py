@@ -29,6 +29,7 @@ if __name__ == "__main__":
 # TODO: short interest : extract also the Lit exchange NYSE /NASDAQ, from 2009 for all (now is 2018)  
 # TODO: insiders trading : sec form 3/4/5 -> sec since 2003, zip since Q1 2006 -> take sec 
 # TODO: earnings surprises starts 1999-08, but empty till ~2003
+# TODO: financial notes (text & nums) 2009 from sec XBLR (zip), but possible directly from fillings (edgar)
 
 # other 
 # TODO: check data is consistent over time, even for latest 2026 month ? 

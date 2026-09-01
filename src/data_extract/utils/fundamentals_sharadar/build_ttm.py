@@ -27,17 +27,27 @@ it would do so invisibly, because the numbers would still look like plausible tr
 `calendardate`, which Sharadar has already normalised to the nearest calendar quarter-end. A
 window is four rows whose normalised quarters are CONSECUTIVE -- not four rows that happen to
 be adjacent in the sort, which would splice a gap shut and report a 15-month "TTM" as if it
-were a year. Phase 2's completeness gate measured 0 missing and 0 duplicate normalised
-quarters over all 30 tickers, so the normalisation is sound on this roster; the test is here
-because the roster is going to widen.
+were a year.
 
-The 45-day cap is `build_history.TTM_STALENESS_DAYS`, IMPORTED rather than restated. In the
-SEC path it asks whether a trailing-twelve window belongs to the same fiscal quarter as the
-period it is reported against; here it does the same job one level down, on the only place the
-two dates can disagree -- `reportperiod` (the filer's real period end) against `calendardate`
-(Sharadar's normalisation of it). Half a quarter can only ever admit the SAME quarter, so a
-row whose normalisation moved it further than that is refused rather than counted into a
-window it does not belong to.
+That normalisation is NOT clean on the live roster: 180 gap events remain, and the ARQ grain is
+one row per FILING, so 543 duplicate `(ticker, calendardate)` groups over 316 tickers arrive as
+original + amendment pairs (EDGAR-confirmed on IBM, KO, GOOGL). A repeated quarter fails a
+contiguity check exactly as a missing one does, so `_one_row_per_quarter` collapses each
+`(ticker, reportperiod)` to its EARLIEST filing before the window maths sees it.
+
+## Why the window is validated on `reportperiod`, not on drift
+
+`calendardate` is a PER-TICKER FISCAL OFFSET, not a bounded normalisation: Sharadar maps AVGO's
+2024-02-04 period end FORWARD to 2024-03-31 (+56d) and WMT's 1995-07-31 BACKWARD to 1995-06-30
+(-31d). So neither an absolute-drift cap nor a containment test measures anything real. A
+45-day cap on `|calendardate - reportperiod|` used to sit here and deleted 239 correct rows
+over 4 tickers -- every one of AVGO's, leaving it absent from `fundamentals_history` entirely,
+and KR/AZO at 100% NULL revenue. A containment test scores worse still: 6,083 false rejects.
+
+What holds regardless of the filer's calendar is that four consecutive quarters span about a
+year of the filer's OWN period ends, so `TTM_SPAN_DAYS` guards the window on
+`reportperiod - reportperiod.shift(3)`. It is a tripwire against a spliced window, not a filter:
+it rejects nothing on today's data.
 """
 from __future__ import annotations
 
@@ -46,7 +56,6 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.fundamentals.build_history import TTM_STALENESS_DAYS
 from src.data_extract.utils.fundamentals.periods import TTM_QUARTERS
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
     DURATION, INSTANT, MEAN, FieldMap, TranslationReport, apply_derived, deadjust_splits)
@@ -61,33 +70,80 @@ ARQ = "ARQ"
 #: The frame's own key columns, carried through untouched.
 TTM_KEYS: tuple[str, ...] = ("ticker", "date", "reportperiod", "calendardate", "fiscalperiod")
 
+#: A trailing twelve must span three quarter-steps of the FILER'S OWN calendar. Measured over
+#: the 49,500 windows the contiguity check accepts: min 240 days, median 274 (~39 weeks, i.e.
+#: 3 x 13), max 315. It is a TRIPWIRE against a spliced window rather than a filter on today's
+#: data -- it rejects 0 of those 49,500.
+#:
+#: ⚠ The LOW edge sits exactly on the observed minimum, so the margin is one-sided: a window
+#: shorter than any seen so far trips it. That is deliberate -- 240 days is ~34 weeks against a
+#: normal 39, already an outlier -- but it means a filer changing to a shorter fiscal calendar
+#: would null rather than publish. The tripwire LOGS, so that would be visible, not silent.
+#:
+#: It replaces a 45-day cap on `calendardate` vs `reportperiod`, which measured the wrong
+#: thing: Sharadar's normalisation legitimately drifts 56-59 days for a filer whose quarters
+#: end early in the calendar quarter (AVGO), and that cap silently deleted 239 correct rows
+#: over 4 tickers -- every one of AVGO's, leaving it absent from `fundamentals_history`.
+#:
+#: Module-local, not in `constants.py`: one non-test consumer, the function below.
+TTM_SPAN_DAYS: tuple[int, int] = (240, 320)
 
-def _window_is_whole(frame: pd.DataFrame) -> pd.Series:
-    """Is each row the end of FOUR CONSECUTIVE normalised quarters, within its own ticker?
 
-    `ordinal - ordinal.shift(3) == 3` is true only when the three preceding rows are the three
-    preceding quarters. A gap, a duplicate quarter or a short history all fail it, and all
-    three must: a "TTM" spliced across a missing quarter is a 15-month number wearing a
-    12-month label. The shift is per TICKER, so one issuer's first quarters can never borrow
-    the previous issuer's last ones.
+def _one_row_per_quarter(frame: pd.DataFrame) -> pd.DataFrame:
+    """One ARQ row per `(ticker, reportperiod)` -- the EARLIEST filing.
+
+    Sharadar's ARQ grain is one row per FILING, amendments included. IBM's quarter ended
+    2004-09-30 arrives twice, as the 10-Q of 2004-10-28 and the 10-Q/A of 2004-11-01; EDGAR
+    confirms the same for KO (10-K/10-K/A, 2002-03-11 and -13) and GOOGL (10-Q/10-Q/A,
+    2007-05-09 and -10). A REPEATED quarter fails `_window_is_whole` exactly as a MISSING one
+    does, so 543 duplicate groups over 316 tickers were each nulling three trailing twelves.
+
+    The EARLIEST filing wins because it is what the market knew on the day: AR* is as-reported
+    and immutable, and taking the amendment would file a later restatement under an earlier
+    publication date. 439 of the 543 groups carry identical values, so the choice only bites on
+    the 97 that were genuinely restated -- and those remain recoverable from
+    `fundamentals_sharadar`, which this transform leaves lossless.
+
+    Keyed on `reportperiod`, NEVER `calendardate`: 7 groups over 4 tickers (BBY, GPN, OKE, KR)
+    are two REAL quarters whose fiscal ends normalise onto one calendar quarter, and keying on
+    the normalisation would DELETE one of them.
+    """
+    return (frame.sort_values(["ticker", "reportperiod", "date"])
+                 .drop_duplicates(["ticker", "reportperiod"], keep="first"))
+
+
+def _window_is_whole(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Is each row the end of FOUR CONSECUTIVE quarters spanning a real twelve months?
+
+    Two independent tests, and both are needed:
+
+      * `ordinal - ordinal.shift(3) == 3` on `calendardate` -- the vendor's own quarter LABELS
+        are contiguous. A gap, a repeated quarter the dedup could not resolve, or a short
+        history all fail it, and all three must: a "TTM" spliced across a missing quarter is a
+        15-month number wearing a 12-month label.
+      * `reportperiod - reportperiod.shift(3)` inside `TTM_SPAN_DAYS` -- the ECONOMICS really
+        do span a year, measured on the FILER'S OWN period ends. This trusts no vendor
+        normalisation, so it survives both a 52/53-week calendar and a mid-history fiscal
+        calendar change, which every drift-based test measured here does not.
+
+    Both shifts are per TICKER, so one issuer's first quarters can never borrow the previous
+    issuer's last ones.
+
+    Returns `(whole, tripwire)`. `tripwire` marks the rows the SPAN alone refused -- contiguous
+    labels over an impossible number of days -- so the caller can log it. The two are returned
+    together rather than recomputed because the caller would otherwise have to restate this
+    shift arithmetic to tell the two refusals apart.
     """
     ordinals = quarter_ordinal(frame["calendardate"])
-    prior = ordinals.groupby(frame["ticker"], sort=False).shift(TTM_QUARTERS - 1)
-    return (ordinals - prior) == (TTM_QUARTERS - 1)
+    by_ticker = frame["ticker"]
+    prior = ordinals.groupby(by_ticker, sort=False).shift(TTM_QUARTERS - 1)
+    contiguous = (ordinals - prior) == (TTM_QUARTERS - 1)
 
-
-def _normalisation_is_sane(frame: pd.DataFrame) -> pd.Series:
-    """Does Sharadar's `calendardate` name the same quarter as the filer's own period end?
-
-    True where the two are within `TTM_STALENESS_DAYS`. Half a quarter, so the tolerance can
-    admit the same quarter and never the previous one -- the SEC path's reasoning, applied to
-    the one pair of dates that can disagree here. A 52/53-week filer's ends walk by weeks; a
-    misnormalised row moves by a quarter.
-    """
     reported = pd.to_datetime(frame["reportperiod"], errors="coerce")
-    normalised = pd.to_datetime(frame["calendardate"], errors="coerce")
-    drift = (normalised - reported).dt.days.abs()
-    return drift.isna() | (drift <= TTM_STALENESS_DAYS)
+    span = (reported - reported.groupby(by_ticker, sort=False).shift(TTM_QUARTERS - 1)).dt.days
+    low, high = TTM_SPAN_DAYS
+    spans_a_year = span.between(low, high)
+    return contiguous & spans_a_year, contiguous & ~spans_a_year
 
 
 def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
@@ -126,15 +182,24 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
         name: spec.inputs[0] for name, spec in field_map.derived.items()
         if spec.op == "quarter"}
 
-    out = frame.sort_values(["ticker", "calendardate"]).reset_index(drop=True)
-    sane = _normalisation_is_sane(out)
-    if not sane.all():
-        log.warning("%d row(s) whose `calendardate` sits more than %d days from their own "
-                    "`reportperiod` are excluded from every TTM window",
-                    int((~sane).sum()), TTM_STALENESS_DAYS)
-        out = out[sane].reset_index(drop=True)
+    # De-duplicate FIRST, then sequence on `reportperiod` -- the filer's own period ends, which
+    # are unique after the dedup and so give a deterministic order even where two rows share a
+    # `calendardate` (the class-A collisions).
+    out = _one_row_per_quarter(frame).sort_values(["ticker", "reportperiod"]) \
+                                     .reset_index(drop=True)
+    if len(out) < len(frame):
+        log.info("%d amended/re-published ARQ row(s) collapsed to one per "
+                 "(ticker, reportperiod), earliest filing kept", len(frame) - len(out))
 
-    whole = _window_is_whole(out)
+    whole, tripwire = _window_is_whole(out)
+    if tripwire.any():
+        # Contiguous quarter LABELS over an impossible number of real days: the vendor's
+        # normalisation has spliced something. NULL the window -- never raise, never publish --
+        # but say so, because a silent filter is the failure mode this file already had once.
+        offenders = out.loc[tripwire, ["ticker", "reportperiod", "calendardate"]]
+        log.warning("%d window(s) hold four consecutive quarter labels but do not span "
+                    "%d-%d days of the filer's own calendar; nulled:\n%s",
+                    int(tripwire.sum()), *TTM_SPAN_DAYS, offenders.to_string())
 
     # Classify every output ONCE, then aggregate per class. Rolling is the slowest path in
     # pandas and there are only two aggregations, so the ~88 mapped columns cost two grouped

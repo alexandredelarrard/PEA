@@ -34,7 +34,7 @@ if __name__ == "__main__":
 # other 
 # TODO: check data is consistent over time, even for latest 2026 month ? 
 # TODO: what happens when new data pops between quarters on financials 
-# TODO: include move from peers when new results are avilable -> move all peers info
+# TODO: include move from peers when new results are available -> move all peers info
 # TODO: refine modelling to be as stable as possible
 # TODO: review periods when IC drops for few weeks / months
 # TODO: check if all neutrality is correctly done on target 

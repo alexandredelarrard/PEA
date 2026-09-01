@@ -16,8 +16,10 @@ import pytest
 from src.data_extract.utils.common import edgar_driver
 from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
 from src.data_extract.utils.common.run_manifest import get_entry
+from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_store import schema
 from src.data_store.schema import Table, Tables
+from tests.data_extract.fake_context import extract_config
 
 _T_MAIN = Table("driver_main", ("ticker", "accession_number"), date_col="filing_date")
 _T_CHILD = Table("driver_child", ("ticker", "accession_number"), date_col="filing_date")
@@ -37,18 +39,22 @@ def _filing(accession: str, filing_date: str):
 
 
 def _ctx(tmp_path, store, tickers):
-    """A Context stand-in carrying the four attributes the driver touches."""
+    """A Context stand-in carrying the four attributes the driver touches.
+
+    `sp500_tickers` is seeded with EVERY column `load_cik_mapping` projects, not just the two
+    the driver itself reads: the projection is server-side, so a column missing from this
+    fixture fails as a `KeyError` inside the SELECT rather than as a missing value."""
     store.save(Tables.sp500_tickers,
-               pd.DataFrame({"ticker": tickers,
-                             "cik": [str(i + 1) for i in range(len(tickers))]}))
+               pd.DataFrame({col: [str(i + 1) if col == "cik" else f"{col}-{t}"
+                                   for i, t in enumerate(tickers)]
+                             for col in CIK_MAPPING_COLS} | {"ticker": tickers}))
     warnings: list[str] = []
     ctx = types.SimpleNamespace(
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=types.SimpleNamespace(info=lambda *a, **k: None,
                                   warning=lambda msg, *a: warnings.append(msg % a)),
-        config=types.SimpleNamespace(
-            data_extract=types.SimpleNamespace(manifest_full_rescan_days=30)),
+        config=extract_config(data_extract={"manifest_full_rescan_days": 30}),
         ensure_edgar_identity=lambda: None)
     ctx.warnings = warnings
     return ctx

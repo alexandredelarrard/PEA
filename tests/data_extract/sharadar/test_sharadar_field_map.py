@@ -16,6 +16,7 @@ writes a table -- the whole phase is a pure transform.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +28,7 @@ from src.constants.constants import (
     SHARADAR_ZERO_RULES_FILENAME,
 )
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_STATEMENT_ORDER
-from src.data_extract.utils.fundamentals_sharadar.build_ttm import build_ttm
+from src.data_extract.utils.fundamentals_sharadar.build_ttm import TTM_SPAN_DAYS, build_ttm
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
     DURATION, INSTANT, MEAN, TranslationReport, apply_derived, load_corrections,
     load_field_map, load_zero_rules, split_events, translate,
@@ -523,6 +524,138 @@ def test_one_ticker_never_borrows_anothers_quarters(field_map):
     assert per_ticker.loc["AAA", "max"] == 400.0
     assert per_ticker.loc["BBB", "max"] == 28.0
     assert (per_ticker["count"] == 1).all()
+
+
+def test_amended_filing_does_not_break_the_window(field_map):
+    """An amendment republishing a quarter must not read as a GAP.
+
+    Sharadar's ARQ grain is one row per FILING, so a 10-Q/A arrives as a second row on the same
+    `reportperiod` under a later `date`. Un-deduplicated, that repeat makes
+    `ordinal - ordinal.shift(3)` equal 2 rather than 3 for three consecutive rows -- the exact
+    signature of a missing quarter -- and nulls three trailing twelves that are in fact whole.
+    """
+    values = {"revenue": [100.0, 200.0, 300.0, 400.0, 500.0]}
+    clean = four_quarters("TEST", values, n=5)
+    amended = clean.copy()
+    repeat = clean.iloc[[1]].copy()
+    repeat["date"] = repeat["date"] + pd.Timedelta(days=4)          # the 10-Q/A, 4 days later
+    amended = pd.concat([clean, repeat], ignore_index=True)
+
+    built_clean = build_ttm(translate(clean, field_map), field_map)
+    built_amended = build_ttm(translate(amended, field_map), field_map)
+    print(f"\nquarters              : {values['revenue']}")
+    print(f"rows in, clean/amended: {len(clean)} / {len(amended)} (Q2 filed twice)")
+    print(f"rows out              : {len(built_clean)} / {len(built_amended)}")
+    print(f"TTM at Q4  clean      : {built_clean['totalRevenue'].iloc[3]} (expected 1000.0)")
+    print(f"TTM at Q4  amended    : {built_amended['totalRevenue'].iloc[3]} (must MATCH)")
+    print(f"whole windows         : {built_clean['totalRevenue'].notna().sum()} / "
+          f"{built_amended['totalRevenue'].notna().sum()} (an amendment nulls nothing)")
+    assert len(built_amended) == len(clean)
+    assert built_amended["totalRevenue"].iloc[3] == 1000.0
+    assert (built_amended["totalRevenue"].notna().sum()
+            == built_clean["totalRevenue"].notna().sum() == 2)
+
+
+def test_dedup_keeps_the_earliest_filing(field_map):
+    """When an amendment RESTATES the number, the original stands.
+
+    AR* is as-reported and immutable: taking the amendment would file a later restatement under
+    an earlier publication date, which is a look-ahead. 97 of the 543 duplicate groups differ in
+    value, so this is the choice that actually bites on real data.
+    """
+    clean = four_quarters("TEST", {"revenue": [100.0, 200.0, 300.0, 400.0]})
+    restated = clean.iloc[[1]].copy()
+    restated["date"] = restated["date"] + pd.Timedelta(days=4)
+    restated["revenue"] = 999.0
+    built = build_ttm(translate(pd.concat([clean, restated], ignore_index=True), field_map),
+                      field_map)
+    print(f"\nQ2 filed 200.0, then RESTATED to 999.0 four days later")
+    print(f"revenue_q at Q2 : {built['revenue_q'].iloc[1]} (expected 200.0, the ORIGINAL)")
+    print(f"TTM at Q4       : {built['totalRevenue'].iloc[3]} "
+          f"(expected 1000.0, not the 1799.0 the restatement would give)")
+    assert built["revenue_q"].iloc[1] == 200.0
+    assert built["totalRevenue"].iloc[3] == 1000.0
+
+
+def test_two_real_quarters_on_one_calendardate_both_survive(field_map):
+    """Class A: dedup keys on `reportperiod`, so it cannot DELETE a real quarter.
+
+    7 groups over 4 tickers (BBY, GPN, OKE, KR) are two genuine fiscal quarters whose ends
+    normalise onto one calendar quarter. Keying the dedup on `calendardate` would look like the
+    obvious fix and would silently destroy one of them -- the guard is here rather than in a
+    comment.
+    """
+    frame = four_quarters("TEST", {"revenue": [100.0, 200.0, 300.0, 400.0]})
+    collision = frame.iloc[[1]].copy()
+    collision["reportperiod"] = collision["reportperiod"] - pd.Timedelta(days=20)
+    collision["date"] = collision["date"] - pd.Timedelta(days=20)
+    collision["revenue"] = 250.0                       # a DIFFERENT quarter, same normalisation
+    built = build_ttm(translate(pd.concat([frame, collision], ignore_index=True), field_map),
+                      field_map)
+    print(f"\ntwo real quarters sharing calendardate "
+          f"{pd.Timestamp(frame['calendardate'].iloc[1]).date()}")
+    print(f"rows out       : {len(built)} (expected 5 -- BOTH survive)")
+    print(f"revenue_q      : {sorted(built['revenue_q'].dropna().tolist())}")
+    print("both 200.0 and 250.0 are present -- keying on calendardate would have dropped one")
+    assert len(built) == 5
+    assert {200.0, 250.0} <= set(built["revenue_q"].dropna())
+
+
+def test_span_guard_nulls_a_spliced_window(field_map, caplog):
+    """Four CONSECUTIVE quarter labels that do not span a year are still not a trailing twelve.
+
+    The tripwire the 45-day drift cap was replaced with. Contiguity is measured on Sharadar's
+    normalised `calendardate`, so a normalisation that mapped a 15-month stretch onto four
+    adjacent calendar quarters would pass it -- the span check on the filer's OWN
+    `reportperiod` is what refuses. It fires on nothing in today's data, so this synthetic case
+    is the only thing that exercises it.
+    """
+    frame = four_quarters("TEST", {"revenue": [100.0, 200.0, 300.0, 400.0]})
+    # Same four calendar quarters, but the filer's own period ends walk ~5 months apart:
+    # 4 rows spanning ~15 months, which no trailing twelve can be.
+    frame["reportperiod"] = pd.to_datetime(frame["calendardate"]) + \
+        pd.to_timedelta([0, 60, 120, 180], unit="D")
+    with caplog.at_level(logging.WARNING):
+        built = build_ttm(translate(frame, field_map), field_map)
+    span = (pd.to_datetime(frame["reportperiod"].iloc[3])
+            - pd.to_datetime(frame["reportperiod"].iloc[0])).days
+    tripped = [r for r in caplog.records if "do not span" in r.getMessage()]
+    print(f"\n4 CONSECUTIVE calendar quarters, reportperiod span {span} days "
+          f"(band {TTM_SPAN_DAYS})")
+    print(f"TTM at the 4th row : {built['totalRevenue'].iloc[3]} "
+          f"(expected NULL, not the 1000.0 contiguity alone would give)")
+    print(f"warning logged     : {bool(tripped)} -- the tripwire must not be silent")
+    assert pd.isna(built["totalRevenue"].iloc[3])
+    assert tripped, "the span refusal was silent"
+
+
+def test_off_calendar_filers_have_a_ttm_line(context, field_map, actions):
+    """AVGO, KR, AZO and COST end their quarters far from a calendar quarter-end -- and must
+    still get a trailing twelve.
+
+    Real data, because the defect was entirely about what Sharadar's normalisation does to
+    genuine filers and no fixture can encode that. Under the deleted 45-day cap these four lost
+    239 ARQ rows between them: AVGO lost ALL 69 and was absent from `fundamentals_history`
+    altogether, KR and AZO were 100% NULL revenue, COST 97.6%.
+    """
+    wanted = ["AVGO", "KR", "AZO", "COST"]
+    vendor = context.store.load(Tables.sharadar_fundamentals, project=True,
+                                where={"ticker": wanted})
+    vendor = vendor[vendor["dimension"] == "ARQ"].copy()
+    built = build_ttm(translate(vendor, field_map), field_map, actions=actions)
+    whole = built.groupby("ticker")["totalRevenue"].apply(lambda s: int(s.notna().sum()))
+    drift = (pd.to_datetime(vendor["calendardate"]) - pd.to_datetime(vendor["reportperiod"])
+             ).dt.days.abs().groupby(vendor["ticker"]).max()
+    print("\n=== SANITY CHECK: off-calendar filers ===")
+    for ticker in wanted:
+        print(f"  {ticker:<5} whole TTM rows {whole.get(ticker, 0):>4}  "
+              f"max |calendardate - reportperiod| {int(drift.get(ticker, 0)):>3}d "
+              f"(the old cap was 45d)")
+    print("  -> every one of them clears 60 whole windows; none is empty.")
+    for ticker in wanted:
+        assert whole.get(ticker, 0) > 60, f"{ticker} has {whole.get(ticker, 0)} whole windows"
+    assert drift.max() > 45, ("no filer here drifts past the old cap -- this test would pass "
+                              "with the cap still in place and proves nothing")
 
 
 def test_zero_rules_propagate_into_derived(field_map):

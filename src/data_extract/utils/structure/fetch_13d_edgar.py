@@ -7,12 +7,24 @@ SC 13D/13D-A activist filings via edgartools (`filing.obj()`) into two tables:
 `sec_13d_transactions`, one row per disclosed trade (Item 5(c) 60-day log, an
 independent grain).
 
-Three properties the parsing depends on:
-- `has_structured_data` is False for essentially every real 13D, which makes
-  edgartools default missing numerics to 0. They are forced to NULL instead, so
-  the table never claims a false 0% stake.
-- For the same reason the structured `.items` narrative is usually empty, so
-  Item 3/4/5/6 prose is regex-carved out of `filing.text()`.
+EDGAR has TWO 13D eras, and the split runs through everything below. At the
+structured-XML mandate the form string itself changed -- "SC 13D" through
+2024-12-16, "SCHEDULE 13D" from 2024-12-17 -- and `get_filings(form=...)` matches
+EXACTLY, so `SEC_13D_FORMS` must list both pairs or the table simply stops
+(measured: 461 filings across 91 tickers went missing that way).
+
+Four properties the parsing depends on:
+- `has_structured_data` means "this filing has XML", NOT "this filing is modern":
+  it is False for essentially every pre-mandate 13D and True for essentially every
+  one since. Pre-mandate it nulled edgartools' 0 defaults by accident; post-mandate
+  it stops discriminating, so `_is_placeholder_numerics` carries that guard instead.
+  Either way the table never claims a 0% stake the filer did not disclose.
+- The structured `.items` narrative is only populated from XML, so pre-mandate
+  Item 3/4/5/6 prose is regex-carved out of `filing.text()` by two anchor sets
+  whose union reads filings neither reads alone (see `_extract_13d_item_sections`).
+- Carved bodies are normalized for encoding and whitespace only: 42% of filings
+  carry cp1252 bytes and 84% carry box-drawing rule runs, both of which wreck
+  tokenization. No sentence is ever removed (see `_normalize_item_text`).
 - The 5(c) trade log is either its own exhibit or a "Schedule I" appendix inside
   the main document, so every attachment is scanned for a "Trade Date" table and
   its columns role-mapped. `att.is_html()` is a METHOD -- calling it wrongly made
@@ -35,7 +47,8 @@ from src.utils.string import pad_cik
 _COLS = ["ticker", "cik", "accession_number", "form", "filing_date", "rp_seq",
         "is_amendment", "amendment_number", "cusip", "issuer_name", "date_of_event",
         "has_structured_data", "reporting_person_name", "reporting_person_cik",
-        "reporting_person_citizenship", "type_of_reporting_person", "is_group_member",
+        "reporting_person_citizenship", "type_of_reporting_person",
+        "reporting_person_comment", "is_group_member",
         "sole_voting_power", "shared_voting_power", "sole_dispositive_power",
         "shared_dispositive_power", "aggregate_amount", "percent_of_class",
         "item3_source_of_funds", "item4_purpose_of_transaction",
@@ -47,10 +60,16 @@ _TRANSACTION_COLS = ["ticker", "cik", "accession_number", "filing_date", "trade_
                      "quantity", "price_per_share"]
 
 # --- Item narrative fallback -------------------------------------------------- #
-# 13D items don't have MD&A-style alternate titles (unlike 10-K/10-Q), so a single
-# anchor per item -- caption keyword right after "Item N" -- is enough; the same
-# separator tolerance as fetch_filing_text.py's `_SEP` handles the "Item 4.",
-# "Item 4:", "Item  4 -" formatting variance seen across filers/eras.
+# 13D items don't have MD&A-style alternate titles (unlike 10-K/10-Q), so one caption
+# keyword per item is the anchor; the same separator tolerance as
+# fetch_filing_text.py's `_SEP` handles the "Item 4.", "Item 4:", "Item  4 -"
+# formatting variance seen across filers/eras.
+#
+# TWO anchor sets exist because each reads filings the other cannot -- see
+# `_extract_13d_item_sections` for the union rule that combines them. `_ITEM_ANCHORS`
+# matches a caption ANYWHERE, which is the only thing that reads a filing rendered
+# without newlines; the line-anchored set below is what recovers the headings whose
+# captions the anywhere-matcher misses.
 _SEP = r"[\.\:\)\s–—-]{0,8}"
 _ITEM_ANCHORS: dict[int, re.Pattern] = {
     1: re.compile(rf"item{_SEP}1\b{_SEP}security\s+and\s+issuer", re.I),
@@ -61,36 +80,139 @@ _ITEM_ANCHORS: dict[int, re.Pattern] = {
     6: re.compile(rf"item{_SEP}6\b{_SEP}contracts", re.I),
     7: re.compile(rf"item{_SEP}7\b{_SEP}material\s+to\s+be\s+filed", re.I),
 }
+#: Caption keyword per item, widened where filers measurably diverge from the SEC's own
+#: wording -- "Purpose of THE Transaction" alone accounted for most Item 4 misses.
+_ITEM_CAPTIONS: dict[int, str] = {
+    1: r"security\s+and\s+(?:the\s+)?issuer",
+    2: r"identity\s+and\s+background",
+    3: r"source\s+(?:and\s+amount|of\s+funds)",
+    4: r"purpose\s+of\s+(?:the\s+)?transaction",
+    5: r"interest\s+in\s+(?:the\s+)?securities",
+    6: r"contracts",
+    7: r"material\s+to\s+be\s+filed",
+}
+#: A heading STARTS A LINE. That single constraint rejects the mid-prose cross-references
+#: ("...as described in Item 4 of Schedule 13D") that make a looser bare-number anchor
+#: unusable, which in turn lets the caption become OPTIONAL: when the line ends right after
+#: "Item N.", it is a captionless heading, not a cross-reference. The caption, when present,
+#: is consumed to end of line so a body never starts mid-caption ("or Other Consideration...").
+_ITEM_ANCHORS_LINE: dict[int, re.Pattern] = {
+    n: re.compile(rf"^[ \t]*item{_SEP}{n}\b[\.\:\)]?[ \t]*(?:{cap}[^\n]*|$)", re.I | re.M)
+    for n, cap in _ITEM_CAPTIONS.items()
+}
+#: Any captioned heading, anywhere -- used ONLY to detect that a carved body swallowed a
+#: later item, never to carve.
+_ITEM_HEADING_ANYWHERE: dict[int, re.Pattern] = {
+    n: re.compile(rf"item{_SEP}{n}{_SEP}(?:{cap})", re.I)
+    for n, cap in _ITEM_CAPTIONS.items()
+}
 _SIGNATURE_RE = re.compile(r"^\s*signature", re.I | re.M)
 _ITEM_TEXT_FIELD = {3: "item3_source_of_funds", 4: "item4_purpose_of_transaction",
                     5: "item5_interest_in_securities", 6: "item6_contracts_understandings"}
 _ITEM_TEXT_MIN_CHARS = 30   # below this, it's a heading with no body (item not amended this cycle)
 
+#: The cp1252 0x80-0x9F block, decoded to the character the filer actually meant. These
+#: bytes survive EDGAR's own encoding round-trip and arrive as raw C1 codepoints (a real PSA
+#: filing stores \x93group\x94 for curly quotes). DERIVED rather than hand-typed because the
+#: block's less common members are SEMANTIC, not punctuation: a KDP filing stores \x80 for the
+#: EURO SIGN in "Investor paid \x80 52,544.78 in cash to Acorn", where dropping the byte would
+#: silently change the currency of a disclosed consideration. Five of the 32 (0x81, 0x8D, 0x8F,
+#: 0x90, 0x9D) are undefined in cp1252 and drop out of the comprehension.
+_CP1252_C1_BLOCK = {
+    chr(b): bytes([b]).decode("cp1252", "ignore") for b in range(0x80, 0xA0)
+    if bytes([b]).decode("cp1252", "ignore")
+}
+#: Straightened on top of the decode: the quotes, dashes and ellipsis become ASCII, and the
+#: zero-width / non-breaking characters that split a word into two tokens for no semantic
+#: reason are dropped. Character-for-character substitutions only -- no sentence or phrase is
+#: ever removed here.
+#: Written as \u escapes, not literal glyphs: the characters this table exists to remove are
+#: exactly the ones an editor or a lossy copy-paste would silently mangle in the source.
+_CHAR_NORMALIZATION = _CP1252_C1_BLOCK | {
+    "\x91": "'", "\x92": "'", "\x93": '"', "\x94": '"', "\x95": "-", "\x96": "-",
+    "\x97": "-", "\x85": "...", "\xa0": " ", "\u2018": "'", "\u2019": "'",
+    "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-", "\u00ad": "",
+    "\u200b": "", "\ufeff": "",
+}
+#: Box-drawing / rule lines used as visual separators under a heading (U+2500-U+257F is the
+#: Box Drawing block). Bounded to runs of 3+ so a hyphenated word ("non-transferable") and a
+#: negative number are never touched.
+_RULE_RUN_RE = re.compile(r"[\u2500-\u257f=_]{3,}|(?<![\w-])-{3,}(?![\w-])")
 
-def _extract_13d_item_sections(text: str) -> dict[str, str]:
-    """Regex-carve Item 3/4/5/6 narrative bodies out of a 13D's raw text. Each
-    body runs from its own heading to whichever comes first: the next item's
-    heading (any of items {item_no+1}..7) or the SIGNATURE block. A missing
-    match is normal, not an error -- amendments routinely restate only SOME
-    items, leaving the others (correctly) absent from that accession's text."""
-    if not text:
-        return {}
+
+def _normalize_item_text(body: str) -> str:
+    """Encoding and whitespace only. Deliberately NOT a content cleaner: stripping the legal
+    boilerplate and the leaked cover-page rows was measured and moved the embedding similarity
+    noise floor by 1.9-2.6%, which does not pay for the regex risk of deleting real prose."""
+    if not body:
+        return body
+    for bad, good in _CHAR_NORMALIZATION.items():
+        body = body.replace(bad, good)
+    body = _RULE_RUN_RE.sub(" ", body)
+    body = re.sub(r"[ \t]+", " ", body)
+    body = re.sub(r" *\n[ \t]*", "\n", body)
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    return body.strip()
+
+
+def _carve_with(text: str, anchors: dict[int, re.Pattern]) -> dict[str, str]:
+    """Carve Item 3/4/5/6 bodies using ONE anchor set. Each body runs from its own
+    heading to whichever comes first: a later item's heading (any of {item_no+1}..7)
+    or the SIGNATURE block. A missing match is normal, not an error -- amendments
+    routinely restate only SOME items, leaving the others (correctly) absent."""
     out: dict[str, str] = {}
     for item_no, field in _ITEM_TEXT_FIELD.items():
-        m = _ITEM_ANCHORS[item_no].search(text)
+        m = anchors[item_no].search(text)
         if not m:
             continue
         start = m.end()
         end = len(text)
         for later_no in range(item_no + 1, 8):
-            m2 = _ITEM_ANCHORS[later_no].search(text, start)
+            m2 = anchors[later_no].search(text, start)
             if m2 and m2.start() < end:
                 end = m2.start()
         m3 = _SIGNATURE_RE.search(text, start)
         if m3 and m3.start() < end:
             end = m3.start()
-        body = text[start:end].strip()
+        body = _normalize_item_text(text[start:end])
         if len(body) >= _ITEM_TEXT_MIN_CHARS:
+            out[field] = body
+    return out
+
+
+def _swallowed_a_later_item(item_no: int, body: str) -> bool:
+    return any(_ITEM_HEADING_ANYWHERE[later].search(body) for later in range(item_no + 1, 8))
+
+
+def _extract_13d_item_sections(text: str) -> dict[str, str]:
+    """Carve Item 3/4/5/6 bodies, preferring the line-anchored headings and falling back to
+    the legacy anchors ONLY where line-anchoring found nothing AND the legacy body is not
+    contaminated.
+
+    Both halves are load-bearing. Line-anchoring is what fixes the three Item 4 misses
+    ("Purpose of THE Transaction", a captionless bare `Item 4.`, and a caption padded past
+    the 8-char separator budget), but it cannot match a filing rendered as ONE line with no
+    newlines at all (HUBB 0001162044-13-001406 is such a filing) -- the legacy anchor is the
+    only thing that reads those. The contamination test is what stops the fallback
+    reintroducing the bug it exists to fix: a legacy item3 body that still contains Item 4's
+    heading has swallowed Item 4 and is worse than no body at all.
+
+    Measured over 182 originals (every SC 13D in the table -- an original must answer every
+    item, so it is the ground-truth set) and 200 random amendments: item3 contamination
+    3.8%/2.5% -> 0%/0%, item4 coverage 92.9% -> 98.9% on originals and 61.5% -> 70.0% on
+    amendments, with ZERO fields regressing on either population. Amendment coverage stays
+    well under 100% because Rule 13d-2(a) has an amendment restate only materially changed
+    items -- carved / present-in-the-document is ~100%. That is not a deficiency to chase."""
+    if not text:
+        return {}
+    line_sections = _carve_with(text, _ITEM_ANCHORS_LINE)
+    legacy_sections = _carve_with(text, _ITEM_ANCHORS)
+    out = dict(line_sections)
+    for item_no, field in _ITEM_TEXT_FIELD.items():
+        if field in out or field not in legacy_sections:
+            continue
+        body = legacy_sections[field]
+        if not _swallowed_a_later_item(item_no, body):
             out[field] = body
     return out
 
@@ -252,15 +374,34 @@ def _extract_transaction_rows(filing, fallback_person: str | None,
     return rows
 
 
-def _num_or_null(value, has_structured_data: bool) -> float:
-    """A ReportingPerson numeric field is only meaningful when the filing's own
-    parse actually found structured data -- otherwise it is the class default
-    (usually 0), not a real disclosed value. Returns NaN (never None/Python-null)
-    so the column stays float dtype even when every row in a batch is unknown --
-    an all-None object column gets inferred as SQL TEXT by `ensure_table`'s
-    dtype mapping, which would corrupt a genuinely numeric field the first time
-    a real (has_structured_data=True) value needs to share that column."""
-    if not has_structured_data or value is None:
+_RP_NUMERIC_ATTRS = ("sole_voting_power", "shared_voting_power", "sole_dispositive_power",
+                     "shared_dispositive_power", "aggregate_amount", "percent_of_class")
+
+
+def _is_placeholder_numerics(rp) -> bool:
+    """A reporting person whose SIX numerics are all 0 while `commentContent` is set has not
+    disclosed a zero position -- it has deferred the numbers to the Item 5 narrative ("Rows 7,
+    8, 9, 10, 11, and 13: See Item 5"). Writing the literal 0 would make the table claim a 0%
+    stake, which is the one thing this module's numeric handling exists to prevent. The
+    all-zero AND comment-present conjunction matters: a genuine full disposal reports zeros
+    with no comment, and a commented row with real numbers keeps them."""
+    if not (getattr(rp, "comment", None) or "").strip():
+        return False
+    values = [getattr(rp, attr, None) for attr in _RP_NUMERIC_ATTRS]
+    present = [v for v in values if v is not None]
+    return bool(present) and all(v == 0 for v in present)
+
+
+def _num_or_null(value, trust_value: bool) -> float:
+    """A ReportingPerson numeric field is only meaningful when the caller has established
+    the value is real rather than a class default (usually 0). Two independent things can
+    make it a default, and `trust_value` is the AND of both: the filing's own parse found
+    no structured data at all, or it did but this person deferred its numbers to Item 5
+    (see `_is_placeholder_numerics`). Returns NaN (never None/Python-null) so the column
+    stays float dtype even when every row in a batch is unknown -- an all-None object
+    column gets inferred as SQL TEXT by `ensure_table`'s dtype mapping, which would corrupt
+    a genuinely numeric field the first time a real value needs to share that column."""
+    if not trust_value or value is None:
         return float("nan")
     try:
         return float(value)
@@ -370,6 +511,7 @@ def _filing_rows(filing) -> list[dict]:
                 "reporting_person_cik": None,
                 "reporting_person_citizenship": None,
                 "type_of_reporting_person": None,
+                "reporting_person_comment": None,
                 "is_group_member": None,
                 "sole_voting_power": float("nan"),
                 "shared_voting_power": float("nan"),
@@ -382,6 +524,10 @@ def _filing_rows(filing) -> list[dict]:
 
     rows = []
     for seq, rp in enumerate(persons):
+        # `has_structured` alone stopped discriminating at the mandate: it was False for
+        # every pre-2025 filing and so nulled the class defaults by accident, but it is True
+        # for every filing since, so the placeholder test is what now carries the guard.
+        trust_numerics = has_structured and not _is_placeholder_numerics(rp)
         rows.append(
             {
                 **base,
@@ -396,24 +542,25 @@ def _filing_rows(filing) -> list[dict]:
                     rp, "type_of_reporting_person", None
                 )
                 or None,
+                "reporting_person_comment": getattr(rp, "comment", None) or None,
                 "is_group_member": getattr(rp, "member_of_group", None),
                 "sole_voting_power": _num_or_null(
-                    getattr(rp, "sole_voting_power", None), has_structured
+                    getattr(rp, "sole_voting_power", None), trust_numerics
                 ),
                 "shared_voting_power": _num_or_null(
-                    getattr(rp, "shared_voting_power", None), has_structured
+                    getattr(rp, "shared_voting_power", None), trust_numerics
                 ),
                 "sole_dispositive_power": _num_or_null(
-                    getattr(rp, "sole_dispositive_power", None), has_structured
+                    getattr(rp, "sole_dispositive_power", None), trust_numerics
                 ),
                 "shared_dispositive_power": _num_or_null(
-                    getattr(rp, "shared_dispositive_power", None), has_structured
+                    getattr(rp, "shared_dispositive_power", None), trust_numerics
                 ),
                 "aggregate_amount": _num_or_null(
-                    getattr(rp, "aggregate_amount", None), has_structured
+                    getattr(rp, "aggregate_amount", None), trust_numerics
                 ),
                 "percent_of_class": _num_or_null(
-                    getattr(rp, "percent_of_class", None), has_structured
+                    getattr(rp, "percent_of_class", None), trust_numerics
                 ),
             }
         )
@@ -461,6 +608,7 @@ def build_ticker_13d_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None 
             exhibit_rows = _extract_transaction_rows(filing, fallback_person, filing_date)
         except Exception:                               # noqa: BLE001 -- best-effort only
             exhibit_rows = []
+            
         cik_val = filing_rows[0].get("cik") if filing_rows else cik
         for seq, tr in enumerate(exhibit_rows):
             tr.update(ticker=ticker, cik=cik_val, accession_number=filing.accession_number,
@@ -471,7 +619,8 @@ def build_ticker_13d_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None 
             Tables.sec_13d_transactions: pd.DataFrame(txn_rows, columns=_TRANSACTION_COLS)}
 
 
-def fetch_13d_edgar(context: Context, tickers: list[str], years_history: int) -> None:
+def fetch_13d_edgar(context: Context, tickers: list[str], years_history: int,
+                    full: bool = False) -> None:
     run_edgar_fetch(context, tickers, years_history,
                     tables=(Tables.sec_13d, Tables.sec_13d_transactions),
-                    build=build_ticker_13d_edgar, desc="SC 13D (edgartools)")
+                    build=build_ticker_13d_edgar, desc="SC 13D (edgartools)", full=full)

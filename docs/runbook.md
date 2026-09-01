@@ -318,6 +318,30 @@ declared ceiling and is burying real findings under itself. When either is prese
 banners that the rankings may be inflated. `src/validate/README.md` is the operating manual, and its §4 --
 "when it does not work" -- is the part worth reading twice.
 
+## Rebuilding `sec_13d` — the whole table, and `-F` is required
+
+**Not yet executed.** The 1,666 pre-2024-12-17 rows are replaced rather than patched: they carry
+the Item 3 contamination (measured 3.8% of originals / 2.5% of amendments had Item 4's whole body
+inside `item3_source_of_funds` — MNST's was 17,776 chars where the true body is 825), they only
+ever captured **one** reporting person per filing (`rp_seq` has exactly one distinct value, `0`),
+and `date_of_event` / `percent_of_class` are non-null on **0 of 1,666**. Every deleted row is
+reconstructible from EDGAR.
+
+```bash
+MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea \
+  -c "DELETE FROM sec_13d;" -c "DELETE FROM sec_13d_transactions;"
+# -F is REQUIRED: the manifest still holds a recent run date, so an incremental run
+# would resume from it and refetch nothing.
+rtk "$PY" -m src data_extract sec-13d -F
+```
+
+- **`-F/--full` is not optional**, for the same reason as the fundamentals backfill: the DELETE
+  does not touch the run manifest, so an incremental run resumes from the last run date and lists
+  nothing.
+- Cost: ~1,700 filings re-fetched, plus the **461** post-mandate filings that were never ingested
+  (91 tickers, 2024-12-17 → today) and now become visible for the first time.
+- `reporting_person_comment` is a new column; `store.ensure_table` adds it on first write.
+
 ## Finishing a task — the definition-of-done report
 
 Contract and rationale: [definition_of_done.md](definition_of_done.md). Pick the generator that

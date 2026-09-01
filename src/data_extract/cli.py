@@ -425,9 +425,10 @@ def sec_8k_items(config_path: str, tickers: str | None, years: int | None) -> No
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
-def sec_13d(config_path: str, tickers: str | None, years: int | None) -> None:
+@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
     config, context = _ctx(config_path)
-    fetch_13d_edgar(context, tickers=_tickers(context, tickers),
+    fetch_13d_edgar(context, tickers=_tickers(context, tickers), full=full,
                     years_history=years or config.data_extract.years_history)
 
 

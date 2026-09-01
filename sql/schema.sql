@@ -781,6 +781,7 @@ CREATE TABLE IF NOT EXISTS "sec_13d" (
     "reporting_person_cik" TEXT,
     "reporting_person_citizenship" TEXT,
     "type_of_reporting_person" TEXT,
+    "reporting_person_comment" TEXT,
     "is_group_member" TEXT,
     "sole_voting_power" DOUBLE PRECISION,
     "shared_voting_power" DOUBLE PRECISION,

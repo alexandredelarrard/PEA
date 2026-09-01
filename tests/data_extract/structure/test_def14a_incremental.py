@@ -13,6 +13,7 @@ from src.data_store.store import DataStore
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.structure.fetch_def14a_llm import _is_up_to_date, _flatten
 from src.data_extract.utils.structure.def14a_schema import Def14AExtract, GovernanceProfile
+from tests.data_extract.fake_context import extract_config
 
 
 def _ctx(tmp_path: Path, tickers: list[str], write_meta_today: bool = True):
@@ -21,7 +22,8 @@ def _ctx(tmp_path: Path, tickers: list[str], write_meta_today: bool = True):
     ds.save("def14a_llm", pd.DataFrame([
         {"ticker": t, "accession_number": f"acc-{t}", "as_of": "2024-04-01"} for t in tickers
     ]))
-    ctx = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path})
+    ctx = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path},
+                               config=extract_config())
     if write_meta_today:
         record_run(ctx, "def14a_llm", len(tickers), 0, is_full_rescan=True)
     return ctx
@@ -61,11 +63,13 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
     ]))
     ctx = types.SimpleNamespace(store=ds, log=logging.getLogger("t"),
                                 paths={"DATA_STORE": tmp_path},
-                                config=OmegaConf.create({"data_extract": {"years_history": 15}}))
+                                config=extract_config(data_extract={"years_history": 15}))
 
     listed_since, extracted = [], []
 
-    def _fake_list(cik, forms, years, company="", since=None):
+    def _fake_list(context, cik, forms, years, company_name="", since=None,
+                   cache_dir=None):        # mirrors edgar_fillings.list_filings EXACTLY
+                                           # -- a stale stub binds `since` positionally
         listed_since.append(since)                            # must be None now (full window)
         return pd.DataFrame([
             {"accession_number": a, "doc_url": f"http://x/{a}", "filing_date": pd.Timestamp(d),
@@ -73,7 +77,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
             for a, d in [("a2022", "2022-04-01"), ("a2023", "2023-04-01"),
                          ("a2024", "2024-04-01"), ("a2025", "2025-04-01")]])
 
-    def _fake_process(ticker, f, extractor):
+    def _fake_process(context, ticker, f, extractor):          # mirrors mod._process_filing
         extracted.append(f["accession_number"])
         return {"ticker": ticker, "accession_number": f["accession_number"],
                 "as_of": f["filing_date"], "def14a_json": "{}"}
@@ -124,7 +128,7 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
     ]))
     ctx = types.SimpleNamespace(store=ds, log=logging.getLogger("t"),
                                 paths={"DATA_STORE": tmp_path},
-                                config=OmegaConf.create({"data_extract": {"years_history": 15}}))
+                                config=extract_config(data_extract={"years_history": 15}))
     # A prior run 10 days ago, one ticker -- same ticker count as this run, and well
     # inside the (default 30-day) self-heal window, so `manifest_window` must return
     # the narrow cutoff, not the full-rescan fallback.
@@ -134,7 +138,9 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
 
     listed_since = []
 
-    def _fake_list(cik, forms, years, company="", since=None):
+    def _fake_list(context, cik, forms, years, company_name="", since=None,
+                   cache_dir=None):        # mirrors edgar_fillings.list_filings EXACTLY
+                                           # -- a stale stub binds `since` positionally
         listed_since.append(since)
         return pd.DataFrame(columns=["accession_number", "doc_url", "filing_date",
                                      "period_of_report", "form"])

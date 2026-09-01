@@ -83,6 +83,7 @@ def manifest_window(
     ticker universe changed size since that run, or the last full rescan is
     `>= full_rescan_days` old. Otherwise returns the entry's `last_run_date`
     (inclusive) with `is_full_rescan=False`."""
+    
     entry = get_entry(context, table)
     if not entry or entry.get("ticker_count") != ticker_count:
         return fallback_since, True

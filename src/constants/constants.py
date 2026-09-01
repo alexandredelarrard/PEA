@@ -69,7 +69,12 @@ SEC_EDGAR_COMPANY_SEARCH_URL = (
 SEC_8K_FORMS = ["8-K", "8-K/A"]
 
 # SC 13D activist filings (>5% stake WITH intent to influence) + amendments — the event-driven
-SEC_13D_FORMS = ["SC 13D", "SC 13D/A"]   # activist (13G = passive is deliberately excluded)
+# EDGAR renamed the form type at the structured-XML mandate: filings through 2024-12-16 are
+# "SC 13D", filings from 2024-12-17 are "SCHEDULE 13D". `get_filings(form=...)` matches EXACTLY,
+# so dropping either pair silently truncates the table at the changeover -- measured: 461 filings
+# across 91 S&P 500 tickers were invisible until both pairs were listed.
+SEC_13D_FORMS = ["SC 13D", "SC 13D/A",   # activist (13G = passive is deliberately excluded)
+                 "SCHEDULE 13D", "SCHEDULE 13D/A"]
 
 # 13F institutional holdings, walked per-filing-date via edgartools (fetch_13f.py). 
 SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]

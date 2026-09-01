@@ -248,7 +248,7 @@ def real_frames():
     series were mixed into `prices`.
     """
     from src.data_aggregate.utils.common import data_utils as du
-    from src.constants.constants import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
+    from src.constants.constants_price import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
     from src.utils.macro import load_macro_wide
 
     store = _store()

@@ -44,7 +44,7 @@ Container `pea_db` (postgres **16.14**), database `pea`, owner role **`alexandre
 | `cube`, `cube_part_*` (all 7) | no features, no training, no prediction |
 | `cube_signal`, `predictions`, `predictions_latest` | no model output |
 | `strategy`, `trend_asset_returns` | no ledger, no trend sleeve |
-| ~~`fundamentals_history`~~ | **No longer missing** — the merged Sharadar+SEC table is built and populated (598 rows / 30 tickers as of 2026-08-26, pre-upgrade). |
+| ~~`fundamentals_history`~~ | **No longer missing** — the merged Sharadar+SEC table is built and populated (51,255 rows / 489 tickers as of 2026-08-31). |
 | `notes_embedding`, `ticker_descriptions` | `notes_embedding` has no downstream reader anyway |
 
 **No longer missing** (they were, in the 2026-08-17 snapshot): **`prices`** is populated —
@@ -77,8 +77,8 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `sharadar_tickers` | 17,827 | 15 MB | 28 | 17,827 | — | Sharadar entity dimension *(08-26)* |
 | `fundamentals_reason_codes` | 78,239 | 13 MB | 6 | **54** | `as_of` | 2009-07-31 → 2026-08-10 *(08-26)* |
 | `fundamentals_history_sec` | **3,258** | 1.8 MB | **69** | **54** | `as_of` | 2009-07-31 → 2026-08-10 *(08-26)* |
-| `fundamentals_sharadar` | 1,346 | 1.3 MB | **112** | **30** ⚠ | `date` | 2021-08-27 → 2026-08-10 *(08-26, PRE-UPGRADE)* |
-| `fundamentals_history` | 598 | — | **91** | **30** ⚠ | `as_of` | 2021-08-27 → 2026-08-10 *(08-26, PRE-UPGRADE)* |
+| `fundamentals_sharadar` | **116,824** | 130 MB | **112** | **489** | `date` | 1995-09-01 → 2026-08-28 *(08-31)* |
+| `fundamentals_history` | **51,255** | 31 MB | **91** | **489** | `as_of` | 1995-09-01 → 2026-08-28 *(08-31)* |
 | `sharadar_sp500` | 3,306 | 432 kB | 7 | 30 | `date` | 1992-01-02 → 2026-08-25 *(08-26)* |
 | `sharadar_actions` | 594 | 128 kB | 7 | 30 | `date` | 2021-08-27 → 2026-08-25 *(08-26)* |
 | `fundamentals_employees` | 754 | 112 kB | 3 | **54** | `as_of` | 2002-03-20 → 2026-07-29 *(08-26)* |
@@ -132,6 +132,15 @@ Ordered by size. `tickers` = distinct non-null tickers.
   now identical by construction. Widening to the full roster is Phase 9's acceptance step; until
   then any cube built off these tables covers 54 names and every coverage rate computed against a
   500-ticker denominator will read ~11%.
+- **`fundamentals_history` (the MERGED table) carries 51,255 rows over 489 tickers, of which 49,280
+  hold a whole trailing twelve** — `totalRevenue` is NULL on 1,975 rows (3.9%). Most of those are
+  structural: a ticker's first three quarters can never have a four-quarter window, and 220 windows
+  hold a quarter whose vendor `revenue` is absent. The SEC block joins on only 5,934 rows over 97
+  tickers — the stated coverage asymmetry, not a gap.
+  Rebuilt 2026-08-31 after two `build_ttm` window defects were fixed (duplicate ARQ filings and a
+  miscalibrated drift gate; see [data_sources.md](data_sources.md)), which recovered **+1,265 whole
+  trailing twelves** and removed **353 duplicate `as_of` rows**. AVGO went 0 → 65 rows, KR 0 → 112,
+  AZO 0 → 113, COST 2 → 121.
 - **`fundamentals_history_sec` went 27,602 rows → 3,258 and 239 columns → 69.** Both are deliberate.
   The row count fell because the grain changed from a computed period spine to the
   **publication-event** grain (one row per date on which ≥1 extracted value became newly public)

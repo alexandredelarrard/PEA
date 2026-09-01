@@ -130,6 +130,24 @@ is **`date`**, and it sits inside the primary key, so the two channels are not i
 - **Q4 is CONSTRUCTED** as `ARY - Σ(Q1..Q3)`, so `ΣARQ == ARY` is a tautology (measured `+0.000%`)
   and can never be a quality check. It can still produce absurd LEVELS — that is what
   `gate_implausible_quarters` measures instead.
+- **ARQ's grain is one row per FILING, not per quarter** — amendments included. A quarter that was
+  amended arrives twice, on one `reportperiod` under two `date`s: IBM's 2004-09-30 as the 10-Q of
+  2004-10-28 and the 10-Q/A of 2004-11-01, and likewise KO (2002-03-11/13) and GOOGL
+  (2007-05-09/10), all EDGAR-confirmed. Measured table-wide: **543 duplicate
+  `(ticker, calendardate)` groups over 316 tickers** — 439 pure re-publications, 97 genuine
+  restatements, 7 class-A collisions (below). `build_ttm._one_row_per_quarter` keeps the EARLIEST
+  filing, because AR\* is as-reported and taking the amendment would file a restatement under an
+  earlier publication date. A repeated quarter breaks a contiguity check exactly as a missing one
+  does, so de-duplicating is a correctness requirement, not tidiness.
+- **`calendardate` is a per-ticker FISCAL OFFSET, not a bounded normalisation.** It drifts as far as
+  the filer's calendar demands and in EITHER direction: AVGO's 2024-02-04 maps FORWARD to 2024-03-31
+  (+56d), WMT's 1995-07-31 BACKWARD to 1995-06-30 (−31d). So neither an absolute-drift cap nor a
+  "the quarter containing `reportperiod`" containment test is valid — a 45-day cap deleted 239
+  correct rows over 4 tickers, and containment measures 6,083 false rejects. **Sequence on the
+  quarter ordinals, validate the window on `reportperiod` span** (`build_ttm.TTM_SPAN_DAYS`).
+- **Class A**: 7 groups over BBY, GPN, KR and OKE are TWO REAL quarters whose fiscal ends normalise
+  onto ONE `calendardate`. Any de-duplication must therefore key on `reportperiod`; keying on
+  `calendardate` deletes a real quarter.
 - **Quarterly dimensions are US-domestic-only.** ADR (form 20) and Canadian (form 40) filers have no
   ARQ/MRQ at all — relevant the moment the universe widens past the S&P 500.
 - SF1 covers the **primary share class only**.
@@ -187,6 +205,30 @@ is **`date`**, and it sits inside the primary key, so the two channels are not i
 block of `sec_def14a` is trusted unconditionally; the HTML-parsed child tables are best-effort and
 are complemented by the LLM path. **Rule: never fabricate** — write a value only when
 deterministically recoverable, else NaN.
+
+### Schedule 13D
+
+- **EDGAR renamed the form at the 2024-12-17 structured-XML mandate.** Filings through
+  2024-12-16 are `SC 13D` / `SC 13D/A`; from 2024-12-17 they are `SCHEDULE 13D` /
+  `SCHEDULE 13D/A`. `get_filings(form=...)` matches **exactly**, so
+  `constants.SEC_13D_FORMS` lists **both pairs** — listing one silently truncates the table
+  at the changeover with no error (measured: 461 filings across 91 tickers went missing,
+  and `sec_13d` stopped dead on 2024-12-16).
+- **`has_structured_data` means "has XML", not "is modern".** False for essentially every
+  pre-mandate filing, True for essentially every one since. Pre-mandate it nulled
+  edgartools' 0 defaults by accident; post-mandate filers defer the cover-page numbers to
+  the narrative (`commentContent`: *"Rows 7, 8, 9, 10, 11, and 13: See Item 5"*) while
+  tagging all six numerics 0. `_is_placeholder_numerics` nulls those and keeps the comment
+  in `reporting_person_comment`; a genuine full disposal reports zeros with **no** comment
+  and keeps them.
+- **Item 3/4/5/6 prose is regex-carved** from `filing.text()` when there is no XML, using
+  the **union** of a line-anchored and an anywhere-matching anchor set. Each reads filings
+  the other cannot: line-anchoring rejects mid-prose cross-references (*"as described in
+  Item 4"*) but cannot read a filing rendered as a single line; the anywhere-matcher can,
+  but loses Item 3's end boundary when Item 4's caption varies, swallowing Item 4 whole.
+- Amendment item coverage well below 100% is **Rule 13d-2(a) working as intended** — an
+  amendment restates only materially changed items. Not a carve deficiency to chase.
+- 13G (passive stakes) is **deliberately excluded**; this table is activist-only.
 
 ### Earnings calls
 

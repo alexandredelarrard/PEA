@@ -17,9 +17,9 @@ a pipeline command.
 | **DATA** | extraction, aggregation, a new table or field, a validation/audit pass | `scripts/dod/data_profile.py` |
 | **REFACTOR** | restructuring, cleanup, a bug fix, docs, tooling — everything else | `scripts/dod/refactor_metrics.py` |
 
-Reports live at `reports/<YYYY-MM-DD>/<slug>__<TYPE>.md` — **one folder per day**, so everything
+Reports live at `reports/dod/<YYYY-MM-DD>/<slug>__<TYPE>.md` — **one folder per day**, so everything
 produced by a day's work (including a MODELLING run's copied plots under
-`reports/<YYYY-MM-DD>/assets/<slug>/`) reads, reviews and prunes together. The date is the folder,
+`reports/dod/<YYYY-MM-DD>/assets/<slug>/`) reads, reviews and prunes together. The date is the folder,
 so it is not repeated in the filename. Reports are **tracked in git** and pruned at each release
 (keep the last one per type plus anything a release note cites).
 
@@ -51,12 +51,6 @@ artifact paths, test output, plot links
 ## 5. Regressions, gaps and deliberate omissions
 MANDATORY, non-empty
 
-## 6. Next actions
-
-```json dod-metrics
-{ ..., "content_hash": "sha256:..." }
-```
-```
 
 ## Three rules the validator enforces structurally
 

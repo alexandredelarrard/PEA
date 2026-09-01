@@ -99,6 +99,14 @@ def save_processed_universe(cache_dir: Path, table: str, universe: set[str]) -> 
         encoding="utf-8")
 
 
+#: The `sp500_tickers` projection every SEC fetcher resolves its universe through. Module-level
+#: so a test fixture standing in for that table can be built FROM it -- a fixture that pinned its
+#: own column list passed while production read a column the fixture never wrote, and the
+#: resulting `KeyError` surfaced only as an unrelated-looking driver failure.
+CIK_MAPPING_COLS: tuple[str, ...] = ("ticker", "cik", "name", "sector",
+                                     "industry_group", "sub_industry")
+
+
 def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.DataFrame:
     """Ticker -> CIK (+ name / GICS) resolution for the SEC EDGAR fetchers, filtered
     server-side to `tickers` when given. `company_name` is aliased from `name` for
@@ -110,10 +118,7 @@ def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.D
     it duplicated `sp500_tickers` AND mismapped active tickers (e.g. XOM -> a non-filing
     "ExxonMobil Holdings Corp" shell).
     """
-    cik_mapping_cols: tuple[str, ...] = ("ticker", "cik", "name", "sector",
-                                        "industry_group", "sub_industry")
-    
-    df = context.store.load(Tables.sp500_tickers, columns=list(cik_mapping_cols),
+    df = context.store.load(Tables.sp500_tickers, columns=list(CIK_MAPPING_COLS),
                             where={"ticker": list(tickers)} if tickers is not None else None)
     
     # SEC URLs need the 10-digit zero-padded CIK

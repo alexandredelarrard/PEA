@@ -20,7 +20,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
+from src.constants.constants_price import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_store.schema import name_of
 from src.data_aggregate.utils.common.price_frames import PriceFrames

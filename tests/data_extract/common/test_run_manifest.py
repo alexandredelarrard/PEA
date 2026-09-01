@@ -11,10 +11,11 @@ import pandas as pd
 
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
 from src.data_store.schema import Tables
+from tests.data_extract.fake_context import extract_config
 
 
 def _ctx(tmp_path):
-    return types.SimpleNamespace(paths={"DATA_STORE": tmp_path})
+    return types.SimpleNamespace(paths={"DATA_STORE": tmp_path}, config=extract_config())
 
 
 def test_record_run_roundtrip(tmp_path):

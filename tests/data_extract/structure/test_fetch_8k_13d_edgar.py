@@ -13,9 +13,11 @@ import pandas as pd
 
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.utils.structure.fetch_8k_edgar import _filing_row, fetch_8k_edgar
+from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.utils.structure.fetch_13d_edgar import (
-    _clean_transaction_row, _extract_13d_item_sections, _extract_transaction_rows,
-    _filing_rows, build_ticker_13d_edgar, fetch_13d_edgar,
+    _ITEM_ANCHORS, _carve_with, _clean_transaction_row, _extract_13d_item_sections,
+    _extract_transaction_rows, _filing_rows, _normalize_item_text,
+    build_ticker_13d_edgar, fetch_13d_edgar,
 )
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
@@ -296,6 +298,206 @@ def test_item_sections_missing_item_is_absent_not_empty():
     assert "item4_purpose_of_transaction" not in sections
 
 
+# --- The union carve rule: line-anchored headings + a guarded legacy fallback - #
+def test_13d_forms_cover_both_edgar_form_eras():
+    """EDGAR renamed the form type at the structured-XML mandate -- filings through
+    2024-12-16 are "SC 13D", filings from 2024-12-17 are "SCHEDULE 13D".
+    `get_filings(form=...)` matches EXACTLY, so listing only one pair silently
+    truncates the table at the changeover (measured: 461 filings across 91 S&P 500
+    tickers were invisible, and `sec_13d` stopped dead on 2024-12-16)."""
+    assert {"SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"} <= set(SEC_13D_FORMS)
+
+
+def test_item4_anchor_matches_purpose_of_the_transaction():
+    """The SEC's own caption is "Purpose of Transaction", but filers routinely write
+    "Purpose of THE Transaction" (PSA, CVNA, EXPE) -- the single largest source of
+    Item 4 misses. The caption must tolerate the optional article."""
+    text = ("Item 4. Purpose of the Transaction\n\nThe Reporting Persons intend to engage "
+            "in discussions with the board regarding capital allocation.\n\nSIGNATURE\n")
+    sections = _extract_13d_item_sections(text)
+    assert "capital allocation" in sections["item4_purpose_of_transaction"]
+
+
+def test_item4_anchor_matches_a_captionless_heading():
+    """Some filers print a bare "Item 4." with the caption omitted entirely (FSLR 2016).
+    A heading that STARTS A LINE and ENDS right after the number is a real heading, not
+    the mid-prose cross-reference a bare-number anchor would otherwise collide with."""
+    text = ("Item 4.\n\nThe Reporting Persons acquired the Shares for investment purposes "
+            "only and have no present plan to influence control.\n\nSIGNATURE\n")
+    sections = _extract_13d_item_sections(text)
+    assert "investment purposes" in sections["item4_purpose_of_transaction"]
+
+
+def test_item3_body_stops_at_a_the_transaction_caption():
+    """The real corruption bug: when Item 4's anchor missed, Item 3 lost its end boundary
+    and ran on until the NEXT anchor that did match, swallowing Item 4's entire body
+    (measured on 4.0% of originals / 6.8% of amendments; MNST's item3 was 17,776 chars
+    where the true body is 850). Item 3 must stop at Item 4's heading."""
+    text = ("Item 3. Source and Amount of Funds or Other Consideration\n\n"
+            "The Reporting Persons used working capital of the Funds.\n\n"
+            "Item 4. Purpose of the Transaction\n\n"
+            "The Reporting Persons intend to nominate directors to the board.\n\nSIGNATURE\n")
+    sections = _extract_13d_item_sections(text)
+    item3 = sections["item3_source_of_funds"]
+    assert "working capital" in item3
+    assert "nominate directors" not in item3            # Item 4's body must NOT leak in
+    assert "nominate directors" in sections["item4_purpose_of_transaction"]
+
+
+def test_item_carve_falls_back_on_a_single_line_filing():
+    """Line-anchoring cannot match a filing rendered as ONE line with no newlines at all
+    (HUBB 0001162044-13-001406 is such a filing). The legacy anywhere-matching anchor is
+    the only thing that reads those, which is why it is kept as the fallback half of the
+    union rule rather than deleted."""
+    text = ("Item 3. Source and Amount of Funds or Other Consideration The Reporting Persons "
+            "used working capital of the Funds for the purchase. Item 4. Purpose of Transaction "
+            "The Reporting Persons intend to engage the board about strategic alternatives. "
+            "SIGNATURE")
+    assert "\n" not in text
+    sections = _extract_13d_item_sections(text)
+    assert "working capital" in sections["item3_source_of_funds"]
+    assert "strategic alternatives" in sections["item4_purpose_of_transaction"]
+
+
+def test_item_carve_fallback_rejects_a_contaminated_legacy_body():
+    """The fallback must not reintroduce the bug it exists to fix. This filing has NO
+    line-starting heading at all (single line, so line-anchoring finds nothing and the
+    fallback is what runs), and its Item 4 says "Purpose of THE Transaction", which the
+    legacy anchor cannot match -- so the legacy Item 3 body loses its end boundary and
+    swallows Item 4 whole. A fallback body that still contains a later item's heading is
+    worse than no body at all, so it is dropped rather than written.
+
+    The guard screens the FALLBACK body only: a line-anchored body ends at the next
+    line-anchored heading, and contamination of one was measured at 0% on both the 182
+    originals and the 200-amendment sample."""
+    text = ("This Amendment No. 2 amends the Schedule 13D previously filed. "
+            "Item 3. Source and Amount of Funds or Other Consideration Working capital of "
+            "the Funds was used. Item 4. Purpose of the Transaction The Reporting Persons "
+            "intend to nominate directors to the board of the Issuer. SIGNATURE")
+    legacy = _carve_with(text, _ITEM_ANCHORS)
+    assert "nominate directors" in legacy["item3_source_of_funds"]    # legacy IS contaminated
+    sections = _extract_13d_item_sections(text)
+    assert "item3_source_of_funds" not in sections                    # ...so it is dropped
+
+
+# --- The false-zero guard: a deferred position is not a zero position -------- #
+def _structured_obj(*persons):
+    return SimpleNamespace(
+        has_structured_data=True, is_amendment=True, amendment_number=3,
+        issuer_info=None, security_info=None,
+        items=SimpleNamespace(item4_purpose_of_transaction=None),
+        date_of_event=None, event_date=None, reporting_persons=list(persons),
+    )
+
+
+_NUMERIC_COLS = ("sole_voting_power", "shared_voting_power", "sole_dispositive_power",
+                 "shared_dispositive_power", "aggregate_amount", "percent_of_class")
+
+
+def test_placeholder_numerics_with_a_comment_are_nulled_not_written_as_zero():
+    """Real filing EL 0001140361-25-042382: every cover-page number is tagged 0 while
+    `commentContent` reads "Rows 7, 8, 9, 10, 11, and 13: See Item 5 of this Schedule 13D
+    amendment" -- the filer deferred the numbers to the narrative, it did not disclose a
+    zero stake. Before the mandate `has_structured_data` was False for every real 13D and
+    nulled these by accident; it is True for every filing since, so without this test the
+    table would start claiming 0% stakes (measured: 84 of 738 backlog rows, 11.4%, carry
+    percent_of_class == 0)."""
+    rp = _reporting_person(
+        "The Leonard A. Lauder 2013 Revocable Trust",
+        comment="Rows 7, 8, 9, 10, 11, and 13:  See Item 5 of this Schedule 13D amendment.")
+    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    assert all(pd.isna(row[c]) for c in _NUMERIC_COLS)
+    assert all(isinstance(row[c], float) for c in _NUMERIC_COLS)     # NaN, never None
+    assert row["reporting_person_comment"].startswith("Rows 7, 8, 9")
+
+
+def test_genuine_full_disposal_keeps_its_zeros():
+    """The other direction, and why the guard is a conjunction: a reporting person that
+    really has sold out reports the same six zeros but attaches NO comment. Nulling those
+    would erase a real, material disclosure (the activist exited)."""
+    rp = _reporting_person("Icahn Carl C", comment=None)
+    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    assert all(row[c] == 0 for c in _NUMERIC_COLS)
+    assert row["reporting_person_comment"] is None
+
+
+def test_real_numerics_survive_alongside_a_comment():
+    """A comment is not itself disqualifying -- filers routinely annotate a row that also
+    carries real numbers. Only the all-zero AND commented conjunction is a placeholder."""
+    rp = _reporting_person(
+        "RC Ventures LLC", sole_voting_power=7952386, shared_voting_power=0,
+        sole_dispositive_power=7952386, shared_dispositive_power=0,
+        aggregate_amount=7952386, percent_of_class=41.5,
+        comment="Excludes shares held in a rabbi trust.")
+    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    assert row["percent_of_class"] == 41.5
+    assert row["aggregate_amount"] == 7952386
+    assert row["reporting_person_comment"] == "Excludes shares held in a rabbi trust."
+
+
+def test_a_percentage_that_rounds_to_zero_is_a_real_disclosure_not_a_placeholder():
+    """Why the guard keys on ALL SIX numerics and not on `percent_of_class` alone. Measured
+    over the 322-filing post-mandate backlog, exactly 3 rows report `percent_of_class == 0`
+    next to a comment, and all three are REAL: a filer holding a genuine share count so
+    small it rounds to 0.0% -- CALFINCO's 18,632,216 shares against the 54,730,851,778,811
+    outstanding after Azul's reorganization, and Silver Lake's comment saying in as many
+    words "reflects less than 0.1% of the outstanding shares". Nulling on the percentage
+    alone would erase the share counts those filings actually disclose."""
+    rp = _reporting_person(
+        "CALFINCO Caymans Ltd.", sole_voting_power=0, shared_voting_power=18632216,
+        sole_dispositive_power=0, shared_dispositive_power=18632216,
+        aggregate_amount=18632216, percent_of_class=0.0,
+        comment="Row 13: This percentage is based on a total of 54,730,851,778,811 Shares.")
+    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    assert row["aggregate_amount"] == 18632216          # the real holding survives
+    assert row["shared_voting_power"] == 18632216
+    assert row["percent_of_class"] == 0.0               # ...and so does its true 0.0%
+
+
+# --- Item-body text normalization (encoding + whitespace only) --------------- #
+def test_normalize_item_text_fixes_mojibake_rules_and_whitespace():
+    """Raw 13D bodies carry cp1252 bytes that survived EDGAR's own encoding round-trip
+    (a real PSA filing stores \\x93group\\x94 for curly quotes; STX stores
+    \\x93Asset Purchase Agreement\\x94), and open with runs of box-drawing characters
+    used as a visual rule under the heading (STX's Item 4 body opens with 40 of them).
+    Both wreck tokenization for no semantic gain, so they are normalized away --
+    characters only, never a sentence."""
+    body = ("─" * 40 + "\nThe \x93group\x94 acquired ‘shares’ — see"
+            "\xa0below.\n\n\n   Ragged    spacing   here.   \n")
+    out = _normalize_item_text(body)
+    assert '"group"' in out and "'shares'" in out       # cp1252 + unicode quotes straightened
+    assert "─" not in out                          # box-drawing rule gone
+    assert "\xa0" not in out                            # non-breaking space -> plain space
+    assert "Ragged spacing here." in out                # runs of spaces collapsed
+    assert "\n\n\n" not in out                          # >2 blank lines collapsed
+    assert out == out.strip()
+    assert not any("\x80" <= c <= "\x9f" for c in out)  # no cp1252 control bytes survive
+
+
+def test_normalize_item_text_decodes_a_semantic_cp1252_byte_rather_than_dropping_it():
+    """Not every byte in the cp1252 0x80-0x9F block is punctuation. Measured on the live
+    corpus, the ONLY residual after straightening the quotes and dashes was \\x80 -- the
+    EURO SIGN, in two real KDP filings reading "Investor paid \\x80 52,544.78 in cash to
+    Acorn". Dropping the byte would silently change the currency of a disclosed
+    consideration, so the whole block is decoded to what the filer meant."""
+    out = _normalize_item_text("Investor paid \x8052,544.78 in cash to Acorn.")
+    assert "€52,544.78" in out                     # euro sign preserved, not deleted
+    assert "\x80" not in out
+    assert _normalize_item_text("The \x99 mark is registered.").startswith("The ™")
+
+
+def test_normalize_item_text_leaves_hyphenated_words_and_negatives_alone():
+    """The rule-run stripper is bounded to runs of 3+ AND must not fire inside a word or a
+    number -- a hyphenated term and a negative figure are real content, not furniture."""
+    body = ("The non-transferable shares were valued at -1,234 per unit, a --5 point "
+            "swing, under a well-known cost-plus arrangement.")
+    out = _normalize_item_text(body)
+    assert "non-transferable" in out
+    assert "-1,234" in out
+    assert "--5" in out
+    assert "cost-plus" in out
+
+
 def _fake_attachment(html, is_html: bool = True):
     """`is_html` is a METHOD on edgartools' real `Attachment` (not a property) --
     modeled as a callable here so the fixture matches production and would have
@@ -549,4 +751,25 @@ def test_sanity_check_prints_conclusion():
     print("  filings where it is the actual subject/issuer. Yearless 'MM/DD' trade dates")
     print("  (previously defaulted to year 1 by pd.Timestamp) are re-anchored to the filing's")
     print("  year; unit-suffixed quantities ('760 Shares') now parse to a real float.")
+    print("  FORM ERAS: EDGAR renamed the form at the 2024-12-17 structured-XML mandate")
+    print("  ('SC 13D' -> 'SCHEDULE 13D'), and get_filings(form=...) matches EXACTLY, so")
+    print("  SEC_13D_FORMS lists BOTH pairs -- listing one silently truncated the table on")
+    print("  2024-12-16 and hid 461 filings across 91 tickers.")
+    print("  ITEM CARVE: the union of a line-anchored and an anywhere-matching anchor set.")
+    print("  Each reads filings the other cannot -- line-anchoring rejects mid-prose cross-")
+    print("  references and recovers 'Purpose of THE Transaction' / captionless / over-padded")
+    print("  headings, while the anywhere-matcher is the only thing that reads a single-line")
+    print("  filing. A fallback body still containing a later item's heading is DROPPED.")
+    print("  Measured over 182 originals + 200 amendments: item4 92.9% -> 98.9% (originals),")
+    print("  61.5% -> 70.0% (amendments); item3 contamination 3.8%/2.5% -> 0%/0%; zero")
+    print("  regressions on either population.")
+    print("  NORMALIZATION: encoding + whitespace ONLY, never a sentence. 42% of raw filings")
+    print("  carry cp1252 bytes and 84% a box-drawing rule run; after carving, 0 of 1,186")
+    print("  bodies retain either. The cp1252 C1 block is DECODED, not dropped -- \\x80 is the")
+    print("  euro sign in a real KDP consideration figure.")
+    print("  FALSE-ZERO GUARD: post-mandate, has_structured_data is True for every filing and")
+    print("  no longer discriminates, so a reporting person with all six numerics 0 AND a")
+    print("  commentContent ('See Item 5') is treated as DEFERRED, not as a 0% stake -- its")
+    print("  numerics go NaN and the comment is kept. Zeros with no comment (a genuine full")
+    print("  disposal) are preserved untouched.")
     print("  Validated.")

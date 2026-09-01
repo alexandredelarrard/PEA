@@ -96,7 +96,7 @@ is gone. See [tests/data_extract/test_macro_prices_separation.py](../tests/data_
 |---|---|---|---|---|
 | `sec13f_hr` | `cik, period, ticker, cusip` | `period` | quarterly | **21.7M rows, 6.1 GB — THE reason projections exist.** Long-only quarterly snapshot, 45-day filing lag. Split into stock / call / put / debt legs. Institutional "moves" come from QoQ **share** deltas, not value deltas |
 | `insider_transactions` | `accession_number, security_type, transaction_sk` | `transaction_date` (fresh on `filing_date`) | quarterly | Forms 3/4/5 bulk sets; roles, transaction codes, shares, price |
-| `sec_13d` | `ticker, accession_number, rp_seq` | `filing_date` | — | one row **per reporting person** per filing (`rp_seq`, not CIK — an RP without a CIK is common). Numeric ownership fields are **NULL, not 0**, when `has_structured_data` is false |
+| `sec_13d` | `ticker, accession_number, rp_seq` | `filing_date` | — | one row **per reporting person** per filing (`rp_seq`, not CIK — an RP without a CIK is common). Numeric ownership fields are **NULL, not 0**, whenever the 0 is a parser default rather than a disclosure: `has_structured_data` false (pre-2024-12-17 filings have no XML), or all six numerics 0 alongside a `reporting_person_comment` deferring them to Item 5. A real 0 with no comment is kept |
 | `sec_13d_transactions` | `ticker, accession_number, trade_seq` | `filing_date` | — | Item 5(c) 60-day trade log; an independent grain from `sec_13d` |
 
 ## Extract — governance (DEF 14A) & events

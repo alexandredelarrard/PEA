@@ -22,3 +22,14 @@ TICKERS_KWARGS = dict(default=None,
 # force a full refresh / re-fetch instead of the default incremental (resume-from-DB) behaviour
 FORCE_ARGS = ("-f", "--force")
 FORCE_KWARGS = dict(is_flag=True, default=False, help="Force a full refresh (ignore incremental state).")
+
+FULL_ARGS = ("-F", "--full")
+FULL_KWARGS = dict(is_flag=True, default=False,
+                    help="Ignore the run manifest and take the whole years-history window. "
+                         "Needed for a chunked from-scratch backfill.")
+
+YEARS_ARGS = ("-y", "--years")
+YEARS_KWARGS = dict(
+    type=int, default=None,
+    help="Override data_extract.years_history for THIS run. A rebuild-from-scratch needs "
+         "this to reach as far back as the incrementally-grown table it replaces.")

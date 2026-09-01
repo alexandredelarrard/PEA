@@ -15,6 +15,7 @@ import click
 from src.data_store.schema import Tables
 from src.constants.command_line_interface import (
     CONFIG_ARGS, CONFIG_KWARGS, TICKERS_ARGS, TICKERS_KWARGS,
+    FULL_ARGS, FULL_KWARGS, YEARS_ARGS, YEARS_KWARGS
 )
 from src.context import Context, get_config_context
 from src.utils.cli_helper import SpecialHelpOrder
@@ -166,11 +167,6 @@ def superinvestors(config_path: str) -> None:
 #: `-F/--full` on the fundamentals commands. The manifest's incremental window keys on the
 #: TICKER COUNT, so a chunked from-scratch backfill reads as a repeat of the previous chunk and
 #: fetches nothing; this bypasses it. See `run_edgar_fetch`.
-_FULL_ARGS = ("-F", "--full")
-_FULL_KWARGS = dict(is_flag=True, default=False,
-                    help="Ignore the run manifest and take the whole years-history window. "
-                         "Needed for a chunked from-scratch backfill.")
-
 
 @cli.command(name="fundamentals-facts",
              help="SEC per-filing XBRL -> fundamentals_facts (+ headcount from the same "
@@ -178,7 +174,7 @@ _FULL_KWARGS = dict(is_flag=True, default=False,
                   "only; append-only.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_facts(config_path: str, tickers: str | None, full: bool) -> None:
     config, context = _ctx(config_path)
     fetch_fundamentals_sec(context, tickers=_tickers(context, tickers), full=full,
@@ -211,7 +207,7 @@ def fundamentals_history_sec(config_path: str, tickers: str | None,
                    "wrong. A deleted ticker looks exactly like a never-fetched one to the "
                    "fetcher's accession-set resume, so there is no third state to reason "
                    "about. There is no build_version column: the rebuild IS the version.")
-@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: bool) -> None:
     config, context = _ctx(config_path)
     names = _tickers(context, tickers)
@@ -242,7 +238,7 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
                   "fundamentals -> actions -> sp500 -> the MERGED fundamentals_history.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> None:
     """Delegates to `StepExtractFundamentalsSharadar` rather than restating the order.
 
@@ -268,7 +264,7 @@ def sharadar_tickers(config_path: str) -> None:
              help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, "
                   "relations) -> sharadar_actions.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def sharadar_actions(config_path: str, full: bool) -> None:
     config, context = _ctx(config_path)
     fetch_sharadar_actions(context, full=full,
@@ -279,7 +275,7 @@ def sharadar_actions(config_path: str, full: bool) -> None:
              help="S&P 500 membership events (added / removed / historical, from 1992) -> "
                   "sharadar_sp500. Ingested only; universe.py is NOT re-pointed (D27).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def sharadar_sp500(config_path: str, full: bool) -> None:
     _, context = _ctx(config_path)
     fetch_sharadar_sp500(context, full=full)
@@ -294,7 +290,7 @@ def sharadar_sp500(config_path: str, full: bool) -> None:
                   "inputs are read-only, so the rollback is a drop-and-rebuild.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_history_merged(config_path: str, tickers: str | None, full: bool) -> None:
     """Field-block precedence (D14): Sharadar owns a declared column block for ALL history,
     the SEC table owns 15, and no column ever switches source mid-series.
@@ -389,13 +385,6 @@ def financial_notes(config_path: str, tickers: str | None) -> None:
     fetch_financial_notes(context, tickers=_tickers(context, tickers))
 
 
-YEARS_ARGS = ("-y", "--years")
-YEARS_KWARGS = dict(
-    type=int, default=None,
-    help="Override data_extract.years_history for THIS run. A rebuild-from-scratch needs "
-         "this to reach as far back as the incrementally-grown table it replaces.")
-
-
 # --------------------------------------------------------------------------- #
 # Structure (governance)                                                        #
 # --------------------------------------------------------------------------- #
@@ -425,7 +414,7 @@ def sec_8k_items(config_path: str, tickers: str | None, years: int | None) -> No
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
-@click.option(*_FULL_ARGS, **_FULL_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
     config, context = _ctx(config_path)
     fetch_13d_edgar(context, tickers=_tickers(context, tickers), full=full,

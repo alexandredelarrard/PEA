@@ -70,23 +70,33 @@ def fundamentals_to_daily(
     return wide
 
 
-def daily_market_cap(fundamentals_history: pd.DataFrame, close: pd.DataFrame) -> pd.DataFrame:
-    """
-    Historical daily market cap = point-in-time shares outstanding (from SEC,
-    forward-filled) * daily close. This is the correct historical mcap (moves
-    with price every day), replacing the old current-mcap*price-ratio proxy.
-    Requires a 'sharesOutstanding' column in the fundamentals history.
-    """
+def daily_market_cap(fundamentals_history: pd.DataFrame,
+                     close_split: pd.DataFrame) -> pd.DataFrame:
+    """Historical daily market cap = ffilled `sharesOutstanding` x daily `close_split`.
 
-    shares = fundamentals_to_daily(fundamentals_history, "sharesOutstanding", close.index)
+    ⚠ BOTH LEGS MUST BE SPLIT-ADJUSTED, and the parameter is named for it. The vendor
+    back-fills `sharesbas` to today's basis (`sharesbas(d) = real_shares(d) x F(d)`) and
+    Yahoo restates `Close` to the same one (`close_split(d) = raw_price(d) / F(d)`), so the
+    future-split factor CANCELS IDENTICALLY in the product and the result is the true
+    historical market cap without needing a split event list at all.
+
+    Handing it `close_total` instead reintroduces the defect this signature exists to
+    prevent: nothing in a share count carries a dividend factor, so `D(d)` survives into the
+    product -- median 0.618 in 2003, i.e. market cap 38% too low, and monotone in FUTURE
+    dividends. Handing it a de-adjusted share count breaks the cancellation the other way.
+
+    Requires a `sharesOutstanding` column (the VENDOR-basis one, not `sharesOutstandingPit`).
+    """
+    shares = fundamentals_to_daily(fundamentals_history, "sharesOutstanding",
+                                   close_split.index)
     if shares.empty:
-        return pd.DataFrame(index=close.index)
+        return pd.DataFrame(index=close_split.index)
 
-    cols = [c for c in shares.columns if c in close.columns]
+    cols = [c for c in shares.columns if c in close_split.columns]
     if not cols:
-        return pd.DataFrame(index=close.index)
+        return pd.DataFrame(index=close_split.index)
 
-    mcap = close[cols].mul(shares[cols])
+    mcap = close_split[cols].mul(shares[cols])
     return mcap.where(mcap > 0)
 
 

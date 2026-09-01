@@ -58,7 +58,9 @@ def main(lo: str, hi: str):
               f"history (re-run extraction).")
 
     # projected + bounded: `prices` is ~1.8M rows and only the window is needed
-    win = store.load(Tables.prices, columns=["date", "ticker", "close"],
+    # `close_split` is never null when `close_total` is, so it defines the widest grid --
+    # which is what a coverage diagnostic wants.
+    win = store.load(Tables.prices, columns=["date", "ticker", "close_split"],
                      since=lo, until=hi, optional=True)
     if win is None:
         print("   rows in window: 0  -> the whole window is absent from `prices`.")
@@ -67,7 +69,8 @@ def main(lo: str, hi: str):
         win["date"] = pd.to_datetime(win["date"]).dt.normalize()
         print(f"   rows in window: {len(win):,}  distinct dates: {win['date'].nunique()}  "
               f"distinct tickers: {win['ticker'].nunique()}")
-        close = win.pivot_table(index="date", columns="ticker", values="close", aggfunc="last")
+        close = win.pivot_table(index="date", columns="ticker", values="close_split",
+                                aggfunc="last")
 
     # ---- 2. MARKET TRADING CALENDAR (the killer filter) ---------------------
     print(f"\n2. {MACRO_MARKET_SERIES} TRADING CALENDAR (StepCubePrices drops every date "

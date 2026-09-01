@@ -24,6 +24,7 @@ from src.utils.universe import load_universe_tickers
 # --- prices / market / macro ------------------------------------------------ #
 from src.data_extract.utils.prices.fetch_prices import fetch_price_history
 from src.data_extract.utils.prices.fetch_dividends import fetch_dividends
+from src.data_extract.utils.prices.fetch_splits import fetch_splits
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_extract.utils.prices.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.prices.fetch_fails_to_deliver import fetch_fails_to_deliver
@@ -101,10 +102,15 @@ def seed_universe(config_path: str, refresh: bool) -> None:
 @cli.command(help="Daily price history, OHLCV (yfinance). HEAVY.", help_priority=2)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def price_history(config_path: str, tickers: str | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def price_history(config_path: str, tickers: str | None, full: bool) -> None:
+    """`--full` re-pulls the whole window instead of resuming. Needed because split
+    adjustment is RETROACTIVE: an incremental upsert never revisits the bars a split
+    restated, so the table interleaves adjustment vintages inside one ticker."""
     _, context = _ctx(config_path)
     fetch_price_history(context, tickers=_tickers(context, tickers),
-                        years_history=context.config.data_extract.years_history)
+                        years_history=context.config.data_extract.years_history,
+                        full=full)
 
 
 @cli.command(help="Cash-dividend ex-dates (yfinance). HEAVY.")
@@ -114,6 +120,18 @@ def dividends(config_path: str, tickers: str | None) -> None:
     _, context = _ctx(config_path)
     fetch_dividends(context, tickers=_tickers(context, tickers),
                     years_history=context.config.data_extract.years_history)
+
+
+@cli.command(help="Share-split ex-dates (yfinance) -> prices_splits. HEAVY.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def splits(config_path: str, tickers: str | None, full: bool) -> None:
+    """Fills the nine holes in `sharadar_actions`. Use `--full` to populate a cold table --
+    resuming from an empty frontier would miss every historical event."""
+    _, context = _ctx(config_path)
+    fetch_splits(context, tickers=_tickers(context, tickers),
+                 years_history=context.config.data_extract.years_history, full=full)
 
 
 @cli.command(help="FINRA RegSHO short interest / short volume.")

@@ -46,9 +46,25 @@ other.
 forever, and still ships errors. The job here is to produce a **short, ranked, explained** list
 that a reviewer can actually work — not to certify anything.
 
-**Nothing gates.** Not one finding blocks the nightly fill of `fundamentals_facts` or
-`fundamentals_history_sec`. This is the SEC's own warn-over-reject precedent, taken deliberately
-(decision 45): one filer's bad quarter must never stall the other 499.
+**Nothing gates -- with ONE deliberate exception.** No FUNDAMENTALS finding blocks the nightly
+fill of `fundamentals_facts` or `fundamentals_history_sec`. This is the SEC's own
+warn-over-reject precedent, taken deliberately (decision 45): one filer's bad quarter must
+never stall the other 499.
+
+The exception is `validate prices` (`prices.py`), added 2026-09-01, whose invariant 3 DOES
+block the cube build via `StepBuildCube._assert_price_basis_is_sound`. The asymmetry is the
+point, and it turns on what a finding MEANS in each domain:
+
+  * a bad fundamentals cell is one filer's one number, and the other 499 are still usable;
+  * a price adjustment seam is invisible ONCE INSIDE A FEATURE. `daily_returns` has no jump
+    guard, so a +-95% day that never happened flows into momentum, vol, betas and every
+    label, for the whole cross-section, with no error raised anywhere. MNST carried exactly
+    that for six weeks in 2026 and nothing noticed until an audit.
+
+Even there, only invariant 3 blocks; invariants 1 and 2 report. Invariant 1 fails on 12.6% of
+rows on a CORRECT table because Yahoo back-adjusts for spinoffs and Sharadar's `sharesbas`
+does not -- the reference is the inconsistent side -- so blocking on it would block every
+build. See the `gate()` docstring for the measured thresholds.
 
 ---
 

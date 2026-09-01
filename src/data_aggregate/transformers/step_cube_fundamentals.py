@@ -51,7 +51,7 @@ class StepCubeFundamentals(Step):
 
     # The price fields this step projects, declared like every sibling sub-step so the
     # projection stays visible and testable (valuation ratios need the close only).
-    _FIELDS = ("close",)
+    _FIELDS = ("close_split",)
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -71,7 +71,7 @@ class StepCubeFundamentals(Step):
                                                        "fetch_earnings_surprises")
         
         # ONE point-in-time cache for all five builders (see the module docstring)
-        pit = PitFrames(fundamentals, frames.trading_index, frames.close)
+        pit = PitFrames(fundamentals, frames.trading_index, frames.close_split)
 
         merger = PanelMerger(self._log)
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
@@ -141,7 +141,7 @@ class StepCubeFundamentals(Step):
             fundamentals_history=fundamentals,
             peer_dict=frames.peers,
             trading_index=frames.trading_index,
-            stock_close=frames.close,
+            stock_close=frames.close_split,
             intrinsic_cfg=self._cfg.get("intrinsic", {}),
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
@@ -167,7 +167,7 @@ class StepCubeFundamentals(Step):
         if earnings is None:
             return None
         return build_earnings_feature_panel(earnings, frames.peers, frames.trading_index,
-                                            stock_close=frames.close)
+                                            stock_close=frames.close_split)
 
     def _employee_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None,
                         pit: PitFrames) -> pd.DataFrame | None:
@@ -191,5 +191,5 @@ class StepCubeFundamentals(Step):
         if dividends is None:
             return None
         return build_dividend_feature_panel(dividends, frames.peers, frames.trading_index,
-                                            stock_close=frames.close,
+                                            stock_close=frames.close_split,
                                             fundamentals_history=fundamentals)

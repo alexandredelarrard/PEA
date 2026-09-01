@@ -389,11 +389,16 @@ def rederive(frame: pd.DataFrame, field_map: FieldMap, changed: set[str]) -> pd.
 # --------------------------------------------------------------------------- #
 def build_frame(sharadar_arq: pd.DataFrame, sec: pd.DataFrame, employees: pd.DataFrame | None,
                 actions: pd.DataFrame | None, field_map: FieldMap, overrides: Overrides, *,
+                yf_splits: pd.DataFrame | None = None,
                 report: TranslationReport | None = None) -> pd.DataFrame:
     """The whole transform, with NO I/O, so every step is testable without a database.
 
     Step order, and each step's rule, is the phase-4 plan's: translate -> TTM -> collapse ->
     join the SEC block backward -> employees -> overrides -> re-derive -> contract -> cast.
+
+    `actions` and `yf_splits` are the two split sources `split_events` unions. Only
+    `sharesOutstandingPit` consumes the result -- every other share column stays on the
+    vendor's split-adjusted basis on purpose.
     """
     columns = merged_columns(field_map)
     # An override on a column the SEC ALREADY owns is not a decision, it is a contradiction --
@@ -410,7 +415,8 @@ def build_frame(sharadar_arq: pd.DataFrame, sec: pd.DataFrame, employees: pd.Dat
     
     # `actions` goes to `build_ttm`, not to `translate`: the split de-adjustment runs AFTER
     # the four-quarter aggregation, or a window straddling a split mixes two share bases.
-    ttm = build_ttm(translated, field_map, actions=actions, report=report)
+    ttm = build_ttm(translated, field_map, actions=actions, yf_splits=yf_splits,
+                    report=report)
     ttm = ttm.rename(columns=_KEY_FROM_VENDOR)
     for column in ("as_of", "fiscal_end"):
         ttm[column] = pd.to_datetime(ttm[column], errors="coerce").astype("datetime64[ns]")
@@ -511,6 +517,12 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     actions = context.store.load(
         Tables.sharadar_actions, project=True, optional=True,
         where={"ticker": names, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]})
+    # The SECOND split source. `sharadar_actions` misses GOOGL 2022 x20, NVDA 2021 x4, TSLA
+    # 2022 x3, AVGO/CMG/ANET 2024 and BKNG/MNST/AMCR 2026 -- nine events yfinance has -- and
+    # carries at least one false positive. `split_events` unions them under a corroboration
+    # rule. Only `sharesOutstandingPit` reads the result; market cap no longer does.
+    yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"],
+                                   where={"ticker": names}, optional=True)
     employees = context.store.load(Tables.fundamentals_employees, where={"ticker": names},
                                    optional=True)
 
@@ -531,7 +543,8 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
         sec = sec.rename(columns={f: f"{_SEC_PREFIX}{f}" for f in overrides.fields})
     
     report = TranslationReport()
-    frame = build_frame(vendor, sec, employees, actions, field_map, overrides, report=report)
+    frame = build_frame(vendor, sec, employees, actions, field_map, overrides,
+                        yf_splits=yf_splits, report=report)
     if frame.empty:
         context.log.warning("merged history: the transform produced 0 rows")
         return

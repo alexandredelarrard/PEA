@@ -61,8 +61,16 @@ def _ttm_dividends(dividends_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     return piv.rolling(_YOY, min_periods=1).sum()
 
 
-def _dividend_fields(dividends_hist: pd.DataFrame, close: pd.DataFrame,
+def _dividend_fields(dividends_hist: pd.DataFrame, close_split: pd.DataFrame,
                      fundamentals: pd.DataFrame | None) -> dict:
+    """⚠ `close_split`, the SPLIT-ADJUSTED quote, and every leg here depends on it.
+
+    `dividend_yield` is `ttm_ps / close_split`, and it only cancels because yfinance's
+    `Dividends` column is split-adjusted the same way the quote is -- so a 4:1 split divides
+    both legs and the yield is unchanged. On `close_total` the denominator would additionally
+    carry the FUTURE-dividend factor D(d), making the dividend yield a function of dividends
+    not yet paid. `mcap` below has the same requirement for the same reason."""
+    close = close_split
     idx = close.index
     universe = list(close.columns)
     ttm_ps = _ttm_dividends(dividends_hist, idx, universe)   # per-share TTM (source A)

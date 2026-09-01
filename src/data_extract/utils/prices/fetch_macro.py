@@ -103,17 +103,31 @@ def _fetch_price_leg(context: Context, since: pd.Timestamp,
                      until: pd.Timestamp) -> pd.DataFrame:
     """The yfinance legs -> date-indexed wide frame of CLOSES under their series names.
 
-    Keeps only `close` (the "trim the volume" step). `trim_prelisting_bars` is deliberately
+    Keeps only the close (the "trim the volume" step). `trim_prelisting_bars` is deliberately
     NOT applied: it is an equity-listing heuristic, and `^VIX` is legitimately 100%
-    zero-volume, so it would erase the whole series."""
+    zero-volume, so it would erase the whole series.
+
+    ⚠ `auto_adjust=True`, explicitly and permanently. EVERY macro leg is consumed as a
+    RETURN, never as a level in a product, so all of them belong on the total-return basis --
+    and two of them would be actively wrong on any other. `SPY` is stored under the series
+    name `equity_tr`: it is the L/S benchmark leg, and it is what `beta_market` and
+    `fwd_market` are measured against inside every label. `XLE` (`energy`) pays ~3%. Flipping
+    either to a PRICE return silently corrupts every beta and every label in the book.
+
+    This is why `download_ohlcv` takes `auto_adjust` as a required argument instead of
+    hard-coding it: the equity leg needs `False`, and this leg must not follow it."""
     raw = download_ohlcv(list(MACRO_PRICE_SERIES), since, until,
-                         desc="Downloading macro/market prices")
+                         desc="Downloading macro/market prices",
+                         auto_adjust=True, actions=False)
     if raw is None or raw.empty:
         context.log.warning("yfinance returned nothing for the macro price legs %s",
                             list(MACRO_PRICE_SERIES))
         return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
 
-    df = raw[["date", "ticker", "close"]].copy()
+    # `close_total`, not `close`: under auto_adjust=True the normaliser emits the single
+    # returned series under the name that states its basis. The stored column stays `close`
+    # -- `prices_macro` is one series per row, so the name carries no basis ambiguity.
+    df = raw[["date", "ticker", "close_total"]].rename(columns={"close_total": "close"})
     df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
     df["ticker"] = df["ticker"].astype(str).map(MACRO_PRICE_SERIES)
     wide = (df.dropna(subset=["ticker"])

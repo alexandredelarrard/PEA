@@ -47,7 +47,7 @@ class StepCubeText(Step):
 
     # The price fields this step reads back from `cube_part_prices`. Declared rather than
     # inlined so the projection stays introspectable (see test_part_registry.py).
-    _FIELDS = ("close",)
+    _FIELDS = ("close_split",)
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)

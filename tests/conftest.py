@@ -265,10 +265,15 @@ def real_frames():
 
     prices = store.load("prices", where={"ticker": sorted(subset)})
     raw = du.prices_long_to_multiindex(prices)
-    close = du.extract_field(raw, "Close")
+    # BOTH bases, because the builders under test need both: `close_split` for market cap and
+    # the intraday features that pair with open/high/low, `close_total` for every return.
+    close = du.extract_field(raw, "CloseSplit")
+    close_total = du.extract_field(raw, "CloseTotal")
     # the trading calendar is still the dates the MARKET traded -- sourced from prices_macro
-    close = close.loc[macro[MACRO_MARKET_SERIES].reindex(close.index).notna()]
-    returns = du.daily_returns(close)
+    calendar = macro[MACRO_MARKET_SERIES].reindex(close.index).notna()
+    close = close.loc[calendar]
+    close_total = close_total.loc[calendar]
+    returns = du.daily_returns(close_total)
 
     cols = list(returns.columns)
     keep = (["AMD"] if "AMD" in cols else []) + [c for c in cols if c != "AMD"][:SUBSET_SIZE]
@@ -276,7 +281,8 @@ def real_frames():
     mkt_level = mkt_level.reindex(mkt_level.index.union(close.index)).ffill()
     return {
         "mkt_ret": mkt_level.pct_change(fill_method=None).reindex(close.index),
-        "stock_close": close[keep],
+        "stock_close": close[keep],                 # close_split -- the LEVEL basis
+        "stock_close_total": close_total[keep],     # the RETURN basis
         "stock_ret": returns[keep],
         # the macro/market series the commodity + currency factors read, wide by series name
         "macro_wide": macro,
@@ -299,7 +305,8 @@ def real_pipeline(real_frames):
     )
     from src.data_peers.utils.sector_peers import build_peer_dict
 
-    stock_close = real_frames["stock_close"]
+    stock_close = real_frames["stock_close"]              # close_split -- LEVELS
+    stock_close_total = real_frames["stock_close_total"]  # close_total -- RETURNS
     stock_ret = real_frames["stock_ret"]
     mkt_ret = real_frames["mkt_ret"]
     macro = real_frames["macro_wide"]
@@ -316,7 +323,8 @@ def real_pipeline(real_frames):
     sector_groups = load_gics_maps(context)
 
     # mirror StepCubeTarget._factor_panel: market + style + commodity + currency + macro
-    chars = build_characteristics(stock_close, stock_ret, fundamentals, resvol_window=63)
+    chars = build_characteristics(stock_close_total, stock_ret, fundamentals,
+                                  resvol_window=63, stock_close_split=stock_close)
     style_cols = {}
     for name, char in chars.items():
         char.name = name
@@ -347,9 +355,9 @@ def real_pipeline(real_frames):
     # deleted); unwrap {h: {"rank": df}} -> {h: df} so the fixture's shape is unchanged
     # and its five consumer tests need no edits.
     _multi = build_targets_multi(
-        stock_close, betas, factor_panel, macro_cols,
+        stock_close_total, betas, factor_panel, macro_cols,
         horizons=horizons, labels=("rank",), min_names=20,
-        sector_groups=sector_groups,
+        sector_groups=sector_groups, stock_ret=stock_ret,
     )
     labels_rank = {h: by_label["rank"] for h, by_label in _multi.items()}
 

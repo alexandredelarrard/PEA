@@ -43,7 +43,6 @@ import pandas as pd
 from src.data_aggregate.utils.common.prices import (
     forward_compound,
     forward_cumchange,
-    forward_return,
     momentum_characteristic,
     trailing_vol,
 )
@@ -53,7 +52,7 @@ from src.data_aggregate.utils.common.xs import (
 
 
 def compute_epsilon(
-    close: pd.DataFrame,             # stocks only
+    stock_ret: pd.DataFrame,         # stocks only, DAILY TOTAL RETURNS
     betas: dict,                     # {ticker: DataFrame beta_<factor>...}
     factor_panel: pd.DataFrame,      # market + style + macro daily
     macro_cols: list,                # which factor_panel columns are macro CHANGES
@@ -62,6 +61,17 @@ def compute_epsilon(
 ) -> pd.DataFrame:
     """
     Multi-factor forward residual for every stock at every date, one horizon.
+
+    ⚠ Takes DAILY RETURNS, not prices. The stock leg used to be
+    `forward_return(close, h)` = `close.shift(-h)/close - 1`, a literal PRICE ratio -- so
+    every label silently excluded dividends while every factor leg it is differenced against
+    was already log-compounded from returns. Two defects in one line: the stock and the
+    factors sat on different bases, and the label systematically under-measured high-yielders
+    (MO 1.24x over this sample where the truth is 20.2x; T 1.29x vs 6.26x). An L/S trained on
+    it would short dividend payers for the dividends they paid.
+
+    `forward_compound(stock_ret, h)` fixes both at once: same function, same window and same
+    compounding as the factor legs.
 
     `sector_excess` = (date x ticker) DAILY frame of each stock's OWN GICS sector basket
     (`factors.gics_sector_excess_returns`) -- the one regressor that differs per stock --
@@ -78,7 +88,7 @@ def compute_epsilon(
     indicator block then takes the LABEL to 0.0%.
     """
     
-    fwd_stock = forward_return(close, horizon)
+    fwd_stock = forward_compound(stock_ret, horizon)
 
     # Precompute forward returns of every SHARED factor (same for all stocks).
     style_market_cols = [c for c in factor_panel.columns if c not in macro_cols]
@@ -94,17 +104,17 @@ def compute_epsilon(
     # fingerprint harnesses build a label with no sector term at all.
     fwd_sector = forward_compound(sector_excess, horizon) if sector_excess is not None else None
 
-    eps = pd.DataFrame(index=close.index, columns=close.columns, dtype="float64")
-    for ticker in close.columns:
+    eps = pd.DataFrame(index=stock_ret.index, columns=stock_ret.columns, dtype="float64")
+    for ticker in stock_ret.columns:
         if ticker not in betas:
             continue
         
-        b = betas[ticker].reindex(close.index)
+        b = betas[ticker].reindex(stock_ret.index)
         resid = fwd_stock[ticker].copy()
         # the stock's OWN sector basket -> strip its individual sector loading
         if (fwd_sector is not None and "beta_sector" in b.columns
                 and ticker in fwd_sector.columns):
-            resid = resid - b["beta_sector"] * fwd_sector[ticker].reindex(close.index).fillna(0.0)
+            resid = resid - b["beta_sector"] * fwd_sector[ticker].reindex(stock_ret.index).fillna(0.0)
 
         # Subtract every shared factor's forward return * its loading. A SHARED factor is the
         # same series for every stock, so ONE missing value (e.g. a data gap in oil / gold /
@@ -177,7 +187,7 @@ def fitted_beta_columns(betas: dict) -> list[str]:
 
 
 def _neutralizing_design(
-    close: pd.DataFrame,
+    close_total: pd.DataFrame,
     betas: dict,
     sector_groups: dict[str, dict[str, str]] | None,
     with_momentum: bool,
@@ -198,11 +208,11 @@ def _neutralizing_design(
     label. Adding this takes that to +0.0051. Presence of the frame is the switch.
     """
 
-    frames = [_beta_frame(betas, c, close) for c in fitted_beta_columns(betas)]
+    frames = [_beta_frame(betas, c, close_total) for c in fitted_beta_columns(betas)]
 
     # neutralize momentum at stock level
     if with_momentum:
-        frames.append(momentum_characteristic(close))
+        frames.append(momentum_characteristic(close_total))
 
     if market_cap is not None:
         frames.append(np.log(market_cap))     # sign is irrelevant to a projection
@@ -214,14 +224,14 @@ def _neutralizing_design(
     # `reindex_like` AFTER this fill -- so an unaligned exposure would reach `np.linalg.lstsq`
     # carrying NaN and raise. This reindex is what makes the later one harmless.
     exposures = [xs_z(f, clip=XS_CLIP_CHARACTERISTIC, zero_sd_to_nan=True)
-                 .reindex_like(close).fillna(0.0)
+                 .reindex_like(close_total).fillna(0.0)
                  for f in frames if f is not None]
 
     # industry_group is NESTED in sector, so industry indicators span both levels; fall back to
     # sector when only that level is supplied.
     groups = ((sector_groups or {}).get("industry_group")
               or (sector_groups or {}).get("sector"))
-    dummies = xs_group_dummies(groups, close.columns) if groups else None
+    dummies = xs_group_dummies(groups, close_total.columns) if groups else None
     return exposures, dummies
 
 
@@ -258,7 +268,7 @@ def vol_standardize_epsilon(eps: pd.DataFrame, stock_ret: pd.DataFrame, horizon:
 
 
 def build_targets_multi(
-    close: pd.DataFrame,
+    close_total: pd.DataFrame,
     betas: dict,
     factor_panel: pd.DataFrame,
     macro_cols: list,
@@ -268,7 +278,7 @@ def build_targets_multi(
     neutralize_momentum: bool = True,
     sector_groups: dict[str, dict[str, str]] | None = None,
     sector_excess: pd.DataFrame | None = None,
-    stock_ret: pd.DataFrame | None = None,
+    stock_ret: pd.DataFrame | None = None,   # REQUIRED -- every label is built from it
     vol_standardize: bool = False,
     market_cap: pd.DataFrame | None = None,
 ) -> dict:
@@ -302,6 +312,12 @@ def build_targets_multi(
     place -- it only homogenises magnitude, which matters for an RMSE loss on the zscore /
     epsilon labels but not for the rank one.
 
+    ⚠ `stock_ret` is REQUIRED, not optional. It is the daily TOTAL-RETURN frame every label
+    is now built from (`compute_epsilon`), and `close_total` is used only for the momentum
+    characteristic and the frame geometry in `_neutralizing_design`. The keyword default
+    survives only so the call remains keyword-explicit; passing None raises immediately
+    rather than producing a silently price-based label.
+
     Returns {horizon: {label: DataFrame(date x ticker)}}.
 
     (A single-label `build_targets` twin used to sit alongside this, duplicating the
@@ -309,12 +325,18 @@ def build_targets_multi(
     it; pass `labels=("rank",)` instead.)
     """
 
+    if stock_ret is None:
+        raise ValueError(
+            "build_targets_multi needs `stock_ret` (daily TOTAL returns): every label is a "
+            "forward COMPOUNDED return now, not a close-to-close price ratio. Passing prices "
+            "alone would rebuild the exact defect this signature exists to prevent.")
+
     # horizon-independent, so it is built ONCE for all (horizon, label) pairs
-    exposures, dummies = _neutralizing_design(close, betas, sector_groups,
+    exposures, dummies = _neutralizing_design(close_total, betas, sector_groups,
                                               neutralize_momentum, market_cap)
     out: dict[int, dict[str, pd.DataFrame]] = {}
     for h in horizons:
-        eps = compute_epsilon(close, betas, factor_panel, macro_cols, h,
+        eps = compute_epsilon(stock_ret, betas, factor_panel, macro_cols, h,
                               sector_excess=sector_excess)
         if vol_standardize:
             eps = vol_standardize_epsilon(eps, stock_ret, h)

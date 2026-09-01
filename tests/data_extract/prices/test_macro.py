@@ -102,9 +102,12 @@ def test_price_leg_stores_closes_untransformed(monkeypatch):
     """The price leg is a pure symbol->name relabel of `close`: no inversion, no rescaling.
     There WAS a reciprocal here while FX came from Yahoo; this pins that nothing re-grows one,
     which would be invisible in every downstream test (the series is still plausible)."""
+    # `close_total`, not `close`: under `auto_adjust=True` the normaliser names the single
+    # returned series after its BASIS. The macro leg is pinned to that flag precisely so
+    # `equity_tr` stays a total return -- see `_fetch_price_leg`.
     idx = pd.date_range("2024-01-02", periods=3, freq="B")
-    raw = pd.concat([pd.DataFrame({"date": idx, "ticker": sym, "close": [c, c + 1.0, c + 2.0],
-                                   "volume": 1.0})
+    raw = pd.concat([pd.DataFrame({"date": idx, "ticker": sym,
+                                   "close_total": [c, c + 1.0, c + 2.0], "volume": 1.0})
                      for sym, c in zip(MACRO_PRICE_SERIES, [100.0, 200.0, 300.0, 400.0, 500.0])],
                     ignore_index=True)
     monkeypatch.setattr(fm, "download_ohlcv", lambda *a, **k: raw)
@@ -115,7 +118,7 @@ def test_price_leg_stores_closes_untransformed(monkeypatch):
 
     assert set(wide.columns) == set(MACRO_PRICE_SERIES.values())
     for sym, name in MACRO_PRICE_SERIES.items():
-        expected = raw.loc[raw["ticker"] == sym, "close"].to_numpy()
+        expected = raw.loc[raw["ticker"] == sym, "close_total"].to_numpy()
         np.testing.assert_allclose(wide[name].to_numpy(), expected)
     assert "volume" not in wide.columns          # the "trim the volume" step
     print("\n=== SANITY CHECK: price leg is untransformed ===")

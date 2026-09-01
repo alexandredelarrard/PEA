@@ -16,7 +16,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def extract_field(df: pd.DataFrame, field: str = "Close") -> pd.DataFrame:
+def extract_field(df: pd.DataFrame, field: str) -> pd.DataFrame:
     """
     Return a wide DataFrame (index=dates, columns=tickers) for a single price
     field (e.g. 'Close' or 'Open'), regardless of the exact yfinance layout.
@@ -48,15 +48,25 @@ def extract_field(df: pd.DataFrame, field: str = "Close") -> pd.DataFrame:
     return out.astype("float64")
 
 
-def daily_returns(close: pd.DataFrame) -> pd.DataFrame:
-    """Simple daily returns from a wide close matrix. First row is NaN."""
-    return close.pct_change(fill_method=None)
+def daily_returns(close_total: pd.DataFrame) -> pd.DataFrame:
+    """Simple daily returns from a wide price matrix. First row is NaN.
+
+    ⚠ Expects the TOTAL-RETURN series (`close_total`), not `close_split`. The maths is the
+    same either way, which is exactly the hazard: fed the split-adjusted series this silently
+    returns PRICE returns, and every consumer -- momentum, vol, betas, the labels -- is then
+    wrong by every dividend ever paid. The signature says which basis it wants; the column
+    names say which one you have."""
+    return close_total.pct_change(fill_method=None)
 
 
 def prices_long_to_multiindex(prices: pd.DataFrame) -> pd.DataFrame:
     """
-    Convert the long-format prices parquet (date, ticker, open, close, ...)
-    into a yfinance-style MultiIndex frame: ('Close', ticker), ('Open', ticker).
+    Convert the long-format prices frame (date, ticker, open, close_split, close_total, ...)
+    into a yfinance-style MultiIndex frame: ('CloseSplit', ticker), ('CloseTotal', ticker).
+
+    ⚠ `CloseSplit` and `CloseTotal`, never a bare `Close`. The two bases must stay
+    distinguishable all the way to the consumer that picks one -- see the `prices` block in
+    sql/schema.sql.
     """
 
     prices = prices.copy()
@@ -64,7 +74,7 @@ def prices_long_to_multiindex(prices: pd.DataFrame) -> pd.DataFrame:
     colmap = {c: c.lower() for c in prices.columns}
     prices = prices.rename(columns=colmap)
 
-    fields = {"Close": "close", "Open": "open"}
+    fields = {"CloseSplit": "close_split", "CloseTotal": "close_total", "Open": "open"}
     for cap, low in (("High", "high"), ("Low", "low"), ("Volume", "volume")):
         if low in prices.columns:
             fields[cap] = low

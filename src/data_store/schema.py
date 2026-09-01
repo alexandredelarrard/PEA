@@ -104,6 +104,13 @@ class Tables:
     # ----------------------------------------------------------------- #
     prices = Table("prices", ("ticker", "date"), date_col="date", freshness="daily")
     dividends = Table("prices_dividends", ("ticker", "date"), date_col="date")
+    # Share-split ex-dates, yfinance-sourced and unioned with `sharadar_actions` (which has
+    # nine known holes -- GOOGL 2022, NVDA 2021, TSLA 2022, AVGO/CMG/ANET 2024, BKNG/MNST/AMCR
+    # 2026 -- and at least one false positive, SJM's 0.945 merger factor).
+    # Sparse like `dividends`, not daily: only non-zero events are stored, so it resumes from
+    # its own frontier rather than the price one.
+    # NOT a market-cap input -- see the table comment in sql/schema.sql.
+    prices_splits = Table("prices_splits", ("ticker", "date"), date_col="date")
     short_interest = Table(
         "sec_short_interest", ("ticker", "date"), date_col="date", freshness="daily",
         # short_interest_features: RegSHO short/total volume + reported short interest / ADV.
@@ -206,8 +213,11 @@ class Tables:
             "retainedEarnings", "minorityInterest_sec", "stockholdersEquity", "returnOnEquity",
             "debtToEquity",
             "basicShares", "dilutedShares", "sharesOutstanding", "optionOverhang",
-            # -- the roll-up that needs BOTH sources, then the 2 SEC-owned added columns
-            "stockholdersEquityInclNci", "employees_sec", "regime_sec",
+            # -- the roll-up that needs BOTH sources, then the 2 SEC-owned added columns,
+            #    then the point-in-time share count (see `_SPLIT_ADJUSTMENT` in
+            #    sharadar_field_map.json -- it is the ONLY de-adjusted column, and only
+            #    `inst_ownership_pct` and the insider %-of-shares leg may read it)
+            "stockholdersEquityInclNci", "employees_sec", "regime_sec", "sharesOutstandingPit",
             # -- the 25 Sharadar EXTRAS, renamed to repo camelCase. They are keyed by their
             #    VENDOR column in sharadar_field_map.json (`cashneq` -> cashAndEquivalents)
             "cashAndEquivalents", "accumulatedOtherComprehensiveIncome", "nonCurrentAssets", "nonCurrentLiabilities", "totalInvestments", "longTermInvestments",

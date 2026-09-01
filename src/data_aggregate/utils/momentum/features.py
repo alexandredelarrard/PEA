@@ -1,6 +1,23 @@
 """
 features.py
 -----------
+⚠ TWO PRICE BASES. `open`, `high` and `low` come back from yfinance SPLIT-ADJUSTED ONLY,
+so they share a basis with `close_split`, NOT with `close_total`. Mixing them inside one
+subtraction is a silent error -- it is the bug the two-column split could easily have
+introduced while fixing market cap. Which block uses which:
+
+  close_split  -- `atr_14`     : (high - prev_close), (low - prev_close)
+                  `gap_21`     : open / prev_close - 1
+                  `range_21`   : |close - open| / open
+                  `dollar_volume_63` / `amihud_63` : price x volume (the split factor
+                                 cancels between the two, the dividend factor would not)
+  close_total  -- every RETURN: mom_12_1, rev_5/21, ma_ratio_50/200, high_prox_252,
+                  peer_mom_63, tax_loss_pressure, the seasonal block, macd, rsi_14, and
+                  the `ret` the vol / skew / idio family is built from
+
+`atr_14` itself is basis-INVARIANT (it returns atr/close, a ratio of same-basis
+quantities); the intermediate true range is not, which is exactly why it needs pinning.
+
 Price-only alphas (you have close + open, no volume yet). EVERY feature is
 point-in-time: computed from data up to and including t, never forward. The
 label is the only forward object in the pipeline.
@@ -81,9 +98,10 @@ def _atr(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame, n: int = 14
 
 
 def compute_raw_features(
-    close: pd.DataFrame,
+    close_total: pd.DataFrame,
     open: pd.DataFrame,
     sector_returns: pd.DataFrame,
+    close_split: pd.DataFrame | None = None,
     high: pd.DataFrame | None = None,
     low: pd.DataFrame | None = None,
     volume: pd.DataFrame | None = None,
@@ -103,6 +121,10 @@ def compute_raw_features(
     seasonality feature `seasonal_h<h>` per horizon (averaged over the last
     `seasonal_years` prior years); if absent it is skipped.
 
+    ⚠ TWO PRICE BASES, and mixing them inside one subtraction is a silent bug. See the
+    module docstring's basis table. `close_split` defaults to `close_total` only so a
+    dividend-free synthetic fixture stays a one-liner; every real caller passes both.
+
     `returns` lets the caller pass daily returns it ALREADY has instead of having them
     re-derived here -- `du.daily_returns` is literally `close.pct_change(fill_method=None)`,
     and the cube's price step persists that frame, so recomputing it was pure duplication.
@@ -110,37 +132,43 @@ def compute_raw_features(
     trimmed window the passed frame is also strictly better: a recompute would return NaN on
     the window's first row where the full build had a value.
     """
-    ret = close.pct_change(fill_method=None) if returns is None else returns.reindex_like(close)
+    ret = (close_total.pct_change(fill_method=None) if returns is None
+           else returns.reindex_like(close_total))
+    # `open`, `high` and `low` come back SPLIT-ADJUSTED ONLY, so anything subtracting one of
+    # them from a close must use `close_split`. Pairing them with `close_total` mixes bases
+    # inside a single subtraction -- a NEW bug, introduced by the two-column fix rather than
+    # fixed by it.
+    split = close_total if close_split is None else close_split.reindex_like(close_total)
     feats = {}
 
     # 12-1 momentum: cumulative return from t-252 to t-21 (skip last month).
-    feats["mom_12_1"] = sanitize(momentum_characteristic(close))
+    feats["mom_12_1"] = sanitize(momentum_characteristic(close_total))
 
     # Short-term reversal (negated: recent losers tend to bounce).
-    feats["rev_5"] = sanitize(-(close / close.shift(5) - 1.0))
-    feats["rev_21"] = sanitize(-(close / close.shift(21) - 1.0))
+    feats["rev_5"] = sanitize(-(close_total / close_total.shift(5) - 1.0))
+    feats["rev_21"] = sanitize(-(close_total / close_total.shift(21) - 1.0))
 
     # Trailing realized volatility (annualized-ish; scale irrelevant post-rank).
     feats["vol_21"] = sanitize(trailing_vol(ret, 21))
     feats["vol_63"] = sanitize(trailing_vol(ret, 63))
 
     # Trend: distance from moving averages.
-    feats["ma_ratio_50"] = sanitize(close / close.rolling(50).mean() - 1.0)
-    feats["ma_ratio_200"] = sanitize(close / close.rolling(200).mean() - 1.0)
+    feats["ma_ratio_50"] = sanitize(close_total / close_total.rolling(50).mean() - 1.0)
+    feats["ma_ratio_200"] = sanitize(close_total / close_total.rolling(200).mean() - 1.0)
 
     # Proximity to trailing 52-week high (near-high names show continuation).
-    feats["high_prox_252"] = sanitize(close / close.rolling(252).max())
+    feats["high_prox_252"] = sanitize(close_total / close_total.rolling(252).max())
 
     # Overnight gap: average of (open_t / close_{t-1} - 1) over 21d.
-    gap = sanitize(open / close.shift(1) - 1.0)
+    gap = sanitize(open / split.shift(1) - 1.0)
     feats["gap_21"] = gap.rolling(21).mean()
 
     # Intraday range proxy from close/open.
-    rng = sanitize((close - open).abs() / open)
+    rng = sanitize((split - open).abs() / open)
     feats["range_21"] = rng.rolling(21).mean()
 
     # Peer-relative (residual) momentum: 63d stock cum ret minus sector cum ret.
-    stock_cum = sanitize(close / close.shift(63) - 1.0)
+    stock_cum = sanitize(close_total / close_total.shift(63) - 1.0)
     sector_cum = sanitize((1.0 + sector_returns).rolling(63).apply(np.prod, raw=True) - 1.0)
     feats["peer_mom_63"] = sanitize(stock_cum - sector_cum)
 
@@ -162,8 +190,11 @@ def compute_raw_features(
 
     # ---- Liquidity / volume (point-in-time trailing windows; skipped w/o volume) ----
     if volume is not None:
-        volume = volume.reindex_like(close)
-        dollar_vol = close * volume                        # daily $ traded
+        volume = volume.reindex_like(close_total)
+        # `split`, not `close_total`: dollar volume is a LEVEL x a share count, and both
+        # carry the same split restatement so it cancels. On the total-return basis the
+        # dollars traded would be depressed by every later dividend.
+        dollar_vol = split * volume                        # daily $ traded
         # Liquidity/size proxy: log average daily dollar volume (63d).
         feats["dollar_volume_63"] = sanitize(
             np.log1p(dollar_vol.rolling(63, min_periods=20).mean()))
@@ -211,7 +242,7 @@ def compute_raw_features(
             ssum = np.where(finite, prior, 0.0).sum(axis=0)
             seasonal = np.where(cnt > 0, ssum / np.maximum(cnt, 1), np.nan)
             feats[f"seasonal_h{h}"] = sanitize(
-                pd.DataFrame(seasonal, index=close.index, columns=close.columns))
+                pd.DataFrame(seasonal, index=close_total.index, columns=close_total.columns))
 
     # ---- Tax-loss-selling / January-effect pressure (forced year-end flow) ----
     # Which names get dumped into year-end is a per-STOCK effect (driven by its
@@ -230,26 +261,29 @@ def compute_raw_features(
     # trend linear in the year (a ranking artifact, not a stock signal). NaN makes
     # the feature simply ABSENT off-season, so the rank only ever orders the
     # in-window names (losers high vs non-losers) and the drift disappears.
-    year_start = close.groupby(close.index.year).transform("first")
-    ytd = sanitize(close / year_start.where(year_start > 0) - 1.0)
+    year_start = close_total.groupby(close_total.index.year).transform("first")
+    ytd = sanitize(close_total / year_start.where(year_start > 0) - 1.0)
     tax_loss = (-ytd).clip(lower=0.0)                 # 0 for YTD winners, >0 for losers
-    off_window = ~np.isin(close.index.month, [10, 11, 12])
+    off_window = ~np.isin(close_total.index.month, [10, 11, 12])
     tax_loss.loc[off_window] = np.nan                 # NaN outside the Oct-Dec tax window (not 0)
     feats["tax_loss_pressure"] = sanitize(tax_loss)
 
     # ---- Technical indicators, LAGGED one day (exclude t -> no leakage) ----
-    macd_norm, macd_hist = _macd(close)
+    macd_norm, macd_hist = _macd(close_total)
     feats["macd"] = macd_norm.shift(1)
     feats["macd_hist"] = macd_hist.shift(1)
-    feats["rsi_14"] = _rsi(close, 14).shift(1)
+    feats["rsi_14"] = _rsi(close_total, 14).shift(1)
     if high is not None and low is not None:
-        feats["atr_14"] = _atr(high, low, close, 14).shift(1)
+        # `split`: `_atr` computes (high - prev_close) and (low - prev_close), so all three
+        # legs must share one basis. It returns atr/close -- a ratio of same-basis
+        # quantities -- so the FEATURE is basis-invariant; the intermediate is not.
+        feats["atr_14"] = _atr(high, low, split, 14).shift(1)
 
     return feats
 
 
 def build_feature_panel(
-    close: pd.DataFrame,
+    close_total: pd.DataFrame,
     open: pd.DataFrame,
     sector_returns: pd.DataFrame,
     method: str = "rank",
@@ -259,6 +293,7 @@ def build_feature_panel(
     seasonal_horizons: list[int] | None = None,
     *,
     returns: pd.DataFrame | None = None,
+    close_split: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Build a long-format feature panel ready for modeling.
@@ -266,15 +301,17 @@ def build_feature_panel(
     Returns a tidy DataFrame with columns:
         ['date', 'ticker', <feature_1>, <feature_2>, ...]
     Each feature already cross-sectionally standardized within its date.
-    `high`/`low` enable the ATR(14) feature; `volume` enables the liquidity family;
+    `close_split` is the split-adjusted-only series that `open`/`high`/`low` share a basis
+    with -- see the module docstring. `high`/`low` enable the ATR(14) feature; `volume`
+    enables the liquidity family;
     `seasonal_horizons` enables the per-horizon cross-sectional seasonality feature.
     `returns` passes through daily returns the caller already holds (see
     `compute_raw_features`); keyword-only, so the eight-positional-arg call sites are
     unaffected.
     """
-    raw = compute_raw_features(close, open, sector_returns, high=high, low=low,
-                               volume=volume, seasonal_horizons=seasonal_horizons,
-                               returns=returns)
+    raw = compute_raw_features(close_total, open, sector_returns, close_split=close_split,
+                               high=high, low=low, volume=volume,
+                               seasonal_horizons=seasonal_horizons, returns=returns)
     std = {name: xs_standardize(f, method) for name, f in raw.items()}
 
     long_frames = []

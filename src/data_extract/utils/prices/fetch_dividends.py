@@ -62,8 +62,11 @@ def fetch_dividends(
                          include_missing=False)
 
     logger.info(f"Downloading dividends for {len(tickers)} tickers since {since.date()}")
+    # auto_adjust=False for the same response shape the price fetcher uses, so a future
+    # combined pull is a straight reuse. The ex-dates themselves are basis-independent.
     df_downloaded = download_ohlcv(tickers, since, today, chunk_size, pause,
-                                   desc="Downloading dividends")
+                                   desc="Downloading dividends",
+                                   auto_adjust=False, actions=True)
     df_dividends = _extract_dividends(df_downloaded)
 
     # upsert on (ticker, date) — the DB merges with any prior ex-dates

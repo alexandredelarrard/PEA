@@ -9,7 +9,7 @@
 # ------------------------------------------------------------------ #
 x-airflow-common: &airflow-common
   build:
-    context: .
+    context: ./airflow
     dockerfile: Dockerfile.airflow
   image: pea-airflow:latest
   env_file:

@@ -51,9 +51,19 @@ def trailing_vol(returns: pd.DataFrame, window: int,
     return returns.rolling(window, min_periods=min_periods).std()
 
 
-def forward_return(prices: pd.DataFrame, horizon: int) -> pd.DataFrame:
-    """Simple forward return over the next `horizon` rows."""
-    return prices.shift(-horizon) / prices - 1.0
+def forward_return(total_return_index: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    """Simple forward return over the next `horizon` rows, from a TOTAL-RETURN INDEX.
+
+    ⚠ NEVER hand this an equity price series. `close_split` is a PRICE, so its ratio is a
+    price return and excludes every dividend -- which is exactly the defect that made the
+    labels short high-yielders (MO reads 1.24x over the sample where the truth is 20.2x).
+    The stock labels were rebuilt on `forward_compound(stock_ret, h)` for that reason and no
+    longer call this.
+
+    It survives for the series where a ratio of levels IS a total return by construction:
+    the macro legs (`equity_tr`, `bond_10y_tr`), which are cumulative-return indices. For
+    anything with a separate dividend stream, use `forward_compound` on daily returns."""
+    return total_return_index.shift(-horizon) / total_return_index - 1.0
 
 
 def forward_compound(daily: pd.Series | pd.DataFrame, horizon: int,

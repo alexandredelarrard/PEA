@@ -6,6 +6,13 @@
 **Spec**: `specs/2026-09-01/investigate-def-14a.md`
 **Library under audit**: edgartools **5.51.0** (the prior repo audit was against 5.44.1)
 
+> **Planning a fix? Read [Consolidated conclusions](#consolidated-conclusions--read-this-first-when-planning) at the END of this document first.**
+> §1–§15 are the original audit. Three follow-ups extend it and, in one case, **correct it**:
+> 1. **Bulk & third-party vote sources** — EFTS/FSDS/N-PX/vendors.
+> 2. **`def14a_llm` correctness + 8-K 5.07 parse feasibility** — ⚠ contains a correction to the
+>    Test Coverage section: the `SAY_ON_PAY_MIN_SUPPORT = 0.50` guard deletes 61 **correct** rows.
+> 3. **How to fix the section carve** — a measured head-to-head of three carving strategies.
+
 ## Research Question
 
 Review the DEF 14A / DEF 14C extraction in the codebase, identify every data gap, and attribute each
@@ -743,7 +750,7 @@ sec_8k[item='5.07'].item_text ──> (no consumers; 5,492 unparsed vote narrati
 | `tests/data_extract/structure/test_def14a_incremental.py` | `_is_up_to_date` per-ticker semantics, manifest window narrowing |
 | `tests/data_extract/structure/test_def14a_nul.py` | `_strip_nul` (Postgres TEXT rejects `\x00`) |
 | `tests/data_aggregate/test_def14a_impute.py` | Live-DB non-destructiveness of `impute_def14a` |
-| `tests/data_aggregate/test_def14a_say_on_pay.py` | `SAY_ON_PAY_MIN_SUPPORT = 0.50` floor; real errors (JPM 2023 stored 0.31 vs ~89%) |
+| `tests/data_aggregate/test_def14a_say_on_pay.py` | `SAY_ON_PAY_MIN_SUPPORT = 0.50` floor. ⚠ **Premise measured FALSE** (see follow-up 2): 14/14 sampled sub-0.50 values are CORRECT, including all three the docstring cites as errors. The floor nulls **61 correct rows** |
 
 Gaps: **no test covers the `sec_def14a*` tables against real filings** — `test_fetch_def14a_edgar.py`
 is entirely synthetic, so every defect in this report is invisible to CI. There is **no SQL PASS/FAIL
@@ -954,3 +961,400 @@ Three objects are routinely conflated:
 - **The fund-level ballot** (N-PX) — genuinely structured XML from 2024, but ~51% of filings are
   empty, 13F managers file say-on-pay only, funds hold ~33% of US equity, and there is no bulk
   download.
+
+---
+
+## Follow-up Research 2 — `def14a_llm` correctness + 8-K 5.07 parse feasibility (2026-09-01 18:20)
+
+Two questions the first pass left open: (a) is the LLM path's poor fill a prompt, schema or carve
+problem, and (b) does 8-K Item 5.07 need an LLM at all. Evidence base: **193 real DEF 14A documents**
+re-fetched and re-carved with the repo's own `html_to_text` / `prepare_def14a_sections`, and **60
+8-K 5.07 filings with 690 hand-read vote rows**.
+
+### ⚠ Correction to this report: the say-on-pay floor is destroying correct data
+
+`SAY_ON_PAY_MIN_SUPPORT = 0.50` in `drop_implausible_def14a` nulls **61 correct rows**, and the three
+counter-examples its docstring cites as proof of extraction error are all **real disclosures**:
+
+- JPM 2023 — *"the **31% support** we received for last year's say-on-pay resolution"*
+- INTC 2023 — *"received **only 34% support**"*
+- SPG 2024 — *"**11.1% of the votes cast** favored our Say-on-Pay"*
+
+**14 of 14** sampled sub-0.50 values are correct. These are shareholder revolts — the
+highest-signal events in the table — and the guard deletes exactly them. The Test Coverage table
+above has been corrected accordingly.
+
+### The bottleneck is the CARVE, not the LLM
+
+Section **hit rates are near-perfect** (DIRECTOR / COMP / OWNERSHIP 100%, AUDITOR 98%, SAY ON PAY
+96%, PAY RATIO 80%) — the anchors find their section. **Recall is what fails** (PAY RATIO 82%,
+MEDIAN PAY 82%, SAY ON PAY 88%), for three measured mechanical reasons:
+
+1. **`_find_content_section` applies the 5% TOC skip only on the anchor-fallback path.** NEM, ROK and
+   SYK carves landed at 3.0% / 2.0% / 3.7% of the document while the pay ratio sat at 49–92%.
+2. **`AUDITOR FEES` uses `last_occurrence=True`** and lands *past* the table — COP at 95% of the
+   document; CINF's fee table starts 1,742 chars *before* the carve begins.
+3. **Every section sits at its char cap.** EG 2018's say-on-pay result is **29 chars** past the carve
+   end; HSIC's pay ratio **229 chars** past.
+
+Consequence for the comp work: **`n_neos = 1` on 21.7% of 2012+ rows** because the 7,000-char
+`EXECUTIVE COMPENSATION` budget cannot hold a 5-NEO × 3-year SCT. Widening that budget is a
+prerequisite for the exec-comp flatten, not an optimisation.
+
+### A fetch bug: 401 rows extracted from an EDGAR directory listing
+
+`submissions/CIK*.json` has `primaryDocument = ""` for pre-2001 filings, so `_doc_url()` builds a
+bare **directory URL** and the LLM was handed a folder index. **401 of 422 pre-2001 rows are fully
+NULL, vs 18 of 8,245 after.** The carve works fine on those filings once the right bytes are fetched.
+(Consistent with §15's finding that `filing.document.url` does not resolve for filings ≤ 2000.)
+
+### Per-field correctness (8 populated + 8 NULL per field, opened against the filing)
+
+| field | populated correct | populated wrong | NULL = missed | NULL = genuinely absent |
+|---|---|---|---|---|
+| `ceo_pay_ratio` | 8/8 | 0 | **8/8** | 0 |
+| `median_employee_pay` | 8/8 | 0 | 7/8 | 0 |
+| `say_on_pay_support_pct` | 8/8 (+14/14 on the sub-0.50 tail) | 0 | 6/8 | 2 |
+| `insider_ownership_pct` | 6/8 | 2 (read a dual-class *voting-power* column) | 0/8 | **8/8 (all `*`)** |
+| `ceo_ownership_pct` | 8/8 | 0 | 0/8 | 6/8 (`*`) |
+| `auditor_fees` | 8/8 | 0 | 7/8 | 0 |
+| `lead_independent_director` | 8/8 | 0 | 4/8 | 4 |
+| `n_technology_directors` | 1/8 verifiable | 1 wrong by 7× | n/a | n/a |
+
+**When the LLM populates a field it is almost always right; the losses are recall.** Two exceptions:
+`insider_ownership_pct` reads a dual-class voting-power column instead of the economic stake, and
+`n_technology_directors` is an opinion, not an extraction (see below).
+
+Year coverage confirms the regulatory reading: **pay-ratio 0% before 2018 is CORRECT** (86–94%
+in-era), so the "44.9% filled" headline is an artefact of averaging across an era where the
+disclosure did not exist. Say-on-pay plateaus flat at 67–74% for 14 years — that is the carve
+ceiling, not a format era. Falling ownership fill tracks real mega-cap insider stakes dropping below
+the `*` threshold the schema tells the model to null.
+
+### Schema gaps, ranked by cost to close
+
+"Already carved" = the value is inside the text the LLM is *currently* being shown, so adding the
+field costs a schema line and nothing else.
+
+| item | present in doc | already carved |
+|---|---|---|
+| **auditor NAME** | 98% | **89% — free win** |
+| **audit fee breakdown** (audit / audit-related / tax / other × current/prior) | 93% | **91% — free win** |
+| committee memberships | 99% | 83% |
+| per-holder ownership rows | ~100% | 95–97% |
+| auditor tenure / since-year | 78% | 64% |
+| **director compensation** | 92% | **21% — needs a new carve** |
+| director attendance | 86% | 26% |
+| say-on-pay frequency | 24% | 46% |
+| board meeting counts | 40% | 23% |
+| equity plan reserves | 23% | 12% |
+
+Also absent from the contract: the SCT **Change in Pension Value** column (the missing seventh
+component identified in §8's residual test), director-since-year, clawback/hedging policy, vote
+counts, the PvP table, peer group, burn rate.
+
+### Units
+
+All `_pct` columns are consistent 0–1 fractions (zero values > 1.0). `ceo_total_comp = 1` rows are
+legitimate $1-salary CEOs, not errors. The pay-ratio identity `total / median = ratio` holds on
+**95.0% of 3,838 rows**; only 2 of the 32 values > 2,000 are wrong (GOOGL 2018/19 stored median pay
+in the ratio field).
+
+**One real 1000× bug**: `auditor_fees` — 8 of the 10 smallest values ignore the table's
+"(in thousands)" / "($ in millions)" header (MS 57.6 = $57.6M; TSLA 10,919 = $10.9M *and* the wrong
+year column). 27 rows are < $500k since 2005.
+
+### The `directors[]` array is the most trustworthy thing in the table
+
+**99.74% of names appear verbatim in the source** (no hallucination); 93% of ages and 98% of tenures
+confirmable; a full hand-check of HUBB 2022 was **27/27 correct**, including public-vs-private board
+judgements. Caveats for any downstream board-composition feature:
+
+- `gender` is 97.9% filled but **only 17.4% of proxies disclose it** — it is a first-name inference.
+- `is_independent` is 78% filled, 86% concordant with the filing's own independent-director count.
+- **`avg_other_public_boards` is biased upward**: 37.2% of filings mix null and 0, and the nulls are
+  systematically the zero-board directors.
+- `n_technology_directors` / `pct_technology_directors` are **opinions** — mean |Δ| of 1.06 directors
+  between consecutive filings (only 38.8% unchanged), and wrong by 7× on HUBB 2022, where the
+  filing's own matrix states "Cybersecurity and Technology 78%" of 9 directors.
+- `majority_voting` flips **21.2% year-over-year** on a bylaw that does not change.
+- `poison_pill` is TRUE in 0.1% of rows — degenerate.
+
+### 8-K Item 5.07: regex vs LLM, measured
+
+**The stored substrate is usable — no HTML re-fetch needed.** `item_text` contains zero HTML tags
+(0/5,984 rows) but is edgartools' *rendered* view and **column alignment survives**: 84.6% carry a
+`U+2500` rule under the header, the rest are whitespace-aligned, one filing row per text line.
+
+Two upstream defects no regex can fix: the renderer **drops the header row** on 21 of 60 sampled
+filings, and item slicing **truncates** — HWM 2019 stores 508 chars of narrative where the live
+filing has 10,922 chars and four tables, because the filer numbered proposals `Item 1.` / `Item 2.`
+and the splitter cut there (62 rows, 1.0%, corpus-wide).
+
+60 filings / 690 hand-read rows:
+
+| | deterministic parser | gpt-4o-mini |
+|---|---|---|
+| rows fully correct | 82.8% | 82.5% |
+| **silently wrong** | **62 (9.0%)** | **81** |
+| missed | 39 | **1** |
+| spurious / fabricated | 7 | 4 |
+| precision / recall | 0.868 / 0.828 | 0.821 / 0.825 |
+| **filings fully clean** | **40%** | **65%** |
+| cost | free | **$0.00063/filing → $3.91 for all 6,251** |
+
+Parser-breaking layouts, by filings hit: dropped header → positional guess (21 attempted, 5 wrong —
+DVN 2026 mislabels broker-non-vote as abstain on all 11 nominees); a year in a proposal title
+absorbed as `for` (6); scrambled multi-line headers producing a **column permutation** (AVY, HBAN,
+ADI 2016, FDS, DVN); narrative years/quorum/zip read as vote rows (5); line-wrapped prose (4);
+vertical `For: 1,234` layout — **100% miss** (4); sub-1,000 cells without a comma shifting a column.
+
+LLM-specific failures: it **fabricated an entire table** for the truncated HWM 2019 — "John Doe" /
+"Jane Smith", 250,000,000 votes — plus a fake row for BSX; 3 silent digit corruptions
+(`23,859,241 → 2,385,941`); fractional votes truncated 1000× (CVNA); and a systematic,
+prompt-fixable `broker_non_votes → votes_withheld` mislabel on ~62 rows.
+
+**No validation gate is available, unlike compensation.** A vote table prints **no independent
+total**, and the dominant parser error is a *column permutation*, which is **invariant under sums**.
+Measured: (a) total ≤ shares outstanding is computable on only 9/57 (16%); (b) per-nominee totals
+computable 96%, hold 91%; (c) meeting-level totals computable 100%, hold 81%. Combined gate:
+**recall 0.56 / precision 0.56 — 7 of 16 known-bad filings pass clean.**
+
+What substitutes for a gate: the two extractors fail on **disjoint** inputs (parser dies on layout,
+LLM on arithmetic and on empty input). Every one of the 62 silent parser errors and 81 silent LLM
+errors falls inside the disagreement set; on the 26 filings where the parser was flawless the two
+agreed on 291/319 rows.
+
+**Amendments: "latest wins" would destroy data.** 190 multi-filing meetings on
+`(ticker, period_of_report)`. In **135 (71%) the amendment carries no vote numbers at all**, so
+"latest wins" is correct on only 33/190 (17%). **"Union the group" is correct on 173/190 (91%).** Of
+the 17 genuine restatements, 8 resolve on wording (explicit preliminary→final pairs — BBY 2012 is
+textbook — or only the later saying "final"/"certified"); **9 of 190 (4.7%) have no signal beyond
+the form type**.
+
+Concurrency note: `sec_8k` item 5.07 grew **5,965 → 6,251 rows during the measurement session**, the
+same live-backfill caveat that applies to `sec_def14a`.
+
+---
+
+## Follow-up Research 3 — how to fix the section carve (2026-09-01 19:30)
+
+Question: the `def14a_llm` recall failures were traced to the carve (follow-up 2). Is the fix a
+bigger budget, a better anchor, or a different substrate? Measured head-to-head on **25 DEF 14A
+filings** (20 from 2025-26 including every named failure case, 5 from 2011-2016), with ground truth
+established by opening each document and recording each target's character offset. **8,628 tables
+parsed; zero contain a nested `<table>`.** No LLM calls — this is purely about which text is selected.
+
+Three strategies:
+- **A — current**: the repo's own `prepare_def14a_sections`, imported not reimplemented.
+  Anchor + fixed char budget.
+- **B — table-anchored**: parse the HTML, enumerate every `<table>`, build a cell grid, classify by
+  header signature, serialize the winning table as TSV.
+- **C — boundary-aware narrative**: carve from anchor to the next section boundary instead of a
+  fixed budget, TOC skip applied on all paths.
+
+### Recall (of 25)
+
+| target | GT exists | A | B |
+|---|---|---|---|
+| Summary Compensation Table | 24 | 20 | **25** |
+| **Director compensation table** | 25 | **2** | **24** |
+| Insider / group ownership | 24 | 22 | 22 |
+| ≥5% holders | 22 | 21 | **25** |
+| Audit fee table | 23 | 20 | **25** |
+
+**B = 121/125 (96.8%)**, 1 false positive (MS: picked page 2 of a paginated table). B never picked a
+semantically different table.
+
+**The director-comp table is A's structural blind spot**, and the reason is geometric: it sits at
+**23–36% of the document**, in the gap between A's `DIRECTOR NOMINEES` window (ends ~17–21%) and
+`EXECUTIVE COMPENSATION` (starts ~42–64%). Median miss distance **70,761 chars**. It was never
+reachable by widening either window.
+
+Narrative targets, A vs C: auditor name 25 → **20**; pay ratio 9 → **11**; median pay 13 → **14**;
+say-on-pay 11 → 11. **C is a net loss (−2) and is rejected.**
+
+### Payload — table-anchoring makes the input SMALLER
+
+| strategy | mean | median | max |
+|---|---|---|---|
+| A | 50,300 | 51,000 | 51,000 |
+| B | 4,283 | 3,786 | 14,169 |
+| C | 6,261 | 6,127 | 11,000 |
+| **B + C** | **10,544** | **9,334** | 21,603 |
+
+B+C is **21% of A**. A hits its cap on every section of every filing. Real SCT text averages
+**1,686 chars** (1,886 as TSV) — about **25%** of the 7k window A spends to sometimes reach it.
+
+B+C does not cover bios or governance, so the realistic hybrid (B + narrative + A's 20k bios + 6k
+governance) is **mean 36,544 = 73% of today's payload**, with materially better recall.
+
+### SCT rows — the `n_neos=1` diagnosis confirmed
+
+354 NEO×year rows exist across the 24 in-table SCTs. **B captures 354 (100%).** A holds the whole
+SCT in 20/24 and *none* of it in 4 (WMT, TSLA, T-2011, A-2016). Critically, when A's anchor lands,
+7k **never truncates** (`frac_in_A = 1.00` in all 20 hits). So the 17% total-miss rate — which
+matches the DB's 21.7% `n_neos = 1` — is an **anchor failure, not budget truncation**. Widening the
+budget would not have fixed it.
+
+### Anchor vs budget, quantified
+
+Only **5 of 25** narrative misses are within ~3,000 chars of the slice end (HSIC +123, PFE +190,
+WMT +430, PFE-median +206, XOM say-on-pay +2,057). **Everything else is 10k–500k chars away.**
+Raising budgets buys exactly those five.
+
+Two anchor defects, both bidirectional:
+- **The 5% TOC floor is itself the killer in some cases** — A-2016's say-on-pay result sits at
+  **4.2%** of the document. Applying the TOC skip universally would make this case worse.
+- **`last_occurrence=True` overshoots in both directions** — it puts WMT's auditor carve 3,066 chars
+  *before* the fee table, and HUBB / ROK **149k / 165k** chars away.
+
+### Two prerequisites, quantified over 8,580 ground-truth cells
+
+- **`<br>` / block-boundary must emit a separator.** Dropping it fuses **180 cells (2.1%) across
+  16 of 25 filings** (`All othercompensation`, `James DimonChairman and CEO`). This is load-bearing
+  for **classification**, not just for values: **JPM's SCT was invisible to the classifier** until
+  block `<div>` boundaries emitted a separator. Same root cause as §6's Agilent 1.0e19.
+- **`<sup>` must be stripped.** 47 cells affected (0.5%, 5 filings), **7 of them the bare-digit form
+  that corrupts a value** (`$1,587,852` + `⁶` → `1,5878526`). Same root cause as §11's PG 10×.
+
+### Header signatures must be strict — the naive version fails badly
+
+Scored against the same ground truth, a naive signature gets: SCT 25/25 (but admits 2–5 candidates
+in **8/25** — JPM's CD&A "Annual compensation" table passes and only loses on a row-count
+tie-break), director comp 24/25, insider ownership **14/25**, 5% holders **3/25**, audit fees
+**2/25 (23 wrong picks)**.
+
+The three fixes that reach 96.8%:
+1. Require ≥1 SEC-mandated SCT column **and reject "compensation actually paid"** (which is the PvP
+   table, not the SCT).
+2. Match **exact** fee-category row labels rather than substring hits.
+3. **Split ownership into two sub-targets** — the insider table often has **no percent column**, so
+   one signature cannot serve both.
+
+### B's residual failures — 5 real defects in 125
+
+| cause | n | note |
+|---|---|---|
+| Disclosure genuinely absent | 4 | not a defect |
+| Header carries no signature | 2 | MMM-2011, T-2011 ("Stock"/"Total", no %, group total in a footnote) |
+| **Page is a JPG** | 1 | XOM — text hidden in a white-on-white `<p>`; unreachable by any text method |
+| **Numbers live in .gif charts** | 1 | SYK fees — absent from the HTML entirely; A cannot reach it either |
+| Table paginated across two `<table>`s | 1 | MS — loses 15 of 19 holders |
+| Table with no numbers | 1 | TSLA director fees all em-dash |
+| Prose, not a table | 1 | T-2011 fees |
+
+### Recommendation
+
+**A router, not a single strategy:**
+
+| target | strategy |
+|---|---|
+| SCT, director comp, ≥5% holders, audit fee table | **B** |
+| Insider / group ownership | **B**, with A's `SECURITY OWNERSHIP` window as fallback |
+| Summary Comp Table on an image page | prose fallback (XOM) |
+| Director bios, corporate governance | **keep A** — B does not cover them |
+| Auditor **name** | anchor the narrative slice on **B's fee table** (the firm is often cell `[0][0]`) |
+| Pay ratio, say-on-pay | **keep A, fix the anchor** — not the budget; lower or drop the 5% floor for say-on-pay |
+
+**Do not adopt C.** Its only sound element is applying the TOC skip on paths that currently lack it.
+
+Combined measured outcome: payload **mean 36,544 (73% of today)** with recall **25/25 SCT, 24/25
+director comp, 25/25 5% holders, 25/25 fee table, 24/25 insider ownership**.
+
+---
+
+## Consolidated conclusions — read this first when planning
+
+The five `sec_def14a*` tables are sparse for three independent reasons (§1, §2, §7-§12): a backfill
+that is **26/500 tickers** complete, a **regulatory cliff at the 2023 filing season** below which the
+ECD XBRL columns cannot exist, and an edgartools HTML parser that is **silently wrong rather than
+absent**. Only the third is a defect to fix in parsing.
+
+### What to keep, what to retire
+
+- **KEEP the ECD XBRL reader** in `fetch_def14a_edgar.py` — these are filer-tagged machine-readable
+  facts and an LLM would be strictly worse. **But fix its dimension bug** (§4): `_get_concept_value`
+  ignores `dim_ecd_IndividualAxis`, so co-PEO years silently drop a PEO (BA drops Calhoun's
+  −23.9M CAP) and zero-matrix filers return 0.0 (SBUX, three consecutive years).
+- **RETIRE the HTML-parsed block** — exec comp, director comp, ownership, audit fees, board
+  recommendations. Every one is measured broken (§6–§12).
+- **MOVE `ceo_pay_ratio` to the LLM path** — it is narrative-only forever and edgartools extracts it
+  with three value-inventing repairs (§12, `html_extractor.py:430-457`).
+
+### Executive compensation — already 92% extracted, never flattened
+
+**34,741 per-executive rows across 497 tickers** sit unqueryable inside `def14a_llm.def14a_json`
+(keys are `_usd`-suffixed). Against `sec_def14a_executive_comp`'s 2,378 rows on 25 tickers: title
+100% vs 45.4%, stock awards 93.8% vs 45.4%, option awards 88.0% vs 27.5%, and **2 rows > $1e9
+vs 109**.
+
+Three steps: **flatten** (free — the tokens are already paid for); **add `pension_change_usd`** to
+`ExecutiveCompensation` (the residual is **positive on 97.5%** of non-reconciling rows, median
+**$319,367** — the signature of a missing column, not misread values, and the post-2006 SCT has
+seven components where the schema models six); **gate on `sum(components) == total`** within $1.
+For 2023+, `ecd:PeoTotalCompAmt` is an independent filer-tagged check on the CEO row.
+
+Prerequisite: the 7,000-char comp budget causes **`n_neos = 1` on 21.7% of 2012+ rows**. Fix the
+carve (follow-up 3) before re-running.
+
+### Director compensation — the genuine gap
+
+Absent from the Pydantic contract entirely; the 87,984 `directors[]` rows are **biographical only**.
+The edgar path's 3,119 rows cover 25 tickers with components that are a **measured parser miss —
+0 of 4 cases opened were genuinely absent from the source** (§7). Needs a new model + B-carving.
+Exists only from the **2008 proxy season** (Reg S-K 2006).
+
+### Votes — two workstreams, not one
+
+- **Board recommendation** (`sec_def14a_votes`): 39.6% NULL, text present in **100%** of the misses,
+  and in **4/4 failures opened the recommendation is in a TABLE** the text-regex extractor never
+  reads. An unknown share of the 890 `FOR` values are **fabricated** by a pattern that matches the
+  proxy card's column header (§9). Ceiling: Apple's cell is a JPEG with `alt=""`.
+- **Vote tallies** (8-K Item 5.07): **6,251 rows already stored, `item_text` usable as-is with column
+  alignment intact — no HTML re-fetch needed.** Run the deterministic parser and the LLM together and
+  auto-accept agreement: they are tied on rows (82.8% vs 82.5%) but fail on **disjoint inputs**, and
+  **no validation gate exists** because a vote table prints no independent total and the dominant
+  error is a column permutation that is invariant under sums (measured gate: recall 0.56 /
+  precision 0.56). Cost **$3.91** for the corpus. Two hard rules: **emit nothing when `item_text`
+  has no comma-grouped number** (the fabrication trap — "John Doe" / 250,000,000 votes on a
+  truncated filing), and **never "latest wins" on amendments** (correct 17% of the time; "union the
+  group" is 91%).
+
+### Ownership — do not rebuild
+
+Redundant with structured sources already available: institutional positions ← 13F; 5%-holder
+positions ← SC 13D/G; insider holdings ← Forms 3/4/5. The proxy-only field is the
+directors-and-officers **group aggregate**, which the LLM already extracts and the cube already
+consumes. Work worth doing: lift `insider_ownership_pct` from 57.3% fill — not reconstruct the
+table.
+
+### Free wins
+
+**`auditor_name`** (98% present, **89% already inside today's carve**) and the **audit fee
+breakdown** (93% / 91%) cost one schema line each. `auditor_name` is currently the worst column in
+`sec_def14a` at **2.05%**, because edgartools returns `''` on failure (§12).
+
+### Bugs to fix regardless of architecture
+
+1. **The say-on-pay 0.50 floor deletes 61 correct rows** and its docstring's three counter-examples
+   are all real disclosures (JPM 2023 genuinely received 31% support). Highest-signal events in the
+   table.
+2. **401 rows were LLM-extracted from an EDGAR directory-listing page** — pre-2001 filings have
+   `primaryDocument = ""`, so `_doc_url()` builds a bare directory URL.
+3. **`auditor_fees` 1000× scale error** on 8 of its 10 smallest values.
+4. **`company_name` has no fallback to `filing.company`** — a one-line fix worth the whole 14% fill
+   rate (§3).
+
+### Do not trust downstream
+
+`n_technology_directors` (mean |Δ| 1.06 directors between consecutive filings; wrong by 7× on HUBB
+2022), `gender` (a first-name inference — only 17.4% of proxies disclose it),
+`avg_other_public_boards` (biased upward; nulls are systematically the zero-board directors),
+`majority_voting` (flips 21.2% year-over-year on a bylaw that does not change), `poison_pill`
+(TRUE in 0.1% of rows).
+
+### Sequencing constraint
+
+`existing_filings` dedups on accession, so a re-fetch after a parser fix requires TRUNCATE + refetch,
+not an incremental run. Flattening the existing JSON is free and independent — it can land first.

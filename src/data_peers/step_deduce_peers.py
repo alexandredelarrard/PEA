@@ -60,7 +60,10 @@ class StepDeducePeers(Step):
     def normalize_prices(self):
 
         raw = du.prices_long_to_multiindex(self.prices_long)
-        self.close = du.extract_field(raw, "Close")
+        # `CloseTotal`: the peer graph is built from the CORRELATION of daily returns, so it
+        # needs the buy-and-hold path. On the price-only series two names with different
+        # dividend policies look less correlated than they are.
+        self.close_total = du.extract_field(raw, "CloseTotal")
 
         # The trading calendar is the days the MARKET traded, which now lives in
         # `prices_macro` rather than as a column inside this equity frame. Same definition as
@@ -70,8 +73,8 @@ class StepDeducePeers(Step):
             raise RuntimeError(f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> "
                                "no trading calendar for the peer graph. Run `data_extract macro`.")
         
-        self.close = self.close.loc[market.reindex(self.close.index).notna()]
-        self.returns = du.daily_returns(self.close)
+        self.close_total = self.close_total.loc[market.reindex(self.close_total.index).notna()]
+        self.returns = du.daily_returns(self.close_total)
         # no market column to drop: `prices` is the equity universe and nothing else
         self.stock_ret = self.returns
         # restrict to the authoritative universe (sp500_tickers) so peers are built
@@ -84,7 +87,7 @@ class StepDeducePeers(Step):
             self._log.warning("sp500_tickers empty -> peers over ALL priced names; "
                               "seed the universe table to scope peers")
         self._log.info("Normalized prices: %s dates, %s stocks",
-                       self.close.shape[0], self.stock_ret.shape[1])
+                       self.close_total.shape[0], self.stock_ret.shape[1])
 
     def _embedding_similarity(self):
         """Fetch descriptions -> OpenAI embeddings (cached) -> cosine similarity.

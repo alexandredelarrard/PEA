@@ -1,4 +1,4 @@
-# Phase 2 — `prices_splits` and the corroborated union ⬜
+# Phase 2 — `prices_splits` and the corroborated union ✅
 
 **Parent**: [PLAN.md](PLAN.md) · **Depends on**: P0 · **Blocks**: P3 · **Estimate**: 2-3h
 
@@ -42,9 +42,9 @@ holed. yfinance has **every** missing event (measured 2026-09-01 via `yf.Ticker(
 
 ### 1. New table `prices_splits`
 
-- [ ] `sql/schema.sql`: `(date TIMESTAMP, ticker TEXT, ratio DOUBLE PRECISION, PRIMARY KEY
+- [x] `sql/schema.sql`: `(date TIMESTAMP, ticker TEXT, ratio DOUBLE PRECISION, PRIMARY KEY
       (ticker, date))`. Hand-splice; the diff must be purely additive.
-- [ ] `src/data_store/schema.py`: register beside `dividends`
+- [x] `src/data_store/schema.py`: register beside `dividends`
       (`Table("prices_splits", ("ticker","date"), date_col="date")`).
 
 ### 2. `src/data_extract/utils/prices/fetch_splits.py` (new)
@@ -53,10 +53,10 @@ Mirror `fetch_dividends.py` exactly — its own fetcher with its own sparse fron
 `download_ohlcv(..., actions=True)`. The `Stock Splits` column is already in the response and is
 thrown away at [fetch_dividends.py:39](src/data_extract/utils/prices/fetch_dividends.py#L39).
 
-- [ ] `_extract_splits`: keep **only non-zero** rows. Unlike dividends (where a stored 0 makes the
+- [x] `_extract_splits`: keep **only non-zero** rows. Unlike dividends (where a stored 0 makes the
       refresh idempotent) a zero split is meaningless and would bloat the table by 3.2M rows.
-- [ ] Empty in, empty out — a total yfinance outage must no-op, not `KeyError`.
-- [ ] Register a `splits` CLI command with `-F/--full`.
+- [x] Empty in, empty out — a total yfinance outage must no-op, not `KeyError`.
+- [x] Register a `splits` CLI command with `-F/--full`.
 
 ### 3. Union in `split_events`
 
@@ -70,28 +70,28 @@ currently reads `sharadar_actions` only. Add `prices_splits` and apply the corro
 | Sharadar only, integer factor | **keep**, and log at WARNING for review |
 | Sharadar only, non-integer factor | **DROP** — merger/exchange artefact (SJM 0.945, CCL 0.0012) |
 
-- [ ] Keep the existing spinoff co-dating exclusion on the Sharadar side (the HON trap) — it is
+- [x] Keep the existing spinoff co-dating exclusion on the Sharadar side (the HON trap) — it is
       correct and orthogonal to this rule.
-- [ ] Where both sources carry an event on nearby dates, prefer the yfinance date (the ex-date
+- [x] Where both sources carry an event on nearby dates, prefer the yfinance date (the ex-date
       Yahoo actually adjusted its own prices on) so `F(d)` and `close_split` step on the same day.
-- [ ] Log a one-line summary per run: kept-both / kept-yf-only / kept-sharadar-only / dropped.
+- [x] Log a one-line summary per run: kept-both / kept-yf-only / kept-sharadar-only / dropped.
 
 ### 4. Investigate CCL
 
-- [ ] CCL's merged/SEC ratio spans 0.0012 – 1.4032 — a compounding over-de-adjustment. Confirm it
+- [x] CCL's merged/SEC ratio spans 0.0012 – 1.4032 — a compounding over-de-adjustment. Confirm it
       is Sharadar-only non-integer rows and that the rule drops them. If it is *not* explained by
       the rule, record what it is; do not widen the rule to make one ticker pass.
 
 ## Verification
 
-- [ ] `prices_splits` contains all 9 previously-missing events at the ratios in the table above
-- [ ] `SJM 2002-05-30` is **absent** from the unioned list
-- [ ] `WTW 2016-01-05 0.3775` is **present**
-- [ ] CCL's residual is explained in writing, and its unioned events reconcile against SEC
-- [ ] `forward_split_factor("AAPL", 2020-07-31)` == 4.0 and
+- [x] `prices_splits` contains all 9 previously-missing events at the ratios in the table above
+- [x] `SJM 2002-05-30` is **absent** from the unioned list
+- [x] `WTW 2016-01-05 0.3775` is **present**
+- [x] CCL's residual is explained in writing, and its unioned events reconcile against SEC
+- [x] `forward_split_factor("AAPL", 2020-07-31)` == 4.0 and
       `forward_split_factor("GOOGL", 2022-02-02)` == 20.0 (today it returns 1.0)
-- [ ] Unit test: the four union cases, on a synthetic fixture — no DB, no network
-- [ ] Row count is plausible (a few thousand, not a few hundred thousand — catches the zero-row bug)
+- [x] Unit test: the four union cases, on a synthetic fixture — no DB, no network
+- [x] Row count is plausible (a few thousand, not a few hundred thousand — catches the zero-row bug)
 
 ## Rollback
 

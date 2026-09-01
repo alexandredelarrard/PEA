@@ -40,6 +40,7 @@ from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.panel_merge import FeatureCollisionError
 from src.data_aggregate.utils.common.part_status import part_status_report
 from src.utils.step import Step
+from src.validate.prices import gate, run_prices_validation
 
 __all__ = ["StepBuildCube", "FeatureCollisionError"]
 
@@ -57,7 +58,9 @@ class StepBuildCube(Step):
         self._extras = StepCubeExtras(context=context, config=config)
         self._assemble = StepAssembleCube(context=context, config=config)
 
-    def run(self, full: bool = False) -> None:
+    def run(self, full: bool = False, skip_basis_gate: bool = False) -> None:
+        if not skip_basis_gate:
+            self._assert_price_basis_is_sound()
         self._prices.run(full=full)
         self._target.run(full=full)
         self._momentum.run(full=full)
@@ -65,6 +68,25 @@ class StepBuildCube(Step):
         self._text.run(full=full)
         self._extras.run(full=full)
         self._assemble.run()
+
+    def _assert_price_basis_is_sound(self) -> None:
+        """Refuse to build on a price table with unexplained adjustment seams.
+
+        The whole cube is downstream of `prices`, and a split-adjustment seam is INVISIBLE
+        once it is inside a feature: `daily_returns` has no jump guard, so a +-95% day that
+        never happened flows straight into momentum, vol, betas and every label. MNST carried
+        exactly that for six weeks in 2026 and nothing noticed until an audit.
+
+        Only invariant 3 gates -- invariants 1 and 2 are reported. See
+        `src/validate/prices.gate` for why, measured."""
+        report = run_prices_validation(self._context)
+        for result in report.invariants:
+            self._log.info(result.summary())
+        ok, reason = gate(report)
+        if not ok:
+            raise RuntimeError(f"price adjustment basis gate FAILED -> refusing to build the "
+                               f"cube on it. {reason}")
+        self._log.info("Price basis gate passed: %s", reason)
 
     def cube_parts_status(self) -> dict:
         """Latest date + row count of every cube part (+ the downstream cube / predictions

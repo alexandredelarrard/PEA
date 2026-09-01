@@ -3,6 +3,7 @@ cli.py  (src/validate/cli.py)
 --------------------------------------------------------------------------------------------
 VALIDATION command-line interface -- part 2 of the three-part loop. Invoked as:
 
+    python -m src validate prices [-t AAPL] [--since 2020-01-01] [--report PATH] [--no-write]
     python -m src validate fundamentals [-t AAPL] [--roster in_sample] [--field capex]
                                         [--tier 1,2,3] [--since 2026-01-01]
                                         [--report PATH] [--no-write]
@@ -87,6 +88,7 @@ from src.validate.fundamentals.finding import QUEUE_SEVERITIES
 from src.validate.fundamentals.ledger import CLUSTER_WIDE, Ledger
 from src.validate.fundamentals.report import ReportModel
 from src.validate.fundamentals.validator import FundamentalsValidator
+from src.validate.prices import run_prices_validation
 
 #: Where the rosters live. Read here rather than re-declared: `fundamentals_rosters.json`
 #: records WHY each ticker is on its list, which is the property a bare list of symbols loses
@@ -238,6 +240,41 @@ def fundamentals(config_path: str, tickers: str | None, rosters: tuple[str, ...]
     context.log.info("\n%s", report_module.render(
         model, packets=report_module.MENU_SIZE, clusters=report_module.TERMINAL_CLUSTERS))
     _write_report(context, model, Path(report_path or _default_report_path(scope_label)), fmt)
+
+
+@cli.command(help="Validate the price / share-count ADJUSTMENT BASIS. Read-only.",
+             help_priority=2)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option("--since", default=None,
+              help="Only score filing rows on/after this date (the price scan is full-history).")
+@click.option("--report", "report_path", default=None,
+              help="Where to write the markdown report (default: reports/validate/<date>/).")
+@click.option("--skip-spike", is_flag=True, default=False,
+              help="Skip invariant 3, the only one that reads the full price history.")
+@click.option("--no-write", is_flag=True, default=False, help="Print only; write no file.")
+def prices(config_path: str, tickers: str | None, since: str | None,
+           report_path: str | None, skip_spike: bool, no_write: bool) -> None:
+    """The three adjustment-basis invariants. Reports; corrects nothing.
+
+    Invariant 1 is the primary gate. Its failures are vendor DISAGREEMENTS -- Sharadar's own
+    `marketcap` is internally inconsistent across spinoffs -- so they are recorded and
+    settled, never auto-corrected. See src/validate/prices.py."""
+    _, context = _ctx(config_path)
+    names, _ = _roster_tickers(context, config_path, (), tickers)
+    report = run_prices_validation(context, tickers=names, since=since,
+                                   skip_spike=skip_spike)
+    for result in report.invariants:
+        context.log.info(result.summary())
+
+    text = report.to_markdown()
+    if no_write:
+        click.echo(text)
+        return
+    path = Path(report_path) if report_path else _default_report_path("prices")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    context.log.info("Wrote %s", path)
 
 
 @cli.command(help="Re-render a recorded run's report from the tables. No re-run, no writes.",

@@ -18,13 +18,29 @@ CREATE TABLE IF NOT EXISTS "sp500_tickers" (
 );
 
 -- [extract] prices  (pk: ticker, date)
+-- TWO price columns, written from ONE yfinance response so they cannot drift apart.
+--   close_split -- Yahoo `Close` under auto_adjust=False: restated for SPLITS ONLY, no
+--                  dividend adjustment. The same basis as Sharadar's `price`, agreeing to
+--                  the cent on two independent vendors. LEVELS read this: market cap, EV,
+--                  dividend yield, ATR -- because on it the future-split factor cancels
+--                  identically against Sharadar's `sharesbas`.
+--   close_total -- Yahoo `Adj Close`: close_split further reduced for every dividend paid
+--                  AFTER that date, so the path is buy-and-hold-with-reinvestment. RETURNS
+--                  read this: ret, momentum, vol, betas and every LABEL.
+-- There is deliberately NO column named `close`. A bare `close` silently changing meaning is
+-- the bug class this schema exists to remove -- a reader that wanted total return and got the
+-- split-adjusted series computes price returns and is wrong by every dividend ever paid
+-- (MO reads 1.24x over the sample where the truth is 20.2x). A missed reader must KeyError.
+-- `open`/`high`/`low` come back split-adjusted only, i.e. on the `close_split` basis, which
+-- is why ATR must take `close_split` and not `close_total`.
 
 CREATE TABLE IF NOT EXISTS "prices" (
     "date" TIMESTAMP NOT NULL,
     "open" DOUBLE PRECISION,
     "high" DOUBLE PRECISION,
     "low" DOUBLE PRECISION,
-    "close" DOUBLE PRECISION,
+    "close_split" DOUBLE PRECISION,
+    "close_total" DOUBLE PRECISION,
     "volume" DOUBLE PRECISION,
     "ticker" TEXT NOT NULL,
     PRIMARY KEY ("ticker", "date")
@@ -36,6 +52,22 @@ CREATE TABLE IF NOT EXISTS "prices_dividends" (
     "date" TIMESTAMP NOT NULL,
     "ticker" TEXT NOT NULL,
     "dividends" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "date")
+);
+
+-- [extract] prices_splits  (pk: ticker, date)
+-- Share-split EX-DATES from yfinance, unioned with `sharadar_actions` under the
+-- corroboration rule in `field_map.split_events`. `ratio` is the multiplier a 1-for-N split
+-- applies (4.0 for a 4:1; 0.2 for a 1:5 reverse). Sparse -- a few thousand rows, not one per
+-- bar -- because only NON-ZERO events are stored.
+-- NOT a market-cap input: after the basis fix the split factor cancels between `close_split`
+-- and `sharesbas`, so this list feeds only `sharesOutstandingPit`, the split-triggered price
+-- re-pull and the prices validator.
+
+CREATE TABLE IF NOT EXISTS "prices_splits" (
+    "date" TIMESTAMP NOT NULL,
+    "ticker" TEXT NOT NULL,
+    "ratio" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "date")
 );
 
@@ -310,6 +342,12 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "basicShares" DOUBLE PRECISION,
     "dilutedShares" DOUBLE PRECISION,
     "sharesOutstanding" DOUBLE PRECISION,
+    -- Point-in-time twin of `sharesOutstanding`: sharesbas / F(d), the count that really
+    -- existed on the day. ONLY consumers are `inst_ownership_pct` and the insider
+    -- %-of-shares leg, which divide an as-filed 13F / Form-4 count by a share count. Every
+    -- other consumer wants `sharesOutstanding` on the vendor basis, where F(d) cancels
+    -- against `close_split`.
+    "sharesOutstandingPit" DOUBLE PRECISION,
     -- the roll-up that needs BOTH sources (its NCI leg is SEC-owned), then the two
     -- SEC-owned added columns. `regime` is the ONE TEXT column among the 88 values.
     "optionOverhang" DOUBLE PRECISION,

@@ -56,21 +56,34 @@ logger = logging.getLogger(__name__)
 # Characteristics                                                              #
 # --------------------------------------------------------------------------- #
 def build_characteristics(
-    stock_close: pd.DataFrame,
+    stock_close_total: pd.DataFrame,
     stock_ret: pd.DataFrame,
     fundamentals_history: pd.DataFrame | None,
     resvol_window: int = 63, # 3 month stock
+    *,
+    stock_close_split: pd.DataFrame | None = None,
 ) -> dict:
     """
     Returns {factor_name: characteristic DataFrame (date x ticker)}, higher =
     more of that factor's long side. Only price-based factors are guaranteed;
     value/quality appear only if fundamentals are available.
+
+    ⚠ TWO price bases, because this builds both a RETURN and a LEVEL:
+      * `momentum` is a 12-1 return -> `stock_close_total`
+      * `size` is -log(market cap) -> `stock_close_split`, the ONLY basis on which the
+        future-split factor cancels against Sharadar's `sharesbas`. Fed the total-return
+        series instead, every market cap would carry a `D(d)` dividend factor (median 0.618
+        in 2003) and the size factor would become a dividend-policy tilt.
+    `stock_close_split` defaults to the total-return frame only so a dividend-free synthetic
+    fixture stays a one-liner; every real caller passes both.
     """
-    idx = stock_close.index
+    idx = stock_close_total.index
+    close_level = (stock_close_total if stock_close_split is None
+                   else stock_close_split.reindex_like(stock_close_total))
     chars: dict[str, pd.DataFrame] = {}
 
     # Momentum 12-1 (skip most recent month). max 75% of values missing
-    chars["momentum"] = momentum_characteristic(stock_close)
+    chars["momentum"] = momentum_characteristic(stock_close_total)
 
     # Residual/low volatility: negative trailing vol (low vol = long side).
     chars["resvol"] = -trailing_vol(stock_ret, resvol_window)
@@ -78,14 +91,14 @@ def build_characteristics(
     if fundamentals_history is not None and not fundamentals_history.empty:
         
         # Historical daily market cap from SEC shares * price (moves daily).
-        mcap = daily_market_cap(fundamentals_history, stock_close)
+        mcap = daily_market_cap(fundamentals_history, close_level)
         if mcap.empty:
             # fallback to old proxy if only a current marketCap snapshot exists
             snap = fundamentals_to_daily(fundamentals_history, "marketCap", idx)
             if not snap.empty:
-                latest_px = stock_close.reindex(columns=snap.columns).ffill().iloc[-1]
+                latest_px = close_level.reindex(columns=snap.columns).ffill().iloc[-1]
                 sh = (snap.iloc[-1] / latest_px).replace([np.inf, -np.inf], np.nan)
-                mcap = stock_close.reindex(columns=snap.columns).mul(sh, axis=1)
+                mcap = close_level.reindex(columns=snap.columns).mul(sh, axis=1)
 
         if not mcap.empty:
             # Size: -log market cap (small = long side).

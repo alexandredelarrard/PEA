@@ -32,7 +32,10 @@ class SignalBundle:
     signal: pd.DataFrame        # date x ticker combined cross-sectional z-signal
     stock_ret: pd.DataFrame     # date x equity daily returns (`prices` is equity-only now)
     spy_ret: pd.Series          # market benchmark daily return
-    close: pd.DataFrame         # date x ticker close prices (all tickers; for share blotters)
+    # date x ticker SPLIT-ADJUSTED prices (all tickers; for share blotters). Named for the
+    # basis: this is the price a share is transacted at, NOT the dividend-reinvested path --
+    # `stock_ret` is where the total return lives.
+    close_split: pd.DataFrame
     backtest_start: pd.Timestamp
     end: pd.Timestamp
     train_ic: dict
@@ -92,10 +95,15 @@ def _returns(context: Context, config: DictConfig, cube_cfg: DictConfig, model_c
     buffer = int(2.2 * (int(model_cfg.get("beta_window", 63)) + int(model_cfg.get("vol_window", 63))) + 30)
     cutoff = start - pd.Timedelta(days=buffer)
     long = context.store.load(Tables.prices, since=cutoff)
-    close = du.extract_field(du.prices_long_to_multiindex(long), "Close")
+    pivot = du.prices_long_to_multiindex(long)
+    # TWO bases, two jobs. `rets` drives the P&L, so it is the buy-and-hold path; the frame
+    # returned as `close` is used as `book_prices` -- the price a share is actually
+    # transacted at -- so it is the split-adjusted quote. Returning `close_total` for both
+    # would price the book on a series no share ever traded at.
+    close = du.extract_field(pivot, "CloseSplit")
     # `prices` is the equity universe and nothing else now, so there is no market/index/FX
     # column to strip out here -- the benchmark leg comes from `prices_macro` instead.
-    rets = du.daily_returns(close)
+    rets = du.daily_returns(du.extract_field(pivot, "CloseTotal"))
     mkt_close = load_macro_series(context.store, MACRO_MARKET_SERIES, since=cutoff)
     if mkt_close is None:
         raise RuntimeError(f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> "
@@ -149,5 +157,6 @@ def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle
                                    np.nan)
     signal = blended.pivot(index="date", columns="ticker", values="combined")
     signal.index = pd.to_datetime(signal.index)
-    return SignalBundle(signal=signal, stock_ret=stock_ret, spy_ret=spy_ret, close=close,
+    return SignalBundle(signal=signal, stock_ret=stock_ret, spy_ret=spy_ret,
+                        close_split=close,
                         backtest_start=start, end=end_ts, train_ic=train_ic, horizons=list(models))

@@ -39,7 +39,7 @@ from src.utils.macro import load_macro_series
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
-PRICE_COLS = ['date', 'close', 'volume', 'ticker']
+PRICE_COLS = ['date', 'close_split', 'close_total', 'volume', 'ticker']
 
 class StepCubePrices(Step):
 
@@ -64,11 +64,18 @@ class StepCubePrices(Step):
         wide = self._pivot_fields(raw)
 
         # filter wide on trading days with close value
-        days_index = self._trading_calendar(wide["close"])
+        # The calendar and the universe key on `close_split`: it is never null when
+        # `close_total` is (the latter is derived from it), so it defines the widest
+        # legitimate grid.
+        days_index = self._trading_calendar(wide["close_split"])
         wide = self._on_calendar(wide, days_index)
 
         # get deltas
-        returns =  self._daily_returns(wide["close"])
+        # ⚠ `close_total`, NOT `close_split`. `ret` is the persisted return that momentum,
+        # vol, betas and every LABEL are built from, so it must be the buy-and-hold path.
+        # Feeding it `close_split` would make every one of them a PRICE return -- MO reads
+        # 1.24x over this sample where the truth is 20.2x.
+        returns =  self._daily_returns(wide["close_total"])
         peers = self._peers()
         universe = self._universe_frames(wide, returns, peers)
         del raw, wide, returns
@@ -96,10 +103,11 @@ class StepCubePrices(Step):
     @staticmethod
     def _pivot_fields(raw: pd.DataFrame) -> dict[str, pd.DataFrame]:
         pivot = du.prices_long_to_multiindex(raw)
-        return {"close": du.extract_field(pivot, "Close"),
+        return {"close_split": du.extract_field(pivot, "CloseSplit"),
+                "close_total": du.extract_field(pivot, "CloseTotal"),
                 "volume": du.extract_field(pivot, "Volume")}
 
-    def _trading_calendar(self, close: pd.DataFrame) -> pd.DatetimeIndex:
+    def _trading_calendar(self, close_split: pd.DataFrame) -> pd.DatetimeIndex:
         """The market series' own calendar, read from `prices_macro` (the table that owns it).
         `du.get_trading_days` also WARNS about interior holes -- dates where a quorum of stocks
         trade but the market series is missing -- because those dates get dropped for the
@@ -109,8 +117,8 @@ class StepCubePrices(Step):
             raise RuntimeError(
                 f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> the cube "
                 "trading calendar is undefined. Run `data_extract macro` first.")
-        mask = du.get_trading_days(close, market, MACRO_MARKET_SERIES)
-        idx = pd.DatetimeIndex(close.index[mask.to_numpy()], name="date")
+        mask = du.get_trading_days(close_split, market, MACRO_MARKET_SERIES)
+        idx = pd.DatetimeIndex(close_split.index[mask.to_numpy()], name="date")
         self._log.info("Trading calendar: %d dates (%s .. %s)", len(idx),
                        idx.min().date(), idx.max().date())
         return idx
@@ -118,15 +126,17 @@ class StepCubePrices(Step):
     @staticmethod
     def _on_calendar(wide: dict[str, pd.DataFrame],
                      idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
-        """close/open/high/low are sliced to the calendar; volume is REINDEXED (it may be
+        """The price frames are sliced to the calendar; volume is REINDEXED (it may be
         missing on a date the price exists), matching the original behaviour."""
         out = {k: v.loc[idx] for k, v in wide.items() if k != "volume"}
         out["volume"] = wide["volume"].reindex(idx)
         return out
 
     @staticmethod
-    def _daily_returns(close: pd.DataFrame) -> pd.DataFrame:
-        return du.daily_returns(close)
+    def _daily_returns(close_total: pd.DataFrame) -> pd.DataFrame:
+        """TOTAL-return series in, `ret` out. The parameter is named for the basis it
+        requires, so the one call site states its contract."""
+        return du.daily_returns(close_total)
 
     def _peers(self) -> dict:
         peers = load_peers(self._context, self._config)
@@ -139,13 +149,13 @@ class StepCubePrices(Step):
         """Restrict every frame to the analysis universe (SORTED -- see
         `universe_columns`), then add the persisted return and peer-basket return."""
         
-        universe = universe_columns(self._tickers, wide["close"])
+        universe = universe_columns(self._tickers, wide["close_split"])
         out = {k: v.reindex(columns=universe) for k, v in wide.items()}
         out["ret"] = returns.reindex(columns=universe)
         out["sector_ret"] = self._sector_returns(out["ret"], peers)
 
         self._log.info("Normalized prices: %d dates x %d universe tickers",
-                       len(wide["close"]), len(universe))
+                       len(wide["close_split"]), len(universe))
         return out
 
     def _sector_returns(self, stock_ret: pd.DataFrame, peers: dict) -> pd.DataFrame:

@@ -70,13 +70,16 @@ def _mini_inputs(T=40, N=6, seed=0):
     close = (1 + stock_ret).cumprod() * 100.0
     factor_panel = pd.DataFrame({"market": rng.normal(0.0004, 0.01, T)}, index=dates)
     betas = {t: pd.DataFrame({"beta_market": 1.0}, index=dates) for t in tickers}
-    return close, betas, factor_panel
+    return close, stock_ret, betas, factor_panel
 
 
 def test_build_targets_multi_returns_rank_and_zscore():
-    close, betas, factor_panel = _mini_inputs()
+    close, stock_ret, betas, factor_panel = _mini_inputs()
+    # `stock_ret` is REQUIRED: every label is a forward COMPOUNDED total return now, not a
+    # close-to-close price ratio. Here `close` IS (1+ret).cumprod(), so the two agree.
     out = build_targets_multi(close, betas, factor_panel, macro_cols=[],
-                              horizons=(5,), labels=("rank", "zscore"), min_names=3)
+                              horizons=(5,), labels=("rank", "zscore"), min_names=3,
+                              stock_ret=stock_ret)
 
     assert set(out.keys()) == {5}
     assert set(out[5].keys()) == {"rank", "zscore"}

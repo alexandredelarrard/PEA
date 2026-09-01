@@ -12,7 +12,7 @@ now**, see [database.md](database.md). For the access rules, see
 
 ```python
 from src.data_store.schema import Tables
-store.load(Tables.prices, columns=["date", "ticker", "close"], since="2024-01-01")
+store.load(Tables.prices, columns=["date", "ticker", "close_split"], since="2024-01-01")
 ```
 
 **Never write a table name as a string literal, and never add a `*_TABLE` constant.**
@@ -64,11 +64,12 @@ is gone. See [tests/data_extract/test_macro_prices_separation.py](../tests/data_
 
 | Table | PK | date_col | Fresh | Notes |
 |---|---|---|---|---|
-| `prices` | `ticker, date` | `date` | daily | OHLCV. Read raw **only** by `StepCubePrices`. |
+| `prices` | `ticker, date` | `date` | daily | OHLC + **TWO close columns** + volume, written from ONE yfinance response so they cannot drift. **`close_split`** = Yahoo `Close` under `auto_adjust=False`, restated for SPLITS ONLY — the same basis as Sharadar's `price` (both read 106.26 for AAPL 2020-07-31). Every LEVEL uses it (market cap, EV, dividend yield, ATR, execution prices), because on it the future-split factor cancels identically against Sharadar's `sharesbas`. **`close_total`** = `Adj Close`, that series further reduced for every dividend paid AFTER the date — every RETURN uses it (`ret`, momentum, vol, betas, all labels). ⚠ There is deliberately **no column named `close`**: a bare `close` silently changing meaning is the defect this schema exists to prevent, so a missed reader must `KeyError` rather than quietly compute price returns. `open`/`high`/`low` are on the `close_split` basis, which is why ATR must take it. |
 | `dividends` | `ticker, date` | `date` | — | ex-div cash amount. Its **own** fetcher (`fetch_dividends.py`) with its own resume window — ex-dates are quarterly where bars are daily — though it reuses the same yfinance `actions=True` response shape |
 | `short_interest` | `ticker, date` | `date` | daily | FINRA RegSHO. Resumes on the table's **global** max date (one day-file covers the whole market, so a per-ticker frontier would only re-fetch days already held). Projection lists `short_interest`/`avg_daily_volume` as **optional** — the live table has neither, and demanding them killed the read instead of degrading it |
 | `sec_fails_to_deliver` | `ticker, date` | `date` | biweekly | SEC CNS fails. Separate from `short_interest` so its semi-monthly ~2-month-lagged files don't poison that table's global-max incremental |
 | `macro` | `date` | `date` | daily | FRED: 3M/2Y/10Y/30Y yields, 10y-2y & 10y-3m spreads, VIX, BAA spread, 10y breakeven. `ticker_col=None` |
+| `prices_splits` | `ticker, date` | `date` | — | Share-split EX-DATES from yfinance, unioned with `sharadar_actions` under the corroboration rule in `field_map.split_events`. `ratio` is the multiplier (4.0 for a 4:1; 0.2 for a 1:5 reverse). Sparse — ~859 rows / 343 tickers, only NON-ZERO events. Exists because `sharadar_actions` misses nine major splits (GOOGL 2022 x20, NVDA 2021 x4, TSLA 2022 x3, AVGO/CMG/ANET 2024, BKNG/MNST/AMCR 2026) and carries at least one false positive (SJM x0.945, a merger factor). ⚠ **NOT a market-cap input** — after the basis fix the split factor cancels between `close_split` and `sharesbas`, so mcap never reads a split event. Three consumers only: `sharesOutstandingPit`, the split-triggered price re-pull, and `validate prices` invariant 3. ⚠ yfinance's `Stock Splits` column ALSO carries spinoff factors (BDX x1.025, x1.272), so the shape test applies to both vendors. |
 | `prices_macro` | `ticker`, `date` | `date` | daily | LONG: one `close` per (series, date). 15 series — yfinance closes (`equity_tr`, `vix`, `oil`, `gold`, `energy`), FRED levels (`yield_2y/10y/30y`, `cash_rate`, `baa_credit_spread`, `breakeven_10y`, `fx_usdeur`) and derived (`yield_curve_10y2y`, `yield_curve_10y3m`, `bond_10y_tr`). Replaced the wide `macro` + `macro_asset_prices` |
 | `cusip_ticker_map` | `cusip` | — | — | CUSIP→ticker via OpenFIGI (+ `constants.CUSIP_TICKER_OVERRIDES`) |
 

@@ -10,7 +10,7 @@ Checks here:
   * wide -> long -> wide is bit-identical for all seven fields, with float64 preserved and the
     index/column names intact;
   * the market table round-trips and is the definition of the trading calendar;
-  * a projected read (`fields=("close",)`) leaves the other six frames None rather than
+  * a projected read (`fields=("close_split",)`) leaves the other frames None rather than
     silently materialising them;
   * an interior market-ticker hole is dropped from the calendar on BOTH sides;
   * the universe column order is deterministic and sorted (it used to come from a `set`, so it
@@ -53,7 +53,10 @@ def frames() -> dict:
     market = pd.Series(400.0, index=idx)
     market.iloc[25] = np.nan                                        # interior calendar hole
     volume = pd.DataFrame(rng.lognormal(14, 0.4, close.shape), index=idx, columns=close.columns)
-    return {"close": close,
+    return {"close_split": close,
+            # a non-payer: on it the two bases are IDENTICAL by construction, which is the
+            # cleanest possible round-trip fixture -- any divergence is a code fault.
+            "close_total": close,
             # "open", not "open_": the canonical field name in price_frames.ALL_FIELDS
             "open": close.shift(1).bfill() * 1.001,
             "high": close * 1.01,
@@ -71,13 +74,13 @@ def _normalize(frames: dict) -> tuple[dict, pd.DatetimeIndex]:
     from src.data_aggregate.utils.common import data_utils as du
 
     wide = {k: v for k, v in frames.items() if k != "market"}
-    close = wide["close"]
+    close = wide["close_split"]
     mask = du.get_trading_days(close, frames["market"])
     idx = pd.DatetimeIndex(close.index[mask.to_numpy()], name="date")
     on_cal = {k: (v.loc[idx] if k != "volume" else v.reindex(idx)) for k, v in wide.items()}
-    returns = du.daily_returns(on_cal["close"])
+    returns = du.daily_returns(on_cal["close_total"])
 
-    universe = universe_columns(TICKERS, on_cal["close"])
+    universe = universe_columns(TICKERS, on_cal["close_split"])
     uni = {k: v.reindex(columns=universe) for k, v in on_cal.items()}
     uni["ret"] = returns.reindex(columns=universe)
     # a deterministic stand-in for compute_sector_returns (equal-weight mean of the others)
@@ -125,15 +128,15 @@ def test_projected_read_leaves_other_fields_none(frames, sqlite_store):
     parts = sqlite_store
     parts.replace(Tables.cube_part_prices, frames_to_long(uni))
 
-    back = load_price_frames(parts, peers={}, fields=("close",))
-    assert back.close is not None
+    back = load_price_frames(parts, peers={}, fields=("close_split",))
+    assert back.close_split is not None
     for field in ALL_PRICE_FIELDS:
-        if field != "close":
+        if field != "close_split":
             assert getattr(back, field) is None, f"{field} was materialised but not requested"
 
     # and `require` fails loudly rather than letting a None reach the arithmetic
     with pytest.raises(ValueError, match="loaded without"):
-        back.require("close", "volume")
+        back.require("close_split", "volume")
 
     print("\n=== SANITY CHECK: projected price read ===")
     print("  fields=('close',) -> 1 frame materialised, 6 left None, market series absent")
@@ -143,23 +146,23 @@ def test_projected_read_leaves_other_fields_none(frames, sqlite_store):
 
 def test_interior_calendar_hole_is_dropped_and_universe_is_sorted(frames):
     uni, idx = _normalize(frames)
-    hole = frames["close"].index[25]
+    hole = frames["close_split"].index[25]
     assert hole not in idx, "the market-series hole must be dropped from the calendar"
-    assert len(idx) == len(frames["close"].index) - 1
+    assert len(idx) == len(frames["close_split"].index) - 1
 
     # deterministic, sorted universe -- from a SHUFFLED input list, twice
     shuffled = list(reversed(TICKERS))
-    a = universe_columns(shuffled, frames["close"])
-    b = universe_columns(TICKERS, frames["close"])
+    a = universe_columns(shuffled, frames["close_split"])
+    b = universe_columns(TICKERS, frames["close_split"])
     assert a == b == sorted(a), f"universe order is not deterministic/sorted: {a} vs {b}"
-    assert list(uni["ret"].columns) == list(uni["close"].columns)
+    assert list(uni["ret"].columns) == list(uni["close_split"].columns)
 
     with pytest.raises(RuntimeError, match="cube universe is empty"):
-        universe_columns(["NOT_LISTED"], frames["close"])
+        universe_columns(["NOT_LISTED"], frames["close_split"])
 
     print("\n=== SANITY CHECK: calendar hole + deterministic universe ===")
     print(f"  interior {hole.date()} hole (market series missing) dropped: "
-          f"{len(frames['close'].index)} -> {len(idx)} dates")
+          f"{len(frames['close_split'].index)} -> {len(idx)} dates")
     print(f"  universe from a shuffled ticker list is stable and sorted: {a}")
     print("  CONCLUSION: the universe no longer comes from a set, so column order (and therefore "
           "float summation order) is identical across processes. Validated.")

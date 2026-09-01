@@ -76,7 +76,8 @@ def test_panel_columns_and_ownership_pct():
     tickers = ["A", "B", "C", "D"]
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
     # shares outstanding for ownership %
-    fund = pd.DataFrame([{"ticker": t, "as_of": "2022-01-01", "sharesOutstanding": 1000.0}
+    fund = pd.DataFrame([{"ticker": t, "as_of": "2022-01-01", "sharesOutstanding": 1000.0,
+                          "sharesOutstandingPit": 1000.0}
                          for t in tickers])
     panel = build_institutional_feature_panel(_holdings(), peers, idx, shares_out_history=fund)
     for c in ("f_inst_breadth_chg_xs", "f_cluster_buying_xs", "f_new_buyers_xs",
@@ -204,7 +205,8 @@ def test_value_to_mcap_and_flow_panel():
     idx = pd.bdate_range("2025-10-01", "2026-09-30")
     tickers = ["A", "B", "C", "D"]
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
-    fund = pd.DataFrame([{"ticker": t, "as_of": "2025-01-01", "sharesOutstanding": 1_000_000.0}
+    fund = pd.DataFrame([{"ticker": t, "as_of": "2025-01-01", "sharesOutstanding": 1_000_000.0,
+                          "sharesOutstandingPit": 1_000_000.0}
                          for t in tickers])
     close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)           # price 10 -> mcap 10M
     panel = build_institutional_feature_panel(

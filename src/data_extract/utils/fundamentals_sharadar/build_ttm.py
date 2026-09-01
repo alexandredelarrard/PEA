@@ -148,6 +148,7 @@ def _window_is_whole(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
 
 def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
               actions: pd.DataFrame | None = None,
+              yf_splits: pd.DataFrame | None = None,
               quarter_columns: dict[str, str] | None = None,
               report: TranslationReport | None = None) -> pd.DataFrame:
     """Discrete ARQ quarters -> one TTM/instant row per (ticker, filing date).
@@ -166,8 +167,18 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
     window: NVDA's 2024-08-28 `dilutedShares` came out 8.08bn against a true 24.9bn, and
     `epsDiluted` 6.56 against ~2.16. Aggregating first and de-adjusting the RESULT once, with
     the factor at the row's OWN filing date, is both coherent within the window and correct
-    point-in-time. Passing `actions=None` leaves the share block on the vendor's retroactive
-    basis, which is NOT point-in-time -- `deadjust_splits` warns when it happens.
+    point-in-time.
+
+    ⚠ Only ONE column is de-adjusted now: `sharesOutstandingPit`. The four feature columns
+    (`sharesOutstanding`, `basicShares`, `dilutedShares`, `dividendsPerShare`) deliberately
+    STAY on the vendor's split-adjusted basis, because that is the basis `close_split` is on,
+    and on it the future-split factor cancels identically in every price x count product. See
+    the `_SPLIT_ADJUSTMENT` block in `sharadar_field_map.json`.
+
+    `actions` and `yf_splits` are the two split sources, unioned under the corroboration rule
+    in `split_events` -- `sharadar_actions` alone has nine known holes. Passing both as None
+    leaves `sharesOutstandingPit` on the vendor basis, which is NOT point-in-time;
+    `deadjust_splits` warns when it happens.
     """
 
     if frame.empty:
@@ -251,5 +262,5 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
     # De-adjust the AGGREGATE, then derive. Both orderings matter: after the rolling window so
     # the window is on one basis, and before `apply_derived` so `epsDiluted` reads a corrected
     # `dilutedShares` rather than being computed from a hybrid one.
-    result = deadjust_splits(result, field_map, actions, report=report)
+    result = deadjust_splits(result, field_map, actions, yf_splits, report=report)
     return apply_derived(result, field_map)

@@ -35,7 +35,11 @@ class StepCubeMomentum(Step):
 
     # `ret` is read from the part rather than recomputed: build_feature_panel used to derive
     # it internally from close, duplicating what the price step already persisted
-    _FIELDS = ("close", "open", "high", "low", "volume", "ret", "sector_ret")
+    # BOTH price bases: `close_total` for every return-shaped feature, `close_split` for the
+    # four that subtract or multiply an `open`/`high`/`low`/`volume` (all split-adjusted
+    # only). See the basis table at the top of momentum/features.py.
+    _FIELDS = ("close_split", "close_total", "open", "high", "low", "volume",
+               "ret", "sector_ret")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -64,13 +68,14 @@ class StepCubeMomentum(Step):
             fields=self._FIELDS, since=since)
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:
-        frames.require("close", "open", "sector_ret", "ret")
+        frames.require("close_split", "close_total", "open", "sector_ret", "ret")
         panel = build_feature_panel(
-            frames.close, frames.open, frames.sector_ret,
+            frames.close_total, frames.open, frames.sector_ret,
             method=self._cfg.features.standardize_method,
             high=frames.high, low=frames.low, volume=frames.volume,
             seasonal_horizons=[int(h) for h in self._cfg.targets.horizons],
             returns=frames.ret,
+            close_split=frames.close_split,
         )
         self._log.info("Price feature panel: %s rows, %s features (volume liquidity: %s)",
                        len(panel), len(panel.columns) - 2,

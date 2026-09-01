@@ -129,15 +129,20 @@ def test_price_fetch_writes_clean_ohlcv_and_never_the_dividends_table(sqlite_sto
           f"dividends table created: {sqlite_store.exists(Tables.dividends)}. Validated.")
 
 
-def test_actions_are_requested_only_on_the_dividend_path():
-    """WHY `prices` stays clean OHLCV: `download_ohlcv` only asks yfinance for the action
-    columns when the CALLER's `desc` says it wants dividends. The price path therefore never
-    receives a `dividends` column to leak, which is what replaced the old explicit
-    drop(_ACTION_COLS) -- so this is the invariant that now carries that guarantee."""
-    seen: list[bool] = []
+def test_actions_and_basis_are_explicit_per_caller():
+    """WHY `prices` stays clean OHLCV, and why the macro leg cannot follow the equity leg
+    off its basis: BOTH flags are now explicit arguments per caller.
 
-    def _spy_chunk(chunk, start, end, pause, actions):
-        seen.append(actions)
+    They used to be implicit and both were wrong for it. `actions` was inferred from the
+    CALLER'S `desc` STRING (`"dividend" in desc.lower()`), so a progress-bar label decided
+    which columns came back; `auto_adjust` was a hard-coded `True`, so there was no way for
+    the equity leg to ask for the split-adjusted close without dragging `SPY`/`equity_tr` and
+    `XLE`/`energy` off total return with it -- which would silently corrupt `beta_market`,
+    `fwd_market` and every label."""
+    seen: list[tuple[bool, bool]] = []
+
+    def _spy_chunk(chunk, start, end, pause, actions, auto_adjust):
+        seen.append((actions, auto_adjust))
         return []
 
     import src.data_extract.utils.prices.fetch_prices as mod
@@ -145,21 +150,27 @@ def test_actions_are_requested_only_on_the_dividend_path():
     try:
         mod._download_price_chunk = _spy_chunk
         since, until = pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-05")
-        mod.download_ohlcv(["AAPL"], since, until, pause=0.0)                    # default desc
-        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, desc="Downloading dividends")
+        mod.download_ohlcv(["AAPL"], since, until, pause=0.0,
+                           auto_adjust=False, actions=False)        # the price path
+        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, desc="Downloading dividends",
+                           auto_adjust=False, actions=True)         # the ex-date path
         mod.download_ohlcv(list(MACRO_PRICE_SERIES), since, until, pause=0.0,
-                           desc="Downloading macro/market prices")
+                           desc="Downloading macro/market prices",
+                           auto_adjust=True, actions=False)         # the macro path
     finally:
         mod._download_price_chunk = original
 
-    assert seen == [False, True, False], f"actions flags {seen}"
+    assert seen == [(False, False), (True, False), (False, True)], f"flags {seen}"
 
-    print("\n=== SANITY CHECK: actions flag per caller ===")
-    print(f"  desc 'Downloading prices' -> actions={seen[0]}; "
-          f"'Downloading dividends' -> actions={seen[1]}; "
-          f"'Downloading macro/market prices' -> actions={seen[2]}.")
-    print("  Only the dividend fetcher pulls ex-dates, so no other path can leak them. "
-          "Validated.")
+    print("\n=== SANITY CHECK: actions + auto_adjust per caller ===")
+    print(f"  price path  -> actions={seen[0][0]}, auto_adjust={seen[0][1]}  "
+          f"(clean OHLCV; Close AND Adj Close both arrive anyway)")
+    print(f"  ex-dates    -> actions={seen[1][0]}, auto_adjust={seen[1][1]}")
+    print(f"  macro path  -> actions={seen[2][0]}, auto_adjust={seen[2][1]}  "
+          f"(TOTAL RETURN -- SPY is stored as equity_tr and every label is measured "
+          f"against it)")
+    print("  No caller can pick a basis by accident, and none can leak an ex-date into "
+          "`prices`. Validated.")
 
 
 def test_dividend_fetch_is_the_only_ex_date_writer(sqlite_store, monkeypatch):

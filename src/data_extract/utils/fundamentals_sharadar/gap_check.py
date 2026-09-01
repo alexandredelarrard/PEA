@@ -62,9 +62,17 @@ DEFAULT_REPORT_PATH = ("reports/planning/active-tasks/2026-08-26-sharadar-integr
                        "phase-4-gap-check.md")
 
 #: The three floor classes, and how a field is assigned one. Read off the FIELD MAP's own
-#: declarations -- `op: ratio`/`ratio_minus_one` is a ratio, `split_basis: count` is a share
-#: count -- rather than from a name pattern, so a new column classifies itself.
+#: declarations -- `op: ratio`/`ratio_minus_one` is a ratio, and a share count is one that
+#: reads a vendor SHARE-COUNT column -- rather than from a name pattern, so a new column
+#: classifies itself.
 MONEY, SHARES, RATIO = "money", "shares", "ratio"
+
+#: The SF1 share-count columns. This USED to be inferred from `split_basis: count`, which
+#: stopped working the day the feature columns moved onto the vendor's split-adjusted basis
+#: and dropped that declaration: `sharesOutstanding`, `basicShares` and `dilutedShares` all
+#: silently reclassified as MONEY and were judged against a dollar floor. The vendor source
+#: is the durable statement of what a column MEASURES, independent of which basis it is on.
+SHARE_COUNT_SOURCES = frozenset({"sharesbas", "shareswa", "shareswadil"})
 
 #: How many `(ticker, field)` rows the markdown lists in full. The count is always printed
 #: beside it, so the tail is visible without being enumerated.
@@ -77,7 +85,7 @@ def field_class(name: str, field_map: FieldMap) -> str:
         return MONEY
     if spec.op in ("ratio", "ratio_minus_one"):
         return RATIO
-    if spec.split_basis == "count":
+    if spec.source in SHARE_COUNT_SOURCES:
         return SHARES
     return MONEY
 

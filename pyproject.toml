@@ -50,6 +50,10 @@ optional = true
 [tool.poetry.group.airflow.dependencies]
 apache-airflow = { version = ">=2.10,<3.0", python = ">=3.9,<3.13" }
 
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.16.5"
+pyright = "^1.1.411"
+
 [[tool.poetry.source]]
 name = "pytorch"
 url = "https://download.pytorch.org/whl/cu126"
@@ -58,3 +62,27 @@ priority = "explicit"
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+# Set maximum line length to 150 characters for both formatter and linter
+line-length = 150
+
+[tool.ruff.lint]
+# Formatter still enforces 150 chars on code, but linter won't fail commits on long URL comments
+ignore = ["E501"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors (Flake8)
+    "W",   # pycodestyle warnings (Flake8)
+    "F",   # Pyflakes (Flake8)
+    "I",   # isort (import sorting)
+    "B",   # flake8-bugbear (catches common bugs & design errors)
+    "N",   # pep8-naming (enforces standard Class/method naming conventions)
+    "UP",  # pyupgrade (automatically modernizes older Python syntax)
+]
+
+[tool.ruff.lint.pylint]
+max-args = 8             # Strategy init methods often take multiple parameters
+max-returns = 5
+max-branches = 12

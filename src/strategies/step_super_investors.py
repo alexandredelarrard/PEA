@@ -140,7 +140,11 @@ class SuperInvestorsStrategy(Strategy):
                                "-- check data/superinvestors/superinvestors.json.")
         df_funds = store.load(Tables.sec13f_hr, columns=_FUNDS_COLS,
                               where={"cik": set(roster_ciks.keys())})
-        prices = store.load("prices", columns=["date", "ticker", "close"])
+        # `close_split` renamed to `close` for the replication helper: this is an EXECUTION
+        # price (what a mirrored share is marked at), so it wants the split-adjusted quote,
+        # not the dividend-reinvested path. A 13F mirror holds shares, not a total-return
+        # index.
+        prices = store.load(Tables.prices, columns=["date", "ticker", "close_split"])                       .rename(columns={"close_split": "close"})
 
         # carry the holdings forward to the last price date, so the book is marked to market
         # right up to today rather than stopping at the most recent 13F filing

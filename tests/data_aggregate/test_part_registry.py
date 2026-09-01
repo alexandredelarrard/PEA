@@ -113,10 +113,15 @@ def test_substep_price_fields_are_declared_and_valid():
         assert not unknown, f"{name} declares unknown price field(s) {unknown}"
 
     # only the momentum step should need the full OHLCV set; the rest must be lighter
-    assert set(StepCubeMomentum._FIELDS) >= {"close", "open", "high", "low", "volume"}
+    # momentum is the only step needing BOTH price bases: close_total for the returns,
+    # close_split for the four features that pair with open/high/low/volume.
+    assert set(StepCubeMomentum._FIELDS) >= {"close_split", "close_total", "open", "high",
+                                             "low", "volume"}
     for name in ("StepCubeFundamentals", "StepCubeText"):
-        assert set(declared[name]) == {"close"}, f"{name} should need close only"
-    assert set(StepCubeExtras._FIELDS) == {"close", "volume"}
+        assert set(declared[name]) == {"close_split"}, (
+            f"{name} builds LEVELS (market cap, EV, per-share ratios), so it must take "
+            f"close_split only -- never the total-return series")
+    assert set(StepCubeExtras._FIELDS) == {"close_split", "volume"}
 
     print("\n=== SANITY CHECK: declared price-field projections ===")
     for name, fields in declared.items():

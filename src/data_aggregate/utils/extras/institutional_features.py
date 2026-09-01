@@ -142,7 +142,13 @@ def build_institutional_feature_panel(
     if have_shares:
         # ownership % by SHARES (aggregate 13F shares / shares outstanding)
         inst_sh = fundamentals_to_daily(qf, "inst_shares", trading_index)
-        shares = fundamentals_to_daily(shares_out_history, "sharesOutstanding", trading_index)
+        # ⚠ `sharesOutstandingPit`, NOT `sharesOutstanding`. A 13F reports the shares a
+        # manager ACTUALLY HELD on the filing date, so the denominator must be the count that
+        # actually existed then. The vendor-basis column is back-filled to today's split
+        # basis, which would read GOOGL's post-2022 ownership 20x too low. This ratio and the
+        # insider one are the only two consumers of the PIT column in the whole repo.
+        shares = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit",
+                                       trading_index)
         if not shares.empty and shares.notna().any().any():
             fields["inst_ownership_pct"] = (
                 inst_sh / shares.where(shares > 0)).replace([np.inf, -np.inf], np.nan)

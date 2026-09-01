@@ -58,8 +58,8 @@ class EqLongOnlyStrategy(Strategy):
                            extra["analysis"]["full_beta_sp"], out_dir)
 
         trades = trade_blotter(w, float(inputs.capital), float(c.get("fee_bps", inputs.fee_bps)),
-                               float(c.get("spread_bps", inputs.spread_bps)), self.name, prices=b.close)
+                               float(c.get("spread_bps", inputs.spread_bps)), self.name, prices=b.close_split)
         return StrategyResult(name=self.name, returns=ret,
                               metrics=series_metrics(ret, inputs.risk_free_rate),
                               positions=w, trades=trades, extra=extra,
-                              book_weights=w, book_prices=b.close)
+                              book_weights=w, book_prices=b.close_split)

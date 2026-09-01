@@ -9,8 +9,9 @@ tables they land in, see [data_schema.md](data_schema.md); for current coverage,
 
 | Domain | Source | Key? | Lands in | Fetcher |
 |---|---|---|---|---|
-| Prices (OHLCV) | yfinance | no | `prices` | `prices/fetch_prices.py` |
+| Prices (OHLCV) | yfinance | no | `prices` | `prices/fetch_prices.py` (`auto_adjust=False` → BOTH `close_split` and `close_total`; `-F/--full` re-pulls history, and a ticker that split after its last stored bar is re-pulled automatically — split adjustment is RETROACTIVE) |
 | Dividends (ex-dates) | yfinance | no | `dividends` | `prices/fetch_dividends.py` |
+| Share splits (ex-dates) | yfinance | no | `prices_splits` | `prices/fetch_splits.py` (fills nine holes in `sharadar_actions`; ⚠ its `Stock Splits` column also carries SPINOFF factors, so `field_map.split_events` shape-tests both vendors) |
 | S&P 500 constituents | Wikipedia | no | `sp500_tickers` | `prices/fetch_tickers.py` |
 | Benchmark / commodity / energy | yfinance (`SPY`, `^VIX`, `CL=F`, `GC=F`, `XLE`) | no | `prices_macro` | `prices/fetch_macro.py` (close only, via `download_ohlcv`) |
 | Rates / credit / breakeven / FX + derived legs (~1995→) | FRED (incl. `DEXUSEU` for FX) | `FRED_API_KEY` | `prices_macro` | `prices/fetch_macro.py` (same fetcher — one table, one source per series) |

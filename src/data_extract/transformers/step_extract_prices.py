@@ -4,6 +4,7 @@ step_extract_prices.py  (src/data_extract/step_extract_prices.py)
 Price / stock-market data extraction:
   * price history (daily OHLCV) -- the EQUITY universe only
   * dividends (ex-dates; its own fetcher, own resume window)
+  * splits (ex-dates; same shape as dividends) -> `prices_splits`
   * macro / market series (SPY, VIX, oil, gold, energy, FX + FRED) -> `prices_macro`
   * short interest (FINRA RegSHO short volume)
   * fails-to-deliver (SEC settlement fails)
@@ -19,6 +20,7 @@ from src.context import Context
 from src.utils.step import Step
 from src.data_extract.utils.prices.fetch_prices import fetch_price_history
 from src.data_extract.utils.prices.fetch_dividends import fetch_dividends
+from src.data_extract.utils.prices.fetch_splits import fetch_splits
 from src.data_extract.utils.prices.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.prices.fetch_fails_to_deliver import fetch_fails_to_deliver
 from src.data_extract.utils.prices.fetch_superinvestors import build_superinvestors_json
@@ -37,6 +39,11 @@ class StepExtractPrices(Step):
 
         years_history = self.config.data_extract.years_history
         years_macro = self.config.data_extract.macro_years_history
+
+        # Splits FIRST: `fetch_price_history` reads `prices_splits` to decide which tickers
+        # need their whole history re-pulled because a split restated it retroactively. Run
+        # the other way round and a fresh split is only acted on the NEXT night.
+        fetch_splits(self._context, tickers=tickers, years_history=years_history)
 
         # Prices and dividends are separate fetchers with separate resume windows
         # (daily bars vs quarterly ex-dates). Both get the EQUITY universe only

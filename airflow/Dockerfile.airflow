@@ -1,0 +1,28 @@
+# Airflow image for the PEA pipeline "composer".
+# Airflow itself lives in the base image's environment (SQLAlchemy 1.4). The PEA pipeline is
+# installed into a SEPARATE venv at /opt/pipeline (SQLAlchemy 2.0) so the two never clash; the DAGs
+# invoke the pipeline as `/opt/pipeline/bin/python -m src <package> <command>`.
+FROM apache/airflow:2.10.5-python3.12
+
+# psycopg2-binary bundles libpq and every pure-Python/data dep ships a manylinux wheel
+# (pandas/numpy/scipy/pyarrow/lxml/curl-cffi) -> nothing to compile. The ONE runtime system lib we
+# must add is libgomp1: LightGBM's manylinux wheel dynamically links libgomp.so.1 (GNU OpenMP) but
+# does NOT bundle it, so `import lightgbm` in the modelling DAG fails with
+# "libgomp.so.1: cannot open shared object file" on this slim base (unlike the main image, whose
+# build-essential pulls gcc -> libgomp1). One tiny package, so the apt hit is negligible.
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Isolated pipeline venv (SQLAlchemy 2.0) — independent of Airflow's own site-packages.
+RUN python -m venv /opt/pipeline
+COPY requirements-airflow.txt /requirements-airflow.txt
+
+# Use the full path to the venv's pip to ensure packages install inside /opt/pipeline
+RUN /opt/pipeline/bin/pip install --upgrade pip && \
+    /opt/pipeline/bin/pip install -r /requirements-airflow.txt
+
+RUN chmod -R a+rx /opt/pipeline
+
+USER airflows

@@ -55,7 +55,10 @@ class StepCubeTarget(Step):
     # The price fields this step reads back from `cube_part_prices`: `ret` as well as
     # `close`, because the factor panel is built from returns. Declared rather than inlined
     # so the projection stays introspectable (see test_part_registry.py).
-    _FIELDS = ("close", "ret")
+    # `close_split` for market cap and the size characteristic (the basis on which the
+    # split factor cancels against `sharesbas`); `close_total` for momentum; `ret` for every
+    # LABEL, which is now a forward COMPOUNDED total return rather than a price ratio.
+    _FIELDS = ("close_split", "close_total", "ret")
 
     def __init__(self, context: Context, config: DictConfig):
 
@@ -163,11 +166,12 @@ class StepCubeTarget(Step):
         away, so every factor family that goes into the panel is visible here instead of
         behind another wrapper."""
 
-        frames.require("close", "ret")
-        chars = build_characteristics(stock_close=frames.close,
+        frames.require("close_split", "close_total", "ret")
+        chars = build_characteristics(stock_close_total=frames.close_total,
                                       stock_ret=frames.ret,
                                       fundamentals_history=fundamentals,
-                                      resvol_window=63)
+                                      resvol_window=63,
+                                      stock_close_split=frames.close_split)
         macro = self._load_macro()                     # ONE read, ONE pivot, all macro below
         macro_chg = self._macro_changes(macro, frames.trading_index)
         commodity, currency = self._asset_factors(macro, frames.trading_index)
@@ -253,10 +257,10 @@ class StepCubeTarget(Step):
         label_types = list(cfg.get("labels", ["zscore", "rank", "epsilon"]))
         # recomputed here rather than reused from `PitFrames.market_cap`: that cache belongs to
         # the fundamentals sub-step, which runs later and over a different warm-up window.
-        market_cap = (daily_market_cap(fundamentals, frames.close)
+        market_cap = (daily_market_cap(fundamentals, frames.close_split)
                       if cfg.get("neutralize_log_mcap", False) else None)
         labels = build_targets_multi(
-            close=frames.close,
+            close_total=frames.close_total,
             betas=betas,
             factor_panel=panel,
             macro_cols=macro_cols,

@@ -32,11 +32,24 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # drifting. An exclusion list that silently outlives its cause is exactly how
 # `cube_part_attention` came to be reported missing on every run (see parts.py's docstring) --
 # when the baseline is eventually regenerated, this set must go to empty, not linger.
-DECLARED_DRIFT: frozenset[str] = frozenset({
-    "panel.betas",
-    "label.rank_h30", "label.rank_h60", "label.rank_h90",
-    "label.zscore_h30", "label.zscore_h60", "label.zscore_h90",
-})
+# EMPTY, as of the 2026-09-01 price/shares basis fix -- which is what this set was always
+# supposed to become. The baseline was regenerated then, so `panel.betas` and the six label
+# digests are GATED AGAIN rather than excused.
+#
+# What the regeneration folded in, measured by fingerprinting HEAD's code and this branch's
+# code against the SAME database and diffing the two:
+#   * moved by THIS branch's code (4): `label.zscore_h30/60/90`, because the label stopped
+#     being `forward_return(close, h)` (a literal price ratio that excluded every dividend)
+#     and became `forward_compound(stock_ret, h)`; and `panel.institutional`, because
+#     `inst_ownership_pct` now divides by `sharesOutstandingPit` rather than the vendor-basis
+#     share count. Both are the intended effect of that change.
+#   * NOT moved by this branch's code: `label.rank_h30/60/90`. On the harness's dividend-free
+#     random walk `forward_compound` is a MONOTONE transform of `forward_return`, so the
+#     cross-sectional rank is preserved while the z-score is not -- an internal check that
+#     the label change did exactly what it claims.
+#   * moved before this branch (4): `panel.betas` and the three rank labels, which had
+#     already drifted at HEAD and were the reason this list existed.
+DECLARED_DRIFT: frozenset[str] = frozenset()
 
 
 @pytest.fixture(scope="module")

@@ -1,0 +1,819 @@
+{
+  "tag": "before",
+  "generated_utc": "2026-09-01 18:37:27Z",
+  "env": {
+    "prices_rows": 3263505,
+    "prices_min": "1995-08-30",
+    "prices_max": "2026-08-28",
+    "panel_rows": 51255,
+    "panel_tickers": 489,
+    "cube_part_prices": "present"
+  },
+  "mcap_error_by_year": {
+    "1995": {
+      "n": 190,
+      "median": 0.2081,
+      "p05": 0.0474,
+      "min": 0.0075,
+      "off_by_10pct": 189
+    },
+    "1996": {
+      "n": 1072,
+      "median": 0.2103,
+      "p05": 0.0453,
+      "min": 0.0075,
+      "off_by_10pct": 1056
+    },
+    "1997": {
+      "n": 1196,
+      "median": 0.2147,
+      "p05": 0.045,
+      "min": 0.0042,
+      "off_by_10pct": 1171
+    },
+    "1998": {
+      "n": 1262,
+      "median": 0.2408,
+      "p05": 0.0458,
+      "min": 0.0042,
+      "off_by_10pct": 1230
+    },
+    "1999": {
+      "n": 1294,
+      "median": 0.2796,
+      "p05": 0.0475,
+      "min": 0.0019,
+      "off_by_10pct": 1258
+    },
+    "2000": {
+      "n": 1340,
+      "median": 0.3148,
+      "p05": 0.054,
+      "min": 0.0019,
+      "off_by_10pct": 1277
+    },
+    "2001": {
+      "n": 1388,
+      "median": 0.3619,
+      "p05": 0.0814,
+      "min": 0.0038,
+      "off_by_10pct": 1300
+    },
+    "2002": {
+      "n": 1422,
+      "median": 0.3945,
+      "p05": 0.0859,
+      "min": 0.0076,
+      "off_by_10pct": 1330
+    },
+    "2003": {
+      "n": 1436,
+      "median": 0.4186,
+      "p05": 0.0951,
+      "min": 0.0076,
+      "off_by_10pct": 1337
+    },
+    "2004": {
+      "n": 1462,
+      "median": 0.4519,
+      "p05": 0.1088,
+      "min": 0.0076,
+      "off_by_10pct": 1350
+    },
+    "2005": {
+      "n": 1488,
+      "median": 0.4851,
+      "p05": 0.1346,
+      "min": 0.0076,
+      "off_by_10pct": 1357
+    },
+    "2006": {
+      "n": 1532,
+      "median": 0.5233,
+      "p05": 0.1496,
+      "min": 0.0076,
+      "off_by_10pct": 1372
+    },
+    "2007": {
+      "n": 1585,
+      "median": 0.5688,
+      "p05": 0.1617,
+      "min": 0.0153,
+      "off_by_10pct": 1396
+    },
+    "2008": {
+      "n": 1618,
+      "median": 0.6063,
+      "p05": 0.17,
+      "min": 0.0229,
+      "off_by_10pct": 1418
+    },
+    "2009": {
+      "n": 1625,
+      "median": 0.6255,
+      "p05": 0.1732,
+      "min": 0.0229,
+      "off_by_10pct": 1417
+    },
+    "2010": {
+      "n": 1656,
+      "median": 0.6435,
+      "p05": 0.1804,
+      "min": 0.0229,
+      "off_by_10pct": 1428
+    },
+    "2011": {
+      "n": 1694,
+      "median": 0.6681,
+      "p05": 0.2049,
+      "min": 0.0229,
+      "off_by_10pct": 1447
+    },
+    "2012": {
+      "n": 1719,
+      "median": 0.694,
+      "p05": 0.25,
+      "min": 0.0229,
+      "off_by_10pct": 1445
+    },
+    "2013": {
+      "n": 1750,
+      "median": 0.7217,
+      "p05": 0.271,
+      "min": 0.0232,
+      "off_by_10pct": 1425
+    },
+    "2014": {
+      "n": 1777,
+      "median": 0.7478,
+      "p05": 0.3141,
+      "min": 0.0237,
+      "off_by_10pct": 1403
+    },
+    "2015": {
+      "n": 1792,
+      "median": 0.7701,
+      "p05": 0.3693,
+      "min": 0.0241,
+      "off_by_10pct": 1366
+    },
+    "2016": {
+      "n": 1818,
+      "median": 0.7986,
+      "p05": 0.3921,
+      "min": 0.0245,
+      "off_by_10pct": 1343
+    },
+    "2017": {
+      "n": 1845,
+      "median": 0.8198,
+      "p05": 0.4148,
+      "min": 0.0246,
+      "off_by_10pct": 1305
+    },
+    "2018": {
+      "n": 1852,
+      "median": 0.8426,
+      "p05": 0.4623,
+      "min": 0.0247,
+      "off_by_10pct": 1230
+    },
+    "2019": {
+      "n": 1881,
+      "median": 0.8656,
+      "p05": 0.5626,
+      "min": 0.0248,
+      "off_by_10pct": 1128
+    },
+    "2020": {
+      "n": 1904,
+      "median": 0.8899,
+      "p05": 0.6438,
+      "min": 0.0249,
+      "off_by_10pct": 1041
+    },
+    "2021": {
+      "n": 1933,
+      "median": 0.9105,
+      "p05": 0.7455,
+      "min": 0.0249,
+      "off_by_10pct": 886
+    },
+    "2022": {
+      "n": 1943,
+      "median": 0.9281,
+      "p05": 0.7978,
+      "min": 0.05,
+      "off_by_10pct": 681
+    },
+    "2023": {
+      "n": 1943,
+      "median": 0.9473,
+      "p05": 0.8348,
+      "min": 0.0998,
+      "off_by_10pct": 450
+    },
+    "2024": {
+      "n": 1948,
+      "median": 0.9661,
+      "p05": 0.8888,
+      "min": 0.0998,
+      "off_by_10pct": 140
+    },
+    "2025": {
+      "n": 1959,
+      "median": 0.9828,
+      "p05": 0.9371,
+      "min": 0.4063,
+      "off_by_10pct": 30
+    },
+    "2026": {
+      "n": 1438,
+      "median": 0.9966,
+      "p05": 0.9798,
+      "min": 0.5174,
+      "off_by_10pct": 7
+    }
+  },
+  "error_decomposition": {
+    "1995": {
+      "n": 190,
+      "split_part": 0.5,
+      "dividend_part": 0.5054,
+      "product": 0.2081,
+      "mcap_error": 0.2081,
+      "residual": 1.0
+    },
+    "1996": {
+      "n": 1072,
+      "split_part": 0.5,
+      "dividend_part": 0.5332,
+      "product": 0.2103,
+      "mcap_error": 0.2103,
+      "residual": 1.0
+    },
+    "1997": {
+      "n": 1196,
+      "split_part": 0.5,
+      "dividend_part": 0.5659,
+      "product": 0.2147,
+      "mcap_error": 0.2147,
+      "residual": 1.0
+    },
+    "1998": {
+      "n": 1262,
+      "split_part": 0.5,
+      "dividend_part": 0.5759,
+      "product": 0.2408,
+      "mcap_error": 0.2408,
+      "residual": 1.0
+    },
+    "1999": {
+      "n": 1294,
+      "split_part": 0.5,
+      "dividend_part": 0.5857,
+      "product": 0.2796,
+      "mcap_error": 0.2796,
+      "residual": 1.0
+    },
+    "2000": {
+      "n": 1340,
+      "split_part": 0.5,
+      "dividend_part": 0.5972,
+      "product": 0.3148,
+      "mcap_error": 0.3148,
+      "residual": 1.0
+    },
+    "2001": {
+      "n": 1388,
+      "split_part": 1.0,
+      "dividend_part": 0.6067,
+      "product": 0.3619,
+      "mcap_error": 0.3619,
+      "residual": 1.0
+    },
+    "2002": {
+      "n": 1422,
+      "split_part": 1.0,
+      "dividend_part": 0.6138,
+      "product": 0.3945,
+      "mcap_error": 0.3945,
+      "residual": 1.0
+    },
+    "2003": {
+      "n": 1436,
+      "split_part": 1.0,
+      "dividend_part": 0.6182,
+      "product": 0.4186,
+      "mcap_error": 0.4186,
+      "residual": 1.0
+    },
+    "2004": {
+      "n": 1462,
+      "split_part": 1.0,
+      "dividend_part": 0.6269,
+      "product": 0.4519,
+      "mcap_error": 0.4519,
+      "residual": 1.0
+    },
+    "2005": {
+      "n": 1488,
+      "split_part": 1.0,
+      "dividend_part": 0.6362,
+      "product": 0.4851,
+      "mcap_error": 0.4851,
+      "residual": 1.0
+    },
+    "2006": {
+      "n": 1532,
+      "split_part": 1.0,
+      "dividend_part": 0.6481,
+      "product": 0.5233,
+      "mcap_error": 0.5233,
+      "residual": 1.0
+    },
+    "2007": {
+      "n": 1585,
+      "split_part": 1.0,
+      "dividend_part": 0.661,
+      "product": 0.5688,
+      "mcap_error": 0.5688,
+      "residual": 1.0
+    },
+    "2008": {
+      "n": 1618,
+      "split_part": 1.0,
+      "dividend_part": 0.6764,
+      "product": 0.6063,
+      "mcap_error": 0.6063,
+      "residual": 1.0
+    },
+    "2009": {
+      "n": 1625,
+      "split_part": 1.0,
+      "dividend_part": 0.6967,
+      "product": 0.6255,
+      "mcap_error": 0.6255,
+      "residual": 1.0
+    },
+    "2010": {
+      "n": 1656,
+      "split_part": 1.0,
+      "dividend_part": 0.7111,
+      "product": 0.6435,
+      "mcap_error": 0.6435,
+      "residual": 1.0
+    },
+    "2011": {
+      "n": 1694,
+      "split_part": 1.0,
+      "dividend_part": 0.7286,
+      "product": 0.6681,
+      "mcap_error": 0.6681,
+      "residual": 1.0
+    },
+    "2012": {
+      "n": 1719,
+      "split_part": 1.0,
+      "dividend_part": 0.7455,
+      "product": 0.694,
+      "mcap_error": 0.694,
+      "residual": 1.0
+    },
+    "2013": {
+      "n": 1750,
+      "split_part": 1.0,
+      "dividend_part": 0.7658,
+      "product": 0.7217,
+      "mcap_error": 0.7217,
+      "residual": 1.0
+    },
+    "2014": {
+      "n": 1777,
+      "split_part": 1.0,
+      "dividend_part": 0.7821,
+      "product": 0.7478,
+      "mcap_error": 0.7478,
+      "residual": 1.0
+    },
+    "2015": {
+      "n": 1792,
+      "split_part": 1.0,
+      "dividend_part": 0.7987,
+      "product": 0.7701,
+      "mcap_error": 0.7701,
+      "residual": 1.0
+    },
+    "2016": {
+      "n": 1818,
+      "split_part": 1.0,
+      "dividend_part": 0.8184,
+      "product": 0.7986,
+      "mcap_error": 0.7986,
+      "residual": 1.0
+    },
+    "2017": {
+      "n": 1845,
+      "split_part": 1.0,
+      "dividend_part": 0.8391,
+      "product": 0.8198,
+      "mcap_error": 0.8198,
+      "residual": 1.0
+    },
+    "2018": {
+      "n": 1852,
+      "split_part": 1.0,
+      "dividend_part": 0.8547,
+      "product": 0.8426,
+      "mcap_error": 0.8426,
+      "residual": 1.0
+    },
+    "2019": {
+      "n": 1881,
+      "split_part": 1.0,
+      "dividend_part": 0.8768,
+      "product": 0.8657,
+      "mcap_error": 0.8656,
+      "residual": 1.0
+    },
+    "2020": {
+      "n": 1904,
+      "split_part": 1.0,
+      "dividend_part": 0.8976,
+      "product": 0.8902,
+      "mcap_error": 0.8899,
+      "residual": 1.0
+    },
+    "2021": {
+      "n": 1933,
+      "split_part": 1.0,
+      "dividend_part": 0.914,
+      "product": 0.9109,
+      "mcap_error": 0.9105,
+      "residual": 1.0
+    },
+    "2022": {
+      "n": 1943,
+      "split_part": 1.0,
+      "dividend_part": 0.9297,
+      "product": 0.9283,
+      "mcap_error": 0.9281,
+      "residual": 1.0
+    },
+    "2023": {
+      "n": 1943,
+      "split_part": 1.0,
+      "dividend_part": 0.9482,
+      "product": 0.9477,
+      "mcap_error": 0.9473,
+      "residual": 1.0
+    },
+    "2024": {
+      "n": 1948,
+      "split_part": 1.0,
+      "dividend_part": 0.9663,
+      "product": 0.9663,
+      "mcap_error": 0.9661,
+      "residual": 1.0
+    },
+    "2025": {
+      "n": 1959,
+      "split_part": 1.0,
+      "dividend_part": 0.9829,
+      "product": 0.9829,
+      "mcap_error": 0.9828,
+      "residual": 1.0
+    },
+    "2026": {
+      "n": 1438,
+      "split_part": 1.0,
+      "dividend_part": 0.9966,
+      "product": 0.9966,
+      "mcap_error": 0.9966,
+      "residual": 1.0
+    }
+  },
+  "split_part_cohorts": {
+    "lt_1": {
+      "n": 10870,
+      "mean_fwd_12m": 0.2929,
+      "median_fwd_12m": 0.2032
+    },
+    "eq_1": {
+      "n": 37438,
+      "mean_fwd_12m": 0.1646,
+      "median_fwd_12m": 0.1245
+    },
+    "gt_1": {
+      "n": 517,
+      "mean_fwd_12m": 0.0999,
+      "median_fwd_12m": 0.057
+    }
+  },
+  "dividend_part_quintiles": {
+    "Q1": {
+      "n": 9085,
+      "mean_dividend_part": 0.5635,
+      "mean_fwd_12m": 0.1254
+    },
+    "Q2": {
+      "n": 7860,
+      "mean_dividend_part": 0.6785,
+      "mean_fwd_12m": 0.142
+    },
+    "Q3": {
+      "n": 7914,
+      "mean_dividend_part": 0.7568,
+      "mean_fwd_12m": 0.1693
+    },
+    "Q4": {
+      "n": 7863,
+      "mean_dividend_part": 0.847,
+      "mean_fwd_12m": 0.2172
+    },
+    "Q5": {
+      "n": 8607,
+      "mean_dividend_part": 0.9797,
+      "mean_fwd_12m": 0.2843
+    }
+  },
+  "combined_error_quintiles": {
+    "Q1": {
+      "n": 9085,
+      "mean_fwd_12m": 0.2097
+    },
+    "Q2": {
+      "n": 7860,
+      "mean_fwd_12m": 0.1618
+    },
+    "Q3": {
+      "n": 7915,
+      "mean_fwd_12m": 0.1611
+    },
+    "Q4": {
+      "n": 7859,
+      "mean_fwd_12m": 0.185
+    },
+    "Q5": {
+      "n": 8610,
+      "mean_fwd_12m": 0.214
+    }
+  },
+  "deadjusted_rows": {
+    "total_rows": 51255,
+    "deadjusted": 11597,
+    "deadjusted_down": 10996,
+    "deadjusted_up": 601,
+    "share": 0.2263,
+    "distinct_tickers": 290,
+    "tickers_down": 277,
+    "tickers_up": 15,
+    "total_tickers": 489
+  },
+  "sec_cover_page_agreement": {
+    "column": "sharesOutstanding",
+    "rows": 5553,
+    "agree": 5141,
+    "too_high": 371,
+    "too_low": 41,
+    "tickers": 96,
+    "failing_tickers": 24,
+    "failing": {
+      "AMCR": {
+        "bad_rows": 26,
+        "median_ratio": 0.2
+      },
+      "ACGL": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "AIZ": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "AEP": {
+        "bad_rows": 3,
+        "median_ratio": 1.0
+      },
+      "ALL": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "AJG": {
+        "bad_rows": 2,
+        "median_ratio": 1.0
+      },
+      "AXON": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "AMD": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "CLX": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "CB": {
+        "bad_rows": 2,
+        "median_ratio": 1.0
+      },
+      "CAT": {
+        "bad_rows": 3,
+        "median_ratio": 1.0
+      },
+      "BX": {
+        "bad_rows": 27,
+        "median_ratio": 1.0
+      },
+      "APP": {
+        "bad_rows": 2,
+        "median_ratio": 1.0001
+      },
+      "ARES": {
+        "bad_rows": 2,
+        "median_ratio": 1.0001
+      },
+      "ALLE": {
+        "bad_rows": 17,
+        "median_ratio": 1.0132
+      },
+      "ACN": {
+        "bad_rows": 2,
+        "median_ratio": 1.1216
+      },
+      "AOS": {
+        "bad_rows": 5,
+        "median_ratio": 1.1723
+      },
+      "CCL": {
+        "bad_rows": 67,
+        "median_ratio": 1.3528
+      },
+      "CMCSA": {
+        "bad_rows": 2,
+        "median_ratio": 1.3799
+      },
+      "APH": {
+        "bad_rows": 60,
+        "median_ratio": 2.0
+      },
+      "ANET": {
+        "bad_rows": 42,
+        "median_ratio": 4.0
+      },
+      "AVGO": {
+        "bad_rows": 25,
+        "median_ratio": 10.0
+      },
+      "BKNG": {
+        "bad_rows": 63,
+        "median_ratio": 25.0
+      },
+      "CMG": {
+        "bad_rows": 56,
+        "median_ratio": 50.0
+      }
+    }
+  },
+  "spike_revert_scan": {
+    "n": 5,
+    "n_post_2020": 3,
+    "tickers_post_2020": [
+      "MNST"
+    ],
+    "events": [
+      {
+        "ticker": "HIG",
+        "date": "2008-11-03",
+        "ret": 0.5775,
+        "revert_gap": 0.063
+      },
+      {
+        "ticker": "FITB",
+        "date": "2009-02-06",
+        "ret": 0.6037,
+        "revert_gap": 0.0183
+      },
+      {
+        "ticker": "MNST",
+        "date": "2026-07-23",
+        "ret": 0.9559,
+        "revert_gap": 0.0074
+      },
+      {
+        "ticker": "MNST",
+        "date": "2026-08-03",
+        "ret": 0.9413,
+        "revert_gap": 0.023
+      },
+      {
+        "ticker": "MNST",
+        "date": "2026-08-07",
+        "ret": 0.9193,
+        "revert_gap": 0.0055
+      }
+    ]
+  },
+  "mnst_window": [
+    {
+      "date": "2026-07-15",
+      "close": 97.57
+    },
+    {
+      "date": "2026-07-16",
+      "close": 99.94
+    },
+    {
+      "date": "2026-07-17",
+      "close": 97.5
+    },
+    {
+      "date": "2026-07-20",
+      "close": 47.725
+    },
+    {
+      "date": "2026-07-21",
+      "close": 47.23
+    },
+    {
+      "date": "2026-07-22",
+      "close": 47.835
+    },
+    {
+      "date": "2026-07-23",
+      "close": 93.56
+    },
+    {
+      "date": "2026-07-24",
+      "close": 93.49
+    },
+    {
+      "date": "2026-07-27",
+      "close": 95.33
+    },
+    {
+      "date": "2026-07-28",
+      "close": 97.74
+    },
+    {
+      "date": "2026-07-29",
+      "close": 97.23
+    },
+    {
+      "date": "2026-07-30",
+      "close": 97.65
+    },
+    {
+      "date": "2026-07-31",
+      "close": 48.19
+    },
+    {
+      "date": "2026-08-03",
+      "close": 93.55
+    },
+    {
+      "date": "2026-08-04",
+      "close": 94.18
+    },
+    {
+      "date": "2026-08-05",
+      "close": 94.46
+    },
+    {
+      "date": "2026-08-06",
+      "close": 47.08
+    },
+    {
+      "date": "2026-08-07",
+      "close": 90.36
+    },
+    {
+      "date": "2026-08-11",
+      "close": 45.53
+    },
+    {
+      "date": "2026-08-12",
+      "close": 45.98
+    },
+    {
+      "date": "2026-08-13",
+      "close": 46.68
+    },
+    {
+      "date": "2026-08-14",
+      "close": 46.82
+    }
+  ],
+  "macro_equity_tr_digest": "c794c4b8e6590101",
+  "option_overhang_digest": "99f56a4553b6e9c0",
+  "mcap_error_overall": {
+    "n": 50762,
+    "median": 0.753459,
+    "mean": 0.706464,
+    "p05": 0.131265,
+    "min": 0.001907,
+    "max": 23.495448
+  }
+}

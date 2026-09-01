@@ -33,7 +33,8 @@ class LongShortStrategy(Strategy):
 
         b = build_signal(self._context, self._config, end=inputs.end)
         
-        self.signal, self.stock_ret, self.spy_ret, self.close = b.signal, b.stock_ret, b.spy_ret, b.close
+        self.signal, self.stock_ret, self.spy_ret, self.close_split = (
+            b.signal, b.stock_ret, b.spy_ret, b.close_split)
         self.backtest_start, self.horizons = b.backtest_start, b.horizons
         self._log.info("ls_equity: signal %s days x %s tickers; OOS from %s",
                        *self.signal.shape, self.backtest_start.date())
@@ -55,7 +56,7 @@ class LongShortStrategy(Strategy):
         return StrategyResult(name=self.name, returns=ret,
                               metrics=series_metrics(ret, inputs.risk_free_rate),
                               positions=None, trades=trades, extra=extra,
-                              book_weights=book, book_prices=getattr(self, "close", None))
+                              book_weights=book, book_prices=getattr(self, "close_split", None))
 
     def _sector_map(self) -> dict:
         tk = self._context.store.load("sp500_tickers", optional=True)
@@ -72,7 +73,8 @@ class LongShortStrategy(Strategy):
         isc = dict(c.get("integer_shares", {}) or {})
         if bool(isc.get("enabled", False)):                 # WHOLE-SHARE book (no fractional shorts)
             return simulate_integer_ls(
-                signal=self.signal, stock_ret=self.stock_ret, spy_ret=self.spy_ret, close=self.close,
+                signal=self.signal, stock_ret=self.stock_ret, spy_ret=self.spy_ret,
+                close_split=self.close_split,
                 starting_capital=float(inp.capital), target_ann_vol=float(inp.target_vol),
                 beta_neutral=c.get("beta_neutral", True), pos_cap=c.get("pos_cap", 0.05),
                 gross_cap=c.get("gross_cap", 3.0), beta_window=c.get("beta_window", 63),
@@ -115,7 +117,7 @@ class LongShortStrategy(Strategy):
         c = self._cfg
         return trade_blotter(book, inputs.capital, float(c.get("fee_bps", inputs.fee_bps)),
                              float(c.get("spread_bps", inputs.spread_bps)), self.name,
-                             prices=getattr(self, "close", None))
+                             prices=getattr(self, "close_split", None))
 
     def _analyze(self, ret: pd.Series) -> dict:
         """IC + Sharpe/maxDD + market-neutrality (beta to SP, corr to energy) plots."""

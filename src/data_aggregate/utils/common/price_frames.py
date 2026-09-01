@@ -46,7 +46,13 @@ from src.data_store.store import DataStore
 
 logger = logging.getLogger(__name__)
 
-ALL_FIELDS = ("close", "volume", "ret", "sector_ret")
+#: ⚠ TWO price fields, and no bare `close`. `close_split` is split-adjusted ONLY (the basis
+#: every LEVEL needs -- market cap, EV, dividend yield, ATR -- because on it the future-split
+#: factor cancels against Sharadar's `sharesbas`); `close_total` is that series further
+#: reduced for later dividends (the basis every RETURN needs -- ret, momentum, betas, labels).
+#: There is deliberately NO `close` alias: a reader that picks the wrong one must KeyError,
+#: not quietly compute price returns.
+ALL_FIELDS = ("close_split", "close_total", "volume", "ret", "sector_ret")
 
 @dataclass(frozen=True, slots=True)
 class PriceFrames:
@@ -57,7 +63,7 @@ class PriceFrames:
     can reach a cross-sectional rank through this object.
 
     Every wide field is `None` unless it was requested via `load_price_frames(fields=...)`,
-    so a step that only needs `close` never materialises open/high/low/volume.
+    so a step that only needs `close_split` never materialises open/high/low/volume.
 
     FROZEN: a sub-step may not mutate what the next one reads. Combined with the rule that
     sub-steps keep their frames LOCAL to `run()`, this is what stops seven sequential
@@ -66,7 +72,8 @@ class PriceFrames:
     trading_index: pd.DatetimeIndex
     universe: tuple[str, ...]
     peers: dict[str, dict[str, float]]
-    close: pd.DataFrame | None = None
+    close_split: pd.DataFrame | None = None
+    close_total: pd.DataFrame | None = None
     open: pd.DataFrame | None = None
     high: pd.DataFrame | None = None
     low: pd.DataFrame | None = None
@@ -84,10 +91,14 @@ class PriceFrames:
                 "to load_price_frames")
 
     def skeleton(self) -> pd.DataFrame:
-        """The (date, ticker) grid of cells that HAVE a close -- what the merge-based panel
-        builders left-join onto."""
-        self.require("close")
-        s = self.close.reset_index()
+        """The (date, ticker) grid of cells that HAVE a price -- what the merge-based panel
+        builders left-join onto.
+
+        Keyed on `close_split` rather than `close_total`: the two have the same non-null
+        pattern by construction (one response, one upsert), but `close_split` is the one that
+        is never null when the other is -- `close_total` is derived from it."""
+        self.require("close_split")
+        s = self.close_split.reset_index()
         idx_col = s.columns[0]
         m = (s.melt(id_vars=idx_col, var_name="ticker", value_name="_v")
              .dropna(subset=["_v"]).rename(columns={idx_col: "date"}))
@@ -162,8 +173,9 @@ def load_price_frames(
 
     return PriceFrames(
         trading_index=idx, universe=universe, peers=peers,
-        close=wide.get("close"), 
-        volume=wide.get("volume"), 
+        close_split=wide.get("close_split"),
+        close_total=wide.get("close_total"),
+        volume=wide.get("volume"),
         ret=wide.get("ret"),
         sector_ret=wide.get("sector_ret"),
     )

@@ -761,13 +761,23 @@ def test_diluted_share_count_gaps_are_the_vendors(vendor_arq, ttm):
 # the split de-adjustment runs AFTER the aggregation, and that ORDER is the fix #
 # --------------------------------------------------------------------------- #
 def test_a_ttm_window_straddling_a_split_stays_on_one_basis(field_map):
-    """SYNTHETIC known-truth: the window that straddles a split must be POST-split, whole.
+    """SYNTHETIC known-truth, on BOTH bases at once: the PIT column must be as-filed, the
+    feature columns must be the vendor's, and NEITHER may land between the two.
 
     Synthetic because the property is about an ORDER OF OPERATIONS, and real data can only
-    show that the two orders happen to differ -- not what the right answer is. Here it is
-    known: Sharadar stores every quarter on today's basis (200), the split is 2-for-1, so a
-    row filed BEFORE it is 100 and a row filed AFTER it is 200. Nothing may ever be 125,
-    which is what averaging four de-adjusted quarters across the split produces.
+    show that two orders differ -- not what the right answer is. Here it is known: Sharadar
+    stores every quarter on today's basis (200) and the split is 2-for-1, so
+
+      * `sharesOutstandingPit` is 100 before the split and 200 after -- the count that really
+        existed on the day, which is what `inst_ownership_pct` and the insider %-of-shares
+        leg divide an as-filed 13F / Form-4 count by;
+      * `dilutedShares` / `sharesOutstanding` are 200 THROUGHOUT, deliberately. That is the
+        basis `close_split` is on, so the split factor cancels in every price x count
+        product, and `shares(t)/shares(t-1)` reads 1 through the split instead of +100%.
+
+    125 is the number that must never appear on either column: it is the mean of four
+    de-adjusted quarters averaged ACROSS the split, which is the bug the aggregate-then-
+    de-adjust ordering exists to prevent.
     """
     values = {"shareswadil": [200.0] * 8, "shareswa": [200.0] * 8, "sharesbas": [200.0] * 8,
               "consolinc": [10.0] * 8, "revenue": [100.0] * 8}
@@ -775,18 +785,31 @@ def test_a_ttm_window_straddling_a_split_stays_on_one_basis(field_map):
     actions = pd.DataFrame([{"ticker": "TEST", "date": pd.Timestamp("2024-05-15"),
                              "action": "split", "value": 2.0, "contraticker": "N/A"}])
     built = build_ttm(translate(frame, field_map), field_map, actions=actions)
-    got = built[["date", "dilutedShares"]].copy()
+
+    got = built[["date", "sharesOutstandingPit", "sharesOutstanding", "dilutedShares"]].copy()
     got["filed"] = pd.to_datetime(got["date"]).dt.date
     print("\nsplit 2024-05-15 x2; Sharadar stores 200 on every quarter")
-    print(got[["filed", "dilutedShares"]].to_string(index=False))
+    print(got[["filed", "sharesOutstandingPit", "sharesOutstanding",
+               "dilutedShares"]].to_string(index=False))
 
-    before = built[pd.to_datetime(built["date"]) < "2024-05-15"]["dilutedShares"].dropna()
-    after = built[pd.to_datetime(built["date"]) >= "2024-05-15"]["dilutedShares"].dropna()
-    assert (before == 100.0).all(), f"pre-split rows must be as-filed 100, got {list(before)}"
-    assert (after == 200.0).all(), f"post-split rows must be 200, got {list(after)}"
-    assert not ((built["dilutedShares"] > 100.0) & (built["dilutedShares"] < 200.0)).any(), \
+    pre = pd.to_datetime(built["date"]) < "2024-05-15"
+    pit_before = built.loc[pre, "sharesOutstandingPit"].dropna()
+    pit_after = built.loc[~pre, "sharesOutstandingPit"].dropna()
+    assert (pit_before == 100.0).all(), f"PIT pre-split must be as-filed 100, {list(pit_before)}"
+    assert (pit_after == 200.0).all(), f"PIT post-split must be 200, got {list(pit_after)}"
+    assert not ((built["sharesOutstandingPit"] > 100.0)
+                & (built["sharesOutstandingPit"] < 200.0)).any(), \
         "a value between the two bases means the window averaged across the split"
-    print("no window mixes the two bases -- de-adjustment ran AFTER the aggregation")
+
+    for column in ("sharesOutstanding", "dilutedShares", "basicShares"):
+        vendor = built[column].dropna()
+        assert (vendor == 200.0).all(), (
+            f"{column} must stay on the VENDOR basis (200) so the split factor cancels "
+            f"against close_split; got {sorted(set(vendor))}")
+
+    print("PIT column is as-filed on both sides of the split; the three feature columns stay "
+          "on the vendor basis throughout, so shares_growth reads 1.0 across it.")
+    print("No window mixes the two bases -- de-adjustment still runs AFTER the aggregation.")
 
 
 def test_post_split_share_counts_are_not_a_hybrid_basis(ttm):

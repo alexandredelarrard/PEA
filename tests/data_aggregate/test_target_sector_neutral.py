@@ -116,18 +116,18 @@ def _panel_with_sector_excess(seed: int = 3):
     factor_panel = pd.DataFrame({"market": rng.normal(0, 0.01, len(dates))}, index=dates)
     betas = {t: pd.DataFrame({"beta_market": 1.0, "beta_sector": 0.9}, index=dates)
              for t in tickers}
-    return close, betas, factor_panel, sector_excess, tickers
+    return close, ret, betas, factor_panel, sector_excess, tickers
 
 
 def test_sector_excess_frame_flows_through_build_targets_multi():
     """The caller hands a date x ticker FRAME. This raised ValueError
     ('truth value of a DataFrame is ambiguous') before the contract was unified."""
-    close, betas, factor_panel, sector_excess, tickers = _panel_with_sector_excess()
+    close, ret, betas, factor_panel, sector_excess, tickers = _panel_with_sector_excess()
 
     out = build_targets_multi(close, betas, factor_panel, macro_cols=[],
                               horizons=(20,), labels=("rank",), min_names=5,
                               sector_groups={"sector": {t: "S" for t in tickers}},
-                              sector_excess=sector_excess)
+                              sector_excess=sector_excess, stock_ret=ret)
 
     non_null = int(out[20]["rank"].notna().sum().sum())
     assert non_null > 0, "targets are empty -> the sector frame did not flow through"
@@ -139,11 +139,11 @@ def test_sector_excess_frame_flows_through_build_targets_multi():
 def test_sector_beta_actually_changes_epsilon():
     """A signature-only fix would still let the term be silently skipped, so assert
     the sector loading genuinely moves epsilon rather than merely not crashing."""
-    close, betas, factor_panel, sector_excess, _ = _panel_with_sector_excess()
+    close, ret, betas, factor_panel, sector_excess, _ = _panel_with_sector_excess()
 
-    with_sector = compute_epsilon(close, betas, factor_panel, [], 20,
+    with_sector = compute_epsilon(ret, betas, factor_panel, [], 20,
                                   sector_excess=sector_excess)
-    without = compute_epsilon(close, betas, factor_panel, [], 20, sector_excess=None)
+    without = compute_epsilon(ret, betas, factor_panel, [], 20, sector_excess=None)
 
     both = with_sector.notna() & without.notna()
     assert both.to_numpy().any(), "no overlapping non-null cells to compare"

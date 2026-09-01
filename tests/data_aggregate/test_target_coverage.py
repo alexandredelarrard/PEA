@@ -21,7 +21,8 @@ import pandas as pd
 
 from src.data_aggregate.utils.target.betas import estimate_all_betas, estimate_betas_for_stock
 from src.data_aggregate.utils.target.factors import momentum_characteristic
-from src.data_aggregate.utils.target.targets import build_targets_multi, forward_return
+from src.data_aggregate.utils.common.prices import forward_return
+from src.data_aggregate.utils.target.targets import build_targets_multi
 
 START = "2011-07-18"          # the live cube's first price date
 N_DAYS = 900
@@ -96,9 +97,13 @@ def test_target_is_defined_from_the_beta_warmup_and_missing_only_the_last_horizo
     betas = estimate_all_betas(rets, factor_panel, min_obs=MIN_OBS)
     horizons = (30, 60, 90)
 
+    # `stock_ret` is REQUIRED: every label is a forward COMPOUNDED total return now. Here
+    # `rets` is `close.pct_change()`, so the coverage geometry this test measures is
+    # unchanged -- only the basis contract is.
     built = build_targets_multi(close, betas, factor_panel, macro_cols=[],
                                horizons=horizons, labels=("rank",),
-                               sector_groups={"sector": {t: "S" for t in tickers}})
+                               sector_groups={"sector": {t: "S" for t in tickers}},
+                               stock_ret=rets)
 
     rows = []
     for h in horizons:
@@ -120,8 +125,13 @@ def test_target_is_defined_from_the_beta_warmup_and_missing_only_the_last_horizo
 
 
 def test_forward_return_is_the_move_from_t_to_t_plus_horizon():
-    """The economic definition, pinned: the raw forward return at t is
-    close[t+h]/close[t] - 1 -- 'today's stock vs the stock in h days'."""
+    """The economic definition, pinned: from a TOTAL-RETURN INDEX the raw forward return at
+    t is level[t+h]/level[t] - 1 -- 'today's holding vs the holding in h days'.
+
+    ⚠ The STOCK labels no longer call this. `close_split` is a price, so its ratio excludes
+    every dividend; the labels are `forward_compound(stock_ret, h)` now. `forward_return`
+    survives for the macro legs (`equity_tr`, `bond_10y_tr`), which ARE cumulative-return
+    indices, and the synthetic fixture below stands in for one."""
     close, *_ = _market()
     h = 30
     fwd = forward_return(close, h)

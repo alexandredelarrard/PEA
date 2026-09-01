@@ -410,10 +410,15 @@ def compute() -> dict:
     # `min_names` is lowered from the production 20 because this harness runs a
     # 22-name cross-section; it gates which DAYS survive, not how the residual is
     # computed, so the code under test is unaffected.
+    # `stock_ret` is REQUIRED: every label is a forward COMPOUNDED total return now rather
+    # than a close-to-close price ratio. This fixture is a dividend-free random walk, so
+    # `close_split == close_total` here and the two formulations differ only by compounding
+    # convention -- which IS a real digest move, and a documented one (see 4e in the plan).
     targets = build_targets_multi(
         close, betas, factor_panel, macro_cols=[],
         horizons=(30, 60, 90), labels=("rank", "zscore"), min_names=5,
-        sector_groups={"sector": dict(zip(fund["ticker"], fund["sector"].astype(str)))})
+        sector_groups={"sector": dict(zip(fund["ticker"], fund["sector"].astype(str)))},
+        stock_ret=returns)
     for horizon, by_label in targets.items():
         for label, frame in by_label.items():
             out[f"label.{label}_h{horizon}"] = frame_digest(frame)
@@ -432,11 +437,17 @@ def compute() -> dict:
         "vol_63": sanitize(trailing_vol(returns, 63)),
         "resvol_63": -trailing_vol(returns, 63),
     }, axis=1))
+    # A HARD-CODED COPY of `du.daily_returns`, deliberately: it is the independent reference
+    # the shared helper is asserted against. In production this is fed `close_total`; the
+    # fixture is dividend-free, so the same frame stands in for both bases.
     out["prim.daily_returns"] = frame_digest(close.pct_change(fill_method=None))
 
     out["prim.forward_windows"] = frame_digest(pd.concat({
         "compound_h20": forward_compound(ret_fx, 20),
         "cumchange_h20": forward_cumchange(ret_fx, 20),
+        # `forward_return` is now contract-limited to TOTAL-RETURN INDICES; SPY here stands
+        # in for the macro `equity_tr` leg, which is exactly that. The stock labels moved to
+        # `forward_compound` and no longer call it.
         "return_h20": forward_return(fx["other_close"].reindex(columns=["SPY"]), 20),
         # the seasonal feature's PARTIAL-window policy (min_periods = round(0.6h)),
         # which differs from the target's full-window policy above

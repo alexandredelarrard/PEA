@@ -46,7 +46,7 @@ from src.data_store.store import DataStore
 
 logger = logging.getLogger(__name__)
 
-ALL_FIELDS = ("close", "open", "high", "low", "volume", "ret", "sector_ret")
+ALL_FIELDS = ("close", "volume", "ret", "sector_ret")
 
 @dataclass(frozen=True, slots=True)
 class PriceFrames:
@@ -162,8 +162,9 @@ def load_price_frames(
 
     return PriceFrames(
         trading_index=idx, universe=universe, peers=peers,
-        close=wide.get("close"), open=wide.get("open"), high=wide.get("high"),
-        low=wide.get("low"), volume=wide.get("volume"), ret=wide.get("ret"),
+        close=wide.get("close"), 
+        volume=wide.get("volume"), 
+        ret=wide.get("ret"),
         sector_ret=wide.get("sector_ret"),
     )
 

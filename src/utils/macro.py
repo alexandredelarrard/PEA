@@ -45,7 +45,7 @@ def load_macro_wide(store, series: Sequence[str] | None = None,
         return None
 
     long = long.copy()
-    long["date"] = pd.to_datetime(long["date"]).dt.normalize()
+    long["date"] = pd.to_datetime(long["date"], format="%Y-%m-%d")
     wide = long.pivot_table(index="date", columns="ticker", values="close", aggfunc="last")
     wide = wide.sort_index()
     wide.columns.name = None

@@ -9,10 +9,10 @@ from src.portfolio import StepPortfolio
 if __name__ == "__main__":
     config, context = get_config_context("./configs", use_cache=False, save=True)
 
-    self = StepExtractAllData(context=context, config=config)
+    # self = StepExtractAllData(context=context, config=config)
     # self.run()
 
-    # self = StepBuildCube(context=context, config=config)
+    self = StepBuildCube(context=context, config=config)
     # self.run(full=True)
 
     # self = SuperInvestorsStrategy(context=context, config=config).run()

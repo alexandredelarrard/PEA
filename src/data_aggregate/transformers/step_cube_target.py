@@ -103,7 +103,7 @@ class StepCubeTarget(Step):
             since=since)
 
     def _load_fundamentals(self) -> pd.DataFrame:
-        columns = ("ticker", "as_of", "sharesOutstanding", "netIncome", "freeCashflow", "stockholdersEquity")
+        columns = ("ticker", "as_of", "totalRevenue", "sharesOutstanding", "netIncome", "freeCashflow", "stockholdersEquity")
         return self._context.store.load(Tables.fundamentals_history, columns=columns)
 
     def _load_macro(self) -> pd.DataFrame:

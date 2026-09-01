@@ -70,7 +70,7 @@ def prices_long_to_multiindex(prices: pd.DataFrame) -> pd.DataFrame:
             fields[cap] = low
 
     wide = {cap: prices.pivot(index="date", columns="ticker", values=low)
-            for cap, low in fields.items()}
+            for cap, low in fields.items() if low in prices.columns}
     
     return pd.concat(wide, axis=1)
 

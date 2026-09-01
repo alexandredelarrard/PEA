@@ -32,13 +32,14 @@ from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_wi
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.common.price_frames import frames_to_long, universe_columns
-from src.data_peers.utils.sector_peers import compute_sector_returns
 from src.data_aggregate.utils.common.price_frames import load_trading_calendar
+from src.data_peers.utils.sector_peers import compute_sector_returns
 
 from src.utils.macro import load_macro_series
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
+PRICE_COLS = ['date', 'close', 'volume', 'ticker']
 
 class StepCubePrices(Step):
 
@@ -51,8 +52,15 @@ class StepCubePrices(Step):
         self._log.info(f"Ticker universe: {len(self._tickers)} tickers from {Tables.sp500_tickers}")
 
     def run(self, full: bool = False) -> None:
+
         window = self._plan_window(full)
-        raw = self._load_prices(window.since)
+        since = window.since
+        raw = self._store.load(Tables.prices, 
+                            since=since, 
+                            columns = PRICE_COLS)
+        self._log.info(f"Loading {Tables.prices} since={since if since else "full"}")
+
+        # long to wide format 
         wide = self._pivot_fields(raw)
 
         # filter wide on trading days with close value
@@ -66,8 +74,10 @@ class StepCubePrices(Step):
         del raw, wide, returns
 
         # save it all
-        n = self._persist(universe, window)
-        if n == COLUMNS_CHANGED:                      # schema drift -> one clean full rebuild
+        n = write_part(self._store, Tables.cube_part_prices,
+                          frames_to_long(universe), window)
+        
+        if n == COLUMNS_CHANGED:
             return self.run(full=True)
 
     # ---- window ---- #
@@ -83,21 +93,10 @@ class StepCubePrices(Step):
                            warmup=self._part.warmup_trading_days,
                            trading_index=idx)
 
-    def _load_prices(self, since: pd.Timestamp | None) -> pd.DataFrame:
-        """The one read of the raw ~1.9M-row `prices` table. `since` is pushed into SQL
-        so an incremental run transfers a few hundred trading days instead of fifteen years 
-        and then discarding 90% of them"""
-        raw = self._store.read(Tables.prices, since=since)
-        self._log.info(f"Loading {Tables.prices} since={since if since else "full"}")
-        return raw
-
     @staticmethod
     def _pivot_fields(raw: pd.DataFrame) -> dict[str, pd.DataFrame]:
         pivot = du.prices_long_to_multiindex(raw)
         return {"close": du.extract_field(pivot, "Close"),
-                "open": du.extract_field(pivot, "Open"),
-                "high": du.extract_field(pivot, "High"),
-                "low": du.extract_field(pivot, "Low"),
                 "volume": du.extract_field(pivot, "Volume")}
 
     def _trading_calendar(self, close: pd.DataFrame) -> pd.DatetimeIndex:
@@ -154,7 +153,3 @@ class StepCubePrices(Step):
         expensive thing the old per-task prologue did, and it ran fourteen times per build;
         persisting it means it runs once."""
         return compute_sector_returns(stock_ret, peers)
-
-    def _persist(self, universe: dict[str, pd.DataFrame], window) -> int:
-        return write_part(self._store, Tables.cube_part_prices,
-                          frames_to_long(universe), window)

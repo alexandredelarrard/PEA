@@ -76,6 +76,7 @@ def build_characteristics(
     chars["resvol"] = -trailing_vol(stock_ret, resvol_window)
 
     if fundamentals_history is not None and not fundamentals_history.empty:
+        
         # Historical daily market cap from SEC shares * price (moves daily).
         mcap = daily_market_cap(fundamentals_history, stock_close)
         if mcap.empty:

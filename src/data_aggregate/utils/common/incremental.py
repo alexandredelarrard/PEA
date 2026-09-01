@@ -109,6 +109,7 @@ def write_part(store: DataStore, part: str, rows: pd.DataFrame, window: PartWind
     """
     if rows is not None and not rows.empty and drop_empty:
         rows = drop_empty_feature_rows(rows, keys, part)
+        
     if rows is None or rows.empty:
         logger.warning("%s produced no rows -> nothing persisted.", part)
         return 0

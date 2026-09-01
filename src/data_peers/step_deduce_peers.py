@@ -38,12 +38,8 @@ class StepDeducePeers(Step):
     def run(self):
         peers_path = self._context.paths["SECTOR_PEERS_PATH"]
         if peers_path.exists():
-            self.peers = load_peer_dict(peers_path)
-            n = sum(1 for p in self.peers.values() if p)
-            self._log.info("Loaded peer dict from %s (%s tickers, %s with peers)",
-                           peers_path, len(self.peers), n)
-            return self.peers
-
+            return self.load_pre_computed_peers(peers_path)
+        
         self.load_prices()
         self.normalize_prices()
         self.build_peers()
@@ -54,9 +50,18 @@ class StepDeducePeers(Step):
         self._log.info("Loading prices from DB table 'prices'")
         self.prices_long = self._context.store.load("prices")
 
+    def load_pre_computed_peers(self, peers_path):
+        self.peers = load_peer_dict(peers_path)
+        n = sum(1 for p in self.peers.values() if p)
+        self._log.info("Loaded peer dict from %s (%s tickers, %s with peers)",
+                        peers_path, len(self.peers), n)
+        return self.peers
+
     def normalize_prices(self):
+
         raw = du.prices_long_to_multiindex(self.prices_long)
         self.close = du.extract_field(raw, "Close")
+
         # The trading calendar is the days the MARKET traded, which now lives in
         # `prices_macro` rather than as a column inside this equity frame. Same definition as
         # the cube's (du.get_trading_days), just sourced from the table that owns it.
@@ -64,6 +69,7 @@ class StepDeducePeers(Step):
         if market is None:
             raise RuntimeError(f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> "
                                "no trading calendar for the peer graph. Run `data_extract macro`.")
+        
         self.close = self.close.loc[market.reindex(self.close.index).notna()]
         self.returns = du.daily_returns(self.close)
         # no market column to drop: `prices` is the equity universe and nothing else

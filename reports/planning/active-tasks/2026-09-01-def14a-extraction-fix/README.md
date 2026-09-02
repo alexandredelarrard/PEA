@@ -126,7 +126,7 @@ today's `def14a_json`), so **recategorising later costs zero LLM calls**.
 |---|---|---|---|
 | 0 ✅ | [PHASE-0-baseline-harness.md](PHASE-0-baseline-harness.md) | Snapshot today's 6 tables for the 23 tickers; build the comparison script; cache the filings | yes — prints the baseline table |
 | 1 ✅ | [PHASE-1-no-schema-bugfixes.md](PHASE-1-no-schema-bugfixes.md) | Bugs fixable with no schema change: say-on-pay floor, `_doc_url`, dead `temperature`, prompt fixes | yes — unit tests + live 3-filing probe |
-| 2 | [PHASE-2-table-anchored-carve.md](PHASE-2-table-anchored-carve.md) | `def14a_tables.py`: table enumerator + 6 header signatures + TSV; router in `prepare_def14a_sections` | yes — recall harness on cached filings, no LLM |
+| 2 ✅ | [PHASE-2-table-anchored-carve.md](PHASE-2-table-anchored-carve.md) | `def14a_tables.py`: table enumerator + 6 header signatures + TSV; router in `prepare_def14a_sections` | yes — recall harness on cached filings, no LLM |
 | 3 | [PHASE-3-schema-and-child-tables.md](PHASE-3-schema-and-child-tables.md) | Pydantic expansion + 4 new tables (incl. `def14a_directors`) + the `reconciles` flag + fee rescale + the gender upgrade | yes — flatten is pure; replay over stored `def14a_json` |
 | 4 | [PHASE-4-slim-edgar-path.md](PHASE-4-slim-edgar-path.md) | ECD dimension filter, `company_name` fallback, delete the HTML block and 4 tables | yes — 5-filing live probe incl. BA/NKE/SBUX |
 | 5 | [PHASE-5-vote-tallies.md](PHASE-5-vote-tallies.md) | `sec_8k_votes` from stored `item_text` + director categories | yes — hand-read fixtures + guard tests |

@@ -1,0 +1,72 @@
+{
+  "_README": [
+    "Ground truth for the table-anchored carve. Per cached filing, per target: either an",
+    "IDENTIFYING VALUE that must appear in the serialized TSV, or null meaning the target is",
+    "genuinely absent AS A TABLE from that filing.",
+    "",
+    "Finding 'a table' is not the test. The research's naive header signature found tables and",
+    "picked the WRONG one 23 times out of 25 on audit fees, so every entry here pins a value",
+    "that only the correct table contains.",
+    "",
+    "Provenance of each value is recorded in `_why`. The three director-comp values are the",
+    "strongest evidence in this file: the research measured all three as NULL in the old",
+    "edgartools path, and they were read off the filings by hand, so they were never produced",
+    "by the code under test.",
+    "",
+    "The audit-fee nulls are a measured FORMAT CLASS, not a shrug: EOG, GE, JPM and PEG all put",
+    "their fee CATEGORY LABELS in narrative prose. GE prints an unlabelled table",
+    "('2024 $ 17.9 $ 3.0 $ 0.0 $ 0.0 $ 20.9') and labels it in the following paragraph",
+    "('AUDIT FEES. Fees for the audit of...'); EOG, JPM and PEG give the figures in prose",
+    "('were $37.0 million and $26.3 million, respectively'). No table classifier can reach",
+    "these -- the router's narrative fallback owns them."
+  ],
+  "filings": {
+    "CAT_2026-04-30_0001308179-26-000358": {
+      "director_comp": "175,033",
+      "_why": "director stock award sitting under a 'Restricted Stock Units (1)' header; the old path returned NULL"
+    },
+    "PFE_2026-03-12_0000078003-26-000031": {
+      "director_comp": "205,000",
+      "_why": "director stock award, NULL on 13/13 rows before, under a header reading exactly 'Stock Awards ($)'"
+    },
+    "GE_2026-03-12_0000040545-26-000018": {
+      "director_comp": "345,795",
+      "audit_fees": null,
+      "_why": "the $-in-its-own-<td> desync dropped 3 of 4 numeric columns; fee labels are prose"
+    },
+    "AAPL_2026-01-08_0001308179-26-000008": {
+      "sct": "74,294,811",
+      "ownership_5pct": "1,415,826,462",
+      "ownership_insider": "as a group",
+      "_why": "Tim Cook total comp; Vanguard's share count. AAPL merges the >=5% and insider tables into ONE 16-row table, so both targets resolve to it"
+    },
+    "AMAT_2026-01-28_0001193125-26-027307": {
+      "sct": "1,030,000",
+      "ownership_5pct": "76,811,130",
+      "_why": "AMAT stacks all three fiscal years inside ONE <td> per column with <br>; the research measured total = 3.527e23 from the fused form. BlackRock's share count."
+    },
+    "LMT_2026-03-26_0000936468-26-000004": {
+      "ownership_5pct": "37,056,708",
+      "ownership_insider": "as a group",
+      "_why": "State Street's share count. LMT labels its columns 'Amount of Common Stock' / 'Percent of Outstanding Shares' and its insider table just 'Common Stock'"
+    },
+    "EOG_2026-03-27_0001104659-26-036125": {
+      "sct": "12,729,628",
+      "audit_fees": null,
+      "_why": "Yacob stock awards. EOG's SCT header spans FOUR rows, so the row carrying 'Year' -- the signature's own requirement -- must survive the merge. Fees are prose."
+    },
+    "JPM_2026-04-06_0000019617-26-000096": {
+      "sct": "Dimon",
+      "audit_fees": null,
+      "_why": "JPM's SCT is only visible once block <div> boundaries emit a separator (otherwise 'James DimonChairman and CEO'). Fees are prose."
+    },
+    "PEG_2026-03-12_0001193125-26-104270": {
+      "audit_fees": null,
+      "_why": "fee cells are prose: 'Audit Fees - The audit fees were incurred for audits of...'"
+    },
+    "PG_2025-08-29_0001193125-25-191749": {
+      "ownership_insider": "as a group",
+      "_why": "PG's insider table is 20 columns of which 13 are pure spacers; the spacer drop must judge on DATA rows, because a colspan header label propagates into every column it spans"
+    }
+  }
+}

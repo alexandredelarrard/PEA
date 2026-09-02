@@ -95,7 +95,7 @@ If verification fails:
 
 **After completing each major phase:**
 1. Update the plan document with progress
-2. If context is getting large (>50% usage):
+2. Run /compact if context is larger than 30%:
    ```
    📊 Context usage high. Compacting progress into plan...
 
@@ -105,7 +105,6 @@ If verification fails:
 
    Continuing with Phase 3...
    ```
-3. Consider suggesting a context reset if beneficial
 
 ### 5. **Completion Report**
 

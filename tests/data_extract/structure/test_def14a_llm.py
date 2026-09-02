@@ -220,8 +220,14 @@ def test_payratio_and_ownership_anchors():
 
 
 def test_def14a_sections_extraction():
-    """prepare_def14a_sections() returns text containing every key section + its data."""
-    focused = prepare_def14a_sections(_SYNTHETIC)
+    """prepare_def14a_sections() returns text containing every key section + its data.
+
+    `html=""` on purpose: with no markup the table classifier finds nothing, so this exercises
+    the ANCHOR-CARVE FALLBACK path end to end -- including the three windows
+    (EXECUTIVE COMPENSATION / SECURITY OWNERSHIP / AUDITOR FEES) that are now emitted only when
+    the table classifier came up empty. That path is not hypothetical: 12 of 64 real filings
+    disclose their audit fees in prose and land here."""
+    focused = prepare_def14a_sections("", _SYNTHETIC)
     for label in ("DIRECTOR NOMINEES", "EXECUTIVE COMPENSATION", "SECURITY OWNERSHIP",
                   "PAY RATIO & MEDIAN PAY", "SAY ON PAY", "AUDITOR FEES"):
         assert f"=== {label} ===" in focused, f"missing section {label}"
@@ -269,8 +275,10 @@ def test_densest_window_lands_on_table_not_prose():
 
 def test_tabular_sections_capture_rows_in_synthetic():
     """In the synthetic proxy, the densest-window director & ownership slices carry the
-    actual rows (director ages; 5%-holder + as-a-group ownership lines)."""
-    focused = prepare_def14a_sections(_SYNTHETIC)
+    actual rows (director ages; 5%-holder + as-a-group ownership lines).
+
+    `html=""` -> the anchor-carve fallback, same rationale as above."""
+    focused = prepare_def14a_sections("", _SYNTHETIC)
     directors = _section_body(focused, "DIRECTOR NOMINEES")
     ownership = _section_body(focused, "SECURITY OWNERSHIP")
 
@@ -403,7 +411,8 @@ def test_llm_extractor_real_apple():
         pytest.skip("No DEF 14A filings found for AAPL via EDGAR")
 
     latest = filings.sort_values("filing_date").iloc[-1]
-    focused = prepare_def14a_sections(html_to_text(sec_get(ctx, latest["doc_url"]).text))
+    raw_html = sec_get(ctx, latest["doc_url"]).text
+    focused = prepare_def14a_sections(raw_html, html_to_text(raw_html))
     result = LLMExtractor(model=model).extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
     row = _flatten("AAPL", latest, result)
 

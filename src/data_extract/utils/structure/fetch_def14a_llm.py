@@ -49,6 +49,10 @@ from tqdm import tqdm
 from src.constants.constants import DATE_FORMAT, DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.structure.def14a_schema import Def14AExtract
+from src.data_extract.utils.structure.def14a_tables import (
+    AUDIT_FEES, DIRECTOR_COMP, OWNERSHIP_5PCT, OWNERSHIP_INSIDER, SCT,
+    classify_filing, to_tsv,
+)
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.llm_extractor import LLMExtractor
@@ -256,6 +260,58 @@ _PAYRATIO_CONTENT_RE = re.compile(
     re.I,
 )
 
+#: Front-matter fraction a section match must clear. Applied to the CONTENT-REGEX path as well
+#: as the anchor fallback -- NEM / ROK / SYK carves landed at 3.0% / 2.0% / 3.7% of the document
+#: while their pay ratio sat at 49-92%. Sections whose target legitimately appears early pass
+#: `toc_frac=0.0` instead (see `_ANCHOR_SECTIONS`).
+_TOC_SKIP_FRAC = 0.05
+#: A fee-table cell that is a plausible dollar figure, used only to locate the table in the
+#: flattened text. Deliberately requires a comma group or a decimal so a footnote marker or a
+#: year cannot be picked as the landmark.
+_FEE_VALUE_RE = re.compile(r"[\d,]*\d,\d{3}[\d,]*(?:\.\d+)?|\d+\.\d+")
+#: Chars before / after the fee table for the auditor-NAME slice. The firm name is in the
+#: sentence introducing the table, so most of the budget goes BEFORE it. Kept small on purpose:
+#: it is ADJACENT to the landmark, so a wide window buys nothing and this slice is pure
+#: addition to the payload (it did not exist in the research's 36,544-char hybrid estimate).
+_AUDITOR_NAME_PRE = 1_200
+_AUDITOR_NAME_CHARS = 1_800
+
+#: The five targets `def14a_tables` owns, with the block label the prompt reads.
+_TABLE_TARGETS = (
+    ("SUMMARY COMPENSATION TABLE", SCT),
+    ("DIRECTOR COMPENSATION TABLE", DIRECTOR_COMP),
+    ("AUDIT FEE TABLE", AUDIT_FEES),
+    ("FIVE PERCENT HOLDERS", OWNERSHIP_5PCT),
+    ("INSIDER OWNERSHIP", OWNERSHIP_INSIDER),
+)
+
+#: Anchor-carve sections: (label, densest-window re, content re, anchors, last_occurrence,
+#: toc_frac, budget).
+#:
+#: Budgets are sized from the MEASURED miss distances, not by widening everything: only 5 of 25
+#: narrative misses were within ~3,000 chars of the slice end (HSIC +123, PFE +190, WMT +430,
+#: PFE-median +206, XOM say-on-pay +2,057), and everything else was 10k-500k chars away -- a
+#: distance no budget fixes. So PAY RATIO gains 1,000 (covers WMT's +430 and PFE's +206 with
+#: margin) and SAY ON PAY gains 2,500 (covers XOM's +2,057); a flat +3,000 on each would spend
+#: 2,500 chars per filing to reach nothing that was measured as reachable.
+#: `SAY ON PAY` carries `toc_frac=0.0` because its result legitimately appears in an
+#: early "voting matters" summary (A-2016's sits at 4.2% of the document).
+#:
+#: `AUDITOR FEES` lost `last_occurrence=True`: it overshot in both directions (WMT 3,066 chars
+#: BEFORE the fee table, HUBB / ROK 149k / 165k away) and B now owns the table anyway, so this
+#: window only has to reach the PROSE disclosures.
+_ANCHOR_SECTIONS = (
+    ("DIRECTOR NOMINEES",      _DIRECTOR_ROW_RE,  _DIRECTOR_CONTENT_RE,     _DIRECTOR_ANCHORS,     False, _TOC_SKIP_FRAC, 20_000),
+    ("CORPORATE GOVERNANCE",   None,              None,                     _GOVERNANCE_ANCHORS,   False, _TOC_SKIP_FRAC,  6_000),
+    ("PAY RATIO & MEDIAN PAY", None,              _PAYRATIO_CONTENT_RE,     _PAYRATIO_ANCHORS,     False, _TOC_SKIP_FRAC,  4_500),
+    ("SAY ON PAY",             None,              _SAYONPAY_CONTENT_RE,     _SAYONPAY_ANCHORS,     False, 0.0,             4_500),
+    # ---- fallbacks: emitted only when the table classifier found nothing ----
+    ("EXECUTIVE COMPENSATION", None, (_COMPENSATION_TITLE_RE, _COMPENSATION_CONTENT_RE), _COMPENSATION_ANCHORS, False, _TOC_SKIP_FRAC, 7_000),
+    ("SECURITY OWNERSHIP",     _OWNERSHIP_ROW_RE, _OWNERSHIP_CONTENT_RE,    _OWNERSHIP_ANCHORS,    False, _TOC_SKIP_FRAC, 10_000),
+    ("AUDITOR FEES",           None,              _AUDITOR_CONTENT_RE,      _AUDITOR_ANCHORS,      False, _TOC_SKIP_FRAC,  2_500),
+)
+
+
 def _densest_window(
     text: str,
     row_re: re.Pattern,
@@ -293,6 +349,7 @@ def _find_content_section(
     fallback_anchors: tuple[str, ...],
     context_pre: int = _CONTEXT_PRE,
     last_occurrence: bool = False,
+    toc_frac: float = _TOC_SKIP_FRAC,
 ) -> int:
     """Find the start of a section using content-based regex(es).
 
@@ -301,25 +358,30 @@ def _find_content_section(
     title+data-row anchor, else the header-cluster fallback). Returns a position
     `context_pre` chars before the first (or last, if `last_occurrence=True`) match
     so the LLM sees full context. When `content_re` is None (prose sections) or no
-    content match is found, falls back to text-anchor scanning (skipping the TOC).
+    content match is found, falls back to text-anchor scanning.
+
+    `toc_frac` is the front-matter fraction a match must clear, and it now applies to the
+    CONTENT-REGEX path as well as the anchor fallback. It used to guard only the fallback,
+    which is how the NEM / ROK / SYK carves landed at 3.0% / 2.0% / 3.7% of the document while
+    the pay ratio they were looking for sat at 49-92%. Pass `toc_frac=0.0` for a section whose
+    target legitimately appears in the front matter — SAY ON PAY does, because filers summarise
+    last year's result in an early "voting matters" panel, and A-2016's sits at 4.2%. A floor
+    is only correct for the sections that are NEVER in the front matter.
     """
     patterns = (() if content_re is None
                 else content_re if isinstance(content_re, tuple) else (content_re,))
+    min_pos = int(len(text) * toc_frac) if toc_frac > 0 else 0
     for pattern in patterns:
-        if last_occurrence:
-            matches = list(pattern.finditer(text))
-            if matches:
-                return max(0, matches[-1].start() - context_pre)
-        else:
-            m = pattern.search(text)
-            if m:
-                return max(0, m.start() - context_pre)
+        matches = [m for m in pattern.finditer(text) if m.start() >= min_pos]
+        if matches:
+            m = matches[-1] if last_occurrence else matches[0]
+            return max(0, m.start() - context_pre)
 
-    # Fallback: text anchors, skipping early TOC hits (first 5% of document)
+    # Fallback: text anchors, skipping early TOC hits
     low = text.lower()
-    min_pos = max(5000, int(len(text) * 0.05))
+    anchor_min = max(5000, min_pos) if toc_frac > 0 else 0
     for anchor in fallback_anchors:
-        start = min_pos
+        start = anchor_min
         while True:
             p = low.find(anchor, start)
             if p == -1:
@@ -332,41 +394,98 @@ def _find_content_section(
     return -1
 
 
-def prepare_def14a_sections(text: str) -> str:
-    """Return a focused subset of the DEF 14A covering the key sections:
-    director nominees, executive compensation, security ownership, corporate
-    governance, and CEO-pay-ratio / say-on-pay / auditor.
+def _auditor_name_slice(text: str, fee_table: tuple[list[str], list[list[str]]] | None) -> int:
+    """Start of a narrative slice positioned on the FEE TABLE, for the auditor's firm name.
 
-    The two TABULAR sections (director nominees, security ownership) are located by
-    a densest-window scan of their row tokens — the region with the most rows IS the
-    table — which is robust to matrix vs per-person layouts and footnotes. The rest
-    use a content-based regex matching their real body (the SCT column-header row, the
-    pay-ratio / say-on-pay result sentence, the audit-fee line) rather than a TOC
-    heading. Every section falls back to text anchors (skipping the TOC) when its
-    primary locator misses; CORPORATE GOVERNANCE is prose, so it is anchor-only. Each
-    section is capped by its own budget and the slices are concatenated. Falls back to
-    the head of the document when no patterns match.
+    The firm name is not in the fee table's cells -- it is in the sentence just before it
+    ("fees billed by PricewaterhouseCoopers LLP") or in cell [0][0]. Position is derived from
+    the table itself by finding one of its comma-grouped values in the flattened text, which
+    maps the HTML-side match onto the text-side offset with no second regex.
+
+    This replaces `last_occurrence=True` on the auditor anchor, which overshot in BOTH
+    directions -- WMT's carve landed 3,066 chars BEFORE the fee table, HUBB's and ROK's
+    149k / 165k chars away.
     """
-    parts: list[str] = []
+    if not fee_table:
+        return -1
+    values = [c for row in fee_table[1] for c in row if _FEE_VALUE_RE.fullmatch(c or "")]
+    for value in sorted(values, key=len, reverse=True)[:6]:
+        pos = text.find(value)
+        if pos != -1:
+            return max(0, pos - _AUDITOR_NAME_PRE)
+    return -1
 
-    for label, dense_re, content_re, anchors, use_last, chars in (
-        ("DIRECTOR NOMINEES",      _DIRECTOR_ROW_RE,  _DIRECTOR_CONTENT_RE,                            _DIRECTOR_ANCHORS,     False, 20_000),
-        ("EXECUTIVE COMPENSATION", None,              (_COMPENSATION_TITLE_RE, _COMPENSATION_CONTENT_RE), _COMPENSATION_ANCHORS, False,  7_000),
-        ("SECURITY OWNERSHIP",     _OWNERSHIP_ROW_RE, _OWNERSHIP_CONTENT_RE,    _OWNERSHIP_ANCHORS,    False, 10_000),
-        ("CORPORATE GOVERNANCE",   None,              None,                     _GOVERNANCE_ANCHORS,   False,  6_000),
-        ("PAY RATIO & MEDIAN PAY", None,              _PAYRATIO_CONTENT_RE,     _PAYRATIO_ANCHORS,     False,  3_500),
-        ("SAY ON PAY",             None,              _SAYONPAY_CONTENT_RE,     _SAYONPAY_ANCHORS,     False,  2_000),
-        ("AUDITOR FEES",           None,              _AUDITOR_CONTENT_RE,      _AUDITOR_ANCHORS,      True,   2_500),
-    ):
+
+def prepare_def14a_sections(html: str, text: str) -> str:
+    """Return a focused subset of the DEF 14A, routing each target to the strategy that
+    actually reaches it.
+
+    Two strategies, per the measured recall:
+
+    * **Tables (B)** own the five tabular targets -- Summary Compensation Table, director
+      compensation, audit fees, >=5% holders, insider ownership. `def14a_tables` classifies
+      the filing's `<table>` elements on their header signature and serializes the winner as
+      TSV. Measured 308/320 = 96.2% over 64 cached filings, mean 5,316 chars for all five.
+    * **Anchors (A)** own the two PROSE targets (director bios, corporate governance) and the
+      two narrative numbers (pay ratio, say-on-pay), and stand in as the FALLBACK whenever B
+      finds no table -- which is not a rare path: EOG, GE, JPM and PEG all disclose their audit
+      fees in narrative prose, so B reaches only 81% of fee disclosures by construction.
+
+    Why B matters most: the director-compensation table is A's structural blind spot and always
+    was. It sits at 23-36% of the document, in the gap between A's `DIRECTOR NOMINEES` window
+    (ends ~17-21%) and `EXECUTIVE COMPENSATION` (starts ~42-64%), median miss distance 70,761
+    chars. A found it in 2 of 25 filings; no budget widening reaches it.
+
+    `=== LABEL ===` blocks, the same convention the prompt references. Never emits nothing for
+    a target A could have reached.
+    """
+    tables = classify_filing(html) if html else {}
+    parts: list[str] = []
+    from_b: list[str] = []
+    from_a: list[str] = []
+
+    for label, target in _TABLE_TARGETS:
+        if target in tables:
+            parts.append(f"\n\n=== {label} ===\n{to_tsv(*tables[target])}")
+            from_b.append(label)
+
+    # A's EXECUTIVE COMPENSATION / SECURITY OWNERSHIP / AUDITOR FEES windows are now
+    # FALLBACKS -- emitted only when B found no table for that target. Dropping them on the
+    # happy path is where most of the payload saving comes from (three windows, 19,500 chars).
+    fallbacks = {
+        "EXECUTIVE COMPENSATION": SCT not in tables,
+        "SECURITY OWNERSHIP": OWNERSHIP_INSIDER not in tables and OWNERSHIP_5PCT not in tables,
+        "AUDITOR FEES": AUDIT_FEES not in tables,
+    }
+
+    for label, dense_re, content_re, anchors, use_last, toc_frac, chars in _ANCHOR_SECTIONS:
+        if label in fallbacks and not fallbacks[label]:
+            continue
         pos = _densest_window(text, dense_re, chars) if dense_re is not None else -1
         if pos == -1:
-            pos = _find_content_section(text, content_re, anchors, last_occurrence=use_last)
+            pos = _find_content_section(text, content_re, anchors,
+                                        last_occurrence=use_last, toc_frac=toc_frac)
         if pos == -1:
             continue
-        end = min(len(text), pos + chars)
-        parts.append(f"\n\n=== {label} ===\n{text[pos:end]}")
+        parts.append(f"\n\n=== {label} ===\n{text[pos:min(len(text), pos + chars)]}")
+        from_a.append(label)
 
-    return "".join(parts) if parts else text[:120_000]
+    # the auditor's NAME, positioned on B's fee table (its own small slice, because the name
+    # sits in the sentence before the table rather than in its cells)
+    name_pos = _auditor_name_slice(text, tables.get(AUDIT_FEES))
+    if name_pos != -1:
+        end = min(len(text), name_pos + _AUDITOR_NAME_CHARS)
+        parts.append(f"\n\n=== AUDITOR NAME ===\n{text[name_pos:end]}")
+        from_a.append("AUDITOR NAME")
+
+    payload = "".join(parts) if parts else text[:120_000]
+    missing = [lbl for lbl, _ in _TABLE_TARGETS if lbl not in from_b]
+    # This log line is the diagnostic that tells you a FORMAT ERA broke: a target that
+    # silently moves from B to A across a filer's template change shows up here first.
+    logger.debug("def14a carve: B=%s | A=%s | no-table=%s | %d chars",
+                 ",".join(from_b) or "-", ",".join(from_a) or "-",
+                 ",".join(missing) or "-", len(payload))
+    return payload
 
 
 def _ceo_from_compensation(extract: Def14AExtract) -> "ExecutiveCompensation | None":  # noqa: F821
@@ -529,7 +648,7 @@ def _process_filing(
     try:
         raw_html = _fetch_filing_html(context, filing)
         text = html_to_text(raw_html)
-        focused = prepare_def14a_sections(text)
+        focused = prepare_def14a_sections(raw_html, text)
         extract = extractor.extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
         return _flatten(ticker, filing, extract)
     except Exception as e:

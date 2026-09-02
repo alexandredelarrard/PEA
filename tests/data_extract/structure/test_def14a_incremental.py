@@ -78,11 +78,13 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
                          ("a2024", "2024-04-01"), ("a2025", "2025-04-01")]])
 
     def _fake_process(context, ticker, f, extractor):          # mirrors mod._process_filing
+        # returns (parent row, child frames) -- the shape the four child tables introduced
         extracted.append(f["accession_number"])
-        return {"ticker": ticker, "accession_number": f["accession_number"],
-                "as_of": f["filing_date"], "def14a_json": "{}"}
+        return ({"ticker": ticker, "accession_number": f["accession_number"],
+                 "as_of": f["filing_date"], "def14a_json": "{}"},
+                {name: [] for name in mod._CHILD_SPEC})
 
-    def _fake_save(context, rows):                            # string as_of (SQLite can't bind Timestamp)
+    def _fake_save(context, rows, children=None):             # string as_of (SQLite can't bind Timestamp)
         df = pd.DataFrame(rows)
         df["as_of"] = pd.to_datetime(df["as_of"]).dt.strftime("%Y-%m-%d")
         return context.store.save("def14a_llm", df)
@@ -167,24 +169,42 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
           f"listed since={listed_since[0]} (inclusive of the prior run date). Validated.")
 
 
-def test_flatten_surfaces_board_technology_maturity():
+def test_flatten_surfaces_the_auditor_block():
+    """`n_technology_directors` / `technology_committee` were REMOVED -- they were an opinion,
+    not an extraction (mean |delta| of 1.06 directors between consecutive filings of the same
+    company, only 38.8% unchanged, and wrong by 7x on HUBB 2022 whose own matrix states
+    "Cybersecurity and Technology 78%" of 9 directors).
+
+    What replaced them is the auditor block, which is the opposite kind of field: the firm name
+    is present in 98% of documents and was the WORST column in the retired edgar table at 2.05%
+    fill."""
     extract = Def14AExtract(
         company_name="ACME", fiscal_year=2024,
-        governance=GovernanceProfile(board_size=10, n_technology_directors=3,
-                                     technology_committee=True),
+        governance=GovernanceProfile(
+            board_size=10, auditor_name="Ernst & Young LLP", auditor_since_year=1934,
+            auditor_fees_usd=12_000_000.0, audit_fees_audit_usd=9_000_000.0,
+            audit_fees_audit_related_usd=1_000_000.0, audit_fees_tax_usd=1_500_000.0,
+            audit_fees_other_usd=500_000.0, auditor_fees_prior_usd=11_000_000.0),
     )
     filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"),
                         "period_of_report": "2023-12-31", "accession_number": "a1"})
     row = _flatten("ACME", filing, extract)
-    assert row["n_technology_directors"] == 3
-    assert abs(row["pct_technology_directors"] - 0.30) < 1e-9      # 3 / 10
-    assert row["technology_committee"] == 1.0                       # bool -> numeric flag
+    assert row["auditor_name"] == "Ernst & Young LLP"
+    assert row["auditor_since_year"] == 1934
+    assert row["auditor_fees"] == 12_000_000.0
+    assert row["audit_fees_audit"] == 9_000_000.0
+    assert row["audit_fees_tax"] == 1_500_000.0
+    assert row["auditor_fees_prior"] == 11_000_000.0
+    # the dropped fields must NOT come back
+    for gone in ("n_technology_directors", "pct_technology_directors", "technology_committee"):
+        assert gone not in row, f"{gone} reappeared in the flatten"
     # absent -> null (not a false 0)
     empty = _flatten("X", filing, Def14AExtract(governance=GovernanceProfile(board_size=8)))
-    assert empty["n_technology_directors"] is None
-    assert empty["pct_technology_directors"] is None
-    assert empty["technology_committee"] is None
+    assert empty["auditor_name"] is None and empty["auditor_fees"] is None
+    assert empty["audit_fees_audit"] is None
 
-    print("\n=== SANITY: board technology-maturity fields flatten ===")
-    print("  n_technology_directors=3, pct=0.30 (3/10 board), technology_committee=1.0; "
-          "absent -> null. Validated.")
+    print("\n=== SANITY: auditor block flattens; technology fields are gone ===")
+    print("  auditor_name='Ernst & Young LLP', since=1934, fees=12,000,000 split "
+          "9.0M/1.0M/1.5M/0.5M, prior=11,000,000; absent -> null.")
+    print("  n_technology_directors / pct_technology_directors / technology_committee are")
+    print("  absent from the flatten -- they were an opinion, not an extraction. Validated.")

@@ -15,8 +15,9 @@ Deductions:
      from the components, or the single missing component from `total - others` (clipped
      >=0). Caveat: the schema omits the SCT "change in pension value" column, so a large
      deduced component may absorb it -- acceptable for a gap-fill.
-  2. Board consistency. `pct_technology_directors == n_technology_directors / board_size`
-     (either direction); `n_directors == board_size`.
+  2. Board consistency. `n_directors == board_size` (either direction). The
+     `pct_technology_directors == n_technology_directors / board_size` identity was removed
+     with the fields themselves -- they were an opinion, not an extraction.
   3. Pay ratio. `ceo_pay_ratio == ceo_total_comp / median_employee_pay` -> fill the median
      employee pay (or the ratio) from the other two.
   4. Temporal gap-fill. Per ticker (sorted by filing date), fill a value missing BETWEEN
@@ -41,15 +42,18 @@ CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards",
             "ceo_non_equity_incentive", "ceo_all_other_comp"]
 # levels / ratios that vary smoothly -> linear interpolate an interior gap
 INTERP = ["board_size", "n_directors", "avg_director_age", "avg_board_tenure",
-          "pct_independent_directors", "pct_female_directors", "pct_technology_directors",
-          "n_technology_directors", "avg_other_public_boards", "insider_ownership_pct",
+          "pct_independent_directors", "pct_female_directors",
+          "avg_other_public_boards", "insider_ownership_pct",
           "ceo_ownership_pct", "n_five_percent_holders", "say_on_pay_support_pct",
           "ceo_age", "median_employee_pay", "ceo_pay_ratio"]
 # stable per-company/CEO facts -> carry the last known value forward within an interior gap
+# `poison_pill` and `majority_voting` are now TRI-STATE at extraction (null when the proxy is
+# silent), so a carry-forward here fills a genuine gap rather than propagating a fabricated
+# FALSE -- which is what made `majority_voting` flip 21.2% year-over-year before.
 FLAGS = ["ceo_is_founder", "ceo_is_board_chair", "independent_chair", "lead_independent_director",
          "classified_board", "dual_class_shares", "poison_pill", "majority_voting",
-         "technology_committee", "ceo_since_year", "ceo_name_proxy"]
-INT_COLS = ["n_directors", "board_size", "n_technology_directors", "ceo_age",
+         "ceo_since_year", "ceo_name_proxy"]
+INT_COLS = ["n_directors", "board_size", "ceo_age",
             "n_five_percent_holders", "n_neos", "ceo_since_year"]
 
 
@@ -75,12 +79,6 @@ def _reconcile_rows(df: pd.DataFrame, stats: dict) -> None:
             cond = df["ceo_total_comp"].notna() & df[others].notna().all(axis=1)
             _fill(df, c, cond, (df["ceo_total_comp"] - df[others].sum(axis=1)).clip(lower=0),
                   stats, "ceo component = total - others")
-    if {"n_technology_directors", "board_size"} <= set(df.columns):
-        bs = df["board_size"]
-        _fill(df, "pct_technology_directors", (bs > 0) & df["n_technology_directors"].notna(),
-              (df["n_technology_directors"] / bs).clip(upper=1.0), stats, "pct_tech = n_tech / board")
-        _fill(df, "n_technology_directors", (bs > 0) & df["pct_technology_directors"].notna(),
-              (df["pct_technology_directors"] * bs).round(), stats, "n_tech = pct_tech * board")
     if {"n_directors", "board_size"} <= set(df.columns):
         _fill(df, "n_directors", df["board_size"].notna(), df["board_size"], stats, "n_directors = board_size")
         _fill(df, "board_size", df["n_directors"].notna(), df["n_directors"], stats, "board_size = n_directors")

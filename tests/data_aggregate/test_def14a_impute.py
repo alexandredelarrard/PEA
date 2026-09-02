@@ -4,7 +4,7 @@ DEF 14A clean-on-read imputation (src/data_aggregate/utils/def14a_impute.py).
 The LLM extraction leaves gaps in `def14a_llm`; the cube deduces them at read time
 (governance features). Rules under test:
   1. ceo_total_comp == sum(6 SCT components); a single missing component == total - others.
-  2. pct_technology_directors <-> n_technology_directors / board_size; n_directors == board_size.
+  2. n_directors == board_size (either direction).
   3. median_employee_pay <-> ceo_total_comp / ceo_pay_ratio.
   4. per-ticker temporal gap-fill BETWEEN two filled years (interp levels, carry flags),
      leaving leading/trailing gaps untouched.
@@ -39,12 +39,11 @@ def test_impute_rules_synthetic():
         _row("AAA", "2022-04-01", ceo_salary=1_000_000, ceo_bonus=0, ceo_stock_awards=5_000_000,
              ceo_option_awards=2_000_000, ceo_non_equity_incentive=3_000_000, ceo_all_other_comp=200_000,
              ceo_total_comp=99_000_000, board_size=10, n_directors=10),
-        # --- board consistency: pct_tech missing, n_tech + board present -> deduce pct
-        _row("BBB", "2020-04-01", board_size=12, n_technology_directors=3, pct_technology_directors=np.nan,
-             n_directors=np.nan),
+        # --- board consistency: n_directors missing, board_size present -> deduce n_directors
+        _row("BBB", "2020-04-01", board_size=12, n_directors=np.nan),
         # --- pay ratio: total + ratio present, median missing -> deduce median
         _row("BBB", "2021-04-01", board_size=12, ceo_total_comp=12_000_000, ceo_pay_ratio=200,
-             median_employee_pay=np.nan, n_technology_directors=3, pct_technology_directors=0.25),
+             median_employee_pay=np.nan),
         # --- temporal gap: CCC board_size 9 -> NaN -> 11 ; ceo_is_founder 1 -> NaN -> (carry) 1
         _row("CCC", "2019-04-01", board_size=9, ceo_is_founder=1.0),
         _row("CCC", "2020-04-01", board_size=np.nan, ceo_is_founder=np.nan),
@@ -62,8 +61,11 @@ def test_impute_rules_synthetic():
     assert out.loc[("AAA", pd.Timestamp("2021-04-01")), "ceo_option_awards"] == pytest.approx(2_000_000)
     # 1. NON-DESTRUCTIVE: real (inconsistent) total preserved
     assert out.loc[("AAA", pd.Timestamp("2022-04-01")), "ceo_total_comp"] == pytest.approx(99_000_000)
-    # 2. pct_tech = n_tech / board ; n_directors deduced from board_size
-    assert out.loc[("BBB", pd.Timestamp("2020-04-01")), "pct_technology_directors"] == pytest.approx(0.25)
+    # 2. n_directors deduced from board_size. The
+    #    `pct_technology_directors == n_technology_directors / board_size` identity was removed
+    #    with the fields themselves: mean |delta| of 1.06 directors between consecutive filings
+    #    of the same company (only 38.8% unchanged) made them an opinion, not an extraction.
+    assert out.loc[("BBB", pd.Timestamp("2020-04-01")), "n_directors"] == 12
     assert out.loc[("AAA", pd.Timestamp("2021-04-01")), "n_directors"] == 10
     # 3. median pay = total / ratio
     assert out.loc[("BBB", pd.Timestamp("2021-04-01")), "median_employee_pay"] == pytest.approx(60_000)

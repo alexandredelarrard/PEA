@@ -1,4 +1,4 @@
-# Phase 3 — Pydantic expansion + 4 new LLM-side tables ⬜
+# Phase 3 — Pydantic expansion + 4 new LLM-side tables 🔄
 
 **Goal**: turn the data that is *already inside the LLM's input* into queryable tables, add the two
 free wins (`auditor_name`, fee breakdown), close the missing seventh SCT component, and drop the
@@ -268,6 +268,67 @@ Additive edits only, matching Phase 2's `=== LABEL ===` blocks:
       null when `gender` is set.
 
 ---
+
+## RESULTS — code complete, verified by the free replay; `sql/schema.sql` + docs OUTSTANDING
+
+### The free replay (`scripts/def14a_replay_flatten.py`, 0 LLM calls)
+
+Replayed over the 445 stored `def14a_json` blobs for the 23 baseline tickers:
+
+| table | rows | filings | note |
+|---|---|---|---|
+| `def14a_llm` | 445 | 445 | 445/445 blobs validated against the NEW schema |
+| `def14a_executive_comp` | **1,849** | 411 | **0 rows above $1e9** (retired edgar path: 109) |
+| `def14a_directors` | **4,551** | 415 | `gender_basis` populated on 100% of non-null genders |
+| `def14a_director_comp` | 0 | — | expected: the stored blobs predate this array |
+| `def14a_ownership` | 0 | — | expected: the stored blobs predate this array |
+
+- **`reconciles` = 60.4%** of 1,723 computable rows (126 rows carry no `total`). Measurable
+  rather than hidden by a residual repair — which is the whole point of D10.
+- `sct_years` mean **1.00** and `n_neos == 1` on **20.4%**: the stored data is single-year
+  because the OLD contract asked for one year. Both only move on a new extraction.
+- The two empty tables are correctly *attributed*: the script checks whether the source blobs
+  carry the array at all, so "the builder produced nothing" is distinguishable from "the stored
+  blobs predate this array". Their builders are covered by unit tests instead.
+
+### Gender consensus on real data
+
+4,551 replayed director rows → **625 distinct people** (7.3 rows per person), **99 filled**,
+**3 overturned**, 0 unkeyable, and **50 people sit on more than one board**. The mechanism is
+therefore *not* a silent no-op — the plan's stated failure mode (an overturn count of 0 meaning
+the name key matched nobody) does not apply. Since every stored blob predates `gender_basis`,
+all input is `basis='name'`, so the 3 overturns measure **instability of the first-name prior
+across filings of the same person** — exactly the tail the upgrade removes.
+
+### Two real bugs the tests caught
+
+1. **`value or ""` on a DataFrame cell.** A null read back from Postgres arrives as
+   `float('nan')`, which is **truthy**, so the idiom returns the nan and the next `.strip()`
+   raises `AttributeError: 'float' object has no attribute 'strip'`. Replaced with a `_norm`
+   helper that type-checks. This would have crashed the consensus pass on the first real run.
+2. **`pd.NA is None` is False.** A pyarrow-backed string column turns `None` into `pd.NA` on
+   the way through `.map`, so the "was this row empty?" test silently counted every **filled**
+   row as an **overturned** one — i.e. it overstated precisely the number the pass is judged on
+   (3 vs 0 overturns on the synthetic roster). Now compares with `pd.isna`.
+
+### Deviations from the plan
+
+- **The `reconciles` flag lives in the fetcher, not in `def14a_validate._reconcile_components`.**
+  It is computed where the rows are built, which keeps the builders pure and self-contained;
+  the validate module's edgartools-only repairs are Phase 4's to delete.
+- **Child-table columns reuse the RETIRED tables' vocabulary** (`salary`, `stock_awards`,
+  `total`, `fees_earned`) rather than the Pydantic `*_usd` names, so the Phase-6 comparison is
+  column-for-column and the docs keep one vocabulary.
+- **`technology_*` was never in `configs/build_cube.yml` or `governance_features`** — the plan
+  expected it there. The real downstream sites were `def14a_impute`'s `INTERP` / `FLAGS` /
+  `INT_COLS` / board-consistency identity, and two tests. All updated; the sweep is clean.
+- **`def14a_gender.py` is a new module**, not part of `fetch_def14a_llm` — the consensus is a
+  pure function of a DataFrame and is worth testing without importing the fetcher.
+
+### Still outstanding for this phase
+
+- [ ] `sql/schema.sql` — splice the four new `CREATE TABLE` + index blocks by hand (approved).
+- [ ] `docs/data_schema.md` — the four new tables and `def14a_llm`'s changed column set.
 
 ## Verification
 

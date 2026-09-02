@@ -445,6 +445,41 @@ class Tables:
     # ----------------------------------------------------------------- #
     def14a_llm = Table("def14a_llm", ("ticker", "accession_number"), date_col="as_of",
                        freshness="yearly")
+    # ---- the four LLM-side child tables, flattened out of `def14a_llm.def14a_json` ----
+    # Free by construction: the tokens are already paid, so these rows cost nothing beyond the
+    # flatten. They were simply unqueryable inside the JSON blob.
+    #
+    # Director / nominee roster: one row per director per filing. The most trustworthy block in
+    # the extract -- 99.74% of names appear verbatim in the source, 93% of ages and 98% of
+    # tenures confirmable, and a full hand-check of HUBB 2022 was 27/27 correct. `gender_basis`
+    # records HOW gender was resolved ('stated' > 'honorific' > 'pronoun' > 'name'); only 17.4%
+    # of proxies state it, so the provenance is what makes the field auditable. The cross-filing
+    # gender consensus pass is a GROUP BY over this table and cannot be written without it.
+    def14a_directors = Table(
+        "def14a_directors", ("ticker", "accession_number", "name"),
+        date_col="as_of", date_type_cols=("as_of",), freshness="yearly")
+    # Summary Compensation Table rows (Item 402(c)): one row per NEO per fiscal year, ~3 years
+    # per filing. 34,741 such rows already sat inside the JSON against the retired edgar table's
+    # 2,378, and better on every axis: title 100% vs 45.4%, stock awards 93.8% vs 45.4%, and
+    # 2 rows above $1e9 vs 109. `reconciles` = 1 when the seven components sum to `total` within
+    # $10 -- a FLAG, not a filter; the values are kept either way.
+    def14a_executive_comp = Table(
+        "def14a_executive_comp", ("ticker", "accession_number", "name", "fiscal_year"),
+        date_col="as_of", date_type_cols=("as_of",), freshness="yearly")
+    # Non-employee Director Compensation Table (Item 402(k)): one row per director per filing.
+    # Single-year BY REGULATION -- 402(k) requires the last completed fiscal year only -- and
+    # membership here IS the definition of an outside director, which the 8-K vote role map
+    # depends on. Exists only from the 2008 proxy season (Reg S-K 2006, FY ending >= 2006-12-15).
+    def14a_director_comp = Table(
+        "def14a_director_comp", ("ticker", "accession_number", "name"),
+        date_col="as_of", date_type_cols=("as_of",), freshness="yearly")
+    # Beneficial-ownership rows (Item 403). KNOWINGLY redundant with 13F / SC 13D-G /
+    # Forms 3-4-5, which are the preferred sources and whose as-of dates these never align with;
+    # the proxy-only figure is the directors-and-officers GROUP aggregate, which is the
+    # `insider_ownership_pct` scalar on `def14a_llm`, not a row here.
+    def14a_ownership = Table(
+        "def14a_ownership", ("ticker", "accession_number", "holder_name", "holder_type"),
+        date_col="as_of", date_type_cols=("as_of",), freshness="yearly")
     # Deterministic complement to def14a_llm: structured DEF 14A data via edgartools' typed
     # ProxyStatement (SEC XBRL ECD taxonomy + deterministic HTML-table parsing), zero LLM
     # cost. Filing-level row + four one-to-many detail tables below.

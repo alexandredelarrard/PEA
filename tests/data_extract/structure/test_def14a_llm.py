@@ -360,8 +360,13 @@ def test_flatten_surfaces_all_signals():
     assert row["say_on_pay_support_pct"] == pytest.approx(0.91)
     assert row["ceo_pay_ratio"] == 250.0 and row["median_employee_pay"] == 60_000.0
     assert row["auditor_fees"] == 5_000_000.0
-    # dropped columns must NOT reappear
-    assert "n_financial_experts" not in row and "auditor_name" not in row and "n_officers" not in row
+    # dropped columns must NOT reappear. `auditor_name` was on this list and is now a
+    # DELIBERATE addition -- it was the worst column in the retired edgar table at 2.05% fill
+    # while the firm name is present in 98% of documents. The technology fields took its place
+    # on the dropped list: they were an opinion, not an extraction.
+    for gone in ("n_financial_experts", "n_officers", "n_technology_directors",
+                 "pct_technology_directors", "technology_committee"):
+        assert gone not in row, f"{gone} reappeared in the flatten"
 
     print("\n=== SANITY CHECK: _flatten expanded signals ===")
     print(f"  ceo_age={row['ceo_age']} pay_ratio={row['ceo_pay_ratio']:.0f}:1 "

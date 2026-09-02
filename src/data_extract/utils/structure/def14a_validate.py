@@ -54,7 +54,9 @@ DEF14A_COMP_RECONCILE_TOLERANCE = 1.0    # comp components must sum to `total` w
 DEF14A_PLACEHOLDER_PERCENT = 0.5         # edgartools' fabricated stand-in for a "*" percent cell
 
 __all__ = [
-    "clean_text", "clean_person_name", "repair_main_row", "repair_exec_comp_rows",
+    "clean_text", "clean_person_name", "clean_holder_name", "is_subtotal_holder",
+    "rescale_block", "DEF14A_AUDIT_FEE_MIN_PLAUSIBLE",
+    "repair_main_row", "repair_exec_comp_rows",
     "repair_director_comp_rows", "repair_ownership_rows",
 ]
 
@@ -140,7 +142,17 @@ def clean_person_name(value: Any) -> str | None:
     return cleaned or None
 
 
-def _clean_holder_name(value: Any) -> str | None:
+def is_subtotal_holder(value: Any) -> bool:
+    """True for an aggregate pseudo-holder that must never be stored as a holder row:
+    "Total", "as a group", "All current directors and executive officers".
+
+    That aggregate is already carried as the `insider_ownership_pct` SCALAR on `def14a_llm`, so
+    storing it again as a holder would double-count the insiders against the real per-person
+    rows. An LLM returns these lines just as readily as a grid parser did."""
+    return bool(value) and bool(_SUBTOTAL_HOLDER_RE.search(str(value)))
+
+
+def clean_holder_name(value: Any) -> str | None:
     """Institutional holder name with the mailing address stripped off the tail. Returns None when
     the cell is ONLY an address (edgartools grabbed the wrong line -- JPM's proxy), so the caller
     can drop the row rather than store a street as a shareholder."""
@@ -154,7 +166,7 @@ def _clean_holder_name(value: Any) -> str | None:
     return cleaned or None
 
 
-def _rescale_block(row: dict, cols: list[str], min_plausible: float) -> None:
+def rescale_block(row: dict, cols: list[str], min_plausible: float) -> None:
     """Rescale a whole fee block to dollars IN PLACE. edgartools reports every cell of a given
     table in one unit, so the block is rescaled together or not at all -- rescaling cell-by-cell
     would invent a table where the components no longer sum to the total. Fires only when the
@@ -209,7 +221,7 @@ def repair_main_row(row: dict) -> dict:
         val = row.get(col)
         row[col] = float(val) if _isnum(val) and DEF14A_FISCAL_YEAR_MIN <= float(val) <= max_year else _NAN
 
-    _rescale_block(row, _AUDIT_FEE_COLS, DEF14A_AUDIT_FEE_MIN_PLAUSIBLE)
+    rescale_block(row, _AUDIT_FEE_COLS, DEF14A_AUDIT_FEE_MIN_PLAUSIBLE)
 
     # net_income cannot be rescaled the way the fee block can. PG's proxy yields 16.1 where every
     # other issuer yields whole dollars, but 16.1 is equally consistent with "$ in millions" and
@@ -339,7 +351,7 @@ def repair_ownership_rows(rows: list[dict], insider_names: set[str]) -> list[dic
         raw_name = clean_text(row.get("holder_name")) or ""
         if _SUBTOTAL_HOLDER_RE.search(raw_name):
             continue
-        holder = _clean_holder_name(raw_name)
+        holder = clean_holder_name(raw_name)
         if not holder:
             continue
         row["holder_name"] = holder

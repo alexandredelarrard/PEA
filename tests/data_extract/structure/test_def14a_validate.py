@@ -28,7 +28,7 @@ import math
 
 from src.data_extract.utils.structure.def14a_validate import (
     DEF14A_AUDIT_FEE_MIN_PLAUSIBLE, clean_holder_name, clean_person_name, clean_text,
-    is_subtotal_holder, repair_main_row, rescale_block,
+    is_subtotal_holder, repair_main_row, rescale_block, sum_fee_total,
 )
 
 _NAN = float("nan")
@@ -172,12 +172,82 @@ def test_repairs_are_pure_and_do_not_mutate_the_input():
     assert src["net_income"] == 16.1
 
 
+#: The four Item 9(e) fee categories, in the order `_FEE_CATEGORY_COLS` uses.
+_PARTS = ["audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax", "audit_fees_other"]
+
+
+def _fees(total: float | None, audit: float | None, related: float | None,
+          tax: float | None, other: float | None) -> dict:
+    return {"auditor_fees": total, "audit_fees_audit": audit,
+            "audit_fees_audit_related": related, "audit_fees_tax": tax,
+            "audit_fees_other": other}
+
+
+def test_a_total_that_is_really_the_audit_line_is_rebuilt_from_the_categories():
+    """BA 2026 and T 2026 print no Total row, so the model reported the `Audit Fees` line as the
+    total -- BA 39.1M against a real 43.6M, T 34.2M against 38.9M. Both are real filings."""
+    ba = _fees(39_100_000.0, 39_100_000.0, 4_500_000.0, 0.0, 0.0)
+    assert sum_fee_total(ba, "auditor_fees", _PARTS) is True
+    assert ba["auditor_fees"] == 43_600_000.0
+
+    t = _fees(34_200_000.0, 34_200_000.0, 1_300_000.0, 3_400_000.0, 0.0)
+    assert sum_fee_total(t, "auditor_fees", _PARTS) is True
+    assert t["auditor_fees"] == 38_900_000.0
+
+
+def test_a_filer_stated_total_is_never_overwritten():
+    """AAPL 2026 states 34,277k, and its categories sum to exactly that. 16 of the 18 complete
+    fee blocks measured behave this way, which is why the repair must be a no-op on them."""
+    aapl = _fees(34_277_000.0, 24_703_000.0, 2_274_000.0, 4_533_000.0, 2_767_000.0)
+    assert sum_fee_total(aapl, "auditor_fees", _PARTS) is False
+    assert aapl["auditor_fees"] == 34_277_000.0
+
+
+def test_a_partial_category_set_is_left_alone():
+    """JPM 2026 discloses three categories and a correct 135,000,000 total. Summing a partial set
+    would REPLACE a right answer with a low one, so an absent category blocks the repair --
+    even though here the total happens to equal the sum of the three."""
+    jpm = _fees(135_000_000.0, 91_000_000.0, 38_100_000.0, 5_900_000.0, None)
+    assert sum_fee_total(jpm, "auditor_fees", _PARTS) is False
+    assert jpm["auditor_fees"] == 135_000_000.0
+
+
+def test_a_total_above_its_categories_is_left_alone():
+    """A stated total LARGER than the four categories means the filer counted something this
+    schema does not model. The filer's own row is authoritative there, so the sum must lose."""
+    row = _fees(50_000_000.0, 39_100_000.0, 4_500_000.0, 0.0, 0.0)
+    assert sum_fee_total(row, "auditor_fees", _PARTS) is False
+    assert row["auditor_fees"] == 50_000_000.0
+
+
+def test_a_genuine_audit_only_fee_table_is_left_alone():
+    """When the other three categories really are zero the total EQUALS the audit line
+    legitimately, and the sum equals it too -- so the guard is the sum, not the equality."""
+    row = _fees(5_000_000.0, 5_000_000.0, 0.0, 0.0, 0.0)
+    assert sum_fee_total(row, "auditor_fees", _PARTS) is False
+    assert row["auditor_fees"] == 5_000_000.0
+
+
+def test_a_null_total_is_not_filled():
+    """EOG 2026 has four categories and no total at all. Filling it is a DIFFERENT change with
+    its own risk -- EOG's categories sum to $598k, implausibly small for an S&P 500 audit, so
+    the parts are themselves suspect and this repair must not launder them into a total."""
+    eog = _fees(None, 270_170.0, 321_000.0, 0.0, 6_954.0)
+    assert sum_fee_total(eog, "auditor_fees", _PARTS) is False
+    assert eog["auditor_fees"] is None
+
+
 def test_sanity_check_prints_conclusion():
     print("\n=== SANITY: what the DEF 14A row cleaner still does ===")
     print("  primary keys: 'Emma N. Walmsley11' -> 'Emma N. Walmsley' (stable year over year);")
     print("                an address-only holder cell -> None, so the caller drops the row.")
     print("  fee units:    a whole block below $100k is rescaled together (KO 32,104 ->")
     print("                32,104,000, matching the same fee in the sibling filing).")
+    print("  fee total:    a table with no Total row had its Audit line read as the total;")
+    print("                rebuilt from the 4 categories (BA 39.1M -> 43.6M, T 34.2M ->")
+    print("                38.9M). Fires ONLY on a complete category set whose total equals")
+    print("                one category and whose sum EXCEEDS it -- 16 of 18 complete blocks")
+    print("                already sum to their stated total to the dollar and are untouched.")
     print("  ECD row:      net_income 1856.4 -> NULL (millions vs billions is undecidable);")
     print("                peo_* == 0.0 -> NULL; a NEGATIVE peo_actually_paid_comp is KEPT.")
     print("  Removed with the HTML block: the 0.5 percent placeholder, the duplicated-Total")

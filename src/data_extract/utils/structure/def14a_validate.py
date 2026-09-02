@@ -53,11 +53,15 @@ import pandas as pd
 # fabricated by the parser" from "small but real" -- the repair layer only fires on the former.
 DEF14A_AUDIT_FEE_MIN_PLAUSIBLE = 1e5     # a sub-$100k TOTAL auditor fee => block is in thousands
 DEF14A_NET_INCOME_MIN_PLAUSIBLE = 1e4    # a sub-$10k net income => figure is in millions/billions
+#: Dollars of slack when comparing a fee total against its categories. Fee tables are printed to
+#: the dollar or to $0.1M, so $10 is below any real rounding step while still absorbing float
+#: error -- the two real defects miss by $4.5M and $4.7M, not by cents.
+DEF14A_FEE_SUM_TOL = 10.0
 
 __all__ = [
     "clean_text", "clean_person_name", "clean_holder_name", "is_subtotal_holder",
-    "rescale_block", "DEF14A_AUDIT_FEE_MIN_PLAUSIBLE", "DEF14A_NET_INCOME_MIN_PLAUSIBLE",
-    "repair_main_row",
+    "rescale_block", "sum_fee_total", "DEF14A_AUDIT_FEE_MIN_PLAUSIBLE",
+    "DEF14A_NET_INCOME_MIN_PLAUSIBLE", "DEF14A_FEE_SUM_TOL", "repair_main_row",
 ]
 
 _NAN = float("nan")
@@ -164,6 +168,43 @@ def rescale_block(row: dict, cols: list[str], min_plausible: float) -> None:
     for c in cols:
         if c in row and _isnum(row[c]):
             row[c] = float(row[c]) * factor
+
+
+def sum_fee_total(row: dict, total_col: str, part_cols: list[str],
+                  tol: float = DEF14A_FEE_SUM_TOL) -> bool:
+    """Rebuild a fee TOTAL from its categories IN PLACE when the total is really a category.
+
+    Not every fee table has a Total row. BA's and T's do not, and on both the model put the
+    `Audit Fees` LINE into the total: BA 39.1M against a real 43.6M (39.1 + 4.5 + 0 + 0), T
+    34.2M against 38.9M (34.2 + 1.3 + 3.4 + 0). That understates the total by 10-12%, and the
+    field is the fee-growth signal's base.
+
+    Three conditions, all necessary, so this is the defect's shape and not a general override:
+      * all four categories present -- a PARTIAL set sums to less than the truth, and the four
+        filings here with 3 categories (INCY, JPM, KLAC, PFE) all have a correct stated total
+        already, so a partial sum would corrupt them;
+      * the total EQUALS one of the categories within `tol` -- the fingerprint of a copied line.
+        Without this the filer's own Total row would lose to our sum, and the filer's row is
+        authoritative: it may legitimately include a category this schema does not model;
+      * the sum EXCEEDS the total by more than `tol` -- not merely differs. A sum BELOW a stated
+        total means exactly that unmodelled-category case, where the total is the better number.
+
+    Measured over 22 filings: 16 of the 18 complete blocks already sum to their stated total to
+    the dollar, so this fires on BA and T alone. Returns whether it fired.
+    """
+    if not _isnum(row.get(total_col)):
+        return False
+    parts = [row.get(c) for c in part_cols]
+    if not all(_isnum(p) for p in parts):
+        return False
+    total = float(row[total_col])
+    parts_f = [float(p) for p in parts]
+    if not any(abs(total - p) <= tol for p in parts_f):
+        return False
+    if sum(parts_f) - total <= tol:
+        return False
+    row[total_col] = sum(parts_f)
+    return True
 
 
 def repair_main_row(row: dict) -> dict:

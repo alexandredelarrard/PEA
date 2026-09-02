@@ -2,16 +2,16 @@
 
 Fill rates cannot tell a right number from a plausible wrong one. Every check here is an **identity the filing itself must satisfy**, so a failure localises the defect.
 
-**1133 pass / 11 fail / 400 not evaluable** (99.0% of evaluable).
+**1138 pass / 6 fail / 400 not evaluable** (99.5% of evaluable).
 
 | check | what | pass | fail | n/a |
 |---|---|---|---|---|
 | C1 | SCT components sum to `total` (+/- $10) | 304 | 4 | 0 |
 | C1b | director-comp components sum to `total` (+/- $10) | 225 | 0 | 7 |
-| C2 | audit fee categories sum to `auditor_fees` (+/- $10) | 19 | 2 | 1 |
+| C2 | audit fee categories sum to `auditor_fees` (+/- $10) | 21 | 0 | 1 |
 | C3 | `ceo_total_comp` == the CEO's own SCT row total | 22 | 0 | 0 |
 | C4 | ceo_pay_ratio == ceo_total_comp / median_employee_pay | 19 | 1 | 2 |
-| C5 | board_size == director rows (+/- 1) | 19 | 3 | 0 |
+| C5 | director rows within (board_size -1 .. +5) | 22 | 0 | 0 |
 | C6 | director age 25-95, tenure 0-60 and <= age-20 | 188 | 0 | 55 |
 | C7 | percent_of_class in (0, 1] (a fraction, not a percentage) | 84 | 0 | 320 |
 | C8 | say_on_pay_support_pct in (0, 1] | 16 | 0 | 6 |
@@ -35,10 +35,7 @@ A check whose two legs are both absent is counted as **not evaluable**, never as
 
 ### C2 — audit fee categories sum to `auditor_fees` (+/- $10)
 
-- **19 pass / 2 fail** (90.5%); 1 could not be evaluated
-
-- `BA`: components sum off by **4,500,000** (total 39,100,000, 4/4 components present)
-- `T`: components sum off by **4,700,000** (total 34,200,000, 4/4 components present)
+- **21 pass / 0 fail** (100.0%); 1 could not be evaluated
 
 ### C3 — `ceo_total_comp` == the CEO's own SCT row total
 
@@ -50,13 +47,9 @@ A check whose two legs are both absent is counted as **not evaluable**, never as
 
 - `CAT`: disclosed ratio 196 vs 17,008,077/89,253 = 191
 
-### C5 — board_size == director rows (+/- 1)
+### C5 — director rows within (board_size -1 .. +5)
 
-- **19 pass / 3 fail** (86.4%); 0 could not be evaluated
-
-- `AEE`: board_size 12 but 16 director rows
-- `PFE`: board_size 12 but 14 director rows
-- `PG`: board_size 12 but 15 director rows
+- **22 pass / 0 fail** (100.0%); 0 could not be evaluated
 
 ### C6 — director age 25-95, tenure 0-60 and <= age-20
 

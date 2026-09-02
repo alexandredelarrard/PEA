@@ -195,7 +195,10 @@ class GovernanceProfile(BaseModel):
     auditor_fees_usd: Optional[float] = Field(
         None, description="TOTAL fees paid to the auditor for the CURRENT fiscal year, all "
                           "categories, in WHOLE USD. Apply any '(in thousands)' / "
-                          "'($ in millions)' note from the table header or the sentence before it")
+                          "'($ in millions)' note from the table header or the sentence before "
+                          "it. If the table has NO 'Total' row, ADD UP the four categories "
+                          "(Audit + Audit-Related + Tax + All Other) — do NOT report the "
+                          "'Audit Fees' line as the total")
     audit_fees_audit_usd: Optional[float] = Field(
         None, description="'Audit Fees' category, current fiscal year, WHOLE USD")
     audit_fees_audit_related_usd: Optional[float] = Field(

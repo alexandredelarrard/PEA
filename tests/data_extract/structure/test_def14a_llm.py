@@ -32,6 +32,7 @@ from src.data_extract.utils.structure.def14a_schema import (
 from src.data_extract.utils.structure.fetch_def14a_llm import (
     _COMPENSATION_CONTENT_RE,
     _DEF14A_PROMPT,
+    _DIRECTOR_MAX_FRAC,
     _DIRECTOR_ROW_RE,
     _OWNERSHIP_CONTENT_RE,
     _OWNERSHIP_ROW_RE,
@@ -271,6 +272,38 @@ def test_densest_window_lands_on_table_not_prose():
     print("\n=== SANITY CHECK: densest-window anchoring ===")
     print(f"  ignored lone 'director since 2005' prose; landed on the 5-row table "
           f"({len(_DIRECTOR_ROW_RE.findall(window))} row tokens). Validated.")
+
+
+def test_a_denser_back_half_decoy_loses_to_the_positional_ceiling():
+    """A DENSER cluster of the same row tokens in the back half must not win the director window.
+
+    Measured on 22 real filings: T's winner sat at 53.6% of the document, in the pension
+    -assumptions discussion (0 of 11 directors in the block, every `is_independent` null), and
+    EOG's at 70.0% in change-of-control prose (1 of 10). Both decoys are dense in "Age" and
+    "Director Since", so neither density nor a bio-marker count separates them from a roster --
+    only POSITION does. The negative control is the first assertion: without the ceiling the
+    decoy genuinely wins, so this test would pass vacuously if the ceiling were removed.
+    """
+    roster = ("Alice Johnson, 58 Director Since 2019\nRobert Williams, 64 Director Since 2010\n"
+              "Mary Chen, 52 Director Since 2015\n")
+    decoy = ("the assumed retirement age is Age 65 Director Since Age 62 Age 58 "
+             "Director Since Age 60 Age 55 Director Since Age 61 ")
+    filler = "The company was founded in 1998 and operates globally. " * 400   # no row tokens
+    text = filler + roster + filler * 3 + decoy * 3 + filler
+
+    uncapped = _densest_window(text, _DIRECTOR_ROW_RE, 4_000)
+    capped = _densest_window(text, _DIRECTOR_ROW_RE, 4_000, max_frac=_DIRECTOR_MAX_FRAC)
+    assert uncapped / len(text) > _DIRECTOR_MAX_FRAC          # the decoy wins without the cap
+    assert "Alice Johnson" not in text[uncapped: uncapped + 4_000]
+    assert "Alice Johnson" in text[capped: capped + 4_000]
+    assert "Mary Chen" in text[capped: capped + 4_000]
+
+    print("\n=== SANITY CHECK: director-window positional ceiling ===")
+    print(f"  uncapped window at {uncapped / len(text):.1%} of the doc -> the back-half decoy, "
+          f"no roster; capped at {capped / len(text):.1%} -> the 3-director roster.")
+    print(f"  On real filings the ceiling ({_DIRECTOR_MAX_FRAC:.0%}) moves EOG (70.0% -> 18.9%, "
+          f"1 -> 9 of 10 directors in-block) and T (53.6% -> the content anchor, 0 -> 4 of 11),")
+    print("  and no other filing of the 22: 191 -> 203 directors reached. Validated.")
 
 
 def test_tabular_sections_capture_rows_in_synthetic():

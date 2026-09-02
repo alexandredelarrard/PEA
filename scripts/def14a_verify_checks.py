@@ -14,7 +14,8 @@ defect instead of merely flagging a row:
   C2  audit fee categories sum to the reported total    (same, for Item 9)
   C3  `ceo_total_comp` equals the CEO's own SCT row      (parent scalar vs child table)
   C4  pay ratio == ceo_total_comp / median_employee_pay  (a disclosed triplet, any leg checks)
-  C5  board_size == the number of director rows          (scalar vs child table)
+  C5  director rows within a turnover window of board_size (scalar vs child table; NOT equality
+      -- the child table legitimately includes directors who left during the year)
   C6  director ages and tenures are humanly possible
   C7  ownership percents are in range and do not exceed 100% in aggregate
   C8  say-on-pay support is a fraction, not a percentage
@@ -205,9 +206,28 @@ def main() -> None:
                               f"{tot[i]:,.0f}/{med[i]:,.0f} = {implied:,.0f}")
     rep.add("C4", "ceo_pay_ratio == ceo_total_comp / median_employee_pay", ok, bad, na, detail[:8])
 
-    # C5 -- board_size against the director rows actually extracted
+    # C5 -- board_size against the director rows actually extracted.
+    #
+    # This check used to demand EQUALITY (+/-1) and reported AEE 12-vs-16, PFE 12-vs-14 and
+    # PG 12-vs-15 as failures. They are not: the two counts measure different populations.
+    # `board_size` is the CURRENT board -- AEE and PG each state "12 director nominees" in their
+    # own words three times over -- while the director rows are everyone the proxy DESCRIBES,
+    # which includes those who served during the year and have since left. PG's own footnote
+    # says it: "Mr. Lundgren and Ms. Woertz retired from the Board effective October 14, 2025"
+    # and "Ms. Lee is not standing for reelection"; AEE's says "former director James C.
+    # Johnson, who did not stand for re-election". Those people appear in the DIRECTOR
+    # COMPENSATION table because they earned fees, and are absent from the bios at any carve
+    # budget -- so demanding equality asks the extraction to DROP disclosed directors.
+    #
+    # The gap is therefore one-sided, and measured over 22 filings it is: 17 exact, excess
+    # +1..+4 on four, and -1 on one (TSCO). So the DEFICIT is the informative direction -- it
+    # means the roster was truncated and directors are MISSING -- and the excess is bounded
+    # rather than forbidden. The bound is one above the largest explained case; with 22 filings
+    # behind it that is a weak bound, but it still catches a roster that swallowed a block of
+    # non-directors (NEOs bleeding in from the SCT is the shape to fear).
     ok = bad = na = 0
     detail = []
+    excess_max = 5
     if not parent.empty and not dirs.empty:
         counts = dirs.groupby("accession_number").size()
         bs = _num(parent, "board_size")
@@ -215,13 +235,17 @@ def main() -> None:
             n = counts.get(parent.at[i, "accession_number"])
             if pd.isna(bs[i]) or n is None:
                 na += 1
-            elif abs(bs[i] - n) <= 1:                 # a filing can list a retiring director
+                continue
+            gap = n - bs[i]
+            if -1 <= gap <= excess_max:
                 ok += 1
             else:
                 bad += 1
-                detail.append(f"- `{parent.at[i, 'ticker']}`: board_size {bs[i]:.0f} but "
-                              f"{n} director rows")
-    rep.add("C5", "board_size == director rows (+/- 1)", ok, bad, na, detail[:8])
+                why = ("roster TRUNCATED -- directors missing" if gap < 0
+                       else "more rows than a year of turnover explains")
+                detail.append(f"- `{parent.at[i, 'ticker']}`: board_size {bs[i]:.0f} vs "
+                              f"{n} director rows ({gap:+.0f}, {why})")
+    rep.add("C5", f"director rows within (board_size -1 .. +{excess_max})", ok, bad, na, detail[:8])
 
     # C6 -- humanly possible ages and tenures
     ok = bad = na = 0

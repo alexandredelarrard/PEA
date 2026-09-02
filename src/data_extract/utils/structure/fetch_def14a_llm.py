@@ -69,7 +69,7 @@ from src.data_extract.utils.structure.def14a_gender import (
 from src.data_extract.utils.structure.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a_validate import (
     DEF14A_AUDIT_FEE_MIN_PLAUSIBLE, clean_holder_name, clean_person_name, clean_text,
-    is_subtotal_holder, rescale_block,
+    is_subtotal_holder, rescale_block, sum_fee_total,
 )
 from src.data_extract.utils.structure.def14a_tables import (
     AUDIT_FEES, DIRECTOR_COMP, OWNERSHIP_5PCT, OWNERSHIP_INSIDER, SCT,
@@ -307,6 +307,19 @@ _PAYRATIO_CONTENT_RE = re.compile(
 #: while their pay ratio sat at 49-92%. Sections whose target legitimately appears early pass
 #: `toc_frac=0.0` instead (see `_ANCHOR_SECTIONS`).
 _TOC_SKIP_FRAC = 0.05
+#: Ceiling on where the DIRECTOR NOMINEES window may START, as a fraction of the document.
+#: `_TOC_SKIP_FRAC` is a FLOOR only, so the row-token optimum was free to land anywhere -- and on
+#: two of 22 measured filings it landed in the BACK half: T's at 53.6% (the pension-assumptions
+#: discussion, 0 of 11 directors in the block, every `is_independent` null) and EOG's at 70.0%
+#: (change-of-control prose, 1 of 10). Both blocks are full of "Age"/"Director Since" tokens, so
+#: no density or bio-marker score separates them from a real roster; their POSITION does. The
+#: other 20 filings' windows sit at 3.3%-29.1%, so 0.40 clears the widest real case by 11 points.
+#: The ceiling cannot move a filing whose window is already below it -- the picker takes the
+#: EARLIEST maximal window, so discarding later candidates leaves that choice standing -- and
+#: measured: exactly EOG and T move, 191 -> 203 of 243 directors land in the block.
+#:
+#: Per-section, NOT global: the ownership fallback's table legitimately sits in the back half.
+_DIRECTOR_MAX_FRAC = 0.40
 #: A fee-table cell that is a plausible dollar figure, used only to locate the table in the
 #: flattened text. Deliberately requires a comma group or a decimal so a footnote marker or a
 #: year cannot be picked as the landmark.
@@ -328,7 +341,7 @@ _TABLE_TARGETS = (
 )
 
 #: Anchor-carve sections: (label, densest-window re, content re, anchors, last_occurrence,
-#: toc_frac, budget).
+#: toc_frac, budget, max_frac).
 #:
 #: Budgets are sized from the MEASURED miss distances, not by widening everything: only 5 of 25
 #: narrative misses were within ~3,000 chars of the slice end (HSIC +123, PFE +190, WMT +430,
@@ -343,14 +356,14 @@ _TABLE_TARGETS = (
 #: BEFORE the fee table, HUBB / ROK 149k / 165k away) and B now owns the table anyway, so this
 #: window only has to reach the PROSE disclosures.
 _ANCHOR_SECTIONS = (
-    ("DIRECTOR NOMINEES",      _DIRECTOR_ROW_RE,  _DIRECTOR_CONTENT_RE,     _DIRECTOR_ANCHORS,     False, _TOC_SKIP_FRAC, 20_000),
-    ("CORPORATE GOVERNANCE",   None,              None,                     _GOVERNANCE_ANCHORS,   False, _TOC_SKIP_FRAC,  6_000),
-    ("PAY RATIO & MEDIAN PAY", None,              _PAYRATIO_CONTENT_RE,     _PAYRATIO_ANCHORS,     False, _TOC_SKIP_FRAC,  4_500),
-    ("SAY ON PAY",             None,              _SAYONPAY_CONTENT_RE,     _SAYONPAY_ANCHORS,     False, 0.0,             4_500),
+    ("DIRECTOR NOMINEES",      _DIRECTOR_ROW_RE,  _DIRECTOR_CONTENT_RE,     _DIRECTOR_ANCHORS,     False, _TOC_SKIP_FRAC, 20_000, _DIRECTOR_MAX_FRAC),
+    ("CORPORATE GOVERNANCE",   None,              None,                     _GOVERNANCE_ANCHORS,   False, _TOC_SKIP_FRAC,  6_000, None),
+    ("PAY RATIO & MEDIAN PAY", None,              _PAYRATIO_CONTENT_RE,     _PAYRATIO_ANCHORS,     False, _TOC_SKIP_FRAC,  4_500, None),
+    ("SAY ON PAY",             None,              _SAYONPAY_CONTENT_RE,     _SAYONPAY_ANCHORS,     False, 0.0,             4_500, None),
     # ---- fallbacks: emitted only when the table classifier found nothing ----
-    ("EXECUTIVE COMPENSATION", None, (_COMPENSATION_TITLE_RE, _COMPENSATION_CONTENT_RE), _COMPENSATION_ANCHORS, False, _TOC_SKIP_FRAC, 7_000),
-    ("SECURITY OWNERSHIP",     _OWNERSHIP_ROW_RE, _OWNERSHIP_CONTENT_RE,    _OWNERSHIP_ANCHORS,    False, _TOC_SKIP_FRAC, 10_000),
-    ("AUDITOR FEES",           None,              _AUDITOR_CONTENT_RE,      _AUDITOR_ANCHORS,      False, _TOC_SKIP_FRAC,  2_500),
+    ("EXECUTIVE COMPENSATION", None, (_COMPENSATION_TITLE_RE, _COMPENSATION_CONTENT_RE), _COMPENSATION_ANCHORS, False, _TOC_SKIP_FRAC, 7_000, None),
+    ("SECURITY OWNERSHIP",     _OWNERSHIP_ROW_RE, _OWNERSHIP_CONTENT_RE,    _OWNERSHIP_ANCHORS,    False, _TOC_SKIP_FRAC, 10_000, None),
+    ("AUDITOR FEES",           None,              _AUDITOR_CONTENT_RE,      _AUDITOR_ANCHORS,      False, _TOC_SKIP_FRAC,  2_500, None),
 )
 
 
@@ -360,6 +373,7 @@ def _densest_window(
     chars: int,
     context_pre: int = _CONTEXT_PRE,
     min_rows: int = 3,
+    max_frac: float | None = None,
 ) -> int:
     """Return the start of the `chars`-wide window holding the MOST `row_re` matches
     (the table), `context_pre` chars before its first row — or -1 if fewer than
@@ -368,8 +382,15 @@ def _densest_window(
     Robust to proxies that scatter the director / ownership data or format it as a
     matrix vs per-person blocks: the densest cluster of row tokens IS the table,
     whereas isolated prose mentions never accumulate.
+
+    `max_frac` bounds how far INTO the document the window may start, for a section that is
+    always in the front matter. Density alone cannot reject a back-half block: T's winner sat at
+    53.6% in the pension-assumptions discussion and EOG's at 70.0% in change-of-control prose,
+    both dense in "Age"/"Director Since" tokens (see `_DIRECTOR_MAX_FRAC`). Left None for every
+    section whose target may legitimately be anywhere.
     """
-    starts = [m.start() for m in row_re.finditer(text)]
+    limit = len(text) if max_frac is None else int(len(text) * max_frac)
+    starts = [m.start() for m in row_re.finditer(text) if m.start() <= limit]
     if len(starts) < min_rows:
         return -1
     best_start, best_n = starts[0], 0
@@ -500,10 +521,11 @@ def prepare_def14a_sections(html: str, text: str) -> str:
         "AUDITOR FEES": AUDIT_FEES not in tables,
     }
 
-    for label, dense_re, content_re, anchors, use_last, toc_frac, chars in _ANCHOR_SECTIONS:
+    for label, dense_re, content_re, anchors, use_last, toc_frac, chars, max_frac in _ANCHOR_SECTIONS:
         if label in fallbacks and not fallbacks[label]:
             continue
-        pos = _densest_window(text, dense_re, chars) if dense_re is not None else -1
+        pos = (_densest_window(text, dense_re, chars, max_frac=max_frac)
+               if dense_re is not None else -1)
         if pos == -1:
             pos = _find_content_section(text, content_re, anchors,
                                         last_occurrence=use_last, toc_frac=toc_frac)
@@ -718,6 +740,10 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
     # audit, which means an "(in thousands)" / "($ in millions)" note was missed (measured on 8
     # of the 10 smallest values: MS 57.6 = $57.6M, TSLA 10,919 = $10.9M).
     rescale_block(row, list(_FEE_COLS), DEF14A_AUDIT_FEE_MIN_PLAUSIBLE)
+    # AFTER the rescale, so both sides of the comparison are in whole dollars. Recovers the total
+    # on the fee tables that have no Total row, where the model reports the `Audit Fees` line as
+    # the total (BA 39.1M -> 43.6M, T 34.2M -> 38.9M).
+    sum_fee_total(row, "auditor_fees", list(_FEE_CATEGORY_COLS))
     return row
 
 
@@ -767,6 +793,10 @@ _DIRECTOR_COMPONENT_COLS = ("fees_earned", "stock_awards", "option_awards",
 #: in one unit, so a cell-by-cell rescale would invent a table whose parts no longer sum.
 _FEE_COLS = ("auditor_fees", "audit_fees_audit", "audit_fees_audit_related",
              "audit_fees_tax", "audit_fees_other", "auditor_fees_prior")
+#: The four Item 9(e) categories that make up the current-year total — `_FEE_COLS` minus the
+#: total itself and minus the prior year, whose categories this schema does not carry.
+_FEE_CATEGORY_COLS = ("audit_fees_audit", "audit_fees_audit_related",
+                      "audit_fees_tax", "audit_fees_other")
 
 
 def _keys(ticker: str, filing: pd.Series) -> dict:
@@ -1065,7 +1095,7 @@ def _finalise_gender(context: Context) -> None:
     log_consensus(context.log, stats, before, after)
 
     if not (stats["filled"] or stats["overturned"]):
-        return                                   # idempotent no-op: nothing to write back
+        return   
 
     context.store.save(Tables.def14a_directors,
                        resolved[["ticker", "accession_number", "name", "as_of",

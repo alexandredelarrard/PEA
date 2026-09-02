@@ -27,6 +27,7 @@ from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.parts import (
     CUBE_PARTS, FEATURE_PARTS, PART_BY_NAME, PART_COMMANDS,
 )
+from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.data_aggregate.utils.common.price_frames import ALL_FIELDS
 
 # the sub-step that owns each CLI command
@@ -88,7 +89,11 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
     })
     # `config` on the context too: sub-steps resolve their universe through
     # `load_universe_tickers`, which reads `data_extract.redundant_ticks` off `context.config`.
+    # `config_dir` too: `StepCubePrices.__init__` reads the Yahoo bug register from it, and
+    # doing that at construction is deliberate -- an unapproved register must fail the step
+    # before it loads 1.9M price rows, which means this test exercises that path.
     ctx = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test"), config=config,
+                          config_dir=Path(DEFAULT_CONFIG_DIR),
                           paths={"DATA_STORE": Path("."), "SECTOR_PEERS_PATH": Path("peers.json")})
     owned = {cmd: [p.name for p in REG if p.command == cmd] for cmd in OWNER}
     for cmd, cls in OWNER.items():
@@ -117,11 +122,18 @@ def test_substep_price_fields_are_declared_and_valid():
     # close_split for the four features that pair with open/high/low/volume.
     assert set(StepCubeMomentum._FIELDS) >= {"close_split", "close_total", "open", "high",
                                              "low", "volume"}
-    for name in ("StepCubeFundamentals", "StepCubeText"):
-        assert set(declared[name]) == {"close_split"}, (
-            f"{name} builds LEVELS (market cap, EV, per-share ratios), so it must take "
-            f"close_split only -- never the total-return series")
-    assert set(StepCubeExtras._FIELDS) == {"close_split", "volume"}
+    # ⚠ THE RULE IS ABOUT `close_total`, NOT ABOUT THE FIELD COUNT. A step that builds LEVELS
+    # must never take the total-return series -- a market cap or an EV computed on it would
+    # compound every dividend ever paid into the level. It SHOULD take `level_factor`, which
+    # is the other half of a correct level and is not a price at all.
+    for name in ("StepCubeFundamentals", "StepCubeText", "StepCubeExtras"):
+        assert "close_total" not in declared[name], (
+            f"{name} builds LEVELS (market cap, EV, per-share ratios), so it must never take "
+            f"the total-return series")
+        assert not ({"open", "high", "low"} & set(declared[name])), (
+            f"{name} does not build bars, so materialising the OHLC range is pure memory")
+    assert set(StepCubeFundamentals._FIELDS) == {"close_split", "level_factor"}
+    assert set(StepCubeExtras._FIELDS) == {"close_split", "volume", "level_factor"}
 
     print("\n=== SANITY CHECK: declared price-field projections ===")
     for name, fields in declared.items():

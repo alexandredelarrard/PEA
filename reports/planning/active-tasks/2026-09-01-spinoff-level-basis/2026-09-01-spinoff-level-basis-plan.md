@@ -619,12 +619,47 @@ is nothing to restore there.
 - [x] FDX 2020-12-17 `marketCap` = **$77.470bn** (Sharadar $77.470bn); was $62.425bn
 - [x] `sharesOutstandingPit` carries the reverse split: HON 2×, DD 3×, MSI 7×, LDOS 4×, HLT 3×
 - [x] `daily_market_cap` cannot be called without stating a basis (required keyword-only)
-- [x] `level_factor` queryable in `cube_part_prices` (361,996 rows ≠ 1, 80 tickers)
+- [x] `level_factor` queryable in `cube_part_prices` (378,387 rows ≠ 1, 88 tickers — was
+      361,996 / 80 before the register)
 - [x] No new test failure against the recorded baseline (`tests/data_aggregate/` 9 → 8)
 - [~] The residual is the four named clusters — MNST 122, V 74, APA/SJM/HBAN/ORCL 79 are all
       present and unchanged, but **IP (102 rows) and JCI (81) are larger than two of them**
       and the plan never named them. Not new (both sit in the Phase-0 residual too) and not a
       regression, but the plan's enumeration was incomplete.
+
+## Phase 6: the Yahoo bug register ✅  (added after the plan, 2026-09-01)
+
+The two clusters the plan never named turned out to be two DIFFERENT defects, and neither is
+expressible as `S`. `configs/prices/yf_price_bugfix.json` records both, plus MNST's, and
+`StepCubePrices` re-measures every entry against `sharadar_fundamentals.price` before applying
+it — so an entry Yahoo has since fixed is SKIPPED and logged instead of double-corrected.
+
+| shape | tickers | mechanism | moves `ret`? |
+|---|---|---|---|
+| `level_factor` | IP, HWM, BX, SJM, HBAN, APA, BLDR, CCI | smooth back-adjustment, no feed row → multiply `S` | no |
+| `split_vintage` | MNST | series left on two bases at once → backwards anchored walk | yes, per bar |
+| `return_seams` | JCI | adjustment on the wrong date with the wrong factor → rescale the prefix | yes, one prefix |
+
+Measured after `build-prices -F`:
+
+- [x] invariant 1 **98.30% → 99.03%**, invariant 2 **98.18% → 98.88%**
+- [x] **IP 102 failing rows → 0**, median `level/price` exactly 1.00000
+- [x] **MNST** wedge `sharadar.price / close_split` **0.50000 → 1.00000**; 7 flips, 7,778 of
+      7,796 bars rescaled; its fabricated −51%/+96% bars gone (largest move now +45.5%, 1996).
+      21 residual rows are all pre-2005 at \$0.005–\$0.067, where Sharadar's 3-decimal `price`
+      quantises at up to 7% — rounding, not basis.
+- [x] **JCI's fabricated bar gone** — it was **−60.52%**, not the −53.45% first recorded (the
+      code's own log line caught the arithmetic error). The LEVEL is still wrong: 82–84 rows,
+      a wedge drifting monotonically across 83 segments, the largest residual left.
+- [x] 14 of 14 level segments apply with the observed wedge matching the register to five
+      decimals; `validate prices` sees the register too, so it scores the basis the cube uses.
+
+⚠ Two defects found by the build log, both now regression-tested:
+  * a segment is a WINDOW `[previous before, this before)`, not a prefix — measuring over an
+    open prefix read the era BEFORE the one being checked (HBAN's second window read 1.46410
+    where the truth is 1.33100, skipping three of five entries), and applying cumulatively put
+    HBAN's 1995 bars at 4.17725 against a measured 1.61051;
+  * a `%`-format log line had three placeholders and four arguments.
 
 ## Estimated Effort
 

@@ -168,8 +168,11 @@ _Observed values only — no verdicts. `rows`, `date_min` and `date_max` are **t
   across a real split by construction. Deep history settles it: HON's 2010 `sharesbas` reads
   390M against an actual ~780M, its 2010 `price` 94.52 against ~47.
 
-  The residual ~1.8% is four named clusters (MNST's stale Yahoo vintage 122 rows, Visa's
-  multi-class `sharesbas` 74, three stock-dividend names ~79, as-of join noise), not a wall.
+  A follow-up register, `configs/prices/yf_price_bugfix.json`, then took invariant 1 to
+  **99.03%** and invariant 2 to **98.88%** by repairing nine tickers whose defect is in
+  Yahoo's own data, where no event feed expresses it and `S` therefore reads exactly 1.0.
+  The residual ~1.0% is now dominated by ONE ticker (JCI, 82 rows) plus Visa's multi-class
+  `sharesbas` (74) and as-of join noise.
 
   **The reusable lesson: "the reference is inconsistent" is the most comfortable possible
   explanation for a failing invariant, and it must be the LAST one accepted.** The
@@ -178,16 +181,39 @@ _Observed values only — no verdicts. `rows`, `date_min` and `date_max` are **t
   Full record: `reports/planning/active-tasks/2026-09-01-spinoff-level-basis-plan.md` and the
   before/after measurements beside it.
 
-- ⚠ **MNST's 97/47 alternation is an UPSTREAM YAHOO DEFECT and is still present.** The plan
-  expected the full re-download to clear it. It does not: a freshly emptied table reproduces
-  it exactly, and both `yf.download` and `Ticker.history` serve the same alternating series.
-  Sharadar prices MNST at 45.18 on 2026-08-07 where Yahoo says 90.36 — exactly 2x — so Yahoo
-  never back-adjusted MNST for the 2:1 split its OWN splits feed reports on 2026-08-11.
-  `validate prices` flags it (6 unexplained jumps, no corroborating split) and the gate lets
-  it through only because it sits inside the measured 1e-4 budget. **MNST's returns,
-  momentum, vol and betas are wrong for July–August 2026 and no code change here can fix
-  that** — it needs a vendor override or a ticker exclusion, which is out of this task's
-  scope.
+- ⚠ **MNST's 97/47 alternation is an UPSTREAM YAHOO DEFECT — now REPAIRED downstream, in the
+  cube, not in `prices`.** The plan expected the full re-download to clear it. It does not: a
+  freshly emptied table reproduces it exactly, and both `yf.download` and `Ticker.history`
+  serve the same alternating series. Re-fetched live on 2026-09-01, bar for bar.
+
+  What Yahoo actually did is narrower and stranger than "never back-adjusted": it adjusted
+  **five** bars for the 2026-08-11 2:1 (07-20, 07-21, 07-22, 07-31, 08-06) and left the other
+  7,793 alone, so the series alternates between two bases inside three weeks — 97.65, 48.19,
+  93.55, 47.08, 90.36, 45.53. That is why a `factor` cannot express it: half the affected bars
+  are already correct and multiplying them would break them.
+
+  `level_basis.apply_split_vintage` anchors on the first bar at or after the split — on the
+  new basis by definition — and walks backwards, flipping a multiplier at every one-bar step
+  that lands on the ratio or its reciprocal. Measured result: 7 flips, 7,778 of 7,796 bars
+  rescaled, and `sharadar.price / close_split` **0.50000 → 1.00000**. MNST's fabricated
+  −51%/+96% bars are gone; its largest remaining move is +45.5% in 1996, which is real.
+
+  Its 21 residual invariant-2 rows are all pre-2005 at $0.005–$0.067, where Sharadar's
+  3-decimal `price` quantises at up to 7%. Rounding, not basis: the median ratio is 1.00000.
+
+- **IP was the largest unnamed cluster and is now at ZERO.** Two spinoffs (Veritiv 2014,
+  Sylvamo 2021) that Yahoo back-adjusted the whole history for while publishing no
+  `prices_splits` row, so `S` was structurally blind: 102 failing rows → **0**, median
+  `level/price` exactly 1.00000. Seven more tickers followed the same shape (SJM, HBAN, APA,
+  HWM, BX, BLDR, CCI); ORCL, TMO and HAS were measured and REJECTED as 1-row blips.
+
+- **JCI's fabricated bar is gone; JCI itself is not fixed.** `close_split` fell 70.354 →
+  27.775 on 2007-07-02, a **−60.52%** return that never happened — its real 3-for-1 was
+  2007-10-03, where the series does not step at all, and the feed claims 0.25 where the
+  applied factor is 0.3948. The seam is repaired, so `ret`, momentum, vol, betas and every
+  JCI label are no longer built on it. The LEVEL is still wrong: the residual wedge drifts
+  monotonically across 83 segments (0.32 → 0.11 over 1996–1999), which is a corrupt series
+  rather than a basis offset. 82–84 rows, the largest single residual left.
 
 - **19 of 96 tickers still fail the SEC cover-page check on `sharesOutstandingPit`** (was 24).
   Every INTEGER-factor offender is resolved — AVGO 10.0, ANET 4.0, CMG 50.0, APH 2.0,
@@ -260,9 +286,11 @@ _Observed values only — no verdicts. `rows`, `date_min` and `date_max` are **t
    record the answer as a waived cluster with evidence — do NOT widen `MCAP_TOLERANCE`.
    Start with the largest: FDX, HON, BDX, SPGI, CMCSA, DD, WDC, GE.
 
-4. **Decide what to do about MNST.** Its Yahoo history is corrupt upstream and cannot be
-   fixed by re-pulling. Either override it from Sharadar's `price`, or exclude it until Yahoo
-   restates.
+4. ~~**Decide what to do about MNST.**~~ DONE — repaired by `configs/prices/
+   yf_price_bugfix.json` and `apply_split_vintage`, verified 0.50000 → 1.00000. What is left
+   is **JCI**, whose wedge drifts monotonically and so cannot be written as a factor at all.
+   It needs the anchored per-bar vintage repair keyed on a `sharadar.price` ladder, or a
+   decision to exclude it.
 
 5. **Drop `prices_pre_basis_fix`** once step 1 and 2 are green.
 

@@ -57,7 +57,8 @@ logger = logging.getLogger(__name__)
 #: `utils/common/level_basis.py` -- the SPINOFF adjustment Yahoo applied to `close_split` that
 #: `sharesOutstanding` does not carry. `close_split` alone is right for splits and short by
 #: `S` for spinoffs, so any LEVEL must multiply by it and no RETURN may.
-ALL_FIELDS = ("close_split", "close_total", "volume", "ret", "sector_ret", "level_factor")
+ALL_FIELDS = ("close_split", "close_total", "open", "high", "low", "volume", "ret",
+              "sector_ret", "level_factor")
 
 @dataclass(frozen=True, slots=True)
 class PriceFrames:
@@ -185,6 +186,9 @@ def load_price_frames(
         trading_index=idx, universe=universe, peers=peers,
         close_split=wide.get("close_split"),
         close_total=wide.get("close_total"),
+        open=wide.get("open"),
+        high=wide.get("high"),
+        low=wide.get("low"),
         volume=wide.get("volume"),
         ret=wide.get("ret"),
         sector_ret=wide.get("sector_ret"),

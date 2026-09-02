@@ -43,7 +43,7 @@ from src.utils.macro import load_macro_series
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
-PRICE_COLS = ['date', 'close_split', 'close_total', 'volume', 'ticker']
+PRICE_COLS = ['date', 'open', 'high', 'low', 'close_split', 'close_total', 'volume', 'ticker']
 #: The two `sharadar_actions` kinds `split_events` reads. Market-wide table, so the read is
 #: filtered to these or it drags back every action of every ticker Sharadar covers.
 ACTION_COLS = ['ticker', 'date', 'action', 'value']
@@ -55,11 +55,13 @@ class StepCubePrices(Step):
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
+        
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_prices)
         self._store = context.store
         self._tickers = load_universe_tickers(context)
         self._log.info(f"Ticker universe: {len(self._tickers)} tickers from {Tables.sp500_tickers}")
+
         # Read at construction so a malformed or unapproved register fails the step before it
         # has loaded 1.9M price rows, not after.
         self._bugfix = load_bugfix(context.config_dir)
@@ -123,7 +125,10 @@ class StepCubePrices(Step):
     @staticmethod
     def _pivot_fields(raw: pd.DataFrame) -> dict[str, pd.DataFrame]:
         pivot = du.prices_long_to_multiindex(raw)
-        return {"close_split": du.extract_field(pivot, "CloseSplit"),
+        return {"open":du.extract_field(pivot, "Open"),
+                "high":du.extract_field(pivot, "High"),
+                "low":du.extract_field(pivot, "Low"),
+                "close_split": du.extract_field(pivot, "CloseSplit"),
                 "close_total": du.extract_field(pivot, "CloseTotal"),
                 "volume": du.extract_field(pivot, "Volume")}
 

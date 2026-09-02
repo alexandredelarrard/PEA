@@ -32,6 +32,11 @@ applies to a share count. Multiplying the price leg by it takes invariant 1 from
 98.30%** and invariant 2 from **87.33% to 98.18%**, and breaks 3 rows while fixing 5,516. See
 `src/data_aggregate/utils/common/level_basis.py` for the derivation.
 
+`configs/prices/yf_price_bugfix.json` then takes them to **99.03%** and **98.88%**: nine
+tickers where the defect is in Yahoo's own data and no event feed expresses it, so `S` is
+structurally blind to them. Applied here too -- the register is a SOURCE, not a cube artifact
+-- and every entry is re-measured against Sharadar before it fires.
+
 The lesson is the reusable part: "the reference is inconsistent" is the most comfortable
 possible explanation for a failing invariant, and it must be the LAST one accepted, after the
 identity has been decomposed leg by leg.
@@ -40,8 +45,10 @@ identity has been decomposed leg by leg.
 
 `gate()` blocks the cube build on INVARIANT 3 ALONE, and that is still right -- but for a
 different reason than the one written here before. Invariant 1's residual is no longer a
-12.6% wall; it is ~1.8% across four NAMED and understood clusters (MNST's stale Yahoo
-vintage, Visa's multi-class `sharesbas`, three stock-dividend names, and as-of join noise).
+12.6% wall; it is ~1.0%, and the largest single contributor left is JCI (82 rows), whose
+Yahoo series is corrupt in a way no factor can express. MNST's vintage and the stock-dividend
+names are repaired by the register; Visa's multi-class `sharesbas` and as-of join noise are
+the rest.
 Raising a gate on it is now a defensible decision rather than an impossible one -- but it is a
 SEPARATE decision, so `MCAP_BLOCK_SHARE` stays `None`. Invariant 3 keeps blocking because its
 failures have no ambiguity: an unexplained >50% round-trip with no split on the books is
@@ -63,7 +70,18 @@ stock splits.
    ADJUSTMENT VINTAGE rather than a convention difference. This is the check that would have
    flagged MNST in July 2026 instead of an audit finding it in September.
 
+   ⚠ For the eight tickers carrying a registered LEVEL wedge this is partly SELF-REFERENTIAL,
+   because the wedge was measured against the same `sharadar.price` it scores against. The
+   independent alternative is the spun-off child's own price via `sharadar_actions
+   .contraticker`, which needs history for securities outside the universe.
+
 3. SPIKE-AND-REVERT
+   ⚠ THE ONLY INVARIANT THAT STILL SCORES THE RAW TABLE, deliberately. It is the tripwire for
+   vendor defects nobody has looked at yet, so it must keep firing on MNST's six 2026 jumps
+   even though the register repairs them downstream -- that firing is the observation the
+   register's own re-verification depends on. A cluster here means "the raw feed is broken",
+   not "the cube is wrong"; cross-check `yf_price_bugfix.json` before acting on one.
+
    A >50% jump whose LEVEL comes back within a few bars, with no corroborating row in
    `prices_splits`, is two adjustment vintages meeting inside one ticker -- not a market
    event. Genuine moves must pass: 2020-03-09's oil crash (APA/OXY/FANG/TRGP), PCG's
@@ -78,13 +96,19 @@ import pandas as pd
 
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import Context
-from src.data_aggregate.utils.common.level_basis import genuine_splits, level_factor
+import logging
+
+from src.data_aggregate.utils.common.level_basis import (
+    apply_level_bugfix, apply_return_seams, apply_split_vintage, genuine_splits, level_factor,
+    load_bugfix)
 from src.data_store.schema import Tables
 
 #: Invariant 1's band. 1% absorbs the as-of join (a filing date is often not a trading day)
 #: and Sharadar's four-significant-figure rounding, and is an order of magnitude tighter than
 #: any real basis error -- those are integer split factors (2x, 4x, 20x) or a dividend factor
 #: that reached 0.62 in 2003.
+logger = logging.getLogger(__name__)
+
 MCAP_TOLERANCE = 0.01
 #: Invariant 2's band. Tighter than invariant 1 because it compares two PRICES with no share
 #: count in between, so only vendor rounding and the as-of join separate them.
@@ -175,6 +199,8 @@ def load_panel(context: Context, tickers: list[str] | None = None,
         where={**(where or {}), "dimension": "ARQ"}, since=since)
     vendor = _as_ns(vendor, "date")
 
+    prices = _repair_registered(context, prices, vendor)
+
     merged = context.store.load(Tables.fundamentals_history,
                                 columns=["ticker", "as_of", "sharesOutstanding"], where=where)
     merged = _as_ns(merged, "as_of")
@@ -186,6 +212,39 @@ def load_panel(context: Context, tickers: list[str] | None = None,
                           tolerance=pd.Timedelta(days=ASOF_TOLERANCE_DAYS))
     panel["level_factor"] = _level_factor_for(context, panel, where)
     return panel
+
+
+def _repair_registered(context: Context, prices: pd.DataFrame,
+                       vendor: pd.DataFrame) -> pd.DataFrame:
+    """Apply the two RETURN-MOVING entries of `configs/prices/yf_price_bugfix.json`.
+
+    ⚠ THIS DOES NOT COMPROMISE THE INDEPENDENCE ABOVE. The register is a SOURCE -- a curated
+    third statement about the vendors, re-verified against Sharadar on every use -- in exactly
+    the way `split_events`' corroboration rules are, and this module already shares those. What
+    it must not do is read a number back out of `cube_part_prices`, and it still does not.
+
+    Without it the validator scores a `prices` table nothing downstream reads, and reports IP
+    and MNST as broken when the cube has them right -- which is the worse failure, because it
+    trains the next reader to ignore the report.
+
+    Only the registered tickers are pivoted (ten of them), so this costs nothing next to the
+    ~400 MB a full wide pivot would.
+    """
+    blob = load_bugfix(context.config_dir)
+    named = sorted({*(blob.get("split_vintage") or {}), *(blob.get("return_seams") or {})})
+    named = [t for t in named if t in set(prices["ticker"])]
+    if not named:
+        return prices
+
+    slice_ = prices[prices["ticker"].isin(named)]
+    wide = {"close_split": slice_.pivot(index="date", columns="ticker",
+                                        values="close_split").sort_index()}
+    apply_split_vintage(wide, blob, vendor[["ticker", "date", "price"]], logger.info)
+    apply_return_seams(wide, blob, logger.info)
+
+    repaired = (wide["close_split"].stack(future_stack=True).rename("close_split")
+                .reset_index().dropna(subset=["close_split"]))
+    return pd.concat([prices[~prices["ticker"].isin(named)], repaired], ignore_index=True)
 
 
 def _level_factor_for(context: Context, panel: pd.DataFrame,
@@ -217,6 +276,15 @@ def _level_factor_for(context: Context, panel: pd.DataFrame,
     if idx.empty:
         return pd.Series(1.0, index=panel.index)
     wide = level_factor(idx, tickers, yf_splits, genuine_splits(actions, yf_splits))
+    # The registered LEVEL wedges are the cases `S` is structurally blind to -- Yahoo adjusted
+    # the price and its splits feed never said so. ⚠ For those tickers invariant 2 is partly
+    # SELF-REFERENTIAL, because the wedge was measured against the same `sharadar.price` the
+    # invariant scores against. It is 8 tickers and it is stated in every one of their
+    # register entries; the alternative is scoring a basis the cube does not use.
+    close_wide = panel.pivot_table(index="date", columns="ticker", values="close_split")
+    wide = apply_level_bugfix(wide, load_bugfix(context.config_dir),
+                              panel[["ticker", "date", "price"]],
+                              close_wide.reindex(index=idx, columns=tickers), logger.info)
 
     flat = wide.stack(future_stack=True).rename("level_factor")
     flat.index = flat.index.set_names(["date", "ticker"])

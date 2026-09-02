@@ -202,6 +202,30 @@ BUGFIX_STEP_TOL = 0.005
 #: than the two above, and it has to be: a flip is the ratio TIMES that day's real move, and
 #: MNST's five are 1.9559, 1.9413, 1.9193, 0.4895 and 0.4935 -- up to 4% off 2.0 or 0.5.
 VINTAGE_FLIP_TOL = 0.10
+#: The price legs a repair rescales, all by the SAME multiplier on the same bar.
+#:
+#: ⚠ `open`/`high`/`low` ARE IN HERE and must stay in. `_atr` takes `high - low` and
+#: `high - close.shift(1)`, so repairing the close and not the range would not merely leave
+#: those bars stale -- it would make them incoherent, and MNST's would read a ~47 close inside
+#: a ~95 high/low band. Anything not listed here is deliberately untouched: `volume`, because
+#: the two MNST vintages show comparable volume (10.8M on the last stale bar, 10.1M on the
+#: next adjusted one) and inventing a factor for a leg with no measured defect is how a
+#: register starts lying; `ret`, because it is recomputed downstream FROM these.
+REPAIRED_PRICE_FIELDS = ("close_split", "close_total", "open", "high", "low")
+
+
+def _rescale(wide: dict[str, pd.DataFrame], ticker: str, factor) -> None:
+    """Multiply every stored price leg of one ticker by `factor`, which is either a scalar or
+    a per-bar Series. Legs absent from this build's `wide` are skipped."""
+    for field in REPAIRED_PRICE_FIELDS:
+        target = wide.get(field)
+        if target is None or ticker not in target.columns:
+            continue
+        if isinstance(factor, pd.Series):
+            target[ticker] = target[ticker] * factor.reindex(target.index).fillna(1.0)
+        else:
+            mask = factor[0]
+            target.loc[mask, ticker] = target.loc[mask, ticker] * factor[1]
 
 
 def load_bugfix(config_dir: str | Path) -> dict:
@@ -246,9 +270,8 @@ def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict,
     here that is direction-aware PER BAR, which is exactly why it cannot be written as a
     `factor` -- half the affected bars need no correction at all.
 
-    ⚠ VOLUME IS LEFT ALONE. The two vintages show comparable volume (10.8M on the last stale
-    bar, 10.1M on the next adjusted one), so there is no evidence Yahoo re-based it, and
-    inventing a factor for a leg with no measured defect is how registers start lying.
+    Every leg in `REPAIRED_PRICE_FIELDS` moves together, `open`/`high`/`low` included; see
+    that constant for what is deliberately left alone and why.
 
     Verified from BOTH ends against Sharadar's independent `price`:
       * before -- the observed wedge must still sit near `expect_wedge` (0.5 for MNST, flat to
@@ -286,11 +309,7 @@ def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict,
                 continue
 
             multiplier, flips = _vintage_multiplier(series, ahead[0], ratio)
-            for field in ("close_split", "close_total"):
-                target = wide.get(field)
-                if target is None or ticker not in target.columns:
-                    continue
-                target[ticker] = target[ticker] * multiplier.reindex(target.index).fillna(1.0)
+            _rescale(wide, ticker, multiplier)
 
             applied += 1
             now = observed_wedge(ticker, when, vendor_price, wide["close_split"])
@@ -349,8 +368,9 @@ def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict,
     all. Feed, applied adjustment and real event disagree three ways.
 
     ⚠ It moves `ret`, and that is the point -- a fabricated -60.52% bar is a LABEL defect
-    first and a level defect second. `close_split` and `close_total` move together, so the
-    dividend leg between them is untouched.
+    first and a level defect second. Every leg in `REPAIRED_PRICE_FIELDS` moves by the same
+    factor, so the dividend leg between `close_split` and `close_total`, and the range between
+    `high` and `low`, both survive it unchanged.
     """
     applied = 0
     for ticker, entries in (bugfix.get("return_seams") or {}).items():
@@ -378,12 +398,7 @@ def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict,
                     "observed step %.6f, register says %.6f. Re-measure the entry.",
                     ticker, when.date(), observed, expected)
                 continue
-            for field in ("close_split", "close_total"):
-                target = wide.get(field)
-                if target is None or ticker not in target.columns:
-                    continue
-                mask = target.index < when
-                target.loc[mask, ticker] = target.loc[mask, ticker] * observed
+            _rescale(wide, ticker, (frame.index < when, observed))
             applied += 1
             log("price bugfix: %s %s seam REPAIRED -- every bar before it rescaled by %.6f "
                 "(it was a %+.2f%% one-bar 'return' that never happened)",

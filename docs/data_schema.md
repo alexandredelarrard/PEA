@@ -168,12 +168,30 @@ to an upsert for frames with list-valued cells).
 `cube_part_prices` carries one column that is **not a price**: **`level_factor`** = `S(d)`, the
 SPINOFF adjustment Yahoo applied to `close_split` that `sharesOutstanding` does not carry
 (`S = Π(prices_splits.ratio after d) / Π(split_events(...).value after d)`). Exactly `1.0` on
-all but 361,996 of 3,827,534 rows (9.46%, across 80 of 491 tickers), and NULL wherever
+all but 378,387 of 3,827,534 rows (11.60%, across 88 of 491 tickers), and NULL wherever
 `close_split` is — so the column is purely additive to the part table's row set. **Multiply a
 LEVEL by it** (market cap, EV, dollar volume, any yield built on one); **never a RETURN** — on
 `close_split × S` the spinoff bar would jump by the whole factor, which is precisely what
 Yahoo's back-adjustment exists to prevent. Derivation and the FDX/GE/HON worked cases:
 [level_basis.py](../src/data_aggregate/utils/common/level_basis.py).
+
+⚠ **The price legs in this part table are NOT byte-copies of `prices`.**
+`StepCubePrices` applies [yf_price_bugfix.json](../configs/prices/yf_price_bugfix.json) — a
+register of defects in Yahoo’s own data that no event feed expresses, so `S` reads 1.0 for
+them. Three shapes, and the section names say which:
+
+| section | what it repairs | touches `ret`? |
+|---|---|---|
+| `level_factor` | a smooth back-adjustment with no feed row: returns already right, LEVEL short (IP, HWM, BX, SJM, HBAN, APA, BLDR, CCI) | no — it multiplies `S` |
+| `split_vintage` | a series left on TWO bases at once, because Yahoo adjusted part of its own history for a split it published (MNST) | yes, per bar |
+| `return_seams` | an adjustment applied on the wrong date with the wrong factor (JCI) | yes, one prefix |
+
+Every entry states the value it EXPECTS TO OBSERVE and is re-measured against
+`sharadar_fundamentals.price` on every build, so an entry Yahoo has since fixed is SKIPPED and
+logged rather than applied twice. Together they take `validate prices` invariant 1 from 98.30%
+to **99.03%** and invariant 2 from 98.18% to **98.88%**. ⚠ `prices` itself is left untouched —
+it is the vendor's word, and `validate prices` invariant 3 keeps scoring it raw so a new
+vendor defect still trips the gate.
 
 Build orchestration (CLI command, warm-up days, binding look-backs) deliberately lives in
 [parts.py](../src/data_aggregate/utils/common/parts.py), not here — that is aggregation policy, not

@@ -20,7 +20,8 @@ from pathlib import Path
 import pytest
 
 from src.data_extract.utils.structure.def14a_tables import (
-    TARGETS, classify_filing, classify_table, iter_tables, merge_header_rows, to_tsv,
+    SCT, TARGETS, _has_salary_column, classify_filing, classify_table, iter_tables,
+    merge_header_rows, to_tsv,
 )
 
 CACHE = Path(__file__).resolve().parents[3] / "data/cache/def14a_probe"
@@ -41,6 +42,89 @@ def _grid(html: str) -> tuple[list[str], list[list[str]]]:
     grids = iter_tables(html)
     assert grids, "fixture produced no table at all"
     return merge_header_rows(grids[0])
+
+
+# --------------------------------------------------------------------------- #
+# 0. the SCT tie-break: telling a Salary COLUMN from prose about salary       #
+# --------------------------------------------------------------------------- #
+#: Every case is a real header cell from the 656-filing cache. Both halves are load-bearing and
+#: both were got WRONG in turn while this rule was being written, each time silently handing a
+#: filing the wrong table.
+_SALARY_LABELS = [
+    "Salary",                                                    # GE 2019
+    "Base Salary",
+    "Salary ($)(1)",                                             # BA 2013-2021
+    "Salary ($) (c)",                                            # KLAC -- Item 402 uses (a)(b)(c)
+    "SUMMARY COMPENSATION TABLE Salary ($) (c)",                 # colspan'd title propagation
+    "Summary Compensation Table Annual Compensation Salary ($)",  # 57 chars, 8 words, genuine
+    "Salary and incentive compensation Annual compensation Salary ($)",
+    "Annual Compensation Salary($)",
+]
+_NOT_SALARY_LABELS = [
+    # ends with the word, but it is a CD&A raise table -- 11-13 words, no unit marker
+    "Year-Over-Year Percentage Increase Represented by the Fiscal Year 2013 Base Salary",
+    "Percentage Increase Represented by the Approved but Deferred Fiscal Year 2009 Base Salary",
+    # a merged FOOTNOTE row
+    "The salary portion of the amounts reflected above is included",
+    # mentions salary but is not a salary column
+    "Annual Base Salary Rate as of June 30, 2012",
+    "Name",
+    "Annual Incentive Compensation ($)",
+]
+
+
+def test_salary_column_is_told_apart_from_prose_about_salary():
+    """Item 402(c)(2)(iii) makes Salary a mandatory SCT column, so it is the strongest
+    discriminator available -- but only if a COLUMN can be told from a sentence.
+
+    Two traps, both of which produced a wrong table before being measured:
+      * `^salary` fails on `SUMMARY COMPENSATION TABLE Salary ($)`, because a colspan'd table
+        title propagates into every cell (PG, GE);
+      * end-anchoring alone accepts `... Fiscal Year 2013 Base Salary`, a CD&A raise table that
+        beat KLAC's real 15-row SCT with 5 rows.
+    A char cap cannot separate them: genuine title-propagated labels reach 64 chars while the
+    prose starts at 82. Word count can -- 1-6 words versus 11-13, with nothing in between.
+    """
+    wrong = ([c for c in _SALARY_LABELS if not _has_salary_column([c])]
+             + [c for c in _NOT_SALARY_LABELS if _has_salary_column([c])])
+    print("\n=== SANITY: Salary column vs prose ===")
+    print(f"  {len(_SALARY_LABELS)} real column labels accepted, "
+          f"{len(_NOT_SALARY_LABELS)} prose cells rejected, {len(wrong)} wrong")
+    for c in wrong:
+        print(f"    MISCLASSIFIED: {c}")
+    assert not wrong, wrong
+
+
+def test_the_real_sct_beats_a_longer_cda_table():
+    """Row count alone is not enough, and the failure is not rare: measured over the 656 cached
+    filings, a genuine Salary-bearing SCT existed and LOST on 21 of them -- BA 2013-2021 is nine
+    consecutive years where `Name and Principal Position | Year | Salary ($)` lost to a longer
+    `Name | Year | Annual Incentive Compensation` CD&A table, and GE 2019 lost to a 27-row
+    director BIO grid. Those filings then stored `n_neos` from the wrong table."""
+    sct = """<table>
+      <tr><td>Name and Principal Position</td><td>Year</td><td>Salary ($)</td>
+          <td>Stock Awards ($)</td><td>Total ($)</td></tr>
+      <tr><td>A. Exec</td><td>2025</td><td>1,000,000</td><td>5,000,000</td><td>6,000,000</td></tr>
+      <tr><td>B. Exec</td><td>2025</td><td>900,000</td><td>4,000,000</td><td>4,900,000</td></tr>
+    </table>"""
+    # the CD&A table is LONGER and also classifies as an SCT candidate
+    cda_rows = "".join(
+        f"<tr><td>Exec {i}</td><td>2025</td><td>{i}00,000</td><td>{i}00,000</td>"
+        f"<td>{i}00,000</td></tr>" for i in range(1, 9))
+    cda = f"""<table>
+      <tr><td>Name</td><td>Year</td><td>Annual Incentive Compensation ($)</td>
+          <td>Long-Term Incentive ($)</td><td>Total ($)</td></tr>{cda_rows}
+    </table>"""
+
+    best = classify_filing(f"<html><body>{cda}{sct}</body></html>")
+    assert SCT in best, "neither table classified as an SCT"
+    header, rows = best[SCT]
+    print("\n=== SANITY: SCT tie-break prefers the Salary column ===")
+    print(f"  CD&A candidate: 8 data rows, no Salary column")
+    print(f"  SCT candidate : 2 data rows, Salary column")
+    print(f"  winner: {len(rows)} rows, header={[str(h) for h in header[:3]]}")
+    assert _has_salary_column(header), "the longer CD&A table won"
+    assert len(rows) == 2
 
 
 # --------------------------------------------------------------------------- #

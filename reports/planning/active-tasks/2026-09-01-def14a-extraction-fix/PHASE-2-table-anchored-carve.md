@@ -353,3 +353,85 @@ plan" but never "equity incentive plan **awards**", so the SCT itself is not rej
 
 Measured after the fix: PG returns **8 NEOs × 3 fiscal years**, and its carve payload falls
 **49,040 → 44,007** — the wrong table was also the larger one, so G10's mean improves.
+
+### Regression check on the reject clause — the whole cached corpus, twice
+
+A must-reject clause can only REMOVE matches, so the one thing it can do wrong is reject a real
+SCT. That cannot be established from the filing it was written for, nor from 16 pinned
+ground-truth values. So all **656 cached filings were classified twice** — once with the clause
+as shipped, once with `_OTHER_402_MARKERS` emptied — making every difference attributable to the
+clause and nothing else. Zero LLM, zero network.
+
+| outcome | filings |
+|---|---|
+| unchanged | 628 |
+| **FIXED** (a non-402(c) table → a Salary-bearing SCT) | **15** |
+| **REGRESSED** (lost a 402(c)-shaped SCT) | **0** |
+| changed, neither before nor after is 402(c)-shaped | 13 |
+
+530 of the 656 filings contain at least one 402(f)/(g)/(h)/(i) header token, so the clause is
+exercised broadly rather than firing only on PG. The 15 fixed are **BA 2008-2012, 2014,
+2022-2024** (9), **LMT 2007-2008**, and **PG 2021, 2024, 2025, 2026** — BA and PG are both on
+the plan's own defect-ticker list, and neither was known to be affected.
+
+## POST-PHASE FIX 2 — row count alone picks the wrong SCT on 21 filings
+
+The 13 filings that changed but landed on *another* non-402(c) table were the interesting
+residue, and chasing them found a defect **independent of the reject clause**: the tie-break was
+`(data rows, position)`, and the real SCT is not always the longest candidate.
+
+Measured over the 656 filings: a genuine Salary-bearing SCT existed and **lost** on 21 of them.
+
+| ticker | filings | what beat the real SCT |
+|---|---|---|
+| BA | 2013, 2015-2021 (8) | a longer `Name \| Year \| Annual Incentive Compensation` CD&A table |
+| KLAC | 2007, 2009 (2) | prose blocks (`The following named executive officers will participate…`) |
+| GE | 2019 | a **27-row director BIO grid** (`Jamie Miller AGE: 50 EDUCATION: …`) |
+| A, AMAT, PFE, TSCO | 2008, 2017, 2025, 2011 | outstanding-equity / element-of-pay tables |
+
+Fixed by making the tie-break `(has a Salary column, data rows, position)`. Item 402(c)(2)(iii)
+makes Salary a **mandatory** SCT column, so a candidate carrying one is strictly more likely to
+be the SCT. Scoped to the SCT via a per-target `_PREFER` predicate — no other target needs one.
+
+**The predicate is where the difficulty actually is, and I got it wrong twice before measuring.**
+
+1. `^salary` fails on **PG and GE**: a colspan'd table title propagates into every cell, so the
+   real column reads `SUMMARY COMPENSATION TABLE Salary ($)`.
+2. End-anchoring with only a `(\d+)` footnote allowance **rejects KLAC's real SCT**, whose column
+   is `Salary ($) (c)` — the SEC's own table format labels columns `(a) (b) (c)`. This version
+   silently handed six KLAC filings a 5-row CD&A raise table in place of their 15-row SCT, and
+   my first comparison script **reported it as a win** because it compared only the salary
+   boolean, not the winner. The script now prints row counts for every winner change.
+3. End-anchoring alone also *accepts* `Year-Over-Year Percentage Increase Represented by the
+   Fiscal Year 2013 Base Salary` — a CD&A raise table, and the cell that beat KLAC's SCT.
+
+The cutoff was then taken from the corpus rather than chosen: of the **46** distinct header cells
+that end in `salary`, genuine labels run **1-6 words** and every prose cell is **11-13 words**,
+with nothing in between. A CHAR cap cannot do this — legitimate title-propagated labels reach
+**64** chars (`Salary and incentive compensation Annual compensation Salary ($)`) and the prose
+starts at **82**. So: ends in `salary`, and either carries a `($)` unit marker or is ≤ 6 words.
+
+Verified corpus-wide, both directions:
+
+| | before | after |
+|---|---|---|
+| SCT winner has a Salary column | 437 | **452** (+15) |
+| lost a Salary-bearing winner | — | **0** |
+| swapped between two Salary-bearing candidates | — | **0** |
+| no SCT found at all | 137 | 137 (unchanged) |
+
+Three filings dropped >40% in row count (GE 2019 27→13, KLAC 2007 10→5, KLAC 2009 12→5); all
+three were inspected and all three replaced a *longer wrong* table with the real SCT header.
+
+Both halves are now pinned in `test_def14a_tables.py`
+(`test_salary_column_is_told_apart_from_prose_about_salary`, 8 real labels + 6 real prose cells;
+and `test_the_real_sct_beats_a_longer_cda_table`).
+
+### Known limit, not a regression
+
+**137 of 656 filings still classify no SCT at all**, unchanged by either fix. These are mostly
+pre-2006 proxies, which predate the modern Item 402(c) table, plus the pre-2001 ASCII filings
+that carry no HTML tables. Two of the newly-fixed KLAC filings also land on a **5-row** SCT where
+~15 is expected, which is the paginated-table case the phase already documents as its one false
+positive: the real table spans several `<table>` elements and only one is taken. Both are
+pre-existing and out of scope here; recorded so Phase 6 does not read them as new.

@@ -40,7 +40,7 @@ from __future__ import annotations
 import html
 import logging
 import re
-from typing import Iterable
+from typing import Callable, Iterable
 
 import lxml.html
 
@@ -479,27 +479,86 @@ def classify_table(header: list[str], rows: list[list[str]]) -> list[str]:
     return matched
 
 
+#: A header cell ending in the word `salary`, tolerating a unit marker and any number of
+#: Item 402 column references after it. The reference letters are the trap: the SEC's own table
+#: format labels columns `(a) (b) (c)`, so KLAC's real SCT column reads `Salary ($) (c)` and a
+#: pattern allowing only `(\d+)` rejects it -- which silently handed six KLAC filings a 5-row
+#: CD&A table in place of their 15-row SCT.
+_SALARY_TAIL_RE = re.compile(
+    r"\bsalary\b\s*(?:\(\s*[\$%]\s*\))?\s*(?:\(\s*\w{1,3}\s*\)\s*)*[\s*†‡§]*$", re.I)
+#: A unit marker right after the label. Its presence is what licenses a LONG cell: a colspan'd
+#: table title propagates into every cell, so a genuine column can read
+#: `Summary Compensation Table Annual Compensation Salary ($)` (57 chars, 8 words).
+_SALARY_UNIT_RE = re.compile(r"\bsalary\b\s*\(\s*[\$%]\s*\)", re.I)
+#: Word budget for a cell with NO unit marker. Measured over every header cell of every
+#: SCT-candidate table in the 656-filing cache: 46 cells end in `salary`, and the split is
+#: clean -- genuine labels run 1-6 words (`Salary`, `Base Salary`,
+#: `SUMMARY COMPENSATION TABLE Salary ($) (c)`), while every prose cell is 11-13 words
+#: (`Year-Over-Year Percentage Increase Represented by the Fiscal Year 2013 Base Salary`,
+#: 82 chars). Nothing measured falls between 7 and 10 words. A CHAR cap cannot do this job --
+#: legitimate title-propagated labels reach 64 chars and the prose starts at 82.
+_SALARY_MAX_WORDS = 6
+
+
+def _has_salary_column(header: list[str]) -> bool:
+    """Does this header carry the SCT's mandatory Salary COLUMN (not prose about salary)?
+
+    Item 402(c)(2)(iii) makes Salary a mandatory SCT column, so a candidate carrying one is
+    strictly more likely to be the SCT than one that does not. The whole difficulty is telling
+    the column apart from text that merely contains -- or ends with -- the word:
+
+      * `The salary portion of the amounts reflected above is ...` is a merged FOOTNOTE row.
+        A "salary appears anywhere" test picks it over the real table on A 2011-2014, CAT
+        2008-2009, EOG 2009 and PG 2013-2023.
+      * `Year-Over-Year Percentage Increase Represented by the Fiscal Year 2013 Base Salary`
+        is a CD&A raise table and it ENDS with the word, so end-anchoring alone is not enough
+        either -- this cell is what beat KLAC's real SCT while I was measuring.
+    """
+    for cell in header:
+        s = str(cell).strip()
+        if not _SALARY_TAIL_RE.search(s):
+            continue
+        if _SALARY_UNIT_RE.search(s) or len(s.split()) <= _SALARY_MAX_WORDS:
+            return True
+    return False
+
+
+#: Per-target tie-break preference, applied BEFORE the data-row count. Only the SCT needs one:
+#: `all other compensation` is in `_SCT_COLS`, so the 402(c) FOOTNOTE breakout table
+#: ("All Other Compensation" detail) matches the SCT rule on its own title and then wins on rows.
+_PREFER: dict[str, Callable[[list[str]], bool]] = {SCT: _has_salary_column}
+
+
 def classify_filing(raw_html: str | bytes) -> dict[str, tuple[list[str], list[list[str]]]]:
     """Best table per target for one filing.
 
-    Tie-break on DATA-ROW COUNT first (the real table is the long one; the measured false
-    positive was page 2 of a paginated table), then on document position (earlier wins).
+    Tie-break, in order: the target's own `_PREFER` predicate (SCT only), then DATA-ROW COUNT
+    (the real table is the long one; the measured false positive was page 2 of a paginated
+    table), then document position (earlier wins).
+
+    Row count alone is not enough and the failure is not rare. Measured over 656 cached filings,
+    a genuine Salary-bearing SCT existed and LOST on 11 of them -- BA 2013-2021 is nine
+    consecutive years where `Name and Principal Position | Year | Salary ($)` lost to a longer
+    `Name | Year | Annual Incentive Compensation` CD&A table, and GE 2019 lost to a director BIO
+    grid. Those filings then stored `n_neos` from the wrong table.
     """
-    candidates: dict[str, list[tuple[int, int, list[str], list[list[str]]]]] = {}
+    candidates: dict[str, list[tuple[bool, int, int, list[str], list[list[str]]]]] = {}
     for pos, grid in enumerate(iter_tables(raw_html)):
         header, rows = merge_header_rows(grid)
         if not rows:
             continue
         for target in classify_table(header, rows):
-            candidates.setdefault(target, []).append((len(rows), -pos, header, rows))
+            prefer = _PREFER.get(target)
+            candidates.setdefault(target, []).append(
+                (bool(prefer(header)) if prefer else False, len(rows), -pos, header, rows))
 
     best: dict[str, tuple[list[str], list[list[str]]]] = {}
     for target, cands in candidates.items():
-        cands.sort(key=lambda c: (c[0], c[1]), reverse=True)
-        best[target] = (cands[0][2], cands[0][3])
+        cands.sort(key=lambda c: (c[0], c[1], c[2]), reverse=True)
+        best[target] = (cands[0][3], cands[0][4])
         if len(cands) > 1:
             runner = cands[1]
-            _log_runner_up(target, cands[0][0], runner[0], runner[2])
+            _log_runner_up(target, cands[0][1], runner[1], runner[3])
     return best
 
 

@@ -125,3 +125,6 @@ data/
 specs/
 reports/
 scripts/
+**/specs/**
+**/reports/**
+**/scripts/**

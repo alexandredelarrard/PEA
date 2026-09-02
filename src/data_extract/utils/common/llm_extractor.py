@@ -32,14 +32,20 @@ _SYSTEM_PROMPT = (
 class LLMExtractor:
     """Structured-output extractor using the OpenAI Responses API.
 
-    `temperature=0` makes the extraction deterministic (same input -> same
-    output). `cache=True` sends a stable `prompt_cache_key` so OpenAI can reuse
-    the cached prompt prefix (the shared system instructions + schema) across
-    calls, lowering latency and cost.
+    `cache=True` sends a stable `prompt_cache_key` so OpenAI can reuse the cached prompt prefix
+    (the shared system instructions + schema) across calls, lowering latency and cost.
+
+    Extraction is NOT deterministic. `temperature` used to be accepted here and was never sent
+    -- `extract` builds a kwargs dict of `model` / `input` / `instructions` / `text_format` /
+    `prompt_cache_key` only -- so the old "temperature=0 makes it deterministic" claim was
+    false, and `gpt-5-mini` (a reasoning model) does not accept the parameter at all. Measured:
+    the same filing and the same carve returned `n_neos` = 1 on one run and 6 on another. Plan
+    for that variance where it matters (a marginal anchor is the amplifier, so the fix is a
+    tighter carve, not a sampling knob).
     """
 
     def __init__(self, model: str = "gpt-4o-mini", max_chars: int = 100_000,
-                 temperature: float = 0.0, cache: bool = True) -> None:
+                 cache: bool = True) -> None:
         api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPEN_AI_API_KEY")
         if not api_key:
             raise EnvironmentError(
@@ -48,7 +54,6 @@ class LLMExtractor:
         self._client = OpenAI(api_key=api_key)
         self._model = model
         self._max_chars = max_chars
-        self._temperature = temperature
         self._cache = cache
 
     def extract(self, schema: Type[T], text: str, instructions: str | None = None) -> T:

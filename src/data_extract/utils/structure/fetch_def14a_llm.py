@@ -6,7 +6,7 @@ LLM with structured output (Def14AExtract schema).
 
 Per ticker, it fetches that ticker's DEF 14A filings from EDGAR, sends targeted
 sections to the OpenAI Responses API (constrained to the Def14AExtract Pydantic
-schema, temperature=0, prompt caching on), then **immediately upserts that
+schema, prompt caching on), then **immediately upserts that
 ticker's rows into the `def14a_llm` Postgres table** before moving to the next
 ticker — so an interrupted run never loses the (expensive) LLM calls already made.
 
@@ -98,12 +98,16 @@ _DEF14A_PROMPT = (
     "compensation table.\n"
     "- Board composition: read the governance/board 'highlights' summary for board_size, "
     "n_independent_directors and n_women_directors (e.g. '7 of our 8 directors are independent').\n"
-    "- Provisions (classified_board, dual_class_shares, poison_pill, majority_voting_for_directors): "
-    "companies disclose these when they exist, so return FALSE when the proxy does not indicate the "
-    "provision is in place — do NOT leave them null.\n"
+    "- Provisions: classified_board and dual_class_shares are STRUCTURALLY always disclosed, so "
+    "return FALSE when the proxy does not indicate them. For poison_pill and "
+    "majority_voting_for_directors return TRUE or FALSE only when the proxy STATES the "
+    "provision's status, and null when the proxy is SILENT — do not infer FALSE from silence.\n"
     "- Ownership: insider_ownership_pct = the 'all directors and executive officers AS A GROUP' "
     "percent; ceo_ownership_pct = the CEO's own row; both as decimals (a '*' or '<1%' -> null). "
-    "n_five_percent_holders = count of owners holding >=5%.\n"
+    "Both percents must come from the PERCENT OF THE CLASS of shares outstanding (economic "
+    "ownership). Dual-class issuers print a '% of total voting power' / 'combined voting power' "
+    "column beside it — NEVER take that one. n_five_percent_holders = count of owners "
+    "holding >=5%.\n"
     "- auditor_fees_usd = the TOTAL of all fee categories paid to the auditor. "
     "say_on_pay_support_pct as a decimal (92% -> 0.92); ceo_pay_ratio as a number (533:1 -> 533).\n"
     "- Board technology maturity: n_technology_directors = how many directors have material "
@@ -497,11 +501,33 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
     }
 
 
+def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
+    """The filing's raw markup, retrying the `<accession>.txt` full submission when the primary
+    document 404s.
+
+    `primaryDocument` names a file that is genuinely ABSENT from the archive on 7 of 663
+    measured DEF 14A filings (all 2000-08..2001-03, all naming `"0001.txt"`). Those produce no
+    row at all without this retry, because the raise propagates out of `_process_filing` and
+    the filing is silently skipped -- a loss invisible in the "pre-2001 rows are NULL" count
+    since there is no row to be null. The `.txt` carries the real proxy (53,661-165,380 chars
+    on the four spot-checked).
+    """
+    try:
+        return sec_get(context, filing["doc_url"]).text
+    except Exception:
+        txt_url = filing.get("txt_url")
+        if not txt_url or txt_url == filing["doc_url"]:
+            raise
+        logger.info("%s: primary document unavailable, falling back to the full submission",
+                    filing.get("accession_number", ""))
+        return sec_get(context, txt_url).text
+
+
 def _process_filing(
     context: Context, ticker: str, filing: pd.Series, extractor: LLMExtractor
 ) -> dict | None:
     try:
-        raw_html = sec_get(context, filing["doc_url"]).text
+        raw_html = _fetch_filing_html(context, filing)
         text = html_to_text(raw_html)
         focused = prepare_def14a_sections(text)
         extract = extractor.extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
@@ -562,9 +588,8 @@ def _save_ticker_rows(context: Context, rows: list[dict]) -> int:
 def fetch_def14a_llm(
     context: Context,
     tickers: list[str],
-    model: str = "gpt-4o-mini",
+    model: str,
     max_chars: int = 130_000,
-    temperature: float = 0.0,
     cache: bool = True,
 ) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
@@ -572,6 +597,10 @@ def fetch_def14a_llm(
     For each ticker only filings AFTER its latest stored `as_of` are sent to the
     LLM (year-incremental), and the ticker's rows are upserted to Postgres
     immediately. Skips gracefully when OPENAI_API_KEY is absent.
+
+    `model` is REQUIRED and has no default on purpose: both callers pass
+    `config.data_extract.llm_model`, and a second default here is how the research came to
+    measure `gpt-4o-mini` while production had been running `gpt-5-mini` all along.
     """
     years = context.config.data_extract.years_history
     de = context.config.data_extract
@@ -604,8 +633,7 @@ def fetch_def14a_llm(
     list_since = None if is_full_rescan else (manifest_since - pd.Timedelta(days=1))
 
     try:
-        extractor = LLMExtractor(model=model, max_chars=max_chars,
-                                 temperature=temperature, cache=cache)
+        extractor = LLMExtractor(model=model, max_chars=max_chars, cache=cache)
     except EnvironmentError as e:
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
         existing = context.store.load(Tables.def14a_llm, optional=True)

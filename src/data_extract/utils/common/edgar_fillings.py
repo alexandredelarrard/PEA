@@ -21,7 +21,33 @@ from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
 
 
+def _full_submission_url(cik: str, accession: str) -> str:
+    """The `<accession>.txt` full-submission file -- every filing has one, in every year.
+
+    It is the fallback for both pre-2001 shapes below, and is safe for any consumer because
+    they all run `html_to_text` first: the file is ASCII or early HTML wrapped in SGML.
+    """
+    return f"{SEC_ARCHIVES_BASE_URL}/{int(cik)}/{accession.replace('-', '')}/{accession}.txt"
+
+
 def _doc_url(cik: str, accession: str, primary_doc: str) -> str:
+    """Absolute URL of a filing's primary document.
+
+    `primaryDocument` is EMPTY in the submissions JSON for filings up to ~2000 (EDGAR stored no
+    per-document index then), and a bare directory URL returns HTTP 200 and a ~10 KB FOLDER
+    INDEX page -- which flattens to ~1,487 chars containing neither "proxy" nor "annual
+    meeting". The `<accession>.txt` full submission is the document for those years. Measured:
+    401 of 422 pre-2001 DEF 14A rows were extracted from the folder index and came back empty;
+    on 4 spot-checked filings the `.txt` yields 53,661-165,380 chars of real proxy text against
+    the index's 1,485-1,488.
+
+    A SECOND pre-2001 shape is not fixable here: 7 of 663 filings measured name a
+    `primaryDocument` (`"0001.txt"`) that is **not in the archive**, so this returns a URL that
+    404s. That one is handled at the fetch site, which falls back to `txt_url` when the GET
+    fails -- a 404-triggered fallback needs no date cutoff and no filename hardcode.
+    """
+    if not primary_doc:
+        return _full_submission_url(cik, accession)
     acc_nodash = accession.replace("-", "")
     return f"{SEC_ARCHIVES_BASE_URL}/{int(cik)}/{acc_nodash}/{primary_doc}"
 
@@ -44,6 +70,11 @@ def _rows_from_recent(block: dict, cik: str, company: str, forms: set,
             "filing_date": fdate, "period_of_report": block.get("reportDate", [None] * n)[i],
             "accession_number": acc, "primary_document": primary,
             "doc_url": _doc_url(cik, acc, primary),
+            # always-present fallback: a named primary document can be MISSING from the
+            # archive (7 of 663 measured DEF 14A filings, all 2000-08..2001-03, name
+            # "0001.txt" and 404), and those filings produce no row at all today because the
+            # fetch raises. Consumers retry this URL when the primary GET fails.
+            "txt_url": _full_submission_url(cik, acc),
             # 8-K structured item codes (e.g. "2.02,9.01"); "" for forms without items
             "items": (block.get("items", [""] * n)[i] or ""),
         })

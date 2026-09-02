@@ -31,7 +31,12 @@ class DirectorInfo(BaseModel):
     gender: Optional[str] = Field(
         None, description="'male' or 'female' if stated or clearly inferable, else null")
     other_public_company_boards: Optional[int] = Field(
-        None, description="Number of OTHER public-company boards this director serves on (over-boarding)")
+        None, description="Number of OTHER public-company boards this director serves on "
+                          "(over-boarding). Set 0 ONLY when the proxy explicitly shows a count of "
+                          "zero or states the director serves on no other public boards. Leave "
+                          "null when other-board service is simply not disclosed for that "
+                          "director — a null and a 0 are NOT interchangeable here, and mixing "
+                          "them biases the board average downward")
 
 
 class ExecutiveCompensation(BaseModel):
@@ -80,10 +85,15 @@ class GovernanceProfile(BaseModel):
         None, description="True if the board is classified/staggered (multi-year terms); else False")
     dual_class_shares: Optional[bool] = Field(
         None, description="True if there is a dual-class / super-voting share structure; else False")
+    # TRI-STATE, unlike the two provisions above: null when the proxy is SILENT. Inferring
+    # FALSE from silence made `poison_pill` TRUE in 0.1% of rows (degenerate) and made
+    # `majority_voting` flip 21.2% year-over-year on a bylaw that does not change.
     poison_pill: Optional[bool] = Field(
-        None, description="True if a shareholder rights plan (poison pill) is in place; else False")
+        None, description="True if a shareholder rights plan (poison pill) is in place, False if "
+                          "the proxy states there is none; null if the proxy is SILENT")
     majority_voting_for_directors: Optional[bool] = Field(
-        None, description="True if directors are elected by majority (vs plurality) voting")
+        None, description="True if directors are elected by majority (vs plurality) voting, False "
+                          "if the proxy states plurality; null if the proxy is SILENT")
     # ---- pay governance ----
     say_on_pay_support_pct: Optional[float] = Field(
         None, description="Most recent say-on-pay approval as a decimal (0.95 = 95% for)")
@@ -94,11 +104,16 @@ class GovernanceProfile(BaseModel):
     auditor_fees_usd: Optional[float] = Field(
         None, description="TOTAL fees paid to the independent auditor for the year (all fee categories), USD")
     # ---- ownership / alignment (from the beneficial-ownership summary) ----
+    # Both must read the PERCENT OF CLASS column. Dual-class issuers print a "% of total voting
+    # power" column alongside it, and 2 of 8 populated values sampled had taken the voting
+    # column instead -- a materially different number (voting power >> economic stake).
     insider_ownership_pct: Optional[float] = Field(
         None, description="Percent of shares owned by ALL directors and executive officers AS A GROUP, "
-                          "as a decimal (0.03 = 3%); null if shown as '*'/<1%")
+                          "as a decimal (0.03 = 3%); null if shown as '*'/<1%. Read the PERCENT OF "
+                          "CLASS (economic) column, never a '% of total voting power' column")
     ceo_ownership_pct: Optional[float] = Field(
-        None, description="Percent of shares beneficially owned by the CEO, as a decimal; null if '*'/<1%")
+        None, description="Percent of shares beneficially owned by the CEO, as a decimal; null if "
+                          "'*'/<1%. PERCENT OF CLASS (economic), never '% of total voting power'")
     n_five_percent_holders: Optional[int] = Field(
         None, description="Number of beneficial owners holding 5% or more of the shares")
 

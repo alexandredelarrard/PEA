@@ -8,7 +8,8 @@ now**, see [database.md](database.md). For the access rules, see
 ## The registry is the single source of truth
 
 `src/data_store/schema.py` declares each table **exactly once** as a frozen `Table` dataclass.
-48 tables: 40 `managed`, 8 `cube_part_*` (`managed=False`).
+59 tables: 52 `managed`, 7 `cube_part_*` (`managed=False`). (Counted from the registry, not
+maintained by hand — the previous "48 / 40 / 8" predated eleven additions.)
 
 ```python
 from src.data_store.schema import Tables
@@ -105,20 +106,55 @@ is gone. See [tests/data_extract/test_macro_prices_separation.py](../tests/data_
 Two complementary paths to the same filings:
 
 - `def14a_llm` (`ticker, accession_number`, `as_of`, yearly) — OpenAI structured extraction.
-  45 columns: board composition, CEO age/tenure/pay, ownership, say-on-pay, governance flags.
-- `sec_def14a` (`ticker, accession_number`, `filing_date`) + 4 child tables — deterministic
-  edgartools `ProxyStatement`, zero LLM cost:
-  `_executive_comp` (`+name, year` — Summary Comp Table, ~3 years/filing),
-  `_director_comp` (`+name`), `_ownership` (`+holder_name, holder_type`),
-  `_votes` (`+proposal_number` — the **board's recommendation**, not the vote outcome).
+  54 columns: board composition, CEO age/tenure/pay, ownership, say-on-pay, governance flags,
+  the **auditor block** (firm name, tenure, and the four Item 9 fee categories separately, not
+  just their total), and two gender-provenance scalars (`pct_gender_stated`,
+  `n_women_directors_vs_inferred`). `poison_pill` / `majority_voting` / `classified_board` /
+  `dual_class_shares` are **tri-state**: NULL when the proxy is silent, never an inferred FALSE.
+  `n_technology_directors` / `pct_technology_directors` / `technology_committee` were **removed** —
+  they were an opinion, not an extraction (mean |Δ| of 1.06 directors between consecutive filings
+  of the same company, only 38.8% unchanged).
+- **Four child tables** flattened out of the same paid extract — the arrays were always in
+  `def14a_json` but unqueryable, so these cost no extra tokens:
 
-> **Only `sec_def14a`'s XBRL-backed block is trustworthy unconditionally.** edgartools' proxy
-> HTML parser emits values that are silently *wrong* rather than absent, so every row passes through
-> [def14a_validate.py](../src/data_extract/utils/structure/def14a_validate.py) first: it rescales
-> unit-broken fee blocks, NULLs the fabricated `0.5` placeholder for the "*" (= "<1%") footnote,
-> undoes Total-column duplication, strips glued titles/footnotes/addresses off name primary keys,
-> drops subtotal pseudo-rows and completes the CEO pay-ratio identity. **Rule: never fabricate** —
-> a value is written only when deterministically recoverable, else NaN.
+  | Table | PK | Notes |
+  |---|---|---|
+  | `def14a_executive_comp` | `+name, fiscal_year` | Summary Comp Table (Item 402(c)), ~3 years/filing. `fiscal_year` is **in the PK and NOT NULL** — a year-less NEO is dropped rather than written, because a null key aborts the whole insert |
+  | `def14a_director_comp` | `+name` | Item 402(k). **Single-year by regulation** (only the last completed fiscal year is required), so `fiscal_year` is payload, not key. Exists only from the 2008 proxy season. Membership here *is* the definition of an outside director |
+  | `def14a_ownership` | `+holder_name, holder_type` | Item 403. Knowingly redundant with 13F / SC 13D-G / Forms 3-4-5, which stay preferred and whose as-of dates never align with a proxy's. "As a group" subtotals are dropped — that aggregate is the `insider_ownership_pct` scalar |
+  | `def14a_directors` | `+name` | One row per director per filing, carrying `gender` **and `gender_basis`** (`stated` > `honorific` > `pronoun` > `name`). The basis is what makes gender auditable, and this table is the substrate the cross-filing consensus pass groups over — it needs a GROUP BY over people, across tickers and years |
+
+  Both comp tables carry `reconciles` — 1 when the components sum to `total` within $10. It is a
+  **flag, not a filter**: the values are kept either way, so the failure rate stays measurable
+  instead of being hidden by a repair.
+- `sec_def14a` (`ticker, accession_number`, `filing_date`) — the **Pay-versus-Performance / ECD
+  inline-XBRL block only**, read direct from `filing.xbrl()`. Zero LLM cost, and the one part of a
+  proxy worth reading deterministically: these are facts the *filer* tagged and computed.
+  **2023+ by regulation** — Item 402(v) covers fiscal years ending ≥ 2022-12-16, so a proxy
+  covering an earlier year carries no `ecd:` facts and gets **no row**. That is why `has_xbrl` was
+  dropped as degenerate; the inventory of which proxies exist is `def14a_llm`'s job.
+  `ecd_period_end` is the fiscal year the PVP facts describe — *not* derivable from
+  `period_of_report`, which for a proxy is the meeting date. `n_peos` counts the PEOs in that
+  covered year and `peo_names_all` lists every PEO named anywhere in the five-year table, so a
+  co-PEO year is visible rather than silently halved.
+
+> **The four HTML-parsed child tables were DELETED, not repaired.** edgartools' proxy HTML parser
+> emits values that are silently *wrong* rather than absent — a fabricated `0.5` for the "*"
+> (= "<1%") footnote, a missed "(in thousands)" fee header (KO: the same fee as 32,104 one year and
+> 32,104,000 the next), the Total column duplicated into a component slot, three value-inventing
+> pay-ratio repairs — and the defects are ticker-persistent, so they do not average out. Every
+> prose field moved to `def14a_llm` and its four child tables, which beat the retired ones on
+> every measured axis (title 100% vs 45.4%, 0 rows > $1e9 vs 109).
+
+> **`ProxyStatement`'s accessors cannot be used either.** They filter on `concept ==` only and take
+> `.iloc[0]`, so on a co-PEO year *document order* decides which executive survives: BA's 2025
+> proxy drops one of Ortberg / Calhoun, and with it a Compensation Actually Paid of −23,875,735.
+> [def14a_ecd.py](../src/data_extract/utils/structure/def14a_ecd.py) resolves the dimensions
+> itself, and **the axis filter is conditional** — a fixed
+> `dim_ecd_ExecutiveCategoryAxis == 'ecd:PeoMember'` returns zero rows on every filing measured.
+> A **negative `peo_actually_paid_comp` is legitimate** (NKE 2025: −10,924,243); there is no
+> `abs()` on this path. **Rule: never fabricate** — a value is written only when deterministically
+> recoverable, else NaN.
 
 | Table | PK | date_col | Notes |
 |---|---|---|---|

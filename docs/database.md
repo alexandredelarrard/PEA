@@ -122,9 +122,17 @@ Ordered by size. `tickers` = distinct non-null tickers.
 
 ## Coverage gotchas worth knowing before you build a feature
 
-- **`sec_def14a` covers only 23 of 500 tickers** (329 filings). The deterministic proxy path is
-  barely seeded; `def14a_llm` (497 tickers) is the one with real coverage. Any `f_ceo_*` /
-  governance feature built off `sec_def14a` will be ~95% NaN.
+- **`sec_def14a` is 2023+ BY REGULATION, and that is correct behaviour rather than a gap.**
+  Item 402(v) (Pay-versus-Performance) applies to fiscal years ending on or after 2022-12-16, so a
+  proxy covering an earlier year carries no `ecd:` facts and gets NO ROW at all. Measured over the
+  23 baseline tickers: 81 rows written, 5 filings correctly skipped, and the PVP columns
+  (`peo_name`, `peo_total_comp`, `peo_actually_paid_comp`, TSR, net income) are **100% filled** on
+  what is written. Do not build a long-history governance feature off this table — the history is
+  `def14a_llm`'s (497 tickers), and every prose field (comp tables, director fees, ownership,
+  audit fees, pay ratio) now lives there and in its four child tables.
+- **The four `sec_def14a_*` child tables in the size table above are RETIRED.** Their
+  registrations and the code that wrote them are gone; the Postgres tables survive only until the
+  cutover drops them, so those row counts describe data no longer being maintained.
 - **The four `fundamentals_*` tables cover 54 tickers, not 500 — this is the Phase 5 rebuild
   scope, not a defect.** All four were dropped and rebuilt from scratch on 2026-08-24
   (`scripts/recreate_fundamentals_tables.py`), so the earlier 491-ticker / 239-column

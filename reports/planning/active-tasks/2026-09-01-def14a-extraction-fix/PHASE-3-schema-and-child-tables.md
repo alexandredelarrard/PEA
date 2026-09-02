@@ -1,4 +1,4 @@
-# Phase 3 — Pydantic expansion + 4 new LLM-side tables 🔄
+# Phase 3 — Pydantic expansion + 4 new LLM-side tables ✅
 
 **Goal**: turn the data that is *already inside the LLM's input* into queryable tables, add the two
 free wins (`auditor_name`, fee breakdown), close the missing seventh SCT component, and drop the
@@ -325,10 +325,56 @@ across filings of the same person** — exactly the tail the upgrade removes.
 - **`def14a_gender.py` is a new module**, not part of `fetch_def14a_llm` — the consensus is a
   pure function of a DataFrame and is worth testing without importing the fetcher.
 
-### Still outstanding for this phase
+### `sql/schema.sql` + docs — DONE
 
-- [ ] `sql/schema.sql` — splice the four new `CREATE TABLE` + index blocks by hand (approved).
-- [ ] `docs/data_schema.md` — the four new tables and `def14a_llm`'s changed column set.
+- [x] `sql/schema.sql` — the four `CREATE TABLE` + index blocks spliced **by hand**, never
+      regenerated: the generator drops 8 hand-added indexes. Diff is **+112 / −3**, index count
+      32 → 36 (+4, exactly the new tables), and the only three removed lines are the retired
+      technology columns.
+- [x] `docs/data_schema.md` — the four child tables with their PKs and the reason each grain is
+      what it is, `def14a_llm` at 54 columns, and the tri-state provisions.
+
+**Verified against a live Postgres, without writing anything**: the five `CREATE TABLE` blocks
+were executed inside `BEGIN; CREATE SCHEMA ddl_check; … ROLLBACK;` against `pea_db`, which parses
+*and* type-checks the DDL rather than merely eyeballing it. All five created cleanly; the schema
+was confirmed absent afterwards (`SELECT … FROM pg_namespace` → `<none>`).
+
+A parsing DDL is not a verified DDL, so `tests/data_extract/structure/test_def14a_schema_ddl.py`
+asserts the column sets **match the flatten name-for-name**, built from a maximal extract (the
+column set of a flatten is a function of the builder, not of the data):
+
+| Table | DDL cols | code cols | |
+|---|---|---|---|
+| `def14a_llm` | 54 | 54 | OK |
+| `def14a_executive_comp` | 16 | 16 | OK |
+| `def14a_director_comp` | 14 | 14 | OK |
+| `def14a_ownership` | 8 | 8 | OK |
+| `def14a_directors` | 11 | 11 | OK |
+
+Both failure directions matter: a column the flatten writes but the table lacks fails the insert
+*after* the tokens are paid, and a column the DDL declares but nothing writes is permanently NULL
+— which reads downstream as "this company does not disclose it" rather than "we never extracted
+it". That is precisely how the retired edgar table's `auditor_name` sat at 2.05% fill while the
+firm name is present in 98% of documents.
+
+### ⚠ Defect found by writing the DDL — a NULL primary-key column
+
+`ExecutiveCompensation.fiscal_year` is `Optional[int]` on the Pydantic model, yet it is part of
+`def14a_executive_comp`'s primary key. In Postgres a NULL in a PK column **aborts the entire
+insert**, not the one row — so a single year-less NEO anywhere in the universe run would have
+discarded a whole ticker's paid extraction.
+
+Measured on the replay: **0 of 1,849 rows** lack a fiscal year. That is evidence, not a guarantee,
+so the guard is structural rather than statistical — `_exec_comp_rows` now skips a row without a
+fiscal year (it is also a useless row: compensation that cannot be placed in time), and the test
+asserts a year-less NEO yields 0 rows instead of a null key. `def14a_director_comp` is *not*
+affected: 402(k) is single-year by regulation, so its `fiscal_year` is payload, not key.
+
+### Carried into Phase 6
+
+- [ ] `ALTER TABLE def14a_llm DROP COLUMN …` for the three retired technology columns. Removing
+      them from `sql/schema.sql` only fixes fresh bootstraps — `CREATE TABLE IF NOT EXISTS` cannot
+      retire a column, and a `TRUNCATE` does not either. Recorded in `PHASE-6`.
 
 ## Verification
 
@@ -400,3 +446,47 @@ recomputes from `gender_basis`, which it never downgrades, so a second run is a 
   the dual-class prompt fix from Phase 1, not a schema change.
 - The `n_neos == 1` metric is the single best summary of whether Phase 2 + 3 worked. Keep
   `sct_years` so it stays measurable after the rerun.
+
+### The paid probe (`scripts/def14a_probe_extract.py`, 8 LLM calls on CACHED filings)
+
+The free replay cannot exercise two of the four child tables: `director_compensation` and
+`ownership_holders` are NEW arrays on the Pydantic contract, so every stored blob returns zero
+rows for them. Nothing had shown the model actually populates them, and finding that out after
+Phase 6's full paid backfill would mean the `≥ 90% of post-2008 proxies carry a director-comp
+row` gate fails with the tokens already spent. Reads Phase 0's on-disk cache — **0 SEC requests**.
+
+| filing | payload | NEOs | SCT yrs | dir-comp | ownership | directors | auditor / fees |
+|---|---|---|---|---|---|---|---|
+| CAT 2026 | 41,173 | 6 | 3 | 9 | 19 | 10 | — / $38,100,000 |
+| PFE 2026 | 41,139 | 5 | 3 | 13 | 20 | 13 | KPMG LLP / $26,747,000 |
+| GE 2026 | 40,368 | 5 | 3 | 10 | 8 | 9 | Deloitte / $19,900,000 |
+| AAPL 2026 | 40,396 | 6 | 3 | 7 | 15 | 8 | Ernst & Young / $34,277,000 |
+| JPM 2026 | 42,585 | 6 | 3 | 11 | 17 | 12 | PwC LLP / $135,000,000 |
+| PG 2026 | 44,007 | **8** | **3** | 14 | 20 | 15 | Deloitte & Touche LLP / $30,527,000 |
+| A 2000 | 37,090 | 5 | 1 | 0 | 11 | 6 | PwC LLP |
+
+- **director-comp rows on 6 of 6 post-2008 filings**, ownership rows on 7 of 7. The two new
+  arrays work; the G7 gate is reachable.
+- **Multi-year SCT confirmed**: 3 distinct fiscal years on every modern filing. The old contract
+  asked for one.
+- **Audit fees 6/6 in whole USD**, all inside $100k-$200M. The measured 1000× cases (MS, TSLA)
+  are not among Phase 0's 23 tickers so are not cached; probing them would have cost SEC fetches
+  and a cache miss for every later phase, so the same PROPERTY was asserted on filings already
+  on disk. Recorded rather than silently substituted.
+- **`auditor_name` on 6 of 7, every one ≤ 60 chars** — a firm name, not the sentence around it.
+  The one miss is CAT, whose fee block is prose. Against the retired edgar column's **2.05%**.
+- **A 2000 (pre-2001 ASCII proxy) works**: 37,090-char carve, 6 directors, gender from 4
+  honorifics + 2 pronouns. It is also where the probe caught its own bug — reading `cache_htm`
+  first gave a 1,480-char *directory index*, because `doc_url` for an empty `primaryDocument` is
+  a bare folder URL. That is the Phase 1 defect; the probe now prefers `cache_txt` on exactly
+  those filings, or it would have been testing the unfixed path.
+- **Gender provenance is real, and its degradation is visible**: CAT 7 pronoun / 1 honorific /
+  2 name; AAPL 5 honorific / 3 name; PG 8 honorific and 7 with no gender at all (the proxy
+  simply does not say); PFE, GE and JPM fall all the way back to the first-name prior.
+  `n_women_directors_vs_inferred == 0` wherever the filing states a count.
+
+**The probe FAILED on its first run, and the failure was real.** PG returned 0 NEOs / 0 SCT
+years while every other field populated. The cause was a Phase-2 classifier defect, not the
+model: PG's `Outstanding Equity at Fiscal Year End` table was being carved into the
+`SUMMARY COMPENSATION TABLE` block, so the model was handed an equity-holdings grid and
+correctly returned no compensation rows. Fixed in `def14a_tables.py`; see PHASE-4's results.

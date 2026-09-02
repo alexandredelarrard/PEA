@@ -26,7 +26,7 @@ tables they land in, see [data_schema.md](data_schema.md); for current coverage,
 | Elite-manager subset | Dataroma roster → CIK filter over 13F | no | `data/superinvestors/superinvestors.json` | `prices/fetch_superinvestors.py` |
 | Insider trades | SEC Insider Data Sets (Forms 3/4/5, quarterly zips) | `SEC_USER_AGENT` | `insider_transactions` | `prices/fetch_insider_transactions.py` |
 | Governance / comp / ownership | SEC **DEF 14A** via OpenAI structured output | `OPENAI_API_KEY`, `SEC_USER_AGENT` | `def14a_llm` | `structure/fetch_def14a_llm.py` |
-| Governance (deterministic) | SEC DEF 14A via edgartools `ProxyStatement` | `SEC_USER_AGENT` | `sec_def14a` + 4 children | `structure/fetch_def14a_edgar.py` |
+| Pay-versus-Performance (deterministic) | SEC DEF 14A **inline XBRL** (ECD taxonomy), read direct from `filing.xbrl()` | `SEC_USER_AGENT` | `sec_def14a` (2023+ by regulation) | `structure/def14a_ecd.py`, `structure/fetch_def14a_edgar.py` |
 | Corporate events | SEC Form 8-K | `SEC_USER_AGENT` | `sec_8k` | `structure/fetch_8k_edgar.py` |
 | Activist stakes | SEC Schedule 13D / 13D-A | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions` | `structure/fetch_13d_edgar.py` |
 | Filing narrative | SEC 10-K Item 1A / Item 7, 10-Q Item 2 | `SEC_USER_AGENT` | `sec_filing_text` | `structure/fetch_filing_text.py` |
@@ -201,11 +201,26 @@ is **`date`**, and it sits inside the primary key, so the two channels are not i
 
 ### DEF 14A
 
-**edgartools' proxy HTML parser is silently wrong, not absent.** Every row goes through
-[def14a_validate.py](../src/data_extract/utils/structure/def14a_validate.py). Only the XBRL-backed
-block of `sec_def14a` is trusted unconditionally; the HTML-parsed child tables are best-effort and
-are complemented by the LLM path. **Rule: never fabricate** — write a value only when
-deterministically recoverable, else NaN.
+**edgartools' proxy HTML parser is silently wrong, not absent** — which is why the whole
+HTML-parsed block and its four child tables were DELETED rather than repaired. A parser that
+returns a fabricated `0.5` for a "*" percent, misses a "(in thousands)" fee header (KO: the same
+fee read as 32,104 one year and 32,104,000 the next), and invents pay-ratio legs cannot be
+repaired into a source. `sec_def14a` is now exactly the filer-tagged ECD block; everything a proxy
+says in PROSE belongs to `def14a_llm` and its four child tables.
+
+**The ECD reader also cannot use `ProxyStatement`'s accessors**: they filter on `concept ==` only
+and take `.iloc[0]`, so on a co-PEO year document order decides which executive survives — BA's
+2025 proxy silently drops one of Ortberg / Calhoun (and with it a CAP of −23,875,735).
+[def14a_ecd.py](../src/data_extract/utils/structure/def14a_ecd.py) reads the facts frame directly.
+Filers discriminate PEO facts two incompatible ways, so **the axis filter is conditional**: a
+fixed `dim_ecd_ExecutiveCategoryAxis == 'ecd:PeoMember'` returns ZERO rows on every filing
+measured (BA/NKE/SBUX tag `IndividualAxis` only; AAPL's amounts are undimensioned while its
+26 `ecd:PeoName` facts are dimensioned, 21 of them as NEOs).
+
+**`peo_actually_paid_comp` is negative on real filings** (NKE 2025: −10,924,243). Compensation
+Actually Paid subtracts prior-year unvested fair value. There is no `abs()` on this path.
+
+**Rule: never fabricate** — write a value only when deterministically recoverable, else NaN.
 
 ### Schedule 13D
 

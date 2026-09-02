@@ -1,40 +1,45 @@
 """
 def14a_validate.py (src/data_extract/utils/structure/def14a_validate.py)
 --------------------------------------------------------------------------------
-Repair layer sitting between edgartools' `ProxyStatement` and the `def14a_edgar*`
-tables. `fetch_def14a_edgar.py` is a faithful pass-through of the library; this
-module is where the library's KNOWN defects are neutralised before anything is
-persisted.
+Row cleaner shared by the two DEF 14A paths: text normalisation, the name and
+holder primary keys, the auditor-fee unit rescale, and the `sec_def14a` (ECD)
+row repair.
 
-Why this exists (all reproduced against edgartools 5.44.1's
-`edgar/proxy/html_extractor.py` on live filings):
+Guiding rule: NEVER fabricate. A value is written only when it is
+deterministically recoverable (a unit rescale a sibling filing confirms).
+Anything else that fails a sanity check is set to NaN, because a NULL is honest
+and a wrong number is not.
 
-- `_parse_percent` HARDCODES `return 0.5` for the "*" / "less than 1%" ownership
-  footnote (html_extractor.py:958-960). Half of every ownership row we stored was
-  this fabricated number -- Apple's CEO and its 12-person director group both came
-  back as exactly 0.5%.
-- `_detect_multiplier` misses "(in thousands)" on some fee tables, so KO's 2026
-  proxy yielded an audit fee of 30,587 where its 2025 proxy yielded 32,104,000 for
-  the SAME fee -- a silent 1000x break WITHIN one ticker.
-- `AuditFees.current_year` / `.prior_year` are fiscal YEAR LABELS (2025, 2024), not
-  fees. They were being written into columns named `audit_fee_*_year`.
-- The Summary Compensation Table's Total column gets duplicated into a neighbouring
-  component column (CAT: `pension_change == total` on every row, while the other
-  components already sum to `total` exactly).
-- Person cells arrive with the title glued on ("James DimonChairman and CEO"),
-  footnote indices glued on ("Emma N. Walmsley11" -- which becomes "...10" the next
-  year, so the NAME PRIMARY KEY does not survive year-over-year), or as an outright
-  address ("100 Vanguard Blvd, Malvern, PA 19355" as a JPM holder_name).
-- Subtotal rows ("Total", "... as a group (16 people)") are emitted as if they were
-  holders, double-counting anything that aggregates the table.
+WHAT USED TO BE HERE, AND WHY IT IS GONE
+----------------------------------------
+This module began as a repair layer for edgartools' proxy HTML parser, whose
+defects it neutralised row by row: a hardcoded `0.5` standing in for the "*"
+("less than 1%") ownership footnote, a missed "(in thousands)" fee header that
+made KO's audit fee 30,587 one year and 32,104,000 the next for the SAME fee,
+the Summary Compensation Table's Total column duplicated into a component slot,
+and pay-ratio triplets completed from an identity. That whole HTML block was
+deleted -- a parser that returns values which are silently WRONG rather than
+absent cannot be repaired into a source, only replaced -- so the repairs went
+with it.
 
-Guiding rule: NEVER fabricate. A value is only written when it is deterministically
-recoverable (the third leg of the pay-ratio identity, a single missing component in
-an otherwise-reconciling comp row, a unit rescale a sibling filing confirms).
-Anything else that fails a sanity check is set to NaN, because a NULL is honest and
-a wrong number is not. Defects that are NOT recoverable here (edgartools returning
-an empty table, or every component of a table NULL) stay empty by design -- those
-remain the LLM path's job (`fetch_def14a_llm.py`).
+What survives is what BOTH paths still need:
+
+- `clean_person_name` / `clean_holder_name` are the primary keys. The footnote
+  strip is the load-bearing part: without it the same director keys as
+  "Emma N. Walmsley11" one year and "Emma N. Walmsley10" the next, silently
+  duplicating the row instead of updating it. `clean_holder_name` returns None
+  for a cell that is only a street address, so the caller can drop the row
+  rather than store a street as a shareholder.
+- `is_subtotal_holder` rejects "Total" / "as a group (16 people)" lines. An LLM
+  returns these just as readily as a grid parser did, and storing one
+  double-counts the insiders it aggregates.
+- `rescale_block` is the safety net behind the LLM's own unit conversion, and
+  fires on the whole fee block at once -- rescaling cell by cell would invent a
+  table whose components no longer sum to its total.
+- `repair_main_row` now handles only the ECD row (see its docstring).
+
+The pay-ratio identity did NOT disappear: it lives on the LLM side in
+`def14a_impute._reconcile_rows`, where it holds on 95.0% of 3,838 rows.
 """
 
 from __future__ import annotations
@@ -48,16 +53,11 @@ import pandas as pd
 # fabricated by the parser" from "small but real" -- the repair layer only fires on the former.
 DEF14A_AUDIT_FEE_MIN_PLAUSIBLE = 1e5     # a sub-$100k TOTAL auditor fee => block is in thousands
 DEF14A_NET_INCOME_MIN_PLAUSIBLE = 1e4    # a sub-$10k net income => figure is in millions/billions
-DEF14A_FISCAL_YEAR_MIN = 1990            # fee-table year labels outside [min, today+1] are junk
-DEF14A_PAY_RATIO_TOLERANCE = 0.02        # ceo_comp / median_comp must reproduce ratio within 2%
-DEF14A_COMP_RECONCILE_TOLERANCE = 1.0    # comp components must sum to `total` within $1 (rounding)
-DEF14A_PLACEHOLDER_PERCENT = 0.5         # edgartools' fabricated stand-in for a "*" percent cell
 
 __all__ = [
     "clean_text", "clean_person_name", "clean_holder_name", "is_subtotal_holder",
-    "rescale_block", "DEF14A_AUDIT_FEE_MIN_PLAUSIBLE",
-    "repair_main_row", "repair_exec_comp_rows",
-    "repair_director_comp_rows", "repair_ownership_rows",
+    "rescale_block", "DEF14A_AUDIT_FEE_MIN_PLAUSIBLE", "DEF14A_NET_INCOME_MIN_PLAUSIBLE",
+    "repair_main_row",
 ]
 
 _NAN = float("nan")
@@ -89,25 +89,6 @@ _SUBTOTAL_HOLDER_RE = re.compile(
     r"^\s*(?:sub)?total\b|\bas\s+a\s+group\b|\ball\s+(?:current\s+)?(?:directors|executive)",
     re.I,
 )
-
-# A title modifier stranded at the END of the name because edgartools split the cell BETWEEN the
-# modifier and the noun ("Bob De Lange Group" / "President"). _GLUED_TITLE_RE cannot see this one:
-# by the time we get the row the modifier is already in a different column from its title.
-_ORPHAN_MODIFIER_RE = re.compile(r"\s+(Former|Group|Interim|Acting)\s*$", re.I)
-
-# Generational suffix and/or footnote left at the FRONT of a title when the name/title split landed
-# mid-suffix ("D. James Umpleby" / "III(7) Chairman and CEO").
-_TITLE_LEADING_JUNK_RE = re.compile(r"^(?:[IVX]+|Jr\.?|Sr\.?|\d+)?\s*(?:\(\d+\))?[\s,.-]*", re.I)
-
-_EXEC_COMP_COMPONENTS = ["salary", "bonus", "stock_awards", "option_awards",
-                         "non_equity_incentive", "pension_change", "other_compensation"]
-_DIRECTOR_COMP_COMPONENTS = ["fees_earned", "stock_awards", "option_awards",
-                             "non_equity_incentive", "pension_change", "other_compensation"]
-_AUDIT_FEE_COLS = [
-    "audit_fees_current", "audit_fees_prior", "audit_related_fees_current",
-    "audit_related_fees_prior", "tax_fees_current", "tax_fees_prior",
-    "other_fees_current", "other_fees_prior", "total_fees_current", "total_fees_prior",
-]
 
 
 def _isnum(x: Any) -> bool:
@@ -185,181 +166,34 @@ def rescale_block(row: dict, cols: list[str], min_plausible: float) -> None:
             row[c] = float(row[c]) * factor
 
 
-def _repair_pay_ratio(row: dict) -> None:
-    """Complete or invalidate the CEO pay-ratio triplet IN PLACE, using the identity
-    `ratio = ceo_comp / median_comp`. Any one missing leg is recoverable from the other two
-    (GE discloses the ratio and the median but not the CEO figure); when all three are present
-    but do not reconcile, the whole triplet is dropped rather than picking a winner."""
-    ceo, med, ratio = (row.get("ceo_pay_ratio_ceo_comp"), row.get("ceo_pay_ratio_median_employee_comp"),
-                       row.get("ceo_pay_ratio"))
-    has = (_isnum(ceo) and ceo != 0, _isnum(med) and med != 0, _isnum(ratio) and ratio != 0)
-
-    if all(has):
-        if abs(float(ceo) / float(med) - float(ratio)) > float(ratio) * DEF14A_PAY_RATIO_TOLERANCE:
-            row["ceo_pay_ratio_ceo_comp"] = _NAN
-            row["ceo_pay_ratio_median_employee_comp"] = _NAN
-            row["ceo_pay_ratio"] = _NAN
-        return
-    if has[1] and has[2] and not has[0]:
-        row["ceo_pay_ratio_ceo_comp"] = float(med) * float(ratio)
-    elif has[0] and has[2] and not has[1]:
-        row["ceo_pay_ratio_median_employee_comp"] = float(ceo) / float(ratio)
-    elif has[0] and has[1] and not has[2]:
-        row["ceo_pay_ratio"] = float(ceo) / float(med)
-
-
 def repair_main_row(row: dict) -> dict:
-    """Repair one `def14a_edgar` row. Mutates and returns a COPY."""
+    """Repair one `sec_def14a` (ECD) row. Mutates and returns a COPY.
+
+    Only three things are left to do here. The fee-block rescale, the fee-table year labels and
+    the pay-ratio identity went with the HTML block they existed for; the pay-ratio identity is
+    NOT lost -- it lives on the LLM side in `def14a_impute._reconcile_rows`, where it holds on
+    95.0% of 3,838 rows, and duplicating it here would give two places to edit.
+    """
     row = dict(row)
-    for col in ("company_name", "peo_name", "company_selected_measure_name", "auditor_name"):
-        row[col] = clean_text(row.get(col))
+    for col in ("company_name", "peo_name", "company_selected_measure_name", "peo_names_all"):
+        if col in row:
+            row[col] = clean_text(row.get(col))
 
-    # Fee-table year labels, not fees -- reject anything outside a sane window so a stray parse
-    # cannot masquerade as a fiscal year.
-    max_year = pd.Timestamp.today().year + 1
-    for col in ("audit_fiscal_year_current", "audit_fiscal_year_prior"):
-        val = row.get(col)
-        row[col] = float(val) if _isnum(val) and DEF14A_FISCAL_YEAR_MIN <= float(val) <= max_year else _NAN
-
-    rescale_block(row, _AUDIT_FEE_COLS, DEF14A_AUDIT_FEE_MIN_PLAUSIBLE)
-
-    # net_income cannot be rescaled the way the fee block can. PG's proxy yields 16.1 where every
-    # other issuer yields whole dollars, but 16.1 is equally consistent with "$ in millions" and
-    # "$ in billions" and NOTHING in the row disambiguates them -- unlike the fee block, whose
-    # factor a sibling filing's overlapping year confirms. So an implausible figure is dropped
-    # rather than guessed; the real value is available from `fundamentals_history` downstream.
+    # net_income cannot be rescaled the way a fee block can. SBUX FY2025 arrives as `1856.4`
+    # (raw value '1856.4', decimals='1', unit_ref='usd' -- tagged in $ millions), and that is
+    # equally consistent with millions and billions: NOTHING in the fact disambiguates them,
+    # unlike a fee block whose factor a sibling filing's overlapping year confirms. So an
+    # implausible figure is dropped rather than guessed; `fundamentals_history` has the real one.
     if _isnum(row.get("net_income")) and 0 < abs(float(row["net_income"])) < DEF14A_NET_INCOME_MIN_PLAUSIBLE:
         row["net_income"] = _NAN
 
-    # A PEO is never paid exactly $0; that is a failed XBRL read, not a disclosure.
+    # Belt-and-braces behind `def14a_ecd`'s selection-time zero drop: a PEO is never paid exactly
+    # $0. On the ECD path that value is SBUX's individual x year matrix marking a year the person
+    # was not PEO, and dropping it at selection time recovers the CORRECT value instead of this
+    # NULL -- so if a zero still reaches here, the selection missed something.
     for col in ("peo_total_comp", "peo_actually_paid_comp", "neo_avg_total_comp",
                 "neo_avg_actually_paid_comp"):
         if _isnum(row.get(col)) and float(row[col]) == 0.0:
             row[col] = _NAN
-
-    _repair_pay_ratio(row)
     return row
 
-
-def _reconcile_components(row: dict, components: list[str]) -> dict:
-    """Reconcile a compensation row against its reported `total` IN PLACE (returns a copy).
-
-    Two deterministic repairs, in order:
-    1. Duplicated-Total column: when a component equals `total` AND the remaining components
-       already sum to `total`, the parser wrote the Total column into that component's slot too
-       (CAT's `pension_change`). The true value is 0, so set it to 0.
-    2. Single missing component: when exactly one component is NULL and the others fall short of
-       `total`, the residual IS that component -- write it.
-
-    A row that still does not reconcile is LEFT AS-IS: `total` is the number the filer actually
-    printed and is the trustworthy field; spreading an unattributable residual across several NULL
-    components would be a guess."""
-    row = dict(row)
-    total = row.get("total")
-    if not _isnum(total):
-        return row
-    total = float(total)
-
-    present = {c: float(row[c]) for c in components if _isnum(row.get(c))}
-    if not present:
-        return row
-
-    for col, val in list(present.items()):
-        others = sum(v for c, v in present.items() if c != col)
-        if val == total and abs(others - total) <= DEF14A_COMP_RECONCILE_TOLERANCE:
-            row[col] = 0.0
-            present[col] = 0.0
-            return row
-
-    missing = [c for c in components if not _isnum(row.get(c))]
-    if len(missing) == 1:
-        residual = total - sum(present.values())
-        if residual > DEF14A_COMP_RECONCILE_TOLERANCE:
-            row[missing[0]] = residual
-    return row
-
-
-def repair_exec_comp_rows(rows: list[dict]) -> list[dict]:
-    """Repair `def14a_edgar_executive_comp` rows: recover the title edgartools glued into the name,
-    stabilise the name key, and reconcile components against `total`. Rows where EVERY component
-    and the total are NULL (JPM -- names parsed, values all dropped) are removed: an all-NULL row
-    carries nothing but still occupies a primary key, blocking a later good extraction."""
-    out: list[dict] = []
-    for row in rows:
-        row = dict(row)
-        raw_name = clean_text(row.get("name")) or ""
-        glued = _GLUED_TITLE_RE.search(raw_name)
-        if glued and not clean_text(row.get("title")):
-            title = clean_text(_FOOTNOTE_SUFFIX_RE.sub("", glued.group(0).strip()))
-        else:
-            title = clean_text(row.get("title"))
-        name = clean_person_name(raw_name)
-        if not name:
-            continue
-
-        # Re-attach a modifier edgartools stranded on the name ("Bob De Lange Group" + "President")
-        # and drop a generational suffix it stranded on the title ("III(7) Chairman and CEO").
-        orphan = _ORPHAN_MODIFIER_RE.search(name)
-        if orphan and title:
-            name = name[: orphan.start()].strip()
-            title = f"{orphan.group(1)} {title}"
-        if title:
-            title = clean_text(_TITLE_LEADING_JUNK_RE.sub("", title)) or title
-        row["name"], row["title"] = name, title
-        if not row["name"]:
-            continue
-        if not any(_isnum(row.get(c)) for c in _EXEC_COMP_COMPONENTS + ["total"]):
-            continue
-        out.append(_reconcile_components(row, _EXEC_COMP_COMPONENTS))
-    return out
-
-
-def repair_director_comp_rows(rows: list[dict]) -> list[dict]:
-    """Repair `def14a_edgar_director_comp` rows: stabilise the name key, drop subtotal pseudo-rows,
-    and reconcile components against `total`."""
-    out: list[dict] = []
-    for row in rows:
-        row = dict(row)
-        raw_name = clean_text(row.get("name")) or ""
-        if _SUBTOTAL_HOLDER_RE.search(raw_name):
-            continue
-        row["name"] = clean_person_name(raw_name)
-        if not row["name"]:
-            continue
-        if not any(_isnum(row.get(c)) for c in _DIRECTOR_COMP_COMPONENTS + ["total"]):
-            continue
-        out.append(_reconcile_components(row, _DIRECTOR_COMP_COMPONENTS))
-    return out
-
-
-def repair_ownership_rows(rows: list[dict], insider_names: set[str]) -> list[dict]:
-    """Repair `def14a_edgar_ownership` rows.
-
-    - Drops address-only holder names (JPM) and aggregate/subtotal rows (GE's "Total", the
-      "... as a group (16 people)" line), which are not holders and double-count the table.
-    - Strips the mailing address off institutional names (PG's Vanguard/BlackRock rows).
-    - NULLs `percent_of_class` when it is edgartools' fabricated 0.5 placeholder for a "*" cell.
-      The "*" footnote means "less than 1%", which is a BOUND, not a measurement -- storing 0.5
-      asserts a precision the filing never gave and made half our ownership rows fiction.
-    - Re-types a holder as `director_officer` when the name matches a known insider of the SAME
-      filing (its PEO or anyone in its comp tables). edgartools tagged GE's and XOM's CEO as a
-      `5pct_holder`; nobody appears in both roles, so the comp-table match settles it.
-    """
-    out: list[dict] = []
-    for row in rows:
-        row = dict(row)
-        raw_name = clean_text(row.get("holder_name")) or ""
-        if _SUBTOTAL_HOLDER_RE.search(raw_name):
-            continue
-        holder = clean_holder_name(raw_name)
-        if not holder:
-            continue
-        row["holder_name"] = holder
-
-        if _isnum(row.get("percent_of_class")) and float(row["percent_of_class"]) == DEF14A_PLACEHOLDER_PERCENT:
-            row["percent_of_class"] = _NAN
-
-        if row.get("holder_type") == "5pct_holder" and clean_person_name(holder) in insider_names:
-            row["holder_type"] = "director_officer"
-        out.append(row)
-    return out

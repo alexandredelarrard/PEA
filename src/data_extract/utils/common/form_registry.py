@@ -94,8 +94,11 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
         discovery="per_cik_accession", table="sec_def14a",
         handler=fetch_def14a_edgar, call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
-        notes="deterministic complement to def_14's LLM pass: edgartools' typed "
-             "ProxyStatement -> sec_def14a + four detail tables, zero LLM cost"),
+        notes="the Pay-versus-Performance / ECD inline-XBRL block only (filer-tagged "
+              "facts, dimension-filtered) -> sec_def14a, zero LLM cost. 2023+ BY "
+              "REGULATION: Item 402(v) covers fiscal years ending >= 2022-12-16, and a "
+              "proxy without ecd: facts gets NO ROW. The four HTML-parsed detail tables "
+              "were deleted -- that prose is def_14's LLM pass' job"),
     "filing_text": FormHandlerSpec(
         name="filing_text", sec_forms=tuple(FILING_TEXT_FORMS),
         discovery="per_cik_accession", table="sec_filing_text",

@@ -885,6 +885,7 @@ CREATE TABLE IF NOT EXISTS "def14a_llm" (
     "ceo_equity_pay_pct" DOUBLE PRECISION,
     "n_neos" BIGINT,
     "total_neo_comp" DOUBLE PRECISION,
+    "sct_years" DOUBLE PRECISION,
     "insider_ownership_pct" DOUBLE PRECISION,
     "ceo_ownership_pct" DOUBLE PRECISION,
     "n_five_percent_holders" BIGINT,
@@ -897,16 +898,132 @@ CREATE TABLE IF NOT EXISTS "def14a_llm" (
     "say_on_pay_support_pct" DOUBLE PRECISION,
     "ceo_pay_ratio" DOUBLE PRECISION,
     "median_employee_pay" DOUBLE PRECISION,
+    "auditor_name" TEXT,
+    "auditor_since_year" DOUBLE PRECISION,
     "auditor_fees" DOUBLE PRECISION,
+    "audit_fees_audit" DOUBLE PRECISION,
+    "audit_fees_audit_related" DOUBLE PRECISION,
+    "audit_fees_tax" DOUBLE PRECISION,
+    "audit_fees_other" DOUBLE PRECISION,
+    "auditor_fees_prior" DOUBLE PRECISION,
+    "n_director_comp_rows" DOUBLE PRECISION,
+    "n_ownership_rows" DOUBLE PRECISION,
+    "pct_gender_stated" DOUBLE PRECISION,
+    "n_women_directors_vs_inferred" DOUBLE PRECISION,
     "def14a_json" TEXT,
-    "n_technology_directors" DOUBLE PRECISION,
-    "pct_technology_directors" DOUBLE PRECISION,
-    "technology_committee" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "accession_number")
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_llm_as_of ON "def14a_llm" ("as_of");
+-- `n_technology_directors` / `pct_technology_directors` / `technology_committee` were REMOVED
+-- from this block: they were an opinion, not an extraction (mean |delta| of 1.06 directors
+-- between consecutive filings of the same company, only 38.8% unchanged). `CREATE TABLE IF NOT
+-- EXISTS` cannot retire a column on a DB that already has it, so an existing deployment needs
+-- an explicit `ALTER TABLE "def14a_llm" DROP COLUMN ...` -- see PHASE-6.
+
+-- [extract] def14a_directors  (pk: ticker, accession_number, name)
+-- One row per director per filing -- the `directors[]` array of the paid extract, flattened.
+-- `gender_basis` records HOW gender was determined (stated > honorific > pronoun > name), which
+-- is what makes the field auditable, and this table is the substrate the cross-filing gender
+-- consensus pass groups over: it needs a GROUP BY over people, across tickers and years.
+
+CREATE TABLE IF NOT EXISTS "def14a_directors" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "as_of" DATE,
+    "name" TEXT NOT NULL,
+    "age" DOUBLE PRECISION,
+    "tenure_years" DOUBLE PRECISION,
+    "is_independent" DOUBLE PRECISION,
+    "gender" TEXT,
+    "gender_basis" TEXT,
+    "other_public_company_boards" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number", "name")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_directors_as_of ON "def14a_directors" ("as_of");
+
+-- [extract] def14a_executive_comp  (pk: ticker, accession_number, name, fiscal_year)
+-- Summary Compensation Table rows (Reg S-K Item 402(c)): one row per NEO per fiscal year, ~3
+-- years per filing. `fiscal_year` is in the PK and therefore NOT NULL -- `_exec_comp_rows`
+-- skips a row that lacks one, because a null would abort the whole insert rather than lose one
+-- row. `reconciles` = 1 when the seven components sum to `total` within $10; it is a FLAG, not
+-- a filter, and the values are kept either way.
+
+CREATE TABLE IF NOT EXISTS "def14a_executive_comp" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "as_of" DATE,
+    "name" TEXT NOT NULL,
+    "title" TEXT,
+    "fiscal_year" DOUBLE PRECISION NOT NULL,
+    "salary" DOUBLE PRECISION,
+    "bonus" DOUBLE PRECISION,
+    "stock_awards" DOUBLE PRECISION,
+    "option_awards" DOUBLE PRECISION,
+    "non_equity_incentive" DOUBLE PRECISION,
+    "pension_change" DOUBLE PRECISION,
+    "other_compensation" DOUBLE PRECISION,
+    "total" DOUBLE PRECISION,
+    "reconciles" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number", "name", "fiscal_year")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_executive_comp_as_of ON "def14a_executive_comp" ("as_of");
+
+-- [extract] def14a_director_comp  (pk: ticker, accession_number, name)
+-- Non-employee Director Compensation Table (Item 402(k)): one row per director per filing.
+-- Single-year BY REGULATION -- 402(k) requires the last completed fiscal year only, so
+-- `fiscal_year` is a payload column here and NOT part of the key. Membership in this table IS
+-- the definition of an outside director, which the 8-K vote role map depends on. Exists only
+-- from the 2008 proxy season (Reg S-K 2006, fiscal years ending >= 2006-12-15).
+
+CREATE TABLE IF NOT EXISTS "def14a_director_comp" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "as_of" DATE,
+    "name" TEXT NOT NULL,
+    "fiscal_year" DOUBLE PRECISION,
+    "fees_earned" DOUBLE PRECISION,
+    "stock_awards" DOUBLE PRECISION,
+    "option_awards" DOUBLE PRECISION,
+    "non_equity_incentive" DOUBLE PRECISION,
+    "pension_change" DOUBLE PRECISION,
+    "other_compensation" DOUBLE PRECISION,
+    "total" DOUBLE PRECISION,
+    "reconciles" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number", "name")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_director_comp_as_of ON "def14a_director_comp" ("as_of");
+
+-- [extract] def14a_ownership  (pk: ticker, accession_number, holder_name, holder_type)
+-- Beneficial-ownership rows (Item 403). KNOWINGLY redundant with 13F / SC 13D-G / Forms 3-4-5,
+-- which are the preferred sources and whose as-of dates these never align with. The proxy-only
+-- figure is the directors-and-officers GROUP aggregate, which is the `insider_ownership_pct`
+-- scalar on `def14a_llm`, not a row here -- `_ownership_rows` drops those subtotals.
+
+CREATE TABLE IF NOT EXISTS "def14a_ownership" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "as_of" DATE,
+    "holder_name" TEXT NOT NULL,
+    "holder_type" TEXT NOT NULL,
+    "shares" DOUBLE PRECISION,
+    "percent_of_class" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number", "holder_name", "holder_type")
+);
+CREATE INDEX IF NOT EXISTS ix_def14a_ownership_as_of ON "def14a_ownership" ("as_of");
 
 -- [extract] sec_def14a  (pk: ticker, accession_number)
+-- The Pay-versus-Performance / ECD inline-XBRL block ONLY. 2023+ by regulation: Item 402(v)
+-- applies to fiscal years ending >= 2022-12-16, so a proxy covering an earlier year carries no
+-- `ecd:` facts and gets NO ROW -- which is why `has_xbrl` was dropped as degenerate. Everything
+-- a proxy says in PROSE (comp tables, director fees, ownership, audit fees, pay ratio, board
+-- recommendations) moved to `def14a_llm` and its four child tables.
+-- `ecd_period_end` is the fiscal year the PVP facts describe; `period_of_report` for a proxy is
+-- the MEETING date, so without it nothing says which year `peo_total_comp` belongs to.
+-- `peo_actually_paid_comp` is NEGATIVE on real filings (NKE 2025: -10,924,243).
 
 CREATE TABLE IF NOT EXISTS "sec_def14a" (
     "ticker" TEXT NOT NULL,
@@ -916,11 +1033,13 @@ CREATE TABLE IF NOT EXISTS "sec_def14a" (
     "filing_date" DATE,
     "period_of_report" DATE,
     "company_name" TEXT,
-    "has_xbrl" DOUBLE PRECISION,
     "has_individual_executive_data" DOUBLE PRECISION,
+    "ecd_period_end" DATE,
     "peo_name" TEXT,
     "peo_total_comp" DOUBLE PRECISION,
     "peo_actually_paid_comp" DOUBLE PRECISION,
+    "n_peos" DOUBLE PRECISION,
+    "peo_names_all" TEXT,
     "neo_avg_total_comp" DOUBLE PRECISION,
     "neo_avg_actually_paid_comp" DOUBLE PRECISION,
     "total_shareholder_return" DOUBLE PRECISION,
@@ -932,103 +1051,11 @@ CREATE TABLE IF NOT EXISTS "sec_def14a" (
     "award_timing_mnpi_considered" DOUBLE PRECISION,
     "award_dates_predetermined" DOUBLE PRECISION,
     "mnpi_disclosure_timed_for_comp_value" DOUBLE PRECISION,
-    "ceo_pay_ratio_ceo_comp" DOUBLE PRECISION,
-    "ceo_pay_ratio_median_employee_comp" DOUBLE PRECISION,
-    "ceo_pay_ratio" DOUBLE PRECISION,
-    "auditor_name" TEXT,
-    "audit_fiscal_year_current" DOUBLE PRECISION,
-    "audit_fiscal_year_prior" DOUBLE PRECISION,
-    "audit_fees_current" DOUBLE PRECISION,
-    "audit_fees_prior" DOUBLE PRECISION,
-    "audit_related_fees_current" DOUBLE PRECISION,
-    "audit_related_fees_prior" DOUBLE PRECISION,
-    "tax_fees_current" DOUBLE PRECISION,
-    "tax_fees_prior" DOUBLE PRECISION,
-    "other_fees_current" DOUBLE PRECISION,
-    "other_fees_prior" DOUBLE PRECISION,
-    "total_fees_current" DOUBLE PRECISION,
-    "total_fees_prior" DOUBLE PRECISION,
-    "n_voting_proposals" DOUBLE PRECISION,
-    "n_say_on_pay_proposals" DOUBLE PRECISION,
-    "n_director_election_proposals" DOUBLE PRECISION,
-    "n_auditor_ratification_proposals" DOUBLE PRECISION,
-    "n_equity_plan_proposals" DOUBLE PRECISION,
-    "n_shareholder_proposals" DOUBLE PRECISION,
-    "n_board_against_recommendations" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "accession_number")
 );
 CREATE INDEX IF NOT EXISTS ix_sec_def14a_filing_date ON "sec_def14a" ("filing_date");
-
--- [extract] sec_def14a_executive_comp  (pk: ticker, accession_number, name, year)
-
-CREATE TABLE IF NOT EXISTS "sec_def14a_executive_comp" (
-    "ticker" TEXT NOT NULL,
-    "cik" TEXT,
-    "accession_number" TEXT NOT NULL,
-    "filing_date" DATE,
-    "name" TEXT NOT NULL,
-    "title" TEXT,
-    "year" DOUBLE PRECISION NOT NULL,
-    "salary" DOUBLE PRECISION,
-    "bonus" DOUBLE PRECISION,
-    "stock_awards" DOUBLE PRECISION,
-    "option_awards" DOUBLE PRECISION,
-    "non_equity_incentive" DOUBLE PRECISION,
-    "pension_change" DOUBLE PRECISION,
-    "other_compensation" DOUBLE PRECISION,
-    "total" DOUBLE PRECISION,
-    PRIMARY KEY ("ticker", "accession_number", "name", "year")
-);
-CREATE INDEX IF NOT EXISTS ix_sec_def14a_executive_comp_filing_date ON "sec_def14a_executive_comp" ("filing_date");
-
--- [extract] sec_def14a_director_comp  (pk: ticker, accession_number, name)
-
-CREATE TABLE IF NOT EXISTS "sec_def14a_director_comp" (
-    "ticker" TEXT NOT NULL,
-    "cik" TEXT,
-    "accession_number" TEXT NOT NULL,
-    "filing_date" DATE,
-    "name" TEXT NOT NULL,
-    "fees_earned" DOUBLE PRECISION,
-    "stock_awards" DOUBLE PRECISION,
-    "option_awards" DOUBLE PRECISION,
-    "non_equity_incentive" DOUBLE PRECISION,
-    "pension_change" DOUBLE PRECISION,
-    "other_compensation" DOUBLE PRECISION,
-    "total" DOUBLE PRECISION,
-    PRIMARY KEY ("ticker", "accession_number", "name")
-);
-CREATE INDEX IF NOT EXISTS ix_sec_def14a_director_comp_filing_date ON "sec_def14a_director_comp" ("filing_date");
-
--- [extract] sec_def14a_ownership  (pk: ticker, accession_number, holder_name, holder_type)
-
-CREATE TABLE IF NOT EXISTS "sec_def14a_ownership" (
-    "ticker" TEXT NOT NULL,
-    "cik" TEXT,
-    "accession_number" TEXT NOT NULL,
-    "filing_date" DATE,
-    "holder_name" TEXT NOT NULL,
-    "holder_type" TEXT NOT NULL,
-    "shares" DOUBLE PRECISION,
-    "percent_of_class" DOUBLE PRECISION,
-    PRIMARY KEY ("ticker", "accession_number", "holder_name", "holder_type")
-);
-CREATE INDEX IF NOT EXISTS ix_sec_def14a_ownership_filing_date ON "sec_def14a_ownership" ("filing_date");
-
--- [extract] sec_def14a_votes  (pk: ticker, accession_number, proposal_number)
-
-CREATE TABLE IF NOT EXISTS "sec_def14a_votes" (
-    "ticker" TEXT NOT NULL,
-    "cik" TEXT,
-    "accession_number" TEXT NOT NULL,
-    "filing_date" DATE,
-    "proposal_number" DOUBLE PRECISION NOT NULL,
-    "description" TEXT,
-    "board_recommendation" TEXT,
-    "proposal_type" TEXT,
-    PRIMARY KEY ("ticker", "accession_number", "proposal_number")
-);
-CREATE INDEX IF NOT EXISTS ix_sec_def14a_votes_filing_date ON "sec_def14a_votes" ("filing_date");
+-- The four HTML-parsed child tables (`sec_def14a_executive_comp` / `_director_comp` /
+-- `_ownership` / `_votes`) were DELETED here; Phase 6 issues their DROP TABLE.
 
 -- [extract] sec_8k  (pk: ticker, accession_number, item)
 

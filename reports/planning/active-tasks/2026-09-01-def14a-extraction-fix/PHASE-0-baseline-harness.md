@@ -98,7 +98,7 @@ df.to_parquet(out_dir / "def14a_llm.parquet", index=False)
 | pre-2001 rows fully NULL | 401 / 422 | ≪ that |
 | `peo_total_comp == 0.0` (SBUX FY23-25) | 3 rows | **0** |
 | distinct PEO names per (ticker, fiscal year) for BA/NKE | 1 | **2** |
-| mean carve payload chars | ~50,300 | ≤ 40,000 |
+| mean carve payload chars | ~50,300 (measured 51,198) | ≤ 45,000 (re-set in Phase 2; was 40,000) |
 
 - [x] Output written to `reports/planning/active-tasks/2026-09-01-def14a-extraction-fix/COMPARISON.md`
       as well as stdout, so Phase 6 has an artifact to attach.

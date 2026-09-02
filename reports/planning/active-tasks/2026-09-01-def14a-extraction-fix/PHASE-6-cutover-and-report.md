@@ -38,12 +38,19 @@ sign-off, then **you** truncate and rerun. Finish with the DATA definition-of-do
 | G7 | director-comp rows / post-2008 proxies | 0 | **> 90%** |
 | G8 | say-on-pay values < 0.50 present | 0 (floored) | **≥ 3** (JPM/INTC/SPG) |
 | G9 | pre-2001 rows fully NULL | 401/422 | **< 10%** |
-| G10 | mean carve payload chars | ~50,300 | **≤ 40,000** |
+| G10 | mean carve payload chars | 51,198 (measured) | **≤ 45,000** (re-set — see note) |
 | G11 | `sec_8k_votes` rows / 5.07 filings with a comma-number | 0 | **> 90%** |
 | G12 | `pct_female_directors` fill | (record it) | **must not fall** |
 | G13 | `gender_basis` populated wherever `gender` is set | n/a (field is new) | **100%** |
 | G14 | filings where `n_women_directors_vs_inferred == 0` | (record it) | **materially higher than baseline** |
 
+- [ ] **G10 was re-set from ≤ 40,000 to ≤ 45,000** (approved 2026-09-02). The 40,000 derived from a
+      36,544-char estimate that predates this plan's own +3,000 widenings of PAY RATIO / SAY ON PAY
+      and its new AUDITOR NAME slice, so it was unreachable as specified; measured is 42,225 (−18%
+      from 51,198). It is *not* 50,000, which would sit at the baseline and certify only "not worse
+      than the code being replaced". Full reasoning and the regression it must catch are recorded in
+      `PHASE-2-table-anchored-carve.md`. **Report the mean / median / max, not just the pass flag** —
+      the binding term is the 20,000-char director-bios window the plan deliberately keeps.
 - [ ] **G12-G14 are the gender-upgrade gates.** `gender` is kept because it carries alpha, so the
       bar is *accuracy up at no cost in coverage*, not merely "still present". Report alongside them:
       the `gender_basis` distribution (how much is `stated`/`honorific` versus `name`), and the count
@@ -87,6 +94,19 @@ DROP TABLE IF EXISTS sec_def14a_votes;
 ```sql
 TRUNCATE TABLE sec_def14a;
 TRUNCATE TABLE def14a_llm;
+```
+
+- [ ] **Drop the three retired `def14a_llm` columns.** Phase 3 removed them from `sql/schema.sql`,
+      but `CREATE TABLE IF NOT EXISTS` cannot retire a column on a database that already has one,
+      so the live table keeps them until this runs. A truncate does *not* remove them — it would
+      leave three permanently-NULL columns that read downstream as "this company discloses no
+      technology directors" rather than "we stopped extracting an opinion".
+
+```sql
+ALTER TABLE def14a_llm
+    DROP COLUMN IF EXISTS n_technology_directors,
+    DROP COLUMN IF EXISTS pct_technology_directors,
+    DROP COLUMN IF EXISTS technology_committee;
 ```
 
 - [ ] `sec_def14a`'s column set changed, so let `store.ensure_table` recreate it, or `DROP` it too.

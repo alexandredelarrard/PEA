@@ -352,6 +352,20 @@ _PVP_MARKERS = ("compensation actually paid", "value of initial fixed",
 #: A CD&A "target pay" / "realized pay" table mimics the SCT header.
 _ALT_PAY_MARKERS = ("target total direct", "realized pay", "realizable pay",
                     "target annual", "target direct compensation")
+#: The OTHER Item 402 tables that carry `Stock Awards` / `Option Awards` columns and the word
+#: "Year", and therefore satisfy the SCT rule without being an SCT. Measured on PG's 2026 proxy:
+#: its `Outstanding Equity at Fiscal Year End` table (402(f)) outscored the real SCT on data
+#: rows and won the tie-break, so the model was handed an equity-holdings grid, correctly
+#: returned zero compensation rows, and the filing stored `n_neos = 0`.
+#: Every phrase here is a regulatory column label from 402(f)/(g)/(h)/(i) that cannot occur in a
+#: 402(c) header -- note "non-equity incentive plan compensation" contains "equity incentive
+#: plan" but never "equity incentive plan awards", so the SCT itself is not rejected.
+_OTHER_402_MARKERS = (
+    "outstanding equity", "unexercised options", "have not vested", "option expiration",
+    "equity incentive plan awards", "value realized", "shares acquired on",
+    "years credited service", "present value of accumulated", "aggregate earnings",
+    "aggregate withdrawals", "executive contributions",
+)
 #: The cash-retainer column, whatever the filer calls it. `Cash Fees` and `Retainer` are the
 #: labels edgartools' synonym list misses.
 _DIR_FEE_COLS = ("fees earned or paid in cash", "fees earned", "cash fees", "retainer",
@@ -436,9 +450,10 @@ def classify_table(header: list[str], rows: list[list[str]]) -> list[str]:
         if footnoted <= len(labels) // 2 and _n_numeric(rows) >= 2:
             matched.append(AUDIT_FEES)
 
-    # ---- SCT: a Year column AND >=1 mandated SCT column, and NOT the PvP table ----
+    # ---- SCT: a Year column AND >=1 mandated SCT column, and NOT another Item 402 table ----
     if _has(hb, "year") and _has(hb, *_SCT_COLS):
-        if not _has(ab, *_PVP_MARKERS) and not _has(hb, *_ALT_PAY_MARKERS):
+        if (not _has(ab, *_PVP_MARKERS) and not _has(hb, *_ALT_PAY_MARKERS)
+                and not _has(hb, *_OTHER_402_MARKERS)):
             # a Salary column is the discriminator against the DIRECTOR table
             if _has(hb, "salary") or not _has(hb, *_DIR_FEE_COLS):
                 matched.append(SCT)

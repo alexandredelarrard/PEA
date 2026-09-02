@@ -809,7 +809,11 @@ def _exec_comp_rows(ticker: str, filing: pd.Series, extract: Def14AExtract) -> l
     rows = []
     for c in extract.compensation:
         name = clean_person_name(c.name)
-        if not name:
+        if not name or c.fiscal_year is None:
+            # `fiscal_year` is Optional on the Pydantic model but PART OF THIS TABLE'S PRIMARY
+            # KEY, so a null aborts the whole Postgres insert -- not one row. It is also a
+            # useless row: comp that cannot be placed in time. 0 of 1,849 replayed rows lack
+            # one, but that is evidence, not a guarantee, so the guard is structural.
             continue
         row = {
             **_keys(ticker, filing),

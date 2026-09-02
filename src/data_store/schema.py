@@ -480,33 +480,20 @@ class Tables:
     def14a_ownership = Table(
         "def14a_ownership", ("ticker", "accession_number", "holder_name", "holder_type"),
         date_col="as_of", date_type_cols=("as_of",), freshness="yearly")
-    # Deterministic complement to def14a_llm: structured DEF 14A data via edgartools' typed
-    # ProxyStatement (SEC XBRL ECD taxonomy + deterministic HTML-table parsing), zero LLM
-    # cost. Filing-level row + four one-to-many detail tables below.
+    # The Pay-versus-Performance / ECD inline-XBRL block of a proxy, and nothing else -- facts
+    # the FILER tagged, which is the only part of a DEF 14A worth reading deterministically.
+    # 2023+ BY REGULATION (Item 402(v) applies to fiscal years ending >= 2022-12-16): a proxy
+    # covering an earlier year carries no `ecd:` facts and gets NO ROW, which is why `has_xbrl`
+    # was dropped as degenerate. The inventory of which proxies exist is `def14a_llm`'s job.
+    # `ecd_period_end` is the fiscal year the PVP facts describe -- NOT derivable from
+    # `period_of_report`, which for a proxy is the meeting date.
+    # The four HTML-parsed child tables (`sec_def14a_executive_comp` / `_director_comp` /
+    # `_ownership` / `_votes`) were DELETED: edgartools' proxy HTML parser returns values that
+    # are silently wrong rather than absent, and the LLM path's own child tables replaced them
+    # on every measurable axis (title 100% vs 45.4%, 0 rows > $1e9 vs 109).
     def14a_edgar = Table("sec_def14a", ("ticker", "accession_number"),
                          date_col="filing_date",
-                         date_type_cols=("filing_date", "period_of_report"))
-    # Summary Compensation Table: one row per NEO per fiscal year (edgartools typically
-    # recovers 3 years per filing) -- richer multi-year history than def14a_llm's single
-    # most-recent-year CEO fields.
-    def14a_edgar_executive_comp = Table(
-        "sec_def14a_executive_comp",
-        ("ticker", "accession_number", "name", "year"),
-        date_col="filing_date", date_type_cols=("filing_date",))
-    # Non-employee Director Compensation Table (Item 402(k)): one row per director/filing.
-    def14a_edgar_director_comp = Table(
-        "sec_def14a_director_comp", ("ticker", "accession_number", "name"),
-        date_col="filing_date", date_type_cols=("filing_date",))
-    # Beneficial ownership table (5%+ holders + insiders, Reg S-K Item 403).
-    def14a_edgar_ownership = Table(
-        "sec_def14a_ownership",
-        ("ticker", "accession_number", "holder_name", "holder_type"),
-        date_col="filing_date", date_type_cols=("filing_date",))
-    # Ballot items: one row per proposal, carrying the BOARD's recommendation (not the
-    # shareholder vote OUTCOME -- see fetch_def14a_edgar.py) + classified type.
-    def14a_edgar_votes = Table(
-        "sec_def14a_votes", ("ticker", "accession_number", "proposal_number"),
-        date_col="filing_date", date_type_cols=("filing_date",))
+                         date_type_cols=("filing_date", "period_of_report", "ecd_period_end"))
     # 8-K events: one row per ITEM CODE of a filing, keyed (ticker, accession, item) -- an
     # 8-K reports 1..n items and ~75% report more than one. `item` is in the PK because
     # keying on the accession alone made every extra item upsert onto the same row, silently

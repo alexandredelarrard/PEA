@@ -245,6 +245,29 @@ What was done instead of quietly shrinking the bios to hit a number:
 **Recommendation for the Phase 6 gate: re-set G10 to ≤ 45,000** (met, with margin) and record
 that the binding constraint is the bios window, which the plan deliberately keeps.
 
+**DECISION — approved 2026-09-02: G10 is ≤ 45,000.** Applied in
+`scripts/compare_def14a_baseline.py`, `PHASE-0-baseline-harness.md` and
+`PHASE-6-cutover-and-report.md`.
+
+Why 45,000 and not 50,000, since the latter would also pass: the baseline is **51,198**, so a gate
+at 50,000 certifies only "not worse than the code being replaced" and would tolerate 18.4% growth
+over the measured 42,225 — the whole 18% reduction this phase claims could be lost with the gate
+still green. 45,000 leaves **6.6%**, which absorbs a different filing mix when the corpus grows
+from 64 filings / 23 tickers to the universe, and nothing more: no later phase adds to this payload
+(Phase 4 only *removes* the HTML block, Phase 5 carves 8-K text on a separate budget).
+
+The concrete regression the threshold has to catch is the three **fallback** slices —
+`EXECUTIVE COMPENSATION` 7,000 + `SECURITY OWNERSHIP` 10,000 + `AUDITOR FEES` 2,500 = **19,500
+chars** — which are emitted *only when the table classifier finds nothing*. That is not
+hypothetical: this phase hit exactly that failure once, when an lxml encoding-declaration
+`ValueError` hidden behind a bare `except` found **0 tables on 63 of 64 filings**. A 45,000 gate
+trips on it; a 50,000 gate may not, because the fallbacks partly displace the TSV blocks they
+replace. G10 is the only gate positioned to notice this, since table recall is measured
+separately and could break at the same time and for the same reason.
+
+If a later need genuinely requires more, raise the gate *then*, with the measurement that
+justifies it — a ratchet pre-loosened for hypothetical growth is not a ratchet.
+
 ## Verification
 
 All of it runs off Phase 0's on-disk filing cache — **zero network, zero LLM cost**, so it is cheap
@@ -259,8 +282,9 @@ enough to re-run on every edit.
       tables and picked the wrong ones 23 times out of 25 on fees.
 - [x] Print the recall matrix as the sanity conclusion, in the same shape as the table above, so it
       is directly comparable to follow-up 3's numbers.
-- [x] **Payload assertion**: mean serialized payload across the cached corpus ≤ **40,000** chars
-      (target ~36,544; baseline 50,300). Print mean / median / max.
+- [x] **Payload assertion**: mean serialized payload across the cached corpus ≤ **45,000** chars
+      — **re-set from 40,000, approved 2026-09-02**; the 36,544 estimate it came from predates this
+      phase's own widenings (see the deviation above). Measured 42,225. Print mean / median / max.
 - [x] **Prerequisite regression tests**, as their own cases with real fixtures:
       - `<br>` separator: the Agilent 2005 cell `1,000,000<br>1,000,000<br>925,000` must yield three
         cells, never `10000001000000925000`.
@@ -303,3 +327,29 @@ one-file change.
   tie-break is what mitigates it; the harness should include MS so the behaviour is visible.
 - Keep `def14a_tables.py` free of `context` and free of I/O. That is what makes the harness cheap,
   and cheap is what makes it get run.
+
+## POST-PHASE FIX — the SCT signature admitted another Item 402 table
+
+Found by Phase 3's paid probe (PG 2026 returned 0 NEOs while every other field populated), not by
+this phase's own recall harness.
+
+PG's `Outstanding Equity at Fiscal Year End` grid satisfies the SCT rule: "Fiscal **Year** End"
+supplies the `year` token and its `Stock Awards` / `Option Awards` column groups supply the
+mandated-column token. It then **outscored the real SCT on the data-row tie-break**, so the TSV
+handed to the model was an equity-holdings table. The model was right to return nothing; the
+filing stored `n_neos = 0`.
+
+Why the recall harness missed it: recall is measured as "an identifying value from the right table
+appears in the serialized TSV", and a *wrong table that is also a table* passes every check that
+asks whether a table was found. Only asking the model produced the disagreement.
+
+Fixed with an `_OTHER_402_MARKERS` must-reject clause — the exact regulatory column labels of
+Items 402(f)/(g)/(h)/(i) (`outstanding equity`, `unexercised options`, `have not vested`,
+`option expiration`, `equity incentive plan awards`, `value realized`, `shares acquired on`,
+`years credited service`, `present value of accumulated`, `aggregate earnings`,
+`aggregate withdrawals`, `executive contributions`). Each was chosen so it cannot occur in a
+402(c) header: note that `non-equity incentive plan compensation` contains "equity incentive
+plan" but never "equity incentive plan **awards**", so the SCT itself is not rejected.
+
+Measured after the fix: PG returns **8 NEOs × 3 fiscal years**, and its carve payload falls
+**49,040 → 44,007** — the wrong table was also the larger one, so G10's mean improves.

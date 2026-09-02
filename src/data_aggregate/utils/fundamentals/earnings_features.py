@@ -156,13 +156,30 @@ def days_since_earnings(df: pd.DataFrame, idx: pd.DatetimeIndex,
 
 
 def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                             close: pd.DataFrame) -> dict:
+                             close: pd.DataFrame,
+                             level_factor: pd.DataFrame | None = None) -> dict:
+    """⚠ THE PRICE LEG IS PUT BACK ON THE LEVEL BASIS BEFORE ANY YIELD IS TAKEN.
+
+    Every yield here is `eps / price`, and the two legs do NOT sit on the same basis by
+    default: Yahoo back-adjusts `close_split` across a spinoff, while an EPS figure -- an
+    estimate or a reported actual -- is whatever was published at the time and is never
+    restated for one. So the yield comes out `S` times too high.
+
+    MEASURED, not assumed (`2026-09-01-spinoff-level-basis/before.md`): on the 1,422 rows
+    with `|S-1| > 10%`, `(eps/close_split) / (sharadar.epsdil/sharadar.price)` has median
+    1.3831 against a median `S` of 1.275 -- 3.5x closer to `S` than to 1.0. The same
+    measurement on the DIVIDEND leg came out at exactly 1.0, which is why
+    `dividend_features` does NOT get this treatment: Yahoo restates `Dividends` for a
+    spinoff and the legs there really do cancel.
+    """
     df = _prep(hist)
     F: dict[str, pd.DataFrame] = {}
 
     fwd_eps = _forward_to_daily(df, "eps_estimate", idx)
     last_actual = _realized_to_daily(df, "eps_actual", idx)
     price = close.reindex(idx)
+    if level_factor is not None and not level_factor.empty:
+        price = price.mul(level_factor.reindex_like(price).fillna(1.0))
 
     if not fwd_eps.empty:
         F["fwd_eps_yield"] = ratio(fwd_eps, price)                 # next-quarter forward E/P
@@ -189,6 +206,7 @@ def build_earnings_feature_panel(
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
     stock_close: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format earnings-expectation feature panel (`f_<name>_vs_peers`,
     `f_<name>_xs`). Empty if the earnings history or prices are unavailable."""
@@ -197,7 +215,8 @@ def build_earnings_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
 
     prepped = _prep(earnings_history)
-    fields = _derived_earnings_fields(earnings_history, trading_index, stock_close)
+    fields = _derived_earnings_fields(earnings_history, trading_index, stock_close,
+                                      level_factor)
     panel = build_peer_relative_panel(fields, peer_dict)
 
     # RAW calendar signal (NOT peer-relative): days since the most recent earnings.

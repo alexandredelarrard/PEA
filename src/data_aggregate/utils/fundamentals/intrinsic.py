@@ -65,6 +65,7 @@ def intrinsic_value_daily(
     years: int = 5,
     growth_cap: float = 0.15,
     growth_floor: float = -0.10,
+    level_factor: pd.DataFrame | None = None,
 ) -> dict:
     """Point-in-time intrinsic value from TTM free cash flow.
 
@@ -91,7 +92,7 @@ def intrinsic_value_daily(
         out["per_share"] = (total[cols] / sh).replace([np.inf, -np.inf], np.nan)
 
     if close is not None:
-        mcap = daily_market_cap(fund_hist, close)
+        mcap = daily_market_cap(fund_hist, close, level_factor=level_factor)
         if not mcap.empty:
             cols = total.columns.intersection(mcap.columns)
             out["yield"] = (total[cols] / mcap[cols]).replace([np.inf, -np.inf], np.nan)

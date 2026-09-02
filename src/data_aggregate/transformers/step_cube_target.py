@@ -58,7 +58,7 @@ class StepCubeTarget(Step):
     # `close_split` for market cap and the size characteristic (the basis on which the
     # split factor cancels against `sharesbas`); `close_total` for momentum; `ret` for every
     # LABEL, which is now a forward COMPOUNDED total return rather than a price ratio.
-    _FIELDS = ("close_split", "close_total", "ret")
+    _FIELDS = ("close_split", "close_total", "ret", "level_factor")
 
     def __init__(self, context: Context, config: DictConfig):
 
@@ -171,7 +171,8 @@ class StepCubeTarget(Step):
                                       stock_ret=frames.ret,
                                       fundamentals_history=fundamentals,
                                       resvol_window=63,
-                                      stock_close_split=frames.close_split)
+                                      stock_close_split=frames.close_split,
+                                      level_factor=frames.level_factor)
         macro = self._load_macro()                     # ONE read, ONE pivot, all macro below
         macro_chg = self._macro_changes(macro, frames.trading_index)
         commodity, currency = self._asset_factors(macro, frames.trading_index)
@@ -257,7 +258,8 @@ class StepCubeTarget(Step):
         label_types = list(cfg.get("labels", ["zscore", "rank", "epsilon"]))
         # recomputed here rather than reused from `PitFrames.market_cap`: that cache belongs to
         # the fundamentals sub-step, which runs later and over a different warm-up window.
-        market_cap = (daily_market_cap(fundamentals, frames.close_split)
+        market_cap = (daily_market_cap(fundamentals, frames.close_split,
+                                       level_factor=frames.level_factor)
                       if cfg.get("neutralize_log_mcap", False) else None)
         labels = build_targets_multi(
             close_total=frames.close_total,

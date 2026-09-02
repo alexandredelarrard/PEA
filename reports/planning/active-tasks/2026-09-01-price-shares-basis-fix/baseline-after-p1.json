@@ -1,0 +1,789 @@
+{
+  "tag": "after-p1",
+  "generated_utc": "2026-09-02 00:04:04Z",
+  "env": {
+    "prices_rows": 3263459,
+    "prices_min": "1995-09-01",
+    "prices_max": "2026-09-01",
+    "panel_rows": 51255,
+    "panel_tickers": 489,
+    "cube_part_prices": "present"
+  },
+  "mcap_error_by_year": {
+    "1995": {
+      "n": 190,
+      "median": 0.9999,
+      "p05": 0.6044,
+      "min": 0.3358,
+      "off_by_10pct": 35
+    },
+    "1996": {
+      "n": 1072,
+      "median": 1.0,
+      "p05": 0.6281,
+      "min": 0.1925,
+      "off_by_10pct": 176
+    },
+    "1997": {
+      "n": 1196,
+      "median": 0.9999,
+      "p05": 0.6711,
+      "min": 0.1985,
+      "off_by_10pct": 174
+    },
+    "1998": {
+      "n": 1262,
+      "median": 0.9999,
+      "p05": 0.6716,
+      "min": 0.1985,
+      "off_by_10pct": 180
+    },
+    "1999": {
+      "n": 1294,
+      "median": 0.9999,
+      "p05": 0.6716,
+      "min": 0.1984,
+      "off_by_10pct": 182
+    },
+    "2000": {
+      "n": 1340,
+      "median": 1.0,
+      "p05": 0.6721,
+      "min": 0.1985,
+      "off_by_10pct": 186
+    },
+    "2001": {
+      "n": 1388,
+      "median": 1.0,
+      "p05": 0.7153,
+      "min": 0.1985,
+      "off_by_10pct": 173
+    },
+    "2002": {
+      "n": 1422,
+      "median": 1.0,
+      "p05": 0.7153,
+      "min": 0.1985,
+      "off_by_10pct": 168
+    },
+    "2003": {
+      "n": 1436,
+      "median": 1.0,
+      "p05": 0.718,
+      "min": 0.1985,
+      "off_by_10pct": 165
+    },
+    "2004": {
+      "n": 1462,
+      "median": 1.0,
+      "p05": 0.7189,
+      "min": 0.1985,
+      "off_by_10pct": 164
+    },
+    "2005": {
+      "n": 1488,
+      "median": 1.0,
+      "p05": 0.7189,
+      "min": 0.1985,
+      "off_by_10pct": 165
+    },
+    "2006": {
+      "n": 1532,
+      "median": 1.0,
+      "p05": 0.7189,
+      "min": 0.1985,
+      "off_by_10pct": 165
+    },
+    "2007": {
+      "n": 1585,
+      "median": 1.0,
+      "p05": 0.7536,
+      "min": 0.1985,
+      "off_by_10pct": 161
+    },
+    "2008": {
+      "n": 1618,
+      "median": 1.0,
+      "p05": 0.7536,
+      "min": 0.1985,
+      "off_by_10pct": 167
+    },
+    "2009": {
+      "n": 1625,
+      "median": 1.0,
+      "p05": 0.7536,
+      "min": 0.1985,
+      "off_by_10pct": 167
+    },
+    "2010": {
+      "n": 1656,
+      "median": 1.0,
+      "p05": 0.7536,
+      "min": 0.1985,
+      "off_by_10pct": 164
+    },
+    "2011": {
+      "n": 1694,
+      "median": 1.0,
+      "p05": 0.7559,
+      "min": 0.1985,
+      "off_by_10pct": 160
+    },
+    "2012": {
+      "n": 1719,
+      "median": 1.0,
+      "p05": 0.7665,
+      "min": 0.1985,
+      "off_by_10pct": 158
+    },
+    "2013": {
+      "n": 1750,
+      "median": 1.0,
+      "p05": 0.794,
+      "min": 0.1985,
+      "off_by_10pct": 148
+    },
+    "2014": {
+      "n": 1777,
+      "median": 1.0,
+      "p05": 0.8078,
+      "min": 0.1985,
+      "off_by_10pct": 144
+    },
+    "2015": {
+      "n": 1792,
+      "median": 1.0,
+      "p05": 0.8272,
+      "min": 0.1985,
+      "off_by_10pct": 126
+    },
+    "2016": {
+      "n": 1818,
+      "median": 1.0,
+      "p05": 0.8382,
+      "min": 0.1985,
+      "off_by_10pct": 111
+    },
+    "2017": {
+      "n": 1845,
+      "median": 1.0,
+      "p05": 0.8511,
+      "min": 0.1985,
+      "off_by_10pct": 109
+    },
+    "2018": {
+      "n": 1852,
+      "median": 1.0,
+      "p05": 0.9148,
+      "min": 0.1985,
+      "off_by_10pct": 96
+    },
+    "2019": {
+      "n": 1881,
+      "median": 1.0,
+      "p05": 0.947,
+      "min": 0.1985,
+      "off_by_10pct": 83
+    },
+    "2020": {
+      "n": 1904,
+      "median": 1.0,
+      "p05": 0.9681,
+      "min": 0.4184,
+      "off_by_10pct": 71
+    },
+    "2021": {
+      "n": 1933,
+      "median": 1.0,
+      "p05": 1.0,
+      "min": 0.4184,
+      "off_by_10pct": 65
+    },
+    "2022": {
+      "n": 1943,
+      "median": 1.0,
+      "p05": 1.0,
+      "min": 0.4184,
+      "off_by_10pct": 53
+    },
+    "2023": {
+      "n": 1943,
+      "median": 1.0,
+      "p05": 1.0,
+      "min": 0.4184,
+      "off_by_10pct": 49
+    },
+    "2024": {
+      "n": 1948,
+      "median": 1.0,
+      "p05": 1.0,
+      "min": 0.4184,
+      "off_by_10pct": 33
+    },
+    "2025": {
+      "n": 1959,
+      "median": 1.0,
+      "p05": 1.0,
+      "min": 0.4184,
+      "off_by_10pct": 22
+    },
+    "2026": {
+      "n": 1438,
+      "median": 1.0,
+      "p05": 1.0,
+      "min": 0.5244,
+      "off_by_10pct": 7
+    }
+  },
+  "error_decomposition": {
+    "1995": {
+      "n": 190,
+      "split_part": 1.0,
+      "dividend_part": 0.9999,
+      "product": 0.9999,
+      "mcap_error": 0.9999,
+      "residual": 1.0
+    },
+    "1996": {
+      "n": 1072,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "1997": {
+      "n": 1196,
+      "split_part": 1.0,
+      "dividend_part": 0.9999,
+      "product": 0.9999,
+      "mcap_error": 0.9999,
+      "residual": 1.0
+    },
+    "1998": {
+      "n": 1262,
+      "split_part": 1.0,
+      "dividend_part": 0.9999,
+      "product": 0.9999,
+      "mcap_error": 0.9999,
+      "residual": 1.0
+    },
+    "1999": {
+      "n": 1294,
+      "split_part": 1.0,
+      "dividend_part": 0.9999,
+      "product": 0.9999,
+      "mcap_error": 0.9999,
+      "residual": 1.0
+    },
+    "2000": {
+      "n": 1340,
+      "split_part": 1.0,
+      "dividend_part": 0.9999,
+      "product": 0.9999,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2001": {
+      "n": 1388,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2002": {
+      "n": 1422,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2003": {
+      "n": 1436,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2004": {
+      "n": 1462,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2005": {
+      "n": 1488,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2006": {
+      "n": 1532,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2007": {
+      "n": 1585,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2008": {
+      "n": 1618,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2009": {
+      "n": 1625,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2010": {
+      "n": 1656,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2011": {
+      "n": 1694,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2012": {
+      "n": 1719,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2013": {
+      "n": 1750,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2014": {
+      "n": 1777,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2015": {
+      "n": 1792,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2016": {
+      "n": 1818,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2017": {
+      "n": 1845,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2018": {
+      "n": 1852,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2019": {
+      "n": 1881,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2020": {
+      "n": 1904,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2021": {
+      "n": 1933,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2022": {
+      "n": 1943,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2023": {
+      "n": 1943,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2024": {
+      "n": 1948,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2025": {
+      "n": 1959,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    },
+    "2026": {
+      "n": 1438,
+      "split_part": 1.0,
+      "dividend_part": 1.0,
+      "product": 1.0,
+      "mcap_error": 1.0,
+      "residual": 1.0
+    }
+  },
+  "split_part_cohorts": {
+    "eq_1": {
+      "n": 48831,
+      "mean_fwd_12m": 0.1712,
+      "median_fwd_12m": 0.1159
+    }
+  },
+  "dividend_part_quintiles": {
+    "Q1": {
+      "n": 9097,
+      "mean_dividend_part": 0.8906,
+      "mean_fwd_12m": 0.1497
+    },
+    "Q2": {
+      "n": 7931,
+      "mean_dividend_part": 0.9959,
+      "mean_fwd_12m": 0.169
+    },
+    "Q3": {
+      "n": 8280,
+      "mean_dividend_part": 0.9998,
+      "mean_fwd_12m": 0.1572
+    },
+    "Q4": {
+      "n": 7573,
+      "mean_dividend_part": 1.0006,
+      "mean_fwd_12m": 0.155
+    },
+    "Q5": {
+      "n": 8448,
+      "mean_dividend_part": 1.0326,
+      "mean_fwd_12m": 0.1952
+    }
+  },
+  "combined_error_quintiles": {
+    "Q1": {
+      "n": 9086,
+      "mean_fwd_12m": 0.146
+    },
+    "Q2": {
+      "n": 7886,
+      "mean_fwd_12m": 0.1713
+    },
+    "Q3": {
+      "n": 8064,
+      "mean_fwd_12m": 0.1624
+    },
+    "Q4": {
+      "n": 7734,
+      "mean_fwd_12m": 0.1558
+    },
+    "Q5": {
+      "n": 8559,
+      "mean_fwd_12m": 0.1911
+    }
+  },
+  "deadjusted_rows": {
+    "total_rows": 51255,
+    "deadjusted": 0,
+    "deadjusted_down": 0,
+    "deadjusted_up": 0,
+    "share": 0.0,
+    "distinct_tickers": 0,
+    "tickers_down": 0,
+    "tickers_up": 0,
+    "total_tickers": 489
+  },
+  "sec_cover_page_agreement": {
+    "column": "sharesOutstandingPit",
+    "rows": 5553,
+    "agree": 5412,
+    "too_high": 126,
+    "too_low": 15,
+    "tickers": 96,
+    "failing_tickers": 19,
+    "failing": {
+      "ACGL": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "AEP": {
+        "bad_rows": 3,
+        "median_ratio": 1.0
+      },
+      "AIZ": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "AJG": {
+        "bad_rows": 2,
+        "median_ratio": 1.0
+      },
+      "AMD": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "ALL": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "CB": {
+        "bad_rows": 2,
+        "median_ratio": 1.0
+      },
+      "AXON": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "CAT": {
+        "bad_rows": 3,
+        "median_ratio": 1.0
+      },
+      "BX": {
+        "bad_rows": 27,
+        "median_ratio": 1.0
+      },
+      "CMG": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "CLX": {
+        "bad_rows": 1,
+        "median_ratio": 1.0
+      },
+      "APP": {
+        "bad_rows": 2,
+        "median_ratio": 1.0001
+      },
+      "ARES": {
+        "bad_rows": 2,
+        "median_ratio": 1.0001
+      },
+      "ALLE": {
+        "bad_rows": 17,
+        "median_ratio": 1.0132
+      },
+      "ACN": {
+        "bad_rows": 2,
+        "median_ratio": 1.1216
+      },
+      "AOS": {
+        "bad_rows": 5,
+        "median_ratio": 1.1723
+      },
+      "CCL": {
+        "bad_rows": 67,
+        "median_ratio": 1.3528
+      },
+      "CMCSA": {
+        "bad_rows": 2,
+        "median_ratio": 1.3799
+      }
+    }
+  },
+  "spike_revert_scan": {
+    "n": 5,
+    "n_post_2020": 3,
+    "tickers_post_2020": [
+      "MNST"
+    ],
+    "events": [
+      {
+        "ticker": "HIG",
+        "date": "2008-11-03",
+        "ret": 0.5775,
+        "revert_gap": 0.063
+      },
+      {
+        "ticker": "FITB",
+        "date": "2009-02-06",
+        "ret": 0.6037,
+        "revert_gap": 0.0183
+      },
+      {
+        "ticker": "MNST",
+        "date": "2026-07-23",
+        "ret": 0.9559,
+        "revert_gap": 0.0074
+      },
+      {
+        "ticker": "MNST",
+        "date": "2026-08-03",
+        "ret": 0.9413,
+        "revert_gap": 0.023
+      },
+      {
+        "ticker": "MNST",
+        "date": "2026-08-07",
+        "ret": 0.9193,
+        "revert_gap": 0.0055
+      }
+    ]
+  },
+  "mnst_window": [
+    {
+      "date": "2026-07-15",
+      "close": 97.57
+    },
+    {
+      "date": "2026-07-16",
+      "close": 99.94
+    },
+    {
+      "date": "2026-07-17",
+      "close": 97.5
+    },
+    {
+      "date": "2026-07-20",
+      "close": 47.725
+    },
+    {
+      "date": "2026-07-21",
+      "close": 47.23
+    },
+    {
+      "date": "2026-07-22",
+      "close": 47.835
+    },
+    {
+      "date": "2026-07-23",
+      "close": 93.56
+    },
+    {
+      "date": "2026-07-24",
+      "close": 93.49
+    },
+    {
+      "date": "2026-07-27",
+      "close": 95.33
+    },
+    {
+      "date": "2026-07-28",
+      "close": 97.74
+    },
+    {
+      "date": "2026-07-29",
+      "close": 97.23
+    },
+    {
+      "date": "2026-07-30",
+      "close": 97.65
+    },
+    {
+      "date": "2026-07-31",
+      "close": 48.19
+    },
+    {
+      "date": "2026-08-03",
+      "close": 93.55
+    },
+    {
+      "date": "2026-08-04",
+      "close": 94.18
+    },
+    {
+      "date": "2026-08-05",
+      "close": 94.46
+    },
+    {
+      "date": "2026-08-06",
+      "close": 47.08
+    },
+    {
+      "date": "2026-08-07",
+      "close": 90.36
+    },
+    {
+      "date": "2026-08-11",
+      "close": 45.53
+    },
+    {
+      "date": "2026-08-12",
+      "close": 45.98
+    },
+    {
+      "date": "2026-08-13",
+      "close": 46.68
+    },
+    {
+      "date": "2026-08-14",
+      "close": 46.82
+    }
+  ],
+  "macro_equity_tr_digest": "c794c4b8e6590101",
+  "option_overhang_digest": "99f56a4553b6e9c0",
+  "mcap_error_overall": {
+    "n": 50762,
+    "median": 1.0,
+    "mean": 0.982093,
+    "p05": 0.805802,
+    "min": 0.192496,
+    "max": 13.181378
+  }
+}

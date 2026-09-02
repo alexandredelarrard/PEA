@@ -229,6 +229,9 @@ def test_the_invariants_fire_on_a_deliberately_corrupted_ticker():
         "sharesOutstanding": [1e9] * len(idx) * 2,
         "sharesbas": [1e9] * len(idx) * 2,
         "marketcap": [1e11] * len(idx) * 2,
+        # no spinoff anywhere in this fixture, so S is the identity and the invariants
+        # reduce to exactly what they were before the level fix
+        "level_factor": [1.0] * len(idx) * 2,
     })
     assert invariant_market_cap(clean).failed == 0, "the clean panel must pass"
     assert invariant_price_vintage(clean).failed == 0
@@ -253,3 +256,53 @@ def test_the_invariants_fire_on_a_deliberately_corrupted_ticker():
     print(f"  GOOD is untouched in both: {sorted(mcap.failing_tickers)}")
     print("  Validated: both invariants detect an unapplied split and cluster it to the one "
           "ticker responsible.")
+
+
+def test_a_spinoff_ticker_fails_invariant_1_without_S_and_passes_with_it():
+    """The level factor, at the validator's own boundary -- the FDX shape, synthesised.
+
+    A spinoff divides Yahoo's `close_split` by `S` and leaves the share count alone, so the
+    identity `close_split x shares == sharadar.marketcap` is short by exactly `S`. This is not
+    a corruption the repo introduced and not one Sharadar introduced: the two vendors are each
+    self-consistent and simply answer different questions. `S` is what makes them comparable.
+
+    The test asserts BOTH directions, because only the pair is meaningful:
+      * without `S` the row fails and `raw_failed` records that it did;
+      * with `S` it passes, and the clean ticker beside it never moves either way.
+    """
+    from src.validate.prices import invariant_market_cap, invariant_price_vintage
+
+    idx = pd.bdate_range("2018-01-31", periods=8, freq="QE")
+    S = 1.241                                   # FDX's measured factor
+    panel = pd.DataFrame({
+        "ticker": ["CLEAN"] * len(idx) + ["SPUN"] * len(idx),
+        "date": list(idx) * 2,
+        # SPUN's quote is back-adjusted for a spinoff still in its future; CLEAN's is not
+        "close_split": [100.0] * len(idx) + [100.0 / S] * len(idx),
+        "price": [100.0] * len(idx) * 2,        # Sharadar never back-adjusts either one
+        "sharesOutstanding": [1e9] * len(idx) * 2,
+        "sharesbas": [1e9] * len(idx) * 2,
+        "marketcap": [1e11] * len(idx) * 2,     # a spinoff does not change the share count
+        "level_factor": [1.0] * len(idx) + [S] * len(idx),
+    })
+
+    mcap = invariant_market_cap(panel)
+    vintage = invariant_price_vintage(panel)
+
+    assert mcap.failed == 0, f"with S the identity must close: {mcap.failing_tickers}"
+    assert vintage.failed == 0
+    assert mcap.raw_failed == len(idx), (
+        "and WITHOUT S it must fail on exactly the spinoff ticker's rows -- a test that only "
+        f"checked the corrected rate could not tell the fix from a widened tolerance: "
+        f"{mcap.raw_failed}")
+    assert vintage.raw_failed == len(idx)
+    assert mcap.raw_share == pytest.approx(0.5), "half the panel is the spun ticker"
+
+    print("\n=== SANITY CHECK: S closes the spinoff identity ===")
+    print(f"  SPUN: close_split {100.0 / S:.4f} x 1e9 shares = "
+          f"${100.0 / S * 1e9 / 1e9:.2f}bn vs Sharadar ${1e11 / 1e9:.0f}bn "
+          f"-> {100.0 / S * 1e9 / 1e11 - 1:+.2%} without S")
+    print(f"  x S = {S} -> ${100.0 / S * S * 1e9 / 1e9:.2f}bn, exact.")
+    print(f"  invariant 1: {mcap.raw_failed} rows fail without S, {mcap.failed} with it; "
+          f"CLEAN never implicated either way.")
+    print("  Validated: the factor fixes the spinoff row and touches nothing else.")

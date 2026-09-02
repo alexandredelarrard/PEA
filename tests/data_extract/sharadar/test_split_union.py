@@ -19,7 +19,8 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
-    SPLIT_MATCH_DAYS, TranslationReport, _is_split_shaped, split_events,
+    SPLIT_INTEGER_TOL, SPLIT_MATCH_DAYS, SPLIT_RATIO_CONFLICT_TOL, TranslationReport,
+    _is_split_shaped, split_events,
 )
 
 
@@ -58,6 +59,32 @@ def test_split_shape_accepts_integers_and_their_reciprocals(ratio, expected, why
     """A genuine split is an integer or the RECIPROCAL of one. The reciprocal half is not a
     nicety: without it every genuine REVERSE split is classified as an artefact."""
     assert _is_split_shaped(ratio) is expected, f"{ratio} ({why})"
+
+
+@pytest.mark.parametrize("ratio,expected,gap,why", [
+    (0.33333, True, 3.33e-6, "DD / HLT / RRD / SBRA 1:3, as Sharadar rounds it to 5 dp"),
+    (0.14286, True, 2.86e-6, "MSI / CCEC / UNTD 1:7"),
+    (0.16667, True, 3.33e-6, "WINMQ 1:6"),
+    (1.272, False, 7.27e-4, "BDX spinoff -- the NEAREST false positive, 7x the tolerance"),
+    (0.945, False, 5.6e-4, "SJM merger factor -- the second nearest"),
+    (1.067, False, 3.3e-4, "CMCSA spinoff factor (16/15)"),
+    (1.025, False, 2.5e-2, "BDX Embecta -- 41/40 exceeds the denominator cap outright"),
+    (0.3775, False, 2.5e-3, "WTW exchange ratio"),
+])
+def test_the_tolerance_sits_in_a_measured_gap(ratio, expected, gap, why):
+    """`SPLIT_INTEGER_TOL` is 1e-4 because that is the middle of a MEASURED gap, and this
+    test is the gap.
+
+    Sharadar publishes ratios to 5 decimal places, so a genuine 1:3 arrives as `0.33333` --
+    3.33e-6 from the truth. At the old 1e-6 that was REJECTED, and rejecting it is what left
+    `sharesOutstandingPit` 3x wrong on DD. The nearest thing on the other side is BDX's
+    spinoff factor at 7.27e-4. 1e-4 is 30x above the largest true rounding error and 7x below
+    the smallest false positive; there is nothing in between to get wrong.
+    """
+    assert _is_split_shaped(ratio) is expected, f"{ratio} ({why}, gap {gap:.2e})"
+    assert (gap < SPLIT_INTEGER_TOL) is expected, (
+        f"the stated gap {gap:.2e} must sit on the same side of the tolerance "
+        f"{SPLIT_INTEGER_TOL:.0e} as the verdict -- {why}")
 
 
 # --------------------------------------------------------------------------- #
@@ -127,15 +154,24 @@ def test_an_uncorroborated_yfinance_spinoff_factor_is_dropped():
 def test_a_corroborated_odd_ratio_beats_the_shape_test():
     """Corroboration OVERRIDES shape, and it has to: GOOGL's real 2014 split is 1.998 in
     yfinance and 2.0 in Sharadar. 1.998 reproduces no small-integer fraction, so the shape
-    test alone would drop a split both vendors independently report."""
+    test alone would drop a split both vendors independently report.
+
+    Also the negative case for the conflict rule. 2.0 IS split-shaped and 1.998 is not, so
+    without a materiality band the rule would "resolve" this pair in Sharadar's favour and
+    silently rewrite a ratio the whole corroboration argument says to trust. 0.1% apart is
+    rounding, not a conflict."""
     actions = _actions([("GOOGL", "2014-04-03", "split", 2.0)])
     yf_splits = _yf([("GOOGL", "2014-04-03", 1.998)])
     out = split_events(actions, yf_splits)
 
     assert len(out) == 1 and out.iloc[0]["value"] == 1.998, out.to_dict("records")
+    assert abs(1.998 / 2.0 - 1.0) <= SPLIT_RATIO_CONFLICT_TOL, \
+        "a 0.1% disagreement must sit INSIDE the materiality band"
     print("\n=== SANITY CHECK: corroboration beats shape ===")
     print("  GOOGL 2014-04-03: sharadar 2.0 + yfinance 1.998 -> kept at 1.998 (yfinance "
-          "wins, because close_split steps on ITS date and ratio). Validated.")
+          "wins, because close_split steps on ITS date and ratio).")
+    print(f"  0.10% apart, inside the {SPLIT_RATIO_CONFLICT_TOL:.0%} conflict band, so the "
+          "ratio rule does not fire on rounding. Validated.")
 
 
 def test_the_yfinance_date_wins_when_the_two_vendors_disagree():
@@ -158,19 +194,64 @@ def test_the_yfinance_date_wins_when_the_two_vendors_disagree():
     print("  The share factor now steps on the same day close_split does. Validated.")
 
 
-def test_a_spinoff_co_dated_row_is_still_rejected():
-    """The HON trap survives the union: a `split` row co-dated with a `spinoff` is the
-    SPINOFF'S PRICE ADJUSTMENT, not a share-count event. HON's own cover page proves it --
-    `sharesbas` reads 316,826,560 on 2026-04-23 and 316,940,010 on 2026-07-23, unchanged
-    across the date. Applying it would have DOUBLED every HON share count in the history."""
+def test_a_spinoff_co_dated_row_is_now_kept():
+    """A `split` row CO-DATED WITH A SPINOFF IS STILL A SPLIT, and this test used to assert
+    the opposite.
+
+    The veto was justified on HON with "`sharesbas` is unchanged across the date
+    (316,826,560 -> 316,940,010)". THAT ARGUMENT IS VOID: Sharadar restates `sharesbas`
+    retroactively, so it is continuous across a real split by construction and proves nothing.
+
+    Deep history is what discriminates, and it says the split is real -- HON's 2010
+    `sharesbas` reads 390,086,318 against an actual ~780M, its 2010 `price` 94.52 against
+    ~47, its 2015 `dps` 1.03 against 0.5175 and its 2015 `epsdil` 3.20 against 1.60. Four
+    fields restated 2x, with `marketcap` correct at $36.9bn because the two legs cancel.
+    All 27 vetoed rows were split-shaped and 24 were reciprocals of small integers.
+    """
     actions = _actions([("HON", "2026-06-29", "split", 0.5),
                         ("HON", "2026-06-29", "spinoff", 1.0)])
     out = split_events(actions, pd.DataFrame(columns=["ticker", "date", "ratio"]))
-    assert out.empty, f"the HON spinoff price factor must not survive: {out.to_dict('records')}"
 
-    print("\n=== SANITY CHECK: the HON spinoff trap ===")
-    print("  split 0.5 co-dated with spinoff 1.0 -> 0 events kept. A 100% error on 19 of 20 "
-          "rows, avoided. Validated.")
+    assert len(out) == 1, f"the real 1:2 reverse split must survive: {out.to_dict('records')}"
+    assert out.iloc[0]["value"] == 0.5
+
+    print("\n=== SANITY CHECK: a split co-dated with a spinoff ===")
+    print("  HON split 0.5 + spinoff 1.0 on 2026-06-29 -> 1 event kept at x0.5.")
+    print("  sharesOutstandingPit now DOUBLES before 2026-06-29, matching the ~780M HON "
+          "actually had in 2010. Validated.")
+
+
+@pytest.mark.parametrize("ticker,when,yf_ratio,sh_ratio,expected,why", [
+    ("DD", "2019-06-03", 0.4725, 0.33333, 0.33333,
+     "the Corteva spinoff's PRICE factor vs the real 1:3 reverse split"),
+    ("HON", "2026-06-29", 0.9535, 0.5, 0.5,
+     "the Solstice spinoff's PRICE factor vs the real 1:2 reverse split"),
+])
+def test_the_split_shaped_ratio_wins_a_material_conflict(ticker, when, yf_ratio, sh_ratio,
+                                                         expected, why):
+    """One date, two vendors, two DIFFERENT numbers -- and only one of them is a share factor.
+
+    On a corroborated event the DATE is always yfinance's (`close_split` steps on the day
+    Yahoo adjusted its own prices). The RATIO is yfinance's only while the two agree: where
+    they differ materially they are describing different things, and the SPLIT-SHAPED one is
+    what a share count needs. Taking yfinance's number here is what left `sharesOutstandingPit`
+    3x wrong on DD and 2x wrong on HON.
+    """
+    actions = _actions([(ticker, when, "split", sh_ratio),
+                        (ticker, when, "spinoff", 1.0)])
+    out = split_events(actions, _yf([(ticker, when, yf_ratio)]))
+
+    assert len(out) == 1, f"one event, not two: {out.to_dict('records')}"
+    assert out.iloc[0]["value"] == expected, why
+    assert pd.Timestamp(out.iloc[0]["date"]).date().isoformat() == when, \
+        "the yfinance DATE must survive even when its RATIO does not"
+
+    print(f"\n=== SANITY CHECK: ratio conflict, {ticker} {when} ===")
+    print(f"  yfinance x{yf_ratio} (split-shaped: {_is_split_shaped(yf_ratio)}) vs "
+          f"sharadar x{sh_ratio} (split-shaped: {_is_split_shaped(sh_ratio)})")
+    print(f"  -> kept x{expected} on {when}. {why}. Validated.")
+
+
 
 
 def test_no_split_source_at_all_is_empty_not_an_error():

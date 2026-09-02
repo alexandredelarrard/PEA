@@ -1,0 +1,193 @@
+{
+  "_doc": [
+    "yf_price_bugfix.json  (configs/prices/)",
+    "-------------------------------------------------------------------------------------",
+    "Defects in YAHOO's own price data that no event feed can express, repaired at the point",
+    "`cube_part_prices` is built. Read by `StepCubePrices` via `level_basis.load_bugfix`.",
+    "",
+    "## Why a register and not code",
+    "",
+    "`level_factor` (S) undoes the spinoff adjustment Yahoo applied to `close_split`, and it",
+    "derives that adjustment from `prices_splits` -- Yahoo's own splits FEED. That works only",
+    "while the feed agrees with what Yahoo actually applied to the PRICES. Three ways it does",
+    "not, and none of them is inferable from the feed:",
+    "",
+    "  * SILENT ADJUSTMENT -- Yahoo back-adjusted the history and published no row at all.",
+    "    IP's market cap reads 6.6% low for 20 years and `prices_splits` has no IP row.",
+    "  * MIS-APPLIED ADJUSTMENT -- Yahoo published one factor and applied a different one on",
+    "    a different date. JCI's `close_split` steps 70.354 -> 27.775 on 2007-07-02, a factor",
+    "    of 0.3948, while its feed claims 0.25 and its REAL 3-for-1 was 2007-10-03 (where the",
+    "    series does not step at all).",
+    "  * SPLIT VINTAGE -- Yahoo adjusted PART of its own history for a split it published",
+    "    and left the rest. MNST alternates between two bases inside three weeks.",
+    "",
+    "Both are per-ticker facts about a vendor's data, established by measurement against an",
+    "independent source. That is a register, not an algorithm -- exactly like",
+    "`sharadar_corrections.json`, and for the same reason.",
+    "",
+    "## Every entry states the DEFECT, not just the repair",
+    "",
+    "⚠ This is the property that matters. An entry carries the value it EXPECTS to observe,",
+    "and `StepCubePrices` re-measures it on every build. If Yahoo fixes its data the",
+    "observation stops matching, the entry is SKIPPED and a warning is logged -- a stale",
+    "repair can never silently double-correct. Nothing here is applied on faith.",
+    "",
+    "## `level_factor` -- a multiplicative LEVEL wedge",
+    "",
+    "`factor` is the measured median of `sharadar_fundamentals.price / prices.close_split`",
+    "over the segment: multiply a LEVEL by it to reach the price the stock actually traded at.",
+    "It multiplies the computed `S`, so it lands in `cube_part_prices.level_factor` and every",
+    "market cap with it. ⚠ It NEVER touches a return -- see level_basis.py.",
+    "",
+    "⚠ A SEGMENT IS A WINDOW `[previous before, this before)`, NOT a prefix, and its `factor`",
+    "is the WHOLE wedge for that era rather than an increment on the one before it. HBAN's",
+    "five eras measure 1.61051 / 1.46410 / 1.33100 / 1.21000 / 1.10005 and IP's two measure",
+    "1.07078 / 1.05600, each read off its own rows. Compounding them would put HBAN's 1995",
+    "bars at 4.17725, which is not a number anything measured; measuring them over an open",
+    "prefix reads the era BEFORE the one being checked, because the older rows outnumber the",
+    "newer ones and the median follows them.",
+    "",
+    "`before` is EXCLUSIVE and is the corporate action's own date wherever one corroborates",
+    "the step. Two entries (BLDR, CCI) have no identified action; theirs sits at the midpoint",
+    "of the gap between the last bad filing and the first clean one, and says so.",
+    "",
+    "Admission bar, applied when these were measured: at least 2 filing rows in the segment,",
+    "at most 0.5% spread WITHIN it, and at least 1% away from 1.0. ORCL, TMO and HAS were",
+    "measured and REJECTED by it -- their residuals are 1-row blips of 1-3%, not plateaus, and",
+    "encoding noise as a correction is worse than leaving it.",
+    "",
+    "## `return_seams` -- a discontinuity that is not a price move",
+    "",
+    "`step` is the observed one-bar ratio `close_split(d) / close_split(d-1)`. The bars BEFORE",
+    "`d` are multiplied by it, which makes the series continuous and removes the fabricated",
+    "return. This is the one repair here that changes `ret`, `close_total` and every label --",
+    "because a fabricated -61% return is a LABEL defect first and a level defect second.",
+    "",
+    "⚠ NOT a general de-spiking rule. A >40% one-bar move with no split on the books is",
+    "usually REAL: MO's 2008 Philip Morris International separation, AIG 2008-09-15, PCG's",
+    "2019 bankruptcy and the 2020-03-09 oil crash (APA/OXY/TRGP) all match that shape and all",
+    "happened. Only a move contradicted by an independent source belongs here.",
+    "",
+    "## `split_vintage` -- a series left on TWO bases at once",
+    "",
+    "The third and worst shape, and the reason this section exists at all. Yahoo publishes a",
+    "split, back-adjusts SOME of its own history for it, and leaves the rest alone. MNST's",
+    "2026-08-11 two-for-one is the case: five scattered bars in the three weeks before it are",
+    "adjusted and every other bar in thirty years is not, so the series alternates --",
+    "97.65, 48.19, 93.55, 47.08, 90.36, 45.53 -- with no market event anywhere near it.",
+    "",
+    "⚠ Re-fetched LIVE from Yahoo on 2026-09-01, bar for bar. This is not a stale extract and",
+    "a full re-download does not touch it.",
+    "",
+    "It cannot be a `factor`, because half the affected bars are already correct and halving",
+    "them would break them. So `ratio` is the split, and the repair anchors on the first bar",
+    "at or after `before` -- which is on the new basis BY DEFINITION, being the split itself --",
+    "and walks backwards, flipping a multiplier at every one-bar step that lands on the ratio",
+    "or its reciprocal. `expect_wedge` is what `sharadar.price / close_split` must still read",
+    "for the entry to fire, and the wedge is re-measured AFTER the walk to confirm it reached",
+    "1.0. Verified from both ends, refused from either."
+  ],
+
+  "_APPROVED": {
+    "date": "2026-09-01",
+    "measured_by": "scripts/spinoff_level_baseline.py + the segment scan in the plan",
+    "note": "Every `factor` is the measured median of sharadar.price / close_split over the segment, with spread <= 0.06% within each. Every `step` is the observed one-bar ratio in `prices`."
+  },
+
+  "level_factor": {
+    "IP": {
+      "evidence": "Two spinoffs Yahoo back-adjusted the whole history for and published NO prices_splits row for. Returns around both dates are <3%, so the adjustment is smooth and correct FOR RETURNS -- it is only the LEVEL that is left short. 107 of 127 filing rows fail invariant 1 without this.",
+      "segments": [
+        {"before": "2014-07-01", "factor": 1.07078, "rows": 78, "spread": 0.0000,
+         "event": "Veritiv (VRTV) spinoff, 2014-07-01 -- xpedx/Unisource"},
+        {"before": "2021-10-01", "factor": 1.05600, "rows": 29, "spread": 0.0000,
+         "event": "Sylvamo (SLVM) spinoff -- sharadar_actions 2021-10-01 value 0.09091"}
+      ]
+    },
+    "SJM": {
+      "evidence": "The 0.945 factor on 2002-05-30 IS in sharadar_actions and IS applied by Yahoo to prices, but it is a merger share-issuance factor, not a split, so `_is_split_shaped` rejects it (0.945 vs 17/18 = 5.6e-4) and it never reaches the denominator of S. 1/0.945 = 1.05820, which is the measured wedge to five decimal places.",
+      "segments": [
+        {"before": "2002-05-30", "factor": 1.05820, "rows": 27, "spread": 0.0006,
+         "event": "sharadar_actions 2002-05-30 value 0.945 -- 1/0.945 = 1.05820"}
+      ]
+    },
+    "HBAN": {
+      "evidence": "Five consecutive annual 10% STOCK DIVIDENDS. Each is genuinely split-shaped (11/10), so `split_events` keeps all five and they cancel out of S -- correctly, because they DO change the share count. But Sharadar's `price` does not reflect them while Yahoo's `close_split` does, so the level wedge is 1.1^n and compounds. The measured ladder reproduces 1.1^5..1.1^1 to five decimal places.",
+      "segments": [
+        {"before": "1996-07-12", "factor": 1.61051, "rows": 2, "spread": 0.0000,
+         "event": "1.1^5 -- five 10% stock dividends still ahead"},
+        {"before": "1997-07-11", "factor": 1.46410, "rows": 3, "spread": 0.0000,
+         "event": "1.1^4"},
+        {"before": "1998-07-13", "factor": 1.33100, "rows": 4, "spread": 0.0000,
+         "event": "1.1^3"},
+        {"before": "1999-07-12", "factor": 1.21000, "rows": 5, "spread": 0.0002,
+         "event": "1.1^2"},
+        {"before": "2000-07-12", "factor": 1.10000, "rows": 4, "spread": 0.0003,
+         "event": "1.1^1 -- the last one, ex-date 2000-07-12"}
+      ]
+    },
+    "APA": {
+      "evidence": "The same stock-dividend mechanism as HBAN: a 10% (2001-12-27) and a 5% (2003-03-10), both split-shaped, both cancelling out of S, neither reflected in Sharadar's `price`. 1.1 x 1.05 = 1.155, which is the measured wedge exactly.",
+      "segments": [
+        {"before": "2001-12-27", "factor": 1.15500, "rows": 20, "spread": 0.0003,
+         "event": "1.1 x 1.05 -- both stock dividends still ahead"},
+        {"before": "2003-03-10", "factor": 1.05000, "rows": 4, "spread": 0.0000,
+         "event": "the 5% stock dividend alone"}
+      ]
+    },
+    "HWM": {
+      "evidence": "Howmet's 2020 Arconic separation. Yahoo back-adjusted the history and published no prices_splits row. Corroborated by sharadar_actions 2020-04-01 spinoff of ARNC (value 0.25).",
+      "segments": [
+        {"before": "2020-04-01", "factor": 1.30400, "rows": 13, "spread": 0.0000,
+         "event": "Arconic (ARNC) spinoff -- sharadar_actions 2020-04-01 value 0.25"}
+      ]
+    },
+    "BX": {
+      "evidence": "Blackstone's PJT Partners separation. No prices_splits row; corroborated by sharadar_actions 2015-10-01 spinoff of PJT (value 0.025). A small wedge (1.9%) but a perfectly flat one across all 33 affected rows.",
+      "segments": [
+        {"before": "2015-10-01", "factor": 1.01900, "rows": 33, "spread": 0.0000,
+         "event": "PJT Partners spinoff -- sharadar_actions 2015-10-01 value 0.025"}
+      ]
+    },
+    "BLDR": {
+      "evidence": "A flat 18.9% wedge across all 18 pre-2010 filing rows, spread 0.00%. ⚠ NO corroborating corporate action was found in sharadar_actions -- the shape is unambiguous (a perfect plateau that ends), the CAUSE is not. Builders FirstSource ran a rights offering and a debt exchange through 2009-2010, either of which would do this.",
+      "segments": [
+        {"before": "2009-12-31", "factor": 1.18900, "rows": 18, "spread": 0.0000,
+         "event": "UNEXPLAINED -- boundary is the midpoint of 2009-10-28..2010-03-04"}
+      ]
+    },
+    "CCI": {
+      "evidence": "A flat 3.1% wedge across 17 filing rows to mid-2002, spread 0.04%. ⚠ NO corroborating corporate action found. Crown Castle restructured heavily in 2002. The single 2020-07-31 row at 0.97938 is NOT included -- one row is a blip, not a plateau.",
+      "segments": [
+        {"before": "2002-06-30", "factor": 1.03100, "rows": 17, "spread": 0.0004,
+         "event": "UNEXPLAINED -- boundary is the midpoint of 2002-05-14..2002-08-13"}
+      ]
+    }
+  },
+
+
+  "split_vintage": {
+    "MNST": [
+      {
+        "before": "2026-08-11",
+        "ratio": 2.0,
+        "expect_wedge": 0.50000,
+        "expect_flips": 5,
+        "evidence": "Yahoo back-adjusted FIVE bars for the 2026-08-11 two-for-one and left the other 7,793 alone. The five (2026-07-20, 07-21, 07-22, 07-31, 08-06) sit as islands inside the unadjusted run, so close_split reads 97.65 -> 48.19 -> 93.55 -> 47.08 -> 90.36 -> 45.53 with nothing in the market to explain it. The ten island edges are steps of 0.4895, 1.9559, 0.4935, 1.9413, 0.4984 and 1.9193 -- every one within 5% of 2.0 or 0.5, and the largest genuine MNST move in thirty years is +45.5%, so nothing real is near the flip band.",
+        "corroboration": "sharadar.price / close_split is 0.50000 on all 122 filing rows from 1996-05-10 to 2026-08-07, flat to five decimals -- Sharadar carries the whole series on the post-split basis. Sharadar's 45.18 on 2026-08-07 equals 90.36 / 2 exactly. sharadar_actions has no MNST row after 2016-11-10, so the vendor's ACTION feed is stale even though its PRICE is right; the split is in prices_splits (2026-08-11, ratio 2.0), which is what `ratio` here refers to.",
+        "note": "⚠ The only entry that is direction-aware per bar, and the only one that is NOT a stale-extract artifact -- re-fetched live from Yahoo on 2026-09-01 and reproduced exactly. Volume is deliberately left alone: 10.8M on the last stale bar against 10.1M on the next adjusted one is no evidence of a re-basing, and inventing a factor for a leg with no measured defect is how a register starts lying."
+      }
+    ]
+  },
+  "return_seams": {
+    "JCI": [
+      {
+        "date": "2007-07-02",
+        "step": 0.394789,
+        "expect_ret": -0.60521,
+        "evidence": "close_split falls 70.354 -> 27.775 in one bar, a -60.52% return that never happened. JCI's real 3-for-1 was 2007-10-03, where the series does NOT step. yfinance's own feed claims 0.25 on this date; the applied factor is 0.3948. So the feed, the applied adjustment and the real event disagree three ways, and the bar is corroborated by NOTHING -- Sharadar's price shows no such move.",
+        "note": "⚠ This repairs the fabricated RETURN, which is what reaches momentum, vol, betas and every JCI label. It does NOT make JCI's level basis correct: the residual wedge drifts monotonically across 83 segments (0.32 -> 0.11 over 1996-1999), which is a corrupt series rather than a basis offset and cannot be expressed as a factor. MNST's defect looked like this one and turned out NOT to be -- see split_vintage -- so JCI stays the last named residual, and it is the genuinely corrupt one."
+      }
+    ]
+  }
+}

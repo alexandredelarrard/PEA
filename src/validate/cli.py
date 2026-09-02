@@ -257,9 +257,13 @@ def prices(config_path: str, tickers: str | None, since: str | None,
            report_path: str | None, skip_spike: bool, no_write: bool) -> None:
     """The three adjustment-basis invariants. Reports; corrects nothing.
 
-    Invariant 1 is the primary gate. Its failures are vendor DISAGREEMENTS -- Sharadar's own
-    `marketcap` is internally inconsistent across spinoffs -- so they are recorded and
-    settled, never auto-corrected. See src/validate/prices.py."""
+    Invariants 1 and 2 apply `S(d)`, the spinoff LEVEL factor, to the price leg in memory,
+    and print BOTH the corrected rate and the rate without it. Only invariant 3 blocks.
+
+    ⚠ A surviving invariant-1 failure is a vendor DISAGREEMENT to settle, not a value to
+    overwrite -- but "the vendor is inconsistent" is no longer the default reading. It was,
+    and it was wrong for 12.6% of rows. Decompose the identity leg by leg first. See
+    src/validate/prices.py."""
     _, context = _ctx(config_path)
     names, _ = _roster_tickers(context, config_path, (), tickers)
     report = run_prices_validation(context, tickers=names, since=since,

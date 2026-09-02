@@ -52,7 +52,12 @@ logger = logging.getLogger(__name__)
 #: reduced for later dividends (the basis every RETURN needs -- ret, momentum, betas, labels).
 #: There is deliberately NO `close` alias: a reader that picks the wrong one must KeyError,
 #: not quietly compute price returns.
-ALL_FIELDS = ("close_split", "close_total", "volume", "ret", "sector_ret")
+#:
+#: ⚠ `level_factor` IS NOT A PRICE. It is the dimensionless `S(d)` from
+#: `utils/common/level_basis.py` -- the SPINOFF adjustment Yahoo applied to `close_split` that
+#: `sharesOutstanding` does not carry. `close_split` alone is right for splits and short by
+#: `S` for spinoffs, so any LEVEL must multiply by it and no RETURN may.
+ALL_FIELDS = ("close_split", "close_total", "volume", "ret", "sector_ret", "level_factor")
 
 @dataclass(frozen=True, slots=True)
 class PriceFrames:
@@ -80,6 +85,11 @@ class PriceFrames:
     volume: pd.DataFrame | None = None
     ret: pd.DataFrame | None = None
     sector_ret: pd.DataFrame | None = None
+    #: `S(d)`, the spinoff LEVEL factor -- a dimensionless multiplier, never a price. 1.0 on
+    #: ~89% of cells. Multiply a LEVEL by it (market cap, EV, dollar volume); never a RETURN,
+    #: because `close_split x S` would break exactly at the spinoff bar that Yahoo's
+    #: back-adjustment exists to smooth. See `utils/common/level_basis.py`.
+    level_factor: pd.DataFrame | None = None
 
     def require(self, *fields: str) -> None:
         """Fail at the top of a builder rather than with a None-arithmetic TypeError two
@@ -178,6 +188,7 @@ def load_price_frames(
         volume=wide.get("volume"),
         ret=wide.get("ret"),
         sector_ret=wide.get("sector_ret"),
+        level_factor=wide.get("level_factor"),
     )
 
 

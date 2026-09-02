@@ -58,7 +58,7 @@ def test_pit_accessors_are_bit_identical_to_the_free_functions(inputs):
         # __call__ is the FieldGetter alias, so capital.py can be handed a PitFrames
         pd.testing.assert_frame_equal(pit(field), pit.daily(field), check_exact=True)
 
-    pd.testing.assert_frame_equal(pit.market_cap, daily_market_cap(fund, close),
+    pd.testing.assert_frame_equal(pit.market_cap, daily_market_cap(fund, close, level_factor=None),
                                   check_exact=True, check_dtype=True)
     assert pit.yoy_periods == infer_yoy_periods(fund)
 

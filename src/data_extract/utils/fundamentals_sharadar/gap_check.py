@@ -154,8 +154,8 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *,
                                 where={**where, "dimension": ARQ}, optional=True)
     if vendor is None or vendor.empty:
         raise RuntimeError("gap check: no stored Sharadar ARQ rows to measure")
-    # market-wide table: filter to these tickers AND to the two actions that move a share
-    # count, or the read drags back every action of every ticker Sharadar covers
+    # market-wide table: filter to these tickers AND to the two actions `split_events` reads,
+    # or the read drags back every action of every ticker Sharadar covers
     actions = context.store.load(
         Tables.sharadar_actions, project=True, optional=True,
         where={**where, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]})

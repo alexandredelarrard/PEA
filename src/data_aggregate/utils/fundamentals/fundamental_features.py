@@ -1384,13 +1384,15 @@ def _valuation_engine_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeInd
 
 
 def _intrinsic_fields(fund_hist: pd.DataFrame, close: pd.DataFrame | None,
-                      idx: pd.DatetimeIndex, intrinsic_cfg: dict | None) -> dict:
+                      idx: pd.DatetimeIndex, intrinsic_cfg: dict | None,
+                      level_factor: pd.DataFrame | None = None) -> dict:
     """INTRINSIC VALUE (two-stage DCF on TTM FCF) vs price. `intrinsic_cfg` is optional --
     every caller up the chain defaults it to None, so fall back to `intrinsic_value_daily`'s
     own documented DCF defaults rather than splatting None."""
     if close is None:
         return {}
-    iy = intrinsic_value_daily(fund_hist, close, idx, **(intrinsic_cfg or {})).get("yield")
+    iy = intrinsic_value_daily(fund_hist, close, idx, level_factor=level_factor,
+                               **(intrinsic_cfg or {})).get("yield")
     if iy is None or iy.empty or not iy.notna().any().any():
         return {}
     return {"intrinsic_yield": iy}
@@ -1408,6 +1410,7 @@ def _derived_fields(
     earnings_history: pd.DataFrame | None = None,
     pension_facts: pd.DataFrame | None = None,
     notes_num: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
 ) -> dict:
     """Build daily wide frames (date x ticker) for every characteristic.
 
@@ -1449,7 +1452,7 @@ def _derived_fields(
     F.update(_pension_health_fields(daily, pbo, notes_num, idx, pension_ret))
 
     # ---- everything that needs a daily market cap ---- #
-    mcap = daily_market_cap(fund_hist, close)
+    mcap = daily_market_cap(fund_hist, close, level_factor=level_factor)
     ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret)
 
     F.update(_valuation_yield_fields(mcap, net_income, revenue, equity, fcf))
@@ -1475,7 +1478,7 @@ def _derived_fields(
     F.update(_ma_footprint_fields(daily, fund_hist, idx, revenue, yoy_periods))
     F.update(_sbc_fields(daily, revenue, sbc))
     F.update(_valuation_engine_fields(daily, fund_hist, idx, revenue, ebitda, yoy_periods))
-    F.update(_intrinsic_fields(fund_hist, close, idx, intrinsic_cfg))
+    F.update(_intrinsic_fields(fund_hist, close, idx, intrinsic_cfg, level_factor))
 
     # ---- BUSINESS-QUALITY blocks (all from tags already extracted) ---- #
     #   #2 D&A/SBC realism, #5 forensic red flags, #3 M&A digestion,
@@ -1552,6 +1555,7 @@ def build_fundamental_feature_panel(
     earnings_history: pd.DataFrame | None = None,
     pension_facts: pd.DataFrame | None = None,
     notes_num: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Long-format panel: ['date','ticker', f_<char>_vs_peers, f_<char>_xs,
@@ -1582,7 +1586,8 @@ def build_fundamental_feature_panel(
                              intrinsic_cfg=intrinsic_cfg,
                              earnings_history=earnings_history, 
                              pension_facts=pension_facts,
-                             notes_num=notes_num)
+                             notes_num=notes_num,
+                             level_factor=level_factor)
 
     # float32 to reduce space vs float 64, no need of too much detail since z scored or ranked
     fields = {k: (v.astype("float32") if isinstance(v, pd.DataFrame) and not v.empty else v)

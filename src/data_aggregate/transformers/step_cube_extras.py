@@ -70,7 +70,7 @@ SOURCE_COLUMNS: dict[str, list[str]] = {
 
 class StepCubeExtras(Step):
 
-    _FIELDS = ("close_split", "volume")
+    _FIELDS = ("close_split", "volume", "level_factor")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -174,7 +174,8 @@ class StepCubeExtras(Step):
             return None
         return build_institutional_feature_panel(
             holdings, frames.peers, frames.trading_index,
-            shares_out_history=shares, stock_close=frames.close_split)
+            shares_out_history=shares, stock_close=frames.close_split,
+            level_factor=frames.level_factor)
 
     def _superinvestor_panel(self, frames: PriceFrames,
                              shares: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -194,7 +195,8 @@ class StepCubeExtras(Step):
         self._log.info("Elite 13F subset: %s rows across %s managers", len(holdings), n_mgrs)
         return build_superinvestor_feature_panel(
             holdings, roster, frames.peers, frames.trading_index,
-            shares_out_history=shares, stock_close=frames.close_split)
+            shares_out_history=shares, stock_close=frames.close_split,
+            level_factor=frames.level_factor)
 
     def _load_superinvestor_roster(self) -> dict | None:
         path = self._context.paths["DATA_STORE"] / Path(self._context.config.local.paths.superinvestors)
@@ -216,7 +218,8 @@ class StepCubeExtras(Step):
             return None
         return build_insider_feature_panel(
             insider, frames.peers, frames.trading_index,
-            shares_out_history=shares, stock_close=frames.close_split)
+            shares_out_history=shares, stock_close=frames.close_split,
+            level_factor=frames.level_factor)
 
     def _short_interest_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
         """RegSHO short-volume ratio + its change, plus SEC fails-to-deliver (settlement

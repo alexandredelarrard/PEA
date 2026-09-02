@@ -39,7 +39,7 @@ class StepCubeMomentum(Step):
     # four that subtract or multiply an `open`/`high`/`low`/`volume` (all split-adjusted
     # only). See the basis table at the top of momentum/features.py.
     _FIELDS = ("close_split", "close_total", "open", "high", "low", "volume",
-               "ret", "sector_ret")
+               "ret", "sector_ret", "level_factor")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -76,6 +76,7 @@ class StepCubeMomentum(Step):
             seasonal_horizons=[int(h) for h in self._cfg.targets.horizons],
             returns=frames.ret,
             close_split=frames.close_split,
+            level_factor=frames.level_factor,
         )
         self._log.info("Price feature panel: %s rows, %s features (volume liquidity: %s)",
                        len(panel), len(panel.columns) - 2,

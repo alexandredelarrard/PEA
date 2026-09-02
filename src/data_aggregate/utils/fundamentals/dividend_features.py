@@ -62,14 +62,28 @@ def _ttm_dividends(dividends_hist: pd.DataFrame, idx: pd.DatetimeIndex,
 
 
 def _dividend_fields(dividends_hist: pd.DataFrame, close_split: pd.DataFrame,
-                     fundamentals: pd.DataFrame | None) -> dict:
+                     fundamentals: pd.DataFrame | None,
+                     level_factor: pd.DataFrame | None = None) -> dict:
     """⚠ `close_split`, the SPLIT-ADJUSTED quote, and every leg here depends on it.
 
     `dividend_yield` is `ttm_ps / close_split`, and it only cancels because yfinance's
     `Dividends` column is split-adjusted the same way the quote is -- so a 4:1 split divides
     both legs and the yield is unchanged. On `close_total` the denominator would additionally
     carry the FUTURE-dividend factor D(d), making the dividend yield a function of dividends
-    not yet paid. `mcap` below has the same requirement for the same reason."""
+    not yet paid.
+
+    ⚠ AND THE SPINOFF FACTOR CANCELS HERE TOO -- MEASURED, so `yield_a` is deliberately left
+    alone. On the 2,968 rows with `|S-1| > 10%`, `(ttm_ps/close_split)` divided by Sharadar's
+    own level-basis `dps/price` has median exactly 1.0, sitting ~150,000x closer to 1.0 than
+    to `S` (`2026-09-01-spinoff-level-basis/before.md`). Yahoo back-adjusts `Dividends`
+    across a spinoff exactly as it does the quote, so both legs move together. The EARNINGS
+    leg measured the opposite way and IS corrected -- see `earnings_features`.
+
+    `mcap` is the exception, and it is not a yield: it is a LEVEL in dollars, divided into a
+    LEVEL in dollars (`total`, which reaches the SEC `dividendsPaid` figure whenever the
+    ex-date history misses a payer). `close_split x shares` is short by `S` for a spinoff
+    name, so that fallback yield would read `S` too high without the factor.
+    """
     close = close_split
     idx = close.index
     universe = list(close.columns)
@@ -89,7 +103,10 @@ def _dividend_fields(dividends_hist: pd.DataFrame, close_split: pd.DataFrame,
 
     # RECONCILED total cash dividends: per-share x shares where the name actually paid
     # (source A, ttm_ps>0), else the SEC `dividendsPaid` total (source B) fills the gap.
-    mcap = (shares * close).where(lambda x: x > 0) if not shares.empty else pd.DataFrame()
+    lvl = (1.0 if level_factor is None or level_factor.empty
+           else level_factor.reindex_like(close).fillna(1.0))
+    mcap = ((shares * close * lvl).where(lambda x: x > 0) if not shares.empty
+            else pd.DataFrame())
     total_a = (ttm_ps * shares).where(ttm_ps > 0) if not shares.empty else pd.DataFrame()
     if not total_a.empty:
         total = total_a.combine_first(div_paid) if not div_paid.empty else total_a
@@ -142,6 +159,7 @@ def build_dividend_feature_panel(
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
     stock_close: pd.DataFrame,
+    level_factor: pd.DataFrame | None = None,
     fundamentals_history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format dividend feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
@@ -150,5 +168,6 @@ def build_dividend_feature_panel(
             or "dividends" not in dividends_history.columns or stock_close is None):
         return pd.DataFrame(columns=["date", "ticker"])
     close = stock_close.reindex(trading_index)
-    fields = _dividend_fields(dividends_history, close, fundamentals_history)
+    fields = _dividend_fields(dividends_history, close, fundamentals_history,
+                              level_factor)
     return build_peer_relative_panel(fields, peer_dict)

@@ -512,8 +512,10 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
         return
 
     # `sharadar_actions` is MARKET-WIDE -- every ticker Sharadar covers, every action type.
-    # Only these tickers' splits and spinoffs move a share count, so both halves of the filter
-    # are needed; `project=True` alone would still drag the whole market back.
+    # Only these tickers' splits and spinoffs are of any interest, so both halves of the
+    # filter are needed; `project=True` alone would still drag the whole market back.
+    # ⚠ The `spinoff` rows no longer VETO a co-dated split -- that veto was wrong, see
+    # `split_events` -- but they are still read, to NAME the 27 rows the veto used to drop.
     actions = context.store.load(
         Tables.sharadar_actions, project=True, optional=True,
         where={"ticker": names, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]})

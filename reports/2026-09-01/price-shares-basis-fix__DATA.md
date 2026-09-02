@@ -139,16 +139,44 @@ _Observed values only — no verdicts. `rows`, `date_min` and `date_max` are **t
   `fundamentals_history` 2026-08-28. Verified by the fetcher's own incremental frontier,
   which now looks back a full year from `min(table max, today - 1y)` = 2025-09-01.
 
-- ⚠ **The market-cap identity tops out at 87.4%, not the plan's >99% — because the REFERENCE
-  is the inconsistent side.** Yahoo back-adjusts prices for SPINOFFS; Sharadar's `sharesbas`
-  does not. So for ~226 tickers `sharadar.marketcap` (= `price x sharesbas`) is internally
-  inconsistent. HON proves it: `sharesbas` is unchanged across its 2026-06-29 spinoff
-  (316,826,560 -> 316,940,010) while its `price` drops 428.68 -> 246.27. **The control
-  settles which side is at fault**: `sharadar.price x sharesbas / marketcap` is within 1% on
-  **99.82%** of rows, so the identity is sound and the residual is purely a vendor
-  disagreement about corporate actions. The cancellation identity removes the split and
-  dividend legs but leaves a **spinoff leg**. This was not anticipated by the plan and is the
-  single most important thing to carry forward.
+- ⚠⚠ **SUPERSEDED 2026-09-01 by the spinoff level-basis fix. The conclusion below was
+  WRONG in its second half, and the correction is the more valuable finding.**
+
+  What stands: the split and dividend legs cancel, a **spinoff leg** survives, and the
+  decomposition that found it (`sharadar.price x sharesbas / marketcap` within 1% on
+  **99.82%** of rows; `sharesOutstanding / sharesbas` on **100.00%**; `close_split /
+  sharadar.price` on only **87.59%**).
+
+  What was wrong: **"the reference is the inconsistent side" and "87.4% is the ceiling".**
+  Both legs are internally consistent — they answer different questions. Yahoo's `Close` is
+  back-adjusted for spinoffs because that is correct for RETURNS; Sharadar's `price` is not
+  because that is correct for LEVELS. Neither is a defect, and the decomposition above
+  already showed the moving leg was OURS. The identity is recoverable by multiplying the
+  price leg by `S(d) = Π(prices_splits.ratio after d) / Π(split_events(...).value after d)`:
+
+  | | before | after |
+  |---|---|---|
+  | invariant 1 `close_split·S·shares / marketcap` | 87.44% | **98.30%** |
+  | invariant 2 `close_split·S / sharadar.price` | 87.33% | **98.18%** |
+  | FDX 2020-12-17 market cap (Sharadar: $77.47bn) | $62.43bn | **$77.47bn** |
+  | rows the fix breaks | — | **3** (IVZ, OXY) vs 5,516 fixed |
+
+  HON, cited above as proof the vendor was inconsistent, was in fact proof of a SECOND
+  defect of our own: its `split = 0.5` on 2026-06-29 is a REAL 1-for-2 reverse split that
+  `split_events` was vetoing because a `spinoff` shared the date. `sharesbas` being unchanged
+  across the date proves nothing — the column is retroactively restated, so it is continuous
+  across a real split by construction. Deep history settles it: HON's 2010 `sharesbas` reads
+  390M against an actual ~780M, its 2010 `price` 94.52 against ~47.
+
+  The residual ~1.8% is four named clusters (MNST's stale Yahoo vintage 122 rows, Visa's
+  multi-class `sharesbas` 74, three stock-dividend names ~79, as-of join noise), not a wall.
+
+  **The reusable lesson: "the reference is inconsistent" is the most comfortable possible
+  explanation for a failing invariant, and it must be the LAST one accepted.** The
+  leg-by-leg decomposition that disproved it was already in this report.
+
+  Full record: `reports/planning/active-tasks/2026-09-01-spinoff-level-basis-plan.md` and the
+  before/after measurements beside it.
 
 - ⚠ **MNST's 97/47 alternation is an UPSTREAM YAHOO DEFECT and is still present.** The plan
   expected the full re-download to clear it. It does not: a freshly emptied table reproduces

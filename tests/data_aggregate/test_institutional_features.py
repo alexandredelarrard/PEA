@@ -219,7 +219,7 @@ def test_value_to_mcap_and_flow_panel():
     from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
     qf = _quarter_features(_holdings_opts())
     iv = fundamentals_to_daily(qf, "inst_value", idx)["A"].dropna().iloc[-1]
-    mc = daily_market_cap(fund, close)["A"].iloc[-1]
+    mc = daily_market_cap(fund, close, level_factor=None)["A"].iloc[-1]
     assert abs(iv / mc - 0.40) < 1e-6
     print("\n=== SANITY CHECK: institutional weight (value / market cap) ===")
     print(f"  A inst_value=${iv:,.0f} / mcap=${mc:,.0f} = {iv / mc:.2f}; panel exposes "

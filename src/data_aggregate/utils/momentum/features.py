@@ -9,8 +9,10 @@ introduced while fixing market cap. Which block uses which:
   close_split  -- `atr_14`     : (high - prev_close), (low - prev_close)
                   `gap_21`     : open / prev_close - 1
                   `range_21`   : |close - open| / open
-                  `dollar_volume_63` / `amihud_63` : price x volume (the split factor
-                                 cancels between the two, the dividend factor would not)
+                  `dollar_volume_63` / `amihud_63` : price x volume x `level_factor`
+                                 (the SPLIT factor cancels between price and volume; the
+                                 SPINOFF one does NOT -- see below -- and the dividend
+                                 factor would not cancel either)
   close_total  -- every RETURN: mom_12_1, rev_5/21, ma_ratio_50/200, high_prox_252,
                   peer_mom_63, tax_loss_pressure, the seasonal block, macd, rsi_14, and
                   the `ret` the vol / skew / idio family is built from
@@ -109,6 +111,7 @@ def compute_raw_features(
     seasonal_years: int = 5,
     *,
     returns: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
 ) -> dict:
     """
     Compute raw (un-standardized) feature frames. Returns dict:
@@ -191,10 +194,19 @@ def compute_raw_features(
     # ---- Liquidity / volume (point-in-time trailing windows; skipped w/o volume) ----
     if volume is not None:
         volume = volume.reindex_like(close_total)
+        # `None` -> 1.0, so the synthetic fingerprint harness and every test that has no
+        # factor to give are bit-identical to the pre-`S` result rather than skipped.
+        lvl = (1.0 if level_factor is None
+               else level_factor.reindex_like(close_total).fillna(1.0))
         # `split`, not `close_total`: dollar volume is a LEVEL x a share count, and both
-        # carry the same split restatement so it cancels. On the total-return basis the
+        # carry the same SPLIT restatement so it cancels. On the total-return basis the
         # dollars traded would be depressed by every later dividend.
-        dollar_vol = split * volume                        # daily $ traded
+        #
+        # ⚠ THE CANCELLATION IS SPLIT-ONLY. A spinoff divides Yahoo's price by `S` and leaves
+        # `volume` untouched -- nothing restates a share COUNT for a spinoff -- so the two
+        # legs no longer carry the same factor and the product is `S` too low. FDX reads 24%
+        # low before 2026-06, GE 40% low before 2019. `level_factor` puts it back.
+        dollar_vol = split * volume * lvl                  # daily $ traded
         # Liquidity/size proxy: log average daily dollar volume (63d).
         feats["dollar_volume_63"] = sanitize(
             np.log1p(dollar_vol.rolling(63, min_periods=20).mean()))
@@ -294,6 +306,7 @@ def build_feature_panel(
     *,
     returns: pd.DataFrame | None = None,
     close_split: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Build a long-format feature panel ready for modeling.
@@ -311,7 +324,8 @@ def build_feature_panel(
     """
     raw = compute_raw_features(close_total, open, sector_returns, close_split=close_split,
                                high=high, low=low, volume=volume,
-                               seasonal_horizons=seasonal_horizons, returns=returns)
+                               seasonal_horizons=seasonal_horizons, returns=returns,
+                               level_factor=level_factor)
     std = {name: xs_standardize(f, method) for name, f in raw.items()}
 
     long_frames = []

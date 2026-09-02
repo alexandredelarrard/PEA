@@ -503,7 +503,7 @@ def compute() -> dict:
         "total_revenue": fundamentals_to_daily(fund, "totalRevenue", idx),
         "free_cashflow": fundamentals_to_daily(fund, "freeCashflow", idx),
         "net_income": fundamentals_to_daily(fund, "netIncome", idx),
-        "market_cap": daily_market_cap(fund, close),
+        "market_cap": daily_market_cap(fund, close, level_factor=None),
     }, axis=1))
 
     # `build_peer_relative_panel` called DIRECTLY, including the two degenerate field

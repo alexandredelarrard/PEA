@@ -393,34 +393,55 @@ def test_share_block_is_deadjusted_against_the_sec_cover_page(context, ttm, tran
     assert ((joined["ratio"] - 1.0).abs() <= VENDOR_ROUNDING).all()
 
 
-def test_a_spinoff_priced_split_row_is_rejected(actions):
-    """⚠ HON's `split` = 0.5 is the Honeywell Aerospace spinoff's PRICE adjustment, not a
-    share-count event -- and applying it would DOUBLE every HON share count in the history.
+def test_a_spinoff_priced_split_row_is_kept(actions):
+    """⚠ THIS TEST USED TO ASSERT THE OPPOSITE, and the assertion was wrong.
 
-    The discriminator is the co-dated `spinoff` row. HON's own cover page confirms the
-    verdict: `sharesbas` is unchanged across the date.
+    HON's `split` = 0.5 on 2026-06-29 is co-dated with the Honeywell Aerospace `spinoff`, and
+    that co-dating was read as proof it must be the spinoff's PRICE adjustment rather than a
+    share-count event. It is both: the spinoff moved the price (yfinance carries x0.9535 on
+    the same day) AND the company reverse-split 1-for-2.
+
+    The supporting argument -- "`sharesbas` is unchanged across the date" -- is void, because
+    Sharadar restates `sharesbas` retroactively and it is therefore continuous across a real
+    split BY CONSTRUCTION. See `test_hon_continuity_proves_nothing_about_the_split`.
     """
     report = TranslationReport()
     kept = split_events(actions, report=report)
+    hon = kept[kept["ticker"] == "HON"]
     print(f"\nsplit rows in `sharadar_actions`: "
           f"{int((actions['action'] == 'split').sum())}")
-    print(f"accepted: {report.splits_applied}")
-    print(f"rejected: {report.splits_rejected}")
-    assert "HON" not in set(kept["ticker"]), "the spinoff price factor must not be applied"
-    assert any(label.startswith("HON") for label in report.splits_rejected)
-    assert set(kept["ticker"]) == {"AMZN", "WMT", "NVDA"}
+    print(f"HON events kept: {hon.to_dict('records')}")
+    assert not hon.empty, "the real 1-for-2 reverse split must survive the union"
+    assert 0.5 in set(hon["value"]), \
+        "and it must be kept at the SPLIT ratio 0.5, not yfinance's price factor 0.9535"
 
 
-def test_hon_share_count_is_unchanged_across_its_split_row(vendor_arq):
-    """The evidence behind the rejection above, measured rather than asserted."""
+def test_hon_continuity_proves_nothing_about_the_split(vendor_arq):
+    """`sharesbas` IS continuous across 2026-06-29 -- and that is exactly why it is not
+    evidence either way.
+
+    Sharadar restates the whole share block to today's basis, so a real split leaves no step
+    in `sharesbas` at all. Reading the absence of a step as "no split happened" is reading a
+    property of the vendor's storage as a property of the company, and it is what vetoed 27
+    genuine reverse splits.
+
+    What DOES discriminate is deep history against an independent source: HON's 2010
+    `sharesbas` reads ~390M where the company actually had ~780M, its 2010 `price` 94.52
+    where the stock traded near 47, its 2015 `dps` 1.03 against 0.5175 and its 2015 `epsdil`
+    3.20 against 1.60 -- four fields restated 2x, with `marketcap` correct because the two
+    legs cancel.
+    """
     hon = vendor_arq[vendor_arq["ticker"] == "HON"].sort_values("date")
     before = hon[pd.to_datetime(hon["date"]) < pd.Timestamp("2026-06-29")].iloc[-1]
     after = hon[pd.to_datetime(hon["date"]) > pd.Timestamp("2026-06-29")].iloc[0]
     step = after["sharesbas"] / before["sharesbas"]
     print(f"\nHON sharesbas {before['date']}: {before['sharesbas']:,.0f}")
     print(f"HON sharesbas {after['date']}: {after['sharesbas']:,.0f}  (step {step:.4f})")
-    print("a 1-for-2 reverse split would halve the as-filed count; it did not move")
-    assert abs(step - 1.0) < 0.05
+    print("Continuous -- as it would be either way, because the column is RESTATED.")
+    print("The split is real; `sharesbas` simply cannot see it. Validated.")
+    assert abs(step - 1.0) < 0.05, (
+        "if this ever DID step, the column would no longer be retroactively restated and "
+        "the whole de-adjustment would need re-deriving")
 
 
 # --------------------------------------------------------------------------- #

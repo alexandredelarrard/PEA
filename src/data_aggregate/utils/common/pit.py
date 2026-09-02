@@ -71,19 +71,34 @@ def fundamentals_to_daily(
 
 
 def daily_market_cap(fundamentals_history: pd.DataFrame,
-                     close_split: pd.DataFrame) -> pd.DataFrame:
-    """Historical daily market cap = ffilled `sharesOutstanding` x daily `close_split`.
+                     close_split: pd.DataFrame,
+                     *, level_factor: pd.DataFrame | None) -> pd.DataFrame:
+    """Historical daily market cap = ffilled `sharesOutstanding` x `close_split` x `S(d)`.
 
-    ⚠ BOTH LEGS MUST BE SPLIT-ADJUSTED, and the parameter is named for it. The vendor
+    ⚠ BOTH PRICE LEGS MUST BE SPLIT-ADJUSTED, and the parameter is named for it. The vendor
     back-fills `sharesbas` to today's basis (`sharesbas(d) = real_shares(d) x F(d)`) and
     Yahoo restates `Close` to the same one (`close_split(d) = raw_price(d) / F(d)`), so the
-    future-split factor CANCELS IDENTICALLY in the product and the result is the true
-    historical market cap without needing a split event list at all.
+    future-SPLIT factor CANCELS IDENTICALLY in the product.
 
     Handing it `close_total` instead reintroduces the defect this signature exists to
     prevent: nothing in a share count carries a dividend factor, so `D(d)` survives into the
     product -- median 0.618 in 2003, i.e. market cap 38% too low, and monotone in FUTURE
     dividends. Handing it a de-adjusted share count breaks the cancellation the other way.
+
+    ⚠ `level_factor` IS REQUIRED AND KEYWORD-ONLY, deliberately, because the cancellation
+    above holds for splits and FAILS for SPINOFFS. Yahoo back-adjusts `Close` across a
+    spinoff and a spinoff does not change the share count, so that factor does not cancel and
+    the product comes out LOW by exactly `S(d)`. Measured on FDX 2020-12-17:
+
+        close_split 235.5036 x 265,070,592 shares  = $62.425bn
+        x S = 1.241                                = $77.470bn
+        Sharadar's own `marketcap`                 = $77.470bn
+
+    GE reads 40% low before 2019 and DD 80% low before 2019 without it. There is no default:
+    a caller that has not thought about the basis must get a `TypeError`, not a number that
+    is quietly wrong for 80 of 491 tickers. Pass `None` ONLY to mean "S is 1.0 everywhere",
+    which is true for a synthetic fixture and for ~89% of real cells but never for the
+    universe as a whole.
 
     Requires a `sharesOutstanding` column (the VENDOR-basis one, not `sharesOutstandingPit`).
     """
@@ -97,6 +112,12 @@ def daily_market_cap(fundamentals_history: pd.DataFrame,
         return pd.DataFrame(index=close_split.index)
 
     mcap = close_split[cols].mul(shares[cols])
+    if level_factor is not None and not level_factor.empty:
+        # Reindexed rather than assumed aligned: `level_factor` spans the whole universe
+        # while `cols` is the intersection with the filing history. `fillna(1.0)` because a
+        # missing factor means "no adjustment", never "no market cap" -- the alternative
+        # silently NULLs a ticker's entire series.
+        mcap = mcap.mul(level_factor.reindex(index=mcap.index, columns=cols).fillna(1.0))
     return mcap.where(mcap > 0)
 
 
@@ -194,10 +215,15 @@ class PitFrames:
     """
 
     def __init__(self, history: pd.DataFrame | None, trading_index: pd.DatetimeIndex,
-                 close: pd.DataFrame | None = None) -> None:
+                 close: pd.DataFrame | None = None,
+                 level_factor: pd.DataFrame | None = None) -> None:
         self._history = history
         self._index = trading_index
         self._close = close
+        #: `S(d)`, forwarded to `daily_market_cap`. Positional-optional here rather than
+        #: required as it is there: `PitFrames` is also built for histories with no price at
+        #: all, where `market_cap` is never reached and demanding a basis would be noise.
+        self._level_factor = level_factor
         self._daily: dict[str, pd.DataFrame] = {}
         self._changes: dict[tuple[str, str, int], pd.DataFrame] = {}
         self._applied: dict[tuple[str, str], pd.DataFrame] = {}
@@ -260,13 +286,14 @@ class PitFrames:
     # ---- derived ---- #
     @property
     def market_cap(self) -> pd.DataFrame:
-        """Memoized `daily_market_cap(history, close)`. Empty when either input is
-        absent, matching `daily_market_cap`'s own empty-frame contract."""
+        """Memoized `daily_market_cap(history, close, level_factor=...)`. Empty when either
+        input is absent, matching `daily_market_cap`'s own empty-frame contract."""
         if self._market_cap is None:
             if self.empty or self._close is None or self._close.empty:
                 self._market_cap = pd.DataFrame(index=self._index)
             else:
-                self._market_cap = daily_market_cap(self._history, self._close)
+                self._market_cap = daily_market_cap(
+                    self._history, self._close, level_factor=self._level_factor)
         return self._market_cap
 
     @property

@@ -161,6 +161,7 @@ def build_superinvestor_feature_panel(
     trading_index: pd.DatetimeIndex,
     shares_out_history: pd.DataFrame | None = None,
     stock_close: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format elite-manager 13F feature panel (`f_super_*_vs_peers`, `_xs`).
     Empty if there are no holdings or the roster resolves to no manager. `roster` is
@@ -185,7 +186,8 @@ def build_superinvestor_feature_panel(
     if have_shares and stock_close is not None and not stock_close.empty:
         # elite ownership WEIGHT by value and size-scaled net $ flow, via a point-in-time
         # daily market cap (ffilled sharesOutstanding x daily close).
-        mcap = daily_market_cap(shares_out_history, stock_close)
+        mcap = daily_market_cap(shares_out_history, stock_close,
+                                level_factor=level_factor)
         if not mcap.empty:
             mpos = mcap.where(mcap > 0)
             v2m = (fundamentals_to_daily(qf, "super_value", trading_index) / mpos

@@ -70,8 +70,6 @@ line-length = 150
 [tool.ruff.lint]
 # Formatter still enforces 150 chars on code, but linter won't fail commits on long URL comments
 ignore = ["E501"]
-
-[tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors (Flake8)
     "W",   # pycodestyle warnings (Flake8)

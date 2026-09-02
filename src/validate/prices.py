@@ -10,33 +10,58 @@ no price validator, and `tests/` contained zero occurrences of `auto_adjust`, `a
 Sharadar publishes `marketcap` on exactly the basis `close_split x sharesOutstanding` is
 supposed to reproduce, so the identity is verifiable on every joined row.
 
-READ-ONLY, always. Sharadar's own `marketcap` is internally inconsistent for spinoff names
-(see invariant 1), so an auto-correction here would propagate a second vendor's error into
-the repo's own numbers.
+READ-ONLY, always -- `S(d)` is computed here IN MEMORY and never written. The stored copy
+lives on `cube_part_prices`, produced by `StepCubePrices`; this module recomputes it from the
+same two tables through the same function so the validator can run against a database whose
+cube has not been rebuilt yet, and so a validator run can never be the thing that changes a
+number it is about to judge.
+
+## The 12.6% was NOT the vendor's fault, and this file used to say it was
+
+⚠ This docstring previously argued that invariant 1 fails on 12.6% of rows "even on a CORRECT
+table, because Sharadar is the inconsistent side". **That was wrong**, and it cost a month:
+the failure was real, it was ours, and it was measurable. The decomposition, taken on the live
+panel, puts it beyond doubt:
+
+    leg_shares  (sharesOutstanding / sharesbas)     100.00%   the share leg is exact
+    leg_vendor  (sharadar.price x sharesbas / mcap)  99.82%   the vendor is self-consistent
+    leg_price   (close_split / sharadar.price)       87.59%   OURS is the leg that moves
+
+The missing factor is `S(d)` -- the SPINOFF adjustment Yahoo applies to `Close` and nobody
+applies to a share count. Multiplying the price leg by it takes invariant 1 from **87.44% to
+98.30%** and invariant 2 from **87.33% to 98.18%**, and breaks 3 rows while fixing 5,516. See
+`src/data_aggregate/utils/common/level_basis.py` for the derivation.
+
+The lesson is the reusable part: "the reference is inconsistent" is the most comfortable
+possible explanation for a failing invariant, and it must be the LAST one accepted, after the
+identity has been decomposed leg by leg.
 
 ## What blocks, and why only one of them
 
-`gate()` blocks the cube build on INVARIANT 3 ALONE. That is a measured decision, not a
-timid one: invariant 1 fails on 12.6% of joined rows even on a CORRECT table, because Yahoo
-back-adjusts prices for SPINOFFS while Sharadar's `sharesbas` does not -- so for HON, DD, GE,
-FDX, BDX and ~220 others the reference itself is the inconsistent side. Blocking there would
-block every build for someone else's defect. Invariant 3's failures have no such ambiguity:
-an unexplained >50% round-trip with no split on the books is always a data fault, and it is
-the mechanism that silently re-corrupts the table every time a stock splits.
+`gate()` blocks the cube build on INVARIANT 3 ALONE, and that is still right -- but for a
+different reason than the one written here before. Invariant 1's residual is no longer a
+12.6% wall; it is ~1.8% across four NAMED and understood clusters (MNST's stale Yahoo
+vintage, Visa's multi-class `sharesbas`, three stock-dividend names, and as-of join noise).
+Raising a gate on it is now a defensible decision rather than an impossible one -- but it is a
+SEPARATE decision, so `MCAP_BLOCK_SHARE` stays `None`. Invariant 3 keeps blocking because its
+failures have no ambiguity: an unexplained >50% round-trip with no split on the books is
+always a data fault, and it is the mechanism that silently re-corrupts the table every time a
+stock splits.
 
 ## The three invariants
 
 1. THE MARKET-CAP IDENTITY (reported, not blocking -- see above)
-       | close_split(d) x sharesOutstanding(d) / sharadar.marketcap(d) - 1 |  <  1%
+       | close_split(d) x S(d) x sharesOutstanding(d) / sharadar.marketcap(d) - 1 |  <  1%
    Two independent vendors, one arithmetic identity. Both legs carry the same retroactive
-   SPLIT restatement, so the future-split factor cancels and what is left is the true
-   historical market cap.
+   SPLIT restatement so the split factor cancels; `S(d)` supplies the SPINOFF factor that does
+   not. Reported BOTH raw and S-adjusted, so the size of the wedge stays visible instead of
+   being absorbed into a headline rate.
 
 2. PRICE VINTAGE FRESHNESS
-       | close_split(d) / sharadar.price(d) - 1 |  <  0.5%     on filing dates
-   Yahoo's `Close` and Sharadar's `price` are the same basis on two independent feeds, so a
-   disagreement is a STALE ADJUSTMENT VINTAGE in one of them. This is the check that would
-   have flagged MNST in July 2026 instead of an audit finding it in September.
+       | close_split(d) x S(d) / sharadar.price(d) - 1 |  <  0.5%     on filing dates
+   With `S` applied the two feeds are on the same basis, so what remains is a genuine STALE
+   ADJUSTMENT VINTAGE rather than a convention difference. This is the check that would have
+   flagged MNST in July 2026 instead of an audit finding it in September.
 
 3. SPIKE-AND-REVERT
    A >50% jump whose LEVEL comes back within a few bars, with no corroborating row in
@@ -51,7 +76,9 @@ from dataclasses import dataclass, field as dataclass_field
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import Context
+from src.data_aggregate.utils.common.level_basis import genuine_splits, level_factor
 from src.data_store.schema import Tables
 
 #: Invariant 1's band. 1% absorbs the as-of join (a filing date is often not a trading day)
@@ -90,15 +117,29 @@ class InvariantResult:
     tickers: int = 0
     failing_tickers: dict[str, dict] = dataclass_field(default_factory=dict)
     detail: list[dict] = dataclass_field(default_factory=list)
+    #: Failures WITHOUT `S(d)` applied, i.e. what this invariant scored before the spinoff
+    #: level fix. Reported beside the corrected number on purpose: a single headline rate
+    #: would hide the size of the wedge, and hiding it is how "12.6% is just the vendor"
+    #: survived for a month. `None` on invariants that never read `S`.
+    raw_failed: int | None = None
 
     @property
     def share(self) -> float:
         return self.failed / self.rows if self.rows else 0.0
 
+    @property
+    def raw_share(self) -> float | None:
+        if self.raw_failed is None or not self.rows:
+            return None
+        return self.raw_failed / self.rows
+
     def summary(self) -> str:
-        return (f"{self.name}: {self.rows - self.failed:,}/{self.rows:,} pass "
+        line = (f"{self.name}: {self.rows - self.failed:,}/{self.rows:,} pass "
                 f"({1 - self.share:.2%}); {len(self.failing_tickers)} of {self.tickers} "
                 f"tickers affected")
+        if self.raw_share is not None:
+            line += f" [without S(d): {1 - self.raw_share:.2%}]"
+        return line
 
 
 def _as_ns(frame: pd.DataFrame, column: str) -> pd.DataFrame:
@@ -143,7 +184,46 @@ def load_panel(context: Context, tickers: list[str] | None = None,
     panel = pd.merge_asof(panel.sort_values("date"), prices.sort_values("date"),
                           on="date", by="ticker", direction="backward",
                           tolerance=pd.Timedelta(days=ASOF_TOLERANCE_DAYS))
+    panel["level_factor"] = _level_factor_for(context, panel, where)
     return panel
+
+
+def _level_factor_for(context: Context, panel: pd.DataFrame,
+                      where: dict | None) -> pd.Series:
+    """`S(d)` for each panel row, computed IN MEMORY. Writes nothing, ever (D6).
+
+    Deliberately NOT read from `cube_part_prices.level_factor`, even though that column
+    exists and holds the same numbers. Two reasons, both about what a validator is for:
+
+      * it must run on a database whose cube is a build behind -- which is exactly the state
+        a validator is most useful in;
+      * reading the value the cube computed would make this a check that the cube agrees with
+        itself. Recomputing from `prices_splits` + `sharadar_actions` through the same shared
+        function keeps it a check against the two SOURCES.
+
+    Wide-then-lookup rather than a per-row loop: `level_factor` is vectorised over a
+    (date x ticker) grid, and the panel is ~52k rows over ~500 tickers.
+    """
+    yf_splits = context.store.load(Tables.prices_splits,
+                                   columns=["ticker", "date", "ratio"],
+                                   where=where, optional=True)
+    actions = context.store.load(
+        Tables.sharadar_actions, columns=["ticker", "date", "action", "value"],
+        where={**(where or {}), "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]},
+        optional=True)
+
+    tickers = sorted(panel["ticker"].astype(str).unique())
+    idx = pd.DatetimeIndex(sorted(panel["date"].dropna().unique()), name="date")
+    if idx.empty:
+        return pd.Series(1.0, index=panel.index)
+    wide = level_factor(idx, tickers, yf_splits, genuine_splits(actions, yf_splits))
+
+    flat = wide.stack(future_stack=True).rename("level_factor")
+    flat.index = flat.index.set_names(["date", "ticker"])
+    keys = pd.MultiIndex.from_arrays([panel["date"], panel["ticker"].astype(str)])
+    # `fillna(1.0)`: a row whose (date, ticker) fell outside the grid gets NO adjustment,
+    # never a NaN -- a NaN here would silently drop the row from every invariant below.
+    return flat.reindex(keys).fillna(1.0).to_numpy()
 
 
 # --------------------------------------------------------------------------- #
@@ -168,45 +248,51 @@ def _cluster(frame: pd.DataFrame, bad: pd.Series, ratio_col: str) -> dict[str, d
 def invariant_market_cap(panel: pd.DataFrame) -> InvariantResult:
     """INVARIANT 1 -- `close_split x sharesOutstanding == sharadar.marketcap`.
 
-    ⚠ A FAILURE IS NOT AUTOMATICALLY THIS REPO'S FAULT, and the validator must never
-    auto-correct on it. Sharadar's `marketcap` is `price x sharesbas`, and its `price` is
-    adjusted for splits ONLY while Yahoo's `close_split` is adjusted for splits AND SPINOFFS.
-    `sharesbas` carries the split restatement and no spinoff one, so for a ticker with a
-    spinoff in its history the two vendors legitimately disagree and it is SHARADAR whose
-    product is internally inconsistent: HON's `sharesbas` is unchanged across its 2026-06-29
-    spinoff (316,826,560 -> 316,940,010) while its `price` drops 428.68 -> 246.27.
+    Sharadar's `marketcap` is `price x sharesbas`, and its `price` is adjusted for splits
+    ONLY while Yahoo's `close_split` is adjusted for splits AND SPINOFFS. `sharesbas` carries
+    the split restatement and no spinoff one, so the price leg carries a factor nothing else
+    does. `S(d)` supplies it, and with it the identity closes: 87.44% -> 98.30%.
 
-    So read a cluster here as "these two vendors disagree about a corporate action", check
-    which one restated, and record the answer -- do not widen the tolerance."""
+    ⚠ A SURVIVING FAILURE IS STILL NOT AUTOMATICALLY THIS REPO'S FAULT, and the validator
+    must never auto-correct on one. Visa's cluster is a genuine vendor defect (`sharesbas` is
+    Class A while `marketcap` is as-converted). So read a cluster as "these two vendors
+    disagree about a corporate action", check which one restated, and record the answer -- do
+    not widen the tolerance to make it pass."""
     frame = panel.dropna(subset=["close_split", "sharesOutstanding", "marketcap"]).copy()
     frame = frame[frame["marketcap"] > 0]
-    frame["ratio"] = frame["close_split"] * frame["sharesOutstanding"] / frame["marketcap"]
+    base = frame["close_split"] * frame["sharesOutstanding"] / frame["marketcap"]
+    frame["ratio"] = base * frame["level_factor"].fillna(1.0)
     bad = (frame["ratio"] - 1).abs() > MCAP_TOLERANCE
     return InvariantResult(
         name="market_cap_identity", rows=int(len(frame)), failed=int(bad.sum()),
         tickers=int(frame["ticker"].nunique()),
-        failing_tickers=_cluster(frame, bad, "ratio"))
+        failing_tickers=_cluster(frame, bad, "ratio"),
+        raw_failed=int(((base - 1).abs() > MCAP_TOLERANCE).sum()))
 
 
 def invariant_price_vintage(panel: pd.DataFrame) -> InvariantResult:
     """INVARIANT 2 -- the two vendors' split-adjusted prices must agree on filing dates.
 
-    Both are split-adjusted-only, so they agree to the cent when both are current (AAPL
-    2020-07-31: 106.26 and 106.26; KO 2004-02-27: 24.98 and 24.98). A disagreement means one
-    feed has not applied a restatement the other has -- which is a STALE VINTAGE, and the
-    thing that goes wrong silently and retroactively.
+    ONCE `S(d)` HAS PUT THEM ON THE SAME BASIS they agree to the cent (AAPL 2020-07-31:
+    106.26 and 106.26; KO 2004-02-27: 24.98 and 24.98). Without it the check conflates two
+    completely different things -- a spinoff CONVENTION difference, which is expected and
+    harmless, and a STALE VINTAGE, which is a fault. Applying `S` leaves only the second,
+    which is the whole point: 87.33% -> 98.18%.
 
     Live example this catches: MNST reads exactly 2.0 against Sharadar in every year from
     2015 to 2026, because Yahoo never back-adjusted it for the 2:1 split its OWN splits feed
-    reports on 2026-08-11."""
+    reports on 2026-08-11. `S` does NOT rescue that one and must not -- the event is in both
+    event sets, so it cancels to 1.0, and the residual is the genuine stale vintage."""
     frame = panel.dropna(subset=["close_split", "price"]).copy()
     frame = frame[frame["price"] > 0]
-    frame["ratio"] = frame["close_split"] / frame["price"]
+    base = frame["close_split"] / frame["price"]
+    frame["ratio"] = base * frame["level_factor"].fillna(1.0)
     bad = (frame["ratio"] - 1).abs() > PRICE_TOLERANCE
     return InvariantResult(
         name="price_vintage", rows=int(len(frame)), failed=int(bad.sum()),
         tickers=int(frame["ticker"].nunique()),
-        failing_tickers=_cluster(frame, bad, "ratio"))
+        failing_tickers=_cluster(frame, bad, "ratio"),
+        raw_failed=int(((base - 1).abs() > PRICE_TOLERANCE).sum()))
 
 
 def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -> InvariantResult:
@@ -268,9 +354,13 @@ class PricesReport:
 
     def to_markdown(self) -> str:
         lines = ["# Prices adjustment-basis validation", "",
-                 "Read-only. Sharadar's own `marketcap` is internally inconsistent across "
-                 "spinoffs, so a finding here names a vendor DISAGREEMENT to settle, not a "
-                 "value to overwrite.", ""]
+                 "Read-only. Invariants 1 and 2 apply `S(d)`, the spinoff LEVEL factor, to "
+                 "the price leg IN MEMORY -- nothing is written. Each is reported twice: the "
+                 "corrected rate, and in brackets what it scored WITHOUT `S`, so the size of "
+                 "the spinoff wedge stays visible rather than being absorbed into a "
+                 "headline.", "",
+                 "A surviving finding names a vendor DISAGREEMENT to settle, not a value to "
+                 "overwrite.", ""]
         for res in self.invariants:
             lines += [f"## {res.name}", "", res.summary(), ""]
             if not res.failing_tickers:
@@ -297,12 +387,20 @@ class PricesReport:
 #: 1e-4 is ~30x that headroom -- enough that a handful of new vendor hiccups warn rather than
 #: halt the nightly, tight enough that a systemic re-corruption cannot slip through.
 SPIKE_BLOCK_SHARE = 1e-4
-#: Invariant 1 does NOT block, and the reason is measured, not squeamish: 12.6% of joined
-#: rows fail it on a CORRECT table, because Yahoo back-adjusts prices for SPINOFFS and
-#: Sharadar's `sharesbas` does not -- so `sharadar.marketcap` is itself internally
-#: inconsistent for those names (HON, DD, GE, FDX, BDX...). Blocking on it would block every
-#: build for a defect in the reference, not in the repo. It is reported and clustered so the
-#: disagreements get settled one ticker at a time. Revisit only when that cluster is closed.
+#: Invariant 1 does NOT block. ⚠ The reason USED to be "12.6% fails on a correct table
+#: because Sharadar is the inconsistent side", and that reason was wrong -- see the module
+#: docstring. With `S(d)` applied the identity closes at **98.30%** (measured 2026-09-01,
+#: 50,762 joined rows), and the residual ~1.8% is four NAMED clusters:
+#:
+#:     MNST  122 rows  ratio 2.0     Yahoo never applied its own published 2026-08-11 split
+#:     V      74 rows  ratio 0.94    `sharesbas` is Class A, `marketcap` is as-converted
+#:     APA/SJM/HBAN/ORCL ~79 rows    stock dividends Sharadar's `price` ignores
+#:     ~20 small names, <=102 rows   as-of join noise, median 2 rows/ticker
+#:
+#: So a gate here is now a DEFENSIBLE decision rather than an impossible one. It is still
+#: `None`, because choosing the threshold is a separate decision with its own evidence, and
+#: because two of those four clusters are open work whose row counts will move. Set it only
+#: with a measured number and a stated reason -- never to make a cluster pass.
 MCAP_BLOCK_SHARE = None
 
 

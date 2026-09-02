@@ -1,0 +1,715 @@
+{
+  "tag": "after",
+  "generated_utc": "2026-09-02 01:35:50Z",
+  "env": {
+    "panel_rows": 51847,
+    "panel_tickers": 489,
+    "yf_split_rows": 859,
+    "genuine_split_rows": 9131
+  },
+  "invariants": {
+    "market_cap_identity": {
+      "rows": 50762,
+      "raw_pass": 44388,
+      "raw_rate": 0.8744,
+      "adj_pass": 49901,
+      "adj_rate": 0.983,
+      "newly_failing": 3,
+      "newly_failing_tickers": [
+        "IVZ",
+        "OXY"
+      ],
+      "newly_passing": 5516
+    },
+    "price_vintage": {
+      "rows": 51264,
+      "raw_pass": 44767,
+      "raw_rate": 0.8733,
+      "adj_pass": 50332,
+      "adj_rate": 0.9818,
+      "newly_failing": 3,
+      "newly_failing_tickers": [
+        "IVZ",
+        "OXY"
+      ],
+      "newly_passing": 5568
+    }
+  },
+  "fdx_landmark": {
+    "found": true,
+    "date": "2020-12-17",
+    "close_split": 235.5036,
+    "sharadar_price": 292.26,
+    "shares": 265070592,
+    "S": 1.241,
+    "ours_bn": 62.425,
+    "fixed_bn": 77.47,
+    "sharadar_bn": 77.47
+  },
+  "market_cap_table": {
+    "FDX": [
+      {
+        "asked": "2005-06-30",
+        "date": "2005-03-18",
+        "S": 1.241,
+        "ours_bn": 23.399,
+        "fixed_bn": 29.038,
+        "sharadar_bn": 29.038,
+        "err_today": -0.1942,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2012-06-29",
+        "date": "2012-03-23",
+        "S": 1.241,
+        "ours_bn": 23.476,
+        "fixed_bn": 29.134,
+        "sharadar_bn": 29.134,
+        "err_today": -0.1942,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2018-06-29",
+        "date": "2018-03-21",
+        "S": 1.241,
+        "ours_bn": 53.62,
+        "fixed_bn": 66.542,
+        "sharadar_bn": 66.542,
+        "err_today": -0.1942,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2021-06-30",
+        "date": "2021-03-18",
+        "S": 1.241,
+        "ours_bn": 56.342,
+        "fixed_bn": 69.92,
+        "sharadar_bn": 69.92,
+        "err_today": -0.1942,
+        "err_fixed": -0.0
+      }
+    ],
+    "GE": [
+      {
+        "asked": "2005-06-30",
+        "date": "2005-05-06",
+        "S": 1.669297,
+        "ours_bn": 227.774,
+        "fixed_bn": 380.222,
+        "sharadar_bn": 380.222,
+        "err_today": -0.4009,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2012-06-29",
+        "date": "2012-05-04",
+        "S": 1.669297,
+        "ours_bn": 122.662,
+        "fixed_bn": 204.759,
+        "sharadar_bn": 204.759,
+        "err_today": -0.4009,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2018-06-29",
+        "date": "2018-05-01",
+        "S": 1.669297,
+        "ours_bn": 73.102,
+        "fixed_bn": 122.029,
+        "sharadar_bn": 122.029,
+        "err_today": -0.4009,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2021-06-30",
+        "date": "2021-04-27",
+        "S": 1.605093,
+        "ours_bn": 73.78,
+        "fixed_bn": 118.424,
+        "sharadar_bn": 118.424,
+        "err_today": -0.377,
+        "err_fixed": -0.0
+      }
+    ],
+    "DD": [
+      {
+        "asked": "2005-06-30",
+        "date": "2005-05-02",
+        "S": 5.037746,
+        "ours_bn": 8.972,
+        "fixed_bn": 45.198,
+        "sharadar_bn": 45.198,
+        "err_today": -0.8015,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2012-06-29",
+        "date": "2012-05-02",
+        "S": 5.037746,
+        "ours_bn": 7.913,
+        "fixed_bn": 39.866,
+        "sharadar_bn": 39.866,
+        "err_today": -0.8015,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2018-06-29",
+        "date": "2018-05-04",
+        "S": 5.037746,
+        "ours_bn": 29.7,
+        "fixed_bn": 149.621,
+        "sharadar_bn": 149.62,
+        "err_today": -0.8015,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2021-06-30",
+        "date": "2021-05-04",
+        "S": 2.39,
+        "ours_bn": 17.701,
+        "fixed_bn": 42.305,
+        "sharadar_bn": 42.305,
+        "err_today": -0.5816,
+        "err_fixed": -0.0
+      }
+    ],
+    "T": [
+      {
+        "asked": "2005-06-30",
+        "date": "2005-05-06",
+        "S": 1.324,
+        "ours_bn": 58.927,
+        "fixed_bn": 78.02,
+        "sharadar_bn": 78.02,
+        "err_today": -0.2447,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2012-06-29",
+        "date": "2012-05-04",
+        "S": 1.324,
+        "ours_bn": 145.512,
+        "fixed_bn": 192.658,
+        "sharadar_bn": 192.658,
+        "err_today": -0.2447,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2018-06-29",
+        "date": "2018-05-03",
+        "S": 1.324,
+        "ours_bn": 148.145,
+        "fixed_bn": 196.144,
+        "sharadar_bn": 196.144,
+        "err_today": -0.2447,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2021-06-30",
+        "date": "2021-05-06",
+        "S": 1.324,
+        "ours_bn": 174.779,
+        "fixed_bn": 231.407,
+        "sharadar_bn": 231.407,
+        "err_today": -0.2447,
+        "err_fixed": -0.0
+      }
+    ],
+    "HPQ": [
+      {
+        "asked": "2005-06-30",
+        "date": "2005-06-08",
+        "S": 2.202,
+        "ours_bn": 29.401,
+        "fixed_bn": 64.74,
+        "sharadar_bn": 64.74,
+        "err_today": -0.5459,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2012-06-29",
+        "date": "2012-06-08",
+        "S": 2.202,
+        "ours_bn": 19.978,
+        "fixed_bn": 43.992,
+        "sharadar_bn": 43.992,
+        "err_today": -0.5459,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2018-06-29",
+        "date": "2018-06-05",
+        "S": 1.0,
+        "ours_bn": 37.718,
+        "fixed_bn": 37.718,
+        "sharadar_bn": 37.718,
+        "err_today": 0.0,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2021-06-30",
+        "date": "2021-06-04",
+        "S": 1.0,
+        "ours_bn": 36.794,
+        "fixed_bn": 36.794,
+        "sharadar_bn": 36.794,
+        "err_today": -0.0,
+        "err_fixed": -0.0
+      }
+    ],
+    "EXC": [
+      {
+        "asked": "2005-06-30",
+        "date": "2005-04-26",
+        "S": 1.402,
+        "ours_bn": 22.411,
+        "fixed_bn": 31.42,
+        "sharadar_bn": 31.42,
+        "err_today": -0.2867,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2012-06-29",
+        "date": "2012-05-10",
+        "S": 1.402,
+        "ours_bn": 23.675,
+        "fixed_bn": 33.193,
+        "sharadar_bn": 33.193,
+        "err_today": -0.2867,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2018-06-29",
+        "date": "2018-05-02",
+        "S": 1.402,
+        "ours_bn": 27.805,
+        "fixed_bn": 38.982,
+        "sharadar_bn": 38.982,
+        "err_today": -0.2867,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2021-06-30",
+        "date": "2021-05-05",
+        "S": 1.402,
+        "ours_bn": 30.34,
+        "fixed_bn": 42.536,
+        "sharadar_bn": 42.536,
+        "err_today": -0.2867,
+        "err_fixed": -0.0
+      }
+    ],
+    "RTX": [
+      {
+        "asked": "2005-06-30",
+        "date": "2005-04-26",
+        "S": 1.589,
+        "ours_bn": 32.626,
+        "fixed_bn": 51.843,
+        "sharadar_bn": 51.843,
+        "err_today": -0.3707,
+        "err_fixed": 0.0
+      },
+      {
+        "asked": "2012-06-29",
+        "date": "2012-04-30",
+        "S": 1.589,
+        "ours_bn": 46.824,
+        "fixed_bn": 74.403,
+        "sharadar_bn": 74.403,
+        "err_today": -0.3707,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2018-06-29",
+        "date": "2018-04-27",
+        "S": 1.589,
+        "ours_bn": 61.658,
+        "fixed_bn": 97.975,
+        "sharadar_bn": 97.975,
+        "err_today": -0.3707,
+        "err_fixed": -0.0
+      },
+      {
+        "asked": "2021-06-30",
+        "date": "2021-04-27",
+        "S": 1.0,
+        "ours_bn": 125.465,
+        "fixed_bn": 125.465,
+        "sharadar_bn": 125.465,
+        "err_today": -0.0,
+        "err_fixed": -0.0
+      }
+    ]
+  },
+  "cohort_factors": {
+    "spinoff": {
+      "FDX": {
+        "rows": 126,
+        "distinct": 2,
+        "max": 1.241,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 125
+      },
+      "GE": {
+        "rows": 126,
+        "distinct": 4,
+        "max": 1.669297,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 116
+      },
+      "DD": {
+        "rows": 123,
+        "distinct": 4,
+        "max": 5.037746,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 119
+      },
+      "T": {
+        "rows": 125,
+        "distinct": 2,
+        "max": 1.324,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 107
+      },
+      "HPQ": {
+        "rows": 129,
+        "distinct": 2,
+        "max": 2.202,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 84
+      },
+      "EXC": {
+        "rows": 126,
+        "distinct": 2,
+        "max": 1.402,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 107
+      },
+      "RTX": {
+        "rows": 125,
+        "distinct": 2,
+        "max": 1.589,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 99
+      },
+      "NI": {
+        "rows": 125,
+        "distinct": 2,
+        "max": 2.545,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 80
+      },
+      "BAX": {
+        "rows": 122,
+        "distinct": 2,
+        "max": 1.841,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 78
+      },
+      "EQT": {
+        "rows": 126,
+        "distinct": 2,
+        "max": 1.837,
+        "min": 1.0,
+        "exactly_one": false,
+        "rows_not_one": 95
+      }
+    },
+    "control": {
+      "AAPL": {
+        "rows": 123,
+        "distinct": 1,
+        "max": 1.0,
+        "min": 1.0,
+        "exactly_one": true,
+        "rows_not_one": 0
+      },
+      "KO": {
+        "rows": 125,
+        "distinct": 1,
+        "max": 1.0,
+        "min": 1.0,
+        "exactly_one": true,
+        "rows_not_one": 0
+      },
+      "JNJ": {
+        "rows": 125,
+        "distinct": 1,
+        "max": 1.0,
+        "min": 1.0,
+        "exactly_one": true,
+        "rows_not_one": 0
+      },
+      "MSFT": {
+        "rows": 126,
+        "distinct": 1,
+        "max": 1.0,
+        "min": 1.0,
+        "exactly_one": true,
+        "rows_not_one": 0
+      },
+      "PG": {
+        "rows": 127,
+        "distinct": 1,
+        "max": 1.0,
+        "min": 1.0,
+        "exactly_one": true,
+        "rows_not_one": 0
+      },
+      "XOM": {
+        "rows": 125,
+        "distinct": 1,
+        "max": 1.0,
+        "min": 1.0,
+        "exactly_one": true,
+        "rows_not_one": 0
+      }
+    }
+  },
+  "factor_population": {
+    "panel_rows": 51847,
+    "rows_off_one": 5955,
+    "share_off_one": 0.1149,
+    "tickers_off_one": 84,
+    "panel_tickers": 489,
+    "yf_split_rows": 859,
+    "genuine_split_rows": 9131,
+    "top_by_abs_log_S": {
+      "LVS": 0.003759,
+      "DD": 5.037746,
+      "HWM": 3.00003,
+      "CBRE": 0.333333,
+      "GM": 0.333333,
+      "F": 2.740082,
+      "NI": 2.545,
+      "EBAY": 2.376,
+      "ABT": 2.227663,
+      "HPQ": 2.202,
+      "HON": 2.12229,
+      "IVZ": 2.0,
+      "PSKY": 0.5,
+      "DELL": 1.973,
+      "MSI": 1.934712
+    }
+  },
+  "residual_clusters": {
+    "MNST": {
+      "rows": 122,
+      "median_ratio": 2.0
+    },
+    "IP": {
+      "rows": 102,
+      "median_ratio": 0.9339
+    },
+    "JCI": {
+      "rows": 81,
+      "median_ratio": 1.3253
+    },
+    "V": {
+      "rows": 74,
+      "median_ratio": 0.9368
+    },
+    "BX": {
+      "rows": 33,
+      "median_ratio": 0.9814
+    },
+    "APA": {
+      "rows": 28,
+      "median_ratio": 0.8658
+    },
+    "SJM": {
+      "rows": 27,
+      "median_ratio": 0.945
+    },
+    "HBAN": {
+      "rows": 19,
+      "median_ratio": 0.7513
+    },
+    "BLDR": {
+      "rows": 18,
+      "median_ratio": 0.841
+    },
+    "CCI": {
+      "rows": 16,
+      "median_ratio": 0.9699
+    },
+    "HWM": {
+      "rows": 13,
+      "median_ratio": 0.7669
+    },
+    "WBD": {
+      "rows": 13,
+      "median_ratio": 0.9074
+    },
+    "HAS": {
+      "rows": 11,
+      "median_ratio": 1.0134
+    },
+    "ORCL": {
+      "rows": 5,
+      "median_ratio": 0.6686
+    },
+    "NUE": {
+      "rows": 4,
+      "median_ratio": 1.0037
+    },
+    "BMY": {
+      "rows": 4,
+      "median_ratio": 0.9855
+    },
+    "INCY": {
+      "rows": 4,
+      "median_ratio": 1.0111
+    },
+    "TMO": {
+      "rows": 4,
+      "median_ratio": 1.0201
+    },
+    "ADM": {
+      "rows": 4,
+      "median_ratio": 0.8681
+    },
+    "GEN": {
+      "rows": 4,
+      "median_ratio": 0.9824
+    }
+  },
+  "cross_sectional_impact": {
+    "rows": 37495,
+    "buckets": 10,
+    "changed_bucket": 3371,
+    "changed_share": 0.0899,
+    "affected_rows": 3957,
+    "changed_share_among_affected": 0.3702,
+    "changed_share_among_unaffected": 0.0568
+  },
+  "dividend_leg": {
+    "what": "dividend_yield (yfinance ttm_ps/close_split) / (sharadar dps/price)",
+    "cohorts": {
+      "control": {
+        "n": 655,
+        "median": 1.0,
+        "p25": 1.0,
+        "p75": 1.0,
+        "within_2pct": 0.9542
+      },
+      "spinoff_cohort": {
+        "n": 1197,
+        "median": 1.0,
+        "p25": 1.0,
+        "p75": 1.0,
+        "within_2pct": 0.8321
+      },
+      "affected": {
+        "n": 4745,
+        "median": 1.0,
+        "p25": 1.0,
+        "p75": 1.0,
+        "within_2pct": 0.8478
+      },
+      "strongly_affected": {
+        "n": 3090,
+        "median": 1.0,
+        "p25": 1.0,
+        "p75": 1.0,
+        "within_2pct": 0.8401
+      },
+      "unaffected": {
+        "n": 33428,
+        "median": 1.0,
+        "p25": 1.0,
+        "p75": 1.0,
+        "within_2pct": 0.9331
+      }
+    },
+    "discriminator": {
+      "n": 3090,
+      "median_S": 1.3363,
+      "median_ratio": 1.0,
+      "dist_to_1": 0.0,
+      "dist_to_S": 0.3356
+    },
+    "verdict": "LEGS CANCEL -- on the 3,090 strongly-affected rows the ratio sits 149381.1x closer to 1.0 than to S (median ratio 1.0 vs median S 1.3363). The vendor back-adjusted BOTH legs. NO CHANGE NEEDED."
+  },
+  "earnings_leg": {
+    "what": "fwd/trailing EPS yield (yfinance eps / close_split) / (sharadar epsdil / price)",
+    "cohorts": {
+      "control": {
+        "n": 387,
+        "median": 1.0,
+        "p25": 1.0,
+        "p75": 1.0676,
+        "within_2pct": 0.5556
+      },
+      "spinoff_cohort": {
+        "n": 517,
+        "median": 1.4751,
+        "p25": 1.2038,
+        "p75": 2.02,
+        "within_2pct": 0.0329
+      },
+      "affected": {
+        "n": 2163,
+        "median": 1.288,
+        "p25": 1.0875,
+        "p75": 1.6636,
+        "within_2pct": 0.0227
+      },
+      "strongly_affected": {
+        "n": 1488,
+        "median": 1.402,
+        "p25": 1.2036,
+        "p75": 1.8513,
+        "within_2pct": 0.0054
+      },
+      "unaffected": {
+        "n": 20782,
+        "median": 1.0235,
+        "p25": 1.0,
+        "p75": 1.2208,
+        "within_2pct": 0.3277
+      }
+    },
+    "discriminator": {
+      "n": 1488,
+      "median_S": 1.3038,
+      "median_ratio": 1.402,
+      "dist_to_1": 0.3726,
+      "dist_to_S": 0.077
+    },
+    "verdict": "LEGS DO NOT CANCEL -- on the 1,488 strongly-affected rows the ratio sits 4.8x closer to S than to 1.0 (median ratio 1.402 vs median S 1.3038). This consumer IS distorted and needs the level factor."
+  },
+  "return_controls": {
+    "source": "prices",
+    "rows": 3263459,
+    "close_total_digest": "000ddd33daae0a38",
+    "ret_from_close_total_digest": "13acfa1a2cd80947",
+    "cube_part_prices": {
+      "rows": 3827534,
+      "columns": [
+        "close_split",
+        "close_total",
+        "date",
+        "level_factor",
+        "ret",
+        "sector_ret",
+        "ticker",
+        "volume"
+      ],
+      "close_split_digest": "c069626e806b9337",
+      "close_total_digest": "e64585da69f6ac00",
+      "ret_digest": "59609f221ac7c1f4",
+      "volume_digest": "96639633e582256a"
+    }
+  }
+}

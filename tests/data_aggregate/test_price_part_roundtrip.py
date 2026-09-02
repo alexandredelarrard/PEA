@@ -83,6 +83,14 @@ def _normalize(frames: dict) -> tuple[dict, pd.DatetimeIndex]:
     universe = universe_columns(TICKERS, on_cal["close_split"])
     uni = {k: v.reindex(columns=universe) for k, v in on_cal.items()}
     uni["ret"] = returns.reindex(columns=universe)
+    # `level_factor` exactly as StepCubePrices builds it: 1.0 for the clean names, a spinoff
+    # factor before one date on BBB, and MASKED to close_split's non-null pattern. The mask is
+    # the part that has to survive the round trip -- `S` is never NaN of its own accord, so
+    # without it `frames_to_long`'s all-NaN row drop stops firing and CCC gains ten rows from
+    # before it listed.
+    lvl = pd.DataFrame(1.0, index=idx, columns=pd.Index(universe, name="ticker"))
+    lvl.loc[: idx[30], "BBB"] = 1.241
+    uni["level_factor"] = lvl.where(uni["close_split"].notna())
     # a deterministic stand-in for compute_sector_returns (equal-weight mean of the others)
     uni["sector_ret"] = pd.DataFrame(
         {t: uni["ret"].drop(columns=[t]).mean(axis=1) for t in universe},

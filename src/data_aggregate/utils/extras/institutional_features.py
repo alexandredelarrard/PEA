@@ -120,6 +120,7 @@ def build_institutional_feature_panel(
     trading_index: pd.DatetimeIndex,
     shares_out_history: pd.DataFrame | None = None,
     stock_close: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format 13F feature panel (`f_<name>_vs_peers`, `f_<name>_xs`). Empty if
     no holdings. `shares_out_history` (fundamentals with `sharesOutstanding`) enables
@@ -156,7 +157,8 @@ def build_institutional_feature_panel(
     if have_shares and stock_close is not None and not stock_close.empty:
         # institutional WEIGHT by VALUE and size-scaled net $ flow, via a point-in-time
         # daily market cap (ffilled sharesOutstanding x daily close).
-        mcap = daily_market_cap(shares_out_history, stock_close)
+        mcap = daily_market_cap(shares_out_history, stock_close,
+                                level_factor=level_factor)
         if not mcap.empty:
             mpos = mcap.where(mcap > 0)
             inst_val = fundamentals_to_daily(qf, "inst_value", trading_index)

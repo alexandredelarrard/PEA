@@ -62,6 +62,7 @@ def build_characteristics(
     resvol_window: int = 63, # 3 month stock
     *,
     stock_close_split: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
 ) -> dict:
     """
     Returns {factor_name: characteristic DataFrame (date x ticker)}, higher =
@@ -91,7 +92,8 @@ def build_characteristics(
     if fundamentals_history is not None and not fundamentals_history.empty:
         
         # Historical daily market cap from SEC shares * price (moves daily).
-        mcap = daily_market_cap(fundamentals_history, close_level)
+        mcap = daily_market_cap(fundamentals_history, close_level,
+                                level_factor=level_factor)
         if mcap.empty:
             # fallback to old proxy if only a current marketCap snapshot exists
             snap = fundamentals_to_daily(fundamentals_history, "marketCap", idx)

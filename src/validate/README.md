@@ -61,10 +61,29 @@ point, and it turns on what a finding MEANS in each domain:
     label, for the whole cross-section, with no error raised anywhere. MNST carried exactly
     that for six weeks in 2026 and nothing noticed until an audit.
 
-Even there, only invariant 3 blocks; invariants 1 and 2 report. Invariant 1 fails on 12.6% of
-rows on a CORRECT table because Yahoo back-adjusts for spinoffs and Sharadar's `sharesbas`
-does not -- the reference is the inconsistent side -- so blocking on it would block every
-build. See the `gate()` docstring for the measured thresholds.
+Even there, only invariant 3 blocks; invariants 1 and 2 report.
+
+⚠ **This section used to say invariant 1's 12.6% failure rate was the REFERENCE's fault** --
+"Yahoo back-adjusts for spinoffs and Sharadar's `sharesbas` does not, so the reference is the
+inconsistent side". That was wrong, and it is worth keeping the correction visible because the
+error is a general one. Decomposing the identity leg by leg settled it in minutes:
+
+| leg | pass rate | reading |
+|---|---|---|
+| `sharesOutstanding / sharesbas` | 100.00% | the share leg is exact |
+| `sharadar.price x sharesbas / marketcap` | 99.82% | the vendor is self-consistent |
+| `close_split / sharadar.price` | 87.59% | **ours is the leg that moves** |
+
+The missing term is `S(d)`, the SPINOFF factor Yahoo applies to `Close` and nothing applies to
+a share count (`src/data_aggregate/utils/common/level_basis.py`). Invariants 1 and 2 now apply
+it in memory and report **98.30%** and **98.18%**, each printed beside what it scored without.
+
+**"The reference is inconsistent" is the most comfortable available explanation for a failing
+invariant, so it must be the LAST one accepted.** Decompose first.
+
+Invariant 1 still does not block -- the residual ~1.8% is four named clusters, two of them
+open work whose row counts will move -- but that is now a choice rather than a necessity. See
+the `gate()` docstring for the measured thresholds.
 
 ---
 

@@ -53,6 +53,7 @@ def build_insider_feature_panel(
     trading_index: pd.DatetimeIndex,
     shares_out_history: pd.DataFrame | None = None,
     stock_close: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
     window_days: int = _WINDOW_DAYS,
 ) -> pd.DataFrame:
     """Long-format insider-trading feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
@@ -101,7 +102,8 @@ def build_insider_feature_panel(
 
     if (shares_out_history is not None and not shares_out_history.empty
             and stock_close is not None and not stock_close.empty):
-        mcap = daily_market_cap(shares_out_history, stock_close)
+        mcap = daily_market_cap(shares_out_history, stock_close,
+                                level_factor=level_factor)
         if not mcap.empty:
             nbm = ((bv - sv) / mcap.where(mcap > 0)).replace([np.inf, -np.inf], np.nan)
             if nbm.notna().any().any():

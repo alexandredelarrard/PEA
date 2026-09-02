@@ -1,4 +1,4 @@
-# Phase 5 — Shareholder vote tallies from 8-K Item 5.07 ⬜
+# Phase 5 — Shareholder vote tallies from 8-K Item 5.07 🔄
 
 **Goal**: parse the **6,657 Item 5.07 narratives already stored in `sec_8k.item_text`** into a new
 `sec_8k_votes` table — one row per proposal, with director elections collapsed to one row carrying

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Type, TypeVar
 
 from openai import OpenAI
@@ -55,6 +56,17 @@ class LLMExtractor:
         self._model = model
         self._max_chars = max_chars
         self._cache = cache
+        #: Token usage of the LAST call, and the running totals for this extractor. The API
+        #: reports them per response and nothing else in the repo captured them, so a backfill's
+        #: real bill could only be estimated after the fact. `cached_input_tokens` is what makes
+        #: `prompt_cache_key` measurable rather than assumed.
+        self.last_usage: dict[str, int] | None = None
+        self.totals: dict[str, int] = {"calls": 0, "input_tokens": 0, "output_tokens": 0,
+                                       "cached_input_tokens": 0}
+        # `totals` is a read-modify-write from every caller, and one extractor is deliberately
+        # SHARED across a thread pool so `prompt_cache_key` keeps hitting the same cached
+        # prefix. Without the lock the call count silently under-reports under concurrency.
+        self._usage_lock = threading.Lock()
 
     def extract(self, schema: Type[T], text: str, instructions: str | None = None) -> T:
         """Extract structured data from text according to the Pydantic schema.
@@ -77,4 +89,25 @@ class LLMExtractor:
             # (model, schema) combination across every filing
             kwargs["prompt_cache_key"] = f"{self._model}:{schema.__name__}"
         response = self._client.responses.parse(**kwargs)
+        self._record_usage(getattr(response, "usage", None))
         return response.output_parsed
+
+    def _record_usage(self, usage: object) -> None:
+        """Capture the response's token counts into `last_usage` / `totals`.
+
+        Defensive by design: the usage object is an SDK model, so a field that moves or goes
+        absent must not take down an extraction whose tokens are already paid for.
+        """
+        if usage is None:
+            self.last_usage = None
+            return
+        details = getattr(usage, "input_tokens_details", None)
+        self.last_usage = {
+            "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+            "cached_input_tokens": int(getattr(details, "cached_tokens", 0) or 0),
+        }
+        with self._usage_lock:
+            self.totals["calls"] += 1
+            for k, v in self.last_usage.items():
+                self.totals[k] += v

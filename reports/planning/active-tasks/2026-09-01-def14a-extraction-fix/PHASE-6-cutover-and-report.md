@@ -1,4 +1,4 @@
-# Phase 6 — 23-ticker comparison, gate, cutover, report ⬜
+# Phase 6 — 23-ticker comparison, gate, cutover, report 🔄
 
 **Goal**: prove the new implementation beats the baseline on the 23 tickers over 2000-2026, get your
 sign-off, then **you** truncate and rerun. Finish with the DATA definition-of-done report.
@@ -13,7 +13,7 @@ sign-off, then **you** truncate and rerun. Finish with the DATA definition-of-do
       **on-disk filing cache**: `html_to_text` + `def14a_tables` → `prepare_def14a_sections` →
       `LLMExtractor` → `_flatten` + the four row builders → parquet under
       `.../2026-09-01-def14a-extraction-fix/new/`.
-- [ ] Same for the ECD path (`def14a_ecd`) → `sec_def14a` parquet. This one needs live
+- [x] Same for the ECD path (`def14a_ecd`) → `sec_def14a` parquet. This one needs live
       `filing.xbrl()` calls; scope it to the 2023+ filings of the 23 tickers (~90 filings).
 - [ ] Same for `sec_8k_votes`, reading `item_text` **from the DB** (read-only, projected, `where`
       on ticker + item) and writing parquet.
@@ -24,7 +24,7 @@ sign-off, then **you** truncate and rerun. Finish with the DATA definition-of-do
 
 ## Step 2 — The comparison
 
-- [ ] `"$PY" scripts/compare_def14a_baseline.py` → `COMPARISON.md` + stdout.
+- [x] `"$PY" scripts/compare_def14a_baseline.py` → `COMPARISON.md` + stdout.
 - [ ] Every check from Phase 0's table, reported PASS/FAIL, most important first. The gate:
 
 | # | Gate | Baseline | Required |
@@ -166,6 +166,110 @@ defect assertions must be re-run **against the real DB**, not only against parqu
 - [ ] Move this plan directory from `active-tasks/` to wherever completed plans live in this repo.
 
 ---
+
+## RESULTS — tooling complete and gated; the DEF 14A re-extraction is YOURS
+
+**You retained the re-extraction** ("do not rerun the whole def14, I will do it. Finish the plan
+without doing def14 extraction"). So Steps 2, 6 and every piece of tooling are done and verified;
+Steps 1 (LLM legs), 3, 4 and 5 are prepared, dry-run where possible, and handed over. **Nothing
+in the database was changed by this session.**
+
+### What ran
+
+| Step | State | Evidence |
+|---|---|---|
+| 1 — ECD leg | ✅ **complete** | 85 rows, 25 columns, all 23 tickers, 2023+. Deterministic, no LLM. `new/sec_def14a.parquet` |
+| 1 — proxy / vote legs | ⬜ **handed over** | runner written, smoke-tested, throughput measured; ~656 + ~320 calls outstanding |
+| 2 — comparison | ✅ **runs** | `COMPARISON.md`: **2 PASS / 0 FAIL / 12 PENDING** |
+| 3 — gate | ⬜ | 10 of 14 gates have no measurement yet |
+| 4 — cutover | ⬜ **handed over** | `scripts/def14a_cutover.py` dry-run verified: 7 statements |
+| 5 — post-cutover verify | ⬜ **handed over** | `scripts/def14a_postcutover_verify.py` written; runs read-only and correctly reports the pre-cutover state as failing |
+| 6 — docs + DoD | ✅ **complete** | `docs/data_schema.md`, `docs/database.md`, `docs/data_sources.md`, `reports/2026-09-02/def14a-extraction-fix__DATA.md` |
+
+### The gates that ARE measured
+
+Both come off the deterministic ECD run, so they cost nothing and are reproducible:
+
+- **G3 PASS** — 0 rows with `peo_total_comp == 0.0`, against a baseline of 3. SBUX FY23-25 now
+  reads 95,801,676 and 30,992,773 where the retired path had a zero matrix.
+- **G4 PASS** — BA 2025 `n_peos = 2` with `peo_names_all` = "David Calhoun,Gregory Smith,Robert
+  K. Ortberg"; NKE 2025 `n_peos = 2` with "Elliott Hill,John Donahoe II". The old
+  `.iloc[0]` accessor kept one PEO per year and document order decided which.
+- Sign preservation: **3 negative `peo_actually_paid_comp`** rows survive, including NKE 2025's
+  −10,924,243. There is no `abs()` on this path.
+- Live-DB spot checks (read-only, whole table not just the 23 tickers): `peo_actually_paid_comp`
+  fill **87.8% / 96.6% / 94.0% / 92.4%** for 2023/24/25/26, and `def14a_json` carries **0 NULs
+  and 0 cp1252 mojibake** in 200 sampled blobs — the retired path had U+0097 on 7.06% of rows.
+
+**The other ten gates report `-`/PENDING, not FAIL.** They have no measurement. That distinction
+is the whole point of the row: a PENDING gate is an unanswered question, and reporting it as a
+pass would be the one thing this phase exists to prevent.
+
+### Step 4 was not executable as the plan wrote it — measured, then fixed
+
+The plan says "run the CLI commands". Serially that is **not finishable**: one modern proxy is a
+~130k-char payload on a reasoning model and takes **~94 seconds** (measured over A's filings), so
+8,700 proxies is **~9.5 days**.
+
+The per-filing LLM calls in `fetch_def14a_llm` and `fetch_8k_votes_llm` now run **12-wide**
+(`_LLM_WORKERS`), measured at **9.1-10.6 s/filing with zero 429s** — a ~10x cut. Every write
+stays exactly where it was: one `_save_ticker_rows` per ticker, on the main thread. That
+deliberately preserves two properties the plan relies on — "an interrupted run loses no paid
+tokens", and immunity from `store.ensure_table`'s check-then-create race, since no worker ever
+touches the store.
+
+**Budget the real thing at ~34 h and ~$150**: ~23 h for 8,700 proxies, ~11 h for 6,657 vote
+filings. `LLMExtractor` now records token usage per call (`last_usage` / `totals`, lock-guarded)
+because the plan forbids starting the backfill on an estimate and nothing in the repo had ever
+captured the numbers.
+
+### Defects found by running the tooling on live data
+
+1. **The pre-2001 folder-index trap (my bug, in the Phase-6 runner).** 88 of 656 cached filings
+   carry `primaryDocument == ""`, so `_doc_url` builds a bare *directory* URL and Phase 0's
+   `cache_htm` holds a **10,217-char EDGAR directory listing** instead of the proxy. The real
+   document is the `.txt` sibling — 159,203 chars on A's 2000 filing. Reading `cache_htm` fed the
+   model a folder index, and those filings came back with **0-2 non-null fields**, which reads as
+   "pre-2001 does not extract" (i.e. G9 fails) when the cause is opening the wrong file. Verified
+   after the fix on A 2000-01-13: **2 non-null fields → 27**, `company_name` "Agilent
+   Technologies", `board_size` 6, CEO "Edward W. Barnholt", auditor "PricewaterhouseCoopers LLP",
+   5 NEOs, plus 5 exec-comp / 11 ownership / 6 director rows. **Production was never affected** —
+   it uses Phase 1's corrected `_doc_url`.
+2. **A real over-rejection in the Phase-5 fabrication guard.** PTC's 2010 filing wraps a narrow
+   name column, so the vote numbers land BETWEEN the halves of the name:
+
+   ```
+   Paul                       100,753,338     1,735,851     7,486,441
+   A. Lacy
+   ```
+
+   `"Paul A. Lacy"` is a substring at no whitespace normalisation, and three CORRECTLY read
+   nominees were discarded. Fixed with a token fallback (contiguous first, else every substantial
+   token must appear); the measured fabrications still fail it. Modern filings show **0
+   rejections** — AAPL 2026 and JPM 2026 each returned 5 and 7 clean proposals.
+3. **The vote role map is unmeasurable from the DB pre-cutover.** `_role_source` joins to
+   `def14a_executive_comp` / `def14a_director_comp`, which the cutover CREATES, so a DB-sourced
+   map returned **96.8% `unmatched`** — a fact about the missing tables, not about the join.
+   Step 1's `--votes` leg reads its role frames from `new/` instead.
+
+### Mistakes worth recording
+
+- **`TaskStop` kills the shell wrapper, not the Python children.** Two abandoned proxy runs kept
+  extracting — one for ~34 minutes — after I believed they were stopped, both against the buggy
+  pre-2001 path. **~$5 of wasted LLM spend.** Found by enumerating command lines and killed by
+  PID (never by image name — a blanket `python.exe` kill has already destroyed a multi-hour SEC
+  download in this repo once). Always verify the process is gone after stopping a task.
+- **The smoke-set parquets in `new/` were deleted, not left behind.** They covered only each
+  ticker's oldest filing and were produced through the folder-index bug, so every fill rate off
+  them was wrong. `COMPARISON.md` now honestly says PENDING. `new/README.md` records why.
+
+### Fixture substitution (Step 2's hand-check)
+
+The plan's 20-row hand-check across A / AMAT / PG / CAT / PFE needs the proxy leg's output, so it
+is outstanding with it. What was hand-checked instead, on real filings: BA's and NKE's co-PEO
+years and SBUX's non-zero PVP (above), AAPL 2025 / JPM 2025 / TDG 2020 / AEE 2026 / GE 2019+2024 /
+JPM 2017 / TDG 2014 vote tables read line-by-line into `tests/.../fixtures/item507_texts.json`,
+and Agilent's 2000 proxy end-to-end.
 
 ## Rollback
 

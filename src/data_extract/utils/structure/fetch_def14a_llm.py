@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 from tqdm import tqdm
@@ -978,6 +979,36 @@ def _process_filing(
         return None
 
 
+#: Concurrent LLM calls per ticker. Not an optimisation -- it is what makes a universe run
+#: possible at all. MEASURED on the Phase-6 validation set: one modern proxy is a ~130k-char
+#: payload and takes **~94 seconds** on `gpt-5-mini` (a reasoning model), so 8,700 proxies
+#: serially is **~9.5 days**. The work is pure network wait on an API that accepts parallel
+#: requests, and 12 was measured to draw no 429s.
+#:
+#: Per-FILING and never per-ticker: the writes stay exactly where they were -- one
+#: `_save_ticker_rows` per ticker, on the main thread -- which preserves both the "an
+#: interrupted run loses no paid tokens" property and immunity from `store.ensure_table`'s
+#: check-then-create race (concurrent writers on a COLD table can silently lose rows).
+_LLM_WORKERS = 12
+
+
+def _extract_concurrently(context: Context, ticker: str, filings: list[pd.Series],
+                          extractor: LLMExtractor,
+                          workers: int) -> list[tuple[dict, dict] | None]:
+    """`_process_filing` over one ticker's filings, in order, `workers` at a time.
+
+    Order is preserved (`pool.map`) because the caller zips the results back against the
+    filings that produced them. One extractor is shared on purpose: `prompt_cache_key` is a
+    function of (model, schema), so every worker keeps hitting the same cached prompt prefix.
+    """
+    if not filings:
+        return []
+    if workers <= 1 or len(filings) == 1:
+        return [_process_filing(context, ticker, f, extractor) for f in filings]
+    with ThreadPoolExecutor(max_workers=min(workers, len(filings))) as pool:
+        return list(pool.map(lambda f: _process_filing(context, ticker, f, extractor), filings))
+
+
 def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
     """Up to date only when EVERY requested ticker already has rows in the DB AND
     the shared extraction manifest (`run_manifest.py`) was refreshed today. The old
@@ -1103,6 +1134,7 @@ def fetch_def14a_llm(
     model: str,
     max_chars: int = 130_000,
     cache: bool = True,
+    workers: int = _LLM_WORKERS,
 ) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
@@ -1164,21 +1196,31 @@ def fetch_def14a_llm(
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue
 
+        # Resolve the work FIRST, then extract it. Deciding what to send before sending any of
+        # it is what lets the LLM calls run concurrently, and the local `done` set covers a
+        # ticker that lists the same accession twice in one window (the old loop relied on
+        # mutating `seen` mid-iteration, which a pool cannot do safely).
+        todo: list[pd.Series] = []
+        done: set[str] = set()
+        for _, f in filings.iterrows():
+            accession = f["accession_number"]
+            if accession in seen or accession in done:
+                continue
+            done.add(accession)
+            todo.append(f)
+        skipped = len(filings) - len(todo)
+        total_skipped += skipped
+
         ticker_rows: list[dict] = []
         ticker_children: dict[str, list[dict]] = {name: [] for name in _CHILD_SPEC}
-        skipped = 0
-        for _, f in filings.iterrows():
-            if f["accession_number"] in seen:      # already in the table -> skip this filing
-                skipped += 1
-                continue
-            result = _process_filing(context, ticker, f, extractor)
+        for f, result in zip(todo, _extract_concurrently(context, ticker, todo, extractor,
+                                                         workers)):
             if result is not None:
                 row, children = result
                 ticker_rows.append(row)
                 for name, child_rows in children.items():
                     ticker_children[name].extend(child_rows)
                 seen.add(f["accession_number"])
-        total_skipped += skipped
 
         # persist THIS ticker before moving on (don't batch — LLM calls are costly)
         if ticker_rows:

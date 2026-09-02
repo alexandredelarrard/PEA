@@ -133,6 +133,16 @@ Ordered by size. `tickers` = distinct non-null tickers.
 - **The four `sec_def14a_*` child tables in the size table above are RETIRED.** Their
   registrations and the code that wrote them are gone; the Postgres tables survive only until the
   cutover drops them, so those row counts describe data no longer being maintained.
+- **Five tables are REGISTERED but not yet in Postgres**: `def14a_directors`,
+  `def14a_executive_comp`, `def14a_director_comp`, `def14a_ownership` and `sec_8k_votes`. The DDL
+  is in `sql/schema.sql` and the code that writes them is merged, but they are created by the
+  DEF 14A cutover run, so they are absent from the size table above rather than empty. Until that
+  run happens, a query against them raises `TableMissingError` — which is the intended behaviour
+  (a missing table is a visible fault; an empty one reads as "this company discloses nothing").
+- **`def14a_llm` still carries its three retired technology columns in Postgres.** They were
+  removed from `sql/schema.sql`, but `CREATE TABLE IF NOT EXISTS` cannot retire a column on a
+  live table and a `TRUNCATE` does not either, so `ALTER TABLE ... DROP COLUMN` is part of the
+  cutover. Live column count is therefore **45**, not the 42 the schema file declares.
 - **The four `fundamentals_*` tables cover 54 tickers, not 500 — this is the Phase 5 rebuild
   scope, not a defect.** All four were dropped and rebuilt from scratch on 2026-08-24
   (`scripts/recreate_fundamentals_tables.py`), so the earlier 491-ticker / 239-column

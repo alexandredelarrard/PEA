@@ -28,6 +28,8 @@ tables they land in, see [data_schema.md](data_schema.md); for current coverage,
 | Governance / comp / ownership | SEC **DEF 14A** via OpenAI structured output | `OPENAI_API_KEY`, `SEC_USER_AGENT` | `def14a_llm` | `structure/fetch_def14a_llm.py` |
 | Pay-versus-Performance (deterministic) | SEC DEF 14A **inline XBRL** (ECD taxonomy), read direct from `filing.xbrl()` | `SEC_USER_AGENT` | `sec_def14a` (2023+ by regulation) | `structure/def14a_ecd.py`, `structure/fetch_def14a_edgar.py` |
 | Corporate events | SEC Form 8-K | `SEC_USER_AGENT` | `sec_8k` | `structure/fetch_8k_edgar.py` |
+| Shareholder votes | SEC Form 8-K **Item 5.07**, re-read from `sec_8k.item_text` (no new download) | `OPENAI_API_KEY` | `sec_8k_votes` (2010-03+ by regulation) | `structure/fetch_8k_votes_llm.py` |
+| Governance child tables | flattened out of the SAME paid `def14a_llm.def14a_json` blob | — | `def14a_directors`, `def14a_executive_comp`, `def14a_director_comp`, `def14a_ownership` | `structure/fetch_def14a_llm.py` |
 | Activist stakes | SEC Schedule 13D / 13D-A | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions` | `structure/fetch_13d_edgar.py` |
 | Filing narrative | SEC 10-K Item 1A / Item 7, 10-Q Item 2 | `SEC_USER_AGENT` | `sec_filing_text` | `structure/fetch_filing_text.py` |
 | Short volume | FINRA RegSHO daily files | no | `short_interest` | `prices/fetch_short_interest.py` |
@@ -221,6 +223,59 @@ measured (BA/NKE/SBUX tag `IndividualAxis` only; AAPL's amounts are undimensione
 Actually Paid subtracts prior-year unvested fair value. There is no `abs()` on this path.
 
 **Rule: never fabricate** — write a value only when deterministically recoverable, else NaN.
+
+**The table-anchored carve is what makes the LLM path work.** `prepare_def14a_sections` routes
+each section through a table classifier first (header signatures → TSV) and falls back to an
+anchor carve, with per-section budgets. Measured mean payload dropped 51,198 → 42,225 chars
+(−18%) while the tables the model needs got *more* of the budget, not less. Two positional facts
+are load-bearing: `_TOC_SKIP_FRAC` is a front-matter FLOOR, and `_DIRECTOR_MAX_FRAC = 0.40` is a
+CEILING on where the director-bios window may start — without it T's window landed at 53.6% of
+the document (pension-assumptions prose, 0 of 11 directors) and EOG's at 70.0%. The ceiling moved
+exactly those two filings and took in-block directors from 191 to 203 of 243.
+
+### Shareholder votes — Form 8-K Item 5.07
+
+**Item 5.07 is the only source of certified vote counts, and it starts 2010-03.** Rel. 33-9089
+moved the disclosure out of 10-Q Part II Item 4. **No vote number is ever tagged in XBRL** —
+Apple's 2025 annual-meeting 8-K carries 21 facts, 100% of them `dei:` cover-page tags — the SEC
+publishes no data set, and no vendor publishes a free parse. `sec_8k_votes` reads the narratives
+`fetch_8k_edgar` **already stores** in `sec_8k.item_text`, so it costs no new download.
+
+**N-PX is not a substitute.** ~51% of N-PX filings contain zero vote records, 13F managers report
+say-on-pay only (Rule 14Ad-1), funds hold ~33% of US equity, and 2,684 N-PX filings in 2025
+mention Apple's CUSIP alone — that is the parsing bill to *partially* reconstruct one meeting
+whose own 8-K gives the complete tally in one document.
+
+**An LLM, not a parser, and it was measured.** Head-to-head on 60 filings / 690 hand-read rows:
+rows fully correct 82.8% (parser) vs 82.5% (LLM), but **missed rows 39 vs 1** and **filings fully
+clean 40% vs 65%**. The parser's failures are layout-driven and unbounded — 12 header
+vocabularies across 34 filings, 41% combined-table layouts, 20.0% writing "Withheld" for
+"Against", a vertical `For: 1,234` layout it misses 100% of the time, and a dropped-header case
+that yields a silent COLUMN PERMUTATION.
+
+**There is no accuracy gate, and that is a finding rather than an omission.** A vote table prints
+no independent total and the dominant error is a column permutation, which is invariant under
+sums: every computable check combined gives recall 0.56 / precision 0.56, with 7 of 16 known-bad
+filings passing clean. `nominee_sum_matches` is stored as a monitor (computable on 96% of
+filings, true on 91%) and never used as a filter. What does the work is a **fabrication guard** —
+the model invented a whole table ("John Doe" / "Jane Smith", 250,000,000 votes) for a truncated
+filing — so a comma-grouped number must exist in the source, and a nominee's name *and* at least
+one of its counts must be printed there.
+
+**Amendments are unioned, never deduped.** Of 190 multi-filing meetings, "latest wins" is correct
+on 33 (17%) and unioning the group on 173 (91%), because **71% of amendments carry no vote
+numbers at all**. Read on `(ticker, period_of_report)`. In a contested election the *first* 8-K is
+the preliminary one — DIS `0000950157-24-000595` says its results exclude "shares voted on the
+blue proxy card distributed by Trian" and the 8-K/A switches from Against to Withhold — but only
+14 filings corpus-wide say "preliminary", so `mentions_preliminary` is a weak flag that resolves
+8 of the 17 genuine restatements and no more.
+
+**Zero rows is a normal outcome.** 8.8% of Item 5.07 filings are 5.07(d) board responses with no
+tally at all; a separate 1.0% store a truncated `item_text` because edgartools' item splitter cut
+at a filer's own "Item 1." numbering. The two are logged under distinct reasons. Note the length
+floor cannot be the truncation defence: the shortest GENUINE tally measured is **554 chars**
+(TDG's 2014 and 2019 special meetings) against HWM 2019's 508-char stub, so a floor high enough
+to reject the stub destroys two correct filings.
 
 ### Schedule 13D
 

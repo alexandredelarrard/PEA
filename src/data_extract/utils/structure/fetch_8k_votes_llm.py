@@ -67,6 +67,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Iterable, TypeVar
 
 import pandas as pd
 from tqdm import tqdm
@@ -202,6 +204,11 @@ def _norm_space(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().lower()
 
 
+#: Name tokens too short or too generic to be evidence on their own. A middle initial appears
+#: somewhere in any proxy, so counting it as a hit would make the token fallback vacuous.
+_WEAK_NAME_TOKENS = frozenset({"jr", "sr", "ii", "iii", "iv", "de", "la", "van", "der", "von"})
+
+
 def _name_in_source(name: str | None, text: str) -> bool:
     """True when `name` appears in the source, whitespace- and case-insensitively.
 
@@ -209,11 +216,31 @@ def _name_in_source(name: str | None, text: str) -> bool:
     `directors[]` names extracted from DEF 14A bodies appear verbatim in their source.
     A nominee name is printed in the election table it was read from, so a name that is
     absent was not read -- it was written.
+
+    But a CONTIGUOUS check alone over-rejects, and measurably: edgartools renders a narrow name
+    column by wrapping it, and the vote numbers land BETWEEN the two halves of the name. PTC's
+    2010 filing prints
+
+        Paul                       100,753,338     1,735,851     7,486,441
+        A. Lacy
+
+    so "Paul A. Lacy" is not a substring of the rendered text at any whitespace normalisation,
+    and three CORRECTLY read nominees were being discarded. Hence the token fallback: every
+    substantial token of the name must appear in the source, which survives the wrap while
+    still refusing a name the document never mentions. It is weaker than contiguity by exactly
+    one thing -- a fabricated name assembled from words present elsewhere in the document --
+    and the fabrication actually measured ("John Doe" / "Jane Smith" on a 508-char stub) fails
+    it, because neither surname is anywhere in that stub.
     """
     cleaned = clean_person_name(name)
     if not cleaned:
         return False
-    return _norm_space(cleaned) in _norm_space(text)
+    haystack = _norm_space(text)
+    if _norm_space(cleaned) in haystack:
+        return True
+    tokens = [t for t in re.findall(r"[a-z]+", cleaned.lower())
+              if len(t) > 1 and t not in _WEAK_NAME_TOKENS]
+    return bool(tokens) and all(t in haystack for t in tokens)
 
 
 def _number_in_source(value: float | None, text: str) -> bool:
@@ -487,6 +514,32 @@ def _proposal_rows(ticker: str, filing: pd.Series, extract: Item507Extract, text
     return rows, rejected
 
 
+#: Concurrent LLM calls per ticker, for the same measured reason as the DEF 14A path: the work
+#: is pure network wait on an API that accepts parallel requests, and a serial universe run is
+#: not finishable. An Item 5.07 narrative is far smaller than a proxy (the longest in the
+#: 333-filing baseline is 17,032 chars), so the per-call latency is lower -- but there are 6,657
+#: of them.
+_LLM_WORKERS = 12
+
+_T = TypeVar("_T")
+
+
+def _map_filings(fn: Callable[[pd.Series], _T], filings: list[pd.Series],
+                 workers: int) -> Iterable[_T]:
+    """`fn` over `filings`, in order, `workers` at a time.
+
+    Reads happen before the pool and the write happens after it, so a worker never touches the
+    store -- which keeps `ensure_table`'s check-then-create race (concurrent writers on a COLD
+    table can silently lose rows) off this path entirely.
+    """
+    if not filings:
+        return []
+    if workers <= 1 or len(filings) == 1:
+        return [fn(f) for f in filings]
+    with ThreadPoolExecutor(max_workers=min(workers, len(filings))) as pool:
+        return list(pool.map(fn, filings))
+
+
 def _process_filing(filing: pd.Series, extractor: LLMExtractor,
                     roles: dict[str, str],
                     titles: dict[str, str]) -> tuple[list[dict], int, str | None]:
@@ -529,6 +582,7 @@ def fetch_8k_votes_llm(
     model: str,
     max_chars: int = 40_000,
     cache: bool = True,
+    workers: int = _LLM_WORKERS,
 ) -> None:
     """Build/refresh `sec_8k_votes` from the stored Item 5.07 narratives, ticker by ticker.
 
@@ -576,11 +630,15 @@ def fetch_8k_votes_llm(
     for ticker, group in tqdm(todo.groupby("ticker"), desc="8-K votes"):
         role_source = _role_source(context, str(ticker))
         ticker_rows: list[dict] = []
-        for _, f in group.iterrows():
-            # the role map is a function of the MEETING, so it is rebuilt per filing --
-            # but off the three frames read once above, not three reads per filing
+
+        def _one(f: pd.Series) -> tuple[list[dict], int, str | None]:
+            # the role map is a function of the MEETING, so it is rebuilt per filing -- but off
+            # the three frames read once above, so a worker never touches the database
             roles, titles = _role_map(role_source, f.get("period_of_report"))
-            rows, rejected, reason = _process_filing(f, extractor, roles, titles)
+            return _process_filing(f, extractor, roles, titles)
+
+        filings = [f for _, f in group.iterrows()]
+        for rows, rejected, reason in _map_filings(_one, filings, workers):
             ticker_rows.extend(rows)
             total_rejected += rejected
             if reason:

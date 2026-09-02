@@ -130,7 +130,7 @@ today's `def14a_json`), so **recategorising later costs zero LLM calls**.
 | 3 ✅ | [PHASE-3-schema-and-child-tables.md](PHASE-3-schema-and-child-tables.md) | Pydantic expansion + 4 new tables (incl. `def14a_directors`) + the `reconciles` flag + fee rescale + the gender upgrade | yes — flatten is pure; replay over stored `def14a_json` |
 | 4 ✅ | [PHASE-4-slim-edgar-path.md](PHASE-4-slim-edgar-path.md) | ECD dimension filter, `company_name` fallback, delete the HTML block and 4 tables | yes — 5-filing live probe incl. BA/NKE/SBUX |
 | 5 ✅ | [PHASE-5-vote-tallies.md](PHASE-5-vote-tallies.md) | `sec_8k_votes` from stored `item_text` + director categories | yes — hand-read fixtures + guard tests |
-| 6 | [PHASE-6-cutover-and-report.md](PHASE-6-cutover-and-report.md) | Run the 23-ticker comparison, gate, then YOU truncate + full rerun; docs + DoD | the gate itself |
+| 6 🔄 | [PHASE-6-cutover-and-report.md](PHASE-6-cutover-and-report.md) | Run the 23-ticker comparison, gate, then YOU truncate + full rerun; docs + DoD | the gate itself |
 
 ### Sequencing constraint (from the research)
 

@@ -32,7 +32,7 @@ import pandas as pd
 
 from src.data_extract.utils.structure.fetch_8k_votes_llm import (
     _DIRECTOR_COLS, _LOW_SUPPORT_THRESHOLD, _MIN_ITEM_TEXT_CHARS, _ROLE_CATEGORIES,
-    _VOTE_FIELDS, _prepare_frame, _proposal_rows, _role_map, has_vote_numbers,
+    _VOTE_FIELDS, _name_in_source, _prepare_frame, _proposal_rows, _role_map, has_vote_numbers,
     mentions_preliminary, rejection_reason,
 )
 from src.data_extract.utils.structure.vote_schema import (
@@ -184,6 +184,29 @@ def test_a_real_name_carrying_invented_numbers_is_still_dropped():
     # 2, not 1: the nominee is dropped, and an election left with no nominee at all carries
     # no tally, so the proposal goes with it
     assert rejected == 2 and rows == []
+
+
+def test_a_name_wrapped_around_its_own_vote_numbers_is_not_rejected():
+    """Measured on PTC's 2010 filing during the Phase-6 run: edgartools wraps a narrow name
+    column, so the vote numbers land BETWEEN the two halves of the name --
+
+        Paul                       100,753,338     1,735,851     7,486,441
+        A. Lacy
+
+    -- and a contiguous substring check discarded three CORRECTLY read nominees. The token
+    fallback survives the wrap; the fabrications still fail it, which is the point.
+    """
+    wrapped = ("                          For          Withheld       Broker Non-Votes\n"
+               "  Paul              100,753,338       1,735,851          7,486,441\n"
+               "  A. Lacy\n"
+               "  Michael            65,279,989      37,209,200          7,486,441\n"
+               "  E. Porter\n")
+    assert _name_in_source("Paul A. Lacy", wrapped)
+    assert _name_in_source("Michael E. Porter", wrapped)
+    assert not _name_in_source("John Doe", wrapped)
+    assert not _name_in_source("Jane Smith", wrapped)
+    # a middle initial is in every proxy, so it must not be what carries a match
+    assert not _name_in_source("A. E. Nobody", wrapped)
 
 
 def test_a_non_director_proposal_with_no_grounded_number_is_rejected():

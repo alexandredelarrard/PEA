@@ -120,3 +120,8 @@ venv.bak/
 data/
 
 *pgdata.tar.gz
+
+# work with LLM 
+specs/
+reports/
+scripts/

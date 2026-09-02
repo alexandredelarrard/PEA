@@ -1,4 +1,4 @@
-# Phase 0 — Baseline snapshot + comparison harness ⬜
+# Phase 0 — Baseline snapshot + comparison harness 🔄
 
 **Goal**: freeze today's tables as an immutable baseline artifact for the 23 chosen tickers, cache
 their raw filings to disk, and build the script that prints the before/after comparison. Nothing

@@ -44,7 +44,16 @@ BASIS_RANK = {"stated": 3, "honorific": 2, "pronoun": 1, "name": 0}
 #: `pct_gender_stated` reports and the one a consumer can filter on.
 EVIDENCE_RANK = BASIS_RANK["honorific"]
 
-_SUFFIX_RE = re.compile(r"\b(?:jr|sr|ii|iii|iv|v|phd|md|cpa|esq)\b\.?", re.I)
+#: Post-nominals must be matched AFTER the dots are removed, not before. The academic ones are
+#: written `Ph.D.` / `M.D.` / `DVM`, and `\bphd\b` does not match `ph.d.` -- so with the dots
+#: still in place the suffix survived, `_NON_ALPHA_RE` then split it into `ph d`, and `d` became
+#: the SURNAME. Measured: `person_key("Albert Bourla, DVM, Ph.D.")` returned `d|a`, which is not
+#: merely a failure to match `A. Bourla` (`bourla|a`) -- it collapses every credentialed
+#: director with the same first initial onto ONE key, so the consensus pass would propagate one
+#: person's gender onto unrelated people.
+_DOT_RE = re.compile(r"\.")
+_SUFFIX_RE = re.compile(
+    r"\b(?:jr|sr|ii|iii|iv|v|phd|md|dvm|dds|dsc|edd|pharmd|mph|cpa|cfa|esq)\b", re.I)
 _NON_ALPHA_RE = re.compile(r"[^a-z ]+")
 
 
@@ -76,7 +85,10 @@ def person_key(name: str | None) -> str | None:
     cleaned = clean_person_name(name)
     if not cleaned:
         return None
-    flat = _NON_ALPHA_RE.sub(" ", _SUFFIX_RE.sub(" ", cleaned.lower()))
+    # dots first, so `Ph.D.` becomes `phd` and the suffix pattern can see it; DELETED rather
+    # than replaced with a space, because a space would leave `ph d` and put `d` in surname
+    # position. `H.` -> `h` is unaffected either way.
+    flat = _NON_ALPHA_RE.sub(" ", _SUFFIX_RE.sub(" ", _DOT_RE.sub("", cleaned.lower())))
     parts = [p for p in flat.split() if p]
     if not parts:
         return None

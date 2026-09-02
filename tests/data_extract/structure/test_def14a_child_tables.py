@@ -218,6 +218,51 @@ def test_person_key_reconciles_spelling_drift():
     assert person_key("Tim Cook") != person_key("Tim Cash")
 
 
+#: Real director names from the cache. Pharma and biotech boards are full of these, which is why
+#: PFE is where the defect surfaced.
+_CREDENTIALED = [
+    ("Albert Bourla, DVM, Ph.D.", "A. Bourla"),
+    ("Mikael Dolsten, M.D., Ph.D.", "Mikael Dolsten"),
+    ("George A. Scangos, Ph.D.", "G. Scangos"),
+    ("Daniel K. Podolsky, M.D.", "D. Podolsky"),
+    ("Susan Desmond-Hellmann, MD, M.P.H.", "Susan Desmond-Hellmann"),
+]
+
+
+def test_academic_post_nominals_do_not_become_the_surname():
+    """A dotted post-nominal must not survive into the key, and this is a CORRUPTION bug rather
+    than a missed match.
+
+    `\\bphd\\b` does not match `ph.d.`, so with the dots still in place the suffix survived the
+    strip, the non-alpha pass then split it into `ph d`, and `d` landed in SURNAME position:
+    `person_key("Albert Bourla, DVM, Ph.D.")` returned **`d|a`**. Every credentialed director
+    sharing a first initial therefore collapsed onto one key, and `consensus` resolves ONE gender
+    per key and writes it to every row of it.
+
+    Measured over the 753 distinct director names in the 445 stored blobs: 24 names mis-keyed and
+    6 keys covering 2-4 different people. The damaging one is `d|s`, which merged **Scott
+    Gottlieb (male), Susan Hockfield (female) and Susanne Schaffert (female)** -- so the pass
+    would have overwritten a real, correctly-extracted gender with another person's.
+    """
+    for full, short in _CREDENTIALED:
+        assert person_key(full) == person_key(short), f"{full} != {short}"
+        key = person_key(full)
+        assert key and len(key.split("|")[0]) > 2, f"{full} keyed on a credential fragment: {key}"
+
+    # the three people the old key merged must land on three distinct keys
+    mixed = ["Scott Gottlieb, M.D.", "Susan Hockfield, Ph.D.", "Susanne Schaffert, Ph.D."]
+    keys = [person_key(n) for n in mixed]
+    print("\n=== SANITY: credentialed names key on the surname ===")
+    for n, k in zip(mixed, keys):
+        print(f"  {k:<20} <- {n}")
+    print("  Old behaviour keyed all three as 'd|s' -- one male and two female directors sharing")
+    print("  a single consensus key.")
+    assert len(set(keys)) == 3, keys
+    # and generational suffixes must still work, unchanged
+    assert person_key("Harry A. Lawton III") == person_key("Harry Lawton")
+    assert person_key("H. Lawrence Culp, Jr.") == person_key("H. Lawrence Culp")
+
+
 def _roster(rows: list[tuple[str, str | None, str | None]]) -> pd.DataFrame:
     return pd.DataFrame(
         [{"ticker": f"T{i}", "accession_number": f"a{i}", "name": n,

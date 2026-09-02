@@ -1,6 +1,6 @@
 """
 DEF 14A LLM save: strings must be NUL-free before the Postgres upsert
-(src/data_extract/utils/structure/fetch_def14a_llm.py::_strip_nul).
+(src/data_extract/utils/common/frame_sanitize.py::strip_nul).
 
 DEF 14A filings are HTML/PDF-derived, so LLM-extracted strings (company_name,
 ceo_name_proxy, the def14a_json dump) can carry a stray NUL (\x00). Postgres TEXT
@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.structure.fetch_def14a_llm import _strip_nul
+from src.data_extract.utils.common.frame_sanitize import strip_nul
 
 
 def test_strip_nul_removes_nul_and_preserves_everything_else():
@@ -21,7 +21,7 @@ def test_strip_nul_removes_nul_and_preserves_everything_else():
         {"ticker": "BBB", "company_name": "Clean Co", "ceo_name_proxy": "John Roe",
          "def14a_json": '{"name": "ok"}', "board_size": 7, "note": "fine"},
     ])
-    out = _strip_nul(df.copy())
+    out = strip_nul(df.copy())
 
     # no NUL survives in ANY cell of ANY column (dtype-agnostic: pandas 2 object + pandas 3 str)
     assert not any(isinstance(v, str) and "\x00" in v

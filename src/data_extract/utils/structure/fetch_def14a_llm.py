@@ -76,6 +76,7 @@ from src.data_extract.utils.structure.def14a_tables import (
     classify_filing, to_tsv,
 )
 from src.data_extract.utils.common.edgar_extract import html_to_text
+from src.data_extract.utils.common.frame_sanitize import strip_nul
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.llm_extractor import LLMExtractor
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
@@ -994,22 +995,6 @@ def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
     return set(requested_tickers).issubset(have)
 
 
-def _strip_nul(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove NUL (`\\x00`) characters from every string cell. Postgres TEXT columns
-    cannot store NUL (psycopg2 raises 'a string literal cannot contain NUL characters'),
-    and DEF 14A filings are HTML / PDF-derived, so the extracted strings (company_name,
-    ceo_name_proxy, the def14a_json dump, ...) occasionally carry stray NULs. Pure.
-
-    Dtype-agnostic (pandas 2 `object` AND pandas 3 `str` string columns): only the
-    columns that actually hold a NUL-bearing string are rewritten, so numeric / datetime
-    columns keep their dtype."""
-    for c in df.columns:
-        col = df[c]
-        if col.map(lambda v: isinstance(v, str) and "\x00" in v).any():
-            df[c] = col.map(lambda v: v.replace("\x00", "") if isinstance(v, str) else v)
-    return df
-
-
 #: Numeric columns on the child tables, and the primary key each is deduped on. The PK must
 #: match `schema.py`'s registration exactly -- a mismatch here silently drops rows on a filing
 #: that lists the same person twice.
@@ -1044,7 +1029,7 @@ def _prepare_frame(rows: list[dict], numeric: tuple[str, ...], pk: list[str]) ->
     for c in numeric:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = _strip_nul(df)                         # Postgres TEXT rejects NUL (\x00)
+    df = strip_nul(df)                          # Postgres TEXT rejects NUL (\x00)
     df["as_of"] = pd.to_datetime(df["as_of"]).dt.normalize()
     return df.drop_duplicates(subset=[c for c in pk if c in df.columns], keep="last")
 

@@ -502,6 +502,22 @@ class Tables:
     # (best-effort -- NaN, not False, when that parse fails).
     sec_8k = Table("sec_8k", ("ticker", "accession_number", "item"), date_col="filing_date",
                    date_type_cols=("filing_date", "period_of_report"))
+    # Shareholder-meeting vote tallies parsed out of the ALREADY-STORED `sec_8k` Item 5.07
+    # narratives -- one row per proposal. Item 5.07 is the ONLY source of certified vote
+    # counts (Rel. 33-9089 moved the disclosure out of 10-Q Part II Item 4, so it begins
+    # 2010-03): no XBRL tag carries a vote number, the SEC publishes no data set, and no
+    # vendor publishes a free parse. Free by construction -- `fetch_8k_edgar` already stores
+    # the narrative (6,657 rows, 405 tickers), so nothing is re-downloaded.
+    # A director election collapses to ONE row whose per-role-category columns are summed
+    # across nominees; the raw per-nominee tallies stay in `nominee_votes_json`, which is
+    # what makes a recategorisation free. The 20 category columns are NULL on the ~85% of
+    # rows that are not elections.
+    # Amendments are stored as their own rows and UNIONED by the reader on
+    # (ticker, period_of_report): of 190 multi-filing meetings, "latest wins" is correct on
+    # 17% and "union the group" on 91%, because 71% of amendments carry no vote numbers.
+    sec_8k_votes = Table("sec_8k_votes", ("ticker", "accession_number", "proposal_seq"),
+                         date_col="filing_date",
+                         date_type_cols=("filing_date", "period_of_report", "meeting_date"))
     # 10-K Item 1A (Risk Factors) + Item 7 (MD&A) raw text; one row per
     # (ticker, accession, section). Feeds the embedding/drift feature layer.
     filing_risk_text = Table("sec_filing_text",

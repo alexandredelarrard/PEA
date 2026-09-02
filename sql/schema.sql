@@ -1078,6 +1078,69 @@ CREATE TABLE IF NOT EXISTS "sec_8k" (
 );
 CREATE INDEX IF NOT EXISTS ix_sec_8k_filing_date ON "sec_8k" ("filing_date");
 
+-- [extract] sec_8k_votes  (pk: ticker, accession_number, proposal_seq)
+-- Shareholder-meeting vote tallies parsed out of the ALREADY-STORED `sec_8k` Item 5.07
+-- narratives. Item 5.07 is the ONLY source of certified vote counts (Rel. 33-9089, from
+-- 2010-03): no XBRL tag carries a vote number, the SEC publishes no data set, and no vendor
+-- publishes a free parse. A director election collapses to ONE row whose per-role-category
+-- columns are summed across nominees; the raw per-nominee tallies stay in `nominee_votes_json`,
+-- which is what makes a recategorisation free. The 20 category columns are NULL on the ~85% of
+-- rows that are not elections. Amendments are stored under their own accession and UNIONED by
+-- the reader on (ticker, period_of_report): of 190 multi-filing meetings, "latest wins" is
+-- correct on 17% and unioning the group on 91%, because 71% of amendments carry no numbers.
+
+CREATE TABLE IF NOT EXISTS "sec_8k_votes" (
+    "ticker" TEXT NOT NULL,
+    "accession_number" TEXT NOT NULL,
+    "proposal_seq" DOUBLE PRECISION NOT NULL,
+    "cik" TEXT,
+    "form" TEXT,
+    "filing_date" DATE,
+    "period_of_report" DATE,
+    "meeting_date" DATE,
+    "is_amendment" DOUBLE PRECISION,
+    "mentions_preliminary" DOUBLE PRECISION,
+    "is_preliminary_stated" DOUBLE PRECISION,
+    "proposal_number" TEXT,
+    "proposal_type" TEXT,
+    "description" TEXT,
+    "vote_standard" TEXT,
+    "votes_for" DOUBLE PRECISION,
+    "votes_against" DOUBLE PRECISION,
+    "votes_abstain" DOUBLE PRECISION,
+    "votes_broker_non_votes" DOUBLE PRECISION,
+    "nominee_sum_matches" DOUBLE PRECISION,
+    "nominee_votes_json" TEXT,
+    "n_nominees_ceo" DOUBLE PRECISION,
+    "n_nominees_exec_officer" DOUBLE PRECISION,
+    "n_nominees_non_employee" DOUBLE PRECISION,
+    "n_nominees_unmatched" DOUBLE PRECISION,
+    "votes_for_ceo" DOUBLE PRECISION,
+    "votes_against_ceo" DOUBLE PRECISION,
+    "votes_abstain_ceo" DOUBLE PRECISION,
+    "votes_broker_non_votes_ceo" DOUBLE PRECISION,
+    "votes_for_exec_officer" DOUBLE PRECISION,
+    "votes_against_exec_officer" DOUBLE PRECISION,
+    "votes_abstain_exec_officer" DOUBLE PRECISION,
+    "votes_broker_non_votes_exec_officer" DOUBLE PRECISION,
+    "votes_for_non_employee" DOUBLE PRECISION,
+    "votes_against_non_employee" DOUBLE PRECISION,
+    "votes_abstain_non_employee" DOUBLE PRECISION,
+    "votes_broker_non_votes_non_employee" DOUBLE PRECISION,
+    "votes_for_unmatched" DOUBLE PRECISION,
+    "votes_against_unmatched" DOUBLE PRECISION,
+    "votes_abstain_unmatched" DOUBLE PRECISION,
+    "votes_broker_non_votes_unmatched" DOUBLE PRECISION,
+    "exec_officer_titles" TEXT,
+    "n_nominees" DOUBLE PRECISION,
+    "min_support_pct" DOUBLE PRECISION,
+    "min_support_name" TEXT,
+    "n_nominees_below_70pct" DOUBLE PRECISION,
+    PRIMARY KEY ("ticker", "accession_number", "proposal_seq")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_8k_votes_filing_date ON "sec_8k_votes" ("filing_date");
+CREATE INDEX IF NOT EXISTS ix_sec_8k_votes_meeting ON "sec_8k_votes" ("ticker", "period_of_report");
+
 -- [extract] sec_filing_text  (pk: ticker, accession_number, section)
 
 CREATE TABLE IF NOT EXISTS "sec_filing_text" (

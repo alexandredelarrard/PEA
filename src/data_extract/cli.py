@@ -52,6 +52,7 @@ from src.data_extract.utils.fundamentals_sharadar.gap_check import (
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 # --- structure -------------------------------------------------------------- #
+from src.data_extract.utils.structure.fetch_8k_votes_llm import fetch_8k_votes_llm
 from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
 from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
 from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
@@ -426,6 +427,16 @@ def sec_8k_items(config_path: str, tickers: str | None, years: int | None) -> No
     config, context = _ctx(config_path)
     fetch_8k_edgar(context, tickers=_tickers(context, tickers),
                    years_history=years or config.data_extract.years_history)
+
+
+@cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). "
+                  "No download — reads sec_8k.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+def sec_8k_votes(config_path: str, tickers: str | None) -> None:
+    config, context = _ctx(config_path)
+    fetch_8k_votes_llm(context, tickers=_tickers(context, tickers),
+                       model=config.data_extract.llm_model)
 
 
 @cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")

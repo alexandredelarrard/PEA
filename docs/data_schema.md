@@ -159,7 +159,42 @@ Two complementary paths to the same filings:
 | Table | PK | date_col | Notes |
 |---|---|---|---|
 | `sec_8k` | `ticker, accession_number, item` | `filing_date` | One row **per item code** — an 8-K reports 1..n items and ~75% report more than one. `item_tag` maps the curated high-signal codes; `has_earnings`/`has_press_release` are best-effort → **NaN, not False**, when the typed parse fails |
+| `sec_8k_votes` | `ticker, accession_number, proposal_seq` | `filing_date` | One row **per proposal** of a shareholder meeting, parsed out of the `sec_8k` Item 5.07 narratives already stored — **no new download** |
 | `sec_filing_text` | `ticker, accession_number, section` | `filed` | 10-K Item 1A + Item 7 / 10-Q Item 2 raw text. `fetch_filing_text.FILING_TEXT_MIN_CHARS = 1500` rejects TOC stubs |
+
+### `sec_8k_votes` — the only source of certified vote counts
+
+Item 5.07 is where shareholder-meeting tallies live and **nowhere else**: Rel. 33-9089 moved the
+disclosure out of 10-Q Part II Item 4, so the series begins **2010-03**; no vote number is ever
+tagged in XBRL (Apple's 2025 annual-meeting 8-K carries 21 facts, 100% of them `dei:` cover-page
+tags); the SEC publishes no data set and no vendor a free parse. N-PX is not a substitute —
+~51% of N-PX filings contain zero vote records, 13F managers report say-on-pay only (Rule 14Ad-1),
+and 2,684 N-PX filings in 2025 mention Apple's CUSIP alone.
+
+- **A director election is ONE row.** Its per-role-category columns (`ceo` / `exec_officer` /
+  `non_employee` / `unmatched` × for / against / abstain / broker + a nominee count) are summed
+  across nominees, and the raw per-nominee tallies stay in `nominee_votes_json` — which is what
+  makes a **recategorisation free**, the same property `def14a_json` gives the proxy path. Those
+  20 columns are NULL on the ~85% of rows that are not elections.
+- **`vote_standard`** is `against` or `withheld`: **20.0% of filings print "Withheld"**, which is
+  not the same thing legally, and conflating them would corrupt every support percentage.
+  The count lands in `votes_against` either way.
+- **Amendments are unioned, never deduped.** Of 190 multi-filing meetings, "latest wins" is
+  correct on 33 (17%) and unioning the group on 173 (91%), because **71% of amendments carry no
+  vote numbers at all**. Read on `(ticker, period_of_report)`. In a contested election the
+  *first* 8-K is the preliminary one — only 14 filings corpus-wide say so, hence
+  `mentions_preliminary` as a weak flag that resolves 8 of the 17 genuine restatements.
+- **There is no accuracy gate, by design.** A vote table prints no independent total and the
+  dominant error is a column permutation, which is invariant under sums: combining every
+  computable check gives recall 0.56 / precision 0.56, with 7 of 16 known-bad filings passing
+  clean. `nominee_sum_matches` is therefore a **monitor, not a filter** (computable on 96% of
+  filings, true on 91%). What does the work instead is a fabrication guard — a comma-grouped
+  number must exist in the source, and a nominee's name *and* at least one of its counts must
+  be printed there.
+- Zero rows is a **normal outcome**: 8.8% of Item 5.07 filings are 5.07(d) board responses with
+  no tally at all. A separate 1.0% store a truncated `item_text` (edgartools' item splitter cuts
+  at a filer's own "Item 1." proposal numbering) — an accepted loss, not repaired by re-fetching
+  HTML. The two are logged under distinct reasons so they cannot hide inside each other.
 
 ## Extract — behavioral / text / embeddings
 

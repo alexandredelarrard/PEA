@@ -2,9 +2,11 @@
 step_extract_structure.py (src/data_extract/transformers/step_extract_structure.py)
 -----------------------------------------------------------------------------------
 Company-structure extraction: 8-K events, SC 13D activist stakes, DEF 14A governance
-(deterministic via edgartools, plus the LLM pass for narrative fields) and 10-K/10-Q
-narrative text. The window is resolved here and passed to every fetcher, so all four
-discover filings over the same history.
+(deterministic via edgartools, plus the LLM pass for narrative fields), 10-K/10-Q
+narrative text, and the Item 5.07 shareholder-vote tallies. The window is resolved here
+and passed to every DOWNLOADING fetcher, so they discover filings over the same history;
+the vote parser takes no window because it downloads nothing -- it reads the 8-K
+narratives the first fetcher has already stored.
 """
 
 from omegaconf import DictConfig
@@ -12,6 +14,7 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
 from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
+from src.data_extract.utils.structure.fetch_8k_votes_llm import fetch_8k_votes_llm
 from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
 from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
 from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text
@@ -34,3 +37,8 @@ class StepExtractStructure(Step):
         fetch_def14a_llm(self._context, tickers=tickers,
                          model=self._config.data_extract.llm_model)
         fetch_def14a_edgar(self._context, tickers=tickers, years_history=years_history)
+
+        # LAST on purpose: it reads `sec_8k` (item 5.07) for its input and the three
+        # `def14a_*` tables for the nominee role map, so both must be current first.
+        fetch_8k_votes_llm(self._context, tickers=tickers,
+                           model=self._config.data_extract.llm_model)

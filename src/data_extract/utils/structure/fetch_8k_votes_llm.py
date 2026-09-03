@@ -67,8 +67,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Iterable, TypeVar
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -76,14 +74,19 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import strip_nul
-from src.data_extract.utils.common.llm_extractor import LLMExtractor
 from src.data_extract.utils.common.sec_utils import existing_filings
 from src.data_extract.utils.structure.def14a_gender import person_key
 from src.data_extract.utils.structure.def14a_validate import clean_person_name, clean_text
 from src.data_extract.utils.schemas.vote_schema import (
     Item507Extract, PROPOSAL_TYPES, ProposalVote, VOTE_STANDARDS,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
+# `gpt_extract` is a shared service, like `src/utils/` -- the sanctioned cross-import. It
+# owns the model, the keys, the prompts (`prompt_templates/sec8k_votes_*.md`) and the
+# thread pool; the fabrication guard and the role map below are this module's business.
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
+from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 
 logger = logging.getLogger(__name__)
 
@@ -136,33 +139,6 @@ _LOW_SUPPORT_THRESHOLD = 0.70
 #: rounded cell without absorbing a permuted column.
 _NOMINEE_SUM_RTOL = 0.005
 
-_VOTES_PROMPT = (
-    "You are reading Item 5.07 of a Form 8-K: the certified results of a shareholder "
-    "meeting. Extract every matter voted on and its vote counts.\n"
-    "\n"
-    "READ THE NUMBERS OFF THE PAGE. Every value you return must appear in the text. Do "
-    "not compute, sum, average or infer any vote count. If a number is not printed, "
-    "return null for it.\n"
-    "\n"
-    "The numbers are SHARE COUNTS, not percentages. Many filings also print a '% For' / "
-    "'% Against' column, or stack a percentage row inside the table -- ignore every "
-    "percentage. Some filings TRANSPOSE a non-director proposal into label/value lines "
-    "('Votes Cast For: | 3,495,486,371 | 96.8 %'); read the share count, drop the "
-    "percentage. Round fractional votes to whole shares.\n"
-    "\n"
-    "'WITHHELD' (or 'Withhold') is the column some filers use INSTEAD OF 'Against' in a "
-    "director election. Put its count in `votes_against` and set `vote_standard` to "
-    "'withheld'. It is NEVER the broker-non-vote column. Broker non-votes are printed as "
-    "'Broker Non-Votes' or 'Non-Votes'; when the filing omits that column or prints "
-    "'N/A', return null -- return 0 only when it prints a zero.\n"
-    "\n"
-    "A director election is ONE proposal with one entry per nominee in `nominees`. Leave "
-    "the proposal-level vote fields null for it; do not add the nominees up.\n"
-    "\n"
-    "Some Item 5.07 filings report no tallies at all -- they only state the board's "
-    "response to an earlier say-on-pay frequency vote. Return an empty `proposals` list "
-    "for those. Never invent a table, a nominee or a number that is not in the text."
-)
 
 
 # --------------------------------------------------------------------------- #
@@ -515,52 +491,33 @@ def _proposal_rows(ticker: str, filing: pd.Series, extract: Item507Extract, text
     return rows, rejected
 
 
-#: Concurrent LLM calls per ticker, for the same measured reason as the DEF 14A path: the work
-#: is pure network wait on an API that accepts parallel requests, and a serial universe run is
-#: not finishable. An Item 5.07 narrative is far smaller than a proxy (the longest in the
-#: 333-filing baseline is 17,032 chars), so the per-call latency is lower -- but there are 6,657
-#: of them.
+#: Concurrent LLM calls, for the same measured reason as the DEF 14A path: the work is pure
+#: network wait on an API that accepts parallel requests, and a serial universe run is not
+#: finishable. An Item 5.07 narrative is far smaller than a proxy (the longest in the
+#: 333-filing baseline is 17,032 chars), so the per-call latency is lower -- but there are
+#: 6,657 of them. `config.gpt.threads` is the live knob; this is the no-config fallback.
 _LLM_WORKERS = 12
 
-_T = TypeVar("_T")
 
+def _result_frames(result: LlmResult, tally: dict) -> dict[Table, pd.DataFrame]:
+    """One answer -> the `sec_8k_votes` rows that survive the fabrication guard.
 
-def _map_filings(fn: Callable[[pd.Series], _T], filings: list[pd.Series],
-                 workers: int) -> Iterable[_T]:
-    """`fn` over `filings`, in order, `workers` at a time.
-
-    Reads happen before the pool and the write happens after it, so a worker never touches the
-    store -- which keeps `ensure_table`'s check-then-create race (concurrent writers on a COLD
-    table can silently lose rows) off this path entirely.
+    Runs on the MAIN thread, after the pool has joined. `roles` / `titles` were resolved at
+    task-build time off the three frames read once per ticker, so no worker ever needed the
+    store to categorise a nominee.
     """
-    if not filings:
-        return []
-    if workers <= 1 or len(filings) == 1:
-        return [fn(f) for f in filings]
-    with ThreadPoolExecutor(max_workers=min(workers, len(filings))) as pool:
-        return list(pool.map(fn, filings))
-
-
-def _process_filing(filing: pd.Series, extractor: LLMExtractor,
-                    roles: dict[str, str],
-                    titles: dict[str, str]) -> tuple[list[dict], int, str | None]:
-    """`(rows, guard rejections, skip reason)` for one 8-K.
-
-    A skip reason short-circuits BEFORE the LLM call, so a truncated or tally-free
-    narrative costs nothing.
-    """
-    text = filing.get("item_text")
-    reason = rejection_reason(text)
-    if reason is not None:
-        return [], 0, reason
-    try:
-        extract = extractor.extract(Item507Extract, text, instructions=_VOTES_PROMPT)
-    except Exception as e:
-        logger.warning("%s %s: Item 5.07 LLM extraction failed (%s)",
-                       filing.get("ticker", ""), filing.get("filing_date", ""), e)
-        return [], 0, "extraction failed"
-    rows, rejected = _proposal_rows(filing["ticker"], filing, extract, text, roles, titles)
-    return rows, rejected, None if rows else "no proposals survived the guard"
+    meta = result.task.meta
+    rows, rejected = _proposal_rows(meta["ticker"], meta["filing"], result.parsed,
+                                    meta["text"], meta["roles"], meta["titles"])
+    tally["rejected"] += rejected
+    if not rows:
+        # NOT the same as a failure: a 5.07(d) board-response filing correctly yields zero
+        # rows. The reason is what separates an accepted loss from a correct empty answer.
+        tally["skips"]["no proposals survived the guard"] = \
+            tally["skips"].get("no proposals survived the guard", 0) + 1
+        return {}
+    tally["rows"].extend(rows)
+    return {Tables.sec_8k_votes: _prepare_frame(rows)}
 
 
 def _prepare_frame(rows: list[dict]) -> pd.DataFrame:
@@ -600,9 +557,8 @@ def fetch_8k_votes_llm(
     `model` / `cache` default to `config.gpt`; pass an explicit keyword to pin one for
     research without touching config.
     """
-    model = model or config.gpt.llm_model[config.gpt.default_api]
-    max_chars = config.gpt.max_chars.sec8k_votes if max_chars is None else max_chars
-    cache = config.gpt.cache if cache is None else cache
+    config = with_gpt_overrides(config, "sec8k_votes", model=model, max_chars=max_chars,
+                                cache=cache)
     if not context.store.exists(Tables.sec_8k):
         context.log.warning("sec_8k does not exist yet — run the 8-K fetcher first; "
                             "Item 5.07 votes skipped")
@@ -624,7 +580,7 @@ def fetch_8k_votes_llm(
         return
 
     try:
-        extractor = LLMExtractor(model=model, max_chars=max_chars, cache=cache)
+        extractor = LLMExtractor(context, config, action="sec8k_votes", threads=workers)
     except EnvironmentError as e:
         context.log.warning("Item 5.07 vote extraction skipped: %s", e)
         return
@@ -632,29 +588,44 @@ def fetch_8k_votes_llm(
     total_rows, total_rejected = 0, 0
     skips: dict[str, int] = {}
     for ticker, group in tqdm(todo.groupby("ticker"), desc="8-K votes"):
+        # read ONCE per ticker, on this thread; `_role_map` is pure, so the per-meeting map
+        # is resolved here too and a worker never needs the database to categorise a nominee
         role_source = _role_source(context, str(ticker))
-        ticker_rows: list[dict] = []
 
-        def _one(f: pd.Series) -> tuple[list[dict], int, str | None]:
-            # the role map is a function of the MEETING, so it is rebuilt per filing -- but off
-            # the three frames read once above, so a worker never touches the database
-            roles, titles = _role_map(role_source, f.get("period_of_report"))
-            return _process_filing(f, extractor, roles, titles)
-
-        filings = [f for _, f in group.iterrows()]
-        for rows, rejected, reason in _map_filings(_one, filings, workers):
-            ticker_rows.extend(rows)
-            total_rejected += rejected
-            if reason:
+        tasks: list[LlmTask] = []
+        for _, f in group.iterrows():
+            text = f.get("item_text")
+            reason = rejection_reason(text)
+            if reason is not None:
+                # short-circuits BEFORE a task exists, so a truncated or tally-free
+                # narrative costs nothing
                 skips[reason] = skips.get(reason, 0) + 1
+                continue
+            roles, titles = _role_map(role_source, f.get("period_of_report"))
+            tasks.append(LlmTask(seq=len(tasks), payload=text, schema=Item507Extract,
+                                 table=Tables.sec_8k_votes,
+                                 meta={"ticker": str(ticker), "filing": f, "text": text,
+                                       "roles": roles, "titles": titles}))
 
+        tally: dict = {"rejected": 0, "rows": [], "skips": {}}
+        results = extractor.run_extraction(
+            tasks, flatten=lambda r: _result_frames(r, tally),
+            group_key=lambda t: str(t.meta["ticker"]))
+
+        total_rejected += tally["rejected"]
+        for reason, n in tally["skips"].items():
+            skips[reason] = skips.get(reason, 0) + n
+        for failed in (r for r in results if not r.ok):
+            logger.warning("%s: Item 5.07 LLM extraction failed (%s)", ticker, failed.error)
+            skips["extraction failed"] = skips.get("extraction failed", 0) + 1
+
+        ticker_rows = tally["rows"]
         if ticker_rows:
-            written = context.store.save(Tables.sec_8k_votes, _prepare_frame(ticker_rows))
-            total_rows += written
+            total_rows += len(ticker_rows)
             unmatched = sum(r.get("n_nominees_unmatched") or 0 for r in ticker_rows)
             nominees = sum(r.get("n_nominees") or 0 for r in ticker_rows)
             context.log.info("%s: +%d vote row(s) from %d filing(s); %d/%d nominees unmatched",
-                             ticker, written, len(group), int(unmatched), int(nominees))
+                             ticker, len(ticker_rows), len(group), int(unmatched), int(nominees))
 
     context.log.info("Item 5.07: %d row(s) written, %d row(s) rejected by the fabrication "
                      "guard", total_rows, total_rejected)

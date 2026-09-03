@@ -18,7 +18,7 @@ from omegaconf import OmegaConf
 from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter
 from src.gpt_extract.utils.providers import OpenAIProvider
 from src.gpt_extract.utils.usage import UsageTracker
-from tests.gpt_extract.conftest import Answer, StubProvider, fake_context, gpt_config
+from tests.gpt_extract.fakes import Answer, StubProvider, fake_context, gpt_config
 
 
 def _extracter(monkeypatch, keys=("k1",), **overrides) -> GptExtracter:

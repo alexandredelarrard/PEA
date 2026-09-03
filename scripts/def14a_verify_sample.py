@@ -40,10 +40,10 @@ if str(ROOT) not in sys.path:
 
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_extract import html_to_text
-from src.data_extract.utils.common.llm_extractor import LLMExtractor
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.fetch_def14a_llm import (
-    _CHILD_SPEC, _DEF14A_PROMPT, _child_frames, _flatten, prepare_def14a_sections,
+    _CHILD_SPEC, _child_frames, _flatten, prepare_def14a_sections,
 )
 
 BASELINE = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix/baseline"
@@ -98,7 +98,7 @@ def extract_one(filing: pd.Series, extractor: LLMExtractor | None) -> tuple[dict
     focused = prepare_def14a_sections(raw, html_to_text(raw))
     if extractor is None:
         return {}, {}, len(focused)
-    ex = extractor.extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
+    ex = extractor.extract(Def14AExtract, focused)
     ticker = filing["ticker"]
     return _flatten(ticker, filing, ex), _child_frames(ticker, filing, ex), len(focused)
 
@@ -236,7 +236,7 @@ def main() -> None:
     if not args.dry_run:
         model = config.gpt.llm_model[config.gpt.default_api]
         print(f"model: {model} — {len(tickers)} filings, {len(tickers)} LLM calls")
-        extractor = LLMExtractor(model=model, max_chars=130_000, cache=True)
+        extractor = LLMExtractor(context, config, action="def14a")
 
     results = []
     for ticker in tickers:

@@ -31,7 +31,6 @@ from src.data_extract.utils.schemas.def14a_schema import (
 )
 from src.data_extract.utils.structure.fetch_def14a_llm import (
     _COMPENSATION_CONTENT_RE,
-    _DEF14A_PROMPT,
     _DIRECTOR_MAX_FRAC,
     _DIRECTOR_ROW_RE,
     _OWNERSHIP_CONTENT_RE,
@@ -325,37 +324,76 @@ def test_tabular_sections_capture_rows_in_synthetic():
           f"OWNERSHIP slice: {len(own_rows)} rows incl 'as a group'. Validated.")
 
 
+def _stub_extractor_cls(captured: dict):
+    """The REAL `LLMExtractor` with a stub provider injected.
+
+    Everything downstream of the network call -- task building, the carve, the flatten, the
+    five saves -- stays real, so these tests still exercise the production path and only the
+    paid call is replaced.
+    """
+    from src.gpt_extract.transformers.gpt_getter import LLMExtractor as _Real
+
+    class _StubProvider:
+        name, model, structured = "stub", "stub-model", True
+
+        def parse(self, schema, system, user):
+            captured["schema"] = schema
+            captured["system"] = system
+            captured.setdefault("payloads", []).append(user)
+            return _make_expected(), {"input_tokens": 1, "output_tokens": 1,
+                                      "cached_input_tokens": 0}
+
+    class _Stubbed(_Real):
+        def initialize_client(self, methode=None, key_index=None):
+            return _StubProvider()
+
+        def run_extraction(self, tasks, flatten=None, group_key=None):
+            tasks = list(tasks)
+            captured.setdefault("extracted", []).extend(
+                t.meta["filing"]["accession_number"] for t in tasks)
+            return super().run_extraction(tasks, flatten=flatten, group_key=group_key)
+
+    return _Stubbed
+
+
 # --------------------------------------------------------------------------- #
 # LLMExtractor (mocked)                                                         #
 # --------------------------------------------------------------------------- #
 def test_llm_extractor_mock():
-    """LLMExtractor.extract() forwards the schema, the tailored instructions and a
-    stable prompt-cache key to the OpenAI Responses API."""
-    from src.data_extract.utils.common.llm_extractor import LLMExtractor
+    """extract() forwards the schema, the tailored `.md` instructions and a stable
+    prompt-cache key to the OpenAI Responses API."""
+    from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+    from tests.gpt_extract.fakes import fake_context, gpt_config
 
     mock_response = MagicMock()
     mock_response.output_parsed = _make_expected()
 
     with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-        with patch("src.data_extract.utils.common.llm_extractor.OpenAI") as mock_cls:
+        with patch("src.gpt_extract.utils.providers.OpenAI") as mock_cls:
             mock_client = MagicMock()
             mock_client.responses.parse.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            extractor = LLMExtractor(model="gpt-5-mini")
-            result = extractor.extract(Def14AExtract, _SYNTHETIC, instructions=_DEF14A_PROMPT)
+            extractor = LLMExtractor(fake_context(), gpt_config(), action="def14a")
+            result = extractor.extract(Def14AExtract, _SYNTHETIC, action="def14a")
 
     assert isinstance(result, Def14AExtract)
     assert result.company_name == "ACME Corporation"
     call_kw = mock_client.responses.parse.call_args.kwargs
     assert call_kw["model"] == "gpt-5-mini"
     assert call_kw["text_format"] is Def14AExtract
-    assert call_kw["instructions"] == _DEF14A_PROMPT           # tailored prompt forwarded
+    # the tailored prompt now lives in prompt_templates/def14a_system_prompt.md
+    assert "=== LABEL ===" in call_kw["instructions"]
+    assert "SUMMARY COMPENSATION TABLE" in call_kw["instructions"]
+    assert call_kw["input"].rstrip().endswith(_SYNTHETIC.rstrip()[-60:])   # payload LAST
     assert call_kw["prompt_cache_key"] == "gpt-5-mini:Def14AExtract"
+    # gpt-5-mini is a reasoning model: it 400s on these
+    assert "temperature" not in call_kw and "seed" not in call_kw
 
     print("\n=== SANITY CHECK: LLMExtractor mock ===")
-    print(f"  extract() -> {result.company_name}; parse() got tailored instructions + "
-          f"prompt_cache_key={call_kw['prompt_cache_key']!r}. Validated.")
+    print(f"  extract() -> {result.company_name}; parse() got the .md instructions, the "
+          f"payload last, prompt_cache_key={call_kw['prompt_cache_key']!r}, and no "
+          "temperature/seed. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -438,10 +476,10 @@ def test_llm_extractor_real_apple():
     from src.context import get_config_context
     from src.data_extract.utils.common.edgar_extract import html_to_text
     from src.data_extract.utils.common.edgar_fillings import list_filings
-    from src.data_extract.utils.common.llm_extractor import LLMExtractor
     from src.data_extract.utils.common.sec_utils import sec_get
+    from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
-    _, ctx = get_config_context("./configs", use_cache=True, save=False)
+    config, ctx = get_config_context("./configs", use_cache=True, save=False)
     model = ctx.config.gpt.llm_model[ctx.config.gpt.default_api]
 
     filings = list_filings(ctx, "0000320193", ["DEF 14A"], years=2, company_name="Apple Inc.")
@@ -451,7 +489,8 @@ def test_llm_extractor_real_apple():
     latest = filings.sort_values("filing_date").iloc[-1]
     raw_html = sec_get(ctx, latest["doc_url"]).text
     focused = prepare_def14a_sections(raw_html, html_to_text(raw_html))
-    result = LLMExtractor(model=model).extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
+    result = LLMExtractor(ctx, config, action="def14a").extract(Def14AExtract, focused,
+                                                                action="def14a")
     row = _flatten("AAPL", latest, result)
 
     assert len(result.directors) >= 5
@@ -496,15 +535,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
     _cleanup()
     try:
         captured: dict = {}
-
-        class _FakeExtractor:                               # no OPENAI key needed
-            def __init__(self, **kwargs):
-                pass
-
-            def extract(self, schema, text_, instructions=None):
-                captured["schema"] = schema
-                captured["instructions"] = instructions
-                return _make_expected()
+        _FakeExtractor = _stub_extractor_cls(captured)       # no OPENAI key needed
 
         filings = pd.DataFrame([{
             "accession_number": ACC, "doc_url": "http://example/def14a.htm",
@@ -525,7 +556,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
         mod.fetch_def14a_llm(ctx, ctx.config, tickers=[TICKER])
 
         assert captured["schema"] is Def14AExtract, captured
-        assert captured["instructions"] == mod._DEF14A_PROMPT   # tailored prompt used
+        assert "SUMMARY COMPENSATION TABLE" in captured["system"]   # the .md prompt is used
 
         back = ctx.store.load("def14a_llm")
         row = back[back["ticker"] == TICKER]
@@ -580,15 +611,11 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
     _cleanup()
     try:
         for yr, acc in have_years.items():
-            mod._save_ticker_rows(ctx, [_seed_row(TICKER, acc, pd.Timestamp(f"{yr}-04-01"))])
+            ctx.store.save(mod.Tables.def14a_llm, mod._prepare_frame(
+                [_seed_row(TICKER, acc, pd.Timestamp(f"{yr}-04-01"))],
+                tuple(mod._NUMERIC_COLS), ["ticker", "accession_number"]))
         captured: dict = {"since_seen": [], "extracted": []}
-
-        class _FakeExtractor:
-            def __init__(self, **kwargs):
-                pass
-
-            def extract(self, schema, text_, instructions=None):
-                return _make_expected()
+        _FakeExtractor = _stub_extractor_cls(captured)
 
         def _fake_list_filings(context, cik, forms, years, company="", since=None):
             captured["since_seen"].append(since)            # must be None now (full window)
@@ -602,16 +629,9 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
         class _Resp:
             text = "<html>proxy</html>"
 
-        # count which accessions actually reach the LLM
-        orig_process = mod._process_filing
-
-        def _spy_process(context, ticker, filing, extractor):
-            captured["extracted"].append(filing["accession_number"])
-            return orig_process(context, ticker, filing, extractor)
-
+        # which accessions actually reach the LLM is recorded by the stub extractor
         monkeypatch.setattr(mod, "LLMExtractor", _FakeExtractor)
         monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
-        monkeypatch.setattr(mod, "_process_filing", _spy_process)
         monkeypatch.setattr(mod, "sec_get", lambda context, url, **k: _Resp())
         monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame(
             {"ticker": [TICKER], "cik": ["0000000001"], "company_name": ["Z"]}))

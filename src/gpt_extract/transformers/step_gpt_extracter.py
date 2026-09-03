@@ -13,12 +13,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from threading import Lock
-from typing import Any, Mapping, TypeVar
+from typing import Any, Mapping, Sequence, TypeVar
 
+import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel
 
 from src.context import Context
+from src.gpt_extract.utils.embeddings import (
+    EMBEDDING_BATCH_SIZE, EMBEDDING_MAX_CHARS, EMBEDDING_MODEL, embed_texts,
+)
 from src.gpt_extract.utils.providers import GeminiProvider, OpenAIProvider, _Provider
 from src.gpt_extract.utils.usage import UsageTracker
 from src.utils.step import Step
@@ -45,6 +49,27 @@ _PROVIDER_CLASSES: dict[str, type] = {
     "local": OpenAIProvider,
     "google": GeminiProvider,
 }
+
+
+def with_gpt_overrides(config: DictConfig, action: str, model: str | None = None,
+                       max_chars: int | None = None,
+                       cache: bool | None = None) -> DictConfig:
+    """`config` with per-call overrides folded into its `gpt` branch.
+
+    A caller pins a model or a budget for research without editing `configs/gpt.yml`, and
+    the extracter still reads everything from ONE place. `None` means "leave the config
+    alone", so the default path is exactly the configured one.
+    """
+    overrides: dict[str, Any] = {}
+    if model is not None:
+        overrides["llm_model"] = {config.gpt.default_api: model}
+    if max_chars is not None:
+        overrides["max_chars"] = {action: max_chars}
+    if cache is not None:
+        overrides["cache"] = cache
+    if not overrides:
+        return config
+    return OmegaConf.merge(config, OmegaConf.create({"gpt": overrides}))
 
 
 class GptExtracter(Step):
@@ -220,3 +245,18 @@ class GptExtracter(Step):
         parsed, usage = provider.parse(schema, system, user)
         self.usage.record(usage)
         return parsed
+
+    def embed(self, texts: Sequence[str], client: Any | None = None) -> np.ndarray:
+        """`embed_texts` with this run's `config.gpt.embedding` defaults applied.
+
+        Embedding needs no prompts and no queues, so there is no `GptEmbedder` subclass --
+        the free function is the API and this is the convenience for a caller that already
+        holds an extracter.
+        """
+        return embed_texts(
+            texts,
+            model=self.embedding.get("model", EMBEDDING_MODEL),
+            batch_size=int(self.embedding.get("batch_size", EMBEDDING_BATCH_SIZE)),
+            max_chars=int(self.embedding.get("max_chars", EMBEDDING_MAX_CHARS)),
+            client=client,
+        )

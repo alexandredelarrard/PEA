@@ -18,7 +18,7 @@ Three sub-runs, each independently skippable so a failure in one does not cost t
   --votes   Item 5.07 tallies, reading `item_text` from the DB READ-ONLY and projected, then
             writing parquet. ~320 LLM calls.
 
-Every LLM call's token usage is recorded (`LLMExtractor.totals`) and written to
+Every LLM call's token usage is recorded (`LLMExtractor.usage.totals`) and written to
 `new/tokens.json`, because Phase 6 forbids starting the ~15,400-call full backfill on an
 estimate. The per-filing carve payload lands in `new/payload.json`, which is what makes gate
 G10 a measurement rather than an assertion.
@@ -44,13 +44,14 @@ if str(ROOT) not in sys.path:
 
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_extract import html_to_text
-from src.data_extract.utils.common.llm_extractor import LLMExtractor
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.fetch_def14a_llm import (
-    _DEF14A_PROMPT, _child_frames, _flatten, prepare_def14a_sections,
+    _child_frames, _flatten, prepare_def14a_sections,
 )
 from src.data_extract.utils.structure.fetch_8k_votes_llm import (
-    _SOURCE_COLS, _VOTES_PROMPT, _prepare_frame as _prepare_vote_frame, _proposal_rows,
+    _SOURCE_COLS, _prepare_frame as _prepare_vote_frame, _proposal_rows,
     _role_map, _role_source, rejection_reason,
 )
 from src.data_extract.utils.schemas.vote_schema import Item507Extract
@@ -108,7 +109,8 @@ def _filings() -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # --proxy : the LLM path                                                       #
 # --------------------------------------------------------------------------- #
-def run_proxy(context, model: str, limit: int | None, dry: bool, workers: int) -> None:
+def run_proxy(context, config, model: str, limit: int | None, dry: bool,
+              workers: int) -> None:
     filings = _filings()
     if limit:
         filings = filings.groupby("ticker", group_keys=False).head(limit)
@@ -117,7 +119,8 @@ def run_proxy(context, model: str, limit: int | None, dry: bool, workers: int) -
         print(filings.groupby("ticker").size().to_string())
         return
 
-    extractor = LLMExtractor(model=model, max_chars=130_000, cache=True)
+    extractor = LLMExtractor(context, with_gpt_overrides(config, "def14a", model=model),
+                             action="def14a")
     parent: list[dict] = []
     children: dict[str, list[dict]] = {}
     payload_chars: list[int] = []
@@ -133,7 +136,7 @@ def run_proxy(context, model: str, limit: int | None, dry: bool, workers: int) -
             raw = Path(f["path"]).read_text(encoding="utf-8", errors="replace")
             text = html_to_text(raw)
             focused = prepare_def14a_sections(raw, text)
-            extract = extractor.extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
+            extract = extractor.extract(Def14AExtract, focused)
             row = _flatten(ticker, f, extract)
             kids = _child_frames(ticker, f, extract)
         except Exception as e:                      # one filing must not cost the run
@@ -149,7 +152,7 @@ def run_proxy(context, model: str, limit: int | None, dry: bool, workers: int) -
             if done[0] % 25 == 0:
                 el = time.time() - t0
                 print(f"  {done[0]}/{len(filings)} filings, {el:.0f}s "
-                      f"({el / done[0]:.1f}s/filing), ${_usd(extractor.totals):.2f} so far",
+                      f"({el / done[0]:.1f}s/filing), ${_usd(extractor.usage.totals):.2f} so far",
                       flush=True)
 
     # Concurrency is not an optimisation here, it is what makes the phase possible: measured
@@ -166,7 +169,7 @@ def run_proxy(context, model: str, limit: int | None, dry: bool, workers: int) -
         pd.DataFrame(rows).to_parquet(NEW / f"{name}.parquet", index=False)
     (NEW / "payload.json").write_text(
         json.dumps({"payload_chars": payload_chars}), encoding="utf-8")
-    _write_tokens("proxy", extractor.totals, len(filings))
+    _write_tokens("proxy", extractor.usage.totals, len(filings))
 
     print(f"\n  parent rows      : {len(parent)}")
     for name, rows in sorted(children.items()):
@@ -177,8 +180,8 @@ def run_proxy(context, model: str, limit: int | None, dry: bool, workers: int) -
     print(f"  failures         : {len(failures)}")
     for msg in failures[:10]:
         print(f"    - {msg}")
-    print(f"  spend            : ${_usd(extractor.totals):.2f} over "
-          f"{extractor.totals['calls']} calls, {time.time() - t0:.0f}s")
+    print(f"  spend            : ${_usd(extractor.usage.totals):.2f} over "
+          f"{extractor.usage.totals['calls']} calls, {time.time() - t0:.0f}s")
 
 
 # --------------------------------------------------------------------------- #
@@ -269,7 +272,8 @@ def _parquet_role_source(ticker: str) -> dict[str, pd.DataFrame]:
 
 
 
-def run_votes(context, model: str, limit: int | None, dry: bool, workers: int) -> None:
+def run_votes(context, config, model: str, limit: int | None, dry: bool,
+              workers: int) -> None:
     manifest = json.loads((BASELINE / "manifest.json").read_text(encoding="utf-8"))
     tickers = manifest["tickers"]
     src = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS),
@@ -285,7 +289,8 @@ def run_votes(context, model: str, limit: int | None, dry: bool, workers: int) -
     if dry:
         return
 
-    extractor = LLMExtractor(model=model, max_chars=40_000, cache=True)
+    extractor = LLMExtractor(context, with_gpt_overrides(config, "sec8k_votes", model=model),
+                             action="sec8k_votes")
     rows: list[dict] = []
     rejected = 0
     t0 = time.time()
@@ -309,8 +314,7 @@ def run_votes(context, model: str, limit: int | None, dry: bool, workers: int) -
         ticker = str(f["ticker"])
         roles, titles = _role_map(role_sources[ticker], f.get("period_of_report"))
         try:
-            extract = extractor.extract(Item507Extract, f["item_text"],
-                                        instructions=_VOTES_PROMPT)
+            extract = extractor.extract(Item507Extract, f["item_text"])
         except Exception as e:
             with lock:
                 print(f"  {ticker} {f['filing_date']}: FAILED {type(e).__name__}: {e}")
@@ -324,7 +328,7 @@ def run_votes(context, model: str, limit: int | None, dry: bool, workers: int) -
             if done[0] % 40 == 0:
                 el = time.time() - t0
                 print(f"  {done[0]}/{len(todo)} filings, {el:.0f}s, {len(rows)} rows, "
-                      f"${_usd(extractor.totals):.2f}", flush=True)
+                      f"${_usd(extractor.usage.totals):.2f}", flush=True)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(one, [f for _, f in todo.iterrows()]))
@@ -332,7 +336,7 @@ def run_votes(context, model: str, limit: int | None, dry: bool, workers: int) -
     NEW.mkdir(parents=True, exist_ok=True)
     out = _prepare_vote_frame(rows) if rows else pd.DataFrame()
     out.to_parquet(NEW / "sec_8k_votes.parquet", index=False)
-    _write_tokens("votes", extractor.totals, len(todo))
+    _write_tokens("votes", extractor.usage.totals, len(todo))
 
     print(f"\n  sec_8k_votes rows      : {len(out)}")
     print(f"  guard rejections       : {rejected}")
@@ -347,8 +351,8 @@ def run_votes(context, model: str, limit: int | None, dry: bool, workers: int) -
         flag = out["nominee_sum_matches"].dropna()
         if len(flag):
             print(f"  nominee_sum_matches    : {flag.mean():.1%} of {len(flag)} computable rows")
-    print(f"  spend                  : ${_usd(extractor.totals):.2f} over "
-          f"{extractor.totals['calls']} calls, {time.time() - t0:.0f}s")
+    print(f"  spend                  : ${_usd(extractor.usage.totals):.2f} over "
+          f"{extractor.usage.totals['calls']} calls, {time.time() - t0:.0f}s")
 
 
 def _write_tokens(kind: str, totals: dict, n_filings: int) -> None:
@@ -382,11 +386,11 @@ def main() -> None:
     if not (args.proxy or args.ecd or args.votes):
         ap.error("pick at least one of --proxy / --ecd / --votes")
     if args.proxy:
-        run_proxy(context, model, args.limit, args.dry_run, args.workers)
+        run_proxy(context, config, model, args.limit, args.dry_run, args.workers)
     if args.ecd:
         run_ecd(context, args.limit, args.dry_run)
     if args.votes:
-        run_votes(context, model, args.limit, args.dry_run, args.workers)
+        run_votes(context, config, model, args.limit, args.dry_run, args.workers)
 
 
 if __name__ == "__main__":

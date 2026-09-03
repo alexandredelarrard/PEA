@@ -16,7 +16,7 @@ import pytest
 from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
-from tests.gpt_extract.conftest import Answer, StubProvider, fake_context, gpt_config
+from tests.gpt_extract.fakes import Answer, StubProvider, fake_context, gpt_config
 
 
 class RecordingStore:
@@ -237,6 +237,49 @@ def test_shutdown_is_not_racy(monkeypatch, attempt):
     if attempt == 19:
         print("\n=== SANITY: deterministic shutdown ===")
         print("  50 tasks over 12 workers, 20 consecutive runs, every one terminated. Validated.")
+
+
+def test_the_client_queue_does_not_grow_when_the_extracter_is_reused(monkeypatch):
+    """One extracter serves every ticker, so `run()` is called hundreds of times. Topping
+    the client queue up each run instead of refilling it would leak a slot per worker per
+    ticker, and rebuilding the providers would throw away warm connections."""
+    built = []
+    runner = _runner(monkeypatch, n_threads=4,
+                     provider_factory=lambda methode=None, key_index=None:
+                     built.append(key_index) or StubProvider())
+
+    sizes = []
+    for _ in range(5):                                # five "tickers"
+        for task in _tasks(6):
+            runner.submit(task)
+        runner.run()
+        sizes.append(runner._clients.qsize())
+
+    assert sizes == [4, 4, 4, 4, 4], sizes
+    assert len(built) == 1, f"providers rebuilt {len(built)} times instead of once"
+
+    print("\n=== SANITY: extracter reuse ===")
+    print(f"  5 consecutive runs -> client queue stays {sizes}; providers built "
+          f"{len(built)}x (connections stay warm). Validated.")
+
+
+def test_saves_are_ordered_by_the_flatten(monkeypatch):
+    """Children before parents: a crash between the two must not leave a parent claiming
+    children it does not have."""
+    store = RecordingStore()
+    runner = _runner(monkeypatch, n_threads=2, store=store)
+
+    def flatten(result: LlmResult):
+        return {Tables.def14a_directors: pd.DataFrame([{"b": 1}]),      # child FIRST
+                Tables.def14a_llm: pd.DataFrame([{"a": 1}])}            # parent LAST
+
+    runner.run_extraction(_tasks(2), flatten=flatten)
+
+    assert [name for name, _ in store.saves] == [str(Tables.def14a_directors),
+                                                 str(Tables.def14a_llm)]
+
+    print("\n=== SANITY: save ordering ===")
+    print(f"  flatten yielded child-then-parent -> saved {[n for n, _ in store.saves]}. Validated.")
 
 
 def test_an_empty_task_list_is_not_an_error(monkeypatch):

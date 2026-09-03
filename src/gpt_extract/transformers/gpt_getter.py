@@ -61,6 +61,10 @@ class LLMExtractor(GptExtracter):
         self._results: dict[int, LlmResult] = {}
         self._results_lock = Lock()
         self._submitted = 0
+        #: Built once and reused across runs. One extracter serves every ticker, so
+        #: rebuilding the clients per ticker would throw away warm connections -- and
+        #: `prompt_cache_key` only pays off while the calls keep hitting one cached prefix.
+        self._provider_pool: list[_Provider] | None = None
 
     # ------------------------------------------------------------------- queues --- #
 
@@ -70,21 +74,26 @@ class LLMExtractor(GptExtracter):
 
     def initialize_queue_clients(self, n_slots: int) -> list[_Provider]:
         """Fill the client queue with `n_slots` entries drawn from every (provider, key)
-        pair available, so M keys are shared by N workers without partitioning them."""
-        methodes = self.methodes or [m for m in (self.default_api,)
-                                     if m in self.available_methodes()]
-        if not methodes:
-            methodes = [self.default_api]
+        pair available, so M keys are shared by N workers without partitioning them.
 
-        distinct: list[_Provider] = []
-        for methode in methodes:
-            keys = self.api_keys.get(methode) or []
-            for index in range(len(keys) or 1):
-                distinct.append(self.initialize_client(methode, key_index=index))
+        The queue is emptied first: this extracter is reused across tickers, and topping
+        it up every run would grow it without bound.
+        """
+        while not self._clients.empty():                # a previous run's slots
+            self._clients.get_nowait()
+
+        if self._provider_pool is None:
+            methodes = self.methodes or [self.default_api]
+            pool: list[_Provider] = []
+            for methode in methodes:
+                keys = self.api_keys.get(methode) or []
+                for index in range(len(keys) or 1):
+                    pool.append(self.initialize_client(methode, key_index=index))
+            self._provider_pool = pool
 
         for slot in range(n_slots):
-            self._clients.put(distinct[slot % len(distinct)])
-        return distinct
+            self._clients.put(self._provider_pool[slot % len(self._provider_pool)])
+        return self._provider_pool
 
     def close_queue_clients(self, n_workers: int) -> None:
         """One sentinel per worker.
@@ -175,6 +184,11 @@ class LLMExtractor(GptExtracter):
 
         `flatten` is a callable rather than a single table because one answer can fan out
         to several tables -- the DEF 14A extract writes five.
+
+        Tables are saved in the order `flatten` first yields them. That is load-bearing for
+        a caller with parent/child tables: writing children FIRST means a crash between the
+        two leaves a child row without a parent (recoverable, because the dedup keys on the
+        parent) rather than a parent claiming children it does not have.
         """
         for task in tasks:
             self.submit(task)

@@ -46,7 +46,10 @@ from tqdm import tqdm
 from src.data_store.schema import Tables
 from src.constants.constants import (EARNINGS_CALL_TAG_ANSWER, EARNINGS_CALL_TAG_PREPARED, EARNINGS_CALL_TAG_QUESTION)
 from src.context import Context
-from src.utils.openai_embeddings import cosine, embed_texts, openai_api_key
+# `gpt_extract` is a shared service, like `src/utils/` -- the one sanctioned cross-import
+# between src/ subfolders. It owns the single OpenAI client factory and the measured
+# 28,000-char cap; the alternative was a second copy of both living here.
+from src.gpt_extract import cosine, embed_texts, openai_api_key
 
 _QA_TAG, _PREP_TAG = "qa", "prepared_remarks"
 

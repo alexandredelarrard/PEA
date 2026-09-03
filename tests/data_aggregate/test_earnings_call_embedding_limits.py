@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.utils.openai_embeddings import EMBEDDING_MAX_CHARS
+from src.gpt_extract import EMBEDDING_MAX_CHARS
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     _MIN_TURN, _is_informative_question,
 )
-from src.utils.openai_embeddings import cosine, embed_texts
+from src.gpt_extract import cosine, embed_texts
 
 
 class _StubClient:

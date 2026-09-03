@@ -57,7 +57,6 @@ from __future__ import annotations
 
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -80,10 +79,15 @@ from src.data_extract.utils.structure.def14a_tables import (
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.frame_sanitize import strip_nul
 from src.data_extract.utils.common.edgar_fillings import list_filings
-from src.data_extract.utils.common.llm_extractor import LLMExtractor
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping, sec_get
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
+# `gpt_extract` is a shared service, like `src/utils/` -- the sanctioned cross-import. It
+# owns the model, the keys, the prompts (`prompt_templates/def14a_*.md`) and the thread
+# pool; everything below is the DEF 14A domain and stays here.
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
+from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 
 # DEF 14A = the shareholder proxy; DEF 14C = the equivalent INFORMATION STATEMENT that
 # CONTROLLED companies file instead (no vote solicited because a controlling holder already has
@@ -118,53 +122,10 @@ _NUMERIC_COLS = [
     "audit_fees_other", "auditor_fees_prior",
 ]
 
-# Task-tailored extraction prompt (cached per model+schema -> stays cheap). Precise
-# instructions on WHERE each field lives and how to normalise it materially lift the
-# fill rate versus a generic "extract structured data" prompt.
-_DEF14A_PROMPT = (
-    "You extract structured governance & compensation data from a SEC DEF 14A proxy (or the "
-    "equivalent DEF 14C information statement filed by controlled companies). The input is a set "
-    "of `=== LABEL ===` blocks. Blocks named SUMMARY COMPENSATION TABLE, DIRECTOR COMPENSATION "
-    "TABLE, AUDIT FEE TABLE, FIVE PERCENT HOLDERS and INSIDER OWNERSHIP are TAB-SEPARATED tables "
-    "with a header line first — use the header to identify each column. The other blocks are "
-    "narrative text.\n"
-    "- SUMMARY COMPENSATION TABLE: return EVERY (executive x fiscal year) row the table shows — "
-    "it normally carries three years per executive. Take `fiscal_year` from the Year column. A "
-    "'-', '—' or blank cell is 0. There are SEVEN dollar components: salary, bonus, stock awards, "
-    "option awards, non-equity incentive, CHANGE IN PENSION VALUE, all other compensation. Do NOT "
-    "confuse this table with the Pay-versus-Performance table (its column says 'compensation "
-    "actually paid') or with the DIRECTOR compensation table.\n"
-    "- CEO pay: the CEO's SCT row for the MOST RECENT fiscal year.\n"
-    "- DIRECTOR COMPENSATION TABLE: one row per director. `fees_earned_usd` is the cash-retainer "
-    "column whatever it is labelled ('Fees Earned or Paid in Cash', 'Cash Fees', 'Retainer'); "
-    "`stock_awards_usd` covers 'Stock Awards', 'Restricted Stock Units' or 'Share Awards'.\n"
-    "- Board composition: read the governance/board 'highlights' summary for board_size, "
-    "n_independent_directors and n_women_directors (e.g. '7 of our 8 directors are independent').\n"
-    "- Directors: resolve `gender` from the proxy's own statement, else the HONORIFIC used for "
-    "that director, else the PRONOUNS in their bio, else the first name — and set `gender_basis` "
-    "to whichever of 'stated'/'honorific'/'pronoun'/'name' you used. Never leave `gender_basis` "
-    "null when `gender` is set.\n"
-    "- Provisions: classified_board and dual_class_shares are STRUCTURALLY always disclosed, so "
-    "return FALSE when the proxy does not indicate them. For poison_pill and "
-    "majority_voting_for_directors return TRUE or FALSE only when the proxy STATES the "
-    "provision's status, and null when the proxy is SILENT — do not infer FALSE from silence.\n"
-    "- Ownership: insider_ownership_pct = the 'all directors and executive officers AS A GROUP' "
-    "percent; ceo_ownership_pct = the CEO's own row; both as decimals (a '*' or '<1%' -> null). "
-    "Both percents must come from the PERCENT OF THE CLASS of shares outstanding (economic "
-    "ownership). Dual-class issuers print a '% of total voting power' / 'combined voting power' "
-    "column beside it — NEVER take that one. n_five_percent_holders = count of owners "
-    "holding >=5%.\n"
-    "- ownership_holders: one entry per HOLDER row across both ownership blocks. Exclude subtotal "
-    "and 'as a group' rows, and exclude a row whose name is only a street address. "
-    "`percent_of_class` is null for '*' / '<1%'.\n"
-    "- Auditor: `auditor_name` is the accounting FIRM NAME only, never a sentence. Report the four "
-    "fee categories for the CURRENT year plus the prior-year TOTAL. Every fee must be WHOLE USD — "
-    "apply any '(in thousands)' or '($ in millions)' note in the table header or the sentence "
-    "before it (a table reading 57.6 under '($ in millions)' is 57,600,000).\n"
-    "- say_on_pay_support_pct as a decimal (92% -> 0.92); ceo_pay_ratio as a number (533:1 -> 533).\n"
-    "Only use values stated in the text; use null when genuinely absent (except "
-    "classified_board / dual_class_shares above)."
-)
+# The task-tailored prompt lives in `src/gpt_extract/prompt_templates/def14a_*.md`. It is
+# precise about WHERE each field lives and how to normalise it, which materially lifts the
+# fill rate versus a generic "extract structured data" instruction, and it is cached per
+# (model, schema) so that precision stays cheap.
 
 logger = logging.getLogger(__name__)
 
@@ -964,50 +925,51 @@ def _child_frames(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dic
     }
 
 
-def _process_filing(
-    context: Context, ticker: str, filing: pd.Series, extractor: LLMExtractor
-) -> tuple[dict, dict] | None:
-    """(parent row, child frames) for one filing, or None when the extraction failed."""
+def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None:
+    """The carved `=== LABEL ===` text one filing contributes, or None if it cannot be read.
+
+    Fetching and carving happen on the MAIN thread, before any task is queued: a worker
+    receives text and a schema, never a `Context`. The SEC fetch is disk-cached and rate
+    limited anyway, so the ~94s LLM call is what the pool is for.
+    """
     try:
         raw_html = _fetch_filing_html(context, filing)
-        text = html_to_text(raw_html)
-        focused = prepare_def14a_sections(raw_html, text)
-        extract = extractor.extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
-        return _flatten(ticker, filing, extract), _child_frames(ticker, filing, extract)
-    except Exception as e:
-        logger.warning("%s %s: DEF 14A LLM extraction failed (%s)",
+        return prepare_def14a_sections(raw_html, html_to_text(raw_html))
+    except Exception as e:                          # noqa: BLE001 -- one filing, not the run
+        logger.warning("%s %s: DEF 14A filing could not be read (%s)",
                        ticker, filing.get("filing_date", ""), e)
         return None
 
 
-#: Concurrent LLM calls per ticker. Not an optimisation -- it is what makes a universe run
-#: possible at all. MEASURED on the Phase-6 validation set: one modern proxy is a ~130k-char
-#: payload and takes **~94 seconds** on `gpt-5-mini` (a reasoning model), so 8,700 proxies
-#: serially is **~9.5 days**. The work is pure network wait on an API that accepts parallel
-#: requests, and 12 was measured to draw no 429s.
-#:
-#: Per-FILING and never per-ticker: the writes stay exactly where they were -- one
-#: `_save_ticker_rows` per ticker, on the main thread -- which preserves both the "an
-#: interrupted run loses no paid tokens" property and immunity from `store.ensure_table`'s
-#: check-then-create race (concurrent writers on a COLD table can silently lose rows).
-_LLM_WORKERS = 12
+def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
+    """One answer -> the five frames it fans out to, save-ready.
 
-
-def _extract_concurrently(context: Context, ticker: str, filings: list[pd.Series],
-                          extractor: LLMExtractor,
-                          workers: int) -> list[tuple[dict, dict] | None]:
-    """`_process_filing` over one ticker's filings, in order, `workers` at a time.
-
-    Order is preserved (`pool.map`) because the caller zips the results back against the
-    filings that produced them. One extractor is shared on purpose: `prompt_cache_key` is a
-    function of (model, schema), so every worker keeps hitting the same cached prompt prefix.
+    CHILDREN FIRST, parent last: `run_extraction` saves in this order, so a crash between
+    the two leaves a child row without a parent (recoverable -- the accession dedup keys on
+    `def14a_llm`) rather than a parent that claims children it lacks.
     """
-    if not filings:
-        return []
-    if workers <= 1 or len(filings) == 1:
-        return [_process_filing(context, ticker, f, extractor) for f in filings]
-    with ThreadPoolExecutor(max_workers=min(workers, len(filings))) as pool:
-        return list(pool.map(lambda f: _process_filing(context, ticker, f, extractor), filings))
+    ticker = str(result.task.meta["ticker"])
+    filing = result.task.meta["filing"]
+    extract = result.parsed
+
+    frames: dict[Table, pd.DataFrame] = {}
+    for name, child_rows in _child_frames(ticker, filing, extract).items():
+        if child_rows:
+            numeric, pk = _CHILD_SPEC[name]
+            frames[_CHILD_TABLES[name]] = _prepare_frame(child_rows, numeric, pk)
+    frames[Tables.def14a_llm] = _prepare_frame(
+        [_flatten(ticker, filing, extract)], tuple(_NUMERIC_COLS),
+        ["ticker", "accession_number"])
+    return frames
+
+
+#: Concurrent LLM calls. Not an optimisation -- it is what makes a universe run possible at
+#: all. MEASURED on the Phase-6 validation set: one modern proxy is a ~130k-char payload and
+#: takes **~94 seconds** on `gpt-5-mini` (a reasoning model), so 8,700 proxies serially is
+#: **~9.5 days**. The work is pure network wait on an API that accepts parallel requests,
+#: and 12 was measured to draw no 429s. `config.gpt.threads` is the live knob; this is the
+#: fallback for a caller that passes no config.
+_LLM_WORKERS = 12
 
 
 def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
@@ -1064,27 +1026,6 @@ def _prepare_frame(rows: list[dict], numeric: tuple[str, ...], pk: list[str]) ->
     df = strip_nul(df)                          # Postgres TEXT rejects NUL (\x00)
     df["as_of"] = pd.to_datetime(df["as_of"]).dt.normalize()
     return df.drop_duplicates(subset=[c for c in pk if c in df.columns], keep="last")
-
-
-def _save_ticker_rows(context: Context, rows: list[dict],
-                      children: dict[str, list[dict]] | None = None) -> int:
-    """Upsert one ticker's freshly-extracted parent + child rows right away.
-
-    LLM calls are expensive, so everything for a ticker is persisted before the next ticker
-    starts -- an interrupted run loses no paid tokens. The child frames are written FIRST so a
-    crash between the two leaves a child row without a parent (recoverable, because the
-    accession dedup keys on `def14a_llm`) rather than a parent that claims children it lacks.
-    """
-    written = 0
-    for name, child_rows in (children or {}).items():
-        if not child_rows:
-            continue
-        numeric, pk = _CHILD_SPEC[name]
-        written += context.store.save(_CHILD_TABLES[name],
-                                      _prepare_frame(child_rows, numeric, pk), pk=pk)
-
-    df = _prepare_frame(rows, tuple(_NUMERIC_COLS), ["ticker", "accession_number"])
-    return written + context.store.save(Tables.def14a_llm, df)
 
 
 
@@ -1148,9 +1089,8 @@ def fetch_def14a_llm(
     pin one for research without touching config (how a prior measurement ran
     `gpt-4o-mini` while production had been running `gpt-5-mini` all along).
     """
-    model = model or config.gpt.llm_model[config.gpt.default_api]
-    max_chars = config.gpt.max_chars.def14a if max_chars is None else max_chars
-    cache = config.gpt.cache if cache is None else cache
+    config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars,
+                                cache=cache)
     years = context.config.data_extract.years_history
     de = context.config.data_extract
 
@@ -1182,7 +1122,7 @@ def fetch_def14a_llm(
     list_since = None if is_full_rescan else (manifest_since - pd.Timedelta(days=1))
 
     try:
-        extractor = LLMExtractor(model=model, max_chars=max_chars, cache=cache)
+        extractor = LLMExtractor(context, config, action="def14a", threads=workers)
     except EnvironmentError as e:
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
         existing = context.store.load(Tables.def14a_llm, optional=True)
@@ -1216,24 +1156,30 @@ def fetch_def14a_llm(
         skipped = len(filings) - len(todo)
         total_skipped += skipped
 
-        ticker_rows: list[dict] = []
-        ticker_children: dict[str, list[dict]] = {name: [] for name in _CHILD_SPEC}
-        for f, result in zip(todo, _extract_concurrently(context, ticker, todo, extractor,
-                                                         workers)):
-            if result is not None:
-                row, children = result
-                ticker_rows.append(row)
-                for name, child_rows in children.items():
-                    ticker_children[name].extend(child_rows)
-                seen.add(f["accession_number"])
+        # Fetch and carve on THIS thread, then hand the pool text and a schema. A filing
+        # whose HTML cannot be read never becomes a task, so it costs nothing.
+        tasks: list[LlmTask] = []
+        for f in todo:
+            payload = _payload_for(context, ticker, f)
+            if payload:
+                tasks.append(LlmTask(seq=len(tasks), payload=payload, schema=Def14AExtract,
+                                     table=Tables.def14a_llm,
+                                     meta={"ticker": ticker, "filing": f}))
 
-        # persist THIS ticker before moving on (don't batch — LLM calls are costly)
-        if ticker_rows:
-            _save_ticker_rows(context, ticker_rows, ticker_children)
-            total_new += len(ticker_rows)
+        # One call per ticker: the pool fills every schema, then THIS thread saves the five
+        # frames once. LLM calls are paid for, so a ticker is persisted before the next
+        # starts and an interrupted run loses at most one ticker's tokens.
+        results = extractor.run_extraction(tasks, flatten=_result_frames,
+                                           group_key=lambda t: str(t.meta["ticker"]))
+        extracted = [r for r in results if r.ok]
+        for r in extracted:
+            seen.add(r.task.meta["filing"]["accession_number"])
+
+        if extracted:
+            total_new += len(extracted)
             tickers_touched += 1
             context.log.info("%s: +%d new DEF 14A filing(s) sent to the LLM (%d already in table)",
-                             ticker, len(ticker_rows), skipped)
+                             ticker, len(extracted), skipped)
 
     # A cross-ticker consensus needs every ticker's rows, so this is the only thing that
     # cannot run inside the loop. Skipped entirely when nothing new was extracted.

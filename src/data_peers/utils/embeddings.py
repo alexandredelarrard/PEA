@@ -20,22 +20,21 @@ Env: reads OPEN_AI_API_KEY (your .env spelling) or OPENAI_API_KEY.
 """
 from __future__ import annotations
 
-import os
+import logging
 import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from openai import OpenAI
 import yfinance as yf
 from tqdm import tqdm
 
+# `gpt_extract` is a shared service, like `src/utils/` -- the one sanctioned cross-import
+# between src/ subfolders. It owns the single OpenAI client factory in the repo, so this
+# module no longer builds its own (and no longer carries its own stale character cap).
+from src.gpt_extract import EMBEDDING_MAX_CHARS, embed_texts
 
-def _api_key() -> str:
-    key = os.getenv("OPEN_AI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not key:
-        raise RuntimeError("OPEN_AI_API_KEY not set in environment / .env")
-    return key
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -68,8 +67,8 @@ def fetch_business_descriptions(
                 if text and isinstance(text, str) and len(text) > 40:
                     prefix = " ".join(str(info.get(k, "")) for k in ("sector", "industry"))
                     new[t] = (prefix + ". " + text).strip()
-            except Exception as e:
-                print(f"{t}: description fetch failed ({e})")
+            except Exception as e:                     # noqa: BLE001 -- one ticker, not the run
+                logger.warning("%s: description fetch failed (%s)", t, e)
             time.sleep(pause)
 
         cached = {**cached, **new}
@@ -77,7 +76,7 @@ def fetch_business_descriptions(
             store.save("ticker_descriptions",
                        pd.DataFrame({"ticker": list(new), "description": list(new.values())}))
     else:
-        print(f"All {len(tickers)} descriptions already cached - no Yahoo calls.")
+        logger.info("All %d descriptions already cached - no Yahoo calls.", len(tickers))
 
     return {t: cached[t] for t in tickers if t in cached}
 
@@ -100,9 +99,10 @@ def get_openai_embeddings(
     model: str = "text-embedding-3-small",
     store=None,
     batch_size: int = 100,
-    max_chars: int = 8000,
+    max_chars: int = EMBEDDING_MAX_CHARS,
     force: bool = False,
     universe: list[str] | None = None,
+    client=None,
 ) -> pd.DataFrame:
     """
     Return DataFrame index=ticker, columns=embedding dims. OpenAI is called ONLY
@@ -112,6 +112,12 @@ def get_openai_embeddings(
     `descriptions` need only cover the tickers that still need embedding; pass
     `universe` (the full ticker list) to get every ticker's vector back — cached
     ones included — so the caller can feed only the to-do descriptions here.
+
+    `max_chars` is the model's real limit (28,000), not the 8,000 this module used to
+    apply. Existing cached vectors are NOT invalidated, so no peer set moves until
+    someone rebuilds with `force=True`.
+
+    `client` injects a stub embedder for tests (see `gpt_extract.embed_texts`).
     """
     cached: dict[str, np.ndarray] = {}
     if store is not None:
@@ -124,16 +130,14 @@ def get_openai_embeddings(
 
     new: dict[str, np.ndarray] = {}
     if todo:
-        client = OpenAI(api_key=_api_key())
-        print(f"Embedding {len(todo)} new tickers (OpenAI); {len(cached)} already cached.")
-        for i in range(0, len(todo), batch_size):
-            chunk = todo[i:i + batch_size]
-            inputs = [descriptions[t][:max_chars] for t in chunk]
-            resp = client.embeddings.create(model=model, input=inputs)
-            for t, item in zip(chunk, resp.data):      # resp.data preserves order
-                new[t] = np.asarray(item.embedding, dtype="float64")
+        logger.info("Embedding %d new tickers (OpenAI); %d already cached.",
+                    len(todo), len(cached))
+        vectors = embed_texts([descriptions[t] for t in todo], model=model,
+                              batch_size=batch_size, max_chars=max_chars, client=client)
+        for t, vec in zip(todo, vectors):              # embed_texts preserves order
+            new[t] = np.asarray(vec, dtype="float64")
     else:
-        print(f"All {len(descriptions)} embeddings already cached - no OpenAI calls.")
+        logger.info("All %d embeddings already cached - no OpenAI calls.", len(descriptions))
 
     all_vecs = {**cached, **new}
     if not all_vecs:

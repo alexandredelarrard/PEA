@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 from sqlalchemy import create_engine
@@ -77,25 +78,34 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
             for a, d in [("a2022", "2022-04-01"), ("a2023", "2023-04-01"),
                          ("a2024", "2024-04-01"), ("a2025", "2025-04-01")]])
 
-    def _fake_process(context, ticker, f, extractor):          # mirrors mod._process_filing
-        # returns (parent row, child frames) -- the shape the four child tables introduced
-        extracted.append(f["accession_number"])
-        return ({"ticker": ticker, "accession_number": f["accession_number"],
-                 "as_of": f["filing_date"], "def14a_json": "{}"},
-                {name: [] for name in mod._CHILD_SPEC})
-
-    def _fake_save(context, rows, children=None):             # string as_of (SQLite can't bind Timestamp)
-        df = pd.DataFrame(rows)
-        df["as_of"] = pd.to_datetime(df["as_of"]).dt.strftime("%Y-%m-%d")
-        return context.store.save("def14a_llm", df)
-
     class _FakeLLM:
-        def __init__(self, **kw):
-            pass
+        """Stands in for the whole extracter: records which accessions became LLM tasks,
+        then writes the rows the real `flatten` would have produced.
+
+        The frame is written with a STRING `as_of` because this test runs on SQLite, whose
+        driver cannot bind a pandas Timestamp.
+        """
+        def __init__(self, context, config, action=None, threads=None, methodes=None):
+            self._context = context
+
+        def run_extraction(self, tasks, flatten=None, group_key=None):
+            tasks = list(tasks)
+            rows = []
+            for t in tasks:
+                f = t.meta["filing"]
+                extracted.append(f["accession_number"])
+                rows.append({"ticker": t.meta["ticker"],
+                             "accession_number": f["accession_number"],
+                             "as_of": f["filing_date"], "def14a_json": "{}"})
+            if rows:
+                df = pd.DataFrame(rows)
+                df["as_of"] = pd.to_datetime(df["as_of"]).dt.strftime("%Y-%m-%d")
+                self._context.store.save("def14a_llm", df)
+            return [SimpleNamespace(ok=True, task=t, parsed=object(), error=None)
+                    for t in tasks]
 
     monkeypatch.setattr(mod, "list_filings", _fake_list)
-    monkeypatch.setattr(mod, "_process_filing", _fake_process)
-    monkeypatch.setattr(mod, "_save_ticker_rows", _fake_save)
+    monkeypatch.setattr(mod, "_payload_for", lambda context, ticker, f: "=== CARVED ===")
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame(
         {"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
@@ -148,8 +158,12 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
                                      "period_of_report", "form"])
 
     class _FakeLLM:
-        def __init__(self, **kw):
+        """This ticker lists no filings, so the extracter is built and never used."""
+        def __init__(self, context, config, action=None, threads=None, methodes=None):
             pass
+
+        def run_extraction(self, tasks, flatten=None, group_key=None):
+            return []
 
     monkeypatch.setattr(mod, "list_filings", _fake_list)
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)

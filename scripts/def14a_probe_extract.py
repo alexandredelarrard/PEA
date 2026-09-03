@@ -31,10 +31,10 @@ if str(ROOT) not in sys.path:
 
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_extract import html_to_text
-from src.data_extract.utils.common.llm_extractor import LLMExtractor
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.fetch_def14a_llm import (
-    _DEF14A_PROMPT, _child_frames, _flatten, prepare_def14a_sections,
+    _child_frames, _flatten, prepare_def14a_sections,
 )
 
 BASELINE = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix/baseline"
@@ -95,7 +95,7 @@ def probe(filing: pd.Series, extractor: LLMExtractor | None) -> dict:
            "payload_chars": len(focused)}
     if extractor is None:                       # --dry-run: carve only, no tokens spent
         return out
-    extract = extractor.extract(Def14AExtract, focused, instructions=_DEF14A_PROMPT)
+    extract = extractor.extract(Def14AExtract, focused)
     row = _flatten(filing["ticker"], filing, extract)
     children = _child_frames(filing["ticker"], filing, extract)
     out.update(row=row, children=children)
@@ -202,7 +202,7 @@ def main() -> None:
     extractor = None
     if not args.dry_run:
         model = config.gpt.llm_model[config.gpt.default_api]
-        extractor = LLMExtractor(model=model, max_chars=130_000, cache=True)
+        extractor = LLMExtractor(context, config, action="def14a")
         print(f"model: {model}  ({len(targets)} filings -> {len(targets)} LLM calls)")
 
     results = []

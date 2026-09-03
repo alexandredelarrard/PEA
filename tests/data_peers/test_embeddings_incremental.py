@@ -19,7 +19,12 @@ _OAI_CALLS: list[list[str]] = []            # captures each embeddings.create(in
 
 
 class _FakeOpenAI:
-    """Stub OpenAI client: records the inputs it was asked to embed."""
+    """Stub OpenAI client: records the inputs it was asked to embed.
+
+    Injected through `client=` (the seam `gpt_extract.embed_texts` exposes) rather than by
+    patching a module-level `OpenAI` name -- there is exactly one OpenAI client factory in
+    the repo now, and it lives in `gpt_extract`.
+    """
     def __init__(self, api_key=None):
         self.embeddings = self
 
@@ -49,8 +54,6 @@ def test_load_embedded_tickers_is_the_done_set():
 
 def test_only_missing_tickers_are_embedded(monkeypatch):
     _OAI_CALLS.clear()
-    monkeypatch.setattr(emb, "_api_key", lambda: "test-key")
-    monkeypatch.setattr(emb, "OpenAI", _FakeOpenAI)
 
     store = _FakeStore({"AAA": [1, 0, 0, 0], "BBB": [0, 1, 0, 0]})   # already embedded
     universe = ["AAA", "BBB", "CCC", "DDD"]
@@ -62,7 +65,8 @@ def test_only_missing_tickers_are_embedded(monkeypatch):
 
     # feed descriptions for the to-do only; universe returns everyone's vector
     out = emb.get_openai_embeddings({"CCC": "chip maker", "DDD": "retail bank"},
-                                    store=store, universe=universe)
+                                    store=store, universe=universe,
+                                    client=_FakeOpenAI())
 
     # OpenAI called ONCE, ONLY for the two missing tickers (AAA/BBB never re-embedded)
     assert _OAI_CALLS == [["chip maker", "retail bank"]]
@@ -79,14 +83,18 @@ def test_only_missing_tickers_are_embedded(monkeypatch):
 def test_all_cached_makes_zero_openai_calls(monkeypatch):
     _OAI_CALLS.clear()
 
-    def _boom(*a, **k):
-        raise AssertionError("OpenAI must not be constructed when all tickers are cached")
+    class _Boom:
+        """Any embedding call at all is the failure this test is looking for."""
+        embeddings = property(lambda self: self)
 
-    monkeypatch.setattr(emb, "OpenAI", _boom)
+        def create(self, model, input):
+            raise AssertionError("OpenAI must not be called when all tickers are cached")
+
     store = _FakeStore({"AAA": [1, 0, 0, 0], "BBB": [0, 1, 0, 0]})
 
     # every universe ticker already done -> no descriptions needed, no OpenAI
-    out = emb.get_openai_embeddings({}, store=store, universe=["AAA", "BBB"])
+    out = emb.get_openai_embeddings({}, store=store, universe=["AAA", "BBB"],
+                                    client=_Boom())
     assert _OAI_CALLS == []
     assert set(out.index) == {"AAA", "BBB"}
     assert not store.saved_frames("ticker_embeddings")          # nothing new saved

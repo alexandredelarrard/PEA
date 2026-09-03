@@ -95,9 +95,6 @@ _ITEM = "5.07"
 _SOURCE_COLS = ("ticker", "cik", "accession_number", "form", "filing_date",
                 "period_of_report", "is_amendment", "item_text")
 
-#: Vote tallies in these filings are SHARE COUNTS and are always printed comma-grouped.
-#: An Item 5.07 narrative with no comma-grouped number anywhere therefore has no table to
-
 #: Concurrent LLM calls, for the same measured reason as the DEF 14A path: the work is pure
 #: network wait on an API that accepts parallel requests, and a serial universe run is not
 #: finishable. An Item 5.07 narrative is far smaller than a proxy (the longest in the

@@ -89,7 +89,7 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `google_trends` | 388,336 | 32 MB | 3 | 500 | `date` | 2011-07-17 → **2026-07-12** |
 | `cusip_ticker_map` | 145,748 | 14 MB | 2 | 19,824 | — | — |
 | `notes_num` | 40,587 | 14 MB | 14 | — | `ddate` | 2007-12-31 → **2026-04-30** |
-| `def14a_llm` | 6,933 | 13 MB | 45 | 497 | `as_of` | 2011-07-26 → 2026-07-28 |
+| `def14a_llm` | **8,784** | 13 MB | **54** | 497 | `as_of` | 1995-12-19 → 2026-07-28 |
 | `earnings_call_sentiment` | 55,514 | 11 MB | 10 | 494 | `as_of` | 2005-10-30 → 2026-07-24 |
 | `earnings_surprises` | 43,383 | 5.3 MB | 5 | 500 | `earnings_date` | 1999-08-02 → **2026-10-29** (forward-dated: scheduled future calls) |
 | `dividends` | 22,060 | 3.7 MB | 3 | **413** | `date` | 2011-07-18 → 2026-07-31 |
@@ -97,11 +97,10 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `pension_facts` | 6,244 | 2.5 MB | 13 | — | `ddate` | 2008-10-31 → **2026-02-28** |
 | `prices_macro` | see §sanity | — | 3 | `ticker` | `date` | ~1995 → today (per series; `fx_usdeur` from 1999, `gold` from 2000, `breakeven_10y` from 2003) |
 | `macro` | 4,175 | 1.0 MB | 10 | — | `date` | 2010-08-02 → 2026-07-31 |
-| `sec_def14a_director_comp` | 2,279 | 600 kB | 12 | — | `filing_date` | — |
-| `sec_def14a_ownership` | 2,149 | 592 kB | 8 | — | `filing_date` | — |
-| `sec_def14a_executive_comp` | 1,395 | 488 kB | 15 | — | `filing_date` | — |
-| `sec_def14a_votes` | 1,177 | 368 kB | 8 | — | `filing_date` | — |
-| `sec_def14a` | **329** | 160 kB | 46 | **23** | `filing_date` | 2011-09-23 → 2026-05-06 |
+| `def14a_ownership` | 6,218 | — | 8 | **14** | `as_of` | 15 smoke tickers only |
+| `def14a_executive_comp` | 5,155 | — | 16 | **14** | `as_of` | 15 smoke tickers only |
+| `def14a_directors` | 4,650 | — | 11 | **14** | `as_of` | 15 smoke tickers only |
+| `def14a_director_comp` | 2,519 | — | 14 | **14** | `as_of` | 15 smoke tickers only |
 | `sp500_tickers` | 500 | 128 kB | 6 | 500 | — | — |
 
 - **The four validator tables hold TWO comparable runs** (`3df52ae9af75` → `725bae7bf8ed`,
@@ -130,19 +129,29 @@ Ordered by size. `tickers` = distinct non-null tickers.
   what is written. Do not build a long-history governance feature off this table — the history is
   `def14a_llm`'s (497 tickers), and every prose field (comp tables, director fees, ownership,
   audit fees, pay ratio) now lives there and in its four child tables.
-- **The four `sec_def14a_*` child tables in the size table above are RETIRED.** Their
-  registrations and the code that wrote them are gone; the Postgres tables survive only until the
-  cutover drops them, so those row counts describe data no longer being maintained.
-- **Five tables are REGISTERED but not yet in Postgres**: `def14a_directors`,
-  `def14a_executive_comp`, `def14a_director_comp`, `def14a_ownership` and `sec_8k_votes`. The DDL
-  is in `sql/schema.sql` and the code that writes them is merged, but they are created by the
-  DEF 14A cutover run, so they are absent from the size table above rather than empty. Until that
-  run happens, a query against them raises `TableMissingError` — which is the intended behaviour
-  (a missing table is a visible fault; an empty one reads as "this company discloses nothing").
-- **`def14a_llm` still carries its three retired technology columns in Postgres.** They were
-  removed from `sql/schema.sql`, but `CREATE TABLE IF NOT EXISTS` cannot retire a column on a
-  live table and a `TRUNCATE` does not either, so `ALTER TABLE ... DROP COLUMN` is part of the
-  cutover. Live column count is therefore **45**, not the 42 the schema file declares.
+- **`sec_def14a` and its four `sec_def14a_*` child tables are GONE from Postgres**, dropped at an
+  earlier cutover. The retired edgar parser returned values that were silently WRONG rather than
+  absent, and the LLM path's own tables replaced them on every measured axis. `ecd.py` still holds
+  the XBRL Pay-versus-Performance reader that wrote `sec_def14a`, so **PVP columns
+  (`peo_name`, `peo_total_comp`, `peo_actually_paid_comp`, `n_peos`) exist nowhere in the live
+  database** — do not look for them on `def14a_llm`, which has never had them.
+- **The four `def14a_*` child tables hold 15 tickers, not 497.** They were created by the
+  2026-09-03 smoke run over AAPL, JPM, BA, NKE, SBUX, GOOGL, BRK-B, XOM, PG, CAT, PFE, A, AMAT,
+  TDG, GE; a universe backfill has not been run. `def14a_llm` still covers all 497, so a join
+  from the parent to a child silently narrows to those 15 — project accordingly.
+- **`sec_8k_votes` is REGISTERED but still not in Postgres.** Its DDL is in `sql/schema.sql` and
+  `fetch_8k_votes_llm` is merged, but nothing has run it, so a query raises `TableMissingError`
+  — the intended behaviour (a missing table is a visible fault; an empty one reads as "this
+  company discloses nothing").
+- **`def14a_llm` is 54 columns now, and only 409 rows carry the newest 12.** The three retired
+  technology columns were dropped by `scripts/gpt_refactor_smoke_prep.py` (45 → 42), then the
+  smoke run's first write took it 42 → 54 via `store.save`'s `ADD COLUMN` schema evolution. The
+  12 added columns (`auditor_name`, the four `audit_fees_*`, `sct_years`, `pct_gender_stated`,
+  `n_ownership_rows`, `n_director_comp_rows`, `n_women_directors_vs_inferred`,
+  `auditor_since_year`, `auditor_fees_prior`) are **NULL on the 8,375 rows that predate it**.
+- **XOM's 14 rows are pre-refactor.** `sp500_tickers` maps XOM to CIK 2115436, which lists **0**
+  DEF 14A filings; the real ExxonMobil CIK is 34088 (29 filings). Fix the universe row before
+  expecting any EDGAR fetcher to return XOM data.
 - **The four `fundamentals_*` tables cover 54 tickers, not 500 — this is the Phase 5 rebuild
   scope, not a defect.** All four were dropped and rebuilt from scratch on 2026-08-24
   (`scripts/recreate_fundamentals_tables.py`), so the earlier 491-ticker / 239-column

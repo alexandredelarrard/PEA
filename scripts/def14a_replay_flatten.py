@@ -36,9 +36,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
-from src.data_extract.utils.structure.fetch_def14a_llm import (
-    _CHILD_SPEC, _child_frames, _flatten,
-)
+from src.data_extract.utils.structure.def14a.flatten import _CHILD_SPEC, _child_frames, _flatten
 
 DEFAULT_BASELINE = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix/baseline"
 #: A component above this is arithmetically impossible for an S&P 500 executive.

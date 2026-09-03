@@ -30,11 +30,15 @@ import re
 
 import pandas as pd
 
-from src.data_extract.utils.structure.fetch_8k_votes_llm import (
-    _DIRECTOR_COLS, _LOW_SUPPORT_THRESHOLD, _MIN_ITEM_TEXT_CHARS, _ROLE_CATEGORIES,
-    _VOTE_FIELDS, _name_in_source, _prepare_frame, _proposal_rows, _role_map, has_vote_numbers,
-    mentions_preliminary, rejection_reason,
+from src.data_extract.utils.structure.votes.flatten import (
+    _DIRECTOR_COLS, _LOW_SUPPORT_THRESHOLD, _ROLE_CATEGORIES, _VOTE_FIELDS,
+    _prepare_frame, _proposal_rows,
 )
+from src.data_extract.utils.structure.votes.guard import (
+    _MIN_ITEM_TEXT_CHARS, _name_in_source, has_vote_numbers, mentions_preliminary,
+    rejection_reason,
+)
+from src.data_extract.utils.structure.votes.roles import _role_map
 from src.data_extract.utils.schemas.vote_schema import (
     Item507Extract, NomineeVote, PROPOSAL_TYPES, ProposalVote,
 )

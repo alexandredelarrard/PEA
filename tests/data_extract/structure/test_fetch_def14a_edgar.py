@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.structure.def14a_ecd import (
+from src.data_extract.utils.structure.def14a.ecd import (
     _CATEGORY_AXIS, _PEO_MEMBER, _PEO_TOTAL, ecd_row, has_ecd_block, latest_period, peo_block,
 )
 from src.data_extract.utils.structure.fetch_def14a_edgar import build_ticker_def14a_edgar

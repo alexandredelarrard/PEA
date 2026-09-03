@@ -30,7 +30,7 @@ from src.data_extract.utils.schemas.def14a_schema import (
     ExecutiveCompensation,
     GovernanceProfile,
 )
-from src.data_extract.utils.structure.fetch_def14a_llm import _child_frames, _flatten
+from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten
 
 SCHEMA_SQL = Path(__file__).resolve().parents[3] / "sql" / "schema.sql"
 #: Every table this module owns, parent first.
@@ -114,7 +114,7 @@ def test_primary_key_columns_are_never_null_in_a_built_row():
     rows replayed from the stored blobs were missing it, but that is evidence, not a guarantee,
     which is why the guard is structural and asserted here.
     """
-    from src.data_extract.utils.structure.fetch_def14a_llm import _CHILD_SPEC
+    from src.data_extract.utils.structure.def14a.flatten import _CHILD_SPEC
 
     filing = pd.Series({"filing_date": pd.Timestamp("2025-04-01"), "cik": "0000001800",
                         "period_of_report": "2024-12-31", "accession_number": "a1"})

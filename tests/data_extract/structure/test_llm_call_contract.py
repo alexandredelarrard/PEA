@@ -19,8 +19,8 @@ from omegaconf import OmegaConf
 
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.schemas.vote_schema import Item507Extract
-from src.data_extract.utils.structure import fetch_8k_votes_llm as votes_mod
-from src.data_extract.utils.structure import fetch_def14a_llm as def14a_mod
+from src.data_extract.utils.structure.votes import fetch as votes_mod
+from src.data_extract.utils.structure.def14a import fetch as def14a_mod
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
 _GPT_YML = Path(__file__).resolve().parents[3] / "configs" / "gpt.yml"

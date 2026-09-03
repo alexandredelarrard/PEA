@@ -29,7 +29,7 @@ from src.data_extract.utils.schemas.def14a_schema import (
     ExecutiveCompensation,
     GovernanceProfile,
 )
-from src.data_extract.utils.structure.fetch_def14a_llm import (
+from src.data_extract.utils.structure.def14a.carve import (
     _COMPENSATION_CONTENT_RE,
     _DIRECTOR_MAX_FRAC,
     _DIRECTOR_ROW_RE,
@@ -38,9 +38,9 @@ from src.data_extract.utils.structure.fetch_def14a_llm import (
     _PAYRATIO_CONTENT_RE,
     _SAYONPAY_CONTENT_RE,
     _densest_window,
-    _flatten,
     prepare_def14a_sections,
 )
+from src.data_extract.utils.structure.def14a.flatten import _flatten
 
 # --------------------------------------------------------------------------- #
 # Synthetic DEF 14A fixture — exercises the tricky section-anchoring cases      #
@@ -517,7 +517,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
     Def14AExtract schema and (2) UPSERTS the flattened row into Postgres."""
     from sqlalchemy import text
     from src.context import get_config_context
-    from src.data_extract.utils.structure import fetch_def14a_llm as mod
+    from src.data_extract.utils.structure.def14a import fetch as mod
 
     try:
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
@@ -589,7 +589,7 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
     between two present years) is filled while the present ones are never re-extracted."""
     from sqlalchemy import text
     from src.context import get_config_context
-    from src.data_extract.utils.structure import fetch_def14a_llm as mod
+    from src.data_extract.utils.structure.def14a import fetch as mod
 
     try:
         _, ctx = get_config_context("./configs", use_cache=False, save=False)

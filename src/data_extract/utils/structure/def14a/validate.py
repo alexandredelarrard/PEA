@@ -1,5 +1,5 @@
 """
-def14a_validate.py (src/data_extract/utils/structure/def14a_validate.py)
+validate.py (src/data_extract/utils/structure/def14a/validate.py)
 --------------------------------------------------------------------------------
 Row cleaner shared by the two DEF 14A paths: text normalisation, the name and
 holder primary keys, the auditor-fee unit rescale, and the `sec_def14a` (ECD)

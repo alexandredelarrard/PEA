@@ -1,5 +1,5 @@
 """
-def14a_ecd.py (src/data_extract/utils/structure/def14a_ecd.py)
+ecd.py (src/data_extract/utils/structure/def14a/ecd.py)
 --------------------------------------------------------------------------------
 The Pay-versus-Performance / Executive Compensation Disclosure (ECD) block of a
 proxy, read straight from the filing's inline-XBRL facts.

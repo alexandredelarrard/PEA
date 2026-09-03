@@ -42,9 +42,8 @@ from src.context import get_config_context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
-from src.data_extract.utils.structure.fetch_def14a_llm import (
-    _CHILD_SPEC, _child_frames, _flatten, prepare_def14a_sections,
-)
+from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
+from src.data_extract.utils.structure.def14a.flatten import _CHILD_SPEC, _child_frames, _flatten
 
 BASELINE = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix/baseline"
 CACHE_DIR = ROOT / "data/cache/def14a_probe"

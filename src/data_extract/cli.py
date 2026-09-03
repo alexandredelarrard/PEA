@@ -52,9 +52,9 @@ from src.data_extract.utils.fundamentals_sharadar.gap_check import (
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 # --- structure -------------------------------------------------------------- #
-from src.data_extract.utils.structure.fetch_8k_votes_llm import fetch_8k_votes_llm
+from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
-from src.data_extract.utils.structure.fetch_def14a_llm import fetch_def14a_llm
+from src.data_extract.utils.structure.def14a import fetch_def14a_llm
 from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
 from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
 from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text

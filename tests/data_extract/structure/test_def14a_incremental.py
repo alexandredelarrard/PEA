@@ -12,7 +12,8 @@ from sqlalchemy import create_engine
 
 from src.data_store.store import DataStore
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.structure.fetch_def14a_llm import _is_up_to_date, _flatten
+from src.data_extract.utils.structure.def14a.fetch import _is_up_to_date
+from src.data_extract.utils.structure.def14a.flatten import _flatten
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, GovernanceProfile
 from tests.data_extract.fake_context import extract_config
 
@@ -55,7 +56,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
     2024) are skipped. Uses an in-memory SQLite store (no Postgres)."""
     import logging
     from omegaconf import OmegaConf
-    from src.data_extract.utils.structure import fetch_def14a_llm as mod
+    from src.data_extract.utils.structure.def14a import fetch as mod
 
     ds = DataStore(create_engine(f"sqlite:///{tmp_path/'d.db'}"))
     ds.save("def14a_llm", pd.DataFrame([                       # 2022 + 2024 present; 2023 is a HOLE
@@ -132,7 +133,7 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
     import logging
     from omegaconf import OmegaConf
     from src.data_extract.utils.common.run_manifest import record_run
-    from src.data_extract.utils.structure import fetch_def14a_llm as mod
+    from src.data_extract.utils.structure.def14a import fetch as mod
 
     ds = DataStore(create_engine(f"sqlite:///{tmp_path/'d.db'}"))
     ds.save("def14a_llm", pd.DataFrame([

@@ -1,5 +1,5 @@
 """
-def14a_gender.py  (src/data_extract/utils/structure/def14a_gender.py)
+gender.py  (src/data_extract/utils/structure/def14a/gender.py)
 ---------------------------------------------------------------------
 Cross-filing gender consensus over `def14a_directors`. Deterministic — no LLM.
 
@@ -32,7 +32,7 @@ from collections import Counter
 
 import pandas as pd
 
-from src.data_extract.utils.structure.def14a_validate import clean_person_name
+from src.data_extract.utils.structure.def14a.validate import clean_person_name
 
 logger = logging.getLogger(__name__)
 

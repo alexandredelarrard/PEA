@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 
-from src.data_extract.utils.structure.def14a_validate import (
+from src.data_extract.utils.structure.def14a.validate import (
     DEF14A_AUDIT_FEE_MIN_PLAUSIBLE, clean_holder_name, clean_person_name, clean_text,
     is_subtotal_holder, repair_main_row, rescale_block, sum_fee_total,
 )

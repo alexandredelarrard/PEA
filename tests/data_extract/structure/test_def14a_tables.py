@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from src.data_extract.utils.structure.def14a_tables import (
+from src.data_extract.utils.structure.def14a.tables import (
     SCT, TARGETS, _has_salary_column, classify_filing, classify_table, iter_tables,
     merge_header_rows, to_tsv,
 )

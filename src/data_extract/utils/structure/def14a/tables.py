@@ -1,5 +1,5 @@
 """
-def14a_tables.py  (src/data_extract/utils/structure/def14a_tables.py)
+tables.py  (src/data_extract/utils/structure/def14a/tables.py)
 ---------------------------------------------------------------------
 Locate a DEF 14A's five TABULAR targets by parsing its `<table>` elements and classifying each
 on its HEADER SIGNATURE, instead of guessing the table's position with a text anchor and a fixed

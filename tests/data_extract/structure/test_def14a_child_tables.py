@@ -10,14 +10,14 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.structure.def14a_gender import (
+from src.data_extract.utils.structure.def14a.gender import (
     BASIS_RANK, consensus, person_key, recompute_parent_gender,
 )
 from src.data_extract.utils.schemas.def14a_schema import (
     BeneficialOwner, Def14AExtract, DirectorCompensation, DirectorInfo,
     ExecutiveCompensation, GovernanceProfile,
 )
-from src.data_extract.utils.structure.fetch_def14a_llm import (
+from src.data_extract.utils.structure.def14a.flatten import (
     _RECONCILE_TOLERANCE_USD, _child_frames, _flatten,
 )
 

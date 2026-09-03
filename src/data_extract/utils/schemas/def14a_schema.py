@@ -1,5 +1,5 @@
 """
-def14a_schema.py  (src/data_extract/utils/structure/def14a_schema.py)
+def14a_schema.py  (src/data_extract/utils/schemas/def14a_schema.py)
 ---------------------------------------------------------------------
 Pydantic v2 schema for structured extraction of SEC DEF 14A proxy statements.
 Deliberately trimmed to the governance / compensation / ownership signals that

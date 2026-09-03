@@ -42,8 +42,8 @@ import pandas as pd
 from src.constants.constants import DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
-from src.data_extract.utils.structure.def14a_ecd import ecd_facts, ecd_row, has_ecd_block
-from src.data_extract.utils.structure.def14a_validate import repair_main_row
+from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_ecd_block
+from src.data_extract.utils.structure.def14a.validate import repair_main_row
 from src.data_store.schema import Table, Tables
 
 _MAIN_COLS = [

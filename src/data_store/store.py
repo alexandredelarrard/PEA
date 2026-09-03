@@ -273,8 +273,19 @@ def _coerce_temporal(df: pd.DataFrame, tbl: Table) -> pd.DataFrame:
 
 def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str,
                      pk: list[str], chunksize: int = _CHUNK) -> int:
-    """INSERT the frame, updating non-PK columns on PK conflict. Returns the
-    number of rows sent. No-op for an empty frame."""
+    """INSERT the frame, updating the columns THE FRAME CARRIES on PK conflict. Returns the
+    number of rows sent. No-op for an empty frame.
+
+    A partial frame MERGES: a column the frame does not carry keeps its stored value. The
+    update list is therefore built from the frame's columns and not from the table's, which
+    is not a nicety -- `excluded.<col>` for a column absent from the INSERT resolves to that
+    column's DEFAULT, so building the list from `tbl.c` sets every omitted column to NULL.
+    Measured: a 4-column gender patch over `def14a_llm` nulled 392 of 409 rows including
+    `def14a_json`, destroying the LLM answers they were the only copy of.
+
+    Callers that mean to blank a column must send it explicitly as null; a caller that means
+    to rewrite a whole table wants `replace`.
+    """
     if df is None or df.empty:
         return 0
     tbl = _reflect(engine, name)
@@ -282,14 +293,15 @@ def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str,
     records = _records(_coerce_temporal(df, tbl))
     dialect = engine.dialect.name
     n = len(records)
+    carried = set(df.columns)
 
     with engine.begin() as conn:
         for i in range(0, n, chunksize):
             chunk = records[i:i + chunksize]
             if dialect in ("postgresql", "sqlite"):
                 ins = pg_insert(tbl) if dialect == "postgresql" else sqlite_insert(tbl)
-                update_cols = {c.name: ins.excluded[c.name]
-                               for c in tbl.c if c.name not in pk}
+                update_cols = {c.name: ins.excluded[c.name] for c in tbl.c
+                               if c.name not in pk and c.name in carried}
                 stmt = (ins.on_conflict_do_update(index_elements=pk, set_=update_cols)
                         if update_cols else ins.on_conflict_do_nothing(index_elements=pk))
                 conn.execute(stmt, chunk)
@@ -299,7 +311,13 @@ def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str,
 
 
 def _delete_then_insert(conn, tbl: Table, chunk: list[dict], pk: list[str]) -> None:
-    
+    """DELETE the conflicting keys, then INSERT. Only reached on a dialect with no
+    `ON CONFLICT` (neither Postgres nor SQLite, i.e. nothing this repo runs on).
+
+    It does NOT merge: a column the chunk omits comes back as that column's default, because
+    the old row is gone before the new one lands. Reproducing the merge here means reading
+    the conflicting rows first, so the divergence is recorded rather than hidden.
+    """
     keys = [tuple(r[k] for k in pk) for r in chunk]
     conn.execute(tbl.delete().where(tuple_(*[tbl.c[k] for k in pk]).in_(keys)))
     conn.execute(tbl.insert(), chunk)

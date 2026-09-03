@@ -32,7 +32,13 @@ def _page(items) -> str:
 def _fake_ctx(tickers, tmp_path):
     store = types.SimpleNamespace(
         load=lambda table, columns=None: pd.DataFrame({"ticker": list(tickers)}))
-    return types.SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path})
+    # `run_manifest._manifest_path` reads `config.local.filename.extraction`
+    # (value from configs/paths.yml), so the double has to carry it.
+    return types.SimpleNamespace(
+        store=store, paths={"DATA_STORE": tmp_path},
+        config=types.SimpleNamespace(local=types.SimpleNamespace(
+            filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
+            paths=types.SimpleNamespace(call_transcripts="call_transcripts"))))
 
 
 def test_crawl_does_not_stop_on_universe_empty_pages(tmp_path, monkeypatch):

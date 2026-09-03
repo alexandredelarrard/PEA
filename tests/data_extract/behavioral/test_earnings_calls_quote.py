@@ -29,7 +29,13 @@ from src.data_extract.utils.behavioral import utils_missing_quarters as mq
 
 def _ctx(tickers, tmp_path):
     store = FakeStore({"sp500_tickers": pd.DataFrame({"ticker": list(tickers)})})
-    return types.SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path})
+    # `run_manifest._manifest_path` reads `config.local.filename.extraction`
+    # (value from configs/paths.yml), so the double has to carry it.
+    return types.SimpleNamespace(
+        store=store, paths={"DATA_STORE": tmp_path},
+        config=types.SimpleNamespace(local=types.SimpleNamespace(
+            filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
+            paths=types.SimpleNamespace(call_transcripts="call_transcripts"))))
 
 
 def _t(date, slug):   # a transcript path as it appears in quote-page JSON

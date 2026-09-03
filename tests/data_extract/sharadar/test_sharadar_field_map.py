@@ -171,7 +171,8 @@ def test_every_sf1_column_is_accounted_for(field_map):
     112 columns is the widest table in the schema and D7 keeps all of them in the raw table.
     A column nobody classified is a column nobody decided about.
     """
-    from src.constants.constants import SHARADAR_ID_COLUMNS
+    # lives with its one consumer, not in constants.py (constants placement rule)
+    from src.data_extract.utils.fundamentals_sharadar.client import SHARADAR_ID_COLUMNS
     # `.source` on BOTH halves. An extra is keyed by the repo name it is EMITTED under, so
     # `set(field_map.extras)` would be a set of camelCase names SF1 has never heard of --
     # every extra would read as unaccounted and every vendor column it covers as phantom.

@@ -28,7 +28,13 @@ def test_wiki_incremental_reads_last_date_per_ticker(tmp_path, monkeypatch):
                              "pageviews": [100.0, 200.0]})
 
     store = FakeStore({"sp500_tickers": names, "wiki_pageviews": existing})
-    ctx = types.SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path})
+    # `run_manifest._manifest_path` reads `config.local.filename.extraction`
+    # (value from configs/paths.yml), so the double has to carry it.
+    ctx = types.SimpleNamespace(
+        store=store, paths={"DATA_STORE": tmp_path},
+        config=types.SimpleNamespace(local=types.SimpleNamespace(
+            filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
+            paths=types.SimpleNamespace(call_transcripts="call_transcripts"))))
 
     calls: list[tuple[str, str, str]] = []
 

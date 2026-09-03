@@ -76,7 +76,13 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
     """Resume contract: an already-ingested period is never re-fetched while the universe
     is stable; a universe change re-parses cached periods, but the upsert on (ticker, date)
     must not duplicate rows already stored."""
-    ctx = SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path})
+    # `cache_dir(context, context.config.local.paths.fails_deliver)` -- the fetcher reads its
+    # cache subdirectory out of config, so the double has to carry it (value from
+    # configs/paths.yml).
+    ctx = SimpleNamespace(
+        store=sqlite_store, paths={"DATA_STORE": tmp_path},
+        config=SimpleNamespace(local=SimpleNamespace(
+            paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver"))))
 
     def _raw_for(path) -> str:
         period = path.stem.removeprefix("cnsfails")
@@ -86,7 +92,7 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
                 f"{yyyymm}{day}|055555555|MSFT|50|MICROSOFT|300.00\n")
 
     requested: list[str] = []
-    def _fake_ensure_zip(path, urls, *, label, timeout, log):
+    def _fake_ensure_zip(context, path, urls, *, label, timeout, log):
         requested.append(label)
         return path
     monkeypatch.setattr(ftd, "ensure_zip", _fake_ensure_zip)

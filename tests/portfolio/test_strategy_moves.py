@@ -62,9 +62,13 @@ def _step(monkeypatch, erc_weight: float = 0.4, leverage: float = 1.5,
         "strategy_trend": {"fee_bps": 1.0, "spread_bps": 5.0},
     })
     store = types.SimpleNamespace(save=lambda t, df: ((saved if saved is not None else []).append((t, df)), len(df))[1])
+    # `config_dir` is read by `Step.__init__`; a SimpleNamespace double has to carry every
+    # attribute the base class touches or all four tests die in construction rather than in
+    # the arithmetic they are about.
     context = types.SimpleNamespace(save=saved is not None, store=store,
                                     logger=logging.getLogger("moves-test"),
-                                    log=logging.getLogger("moves-test"), paths={})
+                                    log=logging.getLogger("moves-test"), paths={},
+                                    config_dir="./configs")
     step = sm.StepStrategyMoves(context=context, config=config)
     return step, w, px
 
@@ -115,7 +119,8 @@ def test_resizing_uses_the_weight_panel_not_scaled_dollars(monkeypatch):
                                "strategy_trend": {"fee_bps": 1.0, "spread_bps": 5.0}})
     context = types.SimpleNamespace(save=False, store=None,
                                     logger=logging.getLogger("moves-test"),
-                                    log=logging.getLogger("moves-test"), paths={})
+                                    log=logging.getLogger("moves-test"), paths={},
+                                    config_dir="./configs")
     led = sm.StepStrategyMoves(context=context, config=config).run()
 
     aaa = led[led["ticker"] == "AAA"].sort_values("trading_day")

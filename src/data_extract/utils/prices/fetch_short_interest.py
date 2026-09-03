@@ -57,19 +57,28 @@ def _fetch_day(day: pd.Timestamp) -> str | None:
     return r.text if r.status_code == 200 else None
 
 
+def _resume_day(context: Context, years_history: int = 15) -> pd.Timestamp:
+    """The first day to download: the day after the GLOBAL stored max, or the full
+    `years_history` window on a cold table.
+
+    Global and not per-ticker on purpose. A RegSHO day-file carries every symbol at once, so
+    one lagging ticker would drag the whole download back to its own last date and re-fetch
+    days already stored for all the others.
+    """
+    today = pd.Timestamp.today().normalize()
+    stored_max = context.store.max_date(Tables.short_interest)
+    if stored_max is None:
+        return today - pd.DateOffset(years=years_history)
+    return stored_max + pd.Timedelta(days=1)
+
+
 def fetch_short_interest(context: Context, tickers: list[str],
                          years_history: int = 15, pause: float = 0.05) -> None:
     """Download the RegSHO daily short-volume files not yet stored, keep only
     `tickers`, and upsert them into `sec_short_interest`."""
 
     today = pd.Timestamp.today().normalize()
-    stored_max = context.store.max_date(Tables.short_interest)
-    if stored_max is None:
-        history= today - pd.DateOffset(years=years_history)
-    else:
-        history= stored_max + pd.Timedelta(days=1)
-
-    days = pd.bdate_range(history, today)
+    days = pd.bdate_range(_resume_day(context, years_history), today)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers")
 
     frames: list[pd.DataFrame] = []

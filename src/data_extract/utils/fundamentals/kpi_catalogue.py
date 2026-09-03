@@ -646,7 +646,7 @@ def resolve_config_dir(config_dir: str | None = None) -> str:
 
 def load_catalogue(config_dir: str | None = DEFAULT_CONFIG_DIR) -> Catalogue:
     """The validated catalogue, built once per (process, config DIRECTORY)"""
-    return _catalogue_at(config_dir)
+    return _catalogue_at(resolve_config_dir(config_dir))
 
 
 @cache

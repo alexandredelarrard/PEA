@@ -36,7 +36,13 @@ def _ctx(tmp_path, existing_keys):
     existing = pd.DataFrame(existing_keys, columns=["ticker", "quarter"]) if existing_keys \
         else pd.DataFrame(columns=["ticker", "quarter"])
     store = FakeStore({"earnings_call_sections": existing} if existing_keys else {})
-    return types.SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path})
+    # `run_manifest._manifest_path` reads `config.local.filename.extraction`
+    # (value from configs/paths.yml), so the double has to carry it.
+    return types.SimpleNamespace(
+        store=store, paths={"DATA_STORE": tmp_path},
+        config=types.SimpleNamespace(local=types.SimpleNamespace(
+            filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
+            paths=types.SimpleNamespace(call_transcripts="call_transcripts"))))
 
 
 def test_ingest_skips_already_ingested(tmp_path):

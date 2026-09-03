@@ -95,7 +95,12 @@ def test_build_superinvestors_json_cik_to_name(monkeypatch, tmp_path):
     def fake_edgar(url):                                     # Greenlight resolves; boutique doesn't
         return SimpleNamespace(text=_SINGLE_ATOM if "Greenlight" in url else "no company-info")
 
-    ctx = SimpleNamespace(paths={"DATA_STORE": tmp_path})
+    # the roster path is `paths["DATA_STORE"] / config.local.paths.superinvestors`
+    # (value from configs/paths.yml)
+    ctx = SimpleNamespace(
+        paths={"DATA_STORE": tmp_path},
+        config=SimpleNamespace(local=SimpleNamespace(
+            paths=SimpleNamespace(superinvestors="superinvestors/superinvestors.json"))))
     out = si.build_superinvestors_json(ctx, get_fn=fake_edgar)
     m = out["cik_to_name"]
 

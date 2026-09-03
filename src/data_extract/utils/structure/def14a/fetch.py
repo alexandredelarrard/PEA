@@ -95,8 +95,8 @@ def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
 
     `primaryDocument` names a file that is genuinely ABSENT from the archive on 7 of 663
     measured DEF 14A filings (all 2000-08..2001-03, all naming `"0001.txt"`). Those produce no
-    row at all without this retry, because the raise propagates out of `_process_filing` and
-    the filing is silently skipped -- a loss invisible in the "pre-2001 rows are NULL" count
+    row at all without this retry, because the raise propagates out of `_payload_for` and the
+    filing never becomes a task -- a loss invisible in the "pre-2001 rows are NULL" count
     since there is no row to be null. The `.txt` carries the real proxy (53,661-165,380 chars
     on the four spot-checked).
     """

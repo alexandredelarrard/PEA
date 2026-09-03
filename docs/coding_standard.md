@@ -62,6 +62,11 @@ Prefer `f{}` f-strings in log calls over %s.
 - **All imports at the top of the file.** No function-local imports.
 - Fix cycle breaks, circular import. No import inside the function
 - No cross-imports between `src/` subfolders — shared logic goes in `src/utils/`.
+  **One sanctioned exception**: `src/gpt_extract/` is a shared SERVICE, like `src/utils/`.
+  `data_extract`, `data_aggregate` and `data_peers` may import it directly for LLM
+  extraction and embeddings. It exists because the alternative was three separate OpenAI
+  clients with three key resolvers and three character caps — one of which had drifted to a
+  stale 8,000 chars. Document the import where it happens.
 
 ## Module docstrings carry the reasoning
 

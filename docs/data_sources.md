@@ -25,11 +25,11 @@ tables they land in, see [data_schema.md](data_schema.md); for current coverage,
 | Institutional holdings | SEC Form 13F bulk sets | `SEC_USER_AGENT`, `OPENFIGI_API_KEY` (optional) | `sec13f_hr`, `cusip_ticker_map` | `prices/fetch_13f.py`, `fetch_cusip_map.py` |
 | Elite-manager subset | Dataroma roster → CIK filter over 13F | no | `data/superinvestors/superinvestors.json` | `prices/fetch_superinvestors.py` |
 | Insider trades | SEC Insider Data Sets (Forms 3/4/5, quarterly zips) | `SEC_USER_AGENT` | `insider_transactions` | `prices/fetch_insider_transactions.py` |
-| Governance / comp / ownership | SEC **DEF 14A** via OpenAI structured output | `OPENAI_API_KEY`, `SEC_USER_AGENT` | `def14a_llm` | `structure/fetch_def14a_llm.py` |
-| Pay-versus-Performance (deterministic) | SEC DEF 14A **inline XBRL** (ECD taxonomy), read direct from `filing.xbrl()` | `SEC_USER_AGENT` | `sec_def14a` (2023+ by regulation) | `structure/def14a_ecd.py`, `structure/fetch_def14a_edgar.py` |
+| Governance / comp / ownership | SEC **DEF 14A** via OpenAI structured output | `OPENAI_API_KEY`, `SEC_USER_AGENT` | `def14a_llm` | `structure/def14a/` |
+| Pay-versus-Performance (deterministic) | SEC DEF 14A **inline XBRL** (ECD taxonomy), read direct from `filing.xbrl()` | `SEC_USER_AGENT` | `sec_def14a` (2023+ by regulation) | `structure/def14a/ecd.py`, `structure/fetch_def14a_edgar.py` |
 | Corporate events | SEC Form 8-K | `SEC_USER_AGENT` | `sec_8k` | `structure/fetch_8k_edgar.py` |
-| Shareholder votes | SEC Form 8-K **Item 5.07**, re-read from `sec_8k.item_text` (no new download) | `OPENAI_API_KEY` | `sec_8k_votes` (2010-03+ by regulation) | `structure/fetch_8k_votes_llm.py` |
-| Governance child tables | flattened out of the SAME paid `def14a_llm.def14a_json` blob | — | `def14a_directors`, `def14a_executive_comp`, `def14a_director_comp`, `def14a_ownership` | `structure/fetch_def14a_llm.py` |
+| Shareholder votes | SEC Form 8-K **Item 5.07**, re-read from `sec_8k.item_text` (no new download) | `OPENAI_API_KEY` | `sec_8k_votes` (2010-03+ by regulation) | `structure/votes/` |
+| Governance child tables | flattened out of the SAME paid `def14a_llm.def14a_json` blob | — | `def14a_directors`, `def14a_executive_comp`, `def14a_director_comp`, `def14a_ownership` | `structure/def14a/` |
 | Activist stakes | SEC Schedule 13D / 13D-A | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions` | `structure/fetch_13d_edgar.py` |
 | Filing narrative | SEC 10-K Item 1A / Item 7, 10-Q Item 2 | `SEC_USER_AGENT` | `sec_filing_text` | `structure/fetch_filing_text.py` |
 | Short volume | FINRA RegSHO daily files | no | `short_interest` | `prices/fetch_short_interest.py` |
@@ -39,7 +39,7 @@ tables they land in, see [data_schema.md](data_schema.md); for current coverage,
 | Earnings-call transcripts (deep history) | HuggingFace `kurry/sp500_earnings_transcripts` | no | `earnings_call_sections` | `behavioral/fetch_hf_transcripts.py` |
 | Earnings-call transcripts (recent gaps) | Roic AI → Motley Fool quote pages | no | `earnings_call_sections` | `behavioral/fetch_roic_transcripts.py`, `utils_missing_quarters.py` |
 | Call tone | local **FinBERT-tone** (torch, GPU) + LM uncertainty lexicon | no | `earnings_call_sentiment` | `utils/nlp_sentiment.py` |
-| Call / notes / business embeddings | OpenAI `text-embedding-3-small` | `OPENAI_API_KEY` | `earning_calls_embedding`, `notes_embedding`, `ticker_embeddings` | `utils/openai_embeddings.py` |
+| Call / notes / business embeddings | OpenAI `text-embedding-3-small` | `OPENAI_API_KEY` | `earning_calls_embedding`, `notes_embedding`, `ticker_embeddings` | `gpt_extract/utils/embeddings.py` |
 
 Environment variables live in a git-ignored `.env` at the repo root (see `.env.example`), loaded by
 `Context._load_env` via `find_dotenv(usecwd=True)`. `SEC_USER_AGENT` must be a real
@@ -57,7 +57,8 @@ Environment variables live in a git-ignored `.env` at the repo root (see `.env.e
   `CERTIFICATE_VERIFY_FAILED`, which looks like a source-coverage failure.
 - [data_extract/utils/common/](../src/data_extract/utils/common/) — `bulk_cache.py` (zip caching &
   self-healing), `sec_utils.py` (rate limiting ~10 req/s, state), `form_registry.py`
-  (`FORM_REGISTRY`), `rate_limit.py`, `parallel_fetch.py`, `run_manifest.py`, `llm_extractor.py`.
+  (`FORM_REGISTRY`), `rate_limit.py`, `parallel_fetch.py`, `run_manifest.py`. The LLM client
+  itself is NOT here: it lives in `src/gpt_extract/` (see that package's README).
 - Airflow pools cap the load: `sec_bulk` 2, `sec_api` 2, `scrape` 2, `aggregate` 3.
 
 ## Free-source realities you must design around
@@ -203,6 +204,16 @@ is **`date`**, and it sits inside the primary key, so the two channels are not i
 
 ### DEF 14A
 
+**Both LLM extraction paths run through `src/gpt_extract/`.** Neither fetcher owns a prompt,
+an API key or an OpenAI client any more: `def14a/` and `votes/` build `LlmTask`s and call
+`LLMExtractor.run_extraction`, which fills the schemas 12-wide and hands the answers back in
+submission order. The prompts live in `src/gpt_extract/prompt_templates/*.md` — two files per
+action (`def14a`, `sec8k_votes`) — and the model, temperature, thread count, per-action
+character budget and prompt-cache flag all come from `configs/gpt.yml`. Workers never touch
+the store; saves happen on the main thread, once per ticker. See
+[gpt_extract/README.md](../src/gpt_extract/README.md) for how to add an action or a provider.
+
+
 **edgartools' proxy HTML parser is silently wrong, not absent** — which is why the whole
 HTML-parsed block and its four child tables were DELETED rather than repaired. A parser that
 returns a fabricated `0.5` for a "*" percent, misses a "(in thousands)" fee header (KO: the same
@@ -213,7 +224,7 @@ says in PROSE belongs to `def14a_llm` and its four child tables.
 **The ECD reader also cannot use `ProxyStatement`'s accessors**: they filter on `concept ==` only
 and take `.iloc[0]`, so on a co-PEO year document order decides which executive survives — BA's
 2025 proxy silently drops one of Ortberg / Calhoun (and with it a CAP of −23,875,735).
-[def14a_ecd.py](../src/data_extract/utils/structure/def14a_ecd.py) reads the facts frame directly.
+[def14a/ecd.py](../src/data_extract/utils/structure/def14a/ecd.py) reads the facts frame directly.
 Filers discriminate PEO facts two incompatible ways, so **the axis filter is conditional**: a
 fixed `dim_ecd_ExecutiveCategoryAxis == 'ecd:PeoMember'` returns ZERO rows on every filing
 measured (BA/NKE/SBUX tag `IndividualAxis` only; AAPL's amounts are undimensioned while its

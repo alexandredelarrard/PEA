@@ -41,7 +41,7 @@ if str(ROOT) not in sys.path:
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.llm_extractor import LLMExtractor
-from src.data_extract.utils.structure.def14a_schema import Def14AExtract
+from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.fetch_def14a_llm import (
     _CHILD_SPEC, _DEF14A_PROMPT, _child_frames, _flatten, prepare_def14a_sections,
 )
@@ -234,7 +234,7 @@ def main() -> None:
 
     extractor = None
     if not args.dry_run:
-        model = config.data_extract.llm_model
+        model = config.gpt.llm_model[config.gpt.default_api]
         print(f"model: {model} — {len(tickers)} filings, {len(tickers)} LLM calls")
         extractor = LLMExtractor(model=model, max_chars=130_000, cache=True)
 

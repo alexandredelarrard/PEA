@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.structure.def14a_schema import (
+from src.data_extract.utils.schemas.def14a_schema import (
     Def14AExtract,
     DirectorInfo,
     ExecutiveCompensation,
@@ -442,7 +442,7 @@ def test_llm_extractor_real_apple():
     from src.data_extract.utils.common.sec_utils import sec_get
 
     _, ctx = get_config_context("./configs", use_cache=True, save=False)
-    model = ctx.config.data_extract.llm_model
+    model = ctx.config.gpt.llm_model[ctx.config.gpt.default_api]
 
     filings = list_filings(ctx, "0000320193", ["DEF 14A"], years=2, company_name="Apple Inc.")
     if filings.empty:
@@ -522,7 +522,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
             {"ticker": [TICKER], "cik": ["0000000000"], "company_name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
-        mod.fetch_def14a_llm(ctx, tickers=[TICKER])
+        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[TICKER])
 
         assert captured["schema"] is Def14AExtract, captured
         assert captured["instructions"] == mod._DEF14A_PROMPT   # tailored prompt used
@@ -617,7 +617,7 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
             {"ticker": [TICKER], "cik": ["0000000001"], "company_name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
-        mod.fetch_def14a_llm(ctx, tickers=[TICKER])
+        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[TICKER])
 
         # full window listed (no since cutoff), and ONLY the two missing years hit the LLM
         assert captured["since_seen"] == [None]

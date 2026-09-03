@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from src.data_store.store import DataStore
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.structure.fetch_def14a_llm import _is_up_to_date, _flatten
-from src.data_extract.utils.structure.def14a_schema import Def14AExtract, GovernanceProfile
+from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, GovernanceProfile
 from tests.data_extract.fake_context import extract_config
 
 
@@ -101,7 +101,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
         {"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
     monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
 
-    mod.fetch_def14a_llm(ctx, tickers=["ZZ"], model="gpt-5-mini")
+    mod.fetch_def14a_llm(ctx, ctx.config, tickers=["ZZ"], model="gpt-5-mini")
 
     assert listed_since == [None], "must list the FULL window (no since cutoff) to find gaps"
     assert set(extracted) == {"a2023", "a2025"}, f"only missing filings should hit the LLM: {extracted}"
@@ -157,7 +157,7 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
         {"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
     monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
 
-    mod.fetch_def14a_llm(ctx, tickers=["ZZ"], model="gpt-5-mini")
+    mod.fetch_def14a_llm(ctx, ctx.config, tickers=["ZZ"], model="gpt-5-mini")
 
     # list_filings' own `since` is STRICTLY AFTER the date passed, so the manifest's
     # last run date (inclusive) is passed as (last_run - 1 day).

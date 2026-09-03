@@ -84,7 +84,7 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
         name="def_14", sec_forms=tuple(DEF14A_FORMS),
         discovery="per_cik_accession", table="def14a_llm",
         handler=fetch_def14a_llm,
-        call_shape="(context, tickers, model=config.data_extract.llm_model)",
+        call_shape="(context, config, tickers)",
         step_chain_wired=True,
         notes="logical key 'def_14' maps to the EXISTING def14a_llm table -- kept per "
              "the task's own instruction ('keep the def14a_llm table and process as a "

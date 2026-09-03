@@ -13,7 +13,7 @@ import pytest
 from src.data_extract.utils.structure.def14a_gender import (
     BASIS_RANK, consensus, person_key, recompute_parent_gender,
 )
-from src.data_extract.utils.structure.def14a_schema import (
+from src.data_extract.utils.schemas.def14a_schema import (
     BeneficialOwner, Def14AExtract, DirectorCompensation, DirectorInfo,
     ExecutiveCompensation, GovernanceProfile,
 )

@@ -60,6 +60,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
+from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.constants.constants import DATE_FORMAT, DEF14A_FORMS
@@ -67,7 +68,7 @@ from src.context import Context
 from src.data_extract.utils.structure.def14a_gender import (
     basis_distribution, consensus, log_consensus, recompute_parent_gender,
 )
-from src.data_extract.utils.structure.def14a_schema import Def14AExtract
+from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a_validate import (
     DEF14A_AUDIT_FEE_MIN_PLAUSIBLE, clean_holder_name, clean_person_name, clean_text,
     is_subtotal_holder, rescale_block, sum_fee_total,
@@ -1130,10 +1131,11 @@ def _finalise_gender(context: Context) -> None:
 
 def fetch_def14a_llm(
     context: Context,
+    config: DictConfig,
     tickers: list[str],
-    model: str,
-    max_chars: int = 130_000,
-    cache: bool = True,
+    model: str | None = None,
+    max_chars: int | None = None,
+    cache: bool | None = None,
     workers: int = _LLM_WORKERS,
 ) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
@@ -1142,10 +1144,13 @@ def fetch_def14a_llm(
     LLM (year-incremental), and the ticker's rows are upserted to Postgres
     immediately. Skips gracefully when OPENAI_API_KEY is absent.
 
-    `model` is REQUIRED and has no default on purpose: both callers pass
-    `config.data_extract.llm_model`, and a second default here is how the research came to
-    measure `gpt-4o-mini` while production had been running `gpt-5-mini` all along.
+    `model` / `max_chars` / `cache` default to `config.gpt`; pass an explicit keyword to
+    pin one for research without touching config (how a prior measurement ran
+    `gpt-4o-mini` while production had been running `gpt-5-mini` all along).
     """
+    model = model or config.gpt.llm_model[config.gpt.default_api]
+    max_chars = config.gpt.max_chars.def14a if max_chars is None else max_chars
+    cache = config.gpt.cache if cache is None else cache
     years = context.config.data_extract.years_history
     de = context.config.data_extract
 

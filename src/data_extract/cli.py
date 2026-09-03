@@ -415,8 +415,7 @@ def financial_notes(config_path: str, tickers: str | None) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def def14a(config_path: str, tickers: str | None) -> None:
     config, context = _ctx(config_path)
-    fetch_def14a_llm(context, tickers=_tickers(context, tickers),
-                     model=config.data_extract.llm_model)
+    fetch_def14a_llm(context, config, tickers=_tickers(context, tickers))
 
 
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")
@@ -435,8 +434,7 @@ def sec_8k_items(config_path: str, tickers: str | None, years: int | None) -> No
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_votes(config_path: str, tickers: str | None) -> None:
     config, context = _ctx(config_path)
-    fetch_8k_votes_llm(context, tickers=_tickers(context, tickers),
-                       model=config.data_extract.llm_model)
+    fetch_8k_votes_llm(context, config, tickers=_tickers(context, tickers))
 
 
 @cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")

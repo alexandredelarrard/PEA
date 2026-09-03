@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data_extract.utils.structure.def14a_schema import (
+from src.data_extract.utils.schemas.def14a_schema import (
     BeneficialOwner,
     Def14AExtract,
     DirectorCompensation,

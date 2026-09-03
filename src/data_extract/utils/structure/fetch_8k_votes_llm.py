@@ -71,6 +71,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Iterable, TypeVar
 
 import pandas as pd
+from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.context import Context
@@ -79,7 +80,7 @@ from src.data_extract.utils.common.llm_extractor import LLMExtractor
 from src.data_extract.utils.common.sec_utils import existing_filings
 from src.data_extract.utils.structure.def14a_gender import person_key
 from src.data_extract.utils.structure.def14a_validate import clean_person_name, clean_text
-from src.data_extract.utils.structure.vote_schema import (
+from src.data_extract.utils.schemas.vote_schema import (
     Item507Extract, PROPOSAL_TYPES, ProposalVote, VOTE_STANDARDS,
 )
 from src.data_store.schema import Tables
@@ -578,10 +579,11 @@ def _prepare_frame(rows: list[dict]) -> pd.DataFrame:
 
 def fetch_8k_votes_llm(
     context: Context,
+    config: DictConfig,
     tickers: list[str],
-    model: str,
-    max_chars: int = 40_000,
-    cache: bool = True,
+    model: str | None = None,
+    max_chars: int | None = None,
+    cache: bool | None = None,
     workers: int = _LLM_WORKERS,
 ) -> None:
     """Build/refresh `sec_8k_votes` from the stored Item 5.07 narratives, ticker by ticker.
@@ -590,15 +592,17 @@ def fetch_8k_votes_llm(
     ticker's rows before starting the next -- LLM calls are paid for, so nothing is
     batched. Skips gracefully when OPENAI_API_KEY is absent.
 
-    `max_chars` is 40k rather than the DEF 14A path's 130k because the input is one
-    already-carved item, not a whole proxy: the longest Item 5.07 narrative in the
-    333-filing baseline is 17,032 chars, so 40k truncates nothing while keeping a
-    runaway `item_text` from turning into a runaway bill.
+    `max_chars` defaults to `config.gpt.max_chars.sec8k_votes` (40k, not the DEF 14A
+    path's 130k) because the input is one already-carved item, not a whole proxy: the
+    longest Item 5.07 narrative in the 333-filing baseline is 17,032 chars, so 40k
+    truncates nothing while keeping a runaway `item_text` from turning into a runaway bill.
 
-    `model` is REQUIRED and has no default, for the same reason it is on the DEF 14A
-    fetcher: a second default is how a measurement gets taken on one model while
-    production runs another.
+    `model` / `cache` default to `config.gpt`; pass an explicit keyword to pin one for
+    research without touching config.
     """
+    model = model or config.gpt.llm_model[config.gpt.default_api]
+    max_chars = config.gpt.max_chars.sec8k_votes if max_chars is None else max_chars
+    cache = config.gpt.cache if cache is None else cache
     if not context.store.exists(Tables.sec_8k):
         context.log.warning("sec_8k does not exist yet — run the 8-K fetcher first; "
                             "Item 5.07 votes skipped")

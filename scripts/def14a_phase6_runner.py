@@ -45,7 +45,7 @@ if str(ROOT) not in sys.path:
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.llm_extractor import LLMExtractor
-from src.data_extract.utils.structure.def14a_schema import Def14AExtract
+from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.fetch_def14a_llm import (
     _DEF14A_PROMPT, _child_frames, _flatten, prepare_def14a_sections,
 )
@@ -53,7 +53,7 @@ from src.data_extract.utils.structure.fetch_8k_votes_llm import (
     _SOURCE_COLS, _VOTES_PROMPT, _prepare_frame as _prepare_vote_frame, _proposal_rows,
     _role_map, _role_source, rejection_reason,
 )
-from src.data_extract.utils.structure.vote_schema import Item507Extract
+from src.data_extract.utils.schemas.vote_schema import Item507Extract
 from src.data_store.schema import Tables
 
 PLAN = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix"
@@ -376,7 +376,7 @@ def main() -> None:
     args = ap.parse_args()
 
     config, context = get_config_context(args.config, use_cache=False, save=False)
-    model = config.data_extract.llm_model
+    model = config.gpt.llm_model[config.gpt.default_api]
     print(f"model: {model} | out: {NEW}")
 
     if not (args.proxy or args.ecd or args.votes):

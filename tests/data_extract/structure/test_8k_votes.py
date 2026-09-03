@@ -35,7 +35,7 @@ from src.data_extract.utils.structure.fetch_8k_votes_llm import (
     _VOTE_FIELDS, _name_in_source, _prepare_frame, _proposal_rows, _role_map, has_vote_numbers,
     mentions_preliminary, rejection_reason,
 )
-from src.data_extract.utils.structure.vote_schema import (
+from src.data_extract.utils.schemas.vote_schema import (
     Item507Extract, NomineeVote, PROPOSAL_TYPES, ProposalVote,
 )
 from src.data_store.schema import Tables

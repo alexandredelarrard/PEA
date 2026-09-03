@@ -1,0 +1,33 @@
+gpt:
+  # provider -> model. `default_api` picks which one a run uses.
+  llm_model:
+    open_ai: "gpt-5-mini"
+    google: gemini-2.5-flash-lite-preview-06-17
+    groq: llama-3.1-8b-instant
+    deepseek: deepseek-chat
+    local: lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF
+  default_api: open_ai
+
+  # Reasoning models REJECT `temperature` and `seed`. Listed rather than pattern-matched so a
+  # new model name is a config change and not a 400 in the middle of a paid run.
+  reasoning_models: ["gpt-5", "gpt-5-mini", "gpt-5-nano", "o3", "o4-mini"]
+  temperature: 0.2
+  seed: 1234
+
+  # null = do not send an output cap. 4096 truncates a large proxy: Def14AExtract returns up to
+  # 5 NEOs x 3 fiscal years plus ~12 directors and ~25 holders.
+  max_token: null
+
+  threads: 12          # measured: 12-wide gives 9.1-10.6 s/filing with zero 429s
+  cache: true          # send prompt_cache_key -> cached input tokens are ~10x cheaper
+
+  # Input truncation, per action. The DEF 14A payload is a whole carved proxy; an Item 5.07
+  # narrative is one already-carved item (longest measured: 17,032 chars).
+  max_chars:
+    def14a: 130000
+    sec8k_votes: 40000
+
+  embedding:
+    model: text-embedding-3-small
+    max_chars: 28000   # text-embedding-3-small accepts 8,191 TOKENS; English runs ~3.6 chars/token
+    batch_size: 128

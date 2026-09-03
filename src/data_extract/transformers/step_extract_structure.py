@@ -34,11 +34,9 @@ class StepExtractStructure(Step):
         fetch_13d_edgar(self._context, tickers=tickers, years_history=years_history)
         fetch_filing_text(self._context, tickers=tickers, years_history=years_history)
 
-        fetch_def14a_llm(self._context, tickers=tickers,
-                         model=self._config.data_extract.llm_model)
+        fetch_def14a_llm(self._context, self._config, tickers=tickers)
         fetch_def14a_edgar(self._context, tickers=tickers, years_history=years_history)
 
         # LAST on purpose: it reads `sec_8k` (item 5.07) for its input and the three
         # `def14a_*` tables for the nominee role map, so both must be current first.
-        fetch_8k_votes_llm(self._context, tickers=tickers,
-                           model=self._config.data_extract.llm_model)
+        fetch_8k_votes_llm(self._context, self._config, tickers=tickers)

@@ -1268,7 +1268,6 @@ CREATE TABLE IF NOT EXISTS "cube" (
     "seasonal_h30" DOUBLE PRECISION,
     "seasonal_h60" DOUBLE PRECISION,
     "seasonal_h90" DOUBLE PRECISION,
-    "tax_loss_pressure" DOUBLE PRECISION,
     "macd" DOUBLE PRECISION,
     "macd_hist" DOUBLE PRECISION,
     "rsi_14" DOUBLE PRECISION,

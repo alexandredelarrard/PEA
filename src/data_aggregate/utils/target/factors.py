@@ -63,6 +63,7 @@ def build_characteristics(
     *,
     stock_close_split: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
+    seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> dict:
     """
     Returns {factor_name: characteristic DataFrame (date x ticker)}, higher =
@@ -77,6 +78,12 @@ def build_characteristics(
         in 2003) and the size factor would become a dividend-policy tilt.
     `stock_close_split` defaults to the total-return frame only so a dividend-free synthetic
     fixture stays a one-liner; every real caller passes both.
+
+    `seams` masks `momentum`'s straddling windows. It matters HERE and not only in the label,
+    because `characteristic_to_factor_return` turns this characteristic into the momentum
+    FACTOR's return: a name carrying a fabricated top-decile exposure sits in the factor's long
+    leg for 231 trading days, so the contamination would leave the six seam tickers and reach
+    `beta_momentum` for the whole universe.
     """
     idx = stock_close_total.index
     close_level = (stock_close_total if stock_close_split is None
@@ -84,7 +91,7 @@ def build_characteristics(
     chars: dict[str, pd.DataFrame] = {}
 
     # Momentum 12-1 (skip most recent month). max 75% of values missing
-    chars["momentum"] = momentum_characteristic(stock_close_total)
+    chars["momentum"] = momentum_characteristic(stock_close_total, seams=seams)
 
     # Residual/low volatility: negative trailing vol (low vol = long side).
     chars["resvol"] = -trailing_vol(stock_ret, resvol_window)

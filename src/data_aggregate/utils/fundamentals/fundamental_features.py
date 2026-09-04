@@ -1452,17 +1452,29 @@ def _derived_fields(
     F.update(_pension_health_fields(daily, pbo, notes_num, idx, pension_ret))
 
     # ---- everything that needs a daily market cap ---- #
-    mcap = daily_market_cap(fund_hist, close, level_factor=level_factor)
-    ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret)
+    # `close` is Optional all the way down this module (`_intrinsic_fields` returns early on
+    # None, `_enterprise_value_frame` and the earnings-yield block both test it), but
+    # `daily_market_cap` declares a non-Optional frame and reads `close_split.index` on its
+    # first line. An empty frame on `idx` is the same answer `PitCache.market_cap` gives when
+    # either input is absent, and every downstream block already handles an empty mcap.
+    mcap = (pd.DataFrame(index=idx) if close is None or close.empty
+            else daily_market_cap(fund_hist, close, level_factor=level_factor))
 
-    F.update(_valuation_yield_fields(mcap, net_income, revenue, equity, fcf))
-    F.update(_pension_scale_fields(pension_ret, pbo, fn_deficit, mcap))
-    F.update(_ev_yield_fields(ebitda, fcf, ev))
-    F.update(_altman_z_fields(daily, mcap, revenue))
-    F.update(_pegy_fields(daily, fund_hist, idx, mcap, net_income, yoy_periods,
-                            earnings_history))
-    F.update(_reit_multiple_fields(daily, fund_hist, net_income, mcap, ev))
-    F.update(_energy_multiple_fields(daily, fund_hist, ev))
+    # Every field below is a yield or a multiple, so all of them are undefined without a
+    # price. They are SKIPPED rather than emitted empty, because a key carrying an empty
+    # frame becomes an all-NaN column downstream and reads as "this company has no earnings
+    # yield" instead of "there was no price to compute one" -- the same distinction
+    # `_intrinsic_fields` already makes by returning `{}` when `close is None`.
+    if not mcap.empty:
+        ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret)
+        F.update(_valuation_yield_fields(mcap, net_income, revenue, equity, fcf))
+        F.update(_pension_scale_fields(pension_ret, pbo, fn_deficit, mcap))
+        F.update(_ev_yield_fields(ebitda, fcf, ev))
+        F.update(_altman_z_fields(daily, mcap, revenue))
+        F.update(_pegy_fields(daily, fund_hist, idx, mcap, net_income, yoy_periods,
+                              earnings_history))
+        F.update(_reit_multiple_fields(daily, fund_hist, net_income, mcap, ev))
+        F.update(_energy_multiple_fields(daily, fund_hist, ev))
 
     # ---- price-independent blocks ---- #
     F.update(_profitability_level_fields(daily, revenue, net_income, fcf))

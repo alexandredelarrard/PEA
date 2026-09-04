@@ -70,7 +70,7 @@ MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea -c "…"   # DB, 
 ```
 
 
-## vexp - Context-Aware AI Coding <!-- vexp v3.1.0 -->
+## vexp - Context-Aware AI Coding <!-- vexp v3.1.1 -->
 
 ### Context strategy: call run_pipeline ONCE at task start
 If the task already names the files/symbols to touch, SKIP vexp. Otherwise one

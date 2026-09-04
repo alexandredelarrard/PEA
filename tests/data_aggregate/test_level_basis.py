@@ -24,8 +24,8 @@ import pytest
 
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.data_aggregate.utils.common.level_basis import (
-    LEVEL_SNAP_TOL, _vintage_multiplier, apply_level_bugfix, apply_return_seams,
-    apply_split_vintage, describe, level_factor, load_bugfix)
+    LEVEL_SNAP_TOL, NULL_RET_STEP_TOL, _vintage_multiplier, apply_level_bugfix, apply_null_ret,
+    apply_return_seams, apply_split_vintage, describe, level_factor, load_bugfix)
 from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events
 
@@ -626,3 +626,120 @@ def test_the_shipped_register_is_loadable_and_states_its_evidence():
     for ticker, entries in blob["return_seams"].items():
         for entry in entries:
             assert entry["step"] > 0 and entry["evidence"], ticker
+    for ticker, entries in blob["null_ret"].items():
+        for entry in entries:
+            # a NULL states no factor, so `expect_ret` is the ONLY thing that makes it
+            # re-verifiable -- and it may legitimately be negative (VTR's -23.57%)
+            assert entry["date"] and entry["evidence"], ticker
+            assert isinstance(entry["expect_ret"], float) and entry["expect_ret"] != 0.0, ticker
+
+    n = sum(len(v) for v in blob["null_ret"].values())
+    print("\n=== SANITY CHECK: the shipped register states its evidence ===")
+    print(f"  sections: {[k for k in blob if not k.startswith('_')]}")
+    print(f"  null_ret: {n} entries over {list(blob['null_ret'])}, every one carrying a "
+          f"re-measurable `expect_ret`. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# `null_ret` -- the one repair that moves `ret` and NO price leg               #
+# --------------------------------------------------------------------------- #
+#: DHR's registered event, the largest of the six: `close_total` re-bases at the FTV spinoff and
+#: `pct_change()` reads the seam between the two bases as a +61.22% return.
+DHR_DATE, DHR_RET = "2016-07-05", 0.61218
+DHR_ENTRY = {"null_ret": {"DHR": [{"date": DHR_DATE, "expect_ret": DHR_RET}]}}
+
+
+def _ret_frame(bad: float | None = DHR_RET) -> pd.DataFrame:
+    """A small daily return frame carrying DHR's fabricated bar, plus a control ticker that
+    must come out bit-identical."""
+    idx = pd.DatetimeIndex(pd.bdate_range("2016-06-01", "2016-08-01"), name="date")
+    frame = pd.DataFrame(0.004, index=idx, columns=["DHR", "CTRL"])
+    if bad is not None:
+        frame.at[pd.Timestamp(DHR_DATE), "DHR"] = bad
+    return frame
+
+
+def test_a_null_ret_entry_deletes_the_bar_it_registered():
+    ret = _ret_frame()
+    before = ret.copy()
+    logged: list[str] = []
+    applied = apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a))
+
+    assert applied == 1
+    assert np.isnan(ret.at[pd.Timestamp(DHR_DATE), "DHR"])
+    assert any("APPLIED" in m for m in logged), logged
+    # NOTHING else moved: exactly one cell differs and the control column is bit-identical
+    moved = before.ne(ret) & ~(before.isna() & ret.isna())
+    assert int(moved.to_numpy().sum()) == 1
+    assert ret["CTRL"].equals(before["CTRL"])
+    assert int(ret.isna().to_numpy().sum()) == 1
+
+    print("\n=== SANITY CHECK: null_ret deletes exactly one cell ===")
+    print(f"  DHR {DHR_DATE}: {before.at[pd.Timestamp(DHR_DATE), 'DHR']:+.5f} -> NaN")
+    print(f"  cells changed across the whole {ret.shape[0]}x{ret.shape[1]} frame: "
+          f"{int(moved.to_numpy().sum())}; CTRL bit-identical. Validated.")
+
+
+def test_a_null_ret_entry_whose_defect_is_gone_is_refused():
+    """The guard, not the happy path. If Yahoo ever re-bases its own history the bar stops
+    matching, and deleting a now-legitimate return would be a fabrication of its own."""
+    ret = _ret_frame(bad=0.012)               # a real +1.2% day where the seam used to be
+    logged: list[str] = []
+    applied = apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a))
+
+    assert applied == 0
+    assert ret.at[pd.Timestamp(DHR_DATE), "DHR"] == pytest.approx(0.012, rel=0, abs=0)
+    assert not ret.isna().to_numpy().any()
+    assert any("GONE or CHANGED" in m for m in logged), logged
+
+    print("\n=== SANITY CHECK: a stale null_ret entry is refused ===")
+    print(f"  register expects {DHR_RET:+.5f}, frame reads +0.01200 -> SKIPPED, 0 cells nulled")
+    print(f"  log: {logged[0]}")
+    print("  -> the register cannot delete a return it no longer recognises. Validated.")
+
+
+def test_the_null_ret_band_is_wide_enough_for_float_noise_and_no_wider():
+    """`NULL_RET_STEP_TOL` is a band on the one-bar STEP `1 + ret`, so its width in RETURN
+    space scales with the move. Pin both edges so a future retune is a visible test change."""
+    edge = (1.0 + DHR_RET) * (1.0 + NULL_RET_STEP_TOL * 0.9) - 1.0     # just inside
+    outside = (1.0 + DHR_RET) * (1.0 + NULL_RET_STEP_TOL * 1.1) - 1.0  # just outside
+
+    assert apply_null_ret(_ret_frame(bad=edge), DHR_ENTRY, lambda *a: None) == 1
+    assert apply_null_ret(_ret_frame(bad=outside), DHR_ENTRY, lambda *a: None) == 0
+
+    print("\n=== SANITY CHECK: the null_ret re-measurement band ===")
+    print(f"  step tolerance {NULL_RET_STEP_TOL:.4f} -> on a {DHR_RET:+.5f} return the band is "
+          f"+/-{(1.0 + DHR_RET) * NULL_RET_STEP_TOL:.5f}")
+    print(f"  {edge:+.5f} fires, {outside:+.5f} does not. Validated.")
+
+
+def test_a_null_ret_entry_outside_the_build_window_is_skipped():
+    """An incremental build whose window starts after the registered date must not raise, and
+    must not silently report the entry as applied."""
+    ret = _ret_frame().drop(columns=["DHR"])
+    logged: list[str] = []
+    assert apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a)) == 0
+    assert any("outside this build's window" in m for m in logged), logged
+
+    narrow = _ret_frame().loc[pd.Timestamp("2016-07-06"):]
+    logged.clear()
+    assert apply_null_ret(narrow, DHR_ENTRY, lambda m, *a: logged.append(m % a)) == 0
+    assert not narrow.isna().to_numpy().any()
+    assert any("outside this build's window" in m for m in logged), logged
+
+    print("\n=== SANITY CHECK: null_ret outside the window ===")
+    print("  ticker absent -> skipped; date before the window -> skipped; 0 cells nulled, "
+          "no exception. Validated.")
+
+
+def test_an_already_missing_return_is_not_counted_as_applied():
+    """`ret` is NaN on a ticker's first bar and wherever the price is missing. Nulling a NaN
+    is a no-op, and reporting it as a repair would inflate the applied count on every build."""
+    ret = _ret_frame(bad=None)
+    ret.at[pd.Timestamp(DHR_DATE), "DHR"] = np.nan
+    logged: list[str] = []
+    assert apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a)) == 0
+    assert any("already not a number" in m for m in logged), logged
+
+    print("\n=== SANITY CHECK: an already-NaN bar is not a repair ===")
+    print("  applied count stays 0 rather than counting a no-op. Validated.")

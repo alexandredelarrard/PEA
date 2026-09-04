@@ -40,10 +40,27 @@ def load_peers(context: Context, config: DictConfig | None = None) -> dict:
 
 def load_peers_or_raise(context: Context, config: DictConfig | None = None) -> dict:
     """`load_peers`, but a missing/empty peer dict is an error: every feature panel is
-    peer-relative, so building a cube without peers would silently emit all-NaN features."""
+    peer-relative, so building a cube without peers would silently emit all-NaN features.
+
+    ⚠ CHECKED PER TICKER, not just on the dict. The whole-dict check had exactly the reason
+    stated above and never applied it at the grain the damage happens at: ONE ticker with an
+    empty basket is skipped by `compute_sector_returns`, so its `sector_ret` and `peer_mom_63`
+    are NaN for its entire history while the build reports success. `FISV` sat like that for
+    7,793 rows / 26 years -- the only signal was an INFO line reading
+    `Peer baskets for 490 / 491 tickers`.
+    """
     peers = load_peers(context, config)
     if not peers:
         raise RuntimeError(
             f"no peer baskets at {context.paths['SECTOR_PEERS_PATH']} -> run "
             "`python -m src data_peers deduce-peers` first")
+    peerless = sorted(t for t, basket in peers.items() if not basket)
+    if peerless:
+        raise RuntimeError(
+            f"{len(peerless)} of {len(peers)} tickers have an EMPTY peer basket in "
+            f"{context.paths['SECTOR_PEERS_PATH']}: {', '.join(peerless)}. Their `sector_ret` "
+            "and `peer_mom_63` would be NaN for their whole history and the build would still "
+            "report success. Check `ticker_descriptions` and `ticker_embeddings` for each name "
+            "(a vendor rebrand needs a `DESCRIPTION_TICKER_ALIAS` entry), then delete the JSON "
+            "and re-run `python -m src data_peers deduce-peers`.")
     return peers

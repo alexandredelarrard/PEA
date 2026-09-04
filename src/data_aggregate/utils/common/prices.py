@@ -31,15 +31,38 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.level_basis import mask_seam_windows
 
-def momentum_characteristic(stock_close: pd.DataFrame) -> pd.DataFrame:
+#: The lookback `momentum_characteristic` reads, as `(back, skip)` for `mask_seam_windows`:
+#: the value at `t` reads `close_total` at positions `t-252` and `t-21` only, so it straddles a
+#: seam at `s` for `t` in `[s+21, s+251]`. One consumer (below), so it stays here.
+MOMENTUM_SEAM_WINDOW = (252, 21)
+
+
+def momentum_characteristic(stock_close: pd.DataFrame, *,
+                            seams: dict[str, list[pd.Timestamp]] | None = None
+                            ) -> pd.DataFrame:
     """12-1 price momentum characteristic (skip the most recent month).
 
     Single source of truth, now actually shared: the momentum style factor, the
     `mom_12_1` model feature AND the target's momentum neutralization all call this.
     Point-in-time (uses only past prices), so it never leaks future information.
+
+    ⚠ ALL THREE CONSUMERS MUST PASS `seams` (from `level_basis.measure_seams`), and they do not
+    share a VALUE -- each recomputes this call on its own frames, so a fix applied at one call
+    site leaves the other two fabricating. Where a registered `null_ret` seam sits inside the
+    252-day window, `close_total`'s two bases are mixed and the ratio is not a return at all:
+    unmasked, `DHR` reads rank 0.9934 for 231 consecutive trading days after 2016-07-05, which
+    is the top decile of a 460-name cross-section on a number the market never produced. The
+    target neutralizes against that same fabricated exposure.
+
+    `seams=None` means no mask and reproduces the pre-mask value bit-for-bit, so a synthetic
+    fixture with no register stays a one-liner.
     """
-    return stock_close.shift(21) / stock_close.shift(252) - 1.0
+    mom = stock_close.shift(21) / stock_close.shift(252) - 1.0
+    if not seams:
+        return mom
+    return mask_seam_windows(mom, seams, *MOMENTUM_SEAM_WINDOW)
 
 
 def trailing_vol(returns: pd.DataFrame, window: int,

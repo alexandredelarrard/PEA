@@ -83,11 +83,13 @@ from src.gpt_extract.utils.schemas_gpt import LlmTask
 
 logger = logging.getLogger(__name__)
 
-# DEF 14A = the shareholder proxy; DEF 14C = the equivalent INFORMATION STATEMENT that
-# CONTROLLED companies file instead (no vote solicited because a controlling holder already has
-# the votes, e.g. ERIE = Hirt trusts). Same governance / exec-comp content, so both are extracted.
-# Centralized in constants.py as DEF14A_FORMS (form_registry.py's single source of truth).
-_FORM = DEF14A_FORMS
+#: Concurrent LLM calls. Not an optimisation -- it is what makes a universe run possible at
+#: all. MEASURED on the Phase-6 validation set: one modern proxy is a ~130k-char payload and
+#: takes **~94 seconds** on `gpt-5-mini` (a reasoning model), so 8,700 proxies serially is
+#: **~9.5 days**. The work is pure network wait on an API that accepts parallel requests,
+#: and 12 was measured to draw no 429s. `config.gpt.threads` is the live knob; this is the
+#: fallback for a caller that passes no config.
+_LLM_WORKERS = 12
 
 def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
     """The filing's raw markup, retrying the `<accession>.txt` full submission when the primary
@@ -111,9 +113,6 @@ def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
         return sec_get(context, txt_url).text
 
 
-
-
-
 def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None:
     """The carved `=== LABEL ===` text one filing contributes, or None if it cannot be read.
 
@@ -128,15 +127,6 @@ def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None
         logger.warning("%s %s: DEF 14A filing could not be read (%s)",
                        ticker, filing.get("filing_date", ""), e)
         return None
-
-
-#: Concurrent LLM calls. Not an optimisation -- it is what makes a universe run possible at
-#: all. MEASURED on the Phase-6 validation set: one modern proxy is a ~130k-char payload and
-#: takes **~94 seconds** on `gpt-5-mini` (a reasoning model), so 8,700 proxies serially is
-#: **~9.5 days**. The work is pure network wait on an API that accepts parallel requests,
-#: and 12 was measured to draw no 429s. `config.gpt.threads` is the live knob; this is the
-#: fallback for a caller that passes no config.
-_LLM_WORKERS = 12
 
 
 def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
@@ -264,7 +254,7 @@ def fetch_def14a_llm(
         # last run date onward are listed. The accession skip below then sends ONLY the
         # not-yet-stored filings to the LLM (gap-filling, per ticker / per date).
         try:
-            filings = list_filings(context, cik, _FORM, years, company, since=list_since)
+            filings = list_filings(context, cik, DEF14A_FORMS, years, company, since=list_since)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue

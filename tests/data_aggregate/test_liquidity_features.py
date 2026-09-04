@@ -79,7 +79,87 @@ def test_dollar_volume_ranks_liquidity():
           f"all liquidity cols rank-standardized to [0,1] in the panel. Validated.")
 
 
+def test_amihud_is_monotone_in_illiquidity_and_rank_invariant_under_the_log():
+    """`amihud_63` is `np.log` of the averaged statistic. Two properties, and the change is
+    only free because BOTH hold:
+
+      * MONOTONE -- the log preserves the ordering, so an illiquid name still reads higher than
+        a liquid one and the economic meaning is untouched.
+      * RANK-INVARIANT -- the STORED panel under the live `standardize_method: rank` is
+        identical to what the un-logged statistic produced, so the transform costs nothing
+        today. It exists so a flip to `zscore` is not crowded: un-logged, the statistic spans
+        eight orders of magnitude and 76.8% of the cross-section sits inside +/-0.25sd.
+    """
+    dates, tickers, close, open_, volume, sector = _synth()
+    raw = compute_raw_features(close, open_, sector, volume=volume)
+    logged = raw["amihud_63"]
+
+    # the un-logged statistic, rebuilt here as the reference
+    ret = close.pct_change(fill_method=None)
+    dollar_vol = close * volume
+    plain = ((ret.abs() / dollar_vol.where(dollar_vol > 0))
+             .rolling(63, min_periods=20).mean())
+
+    row_l, row_p = logged.iloc[-1].dropna(), plain.iloc[-1].dropna()
+    shared = row_l.index.intersection(row_p.index)
+    # monotone: the rank orderings agree exactly
+    assert (row_l[shared].rank().to_numpy() == row_p[shared].rank().to_numpy()).all()
+    # and the low-volume name is still the illiquid one
+    assert row_l[tickers[0]] > row_l[tickers[-1]]
+
+    # rank-invariant across the WHOLE panel, not just one row
+    from src.data_aggregate.utils.common.xs import xs_rank_pct
+    a, b = xs_rank_pct(logged), xs_rank_pct(plain.reindex_like(logged))
+    both = a.notna() & b.notna()
+    assert int(both.to_numpy().sum()) > 0
+    np.testing.assert_allclose(a.to_numpy()[both.to_numpy()], b.to_numpy()[both.to_numpy()],
+                               rtol=0, atol=0)
+
+    # the zscore crowding this transform exists to fix
+    def crowding(frame):
+        z = frame.sub(frame.mean(axis=1), axis=0).div(frame.std(axis=1), axis=0)
+        return float((z.abs() < 0.25).to_numpy().sum() / z.notna().to_numpy().sum())
+
+    tight_plain, tight_log = crowding(plain), crowding(logged)
+    assert tight_log < tight_plain
+
+    print("\n=== SANITY CHECK: amihud_63 log transform ===")
+    print(f"  rank ordering identical on {len(shared)} names; illiquid {tickers[0]} "
+          f"{row_l[tickers[0]]:.3f} > liquid {tickers[-1]} {row_l[tickers[-1]]:.3f}")
+    print(f"  stored RANK panel bit-identical over {int(both.to_numpy().sum())} cells "
+          "(atol=0) -> the change is free under standardize_method: rank")
+    print(f"  +/-0.25sd crowding under zscore: {tight_plain:.1%} un-logged -> "
+          f"{tight_log:.1%} logged. Validated.")
+
+
+def test_an_all_flat_window_yields_nan_not_minus_inf():
+    """`|ret|` is exactly 0 on a flat day, so an all-flat 63-day window averages to 0 and
+    `log(0)` is -inf. The `.where(> 0)` guard has to run BEFORE the log, or every build emits a
+    NumPy divide warning and the cell reaches `sanitize` as an infinity."""
+    dates = pd.bdate_range("2022-01-03", periods=120)
+    tickers = ["FLAT", "MOVES"]
+    close = pd.DataFrame({"FLAT": 100.0,
+                          "MOVES": 100 * np.cumprod(1 + np.full(len(dates), 0.001))},
+                         index=dates)
+    volume = pd.DataFrame(1e6, index=dates, columns=tickers)
+    sector = pd.DataFrame(0.0, index=dates, columns=tickers)
+
+    with np.errstate(divide="raise", invalid="raise"):
+        raw = compute_raw_features(close, close.shift(1).bfill(), sector, volume=volume)
+
+    flat = raw["amihud_63"]["FLAT"]
+    assert flat.isna().all()
+    assert not np.isinf(flat.to_numpy()).any()
+    assert raw["amihud_63"]["MOVES"].iloc[-1] < 0        # a tiny illiquidity -> log is negative
+
+    print("\n=== SANITY CHECK: log(0) guard on a flat window ===")
+    print(f"  FLAT (|ret| == 0 throughout): {int(flat.notna().sum())} non-null, 0 infinities, "
+          "and no divide/invalid FloatingPointError raised under errstate. Validated.")
+
+
 if __name__ == "__main__":
     test_liquidity_skipped_without_volume_present_with()
     test_no_lookahead()
     test_dollar_volume_ranks_liquidity()
+    test_amihud_is_monotone_in_illiquidity_and_rank_invariant_under_the_log()
+    test_an_all_flat_window_yields_nan_not_minus_inf()

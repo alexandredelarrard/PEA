@@ -142,8 +142,18 @@ class StepDeducePeers(Step):
                 weighting=self._cfg.weighting, min_obs=self._cfg.min_obs)
             self._log.info("Built CORRELATION-ONLY peer baskets")
 
-        n = sum(1 for p in self.peers.values() if p)
+        peerless = sorted(t for t, p in self.peers.items() if not p)
+        n = len(self.peers) - len(peerless)
         self._log.info("Peer baskets for %s / %s tickers", n, len(self.peers))
+        if peerless:
+            # WARNING and NAMED, because the INFO line above is what let FISV ship with an
+            # empty basket: `490 / 491` is a real signal that nobody reads. `load_peers_or_raise`
+            # turns this into a hard failure at the next cube build.
+            self._log.warning(
+                "%s ticker(s) have NO peers and will emit NaN sector_ret / peer_mom_63 for "
+                "their whole history: %s. Check ticker_descriptions / ticker_embeddings for "
+                "each (a vendor rebrand needs a DESCRIPTION_TICKER_ALIAS entry).",
+                len(peerless), ", ".join(peerless))
 
     def save_peers(self):
         peers_path = self._context.paths["SECTOR_PEERS_PATH"]

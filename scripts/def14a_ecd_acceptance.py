@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.context import get_config_context
-from src.data_extract.utils.structure.def14a_ecd import ecd_facts, ecd_row, has_ecd_block
+from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_ecd_block
 
 BASELINE = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix/baseline"
 

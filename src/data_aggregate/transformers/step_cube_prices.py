@@ -33,8 +33,8 @@ from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_wi
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.common.level_basis import (
-    apply_level_bugfix, apply_return_seams, apply_split_vintage, describe, genuine_splits,
-    level_factor, load_bugfix)
+    apply_level_bugfix, apply_null_ret, apply_return_seams, apply_split_vintage, describe,
+    genuine_splits, level_factor, load_bugfix)
 from src.data_aggregate.utils.common.price_frames import frames_to_long, universe_columns
 from src.data_aggregate.utils.common.price_frames import load_trading_calendar
 from src.data_peers.utils.sector_peers import compute_sector_returns
@@ -96,6 +96,10 @@ class StepCubePrices(Step):
         self._repair(wide, vendor)
 
         returns =  self._daily_returns(wide["close_total"])
+        # ⚠ AFTER `_daily_returns`, unlike the two repairs above, because it acts on the
+        # RETURN itself rather than on a price leg the return is derived from.
+        self._null_returns(returns)
+
         peers = self._peers()
         universe = self._universe_frames(wide, returns, peers)
         universe["level_factor"] = self._level_factor(days_index, universe["close_split"],
@@ -219,7 +223,10 @@ class StepCubePrices(Step):
 
         Only the two RETURN-MOVING repairs run here, because they have to happen before `ret`
         is computed. The level wedges are folded into `S` in `_level_factor`, where they
-        belong: they change a market cap and must leave every return exactly as it was."""
+        belong: they change a market cap and must leave every return exactly as it was. The
+        fourth shape, `null_ret`, runs in `_null_returns` AFTER `ret` is computed instead --
+        it acts on the return itself, not on a price leg `ret` is derived from, and it moves
+        no price leg at all."""
         if not self._bugfix:
             return
         applied = apply_split_vintage(wide, self._bugfix, vendor, self._log.info)
@@ -227,6 +234,20 @@ class StepCubePrices(Step):
         listed = (sum(len(v) for v in (self._bugfix.get("split_vintage") or {}).values())
                   + sum(len(v) for v in (self._bugfix.get("return_seams") or {}).values()))
         self._log.info("price bugfix: %d of %d registered price repair(s) applied",
+                       applied, listed)
+
+    def _null_returns(self, returns: pd.DataFrame) -> None:
+        """The `null_ret` register shape: delete the fabricated one-bar returns `close_total`'s
+        own re-basing at a spinoff manufactures. Mutates `returns` in place.
+
+        It takes ONLY this frame and never `wide`, while `_repair`'s two shapes only ever touch
+        `wide` -- so the two cannot interact, and the entries applied there are reproduced
+        bit-for-bit whatever this one does."""
+        if not self._bugfix:
+            return
+        applied = apply_null_ret(returns, self._bugfix, self._log.info)
+        listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
+        self._log.info("price bugfix: %d of %d registered null_ret repair(s) applied",
                        applied, listed)
 
     def _level_factor(self, idx: pd.DatetimeIndex, close_split: pd.DataFrame,

@@ -52,6 +52,27 @@ momentum, betas and every label are returns and must never see it.
 MNST. Yahoo PUBLISHES the 2026-08-11 x2 in its own splits feed but never applied it to the
 quote, so the event appears in both products and cancels to 1.0. That is a stale price
 VINTAGE, not a basis difference, and it needs a per-bar repair rather than a factor.
+
+## Which LEG each repair in the register moves
+
+`level_factor` moves the LEVEL only (it is folded into `S`, never into a return).
+`split_vintage` and `return_seams` move the PRICE LEGS in `REPAIRED_PRICE_FIELDS`, and `ret`
+follows because it is recomputed downstream from them. `null_ret` (`apply_null_ret`) is the one
+repair that moves `ret` and NO price leg -- deliberately, because unlike the other three it
+does not claim to know what the correct return or level is, only that the observed one is
+fabricated. So it deletes the number instead of restating it, and every price leg on that bar
+is left exactly as the vendor published it.
+
+`null_ret` also MASKS, and that is a second consequence of the same decision. Leaving the price
+legs as published means `close_total` is on two DIFFERENT BASES either side of the bar, so the
+defect is not a bad number in one cell -- it is a basis change in the level. Any rolling window
+that STRADDLES the bar therefore mixes bases and fabricates a value even though no single bar
+it reads is wrong: `DHR`'s `mom_12_1` sits at rank 0.67 the day before 2016-07-05, jumps to
+0.9934 the day `t-21` clears the seam, holds top-decile for 231 trading days and craters to
+0.29 the day the window rolls past. `measure_seams` + `mask_seam_windows` null each
+`close_total`-derived feature, and the target's momentum exposure, over that feature's OWN
+lookback -- a window sitting entirely on one side of the seam is internally consistent and is
+left alone.
 """
 from __future__ import annotations
 
@@ -198,6 +219,15 @@ BUGFIX_WEDGE_TOL = 0.02
 #: The same idea for a return seam, against the observed one-bar step. Tighter, because a bar
 #: ratio is one division of two stored numbers with no join and no median in between.
 BUGFIX_STEP_TOL = 0.005
+#: The re-measurement band for a `null_ret` entry, applied to the one-bar STEP `1 + ret` rather
+#: than to `ret` itself -- the same quantity, and therefore the same relative meaning, as
+#: `BUGFIX_STEP_TOL` above, which is why it reuses that constant instead of inventing a second
+#: number. On the registered entries (returns of +15% to +61%) 0.5% of the step is a band of
+#: 0.0006 to 0.008 on the return: far wider than any float noise in `close_total.pct_change()`,
+#: far narrower than the move itself, so an upstream re-adjustment cannot slip through as a
+#: match. Stated separately from `BUGFIX_STEP_TOL` only so the two can diverge without a silent
+#: coupling; they are equal today by argument, not by accident.
+NULL_RET_STEP_TOL = BUGFIX_STEP_TOL
 #: How near a one-bar step must sit to a split ratio to count as a VINTAGE FLIP. Much looser
 #: than the two above, and it has to be: a flip is the ratio TIMES that day's real move, and
 #: MNST's five are 1.9559, 1.9413, 1.9193, 0.4895 and 0.4935 -- up to 4% off 2.0 or 0.5.
@@ -404,6 +434,142 @@ def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict,
                 "(it was a %+.2f%% one-bar 'return' that never happened)",
                 ticker, when.date(), observed, (observed - 1) * 100)
     return applied
+
+
+def apply_null_ret(ret: pd.DataFrame, bugfix: dict,
+                   log: Callable[..., None]) -> int:
+    """Delete a one-bar return that is fabricated but whose CORRECT value is unknown. Mutates
+    `ret` in place and returns the number of entries applied.
+
+    THE DEFECT. `close_total` re-bases itself at a spinoff -- the level Yahoo publishes before
+    the event and the level it publishes after sit on different bases -- and `pct_change()`
+    reads the seam between them as a return. Six are registered, each a >15% one-bar move
+    landing exactly on a `level_factor` step, and the tell is what happens to the label across
+    the boundary rather than the size of the move: mean |epsilon| over the 60 days before vs
+    after measures 4.591x at these six against a random-date control median of 0.986x. DHR's
+    2016-07-05 alone runs 8.94 -> 0.39, a 23x swing on a quantity that sits near 1 once
+    vol-standardized.
+
+    ⚠ WHY A NULL AND NOT A RESCALE. `apply_return_seams` repairs the same SHAPE by multiplying
+    the whole prefix by the observed step, which asserts that the post-seam basis is the right
+    one. That assertion needs the per-ticker corroboration JCI got -- the feed's claimed factor,
+    the applied factor and the real event date checked against each other, plus Sharadar's
+    independent price. None of the six has it. Nulling makes the weaker, provable claim: this
+    number is not a return. It leaves `close_split`, `close_total` and the OHLC range exactly as
+    published, so anything reading a LEVEL is untouched, and it costs only the <=2h forward and
+    trailing windows that span the bar -- the same, already-accepted mechanism that nulls a
+    window around any missing daily return.
+
+    Like every other entry in the register, each states the value it EXPECTS TO OBSERVE and is
+    re-measured against this build's own frame first. An entry whose defect has gone or moved is
+    SKIPPED and logged, never applied on faith.
+    """
+    applied = 0
+    for ticker, entries in (bugfix.get("null_ret") or {}).items():
+        for entry in entries:
+            when, expected = pd.Timestamp(entry["date"]), float(entry["expect_ret"])
+            if ticker not in ret.columns or when not in ret.index:
+                log("price bugfix: %s %s null_ret SKIPPED -- outside this build's window",
+                    ticker, when.date())
+                continue
+            observed = float(ret.at[when, ticker])
+            if not np.isfinite(observed):
+                log("price bugfix: %s %s null_ret SKIPPED -- already not a number",
+                    ticker, when.date())
+                continue
+            # compared as a one-bar STEP, the same quantity `apply_return_seams` compares
+            if abs((1.0 + observed) / (1.0 + expected) - 1.0) > NULL_RET_STEP_TOL:
+                log("price bugfix: %s %s null_ret SKIPPED -- the defect is GONE or CHANGED: "
+                    "observed ret %+.5f, register says %+.5f. Re-measure the entry.",
+                    ticker, when.date(), observed, expected)
+                continue
+            ret.at[when, ticker] = np.nan
+            applied += 1
+            log("price bugfix: %s %s null_ret APPLIED -- a %+.2f%% one-bar 'return' deleted "
+                "(the price legs are left exactly as published)",
+                ticker, when.date(), observed * 100)
+    return applied
+
+
+def measure_seams(close_total: pd.DataFrame, bugfix: dict,
+                  log: Callable[..., None]) -> dict[str, list[pd.Timestamp]]:
+    """The registered `null_ret` dates, RE-MEASURED against this build's own `close_total`, as
+    `{ticker: [seam dates]}` for the feature steps to mask their lookback windows over.
+
+    ⚠ MEASURED ON `close_total`, NEVER ON `ret`. By the time a feature step runs,
+    `apply_null_ret` has already set the seam cell of `ret` to NaN, so a re-measure there would
+    find "already not a number" and SKIP every entry -- the mask would silently never apply and
+    the whole repair would be a no-op that still passed its tests. `close_total` is the leg
+    `null_ret` promises to leave exactly as the vendor published it, which is what makes a
+    second, independent measurement possible at all.
+
+    Same contract as every other applier, and it must stay that way: the entry states the
+    one-bar step it EXPECTS TO OBSERVE, that step is re-measured here as `1 + ret` within
+    `NULL_RET_STEP_TOL`, and an entry whose defect has gone or moved is SKIPPED and logged
+    rather than masked on faith. A stale register can therefore stop masking, but it cannot
+    mask the wrong window.
+    """
+    seams: dict[str, list[pd.Timestamp]] = {}
+    for ticker, entries in (bugfix.get("null_ret") or {}).items():
+        for entry in entries:
+            when, expected = pd.Timestamp(entry["date"]), float(entry["expect_ret"])
+            if ticker not in close_total.columns or when not in close_total.index:
+                log("seam mask: %s %s SKIPPED -- outside this build's window",
+                    ticker, when.date())
+                continue
+            series = close_total[ticker]
+            position = int(series.index.get_loc(when))
+            if position == 0:
+                log("seam mask: %s %s SKIPPED -- first bar, no step to measure",
+                    ticker, when.date())
+                continue
+            prior, here = float(series.iloc[position - 1]), float(series.iloc[position])
+            if not (np.isfinite(prior) and np.isfinite(here)) or prior <= 0:
+                log("seam mask: %s %s SKIPPED -- no usable bar pair", ticker, when.date())
+                continue
+            observed = here / prior - 1.0
+            # the one-bar STEP, the identical quantity `apply_null_ret` compares
+            if abs((1.0 + observed) / (1.0 + expected) - 1.0) > NULL_RET_STEP_TOL:
+                log("seam mask: %s %s SKIPPED -- the defect is GONE or CHANGED: observed ret "
+                    "%+.5f, register says %+.5f. Re-measure the entry.",
+                    ticker, when.date(), observed, expected)
+                continue
+            seams.setdefault(ticker, []).append(when)
+            log("seam mask: %s %s MEASURED -- a %+.2f%% one-bar basis change in close_total; "
+                "every straddling lookback window will be masked",
+                ticker, when.date(), observed * 100)
+    return seams
+
+
+def mask_seam_windows(frame: pd.DataFrame, seams: dict[str, list[pd.Timestamp]],
+                      back: int, skip: int = 0) -> pd.DataFrame:
+    """NaN the cells of `frame` whose lookback window STRADDLES a measured seam. Returns a copy.
+
+    A feature at `t` reads its input over index positions `[t-back, t-skip]`, so it straddles a
+    seam at position `s` exactly when `t-back < s <= t-skip` -- i.e. for `t` in
+    `[s+skip, s+back-1]`, both ends inclusive. Both ends are load-bearing. Verified on the live
+    panel at `DHR`/2016-07-05: `peer_mom_63` (`back=63, skip=0`) is pinned at rank 0.9978
+    through `s+62` and reads 0.1891 at `s+63`; `mom_12_1` (`back=252, skip=21`) plateaus at
+    0.9934 from `s+21`, holds to 0.9457 at `s+251` and craters to 0.2928 at `s+252`.
+
+    Positional on `frame`'s OWN index, not on calendar arithmetic, so an incrementally trimmed
+    window masks the same trading days as a full build. A seam outside the frame is a no-op, and
+    a mask running off the end of the frame is clipped by the slice.
+    """
+    out = frame.copy()
+    for ticker, dates in (seams or {}).items():
+        if ticker not in out.columns:
+            continue
+        column = out.columns.get_loc(ticker)
+        for when in dates:
+            if when not in out.index:
+                continue
+            start = int(out.index.get_loc(when)) + skip
+            stop = int(out.index.get_loc(when)) + back      # exclusive: s+back-1 inclusive
+            if stop <= start:
+                continue
+            out.iloc[max(start, 0):stop, column] = np.nan
+    return out
 
 
 def apply_level_bugfix(factor: pd.DataFrame, bugfix: dict, vendor_price: pd.DataFrame | None,

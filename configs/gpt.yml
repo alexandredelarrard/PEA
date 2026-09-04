@@ -11,7 +11,7 @@ gpt:
   # Reasoning models REJECT `temperature` and `seed`. Listed rather than pattern-matched so a
   # new model name is a config change and not a 400 in the middle of a paid run.
   reasoning_models: ["gpt-5", "gpt-5-mini", "gpt-5-nano", "o3", "o4-mini"]
-  temperature: 0.2
+  temperature: 0.01
   seed: 1234
 
   # null = do not send an output cap. 4096 truncates a large proxy: Def14AExtract returns up to

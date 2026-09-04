@@ -13,7 +13,7 @@ if __name__ == "__main__":
     # self.run()
 
     self = StepBuildCube(context=context, config=config)
-    # self.run(full=True)
+    self.run(full=True)
 
     # self = StepModelling(context=context, config=config)
     # self.run()
@@ -36,9 +36,7 @@ if __name__ == "__main__":
 # TODO: include move from peers when new results are available -> move all peers info
 # TODO: refine modelling to be as stable as possible
 # TODO: review periods when IC drops for few weeks / months
-# TODO: check if all neutrality is correctly done on target 
 # TODO: add other strats decorrelated : - Super investors replica ? 
-# TODO: put horizons to 21,42,63 since we a  re in open days, not calendar days
 
 # docker run --rm -v database_pgdata:/volume alpine tar czf - -C /volume . > D:/database_pgdata.tar.gz
 

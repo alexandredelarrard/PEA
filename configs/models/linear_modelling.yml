@@ -26,7 +26,6 @@ linear:
   - f_gross_profitability_vs_peers
   - f_insider_net_buy_ratio_xs
   - f_gmroi_xs
-  - tax_loss_pressure
   - f_deferred_rev_intensity_xs
   - f_patent_cliff_vs_peers
   - f_gross_profitability_xs

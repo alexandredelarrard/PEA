@@ -170,7 +170,7 @@ def load_price_frames(
         raise RuntimeError(f"{Tables.cube_part_prices} is missing or returned no rows"
                            f"{f' since {pd.Timestamp(since).date()}' if since else ''}"
                            " -> run `data_aggregate build-prices` first")
-    long["date"] = pd.to_datetime(long["date"]).dt.normalize()
+    long["date"] = pd.to_datetime(long["date"], format="%Y-%m-%d")
 
     wide: dict[str, pd.DataFrame] = {}
     for f in fields:

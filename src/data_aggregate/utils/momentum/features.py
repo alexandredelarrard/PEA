@@ -14,8 +14,8 @@ introduced while fixing market cap. Which block uses which:
                                  SPINOFF one does NOT -- see below -- and the dividend
                                  factor would not cancel either)
   close_total  -- every RETURN: mom_12_1, rev_5/21, ma_ratio_50/200, high_prox_252,
-                  peer_mom_63, tax_loss_pressure, the seasonal block, macd, rsi_14, and
-                  the `ret` the vol / skew / idio family is built from
+                  peer_mom_63, the seasonal block, macd, rsi_14, and the `ret` the
+                  vol / skew / idio family is built from
 
 `atr_14` itself is basis-INVARIANT (it returns atr/close, a ratio of same-basis
 quantities); the intermediate true range is not, which is exactly why it needs pinning.
@@ -46,6 +46,34 @@ prices up to and including t-1, EXCLUDING t itself, so the indicator can never
 peek at the close it is being lined up against. MACD and ATR are divided by the
 close so they are comparable across stocks of different price levels before the
 cross-sectional ranking.
+
+⚠ SEAM MASKING. A registered `null_ret` entry leaves both price legs exactly as published, so
+the level is on two different BASES either side of the bar and any window straddling it mixes
+them -- see `level_basis`'s module docstring. `SEAM_WINDOWS` below masks each affected feature
+over its own lookback. Which families are masked, and why the rest are not:
+
+  masked      -- every LEVEL-RATIO feature: `mom_12_1`, `rev_5/21`, `ma_ratio_50/200`,
+                 `high_prox_252` (the seam RAISES the rolling max), `peer_mom_63`, the lagged
+                 `macd` / `macd_hist` / `rsi_14` / `atr_14`, and the `close_split`-based
+                 `gap_21` / `range_21`.
+  not masked  -- the `ret`-derived family (`vol_21/63`, `max_21`, `ret_skew_126`,
+                 `downside_vol_63`, `idio_vol_63`): `apply_null_ret` already deleted the one
+                 bad cell from `ret`, so these carry a single hole their `min_periods` absorbs
+                 rather than a mixed basis.
+               -- `seasonal_h*`: also `ret`-derived, through `forward_compound`, and its
+                 deliberately partial `min_periods` tolerates the hole.
+               -- the whole VOLUME family: `close_split x volume x level_factor` was measured
+                 smooth through all six seams (`DHR` `dollar_volume_63` 0.837 -> 0.841 ->
+                 0.848, `LDOS` 0.433 flat, `DD` 0.985 flat). The split factor cancels between
+                 price and volume and `level_factor` carries the spinoff one.
+The `close_split` family (`atr_14`, `gap_21`, `range_21`) is masked on the SAME dates even
+though the seams are measured on `close_total`. Measured justification, and its cost: the seam
+is present in both legs at `DD` / `LDOS` / `VTR` (the full step, identically) and partly at
+`CNP`, and the stored ranks move accordingly -- `LDOS` `gap_21` jumps 0.007 -> 0.901 on its
+seam date, `VTR` `gap_21` 0.591 -> 0.002 and `atr_14` 0.282 -> 0.978. `DHR` and `ETN` are the
+exception: their `close_split` steps only ~3.5%, being back-adjusted by the `prices_splits`
+ratio, so those two are over-masked by their features' own windows. That is the conservative
+side of the trade and it is 21-43 bars on two tickers.
 """
 
 from __future__ import annotations
@@ -53,8 +81,41 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.frames import sanitize
+from src.data_aggregate.utils.common.level_basis import mask_seam_windows
 from src.data_aggregate.utils.common.prices import forward_compound, momentum_characteristic, trailing_vol
 from src.data_aggregate.utils.common.xs import xs_standardize
+
+#: How many EWMA spans back a seam is still treated as reaching. An EWMA has no finite window,
+#: so the mask needs a decay cut-off rather than an exact one: at 3 spans the bad bar's weight
+#: is `(1 - 1/14)^42 = 4.4%` for Wilder's RSI/ATR and `(1 - 2/27)^78 = 0.25%` for MACD's slow
+#: leg. One consumer -- `SEAM_WINDOWS` immediately below -- so it lives here.
+SEAM_EWMA_SPAN_MULTIPLE = 3
+
+#: `(back, skip)` per masked feature: the STORED value at `t` reads its price input over index
+#: positions `[t-back, t-skip]`, so it straddles a seam at `s` for `t` in `[s+skip, s+back-1]`.
+#: The technical block's `skip=1` is its own `.shift(1)`, and its `back` is
+#: `SEAM_EWMA_SPAN_MULTIPLE x span + 1` for the same reason.
+#: Verified against the live panel at `DHR`/2016-07-05 -- see `mask_seam_windows`.
+SEAM_WINDOWS: dict[str, tuple[int, int]] = {
+    "mom_12_1":      (252, 21),   # close.shift(21) / close.shift(252)
+    "rev_5":         (5, 0),
+    "rev_21":        (21, 0),
+    "ma_ratio_50":   (49, 0),     # rolling(50) covers t-49..t
+    "ma_ratio_200":  (199, 0),
+    "high_prox_252": (251, 0),    # rolling(252) max -- the seam RAISES the max
+    "peer_mom_63":   (63, 0),
+    "macd":          (79, 1),     # 3 x the slow EWMA span (26), + the .shift(1)
+    "macd_hist":     (79, 1),
+    "rsi_14":        (43, 1),     # 3 x Wilder's n=14, + the .shift(1)
+    # the `close_split` family. It shares no basis with `close_total`, but the seam is in BOTH
+    # legs at DD / LDOS / VTR (the full step, identically) and partly at CNP (+6.06% against
+    # close_total's +17.83%); only DHR and ETN are clean, being back-adjusted by the
+    # `prices_splits` ratio. Masked on the close_total-measured dates anyway, so ~21-43 bars
+    # are over-masked at those two -- the conservative side, and cheap.
+    "atr_14":        (43, 1),
+    "gap_21":        (21, 0),     # rolling(21) mean of open / close_split.shift(1) - 1
+    "range_21":      (21, 0),     # rolling(21) mean of |close_split - open| / open
+}
 
 
 def _rsi(close: pd.DataFrame, n: int = 14) -> pd.DataFrame:
@@ -112,6 +173,7 @@ def compute_raw_features(
     *,
     returns: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
+    seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> dict:
     """
     Compute raw (un-standardized) feature frames. Returns dict:
@@ -134,6 +196,10 @@ def compute_raw_features(
     KEYWORD-ONLY so the existing positional call sites are untouched. On an incrementally
     trimmed window the passed frame is also strictly better: a recompute would return NaN on
     the window's first row where the full build had a value.
+
+    `seams` (from `level_basis.measure_seams`) masks every feature in `SEAM_WINDOWS` over its
+    own lookback -- see the module docstring for which families are covered and which are
+    deliberately not. `None` means no mask and reproduces the pre-mask frames bit-for-bit.
     """
     ret = (close_total.pct_change(fill_method=None) if returns is None
            else returns.reindex_like(close_total))
@@ -145,7 +211,9 @@ def compute_raw_features(
     feats = {}
 
     # 12-1 momentum: cumulative return from t-252 to t-21 (skip last month).
-    feats["mom_12_1"] = sanitize(momentum_characteristic(close_total))
+    # `seams` goes through the shared primitive, not the loop below, so this feature and the
+    # target's neutralizer are masked by the SAME code rather than by two agreeing copies.
+    feats["mom_12_1"] = sanitize(momentum_characteristic(close_total, seams=seams))
 
     # Short-term reversal (negated: recent losers tend to bounce).
     feats["rev_5"] = sanitize(-(close_total / close_total.shift(5) - 1.0))
@@ -201,19 +269,31 @@ def compute_raw_features(
         # `split`, not `close_total`: dollar volume is a LEVEL x a share count, and both
         # carry the same SPLIT restatement so it cancels. On the total-return basis the
         # dollars traded would be depressed by every later dividend.
-        #
-        # ⚠ THE CANCELLATION IS SPLIT-ONLY. A spinoff divides Yahoo's price by `S` and leaves
-        # `volume` untouched -- nothing restates a share COUNT for a spinoff -- so the two
-        # legs no longer carry the same factor and the product is `S` too low. FDX reads 24%
-        # low before 2026-06, GE 40% low before 2019. `level_factor` puts it back.
+
+        # ⚠ Spinoff reduce price and backfilled, but vol does not
+        # lvl is the factor to apply to volume to represent the spinoff shares added
         dollar_vol = split * volume * lvl                  # daily $ traded
+
         # Liquidity/size proxy: log average daily dollar volume (63d).
         feats["dollar_volume_63"] = sanitize(
             np.log1p(dollar_vol.rolling(63, min_periods=20).mean()))
         # Amihud (2002) illiquidity = mean(|ret| / $volume). HIGHER = more illiquid
-        # (illiquidity premium). Scale is irrelevant post cross-sectional ranking.
+        # (illiquidity premium).
+        #
+        # ⚠ np.log, NOT log1p. The raw statistic spans 4.1e-13 to 9.5e-5 -- eight orders of
+        # magnitude -- and at that scale `log1p(x) == x` to four significant figures, so the
+        # sibling's transform would be a literal no-op here. (`log1p` is right for
+        # `dollar_volume_63`, whose values are ~1e8.) The transform is RANK-INVARIANT, so the
+        # stored panel is bit-identical under the live `standardize_method: rank`; it exists so
+        # a flip to `zscore` in configs/build_cube.yml does not crowd 76.8% of the
+        # cross-section inside +/-0.25sd, which is what the un-logged statistic does.
+        #
+        # `.where(> 0)` before the log, not `sanitize` afterwards: |ret| is exactly 0 on a flat
+        # day, so an all-flat 63-day window averages to 0 and `log(0)` is -inf. `sanitize` does
+        # map +/-inf to NaN, but relying on that emits a NumPy divide warning every build.
         amihud = sanitize(ret.abs() / dollar_vol.where(dollar_vol > 0))
-        feats["amihud_63"] = amihud.rolling(63, min_periods=20).mean()
+        amihud_mean = amihud.rolling(63, min_periods=20).mean()
+        feats["amihud_63"] = sanitize(np.log(amihud_mean.where(amihud_mean > 0)))
         # Relative volume: recent 5d vs 63d average -> volume spike / attention.
         v5 = volume.rolling(5, min_periods=3).mean()
         v63 = volume.rolling(63, min_periods=20).mean()
@@ -256,30 +336,6 @@ def compute_raw_features(
             feats[f"seasonal_h{h}"] = sanitize(
                 pd.DataFrame(seasonal, index=close_total.index, columns=close_total.columns))
 
-    # ---- Tax-loss-selling / January-effect pressure (forced year-end flow) ----
-    # Which names get dumped into year-end is a per-STOCK effect (driven by its
-    # YTD loss), so it IS cross-sectional (a bare "it's December" dummy is flat
-    # across names and useless). tax_loss_pressure = YTD loss magnitude, active
-    # only in the tax-selling window (Oct-Dec, covering fund Oct-31 & individual
-    # Dec-31 year-ends); it flags names under selling pressure now that tend to
-    # rebound in January. Leak-free: YTD uses only past prices, the calendar of t
-    # is known. The model learns the sign.
-    #
-    # OUTSIDE the window the value is NaN, NOT 0. A 0 off-season would feed the
-    # per-day cross-sectional ranker a sea of equal zeros (9 of 12 months + every
-    # YTD-winner in-season), collapsing the standardized feature to a near-constant
-    # ~0.5 whose only variation is the rank's small-sample +1/(2N) bias -> as the
-    # universe N grows over the years that bias shrinks, giving a SPURIOUS downward
-    # trend linear in the year (a ranking artifact, not a stock signal). NaN makes
-    # the feature simply ABSENT off-season, so the rank only ever orders the
-    # in-window names (losers high vs non-losers) and the drift disappears.
-    year_start = close_total.groupby(close_total.index.year).transform("first")
-    ytd = sanitize(close_total / year_start.where(year_start > 0) - 1.0)
-    tax_loss = (-ytd).clip(lower=0.0)                 # 0 for YTD winners, >0 for losers
-    off_window = ~np.isin(close_total.index.month, [10, 11, 12])
-    tax_loss.loc[off_window] = np.nan                 # NaN outside the Oct-Dec tax window (not 0)
-    feats["tax_loss_pressure"] = sanitize(tax_loss)
-
     # ---- Technical indicators, LAGGED one day (exclude t -> no leakage) ----
     macd_norm, macd_hist = _macd(close_total)
     feats["macd"] = macd_norm.shift(1)
@@ -290,6 +346,19 @@ def compute_raw_features(
         # legs must share one basis. It returns atr/close -- a ratio of same-basis
         # quantities -- so the FEATURE is basis-invariant; the intermediate is not.
         feats["atr_14"] = _atr(high, low, split, 14).shift(1)
+
+    # ---- Seam masking, BEFORE the caller standardizes ----
+    # ⚠ THE ORDERING IS LOAD-BEARING. `build_feature_panel` ranks cross-sectionally after this
+    # returns; masking afterwards would leave the fabricated value in the cross-section, where
+    # it takes rank 459/460 and shifts every OTHER name's rank by ~1/460. The defect is not
+    # confined to the six seam tickers unless the mask lands first.
+    # `mom_12_1` is in `SEAM_WINDOWS` for the spec table and was already masked above by
+    # `momentum_characteristic` with the same window, so re-masking it here is exactly
+    # idempotent.
+    if seams:
+        for name, (back, skip) in SEAM_WINDOWS.items():
+            if name in feats:
+                feats[name] = mask_seam_windows(feats[name], seams, back, skip)
 
     return feats
 
@@ -307,6 +376,7 @@ def build_feature_panel(
     returns: pd.DataFrame | None = None,
     close_split: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
+    seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> pd.DataFrame:
     """
     Build a long-format feature panel ready for modeling.
@@ -320,12 +390,14 @@ def build_feature_panel(
     `seasonal_horizons` enables the per-horizon cross-sectional seasonality feature.
     `returns` passes through daily returns the caller already holds (see
     `compute_raw_features`); keyword-only, so the eight-positional-arg call sites are
-    unaffected.
+    unaffected. `seams` masks the straddling lookback windows -- applied inside
+    `compute_raw_features`, i.e. strictly BEFORE the `xs_standardize` below, which is what
+    keeps a fabricated value out of the cross-section.
     """
     raw = compute_raw_features(close_total, open, sector_returns, close_split=close_split,
                                high=high, low=low, volume=volume,
                                seasonal_horizons=seasonal_horizons, returns=returns,
-                               level_factor=level_factor)
+                               level_factor=level_factor, seams=seams)
     std = {name: xs_standardize(f, method) for name, f in raw.items()}
 
     long_frames = []

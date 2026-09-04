@@ -32,23 +32,22 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # drifting. An exclusion list that silently outlives its cause is exactly how
 # `cube_part_attention` came to be reported missing on every run (see parts.py's docstring) --
 # when the baseline is eventually regenerated, this set must go to empty, not linger.
-# EMPTY, as of the 2026-09-01 price/shares basis fix -- which is what this set was always
-# supposed to become. The baseline was regenerated then, so `panel.betas` and the six label
-# digests are GATED AGAIN rather than excused.
+# EMPTY, and kept empty by regenerating the baseline rather than by adding entries here --
+# which is what this set was always supposed to become.
 #
-# What the regeneration folded in, measured by fingerprinting HEAD's code and this branch's
-# code against the SAME database and diffing the two:
-#   * moved by THIS branch's code (4): `label.zscore_h30/60/90`, because the label stopped
-#     being `forward_return(close, h)` (a literal price ratio that excluded every dividend)
-#     and became `forward_compound(stock_ret, h)`; and `panel.institutional`, because
-#     `inst_ownership_pct` now divides by `sharesOutstandingPit` rather than the vendor-basis
-#     share count. Both are the intended effect of that change.
-#   * NOT moved by this branch's code: `label.rank_h30/60/90`. On the harness's dividend-free
-#     random walk `forward_compound` is a MONOTONE transform of `forward_return`, so the
-#     cross-sectional rank is preserved while the z-score is not -- an internal check that
-#     the label change did exactly what it claims.
-#   * moved before this branch (4): `panel.betas` and the three rank labels, which had
-#     already drifted at HEAD and were the reason this list existed.
+# Regenerated twice. The 2026-09-01 price/shares basis fix was the first; the second is the
+# 2026-09-03 `MIN_GROUP_SIZE_FOR_NEUTRALIZATION` change in `_neutral_label`, which stops a
+# group with one present member (1996's `Automobiles & Components` held only `F` until
+# `TSLA`'s first target in 2010, because `sp500_tickers` carries CURRENT membership only)
+# having its whole residual absorbed by its own indicator column and shipping as an exact 0.0.
+#
+# What the second regeneration folded in, measured by diffing the regenerated file against
+# the pre-regeneration copy: EXACTLY the six label digests
+# (`label.rank_h30/60/90`, `label.zscore_h30/60/90`) and nothing else. All 15 panels, all 13
+# primitives and the frozen `input.fundamentals_slice` are byte-identical across it, which is
+# the check that the regeneration blessed one intended change and not a bundle of them.
+# `_neutral_label` is the only code path the change touches and those six labels are the only
+# outputs it feeds, so the blast radius matches the edit exactly.
 DECLARED_DRIFT: frozenset[str] = frozenset()
 
 
@@ -103,9 +102,8 @@ def test_aggregation_output_is_unchanged_by_the_refactor(baseline, current):
           f"({total_cols} columns hashed)")
     print(f"    {len(panels)} panel builders | {len(prims)} deduplicated primitives | "
           f"{len(labels)} target labels")
-    print(f"    NOT gated ({len(DECLARED_DRIFT)}): {', '.join(sorted(DECLARED_DRIFT))}")
-    print("      ^ baseline predates commit 0053dc3 ('removed peers neutrality'), which dropped "
-          "beta_sector from the factor panel and moved every factor-neutral label with it.")
+    print(f"    NOT gated ({len(DECLARED_DRIFT)}): "
+          f"{', '.join(sorted(DECLARED_DRIFT)) or 'nothing — every output is gated'}")
     print("    SANITY CHECK: the data-layer refactor changed no number in any of the "
           f"{len(gated)} gated aggregation outputs.")
 

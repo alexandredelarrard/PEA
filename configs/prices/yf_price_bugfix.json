@@ -64,6 +64,30 @@
     "and every label -- because a fabricated -61% return is a LABEL defect first and a level",
     "defect second.",
     "",
+    "## `null_ret` -- a fabricated return whose CORRECT value is unknown",
+    "",
+    "The same SHAPE as a seam and a weaker claim about it. `close_total` re-bases itself at a",
+    "spinoff and `pct_change()` reads the seam between the two bases as a return. Six sit on a",
+    "`level_factor` step with a >15% same-day move, and the tell is what happens to the LABEL",
+    "across the boundary rather than the size of the move: mean |epsilon| over the 60d before",
+    "vs after measures 4.591x at these six, against a random-date control median of 0.986x and",
+    "p95 2.977x. DHR's 2016-07-05 runs 8.94 -> 0.39, a 23x swing on a quantity that sits near 1",
+    "once vol-standardized. Full-universe scan (491 tickers, 130 level_factor steps across 88",
+    "tickers): these six are the WHOLE population, not a sample.",
+    "",
+    "⚠ It is a NULL, not a rescale, and that is why it is a separate shape rather than six more",
+    "`return_seams` rows. A seam ASSERTS that the post-seam basis is the correct one and",
+    "multiplies the prefix to match -- a claim that needs the per-ticker corroboration JCI got",
+    "(the feed's claimed factor, the applied factor and the real event date checked against each",
+    "other, plus Sharadar's independent price). None of these six has been through that. Nulling",
+    "makes only the claim the measurement supports: this number is not a return. It leaves",
+    "`close_split`, `close_total` and the OHLC range EXACTLY as published, so every LEVEL is",
+    "untouched, and it costs only the <=2h forward and trailing windows spanning the bar -- the",
+    "same mechanism that already nulls a window around any missing daily return.",
+    "",
+    "`expect_ret` is what `close_total.pct_change()` must still read for the entry to fire,",
+    "compared as the one-bar step `1 + ret` within `level_basis.NULL_RET_STEP_TOL`.",
+    "",
     "## Which LEGS a price repair moves",
     "",
     "`close_split`, `close_total`, `open`, `high` and `low`, all by the SAME multiplier on the",
@@ -77,6 +101,9 @@
     "the last stale bar, 10.1M on the next adjusted one), so there is no measured defect, and",
     "inventing a factor for a leg with no evidence is how a register starts lying. `ret` is not",
     "moved either -- it is recomputed downstream FROM the repaired closes.",
+    "",
+    "`null_ret` is the exception in both directions: it moves `ret` and NOTHING else, because it",
+    "is the one shape that does not claim to know the correct level.",
     "",
     "⚠ NOT a general de-spiking rule. A >40% one-bar move with no split on the books is",
     "usually REAL: MO's 2008 Philip Morris International separation, AIG 2008-09-15, PCG's",
@@ -202,6 +229,52 @@
         "expect_ret": -0.60521,
         "evidence": "close_split falls 70.354 -> 27.775 in one bar, a -60.52% return that never happened. JCI's real 3-for-1 was 2007-10-03, where the series does NOT step. yfinance's own feed claims 0.25 on this date; the applied factor is 0.3948. So the feed, the applied adjustment and the real event disagree three ways, and the bar is corroborated by NOTHING -- Sharadar's price shows no such move.",
         "note": "⚠ This repairs the fabricated RETURN, which is what reaches momentum, vol, betas and every JCI label. It does NOT make JCI's level basis correct: the residual wedge drifts monotonically across 83 segments (0.32 -> 0.11 over 1996-1999), which is a corrupt series rather than a basis offset and cannot be expressed as a factor. MNST's defect looked like this one and turned out NOT to be -- see split_vintage -- so JCI stays the last named residual, and it is the genuinely corrupt one."
+      }
+    ]
+  }
+,
+
+  "null_ret": {
+    "DHR": [
+      {
+        "date": "2016-07-05",
+        "expect_ret": 0.61218,
+        "evidence": "close_total steps +61.22% in one bar and level_factor steps 1.487832 -> 1.128000 on the same date. sharadar_actions carries a spinoff 0.5 -> FTV with a 25.65 spinoff dividend there, and prices_splits a 1.319 ratio: an event both feeds agree happened, so the +61% is the seam between close_total's two bases, not a move. Mean |epsilon| over the 60d before/after is 8.94 -> 0.39, a 23x swing against a random-date control median 0.986x."
+      }
+    ],
+    "ETN": [
+      {
+        "date": "2001-01-02",
+        "expect_ret": 0.22886,
+        "evidence": "close_total steps +22.89% in one bar and level_factor steps 1.152472 -> 1.000000, EXACTLY the 1.152472 ratio yfinance publishes in prices_splits on that date. sharadar_actions has no event row for ETN anywhere in 2000-2002 (dividends only), so the ratio is uncorroborated in either direction and a rescale would be guessing. Mean |epsilon| over the 60d before/after is 2.96 -> 0.16, an 18x swing against a control median 0.986x."
+      }
+    ],
+    "VTR": [
+      {
+        "date": "2015-08-18",
+        "expect_ret": -0.23574,
+        "evidence": "close_total steps -23.57% in one bar and level_factor steps 0.875700 -> 1.000000. sharadar_actions carries a spinoff 0.25 -> CCP with an 8.51 spinoff dividend on exactly that date while prices_splits has NO row, so the two feeds disagree on whether the price leg should have moved at all. Mean |epsilon| over the 60d before/after is 2.95 -> 0.44, a 7x swing against a control median 0.986x."
+      }
+    ],
+    "LDOS": [
+      {
+        "date": "2013-09-30",
+        "expect_ret": 0.15007,
+        "evidence": "close_total steps +15.01% in one bar and level_factor steps 1.620000 -> 1.000000. Three co-dated events: sharadar_actions carries a spinoff 0.57143 -> SAIC AND a 0.25 split, prices_splits a 0.405 ratio, and the SAI -> LDOS ticker change lands 2013-09-27. The legs cannot be separated from one another here, which is precisely why this is a null. Mean |epsilon| over the 60d before/after is 1.21 -> 0.50, a 2.4x swing against 0.986x."
+      }
+    ],
+    "DD": [
+      {
+        "date": "2019-06-03",
+        "expect_ret": 0.17815,
+        "evidence": "close_total steps +17.82% in one bar and level_factor steps 3.387859 -> 2.390000. Four co-dated events on the DWDP -> DD ticker change: sharadar_actions carries a spinoff 0.33333 -> CTVA, a 79.62 spinoff dividend AND a 0.33333 split, and prices_splits a 0.4725 ratio. Neither the residual level nor the correct return is separable from that stack. Mean |epsilon| over the 60d before/after is 0.64 -> 0.41, a 1.6x swing against 0.986x."
+      }
+    ],
+    "CNP": [
+      {
+        "date": "2002-10-01",
+        "expect_ret": 0.17834,
+        "evidence": "close_total steps +17.83% in one bar and level_factor steps 1.186240 -> 1.000000, EXACTLY the 1.186240 ratio in prices_splits. sharadar_actions carries a spinoff 0.7886 -> GEN1 with a 1.5 spinoff dividend on the same date, so the event is real and only the price leg's basis is in question. Mean |epsilon| over the 60d before/after is 0.28 -> 0.24, the mildest of the six -- registered because it is the same mechanism, not because the label damage is large."
       }
     ]
   }

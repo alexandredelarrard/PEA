@@ -47,7 +47,8 @@ from src.data_aggregate.utils.common.prices import (
     trailing_vol,
 )
 from src.data_aggregate.utils.common.xs import (
-    XS_CLIP_CHARACTERISTIC, XS_CLIP_LABEL, xs_group_dummies, xs_project_out, xs_rank_pct, xs_z,
+    MIN_GROUP_SIZE_FOR_NEUTRALIZATION, XS_CLIP_CHARACTERISTIC, XS_CLIP_LABEL, xs_group_dummies,
+    xs_project_out, xs_rank_pct, xs_z,
 )
 
 
@@ -84,8 +85,16 @@ def compute_epsilon(
     projection that runs afterwards is NOT redundant with it: this removes the stock's
     individual sector beta, that one guarantees an exact zero group mean on the day AND covers
     industry_group, which has no beta of its own. Measured on the live panel, the sector beta
-    cuts the sector share of epsilon's cross-sectional variance from 9.3% to 1.7%; the
-    indicator block then takes the LABEL to 0.0%.
+    cuts the sector share of epsilon's cross-sectional variance from 9.3% to 1.7%; the indicator
+    block in `_neutral_label` then takes it to EXACTLY 0.0% for `epsilon` -- 6.0e-16, which is
+    float noise around a guarantee OLS gives by construction.
+
+    ⚠ That exactness does NOT survive the second transform `_neutral_label` applies after the
+    projection. Measured: 0.00006 for `zscore` and 0.00182 for `rank` -- the label
+    `configs/modellling.yml` actually trains on -- because the rank re-percentiling (and the
+    +-3 zscore clip) are non-linear and do not preserve a zero mean. The residue is ~1/50th of
+    what the projection removes and the ordering is deliberate despite it; see `_neutral_label`
+    for why projecting the TRANSFORMED label rather than epsilon is worth that cost.
     """
     
     fwd_stock = forward_compound(stock_ret, horizon)
@@ -192,6 +201,7 @@ def _neutralizing_design(
     sector_groups: dict[str, dict[str, str]] | None,
     with_momentum: bool,
     market_cap: pd.DataFrame | None,
+    seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> tuple[list[pd.DataFrame], pd.DataFrame | None]:
     """The regressors the LABEL is made orthogonal to: every fitted factor loading, the 12-1
     momentum characteristic, log market cap, and the GICS industry_group indicators.
@@ -206,13 +216,21 @@ def _neutralizing_design(
     R^2 0.26 of `-log(mcap)` across names, so 59% of the size ordering was unspanned by the
     whole design and `-log_mcap` earned free rank-IC +0.0380 (t +7.4) at h=60 against the
     label. Adding this takes that to +0.0051. Presence of the frame is the switch.
+
+    `seams` masks the momentum exposure where a registered `null_ret` seam sits inside its
+    252-day window. This function RECOMPUTES the characteristic rather than reading
+    `cube_part_momentum.mom_12_1`, so it does not inherit that part's mask and has to be handed
+    the same register -- without it the label is neutralized against a fabricated top-decile
+    exposure for the six seam tickers. A masked exposure becomes NaN and then `0.0` at the
+    `.fillna(0.0)` below, i.e. the day's average exposure: the name is simply not neutralized
+    on momentum that day, the same accepted degradation as a name with no fitted beta.
     """
 
     frames = [_beta_frame(betas, c, close_total) for c in fitted_beta_columns(betas)]
 
     # neutralize momentum at stock level
     if with_momentum:
-        frames.append(momentum_characteristic(close_total))
+        frames.append(momentum_characteristic(close_total, seams=seams))
 
     if market_cap is not None:
         frames.append(np.log(market_cap))     # sign is irrelevant to a projection
@@ -248,10 +266,25 @@ def _neutral_label(eps: pd.DataFrame, label: str, min_names: int,
     (-> 0.016).
 
     The second `_apply_label` restores each label's own scale, which the projection destroys:
-    rank back to a [0,1] percentile, zscore back to mean 0 / sd 1 / +-3.
+    rank back to a [0,1] percentile, zscore back to mean 0 / sd 1 / +-3. It is also where the
+    exact zero group mean the projection just produced STOPS being exact -- rank re-percentiling
+    and the +-3 zscore clip are non-linear. Measured sector share of cross-sectional variance
+    after the whole path: 6.0e-16 for `epsilon`, 0.00006 for `zscore`, 0.00182 for `rank`. The
+    ordering is kept anyway because it is worth far more than that residue (see above), but
+    `compute_epsilon`'s docstring carries the same numbers so the two do not drift apart.
+
+    ⚠ `MIN_GROUP_SIZE_FOR_NEUTRALIZATION` is hardcoded here the way `_neutralizing_design`
+    hardcodes `XS_CLIP_CHARACTERISTIC`: it is a fixed policy of THIS label, not a per-call
+    choice, so it does not reach `build_targets_multi`'s signature. A group with fewer present
+    members than that on a day is simply not in that day's design -- no dummy, no forced group
+    mean -- and the name still gets every other regressor. Without it, a group with one present
+    member (1996's `Automobiles & Components` held only `F` until `TSLA`'s first target in 2010,
+    because `sp500_tickers` carries CURRENT index membership only) has its whole residual
+    absorbed by its own indicator column and ships as an exact 0.0.
     """
     y = _apply_label(eps, label, min_names)
-    y = xs_project_out(y, exposures, dummies)
+    y = xs_project_out(y, exposures, dummies,
+                       min_group_size=MIN_GROUP_SIZE_FOR_NEUTRALIZATION)
     return _apply_label(y, label, min_names)
 
 
@@ -281,6 +314,7 @@ def build_targets_multi(
     stock_ret: pd.DataFrame | None = None,   # REQUIRED -- every label is built from it
     vol_standardize: bool = False,
     market_cap: pd.DataFrame | None = None,
+    seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> dict:
     """Compute the (expensive) factor-neutral residual ONCE per horizon and emit
     SEVERAL target versions from it, so the cube can store e.g. both the rank and the
@@ -296,7 +330,9 @@ def build_targets_multi(
     jointly, by `_neutral_label`. The loading list is derived, not configured -- see
     `fitted_beta_columns`.
 
-    `neutralize_momentum` adds the 12-1 momentum characteristic to that same design.
+    `neutralize_momentum` adds the 12-1 momentum characteristic to that same design; `seams`
+    (from `level_basis.measure_seams`) masks it where a registered `null_ret` basis change sits
+    inside its lookback -- see `_neutralizing_design`.
 
     `market_cap` adds log market cap, i.e. the size CHARACTERISTIC as opposed to the size
     loading. Unlike the beta and sector tilts, a size tilt is neutralized NOWHERE downstream
@@ -333,7 +369,7 @@ def build_targets_multi(
 
     # horizon-independent, so it is built ONCE for all (horizon, label) pairs
     exposures, dummies = _neutralizing_design(close_total, betas, sector_groups,
-                                              neutralize_momentum, market_cap)
+                                              neutralize_momentum, market_cap, seams)
     out: dict[int, dict[str, pd.DataFrame]] = {}
     for h in horizons:
         eps = compute_epsilon(stock_ret, betas, factor_panel, macro_cols, h,

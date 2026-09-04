@@ -139,10 +139,20 @@ def combine_similarity(
 ) -> pd.DataFrame:
     """
     Weighted blend of two similarity matrices, each mapped from [-1,1] to [0,1].
-    Aligned on the union of tickers. Where a cell is missing in one matrix (e.g.
-    a ticker with no embedding, or a pair with too few overlapping returns), the
-    weights renormalize over whichever source IS present -- so a missing
-    embedding gracefully falls back to correlation-only for that pair.
+    Aligned on the union of tickers. Where a cell is missing in one matrix (e.g. a ticker with
+    no embedding, or a pair with too few overlapping returns), the weights renormalize over
+    whichever source IS present.
+
+    ⚠ THAT RENORMALIZATION IS NOT A FALLBACK AT THE LIVE CONFIG. It reweights over the sources
+    present, and `configs/peers.yml` sets `w_corr: 0 / w_embed: 1`, so for a ticker with no
+    embedding row both weights are zero -- `wc = notna * 0 = 0` and `we = 0 * 1 = 0` -- the
+    denominator is NaN and the ticker's ENTIRE row comes back NaN. `_weights_from_similarity`
+    then returns `{}`, an empty basket, and `compute_sector_returns` skips the name: 0 non-null
+    `sector_ret` and `peer_mom_63` for its whole history. There is no correlation-only fallback
+    to catch it, because correlation carries weight 0.
+
+    The fallback IS live at any `w_corr > 0`, which is what the sentence this replaces
+    described. `load_peers_or_raise` is the guard that makes the empty basket loud regardless.
     """
     tickers = corr.index.union(embed_sim.index)
     c = ((corr.reindex(index=tickers, columns=tickers) + 1.0) / 2.0)

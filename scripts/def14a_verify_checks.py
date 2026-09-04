@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data_extract.utils.structure.def14a_gender import person_key
+from src.data_extract.utils.structure.def14a.gender import person_key
 
 DEFAULT_DIR = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix/verify"
 

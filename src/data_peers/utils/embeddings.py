@@ -36,6 +36,23 @@ from src.gpt_extract import EMBEDDING_MAX_CHARS, embed_texts
 
 logger = logging.getLogger(__name__)
 
+#: Tickers the universe still carries under their PRE-rebrand symbol, mapped to the symbol
+#: Yahoo answers on. Same pattern as `sector_peers.DUAL_CLASS_SECONDARY_TO_PRIMARY`, and the
+#: same reason: the universe's symbol is authoritative, the vendor's is not.
+#:
+#: `yf.Ticker("FISV").info` has carried no `longBusinessSummary` since the 2023 FISV -> FI
+#: rebrand, so the description fetch returned nothing, no embedding was ever written, and at
+#: `w_corr: 0` the peer basket came back EMPTY -- 0 non-null `sector_ret` and `peer_mom_63`
+#: across FISV's whole 26-year history. The row is still STORED under the universe's symbol;
+#: only the QUERY is aliased, so nothing downstream has to know about the rename.
+#: ⚠ This is the description fetch ONLY. Renaming the ticker in `sp500_tickers`, `prices`,
+#: `ticker_embeddings` and every cube part is a separate migration.
+DESCRIPTION_TICKER_ALIAS: dict[str, str] = {"FISV": "FI"}   # Fiserv, rebranded 2023
+
+#: Shortest `longBusinessSummary` worth embedding. Below this Yahoo has returned a stub rather
+#: than a business description, which embeds to noise.
+MIN_DESCRIPTION_CHARS = 40
+
 
 # --------------------------------------------------------------------------- #
 # Business descriptions (Yahoo) - cached once per ticker                       #
@@ -45,12 +62,22 @@ def fetch_business_descriptions(
     store=None,
     pause: float = 0.2,
     force: bool = False,
+    alias: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """
     Return {ticker: description}. Yahoo is queried ONLY for tickers not already
     in the DB cache (`ticker_descriptions`) unless force=True; new descriptions
     are merged back into the table.
+
+    `alias` (default `DESCRIPTION_TICKER_ALIAS`) redirects the QUERY for a ticker the vendor
+    has renamed; the result is still stored under the universe's own symbol.
+
+    ⚠ A ticker that yields no usable description is logged at WARNING. It used to be silent
+    unless Yahoo raised -- an absent or stub `longBusinessSummary` just fell through the `if`
+    -- which is how FISV went the entire life of the feature with an empty peer basket and
+    all-NaN peer features while the build reported success.
     """
+    alias = DESCRIPTION_TICKER_ALIAS if alias is None else alias
     cached: dict[str, str] = {}
     if store is not None:
         df = store.load("ticker_descriptions", optional=True)
@@ -61,12 +88,20 @@ def fetch_business_descriptions(
     if missing:
         new: dict[str, str] = {}
         for t in tqdm(missing, desc=f"Fetching {len(missing)} descriptions (Yahoo)"):
+            queried = alias.get(t, t)
             try:
-                info = yf.Ticker(t).info
+                info = yf.Ticker(queried).info
                 text = info.get("longBusinessSummary")
-                if text and isinstance(text, str) and len(text) > 40:
+                if text and isinstance(text, str) and len(text) > MIN_DESCRIPTION_CHARS:
                     prefix = " ".join(str(info.get(k, "")) for k in ("sector", "industry"))
                     new[t] = (prefix + ". " + text).strip()
+                else:
+                    logger.warning(
+                        "%s: no usable business description from Yahoo (queried as '%s', "
+                        "longBusinessSummary is %s) -> NO embedding, and at w_corr: 0 an EMPTY "
+                        "peer basket. Add a DESCRIPTION_TICKER_ALIAS entry if it has been "
+                        "renamed.", t, queried,
+                        "absent" if not text else f"{len(str(text))} chars")
             except Exception as e:                     # noqa: BLE001 -- one ticker, not the run
                 logger.warning("%s: description fetch failed (%s)", t, e)
             time.sleep(pause)

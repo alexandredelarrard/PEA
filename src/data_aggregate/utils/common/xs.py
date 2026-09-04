@@ -24,6 +24,14 @@ every name shares one value, `sd == 0`, so an unguarded divide yields +/-inf whi
 then turns into a FABRICATED +/-clip; the two guarded call sites instead produce NaN.
 Both behaviours are reproduced exactly (`zero_sd_to_nan`) because changing either would
 move live numbers -- that is a separate, declared decision, not a refactor.
+
+The GROUP-PRESENCE FLOOR (`MIN_GROUP_SIZE_FOR_NEUTRALIZATION`) is the same spirit applied to
+`xs_project_out`'s indicator block: a named threshold instead of silently accepting a
+degenerate fit. A one-hot column with a single present member fits that member's residual
+EXACTLY, so the "neutralized" label is identically zero and ships as a valid-looking
+`target_rank ~ 0.50`; two members split it and each keeps exactly half. That is not a
+neutralization, it is a deletion, so a group too thin to support a demean is dropped from
+the day's design rather than allowed to absorb the name whole.
 """
 from __future__ import annotations
 
@@ -38,6 +46,21 @@ _WINSOR_LO, _WINSOR_HI = 0.01, 0.99
 XS_CLIP_LABEL = 3.0             # modelling target (targets.py)
 XS_CLIP_CHARACTERISTIC = 4.0    # factor characteristic / regressor (factors.py, composites)
 XS_CLIP_PEER = 8.0             # peer-relative z (panel.py), winsorised again downstream
+
+#: How many PRESENT members a design CELL needs on a day before the group block may split the
+#: day's names on it (`_floored_group_block` -- read it before changing this, the rule is about
+#: cells and not columns). See the module docstring for the defect it closes: a 1-member cell
+#: forces an exactly-zero residual and a 2-member cell an exactly-halved one -- measured 5,230
+#: exactly-zero and 16,960 halved cells at h=60, `F` losing 48.7% of its history and `CSGP`
+#: 21.5%.
+#:
+#: The bar is 5 rather than the 2 or 3 that would close only the arithmetically degenerate
+#: cases: a 3- or 4-member demean still removes a third to a quarter of the name's own variance
+#: as if it were a group effect, which is the same defect with a smaller coefficient. The cost
+#: is the other side of that trade -- below the floor the name still gets the FULL rest of the
+#: projection (betas, momentum, log market cap) and is simply not forced to a group-zero mean.
+#: No cell is nulled by this rule.
+MIN_GROUP_SIZE_FOR_NEUTRALIZATION = 5
 
 
 def winsorize_xs(df: pd.DataFrame, lo: float = _WINSOR_LO,
@@ -86,9 +109,42 @@ def xs_group_dummies(group_map: dict[str, str], tickers: pd.Index) -> pd.DataFra
     Static (no date axis): GICS membership is keyed by ticker only. An unmapped name lands in a
     shared `__UNK__` column so every name sits in exactly one group and the block spans the
     constant -- which is what makes the projection's residual exactly zero-mean per group.
+
+    No reference level is dropped, deliberately: the FULL one-hot block is what forces an exact
+    zero group mean rather than a mean relative to some arbitrary base group. The price of that
+    is a column per group whatever the group's size, which is why `xs_project_out` needs a
+    per-day presence floor (`min_group_size`) -- the block is built once, statically, and cannot
+    know how many of a group's members are present on any given day.
     """
     labels = pd.Series([group_map.get(t, "__UNK__") for t in tickers], index=tickers)
     return pd.get_dummies(labels, dtype=float)
+
+
+def _floored_group_block(grp: np.ndarray, min_group_size: int) -> np.ndarray:
+    """One day's one-hot group block with every column too thin to support a demean removed.
+
+    ⚠ THE RULE IS ABOUT DESIGN CELLS, NOT COLUMNS, and the difference is the whole reason this
+    is a function rather than one filter line. `_day_residual` centers both sides, so there is
+    an IMPLICIT INTERCEPT: the one-hot block plus that intercept PARTITIONS the day's names, and
+    dropping a group's column does not take its members out of the design -- it moves them into
+    the partition's COMPLEMENT cell, which is then demeaned exactly like any other cell. Drop a
+    solo group's column while every other group clears the floor and the complement is a cell of
+    ONE, fitted exactly, residual identically 0.0 -- the original defect, unmoved. Measured on a
+    synthetic solo panel: 1.1e-16 with the column dropped, which is zero.
+
+    So the complement is checked too, and the smallest surviving group is folded into it until
+    it clears the floor as well. Every cell in the returned design therefore holds at least
+    `min_group_size` names, or the block is empty and no group demean happens that day at all
+    (which is the correct answer when no partition of the day can be supported).
+    """
+    counts = grp.sum(axis=0)
+    keep = counts >= min_group_size
+    total = grp.shape[0]
+    # the complement cell = every present name whose group column was dropped
+    while keep.any() and 0 < total - counts[keep].sum() < min_group_size:
+        smallest = np.flatnonzero(keep)[np.argmin(counts[keep])]
+        keep[smallest] = False
+    return grp[:, keep]
 
 
 def _day_residual(y: np.ndarray, x: np.ndarray) -> np.ndarray:
@@ -105,7 +161,8 @@ def _day_residual(y: np.ndarray, x: np.ndarray) -> np.ndarray:
 
 
 def xs_project_out(values: pd.DataFrame, exposures: list[pd.DataFrame],
-                   dummies: pd.DataFrame | None = None) -> pd.DataFrame:
+                   dummies: pd.DataFrame | None = None, *,
+                   min_group_size: int | None = None) -> pd.DataFrame:
     """Per-day cross-sectional residual of `values` on `exposures` + `dummies`, JOINTLY.
 
     The multivariate sibling of a single-factor neutralization, and the difference is not
@@ -114,6 +171,16 @@ def xs_project_out(values: pd.DataFrame, exposures: list[pd.DataFrame],
 
     `exposures` are (date x ticker) frames, ALREADY standardized by the caller (once, rather
     than once per label); `dummies` is the static ticker x group block from `xs_group_dummies`.
+
+    `min_group_size` is the per-day presence floor on every DESIGN CELL of the group block --
+    see `_floored_group_block`, which is where the subtlety lives. It closes the defect the
+    whole-day guard below cannot see: `present.sum() > design.shape[1]` asks whether the WHOLE
+    fit is over-determined, so a day with 400 names and one solo group sails through it while
+    that one name is still fitted exactly by its own indicator column, to 0.0.
+
+    A name below the floor is not DROPPED, only un-grouped: it keeps every other regressor and
+    is simply not forced to a group zero mean that day, so no new NaN is introduced.
+    `None` (the default) reproduces the unfloored behaviour exactly, bit for bit.
     """
     stacked = (np.stack([e.reindex_like(values).to_numpy(float) for e in exposures], axis=2)
                if exposures else np.zeros((*values.shape, 0)))
@@ -123,7 +190,10 @@ def xs_project_out(values: pd.DataFrame, exposures: list[pd.DataFrame],
     out = np.full_like(y, np.nan)
     for i in range(len(y)):
         present = np.isfinite(y[i])
-        design = np.column_stack([stacked[i][present], group_block[present]])
+        grp = group_block[present]
+        if min_group_size is not None and grp.shape[1]:
+            grp = _floored_group_block(grp, min_group_size)
+        design = np.column_stack([stacked[i][present], grp])
         if present.sum() > design.shape[1]:          # else the fit is exact and says nothing
             out[i, present] = _day_residual(y[i][present], design)
     return pd.DataFrame(out, index=values.index, columns=values.columns)

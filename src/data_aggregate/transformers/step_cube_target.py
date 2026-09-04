@@ -21,6 +21,7 @@ from omegaconf import DictConfig
 from src.data_store.schema import Tables
 from src.data_aggregate.utils.assemble.cube import _betas_to_long, _labels_to_long
 from src.data_aggregate.utils.common.gics import load_gics_maps
+from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
 from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED, plan_window, window_start, write_part,
@@ -66,6 +67,11 @@ class StepCubeTarget(Step):
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_targets)
         self._store = context.store
+        # ⚠ the `null_ret` register reaches this step too, and it must. This step RECOMPUTES
+        # `momentum_characteristic` on its own `close_total` -- it does not read
+        # `cube_part_momentum.mom_12_1` -- so masking the momentum feature leaves the LABEL
+        # neutralized against a fabricated exposure unless the same register lands here.
+        self._bugfix = load_bugfix(context.config_dir)
 
     def run(self, full: bool = False) -> None:
 
@@ -78,12 +84,16 @@ class StepCubeTarget(Step):
                              trading_index=calendar,
                              extra_back=max_h)
 
-        # load inputs 
+        # load inputs
         price_frames = self._load_frames(window.since)
         fundamentals = self._load_fundamentals()
 
+        # ONE measurement, shared by the momentum STYLE FACTOR and the label's own momentum
+        # exposure, so the two cannot end up masking different windows.
+        seams = self._measure_seams(price_frames)
+
         # aggregate and compute needed netral variables
-        panel, macro_cols = self._factor_panel(price_frames, fundamentals)
+        panel, macro_cols = self._factor_panel(price_frames, fundamentals, seams)
         sector_groups = load_gics_maps(self._context)
         # avg sector without market -- fed the panel's OWN market column, not a second read
         sector_excess = self._sector_factor(price_frames, sector_groups, panel["market"])
@@ -91,7 +101,7 @@ class StepCubeTarget(Step):
         # fit betas and build target neutrals to betas
         betas = self._estimate_betas(price_frames, panel, sector_excess)
         targets = self._build_targets(price_frames, betas, panel, macro_cols, horizons,
-                                      sector_groups, sector_excess, fundamentals)
+                                      sector_groups, sector_excess, fundamentals, seams)
         n = self._persist(targets, betas, window, calendar, max_h)
         
         if n == COLUMNS_CHANGED:
@@ -104,6 +114,16 @@ class StepCubeTarget(Step):
             peers=load_peers_or_raise(self._context, self._config),
             fields=self._FIELDS,
             since=since)
+
+    def _measure_seams(self, frames: PriceFrames) -> dict[str, list[pd.Timestamp]]:
+        """The registered `null_ret` basis changes, re-measured on THIS step's `close_total`."""
+        frames.require("close_total")
+        seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
+        listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
+        self._log.info("Seam masks: %s of %s registered null_ret entries measured (%s ticker(s)) "
+                       "-> masked in the momentum style factor and the label's momentum exposure",
+                       sum(len(v) for v in seams.values()), listed, len(seams))
+        return seams
 
     def _load_fundamentals(self) -> pd.DataFrame:
         columns = ("ticker", "as_of", "totalRevenue", "sharesOutstanding", "netIncome", "freeCashflow", "stockholdersEquity")
@@ -160,8 +180,9 @@ class StepCubeTarget(Step):
         fx = [c for c in frame.columns if MACRO_CUBE_FACTORS[c].startswith("fx_")]
         return frame.drop(columns=fx), frame[fx]
 
-    def _factor_panel(self, frames: PriceFrames,
-                      fundamentals: pd.DataFrame | None) -> tuple[pd.DataFrame, list[str]]:
+    def _factor_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None,
+                      seams: dict[str, list[pd.Timestamp]] | None = None
+                      ) -> tuple[pd.DataFrame, list[str]]:
         """Flat by design: style, macro, commodity/currency and market are each ONE call
         away, so every factor family that goes into the panel is visible here instead of
         behind another wrapper."""
@@ -172,7 +193,8 @@ class StepCubeTarget(Step):
                                       fundamentals_history=fundamentals,
                                       resvol_window=63,
                                       stock_close_split=frames.close_split,
-                                      level_factor=frames.level_factor)
+                                      level_factor=frames.level_factor,
+                                      seams=seams)
         macro = self._load_macro()                     # ONE read, ONE pivot, all macro below
         macro_chg = self._macro_changes(macro, frames.trading_index)
         commodity, currency = self._asset_factors(macro, frames.trading_index)
@@ -248,7 +270,8 @@ class StepCubeTarget(Step):
                        macro_cols: list[str], horizons: list[int],
                        sector_groups: dict[str, dict[str, str]],
                        sector_excess: pd.DataFrame | None,
-                       fundamentals: pd.DataFrame) -> dict:
+                       fundamentals: pd.DataFrame,
+                       seams: dict[str, list[pd.Timestamp]] | None = None) -> dict:
 
         cfg = self._cfg.targets
         frames.require("ret")
@@ -274,7 +297,8 @@ class StepCubeTarget(Step):
             sector_excess=sector_excess,
             stock_ret=frames.ret,
             vol_standardize=cfg.get("vol_standardize", False),
-            market_cap=market_cap)
+            market_cap=market_cap,
+            seams=seams)
 
         non_null = sum(int(df.notna().sum().sum())
                        for per in labels.values() for df in per.values())

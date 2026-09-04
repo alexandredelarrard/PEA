@@ -22,6 +22,7 @@ from omegaconf import DictConfig
 from src.data_store.schema import Tables
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
+from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
@@ -46,6 +47,10 @@ class StepCubeMomentum(Step):
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_momentum)
         self._store = context.store
+        # the `null_ret` entries reach this step as MASKS, not as repairs: `StepCubePrices`
+        # already nulled the one `ret` cell, but it left both price legs as published, so
+        # `close_total` is still on two bases here. See level_basis's module docstring.
+        self._bugfix = load_bugfix(context.config_dir)
 
     def run(self, full: bool = False) -> None:
         window = plan_window(self._store, Tables.cube_part_momentum, full=full,
@@ -69,6 +74,13 @@ class StepCubeMomentum(Step):
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:
         frames.require("close_split", "close_total", "open", "sector_ret", "ret")
+        seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
+        listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
+        # a SKIP here is not cosmetic: it means the register no longer matches this build's
+        # `close_total`, so the window that would have been masked is being emitted fabricated.
+        self._log.info("Seam masks: %s of %s registered null_ret entries measured on "
+                       "close_total (%s ticker(s))",
+                       sum(len(v) for v in seams.values()), listed, len(seams))
         panel = build_feature_panel(
             frames.close_total, frames.open, frames.sector_ret,
             method=self._cfg.features.standardize_method,
@@ -77,6 +89,7 @@ class StepCubeMomentum(Step):
             returns=frames.ret,
             close_split=frames.close_split,
             level_factor=frames.level_factor,
+            seams=seams,
         )
         self._log.info("Price feature panel: %s rows, %s features (volume liquidity: %s)",
                        len(panel), len(panel.columns) - 2,

@@ -210,9 +210,9 @@ def test_load_peers_or_raise_names_the_peerless_ticker(tmp_path, monkeypatch):
 
 
 def test_the_description_fetch_queries_the_alias_and_stores_the_universe_symbol():
-    """A rebranded ticker is queried under the vendor's symbol and STORED under the
-    universe's, so nothing downstream has to know about the rename."""
-    assert DESCRIPTION_TICKER_ALIAS["FISV"] == "FI"
+    """An aliased ticker is queried under the symbol that HAS a profile and STORED under the
+    universe's, so nothing downstream has to know about the alias."""
+    assert DESCRIPTION_TICKER_ALIAS["FISV"] == "FIV.DE"
     queried: list[str] = []
 
     class _Info:
@@ -233,8 +233,8 @@ def test_the_description_fetch_queries_the_alias_and_stores_the_universe_symbol(
     finally:
         monkey.undo()
 
-    assert queried == ["FI"]                       # the QUERY was aliased
-    assert list(out) == ["FISV"]                   # the KEY is the universe's symbol
+    assert queried == [DESCRIPTION_TICKER_ALIAS["FISV"]]   # the QUERY was aliased
+    assert list(out) == ["FISV"]                           # the KEY is the universe's symbol
     assert "Fiserv" in out["FISV"]
 
     print("\n=== SANITY CHECK: rebrand alias on the description fetch ===")

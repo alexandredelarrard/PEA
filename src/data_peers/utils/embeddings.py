@@ -36,18 +36,26 @@ from src.gpt_extract import EMBEDDING_MAX_CHARS, embed_texts
 
 logger = logging.getLogger(__name__)
 
-#: Tickers the universe still carries under their PRE-rebrand symbol, mapped to the symbol
-#: Yahoo answers on. Same pattern as `sector_peers.DUAL_CLASS_SECONDARY_TO_PRIMARY`, and the
-#: same reason: the universe's symbol is authoritative, the vendor's is not.
+#: Tickers whose DESCRIPTION must be fetched under a different symbol, because Yahoo's
+#: `assetProfile` module is missing on the one the universe uses. Same pattern as
+#: `sector_peers.DUAL_CLASS_SECONDARY_TO_PRIMARY`, and the same reason: the universe's symbol
+#: is authoritative, the vendor's is a lookup key.
 #:
-#: `yf.Ticker("FISV").info` has carried no `longBusinessSummary` since the 2023 FISV -> FI
-#: rebrand, so the description fetch returned nothing, no embedding was ever written, and at
-#: `w_corr: 0` the peer basket came back EMPTY -- 0 non-null `sector_ret` and `peer_mom_63`
-#: across FISV's whole 26-year history. The row is still STORED under the universe's symbol;
-#: only the QUERY is aliased, so nothing downstream has to know about the rename.
-#: ⚠ This is the description fetch ONLY. Renaming the ticker in `sp500_tickers`, `prices`,
-#: `ticker_embeddings` and every cube part is a separate migration.
-DESCRIPTION_TICKER_ALIAS: dict[str, str] = {"FISV": "FI"}   # Fiserv, rebranded 2023
+#: ⚠ THE DEFECT IS A MISSING MODULE, NOT A RENAME -- measured, because the obvious diagnosis is
+#: wrong and costs a build to discover. `yf.Ticker("FISV").info` still answers with 103 keys and
+#: `shortName` "Fiserv, Inc.", so the symbol is live; it just has no `sector`, `industry` or
+#: `longBusinessSummary` (a control, `MA`, returns 176 keys and an 1,831-char summary in the
+#: same session). Fiserv did rebrand FISV -> FI in 2023, but `FI` is NOT a Yahoo symbol: it
+#: 404s with "Quote not found", and Yahoo's own search still returns FISV as the primary NASDAQ
+#: listing. So an alias to `FI` fixes nothing. The CROSS-LISTINGS do carry the module --
+#: `FIV.DE` (XETRA) returns sector "Technology", industry "Information Technology Services" and
+#: the same 1,690-char English description of Fiserv, Inc.
+#:
+#: Only the TEXT is taken, never a price, so the listing's EUR currency is irrelevant. The row
+#: is STORED under the universe's symbol, so nothing downstream knows about the alias.
+#: Without it the embedding is never written and at `w_corr: 0` the peer basket comes back
+#: EMPTY -- 0 non-null `sector_ret` and `peer_mom_63` across FISV's whole 26-year history.
+DESCRIPTION_TICKER_ALIAS: dict[str, str] = {"FISV": "FIV.DE"}   # Fiserv: US profile is empty
 
 #: Shortest `longBusinessSummary` worth embedding. Below this Yahoo has returned a stub rather
 #: than a business description, which embeds to noise.

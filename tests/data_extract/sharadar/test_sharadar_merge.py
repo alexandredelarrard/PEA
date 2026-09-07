@@ -224,7 +224,12 @@ def test_column_contract(merged, field_map):
     print(f"built but not declared: {[c for c in built if c not in set(declared)]}")
     print(f"declared but not built: {[c for c in declared if c not in set(built)]}")
     assert built == declared
-    assert len(built) == 91, f"the merged contract is {len(built)}, not 91"
+    # A THIRD, deliberately redundant check on top of the two list equalities: those two both
+    # read generated lists, so editing the field map and `schema.py` together satisfies them
+    # even when the change was careless. This literal makes a column count change something
+    # someone has to type on purpose. Bump it WITH the change, never to make the test pass --
+    # 91 -> 93 was `intangibles` (commit d2ed8a6) plus one sibling.
+    assert len(built) == 93, f"the merged contract is {len(built)}, not 93"
     assert tuple(Tables.fundamentals_history.read_columns) == declared, \
         "schema.py's read_columns and the field map state the same contract twice; they differ"
 

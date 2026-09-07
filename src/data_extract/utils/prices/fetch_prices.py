@@ -34,10 +34,24 @@ import logging
 from src.data_store.schema import Tables
 from src.data_extract.utils.common.incremental import resume_since
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sessions import last_completed_session
 from src.constants.constants import DATE_FORMAT
 from src.context import Context
 
 logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# ROLLING RE-PULL FLOOR                                                        #
+# --------------------------------------------------------------------------- #
+#: How far back an incremental run always re-pulls, whatever `resume_since` says.
+#: `resume_since` reads only each ticker's MAX date, so an INTERIOR hole leaves every MAX
+#: current and can never heal: the live table held 45 of 491 tickers on 2026-08-28 with
+#: 491 on both neighbouring sessions, and no incremental run would ever have revisited it.
+#: A trailing floor also re-writes the last few bars, which is what lets a bar that was
+#: fetched mid-session be replaced by its settled close.
+#: 7 business days buys a week of self-healing for ~7 sessions x 491 tickers (10 chunked
+#: calls) per run -- the upsert merges on (ticker, date), so the redundant rows are free.
+PRICE_REFRESH_TRADING_DAYS = 7
 
 # --------------------------------------------------------------------------- #
 # PRICE PRE-LISTING TRIM                                                       #
@@ -151,14 +165,37 @@ def trim_prelisting_bars(prices: pd.DataFrame) -> pd.DataFrame:
         return prices
     return prices.loc[~drop].reset_index(drop=True)
 
-def _is_up_to_date(since: pd.Timestamp, today: pd.Timestamp) -> bool:
-    return since >= today - pd.tseries.offsets.BDay(1)
+def _refresh_floor(since: pd.Timestamp, until: pd.Timestamp,
+                   window_start: pd.Timestamp) -> pd.Timestamp:
+    """Widen an incremental `since` back over the recent tail, but never past `window_start`.
+
+    `resume_since` answers "the oldest per-ticker MAX date", which is the right frontier only
+    if every ticker's history is CONTIGUOUS up to its max. Two live failures say it is not:
+    an interior hole (45 of 491 tickers on 2026-08-28, 491 on both neighbours) leaves every
+    MAX current, and a bar written mid-session is never revisited to pick up its settled
+    close. Both heal on the next run once the window is floored.
+
+    Clamped at `window_start` so a short `years_history` is still respected -- the floor may
+    only ever look BACK from `until`, never widen the configured history."""
+    floor = until - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS)
+    return max(min(since, floor), window_start)
 
 def _chunk_response_to_frames(data: pd.DataFrame, chunk: list[str]) -> list[pd.DataFrame]:
     frames = []
     if isinstance(data.columns, pd.MultiIndex):
+        served = set(data.columns.get_level_values(0))
+        missing = [t for t in chunk if t not in served]
+        if missing:
+            # WARN, do not pass over it. A ticker yfinance declines to serve used to vanish
+            # here without a trace, so a truncated response was indistinguishable from a
+            # complete one and only surfaced three tables downstream as a thin cross-section.
+            # This is the single line that made the 45-of-491 day invisible at fetch time.
+            logger.warning(
+                "yfinance returned no data for %d of %d tickers in chunk %s..%s -- their bars "
+                "for this window are MISSING, not empty: %s",
+                len(missing), len(chunk), chunk[0], chunk[-1], ", ".join(missing))
         for tkr in chunk:
-            if tkr not in data.columns.get_level_values(0):
+            if tkr not in served:
                 continue
             sub = data[tkr].dropna(how="all").reset_index()
             sub["ticker"] = tkr
@@ -292,12 +329,18 @@ def fetch_price_history(
         it, so the stored table interleaves adjustment vintages.
       * a pending split      -- the same full window, for those tickers only, whatever `full`
         says (see `tickers_needing_repull`).
-      * otherwise            -- `resume_since`, the shared per-batch frontier.
+      * otherwise            -- `resume_since`, the shared per-batch frontier, floored back
+        over the recent tail by `_refresh_floor` so a hole or a partial bar self-heals.
 
     The two windows are TWO CALLS rather than a per-ticker `since`, which keeps `resume_since`
-    and its one-shared-date contract untouched."""
-    today = pd.Timestamp.today().normalize()
-    window_start = today - pd.DateOffset(years=years_history)
+    and its one-shared-date contract untouched.
+
+    The window ENDS at `last_completed_session()`, never at "today". An unclamped end asks
+    yfinance for a session that may still be trading and gets a real-looking bar built from a
+    partial OHLC and a fraction of the day's volume (measured: 0.535x the ticker's own
+    trailing median). Nothing downstream can distinguish it from a settled close."""
+    until = last_completed_session()
+    window_start = until - pd.DateOffset(years=years_history)
 
     repull = [] if full else tickers_needing_repull(context, tickers)
     incremental = [t for t in tickers if t not in set(repull)]
@@ -313,23 +356,25 @@ def fetch_price_history(
             batches.append((repull, window_start, "post-split re-pull"))
         if incremental:
             since = resume_since(context, Tables.prices, incremental, years_history)
-            if _is_up_to_date(since, today) and not repull:
-                logger.info(f"Price history already up to date — DB table '{Tables.prices}'")
-                record_run(context, Tables.prices, len(tickers), 0)
-                return
-            if not _is_up_to_date(since, today):
-                batches.append((incremental, since, "incremental"))
+            # No skip-if-fresh branch. There used to be one (`since >= today - 1 BDay` ->
+            # return), and it is exactly what let a hole and a partial bar persist: the table's
+            # max date looked current, so the run that could have repaired the tail returned
+            # without fetching. The floor below deliberately makes every run re-pull the last
+            # PRICE_REFRESH_TRADING_DAYS sessions; that redundancy IS the repair mechanism and
+            # the upsert merges it away.
+            batches.append((incremental, _refresh_floor(since, until, window_start),
+                            "incremental"))
 
     total = 0
     for batch, since, label in batches:
-        logger.info("Downloading prices for %d tickers since %s (%s)",
-                    len(batch), since.date(), label)
+        logger.info("Downloading prices for %d tickers over %s .. %s (%s)",
+                    len(batch), since.date(), until.date(), label)
         # actions=False keeps `prices` clean OHLCV: no `dividends` / `stock splits` column
         # can reach the upsert. Both price bases arrive regardless -- `auto_adjust=False`
         # returns `Close` AND `Adj Close` on its own (verified: AAPL 2020-07-31 -> 106.26 and
         # 102.795). Ex-dates and split events have their own fetchers with their own sparse
         # resume frontiers.
-        df_prices = download_ohlcv(batch, since, today, chunk_size, pause,
+        df_prices = download_ohlcv(batch, since, until, chunk_size, pause,
                                    auto_adjust=False, actions=False)
 
         # Drop the synthetic pre-listing prefix BEFORE the upsert, so a full-history pull

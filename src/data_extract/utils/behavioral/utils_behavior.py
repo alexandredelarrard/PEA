@@ -17,6 +17,14 @@ from src.data_extract.utils.common.bulk_cache import cache_dir
 _CRAWLER: Crawler | None = None
 
 def _crawler() -> Crawler:
+    """The ONE lazily-built crawler shared by every Motley Fool request.
+
+    `global` is LOAD-BEARING, not decoration: the assignment below makes `_CRAWLER` a local
+    for the whole function body without it, so reading it on the line above raises
+    UnboundLocalError on EVERY call and takes the entire fool fallback down with it (quote
+    pages, index crawl and transcript downloads all reach the network through `_get`).
+    """
+    global _CRAWLER
     if _CRAWLER is None:
         _CRAWLER = Crawler(retries=5, backoff=1.5, timeout=30, impersonate=True)
     return _CRAWLER

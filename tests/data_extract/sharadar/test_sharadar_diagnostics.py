@@ -45,6 +45,16 @@ MAX_POSITIVE_CAPEX_RATE = 0.05
 #: a LEVEL shift and holds flat over time; only a split moves the ratio within one ticker.
 SPLIT_RATIO_SPAN = 1.5
 
+#: The only tickers allowed a `sharefactor != 1.0`. Sharadar documents `sharefactor` as a
+#: multiplicant in its `marketcap` calculation that adjusts for DUAL SHARE CLASSES, and these
+#: are the two dual-class names in the universe. Measured 2026-09-07 over all 117,391 rows:
+#: 447 carry `sharefactor != 1` and every one belongs to BRK-B (276) or V (171); every
+#: split-adjusted name (NVDA, WMT, AMZN) is still exactly 1.0.
+#:
+#: Lives here, not in `constants.py`: its only consumer is this test
+#: (the constants-placement rule is 2+ non-test `src/` consumers).
+DUAL_CLASS_SHAREFACTOR_TICKERS = frozenset({"BRK-B", "V"})
+
 
 @pytest.fixture(scope="module")
 def context():
@@ -237,9 +247,29 @@ def test_sharesbas_is_split_adjusted_not_point_in_time(frames):
     assert len(agree) >= len(frame) - len(split), (
         "a ticker disagrees with the SEC cover-page count for a reason that is NOT a split -- "
         "that would be the share-class summing question D-decision actually asked about")
-    assert (frame["median_sharefactor"] == 1.0).all(), (
-        "`sharefactor` is no longer uniformly 1.0 -- it may now encode the split adjustment, "
-        "which would change how the de-adjustment has to work")
+    # `sharefactor` must stay 1.0 on every SINGLE-CLASS name, because that is the assumption
+    # the split de-adjustment rests on: if it started carrying the split factor, de-adjusting
+    # with `sharadar_actions` on top of it would double-count.
+    #
+    # ⚠ It is NOT uniformly 1.0 across the table, and asserting that it was is what made this
+    # test fail on the paid full-universe pull. Re-measured 2026-09-07: 447 of 117,391 rows
+    # carry `sharefactor != 1` and they belong to exactly two DUAL-CLASS tickers --
+    # BRK-B (1493.472 in 1996 -> 1.52 in 2026) and V (0.800 -> 1.099). It DECLINES as
+    # `sharesbas` grows, which is Sharadar's documented dual-class multiplicant for
+    # `marketcap`, not a split factor; every split name (NVDA, WMT, AMZN) is still exactly 1.0.
+    #
+    # So the exemption is by NAME and stays narrow on purpose: a third ticker appearing here,
+    # or a split-shaped factor on a single-class name, must still fail.
+    off = frame[frame["median_sharefactor"] != 1.0]
+    unexpected = sorted(set(off["ticker"]) - set(DUAL_CLASS_SHAREFACTOR_TICKERS))
+    if len(off):
+        print(f"  sharefactor != 1.0 on {len(off)} ticker(s): "
+              + ", ".join(f"{r.ticker}={r.median_sharefactor:g}"
+                          for r in off.itertuples(index=False)))
+    assert not unexpected, (
+        f"`sharefactor` is no longer 1.0 for {unexpected}, which are not known dual-class "
+        f"names -- it may now encode the split adjustment, which would change how the "
+        f"de-adjustment has to work (de-adjusting on top of it would double-count)")
     print(f"  OK: {len(agree)}/{len(frame)} agree on level; {len(split)} carry a split-adjusted "
           f"history that `build_ttm` de-adjusts.")
 

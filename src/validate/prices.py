@@ -55,7 +55,14 @@ failures have no ambiguity: an unexplained >50% round-trip with no split on the 
 always a data fault, and it is the mechanism that silently re-corrupts the table every time a
 stock splits.
 
-## The three invariants
+Invariant 4 is a different KIND of check from the other three and was added because of what
+they cannot see. Invariants 1-3 all score ROWS THAT EXIST, so a missing row is invisible to
+every one of them: `prices` held 45 of 491 tickers on 2026-08-28 with 491 on both
+neighbouring sessions, and all three invariants passed that day because the 45 rows present
+were perfectly adjusted. The damage was downstream, where `cube_part_momentum` ranked 13 of
+its 28 features over those 45 names and published ordinary-looking percentiles.
+
+## The four invariants
 
 1. THE MARKET-CAP IDENTITY (reported, not blocking -- see above)
        | close_split(d) x S(d) x sharesOutstanding(d) / sharadar.marketcap(d) - 1 |  <  1%
@@ -86,6 +93,12 @@ stock splits.
    `prices_splits`, is two adjustment vintages meeting inside one ticker -- not a market
    event. Genuine moves must pass: 2020-03-09's oil crash (APA/OXY/FANG/TRGP), PCG's
    bankruptcy, CVNA 2022.
+
+4. DAY COVERAGE (reported, not blocking)
+       tickers with a bar on day d  >=  0.9 x the median day's count
+   The only invariant that scores rows that are ABSENT. Clustered by DATE, since that is what
+   the failure is a property of. Not in `gate()`: choosing a blocking threshold is a separate
+   decision needing its own evidence, exactly as recorded for `MCAP_BLOCK_SHARE`.
 """
 from __future__ import annotations
 
@@ -125,15 +138,45 @@ SPIKE_REVERT_BAND = 0.10
 SPLIT_MATCH_DAYS = 3
 #: Days either side of a filing date within which the last price bar is accepted.
 ASOF_TOLERANCE_DAYS = 5
+#: Invariant 4: a trading day carrying fewer than this FRACTION of its OWN RECENT typical
+#: ticker count is a truncated extract run, not a market event -- the universe does not lose
+#: a third of its names for one session and get them back the next.
+#:
+#: ⚠ The reference is a TRAILING median, not the whole table's median. Measured both ways over
+#: the live 7,793-day span: against the global median (428, because the universe grew from 383
+#: names in 2005 to 491 today) the floor flags 2026-08-28 AND 20 legitimate 2005 dates, where
+#: the count is genuinely 383-385 and rising. A global reference cannot separate STRUCTURAL
+#: growth from a COLLAPSE; a trailing one can, because growth moves the reference with it
+#: while a truncated run drops to 9% of it in a single session. This is the same trade, and the
+#: same resolution, as `momentum.features.MIN_XS_POPULATION_FRAC`.
+DAY_COVERAGE_FLOOR = 0.90
+#: Trailing sessions the reference median is taken over -- one month, long enough that a
+#: single bad day cannot move it and short enough to track a growing universe.
+#:
+#: Its named limit: once short days fill MORE THAN HALF this window the rolling median becomes
+#: the short count, and a sustained outage reads as the universe's new normal. So an outage is
+#: flagged on roughly its first `DAY_COVERAGE_WINDOW // 2` days and then goes quiet. Accepted
+#: -- eleven days of warning is not the failure mode worth engineering against, and the
+#: alternative (a global median) flags 20 legitimate 2005 dates. Pinned by
+#: `tests/validate/test_prices_day_coverage.py` so it stays a decision, not a surprise.
+DAY_COVERAGE_WINDOW = 21
+#: How many short days the report lists individually.
+DAY_COVERAGE_MAX_LISTED = 40
 
 
 @dataclass
 class InvariantResult:
-    """One invariant's outcome, clustered BY TICKER.
+    """One invariant's outcome, clustered by whatever the failure is a property OF.
 
-    Per-ticker, not per-row, on purpose: one badly-adjusted ticker produces sixty failing
-    rows, and sixty findings for one cause is how a report becomes unreadable and stops being
-    read. The row counts stay in the summary.
+    Not per-row, on purpose: one badly-adjusted ticker produces sixty failing rows, and sixty
+    findings for one cause is how a report becomes unreadable and stops being read. The row
+    counts stay in the summary.
+
+    `clustered_by` says which axis the clusters are on. Invariants 1-3 are per-TICKER
+    (`failing_tickers`); invariant 4's failure is a property of the DAY, so its clusters live
+    in `detail` and `failing_tickers` stays empty. `rows` / `failed` are always in the same
+    unit for every invariant -- ticker-days -- so `share` and `worst_share()` remain
+    comparable across the four.
     """
     name: str
     rows: int = 0
@@ -141,6 +184,7 @@ class InvariantResult:
     tickers: int = 0
     failing_tickers: dict[str, dict] = dataclass_field(default_factory=dict)
     detail: list[dict] = dataclass_field(default_factory=list)
+    clustered_by: str = "ticker"
     #: Failures WITHOUT `S(d)` applied, i.e. what this invariant scored before the spinoff
     #: level fix. Reported beside the corrected number on purpose: a single headline rate
     #: would hide the size of the wedge, and hiding it is how "12.6% is just the vendor"
@@ -158,9 +202,11 @@ class InvariantResult:
         return self.raw_failed / self.rows
 
     def summary(self) -> str:
-        line = (f"{self.name}: {self.rows - self.failed:,}/{self.rows:,} pass "
-                f"({1 - self.share:.2%}); {len(self.failing_tickers)} of {self.tickers} "
-                f"tickers affected")
+        line = f"{self.name}: {self.rows - self.failed:,}/{self.rows:,} pass ({1 - self.share:.2%})"
+        if self.clustered_by == "date":
+            line += f"; {len(self.detail)} short day(s) across {self.tickers} tickers"
+        else:
+            line += (f"; {len(self.failing_tickers)} of {self.tickers} tickers affected")
         if self.raw_share is not None:
             line += f" [without S(d): {1 - self.raw_share:.2%}]"
         return line
@@ -408,6 +454,60 @@ def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -
         tickers=int(px["ticker"].nunique()), failing_tickers=failing, detail=detail)
 
 
+def invariant_day_coverage(context: Context,
+                           tickers: list[str] | None = None) -> InvariantResult:
+    """INVARIANT 4 -- every trading day in the table's span carries the whole universe.
+
+    The defect this exists for: `prices` held 45 of 491 tickers on 2026-08-28, with 491 on
+    both 08-27 and 08-31. One extract run was truncated, and NOTHING NOTICED for nine days --
+    the fetcher's per-ticker `continue` was silent, every ticker's MAX date stayed current so
+    the incremental resume never revisited the day, and the three basis invariants above all
+    score ROWS THAT EXIST. A hole is invisible to every one of them: the 45 rows present were
+    perfectly adjusted.
+
+    The damage was downstream. `cube_part_momentum` ranked 13 of its 28 features over those
+    45 names on that date and published the result as ordinary percentiles.
+
+    Clustered BY DATE, not by ticker -- the failure is a property of the day. `rows` and
+    `failed` are in TICKER-DAYS (expected, and missing) rather than dates, so `share` is on
+    the same scale as the other three invariants and `worst_share()` stays comparable.
+
+    Streams the (ticker, date) pair columns rather than loading them, so the check costs a
+    grouped count over ~3.3M narrow rows and never materialises the table.
+    """
+    where = {"ticker": tickers} if tickers else None
+    per_day: dict[pd.Timestamp, int] = {}
+    seen: set[str] = set()
+    for chunk in context.store.iter_load(Tables.prices, columns=["ticker", "date"],
+                                         where=where, chunksize=500_000):
+        seen.update(chunk["ticker"].astype(str))
+        counts = pd.to_datetime(chunk["date"]).dt.normalize().value_counts()
+        for day, n in counts.items():
+            per_day[day] = per_day.get(day, 0) + int(n)
+
+    if not per_day:
+        return InvariantResult(name="day_coverage", rows=0, failed=0, tickers=0)
+
+    coverage = pd.Series(per_day).sort_index()
+    # shift(1): the reference is the population strictly BEFORE this date, so a collapse can
+    # never dilute the median it is being judged against.
+    ref = (coverage.shift(1).rolling(DAY_COVERAGE_WINDOW, min_periods=5).median()
+           .bfill())
+    short = coverage[coverage < DAY_COVERAGE_FLOOR * ref]
+
+    detail = [{"date": str(day.date()), "tickers": int(n),
+               "expected": int(ref[day]), "missing": int(ref[day] - n),
+               "share_present": round(float(n) / float(ref[day]), 4)}
+              for day, n in short.items()]
+    return InvariantResult(
+        name="day_coverage",
+        rows=int(ref.sum()),
+        failed=int(sum(d["missing"] for d in detail)),
+        tickers=len(seen),
+        detail=detail,
+        clustered_by="date")
+
+
 # --------------------------------------------------------------------------- #
 # entry point                                                                 #
 # --------------------------------------------------------------------------- #
@@ -431,6 +531,25 @@ class PricesReport:
                  "overwrite.", ""]
         for res in self.invariants:
             lines += [f"## {res.name}", "", res.summary(), ""]
+
+            # invariant 4 clusters by DATE, so it renders from `detail` and its
+            # `failing_tickers` is empty by construction -- the ticker-shaped branches below
+            # would report "No failures." over a real hole.
+            if res.clustered_by == "date":
+                if not res.detail:
+                    lines += ["No failures — every trading day carries the full universe.", ""]
+                    continue
+                lines += ["| date | tickers | expected | missing | present |",
+                          "|---|---|---|---|---|"]
+                lines += [f"| {d['date']} | {d['tickers']} | {d['expected']} | "
+                          f"{d['missing']} | {d['share_present']:.1%} |"
+                          for d in res.detail[:DAY_COVERAGE_MAX_LISTED]]
+                if len(res.detail) > DAY_COVERAGE_MAX_LISTED:
+                    lines.append(f"| ... | +{len(res.detail) - DAY_COVERAGE_MAX_LISTED} more "
+                                 f"short day(s) | | | |")
+                lines.append("")
+                continue
+
             if not res.failing_tickers:
                 lines += ["No failures.", ""]
                 continue
@@ -496,9 +615,10 @@ def gate(report: "PricesReport") -> tuple[bool, str]:
 def run_prices_validation(context: Context, tickers: list[str] | None = None,
                           since: str | pd.Timestamp | None = None,
                           skip_spike: bool = False) -> PricesReport:
-    """Run all three invariants and return the report. Writes nothing."""
+    """Run all four invariants and return the report. Writes nothing."""
     panel = load_panel(context, tickers=tickers, since=since)
-    results = [invariant_market_cap(panel), invariant_price_vintage(panel)]
+    results = [invariant_market_cap(panel), invariant_price_vintage(panel),
+               invariant_day_coverage(context, tickers=tickers)]
     if not skip_spike:
         results.append(invariant_spike_revert(context, tickers=tickers))
     return PricesReport(invariants=results)

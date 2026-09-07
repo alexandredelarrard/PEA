@@ -2,11 +2,18 @@
 Incremental cube-part builds (src/data_aggregate/step_build_cube.py).
 
 The exploded DAG rebuilds each cube_part_<group> INCREMENTALLY: read the latest date, recompute only
-a warm-up-padded trailing window, and append the new rows. This is only correct if a trailing-window
-build reproduces the FULL build's tail exactly — which holds because the price/rolling features are
-backward-looking (window <= warm-up) and the cross-sectional standardization is per-day (independent
-across dates). This test proves that equivalence on the price feature builder, and checks the
+a warm-up-padded trailing window, then REWRITE the trailing `PART_REFRESH_TRADING_DAYS` and append
+everything after them. This is only correct if a trailing-window build reproduces the FULL build's
+tail exactly — which holds because the price/rolling features are backward-looking (window <=
+warm-up) and the cross-sectional standardization is per-day (independent across dates). This test
+proves that equivalence on the price feature builder over the INCLUSIVE span, and checks the
 idempotent tail-append helper.
+
+The rewrite is not hygiene. A part's last stored date is the one most likely to be wrong: it was
+built from the newest, least settled prices, and the fetcher re-pulls that same tail (a settled
+close superseding a mid-session bar, a refilled hole). Appending strictly after it left the live
+`cube_part_momentum` stopping ON a date whose features were ranked over 45 of 491 tickers, with no
+incremental run able to replace that row.
 """
 from __future__ import annotations
 
@@ -17,6 +24,9 @@ import pandas as pd
 
 from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
+from src.data_aggregate.utils.common.incremental import (
+    PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part, window_start,
+)
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
 from src.data_aggregate.utils.common.sources import (
     OPTIONAL_SOURCE_COLUMNS, SOURCE_COLUMNS, project_existing,
@@ -40,42 +50,68 @@ def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
 
 
 def test_windowed_build_reproduces_full_tail():
+    """The equivalence the whole incremental design rests on, over the INCLUSIVE window.
+
+    The compared span is `date >= refresh_from`, not `date > cutoff`: a backward-looking part
+    now REWRITES its trailing `PART_REFRESH_TRADING_DAYS` as well as appending after them, so
+    those dates have to be reproduced by the windowed build too -- they are deleted from the
+    table before the append and there is no second chance at them.
+
+    This is also what makes `plan_window`'s `warmup + extra_back + refresh` load-bearing: the
+    read window starts `warmup` days before `refresh_from`, not before `last`, so the OLDEST
+    rewritten date still gets its full look-back."""
     dates, close, open_, sector, high, low, volume = _synthetic_prices()
     sh = [5, 20, 60]
 
     full = build_feature_panel(close, open_, sector, "rank", high, low, volume, sh)
 
     # simulate an incremental run with the ACTUAL configured price-group warm-up: recompute only
-    # [cutoff-warmup, end]. This must cover the longest daily look-back (the 5-year = 1260-day
-    # seasonality feature) -> the test fails if the map value is ever set too low.
+    # [refresh_from - warmup, end]. This must cover the longest daily look-back (the 5-year =
+    # 1260-day seasonality feature) -> the test fails if the map value is ever set too low.
     warmup = PART_BY_NAME["cube_part_momentum"].warmup_trading_days
+    refresh = PART_REFRESH_TRADING_DAYS
     cutoff_pos = 1900
-    cutoff = dates[cutoff_pos]
-    start = dates[cutoff_pos - warmup]
+    last = dates[cutoff_pos]
+    refresh_from = dates[cutoff_pos - refresh]
+    start = dates[cutoff_pos - refresh - warmup]
     win = build_feature_panel(close.loc[start:], open_.loc[start:], sector.loc[start:], "rank",
                               high.loc[start:], low.loc[start:], volume.loc[start:], sh)
 
-    # the tail we would KEEP + APPEND (date > cutoff) must match the full build bit-for-bit
-    f_tail = (full[full["date"] > cutoff].set_index(["date", "ticker"]).sort_index())
-    w_tail = (win[win["date"] > cutoff].set_index(["date", "ticker"]).sort_index())
+    # the tail the incremental run WRITES (date >= refresh_from) must match the full build
+    # bit-for-bit -- both the `refresh` dates it overwrites and everything it appends after.
+    f_tail = (full[full["date"] >= refresh_from].set_index(["date", "ticker"]).sort_index())
+    w_tail = (win[win["date"] >= refresh_from].set_index(["date", "ticker"]).sort_index())
     assert not f_tail.empty and f_tail.shape == w_tail.shape
     cols = list(f_tail.columns)
     pd.testing.assert_frame_equal(f_tail[cols], w_tail[cols].reindex(f_tail.index),
                                   check_exact=False, atol=1e-9, rtol=0)
 
-    n_tail_days = f_tail.index.get_level_values("date").nunique()
-    print("\n=== SANITY CHECK: windowed build reproduces the full tail ===")
+    # the rewritten span really does include `last` itself -- the row a strictly-after append
+    # could never replace, and the one a truncated extract run left wrong on the live table.
+    rewritten = f_tail.index.get_level_values("date").unique()
+    assert last in set(rewritten)
+    assert (rewritten <= last).sum() == refresh + 1, "refresh_from .. last inclusive"
+
+    n_tail_days = len(rewritten)
+    print("\n=== SANITY CHECK: windowed build reproduces the full tail (INCLUSIVE) ===")
     print(f"  full={len(full)} rows over {close.shape[0]} days; windowed recompute of the last "
-          f"{close.shape[0] - (cutoff_pos - warmup)} days (warmup {warmup})")
-    print(f"  tail (date > {cutoff.date()}): {n_tail_days} days x {full['ticker'].nunique()} "
-          f"tickers x {len(cols)} feature cols -> IDENTICAL between full and windowed builds")
+          f"{close.shape[0] - (cutoff_pos - refresh - warmup)} days "
+          f"(warmup {warmup} + refresh {refresh})")
+    print(f"  stored max was {last.date()}; the run REWRITES from {refresh_from.date()} "
+          f"({refresh + 1} dates through {last.date()}) and appends after")
+    print(f"  tail (date >= {refresh_from.date()}): {n_tail_days} days x "
+          f"{full['ticker'].nunique()} tickers x {len(cols)} feature cols -> IDENTICAL between "
+          "full and windowed builds")
     print("  CONCLUSION: backward-looking features + per-day standardization -> the incremental "
-          "trailing recompute equals a full rebuild on the appended dates. Validated.")
+          "trailing recompute equals a full rebuild on every date it writes, rewritten dates "
+          "included. Validated.")
 
 
 def test_incremental_horizon_arithmetic():
-    """The target refresh window must reach back >= max_horizon so matured (NaN->value) labels are
-    recomputed, while features only need dates strictly after the stored max."""
+    """The target refresh window must reach back >= max_horizon so matured (NaN->value) labels
+    are recomputed. That is much wider than the backward-looking parts' own trailing rewrite
+    (`PART_REFRESH_TRADING_DAYS`), which is why `write_part` gives an explicit `refresh_from`
+    precedence over `window.refresh_from`."""
     # emulate _window_start on a business-day calendar
     idx = pd.bdate_range("2019-01-01", periods=800)
     last = idx[750]
@@ -95,8 +131,9 @@ def test_incremental_horizon_arithmetic():
     print("\n=== SANITY CHECK: incremental window arithmetic ===")
     print(f"  last stored date {last.date()} | feature warm-up start {feat_start.date()} | "
           f"target compute start {tgt_start.date()} | matured-label refresh from {refresh_from.date()}")
-    print("  targets overwrite the trailing max_horizon window (matured labels), betas/features "
-          "append only dates after the max. Validated.")
+    print(f"  targets overwrite the trailing max_horizon window ({max_h} days, matured labels); "
+          f"betas/features rewrite only {PART_REFRESH_TRADING_DAYS}, so the wider explicit "
+          "window wins. Validated.")
 
 
 def test_per_part_warmup_covers_binding_lookback():
@@ -134,6 +171,135 @@ def test_per_part_warmup_covers_binding_lookback():
     print(f"  CONCLUSION: all 14 feature groups are owned by {len(heavy)} heavy part(s) reading "
           f"~5y and {len(light)} light part(s) reading <=400d. Each part reads only as far back "
           "as its longest member needs. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# the inclusive trailing refresh                                               #
+# --------------------------------------------------------------------------- #
+# long enough that momentum's real 1,320-day warm-up plus the refresh still lands inside it;
+# `window_start` clamps at index 0, which would silently hide the arithmetic under test.
+CAL = pd.bdate_range("2011-01-03", periods=2000)
+LAST_POS = 1900
+LAST = CAL[LAST_POS]
+
+
+class _RefreshStore:
+    """Minimal DataStore stand-in: records what `write_part` asked for."""
+
+    def __init__(self, columns=None, last=LAST):
+        self._columns, self._last = columns, last
+        self.appended: tuple | None = None
+        self.replaced: pd.DataFrame | None = None
+
+    def max_date(self, part):
+        return self._last
+
+    def columns(self, part):
+        return self._columns or []
+
+    def replace(self, part, rows):
+        self.replaced = rows
+        return len(rows)
+
+    def append_tail(self, part, tail, cutoff, *, inclusive):
+        self.appended = (tail, pd.Timestamp(cutoff), inclusive)
+        return len(tail)
+
+
+def _rows(dates=CAL[LAST_POS - 10:LAST_POS + 6]):
+    return pd.DataFrame({"date": dates, "ticker": "T0", "f": 1.0})
+
+
+def test_plan_window_refresh_arithmetic():
+    """`since` reaches `warmup + refresh` back, `refresh_from` exactly `refresh` back.
+
+    The `+ refresh` in `since` is the point: the warm-up has to be measured from the oldest
+    REWRITTEN date, not from `last`, or that date is computed with less look-back than a full
+    rebuild would give it."""
+    warmup, refresh = 1320, PART_REFRESH_TRADING_DAYS
+    w = plan_window(_RefreshStore(), "p", warmup=warmup, full=False,
+                    trading_index=CAL, refresh=refresh)
+
+    assert w.last == LAST
+    assert w.refresh_from == CAL[LAST_POS - refresh]
+    assert w.since == CAL[LAST_POS - refresh - warmup]
+    # the oldest rewritten date still gets the FULL warm-up behind it
+    assert CAL.searchsorted(w.refresh_from) - CAL.searchsorted(w.since) == warmup
+    print("\n=== SANITY CHECK: plan_window(refresh=%d) ===" % refresh)
+    print(f"  last={w.last.date()}  refresh_from={w.refresh_from.date()}  "
+          f"since={w.since.date()}")
+    print(f"  warm-up behind the OLDEST rewritten date = {warmup} trading days (not "
+          f"{warmup - refresh}), so it is computed exactly as a full rebuild would. Validated.")
+
+
+def test_plan_window_without_refresh_is_unchanged():
+    """The parts that opt out (fundamentals / text / extras) keep their exact old window."""
+    w = plan_window(_RefreshStore(), "p", warmup=130, full=False, trading_index=CAL)
+    assert w.refresh_from is None
+    assert w.since == CAL[LAST_POS - 130]
+    assert plan_window(_RefreshStore(), "p", warmup=130, full=True).refresh_from is None
+
+
+def test_plan_window_refresh_stacks_with_extra_back():
+    """Targets take both: `extra_back` for the maturing-label compute window and `refresh`."""
+    w = plan_window(_RefreshStore(), "p", warmup=390, full=False, trading_index=CAL,
+                    extra_back=90, refresh=PART_REFRESH_TRADING_DAYS)
+    assert w.since == CAL[LAST_POS - 390 - 90 - PART_REFRESH_TRADING_DAYS]
+
+
+def test_write_part_rewrites_inclusively_from_refresh_from():
+    """The defect this closes: `cube_part_momentum` stopped ON a bad date, and a strictly-after
+    append could never replace that row -- only a `--full` rebuild would."""
+    store = _RefreshStore(columns=["date", "ticker", "f"])
+    window = PartWindow(LAST, CAL[LAST_POS - 1320], CAL[LAST_POS - PART_REFRESH_TRADING_DAYS])
+    n = write_part(store, "p", _rows(), window)
+
+    tail, cutoff, inclusive = store.appended
+    assert inclusive is True
+    assert cutoff == window.refresh_from
+    assert tail["date"].min() == window.refresh_from
+    assert LAST in set(tail["date"]), "the previously-final row IS rewritten"
+    print("\n=== SANITY CHECK: write_part rewrites its own tail ===")
+    print(f"  stored max {LAST.date()} -> DELETE >= {cutoff.date()} then append {n} rows "
+          f"({tail['date'].min().date()} .. {tail['date'].max().date()})")
+    print("  the stored max date's own row is REPLACED, not skipped. Validated.")
+
+
+def test_write_part_strict_append_when_no_refresh():
+    """No opt-in -> bit-identical to the pre-refresh behaviour."""
+    store = _RefreshStore(columns=["date", "ticker", "f"])
+    write_part(store, "p", _rows(), PartWindow(LAST, CAL[LAST_POS - 130]))
+    tail, cutoff, inclusive = store.appended
+    assert inclusive is False and cutoff == LAST
+    assert tail["date"].min() > LAST
+
+
+def test_explicit_refresh_from_wins_over_the_part_default():
+    """The target step's maturing-label window (~90 trading days) is much wider than the
+    shared 5 and must not be narrowed by it."""
+    store = _RefreshStore(columns=["date", "ticker", "f"])
+    wide = window_start(CAL, LAST, 90)
+    window = PartWindow(LAST, CAL[LAST_POS - 500], CAL[LAST_POS - PART_REFRESH_TRADING_DAYS])
+    write_part(store, "p", _rows(CAL[LAST_POS - 150:LAST_POS + 6]), window, refresh_from=wide)
+    _, cutoff, inclusive = store.appended
+    assert inclusive is True and cutoff == wide
+    assert cutoff < window.refresh_from
+
+
+def test_refresh_never_narrows_the_written_span():
+    """A guard on the constant: the part must rewrite at least as far back as the price
+    fetcher can still change its inputs, or a corrected price leaves a stale feature behind.
+    The fetcher's floor is 7 BUSINESS days, which is 5 trading sessions of span."""
+    from src.data_extract.utils.prices.fetch_prices import PRICE_REFRESH_TRADING_DAYS
+    fetcher_span = (pd.Timestamp("2026-09-04")
+                    - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS))
+    part_span = window_start(pd.bdate_range("2026-01-01", "2026-09-04"),
+                             pd.Timestamp("2026-09-04"), PART_REFRESH_TRADING_DAYS)
+    print(f"\n  fetcher re-pulls from {fetcher_span.date()}; part rewrites from "
+          f"{part_span.date()}")
+    assert part_span <= fetcher_span + pd.Timedelta(days=2), (
+        f"part refresh ({PART_REFRESH_TRADING_DAYS} sessions) must cover the fetcher's "
+        f"{PRICE_REFRESH_TRADING_DAYS} BDay re-pull floor")
 
 
 def test_source_column_projection_covers_builder_needs():

@@ -25,6 +25,7 @@ import pandas as pd
 
 from src.data_store.schema import Tables
 from src.context import Context
+from src.utils.ssl_setup import corporate_session
 from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
 
@@ -51,25 +52,41 @@ HF_BACKBONE_EARLY_QUARTER = "2005Q4"   # table min quarter must be <= this (deep
 HF_BACKBONE_LATE_QUARTER = "2025Q1"    # table max quarter must be >= this (HF's ~2025 cut is reached)
 
 # --------------------------------------------------------------------------- #
-# One-time parquet download (streamed; curl_cffi fallback for the corporate proxy CA)
+# One-time parquet download (streamed; curl_cffi browser-profile fallback)
 # --------------------------------------------------------------------------- #
 def _stream_download(url: str, dest: Path) -> None:
+    """Stream `url` into `dest`: a requests session first, then a curl_cffi browser
+    impersonation profile (HF can refuse a python-requests TLS fingerprint).
+
+    BOTH attempts VERIFY TLS. The requests leg goes through `corporate_session()`, which
+    trusts the inspection proxy's CA and clears Python 3.13's over-strict
+    `VERIFY_X509_STRICT` (see `ssl_setup.relaxed_ssl_context`); curl_cffi uses libcurl and
+    never applied that flag, so it needs nothing. Measured: huggingface.co returns 200 on
+    both legs with certificate and hostname verification ON.
+
+    curl_cffi's streamed `Response` does NOT implement the context-manager protocol
+    (no `__enter__`/`__exit__` on 0.15.0), so it must be closed explicitly — wrapping
+    it in a `with` raises TypeError before a single byte is written.
+    """
     try:
-        
-        with requests.get(url, stream=True, timeout=120) as r:
+        with corporate_session().get(url, stream=True, timeout=120) as r:
             r.raise_for_status()
             with dest.open("wb") as f:
                 for chunk in r.iter_content(1 << 20):
                     f.write(chunk)
         return
     except Exception as e:                              # noqa: BLE001
-        logger.warning("HF parquet via requests failed (%s); retrying with curl_cffi "
-                       "(unverified TLS — the corporate proxy rejects the HF CA)", e)
-    
-    with cr.get(url, stream=True, timeout=120, impersonate="chrome", verify=False) as r:
+        logger.warning("HF parquet via requests failed (%s: %s); retrying with a curl_cffi "
+                       "browser profile.", type(e).__name__, e)
+
+    r = cr.get(url, stream=True, timeout=120, impersonate="chrome")
+    try:
+        r.raise_for_status()
         with dest.open("wb") as f:
             for chunk in r.iter_content(1 << 20):
                 f.write(chunk)
+    finally:
+        r.close()
 
 def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = None,
                                 batch_size: int = 4000) -> dict[str, tuple[int, int]]:

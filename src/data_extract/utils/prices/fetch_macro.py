@@ -36,6 +36,7 @@ from src.constants.constants_price import (MACRO_PRICE_SERIES, MACRO_FRED_SERIES
                                      MACRO_ALL_SERIES)
 from src.utils.ssl_setup import configure_corporate_ca
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sessions import last_completed_session
 
 # ORDERING, not a side-effect to tidy away: importing `download_ohlcv` pulls in yfinance,
 # which imports curl_cffi at module load and FREEZES its CA bundle then -- so the combined
@@ -207,10 +208,14 @@ def _is_up_to_date(context: Context) -> bool:
 def build_macro_frame(context: Context, years_history: int) -> pd.DataFrame:
     """Fetch, align, gap-fill and derive -> the long frame ready to store. Separated from
     `fetch_macro` so the shape can be tested without touching the DB."""
-    today = pd.Timestamp.today().normalize()
-    since = today - pd.DateOffset(years=years_history)
+    # Clamp the price leg to the last SETTLED close. This table matters more than `prices` for
+    # the clamp: `equity_tr`'s dates ARE the cube's trading calendar
+    # (`StepCubePrices._trading_calendar`), so a mid-session bar here does not just carry a
+    # partial close -- it admits a half-session DATE into the grid every part is built on.
+    until = last_completed_session()
+    since = until - pd.DateOffset(years=years_history)
 
-    prices = _fetch_price_leg(context, since, today)
+    prices = _fetch_price_leg(context, since, until)
     fred = _fetch_fred_leg(since)
 
     # union of both calendars (yfinance trades US market days, FRED publishes on its own),

@@ -12,9 +12,16 @@ equivalence is proved on the price builder by
 `tests/data_aggregate/test_cube_incremental.py`.
 
 Two shapes of write:
-  * BACKWARD-looking parts (features, betas) append dates strictly after the stored max.
+  * BACKWARD-looking parts (features, betas) rewrite their trailing `refresh` window
+    INCLUSIVELY and append everything after it. Strictly-after used to be enough on the
+    theory that a stored date is final once written -- it is not. A part's last stored date
+    is the one most likely to be WRONG, because it is the date whose price inputs were newest
+    and least settled: a truncated extract run left `cube_part_momentum` stopping ON a date
+    ranked over 45 of 491 tickers, and because the append started strictly after it, no
+    incremental run could ever have replaced that row. Only a `--full` rebuild would.
   * FORWARD-looking targets must ALSO refresh the trailing `max_horizon` window, because
     a label that was NaN last run (no future price yet) MATURES into a value between runs.
+    That is the same mechanism with a much wider window, and it takes precedence.
 
 The old code loaded the whole history and then called `_trim_window` to throw ~90% of it
 away. Here the window is decided FIRST, from the market part's dates alone (~15k rows),
@@ -35,14 +42,32 @@ from src.data_store.store import DataStore
 # tell the caller "your column set no longer matches the stored table -- re-run full".
 COLUMNS_CHANGED = -1
 
+#: How many trading days of a backward-looking part's own tail every incremental run
+#: recomputes and REWRITES, rather than only appending after.
+#:
+#: One trading week. The bound that matters is the price fetcher's own re-pull floor
+#: (`PRICE_REFRESH_TRADING_DAYS = 7` business days): a part must rewrite at least as far back
+#: as its inputs can still change underneath it, or a corrected price would sit in `prices`
+#: with the stale feature built from its predecessor left in the part forever. 5 trading days
+#: covers 7 business days of calendar (they are the same span; the fetcher counts BDays from
+#: the settled close, the part counts sessions on the trading index).
+#:
+#: The cost is bounded and small: 5 dates x ~491 tickers re-computed and re-written per part
+#: per run, against parts of ~3.3M rows. `store.append_tail(inclusive=True)` DELETEs `>=` the
+#: cutoff before appending, so re-running the same day is idempotent -- it never duplicates
+#: and never leaves a stale row behind.
+PART_REFRESH_TRADING_DAYS = 5
+
 logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class PartWindow:
     """`last` is the part's stored max date (None -> full rebuild); `since` is the first
-    date to READ and compute from (warm-up padded)."""
+    date to READ and compute from (warm-up padded); `refresh_from` is the first date to
+    REWRITE (None -> append strictly after `last`, the pre-refresh behaviour)."""
     last: pd.Timestamp | None
     since: pd.Timestamp | None
+    refresh_from: pd.Timestamp | None = None
 
     @property
     def is_full(self) -> bool:
@@ -58,19 +83,31 @@ def window_start(trading_index: pd.DatetimeIndex, last: pd.Timestamp,
 
 def plan_window(store: DataStore, part: str, *, warmup: int, full: bool,
                 trading_index: pd.DatetimeIndex | None = None,
-                extra_back: int = 0) -> PartWindow:
+                extra_back: int = 0, refresh: int = 0) -> PartWindow:
     """Decide what to rebuild.
 
     `full=True`, a missing part, or no usable calendar -> a full rebuild. Otherwise the
-    window reaches `warmup + extra_back` trading days before the stored max date;
-    `extra_back` is the target step's forward horizon (so maturing labels are recomputed).
+    window reaches `warmup + extra_back + refresh` trading days before the stored max date;
+    `extra_back` is the target step's forward horizon (so maturing labels are recomputed) and
+    `refresh` is how far back the part REWRITES its own tail.
+
+    ⚠ `warmup + extra_back + refresh`, not `warmup + extra_back`. The warm-up has to be
+    measured from the earliest REWRITTEN date, not from `last`, or the oldest refreshed date
+    gets only `warmup - refresh` days of look-back context and is computed differently from
+    the way a full rebuild would compute it. For momentum that would be 1,320 - 5 = 1,315
+    days against a binding look-back of 1,260: it happens to survive today purely on margin,
+    and would break silently the moment either number moved. Adding `refresh` removes the
+    coupling instead of relying on the slack.
     """
     if full:
         return PartWindow(None, None)
     last = store.max_date(part)
     if last is None or trading_index is None or len(trading_index) == 0:
         return PartWindow(None, None)
-    return PartWindow(last, window_start(trading_index, last, warmup + extra_back))
+    return PartWindow(
+        last,
+        window_start(trading_index, last, warmup + extra_back + refresh),
+        window_start(trading_index, last, refresh) if refresh else None)
 
 
 def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str],
@@ -101,9 +138,19 @@ def write_part(store: DataStore, part: str, rows: pd.DataFrame, window: PartWind
 
     FULL -> replace. INCREMENTAL -> compare the stored column set against `rows` and
     return `COLUMNS_CHANGED` when they differ (the caller must re-run with full=True,
-    since an append into a changed schema would silently misalign); otherwise append the
-    tail after `refresh_from or window.last`, inclusive when `refresh_from` is given
-    (that is the maturing-label overwrite).
+    since an append into a changed schema would silently misalign); otherwise write the
+    tail from the widest cutoff on offer:
+
+      1. an explicit `refresh_from` -- the target step's maturing-label window (~90 trading
+         days), which is always the widest and so takes precedence;
+      2. `window.refresh_from` -- the backward-looking part's own trailing rewrite;
+      3. `window.last`, strictly after -- the pre-refresh behaviour, kept for the parts that
+         opt out (fundamentals / text / extras, all driven by filing-space sources rather
+         than the daily price grid).
+
+    Cases 1 and 2 write INCLUSIVELY, so the cutoff date's own row is replaced rather than
+    skipped. `store.append_tail(inclusive=True)` DELETEs `>=` the cutoff first, which makes
+    a same-day re-run idempotent.
 
     `drop_empty` (feature parts) removes rows carrying no feature values at all.
     """
@@ -129,8 +176,10 @@ def write_part(store: DataStore, part: str, rows: pd.DataFrame, window: PartWind
                     part, len(existing), len(rows.columns))
         return COLUMNS_CHANGED
 
-    cutoff = refresh_from if refresh_from is not None else window.last
-    inclusive = refresh_from is not None
+    cutoff = refresh_from if refresh_from is not None else window.refresh_from
+    inclusive = cutoff is not None
+    if cutoff is None:
+        cutoff = window.last
     tail = rows[rows["date"] >= cutoff] if inclusive else rows[rows["date"] > cutoff]
     n = store.append_tail(part, tail, cutoff, inclusive=inclusive)
     logger.info("Appended %s (INCREMENTAL): +%s rows %s %s.", part, n,

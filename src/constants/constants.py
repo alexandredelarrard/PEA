@@ -228,6 +228,18 @@ SHARADAR_NEGATE_IF_NON_POSITIVE = "if_non_positive"
 # June 2024), WMT 3x, AMZN 20x. De-adjusted, `sharesbas` matches the SEC cover  #
 # page EXACTLY on 10 of 10 WMT rows and 10 of 11 NVDA rows (the 11th differs by #
 # Sharadar's own 4-significant-figure rounding).                                #
+#                                                                               #
+# ⚠ `sharefactor` is 1.0 on every SPLIT-adjusted row, which is what this block  #
+# needs -- but it is NOT uniformly 1.0 across the table any more, and an        #
+# earlier version of this comment said it was. Re-measured 2026-09-07 on the    #
+# paid full-universe pull: 447 of 117,391 rows carry `sharefactor != 1`, and    #
+# they belong to exactly TWO tickers, both DUAL-CLASS:                          #
+#     BRK-B  276 rows  1493.472 (1996-03-31) -> 1.52 (2026-06-30)               #
+#     V      171 rows  0.800 -> 1.099        (2007-09-30 -> 2026-06-30)         #
+# It declines monotonically as `sharesbas` grows, which is Sharadar's           #
+# documented dual-share-class multiplicant for `marketcap`, not a split factor. #
+# So the de-adjustment here is unaffected; the market-cap identity for those    #
+# two names is a SEPARATE question (see the Visa cluster in validate/prices).   #
 # --------------------------------------------------------------------------- #
 #: The `sharadar_actions.action` value naming a share split, and the one naming a spinoff.
 #:

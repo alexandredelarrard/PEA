@@ -18,7 +18,7 @@ The gap it works from is NOT computed here: `download_earnings_calls` derives it
 stored so the caller can subtract them before handing the rest to fool (see
 `utils_missing_quarters`).
 
-Auth is the `apikey` QUERY param (ROIC_API_KEY / ROIC_AI_API_KEY). No key -> logs a warning and is a
+Auth is the `apikey` QUERY param, read from ROIC_API_KEY. No key -> logs a warning and is a
 no-op (the pipeline continues to the fool fallback). Free tier is 5 req/min, so requests are paced.
 """
 from __future__ import annotations

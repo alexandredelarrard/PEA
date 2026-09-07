@@ -29,7 +29,9 @@ from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPL
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common import data_utils as du
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import (COLUMNS_CHANGED,
+                                                         PART_REFRESH_TRADING_DAYS,
+                                                         plan_window, write_part)
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.common.level_basis import (
@@ -117,14 +119,21 @@ class StepCubePrices(Step):
     def _plan_window(self, full: bool):
         """Warm-up 260 trading days. `ret` needs only one prior day (and is persisted, so
         the trailing recompute is exact), but `get_trading_days`'s interior-calendar-hole
-        warning is a diagnostic over history and wants a year of context."""
+        warning is a diagnostic over history and wants a year of context.
+
+        `refresh` makes the write INCLUSIVE over the trailing week, so the part's own last
+        stored dates are REPLACED rather than skipped. They are the dates most likely to be
+        wrong: the fetcher re-pulls the same tail (a settled close superseding a mid-session
+        bar, a refilled hole), and without this the corrected price would sit in `prices`
+        with the stale row it produced left here permanently."""
         idx = None
         if self._store.exists(Tables.cube_part_prices):
             idx = load_trading_calendar(self._store)
 
         return plan_window(self._store, Tables.cube_part_prices, full=full,
                            warmup=self._part.warmup_trading_days,
-                           trading_index=idx)
+                           trading_index=idx,
+                           refresh=PART_REFRESH_TRADING_DAYS)
 
     @staticmethod
     def _pivot_fields(raw: pd.DataFrame) -> dict[str, pd.DataFrame]:

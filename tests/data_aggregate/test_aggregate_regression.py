@@ -48,6 +48,17 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # the check that the regeneration blessed one intended change and not a bundle of them.
 # `_neutral_label` is the only code path the change touches and those six labels are the only
 # outputs it feeds, so the blast radius matches the edit exactly.
+#
+# Regenerated a THIRD time, 2026-09-06: `downside_vol_63`'s `min_periods` went 20 -> 5. `neg`
+# keeps only DOWN days, so the period count was a count of LOSING days rather than of
+# available data, and requiring 20 of them nulled exactly the names that had been going up
+# (measured: 14,376 cells over 410 tickers whose median trailing 63-day return is +21.36%
+# against +3.87% where present). Same diff procedure, same discipline: of 35 fingerprinted
+# outputs, 33 are byte-identical and the 2 that moved are `panel.price` (1 column digest) and
+# `panel.raw_features` (22 per-ticker digests) -- every one of them `downside_vol_63`. Row and
+# column counts unchanged on both. Notably `panel.betas` and all 6 labels are untouched, which
+# is the check that the inclusive-trailing-refresh and cross-sectional-population changes
+# shipped in the same commit moved no number.
 DECLARED_DRIFT: frozenset[str] = frozenset()
 
 

@@ -60,7 +60,11 @@ class StepExtractFundamentals(Step):
 
     def run(self, tickers: list[str], full : bool=False) -> None:
 
-        years_history = int(self.config.data_extract.years_history)
+        # `self._config`, the attribute `Step.__init__` actually sets. There is no `config`
+        # property on `Step` (only `strategies/base.Strategy` has one, and
+        # `StepExtractPrices` assigns its own in `__init__`), so `self.config` here raised
+        # AttributeError on every real invocation of this step.
+        years_history = int(self._config.data_extract.years_history)
 
         # Per-filing SEC XBRL -> fundamentals_facts (+ fundamentals_employees from the same
         # 10-K prose), each KPI resolved from the filer's own calculation linkbase.

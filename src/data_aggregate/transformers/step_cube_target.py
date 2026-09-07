@@ -24,7 +24,7 @@ from src.data_aggregate.utils.common.gics import load_gics_maps
 from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
 from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.common.incremental import (
-    COLUMNS_CHANGED, plan_window, window_start, write_part,
+    COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, window_start, write_part,
 )
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
@@ -317,7 +317,10 @@ class StepCubeTarget(Step):
                  calendar: pd.DatetimeIndex, max_h: int) -> int:
         targets_long, betas_long = _labels_to_long(labels), _betas_to_long(betas)
 
-        # targets: overwrite the trailing max_horizon window so MATURED labels refresh
+        # targets: overwrite the trailing max_horizon window so MATURED labels refresh. This
+        # is the widest refresh in the pipeline (~90 trading days vs the backward-looking
+        # parts' 5) and `write_part` gives an explicit `refresh_from` precedence, so passing
+        # it keeps the maturing-label window rather than narrowing to the shared one.
         refresh_from = (None if window.is_full
                         else window_start(calendar, window.last, max_h))
         n = write_part(self._store, Tables.cube_part_targets, targets_long, window,
@@ -325,9 +328,13 @@ class StepCubeTarget(Step):
         if n == COLUMNS_CHANGED:
             return n
         
-        # betas: backward-looking -> plain append after their OWN stored max
+        # betas: backward-looking -> rewrite the trailing week INCLUSIVELY, then append.
+        # `warmup=0` because `betas_long` is already computed over the TARGET window (which
+        # reaches `warmup + max_h` back), so every refreshed date has its full look-back here
+        # regardless; `refresh` only decides how far back the WRITE reaches.
         beta_window = plan_window(self._store, Tables.cube_part_betas, full=window.is_full,
-                                  warmup=0, trading_index=calendar)
+                                  warmup=0, trading_index=calendar,
+                                  refresh=PART_REFRESH_TRADING_DAYS)
         # `write_part` returns COLUMNS_CHANGED *instead of writing*, so discarding this return
         # would silently leave the betas part missing both the new column and the run's rows
         # (adding a macro factor adds a beta column, which is exactly when this fires).

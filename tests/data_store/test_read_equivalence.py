@@ -208,9 +208,14 @@ def test_since_composes_with_a_key_predicate_on_a_large_part(store):
     """The same `date >= :since` on the 1.85M-row `cube_part_prices`, scoped to ONE ticker so
     the comparison stays bounded -- this is the shape every cube sub-step actually issues."""
     _requires(store, "load")
-    cols = ["date", "ticker", "close"]
+    # `close_total`, not `close`: the two-price-basis split replaced the bare name with
+    # `close_split` (split-adjusted, the market-cap basis) and `close_total` (further reduced
+    # for later dividends, the basis returns/momentum/labels need). `_normalize_prices` NEVER
+    # emits `close` on the equity path, precisely so a reader that wanted total return and
+    # silently got the price series raises KeyError instead. Do not "restore" it here.
+    cols = ["date", "ticker", "close_total"]
     _requires_tables(store, "cube_part_prices")
-    old = _sql(store, 'SELECT "date", "ticker", "close" FROM "cube_part_prices" '
+    old = _sql(store, 'SELECT "date", "ticker", "close_total" FROM "cube_part_prices" '
                       "WHERE date >= :since AND ticker = :t",
                {"since": SINCE.strftime("%Y-%m-%d"), "t": TICKER})
     new = store.load("cube_part_prices", columns=cols, since=SINCE, where={"ticker": TICKER})
@@ -218,16 +223,19 @@ def test_since_composes_with_a_key_predicate_on_a_large_part(store):
 
 
 def test_since_matches_ls_model_prices_window(store):
-    """`ls_model` -- `SELECT * FROM prices WHERE date >= :cut` (ls_model.py:101), scoped to one
-    ticker (the table is 1.8M rows).
+    """The model-side price window -- `SELECT <cols> FROM prices WHERE date >= :cut`, scoped to
+    one ticker (the table is ~3.3M rows).
 
-    The sibling cube query at ls_model.py:88-90 INTERPOLATES its dates straight into the SQL
-    string; this pins that replacing both with one BOUND predicate selects the same rows."""
+    A sibling cube query used to INTERPOLATE its dates straight into the SQL string; this pins
+    that replacing both with one BOUND predicate selects the same rows.
+
+    `close_total` for the same reason as the case above: the bare `close` is deliberately never
+    emitted on the equity path, so a total-return consumer cannot silently read prices."""
     _requires(store, "load")
-    old = _sql(store, 'SELECT "date", "ticker", "close" FROM prices '
+    old = _sql(store, 'SELECT "date", "ticker", "close_total" FROM prices '
                       "WHERE date >= :cut AND ticker = :t",
                {"cut": SINCE.strftime("%Y-%m-%d"), "t": TICKER})
-    new = store.load("prices", columns=["date", "ticker", "close"], since=SINCE,
+    new = store.load("prices", columns=["date", "ticker", "close_total"], since=SINCE,
                      where={"ticker": TICKER})
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 

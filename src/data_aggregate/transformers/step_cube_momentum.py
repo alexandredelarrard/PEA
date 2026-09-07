@@ -21,7 +21,9 @@ from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import (COLUMNS_CHANGED,
+                                                         PART_REFRESH_TRADING_DAYS,
+                                                         plan_window, write_part)
 from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
@@ -53,9 +55,15 @@ class StepCubeMomentum(Step):
         self._bugfix = load_bugfix(context.config_dir)
 
     def run(self, full: bool = False) -> None:
+        # `refresh` rewrites the trailing week INCLUSIVELY instead of appending strictly after
+        # the stored max. That last stored date is the one most likely to be wrong -- it was
+        # built from the newest, least settled prices -- and a strictly-after append can never
+        # revisit it. The live table stopped ON a date whose features were ranked over 45 of
+        # 491 tickers, and only a `--full` rebuild would have cleared it.
         window = plan_window(self._store, Tables.cube_part_momentum, full=full,
                              warmup=self._warmup(),
-                             trading_index=load_trading_calendar(self._store))
+                             trading_index=load_trading_calendar(self._store),
+                             refresh=PART_REFRESH_TRADING_DAYS)
         frames = self._load_frames(window.since)
         panel = self._price_panel(frames)
         del frames

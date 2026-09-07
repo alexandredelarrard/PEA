@@ -13,6 +13,9 @@ do NOT evade bans:
     throttling never slows Wikimedia and vice-versa.
   * optional bring-your-own proxy via env (PEA_SCRAPE_PROXY / HTTPS_PROXY). We deliberately do
     NOT ship or rotate anonymous / residential proxy pools (that is ban-evasion, not politeness).
+  * TLS verification stays ON everywhere. A certificate failure is reported ONCE PER HOST at
+    WARNING naming its fix (`configure_corporate_ca()`), because it is otherwise indistinguishable
+    from a dead endpoint: it surfaced only as `GET failed (transport)` after four wasted retries.
 
 Used by `fetch_earnings_calls` (Cloudflare) and `fetch_wiki_pageviews`; `fetch_google_trends`
 keeps its bespoke cookie/token session client but shares `resolve_proxy`.
@@ -30,7 +33,22 @@ from urllib.parse import urlsplit
 import requests
 from curl_cffi import requests as cr
 
+from src.utils.ssl_setup import corporate_session
+
 logger = logging.getLogger(__name__)
+
+_SESSION = None                       # lazily-built requests.Session (corporate CA + non-strict)
+
+
+def session():
+    """The shared requests Session for the plain-requests path. Carries the corporate CA
+    and clears Python 3.13's `VERIFY_X509_STRICT` (see `ssl_setup.relaxed_ssl_context`);
+    a bare `requests.get` cannot express either, so it fails against the inspection proxy.
+    Lazy + module-level so tests can monkeypatch this function."""
+    global _SESSION
+    if _SESSION is None:
+        _SESSION = corporate_session()
+    return _SESSION
 
 # curl_cffi impersonation targets (each = a coherent UA+TLS+header profile of a real browser)
 IMPERSONATE_POOL = ("chrome124", "chrome123", "chrome120", "chrome131", "safari17_0", "edge101")
@@ -46,6 +64,7 @@ _UA_POOL = (
 )
 _PACE_CAP = 8.0
 _PACE: dict[str, float] = {}          # host -> run-wide slowdown multiplier, ratcheted on 429
+_CA_HINT_HOSTS: set[str] = set()      # hosts an SSL failure was already explained for (once/run)
 
 
 def resolve_proxy() -> dict | None:
@@ -110,6 +129,38 @@ def sleep_pace(base: float, url_or_host: str = "") -> None:
     time.sleep(base * pace_mult(url_or_host) + random.uniform(0.1, 0.7))
 
 
+def _is_ssl_error(exc: BaseException) -> bool:
+    """Is this a TLS/certificate failure (as opposed to DNS / timeout / dead proxy)?
+
+    requests raises a typed `SSLError`; curl_cffi 0.15.0 raises a GENERIC `RequestException`
+    carrying `curl: (60) SSL certificate problem: unable to get local issuer certificate`,
+    so on that path the message is the only reliable discriminator."""
+    if isinstance(exc, requests.exceptions.SSLError):
+        return True
+    txt = str(exc).lower()
+    return "ssl" in txt or "certificate" in txt
+
+
+def _note_ssl_failure(url_or_host: str, exc: BaseException) -> None:
+    """Explain a TLS failure ONCE per host, at WARNING with the fix in the message.
+
+    A certificate failure otherwise surfaces only as `GET failed (transport)` after four
+    pointless retries, which reads like a dead endpoint and hides a one-call fix: on a
+    managed network it is the corporate inspection proxy's root CA missing from the trust
+    path, which `configure_corporate_ca()` (src/utils/ssl_setup.py, run from src/context.py)
+    resolves WITHOUT disabling verification. Once per host, not per request, so a
+    500-ticker run reports it once instead of 500 times."""
+    h = _host(url_or_host)
+    if h in _CA_HINT_HOSTS:
+        return
+    _CA_HINT_HOSTS.add(h)
+    logger.warning("TLS verification FAILED for %s (%s: %s). On a managed network this is the "
+                   "inspection proxy's root CA missing from Python's trust path: check that "
+                   "src.utils.ssl_setup.configure_corporate_ca() ran (src/context.py calls it), "
+                   "or run `python -m src.utils.ssl_setup` to set the CA env vars permanently.",
+                   h, type(exc).__name__, exc)
+
+
 def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
     """ONE GET. curl_cffi with a ROTATED impersonation profile when `impersonate` (best for
     Cloudflare/JA3), else a plain requests GET (friendly REST APIs). Returns a response
@@ -125,16 +176,20 @@ def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
             except Exception:                       # unknown profile / TLS quirk -> generic chrome
                 return cr.get(url, params=params, headers=headers, impersonate="chrome",
                               timeout=timeout, proxies=proxies)
-        except Exception:
-            pass                                    # curl_cffi transport error -> requests fallback
+        except Exception as exc:                    # curl_cffi transport error -> requests fallback
+            if _is_ssl_error(exc):
+                _note_ssl_failure(url, exc)
     try:
-        return requests.get(url, params=params, headers=headers or random_headers(),
-                            timeout=timeout, proxies=proxies)
+        return session().get(url, params=params, headers=headers or random_headers(),
+                             timeout=timeout, proxies=proxies)
     except Exception as exc:                            # noqa: BLE001
         # Log the CAUSE. Swallowing it silently left callers with only "GET failed
         # (transport)", which cannot distinguish an SSL/CA problem from DNS, a dead
         # proxy or a timeout -- the retry loop then burns its 4 attempts on it.
-        logger.debug("transport error on %s: %s: %s", url, type(exc).__name__, exc)
+        if _is_ssl_error(exc):
+            _note_ssl_failure(url, exc)
+        else:
+            logger.debug("transport error on %s: %s: %s", url, type(exc).__name__, exc)
         return None
 
 

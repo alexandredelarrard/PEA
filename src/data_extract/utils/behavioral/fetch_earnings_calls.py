@@ -443,9 +443,19 @@ def download_earnings_calls(context: Context, tickers: list[str] | None = None,
          each newly indexed transcript's HTML to disk.
     Incremental throughout (HF parquet + MF HTML skipped when on disk; the gap excludes anything
     already stored). `tickers` restricts the subset; `limit` bounds the MF download for a test;
-    `use_roic=False` skips the Roic layer."""
+    `use_roic=False` skips the Roic layer.
 
-    download_hf_parquet(context)
+    Step 1 is NON-FATAL: the HF backbone is deep HISTORY, while ROIC and Fool fill the RECENT
+    quarters that matter for the live features. A download failure there must not cost us the
+    recent gap, so it is logged and stepped over — `hf_latest_quarter_by_ticker` already returns
+    {} for an uncached parquet and the gap logic falls back to its date floor."""
+
+    try:
+        download_hf_parquet(context)
+    except Exception as exc:                                     # noqa: BLE001
+        logger.warning("HF backbone download failed (%s: %s) -> continuing without it; ROIC and "
+                       "Fool still run and the recent gap falls back to the date floor.",
+                       type(exc).__name__, exc)
 
     missing = missing_quarters_by_ticker(context, tickers=tickers, since=recent_since)
     logger.info("Recent gap: %d ticker(s) missing %d quarter(s) in total.",
@@ -474,8 +484,20 @@ def ingest_all_earnings_calls(context: Context, tickers: list[str] | None = None
     ingest-earnings-calls` CLI command both need "ingest whatever is on disk, from any
     source". Both imported this name while only the two per-source functions existed,
     which made `src/data_extract/cli.py` -- and therefore the whole extraction CLI --
-    fail to import."""
-    saved = ingest_hf_transcripts(context, tickers=tickers, force=force)   # cached parquet
+    fail to import.
+
+    The HF leg is NON-FATAL for the same reason it is in `download_earnings_calls`: it can
+    still hit the network (`ingest_hf_transcripts` downloads the parquet when the table does
+    not already span the backbone range), and the RECENT quarters that feed the live features
+    sit in the Motley Fool HTML ingested by the second leg. Letting an HF failure through would
+    throw away transcripts already downloaded to disk."""
+    saved = 0
+    try:
+        saved += ingest_hf_transcripts(context, tickers=tickers, force=force)   # cached parquet
+    except Exception as exc:                                     # noqa: BLE001
+        logger.warning("HF backbone ingest failed (%s: %s) -> continuing to the Motley Fool "
+                       "ingest so the recent quarters already on disk still land.",
+                       type(exc).__name__, exc)
     saved += ingest_earnings_calls(context, tickers=tickers, force=force)  # cached MF HTML
     record_run(context, Tables.earnings_call_sections, len(tickers) if tickers else 0, saved)
     return saved

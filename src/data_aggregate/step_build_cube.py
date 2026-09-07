@@ -66,7 +66,7 @@ class StepBuildCube(Step):
         # self._target.run(full=full)
         # self._momentum.run(full=full)
         self._fundamentals.run(full=full)
-        # self._text.run(full=full)
+        self._text.run(full=full)
         # self._extras.run(full=full)
         # self._assemble.run()
 

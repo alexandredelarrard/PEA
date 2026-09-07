@@ -6,6 +6,8 @@ host's throttle can't slow another), get_text/get_json, and the BYO-proxy env re
 """
 from __future__ import annotations
 
+import types
+
 from src.utils import polite_http as ph
 
 
@@ -59,6 +61,59 @@ def test_get_text_json_and_terminal_none(monkeypatch):
     monkeypatch.setattr(ph, "_raw_get", lambda url, **k: None)
     assert ph.http_get("https://x", retries=1) is None
     print("  get_text/get_json OK; 404 and transport-error both -> None. Validated.")
+
+
+def test_ssl_failure_is_explained_once_per_host(monkeypatch, caplog):
+    """A certificate failure must be reported at WARNING with its fix named, ONCE per host --
+    not swallowed at DEBUG and re-surfaced as a bare `GET failed (transport)` after four
+    retries, and not repeated for every ticker in a 500-ticker run."""
+    import requests as _rq
+
+    ph._CA_HINT_HOSTS.clear()
+
+    def _ssl_boom(*a, **k):
+        raise _rq.exceptions.SSLError("unable to get local issuer certificate")
+
+    monkeypatch.setattr(ph, "session", lambda: types.SimpleNamespace(get=_ssl_boom))
+
+    with caplog.at_level("WARNING", logger=ph.logger.name):
+        assert ph._raw_get("https://api.roic.ai/v2/x", impersonate=False) is None
+        assert ph._raw_get("https://api.roic.ai/v2/y", impersonate=False) is None
+        assert ph._raw_get("https://huggingface.co/z", impersonate=False) is None
+
+    warns = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    roic = [w for w in warns if "api.roic.ai" in w]
+    assert len(roic) == 1, f"one warning per HOST, not per request (got {len(roic)})"
+    assert "configure_corporate_ca" in roic[0], "the warning must name the fix"
+    assert any("huggingface.co" in w for w in warns), "a second host must still be reported"
+
+    print("\n=== SANITY CHECK: SSL failure diagnostics ===")
+    print(f"  2 failing calls to api.roic.ai -> 1 WARNING naming configure_corporate_ca(); "
+          f"a different host still reported. {len(warns)} warnings total. Validated.")
+
+
+def test_non_ssl_transport_error_is_not_misreported_as_a_ca_problem(monkeypatch, caplog):
+    """A timeout / DNS failure must NOT be dressed up as a certificate problem -- that would
+    send the reader chasing a CA bundle for a dead network."""
+    import requests as _rq
+
+    ph._CA_HINT_HOSTS.clear()
+    monkeypatch.setattr(ph, "session", lambda: types.SimpleNamespace(
+        get=lambda *a, **k: (_ for _ in ()).throw(_rq.exceptions.Timeout("timed out"))))
+
+    with caplog.at_level("WARNING", logger=ph.logger.name):
+        assert ph._raw_get("https://api-timeout.com/x", impersonate=False) is None
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"], \
+        "a timeout must not raise a TLS warning"
+    assert "api-timeout.com" not in ph._CA_HINT_HOSTS
+    assert ph._is_ssl_error(_rq.exceptions.Timeout("timed out")) is False
+    # curl_cffi 0.15.0 reports TLS problems as a GENERIC exception -> matched on the message
+    assert ph._is_ssl_error(Exception("curl: (60) SSL certificate problem: unable to get "
+                                      "local issuer certificate")) is True
+
+    print("  timeout -> no TLS warning (stays DEBUG); curl_cffi's generic `curl: (60) SSL "
+          "certificate problem` still classified as TLS. Validated.")
 
 
 def test_resolve_proxy_env(monkeypatch):

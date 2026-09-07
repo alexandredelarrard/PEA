@@ -47,24 +47,43 @@ def test_fetch_filters_to_the_universe_and_upserts(sqlite_store, monkeypatch):
         "short_volume": [1.0], "total_volume": [10.0],
     }))
     monkeypatch.setattr(si, "record_run", lambda *a, **k: None)
-    monkeypatch.setattr(si, "_fetch_day",
-                        lambda day: _regsho(day.strftime("%Y%m%d"),
-                                            [("AAA", 500, 1000), ("ZZZ", 900, 1800)]))
-    # bound the loop: pretend the table is current through the day before "today"
+
+    # ⚠ THE WINDOW MUST NOT BE `today .. today`. `fetch_short_interest` builds
+    # `pd.bdate_range(_resume_day(...), today)`, and a bdate_range whose start AND end are the
+    # same WEEKEND day is EMPTY -- so on a Saturday or Sunday no day-file was fetched, nothing
+    # was stored, and `len(stored) == 2` failed. That is exactly what happened in the
+    # 2026-09-06 (Sunday) full-suite run, where this test passed in isolation on the Monday
+    # and looked like ordering pollution.
+    #
+    # A 5-business-day window is non-empty on every day of the week, and serving the day-file
+    # only ONCE keeps the assertion on "one new row" exact regardless of how many days the
+    # range holds.
     monkeypatch.setattr(si, "_resume_day",
-                        lambda *a, **k: pd.Timestamp.today().normalize())
+                        lambda *a, **k: (pd.Timestamp.today().normalize()
+                                         - pd.tseries.offsets.BDay(5)))
+    served: list[pd.Timestamp] = []
+
+    def _one_day(day):
+        if served:
+            return None
+        served.append(day)
+        return _regsho(day.strftime("%Y%m%d"), [("AAA", 500, 1000), ("ZZZ", 900, 1800)])
+
+    monkeypatch.setattr(si, "_fetch_day", _one_day)
 
     si.fetch_short_interest(SimpleNamespace(store=sqlite_store), tickers=["AAA"], pause=0.0)
 
     # the fetcher returns None -- it resumes from the DB and writes to it, so the stored
     # table is the only contract worth asserting on
     stored = sqlite_store.load(Tables.short_interest)
+    assert served, "the window must contain at least one business day on any weekday"
     assert set(stored["ticker"]) == {"AAA"}, "ZZZ leaked past the universe filter"
     assert len(stored) == 2                            # prior row kept, one new day added
 
     print("\n=== SANITY CHECK: RegSHO universe filter + upsert ===")
-    print(f"  day-file had AAA+ZZZ -> stored {sorted(set(stored['ticker']))} only; "
-          f"table {len(stored)} rows (1 prior + 1 new). Validated.")
+    print(f"  day-file for {served[0].date()} had AAA+ZZZ -> stored "
+          f"{sorted(set(stored['ticker']))} only; table {len(stored)} rows "
+          f"(1 prior + 1 new). Validated.")
 
 
 def test_empty_download_leaves_the_table_untouched(sqlite_store, monkeypatch):

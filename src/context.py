@@ -14,10 +14,20 @@ from src.utils.config import read_config
 from src.utils.seed import set_seed
 from src.utils.db import get_engine
 from src.data_store.store import DataStore
+from src.utils.ssl_setup import configure_corporate_ca
 
 os.environ['LC_ALL'] = "C"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
+
+# Trust the corporate TLS-inspection proxy's root CA (it is in the OS store, NOT in certifi)
+# before any extractor opens a socket. Every entrypoint -- main.py and all six CLIs -- imports
+# this module, so this is the one place that covers them all; tests get it from conftest.py.
+# Without it the proxy's re-signed certificates fail verification and outbound HTTPS dies as an
+# opaque "GET failed (transport)": measured on this network, api.roic.ai and huggingface.co both
+# fail from requests and curl_cffi, and both return 200 once this runs. It only ADDS roots the OS
+# already trusts and leaves verification ON; a CA env var the user set themselves still wins.
+configure_corporate_ca()
 
 def check_path_exist(path):
     path = Path(path)

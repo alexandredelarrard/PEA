@@ -77,6 +77,8 @@ side of the trade and it is 21-43 bars on two tickers.
 """
 
 from __future__ import annotations
+import logging
+
 import numpy as np
 import pandas as pd
 
@@ -84,6 +86,30 @@ from src.data_aggregate.utils.common.frames import sanitize
 from src.data_aggregate.utils.common.level_basis import mask_seam_windows
 from src.data_aggregate.utils.common.prices import forward_compound, momentum_characteristic, trailing_vol
 from src.data_aggregate.utils.common.xs import xs_standardize
+
+logger = logging.getLogger(__name__)
+
+#: A feature's cross-section is ranked only when its population that day is at least this
+#: FRACTION of its OWN recent typical population. `xs_rank_pct` is `rank(axis=1, pct=True)`,
+#: which ranks over whatever is non-null in the ROW -- so 45 names out of 491 silently become a
+#: full-looking (0, 1] percentile whose minimum is 1/45 = 0.0222 instead of 1/491 = 0.0020.
+#: The stored column carries no trace of how many names produced it, so a truncated extract run
+#: publishes a decile that is not comparable to any other date's.
+#: Measured over all 7,793 dates x 28 features of the live panel (216,137 non-empty cells):
+#: this rule nulls 13 cells on exactly one date -- 2026-08-28, the truncated run -- and nothing
+#: else.
+#:
+#: ⚠ The reference is the feature's OWN trailing median, NOT the day's best-populated feature.
+#: The day-max variant cannot separate a STRUCTURAL population difference (a 1,260-day
+#: seasonality feature is legitimately thinner than a 5-day reversal early in history) from a
+#: SUDDEN collapse: measured, it also nulls 18 legitimate 1995 `downside_vol_63` cells. A
+#: feature's own trailing median can: a warm-up ramp grows monotonically so the floor never
+#: binds, while a truncated run drops the population to 9% of it.
+MIN_XS_POPULATION_FRAC = 0.60
+
+#: Trailing dates the reference median is taken over -- one month of sessions, long enough that
+#: a single bad day cannot move it and short enough to track a genuinely growing universe.
+XS_POPULATION_WINDOW = 21
 
 #: How many EWMA spans back a seam is still treated as reaching. An EWMA has no finite window,
 #: so the mask needs a decay cut-off rather than an exact one: at 3 spans the bad bar's weight
@@ -252,8 +278,18 @@ def compute_raw_features(
     # (investors overpay for lottery-like upside).
     feats["ret_skew_126"] = sanitize(ret.rolling(126).skew())
     # Downside semi-deviation: std of only the negative daily returns (63d).
+    #
+    # ⚠ min_periods=5, deliberately UNLIKE the 20 every other 63-day window here uses. Do not
+    # "harmonise" it back. `neg` keeps only the DOWN days, so the period count is not a data-
+    # availability measure -- it is a count of losing days. A name with fewer than 20 down days
+    # in 63 sessions is a name that has been going UP, so at min_periods=20 the NaN IS the
+    # outcome: measured 14,376 nulled cells across 410 tickers whose median trailing 63-day
+    # return is +21.36%, against +3.87% where the feature is present -- a +17.48pp gap.
+    # `baselines.py` then mean-imputes those to the median rank, which converts the pattern into
+    # a feature VALUE and hands the model a fragment of its own label. A noisier standard
+    # deviation estimated off 5 observations is the better side of that trade.
     neg = ret.where(ret < 0)
-    feats["downside_vol_63"] = sanitize(neg.rolling(63, min_periods=20).std())
+    feats["downside_vol_63"] = sanitize(neg.rolling(63, min_periods=5).std())
     # Idiosyncratic volatility: vol of the market-relative return (stock minus the
     # equal-weight universe move) over 63d -> the low-idio-vol anomaly.
     mkt = ret.mean(axis=1)
@@ -363,6 +399,52 @@ def compute_raw_features(
     return feats
 
 
+def _thin_cross_sections(raw: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """(date x feature) booleans: True where that feature's cross-section is too thin to rank.
+
+    Compares each feature's population on a date against its OWN trailing median population.
+    See `MIN_XS_POPULATION_FRAC` for the measurement behind the threshold and for why the
+    reference is the feature's own history rather than the day's best-populated feature.
+
+    An all-empty date is left False: it has nothing to rank either way, and flagging it would
+    fire on every date before a long-window feature's warm-up completes."""
+    pop = pd.DataFrame({name: f.notna().sum(axis=1) for name, f in raw.items()})
+    # shift(1): the reference is the population strictly BEFORE this date, so a collapse can
+    # never dilute the very median it is being judged against.
+    ref = pop.shift(1).rolling(XS_POPULATION_WINDOW, min_periods=5).median()
+    return (pop > 0) & pop.lt(MIN_XS_POPULATION_FRAC * ref)
+
+
+def _null_thin_cross_sections(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Null every too-thin (date, feature) cross-section instead of ranking it, and WARN.
+
+    Mutates `raw` and returns it (the caller's dict comes straight from
+    `compute_raw_features`, so there is nothing else holding a reference to it).
+
+    ⚠ THE ORDERING IS LOAD-BEARING, for the same reason seam masking is (see
+    `compute_raw_features`): this must run AFTER the seam mask and BEFORE `xs_standardize`. A
+    value that reaches the rank has already contaminated every OTHER name's percentile, so a
+    guard applied to the standardized output would be far too late.
+
+    NULLING, not renormalising: there is no way to recover a comparable percentile from a
+    fraction of the universe, and the 15 well-populated features on a thin date stay untouched
+    and usable. The WARNING is half the fix -- D-01 was undetectable precisely because
+    `rank(pct=True)` reports success on any population at all."""
+    thin = _thin_cross_sections(raw)
+    for name, f in raw.items():
+        if not thin[name].any():
+            continue
+        dates = thin.index[thin[name]]
+        logger.warning(
+            "%s: cross-section too thin on %d date(s) -> NULLED rather than ranked (%s%s). A "
+            "percentile drawn from a fraction of the universe is not comparable to one drawn "
+            "from all of it.",
+            name, len(dates), ", ".join(str(d.date()) for d in dates[:5]),
+            ", ..." if len(dates) > 5 else "")
+        raw[name] = f.mask(thin[name], axis=0)
+    return raw
+
+
 def build_feature_panel(
     close_total: pd.DataFrame,
     open: pd.DataFrame,
@@ -393,11 +475,15 @@ def build_feature_panel(
     unaffected. `seams` masks the straddling lookback windows -- applied inside
     `compute_raw_features`, i.e. strictly BEFORE the `xs_standardize` below, which is what
     keeps a fabricated value out of the cross-section.
+
+    The thin-cross-section guard sits in the same gap, and for the same reason -- see
+    `_null_thin_cross_sections`.
     """
     raw = compute_raw_features(close_total, open, sector_returns, close_split=close_split,
                                high=high, low=low, volume=volume,
                                seasonal_horizons=seasonal_horizons, returns=returns,
                                level_factor=level_factor, seams=seams)
+    raw = _null_thin_cross_sections(raw)
     std = {name: xs_standardize(f, method) for name, f in raw.items()}
 
     long_frames = []

@@ -11,7 +11,11 @@ There used to be two, and they disagreed:
     `shortTermDebt`, so it was DOUBLE COUNTED whenever it won there; finance leases and the
     pension deficit were missing.
   * `fundamental_features.net_debt_incl_offbs_to_ebitda` = LTD + STD + both lease legs +
-    pension deficit - cash.
+    pension deficit - cash. (That FEATURE was deleted 2026-09-05 -- three of its four
+    distinguishing legs have no column on the Sharadar substrate, so it became identical to
+    `net_debt_to_ebitda`. The off-balance-sheet DEFINITION lives on here, reachable via
+    `net_debt(off_balance_sheet=True)`, and is still the right one for a caller that has
+    lease or ARO data.)
 
 And the return metrics used a THIRD basis: invested capital was equity + LTD + STD - cash,
 excluding leases entirely, while EV and the leverage ratios treated leases as debt. Under
@@ -29,8 +33,19 @@ Layering, from narrowest to widest:
     total_debt(get)        borrowings + capitalized leases          <- the leverage default
     net_debt(get)          total_debt - non-operating liquid assets
     net_debt(off_bs=True)  + pension/OPEB deficit + asset-retirement obligations
-    liquid_assets(get)     cash + short-term investments + current marketable securities
+    liquid_assets(get)     cash + current marketable securities     <- NOT + ST investments,
+                                                                       `cash` already holds them
     invested_capital(get)  equity + total_debt - cash               <- the ROIC default
+
+Every site that NETS cash takes `operating_cash`, a set of tickers whose cash is a core
+operating asset rather than spare cash (bank reserves, insurance float). One judgement,
+applied at all three netting sites, so EV cannot say "not spare cash" while invested
+capital says the opposite. `cash_to_debt` and the other cash RATIOS deliberately do not
+take it -- a liquidity cushion is a fact about a bank too; only the netting is wrong.
+
+Also here, for the same reason (two layers, one definition, a sign that is easy to get
+backwards): `share_repurchases(get)`, which turns Sharadar's NET-ISSUANCE cash-flow line
+into the buyback magnitude the payout ratios want.
 """
 from __future__ import annotations
 
@@ -40,7 +55,7 @@ from src.data_aggregate.utils.common.pit import FieldGetter
 
 __all__ = ["borrowings", "capitalized_leases", "liquid_assets", "total_debt",
            "net_debt", "invested_capital", "off_balance_sheet_obligations",
-           "assets_ex_lease"]
+           "assets_ex_lease", "share_repurchases", "drop_operating_cash"]
 
 # accessor: field name -> numeric Series (row-level) or date x ticker frame (daily).
 # Was the string literal `Getter = "callable"`, which described the protocol in a comment
@@ -76,6 +91,24 @@ def _add(*parts) -> pd.Series | pd.DataFrame | None:
     return out.where(known)
 
 
+def drop_operating_cash(frame, tickers: frozenset[str] | None):
+    """`frame` with the named tickers' columns set to NaN -- the shape-agnostic way to say
+    "this quantity does not mean what the caller wants it to mean for these names".
+
+    NaN rather than 0 because every netting site here already treats a missing liquid
+    balance as "net nothing" (`gross.sub(liquid.fillna(0.0))`), so the two agree; a literal
+    0 would additionally claim the firm holds no cash, which is a different and false
+    statement. A row-level Series has no ticker axis and is returned untouched."""
+    if frame is None or not tickers or not isinstance(frame, pd.DataFrame):
+        return frame
+    hit = [c for c in frame.columns if c in tickers]
+    if not hit:
+        return frame
+    out = frame.copy()
+    out[hit] = float("nan")
+    return out
+
+
 def assets_ex_lease(get):
     """Total assets free of the ASC-842 operating-lease ROU asset — the base every
     assets-denominated ratio uses (asset growth, asset turnover, gross profitability,
@@ -96,6 +129,29 @@ def assets_ex_lease(get):
         return raw
     rou = get("operatingLeaseRouAsset")
     return raw.sub(rou.fillna(0.0), fill_value=0.0) if _has(rou) else raw
+
+
+def share_repurchases(get) -> pd.Series | pd.DataFrame | None:
+    """Gross-of-issuance BUYBACK MAGNITUDE, positive, from Sharadar's `equityIssuanceNet`.
+
+    ⚠ THE SOURCE COLUMN IS NET ISSUANCE, NOT BUYBACKS, and the sign is the whole reason this
+    helper exists. `ncfcommon` is "issuance (repurchase) of equity": NEGATIVE when the firm
+    bought back more stock than it issued, positive when it raised equity. Measured on the
+    live table, 30,741 rows are negative and 15,957 positive; AAPL 2026-07-31 reads
+    -$82.2bn, which is a repurchase.
+
+    Three call sites want "how much stock did they buy back", a non-negative magnitude:
+    `payout_ratio`'s buyback leg, `buyback_intensity`, and `sbc_to_buyback`. Taking `.abs()`
+    would map a $5bn EQUITY RAISE onto "$5bn of buybacks" -- the opposite signal -- so the
+    net-issuing side is floored to 0 instead: a firm that issued on net repurchased nothing.
+
+    This is NET of issuance, so it understates gross repurchases for a firm that does both
+    in the same year (a serial acquirer paying in stock). It never overstates them, which is
+    the direction that would fabricate a payout the firm did not make."""
+    net_issuance = get("equityIssuanceNet")
+    if not _has(net_issuance):
+        return None
+    return (-net_issuance).clip(lower=0.0)
 
 
 def borrowings(get) -> pd.Series | pd.DataFrame | None:
@@ -119,21 +175,47 @@ def capitalized_leases(get) -> pd.Series | pd.DataFrame | None:
     return _add(get("operatingLeaseLiability"), get("financeLeaseLiability"))
 
 
-def liquid_assets(get) -> pd.Series | pd.DataFrame | None:
-    """NON-OPERATING liquid assets netted against debt: unrestricted cash + short-term
-    investments + current marketable securities. `cash` is already restricted-cash-free and
-    investment-free (the extractor nets the broader totals down), so nothing is
-    double-counted here. The AFS/HTM investment BOOK (`investmentSecurities`) is excluded on
-    purpose -- for a bank or insurer that is the core operating asset, not spare cash."""
-    return _add(get("cash"), get("shortTermInvestments"), get("marketableSecuritiesCurrent"))
+def liquid_assets(get, *, operating_cash: frozenset[str] | None = None):
+    """NON-OPERATING liquid assets netted against debt: unrestricted cash + current
+    marketable securities.
+
+    ⚠ SHORT-TERM INVESTMENTS ARE NOT A SEPARATE LEG, because `cash` ALREADY CONTAINS THEM.
+    The field map defines `cash = cashAndEquivalents + coalesce(shortTermInvestments, 0)`
+    and maps `shortTermInvestments` straight from `investmentsc`, so adding it again
+    subtracted the same money twice from EV, net debt and invested capital. The docstring
+    used to claim `cash` was "investment-free (the extractor nets the broader totals
+    down)": true of the SEC-era extractor, FALSE on the Sharadar substrate. Magnitude of
+    the double count, `investmentsc`/market cap at filing grain: ~0 median in nine sectors
+    but 1.30% in Information Technology (p90 13.36%) -- so it understated EV most for
+    exactly the cash-rich tech names where the EV yields matter.
+
+    The AFS/HTM investment BOOK (`investmentSecurities`) is excluded on purpose -- for a
+    bank or insurer that is the core operating asset, not spare cash.
+
+    `operating_cash` extends that same judgement to `cash` itself for the tickers named:
+    "cash and due from banks" is required reserves and interbank float, and insurance cash
+    is claims float. Netting it would misstate the capital structure, and the measurement
+    says by how much -- median `cashneq` is 10.97% of market cap for Financials, p90
+    101.95%, so for the top decile the "cash" exceeds the entire equity value and EV would
+    go NEGATIVE. Blanked to NaN rather than 0 so callers cannot distinguish it from "no
+    data", which is what the netting sites already handle. Requires the date x ticker
+    shape (GICS membership is per ticker); a row-level Series has no ticker axis, so the
+    set is ignored there -- no such caller exists today (`sector_features` uses only
+    `assets_ex_lease`, `total_debt` and `share_repurchases`, none of which net cash)."""
+    liquid = _add(get("cash"), get("marketableSecuritiesCurrent"))
+    return drop_operating_cash(liquid, operating_cash)
 
 
 def off_balance_sheet_obligations(get, pension: pd.DataFrame | None = None):
     """Debt-like obligations outside borrowings and leases: the underfunded pension/OPEB
-    deficit and asset-retirement (decommissioning) obligations. `pension` lets a caller
-    pass an already-coalesced deficit built from the bulk SEC data sets, which is
-    universe-wide and preferred over the single companyfacts tag."""
-    deficit = pension if _has(pension) else get("pensionDeficit")
+    deficit and asset-retirement (decommissioning) obligations.
+
+    The deficit arrives ONLY as the caller's already-coalesced `pension` frame, built from
+    the bulk SEC data sets. There is no field-getter fallback: this used to read a
+    `pensionDeficit` column, but `fundamentals_history` has never carried one on the
+    Sharadar-first schema (an `information_schema` match on `%pension%`/`%opeb%`/`%benefit%`
+    returns nothing), so that leg contributed exactly zero on every live row."""
+    deficit = pension
     if _has(deficit):
         deficit = deficit.clip(lower=0.0)            # underfunding only
     return _add(deficit, get("assetRetirementObligation"))
@@ -147,29 +229,37 @@ def total_debt(get, *, include_leases: bool = True):
 
 
 def net_debt(get, *, include_leases: bool = True, off_balance_sheet: bool = False,
-             pension: pd.DataFrame | None = None):
+             pension: pd.DataFrame | None = None,
+             operating_cash: frozenset[str] | None = None):
     """Total debt (optionally + off-balance-sheet obligations) minus non-operating liquid
-    assets. `off_balance_sheet=True` adds the pension deficit and ARO."""
+    assets. `off_balance_sheet=True` adds the pension deficit and ARO. `operating_cash`
+    names tickers whose cash is not spare cash -- see `liquid_assets`."""
     gross = total_debt(get, include_leases=include_leases)
     if off_balance_sheet:
         gross = _add(gross, off_balance_sheet_obligations(get, pension))
-    liquid = liquid_assets(get)
+    liquid = liquid_assets(get, operating_cash=operating_cash)
     if gross is None:
         return None
     return gross if liquid is None else gross.sub(liquid.fillna(0.0), fill_value=0.0)
 
 
-def invested_capital(get, *, include_leases: bool = True):
+def invested_capital(get, *, include_leases: bool = True,
+                     operating_cash: frozenset[str] | None = None):
     """Financing-side invested capital = equity + total debt (incl. leases) - cash.
 
     Leases are included because they are counted as debt everywhere else (EV, leverage);
     excluding them here understated the capital base of every lease-heavy business
-    (retail, restaurants, airlines) and so overstated its ROIC."""
+    (retail, restaurants, airlines) and so overstated its ROIC.
+
+    `operating_cash` is honoured for the same reason it is in `liquid_assets`, and it must
+    be: deducting restored bank cash here would SHRINK the capital base and inflate the
+    ROIC of every bank, which is the same silent re-rating the EV gate exists to prevent.
+    One judgement about what a bank's cash is, applied at every site that nets it."""
     equity = get("stockholdersEquity")
     if not _has(equity):
         return None
     ic = _add(equity, total_debt(get, include_leases=include_leases))
-    cash = get("cash")
+    cash = drop_operating_cash(get("cash"), operating_cash)
     if ic is not None and _has(cash):
         ic = ic.sub(cash.fillna(0.0), fill_value=0.0)
     return ic

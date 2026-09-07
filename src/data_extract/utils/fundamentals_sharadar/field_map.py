@@ -304,6 +304,10 @@ def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula
         expected = f"the DISCRETE quarter's {inputs[0]}" if len(inputs) == 1 else None
     elif op == "sum":
         expected = " + ".join(inputs)
+    elif op == "sum_optional":
+        # the formula has to SHOW which legs are optional, or the two ops read identically
+        expected = (" + ".join([inputs[0]] + [f"coalesce({i}, 0)" for i in inputs[1:]])
+                    if len(inputs) >= 2 else None)
     elif op == "ratio":
         expected = " / ".join(inputs) if len(inputs) == 2 else None
     else:
@@ -345,8 +349,13 @@ def _field_map_at(config_dir: str) -> FieldMap:
     # as "keep Sharadar's own SPELLING" -- which left `ncfx`, `prefdivis` and `accoci` sitting
     # in a table whose other 63 columns are camelCase. The vendor spelling stays the KEY, so
     # `sharadar_fundamentals` is still the thing this file maps FROM.
+    # `negate` is read here as well as on the contract columns: an extra can be a cash-flow
+    # OUTFLOW too. `dividendsPaid` is the case that forced it -- Sharadar stores `ncfdiv`
+    # outflow-negative, and while the key was silently dropped here the column reached the
+    # cube on the vendor's sign, inverting `payout_ratio` across 2.96 M rows and collapsing
+    # `sustainable_growth_rate` onto `returnOnEquity`.
     extras = {e["to"]: ColumnSpec(name=e["to"], kind="direct", source=n, basis=e["basis"],
-                                  split_basis=e.get("split_basis"))
+                                  split_basis=e.get("split_basis"), negate=e.get("negate"))
               for n, e in raw["extras"].items()}
 
     unmapped = [n for n in HISTORY_STATEMENT_ORDER if n not in columns]
@@ -372,6 +381,10 @@ def _field_map_at(config_dir: str) -> FieldMap:
         if spec.basis not in (DURATION, INSTANT):
             raise RuntimeError(f"{path}: extra {name!r} has basis {spec.basis!r}; expected "
                                f"{DURATION!r} or {INSTANT!r}")
+        if spec.negate is not None and spec.negate != SHARADAR_NEGATE_IF_NON_POSITIVE:
+            raise RuntimeError(f"{path}: extra {name!r} has negate {spec.negate!r}; the only "
+                               f"accepted spelling is {SHARADAR_NEGATE_IF_NON_POSITIVE!r} "
+                               f"(see the contract-column check for why never `true`)")
     collisions = sorted(n for n in extras if sum(1 for e in raw["extras"].values()
                                                  if e["to"] == n) > 1)
     if collisions:
@@ -932,6 +945,12 @@ def apply_derived(frame: pd.DataFrame, field_map: FieldMap,
         parts = [frame[c].astype("float64") for c in spec.inputs]
         if spec.op == "sum":
             computed[name] = sum(parts[1:], start=parts[0])
+        elif spec.op == "sum_optional":
+            # first leg REQUIRED, the rest coalesced to 0: a widening must not be able to
+            # destroy the narrow line it widens. `.fillna(0.0)` on the tail, then re-impose
+            # the head's own NULLs, so a filing with neither leg still reads NULL.
+            widened = sum((p.fillna(0.0) for p in parts[1:]), start=parts[0].fillna(0.0))
+            computed[name] = widened.where(parts[0].notna())
         else:
             numerator, denominator = parts[0], parts[1].replace(0.0, np.nan)
             values = numerator / denominator

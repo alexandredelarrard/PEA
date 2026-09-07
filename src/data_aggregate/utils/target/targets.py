@@ -375,6 +375,7 @@ def build_targets_multi(
         eps = compute_epsilon(stock_ret, betas, factor_panel, macro_cols, h,
                               sector_excess=sector_excess)
         if vol_standardize:
+            # TODO: check if not needed to standardize by the idio vol, not the stock_ret
             eps = vol_standardize_epsilon(eps, stock_ret, h)
         out[h] = {lab: _neutral_label(eps, lab, min_names, exposures, dummies)
                   for lab in labels}

@@ -16,7 +16,12 @@ rows fully correct 82.8% (parser) vs 82.5% (LLM), but **missed rows 39 vs 1** an
 unbounded — 12 distinct header vocabularies across 34 filings, 41% combined-table
 layouts, 20.0% writing "Withheld" instead of "Against", a vertical `For: 1,234` layout
 it misses 100% of the time, and a dropped-header case that yields a silent COLUMN
-PERMUTATION. Cost is ~$0.00063/filing, i.e. ~$4 for the whole 6,657-row corpus.
+PERMUTATION.
+
+Cost, measured on a 48-filing run at `gpt.threads: 12`: 48 calls, 146k input / 143k output
+tokens, $0.30 — **~$0.0063/filing, so ~$50 for the 8,107 Item 5.07 filings in `sec_8k`**.
+Output is half the token bill because `gpt-5-mini` is a reasoning model and its reasoning
+tokens bill as output, so size a run on filings LISTED and not on rows expected.
 
 `proposal_type` reuses the vocabulary of the retired `sec_def14a_votes` table verbatim
 (nothing new invented) so a proxy's proposal and its meeting's tally speak one language.
@@ -48,11 +53,19 @@ VOTE_STANDARDS = ("against", "withheld")
 
 
 class NomineeVote(BaseModel):
-    """One director nominee's line in the election table."""
+    """One line of a per-line tally table: a director nominee, or a frequency bucket.
 
-    name: str = Field(description="The nominee's name EXACTLY as printed in the table")
+    The two share a shape — a label and up to four counts — so they share a model. A
+    frequency bucket fills `name` and `votes_for` only; see `ProposalVote.nominees`.
+    """
+
+    name: str = Field(description="The label EXACTLY as printed at the head of this line — the "
+                                  "nominee's name in an election table, or the frequency bucket "
+                                  "('1 Year', 'Every 2 Years', '3 Years') in a say-on-pay "
+                                  "frequency table")
     votes_for: Optional[float] = Field(
-        None, description="Shares voted FOR this nominee, as printed")
+        None, description="Shares voted FOR this nominee, as printed. For a frequency bucket, the "
+                          "shares that chose THIS interval")
     votes_against: Optional[float] = Field(
         None, description="Shares voted AGAINST this nominee — or WITHHELD, when the table "
                           "uses that column instead. Put the count here either way and record "
@@ -87,18 +100,30 @@ class ProposalVote(BaseModel):
                           "Null for every other proposal type")
     votes_for: Optional[float] = Field(
         None, description="Shares voted FOR, as printed. Null for a director election — the "
-                          "per-nominee counts go in `nominees` and must NOT be summed here")
+                          "per-nominee counts go in `nominees` and must NOT be summed here. Null "
+                          "for a say_on_pay_frequency vote too: it is tallied per FREQUENCY "
+                          "BUCKET, and '1 Year' is not a vote FOR anything")
     votes_against: Optional[float] = Field(
-        None, description="Shares voted AGAINST (or WITHHELD), as printed")
+        None, description="Shares voted AGAINST (or WITHHELD), as printed. Null for a director "
+                          "election, and null for a say_on_pay_frequency vote — '2 Years' is a "
+                          "choice of interval, NOT a vote against")
     votes_abstain: Optional[float] = Field(
-        None, description="Shares ABSTAINED, as printed")
+        None, description="Shares ABSTAINED, as printed. On a say_on_pay_frequency vote this is "
+                          "that table's own 'Abstain' column, which sits BESIDE the year buckets "
+                          "— never the '3 Years' count")
     votes_broker_non_votes: Optional[float] = Field(
         None, description="BROKER NON-VOTES, as printed. Null when the filing does not report "
-                          "them or prints 'N/A'; 0 ONLY when it prints a zero")
+                          "them or prints 'N/A'; 0 ONLY when it prints a zero. On a "
+                          "say_on_pay_frequency vote this is that table's own 'Broker Non-Votes' "
+                          "column — never the 'Abstain' count shifted along one")
     nominees: list[NomineeVote] = Field(
         default_factory=list,
-        description="EVERY nominee's line, for a director_election ONLY. Empty for every other "
-                    "proposal type")
+        description="EVERY per-line entry of the proposal's own tally table, for these two "
+                    "proposal types ONLY. For a director_election: one entry per nominee. For a "
+                    "say_on_pay_frequency vote: one entry per FREQUENCY BUCKET — `name` is the "
+                    "bucket label exactly as printed ('1 Year', 'Every 2 Years', '3 Years'), its "
+                    "count goes in `votes_for`, and the other three fields are null. Empty for "
+                    "every other proposal type")
 
 
 class Item507Extract(BaseModel):

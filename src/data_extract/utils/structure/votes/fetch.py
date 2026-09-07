@@ -24,7 +24,7 @@ independent check either: it is lossy (Merck says "approximately 94%" where its 
 says 93.50%) and the denominator convention varies by state of incorporation (XOM notes
 New Jersey excludes abstentions from votes cast).
 
-What replaces a gate is two hard rules, both of them the LLM's own measured failure modes:
+What replaces a gate is three hard rules, all of them the LLM's own measured failure modes:
 
 1. **The fabrication guard.** The model invented an entire table ("John Doe" / "Jane
    Smith", 250,000,000 votes) for a filing whose `item_text` was truncated, and a fake
@@ -40,6 +40,16 @@ What replaces a gate is two hard rules, both of them the LLM's own measured fail
    "estimated preliminary voting results ... do not include shares voted on the blue
    proxy card distributed by Trian" and the 8-K/A carries the Inspector of Election's
    final results, switching from Against to Withhold on the way.
+3. **A per-line tally is never relabelled For/Against.** A say-on-pay FREQUENCY vote is
+   printed `1 Year | 2 Years | 3 Years | Abstain | Broker Non-Votes` (Agilent writes
+   `Every 1 Year`), and folding three year buckets onto For/Against/Abstain shifts every
+   column along one, drops the broker non-votes off the end, and leaves `votes_against`
+   reading as opposition when it counts shareholders who wanted a BIENNIAL vote. Neither
+   guard above can see it — the shifted numbers are all genuinely printed in the source,
+   so both grounding tests pass. So the year buckets go to `nominee_votes_json` and
+   `votes_for` / `votes_against` are NULLED in `flatten`, not merely discouraged in the
+   prompt. Same shape of defect as the dropped-header column permutation, same defence:
+   the layer that knows the proposal's TYPE is the one that has to enforce it.
 
 Role categorisation joins each nominee to the nearest prior proxy (`def14a_llm`,
 `def14a_executive_comp`, `def14a_director_comp`) on the same `lastname|firstinitial` key

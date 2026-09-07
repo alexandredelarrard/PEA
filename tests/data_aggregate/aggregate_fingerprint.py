@@ -67,17 +67,36 @@ FILING_LAG = 45
 def _select_fundamentals() -> pd.DataFrame:
     """`TICKERS_PER_SECTOR` alphabetically-first tickers per GICS sector, so the draw is
     reproducible without an RNG and every sector-gated KPI family has names that pass its
-    gate. Read from the DB only when the frozen parquet is absent."""
+    gate. Read from the DB only when the frozen parquet is absent.
+
+    THE TWO ENRICHMENTS ARE PART OF THE INPUT, not of the panel builders. `StepCubeFundamentals`
+    applies them between the load and the builders, so a slice frozen straight off the table is
+    NOT the frame production feeds in:
+
+      * `sector` / `industry_group` are not columns of `fundamentals_history` at all -- they are
+        a `sp500_tickers` lookup. Without them `sector_gates.row_gate` fails closed and the whole
+        sector-KPI layer is fingerprinted as empty (and the per-sector draw above has nothing to
+        iterate over).
+      * `revenueGrowth` / `earningsGrowth` are `CUBE_TIME_COLUMNS`: only the cube can compute
+        them, because the year-ago leg is found by a 365-DAY as-of match, not a row offset.
+    """
     from dotenv import load_dotenv
 
     load_dotenv(ROOT / ".env")            # so `python -m ...aggregate_fingerprint` works standalone
+    from types import SimpleNamespace
+
+    from src.data_aggregate.utils.common.gics import attach_gics_columns
+    from src.data_aggregate.utils.common.pit import add_cube_time_growth
     from src.data_store.store import DataStore
     from src.utils.db import get_engine
 
-    fh = DataStore(get_engine()).load("fundamentals_history")
+    store = DataStore(get_engine())
+    fh = store.load("fundamentals_history")
     if fh.empty:
         raise RuntimeError("fundamentals_history is empty -> cannot build the aggregation "
                            "fingerprint (run the extraction step first)")
+    # `attach_gics_columns` reads `context.store` and nothing else
+    fh = attach_gics_columns(add_cube_time_growth(fh), SimpleNamespace(store=store))
     picked: list[str] = []
     for sector in sorted(fh["sector"].dropna().astype(str).unique()):
         names = sorted(fh.loc[fh["sector"].astype(str) == sector, "ticker"].unique())
@@ -366,6 +385,10 @@ def compute() -> dict:
     out["panel.price"] = frame_digest(build_feature_panel(
         close, px["open"], sector_ret, "rank", px["high"], px["low"], px["volume"],
         [30, 60, 90]))
+    # `pension_facts` / `notes_num` are deliberately NOT passed: they are separate bulk SEC
+    # tables, and freezing a slice of each would double the fixture for one feature family.
+    # The consequence is explicit -- the `pension_*` features are absent from this digest and
+    # are guarded by `test_insider_pension_features.py` instead.
     fp = build_fundamental_feature_panel(fund, peers, idx, stock_close=close,
                                          earnings_history=earn)
     out["panel.fundamental"] = frame_digest(fp)

@@ -32,7 +32,7 @@ import pandas as pd
 
 from src.data_extract.utils.structure.votes.flatten import (
     _DIRECTOR_COLS, _LOW_SUPPORT_THRESHOLD, _ROLE_CATEGORIES, _VOTE_FIELDS,
-    _prepare_frame, _proposal_rows,
+    _clean_proposal_number, _prepare_frame, _proposal_rows,
 )
 from src.data_extract.utils.structure.votes.guard import (
     _MIN_ITEM_TEXT_CHARS, _name_in_source, has_vote_numbers, mentions_preliminary,
@@ -244,27 +244,61 @@ def test_the_shortest_genuine_tally_in_the_corpus_is_not_mistaken_for_a_stub():
     assert rows[0]["votes_broker_non_votes"] is None
 
 
+_JPM_FREQ_BUCKETS = [_nominee("One Year", 2_609_772_372, None),
+                     _nominee("Two Years", 51_181_321, None),
+                     _nominee("Three Years", 79_750_121, None)]
+
+
 def test_the_frequency_buckets_are_not_an_election():
     """JPM 2017 tallies `One Year | Two Years | Three Years | Abstain | Broker Non-Votes`.
     A per-label tally is not a per-person one: treating it as an election would build a role
     map and a `min_support_pct` for a bucket called "One Year". The buckets land in
     `nominee_votes_json`, where a recategorisation stays free, and the 20 category columns
-    stay null."""
-    buckets = [_nominee("One Year", 2_609_772_372, 0),
-               _nominee("Two Years", 51_181_321, 0),
-               _nominee("Three Years", 79_750_121, 0)]
+    stay null.
+
+    Only the LAST TWO columns of that header are proposal-level. `votes_for` and
+    `votes_against` are nulled: no shareholder voted "for" a frequency, they chose one,
+    and the choices are all in the JSON."""
     rows, rejected = _rows("jpm_2017_freq", _extract(ProposalVote(
         proposal_number="1", description="Frequency of future Say on Pay votes",
         proposal_type="say_on_pay_frequency", votes_abstain=7_681_114,
-        votes_broker_non_votes=402_161_634, nominees=buckets)))
+        votes_broker_non_votes=402_161_634, nominees=_JPM_FREQ_BUCKETS)))
     assert rejected == 0
     row = rows[0]
     assert row["proposal_type"] == "say_on_pay_frequency"
     assert all(row[c] is None for c in _DIRECTOR_COLS)     # no n_nominees, no min_support
     assert row["nominee_sum_matches"] is None              # meaningless off an election
-    assert row["votes_abstain"] == 7_681_114               # proposal-level votes SURVIVE
-    assert {b["name"] for b in json.loads(row["nominee_votes_json"])} == {
-        "One Year", "Two Years", "Three Years"}
+    assert row["votes_for"] is None and row["votes_against"] is None
+    assert row["votes_abstain"] == 7_681_114               # the table's OWN Abstain column
+    assert row["votes_broker_non_votes"] == 402_161_634    # ...and its own broker column
+    assert {b["name"]: b["votes_for"] for b in json.loads(row["nominee_votes_json"])} == {
+        "One Year": 2_609_772_372, "Two Years": 51_181_321, "Three Years": 79_750_121}
+
+
+def test_a_frequency_table_folded_onto_for_against_is_refused_not_stored():
+    """The measured production defect, on 100% of the say-on-pay frequency rows written:
+    the model shifted `1 Year | 2 Years | 3 Years | Abstain` onto
+    `votes_for | votes_against | votes_abstain | votes_broker_non_votes`, dropping the real
+    broker non-votes off the end and leaving `votes_against` reading as opposition when it
+    counted shareholders who wanted a BIENNIAL vote.
+
+    Neither fabrication guard can see this — every shifted number IS printed in the source,
+    so both grounding tests pass. Only the layer that knows the proposal's TYPE can refuse
+    it, and refusing means storing NO tally: which source column a lone number came from is
+    exactly what is unknowable once the buckets are gone."""
+    permuted = ProposalVote(
+        proposal_number="1", description="Frequency of future Say on Pay votes",
+        proposal_type="say_on_pay_frequency",
+        votes_for=2_609_772_372,               # One Year
+        votes_against=51_181_321,              # Two Years
+        votes_abstain=79_750_121,              # Three Years
+        votes_broker_non_votes=7_681_114)      # Abstain — and 402,161,634 lost entirely
+    rows, rejected = _rows("jpm_2017_freq", _extract(permuted))
+    assert rejected == 0                                   # the row survives...
+    row = rows[0]
+    assert all(row[f] is None for f in _VOTE_FIELDS)       # ...carrying no tally at all
+    assert row["nominee_votes_json"] is None               # which is how the loss stays countable
+    assert row["description"] and row["proposal_type"] == "say_on_pay_frequency"
 
 
 # --------------------------------------------------------------------------- #
@@ -513,6 +547,75 @@ def test_an_unknown_proposal_type_is_nulled_not_invented():
                      votes_for=11_910_666_249, votes_against=221_074_424)))
     assert rows[0]["proposal_type"] is None
     assert "climate_proposal" not in PROPOSAL_TYPES
+
+
+# --------------------------------------------------------------------------- #
+# The filer's own proposal label                                               #
+# --------------------------------------------------------------------------- #
+def test_the_filers_proposal_label_is_normalised_to_one_shape():
+    """Run over every distinct label stored, 302 strings collapse to 113 tokens. The model
+    reads the label AS PRINTED — that is its job — and the canonicalisation happens here.
+
+    Every case below is a real stored string."""
+    assert _clean_proposal_number("Proposal No. 4") == "4"
+    assert _clean_proposal_number("Proposal No.1") == "1"
+    assert _clean_proposal_number("Item 1.") == "1"
+    assert _clean_proposal_number("Proposal One") == "1"
+    assert _clean_proposal_number("Proposal Seven") == "7"
+    assert _clean_proposal_number("9.") == "9"
+    assert _clean_proposal_number("(2)") == "2"
+    assert _clean_proposal_number("10") == "10"
+    assert _clean_proposal_number("Stockholder Proposal #1") == "1"
+    assert _clean_proposal_number(None) is None
+    assert _clean_proposal_number("   ") is None
+
+
+def test_a_glued_on_title_is_dropped_but_a_range_is_not_reduced_to_its_first():
+    """Filers glue the title onto the number three different ways. Taking the leading
+    ordinal is right for those — but `Proposals 1 - 10` and `1(a)-(f)` are RANGES whose row
+    aggregates every proposal in them, so reducing either to "1" would misstate what was
+    voted on. The tail is what tells them apart: prose means a title, an ordinal means a
+    range. All eight labels left verbatim across the stored corpus are ranges of this shape
+    (plus one class-qualified `5 (Preferred Stockholders)`)."""
+    assert _clean_proposal_number("Proposal 1 - Election of Directors") == "1"
+    assert _clean_proposal_number("Proposal 3: Advisory Vote on the Frequency") == "3"
+    assert _clean_proposal_number("Proposal 6– Shareholder proposal") == "6"
+    assert _clean_proposal_number("Item 4 - Stockholder Proposal (Vote Tabulation)") == "4"
+
+    assert _clean_proposal_number("Proposals 1 - 10") == "Proposals 1 - 10"
+    assert _clean_proposal_number("1 - 11") == "1 - 11"
+    assert _clean_proposal_number("1(a)-(f)") == "1(a)-(f)"
+    # a shape this does not understand is source, not noise
+    assert _clean_proposal_number("Resolution IV(a)") == "Resolution IV(a)"
+
+
+def test_a_split_item_keeps_its_sub_marker_and_two_spellings_of_it_agree():
+    """Abbott 2021 split one bye-law amendment into `4a`/`4b`, Accenture 2016 ran
+    `7A/7B/8A/8B`, and another filer writes the same idea as `4.a`. Collapsing any of them
+    to a bare `4` would merge two different proposals carrying different tallies, so the
+    sub-marker is kept and the column stays TEXT.
+
+    `7.2` cannot lose its dot the way `4.a` does — `72` is a different proposal."""
+    assert _clean_proposal_number("4b") == "4b"            # NOT "4"
+    assert _clean_proposal_number("7B.") == "7b"
+    assert _clean_proposal_number("4.a") == "4a"           # same proposal as a bare "4a"
+    assert _clean_proposal_number("7.2") == "7.2"
+    assert _clean_proposal_number("(b)") == "b"            # one filer letters everything
+
+
+def test_the_label_is_normalised_on_the_row_and_proposal_seq_is_independent_of_it():
+    """`proposal_seq` is OUR gap-free ordinal and `proposal_number` is the filer's label;
+    they are not the same column. Arch Capital's 2010 8-K puts two separate elections under
+    one `Item 1`, so a label cannot key a row — and where the two disagree the gap is
+    informative: Apple's 2013 item 2 "was withdrawn and no vote was taken" and its 2012 item
+    6 was never presented, so the filer's numbering skips where ours cannot."""
+    rows, _ = _rows("aapl_2025", _extract(
+        _election(_AAPL_NOMINEES, number="Item 1"),
+        ProposalVote(proposal_number="Item 1", description="A second matter under one label",
+                     proposal_type="company_proposal", votes_for=11_910_666_249,
+                     votes_against=221_074_424)))
+    assert [r["proposal_number"] for r in rows] == ["1", "1"]      # normalised, and NOT unique
+    assert [r["proposal_seq"] for r in rows] == [1.0, 2.0]         # ours, and always distinct
 
 
 # --------------------------------------------------------------------------- #

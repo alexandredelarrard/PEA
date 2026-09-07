@@ -138,7 +138,6 @@ _FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed"]   # the only c
 _MEAN_REVERSION_FIELDS = (
     "earnings_yield", "sales_yield", "book_yield",
     "fcf_yield", "ebitda_to_ev", "fcf_to_ev", "ffo_yield", "intrinsic_yield",
-    "core_earnings_yield",   # adjusted E/P also gets a "cheap vs its own past" z
 )
 _HIST_WINDOW = 1260      # ~5 trading years of daily observations
 _HIST_MIN_PERIODS = 252  # require >= 1y of history before emitting a z-score
@@ -163,11 +162,32 @@ _HYPER_GROWTH = 0.25     # YoY revenue growth above which a name is "hyper-growt
 # --------------------------------------------------------------------------- #
 
 
-def _combine_debt(long_debt: pd.DataFrame, short_debt: pd.DataFrame,
+def _combine_debt(daily, long_debt: pd.DataFrame, short_debt: pd.DataFrame,
                   fallback: pd.DataFrame) -> pd.DataFrame:
-    """Total interest-bearing debt = long-term + short-term, NaN-tolerant
-    (a firm with only one of the two keeps that one). Falls back to total
-    liabilities when neither debt tag is present, so leverage is still defined."""
+    """Total interest-bearing debt for the distress block.
+
+    ⚠ PREFERS THE RECONCILED `totalDebt` COLUMN, via the shared `capital.borrowings`.
+    This used to be `longTermDebt + shortTermDebt` only, and that is the SAME
+    unclassified-balance-sheet trap `cash` fell into: a bank or REIT reports no
+    current/non-current split (ASC 210-10-05-4), so BOTH leg columns are absent on
+    exactly those filings. Measured: `longTermDebt` and `shortTermDebt` are each 0.277
+    populated for Financials and 0.274 for Real Estate, while `totalDebt` -- which the
+    extractor reconciles from the combined ST+LT tag, the two-leg sum and the REIT
+    notes-payable fallback -- is **1.000 in every sector**. So restoring `cash` fixed the
+    NUMERATOR of `cash_to_debt` and the denominator still nulled the row.
+
+    Substituting it is safe because it is the same quantity, not a wider one: on every
+    row where both legs exist, `totalDebt` equals their sum to within 1% on **100.00%**
+    of rows in all eleven sectors (median relative gap 0.0). And it is genuinely debt
+    rather than liabilities for the leg-less filers -- median `totalDebt`/assets is 0.095
+    for Financials against `totalLiabilities`/assets of 0.877 (BAC: 732bn of debt inside
+    3,198bn of liabilities on 3,499bn of assets; deposits are the difference).
+
+    Falls back to the two legs, then to total liabilities, so a history vintage without
+    the reconciled column still produces leverage."""
+    borrowed = capital.borrowings(daily)
+    if borrowed is not None and not borrowed.empty and borrowed.notna().any().any():
+        return borrowed
     have_long = long_debt is not None and not long_debt.empty
     have_short = short_debt is not None and not short_debt.empty
     if have_long and have_short:
@@ -245,38 +265,20 @@ def _nopat_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
 
 
 def _da_realism_fields(daily) -> dict:
-    """#2 -- is reported depreciation believable given the asset base? Extending
-    useful lives (a jump in implied life) or an aging base (high accumulated /
-    gross PP&E) are classic earnings-quality tells the aggregate D&A line hides.
-    `sbc_to_buyback` flags buybacks that merely offset option dilution."""
-    F: dict[str, pd.DataFrame] = {}
-    depamort = daily("depAmort")
-    amort_intang = daily("amortizationIntangibles")
-    ppe_gross = daily("ppeGross")
-    accum_dep = daily("accumulatedDepreciation")
-    # PP&E depreciation = D&A minus intangible amortization (fall back to full D&A
-    # when the split is absent) so the useful-life read is about hard assets.
-    depreciation = (depamort.sub(amort_intang, fill_value=0.0)
-                    if not amort_intang.empty else depamort)
+    """Does the buyback even cover the stock the firm gave away? `sbc_to_buyback` > 1 means
+    the repurchase is not returning capital, it is mopping up option dilution.
 
-    if not ppe_gross.empty and not depreciation.empty:
-        life = ratio(ppe_gross, depreciation, positive_den=True)
-        if life.notna().any().any():
-            F["implied_useful_life"] = life
-            luc = (life - life.shift(_YEAR)).replace([np.inf, -np.inf], np.nan)
-            if luc.notna().any().any():
-                F["useful_life_change"] = luc     # jump UP = lives extended = red flag
-    if not accum_dep.empty and not ppe_gross.empty:
-        age = ratio(accum_dep, ppe_gross, positive_den=True)
-        if age.notna().any().any():
-            F["asset_age"] = age                  # high = old base -> capex catch-up ahead
-    if not amort_intang.empty and not depamort.empty:
-        ias = ratio(amort_intang, depamort, positive_den=True)
-        if ias.notna().any().any():
-            F["intangible_amortization_share"] = ias
-    sbc, buyback = daily("stockBasedComp"), daily("buybacks")
-    if not sbc.empty and not buyback.empty:
-        s2b = ratio(sbc, buyback.abs(), positive_den=True)
+    WAS ALSO HERE, now deleted: `implied_useful_life`, `useful_life_change`, `asset_age` and
+    `intangible_amortization_share` -- the D&A-realism family, which asked whether reported
+    depreciation is believable given the gross asset base. All four need `ppeGross`,
+    `accumulatedDepreciation` or `amortizationIntangibles`. Sharadar delivers none of the
+    three, and the SEC-owned `_sec` twins sit at 4.7% and 6.4% coverage, far too thin to
+    rank a universe on. They return with the SEC extraction path."""
+    F: dict[str, pd.DataFrame] = {}
+    sbc = daily("stockBasedComp")
+    buyback = capital.share_repurchases(daily)     # positive magnitude; see capital.py
+    if not sbc.empty and buyback is not None and not buyback.empty:
+        s2b = ratio(sbc, buyback, positive_den=True)
         if s2b.notna().any().any():
             F["sbc_to_buyback"] = s2b             # >1 = buybacks don't even cover SBC
     return F
@@ -286,7 +288,16 @@ def _beneish_m_score(daily, idx: pd.DatetimeIndex) -> pd.DataFrame:
     """Beneish (1999) 8-variable earnings-manipulation model, each index computed
     as this year vs one year ago (trailing 252 trading days). Higher M = more
     likely a manipulator (the classic screen is M > -1.78). Missing index ->
-    neutral (1.0; TATA -> 0), so M is defined wherever revenue+assets exist."""
+    neutral (1.0; TATA -> 0), so M is defined wherever revenue+assets exist.
+
+    ⚠ THAT LAST CLAUSE IS ENFORCED, not just asserted. The score is seeded as a DENSE
+    constant frame over the whole date x ticker grid and every absent index is filled with
+    its neutral value, so a ticker with NO DATA AT ALL scored
+    -4.84 + 0.920 + 0.528 + 0.404 + 0.892 + 0.115 - 0.172 - 0.327 = -2.48: a clean bill of
+    health, below the -1.78 manipulation threshold, for a company that did not exist yet.
+    Measured, that was 565,720 pre-listing rows carrying the identical constant. The guard
+    above only checks that SOME ticker has revenue and assets, which is why the final
+    `.where` is needed -- it is what makes the docstring's promise true per cell."""
     rev, assets = daily("totalRevenue"), capital.assets_ex_lease(daily)
     if rev.empty or assets.empty:
         return pd.DataFrame()
@@ -329,7 +340,12 @@ def _beneish_m_score(daily, idx: pd.DatetimeIndex) -> pd.DataFrame:
             m = m + coef * df.reindex(index=idx, columns=cols).fillna(neutral).clip(-10.0, 10.0)
         else:
             m = m + coef * neutral
-    return m.replace([np.inf, -np.inf], np.nan)
+    # the docstring's support, enforced per cell: no revenue or no assets -> no score.
+    # Deliberately keyed on DATA, not on listing, so a spin-off that files before it starts
+    # trading (OTIS, CARR) keeps the score its filings support.
+    support = (rev.reindex(index=idx, columns=cols).notna()
+               & assets.reindex(index=idx, columns=cols).notna())
+    return m.where(support).replace([np.inf, -np.inf], np.nan)
 
 
 _NET_PENSION_TAGS = (
@@ -342,6 +358,16 @@ _NET_PENSION_TAGS = (
 # (balance-type) facts the primary statements never expose.
 _FN_PBO_TAG = "DefinedBenefitPlanBenefitObligation"          # projected benefit obligation
 _FN_PLAN_ASSETS_TAG = "DefinedBenefitPlanFairValueOfPlanAssets"
+
+
+def _scope_to_universe(facts: pd.DataFrame | None,
+                       universe: set[str]) -> pd.DataFrame | None:
+    """A bulk facts frame restricted to the tickers the fundamentals panel is being built
+    for. A no-op when the universe is unknown, so a caller that hands over a frame without
+    a `ticker` column still gets the old behaviour rather than an empty one."""
+    if facts is None or facts.empty or not universe or "ticker" not in facts.columns:
+        return facts
+    return facts[facts["ticker"].astype(str).isin(universe)]
 
 
 def _pension_deficit_daily(pension_facts: pd.DataFrame | None,
@@ -420,8 +446,7 @@ def load_notes_num_scoped(context: Context) -> pd.DataFrame | None:
     return load_tagged_facts(context, _NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG))
 
 
-def _forensic_fields(daily, idx: pd.DatetimeIndex,
-                     pension_deficit: pd.DataFrame | None = None) -> dict:
+def _forensic_fields(daily, idx: pd.DatetimeIndex) -> dict:
     """#5 -- accounting-quality / hidden-leverage red flags: working-capital days
     and their year-over-year drift (supplier-funded growth = rising DPO; channel
     stuffing = rising DSO), off-balance-sheet-INCLUSIVE net leverage (adds lease
@@ -447,18 +472,31 @@ def _forensic_fields(daily, idx: pd.DatetimeIndex,
         if ccc.notna().any().any():
             F["cash_conversion_cycle"] = ccc
 
-    # Off-balance-sheet-INCLUSIVE net leverage, from the single shared definition in
-    # `capital.py`: borrowings + capitalized leases + pension/OPEB deficit + asset-
-    # retirement obligations - non-operating liquid assets, over EBITDA. The bulk
-    # Financial-Statement-Data-Sets deficit is passed in (universe-wide) and the
-    # companyfacts tag fills its gaps inside the helper.
-    ebitda = daily("ebitda")
-    net_od = capital.net_debt(daily, off_balance_sheet=True, pension=pension_deficit)
-    if net_od is not None and not ebitda.empty:
-        nlev = ratio(net_od, ebitda, positive_den=True)
-        if nlev.notna().any().any():
-            F["net_debt_incl_offbs_to_ebitda"] = nlev
-
+    # DELETED 2026-09-05: `net_debt_incl_offbs_to_ebitda`.
+    #
+    # It was the off-balance-sheet-inclusive twin of `net_debt_to_ebitda`: borrowings +
+    # capitalized leases + pension/OPEB deficit + asset-retirement obligations - liquid
+    # assets, over EBITDA. THREE of those four distinguishing legs do not exist on the
+    # Sharadar substrate -- `fundamentals_history` has no `operatingLeaseLiability`,
+    # `financeLeaseLiability` or `assetRetirementObligation` column at all -- and the
+    # fourth, the pension pool, reaches 199 of 491 tickers.
+    #
+    # It survived only because the distress block computed its own debt from
+    # `longTermDebt + shortTermDebt` while this one went through `capital.borrowings`. Once
+    # the distress block was fixed to read the reconciled `totalDebt` too (both were wrong
+    # for banks and REITs, where neither leg column exists), the last artificial difference
+    # went and the two became THE SAME NUMBER: identical fingerprint hashes on the frozen
+    # slice (`bc782e6854f8f83d` / `57e0d7b74e5e2e23`), r = 0.9997 on the 18-ticker
+    # redundancy fixture and 0.9955 across the live cube. The audit deleted
+    # `net_debt_to_ebitdare` at r = 0.9998 for exactly this reason.
+    #
+    # Nothing is lost: the pension overhang it folded in is already carried, undiluted, by
+    # `pension_overhang_leverage` and `pension_retirement_liability`. `net_debt_to_ebitda`
+    # is kept as the survivor because it is the standard credit metric and the one
+    # `lgbm_modelling.yml` already declares a monotone constraint on.
+    #
+    # With it went this block's only reads of `ebitda`, the coalesced pension pool and the
+    # operating-cash gate, so all three left the signature too.
     m = _beneish_m_score(daily, idx)
     if not m.empty and m.notna().any().any():
         F["beneish_m_score"] = m
@@ -466,51 +504,55 @@ def _forensic_fields(daily, idx: pd.DatetimeIndex,
 
 
 def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                      yoy_periods: int) -> dict:
-    """#3 -- is bought growth being digested? ROIC WITH vs WITHOUT goodwill (the
-    wedge = how much acquisitions drag returns), goodwill+intangibles balance-
-    sheet weight (writedown exposure), and SG&A elasticity to revenue (<1 =
-    synergies captured, ~1 = bolt-on with no integration)."""
+                      yoy_periods: int,
+                      operating_cash: frozenset[str] | None = None) -> dict:
+    """#3 -- is bought growth being digested? ROIC WITH vs WITHOUT acquired intangibles (the
+    wedge = how much acquisitions drag returns), the intangibles balance-sheet weight
+    (writedown exposure), and SG&A elasticity to revenue (<1 = synergies captured, ~1 =
+    bolt-on with no integration).
+
+    ⚠ THE DEDUCTION IS GOODWILL **AND** OTHER INTANGIBLES, COMBINED, and the feature names
+    say so. Sharadar's `intangibles` is the only intangibles basis SF1 delivers and it does
+    not split the two; the SEC-owned split legs (`goodwill_sec` 10.2%,
+    `intangiblesExGoodwill_sec` 7.1%) are far too thin to subtract from a universe-wide
+    denominator. Reading the bare `goodwill` -- which no producer writes -- is what made the
+    "ex-goodwill" ROIC subtract NOTHING and correlate 1.0000 with its incl-goodwill twin,
+    with `goodwill_roic_drag` identically zero across 3.04 M rows.
+
+    So `roic_ex_intangibles` is a WIDER deduction than a textbook ex-goodwill ROIC: it also
+    removes purchased patents, customer lists and brands. That is the honest name for what
+    the data supports, and it is the same deduction for every ticker, which is what makes
+    the cross-sectional rank meaningful."""
     F: dict[str, pd.DataFrame] = {}
     # asset base EX the ASC-842 ROU asset, so the FY2019 adoption jump does not read as
     # balance-sheet growth (see `totalAssetsExLease` in the extractor).
     oi, assets = daily("operatingIncome"), capital.assets_ex_lease(daily)
     equity = daily("stockholdersEquity")
-    goodwill, intang = daily("goodwill"), daily("intangiblesExGoodwill")
+    intangibles = daily("intangibles")          # goodwill + other intangibles, COMBINED
     tax = _nopat_tax_rate(daily)
 
     if not oi.empty and not equity.empty:
         nopat = oi * (1.0 - tax) if not tax.empty else oi
         # invested capital now INCLUDES capitalized leases (shared definition), matching
         # how leases are already treated as debt in EV and in the leverage ratios.
-        ic = capital.invested_capital(daily)
+        ic = capital.invested_capital(daily, operating_cash=operating_cash)
         roic_incl = ratio(nopat, ic, positive_den=True) if ic is not None else pd.DataFrame()
         if roic_incl.notna().any().any():
-            F["roic_incl_goodwill"] = roic_incl
-            ic_ex = ic
-            if not goodwill.empty:
-                ic_ex = ic_ex.sub(goodwill, fill_value=0.0)
-            if not intang.empty:
-                ic_ex = ic_ex.sub(intang, fill_value=0.0)
-            roic_ex = ratio(nopat, ic_ex, positive_den=True)
-            if roic_ex.notna().any().any():
-                F["roic_ex_goodwill"] = roic_ex
-                # incl - ex < 0 => goodwill/intangibles dilute returns (overpaid)
-                F["goodwill_roic_drag"] = roic_incl.sub(roic_ex, fill_value=np.nan)
+            F["roic_incl_intangibles"] = roic_incl
+            if not intangibles.empty:
+                roic_ex = ratio(nopat, ic.sub(intangibles, fill_value=0.0), positive_den=True)
+                if roic_ex.notna().any().any():
+                    F["roic_ex_intangibles"] = roic_ex
+                    # incl - ex < 0 => acquired intangibles dilute returns (overpaid)
+                    F["intangibles_roic_drag"] = roic_incl.sub(roic_ex, fill_value=np.nan)
 
-    if not goodwill.empty and not assets.empty:
-        gi = goodwill.add(intang, fill_value=0.0)
-        gta = ratio(gi, assets, positive_den=True)
+    if not intangibles.empty and not assets.empty:
+        gta = ratio(intangibles, assets, positive_den=True)
         if gta.notna().any().any():
-            F["goodwill_intangibles_to_assets"] = gta
-        gte = ratio(goodwill, equity.where(equity > 0))
+            F["intangibles_to_assets"] = gta
+        gte = ratio(intangibles, equity.where(equity > 0))
         if gte.notna().any().any():
-            F["goodwill_to_equity"] = gte     # >1 => a writedown can wipe out book equity
-        gw_imp = daily("goodwillImpairment")  # absent until split-out tag is extracted
-        if not gw_imp.empty:
-            gii = ratio(gw_imp, assets, positive_den=True)
-            if gii.notna().any().any():
-                F["goodwill_impairment_intensity"] = gii   # writedown = overpayment admitted
+            F["intangibles_to_equity"] = gte   # >1 => a writedown can wipe out book equity
 
     sga_g = fiscal_change_to_daily(fund_hist, "sellingGeneralAdmin", idx, kind="pct", periods=yoy_periods)
     rev_g = fiscal_change_to_daily(fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods)
@@ -521,122 +563,24 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     return F
 
 
-def _core_earnings_fields(daily, mcap: pd.DataFrame) -> dict:
-    """#1 -- normalize earnings for non-recurring items (impairment + restructuring
-    added back, gains on disposition removed) -> CORE margins/yield kept ALONGSIDE
-    the reported ones (both versions live in the cube). `nonrecurring_pretax_share`
-    is how transitory the quarter's profit is. The special-items pool widens once
-    litigation / discontinued-ops / unusual tags are extracted (see backlog)."""
-    F: dict[str, pd.DataFrame] = {}
-    rev = daily("totalRevenue")
-    if rev.empty:
-        return F
-    pretax, ni = daily("pretaxIncome"), daily("netIncome")
-    oi, ebitda = daily("operatingIncome"), daily("ebitda")
-    impair, restr, gains = daily("impairment"), daily("restructuring"), daily("gainOnDispositions")
+def _per_share_and_profit_slice_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
+                                       yoy_periods: int,
+                                       close: pd.DataFrame | None) -> dict:
+    """Per-share economics and the non-controlled slice of reported profit.
 
-    charges = impair.add(restr, fill_value=0.0)          # >=0 expense add-backs
-    litig = daily("litigationExpense")                   # positive charge (add back); absent pre-refetch
-    if not litig.empty:
-        charges = charges.add(litig, fill_value=0.0)
-    # signed gains removed from core (gain +, loss -): disposals, bargain purchase, net unusual
-    # equity-method income has no revenue and no cash; realized investment gains and debt
-    # extinguishment are management-timed; `otherNonoperating` is where ASU 2017-07 parked
-    # non-service pension cost. None of them belong in CORE operating earnings.
-    for extra in ("gainOnSaleGeneric", "bargainPurchaseGain", "unusualItems",
-                  "equityMethodIncome", "realizedInvestmentGains", "debtExtinguishment",
-                  "otherNonoperating"):
-        g = daily(extra)
-        if not g.empty:
-            gains = gains.add(g, fill_value=0.0) if not gains.empty else g
-    special = charges.sub(gains, fill_value=0.0)         # +net charges (reported depressed) / -net gains
-    if special.empty or not special.notna().any().any():
-        return F
-    tax = _nopat_tax_rate(daily)
-    rev_pos = rev.where(rev > 0)
+    Per share  reported diluted EPS (98.8%) and the OPTION OVERHANG (diluted - basic) / basic,
+               which the net share count hides once buybacks offset the SBC issuance.
+    NCI        how much of the bottom line belongs to somebody else. `netIncome` maps from
+               Sharadar's `consolinc`, which INCLUDES non-controlling interests, so this is
+               the share of consolidated profit the parent's shareholders do not own.
 
-    if not pretax.empty:
-        share = ratio(special.abs(), pretax.abs(), positive_den=True)
-        if share.notna().any().any():
-            F["nonrecurring_pretax_share"] = share
-    F["special_items_intensity"] = ratio(special, rev_pos)    # signed: +ve => one-offs hurt reported
-
-    core_ni = ni.add(special.mul(1.0 - tax) if not tax.empty else special, fill_value=0.0)
-    # discontinued operations are net-of-tax and transitory -> removed from core directly
-    disc = daily("discontinuedOps")
-    if not core_ni.empty and not disc.empty:
-        core_ni = core_ni.sub(disc, fill_value=0.0)
-    if not core_ni.empty:
-        F["core_profit_margin"] = ratio(core_ni, rev_pos)     # vs reported profitMargins
-        if mcap is not None and not mcap.empty:
-            cey = ratio(core_ni.where(core_ni > 0), mcap, positive_den=True)
-            if cey.notna().any().any():
-                F["core_earnings_yield"] = cey                 # vs reported earnings_yield
-    if not oi.empty:
-        F["core_operating_margin"] = ratio(oi.add(charges, fill_value=0.0), rev_pos)
-    if not ebitda.empty:
-        F["adjusted_ebitda_margin"] = ratio(
-            ebitda.add(charges, fill_value=0.0).sub(gains, fill_value=0.0), rev_pos)
-    return F
-
-
-def _credit_tax_and_pershare_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                                    yoy_periods: int, mcap: pd.DataFrame,
-                                    close: pd.DataFrame | None) -> dict:
-    """The §B tier-1 families the extractor previously ignored despite 80-99% coverage.
-
-    Credit    the DEBT MATURITY WALL vs the liquidity available to meet it. `refinancing_risk`
-              only ever saw `shortTermDebt`, so a wall sitting two or three years out was
-              invisible; the 1y and 5y ladders are disclosed by ~81% of filers.
-    Tax       CASH taxes actually paid vs the accrual charge. A persistently low cash rate on
-              a normal book rate is deferral / aggressive positions catching up later, and a
-              valuation-allowance release flatters EPS with no cash behind it.
-    Per share reported diluted EPS (98.8%) and the OPTION OVERHANG (diluted - basic) / basic,
-              which net share count hides once buybacks offset the SBC issuance.
+    WAS ALSO HERE, now deleted: the debt-maturity ladder (`debtMaturity1y` / `5yTotal`), the
+    cash-tax pair (`incomeTaxesPaid`), the valuation-allowance and unrecognized-tax-benefit
+    ratios, the OCI drag (`comprehensiveIncome`), the receivable allowance and the segment
+    count. SF1 carries none of those tags and each measured ZERO values against the live
+    table. They return with the SEC extraction path.
     """
     F: dict[str, pd.DataFrame] = {}
-    cash, fcf = daily("cash"), daily("freeCashflow")
-    # self-fundable liquidity: cash on hand plus one year of positive free cash flow
-    liquidity = cash.add(fcf.where(fcf > 0), fill_value=0.0)
-
-    wall_1y = daily("debtMaturity1y")
-    if not wall_1y.empty and not liquidity.empty:
-        w1 = ratio(wall_1y, liquidity, positive_den=True)
-        if w1.notna().any().any():
-            F["debt_maturity_wall_1y"] = w1        # >1 => must refinance, cannot self-fund
-    wall_5y = daily("debtMaturity5yTotal")
-    if not wall_5y.empty and not cash.empty:
-        five_yr_liquidity = cash.add(fcf.where(fcf > 0) * 5.0, fill_value=0.0)
-        w5 = ratio(wall_5y, five_yr_liquidity, positive_den=True)
-        if w5.notna().any().any():
-            F["debt_maturity_wall_5y"] = w5
-    # how FRONT-LOADED the ladder is: a big share due next year is the acute risk
-    if not wall_1y.empty and not wall_5y.empty:
-        front = ratio(wall_1y, wall_5y, positive_den=True)
-        if front.notna().any().any():
-            F["debt_maturity_front_loading"] = front
-
-    taxes_paid, pretax = daily("incomeTaxesPaid"), daily("pretaxIncome")
-    if not taxes_paid.empty and not pretax.empty:
-        cash_rate = ratio(taxes_paid, pretax.where(pretax > 0)).clip(-0.5, 1.0)
-        if cash_rate.notna().any().any():
-            F["cash_tax_rate"] = cash_rate
-            book_rate = _nopat_tax_rate(daily)
-            if not book_rate.empty:
-                cols = book_rate.columns.intersection(cash_rate.columns)
-                # >0 => book charge exceeds cash paid (deferral); <0 => paying more than booked
-                F["cash_book_tax_gap"] = book_rate[cols] - cash_rate[cols]
-    va, dta = daily("valuationAllowance"), daily("deferredTaxAssets")
-    if not va.empty and not dta.empty:
-        vr = ratio(va, dta, positive_den=True)
-        if vr.notna().any().any():
-            F["valuation_allowance_ratio"] = vr   # a fall = a release = non-cash EPS boost
-    utb, assets_xl = daily("unrecognizedTaxBenefits"), capital.assets_ex_lease(daily)
-    if not utb.empty and not assets_xl.empty:
-        ur = ratio(utb, assets_xl, positive_den=True)
-        if ur.notna().any().any():
-            F["unrecognized_tax_benefits_ratio"] = ur    # tax aggressiveness
-
     # (diluted - basic) / basic, already computed by the extractor on the periods where BOTH
     # counts are reported -- dividing the two independently forward-filled columns here would
     # compare a stale diluted count against a fresh basic one.
@@ -654,102 +598,14 @@ def _credit_tax_and_pershare_fields(daily, fund_hist: pd.DataFrame, idx: pd.Date
     if dps_growth.notna().any().any():
         F["dps_growth"] = dps_growth
 
-    # non-cash / non-controlled slices of reported profit
-    ni = daily("netIncome")
-    for name, field in (("nci_income_share", "nciIncome"),
-                        ("equity_method_income_share", "equityMethodIncome")):
-        src = daily(field)
-        if not src.empty and not ni.empty:
-            share = ratio(src, ni.abs().where(ni.abs() > 0))
-            if share.notna().any().any():
-                F[name] = share
-    ci = daily("comprehensiveIncome")
-    if not ci.empty and not ni.empty:
-        # OCI drag: comprehensive income far below net income = FX / pension / AFS marks
-        # eroding book value that the income statement never showed.
-        oci = ratio(ci.sub(ni, fill_value=np.nan), ni.abs().where(ni.abs() > 0))
-        if oci.notna().any().any():
-            F["oci_to_net_income"] = oci
-
-    ar, allow = daily("accountsReceivable"), daily("allowanceDoubtfulAccounts")
-    if not ar.empty and not allow.empty:
-        rr = ratio(allow, ar.add(allow, fill_value=0.0), positive_den=True)
-        if rr.notna().any().any():
-            F["receivable_allowance_ratio"] = rr      # rising = collectability doubts
-    seg = daily("reportableSegments")
-    if not seg.empty and seg.notna().any().any():
-        F["reportable_segments"] = seg                # conglomerate complexity
-    return F
-
-
-def _adjustment_size_fields(daily, mcap: pd.DataFrame) -> dict:
-    """The SIZE of each analyst restatement, kept as a feature in its own right.
-
-    The base fields are restated in the extractor (FIFO inventory, pre-2018 operating income
-    ex non-service pension cost, excise-tax-free revenue, an asset base free of the ASC-842
-    ROU asset) so every series is internally comparable. The magnitude of each adjustment is
-    itself informative -- a large LIFO reserve is an inflation-hidden inventory gain, a large
-    non-service pension charge is a legacy-workforce drag, a large ROU asset is an
-    off-balance-sheet-financed operating model -- so it is exposed rather than discarded."""
-    F: dict[str, pd.DataFrame] = {}
-    assets_xl, revenue = capital.assets_ex_lease(daily), daily("totalRevenue")
-
-    rou = daily("operatingLeaseRouAsset")
-    if not rou.empty and not assets_xl.empty:
-        li = ratio(rou, assets_xl, positive_den=True)
-        if li.notna().any().any():
-            F["lease_asset_intensity"] = li           # how lease-financed the asset base is
-    lifo, inventory = daily("lifoReserve"), daily("inventory")
-    if not lifo.empty and not inventory.empty:
-        lr = ratio(lifo, inventory, positive_den=True)
-        if lr.notna().any().any():
-            F["lifo_reserve_ratio"] = lr
-    nsp = daily("nonServicePensionCost")
-    if not nsp.empty and not revenue.empty:
-        nr = ratio(nsp, revenue.where(revenue > 0))
-        if nr.notna().any().any():
-            F["non_service_pension_to_revenue"] = nr
-    excise = daily("exciseTaxAdjustment")
-    if not excise.empty and not revenue.empty:
-        er = ratio(excise, revenue.where(revenue > 0))
-        if er.notna().any().any():
-            F["excise_tax_to_revenue"] = er
-    aro = daily("assetRetirementObligation")
-    if not aro.empty and mcap is not None and not mcap.empty:
-        ar = ratio(aro, mcap, positive_den=True)
-        if ar.notna().any().any():
-            F["aro_to_mcap"] = ar                     # decommissioning overhang
-    ig, iaa = daily("intangiblesGross"), daily("intangiblesAccumAmort")
-    if not ig.empty and not iaa.empty:
-        age = ratio(iaa, ig, positive_den=True)
-        if age.notna().any().any():
-            F["intangible_asset_age"] = age           # mirrors the PP&E `asset_age`
-    gwa = daily("goodwillAcquired")
-    if not gwa.empty and not assets_xl.empty:
-        gi = ratio(gwa, assets_xl, positive_den=True)
-        if gi.notna().any().any():
-            F["goodwill_acquired_intensity"] = gi
-    return F
-
-
-def _ai_leverage_fields(daily) -> dict:
-    """#4 -- IT-MATURITY inputs for the AI-leverage score: how much a firm invests in
-    its own software (the capability to deploy AI on its cost base). Populates once
-    CapitalizedComputerSoftware* is extracted; empty before that. The OPPORTUNITY
-    side (SG&A intensity = automatable admin/marketing, low revenue-per-employee =
-    labor-heavy) and the sector-neutral score are assembled as a composite in
-    build_cube.yml from existing peer-relative members (kept sector-neutral so it
-    finds the best adopter in each industry, not just the hyperscalers)."""
-    F: dict[str, pd.DataFrame] = {}
-    soft, assets, rev = daily("capitalizedSoftware"), daily("totalAssets"), daily("totalRevenue")
-    if not soft.empty and not assets.empty:
-        si = ratio(soft, assets, positive_den=True)
-        if si.notna().any().any():
-            F["capitalized_software_intensity"] = si
-    if not soft.empty and not rev.empty:
-        sr = ratio(soft, rev.where(rev > 0))
-        if sr.notna().any().any():
-            F["software_to_revenue"] = sr
+    # The NCI leg reads `netIncomeToNci`, the live column name. It was written `nciIncome`,
+    # which nothing has ever produced, so the feature emitted nothing -- invisible to the
+    # column-existence diff because the argument is a loop variable, not a literal.
+    ni, nci = daily("netIncome"), daily("netIncomeToNci")
+    if not nci.empty and not ni.empty:
+        share = ratio(nci, ni.abs().where(ni.abs() > 0))
+        if share.notna().any().any():
+            F["nci_income_share"] = share
     return F
 
 
@@ -765,7 +621,7 @@ def _ai_leverage_fields(daily) -> dict:
 # `revenue`, `mcap`, `ev` and `pension_ret` through ~110 signatures, which reads worse
 # than the original, not better.
 # --------------------------------------------------------------------------- #
-def _pension_pool(daily, notes_num: pd.DataFrame | None,
+def _pension_pool(notes_num: pd.DataFrame | None,
                   pension_facts: pd.DataFrame | None,
                   idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """The three SHARED pension frames: (pbo, footnote deficit, coalesced overhang).
@@ -774,11 +630,18 @@ def _pension_pool(daily, notes_num: pd.DataFrame | None,
     features below, which is why they are computed once here rather than per block.
 
     The overhang is gap-filled (`combine_first`, NOT a sum -> no OPEB double-count)
-    across three sources in order of directness:
-      1) bulk Financial-Statement-Data-Sets recognized net liability (`pension_facts`),
-      2) companyfacts `pensionDeficit`,
-      3) footnote funded status = PBO - plan assets from the NOTES sets (`notes_num`).
-    """
+    across TWO sources in order of directness:
+      1) bulk Financial-Statement-Data-Sets recognized net liability (`pension_facts`) --
+         6,244 rows over 125 tickers, median 17 years each,
+      2) footnote funded status = PBO - plan assets from the NOTES sets (`notes_num`) --
+         the widest single source at 4,209 plan-asset rows over 214 CIKs, but the PBO leg
+         covers only 122, which is what caps `pension_funded_ratio` at 98 tickers.
+
+    A third leg used to sit between them, reading a `pensionDeficit` column off
+    `fundamentals_history`. That column does not exist on the Sharadar-first schema and
+    never has, so the leg was dead code; it was removed rather than extracted, because
+    these two sources are the substrate limit. Measured ceiling: 199 of 489 tickers ever
+    receive a value, at 20.9% mean fill of their live span."""
     pbo = _notes_num_daily(notes_num, _FN_PBO_TAG, idx, instant=True)
     plan_assets = _notes_num_daily(notes_num, _FN_PLAN_ASSETS_TAG, idx, instant=True)
     fn_deficit = pd.DataFrame()
@@ -787,9 +650,9 @@ def _pension_pool(daily, notes_num: pd.DataFrame | None,
         fn_deficit = pbo.sub(plan_assets).clip(lower=0.0)
 
     pension_ret = _pension_deficit_daily(pension_facts, idx)
-    for _src in (daily("pensionDeficit"), fn_deficit):
-        if not _src.empty:
-            pension_ret = pension_ret.combine_first(_src) if not pension_ret.empty else _src
+    if not fn_deficit.empty:
+        pension_ret = (pension_ret.combine_first(fn_deficit)
+                       if not pension_ret.empty else fn_deficit)
     if not pension_ret.empty:
         pension_ret = pension_ret.clip(lower=0.0)          # underfunding only (>= 0)
     return pbo, fn_deficit, pension_ret
@@ -812,16 +675,21 @@ def _pension_health_fields(daily, pbo: pd.DataFrame, notes_num: pd.DataFrame | N
 
 
 def _pension_scale_fields(pension_ret: pd.DataFrame, pbo: pd.DataFrame,
-                          fn_deficit: pd.DataFrame, mcap: pd.DataFrame) -> dict:
+                          mcap: pd.DataFrame) -> dict:
     """Pension obligations SCALED by equity value -- the burden overhanging the stock.
 
-    PBO/mcap flags rate/return sensitivity even for FUNDED plans; underfunding/mcap is
-    the cleaner deficit burden (footnote-sourced, so it covers names the balance-sheet
-    tag misses)."""
+    Two genuinely different quantities: `pbo_to_mcap` is the GROSS obligation, which flags
+    rate/return sensitivity even for a fully FUNDED plan, while `pension_overhang_leverage`
+    is the net DEFICIT, the debt-like part.
+
+    `pension_underfunding_to_mcap` USED TO BE HERE AND IS DELETED. It scaled `fn_deficit`,
+    the footnote funded status -- but `fn_deficit` is the LAST FALLBACK inside the coalesced
+    pool `pension_overhang_leverage` already uses, so wherever the footnote was the winning
+    source the two features were the same number. Measured r = 1.000000 on their overlap,
+    against 8.3% coverage versus the pool's 28.3%: a strict subset, not a second view."""
     F: dict[str, pd.DataFrame] = {}
     for name, src in (("pension_overhang_leverage", pension_ret),
-                      ("pbo_to_mcap", pbo),
-                      ("pension_underfunding_to_mcap", fn_deficit)):
+                      ("pbo_to_mcap", pbo)):
         if src is None or src.empty:
             continue
         r = ratio(src, mcap, positive_den=True)
@@ -833,25 +701,50 @@ def _pension_scale_fields(pension_ret: pd.DataFrame, pbo: pd.DataFrame,
 def _valuation_yield_fields(mcap: pd.DataFrame, net_income: pd.DataFrame,
                             revenue: pd.DataFrame, equity: pd.DataFrame,
                             fcf: pd.DataFrame) -> dict:
-    """Earnings / sales / book / FCF yields against market cap.
+    """Earnings / sales / book / FCF yields against market cap, plus the loss magnitude
+    the yields deliberately exclude.
 
     Earnings/FCF/EV yields are only monotone as "cheapness" when the NUMERATOR is
-    positive: a negative E/P is not "cheap", it is a loss, so ranking loss-makers by it
-    is noise. Those are masked to NaN (LightGBM handles NaN; the peer-z/rank then only
-    ranks names where the metric is defined), and the `profitable` / `fcf_positive`
-    flags carry the regime instead. Sales/price stays valid for everyone (revenue is
-    always positive)."""
+    positive: a negative E/P is not "cheap", it is a loss. Those are masked to NaN
+    (LightGBM handles NaN; the peer-z/rank then only ranks names where the metric is
+    defined), and the `profitable` / `fcf_positive` flags carry the regime instead.
+    Sales/price stays valid for everyone (revenue is always positive).
+
+    ⚠ THE MASK IS MEASURED, NOT ASSUMED -- and the old justification for it was wrong.
+    The claim used to be "ranking loss-makers by E/P is noise". It is not noise: it is
+    REVERSED. Spearman IC of the signed yield against `target_rank`, month-end 1995-2026,
+    computed inside each sign subset:
+
+        numerator            NEGATIVE subset          positive subset
+        netIncome            -0.0297  (t = -3.17)     +0.0116  (t = +3.31)
+        freeCashflow         -0.0159  (t = -2.44)     +0.0162  (t = +4.98)
+        stockholdersEquity   -0.0414  (t = -2.56)     -0.0062  (t = -2.18)
+
+    A DEEPER loss predicts a BETTER forward return -- the opposite direction to the one
+    E/P carries among profitable names, and negative in 4/4 sub-periods. So folding the
+    two into one monotone column averages them away: the merged column's Q5-Q1 spread in
+    mean `target_rank` is 0.0040 against the masked column's 0.0053. Un-masking is a
+    measured REGRESSION. That is why the mask stays.
+
+    `loss_intensity` is how the discarded information is kept instead: the annual loss as a
+    POSITIVE share of market cap (house convention for `*_intensity`), defined ONLY where
+    earnings are negative. NaN for profitable names, never 0 -- a zero would pile every
+    profitable name into one tie at the bottom of the cross-sectional rank, which is the
+    same defect the dividend zero-fill had. Given its own column the model can learn the
+    reversed sign directly instead of having it cancel inside `earnings_yield`."""
     return {
         "earnings_yield": ratio(net_income.where(net_income > 0), mcap, positive_den=True),
         "sales_yield": ratio(revenue, mcap, positive_den=True),
         "book_yield": ratio(equity.where(equity > 0), mcap, positive_den=True),
         "fcf_yield": ratio(fcf.where(fcf > 0), mcap, positive_den=True),
+        "loss_intensity": ratio(-net_income.where(net_income < 0), mcap, positive_den=True),
     }
 
 
 def _enterprise_value_frame(daily, close: pd.DataFrame | None, mcap: pd.DataFrame,
                             equity: pd.DataFrame, d2e: pd.DataFrame,
-                            cash: pd.DataFrame, pension_ret: pd.DataFrame) -> pd.DataFrame:
+                            cash: pd.DataFrame, pension_ret: pd.DataFrame,
+                            operating_cash: frozenset[str] | None = None) -> pd.DataFrame:
     """True (fully-diluted) enterprise value; feeds every EV yield.
 
       EV = fully-diluted mcap
@@ -876,12 +769,13 @@ def _enterprise_value_frame(daily, close: pd.DataFrame | None, mcap: pd.DataFram
     if debt is None or debt.empty:
         debt = (d2e.clip(lower=0.0) * equity.where(equity > 0)
                 if not d2e.empty and not equity.empty else pd.DataFrame())
-    liquid = capital.liquid_assets(daily)
+    liquid = capital.liquid_assets(daily, operating_cash=operating_cash)
     return _enterprise_value(
         fd_mcap,
         [debt, daily("minorityInterest"), daily("redeemableNCI"),
          daily("preferredEquity"), pension_ret],
-        [liquid if liquid is not None else cash])
+        [liquid if liquid is not None
+         else capital.drop_operating_cash(cash, operating_cash)])
 
 
 def _ev_yield_fields(ebitda: pd.DataFrame, fcf: pd.DataFrame, ev: pd.DataFrame) -> dict:
@@ -953,44 +847,27 @@ def _pegy_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
 
 def _reit_multiple_fields(daily, fund_hist: pd.DataFrame, net_income: pd.DataFrame,
                           mcap: pd.DataFrame, ev: pd.DataFrame) -> dict:
-    """REIT price multiples, scoped to the GICS equity-REIT group.
+    """FFO yield (FFO / price = 1 / P-FFO), scoped to the GICS equity-REIT group.
 
-    Previously gated on `realEstateNet | rentalIncome` being tagged, which handed
-    FFO / implied cap rate to ~56 non-real-estate names (utilities, IT and industrial
-    lessors tag `OperatingLeaseLeaseIncome`) while missing 9 of 31 REITs."""
+    Previously gated on `realEstateNet | rentalIncome` being tagged, which handed FFO to ~56
+    non-real-estate names (utilities, IT and industrial lessors tag
+    `OperatingLeaseLeaseIncome`) while missing 9 of 31 REITs. GICS decides instead.
+
+    ⚠ ONLY THE D&A LEG OF NAREIT FFO IS AVAILABLE. `gainOnDispositions` and
+    `realEstateImpairment` are not in SF1, so a REIT that sold a property at a gain reads
+    high here -- which is exactly what those two adjustments exist to remove.
+
+    `implied_cap_rate` USED TO BE HERE AND IS DELETED. It was
+    `(operatingIncome + depAmort + realEstateImpairment) / EV`, and with the impairment leg
+    absent that is `(operatingIncome + depAmort) / EV` -- which is the field map's own
+    DEFINITION of `ebitda`, so the feature was `ebitda_to_ev` masked to REITs and correlated
+    with it at exactly 1.000000. A gate is not a second feature: the model already gets REIT
+    membership from the sector categorical."""
     if not family_tickers(fund_hist, "reit"):
         return {}
-    F: dict[str, pd.DataFrame] = {}
-    depamort_ev = daily("depAmort")
-    # NAREIT FFO: + real-estate D&A, - gains on property sales, + impairment write-downs
-    ffo = (net_income.add(depamort_ev, fill_value=0.0)
-           .sub(daily("gainOnDispositions"), fill_value=0.0)
-           .add(daily("realEstateImpairment"), fill_value=0.0))
+    ffo = net_income.add(daily("depAmort"), fill_value=0.0)
     fy = mask_columns(ratio(ffo, mcap, positive_den=True), fund_hist, "reit")
-    if fy.notna().any().any():
-        F["ffo_yield"] = fy                                   # FFO/price = 1 / P-FFO
-    icr = mask_columns(                                       # NOI(≈EBITDAre) / EV
-        ratio(daily("operatingIncome").add(depamort_ev, fill_value=0.0)
-              .add(daily("realEstateImpairment"), fill_value=0.0), ev,
-              positive_den=True), fund_hist, "reit")
-    if icr.notna().any().any():
-        F["implied_cap_rate"] = icr
-    return F
-
-
-def _energy_multiple_fields(daily, fund_hist: pd.DataFrame, ev: pd.DataFrame) -> dict:
-    """Energy EV/EBITDAX yield, scoped to the GICS Energy sector.
-
-    Was gated on `oilGasPropertyNet` being tagged: only 3 of 21 Energy names do, so this
-    covered 14% of the sector. Services / refiners report no exploration expense, so for
-    them EBITDAX collapses to EBITDA -- which is correct."""
-    if not family_tickers(fund_hist, "energy"):
-        return {}
-    ebitdax = (daily("operatingIncome").add(daily("depAmort"), fill_value=0.0)
-               .add(daily("explorationExpense"), fill_value=0.0))
-    ex = mask_columns(ratio(ebitdax.where(ebitdax > 0), ev, positive_den=True),
-                      fund_hist, "energy")
-    return {"ebitdax_to_ev": ex} if ex.notna().any().any() else {}
+    return {"ffo_yield": fy} if fy.notna().any().any() else {}
 
 
 def _profitability_level_fields(daily, revenue: pd.DataFrame, net_income: pd.DataFrame,
@@ -1083,8 +960,6 @@ def _quality_regime_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex
                            investment.
       rule_of_40           TTM revenue-growth% + FCF-margin%; >40 is elite (a fast grower
                            OR a cash cow).
-      rpo_growth           forward-bookings momentum; only defined for filers that report
-                           RPO -> tech-gated by availability.
       piotroski_f_score    0-9 fundamental-health binaries: profitability (ROA>0, CFO>0,
                            dROA>0, CFO/assets>ROA), lower leverage / better liquidity / no
                            dilution, and rising gross margin / asset turnover. Scored only
@@ -1114,11 +989,6 @@ def _quality_regime_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex
     rule40 = sanitize(rev_growth_pct + fcf_margin_pct)
     if rule40.notna().any().any():
         F["rule_of_40"] = rule40
-    rpo_growth = fiscal_change_to_daily(fund_hist, "remainingPerformanceObligation", idx,
-                                        kind="pct", periods=yoy_periods)
-    if rpo_growth.notna().any().any():
-        F["rpo_growth"] = rpo_growth
-
     _oa = capital.assets_ex_lease(daily)
     _ocf = daily("operatingCashFlow")
     _sh = daily("sharesOutstanding")
@@ -1227,20 +1097,29 @@ def _yearly_ttm_momentum_fields(fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
 
 def _distress_fields(daily, ebitda: pd.DataFrame, cash: pd.DataFrame,
                      fcf: pd.DataFrame, long_debt: pd.DataFrame,
-                     short_debt: pd.DataFrame) -> dict:
+                     short_debt: pd.DataFrame,
+                     operating_cash: frozenset[str] | None = None) -> dict:
     """DISTRESS / SOLVENCY: can the firm service and roll its debt?
 
     debtToEquity is a book ratio that says nothing about debt-SERVICING ability; these
     are the leverage / coverage / liquidity ratios credit desks watch. REFINANCING RISK
     is short-term debt / (cash + trailing free cash flow): HIGH (>>1) means the firm must
     roll a big slug of debt it cannot self-fund -> exposed to rate spikes / frozen credit
-    markets."""
+    markets.
+
+    `operating_cash` reaches only the NET-DEBT line. `cash_to_debt` and `refinancing_risk`
+    are cash RATIOS, not nettings: a liquidity cushion is a real fact about a bank, and
+    those two are precisely the features the `cash` widening fix exists to restore (`cash`
+    was NULL on 28.1% of Financials filings). Netting is the only operation where a bank's
+    required reserves and interbank float would misstate the capital structure."""
     F: dict[str, pd.DataFrame] = {}
-    total_debt = _combine_debt(long_debt, short_debt, daily("totalLiabilities"))
+    total_debt = _combine_debt(daily, long_debt, short_debt, daily("totalLiabilities"))
     if not total_debt.empty and not ebitda.empty:
-        cols = total_debt.columns.intersection(cash.columns) if not cash.empty else total_debt.columns
-        net_debt = (total_debt[cols].sub(cash[cols], fill_value=0.0)
-                    if not cash.empty else total_debt)
+        net_cash = capital.drop_operating_cash(cash, operating_cash)
+        cols = (total_debt.columns.intersection(net_cash.columns)
+                if not net_cash.empty else total_debt.columns)
+        net_debt = (total_debt[cols].sub(net_cash[cols], fill_value=0.0)
+                    if not net_cash.empty else total_debt)
         # HIGH net-debt/EBITDA = more leveraged = worse (only meaningful for EBITDA>0)
         nd_ebitda = ratio(net_debt, ebitda, positive_den=True)
         if not nd_ebitda.empty and nd_ebitda.notna().any().any():
@@ -1293,16 +1172,23 @@ def _ma_footprint_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
                          revenue: pd.DataFrame, yoy_periods: int) -> dict:
     """M&A footprint: organic vs inorganic growth, and impairment risk."""
     F: dict[str, pd.DataFrame] = {}
-    acq = daily("acquisitions")
+    # Sharadar's `ncfbus`: net cash paid for acquisitions, stored outflow-negative, so the
+    # magnitude is what "how acquisitive is this firm" means. 27,731 negative rows to 9,039
+    # positive (a positive row is a net DISPOSAL year), hence `.abs()` rather than a floor:
+    # both directions are M&A activity, and the intensity is unsigned by construction.
+    acq = daily("businessAcquisitionsNet")
     assets = capital.assets_ex_lease(daily)
     acq_den = assets if not assets.empty else revenue
     acq_intensity = ratio(acq.abs() if not acq.empty else acq, acq_den, positive_den=True)
     if not acq_intensity.empty and acq_intensity.notna().any().any():
         F["acquisition_intensity"] = acq_intensity
-    goodwill_growth = fiscal_change_to_daily(fund_hist, "goodwill", idx,
-                                             kind="pct", periods=yoy_periods)
-    if goodwill_growth.notna().any().any():
-        F["goodwill_growth"] = goodwill_growth
+    # YoY growth in the acquired-intangibles balance: the balance-sheet trace of M&A, and
+    # the exposure a future writedown lands on. On Sharadar's COMBINED `intangibles` -- the
+    # bare `goodwill` this read before is written by no producer, so it grew nothing.
+    intangibles_growth = fiscal_change_to_daily(fund_hist, "intangibles", idx,
+                                                kind="pct", periods=yoy_periods)
+    if intangibles_growth.notna().any().any():
+        F["intangibles_growth"] = intangibles_growth
     return F
 
 
@@ -1447,9 +1333,36 @@ def _derived_fields(
     short_debt = daily("shortTermDebt")
     sbc = daily("stockBasedComp")
 
-    # pension/OPEB overhang: three frames feeding the EV, forensic and scale blocks
-    pbo, fn_deficit, pension_ret = _pension_pool(daily, notes_num, pension_facts, idx)
+    # pension/OPEB overhang: three frames feeding the EV, forensic and scale blocks.
+    #
+    # ⚠ SCOPED TO THE FUNDAMENTALS UNIVERSE FIRST. `pension_facts` and `notes_num` are bulk
+    # SEC tables keyed on their own filer set, and the helpers below pivot them WIDE: every
+    # ticker they carry becomes a column, and the first arithmetic against a fundamentals
+    # frame aligns on the UNION. Unscoped, that grafts filers with no balance sheet into the
+    # panel -- rows carrying a pension ratio and nothing else, since every other feature
+    # needs a fundamentals row to divide by. Measured against the live tables: 4 tickers in
+    # `pension_facts` and 7 in `notes_num` are absent from `fundamentals_history`, and on a
+    # 10-ticker slice the two tables alone widened the panel to 279.
+    universe = set(fund_hist["ticker"].astype(str)) if "ticker" in fund_hist.columns else set()
+    pension_facts = _scope_to_universe(pension_facts, universe)
+    notes_num = _scope_to_universe(notes_num, universe)
+
+    pbo, fn_deficit, pension_ret = _pension_pool(notes_num, pension_facts, idx)
     F.update(_pension_health_fields(daily, pbo, notes_num, idx, pension_ret))
+
+    # Tickers whose `cash` is a CORE OPERATING ASSET, not spare cash: bank required
+    # reserves / interbank float and insurance claims float. They are excluded from every
+    # site that NETS cash (EV, net debt, invested capital) and from none that ratios it.
+    #
+    # This became load-bearing when `cash` was widened to `cashneq + coalesce(investmentsc,
+    # 0)`. Before that, banks and insurers had a NULL cash -- an unclassified balance sheet
+    # (ASC 210-10-05-4) reports no current-investments line -- so the netting sites already
+    # netted nothing for them. Restoring it without this gate would have silently re-rated
+    # every bank: measured, median `cashneq` is 10.97% of market cap for Financials and
+    # 101.95% at p90, so the top decile's "cash" exceeds its entire equity value and EV
+    # would turn NEGATIVE, nulling a feature that has a value today.
+    operating_cash = frozenset(family_tickers(fund_hist, "bank")
+                               | family_tickers(fund_hist, "insurance"))
 
     # ---- everything that needs a daily market cap ---- #
     # `close` is Optional all the way down this module (`_intrinsic_fields` returns early on
@@ -1466,15 +1379,15 @@ def _derived_fields(
     # yield" instead of "there was no price to compute one" -- the same distinction
     # `_intrinsic_fields` already makes by returning `{}` when `close is None`.
     if not mcap.empty:
-        ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret)
+        ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret,
+                                     operating_cash)
         F.update(_valuation_yield_fields(mcap, net_income, revenue, equity, fcf))
-        F.update(_pension_scale_fields(pension_ret, pbo, fn_deficit, mcap))
+        F.update(_pension_scale_fields(pension_ret, pbo, mcap))
         F.update(_ev_yield_fields(ebitda, fcf, ev))
         F.update(_altman_z_fields(daily, mcap, revenue))
         F.update(_pegy_fields(daily, fund_hist, idx, mcap, net_income, yoy_periods,
                               earnings_history))
         F.update(_reit_multiple_fields(daily, fund_hist, net_income, mcap, ev))
-        F.update(_energy_multiple_fields(daily, fund_hist, ev))
 
     # ---- price-independent blocks ---- #
     F.update(_profitability_level_fields(daily, revenue, net_income, fcf))
@@ -1485,23 +1398,29 @@ def _derived_fields(
     F.update(_state_flag_fields(daily, net_income, fcf, equity))
     F.update(_quarter_momentum_fields(daily, fund_hist, idx, yoy_periods))
     F.update(_yearly_ttm_momentum_fields(fund_hist, idx, yoy_periods))
-    F.update(_distress_fields(daily, ebitda, cash, fcf, long_debt, short_debt))
+    F.update(_distress_fields(daily, ebitda, cash, fcf, long_debt, short_debt,
+                              operating_cash))
     F.update(_sga_efficiency_fields(daily, fund_hist, idx, revenue, yoy_periods))
     F.update(_ma_footprint_fields(daily, fund_hist, idx, revenue, yoy_periods))
     F.update(_sbc_fields(daily, revenue, sbc))
     F.update(_valuation_engine_fields(daily, fund_hist, idx, revenue, ebitda, yoy_periods))
     F.update(_intrinsic_fields(fund_hist, close, idx, intrinsic_cfg, level_factor))
 
-    # ---- BUSINESS-QUALITY blocks (all from tags already extracted) ---- #
-    #   #2 D&A/SBC realism, #5 forensic red flags, #3 M&A digestion,
-    #   #1 core/adjusted earnings (kept alongside the reported figures above).
+    # ---- BUSINESS-QUALITY blocks ---- #
+    #   SBC-vs-buyback, #5 forensic red flags, #3 M&A digestion, per-share economics.
+    #
+    # The CORE/ADJUSTED-EARNINGS family that used to run here is gone. It normalized profit
+    # for non-recurring items over ten tags (`impairment`, `restructuring`,
+    # `gainOnDispositions`, `litigationExpense`, `unusualItems`, ...) and Sharadar delivers
+    # NONE of them -- the only non-recurring item SF1 isolates is `netIncomeDiscontinued`.
+    # It emitted nothing while looking fully implemented, which is worse than absent. A true
+    # core-earnings series requires the SEC path; the 72 rows where `netIncome > totalRevenue`
+    # (KKR to 14.1x, APO, ARES, BX -- all real, not extraction bugs) are exactly the
+    # observations it would neutralise, and nothing does.
     F.update(_da_realism_fields(daily))
-    F.update(_forensic_fields(daily, idx, pension_ret))   # reuse the coalesced overhang pool
-    F.update(_digestion_fields(daily, fund_hist, idx, yoy_periods))
-    F.update(_core_earnings_fields(daily, mcap))
-    F.update(_ai_leverage_fields(daily))
-    F.update(_credit_tax_and_pershare_fields(daily, fund_hist, idx, yoy_periods, mcap, close))
-    F.update(_adjustment_size_fields(daily, mcap))
+    F.update(_forensic_fields(daily, idx))
+    F.update(_digestion_fields(daily, fund_hist, idx, yoy_periods, operating_cash))
+    F.update(_per_share_and_profit_slice_fields(daily, fund_hist, idx, yoy_periods, close))
 
     return F
 

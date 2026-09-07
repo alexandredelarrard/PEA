@@ -2,10 +2,13 @@
 fetch_financial_statements.py  (src/data_extract/utils/fundamentals/fetch_financial_statements.py)
 -------------------------------------------------------------------------------------------------
 Pension facts from the SEC "Financial Statement Data Sets" (free quarterly bulk
-TSV zips of the flattened primary-statement XBRL). This is the "other source" for
-pensions: `companyfacts` only surfaces the tags a filer happens to expose, so our
-`pensionDeficit` coverage was thin; the bulk num/sub sets give the recognized net
-defined-benefit liability across the whole universe in one pull.
+TSV zips of the flattened primary-statement XBRL). This is the PRIMARY source for
+pensions: `companyfacts` only surfaces the tags a filer happens to expose, and the
+Sharadar-first `fundamentals_history` carries no pension column at all, so the bulk
+num/sub sets are what give the recognized net defined-benefit liability across the
+universe. Measured: 6,244 rows over 125 tickers, median 17 years each. The footnote
+funded status in `notes_num` (see `fetch_financial_notes.py`) is the second source
+and the only other one; together they reach 199 of 489 tickers.
 
 Each quarter's zip carries:
   * sub.txt   adsh -> cik, name, form, period, fy, fp, filed
@@ -44,8 +47,8 @@ logger = logging.getLogger(__name__)
 _CHUNK = 500_000
 
 # Curated defined-benefit pension tags. The first is the recognized NET deficit
-# (balance-sheet, the debt-like obligation that feeds `pensionDeficit`); the rest
-# add coverage / detail where filers report them. Extend freely.
+# (balance-sheet, the debt-like obligation that feeds the cube's pension overhang);
+# the rest add coverage / detail where filers report them. Extend freely.
 _PENSION_TAGS = frozenset({
     "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
     "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesCurrent",

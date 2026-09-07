@@ -729,6 +729,50 @@ def test_a_zero_denominator_is_null_not_infinity(field_map):
     assert pd.isna(out["stockholdersEquityInclNci"].iloc[0])
 
 
+def test_sum_optional_widens_cash_without_being_able_to_destroy_it(field_map):
+    """`cash` is a WIDENING, so a missing widening leg must not null the narrow line.
+
+    `cash = cashneq + investmentsc` under the NaN-propagating `sum` threw away a present
+    `cashneq` whenever `investmentsc` was absent — and `investmentsc` is a CURRENT asset, so
+    it is absent for every filer that does not classify its balance sheet (ASC 210-10-05-4
+    exempts banks, insurers and REITs). Measured on the live table: `investmentsc` is 28.1%
+    populated for Financials and 27.4% for Real Estate against 100% for IT, while `cashneq`
+    is 100% EVERYWHERE, and `cash` was NULL on 9,130 filings (17.81%, 91 tickers) that had a
+    perfectly good `cashneq`. `cash_to_debt` died on exactly those rows.
+
+    Hence op `sum_optional`. The asymmetry is the point and is asserted in both directions:
+    the head may not be dropped, the tail may. `ebitda` keeps the strict `sum` on the same
+    frame as the control — operatingIncome without depAmort is EBIT, and widening THAT would
+    silently mislabel it."""
+    frame = pd.DataFrame({
+        "cashAndEquivalents":  [100.0, 100.0, np.nan, np.nan],
+        "shortTermInvestments": [25.0, np.nan,  25.0, np.nan],
+        # the strict-`sum` control, and the columns apply_derived needs to evaluate at all
+        "operatingIncome":      [10.0,  10.0,  10.0,  10.0],
+        "depAmort":             [ 2.0, np.nan,   2.0, np.nan],
+        "netIncome": [1.0] * 4, "totalRevenue": [1.0] * 4, "grossProfit": [1.0] * 4,
+        "stockholdersEquity": [1.0] * 4, "totalDebt": [1.0] * 4, "pretaxIncome": [1.0] * 4,
+        "incomeTaxExpense": [1.0] * 4, "dilutedShares": [1.0] * 4, "basicShares": [1.0] * 4,
+        "minorityInterest": [1.0] * 4,
+    })
+    out = apply_derived(frame, field_map)
+    cash, ebitda = out["cash"].tolist(), out["ebitda"].tolist()
+    print(f"\ncash (sum_optional): {cash}   expected [125.0, 100.0, nan, nan]")
+    print(f"ebitda (strict sum): {ebitda}  expected [12.0, nan, 12.0, nan]")
+
+    assert cash[0] == 125.0                       # both legs -> the widened total
+    assert cash[1] == 100.0                       # ⬅ THE FIX: the tail leg may be missing
+    assert pd.isna(cash[2])                       # the HEAD may not — a widening needs a base
+    assert pd.isna(cash[3])                       # neither leg -> honestly unknown
+    # the strict op is untouched: a missing leg still propagates
+    assert ebitda[0] == 12.0 and pd.isna(ebitda[1])
+    assert ebitda[2] == 12.0 and pd.isna(ebitda[3])
+    # and the config declares the coalesce in prose, so a reader sees which legs are optional
+    assert field_map.derived["cash"].op == "sum_optional"
+    assert field_map.derived["cash"].formula == (
+        "cashAndEquivalents + coalesce(shortTermInvestments, 0)")
+
+
 # --------------------------------------------------------------------------- #
 # what the phase leaves behind                                                 #
 # --------------------------------------------------------------------------- #

@@ -121,6 +121,93 @@ def daily_market_cap(fundamentals_history: pd.DataFrame,
     return mcap.where(mcap > 0)
 
 
+#: The two growth ratios `kpi_catalogue.CUBE_TIME_COLUMNS` declares are computed HERE rather
+#: than by the history build, mapped to the TTM level each is the growth of. Duplicated as a
+#: literal instead of imported: `src/data_aggregate/` must not import from
+#: `src/data_extract/`, and the catalogue owns the declaration, not the arithmetic.
+_CUBE_TIME_GROWTH: dict[str, str] = {
+    "revenueGrowth": "totalRevenue",
+    "earningsGrowth": "netIncome",
+}
+
+#: How far from the 365-day target a filing may sit and still count as "one year ago".
+#:
+#: The match is NEAREST, not backward, and the difference is measured: AAPL's 2026-07-31 row
+#: has filings at 2025-08-01 (target + 1 day) and 2025-05-02 (target - 90). A backward match
+#: is forced to skip the one that is one day too late and compare TTM revenue 455 days apart,
+#: which is not a year-over-year growth. Nearest picks 2025-08-01.
+#:
+#: Nearest stays leak-free: the worst-case match is `as_of - 365 + 180 = as_of - 185` days,
+#: always strictly before the row's own filing date, so both legs are public on `as_of`.
+#: 180 days also still refuses to call a multi-year gap a YoY comparison -- the defect a bare
+#: `shift(4)` cannot even detect.
+_YOY_TOLERANCE_DAYS = 180
+
+
+def add_cube_time_growth(fund_hist: pd.DataFrame) -> pd.DataFrame:
+    """`fundamentals_history` + the `revenueGrowth` / `earningsGrowth` columns, row-level.
+
+    THE OFFSET IS THE WHOLE POINT, and it is why these two are computed at cube time rather
+    than by the history build (`kpi_catalogue.CUBE_TIME_COLUMNS`). Growth is measured against
+    the filing NEAREST 365 CALENDAR DAYS back, found per ticker by an as-of match. The
+    history build could only take a 4-ROW offset, and under the publication-event grain an
+    amendment row makes four rows ~9 months rather than 12 -- so the denominator would be the
+    wrong quarter for exactly the names that restate.
+
+    Point-in-time by construction: both legs are filings already public on their own `as_of`,
+    and the result is keyed on the LATER of the two, so `fundamentals_to_daily` forward-fills
+    it from the day the new filing landed. No look-ahead.
+
+    Returns a COPY. Absent source column, or a history with no `as_of`, leaves the frame
+    unchanged rather than emitting an all-NaN column -- an all-NaN column reads downstream as
+    "this firm did not grow" instead of "growth was never computed".
+    """
+    out = fund_hist.copy()
+    if "as_of" not in out.columns or "ticker" not in out.columns or out.empty:
+        return out
+
+    # ⚠ `[ns]` EXPLICITLY, not just `to_datetime`. Postgres DATE columns come back as
+    # `datetime64[s]`, and subtracting a Timedelta below promotes that to `[us]` -- so the
+    # two sides of the `merge_asof` end up on DIFFERENT RESOLUTIONS and pandas raises
+    # `MergeError: incompatible merge keys`. Reading the same rows out of a parquet or a CSV
+    # gives `[ns]` on both sides and hides it entirely, which is why this only reproduces
+    # against the live store.
+    as_of = pd.to_datetime(out["as_of"], errors="coerce").astype("datetime64[ns]")
+    for name, source in _CUBE_TIME_GROWTH.items():
+        if source not in out.columns:
+            continue
+        base = pd.DataFrame({
+            "ticker": out["ticker"].astype(str),
+            "as_of": as_of,
+            "level": pd.to_numeric(out[source], errors="coerce"),
+        }).dropna(subset=["ticker", "as_of"])
+        if base.empty:
+            continue
+        # One row per (ticker, as_of): an amendment republishes the same publication date,
+        # and merge_asof would otherwise match against whichever duplicate sorted last.
+        base = (base.sort_values(["ticker", "as_of"])
+                    .drop_duplicates(["ticker", "as_of"], keep="last"))
+        right = base.rename(columns={"as_of": "prior_as_of", "level": "prior"})
+        left = base.assign(target=base["as_of"] - pd.Timedelta(days=365))
+
+        matched = pd.merge_asof(
+            left.sort_values("target"), right.sort_values("prior_as_of"),
+            left_on="target", right_on="prior_as_of", by="ticker",
+            direction="nearest", tolerance=pd.Timedelta(days=_YOY_TOLERANCE_DAYS),
+        )
+        # A zero or negative prior makes the ratio meaningless, not infinite: a swing from a
+        # loss to a profit has no percentage growth, and dividing by it manufactures a huge
+        # number with an arbitrary sign that then dominates every z-score it reaches.
+        prior = matched["prior"].where(matched["prior"] > 0)
+        growth = (matched["level"] / prior - 1.0).replace([np.inf, -np.inf], np.nan)
+        keyed = pd.Series(growth.to_numpy(),
+                          index=pd.MultiIndex.from_arrays(
+                              [matched["ticker"].to_numpy(), matched["as_of"].to_numpy()]))
+        out[name] = pd.MultiIndex.from_arrays(
+            [out["ticker"].astype(str), as_of]).map(keyed)
+    return out
+
+
 def infer_yoy_periods(fund_hist: pd.DataFrame) -> int:
     """Number of filing periods that make up one year, from the median gap
     between consecutive `as_of` dates. Quarterly history -> 4, annual -> 1.

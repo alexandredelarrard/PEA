@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 
 import pandas as pd
 
@@ -48,6 +49,60 @@ SHARADAR_API_KEY_ENV = "SHARADAR_API_KEY"
 # back as '1997000000.0'.
 SHARADAR_ID_COLUMNS = ("ticker", "dimension", "calendardate", "date", "reportperiod",
                        "fiscalperiod", "lastupdated")
+
+
+def vendor_symbol(ticker: str) -> str:
+    """This repo's canonical ticker in SHARADAR's spelling.
+
+    Sharadar separates a share class with a DOT (`BRK.B`, `BF.B`); this repo uses a DASH
+    (`BRK-B`, `BF-B`) because `prices`, `sp500_tickers` and every cube part key on the
+    yfinance spelling, and the canonical form must stay the one the panel joins on.
+
+    ⚠ THE MISMATCH FAILS SILENTLY. Asking for `BRK-B` returns HTTP 200 with ZERO ROWS -- not
+    a 403, not an error -- so both S&P 500 share-class names were simply absent from
+    `fundamentals_sharadar` (measured: 0 rows under EITHER spelling) and therefore from
+    every fundamental feature, while still appearing in the cube via the price panel.
+    Berkshire is one of the largest names in the index.
+
+    Applied only on the way OUT. The response is relabelled with the caller's own ticker
+    rather than transformed back, so no dot a vendor symbol might legitimately carry can be
+    rewritten into a dash by accident.
+
+    Measured on the live universe: `BF-B` and `BRK-B` are the ONLY tickers in
+    `sp500_tickers` / `prices` carrying either separator, and Sharadar covers both from
+    1992 (`BF.B` 1992-03-31, `BRK.B` 1992-12-31), USD, not delisted.
+    """
+    return ticker.replace("-", ".")
+
+
+#: A SHARE CLASS and nothing else: letters, one dot, ONE trailing letter. Sharadar's other
+#: dotted spellings must survive untouched -- measured on `sharadar_actions`, the 10 that do
+#: not match are foreign listings (`EVN.AX`, `MUV2.MI`, `TECHM.NS`, `NFTA.TA`), warrants
+#: (`OXY.WS`) and SPAC units (`AAC.U1`, `TAP.A1`). 429 tickers there DO match.
+_SHARE_CLASS_SYMBOL = re.compile(r"^[A-Z]+\.[A-Z]$")
+
+
+def canonical_symbols(tickers: pd.Series) -> pd.Series:
+    """A vendor `ticker` column in the repo's spelling -- the inverse of `vendor_symbol`,
+    applied to a MARKET-WIDE table where the caller's own ticker is not available to
+    relabel with.
+
+    `sharadar_actions` and `sharadar_sp500` are fetched in one request for every ticker
+    Sharadar covers, so unlike SF1 there is no per-request symbol to assign back. They are
+    also JOINED AGAINST THE PANEL: `split_events` reads `sharadar_actions` to de-adjust
+    `sharesbas`, and it filters `where={"ticker": names}` with the repo's names. Left in the
+    vendor spelling, BRK-B's 25 action rows and BF-B's 108 simply never matched, so their
+    share counts would be de-adjusted against NO split events -- a silently wrong number
+    rather than a missing one.
+
+    Only the share-class shape is rewritten, which is why this is safe: measured on the live
+    `sharadar_actions` (25,141 tickers), 921 already carry a dash and ZERO of them collide
+    with a rewritten dot-form.
+    """
+    return tickers.astype(str).str.replace(_SHARE_CLASS_SYMBOL,
+                                           lambda m: m.group(0).replace(".", "-"),
+                                           regex=True)
+
 
 class NotEntitled(RuntimeError):
     """HTTP 403 -- the subscription does not cover this ticker/table.

@@ -47,6 +47,23 @@ XS_CLIP_LABEL = 3.0             # modelling target (targets.py)
 XS_CLIP_CHARACTERISTIC = 4.0    # factor characteristic / regressor (factors.py, composites)
 XS_CLIP_PEER = 8.0             # peer-relative z (panel.py), winsorised again downstream
 
+#: Smallest dispersion a standardizer will divide by, as a FRACTION of the same day's
+#: cross-sectional std. Generalises the `sd > 0` degenerate-case guard from *zero* to
+#: *negligible*, and reads as: this group is too homogeneous to resolve a difference this
+#: small.
+#:
+#: The defect it closes was measured, not assumed. 3-12% of non-null `_vs_peers` cells sat at
+#: the +-8 clip (`f_pbo_to_mcap_vs_peers` 11.89%, `f_pegy_vs_peers` 6.70%), where a normal law
+#: gives P(|z| > 4) ~ 6e-5. Decomposing those cells: they have FULL 6-7-name baskets and a
+#: peer dispersion of 0.5%-8% of the day's universe dispersion -- the denominator collapsed,
+#: the numerator is fine. The embedding basket works too well.
+#:
+#: 0.10 rather than 0.25: on five real fields over 1995-2026 it cut clip saturation ~3x on the
+#: worst fields (`interest_coverage` 5.79% -> 1.85%) and ~1.75x on the mildest, while 0.25
+#: goes further (-> 1.21%) at the cost of muting real dispersion in genuinely tight groups.
+#: Residual saturation on legitimately extreme names is expected and correct.
+PEER_DISPERSION_FLOOR = 0.10
+
 #: How many PRESENT members a design CELL needs on a day before the group block may split the
 #: day's names on it (`_floored_group_block` -- read it before changing this, the rule is about
 #: cells and not columns). See the module docstring for the defect it closes: a 1-member cell
@@ -91,7 +108,19 @@ def xs_z(df: pd.DataFrame, clip: float | None, *,
     `zero_sd_to_nan=False` reproduces the UNGUARDED behaviour of `factors._xs_z` /
     `features.cross_sectional_standardize` / `targets.cross_sectional_zscore`
     (sd == 0 -> +/-inf -> clip -> +/-clip); `True` is the guarded behaviour a REGRESSOR needs
-    (sd == 0 -> NaN), used by `targets._neutralizing_design`."""
+    (sd == 0 -> NaN), used by `targets._neutralizing_design`.
+
+    ⚠ `PEER_DISPERSION_FLOOR` IS DELIBERATELY NOT APPLIED HERE, and not for symmetry's sake.
+    The floor is defined as a fraction of THE DAY'S CROSS-SECTIONAL STD, and `sd` on this
+    line IS that std -- so `sd.clip(lower=0.10 * sd)` can never bind. The floor is only
+    meaningful for a SUBGROUP dispersion measured against a wider reference, which is
+    `panel.peer_relative`'s 7-name basket and nothing here.
+
+    Input winsorization is likewise not applied: this function standardizes the MODELLING
+    LABEL (`targets.cross_sectional_zscore`) as well as characteristics, and trimming the
+    label's inputs is a decision about the target, not about a feature's outlier policy.
+    The fundamentals cube never reaches this function anyway -- its `_xs` suffix is
+    `xs_rank_pct`, a percentile rank, which is outlier-proof by construction."""
     mu = df.mean(axis=1)
     sd = df.std(axis=1)
     if zero_sd_to_nan:

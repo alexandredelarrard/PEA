@@ -178,19 +178,23 @@ def test_signs_orient_every_composite_to_the_long_side(groups):
           "so no member is quietly subtracting signal from its own theme.")
 
 
-def test_goodwill_roic_drag_keeps_its_positive_sign(groups):
-    """The one sign that reads backwards but is right. `goodwill_roic_drag =
-    roic_incl_goodwill - roic_ex_goodwill`; excluding goodwill SHRINKS invested capital,
-    so roic_ex > roic_incl and the drag is structurally NEGATIVE. A bigger goodwill
-    balance makes it more negative, so HIGHER (nearer zero) = less dilution = better,
-    and the member takes a '+'."""
+def test_intangibles_roic_drag_keeps_its_positive_sign(groups):
+    """The one sign that reads backwards but is right. `intangibles_roic_drag =
+    roic_incl_intangibles - roic_ex_intangibles`; excluding acquired intangibles SHRINKS
+    invested capital, so roic_ex > roic_incl and the drag is structurally NEGATIVE. A bigger
+    intangibles balance makes it more negative, so HIGHER (nearer zero) = less dilution =
+    better, and the member takes a '+'.
+
+    The `goodwill_*` names became `intangibles_*` when the deduction moved onto Sharadar's
+    COMBINED `intangibles` column: the bare `goodwill` these read is written by no producer,
+    so the ex-goodwill ROIC subtracted nothing and the drag was identically zero."""
     members = dict(
         (col, sign) for sign, col in map(_parse_member, groups["ma_digestion"]))
-    assert members.get("f_goodwill_roic_drag_xs") == 1.0, \
-        "goodwill_roic_drag must be POSITIVE-signed: the metric is already negative"
-    assert members.get("f_goodwill_to_equity_xs") == -1.0
-    print("\n[5] ma_digestion: goodwill_roic_drag '+' (metric is already negative), "
-          "goodwill_to_equity '-'")
+    assert members.get("f_intangibles_roic_drag_xs") == 1.0, \
+        "intangibles_roic_drag must be POSITIVE-signed: the metric is already negative"
+    assert members.get("f_intangibles_to_equity_xs") == -1.0
+    print("\n[5] ma_digestion: intangibles_roic_drag '+' (metric is already negative), "
+          "intangibles_to_equity '-'")
     print("    SANITY CHECK: the drag is not double-negated -- inverting it would have "
           "rewarded exactly the names that overpaid for acquisitions.")
 
@@ -200,12 +204,36 @@ def test_goodwill_roic_drag_keeps_its_positive_sign(groups):
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def real_panel() -> pd.DataFrame:
-    """The two fundamentals panels built from the real `fundamentals_history` table.
+    """The fundamentals panels built the way `StepCubeFundamentals` builds them.
 
-    Reads the persisted table rather than rebuilding history from cached companyfacts
-    JSON: that cache is gone, and reading the table is what the cube itself does, so
-    this fixture now exercises the same input the pipeline sees.
+    Reads the persisted `fundamentals_history` rather than rebuilding from cached
+    companyfacts JSON: that cache is gone, and reading the table is what the cube does.
+
+    ⚠ THE ENRICHMENTS ARE NOT OPTIONAL SUGAR -- they are where four feature families come
+    from, and a fixture that skips them reports live features as dead:
+
+      * `add_cube_time_growth`  is the ONLY producer of `revenueGrowth` / `earningsGrowth`
+        (declared in `CUBE_TIME_COLUMNS` because a 365-DAY as_of offset is impossible at
+        history-build time, where the offset could only be 4 ROWS);
+      * `attach_gics_columns`   is the ONLY source of `sector` / `industry_group`, and
+        `sector_gates.row_gate` fails CLOSED without them -- every sector KPI gated off;
+      * `pension_facts` / `notes_num` carry the whole `pension_*` family;
+      * the WORKFORCE panel is a third builder the step merges in.
+
+    Building three panels instead of two, on enriched input, is what makes
+    `test_every_configured_member_is_a_real_feature` a statement about the CONFIG rather
+    than about this fixture's shortcuts.
     """
+    from types import SimpleNamespace
+
+    from src.data_aggregate.utils.common.gics import attach_gics_columns
+    from src.data_aggregate.utils.common.pit import add_cube_time_growth
+    from src.data_aggregate.utils.fundamentals.employee_features import (
+        build_employee_feature_panel,
+    )
+    from src.data_aggregate.utils.fundamentals.fundamental_features import (
+        load_notes_num_scoped, load_pension_facts_scoped,
+    )
     from src.data_store.schema import Tables
     from src.data_store.store import DataStore
     from src.utils.db import get_engine
@@ -225,12 +253,24 @@ def real_panel() -> pd.DataFrame:
     if fund is None or fund.empty:
         pytest.skip("fundamentals_history is empty for the drawn tickers")
 
+    # the loaders below read `context.store` and nothing else, so a shim is the honest
+    # dependency rather than standing a whole Context up for one attribute
+    ctx = SimpleNamespace(store=store)
+    fund = attach_gics_columns(add_cube_time_growth(fund), ctx,
+                               logging.getLogger("composites-test"))
+
     idx = pd.bdate_range("2022-01-03", "2026-06-30")
     close = pd.DataFrame(100.0, index=idx, columns=picked)
     peers = {t: {p: 1.0 for p in picked if p != t} for t in picked}
-    fp = build_fundamental_feature_panel(fund, peers, idx, stock_close=close)
+    fp = build_fundamental_feature_panel(
+        fund, peers, idx, stock_close=close,
+        pension_facts=load_pension_facts_scoped(ctx),
+        notes_num=load_notes_num_scoped(ctx))
     sp = build_sector_feature_panel(fund, peers, idx)
+    wp = build_employee_feature_panel(fund, peers, idx, fundamentals_history=fund)
     panel = fp.merge(sp, on=["date", "ticker"], how="outer")
+    if not wp.empty:
+        panel = panel.merge(wp, on=["date", "ticker"], how="outer")
     panel.attrs["tickers"] = picked
     return panel
 
@@ -262,12 +302,12 @@ def test_composites_build_on_ten_real_tickers(groups, real_panel, caplog):
         assert any("absent from the panel" in r.getMessage() for r in caplog.records), \
             "members are missing but nothing was logged"
 
-    # This fixture builds only the FUNDAMENTAL + SECTOR panels, so members owned by the
+    # This fixture builds the three FUNDAMENTALS-STEP panels, so members owned by the
     # governance / insider / 13F / technical / attention builders are legitimately absent
     # here -- `test_every_configured_member_is_a_real_feature` is what proves those names
     # are real. What matters in this test is that the universal composites still populate.
     print(f"\n[6] built {len(built)} composites on {len(tickers)} real tickers "
-          f"({', '.join(tickers)}), from the fundamental + sector panels only")
+          f"({', '.join(tickers)}), from the fundamental + sector + workforce panels")
     print(f"    {'composite':22} {'row coverage':>13}")
     for c, v in sorted(live.items(), key=lambda kv: -kv[1]):
         tag = "  (sparse by design)" if c.removeprefix("comp_") in SPARSE_GROUPS else ""
@@ -278,38 +318,67 @@ def test_composites_build_on_ten_real_tickers(groups, real_panel, caplog):
 
 
 def test_every_configured_member_is_a_real_feature(groups, real_panel):
-    """No typos: every member must exist either in the LIVE cube (which carries the
-    governance / insider / 13F / technical / attention panels) or in the freshly-built
-    fundamental + sector panels (which carry the new steps 4-8 features).
+    """No typos: every configured member must be a column some builder really produces.
 
-    The one documented exception is the `f_ec_*` earnings-call family: the builders are
-    wired but `earnings_call_sections` holds only ~217 rows and was never scored, so
-    those columns do not exist yet. They are configured deliberately so they light up the
-    moment transcripts are ingested -- and the skip warning keeps that visible."""
-    from src.data_store.store import DataStore
+    RESOLVED AGAINST THE CUBE **PARTS**, NOT THE ASSEMBLED `cube`. The assembly is a
+    downstream artefact that can be stale or partial -- in this database it holds 52 columns
+    and not one `f_*` fundamentals feature, while `cube_part_fundamentals` holds 249. Reading
+    the assembled table therefore reported live features as missing and, worse, would have
+    accepted a member that only exists in a stale assembly. The parts are what the assembly
+    reads, so they are the authority.
+
+    A PARTIALLY-unresolved theme is the TYPO SIGNATURE and fails: if nine of a theme's ten
+    members resolve, the tenth is a misspelling or a rename that was not propagated -- which
+    is exactly what this audit found (`goodwill_*` -> `intangibles_*`, `roic_*`,
+    `days_sales_outstanding` -> `dso`, and `revenueGrowth` / `sbc_to_buyback` /
+    `nci_income_share` / `buyback_intensity` / the workforce and REIT families).
+
+    A WHOLLY-unresolved theme is a BUILD GAP and is reported, not failed: every one of its
+    members is missing because the part that owns them was never built here. `cube_part_extras`
+    (governance, insider, 13F, superinvestor, short interest) and `cube_part_text`
+    (earnings-call) do not exist in this database, and no amount of config correctness would
+    conjure them. Distinguishing the two is the whole point -- a test that fails on both
+    teaches the reader to ignore it.
+    """
+    from sqlalchemy import text
+
     from src.utils.db import get_engine
     try:
-        cube_cols = set(DataStore(get_engine()).load("cube", limit=1).columns)
+        with get_engine().connect() as conn:
+            part_cols = {r[0] for r in conn.execute(text(
+                "select column_name from information_schema.columns "
+                "where table_name like 'cube%'")).fetchall()}
     except Exception as exc:                       # pragma: no cover - env without the DB
-        pytest.skip(f"cube unavailable ({type(exc).__name__})")
+        pytest.skip(f"cube tables unavailable ({type(exc).__name__})")
+    if not part_cols:
+        pytest.skip("no cube part tables have been built")
 
-    known = cube_cols | set(real_panel.columns)
-    unknown, awaiting_data = [], []
+    known = part_cols | set(real_panel.columns)
+    typos: list[str] = []
+    gaps: dict[str, int] = {}
     for theme, members in groups.items():
-        for _, col in map(_parse_member, members):
-            if col in known:
-                continue
-            (awaiting_data if col.startswith("f_ec_") else unknown).append(f"{theme}: {col}")
-    assert not unknown, ("configured member is not a real feature anywhere:\n  "
-                         + "\n  ".join(sorted(unknown)))
+        missing = [c for _, c in map(_parse_member, members) if c not in known]
+        if not missing:
+            continue
+        if len(missing) == len(members):
+            gaps[theme] = len(missing)                       # the whole builder is absent
+        else:
+            typos += [f"{theme}: {c}" for c in missing]
 
-    print(f"\n[6b] every configured member resolves against {len(cube_cols)} live cube "
+    assert not typos, (
+        "these members are configured but no builder produces them, while their THEME "
+        "SIBLINGS resolve -- so this is a typo or an unpropagated rename, not a missing "
+        "data source:\n  " + "\n  ".join(sorted(typos)))
+
+    print(f"\n[6b] every configured member resolves against {len(part_cols)} cube-part "
           f"columns + {len(real_panel.columns)} freshly-built panel columns")
-    print(f"     {len(awaiting_data)} members awaiting DATA (earnings-call transcripts: "
-          f"217 sections ingested, never scored) -- configured on purpose so they "
-          f"activate on ingest")
-    print("     SANITY CHECK: no typo'd or renamed feature name in the config; the only "
-          "unresolved members are a known, reported data gap.")
+    if gaps:
+        print(f"     {len(gaps)} theme(s) wholly unbuilt in this database "
+              f"({sum(gaps.values())} members): "
+              + ", ".join(f"{t} ({n})" for t, n in sorted(gaps.items())))
+        print("     -> these need `build-extras` / `build-text`; the config is not wrong.")
+    print("     SANITY CHECK: no theme is PARTIALLY unresolved, which is the signature a "
+          "typo or an unpropagated rename would leave.")
 
 
 def test_missing_members_are_reported_not_swallowed(groups, real_panel, caplog):

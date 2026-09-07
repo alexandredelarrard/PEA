@@ -199,7 +199,16 @@ SHARADAR_CORRECTION_ACTIONS: frozenset[str] = frozenset({
 
 #: The field map's CLOSED vocabularies, for the same reason.
 SHARADAR_MAP_KINDS: frozenset[str] = frozenset({"direct", "derived", "sec", "null"})
-SHARADAR_MAP_OPS: frozenset[str] = frozenset({"sum", "ratio", "ratio_minus_one", "quarter"})
+#: `sum` propagates NaN -- every leg must be present, which is right for `ebitda`
+#: (operatingIncome without depAmort is EBIT, not EBITDA, and would be silently
+#: mislabelled). `sum_optional` requires only the FIRST input and coalesces the rest to 0,
+#: which is right for a WIDENING: `cash = cashneq + shortTermInvestments` lost a present
+#: `cashneq` on 9,130 filings (17.8% of the table, 91 tickers) because banks, insurers and
+#: REITs file an unclassified balance sheet (ASC 210-10-05-4) and so report no CURRENT
+#: investments line at all. The two ops are separate on purpose: which legs are mandatory
+#: is a per-field accounting judgement, not a global one.
+SHARADAR_MAP_OPS: frozenset[str] = frozenset({"sum", "sum_optional", "ratio",
+                                              "ratio_minus_one", "quarter"})
 SHARADAR_MAP_SPLIT_BASES: frozenset[str] = frozenset({"count", "per_share"})
 
 #: The only `negate` spelling the map accepts. `true` was the plan's original and phase 2

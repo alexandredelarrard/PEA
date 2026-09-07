@@ -38,7 +38,8 @@ from src.context import Context
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Table, Tables
 from src.data_extract.utils.fundamentals_sharadar.client import (
-    NotEntitled, cast_value_columns, coerce_date_columns, sharadar_get,
+    NotEntitled, canonical_symbols, cast_value_columns, coerce_date_columns, sharadar_get,
+    vendor_symbol,
 )
 from src.utils.polite_http import sleep_pace
 
@@ -141,7 +142,11 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
     total_rows = 0
 
     for ticker in tqdm(tickers, desc="Downloading tickers"):
-        currency = currencies.get(ticker)
+        # `BRK-B` here, `BRK.B` at Sharadar. The wrong spelling returns 200 with zero rows,
+        # so it never surfaced as an error -- see `client.vendor_symbol`. The roster lookup
+        # has to use the vendor form too, or the USD assertion silently reads None.
+        symbol = vendor_symbol(ticker)
+        currency = currencies.get(symbol)
         if currency is not None and currency != "USD":
             # Refuse to write rather than write-and-flag: only 8 of the 112 columns are
             # USD-converted, so the row would mix units inside itself and no downstream
@@ -158,7 +163,7 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
             for dimension in SHARADAR_DIMENSIONS:
                 page = sharadar_get(
                     context, "fundamentals", expect_columns=SHARADAR_SF1_COLUMNS,
-                    ticker=ticker, dimension=dimension, sort="date.asc",
+                    ticker=symbol, dimension=dimension, sort="date.asc",
                     **{"date.gte": since})
                 if page is not None and not page.empty:
                     frames.append(page)
@@ -173,6 +178,11 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
             continue
 
         frame = pd.concat(frames, ignore_index=True)
+        # Relabel to the REPO's canonical symbol. The response carries Sharadar's spelling,
+        # and `fundamentals_sharadar.ticker` is what the merge, the panel and every join
+        # key on. Assigning the caller's own ticker (rather than transforming the vendor
+        # string back) means no legitimate dot can be rewritten into a dash by accident.
+        frame["ticker"] = ticker
         # Cast BEFORE the first write: `ensure_table` types the table off the first frame,
         # and an all-None object column would become TEXT for every later ticker.
         frame = cast_value_columns(frame)
@@ -206,6 +216,12 @@ def _fetch_dated_table(context: Context, table: Table, endpoint: str,
                          endpoint, since, table)
         return
     frame = coerce_date_columns(frame, table.date_type_cols)
+    # Share classes to the repo's spelling. These two tables are market-wide, so there is
+    # no per-request symbol to relabel with as there is for SF1 -- but they ARE joined
+    # against the panel on the repo's names, and `split_events` reading `sharadar_actions`
+    # is how BRK-B's share counts get de-adjusted. See `client.canonical_symbols`.
+    if "ticker" in frame.columns:
+        frame["ticker"] = canonical_symbols(frame["ticker"])
     if "value" in frame.columns:
         frame["value"] = pd.to_numeric(frame["value"], errors="coerce").astype("float64")
     written = context.store.save(table, frame)

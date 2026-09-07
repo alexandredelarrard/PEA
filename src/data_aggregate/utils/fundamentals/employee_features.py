@@ -1,7 +1,7 @@
 """
 employee_features.py  (src/data_aggregate/utils/employee_features.py)
 ---------------------------------------------------------------------
-Peer-relative WORKFORCE features built from the `employees` column of
+Peer-relative WORKFORCE features built from the `employees_sec` column of
 `fundamentals_history` -- the headcount parsed out of each 10-K's body text by
 `fundamentals_employees.py` (this used to be a separate `employees_history`
 table). Because each count carries its SEC filing date as `as_of`, these are
@@ -28,6 +28,13 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 
 _YOY_TRADING_DAYS = 252   # ~1 year of trading days for the YoY headcount change
 
+#: Headcount is SEC-OWNED in the Sharadar-first merged table: it is parsed out of the 10-K
+#: body text, and Sharadar does not deliver it. `merge_history` therefore namespaces it
+#: `employees_sec`, so the column NAME carries its provenance and a NULL is attributable to
+#: one producer. Reading the bare `employees` returned an empty frame and killed all four
+#: features on the first lookup, before revenue was ever read. Live coverage 75.7%.
+_HEADCOUNT_FIELD = "employees_sec"
+
 
 def _employee_fields(
     employees_hist: pd.DataFrame,
@@ -37,7 +44,7 @@ def _employee_fields(
     """Daily wide frames (date x ticker), point-in-time from each filing `as_of`."""
     F: dict[str, pd.DataFrame] = {}
 
-    employees = fundamentals_to_daily(employees_hist, "employees", idx)
+    employees = fundamentals_to_daily(employees_hist, _HEADCOUNT_FIELD, idx)
     if employees.empty or not employees.notna().any().any():
         return F
 
@@ -81,7 +88,7 @@ def build_employee_feature_panel(
     """Long-format workforce feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
     Empty if the employee-count history is unavailable.
 
-    `headcount_history` needs only (ticker, as_of, employees) -- today that IS
+    `headcount_history` needs only (ticker, as_of, employees_sec) -- today that IS
     `fundamentals_history`, so callers pass the same frame twice; the two
     parameters stay separate because the headcount and the revenue it is divided
     by are conceptually independent inputs (and were separate tables until the

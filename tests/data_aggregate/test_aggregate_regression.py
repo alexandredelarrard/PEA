@@ -167,10 +167,27 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # the frozen input must be pinned too: a silent DB change would otherwise look like a
     # code regression spread across every fundamentals-derived panel
     assert baseline["input.fundamentals_slice"]["rows"] > 0
-    assert baseline["input.fundamentals_slice"]["cols"] > 100
+    # A bare width threshold is what this used to be (`> 100`, written against a 237-column
+    # vintage), and it went stale silently when `fundamentals_history` moved to the
+    # Sharadar-first 93-column shape: the assertion still passed for a whole vintage because
+    # the FROZEN PARQUET had not been regenerated, so it was measuring a file, not the table.
+    # Name the columns that must be there instead -- a width is a proxy for coverage, these
+    # ARE the coverage, and each one is a family that silently died when it went missing.
+    slice_cols = set(baseline["input.fundamentals_slice"].get("columns", []))
+    assert len(slice_cols) >= 80, f"frozen slice is a stub: {len(slice_cols)} columns"
+    for must, why in (
+            ("sector", "sector_gates.row_gate fails CLOSED without it -> every sector KPI off"),
+            ("industry_group", "the finer gate, same failure mode"),
+            ("revenueGrowth", "a CUBE_TIME_COLUMN: only the cube can compute it"),
+            ("earningsGrowth", "ditto"),
+            ("employees_sec", "the whole workforce family reads this exact name"),
+            ("intangibles", "the ROIC deduction; the bare `goodwill` is written by no producer"),
+            ("dividendsPaid", "payout_ratio and sustainable_growth_rate both need its sign")):
+        assert must in slice_cols, f"frozen fundamentals slice has no `{must}` -- {why}"
 
     print(f"\n[coverage] {len(panels)} panels + {len(prims)} deduplicated primitives + "
-          f"{len(labels)} labels + the frozen fundamentals input")
+          f"{len(labels)} labels + the frozen fundamentals input "
+          f"({len(slice_cols)} columns, enrichments included)")
     print("    SANITY CHECK: all 13 panel builders and all 13 to-be-merged primitives are "
           "fingerprinted and non-empty, so no dedup step is unguarded.")
 

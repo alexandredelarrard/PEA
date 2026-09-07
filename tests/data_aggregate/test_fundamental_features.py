@@ -68,6 +68,48 @@ def test_regime_masks_earnings_metrics_but_keeps_robust_ones():
           f"gross_profitability={F['gross_profitability'].loc[d,'ZZZ']:.4f}. Validated.")
 
 
+def test_loss_intensity_carries_what_the_earnings_mask_discards():
+    """The loss magnitude gets its OWN column, because its sign is the OPPOSITE of E/P's.
+
+    The mask on `earnings_yield` was justified by "ranking loss-makers by it is noise". That
+    was never measured, and it is wrong. Spearman IC of the signed yield against
+    `target_rank`, month-end 1995-2026, computed inside each sign subset:
+
+        netIncome     loss subset -0.0297 (t = -3.17)   profitable +0.0116 (t = +3.31)
+        freeCashflow  loss subset -0.0159 (t = -2.44)   profitable +0.0162 (t = +4.98)
+
+    A DEEPER loss predicts a BETTER forward return -- negative in 4/4 sub-periods. So the
+    information is real but REVERSED, and folding it into one monotone column averages it
+    away: the merged column's Q5-Q1 spread in mean `target_rank` is 0.0040 against the
+    masked column's 0.0053. Hence: keep the mask, add this feature.
+
+    NaN for profitable names, never 0. A zero would tie every profitable name at one value
+    at the bottom of the cross-sectional rank -- the same defect the dividend zero-fill had
+    on pre-listing rows."""
+    fund = _synth_mixed_regime()
+    idx = pd.bdate_range("2020-03-02", periods=3)
+    close = pd.DataFrame({"AAA": 2.0, "ZZZ": 1.0}, index=idx)
+    F = _derived_fields(fund, idx, close)
+    d = idx[-1]
+
+    assert "loss_intensity" in F
+    # ZZZ: netIncome -30, shares 2000 x price 1.0 -> mcap 2000 -> 30/2000 = 0.015, POSITIVE
+    assert abs(F["loss_intensity"].loc[d, "ZZZ"] - 30.0 / 2000.0) < 1e-9
+    assert F["loss_intensity"].loc[d, "ZZZ"] > 0, "the house convention for *_intensity"
+    # AAA is profitable -> NaN, not 0
+    assert np.isnan(F["loss_intensity"].loc[d, "AAA"])
+    # and the two columns are exactly complementary: never both defined, never both null
+    both = F["earnings_yield"].loc[d].notna() & F["loss_intensity"].loc[d].notna()
+    assert not both.any(), "a name cannot be both profitable and loss-making"
+
+    print("\n=== SANITY CHECK: loss_intensity ===")
+    print(f"  ZZZ loses 30 on a 2000 market cap -> loss_intensity="
+          f"{F['loss_intensity'].loc[d,'ZZZ']:.4f} (positive magnitude), while its "
+          f"earnings_yield stays NaN. AAA (profitable) -> NaN, not 0.")
+    print("  Measured basis: loss-subset IC -0.0297 (t=-3.17) vs +0.0116 (t=+3.31) when "
+          "profitable -- opposite signs, so they cannot share a column. Validated.")
+
+
 def test_regime_state_flags_exact_and_raw():
     fund = _synth_mixed_regime()
     idx = pd.bdate_range("2020-03-02", periods=3)
@@ -155,16 +197,53 @@ def test_fiscal_change_pct_and_diff():
 # 3. peer_relative: correct z + explosion guard                               #
 # --------------------------------------------------------------------------- #
 def test_peer_relative_zscore_correct():
+    """The z-score arithmetic, with the INPUT WINSORIZATION turned off.
+
+    `peer_relative` trims the day's cross-section to its 1%/99% quantiles before taking the
+    peer moments, so on a 4-name universe the quantile interpolation pulls A in from 4.0 and
+    the textbook hand calculation no longer applies (it lands at 2.437, not 2.449). That is
+    the treatment working, not a defect -- but it is not what THIS test is about, so the
+    trim is disabled here and asserted separately below."""
     idx = pd.bdate_range("2020-01-01", periods=1)
     field = pd.DataFrame({"A": [4.0], "B": [1.0], "C": [2.0], "D": [3.0]}, index=idx)
     peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
 
-    rel = peer_relative(field, peers)
+    rel = peer_relative(field, peers, winsorize_inputs=False)
     # peer mean=2, population std=sqrt(2/3)=0.8165 -> (4-2)/0.8165 = 2.449
     assert abs(rel.loc[idx[0], "A"] - 2.449) < 1e-2
 
+    # with the trim ON (production default) the subject is pulled toward the pack
+    trimmed = peer_relative(field, peers)
+    assert trimmed.loc[idx[0], "A"] < rel.loc[idx[0], "A"]
+
     print("\n=== SANITY CHECK: peer-relative z-score ===")
-    print(f"  A=4 vs peers[1,2,3] -> z={rel.loc[idx[0], 'A']:.3f} (expected ~2.449).")
+    print(f"  A=4 vs peers[1,2,3] -> z={rel.loc[idx[0], 'A']:.3f} (expected ~2.449) "
+          f"with inputs untrimmed; {trimmed.loc[idx[0], 'A']:.3f} with the production "
+          f"1%/99% input trim, which pulls the subject toward its peers.")
+
+
+def test_peer_dispersion_floor_bounds_a_homogeneous_basket():
+    """The FLOOR: a basket too homogeneous to resolve a difference must not manufacture a
+    huge z. Peers at 5.0/5.0/5.001 have a near-zero std; without the floor the subject's
+    deviation is divided by ~0.0005 and pins at the clip. The floor divides by
+    0.10 x the day's UNIVERSE std instead."""
+    idx = pd.bdate_range("2020-01-01", periods=1)
+    # a wide universe (so the universe std, and therefore the floor, is meaningful)
+    field = pd.DataFrame({"A": [6.0], "B": [5.0], "C": [5.0], "D": [5.001],
+                          "E": [0.0], "F": [10.0], "G": [20.0]}, index=idx)
+    peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
+
+    floored = peer_relative(field, peers, winsorize_inputs=False)
+    unfloored = peer_relative(field, peers, winsorize_inputs=False, dispersion_floor=0.0)
+
+    assert abs(unfloored.loc[idx[0], "A"]) >= 7.99, "without the floor this pins at the clip"
+    assert abs(floored.loc[idx[0], "A"]) < 7.99, "the floor must keep it off the clip"
+
+    print("\n=== SANITY CHECK: peer dispersion floor ===")
+    print(f"  peers 5.0/5.0/5.001 (std ~5e-4), subject 6.0: unfloored z="
+          f"{unfloored.loc[idx[0], 'A']:.2f} (at the +-8 clip) vs floored z="
+          f"{floored.loc[idx[0], 'A']:.2f} -- the denominator is now 0.10 x the day's "
+          f"universe std, not the collapsed basket std.")
 
 
 def test_peer_relative_does_not_explode_on_degenerate_peers():
@@ -406,21 +485,28 @@ def test_self_history_z_mean_reversion():
 # --------------------------------------------------------------------------- #
 def _synth_fundamentals_rich():
     """Two annual filings for AAA carrying every raw level the refined features
-    need. Hand-computable so the ratios can be checked exactly."""
+    need. Hand-computable so the ratios can be checked exactly.
+
+    ⚠ THE COLUMN NAMES ARE THE LIVE ONES, and that is the point of this fixture. It used to
+    carry `acquisitions` and `goodwill`, neither of which `fundamentals_history` has: the
+    cash-flow leg is `businessAcquisitionsNet` and the balance is Sharadar's COMBINED
+    `intangibles`. A synthetic frame that invents column names cannot fail when the builder
+    reads a column no producer writes -- which is exactly how 65 features emitted nothing
+    while their tests stayed green."""
     rows = [
         dict(ticker="AAA", as_of="2019-02-01",
              totalRevenue=100.0, netIncome=10.0, ebitda=25.0,
              cash=20.0, longTermDebt=40.0, shortTermDebt=10.0,
              totalLiabilities=80.0, currentAssets=60.0, currentLiabilities=30.0,
-             interestExpense=5.0, goodwill=15.0, totalAssets=200.0,
-             sellingGeneralAdmin=20.0, stockBasedComp=4.0, acquisitions=6.0,
+             interestExpense=5.0, intangibles=15.0, totalAssets=200.0,
+             sellingGeneralAdmin=20.0, stockBasedComp=4.0, businessAcquisitionsNet=6.0,
              operatingCashFlow=18.0, profitMargins=0.10),
         dict(ticker="AAA", as_of="2020-02-03",
              totalRevenue=120.0, netIncome=15.0, ebitda=30.0,
              cash=25.0, longTermDebt=50.0, shortTermDebt=10.0,
              totalLiabilities=90.0, currentAssets=66.0, currentLiabilities=33.0,
-             interestExpense=6.0, goodwill=30.0, totalAssets=240.0,
-             sellingGeneralAdmin=22.0, stockBasedComp=6.0, acquisitions=12.0,
+             interestExpense=6.0, intangibles=30.0, totalAssets=240.0,
+             sellingGeneralAdmin=22.0, stockBasedComp=6.0, businessAcquisitionsNet=12.0,
              operatingCashFlow=24.0, profitMargins=0.125),
     ]
     return pd.DataFrame(rows)
@@ -448,7 +534,7 @@ def test_distress_sga_ma_sbc_features_exact():
 
     # ---- M&A ----
     assert abs(F["acquisition_intensity"].loc[d, "AAA"] - 12.0 / 240.0) < 1e-9   # acq/assets
-    assert abs(F["goodwill_growth"].loc[d, "AAA"] - (30.0 / 15.0 - 1.0)) < 1e-9  # +100%
+    assert abs(F["intangibles_growth"].loc[d, "AAA"] - (30.0 / 15.0 - 1.0)) < 1e-9  # +100%
 
     # ---- SBC ----
     assert abs(F["sbc_intensity"].loc[d, "AAA"] - 6.0 / 120.0) < 1e-9
@@ -456,7 +542,7 @@ def test_distress_sga_ma_sbc_features_exact():
 
     # ---- point-in-time: growth features NaN before the second filing ----
     before = pd.Timestamp("2019-06-03")
-    assert np.isnan(F["goodwill_growth"].loc[before, "AAA"]), "goodwill_growth leaked"
+    assert np.isnan(F["intangibles_growth"].loc[before, "AAA"]), "intangibles_growth leaked"
     assert np.isnan(F["operating_leverage"].loc[before, "AAA"]), "operating_leverage leaked"
     # level ratios use the y1 filing before y2 is public (still no look-ahead)
     assert abs(F["net_debt_to_ebitda"].loc[before, "AAA"] - (40.0 + 10.0 - 20.0) / 25.0) < 1e-9
@@ -469,7 +555,7 @@ def test_distress_sga_ma_sbc_features_exact():
     print(f"  sga_intensity={F['sga_intensity'].loc[d,'AAA']:.3f}  "
           f"op_leverage={F['operating_leverage'].loc[d,'AAA']:+.2%}  "
           f"acq_intensity={F['acquisition_intensity'].loc[d,'AAA']:.3f}  "
-          f"goodwill_growth={F['goodwill_growth'].loc[d,'AAA']:+.0%}")
+          f"intangibles_growth={F['intangibles_growth'].loc[d,'AAA']:+.0%}")
     print(f"  sbc_intensity={F['sbc_intensity'].loc[d,'AAA']:.3f}  "
           f"sbc/OCF={F['sbc_to_ocf'].loc[d,'AAA']:.2f}")
     print("  All ratios match hand calc; growth NaN before 2nd filing -> point-in-time. Validated.")
@@ -585,8 +671,23 @@ def test_pct_growth_signed_base_is_negative_when_losing_money():
 # 13. Enterprise value = mktcap + real debt + SBC - cash (exact)               #
 # --------------------------------------------------------------------------- #
 def test_valuation_engine_kpis_exact():
-    """Altman Z, PEGY, operating-leverage elasticity, and the REIT/energy EV
-    multiples, on a 2-year history with a known price."""
+    """Altman Z, PEGY, operating-leverage elasticity and the REIT FFO yield, on a 2-year
+    history with a known price.
+
+    TWO ASSERTIONS HERE USED TO PASS ON FIELDS SHARADAR DOES NOT DELIVER, and both features
+    are now deleted rather than dormant:
+
+      `implied_cap_rate`  was `(operatingIncome + depAmort + realEstateImpairment) / EV`. With
+                          the impairment leg absent that is `(operatingIncome + depAmort) / EV`
+                          -- the field map's own DEFINITION of `ebitda` -- so it was
+                          `ebitda_to_ev` masked to REITs, measured at r = 1.000000 against it.
+      `ebitdax_to_ev`     added back `explorationExpense` so Successful-Efforts and Full-Cost
+                          filers compare. Without that tag nothing is added back and it too
+                          reduced to `ebitda_to_ev`.
+
+    The old fixture supplied `gainOnDispositions`, `realEstateNet`, `explorationExpense` and
+    `oilGasPropertyNet` by hand, so the tests passed on numbers production could never
+    produce. They are gone from the fixture, and their absence is now asserted."""
     y19, y20 = "2019-12-31", "2020-12-31"
     fund = pd.DataFrame([
         # GEN: 2 years -> growth/elasticity/PEGY; full Altman inputs
@@ -601,16 +702,16 @@ def test_valuation_engine_kpis_exact():
              currentLiabilities=40.0, retainedEarnings=50.0, totalLiabilities=100.0,
              longTermDebt=50.0, shortTermDebt=10.0, cash=20.0,
              sharesOutstanding=100.0, dilutedShares=100.0, dividendsPaid=4.0),
-        # REIT: FFO yield + implied cap rate
+        # REIT: FFO yield (the D&A leg only -- SF1 has no disposal-gain or impairment tag)
         dict(ticker="REI", sector="Real Estate",
              industry_group="Equity Real Estate Investment Trusts (REITs)",
              as_of=y20, totalRevenue=300.0, netIncome=50.0, operatingIncome=90.0,
-             depAmort=100.0, gainOnDispositions=10.0, realEstateNet=2000.0,
+             depAmort=100.0,
              longTermDebt=800.0, cash=50.0, sharesOutstanding=100.0, dilutedShares=100.0),
-        # Energy: EV/EBITDAX
+        # Energy: kept as the NON-REIT control for the FFO gate
         dict(ticker="OIL", sector="Energy", industry_group="Energy",
              as_of=y20, totalRevenue=1000.0, netIncome=120.0, operatingIncome=180.0,
-             depAmort=110.0, explorationExpense=70.0, oilGasPropertyNet=5000.0,
+             depAmort=110.0,
              longTermDebt=1000.0, cash=100.0, sharesOutstanding=100.0, dilutedShares=100.0),
     ])
     idx = pd.bdate_range("2021-03-01", periods=3)
@@ -624,19 +725,23 @@ def test_valuation_engine_kpis_exact():
     assert F["operating_leverage_elasticity"].loc[d, "GEN"] == pytest.approx(2.5, rel=1e-6)
     # Altman Z = 1.2*.2 + 1.4*.25 + 3.3*.09 + 0.6*2.0 + 1.0*.6 = 2.687
     assert F["altman_z"].loc[d, "GEN"] == pytest.approx(2.687, abs=1e-3)
-    # REIT: FFO = 50+100-10 = 140 -> ffo_yield 140/200 = 0.70; EV=200+800-50=950 -> cap 190/950
-    assert F["ffo_yield"].loc[d, "REI"] == pytest.approx(140 / 200)
-    assert F["implied_cap_rate"].loc[d, "REI"] == pytest.approx(190 / 950)
-    # Energy: EBITDAX=180+110+70=360; EV=200+1000-100=1100 -> 360/1100
-    assert F["ebitdax_to_ev"].loc[d, "OIL"] == pytest.approx(360 / 1100)
-    # gating: non-REIT has no ffo_yield, non-energy has no ebitdax_to_ev
-    assert np.isnan(F["ffo_yield"].loc[d, "OIL"]) and np.isnan(F["ebitdax_to_ev"].loc[d, "REI"])
+    # REIT: FFO = netIncome 50 + D&A 100 = 150 -> ffo_yield 150/200 = 0.75. The NAREIT
+    # disposal-gain and impairment adjustments are NOT subtracted: SF1 carries neither tag.
+    assert F["ffo_yield"].loc[d, "REI"] == pytest.approx(150 / 200)
+    # GICS gating: the FFO yield exists only for the equity-REIT group
+    assert np.isnan(F["ffo_yield"].loc[d, "OIL"])
+    # the two features that reduced to `ebitda_to_ev` on this substrate are GONE, not NaN --
+    # an all-NaN column would read downstream as "this REIT has no cap rate"
+    for gone in ("implied_cap_rate", "ebitdax_to_ev", "net_debt_to_ebitdare"):
+        assert gone not in F, f"{gone} is back: it is `ebitda_to_ev` under a sector mask"
 
     print("\n=== SANITY CHECK: valuation-engine KPIs ===")
     print(f"  GEN PEGY={F['pegy'].loc[d,'GEN']:.3f} op_lev_elasticity={F['operating_leverage_elasticity'].loc[d,'GEN']:.2f} "
           f"AltmanZ={F['altman_z'].loc[d,'GEN']:.3f}")
-    print(f"  REIT ffo_yield={F['ffo_yield'].loc[d,'REI']:.3f} implied_cap={F['implied_cap_rate'].loc[d,'REI']:.3f}; "
-          f"OIL ev/ebitdax_yield={F['ebitdax_to_ev'].loc[d,'OIL']:.3f}; sector-gated. Validated.")
+    print(f"  REIT ffo_yield={F['ffo_yield'].loc[d,'REI']:.3f} (D&A leg only), NaN for the "
+          f"non-REIT OIL -> GICS-gated.")
+    print("  implied_cap_rate / ebitdax_to_ev / net_debt_to_ebitdare are ABSENT: each reduced "
+          "to a sector-masked `ebitda_to_ev` once its add-back leg proved missing. Validated.")
 
 
 def test_pegy_uses_projected_eps_growth():
@@ -668,15 +773,31 @@ def test_pegy_uses_projected_eps_growth():
 
 
 def test_true_enterprise_value_fully_diluted():
-    """True EV = diluted-shares*price + total debt + leases + minority interest
-    - cash - short-term investments. SBC is NOT part of EV (corrected definition)."""
+    """True EV = diluted-shares*price + total debt + leases + minority interest - cash.
+    SBC is NOT part of EV, and SHORT-TERM INVESTMENTS ARE NOT A SEPARATE LEG.
+
+    ⚠ THIS TEST USED TO ASSERT A DOUBLE COUNT. It subtracted `cash` AND
+    `shortTermInvestments`, and hand-built them as two independent columns — which the
+    Sharadar substrate does not produce. The field map defines
+    `cash = cashAndEquivalents + coalesce(shortTermInvestments, 0)` and maps
+    `shortTermInvestments` straight from `investmentsc`, so the same money was subtracted
+    twice from EV, net debt and invested capital on every live row. `liquid_assets`'
+    docstring justified it by claiming `cash` was "investment-free (the extractor nets the
+    broader totals down)": true of the SEC-era extractor, false today.
+
+    The fixture now reflects production — `cash` 25 IS 10 of cash-and-equivalents plus the
+    15 of short-term investments — so the arithmetic below is what the live pipeline does.
+    Measured magnitude of the old double count, `investmentsc`/market cap at filing grain:
+    ~0 median in nine sectors but 1.30% in Information Technology (p90 13.36%)."""
     fund = pd.DataFrame([
         dict(ticker="AAA", as_of="2020-02-01", totalRevenue=120.0, netIncome=15.0,
              stockholdersEquity=60.0, freeCashflow=12.0, ebitda=26.0,
              sharesOutstanding=1000.0, dilutedShares=1100.0,      # diluted > basic
              longTermDebt=40.0, shortTermDebt=10.0,
              operatingLeaseLiability=8.0, financeLeaseLiability=2.0,
-             minorityInterest=5.0, cash=25.0, shortTermInvestments=15.0,
+             minorityInterest=5.0,
+             # production shape: cash ALREADY CONTAINS the 15 of short-term investments
+             cash=25.0, shortTermInvestments=15.0,
              stockBasedComp=6.0),                                  # present, must NOT affect EV
     ])
     idx = pd.bdate_range("2020-03-02", periods=3)
@@ -684,20 +805,24 @@ def test_true_enterprise_value_fully_diluted():
     F = _derived_fields(fund, idx, close)
     d = idx[-1]
 
-    # EV = FD mcap (1100*2=2200) + debt(50) + leases(10) + minority(5) - cash(25) - STI(15)
-    ev = 1100 * 2.0 + 50.0 + 10.0 + 5.0 - 25.0 - 15.0     # = 2225
+    # EV = FD mcap (1100*2=2200) + debt(50) + leases(10) + minority(5) - cash(25)
+    ev = 1100 * 2.0 + 50.0 + 10.0 + 5.0 - 25.0            # = 2240
     assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / ev) < 1e-9
     assert abs(F["fcf_to_ev"].loc[d, "AAA"] - 12.0 / ev) < 1e-9
+    # THE REGRESSION GUARD: the old, double-counting EV was 2225. It must not come back.
+    assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / 2225.0) > 1e-9, \
+        "short-term investments are being subtracted twice again"
     # uses DILUTED (2200) not basic (2000) for the equity value
-    ev_basic = 1000 * 2.0 + 50.0 + 10.0 + 5.0 - 25.0 - 15.0
+    ev_basic = 1000 * 2.0 + 50.0 + 10.0 + 5.0 - 25.0
     assert abs(ev - ev_basic) == 200.0
-    # SBC=6 is present but excluded: EV would be 2231 if SBC were added -> assert it is NOT
+    # SBC=6 is present but excluded: EV would be 2246 if SBC were added -> assert it is NOT
     assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / (ev + 6.0)) > 1e-9
 
     print("\n=== SANITY CHECK: True (fully-diluted) enterprise value ===")
-    print(f"  EV = 2200 FD-mcap + 50 debt + 10 leases + 5 minority - 25 cash - 15 STI = {ev:.0f}; "
+    print(f"  EV = 2200 FD-mcap + 50 debt + 10 leases + 5 minority - 25 cash = {ev:.0f}; "
           f"EBITDA/EV = 26/{ev:.0f} = {F['ebitda_to_ev'].loc[d,'AAA']:.5f}; "
-          f"FCF/EV = 12/{ev:.0f}. Diluted (not basic) shares used; SBC excluded. Exact.")
+          f"FCF/EV = 12/{ev:.0f}. Diluted (not basic) shares; SBC excluded; short-term "
+          f"investments counted ONCE (the old EV was 2225 and double-counted them). Exact.")
 
 
 # --------------------------------------------------------------------------- #

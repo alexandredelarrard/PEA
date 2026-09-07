@@ -22,7 +22,7 @@ from src.constants.constants import (
 from src.data_store.schema import Tables
 from src.data_extract.utils.fundamentals_sharadar import client as client_mod
 from src.data_extract.utils.fundamentals_sharadar.client import (
-    NotEntitled, cast_value_columns, sharadar_get,
+    NotEntitled, canonical_symbols, cast_value_columns, sharadar_get, vendor_symbol,
 )
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_fundamentals, fetch_sharadar_tickers,
@@ -99,6 +99,64 @@ def test_value_columns_are_float():
     assert not numeric_ids, f"identifier columns must NOT be cast to float: {numeric_ids}"
     print(f"  OK: {len(value_cols)}/{len(value_cols)} value columns are float64, including "
           f"the two this ticker never reports.")
+
+
+def test_share_class_symbols_map_both_ways_and_nothing_else_moves():
+    """Sharadar spells a share class `BRK.B`; this repo spells it `BRK-B`.
+
+    The repo's spelling is canonical because `prices`, `sp500_tickers` and every cube part
+    key on it. The vendor's spelling has to be used for the REQUEST, and the two market-wide
+    tables (`sharadar_actions`, `sharadar_sp500`) have to be mapped back on arrival because
+    they are joined against the panel on the repo's names.
+
+    The mapping back is deliberately NARROW -- letters, one dot, one trailing letter -- and
+    the negative cases here are real symbols from the live `sharadar_actions`: foreign
+    listings, warrants and SPAC units all carry a dot that is NOT a share class. Measured on
+    that table: 429 tickers match the share-class shape, 10 do not, 921 already carry a dash
+    and ZERO of those collide with a rewritten dot-form."""
+    assert vendor_symbol("BRK-B") == "BRK.B"
+    assert vendor_symbol("BF-B") == "BF.B"
+    assert vendor_symbol("AAPL") == "AAPL"          # untouched
+
+    got = canonical_symbols(pd.Series([
+        "BRK.B", "BF.B", "AAPL",                    # share classes + a plain symbol
+        "EVN.AX", "MUV2.MI", "TECHM.NS", "NFTA.TA",  # foreign listings -- NOT share classes
+        "OXY.WS", "AAC.U1", "TAP.A1",               # warrants / SPAC units -- NOT either
+        "SOME-CO",                                  # already dashed: left alone
+    ])).tolist()
+    assert got == ["BRK-B", "BF-B", "AAPL",
+                   "EVN.AX", "MUV2.MI", "TECHM.NS", "NFTA.TA",
+                   "OXY.WS", "AAC.U1", "TAP.A1",
+                   "SOME-CO"]
+
+    print("\n=== SANITY CHECK: share-class symbol mapping ===")
+    print(f"  request  BRK-B -> {vendor_symbol('BRK-B')} ; response BRK.B -> BRK-B")
+    print(f"  NOT rewritten (a dot that is not a share class): EVN.AX, MUV2.MI, TECHM.NS, "
+          f"NFTA.TA, OXY.WS, AAC.U1, TAP.A1. Validated.")
+
+
+def test_the_dash_spelling_returns_zero_rows_not_an_error(context):
+    """THE REASON THE DEFECT WAS SILENT, pinned against the live feed.
+
+    Asking Sharadar for `BRK-B` does not 403 and does not raise -- it returns HTTP 200 with
+    an EMPTY body. So `fundamentals_sharadar` simply had no rows for either S&P 500
+    share-class name (measured: 0 under either spelling) and nothing in the run log said so,
+    while BRK-B kept appearing in the cube via the price panel. If this test ever starts
+    failing because the dash form returns rows, the mapping can be deleted."""
+    common = dict(dimension="ARQ", sort="date.asc", limit=5)
+    wrong = sharadar_get(context, "fundamentals", ticker="BRK-B",
+                         **common, **{"date.gte": "2020-01-01"})
+    right = sharadar_get(context, "fundamentals", ticker=vendor_symbol("BRK-B"),
+                         **common, **{"date.gte": "2020-01-01"})
+    if wrong is None or right is None:
+        pytest.skip("Sharadar request failed (network)")
+
+    print("\n=== SANITY CHECK: the wrong spelling fails SILENTLY ===")
+    print(f"  ticker='BRK-B' -> {len(wrong)} rows (200 OK, no error, no 403)")
+    print(f"  ticker='{vendor_symbol('BRK-B')}' -> {len(right)} rows")
+    assert wrong.empty, "the dash form now returns rows -- the mapping is no longer needed"
+    assert not right.empty, "the dot form must be what Sharadar answers to"
+    assert set(right["ticker"].astype(str)) == {"BRK.B"}
 
 
 # --------------------------------------------------------------------------- #

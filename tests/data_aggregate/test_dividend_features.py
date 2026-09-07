@@ -141,6 +141,47 @@ def test_reconcile_sources_5y_growth_payout_coverage():
           f"{F['dividend_coverage'].loc[t,'B_ONLY']:.2f}<1 (unsafe) < A {F['dividend_coverage'].loc[t,'A']:.2f}. Validated.")
 
 
+def test_zero_fill_is_scoped_to_the_listed_window():
+    """A non-payer's real 0 must NOT be written onto rows before the company listed.
+
+    The panel is a near-dense date x ticker grid, so a 2020 IPO carries rows back to 1995.
+    An unscoped `.fillna(0.0)` asserted "pays no dividend" on 565,893 such rows — and
+    because `_xs` is a percentile rank computed per day across the universe, those phantoms
+    sat in the cross-section that prices the real names. Measured on the live cube:
+    1996-01-02 had 300 listed tickers but 491 carrying a dividend rank, with all 272
+    zero-yield names tied at 0.278, so the real universe was compressed into [0.278, 1.0].
+
+    NEW must be NaN before it lists and a real 0 after; OLD, listed throughout, is the
+    control and must be 0 on the same early dates."""
+    dates = pd.bdate_range("2021-01-04", periods=3 * 252)
+    listing = dates[len(dates) // 2]
+    close = pd.DataFrame(100.0, index=dates, columns=["OLD", "NEW", "PAYER"])
+    close.loc[close.index < listing, "NEW"] = np.nan          # not quotable yet
+
+    div_hist = pd.DataFrame([{"date": d, "ticker": "PAYER", "dividends": 0.5}
+                             for d in dates[::63]])
+    fund = pd.DataFrame([{"ticker": t, "as_of": aso, "sharesOutstanding": 1e9}
+                         for aso in dates[::63] for t in ("OLD", "NEW", "PAYER")])
+
+    F = _dividend_fields(div_hist, close, fund)
+    before, after = dates[10], dates[-1]
+    for k in ("dividend_yield", "dividend_payer", "shareholder_yield"):
+        assert pd.isna(F[k].loc[before, "NEW"]), f"{k} fabricated on a pre-listing row"
+        assert pd.notna(F[k].loc[after, "NEW"]), f"{k} lost after listing"
+        assert pd.notna(F[k].loc[before, "OLD"]), f"{k} nulled on a LISTED row"
+    # and the post-listing value is the real 0 the design intends, not a NaN
+    assert F["dividend_yield"].loc[after, "NEW"] == 0.0
+    assert F["dividend_payer"].loc[after, "NEW"] == 0.0
+    assert F["dividend_payer"].loc[before, "OLD"] == 0.0
+    assert F["dividend_payer"].loc[after, "PAYER"] == 1.0
+
+    print("\n=== SANITY CHECK: the zero-fill is scoped to the LISTED window ===")
+    print(f"  NEW lists {listing.date()}: dividend_yield/payer/shareholder_yield are NaN "
+          f"before it and a real 0 after. OLD (listed throughout) keeps its 0 on the same "
+          f"early date, so non-payers still rank correctly. Live cost of the mask: 448 rows "
+          f"of interior price holes = 0.014% of listed rows. Validated.")
+
+
 def test_panel_exposes_f_columns():
     dates, tickers, close, div_hist, fund = _synth()
     # give each ticker enough peers for the _vs_peers column to populate

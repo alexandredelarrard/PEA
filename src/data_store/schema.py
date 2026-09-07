@@ -218,9 +218,12 @@ class Tables:
             #    sharadar_field_map.json -- it is the ONLY de-adjusted column, and only
             #    `inst_ownership_pct` and the insider %-of-shares leg may read it)
             "stockholdersEquityInclNci", "employees_sec", "regime_sec", "sharesOutstandingPit",
-            # -- the 25 Sharadar EXTRAS, renamed to repo camelCase. They are keyed by their
-            #    VENDOR column in sharadar_field_map.json (`cashneq` -> cashAndEquivalents)
-            "cashAndEquivalents", "accumulatedOtherComprehensiveIncome", "nonCurrentAssets", "nonCurrentLiabilities", "totalInvestments", "longTermInvestments",
+            # -- the 26 Sharadar EXTRAS, renamed to repo camelCase. They are keyed by their
+            #    VENDOR column in sharadar_field_map.json (`cashneq` -> cashAndEquivalents).
+            #    `intangibles` is goodwill AND other intangibles COMBINED -- the only basis
+            #    Sharadar delivers, and the substrate for the ex-goodwill ROIC pair, whose
+            #    SEC-owned split legs are too thin (10.2% / 7.1%) to subtract.
+            "cashAndEquivalents", "accumulatedOtherComprehensiveIncome", "intangibles", "nonCurrentAssets", "nonCurrentLiabilities", "totalInvestments", "longTermInvestments",
             "taxAssets", "taxLiabilities", "deferredRevenue", "deposits",
             "operatingExpenses", "netIncomeToNci", "netIncomeDiscontinued", "netIncomeCommon", "preferredDividends", "dividendsPerShare",
             "investingCashFlow", "financingCashFlow", "dividendsPaid", "equityIssuanceNet", "businessAcquisitionsNet", "investmentAcquisitionsNet", "debtIssuanceNet", "exchangeRateEffect",

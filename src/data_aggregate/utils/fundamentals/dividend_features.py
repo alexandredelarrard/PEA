@@ -26,6 +26,20 @@ The reconciled TTM total = per-share x shares where the name paid (source A), el
 
 Non-payers get a real 0 dividend yield (not NaN) so they rank correctly in the
 cross-section; shareholder_yield still captures their buybacks/dilution.
+
+⚠ THAT ZERO IS SCOPED TO THE LISTED WINDOW (`close.notna()`). The panel is a near-dense
+date x ticker grid, so every ticker carries rows back to 1995 whether or not it existed,
+and an unscoped `.fillna(0.0)` wrote "this company pays no dividend" onto 565,893
+pre-listing rows. Those rows are dropped at training (no label), but `_xs` is a percentile
+rank computed PER DAY ACROSS THE UNIVERSE, so the phantoms sat in the cross-section that
+prices the real names: on 1996-01-02, 491 tickers carried a dividend rank while only 300
+were listed, and all 272 zero-yield names -- 191 of them phantoms -- tied at rank 0.278,
+compressing the real universe into [0.278, 1.000]. The contamination decays monotonically
+to zero by 2026, so the feature's SCALE DRIFTS ACROSS THE BACKTEST: the same economic state
+maps to a different value in 1996 than today. That is a trend, not noise, and it is the
+worst failure mode for a time-series split. Masking costs 448 rows of genuine data (holes
+inside a listed span, 0.014% of listed rows, max 2 per ticker) -- and a day with no quote
+has no yield anyway.
 """
 from __future__ import annotations
 
@@ -89,6 +103,10 @@ def _dividend_fields(dividends_hist: pd.DataFrame, close_split: pd.DataFrame,
     universe = list(close.columns)
     ttm_ps = _ttm_dividends(dividends_hist, idx, universe)   # per-share TTM (source A)
     close_pos = close.where(close > 0)
+    # THE LISTED WINDOW. Three features below fill a real 0 for non-payers, which is right
+    # in the cross-section and wrong on the pre-listing pad -- see the module docstring.
+    # `close` is the only frame here that knows when the company was quotable.
+    listed = close.notna()
 
     # ---- source B (SEC cash-flow statement): reconciliation + payout / coverage ----
     def _fd(field: str) -> pd.DataFrame:
@@ -119,9 +137,10 @@ def _dividend_fields(dividends_hist: pd.DataFrame, close_split: pd.DataFrame,
     # fill for names the ex-date history misses, real 0 for true non-payers ----
     yield_a = sanitize(ttm_ps.where(ttm_ps > 0) / close_pos)
     if not mcap.empty and not total.empty:
-        F["dividend_yield"] = yield_a.combine_first(sanitize(total / mcap)).fillna(0.0)
+        F["dividend_yield"] = (yield_a.combine_first(sanitize(total / mcap))
+                               .fillna(0.0).where(listed))
     else:
-        F["dividend_yield"] = sanitize(ttm_ps / close_pos).fillna(0.0)
+        F["dividend_yield"] = sanitize(ttm_ps / close_pos).fillna(0.0).where(listed)
 
     # ---- growth (1y + 5y CAGR), per-share source A primary, source-B total fills ----
     g1 = sanitize(ttm_ps / ttm_ps.shift(_YOY).where(lambda x: x > 0)) - 1.0
@@ -133,10 +152,13 @@ def _dividend_fields(dividends_hist: pd.DataFrame, close_split: pd.DataFrame,
     F["dividend_growth_5y"] = g5
 
     # ---- payer flag: paid in the trailing year per EITHER source ----
+    # A comparison can never be NaN, so this flag is 0/1 on EVERY cell of the grid unless
+    # it is scoped: unmasked it asserted "did not pay a dividend" for companies that had
+    # not listed yet, which is not a fact about them.
     payer = ttm_ps > 0
     if not div_paid.empty:
         payer = payer | (div_paid > 0)
-    F["dividend_payer"] = payer.astype("float64")
+    F["dividend_payer"] = payer.astype("float64").where(listed)
 
     # ---- payout ratio + FCF coverage (dividend safety) off the reconciled total ----
     if not total.empty and not net_income.empty:
@@ -149,8 +171,10 @@ def _dividend_fields(dividends_hist: pd.DataFrame, close_split: pd.DataFrame,
     # ---- shareholder yield = dividend yield + buyback yield (- share issuance) ----
     if not shares.empty and shares.notna().any().any():
         buyback_yield = -(shares / shares.shift(_YOY) - 1.0)   # >0 => net buyback
+        # `fill_value=0.0` treats a missing leg as zero, so this inherits whatever scope
+        # `dividend_yield` has; `.where(listed)` is re-applied rather than assumed.
         F["shareholder_yield"] = (F["dividend_yield"].add(buyback_yield, fill_value=0.0)
-                                  .replace([np.inf, -np.inf], np.nan))
+                                  .replace([np.inf, -np.inf], np.nan).where(listed))
     return F
 
 

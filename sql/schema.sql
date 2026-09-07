@@ -353,11 +353,18 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "optionOverhang" DOUBLE PRECISION,
     "stockholdersEquityInclNci" DOUBLE PRECISION,
     "employees_sec" DOUBLE PRECISION,
-    -- the 25 Sharadar EXTRAS, under their own vendor names (D16: there is nothing to
+    -- the 26 Sharadar EXTRAS, under their own vendor names (D16: there is nothing to
     -- rename them to). Eight of these revive currently-dead cube inputs.
     "regime_sec" TEXT,
     "cashAndEquivalents" DOUBLE PRECISION,
     "accumulatedOtherComprehensiveIncome" DOUBLE PRECISION,
+    -- goodwill AND other intangibles COMBINED, which is the only intangibles basis Sharadar
+    -- delivers. It is the substrate for the ex-goodwill ROIC pair: the SEC-owned split
+    -- (`goodwill_sec` 10.2%, `intangiblesExGoodwill_sec` 7.1%) is too thin to subtract, so
+    -- "ROIC ex goodwill" subtracted nothing and correlated 1.0000 with the incl-goodwill
+    -- twin. Combined at 100% coverage it is a real deduction; the price is that the two
+    -- legs cannot be told apart, so the feature it feeds is named for the combined base.
+    "intangibles" DOUBLE PRECISION,
     "nonCurrentAssets" DOUBLE PRECISION,
     "nonCurrentLiabilities" DOUBLE PRECISION,
     "totalInvestments" DOUBLE PRECISION,

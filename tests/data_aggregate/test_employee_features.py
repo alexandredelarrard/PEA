@@ -1,7 +1,8 @@
 """Tests for the workforce features
 (src/data_aggregate/utils/employee_features.py).
 
-The headcount series (fundamentals_history."employees", parsed from 10-K text)
+The headcount series (fundamentals_history."employees_sec", parsed from 10-K text;
+SEC-owned in the Sharadar-first merged table, hence the `_sec` namespace)
 IS historical, so we check: (a) point-in-time stepwise application from each
 filing `as_of`, (b) year-over-year headcount growth math, and (c)
 revenue-per-employee combining TTM revenue with the headcount.
@@ -22,7 +23,7 @@ def _synth_employees():
         "ticker": ["AAA", "AAA"],
         "as_of": [pd.Timestamp("2019-02-01"), pd.Timestamp("2020-02-03")],
         "period": [pd.Timestamp("2018-12-31"), pd.Timestamp("2019-12-31")],
-        "employees": [1000.0, 1200.0],
+        "employees_sec": [1000.0, 1200.0],
         "form_type": ["10-K", "10-K"],
     })
 
@@ -65,7 +66,7 @@ def test_revenue_per_employee_growth():
     emp = pd.DataFrame({
         "ticker": ["AAA", "AAA"],
         "as_of": [pd.Timestamp("2019-02-01"), pd.Timestamp("2020-02-03")],
-        "employees": [1000.0, 1200.0],
+        "employees_sec": [1000.0, 1200.0],
     })
     fund = pd.DataFrame({
         "ticker": ["AAA", "AAA"], "as_of": ["2019-02-01", "2020-02-03"],
@@ -93,7 +94,7 @@ def test_rev_per_employee_growth_handles_inf_no_crash():
     emp = pd.DataFrame({
         "ticker": ["AAA", "AAA", "ZZZ", "ZZZ"],
         "as_of": [pd.Timestamp("2019-02-01"), pd.Timestamp("2020-02-03")] * 2,
-        "employees": [1000.0, 1200.0, 100.0, 100.0],
+        "employees_sec": [1000.0, 1200.0, 100.0, 100.0],
     })
     fund = pd.DataFrame({
         "ticker": ["AAA", "AAA", "ZZZ", "ZZZ"],

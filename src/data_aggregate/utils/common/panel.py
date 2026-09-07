@@ -19,7 +19,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.xs import XS_CLIP_PEER, winsorize_xs, xs_rank_pct
+from src.data_aggregate.utils.common.xs import (
+    PEER_DISPERSION_FLOOR, XS_CLIP_PEER, winsorize_xs, xs_rank_pct,
+)
 
 
 def peer_relative(
@@ -27,6 +29,8 @@ def peer_relative(
     peer_dict: dict,
     min_peers: int = 3,
     clip: float = XS_CLIP_PEER,
+    dispersion_floor: float = PEER_DISPERSION_FLOOR,
+    winsorize_inputs: bool = True,
 ) -> pd.DataFrame:
     """
     (stock - peer_weighted_mean) / peer_weighted_std, per date, per stock.
@@ -36,10 +40,64 @@ def peer_relative(
     Robustness (critical): when only a couple of peers report or their values
     nearly coincide, the peer std collapses toward zero and the raw z-score
     explodes to ~1e13. We therefore (a) require at least `min_peers` peers with
-    data on the date, (b) drop dates where the peer std is not strictly positive,
-    and (c) winsorize the result to +-`clip` so a near-degenerate peer group can
-    never dominate the model.
+    data on the date, (b) FLOOR the peer std at `dispersion_floor` x the day's
+    cross-sectional std, (c) winsorize the INPUTS 1%/99% per day before the moments
+    are taken, and (d) clip the result to +-`clip`.
+
+    ⚠ WHY THE FLOOR IS THE LOAD-BEARING GUARD, and the input trim only the junior
+    partner. Decomposing the cells that landed at the +-8 clip on five real fields over the
+    full 1995-2026 history (1.8-2.5 M non-null cells each) showed those cells have FULL
+    baskets -- 6 to 7 peers present, not thin -- and a peer dispersion of 0.5% to 8% of that
+    day's UNIVERSE dispersion. The z explodes because the denominator collapsed, not because
+    the numerator is wild: the embedding basket does its job too well, so 7 business-text-
+    similar companies have nearly identical fundamentals and a subject that differs even
+    modestly is divided by a near-zero std.
+
+    Measured share of cells at the clip, on the full 1995-2026 universe. The first three
+    columns are the single-treatment arms; the last is what this function now does:
+
+        field               base   winsor only   floor only   BOTH (shipped)
+        returnOnEquity      3.24%        2.70%        1.85%            2.43%
+        debtToEquity        3.49%        2.97%        1.86%            2.71%
+        interest_coverage   5.79%        5.63%        1.85%            2.86%
+        cash_to_debt        5.64%        5.54%        1.80%            2.85%
+        profitMargins       1.06%        0.76%        0.61%            0.60%
+        mean                3.84%                                      2.29%
+
+    (`|z| > 4` moves the same way: `interest_coverage` 9.22% -> 4.42%.)
+
+    ⚠ THE TWO TREATMENTS PARTLY WORK AGAINST EACH OTHER, which is why BOTH lands above
+    floor-only on four of the five fields. Trimming the inputs shrinks the day's
+    cross-sectional std, the floor is a FRACTION of that std, so the floor itself drops and
+    binds less often. Keeping the reference std un-trimmed would bind harder and score closer
+    to the floor-only column -- but it would do so because a single mis-parsed extreme
+    inflated the reference, which is the opposite of the robustness being bought. The trimmed
+    reference is the honest one and the interaction is the price.
+
+    Input winsorization alone moves `interest_coverage` 5.79% -> 5.63%, which is nothing; the
+    floor is what fixes it. The trim is kept because it still removes the one genuine tail
+    case the floor cannot -- a mis-parsed extreme in the SUBJECT's own value.
+
+    The floor GENERALISES the `pstd > 0` degenerate-case guard from *zero* to *negligible*,
+    and reads as: this basket is too homogeneous to resolve a difference this small.
+    Residual saturation is expected and correct: a genuinely extreme name should reach the
+    clip, and `f_pbo_to_mcap_vs_peers` (the worst field, 11.89%) still does.
     """
+    # Trim the day's cross-section BEFORE the peer moments are taken, so a single mis-parsed
+    # extreme cannot move its basket's mean and std. Done once here rather than per ticker:
+    # `winsorize_xs` is per-ROW (per date) over the whole universe, so it is the same bound
+    # for every basket on that day.
+    #
+    # The two treatments are separately switchable (`winsorize_inputs=False`,
+    # `dispersion_floor=0.0`) so each can be reverted or A/B-ed on its own -- they were
+    # measured as separate arms and they interact (see the table above).
+    if winsorize_inputs:
+        field_df = winsorize_xs(field_df)
+    # The day's universe dispersion, which the floor is expressed as a fraction of. Sample
+    # std (ddof=1) to match `xs.xs_z`, the repo's other standardizer.
+    universe_sd = field_df.std(axis=1)
+    floor = universe_sd * float(dispersion_floor)
+
     rel = pd.DataFrame(index=field_df.index, columns=field_df.columns, dtype="float64")
     for ticker, peers in peer_dict.items():
         if not peers or ticker not in field_df.columns:
@@ -58,8 +116,16 @@ def peer_relative(
         pmean = peer_vals.mul(w, axis=1).sum(axis=1, min_count=1).div(wsum.where(valid))
         var = (peer_vals.sub(pmean, axis=0) ** 2).mul(w, axis=1).sum(axis=1, min_count=1)
         pstd = np.sqrt(var.div(wsum.where(valid)))
+        # ⚠ THE ZERO-DISPERSION GUARD IS EVALUATED ON THE RAW STD, BEFORE THE FLOOR, and the
+        # order is the whole point. Flooring first would turn a basket whose peers all report
+        # the SAME value into a finite z divided by the floor -- silently overriding the
+        # zero-dispersion policy `xs.py` documents as a declared decision rather than an
+        # accident. The floor is for NEGLIGIBLE dispersion; exactly-zero dispersion still
+        # means "these peers cannot rank anything" and still yields NaN.
+        degenerate = ~(pstd > 0)
+        pstd = pstd.clip(lower=floor).where(~degenerate)
 
-        z = (field_df[ticker] - pmean) / pstd.where(pstd > 0)
+        z = (field_df[ticker] - pmean) / pstd
         z = z.where(valid)
         rel[ticker] = z.clip(-clip, clip)
     return rel.replace([np.inf, -np.inf], np.nan)

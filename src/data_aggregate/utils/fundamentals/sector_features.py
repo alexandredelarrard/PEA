@@ -1,9 +1,7 @@
 """
 sector_features.py  (src/data_aggregate/utils/sector_features.py)
 ------------------------------------------------------------------
-Derived, sector-specific fundamental KPIs computed from the expanded SEC
-fundamentals history (the raw line items added in fetch_fundamentals). Two
-layers:
+Derived, sector-specific fundamental KPIs computed from `fundamentals_history`. Two layers:
 
   * compute_sector_kpis(df)          -> pure, row-level ratios (one value per
                                         filing). Scoped by GICS (`sector_gates.py`,
@@ -21,36 +19,51 @@ layers:
                                         machinery as the fundamental panel), so
                                         they drop straight into the cube.
 
+⚠ THE GICS COLUMNS MUST BE ON THE FRAME. `row_gate` fails CLOSED, so a caller that hands
+this a bare `fundamentals_history` gets every sector KPI silently gated off — which is what
+happened for the whole life of this module until `step_cube_fundamentals` started attaching
+them (`gics.attach_gics_columns`). The reference data was in `sp500_tickers` the entire time.
+
 Every KPI is point-in-time (computed from TTM flows / period-end levels keyed on
 the filing date `as_of`) and unit-free (a ratio), so it is comparable across
 names and safe to neutralize within an industry group for a L/S book.
 
 NOT here (owned by fundamental_features.py, which emits the same feature NAMES):
   interest_coverage, net_debt_to_ebitda, gross_profitability, cash_conversion_cycle,
-  sbc_intensity. Both panels used to build them with DIFFERENT formulas and the cube
-  merges on ['date','ticker'] only, so pandas silently produced 20 `_x`/`_y` columns
-  (`f_interest_coverage_vs_peers_x` / `_y`, ...) whose meaning depended on merge order.
-  One owner each: the general-purpose ratios live in the fundamental panel (which also
-  carries the richer `net_debt_incl_offbs_to_ebitda`), this module keeps only KPIs that
-  are genuinely sector-specific.
+  sbc_intensity, and the working-capital day counts `dso` / `dio` / `dpo`. Both panels
+  used to build them with DIFFERENT formulas and the cube merges on ['date','ticker']
+  only, so pandas silently produced 20 `_x`/`_y` columns whose meaning depended on merge
+  order. One owner each: the general-purpose ratios live in the fundamental panel, this
+  module keeps only KPIs that are genuinely sector-specific. `roic` moved the same way —
+  it duplicated `fundamental_features.roic_incl_intangibles` at r = 0.973, the same
+  NOPAT/invested-capital expression written twice. So did `net_debt_to_ebitdare` and
+  `implied_cap_rate`: on the Sharadar substrate both reduce to a sector-masked copy of a
+  general-purpose ratio (r = 0.9998 and 1.0000). A GATE IS NOT A SECOND FEATURE — the model
+  already gets sector membership from the GICS categorical.
+
+WHAT SHARADAR CANNOT FEED. The bank, insurance and several single-tag KPIs this module
+used to define are GONE rather than dormant: `fundamentals_history` is Sharadar-first and
+SF1 carries no `loans`, `deposits`Domestic, `noninterestExpense`, `claimsIncurred`,
+`premiumsWritten`, `provisionForCreditLosses`, `tier1CapitalRatio`, `nonaccrualLoans`,
+`netChargeOffs`, `regulatoryAssets`, `oilGasPropertyNet`, `explorationExpense` or
+`amortizationIntangibles`. Each was measured emitting ZERO values against the live table.
+They come back with the SEC extraction path, not before; keeping them as definitions made
+the module look like it covered banks and insurers when it covered neither.
 
 KPIs (grouped):
   universal      effective_tax_rate, accruals_ratio, asset_turnover (avg assets),
                  capex_intensity, capex_to_dep, payout_ratio, buyback_intensity,
-                 days_sales/inventory/payable_outstanding, roic, earnings_quality,
-                 reinvestment_rate, sustainable_growth_rate,
-                 fixed_cost_coverage_margin, gmroi, bad_debt_intensity
-  banks          net_interest_margin, efficiency_ratio, provision_rate,
-                 loan_to_deposit, bank_roa, bank_operating_margin,
-                 reserve_coverage_velocity, tier1_capital_ratio, deposit_stickiness
-  insurance      loss_ratio, expense_ratio, combined_ratio, investment_income_ratio
-  reits          ffo_margin, ffo_payout, rental_margin, affo_margin,
-                 net_debt_to_ebitdare
-  energy         exploration_intensity, ddna_intensity, ebitdax_margin,
-                 property_overvaluation_cushion
-  software/tech  deferred_rev_intensity, rpo_coverage
-  utilities      regulatory_asset_ratio, capex_to_rate_base
-  pharma/biotech patent_cliff, rd_capitalized_roic (5y-capitalized R&D)
+                 earnings_quality, reinvestment_rate, sustainable_growth_rate,
+                 fixed_cost_coverage_margin, gmroi
+  financials     aoci_to_equity, book_value_growth
+  banks          bank_roa
+  reits          ffo_margin, ffo_payout, affo_margin, affo_dividend_coverage
+  energy         ddna_intensity, ebitda_margin
+  software/tech  deferred_rev_intensity
+  utilities      capex_to_rate_base
+  R&D-intensive  rd_capitalized_roic (5y-capitalized R&D) -- gated on R&D being REPORTED,
+                 not on GICS: capitalizing R&D is meaningful for any research-intensive
+                 filer, not only biotech
 """
 from __future__ import annotations
 
@@ -64,41 +77,37 @@ from src.data_aggregate.utils.common.sector_gates import row_gate
 from src.data_aggregate.utils.common import capital
 
 # KPI columns produced by compute_sector_kpis (the panel builder iterates these).
-# interest_coverage / net_debt_to_ebitda / gross_profitability / cash_conversion_cycle /
-# sbc_intensity are deliberately ABSENT -- fundamental_features.py owns those names (see
-# the module docstring); listing them here collided in the cube merge.
 SECTOR_KPI_COLS: list[str] = [
     # universal
-    "effective_tax_rate", "accruals_ratio",
-    "asset_turnover", "capex_intensity", "capex_to_dep",
-    "payout_ratio", "buyback_intensity", "days_sales_outstanding",
-    "days_inventory_outstanding", "days_payable_outstanding",
-    "roic", "earnings_quality", "reinvestment_rate", "sustainable_growth_rate",
-    "fixed_cost_coverage_margin", "gmroi", "bad_debt_intensity",
+    "effective_tax_rate", "accruals_ratio", "asset_turnover",
+    "capex_intensity", "capex_to_dep", "payout_ratio", "buyback_intensity",
+    "earnings_quality", "reinvestment_rate", "sustainable_growth_rate",
+    "fixed_cost_coverage_margin", "gmroi",
+    # financials
+    "aoci_to_equity", "book_value_growth",
     # banks
-    "net_interest_margin", "efficiency_ratio", "provision_rate", "loan_to_deposit", "bank_roa",
-    "bank_operating_margin", "reserve_coverage_velocity", "tier1_capital_ratio", "deposit_stickiness",
-    "nii_growth", "loan_growth",                                                         # A7
-    "aoci_to_equity", "htm_unrealized_loss_ratio", "npl_ratio", "net_charge_off_rate",  # B1 + B3
-    # insurance
-    "loss_ratio", "expense_ratio", "combined_ratio", "investment_income_ratio",
-    "book_value_growth", "premium_growth", "float_growth",                              # A6
+    "bank_roa",
     # reits
-    "ffo_margin", "ffo_payout", "rental_margin", "affo_margin", "net_debt_to_ebitdare",
-    "affo_dividend_coverage",                                                            # A8
+    "ffo_margin", "ffo_payout", "affo_margin", "affo_dividend_coverage",
     # energy
-    "exploration_intensity", "ddna_intensity", "ebitdax_margin", "property_overvaluation_cushion",
+    "ddna_intensity", "ebitda_margin",
     # software / tech
-    "deferred_rev_intensity", "rpo_coverage",
+    "deferred_rev_intensity",
     # utilities
-    "regulatory_asset_ratio", "capex_to_rate_base",
+    "capex_to_rate_base",
     # pharma / biotech
-    "patent_cliff", "rd_capitalized_roic",
+    "rd_capitalized_roic",
 ]
 
 
 def _col(df: pd.DataFrame, name: str) -> pd.Series:
-    """Numeric column or an all-NaN series when the tag was never reported."""
+    """Numeric column or an all-NaN series when the tag was never reported.
+
+    ⚠ SILENT BY DESIGN AND THAT IS A HAZARD. A missing column becomes all-NaN, and an
+    all-NaN leg that is then `.fillna(0)`'d keeps its parent formula ALIVE while quietly
+    changing its meaning — `payout_ratio` was a dividend payout ratio wearing a
+    total-shareholder-payout name for exactly this reason. Every `.fillna(0)` below is on a
+    leg confirmed to exist in the live table; adding a new one means checking the same."""
     if name in df.columns:
         return pd.to_numeric(df[name], errors="coerce")
     return pd.Series(np.nan, index=df.index)
@@ -161,56 +170,61 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     depamort = g("depAmort")
     capex = g("capex")
     cash = g("cash")
-    # ONE definition of debt / invested capital (src/data_aggregate/utils/capital.py):
+    # ONE definition of debt / invested capital (src/data_aggregate/utils/common/capital.py):
     # borrowings + capitalized leases, with no commercial-paper double count.
     total_debt = capital.total_debt(g)
 
     # GICS scopes (business-model, not tagging-based) for the sector KPI families
     bank_gate = row_gate(df, "bank")
-    ins_gate = row_gate(df, "insurance")
     fin_gate = row_gate(df, "financials")
     re_gate = row_gate(df, "reit")
     energy_gate = row_gate(df, "energy")
     util_gate = row_gate(df, "utilities")
-    pharma_gate = row_gate(df, "pharma")
+    # NO pharma gate: `patent_cliff` was the only GICS-scoped pharma KPI and it needed
+    # `amortizationIntangibles`, which SF1 does not carry. `rd_capitalized_roic` is gated on
+    # R&D being REPORTED, not on GICS -- deliberately, since capitalizing R&D is meaningful
+    # for any research-intensive filer (tech and industrials as much as biotech).
 
     # ---- universal ------------------------------------------------------- #
     df["effective_tax_rate"] = safe_div(g("incomeTaxExpense"), g("pretaxIncome"), True)
 
     # cash-flow accruals (Sloan): (net income - operating cash flow) / assets
     df["accruals_ratio"] = safe_div(ni - ocf, assets, True)
-    # TRADE bad-debt expense / revenue (no sector gate: any seller can over-book).
-    # Rising = sales are being recognised that the firm cannot collect. Split out of
-    # the bank `provisionForCreditLosses` pool it used to contaminate.
-    df["bad_debt_intensity"] = safe_div(g("provisionDoubtfulAccounts"), revenue, True)
     # asset turnover on AVERAGE total assets (mean of current & 1y-prior; falls back
     # to period-end when no prior year is available).
     prior_assets = _yearly_lag(df, assets, 1, yoy)
     avg_assets = ((assets + prior_assets) / 2.0).where(prior_assets.notna(), assets)
     df["asset_turnover"] = safe_div(revenue, avg_assets, True)
-    df["capex_intensity"] = safe_div(g("capex"), revenue, True)
-    df["capex_to_dep"] = safe_div(g("capex"), g("depAmort"), True)
-    df["payout_ratio"] = safe_div(g("dividendsPaid").fillna(0) + g("buybacks").fillna(0), ni, True)
-    df["buyback_intensity"] = safe_div(g("buybacks"), revenue, True)
+    df["capex_intensity"] = safe_div(capex, revenue, True)
+    df["capex_to_dep"] = safe_div(capex, depamort, True)
 
-    df["days_sales_outstanding"] = safe_div(g("accountsReceivable") * 365.0, revenue, True)
-    df["days_inventory_outstanding"] = safe_div(g("inventory") * 365.0, cogs, True)
-    df["days_payable_outstanding"] = safe_div(g("accountsPayable") * 365.0, cogs, True)
-    # (their sum, cash_conversion_cycle, is emitted by fundamental_features.py)
+    # TOTAL shareholder payout / net income. Both legs are positive magnitudes: the
+    # `dividendsPaid` outflow is stored positive (the field map flips Sharadar's negative,
+    # matching `capex`), and `share_repurchases` floors net issuance at 0 -- see capital.py,
+    # the source column is NET ISSUANCE and reads negative for a repurchaser.
+    buybacks = capital.share_repurchases(g)
+    if buybacks is None:
+        buybacks = pd.Series(np.nan, index=df.index)
+    df["payout_ratio"] = safe_div(g("dividendsPaid").fillna(0) + buybacks.fillna(0), ni, True)
+    df["buyback_intensity"] = safe_div(buybacks, revenue, True)
 
     # ---- capital efficiency & quality (value-creation core) -------------- #
     # NOPAT = operatingIncome x (1 - effective tax); tax clipped to [0,50%] and
-    # defaulted to 21% when unreported so ROIC is defined for the whole universe.
+    # defaulted to 21% when unreported so it is defined for the whole universe.
     tax = df["effective_tax_rate"].clip(lower=0.0, upper=0.5).fillna(0.21)
     nopat = oper_income * (1.0 - tax)
-    df["roic"] = safe_div(nopat, capital.invested_capital(g), True)   # value created if > WACC
     # earnings quality: operating cash flow backing reported profit (<0.8 = accrual risk)
     df["earnings_quality"] = safe_div(ocf, ni, True)
     # reinvestment rate: net cash ploughed back (capex - D&A + ΔNWC) per $ of NOPAT
     nwc_now = g("currentAssets") - g("currentLiabilities")
     d_nwc = nwc_now - _yearly_lag(df, nwc_now, 1, yoy)
     df["reinvestment_rate"] = safe_div(capex.fillna(0.0) - depamort.fillna(0.0) + d_nwc, nopat, True)
-    # sustainable growth = ROE x retention (max organic growth w/o new equity/leverage)
+    # sustainable growth = ROE x retention (max organic growth w/o new equity/leverage).
+    # ⚠ THE `clip(0, 1)` MAKES THE `dividendsPaid` SIGN LOAD-BEARING. While the column was
+    # stored outflow-NEGATIVE, every payer's payout clipped to exactly 0, retention to 1, and
+    # SGR collapsed to `returnOnEquity` -- measured at Pearson r = 1.0000 against it. The
+    # clip is still right (a payout above 100% of earnings is not a negative retention), but
+    # it only reads as a payout ratio because the outflow is positive.
     roe = g("returnOnEquity")
     div_payout = safe_div(g("dividendsPaid"), ni, True).clip(lower=0.0, upper=1.0)
     df["sustainable_growth_rate"] = (roe * (1.0 - div_payout.fillna(0.0))).where(roe.notna())
@@ -223,106 +237,61 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     df["gmroi"] = safe_div(g("grossProfit"), avg_inv, True).where(inv.notna())
 
     # ---- banks ----------------------------------------------------------- #
-    nii = g("netInterestIncome")
-    noninterest_income = g("noninterestIncome")
-    df["net_interest_margin"] = safe_div(nii, assets, True).where(bank_gate)  # NII / total assets (proxy)
-    bank_revenue = nii.fillna(0) + noninterest_income.fillna(0)           # NII + noninterest income
-    df["efficiency_ratio"] = safe_div(g("noninterestExpense"), bank_revenue, True).where(bank_gate)
-    df["provision_rate"] = safe_div(g("provisionForCreditLosses"), g("loans"), True).where(bank_gate)
-    df["loan_to_deposit"] = safe_div(g("loans"), g("deposits"), True).where(bank_gate)
+    # The only bank KPI Sharadar can feed: everything else needed `loans`, `deposits`Domestic,
+    # `noninterestExpense`, `provisionForCreditLosses` or `netInterestIncome`, none of which
+    # SF1 delivers. ROA is the right survivor -- for a bank, assets ARE the earning base.
     df["bank_roa"] = safe_div(ni, assets, True).where(bank_gate)
-    # operating profitability of the banking model: (revenue - provisions - opex) / revenue
-    bank_oi = (bank_revenue - g("provisionForCreditLosses").fillna(0)
-               - g("noninterestExpense").fillna(0))
-    df["bank_operating_margin"] = safe_div(bank_oi, bank_revenue, True).where(bank_gate)
-    # reserve-build velocity: QoQ change in provisioning relative to the loss allowance.
-    # A sharp positive jump = management sees deteriorating credit -> forward-looking short.
-    prov = g("provisionForCreditLosses")
-    if "ticker" in df.columns and "as_of" in df.columns:
-        _o = pd.to_datetime(df["as_of"], errors="coerce")
-        _t = pd.DataFrame({"ticker": df["ticker"], "o": _o, "p": prov}).sort_values(["ticker", "o"])
-        d_prov = _t.groupby("ticker")["p"].diff().reindex(df.index)
-    else:
-        d_prov = pd.Series(np.nan, index=df.index)
-    df["reserve_coverage_velocity"] = safe_div(d_prov, g("allowanceCreditLosses"), True).where(bank_gate)
-    # capital adequacy (already a ratio) and deposit-franchise stickiness
-    t1 = g("tier1CapitalRatio")
-    df["tier1_capital_ratio"] = t1.where((t1 > 0) & bank_gate)
-    df["deposit_stickiness"] = safe_div(g("depositsDomestic"), g("totalLiabilities"), True).where(bank_gate)
-
-    # ---- insurance ------------------------------------------------------- #
-    premiums = g("premiumsEarned")
-    df["loss_ratio"] = safe_div(g("claimsIncurred"), premiums, True).where(ins_gate)
-    # expense ratio proxy: underwriting/opex (SG&A + DAC amortization) over premiums
-    underwriting_exp = g("sellingGeneralAdmin").fillna(0) + g("dacAmortization").fillna(0)
-    df["expense_ratio"] = safe_div(underwriting_exp, premiums, True).where(ins_gate)
-    df["combined_ratio"] = df["loss_ratio"] + df["expense_ratio"]        # <1 = underwriting profit
-    # reliance on investment "float" vs underwriting: net investment income / premiums earned
-    df["investment_income_ratio"] = safe_div(g("netInvestmentIncome"), premiums, True).where(ins_gate)
 
     # ---- reits ----------------------------------------------------------- #
     # NAREIT FFO = net income + real-estate D&A - gains/losses on sales of real estate
-    # + IMPAIRMENT write-downs of real estate (the 2018 white paper excludes all three
-    # non-cash / non-recurring property items, not just the first two).
-    re_impair = g("realEstateImpairment")
-    ffo = (ni + depamort.fillna(0) - g("gainOnDispositions").fillna(0)
-           + re_impair.fillna(0))
+    # + impairment write-downs.
+    # ⚠ ONLY THE D&A LEG IS AVAILABLE. `gainOnDispositions` and `realEstateImpairment` are
+    # not in SF1, so this is net income + total D&A: a REIT that sold a property at a gain
+    # reads high here, which is exactly what those two adjustments exist to remove. Directionally
+    # right and comparable across REITs, but not a strict NAREIT FFO.
+    ffo = ni + depamort.fillna(0)
     df["ffo_margin"] = safe_div(ffo, revenue, True).where(re_gate)
     df["ffo_payout"] = safe_div(g("dividendsPaid"), ffo, True).where(re_gate)
-    df["rental_margin"] = safe_div(g("rentalIncome"), revenue, True).where(re_gate)
-    # AFFO = FFO - recurring capex - NON-CASH straight-line rent - above/below-market
-    # lease amortization (NAREIT declines to standardize AFFO, but these are the two
-    # adjustments every REIT supplemental makes; both are sparsely tagged, so this is a
-    # no-op where undisclosed rather than a guess).
-    affo = (ffo - capex.fillna(0) - g("straightLineRent").fillna(0)
-            - g("aboveBelowMarketLeaseAmort").fillna(0))
+    # AFFO = FFO - recurring capex. The straight-line-rent and above/below-market lease
+    # amortization legs the supplementals adjust for are likewise not in SF1.
+    affo = ffo - capex.fillna(0)
     df["affo_margin"] = safe_div(affo, revenue, True).where(re_gate)
-    # leverage on a REIT-appropriate cash-earnings base: EBITDAre = operatingIncome + D&A
-    # + real-estate impairment (NAREIT EBITDAre adds back the same property write-downs).
-    ebitdare = oper_income.fillna(0) + depamort.fillna(0) + re_impair.fillna(0)
-    # NAREIT EBITDAre also excludes gains on property sales, but that is NOT subtracted here:
-    # this starts from OPERATING income, and for the many REITs with no tagged
-    # `OperatingIncomeLoss` the extractor derives it bottom-up as pre-tax income + interest,
-    # which already contains the gain -- while for REITs that do tag it the gain usually sits
-    # below the operating line. Subtracting unconditionally would double-remove it for the
-    # first group. FFO (built from net income) removes the gain correctly.
-    df["net_debt_to_ebitdare"] = safe_div(capital.net_debt(g), ebitdare, True).where(re_gate)
+    # `net_debt_to_ebitdare` USED TO BE HERE AND IS DELETED. EBITDAre was
+    # `operatingIncome + D&A` once the real-estate impairment leg proved absent from SF1 --
+    # which is the field map's own DEFINITION of `ebitda`, so the KPI was
+    # `fundamental_features.net_debt_to_ebitda` masked to REITs, measured at r = 0.9998
+    # against it. One owner per name, and that owner is the general-purpose ratio.
+    # dividend safety: does the cash left after maintenance capex cover the distribution?
+    df["affo_dividend_coverage"] = safe_div(affo, g("dividendsPaid"), True).where(re_gate)
 
     # ---- energy ---------------------------------------------------------- #
-    df["exploration_intensity"] = safe_div(g("explorationExpense"), capex, True).where(energy_gate)
-    ddna = g("depletionDDA").where(g("depletionDDA").notna(), depamort)
-    df["ddna_intensity"] = safe_div(ddna, revenue, True).where(energy_gate)
-    # EBITDAX adds back exploration expense so Successful-Efforts and Full-Cost filers
-    # are comparable; expressed as a margin so it is peer-rankable.
-    ebitdax = oper_income.fillna(0) + depamort.fillna(0) + g("explorationExpense").fillna(0)
-    df["ebitdax_margin"] = safe_div(ebitdax, revenue, True).where(energy_gate)
-    # capitalized-property vs cash generation: high = reserves carried at a value the
-    # current cash flow cannot support -> impairment / overvaluation risk (short).
-    df["property_overvaluation_cushion"] = safe_div(
-        g("oilGasPropertyNet"), ocf * 4.0, True).where(energy_gate)
+    # Depletion/DD&A intensity. `depletionDDA` is not in SF1, so total D&A stands in: for an
+    # E&P that IS overwhelmingly depletion, which is why the fallback was already the design.
+    df["ddna_intensity"] = safe_div(depamort, revenue, True).where(energy_gate)
+    # EBITDA margin on the energy gate. NOT named `ebitdax_margin` any more: EBITDAX adds
+    # back exploration expense so Successful-Efforts and Full-Cost filers are comparable, and
+    # `explorationExpense` is not in SF1, so nothing is added back. The name promised a
+    # normalisation the data cannot perform -- correct for services and refiners, understated
+    # for a Successful-Efforts E&P by exactly the exploration it expensed.
+    ebitda_energy = oper_income.fillna(0) + depamort.fillna(0)
+    df["ebitda_margin"] = safe_div(ebitda_energy, revenue, True).where(energy_gate)
 
     # ---- software / tech ------------------------------------------------- #
-    # NOT sector-gated on purpose: deferred revenue / RPO are meaningful for ANY
-    # subscription or contract-backed model (industrials services, health-care IT),
-    # and they are only reported by filers that have them.
+    # NOT sector-gated on purpose: deferred revenue is meaningful for ANY subscription or
+    # contract-backed model (industrials services, health-care IT), and it is only reported
+    # by filers that have it.
     df["deferred_rev_intensity"] = safe_div(g("deferredRevenue"), revenue, True)
-    df["rpo_coverage"] = safe_div(g("remainingPerformanceObligation"), revenue, True)
 
     # ---- utilities ------------------------------------------------------- #
-    reg_assets = g("regulatoryAssets")
-    df["regulatory_asset_ratio"] = safe_div(reg_assets, assets, True).where(util_gate)
-    # rate-base growth proxy: capex over the CLEAN asset base (ex regulatory assets &
-    # goodwill). A regulated utility only grows guaranteed earnings by expanding real
-    # infrastructure, so a high ratio is a structural long. Gated to utilities (they
-    # are the filers that report regulatory assets).
-    clean_assets = assets - reg_assets.fillna(0) - g("goodwill").fillna(0)
-    df["capex_to_rate_base"] = safe_div(capex, clean_assets, True).where(util_gate)
+    # Rate-base growth proxy: capex over the asset base. A regulated utility only grows
+    # guaranteed earnings by expanding real infrastructure, so a high ratio is a structural
+    # long. ⚠ `regulatoryAssets` and a standalone `goodwill` are not in SF1, so the base is
+    # NOT cleaned of either -- this is capex/assets on the utility gate, and it differs from
+    # the universal `capex_intensity` only in its denominator (assets, not revenue).
+    df["capex_to_rate_base"] = safe_div(capex, assets, True).where(util_gate)
 
-    # ---- pharma / biotech ------------------------------------------------ #
+    # ---- R&D-intensive (availability-gated, NOT GICS-gated) -------------- #
     rd = g("researchAndDevelopment")
-    # Patent-cliff vulnerability: acquired-drug amortization vs operating cash flow.
-    # Rising = the current (bought) patents are expiring faster than cash is generated.
-    df["patent_cliff"] = safe_div(g("amortizationIntangibles"), ocf, True).where(pharma_gate)
     # Capitalized-R&D adjusted ROIC: undo GAAP's immediate R&D expensing (treat R&D as
     # a 5-year intangible) so organic innovators are comparable to serial acquirers.
     rd_asset, rd_amort = _capitalized_rd(df, rd, yoy)
@@ -331,36 +300,16 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
                    + rd_asset.fillna(0) - cash.fillna(0))
     df["rd_capitalized_roic"] = safe_div(adj_oper_income, adj_capital, True).where(rd.notna())
 
-    # ---- financial-sector growth & capital (A6 insurance, A7 banks) ------- #
-    def _yoy_growth(s: pd.Series) -> pd.Series:
-        prior = _yearly_lag(df, s, 1, yoy)
-        return safe_div(s - prior, prior, True)
-
-    df["nii_growth"] = _yoy_growth(nii).where(bank_gate)                       # A7
-    df["loan_growth"] = _yoy_growth(g("loans")).where(bank_gate)               # A7
+    # ---- financial-sector growth & capital ------------------------------- #
     equity = g("stockholdersEquity")
-    df["book_value_growth"] = _yoy_growth(equity).where(fin_gate)              # A6 (compounding)
-    df["premium_growth"] = _yoy_growth(g("premiumsWritten")).where(ins_gate)   # A6
-    df["float_growth"] = _yoy_growth(g("insuranceReserves")).where(ins_gate)   # A6 (investable float)
+    prior_equity = _yearly_lag(df, equity, 1, yoy)
+    df["book_value_growth"] = safe_div(equity - prior_equity, prior_equity, True).where(fin_gate)
 
-    # ---- A8 REIT: AFFO dividend coverage (dividend safety) --------------- #
-    df["affo_dividend_coverage"] = safe_div(affo, g("dividendsPaid"), True).where(re_gate)
-
-    # ---- B1 bank/insurer securities-mark drag (the 2023 SVB signal) ------ #
-    # AOCI is mostly the AFS mark-to-market; a large NEGATIVE AOCI = unrealized
-    # securities losses eroding tangible capital (signed: negative = losses).
-    df["aoci_to_equity"] = safe_div(g("accumulatedOCI"), equity, True).where(fin_gate)
-    # HELD-TO-MATURITY unrealized loss = amortized cost - footnote fair value, the loss
-    # hidden OFF the balance sheet (what sank SVB). Positive = unrecognized loss. The
-    # DISCLOSED unrecognized holding loss is preferred where tagged: it needs only one
-    # element, so it covers banks that tag just one of the two legs.
-    htm_loss = g("htmUnrealizedLoss")
-    htm_loss = htm_loss.where(htm_loss.notna(), g("htmSecurities") - g("htmSecuritiesFairValue"))
-    df["htm_unrealized_loss_ratio"] = safe_div(htm_loss, equity, True).where(fin_gate)
-
-    # ---- B3 bank credit quality: non-performing loans + net charge-offs -- #
-    df["npl_ratio"] = safe_div(g("nonaccrualLoans"), g("loans"), True).where(bank_gate)
-    df["net_charge_off_rate"] = safe_div(g("netChargeOffs"), g("loans"), True).where(bank_gate)
+    # AOCI is mostly the AFS mark-to-market; a large NEGATIVE AOCI = unrealized securities
+    # losses eroding tangible capital (signed: negative = losses). The 2023 SVB signal, minus
+    # the held-to-maturity leg, which needs footnote fair values SF1 does not carry.
+    df["aoci_to_equity"] = safe_div(
+        g("accumulatedOtherComprehensiveIncome"), equity, True).where(fin_gate)
 
     return df
 

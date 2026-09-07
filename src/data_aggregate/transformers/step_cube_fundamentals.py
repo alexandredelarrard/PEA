@@ -30,11 +30,12 @@ from omegaconf import OmegaConf
 
 from src.data_store.schema import Tables
 from src.context import Context
+from src.data_aggregate.utils.common.gics import attach_gics_columns
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_aggregate.utils.common.pit import PitFrames
+from src.data_aggregate.utils.common.pit import PitFrames, add_cube_time_growth
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames, load_price_frames, load_trading_calendar,
 )
@@ -115,13 +116,21 @@ class StepCubeFundamentals(Step):
             since=since)
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
+        """`fundamentals_history` with GICS attached, loaded ONCE for five builders.
+
+        The GICS join happens HERE, after the load, and returns a new frame rather than
+        projecting the two columns out of the store: `sp500_tickers` is the authority for
+        sector membership and `fundamentals_history` has never carried it, so this is a
+        lookup, not a column the read could have asked for. Without it every sector KPI is
+        gated off (`sector_gates.row_gate` fails closed on the absent column)."""
         df = self._context.store.load(Tables.fundamentals_history, optional=True)
         if df is None:
             raise Exception("No fundamentals history -> the fundamental, sector, workforce "
                               "and dividend-payout features will be skipped.")
         self._log.info("Loaded %s: %s rows, %s tickers (ONCE for five builders)",
                        Tables.fundamentals_history, len(df), df["ticker"].nunique())
-        return df
+        df = add_cube_time_growth(df)
+        return attach_gics_columns(df, self._context, self._log)
 
     def _load_optional(self, table: str, what: str, fetcher: str) -> pd.DataFrame | None:
         df = self._context.store.load(table, optional=True)

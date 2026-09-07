@@ -1,20 +1,29 @@
-"""Correctness tests for the business-quality factors added to
-fundamental_features.py (#2 D&A realism, #5 forensic, #3 M&A digestion,
-#1 core/adjusted earnings).
+"""Correctness tests for the business-quality factors in fundamental_features.py
+(SBC-vs-buyback, #5 forensic, #3 M&A digestion, pension).
 
 Each helper takes the memoized `daily` accessor (field -> date x ticker frame);
 here we feed it hand-built frames with KNOWN values and assert the exact ratio
-math, plus the two things that matter most for the adjusted factors:
-  * SIGN of the normalization (a charge quarter -> core EARNINGS > reported;
-    a one-off gain quarter -> core < reported);
+math, plus the two things that matter most:
+  * the SIGN CONVENTIONS the live table actually stores -- `equityIssuanceNet` is NET
+    ISSUANCE (negative = buyback), `dividendsPaid` is outflow-POSITIVE;
   * the Beneish M-score RANKS a manipulation profile above a clean one.
+
+GONE, with the features they covered: the core/adjusted-earnings tests (the family needs
+ten special-items tags Sharadar does not deliver), the AI-leverage test
+(`capitalizedSoftware`), the D&A-realism test (`ppeGross` / `accumulatedDepreciation` /
+`amortizationIntangibles`), and the graceful-degradation test that asserted a core margin.
+Each was PASSING against a synthetic frame that hand-built the missing source column, which
+is how 24 dead features stayed green for a whole vintage of the table.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.fundamentals.fundamental_features import _da_realism_fields, _forensic_fields, _digestion_fields, _core_earnings_fields, _beneish_m_score, _ai_leverage_fields, _derived_fields
+from src.data_aggregate.utils.common import capital
+from src.data_aggregate.utils.fundamentals.fundamental_features import (
+    _beneish_m_score, _da_realism_fields, _derived_fields, _digestion_fields, _forensic_fields,
+)
 
 IDX = pd.bdate_range("2022-01-03", periods=300)     # >252 so shift(_YEAR) has a year-ago
 _SPLIT = 252                                          # rows [0:252) = "a year ago", [252:] = "now"
@@ -36,71 +45,29 @@ def _mock(frames: dict):
     return lambda field: frames.get(field, empty)
 
 
-def test_da_realism_math_and_useful_life_extension():
+def test_sbc_to_buyback_reads_net_issuance_as_a_signed_line():
+    """`sbc_to_buyback` > 1 means the repurchase does not even cover the stock given away.
+
+    THE SOURCE COLUMN IS NET ISSUANCE, NOT BUYBACKS. `equityIssuanceNet` is negative for a
+    repurchaser and positive for a firm raising equity, so the magnitude has to come from
+    `capital.share_repurchases` (which floors the issuing side at 0) and NOT from `.abs()` --
+    `.abs()` would read a $100 equity RAISE as $100 of buybacks, the opposite signal."""
     frames = {
-        "ppeGross": _const({"AAA": 1000, "BBB": 1000}),
-        # BBB's depreciation FALLS 105->80 (lives extended); AAA steady at 80
-        "depAmort": _step({"AAA": 100, "BBB": 125}, {"AAA": 100, "BBB": 100}),
-        "amortizationIntangibles": _const({"AAA": 20, "BBB": 20}),
-        "accumulatedDepreciation": _const({"AAA": 400, "BBB": 600}),
-        "stockBasedComp": _const({"AAA": 50, "BBB": 50}),
-        "buybacks": _const({"AAA": 25, "BBB": 100}),
+        "stockBasedComp": _const({"BUYER": 50, "ISSUER": 50}),
+        # BUYER repurchased 100 (negative = outflow); ISSUER raised 100 (positive)
+        "equityIssuanceNet": _const({"BUYER": -100, "ISSUER": 100}),
     }
     F = _da_realism_fields(_mock(frames))
     last = IDX[-1]
-    # depreciation = D&A - intangible amort = 100-20 = 80 ; life = 1000/80 = 12.5
-    assert abs(F["implied_useful_life"].loc[last, "AAA"] - 12.5) < 1e-6
-    assert abs(F["asset_age"].loc[last, "AAA"] - 0.4) < 1e-6
-    assert abs(F["intangible_amortization_share"].loc[last, "AAA"] - 0.2) < 1e-6
-    assert abs(F["sbc_to_buyback"].loc[last, "AAA"] - 2.0) < 1e-6
-    # BBB: depreciation fell 105->80 => implied life jumped 9.52 -> 12.5 => change > 0
-    assert F["useful_life_change"].loc[last, "BBB"] > 0
-    assert abs(F["useful_life_change"].loc[last, "AAA"]) < 1e-6   # AAA steady
+    assert abs(F["sbc_to_buyback"].loc[last, "BUYER"] - 0.5) < 1e-9
+    # the issuer bought back NOTHING -> the ratio is undefined, never 0.5
+    assert np.isnan(F["sbc_to_buyback"].loc[last, "ISSUER"])
 
-    print("\n=== SANITY CHECK: #2 D&A realism ===")
-    print(f"  AAA useful_life=1000/80={F['implied_useful_life'].loc[last,'AAA']:.1f}y, "
-          f"asset_age=0.40, intang_amort_share=0.20, sbc_to_buyback=2.0 (buybacks < SBC).")
-    print(f"  BBB useful_life jumped +{F['useful_life_change'].loc[last,'BBB']:.2f}y "
-          f"(lives extended = lower depreciation = red flag). Validated.")
-
-
-def test_core_earnings_normalization_signs():
-    frames = {
-        "totalRevenue": _const({"CHG": 1000, "GAIN": 1000}),
-        "pretaxIncome": _const({"CHG": 100, "GAIN": 100}),
-        "netIncome": _const({"CHG": 80, "GAIN": 80}),
-        "operatingIncome": _const({"CHG": 120, "GAIN": 120}),
-        "ebitda": _const({"CHG": 150, "GAIN": 150}),
-        "incomeTaxExpense": _const({"CHG": 20, "GAIN": 20}),      # effective tax 20/100 = 20%
-        "impairment": _const({"CHG": 30, "GAIN": 0}),
-        "restructuring": _const({"CHG": 10, "GAIN": 0}),
-        "gainOnDispositions": _const({"CHG": 0, "GAIN": 50}),
-    }
-    mcap = _const({"CHG": 1000, "GAIN": 1000})
-    F = _core_earnings_fields(_mock(frames), mcap)
-    last = IDX[-1]
-    reported_margin = 80 / 1000     # netIncome / revenue = 0.08
-
-    # CHG: net charges of 40 depressed reported earnings -> CORE is HIGHER
-    assert abs(F["nonrecurring_pretax_share"].loc[last, "CHG"] - 0.40) < 1e-6
-    assert abs(F["special_items_intensity"].loc[last, "CHG"] - 0.04) < 1e-6
-    assert abs(F["core_profit_margin"].loc[last, "CHG"] - (80 + 40 * 0.8) / 1000) < 1e-6
-    assert F["core_profit_margin"].loc[last, "CHG"] > reported_margin
-    assert abs(F["core_operating_margin"].loc[last, "CHG"] - (120 + 40) / 1000) < 1e-6
-    assert abs(F["adjusted_ebitda_margin"].loc[last, "CHG"] - (150 + 40) / 1000) < 1e-6
-    assert abs(F["core_earnings_yield"].loc[last, "CHG"] - 112 / 1000) < 1e-6
-
-    # GAIN: a one-off gain of 50 inflated reported earnings -> CORE is LOWER
-    assert abs(F["core_profit_margin"].loc[last, "GAIN"] - (80 - 50 * 0.8) / 1000) < 1e-6
-    assert F["core_profit_margin"].loc[last, "GAIN"] < reported_margin
-    assert abs(F["adjusted_ebitda_margin"].loc[last, "GAIN"] - (150 - 50) / 1000) < 1e-6
-
-    print("\n=== SANITY CHECK: #1 core/adjusted earnings ===")
-    print(f"  reported net margin = {reported_margin:.3f} for both.")
-    print(f"  CHG (impair+restr 40): core margin = {F['core_profit_margin'].loc[last,'CHG']:.3f} "
-          f"> reported (charges added back).")
-    print(f"  GAIN (one-off gain 50): core margin = {F['core_profit_margin'].loc[last,'GAIN']:.3f} "
-          f"< reported (gain stripped). Both adjusted & reported kept. Validated.")
+    print("\n=== SANITY CHECK: sbc_to_buyback on NET ISSUANCE ===")
+    print(f"  BUYER equityIssuanceNet=-100 -> 100 repurchased, SBC 50 -> ratio "
+          f"{F['sbc_to_buyback'].loc[last,'BUYER']:.2f} (buyback covers 2x the SBC).")
+    print(f"  ISSUER equityIssuanceNet=+100 (a RAISE) -> repurchases floored to 0 -> NaN, "
+          f"not the 0.50 an .abs() would have fabricated. Validated.")
 
 
 def test_beneish_ranks_manipulator_above_clean():
@@ -128,7 +95,55 @@ def test_beneish_ranks_manipulator_above_clean():
           f"(AR/accruals/margin/depreciation flags -> higher M). Validated.")
 
 
+def test_beneish_is_null_without_revenue_and_assets():
+    """The M-score must be NaN for a ticker with no revenue/assets, not the neutral constant.
+
+    The score is seeded as a DENSE frame at -4.84 and every absent index is filled with its
+    neutral value, so a company with no data at all scored exactly
+    -4.84 + 0.920 + 0.528 + 0.404 + 0.892 + 0.115 - 0.172 - 0.327 = -2.48 — below the
+    classic M > -1.78 manipulation threshold, i.e. a clean bill of health for a company that
+    did not exist yet. Measured on the live cube: 565,720 pre-listing rows all carrying that
+    identical constant, contaminating a per-day cross-sectional rank.
+
+    The support is keyed on DATA, not on listing: a spin-off that files before it starts
+    trading keeps the score its filings support."""
+    frames = {
+        "totalRevenue": _const({"REAL": 1000, "GHOST": np.nan}),
+        "totalAssets": _const({"REAL": 1200, "GHOST": np.nan}),
+        "accountsReceivable": _const({"REAL": 200, "GHOST": np.nan}),
+        "netIncome": _const({"REAL": 80, "GHOST": np.nan}),
+    }
+    m = _beneish_m_score(_mock(frames), IDX)
+    last = IDX[-1]
+    assert np.isfinite(m.loc[last, "REAL"])
+    assert np.isnan(m.loc[last, "GHOST"]), "M fabricated for a ticker with no data"
+    # the specific value it used to fabricate, so the regression is named not just implied
+    assert not np.isclose(m.loc[last, "GHOST"], -2.48, equal_nan=False)
+    assert m["GHOST"].notna().sum() == 0
+
+    print("\n=== SANITY CHECK: Beneish support is enforced per cell ===")
+    print(f"  REAL (revenue+assets present) M = {m.loc[last,'REAL']:+.2f}; GHOST (neither) "
+          f"is NaN on all {len(IDX)} rows — not the -2.48 the all-neutral seed used to "
+          f"fabricate, which would have read as a clean bill of health. Validated.")
+
+
 def test_forensic_days_and_offbs_leverage():
+    """The pension leg reaches `capital.py` ONLY as the caller's coalesced frame.
+
+    It used to be supplied here as a `pensionDeficit` field on the `daily` accessor, which
+    is a column `fundamentals_history` has never had on the Sharadar-first schema — so the
+    test was green on a leg that contributed zero in production. `capital.py` no longer has
+    that field-getter fallback; the deficit is the third positional argument, exactly as
+    `_derived_fields` passes it from `_pension_pool`.
+
+    ⚠ `net_debt_incl_offbs_to_ebitda` USED TO BE ASSERTED HERE AND IS NOW DELETED. Three of
+    its four distinguishing legs — operating leases, finance leases and asset-retirement
+    obligations — do not exist as columns on the Sharadar substrate, and this fixture
+    hand-built two of them, which is exactly how a feature stays green while collapsing in
+    production. Once the distress block was fixed to read the reconciled `totalDebt`, the
+    feature became byte-identical to `net_debt_to_ebitda` on the fingerprint slice. What is
+    asserted instead is the arithmetic it relied on, still live in `capital.py` and still
+    reachable through `net_debt(off_balance_sheet=True)`."""
     frames = {
         "totalRevenue": _const({"X": 1000}),
         "costOfRevenue": _const({"X": 600}),
@@ -139,27 +154,40 @@ def test_forensic_days_and_offbs_leverage():
         "shortTermDebt": _const({"X": 100}),
         "operatingLeaseLiability": _const({"X": 50}),
         "financeLeaseLiability": _const({"X": 20}),
-        "pensionDeficit": _const({"X": 30}),         # recognized net deficit -> debt-like
         "cash": _const({"X": 80}),
         "ebitda": _const({"X": 150}),
     }
-    F = _forensic_fields(_mock(frames), IDX)
+    get = _mock(frames)
+    F = _forensic_fields(get, IDX)
     last = IDX[-1]
     dso, dpo, dio = 200 / 1000 * 365, 150 / 600 * 365, 100 / 600 * 365
     assert abs(F["dso"].loc[last, "X"] - dso) < 1e-6
     assert abs(F["dpo"].loc[last, "X"] - dpo) < 1e-6
     assert abs(F["dio"].loc[last, "X"] - dio) < 1e-6
     assert abs(F["cash_conversion_cycle"].loc[last, "X"] - (dso + dio - dpo)) < 1e-6
-    # (debt 400 + leases 70 + pension deficit 30 - cash 80) / EBITDA 150
-    assert abs(F["net_debt_incl_offbs_to_ebitda"].loc[last, "X"] - (400 + 70 + 30 - 80) / 150) < 1e-6
+    assert "net_debt_incl_offbs_to_ebitda" not in F        # deleted duplicate
+
+    # the off-BS arithmetic itself, asserted where it now lives: recognized net deficit 30
+    # is debt-like and is passed in, the way `_derived_fields` passes it from `_pension_pool`
+    net_od = capital.net_debt(get, off_balance_sheet=True, pension=_const({"X": 30}))
+    assert abs(net_od.loc[last, "X"] - (400 + 70 + 30 - 80)) < 1e-6
 
     print("\n=== SANITY CHECK: #5 forensic working-capital + off-BS leverage ===")
-    print(f"  DSO={dso:.1f}d, DPO={dpo:.1f}d, DIO={dio:.1f}d, CCC={dso+dio-dpo:.1f}d; "
-          f"net-debt-incl-offbs/EBITDA={(400+70+30-80)/150:.2f}x (leases + pension deficit "
-          f"lifted leverage). Validated.")
+    print(f"  DSO={dso:.1f}d, DPO={dpo:.1f}d, DIO={dio:.1f}d, CCC={dso+dio-dpo:.1f}d.")
+    print(f"  off-BS net debt = 400 debt + 70 leases + 30 pension - 80 cash = "
+          f"{net_od.loc[last,'X']:.0f} (capital.py's arithmetic, still live).")
+    print("  NOTE: the lease legs are hand-built here and do not exist on the Sharadar table; "
+          "the feature that divided this by EBITDA was deleted for collapsing onto "
+          "net_debt_to_ebitda once both read the reconciled totalDebt.")
 
 
-def test_digestion_roic_wedge_and_goodwill_weight():
+def test_digestion_roic_wedge_on_combined_intangibles():
+    """ROIC with vs without ACQUIRED INTANGIBLES, and the wedge between them.
+
+    The deduction is Sharadar's COMBINED `intangibles` (goodwill + other), the only
+    intangibles basis SF1 delivers. Reading the bare `goodwill` -- which no producer writes --
+    made the ex-goodwill ROIC subtract NOTHING, so it correlated 1.0000 with its incl twin and
+    the drag was identically zero. This test exists to keep the deduction non-empty."""
     frames = {
         "operatingIncome": _const({"X": 200}),
         "incomeTaxExpense": _const({"X": 40}),
@@ -168,89 +196,52 @@ def test_digestion_roic_wedge_and_goodwill_weight():
         "cash": _const({"X": 100}),
         "longTermDebt": _const({"X": 200}),
         "shortTermDebt": _const({"X": 0}),
-        "goodwill": _const({"X": 200}),
-        "intangiblesExGoodwill": _const({"X": 50}),
+        "intangibles": _const({"X": 250}),           # goodwill + other, COMBINED
         "totalAssets": _const({"X": 1000}),
     }
     F = _digestion_fields(_mock(frames), pd.DataFrame(), IDX, 4)
     last = IDX[-1]
     # NOPAT = 200*(1-0.25)=150 ; IC = 500+200-100 = 600 ; roic_incl = 0.25
-    assert abs(F["roic_incl_goodwill"].loc[last, "X"] - 0.25) < 1e-6
-    # IC ex goodwill+intangibles = 600-250 = 350 ; roic_ex = 150/350
-    assert abs(F["roic_ex_goodwill"].loc[last, "X"] - 150 / 350) < 1e-6
-    assert F["goodwill_roic_drag"].loc[last, "X"] < 0     # acquisitions dilute returns
-    assert abs(F["goodwill_intangibles_to_assets"].loc[last, "X"] - 0.25) < 1e-6
-    assert abs(F["goodwill_to_equity"].loc[last, "X"] - 0.40) < 1e-6
+    assert abs(F["roic_incl_intangibles"].loc[last, "X"] - 0.25) < 1e-6
+    # IC ex intangibles = 600-250 = 350 ; roic_ex = 150/350
+    assert abs(F["roic_ex_intangibles"].loc[last, "X"] - 150 / 350) < 1e-6
+    # the wedge must be NON-ZERO and negative: acquisitions dilute returns
+    assert F["intangibles_roic_drag"].loc[last, "X"] < -1e-6
+    assert abs(F["intangibles_to_assets"].loc[last, "X"] - 0.25) < 1e-6
+    assert abs(F["intangibles_to_equity"].loc[last, "X"] - 0.50) < 1e-6
 
-    print("\n=== SANITY CHECK: #3 M&A digestion ===")
-    print(f"  ROIC incl goodwill = {F['roic_incl_goodwill'].loc[last,'X']:.3f} "
-          f"vs ex goodwill = {F['roic_ex_goodwill'].loc[last,'X']:.3f} "
-          f"-> drag {F['goodwill_roic_drag'].loc[last,'X']:+.3f} (goodwill dilutes returns); "
-          f"goodwill+intangibles = 25% of assets. Validated.")
-
-
-def test_core_earnings_widened_pool_and_discontinued_ops():
-    """Once the extra special-items tags are extracted, the pool must widen:
-    charges (impairment+restructuring+LITIGATION) added back, gains (disposals +
-    GENERIC sale + bargain purchase + net UNUSUAL) removed, and DISCONTINUED ops
-    (net of tax) removed from core net income directly."""
-    frames = {
-        "totalRevenue": _const({"W": 1000}),
-        "pretaxIncome": _const({"W": 100}),
-        "netIncome": _const({"W": 80}),
-        "operatingIncome": _const({"W": 120}),
-        "ebitda": _const({"W": 150}),
-        "incomeTaxExpense": _const({"W": 20}),        # effective tax 20%
-        "impairment": _const({"W": 20}),
-        "restructuring": _const({"W": 10}),
-        "litigationExpense": _const({"W": 10}),        # charge -> add back  (charges=40)
-        "gainOnDispositions": _const({"W": 5}),
-        "gainOnSaleGeneric": _const({"W": 5}),         # gains -> remove     (gains=10)
-        "discontinuedOps": _const({"W": 10}),          # net-of-tax income -> remove
-    }
-    F = _core_earnings_fields(_mock(frames), _const({"W": 1000}))
-    last = IDX[-1]
-    # special = charges(40) - gains(10) = 30
-    assert abs(F["nonrecurring_pretax_share"].loc[last, "W"] - 0.30) < 1e-6
-    assert abs(F["special_items_intensity"].loc[last, "W"] - 0.03) < 1e-6
-    # core_ni = 80 + 30*(1-0.2) - 10 (discontinued) = 80 + 24 - 10 = 94
-    assert abs(F["core_profit_margin"].loc[last, "W"] - 0.094) < 1e-6
-
-    print("\n=== SANITY CHECK: #1 widened special-items pool ===")
-    print(f"  charges 40 (incl litigation) - gains 10 (incl generic sale) = 30 special; "
-          f"core_ni = 80 + 24 - 10 disc-ops = 94 -> core margin "
-          f"{F['core_profit_margin'].loc[last,'W']:.3f}. Widened pool + disc-ops. Validated.")
-
-
-def test_ai_leverage_it_maturity():
-    """capitalized_software / assets is the IT-investment (capability) proxy; it
-    populates once CapitalizedComputerSoftware* is extracted."""
-    frames = {
-        "capitalizedSoftware": _const({"A": 200, "B": 20}),
-        "totalAssets": _const({"A": 1000, "B": 1000}),
-        "totalRevenue": _const({"A": 800, "B": 800}),
-    }
-    F = _ai_leverage_fields(_mock(frames))
-    last = IDX[-1]
-    assert abs(F["capitalized_software_intensity"].loc[last, "A"] - 0.20) < 1e-6
-    assert F["capitalized_software_intensity"].loc[last, "A"] > F["capitalized_software_intensity"].loc[last, "B"]
-    assert abs(F["software_to_revenue"].loc[last, "A"] - 200 / 800) < 1e-6
-
-    print("\n=== SANITY CHECK: #4 AI-leverage IT maturity ===")
-    print(f"  A capitalized-software/assets = 0.20 (IT-mature) >> B = 0.02; "
-          f"software/revenue = 0.25. Capability proxy ready (score assembled as composite). Validated.")
+    print("\n=== SANITY CHECK: #3 M&A digestion on combined intangibles ===")
+    print(f"  ROIC incl intangibles = {F['roic_incl_intangibles'].loc[last,'X']:.3f} "
+          f"vs ex = {F['roic_ex_intangibles'].loc[last,'X']:.3f} "
+          f"-> drag {F['intangibles_roic_drag'].loc[last,'X']:+.3f} (non-zero, so the "
+          f"deduction is real); intangibles = 25% of assets, 50% of equity. Validated.")
 
 
 def test_pension_adjusted_ev_and_overhang_leverage():
     """Pension/OPEB deficit is added to the True EV (debt-like), a pension_overhang_leverage
     ratio (deficit / market cap) is emitted, and the deficit is surfaced as
-    pension_retirement_liability. The EV inclusion lowers the EV yields vs no-pension."""
+    pension_retirement_liability. The EV inclusion lowers the EV yields vs no-pension.
+
+    The deficit comes from `pension_facts` — the bulk Financial-Statement-Data-Sets
+    recognized net liability, the pool's PRIMARY leg. It used to be hand-built here as a
+    `pensionDeficit` column on `fund_hist`, so this test asserted a source that cannot fire
+    in production: the Sharadar-first `fundamentals_history` carries no pension column at
+    all. Now it exercises the code path the live build actually takes."""
     fh = pd.DataFrame([{"ticker": "P", "as_of": "2019-12-31",
                         "sharesOutstanding": 100.0, "ebitda": 50.0, "cash": 10.0,
-                        "longTermDebt": 200.0, "pensionDeficit": 80.0}])
+                        "longTermDebt": 200.0}])
     idx = pd.bdate_range("2020-01-02", periods=30)
     close = pd.DataFrame({"P": 5.0}, index=idx)        # market cap = 100 * 5 = 500
-    F = _derived_fields(fh, idx, close)
+    pension_facts = pd.DataFrame([
+        {"ticker": "P",
+         "tag": "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
+         "ddate": "2019-09-30", "qtrs": 0, "value": 80.0, "filed": "2019-11-15"},
+        # a DURATION fact (qtrs>0) is periodic pension COST, not the balance -> must be ignored
+        {"ticker": "P",
+         "tag": "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
+         "ddate": "2019-09-30", "qtrs": 4, "value": 999.0, "filed": "2019-11-15"},
+    ])
+    F = _derived_fields(fh, idx, close, pension_facts=pension_facts)
     d = idx[-1]
     assert abs(F["pension_retirement_liability"].loc[d, "P"] - 80.0) < 1e-6
     assert abs(F["pension_overhang_leverage"].loc[d, "P"] - 80.0 / 500.0) < 1e-9   # 0.16
@@ -290,11 +281,15 @@ def test_pension_footnote_features_from_notes_num():
     """Financial Statement & NOTES sets (`notes_num`) supply the footnote PBO and
     plan assets the primary statements never expose:
       * pension_funded_ratio = plan assets / PBO,
-      * pbo_to_mcap, pension_underfunding_to_mcap (scale vs equity value),
+      * pbo_to_mcap (gross obligation vs equity value),
       * and the footnote funded status (PBO - assets) GAP-FILLS the recognized
         pension deficit -> pension_retirement_liability + True EV for a name that
-        has NO balance-sheet net-liability / companyfacts pension tag."""
-    # No pensionDeficit / pension_facts here -> the ONLY pension source is the footnote.
+        has NO balance-sheet net-liability / companyfacts pension tag.
+
+    `pension_underfunding_to_mcap` is deliberately NOT asserted: it was deleted because it
+    scaled the same footnote deficit that is the last fallback of the coalesced pool
+    `pension_overhang_leverage` uses, measuring r = 1.000000 against it on its own support."""
+    # No `pension_facts` here -> the ONLY pension source is the footnote.
     fh = pd.DataFrame([{"ticker": "U", "as_of": "2019-12-31",
                         "sharesOutstanding": 100.0, "ebitda": 50.0, "cash": 10.0,
                         "longTermDebt": 200.0}])
@@ -313,7 +308,7 @@ def test_pension_footnote_features_from_notes_num():
     d = idx[-1]
     assert abs(F["pension_funded_ratio"].loc[d, "U"] - 0.6) < 1e-9          # 600 / 1000
     assert abs(F["pbo_to_mcap"].loc[d, "U"] - 1000.0 / 500.0) < 1e-9        # 2.0
-    assert abs(F["pension_underfunding_to_mcap"].loc[d, "U"] - 400.0 / 500.0) < 1e-9  # 0.8
+    assert "pension_underfunding_to_mcap" not in F                          # deleted duplicate
     # footnote deficit (1000-600=400) fills the recognized pension deficit + EV:
     assert abs(F["pension_retirement_liability"].loc[d, "U"] - 400.0) < 1e-6
     assert abs(F["pension_overhang_leverage"].loc[d, "U"] - 400.0 / 500.0) < 1e-9
@@ -325,26 +320,164 @@ def test_pension_footnote_features_from_notes_num():
     assert "pension_funded_ratio" not in F0 and "pbo_to_mcap" not in F0
 
     print("\n=== SANITY CHECK: pension FOOTNOTE features (notes_num) ===")
-    print(f"  PBO=1000, plan assets=600 -> funded_ratio=0.60, pbo_to_mcap=2.0, "
-          f"underfunding/mcap=0.80; footnote deficit 400 (no other source) fills "
-          f"pension_retirement_liability=400 & EV=1090 -> ebitda_to_ev={50/1090:.4f}. "
-          f"Duration (qtrs>0) PBO ignored. Absent notes_num -> features skipped. Validated.")
+    print(f"  PBO=1000, plan assets=600 -> funded_ratio=0.60, pbo_to_mcap=2.0; "
+          f"footnote deficit 400 (no other source) fills pension_retirement_liability=400 "
+          f"& EV=1090 -> ebitda_to_ev={50/1090:.4f}. Duration (qtrs>0) PBO ignored. "
+          f"Absent notes_num -> features skipped. Validated.")
 
 
-def test_absent_new_tags_do_not_break_existing_factors():
-    """Before the DB is re-fetched the new tags are absent; the helpers must still
-    produce the existing factors (empty daily frame -> component contributes 0)."""
-    empty = pd.DataFrame()
-    daily = lambda f: {  # only the pre-existing columns present
-        "totalRevenue": _const({"X": 1000}), "pretaxIncome": _const({"X": 100}),
-        "netIncome": _const({"X": 80}), "operatingIncome": _const({"X": 120}),
-        "ebitda": _const({"X": 150}), "incomeTaxExpense": _const({"X": 20}),
-        "impairment": _const({"X": 30}), "restructuring": _const({"X": 10}),
-        "gainOnDispositions": _const({"X": 0}),
-    }.get(f, empty)
-    F = _core_earnings_fields(daily, _const({"X": 1000}))
+def test_liquid_assets_does_not_double_count_short_term_investments():
+    """D1b: `cash` ALREADY CONTAINS short-term investments, so it must not be added again.
+
+    The field map defines `cash = cashAndEquivalents + coalesce(shortTermInvestments, 0)`
+    and maps `shortTermInvestments` straight from `investmentsc`. `liquid_assets` used to
+    return `cash + shortTermInvestments + marketableSecuritiesCurrent`, subtracting the same
+    money twice from EV, net debt and invested capital. Its docstring's justification —
+    `cash` is "investment-free (the extractor nets the broader totals down)" — was true of
+    the SEC-era extractor and false on the Sharadar substrate.
+
+    Magnitude, `investmentsc`/market cap at filing grain: ~0 median in nine sectors but
+    1.30% in Information Technology (p90 13.36%), so it understated EV most for exactly the
+    cash-rich tech names where EV yields matter."""
+    frames = {
+        "cash": _const({"X": 125}),                  # = 100 cashneq + 25 ST investments
+        "shortTermInvestments": _const({"X": 25}),   # the SAME 25, already inside `cash`
+        "longTermDebt": _const({"X": 400}),
+        "shortTermDebt": _const({"X": 0}),
+    }
+    get = _mock(frames)
     last = IDX[-1]
-    # litigation/generic-gain/discontinued absent -> special = 30+10 = 40, core_ni = 80+32 = 112
-    assert abs(F["core_profit_margin"].loc[last, "X"] - 0.112) < 1e-6
-    print("\n=== SANITY CHECK: graceful degradation before re-fetch ===")
-    print("  new tags absent -> core margin = 0.112 (impair+restr only), no crash. Validated.")
+    liquid = capital.liquid_assets(get)
+    assert liquid.loc[last, "X"] == 125.0, "short-term investments counted twice"
+    # and net debt therefore nets 125, not 150
+    assert capital.net_debt(get).loc[last, "X"] == 400.0 - 125.0
+
+    print("\n=== SANITY CHECK: liquid_assets counts ST investments ONCE ===")
+    print(f"  cash=125 (100 cashneq + 25 STI) with shortTermInvestments=25 also present -> "
+          f"liquid_assets={liquid.loc[last,'X']:.0f}, not 150; net debt "
+          f"{capital.net_debt(get).loc[last,'X']:.0f} = 400 - 125. Validated.")
+
+
+def test_bank_cash_is_not_netted_from_ev_but_still_ratios_into_cash_to_debt():
+    """D1c: a bank's cash is a CORE OPERATING ASSET, so it is excluded from every NETTING
+    site — and from no ratio.
+
+    "Cash and due from banks" is required reserves and interbank float; insurance cash is
+    claims float. `liquid_assets` already excludes the AFS/HTM investment book
+    (`investmentSecurities`) on exactly this reasoning. The gate became load-bearing when
+    `cash` was widened to `cashneq + coalesce(investmentsc, 0)`: before that a bank's cash
+    was simply NULL (an unclassified balance sheet reports no current-investments line), so
+    the netting sites netted nothing anyway. Restoring it ungated would have re-rated every
+    bank — median `cashneq` is 10.97% of Financials market cap, 101.95% at p90, so the top
+    decile's cash exceeds its whole equity value and EV would go NEGATIVE.
+
+    `cash_to_debt` is the control: a liquidity cushion is a real fact about a bank, and it
+    is the feature the widening exists to restore (`cash` was NULL on 28.1% of Financials
+    filings). Only the netting is wrong."""
+    base = {"as_of": "2019-12-31", "sharesOutstanding": 100.0, "ebitda": 50.0,
+            "cash": 300.0, "totalDebt": 200.0, "longTermDebt": 200.0, "shortTermDebt": 0.0}
+    fh = pd.DataFrame([{"ticker": "BANKX", "industry_group": "Banks", **base},
+                       {"ticker": "TECHY", "industry_group": "Software & Services", **base}])
+    idx = pd.bdate_range("2020-01-02", periods=30)
+    close = pd.DataFrame({"BANKX": 5.0, "TECHY": 5.0}, index=idx)   # mcap = 500 each
+    F = _derived_fields(fh, idx, close)
+    d = idx[-1]
+
+    # TECHY nets its cash: EV = 500 mcap + 200 debt - 300 cash = 400
+    assert abs(F["ebitda_to_ev"].loc[d, "TECHY"] - 50.0 / 400.0) < 1e-9
+    # BANKX does NOT: EV = 500 + 200 = 700, identical to holding no cash at all
+    assert abs(F["ebitda_to_ev"].loc[d, "BANKX"] - 50.0 / 700.0) < 1e-9
+    assert F["ebitda_to_ev"].loc[d, "BANKX"] < F["ebitda_to_ev"].loc[d, "TECHY"]
+    # ...but the RATIO is identical for both — the bank keeps its liquidity cushion
+    assert abs(F["cash_to_debt"].loc[d, "BANKX"] - 1.5) < 1e-9
+    assert abs(F["cash_to_debt"].loc[d, "TECHY"] - 1.5) < 1e-9
+
+    print("\n=== SANITY CHECK: bank cash is gated out of NETTING, not out of RATIOS ===")
+    print(f"  same balance sheet, different GICS group: EV(TECHY)=400 -> ebitda_to_ev "
+          f"{F['ebitda_to_ev'].loc[d,'TECHY']:.4f}; EV(BANKX)=700 (cash NOT netted) -> "
+          f"{F['ebitda_to_ev'].loc[d,'BANKX']:.4f}. cash_to_debt is 1.50 for BOTH — the "
+          f"widening fix still reaches the bank. Validated.")
+
+
+def test_distress_debt_prefers_the_reconciled_total_debt_column():
+    """The distress block's DENOMINATOR fell into the same trap as `cash`.
+
+    It built debt as `longTermDebt + shortTermDebt`, and both legs are absent for every
+    filer that does not classify its balance sheet — measured, each is 0.277 populated for
+    Financials and 0.274 for Real Estate, while the reconciled `totalDebt` column is 1.000
+    in EVERY sector. So restoring `cash` (D1a) fixed the numerator of `cash_to_debt` and the
+    row was still nulled by the denominator: Financials' cube fill sat at 0.256 with a
+    balance-sheet anchor of 0.986, and BRK-B, BX, AXP, BAC, C and every other bank scored a
+    flat 0.0.
+
+    Substitution is safe because it is the same quantity: where both legs exist `totalDebt`
+    equals their sum to within 1% on 100.00% of rows across all eleven sectors."""
+    idx = pd.bdate_range("2020-01-02", periods=30)
+    close = pd.DataFrame({"BANKX": 5.0, "MFG": 5.0}, index=idx)
+    fh = pd.DataFrame([
+        # a bank: NO current/non-current split, so neither leg column exists
+        dict(ticker="BANKX", as_of="2019-12-31", sharesOutstanding=100.0, ebitda=50.0,
+             cash=300.0, totalDebt=200.0, totalRevenue=400.0, totalAssets=2000.0,
+             industry_group="Banks"),
+        # a manufacturer: both legs reported, and totalDebt agrees with their sum
+        dict(ticker="MFG", as_of="2019-12-31", sharesOutstanding=100.0, ebitda=50.0,
+             cash=300.0, totalDebt=200.0, longTermDebt=150.0, shortTermDebt=50.0,
+             totalRevenue=400.0, totalAssets=2000.0, industry_group="Capital Goods"),
+    ])
+    F = _derived_fields(fh, idx, close)
+    d = idx[-1]
+
+    # BOTH get the feature, and both get the same value: 300 / 200
+    assert abs(F["cash_to_debt"].loc[d, "BANKX"] - 1.5) < 1e-9, \
+        "a leg-less filer still has no debt denominator"
+    assert abs(F["cash_to_debt"].loc[d, "MFG"] - 1.5) < 1e-9
+    # the leg-reporting filer is UNCHANGED -- this is a coverage fix, not a re-basing
+    assert abs(F["net_debt_to_ebitda"].loc[d, "MFG"] - (200.0 - 300.0) / 50.0) < 1e-9
+    assert abs(F["net_debt_to_ebitda"].loc[d, "BANKX"] - 200.0 / 50.0) < 1e-9, \
+        "BANKX is a bank: its cash must NOT be netted (D1c), so net debt is the gross 200"
+
+    print("\n=== SANITY CHECK: distress debt uses the reconciled totalDebt ===")
+    print(f"  BANKX reports NO longTermDebt/shortTermDebt (unclassified balance sheet) yet "
+          f"cash_to_debt={F['cash_to_debt'].loc[d,'BANKX']:.2f} — it used to be NaN.")
+    print(f"  MFG reports both legs summing to the same 200 -> identical "
+          f"{F['cash_to_debt'].loc[d,'MFG']:.2f}: coverage gained, no value re-based.")
+    print(f"  And D1c still holds: net_debt_to_ebitda is "
+          f"{F['net_debt_to_ebitda'].loc[d,'BANKX']:.1f}x for the bank (cash NOT netted) "
+          f"vs {F['net_debt_to_ebitda'].loc[d,'MFG']:.1f}x for the manufacturer. Validated.")
+
+
+def test_pension_has_exactly_two_sources_no_fundamentals_history_column():
+    """REGRESSION GUARD: the pension overhang has TWO sources, and a `fundamentals_history`
+    column is not one of them.
+
+    A third leg used to sit in the coalesce, reading `pensionDeficit` off the fundamentals
+    frame. `fundamentals_history` has no pension column on the Sharadar-first schema — an
+    `information_schema` match on `%pension%`/`%opeb%`/`%benefit%` returns nothing — so the
+    leg contributed exactly zero on every live row while two tests kept it green by
+    hand-building the column. Feeding it here must now change NOTHING.
+
+    This is the D2 no-op assertion, expressed at the unit level: if this test starts
+    failing, a field-getter fallback has been reintroduced and the cube would silently
+    diverge from the two bulk SEC sources that are its real substrate."""
+    base = {"ticker": "Z", "as_of": "2019-12-31", "sharesOutstanding": 100.0,
+            "ebitda": 50.0, "cash": 10.0, "longTermDebt": 200.0}
+    idx = pd.bdate_range("2020-01-02", periods=30)
+    close = pd.DataFrame({"Z": 5.0}, index=idx)
+
+    without = _derived_fields(pd.DataFrame([base]), idx, close)
+    with_col = _derived_fields(pd.DataFrame([{**base, "pensionDeficit": 80.0}]), idx, close)
+
+    # no pension source at all -> no pension features, with or without the phantom column
+    for F in (without, with_col):
+        assert "pension_retirement_liability" not in F
+        assert "pension_overhang_leverage" not in F
+    # and EV is pension-free either way: 500 mcap + 200 debt - 10 cash = 690
+    for F in (without, with_col):
+        assert abs(F["ebitda_to_ev"].loc[idx[-1], "Z"] - 50.0 / 690.0) < 1e-9
+
+    print("\n=== SANITY CHECK: pension pool has exactly TWO sources ===")
+    print(f"  A `pensionDeficit` column on fundamentals_history is IGNORED: no pension "
+          f"feature is emitted and EV stays 690 (= 500 mcap + 200 debt - 10 cash), "
+          f"identical to the run without it. The dead third leg cannot come back. "
+          f"Live sources: pension_facts (125 tickers) + notes_num footnote (214 CIKs) "
+          f"-> 199 of 489 tickers. Validated.")

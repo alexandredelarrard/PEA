@@ -335,8 +335,9 @@ def test_every_configured_member_is_a_real_feature(groups, real_panel):
 
     A WHOLLY-unresolved theme is a BUILD GAP and is reported, not failed: every one of its
     members is missing because the part that owns them was never built here. `cube_part_extras`
-    (governance, insider, 13F, superinvestor, short interest) and `cube_part_text`
-    (earnings-call) do not exist in this database, and no amount of config correctness would
+    (insider, 13F, superinvestor, short interest, attention), `cube_part_governance` (DEF 14A +
+    Item 5.07 -- governance left `_extras` when it got its own part) and `cube_part_text`
+    (earnings-call) may not exist in this database, and no amount of config correctness would
     conjure them. Distinguishing the two is the whole point -- a test that fails on both
     teaches the reader to ignore it.
     """

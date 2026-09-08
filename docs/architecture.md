@@ -37,9 +37,9 @@ docstring still saying otherwise is stale).
 │   ├── context.py               # Context: config, logging, .store (DB), .paths (artifacts)
 │   ├── constants/constants.py   # 927 lines — THE global literals (URLs, formats, thresholds)
 │   ├── data_store/              # the ONLY SQL in the repo: schema.py, store.py, ddl.py, errors.py
-│   ├── data_extract/            # StepExtractAllData + 4 sub-steps + fetchers
+│   ├── data_extract/            # StepExtractAllData + 5 sub-steps + fetchers
 │   ├── data_peers/              # StepDeducePeers (return-corr + OpenAI-embedding peer baskets)
-│   ├── data_aggregate/          # StepBuildCube + 7 sub-steps -> cube_part_* -> cube
+│   ├── data_aggregate/          # StepBuildCube + 7 sub-steps -> 8 cube_part_* -> cube
 │   ├── modelling/               # long_short/, trend/, long_book/ — signal engines
 │   ├── strategies/              # self-contained sleeves + analysis plots
 │   ├── portfolio/               # StepPortfolio (ERC blend), StepStrategyMoves (trade ledger)
@@ -108,7 +108,7 @@ StepStrategyMoves               src/portfolio/ -> the `strategy` trade ledger
 Note the extraction order in `StepExtractAllData.run()`: **structure → fundamentals → prices →
 behavioral**, not the docstring's numbering.
 
-### StepBuildCube: 7 sub-steps, one part table each
+### StepBuildCube: 7 sub-steps, 8 part tables (+ the assembler)
 
 | Sub-step | Writes | Price fields it reads (`_FIELDS`) | Contents |
 |---|---|---|---|
@@ -117,16 +117,17 @@ behavioral**, not the docstring's numbering.
 | `StepCubeFundamentals` | `cube_part_fundamentals` | (via `PitFrames`) | fundamental, sector-KPI, earnings, workforce, dividend |
 | `StepCubeMomentum` | `cube_part_momentum` | `close, open, high, low, volume, ret, sector_ret` | momentum, vol, trend, lottery, liquidity, seasonality, MACD/RSI/ATR |
 | `StepCubeText` | `cube_part_text` | `close` | earnings-call FinBERT sentiment + embedding KPIs (both **stream** their sources) |
-| `StepCubeExtras` | `cube_part_extras` | `close, volume` | governance, 13F, elite 13F, insider, short interest, attention |
+| `StepCubeExtras` | `cube_part_extras` | `close, volume` | 13F, elite 13F, insider, short interest, attention |
+| `StepCubeGovernance` | `cube_part_governance` | `close_split, close_total` | DEF 14A board/pay levels, the three executive-compensation families (turnover-guarded pay growth, the exact CEO Pay Slice, pay-vs-performance misalignment), the entrenchment-provision transitions + board busyness + the auditor block, the four Item 5.07 shareholder-dissent families, and the two PER-PERSON children — board quality (turnover, entrenchment, dispersion, the ISS overboarded share) and Item 402(k) director pay. ⚠ The children also **repair** the board averages: `avg_other_public_boards` / `avg_director_age` are derived from `def14a_directors` before `impute_def14a` interpolates, so interpolation is the last resort rather than the first move |
 | `StepAssembleCube` | `cube` | — | read the parts → composites → per-horizon streamed write |
 
 **Memory invariant.** Each sub-step keeps its heavy frames LOCAL to `run()` and reads the price
 grid back from `cube_part_prices` **projected to its declared `_FIELDS`**. Peak memory is the
 largest single sub-step, not the sum. **Never stash a frame on `self`.**
 
-**One code path, two drivers.** `StepBuildCube.run()` drives the same seven objects that
-[src/data_aggregate/cli.py](../src/data_aggregate/cli.py) exposes as seven commands and the Airflow
-DAG chains as seven tasks.
+**One code path, two drivers.** `StepBuildCube.run()` drives the same eight objects that
+[src/data_aggregate/cli.py](../src/data_aggregate/cli.py) exposes as eight commands and the Airflow
+DAG chains as eight tasks.
 
 **Part registry** — [src/data_aggregate/utils/common/parts.py](../src/data_aggregate/utils/common/parts.py)
 is the single source of truth for part names, CLI commands, incremental warm-ups and per-group
@@ -152,7 +153,7 @@ merge in assemble.
 | `parts.py`, `part_status.py` | the part registry and the DAG status gate (its dict shape is a contract) |
 | `panel_merge.py`, `capital.py`, `sector_gates.py`, `gics.py`, `peers_io.py`, `sources.py`, `data_utils.py` | see each module docstring |
 
-Domain builders live in `utils/{target,fundamentals,momentum,text,extras,assemble}/`.
+Domain builders live in `utils/{target,fundamentals,momentum,text,extras,governance,assemble}/`.
 `fundamental_features._derived_fields` is a thin composition over ~30 per-block
 `_*_fields(daily, …) -> dict` builders.
 
@@ -187,11 +188,12 @@ Aggregation is triggered on `ALL_DONE`, so a failed fetcher does not block the p
 
 Read this before assuming a stage runs end-to-end:
 
-- **[src/data_aggregate/step_build_cube.py:78-85](../src/data_aggregate/step_build_cube.py#L78-L85)
+- **[src/data_aggregate/step_build_cube.py:68-75](../src/data_aggregate/step_build_cube.py#L68-L75)
   has 6 of its 7 sub-steps commented out** — `run()` currently executes only
-  `self._target.run(full=full)`. `main.py` is likewise set to `StepBuildCube(...).run(full=True)`
-  with every other step commented. This is a deliberate in-progress state, not a bug to "fix"
-  unless asked; the CLI sub-commands still drive each sub-step individually.
+  `self._extras.run(full=full)`, and `self._assemble.run()` is commented too. `main.py`
+  constructs `StepBuildCube` but its `run(full=True)` is commented as well, so `main.py` runs
+  nothing as checked in. This is a deliberate in-progress state, not a bug to "fix" unless
+  asked; the CLI sub-commands still drive each sub-step individually.
 - The live database has **no `prices` table and no cube/prediction/strategy tables at all** — see
   [database.md](database.md). Any code path starting from `prices` cannot run locally as-is.
 - `data/` does not exist in a fresh checkout; `Context` creates it on first run.

@@ -1,10 +1,9 @@
 """
 step_cube_extras.py  (src/data_aggregate/transformers/step_cube_extras.py)
 ----------------------------------------------------------------------
-The six OWNERSHIP / ATTENTION / GOVERNANCE panels -> `cube_part_extras`: DEF 14A
-governance and executive pay, all-filer 13F institutional ownership, elite-manager
-(superinvestor) 13F, insider trading, short interest + fails-to-deliver, and blended
-retail attention.
+The five OWNERSHIP / ATTENTION panels -> `cube_part_extras`: all-filer 13F institutional
+ownership, elite-manager (superinvestor) 13F, insider trading, short interest +
+fails-to-deliver, and blended retail attention.
 
 THIS IS THE BIGGEST WIN OF THE COARSENING. These were six separate DAG tasks, each
 re-running the whole price prologue, and three of them had to be SERIALIZED behind one
@@ -36,8 +35,6 @@ from src.data_aggregate.utils.common.price_frames import (
 )
 from src.data_aggregate.utils.common.sources import project_existing
 from src.data_aggregate.utils.extras.attention_features import build_combined_attention_panel
-from src.data_aggregate.utils.extras.def14a_impute import drop_implausible_def14a, impute_def14a
-from src.data_aggregate.utils.extras.governance_features import build_governance_feature_panel
 from src.data_aggregate.utils.extras.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.extras.institutional_features import (
     build_institutional_feature_panel,
@@ -82,15 +79,14 @@ class StepCubeExtras(Step):
         window = plan_window(self._store, Tables.cube_part_extras, full=full,
                              warmup=self._warmup(),
                              trading_index=load_trading_calendar(self._store))
+        
         frames = self._load_frames(window.since)
+        
         # shares outstanding for the market-cap scaling shared by 13F / insider panels
         shares = self._load_shares_out()
 
         merger = PanelMerger(self._log)
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
-        merger.add(self._governance_panel(frames, shares), "governance/executive-pay",
-                   "No governance/executive-pay features built (def14a_llm empty — "
-                   "accrues as fetch_def14a_llm runs).")
         merger.add(self._institutional_panel(frames, shares), "institutional (13F)",
                    "No institutional (13F) features built.")
         merger.add(self._superinvestor_panel(frames, shares), "superinvestor (elite 13F)",
@@ -99,9 +95,7 @@ class StepCubeExtras(Step):
                    "No insider-trading features built.")
         merger.add(self._short_interest_panel(frames), "short-interest",
                    "No short-interest features built.")
-        merger.add(self._attention_panel(frames), "combined-attention",
-                   "No attention data -> Wikipedia/Google-Trends features skipped.")
-
+        
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames, shares
         n = write_part(self._store, Tables.cube_part_extras, panel, window, drop_empty=True)
@@ -128,6 +122,7 @@ class StepCubeExtras(Step):
         instead of degrading."""
         if not self._context.store.exists(table):
             return None
+        
         columns = project_existing(self._store.columns(table), table)
         df = self._context.store.load(table, columns=columns, optional=True)
         if df is None:
@@ -144,26 +139,6 @@ class StepCubeExtras(Step):
         return df
 
     # ---- panels ---- #
-    def _governance_panel(self, frames: PriceFrames,
-                          shares: pd.DataFrame | None) -> pd.DataFrame | None:
-        """CEO pay growth, pay-vs-revenue-growth misalignment, pay ratio, board
-        independence / diversity / tenure, say-on-pay. Point-in-time from each proxy's
-        `as_of`.
-
-        The raw extraction table is never mutated: the LLM-extracted proxy rows are
-        cleaned ON READ (implausible values dropped, deducible cells imputed)."""
-        df = self._load_source("def14a_llm")
-        if df is None:
-            return None
-        df, drop_stats = drop_implausible_def14a(df)
-        df, imp_stats = impute_def14a(df)
-        stats = {**drop_stats, **imp_stats}
-        if stats:
-            self._log.info("DEF 14A clean-on-read: deduced %d missing cells across %d rules "
-                           "(raw table untouched).", sum(stats.values()), len(stats))
-        return build_governance_feature_panel(df, frames.peers, frames.trading_index,
-                                              fundamentals_history=shares)
-
     def _institutional_panel(self, frames: PriceFrames,
                              shares: pd.DataFrame | None) -> pd.DataFrame | None:
         """13F breadth, share/value accumulation, new-buyer / exiter counts, cluster buying,

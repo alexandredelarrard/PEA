@@ -786,6 +786,12 @@ class Tables:
                            date_col="date", managed=False)
     cube_part_extras = Table("cube_part_extras", ("date", "ticker"), KIND_PART,
                              date_col="date", managed=False)
+    # DEF 14A + Item 5.07 governance alpha. Its own part rather than a seventh `extras` panel:
+    # it reads five filing-space tables (the proxy archive, its per-NEO and per-director
+    # children, the certified 8-K vote record, fundamentals) where every other extras panel
+    # reads one, and it is the only part needing a trailing RETURN.
+    cube_part_governance = Table("cube_part_governance", ("date", "ticker"), KIND_PART,
+                                 date_col="date", managed=False)
 
 
 def _collect() -> tuple[Table, ...]:

@@ -1,7 +1,7 @@
 """
 step_build_cube.py  (src/data_aggregate/step_build_cube.py)
 ---------------------------------------------------------
-Super step orchestrating the seven cube sub-steps, mirroring `StepExtractAllData`. Each
+Super step orchestrating the eight cube sub-steps, mirroring `StepExtractAllData`. Each
 sub-step normalizes or derives one slice of the cube, persists it as a `cube_part_*` table,
 and hands nothing else to the next one:
 
@@ -10,11 +10,12 @@ and hands nothing else to the next one:
   3. fundamentals  SEC filings: fundamental, sector-KPI, earnings, workforce, dividend
   4. momentum      everything derived from price variation (momentum, vol, MACD, liquidity)
   5. text          earnings-call sentiment + embedding KPIs
-  6. extras        governance, 13F, elite 13F, insider, short interest, attention
-  7. assemble      read the parts -> composites -> the `cube` table
+  6. extras        13F, elite 13F, insider, short interest, attention
+  7. governance    DEF 14A + Item 5.07: dissent, executive pay, board, provisions
+  8. assemble      read the parts -> composites -> the `cube` table
 
-ONE CODE PATH, TWO DRIVERS. `run()` executes the same seven objects, in the same order, that
-`cli.py` exposes as seven commands and the Airflow DAG chains as seven tasks. There is no
+ONE CODE PATH, TWO DRIVERS. `run()` executes the same eight objects, in the same order, that
+`cli.py` exposes as eight commands and the Airflow DAG chains as eight tasks. There is no
 separate monolithic implementation any more: the previous version had two drivers over one
 set of `self`-mutating methods, so the in-process path loaded thirteen source tables at once
 (unrunnable at this data volume) while the DAG path re-ran the price+peer prologue fourteen
@@ -33,6 +34,7 @@ from src.context import Context
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
+from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
@@ -56,6 +58,7 @@ class StepBuildCube(Step):
         self._momentum = StepCubeMomentum(context=context, config=config)
         self._text = StepCubeText(context=context, config=config)
         self._extras = StepCubeExtras(context=context, config=config)
+        self._governance = StepCubeGovernance(context=context, config=config)
         self._assemble = StepAssembleCube(context=context, config=config)
 
     def run(self, full: bool = False, skip_basis_gate: bool = False) -> None:
@@ -65,9 +68,10 @@ class StepBuildCube(Step):
         # self._prices.run(full=full)
         # self._target.run(full=full)
         # self._momentum.run(full=full)
-        self._fundamentals.run(full=full)
-        self._text.run(full=full)
-        # self._extras.run(full=full)
+        # self._fundamentals.run(full=full)
+        # self._text.run(full=full)
+        self._extras.run(full=full)
+        # self._governance.run(full=full)
         # self._assemble.run()
 
     def _assert_price_basis_is_sound(self) -> None:

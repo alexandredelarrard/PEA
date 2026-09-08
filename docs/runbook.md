@@ -141,7 +141,7 @@ There is **no `employees` command** — headcount comes from the same 10-K as `f
 deduce-peers               # -> paths["SECTOR_PEERS_PATH"] (data/output/sector_peers.json)
 ```
 
-### `data_aggregate` — the seven-step cube build
+### `data_aggregate` — the eight-step cube build
 
 ```
 build-prices          # -> cube_part_prices                      (the ONLY reader of raw prices)
@@ -150,8 +150,9 @@ build-fundamentals    # -> cube_part_fundamentals
 build-momentum        # -> cube_part_momentum
 build-text            # -> cube_part_text
 build-extras          # -> cube_part_extras
+build-governance      # -> cube_part_governance          (DEF 14A + Item 5.07; a HEAVY part)
 assemble-cube         # read the parts -> composites -> the `cube` table
-build-cube            # all seven in ONE process (what main.py does)
+build-cube            # all eight in ONE process (what main.py does)
 cube-status           # JSON status of every part; exit 2 if any part is behind
 ```
 

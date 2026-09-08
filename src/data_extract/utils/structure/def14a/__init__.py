@@ -11,11 +11,15 @@ company files instead), split by job:
     tables.py    deterministic HTML table extraction the carve embeds as TSV
     ecd.py       the Pay-versus-Performance / ECD inline-XBRL block (filer-tagged, no LLM);
                  used by `fetch_def14a_edgar`, which is a different fetcher entirely
-    validate.py  row cleaning and the fee/name repairs
-    gender.py    `person_key` and the cross-filing gender consensus
+    validate.py  row cleaning and the fee repairs; re-exports the two name cleaners
+    gender.py    the cross-filing gender consensus; re-exports `person_key`
 
-`person_key` lives in `gender.py` and is imported by `votes/roles.py`: the DEF 14A gender
-consensus and the 8-K vote role map agreeing depends on there being ONE definition.
+⚠ `person_key` / `clean_person_name` / `clean_text` no longer live in this package. They are
+shared vocabulary between the extraction that writes these tables and the governance cube that
+joins them, so they moved to `src/utils/{names,string}.py` -- `src/data_aggregate/` may not
+import `src/data_extract/`, and a second copy would let the write side and the read side key
+the same human differently. `gender.py` and `validate.py` re-export them, so nothing here or in
+`votes/` had to change.
 """
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
 from src.data_extract.utils.structure.def14a.fetch import fetch_def14a_llm

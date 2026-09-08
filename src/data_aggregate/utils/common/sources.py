@@ -42,6 +42,24 @@ SOURCE_COLUMNS: dict[str, list[str]] = {
     # attention_features
     "wiki_pageviews": ["date", "ticker", "pageviews"],
     "google_trends": ["date", "ticker", "search_interest"],
+    # ---- the two PER-PERSON DEF 14A children (StepCubeGovernance) ----
+    # 134,490 + 80,252 rows is a real read beside the 21.7M-row 13F table in the same build,
+    # and both are WIDE with columns the governance builders never touch (`cik`, `gender_basis`,
+    # `reconciles`, `fiscal_year`). Projected here rather than inlined in the step so
+    # `test_cube_incremental` can assert the list covers what the builders require.
+    #
+    # ⚠ `def14a_directors` needs `tenure_years` for `pct_long_tenured` and
+    # `board_tenure_dispersion` (D40) -- the six-column list that omits it predates the
+    # board-quality family. `gender` is deliberately absent: `pct_female_directors` is
+    # D3-protected and stays on the parent scalar (D36).
+    "def14a_directors": ["ticker", "accession_number", "as_of", "name",
+                         "age", "tenure_years", "is_independent",
+                         "other_public_company_boards"],
+    # ⚠ SIX components, and the first is `fees_earned` -- Item 402(k) has no `salary` and no
+    # `bonus` line. `impute_director_comp` sums exactly these into a NULL `total`.
+    "def14a_director_comp": ["ticker", "accession_number", "as_of", "name", "total",
+                             "fees_earned", "stock_awards", "option_awards",
+                             "non_equity_incentive", "pension_change", "other_compensation"],
 }
 
 # Columns a builder uses only IF present, so projecting them must not hard-fail when the live

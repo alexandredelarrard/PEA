@@ -30,6 +30,10 @@ What survives is what BOTH paths still need:
   duplicating the row instead of updating it. `clean_holder_name` returns None
   for a cell that is only a street address, so the caller can drop the row
   rather than store a street as a shareholder.
+  ⚠ `clean_person_name` and `clean_text` no longer LIVE here -- they moved to
+  `src/utils/` so `src/data_aggregate/` can share the one person key without
+  cross-importing this package, and are re-exported below so every call site
+  here is unchanged. Edit them there, not by adding a second copy here.
 - `is_subtotal_holder` rejects "Total" / "as a group (16 people)" lines. An LLM
   returns these just as readily as a grid parser did, and storing one
   double-counts the insiders it aggregates.
@@ -49,6 +53,13 @@ from typing import Any
 
 import pandas as pd
 
+# Re-exported, not defined: the person key is shared vocabulary between this package and
+# `src/data_aggregate/`'s governance features, so it lives in `src/utils/names.py` (see D26 /
+# AGENTS.md "no cross-imports between `src/` subfolders"). Keeping the names importable from
+# here is what makes that a MOVE rather than a refactor: zero call sites change.
+from src.utils.names import clean_person_name  # noqa: F401
+from src.utils.string import clean_text  # noqa: F401
+
 # Sanity bounds separating "implausible for an S&P 500 issuer, therefore mis-scaled or
 # fabricated by the parser" from "small but real" -- the repair layer only fires on the former.
 DEF14A_AUDIT_FEE_MIN_PLAUSIBLE = 1e5     # a sub-$100k TOTAL auditor fee => block is in thousands
@@ -65,23 +76,6 @@ __all__ = [
 ]
 
 _NAN = float("nan")
-
-# Trailing footnote markers on a person cell: "(3)", "*", "†", or bare digits glued to the surname
-# ("Daniel Pinto7", "Emma N. Walmsley11"). Bare digits are only stripped after a letter, so a name
-# is never confused with a numbered list item.
-_FOOTNOTE_SUFFIX_RE = re.compile(r"(?:\(\d+\)|[*†‡§]|(?<=[a-z])\d{1,2})+\s*$")
-_WHITESPACE_RE = re.compile(r"\s+")
-
-# Titles that edgartools glues onto the name when the source cell has the name and the position on
-# two visual lines. The leading modifier group matters: without it "Luca Maestri Former Senior Vice
-# President" splits at "Senior Vice" and leaves "Luca Maestri Former" as the name (and likewise
-# "Bob De Lange Group"), so the modifier is consumed into the TITLE where it belongs.
-_GLUED_TITLE_RE = re.compile(
-    r"\s*(?:Former\s+|Group\s+|Interim\s+|Acting\s+|Co-)?(?:"
-    r"Chairman\b|Chief\s|President\b|Senior\s+Vice\b|Executive\s+Vice\b|Vice\s+Chair\b|"
-    r"General\s+Counsel\b|Co-CEO\b|\bCEO\b|\bCFO\b|\bCOO\b"
-    r").*$"
-)
 
 # A street address glued onto (or standing in for) an institutional holder name:
 # "The Vanguard Group 100 Vanguard Blvd. Malvern, PA 19355" / "50 Hudson Yards, New York, NY 10001".
@@ -101,30 +95,6 @@ def _isnum(x: Any) -> bool:
         return x is not None and pd.notna(x) and float(x) not in (float("inf"), float("-inf"))
     except (TypeError, ValueError):
         return False
-
-
-def clean_text(value: Any) -> str | None:
-    """Collapse the whitespace runs edgartools preserves from the source HTML
-    ("Free                cash flow" -> "Free cash flow"). None for empty."""
-    if value is None or not isinstance(value, str):
-        return None
-    cleaned = _WHITESPACE_RE.sub(" ", value.replace("\xa0", " ")).strip()
-    return cleaned or None
-
-
-def clean_person_name(value: Any) -> str | None:
-    """Normalise a person cell into a STABLE primary key: collapse whitespace, strip the glued-on
-    title and any trailing footnote marker. Casing is left alone (it is source-faithful and
-    lower-casing would fight the rest of the repo), but the footnote strip is what actually
-    matters -- without it the same director keys as "Emma N. Walmsley11" one year and
-    "Emma N. Walmsley10" the next, silently duplicating the row instead of updating it."""
-    cleaned = clean_text(value)
-    if cleaned is None:
-        return None
-    cleaned = _GLUED_TITLE_RE.sub("", cleaned).strip()
-    cleaned = _FOOTNOTE_SUFFIX_RE.sub("", cleaned).strip()
-    cleaned = cleaned.rstrip(",;:-").strip()
-    return cleaned or None
 
 
 def is_subtotal_holder(value: Any) -> bool:

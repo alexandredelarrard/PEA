@@ -82,10 +82,28 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     CubePart(Tables.cube_part_extras, "build-extras", "features", 160,
              (("short_interest", 103),    # short-vol rolling(63) + FTD shift(40)
               ("attention", 63),          # spike rolling(63) / level rolling(21)
-              ("governance", 0),          # YoY fiscal change over annual proxies
               ("institutional", 0),       # QoQ vs the prior 13F period
               ("superinvestor", 0),
               ("insider", 0))),           # rolling('180D') over the FULL transaction calendar
+    # Governance sources are all FILING-space (annual proxies, 8-K vote records), so every YoY
+    # delta needs no grid warm-up at all. TWO legs bind on the daily grid, and the longer one
+    # decides:
+    #   * 252d -- the trailing shareholder return the pay-vs-performance family differences
+    #     against pay growth (phase 4);
+    #   * 1260d -- `self_history_z` behind `f_avg_board_tenure_vs_hist`, a trailing 5-year
+    #     self-z taken on the DAILY frame (phase 3, D51).
+    # ⚠ THE 1260 IS WHY THIS PART IS HEAVY, and under-declaring it was a live defect: with a
+    # 390-day warm-up an incremental run gives `self_history_z` 390 days of context where a
+    # full run gives it 1260, so the rolling mean and std differ and the incremental tail
+    # silently disagrees with a rebuild. `min_periods=252` makes it produce a WRONG number
+    # rather than a NaN, which is what hid it.
+    # A cheaper fix exists and is deferred to phase 7: take the self-z on the FILING grain (a
+    # trailing 5-FILING z) and ffill it, which needs no grid warm-up at all and is arguably the
+    # better statistic -- a day-weighted mean of an annual series weights each proxy by how long
+    # it happened to stay current. It would change the measured values, so it needs its
+    # sign-stability screen re-run before it ships.
+    CubePart(Tables.cube_part_governance, "build-governance", "features", 1260,
+             (("governance", 1260),)),
 )
 
 FEATURE_PARTS: tuple[CubePart, ...] = tuple(p for p in CUBE_PARTS if p.kind == "features")

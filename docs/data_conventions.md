@@ -173,6 +173,14 @@ exactly. That equivalence is proved on the price builder by
 its part's warm-up, you must raise the warm-up** — `test_part_registry.py` checks each warm-up
 against its declared `binding_lookbacks`.
 
+⚠ That test can only check what you **declare**, and `cube_part_governance` is the worked example
+of the failure mode: its sources are all filing-space (annual proxies, 8-K vote records), so every
+YoY delta needs no grid warm-up at all — but one feature takes a trailing 1,260-day self-z on the
+DAILY frame. With the part's original 390-day warm-up the incremental run gave that window 390
+days of context where a full rebuild gave it 1,260, and `min_periods=252` made it emit a WRONG
+number rather than a NaN. The declaration was raised to 1,260. **A part is as heavy as its
+longest DAILY look-back, whatever grain its sources arrive on.**
+
 ## 7. XBRL / SEC specifics
 
 - **Coalesce** across a priority-ordered candidate tag list per period; never take the first present

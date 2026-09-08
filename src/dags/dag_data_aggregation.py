@@ -1,7 +1,7 @@
 """
 dag_data_aggregation.py  (src/dags/dag_data_aggregation.py)
 -----------------------------------------------------------
-Nightly DATA-AGGREGATION DAG — the cube build as seven sequential, memory-bounded steps.
+Nightly DATA-AGGREGATION DAG — the cube build as eight sequential, memory-bounded steps.
 Triggered by the extraction DAG once ALL sources have refreshed (schedule=None).
 
     deduce_peers ─▶ build_prices ─▶ build_target ─▶ build_fundamentals ─▶ build_momentum
@@ -11,6 +11,9 @@ Triggered by the extraction DAG once ALL sources have refreshed (schedule=None).
                          │   back, projected to the fields it needs)              │
                          │                                                        ▼
                          │                                                   build_extras
+                         │                                                        │
+                         │                                                        ▼
+                         │                                                 build_governance
                          ▼                                                        │
                     assemble_cube ◀────────────────────────────────────────────────┘
                          │
@@ -63,7 +66,7 @@ default_args = {
 dag = DAG(
     dag_id="data_aggregation",
     default_args=default_args,
-    description="Build the cube from the DB in seven sequential, memory-bounded steps.",
+    description="Build the cube from the DB in eight sequential, memory-bounded steps.",
     schedule=None,                                   # triggered by the extraction DAG when it finishes
     start_date=datetime(2024, 1, 1),
     catchup=False,
@@ -85,8 +88,9 @@ def run(cmd: str, base: str = AGG, pool: str = "aggregate", task_id: str | None 
 # 1) peers once (cached) — build-prices turns them into the persisted sector-return column
 deduce_peers = run("deduce-peers", base=PEERS, pool="default_pool", task_id="deduce_peers")
 
-# 2) the seven sub-steps, STRICTLY SEQUENTIAL. Peak memory is now the largest single step
-#    rather than the sum of two parallel pool slots, so the `aggregate` pool is unnecessary
+# 2) the seven build sub-steps (8 part tables — `build-target` writes two), STRICTLY SEQUENTIAL.
+#    Peak memory is now the largest single step rather than the sum of two parallel pool slots,
+#    so the `aggregate` pool is unnecessary
 #    and the old institutional -> superinvestor -> fundamental serialization (which existed
 #    only to keep those three off each other's memory) is gone: they are `build-extras` and
 #    `build-fundamentals`, sequential by construction.

@@ -8,8 +8,9 @@ now**, see [database.md](database.md). For the access rules, see
 ## The registry is the single source of truth
 
 `src/data_store/schema.py` declares each table **exactly once** as a frozen `Table` dataclass.
-59 tables: 52 `managed`, 7 `cube_part_*` (`managed=False`). (Counted from the registry, not
-maintained by hand — the previous "48 / 40 / 8" predated eleven additions.)
+61 tables: 53 `managed`, 8 `cube_part_*` (`managed=False`). (Counted from the registry
+(`len(schema.ALL)` / `len(schema.MANAGED)` / `len(schema.PARTS)`), not maintained by hand — the
+previous "48 / 40 / 8" predated eleven additions, and "59 / 52 / 7" predated `cube_part_governance`.)
 
 ```python
 from src.data_store.schema import Tables
@@ -120,9 +121,9 @@ Two complementary paths to the same filings:
   | Table | PK | Notes |
   |---|---|---|
   | `def14a_executive_comp` | `+name, fiscal_year` | Summary Comp Table (Item 402(c)), ~3 years/filing. `fiscal_year` is **in the PK and NOT NULL** — a year-less NEO is dropped rather than written, because a null key aborts the whole insert |
-  | `def14a_director_comp` | `+name` | Item 402(k). **Single-year by regulation** (only the last completed fiscal year is required), so `fiscal_year` is payload, not key. Exists only from the 2008 proxy season. Membership here *is* the definition of an outside director |
+  | `def14a_director_comp` | `+name` | Item 402(k). **Single-year by regulation** (only the last completed fiscal year is required), so `fiscal_year` is payload, not key. Exists only from the 2008 proxy season. Membership here *is* the definition of an outside director. **Read by `StepCubeGovernance`**: `impute_director_comp` repairs a NULL `total` from its SIX components (`fees_earned` first — a director draws fees, not a salary) and four director-pay features are built on it. The 64% headline coverage is a **regime staircase** (5.7% pre-2000, 91.3% since 2020), not an extraction gap. ⚠ `APP`, `CRH`, `IBM`, `PANW`, `VTRS`, `WDAY` have **zero** rows — an Item 402(k) parser defect, not absence |
   | `def14a_ownership` | `+holder_name, holder_type` | Item 403. Knowingly redundant with 13F / SC 13D-G / Forms 3-4-5, which stay preferred and whose as-of dates never align with a proxy's. "As a group" subtotals are dropped — that aggregate is the `insider_ownership_pct` scalar |
-  | `def14a_directors` | `+name` | One row per director per filing, carrying `gender` **and `gender_basis`** (`stated` > `honorific` > `pronoun` > `name`). The basis is what makes gender auditable, and this table is the substrate the cross-filing consensus pass groups over — it needs a GROUP BY over people, across tickers and years |
+  | `def14a_directors` | `+name` | One row per director per filing, carrying `gender` **and `gender_basis`** (`stated` > `honorific` > `pronoun` > `name`). The basis is what makes gender auditable, and this table is the substrate the cross-filing consensus pass groups over — it needs a GROUP BY over people, across tickers and years. **Read by `StepCubeGovernance`**, and it is where `avg_other_public_boards` / `avg_director_age` now come from: the child is filled per person (agreement-gated for other-board counts, anchor-and-accrue for age), re-aggregated, and merged into the parent ahead of `impute_def14a` — so interpolation is the last resort. The parent scalar was *already* the mean of these rows (corr 1.0000, median \|diff\| 0.00), which is why filling the CHILD is the only thing that makes the derivation stronger evidence |
 
   Both comp tables carry `reconciles` — 1 when the components sum to `total` within $10. It is a
   **flag, not a filter**: the values are kept either way, so the failure rate stays measurable
@@ -159,7 +160,7 @@ Two complementary paths to the same filings:
 | Table | PK | date_col | Notes |
 |---|---|---|---|
 | `sec_8k` | `ticker, accession_number, item` | `filing_date` | One row **per item code** — an 8-K reports 1..n items and ~75% report more than one. `item_tag` maps the curated high-signal codes; `has_earnings`/`has_press_release` are best-effort → **NaN, not False**, when the typed parse fails |
-| `sec_8k_votes` | `ticker, accession_number, proposal_seq` | `filing_date` | One row **per proposal** of a shareholder meeting, parsed out of the `sec_8k` Item 5.07 narratives already stored — **no new download** |
+| `sec_8k_votes` | `ticker, accession_number, proposal_seq` | `filing_date` | One row **per proposal** of a shareholder meeting, parsed out of the `sec_8k` Item 5.07 narratives already stored — **no new download** . **Read by `StepCubeGovernance`**, its only consumer: the four shareholder-dissent families (say-on-pay, director election, CEO-specific, auditor) are built from `votes_for`/`votes_against`/`abstentions` plus the per-nominee tallies. Vote history begins **2010-03** (Rel. 33-9089), so every one of those features is structurally NaN before then |
 | `sec_filing_text` | `ticker, accession_number, section` | `filed` | 10-K Item 1A + Item 7 / 10-Q Item 2 raw text. `fetch_filing_text.FILING_TEXT_MIN_CHARS = 1500` rejects TOC stubs |
 
 ### `sec_8k_votes` — the only source of certified vote counts
@@ -227,9 +228,27 @@ and 2,684 N-PX filings in 2025 mention Apple's CUSIP alone.
 
 ## Parts — private plumbing between cube sub-steps
 
-`cube_part_prices`, `_market`, `_targets`, `_betas`, `_fundamentals`, `_momentum`, `_text`,
-`_extras`. All `managed=False`: rebuilt wholesale by their owning step, each carrying DDL inferred
-from the frame it writes, excluded from `sql/schema.sql`.
+`cube_part_prices`, `_targets`, `_betas`, `_fundamentals`, `_momentum`, `_text`, `_extras`,
+`_governance` — the eight `schema.PARTS`, in registry order. All `managed=False`: rebuilt
+wholesale by their owning step, each carrying DDL inferred from the frame it writes, excluded
+from `sql/schema.sql`.
+
+**`cube_part_governance` is the newest part and the only one whose sources are all
+FILING-SPACE.** 3,031,768 rows × 108 columns (106 features + `date`/`ticker`), 1995-09-13 →
+2026-09-04, 491 tickers; encoding split **87 raw / 18 `_vs_peers` / 1 `_vs_hist` / 0 `_xs`**, and
+zero interaction columns by design. It holds the DEF 14A board and pay levels (the twelve features
+that used to ship from `cube_part_extras`, carried across byte-identical), the executive-pay
+families, the entrenchment-provision transitions, the auditor block, the four Item 5.07
+shareholder-dissent families, and — from the two per-person children — board quality and Item
+402(k) director pay. **Why it is its own part rather than more of `_extras`:** its sources are
+annual proxies and 8-K vote records, so every YoY delta is a filing-to-filing difference needing
+no grid warm-up, while `_extras`' sources are daily and quarterly market data; the two have no
+shared input beyond `close_total`. The part is nonetheless declared **heavy** (1,260-day warm-up)
+because one feature, `f_avg_board_tenure_vs_hist`, takes a trailing five-year self-z on the DAILY
+frame — under-declaring that made the incremental tail silently disagree with a rebuild rather
+than emit NaN. Coverage is thin before 2006 (Reg S-K created the SCT `Total` column) and before
+2010-03 (Rel. 33-9089 created the Item 5.07 vote record); both are regulatory regimes, reported
+as coverage and never filled.
 
 PK is `(date, ticker)` **except `cube_part_targets`, which is `(date, ticker, target_horizon)`** —
 `_labels_to_long` stamps a horizon per label and concatenates. Declaring the narrower key would let

@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
+from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
@@ -38,6 +39,7 @@ OWNER = {
     "build-momentum": StepCubeMomentum,
     "build-text": StepCubeText,
     "build-extras": StepCubeExtras,
+    "build-governance": StepCubeGovernance,
 }
 
 
@@ -69,7 +71,7 @@ def test_every_part_has_an_owning_substep_and_cli_command():
 
 
 def test_every_substep_constructs_and_binds_its_part(sqlite_store):
-    """CONSTRUCT all six sub-steps, which nothing else in the suite did.
+    """CONSTRUCT every part-owning sub-step, which nothing else in the suite did.
 
     Their `__init__` resolves `part_for(Tables.cube_part_*)` and reads the universe, so a
     registry lookup that no longer matches its key -- e.g. indexing the name-keyed
@@ -111,7 +113,7 @@ def test_substep_price_fields_are_declared_and_valid():
     projection meaningful -- a step asking for everything would undo the memory win."""
     declared = {cls.__name__: cls._FIELDS for cls in
                 (StepCubeTarget, StepCubeFundamentals, StepCubeMomentum, StepCubeText,
-                 StepCubeExtras)}
+                 StepCubeExtras, StepCubeGovernance)}
     for name, fields in declared.items():
         assert fields, f"{name} declares no price fields"
         unknown = [f for f in fields if f not in ALL_FIELDS]
@@ -134,17 +136,31 @@ def test_substep_price_fields_are_declared_and_valid():
             f"{name} does not build bars, so materialising the OHLC range is pure memory")
     assert set(StepCubeFundamentals._FIELDS) == {"close_split", "level_factor"}
     assert set(StepCubeExtras._FIELDS) == {"close_split", "volume", "level_factor"}
+    # Governance is the third and last step allowed `close_total`: pay-vs-performance
+    # differences pay growth against a trailing shareholder RETURN, and a return is exactly
+    # what the total-return series is for. That is why the exemption above stays a named
+    # 3-tuple rather than "every step but momentum": the rule is about what a step BUILDS,
+    # not about how many fields it reads. `close_split` rides along because
+    # `PriceFrames.skeleton()` keys the universe grid on it -- but NOT `level_factor`, and
+    # that absence is the real assertion: without it no level (market cap, EV, per-share
+    # ratio) can be computed here even by accident, which is what licenses the return series.
+    assert set(StepCubeGovernance._FIELDS) == {"close_split", "close_total"}
+    assert "level_factor" not in StepCubeGovernance._FIELDS, (
+        "governance takes close_total, so it must not also hold the level factor -- the pair "
+        "is what a market-cap/EV computation needs")
 
     print("\n=== SANITY CHECK: declared price-field projections ===")
     for name, fields in declared.items():
         print(f"  {name:<24} {len(fields)} field(s): {', '.join(fields)}")
     print("  CONCLUSION: only the momentum step materialises full OHLCV; fundamentals and text "
-          "read close alone, extras close+volume. Validated.")
+          "read close alone, extras close+volume, governance the return series alone. "
+          "Validated.")
 
 
 def test_feature_parts_cover_every_group_exactly_once():
-    """The 14 feature groups of the old exploded DAG map onto the 4 feature parts, each group
-    owned by exactly one part."""
+    """The 14 feature groups of the old exploded DAG map onto the feature parts, each group
+    owned by exactly one part. The count is 14 whether `governance` sits on `extras` or on
+    its own part -- a MOVE must not change it, only a genuinely new group would."""
     owners: dict[str, list[str]] = {}
     for part in FEATURE_PARTS:
         for group, _ in part.binding_lookbacks:

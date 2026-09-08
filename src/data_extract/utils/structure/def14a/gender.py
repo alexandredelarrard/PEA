@@ -27,12 +27,16 @@ every extraction, and DEF 14A is a yearly filing -- an incremental day adds ~0 r
 from __future__ import annotations
 
 import logging
-import re
 from collections import Counter
 
 import pandas as pd
 
-from src.data_extract.utils.structure.def14a.validate import clean_person_name
+# Re-exported, not defined: `person_key` moved to `src/utils/names.py` so the governance cube
+# can bucket the same humans without importing this package (D26 / AGENTS.md "no cross-imports
+# between `src/` subfolders"). Importing it here keeps every existing call site -- `consensus`
+# below, `votes/roles.py`, `votes/flatten.py` -- unchanged, which is what makes the move a move.
+# ⚠ Do not "improve" it there: `sec_8k_votes`' stored role-category sums were bucketed with it.
+from src.utils.names import person_key  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -43,18 +47,6 @@ BASIS_RANK = {"stated": 3, "honorific": 2, "pronoun": 1, "name": 0}
 #: Above this rank a value is DOCUMENT evidence rather than an inference -- the threshold
 #: `pct_gender_stated` reports and the one a consumer can filter on.
 EVIDENCE_RANK = BASIS_RANK["honorific"]
-
-#: Post-nominals must be matched AFTER the dots are removed, not before. The academic ones are
-#: written `Ph.D.` / `M.D.` / `DVM`, and `\bphd\b` does not match `ph.d.` -- so with the dots
-#: still in place the suffix survived, `_NON_ALPHA_RE` then split it into `ph d`, and `d` became
-#: the SURNAME. Measured: `person_key("Albert Bourla, DVM, Ph.D.")` returned `d|a`, which is not
-#: merely a failure to match `A. Bourla` (`bourla|a`) -- it collapses every credentialed
-#: director with the same first initial onto ONE key, so the consensus pass would propagate one
-#: person's gender onto unrelated people.
-_DOT_RE = re.compile(r"\.")
-_SUFFIX_RE = re.compile(
-    r"\b(?:jr|sr|ii|iii|iv|v|phd|md|dvm|dds|dsc|edd|pharmd|mph|cpa|cfa|esq)\b", re.I)
-_NON_ALPHA_RE = re.compile(r"[^a-z ]+")
 
 
 def _norm(value: object) -> str | None:
@@ -69,32 +61,6 @@ def _norm(value: object) -> str | None:
         return None
     cleaned = value.strip().lower()
     return cleaned or None
-
-
-def person_key(name: str | None) -> str | None:
-    """A person key stable across filings and across companies: `lastname|firstinitial`.
-
-    Keyed on the first INITIAL, not the first name, because a filer's own spelling drifts:
-    "Katherine J. Smith" and "Kathy Smith" are one director and must reconcile. Generational
-    suffixes and post-nominals are stripped first -- "John Smith Jr." and "John Smith" are the
-    same person for this purpose, and treating them as two would split their evidence.
-
-    This is deliberately the SAME key Phase 5's vote role map uses, so a nominee that matches
-    there matches here.
-    """
-    cleaned = clean_person_name(name)
-    if not cleaned:
-        return None
-    # dots first, so `Ph.D.` becomes `phd` and the suffix pattern can see it; DELETED rather
-    # than replaced with a space, because a space would leave `ph d` and put `d` in surname
-    # position. `H.` -> `h` is unaffected either way.
-    flat = _NON_ALPHA_RE.sub(" ", _SUFFIX_RE.sub(" ", _DOT_RE.sub("", cleaned.lower())))
-    parts = [p for p in flat.split() if p]
-    if not parts:
-        return None
-    if len(parts) == 1:
-        return parts[0]
-    return f"{parts[-1]}|{parts[0][0]}"
 
 
 def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:

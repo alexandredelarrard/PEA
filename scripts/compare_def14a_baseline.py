@@ -197,19 +197,20 @@ def _or_none(v):
 
 
 def _low_say_on_pay(df: pd.DataFrame) -> tuple[int, list[str]] | None:
-    """Sub-0.50 say-on-pay values that SURVIVE the cube's drop stage (G8).
+    """Sub-0.50 say-on-pay values that SURVIVE the cube's clean-on-read stage (G8).
 
-    Measured THROUGH `drop_implausible_def14a`, not on the raw table, because that is where the
-    0.50 floor lives: `def14a_llm` keeps the revolts and the cube deletes them, so a raw-table
-    count reports 3 on both sides and proves nothing. Returns the count and the tickers -- the
+    Measured THROUGH `impute_def14a`, not on the raw table, because the cube reads the cleaned
+    frame and that is where a nulling rule would bite: back when a 0.50 floor lived in the
+    stage, `def14a_llm` kept the revolts and the cube deleted them, so a raw-table count
+    reported 3 on both sides and proved nothing. Returns the count and the tickers -- the
     identity of the survivors IS the evidence (JPM 2023 = 0.31, INTC 2023 = 0.34, SPG 2024 = 0.111).
     """
     if df.empty or "say_on_pay_support_pct" not in df.columns:
         return None
-    from src.data_aggregate.utils.extras.def14a_impute import drop_implausible_def14a
-    dropped, _ = drop_implausible_def14a(df.copy())
-    v = pd.to_numeric(dropped["say_on_pay_support_pct"], errors="coerce")
-    d = dropped[(v > 0) & (v < 0.50)]
+    from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
+    cleaned, _ = impute_def14a(df.copy())
+    v = pd.to_numeric(cleaned["say_on_pay_support_pct"], errors="coerce")
+    d = cleaned[(v > 0) & (v < 0.50)]
     return int(len(d)), sorted(d["ticker"].unique().tolist())
 
 
@@ -412,8 +413,9 @@ def render(gates: list[dict], base: dict, new: dict) -> str:
               f"reached {len(have)} of the 23 tickers ({', '.join(have)}) when the snapshot was taken, "
               "and PG — the ticker carrying the footnote-digit defect — is not among them. The gate "
               "still guards the NEW side, which is what it is for.",
-              "- **G8 is measured THROUGH `drop_implausible_def14a`**, because that is where the 0.50 "
-              "floor lives. `def14a_llm` keeps the revolts; the cube deletes them. ⚠ This makes G8 "
+              "- **G8 is measured THROUGH `impute_def14a`**, the cube's whole clean-on-read stage, "
+              "because that is where a nulling rule would bite: back when the stage held a 0.50 "
+              "floor, `def14a_llm` kept the revolts and the cube deleted them. ⚠ This makes G8 "
               "the one gate whose BASELINE column is not frozen: the parquet tables are, but this "
               "row re-runs live `src/` code over them, so it reads 3 once Phase 1 removes the floor "
               "and read 0 before. The true pre-fix baseline is **0**, recorded in "

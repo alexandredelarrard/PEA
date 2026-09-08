@@ -126,6 +126,15 @@ Substitute the pk and date column from Step 0; `rows > keys` is a D1 failure. Th
 the ffill limit is); what the date column *means* — observation, fiscal period end, or publication
 event; and expected coverage, from `sp500_tickers` not from the table.
 
+### Coverage 
+
+Identify if the table assessed has all tickers expected (so far focusing on 491 tickers from SP500). 
+Example of questions to cover with deep data extraction and analysis are (non exhaustive):
+- Does the raw count makes sense, daily its around 3M expected. 
+- Do I have a drop of tickers for the latest days ?
+- Does missing values make sense for tickers with less coverage (some tickers come later, so normal to have Nan before their listing).
+- Is the column sector specific and is it filled for the tickers that are part of the sector ? 
+
 ### Per-column profile
 
 `data_profile.py` covers a normal-width table. For a wide one, generate the `UNION ALL` block
@@ -171,9 +180,7 @@ FROM   cube_part_targets WHERE target_rank IS NOT NULL GROUP BY 1 ORDER BY 1;
 SELECT max(date) AS last_price FROM prices;
 ```
 
-The second is the cheapest leakage test here, and worth knowing what a PASS looks like — measured
-2026-09-05, `last_price` = 2026-09-01 while labels stop at **2026-07-17 (h=30) / 2026-06-03 (h=60)
-/ 2026-04-21 (h=90)**. A label reaching the last price, or three horizons stopping on the same day,
+A label reaching the last price, or three horizons stopping on the same day,
 is a leak. Also hunt forward shifts, centred windows, joins selecting future rows, restated data.
 
 ### Redundancy
@@ -182,7 +189,7 @@ is a leak. Also hunt forward shifts, centred windows, joins selecting future row
 SELECT corr(<a>, <b>) AS r FROM <table> WHERE <a> IS NOT NULL AND <b> IS NOT NULL;
 ```
 
-Flag `|r| > 0.99` and exact duplicates — the 2026-09-04 audit found **seven pairs at r = 1.0000**.
+Flag `|r| > 0.985` and exact duplicates — the 2026-09-04 audit found **seven pairs at r = 1.0000**.
 Beware tautologies (`ebt - ebit == -intexp` on Sharadar is an identity); say which one to keep.
 
 ## Step 3 — Diagnose each flag in the code

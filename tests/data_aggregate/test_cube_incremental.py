@@ -315,6 +315,19 @@ def test_source_column_projection_covers_builder_needs():
         "sec_fails_to_deliver":   {"date", "ticker", "fails_quantity"},
         "wiki_pageviews":         {"date", "ticker", "pageviews"},
         "google_trends":          {"date", "ticker", "search_interest"},
+        # the two per-person DEF 14A children, read by StepCubeGovernance. `accession_number`
+        # is in the directors set because the per-FILING aggregates key on it (an `as_of` can
+        # carry two filings), and every one of the six Item 402(k) components is required
+        # because `impute_director_comp` reconstructs a NULL `total` by summing them.
+        # ⚠ `def14a_directors.is_independent` is PROJECTED but deliberately not read (D79:
+        # `pct_independent_directors` is one of the twelve D3-protected features, so deriving
+        # it from the child would move live cells). Left in the projection on purpose -- do not
+        # "tidy" it out, it is the substrate for that deferred work.
+        "def14a_directors":       {"ticker", "accession_number", "as_of", "name", "age",
+                                   "tenure_years", "other_public_company_boards"},
+        "def14a_director_comp":   {"ticker", "as_of", "total", "fees_earned", "stock_awards",
+                                   "option_awards", "non_equity_incentive", "pension_change",
+                                   "other_compensation"},
     }
     for tbl, need in required.items():
         proj = set(SOURCE_COLUMNS[tbl])
@@ -354,6 +367,7 @@ def test_source_column_projection_covers_builder_needs():
     print("\n=== SANITY: source-column projection ===")
     for tbl in required:
         print(f"  {tbl:<24} -> {len(SOURCE_COLUMNS[tbl])} cols (covers builder needs)")
+    print("  def14a_directors keeps `is_independent` projected-but-unread on purpose (D79).")
     print("  sec13f_hr (~21.7M rows) drops the call/put/cusip-era bloat; small tables load "
           "full. StepCubeExtras forwards the projection to the store. Validated.")
 

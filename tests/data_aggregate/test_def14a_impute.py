@@ -1,5 +1,5 @@
 """
-DEF 14A clean-on-read imputation (src/data_aggregate/utils/def14a_impute.py).
+DEF 14A clean-on-read imputation (src/data_aggregate/utils/governance/def14a_impute.py).
 
 The LLM extraction leaves gaps in `def14a_llm`; the cube deduces them at read time
 (governance features). Rules under test:
@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.extras.def14a_impute import impute_def14a
+from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
 
 
 def _row(ticker: str, as_of: str, **kw) -> dict:

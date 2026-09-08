@@ -1,7 +1,7 @@
 """
 cli.py  (src/data_aggregate/cli.py)
 -----------------------------------
-DATA-AGGREGATION CLI — the cube build as seven sequential, memory-bounded steps, one command
+DATA-AGGREGATION CLI — the cube build as eight sequential, memory-bounded steps, one command
 each, for the Airflow `data_aggregation` DAG:
 
     python -m src data_aggregate build-prices          # -> cube_part_prices
@@ -10,9 +10,10 @@ each, for the Airflow `data_aggregation` DAG:
     python -m src data_aggregate build-momentum        # -> cube_part_momentum
     python -m src data_aggregate build-text            # -> cube_part_text
     python -m src data_aggregate build-extras          # -> cube_part_extras
+    python -m src data_aggregate build-governance      # -> cube_part_governance
     python -m src data_aggregate assemble-cube         # read the parts -> build + save `cube`
     python -m src data_aggregate cube-status           # JSON status of every part
-    python -m src data_aggregate build-cube            # all seven in ONE process
+    python -m src data_aggregate build-cube            # all eight in ONE process
 
 `build-prices` normalizes the raw `prices` table ONCE (pivot, trading calendar, returns,
 universe restriction, peer sector returns); every later step reads those part tables back
@@ -35,6 +36,7 @@ from src.data_aggregate.step_build_cube import StepBuildCube
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
+from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
@@ -46,7 +48,7 @@ _FULL_HELP = "Force a full rebuild (ignore the stored part)."
 
 @click.group(cls=SpecialHelpOrder)
 def cli() -> None:
-    """DATA AGGREGATION — the cube build as seven sequential steps."""
+    """DATA AGGREGATION — the cube build as eight sequential steps."""
 
 
 def _step(cls, config_path: str):
@@ -98,24 +100,32 @@ def build_text(config_path: str, full: bool) -> None:
     _step(StepCubeText, config_path).run(full=full)
 
 
-@cli.command(help="Governance, 13F institutional, elite 13F, insider, short interest and "
-                  "attention features -> cube_part_extras.", help_priority=6)
+@cli.command(help="13F institutional, elite 13F, insider, short interest and attention "
+                  "features -> cube_part_extras.", help_priority=6)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
 def build_extras(config_path: str, full: bool) -> None:
     _step(StepCubeExtras, config_path).run(full=full)
 
 
+@cli.command(help="DEF 14A + Item 5.07 governance alpha (shareholder dissent, executive pay, "
+                  "governance provisions) -> cube_part_governance.", help_priority=7)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
+def build_governance(config_path: str, full: bool) -> None:
+    _step(StepCubeGovernance, config_path).run(full=full)
+
+
 @cli.command(help="Read all persisted parts -> features + composites + betas + peers + "
-                  "targets -> save the `cube` table.", help_priority=7)
+                  "targets -> save the `cube` table.", help_priority=8)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def assemble_cube(config_path: str) -> None:
     _step(StepAssembleCube, config_path).run()
 
 
-@cli.command(help="Run all seven sub-steps in ONE process (what main.py does): prices -> "
-                  "target -> fundamentals -> momentum -> text -> extras -> assemble.",
-             help_priority=8)
+@cli.command(help="Run all eight sub-steps in ONE process (what main.py does): prices -> "
+                  "target -> fundamentals -> momentum -> text -> extras -> governance -> "
+                  "assemble.", help_priority=9)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
 def build_cube(config_path: str, full: bool) -> None:
@@ -124,7 +134,7 @@ def build_cube(config_path: str, full: bool) -> None:
 
 @cli.command(help="Report the latest date + row count of every cube_part_* (+ cube / "
                   "predictions) as a JSON last line (the DAG pushes it to XCom); exits "
-                  "non-zero if any part is behind.", help_priority=9)
+                  "non-zero if any part is behind.", help_priority=10)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def cube_status(config_path: str) -> None:
     report = _step(StepBuildCube, config_path).cube_parts_status()

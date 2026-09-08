@@ -197,10 +197,15 @@ build_cube:
                                                     #  `expectations` -- the two are meant to
                                                     #  disagree, not to be averaged together)
 
-      governance: [f_pct_independent_directors_xs, f_insider_ownership_pct_xs,
-                   f_ceo_equity_pay_pct_xs, f_say_on_pay_support_xs, f_founder_ceo_xs,
-                   "-f_ceo_pay_ratio_xs", "-f_ceo_pay_vs_revenue_growth_xs",
-                   "-f_ceo_pay_growth_xs"]
+      # ⚠ `governance` DELETED 2026-09-08. It averaged eight per-date percentile ranks and was
+      # judged to carry no predictive power. Its members are all still emitted individually --
+      # the raw pay features (f_ceo_pay_growth, f_ceo_pay_vs_revenue_growth,
+      # f_say_on_pay_support, f_founder_ceo) and the peer legs of the genuinely sector-driven
+      # ones (f_ceo_pay_ratio_vs_peers 12.2% sector share, f_board_size_vs_peers 12.4%) -- so
+      # nothing is lost except the average. Deleting it also removed the last reason to keep an
+      # `_xs` leg on a feature whose zero point IS its interpretation: the composite needed
+      # every member on a common [0, 1] scale, which is what forced the percentile encoding on
+      # a pay-vs-revenue difference in the first place.
       workforce: [f_revenue_per_employee_vs_peers, f_revenue_per_employee_growth_xs,
                   f_employee_growth_xs]
 

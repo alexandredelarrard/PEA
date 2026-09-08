@@ -68,12 +68,16 @@ lgbm:
     - f_nii_growth_xs: 1
     - f_super_new_buyer_ratio_vs_peers: 1
     - f_q_margin_vs_ttm_vs_peers: 1
-    - f_pct_female_directors_vs_peers: 1
     - f_eps_expectation_growth_vs_peers: 1
     - f_intrinsic_yield_vs_peers: 1
     - f_goodwill_intangibles_to_assets_vs_peers: -1
     - f_fcf_to_ev_vs_hist: 1
-    - f_ceo_tenure_vs_peers: 1
+    # ⚠ f_ceo_tenure_vs_peers and f_pct_female_directors_vs_peers REMOVED 2026-09-08,
+    # from this list and from `columns` below. Both were monotone +1, and both features'
+    # information coefficient FLIPS SIGN between halves of the sample under all three
+    # encodings (ceo_tenure peer: -0.0062 in 2011-18, +0.0213 in 2019-26) -- a monotone
+    # constraint asserts a direction the data does not hold. They now ship raw as
+    # f_ceo_tenure / f_pct_female_directors; re-add on SHAP evidence, not on priors.
   columns:
   - mom_12_1
   - rev_21
@@ -115,8 +119,6 @@ lgbm:
   - f_interest_coverage_vs_peers
   - f_net_debt_to_ebitda_xs
   - f_refinancing_risk_xs
-  - f_ceo_tenure_vs_peers
-  - f_pct_female_directors_vs_peers
   - f_insider_net_buy_ratio_xs
   - f_inst_flow_to_mcap_xs
   - f_super_new_buyer_ratio_vs_peers

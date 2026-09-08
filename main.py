@@ -13,7 +13,7 @@ if __name__ == "__main__":
     # self.run()
 
     self = StepBuildCube(context=context, config=config)
-    self.run(full=True)
+    # self.run(full=True)
 
     # self = StepModelling(context=context, config=config)
     # self.run()

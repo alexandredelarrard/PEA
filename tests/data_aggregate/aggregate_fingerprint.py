@@ -42,6 +42,7 @@ refactor destroys the very comparison it exists to make.
 from __future__ import annotations
 
 import json
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -175,12 +176,42 @@ def synthetic_def14a(tickers: list[str], idx: pd.DatetimeIndex,
     """One annual proxy per name per year, with the columns `governance_features` reads."""
     years = sorted({d.year for d in idx})
     rows = []
-    for t in tickers:
+    for i, t in enumerate(tickers):
         pay = float(rng.uniform(5e6, 3e7))
         since = int(rng.integers(1998, 2018))
+        # ⚠ `ceo_name_proxy` is REQUIRED for the pay families to exist at all: without it the
+        # CEO identity is UNKNOWN on every row, so the turnover guard correctly nulls both
+        # `ceo_comp_growth_1y` and `ceo_turnover_flag` and 12 of the 13 pay fields vanish from
+        # the digest. Every third ticker changes CEO mid-sample, so the guard's null branch and
+        # its pass branch are both exercised rather than only one of them.
+        change_at = years[len(years) // 2] if i % 3 == 0 else None
+        # ⚠ The PROVISION block is equally required, and for the same reason: with no
+        # `classified_board` / `majority_voting` / `auditor_name` there are no adjacent pairs, so
+        # all 13 transition flags, both counts and the whole auditor block are absent from the
+        # digest. Each provision flips at a ticker-dependent year so both directions of the
+        # detector fire somewhere; `majority_voting` is deliberately left NULL on one year per
+        # ticker so the tri-state skip path is exercised too, and the auditor changes for one
+        # ticker in three so `auditor_changed` and both tenure bases appear.
+        flip = years[len(years) // 2 + (i % 3) - 1]
+        first_firm, second_firm = ("Ernst & Young LLP", "KPMG LLP") if i % 3 == 0 else \
+            ("Deloitte & Touche LLP", "Deloitte & Touche LLP")
         for k, y in enumerate(years):
+            who = "Robin Vance" if change_at is not None and y >= change_at else "Alex Mercier"
+            late = y >= flip
             rows.append({
+                "classified_board": float(late) if i % 2 == 0 else float(not late),
+                "dual_class_shares": float(i % 4 == 0),
+                "poison_pill": float(late) if i % 5 == 0 else np.nan,
+                "majority_voting": np.nan if y == flip else float(not late),
+                "ceo_is_board_chair": float(late) if i % 2 else float(not late),
+                "independent_chair": float(not late) if i % 3 else float(late),
+                "lead_independent_director": float(late) if i % 3 == 1 else 1.0,
+                "avg_other_public_boards": float(1.0 + 0.2 * k + 0.3 * (i % 4)),
+                "auditor_name": second_firm if late else first_firm,
+                "auditor_since_year": float(2004 + i % 5) if i % 2 else np.nan,
                 "ticker": t, "as_of": pd.Timestamp(year=y, month=4, day=15),
+                "accession_number": f"{t}-{y}",
+                "ceo_name_proxy": who,
                 "ceo_total_comp": pay * (1.0 + 0.06 * k),
                 "ceo_pay_ratio": float(rng.uniform(50, 400)),
                 "ceo_equity_pay_pct": float(rng.uniform(0.3, 0.9)),
@@ -193,6 +224,109 @@ def synthetic_def14a(tickers: list[str], idx: pd.DatetimeIndex,
                 "ceo_is_founder": float(int(rng.integers(0, 2))),
                 "ceo_since_year": float(since),
             })
+    return pd.DataFrame(rows)
+
+
+#: The board this fixture seats. Real names, because `board_turnover` keys on `person_key` and
+#: `person_key("Steady 1")` is `steady` -- four placeholder names would collapse to ONE key and
+#: a five-seat board would digest as a two-seat one.
+_BOARD = ("Ann Alder", "Bob Birch", "Cara Cedar", "Dave Dogwood", "Erin Elm", "Finn Fir",
+          "Gina Gum", "Hal Hazel", "Iris Ivy", "Jack Juniper")
+
+
+def synthetic_directors(proxies: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    """One row per DIRECTOR per proxy — the child table phase 6 reads.
+
+    ⚠ REQUIRED for six of the ten phase-6 fields to exist at all: with no directors table there
+    are no board-quality features, and `board_aggregates` has nothing to derive.
+
+    Each branch of the child fill is exercised by construction rather than by luck:
+      * one director's `other_public_company_boards` is NULL on a middle year with the SAME value
+        either side -> the D37 agreement gate FILLS it;
+      * another's is NULL with DIFFERENT values either side -> the gate DECLINES;
+      * one director's `age` is NULL on their FIRST proxy -> only the D38 accrual reaches it;
+      * one seat turns over halfway through, so `board_turnover` has a non-zero year AND quiet
+        years, which is what makes a measured 0.0 distinguishable from an absence.
+    """
+    rows = []
+    for r in proxies.itertuples(index=False):
+        t, y = r.ticker, int(pd.Timestamp(r.as_of).year)
+        # 5-7 seats, stable per ticker AND ACROSS PROCESSES. ⚠ `hash(t)` was wrong here
+        # and the fingerprint test is what caught it: Python randomizes `hash()` of a str
+        # per interpreter (PYTHONHASHSEED), so the seat count -- and with it every
+        # board-quality and director-pay value -- was a fresh lottery draw on every run.
+        # `crc32` is a fixed function of the bytes, so the fixture is reproducible.
+        seats = 5 + (zlib.crc32(t.encode()) % 3)
+        mid = int(proxies["as_of"].dt.year.median())
+        for s in range(seats):
+            # the last seat turns over at `mid`: one departure and one arrival
+            name = (_BOARD[(s + 5) % len(_BOARD)] if s == seats - 1 and y >= mid
+                    else _BOARD[s % len(_BOARD)])
+            age = 52.0 + 3.0 * s + (y - mid)
+            boards = float(s % 4)
+            if s == 1 and y == mid:                    # agreement -> filled
+                boards = np.nan
+            elif s == 2:                               # disagreement -> declined
+                boards = np.nan if y == mid else float(1 + 3 * (y > mid))
+            rows.append({
+                "ticker": t, "accession_number": r.accession_number, "as_of": r.as_of,
+                "name": name,
+                "age": np.nan if (s == 0 and y == int(proxies["as_of"].dt.year.min())) else age,
+                "tenure_years": float(2 + 4 * s + (y - mid)),
+                "is_independent": float(s > 0),
+                "other_public_company_boards": boards,
+            })
+    return pd.DataFrame(rows)
+
+
+def synthetic_director_comp(directors: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    """One Item 402(k) row per director per proxy, for the four director-pay fields.
+
+    ⚠ ONE row per filing carries a NULL `total` with its six components present, so the 402(k)
+    identity is exercised; another carries every component NULL, so `min_count=1`'s "stays NULL"
+    branch is too. Without both, `impute_director_comp` digests as a pass-through.
+    """
+    rows = []
+    for i, r in enumerate(directors.itertuples(index=False)):
+        fees = 90_000.0 + 5_000.0 * (i % 6)
+        stock = 160_000.0 + 10_000.0 * (i % 4)
+        other = 4_000.0 * (i % 3)
+        total = fees + stock + other
+        if i % 17 == 0:                                # NULL total, components present
+            total = np.nan
+        blank = i % 53 == 0                            # no component at all -> stays NULL
+        rows.append({
+            "ticker": r.ticker, "accession_number": r.accession_number, "as_of": r.as_of,
+            "name": r.name,
+            "total": np.nan if blank else total,
+            "fees_earned": np.nan if blank else fees,
+            "stock_awards": np.nan if blank else stock,
+            "option_awards": np.nan, "non_equity_incentive": np.nan,
+            "pension_change": np.nan,
+            "other_compensation": np.nan if blank else other,
+        })
+    return pd.DataFrame(rows)
+
+
+def synthetic_exec_comp(proxies: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    """Five NEOs per filing over TWO fiscal years, mirroring Item 402(c)'s three-year table.
+
+    The second fiscal year is what pins the "latest fiscal year only" rule: summing both would
+    inflate the CPS denominator and the digest would move.
+    """
+    rows = []
+    for i, r in enumerate(proxies.itertuples(index=False)):
+        fy = int(pd.Timestamp(r.as_of).year) - 1
+        ceo = float(r.ceo_total_comp)
+        # the CEO plus four deputies at a decaying share, so the slice lands in (0, 1)
+        pool = [(r.ceo_name_proxy, ceo)] + [
+            (f"Deputy {j} of {i % 7}", ceo * float(share))
+            for j, share in enumerate((0.55, 0.42, 0.33, 0.27))]
+        for name, total in pool:
+            for year, mult in ((fy, 1.0), (fy - 1, 0.85)):
+                rows.append({"ticker": r.ticker, "accession_number": f"{r.ticker}-{fy}",
+                             "as_of": r.as_of, "name": name, "fiscal_year": year,
+                             "total": total * mult, "reconciles": 1.0})
     return pd.DataFrame(rows)
 
 
@@ -332,7 +466,9 @@ def compute() -> dict:
         build_feature_panel, compute_raw_features,
     )
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
-    from src.data_aggregate.utils.extras.governance_features import build_governance_feature_panel
+    from src.data_aggregate.utils.governance.director_comp import impute_director_comp
+    from src.data_aggregate.utils.governance.directors import fill_director_attributes
+    from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
     from src.data_aggregate.utils.extras.insider_features import build_insider_feature_panel
     from src.data_aggregate.utils.extras.institutional_features import (
         _quarter_features, build_institutional_feature_panel,
@@ -365,6 +501,10 @@ def compute() -> dict:
     div = synthetic_dividends(tickers, idx, rng)
     earn = synthetic_earnings(tickers, idx, rng)
     proxies = synthetic_def14a(tickers, idx, rng)
+    neo_comp = synthetic_exec_comp(proxies, rng)
+    board = synthetic_directors(proxies, rng)
+    board_filled, _ = fill_director_attributes(board)
+    board_pay, _ = impute_director_comp(synthetic_director_comp(board, rng))
     wiki, trends = synthetic_attention(tickers, idx, rng)
     short_hist, ftd = synthetic_short_interest(tickers, idx, rng)
     insider = synthetic_insider(tickers, idx, rng)
@@ -400,8 +540,20 @@ def compute() -> dict:
         fund, peers, idx, fundamentals_history=fund))
     out["panel.dividend"] = frame_digest(build_dividend_feature_panel(
         div, peers, idx, stock_close=close, fundamentals_history=fund))
+    # `exec_comp` and `close_total` are what make the three EXECUTIVE-PAY families exist:
+    # without the child table there is no CPS denominator, and without a total-return series no
+    # pay-vs-performance leg. `close` stands in for `close_total` here, as it does for the
+    # dividend panel -- the synthetic series carries no dividends, so the two bases coincide.
+    # ⚠ `directors` / `director_comp` are passed CLEANED, as the step passes them: the child
+    # fill and the 402(k) identity are the caller's job (`StepCubeGovernance`), so digesting the
+    # raw children would freeze a different contract than the one that ships. The board-average
+    # REPAIR (D35) is deliberately NOT in this digest -- `merge_board_aggregates` runs in the
+    # step, before `impute_def14a`, and is guarded by `test_governance_directors.py` plus the D3
+    # twelve-feature guard.
     out["panel.governance"] = frame_digest(build_governance_feature_panel(
-        proxies, peers, idx, fundamentals_history=fund))
+        proxies, peers, idx, fundamentals_history=fund,
+        exec_comp=neo_comp, directors=board_filled, director_comp=board_pay,
+        close_total=close)[0])
     out["panel.attention"] = frame_digest(build_combined_attention_panel(
         wiki, trends, peers, idx))
     out["panel.short_interest"] = frame_digest(build_short_interest_feature_panel(

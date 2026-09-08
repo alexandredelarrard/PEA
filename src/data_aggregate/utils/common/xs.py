@@ -255,3 +255,45 @@ def long_xs_standardize(panel: pd.DataFrame, cols: list[str], method: str,
         return (g.rank(pct=True) - 0.5) * 2.0            # -> ~[-1, 1], mean ~0
     z = g.transform(lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
     return z.clip(-clip, clip)
+
+
+#: The trailing window for a SELF-HISTORY z, and the minimum history before one is emitted.
+#: 1260 trading days is ~5 calendar years; 252 is ~1 year. These set the fundamentals part's
+#: warm-up (`parts.py` pins 1260 for exactly this reason), so changing them changes that too.
+HIST_WINDOW = 1260
+HIST_MIN_PERIODS = 252
+
+
+def self_history_z(field_df: pd.DataFrame, window: int = HIST_WINDOW,
+                   min_periods: int = HIST_MIN_PERIODS,
+                   clip: float = 8.0) -> pd.DataFrame:
+    """Time-series z-score of each ticker versus its OWN trailing `window`:
+
+        z(t) = (x(t) - trailing_mean(t)) / trailing_std(t)
+
+    The rolling window is trailing (right-edge = today), so it uses only current-and-past
+    values -- strictly point-in-time, no look-ahead. On a valuation YIELD a high z means the
+    firm is currently cheaper than its own historical norm (mean-reversion long side); on a
+    governance LEVEL it means the firm is unusual BY ITS OWN STANDARDS, which is a different
+    question from unusual versus its peers.
+
+    ⚠ ITS PRECONDITION IS WITHIN-FIRM MOVEMENT, and that is not a formality. The denominator is
+    the firm's own trailing std, so on a characteristic that is effectively fixed per firm the
+    std is zero and the z is NaN (guarded by `std > 0`) -- measured on governance fields
+    2026-09-08, the trailing std is zero on 79.1% of firm-days for
+    `board_pct_nominees_below_70_support`, 63.0% for `board_dissent_breadth_20` and 23.3% for
+    `insider_ownership_pct`, so a self-history view of those is mostly absent and, where it
+    does exist, inverts the sign of the raw signal. Check the zero-std rate before adopting it
+    for a new field.
+
+    ⚠ WHY IT LIVES HERE. It is the sixth standardizer this module exists to hold in one place,
+    and it now has two consumers (the fundamentals valuation panel and the governance board
+    panel). `fundamental_features` keeps a private alias so its own call sites are unchanged.
+    """
+    if field_df is None or field_df.empty:
+        return pd.DataFrame()
+    mean = field_df.rolling(window, min_periods=min_periods).mean()
+    std = field_df.rolling(window, min_periods=min_periods).std()
+    z = (field_df - mean) / std.where(std > 0)
+    z = z.clip(-clip, clip).replace([np.inf, -np.inf], np.nan)
+    return winsorize_xs(z)            # trim per-day cross-sectional 1%/99% outliers

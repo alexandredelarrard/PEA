@@ -123,7 +123,9 @@ from src.data_aggregate.utils.common.pit import (
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 from src.data_aggregate.utils.common.frames import ratio, sanitize
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.xs import winsorize_xs
+from src.data_aggregate.utils.common.xs import (
+    HIST_MIN_PERIODS, HIST_WINDOW, self_history_z, winsorize_xs,
+)
 from src.data_aggregate.utils.common.sector_gates import family_tickers, mask_columns
 from src.data_aggregate.utils.common import capital
 
@@ -139,8 +141,10 @@ _MEAN_REVERSION_FIELDS = (
     "earnings_yield", "sales_yield", "book_yield",
     "fcf_yield", "ebitda_to_ev", "fcf_to_ev", "ffo_yield", "intrinsic_yield",
 )
-_HIST_WINDOW = 1260      # ~5 trading years of daily observations
-_HIST_MIN_PERIODS = 252  # require >= 1y of history before emitting a z-score
+#: Re-exported from `common/xs.py`, which now owns the self-history z (it gained a second
+#: consumer in the governance panel). Same values; the names stay so no call site here moves.
+_HIST_WINDOW = HIST_WINDOW          # ~5 trading years of daily observations
+_HIST_MIN_PERIODS = HIST_MIN_PERIODS  # require >= 1y of history before emitting a z-score
 
 # Cross-sectional winsorization for the Z-SCORE features (peer-z + self-history z):
 # clip each day's distribution to its [1%, 99%] percentiles so a few extreme names
@@ -220,24 +224,9 @@ def _enterprise_value(mcap: pd.DataFrame, additions: list, subtractions: list) -
     return ev
 
 
-def _self_history_z(field_df: pd.DataFrame, window: int = _HIST_WINDOW,
-                    min_periods: int = _HIST_MIN_PERIODS, clip: float = 8.0) -> pd.DataFrame:
-    """Time-series z-score of each ticker versus its OWN trailing `window`:
-
-        z(t) = (x(t) - trailing_mean(t)) / trailing_std(t)
-
-    The rolling window is trailing (right-edge = today), so it uses only
-    current-and-past values -- strictly point-in-time, no look-ahead. On a
-    valuation YIELD, a high z means the firm is currently cheaper than its own
-    historical norm (mean-reversion long side). Winsorized to +-`clip`."""
-    if field_df is None or field_df.empty:
-        return pd.DataFrame()
-    mean = field_df.rolling(window, min_periods=min_periods).mean()
-    std = field_df.rolling(window, min_periods=min_periods).std()
-    z = (field_df - mean) / std.where(std > 0)
-    z = z.clip(-clip, clip).replace([np.inf, -np.inf], np.nan)
-    return winsorize_xs(z)            # trim per-day cross-sectional 1%/99% outliers
-
+#: The self-history z now lives in `common/xs.py` beside the other standardizers; this alias
+#: keeps every call site in this module (and its test) working unchanged.
+_self_history_z = self_history_z
 
 # --------------------------------------------------------------------------- #
 # Business-quality helpers (all from tags ALREADY extracted -- no new SEC pull)

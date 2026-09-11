@@ -3,11 +3,10 @@ xs.py  (src/data_aggregate/utils/common/xs.py)
 ---------------------------------------------
 CROSS-SECTIONAL operations: every per-day, across-tickers transform in one place.
 
-Five separate implementations of "standardize within a date" had accumulated --
+Four separate implementations of "standardize within a date" had accumulated --
 `factors._xs_z` (clip 4), `features.cross_sectional_standardize` (rank | z clip 3),
-`targets.cross_sectional_zscore` (clip 3 + a min_names gate), the inline z inside
-`targets`' neutralization design (clip 4, zero-sd -> NaN) and
-`composites._xs_standardize` (long panel, groupby("date")) -- plus four independent
+`targets.cross_sectional_zscore` (clip 3 + a min_names gate) and the inline z inside
+`targets`' neutralization design (clip 4, zero-sd -> NaN) -- plus four independent
 `rank(axis=1, pct=True)` call sites.
 
 THE CLIPS ARE NOT AN ACCIDENT AND ARE NOT HARMONISED HERE. They encode three different
@@ -44,7 +43,7 @@ _WINSOR_LO, _WINSOR_HI = 0.01, 0.99
 
 # the three clip policies, named so a call site documents its intent
 XS_CLIP_LABEL = 3.0             # modelling target (targets.py)
-XS_CLIP_CHARACTERISTIC = 4.0    # factor characteristic / regressor (factors.py, composites)
+XS_CLIP_CHARACTERISTIC = 4.0    # factor characteristic / regressor (factors.py)
 XS_CLIP_PEER = 8.0             # peer-relative z (panel.py), winsorised again downstream
 
 #: Smallest dispersion a standardizer will divide by, as a FRACTION of the same day's
@@ -241,22 +240,6 @@ def xs_standardize(feat: pd.DataFrame, method: Literal["rank", "zscore"],
     raise ValueError("method must be 'rank' or 'zscore'")
 
 
-def long_xs_standardize(panel: pd.DataFrame, cols: list[str], method: str,
-                        clip: float) -> pd.DataFrame:
-    """Cross-sectionally standardize each column within each date, on a LONG panel.
-
-    Kept separate from `xs_z`/`xs_rank_pct` on purpose: this operates on a long
-    (date, ticker) frame via `groupby("date")` rather than a wide date x ticker one, the
-    rank branch rescales to ~[-1, 1] instead of [0, 1], and the z branch has its OWN
-    zero-dispersion guard (`s.std() if s.std() > 0 else np.nan`). Three real differences,
-    so unifying it would change the composites. Was `composites._xs_standardize`."""
-    g = panel.groupby("date")[cols]
-    if method == "rank":
-        return (g.rank(pct=True) - 0.5) * 2.0            # -> ~[-1, 1], mean ~0
-    z = g.transform(lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
-    return z.clip(-clip, clip)
-
-
 #: The trailing window for a SELF-HISTORY z, and the minimum history before one is emitted.
 #: 1260 trading days is ~5 calendar years; 252 is ~1 year. These set the fundamentals part's
 #: warm-up (`parts.py` pins 1260 for exactly this reason), so changing them changes that too.
@@ -286,7 +269,7 @@ def self_history_z(field_df: pd.DataFrame, window: int = HIST_WINDOW,
     does exist, inverts the sign of the raw signal. Check the zero-std rate before adopting it
     for a new field.
 
-    ⚠ WHY IT LIVES HERE. It is the sixth standardizer this module exists to hold in one place,
+    ⚠ WHY IT LIVES HERE. It is the fifth standardizer this module exists to hold in one place,
     and it now has two consumers (the fundamentals valuation panel and the governance board
     panel). `fundamental_features` keeps a private alias so its own call sites are unchanged.
     """

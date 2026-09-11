@@ -276,6 +276,21 @@
       }
     ]
   },
+  "TT": {
+    "kind": "domestication",
+    "segments": [
+      {
+        "cik": "0001160497",
+        "valid_to": "2009-07-01",
+        "evidence": "Ingersoll-Rand Company Limited (Bermuda). Measured 2026-09-11 over the cached Form 345 bulk sets: 240 filings 2006-03-03 .. 2009-06-03, and it stops filing entirely at the boundary, so there is no subsidiary double-coverage to exclude. ⚠ IT HELD THE `IR` SYMBOL, NEVER `TT` -- which is a `symbol_tenure` fact and not a register fact. Today's IR is Ingersoll Rand Inc (0001699150), the 2020 Reverse Morris Trust spin-off that took the symbol and the industrial business; this CIK is claimed by TT here and by nothing else, which is what `_check_ciks_unique_across_entries` needs."
+      },
+      {
+        "cik": "0001466258",
+        "valid_from": "2009-07-01",
+        "evidence": "Ingersoll-Rand plc (Ireland), the re-registration effective 2009-07-01; renamed Trane Technologies plc in March 2020 with NO CIK change, which is why the chain stops here -- a further `rename` segment would walk one CIK twice. Measured 2026-09-11: 1,155 filings under `IR` 2009-07-09 .. 2020-02-24, then 470 under `TT` from 2020-03-10. The boundary is the reorganisation's own effective date and is both gapless and non-overlapping: the predecessor's last filing is 2009-06-03 and the successor's first is 2009-07-09. This is also TT's roster CIK, so the entry ADDS the 2006-2009 Bermuda history the ticker walk cannot reach and substitutes nothing."
+      }
+    ]
+  },
   "VTRS": {
     "kind": "reorganisation",
     "segments": [

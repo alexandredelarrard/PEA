@@ -38,6 +38,10 @@ from src.data_extract.utils.institutionals.fetch_superinvestors import (
     seed_roster_history, upsert_roster_snapshot)
 from src.data_extract.utils.institutionals.fetch_insider_transactions import (
     fetch_insider_transactions)
+# --- identity: which company is this ticker, and when ----------------------- #
+from src.data_extract.utils.common.bulk_cache import cache_dir
+from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure
+from src.data_extract.utils.common.entity_lineage import build_entity_lineage
 from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
 from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
 from src.data_extract.utils.institutionals.fetch_8k_edgar import fetch_8k_edgar
@@ -443,6 +447,25 @@ def insider_transactions(config_path: str, tickers: str | None, reparse: bool) -
     fetch_insider_transactions(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
+@cli.command(name="identity-tables",
+             help="symbol_tenure + entity_lineage: WHICH COMPANY a ticker was, and when. "
+                  "OFFLINE reference build -- derived from the cached Form 345 zips and the "
+                  "DB, no network. Run after `insider-transactions` has populated the cache.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+def identity_tables(config_path: str) -> None:
+    """ONE command for BOTH tables, because they are one logical dimension and a half-built
+    pair is a trap: `entity_lineage`'s candidate set is read off `symbol_tenure`, so a stale
+    tenure table silently narrows the lineage table without either looking wrong.
+
+    `ticker_count=0` in the manifest: this is a market-wide derivation over all ~27k EDGAR
+    symbols, not a per-ticker walk -- the same convention `fetch_sharadar_tickers` uses.
+    """
+    _, context = _ctx(config_path)
+    cache = cache_dir(context, context.config.local.paths.insider_transactions)
+    build_symbol_tenure(context, cache)
+    build_entity_lineage(context, cache, config_path)
+
+
 @cli.command(help="SEC Financial Statement & NOTES sets -> notes_num / notes_text. VERY HEAVY.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -462,9 +485,16 @@ def financial_notes(config_path: str, tickers: str | None, reparse: bool) -> Non
 @cli.command(help="DEF 14A governance / executive pay (LLM-parsed). SEC-api + LLM.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def def14a(config_path: str, tickers: str | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def def14a(config_path: str, tickers: str | None, full: bool) -> None:
+    """`--full` is needed after a registrant chain GROWS. Both incremental gates are shared
+    state keyed on the run, not on `-t`: the manifest's `last_run_date` is global and the
+    up-to-date check only asks whether the named tickers have ANY rows. So the second def14a
+    of a day returns in seconds with exit 0 and no LLM calls, however much history the new
+    segment just exposed — measured twice on AVGO, the second time 12 minutes after the run
+    that poisoned it."""
     config, context = _ctx(config_path)
-    fetch_def14a_llm(context, config, tickers=_tickers(context, tickers))
+    fetch_def14a_llm(context, config, tickers=_tickers(context, tickers), full=full)
 
 
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")

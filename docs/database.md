@@ -67,8 +67,9 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `sec13f_hr` | 21,659,435 | **6.1 GB** | 15 | 497 | `period` | 1987-03-31 → 2026-03-31 |
 | `earnings_call_sections` | 109,899 | 1.5 GB | 6 | 494 | `as_of` | 2005-10-13 → 2026-07-24 |
 | `sec_filing_text` | 34,127 | 1.2 GB | 9 | 498 | `filed` | 2011-07-27 → 2026-08-03 |
-| `insider_transactions` | **1,942,945** | 929 MB | **38** | 498 | `transaction_date` | 1990-05-07 → **2026-03-31** *(09-08)* |
-| `insider_footnotes` | **1,860,827** | 713 MB | 3 | — | — | no date column; joins on `accession_number` *(09-08)* |
+| `insider_transactions` | **2,014,745** | — | **38** | **491** | `transaction_date` | 2006-01-03 → **2026-03-31** *(09-11, post identity screen)* |
+| `insider_transactions_quarantine` | **20,832** | — | 42 | 58 claimed | `filing_date` | 2006-01-03 → 2026-03-31 *(09-11)* |
+| `insider_footnotes` | **1,893,419** | — | 3 | — | — | no date column; joins on `accession_number`. 8,866 orphans, all of them quarantined accessions *(09-11)* |
 | `notes_text` | 96,576 | 411 MB | 15 | — | `ddate` | 2006-12-31 → 2026-05-31 |
 | `sec_8k` | 95,789 | 137 MB | 14 | 486 | `filing_date` | 2011-08-04 → 2026-08-03 |
 | `sec13f_manager_holdings` | **342,501** | 85 MB | 16 | — | `period` | 2011-09-30 → 2026-06-30 *(09-08)* |
@@ -106,6 +107,8 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `def14a_director_comp` | 2,519 | — | 14 | **14** | `as_of` | 15 smoke tickers only |
 | `sp500_tickers` | 500 | 128 kB | 6 | 500 | — | — |
 | `superinvestor_roster` | 962 | — | 6 | — | `snapshot_date` | 2013-01-01 → today (14 snapshots, 50 → 83 managers) |
+| `symbol_tenure` | 30,530 | 7.9 MB | 7 | — | `valid_from` | 2006-01-03 → today (81 cached quarters; 27,393 symbols, 2,467 with >1 issuer CIK, 5,144 tenures still open) |
+| `entity_lineage` | 556 | 288 kB | 5 | — | — | 621 candidate CIKs → 505 entities; 500 one-per-universe-ticker |
 
 - **The four validator tables hold TWO comparable runs** (`3df52ae9af75` → `725bae7bf8ed`,
   54 tickers, all tiers). They are written only by `src/validate/` and gate nothing.
@@ -206,17 +209,50 @@ Ordered by size. `tickers` = distinct non-null tickers.
   (median $30,494) against $1,434.1bn of sales (median $120,850)** over 2006–2026, a 10:1
   sell/buy ratio that matches the known stylised fact and is the independent check that the
   repaired figures are the right order of magnitude.
-- **⚠ `insider_transactions.ticker` IS RESOLVED SYMBOL-FIRST, so a reused ticker carries another
-  company's insiders.** `_filter_universe` keeps a row whose SEC trading symbol is in the
-  universe and only falls back to the issuer CIK. Measured against the registrant register:
-  **38,910 rows (1.92%), 8,640 of them P/S, across 72 in-universe tickers** hold an `issuer_cik` outside
-  their ticker's lineage — 2,075 Trane rows under `IR` (CIK 0001466258, which is `TT`'s own
-  universe CIK), 2,046 Weight Watchers under `WTW`, 1,207 CoreSite under `COR`, 1,111 the old
-  Constellation Energy under `CEG`, Axovant Sciences under `AXON`. The same screen also names
-  ~40 **genuine** predecessors missing from the register (DuPont under `DD`, Chubb Corp under
-  `CB`, Avago under `AVGO`), and the two are indistinguishable by date span, so a blanket
-  CIK-first cut would delete real history. Unfixed as of 2026-09-10; the reparse that would
-  apply a fix needs **no download** (`insider-transactions --reparse`, 81 cached quarters).
+- **`insider_transactions.ticker` is resolved CIK-FIRST — FIXED 2026-09-11, and the rejected
+  rows are kept.** The old `_filter_universe` accepted whatever `ISSUERTRADINGSYMBOL` the filer
+  typed provided that string was in today's universe, with the CIK map only as a fallback, so a
+  symbol another LIVE company held earlier carried that company's insiders: **38,910 rows
+  (1.92%), 8,640 of them P/S, across 72 in-universe tickers** sat outside their ticker's
+  lineage. Resolution now runs the other way — `issuer_cik` names an entity in `entity_lineage`
+  and the entity names today's universe ticker — and the symbol survives only as a cross-check
+  on the quarantined rows.
+  Three outcomes, all measured on the 2026-09-11 re-parse of the 81 cached quarters:
+  - **relabelled 2,558** rows, the outcome the plan did not predict and the best one: Trane's
+    2,554 Ingersoll-Rand-plc filings typed `IR` move to `TT`, where they belong, rather than
+    being deleted. (Plus `TT`→`IT` 3, `NTRS`→`ITW` 1, both single filer typos.)
+  - **quarantined and deleted 18,816** rows — **10,717** `entity_mismatch` over 48 tickers
+    (Weight Watchers under `WTW` 2,046, CoreSite under `COR` 1,207, the old Constellation
+    Energy under `CEG` 1,111, Echo Global under `ECHO` 772, Axovant under `AXON` 80) and
+    **8,099** `entity_not_in_universe` left over from an earlier universe. The quarantine
+    table itself holds **20,832**, because the parse screen also sees the excluded roster
+    tickers' full zip history while the stored table held only what an earlier universe
+    admitted.
+  - net **2,031,286 → 2,014,745**, and the arithmetic closes exactly: −18,816 + 2,275.
+    60 tickers moved, 438 unchanged; `TT` +3,133 decomposes to +2,554 relabelled from `IR`,
+    +583 admitted American Standard, −1 CatchMark quarantined, −3 Gartner rows typed `TT`
+    that moved to `IT`. `COR` −1,357 = 1,207 CoreSite + 142 Cortex Pharmaceuticals + 8
+    Corium International.
+  - **admitted 2,275** rows the symbol path DROPPED: AmerisourceBergen filed as `ABC`, Merck
+    pre-2009, American Standard, Digital Realty L.P., CDW pre-2013, Accenture SCA. ⚠ The change
+    is **not purely subtractive**, which is the check that CIK-first is a resolution rule and
+    not a deletion rule.
+  The ~40 **genuine** predecessors a blanket CIK-first cut would have deleted (DuPont E I under
+  `DD` 3,422 rows, Google Inc under `GOOGL` 78,865, Apache 9,153, Chubb Corp under `CB`, Avago
+  under `AVGO`) are retained, because `entity_lineage` says in a table that they are the same
+  economic company — 25,635 rows that the register alone could not have saved. **`no_issuer_cik`
+  is 0** across all 4,402,307 filings in the 81 quarters, so there is no symbol fallback.
+  Still **no date filter**: Forms 3/4/5 are UNION events and a date cut here is the named
+  XOM-`SCHEDULE 13G` regression. The whole fix is offline and repeatable
+  (`insider-transactions --reparse`, no download).
+- **The quarantine is swept from the STORED rows, not only at parse time, because `store.save`
+  upserts and can never remove a row.** A `--reparse` simply declines to re-write a rejected
+  row, which leaves it in place for ever; `_screen_stored_rows` re-adjudicates every stored row
+  against today's universe, writes the rejects to the quarantine and DELETEs them. It is also
+  the only thing that reconciles a SHRINKING universe — no parse would ever revisit a row whose
+  ticker left the index. The relabelled rows need none of it: `ticker` is not in the primary key
+  (`accession_number, security_type, transaction_sk`), so a relabel UPDATES in place and the
+  table cannot double.
 - **`sec_def14a` is 2023+ BY REGULATION, and that is correct behaviour rather than a gap.**
   Item 402(v) (Pay-versus-Performance) applies to fiscal years ending on or after 2022-12-16, so a
   proxy covering an earlier year carries no `ecd:` facts and gets NO ROW at all. Measured over the

@@ -12,7 +12,7 @@ and hands nothing else to the next one:
   5. text          earnings-call sentiment + embedding KPIs
   6. institutionals 13F, elite 13F, insider, short interest + fails-to-deliver
   7. governance    DEF 14A + Item 5.07: dissent, executive pay, board, provisions
-  8. assemble      read the parts -> composites -> the `cube` table
+  8. assemble      read the parts -> the `cube` table
 
 ONE CODE PATH, TWO DRIVERS. `run()` executes the same eight objects, in the same order, that
 `cli.py` exposes as eight commands and the Airflow DAG chains as eight tasks. There is no

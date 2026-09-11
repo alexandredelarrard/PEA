@@ -25,7 +25,7 @@ Triggered by the extraction DAG once ALL sources have refreshed (schedule=None).
 Each step is `/opt/pipeline/bin/python -m src data_aggregate <cmd>` (the pipeline's isolated venv).
 STRICTLY SEQUENTIAL, on purpose: peak memory is the largest single step rather than the sum of two
 parallel pool slots, and each step keeps its heavy frames local so they are freed when it returns.
-`assemble_cube` merges the parts (+ composites + betas + peers + targets) into the cube. Peers are
+`assemble_cube` merges the parts (+ betas + peers + targets) into the cube. Peers are
 computed once up front and cached; `build_prices` folds them into a persisted sector-return column.
 """
 import json

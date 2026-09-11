@@ -1,0 +1,157 @@
+{
+  "_README": [
+    "HAND ADJUDICATIONS FOR `entity_lineage` -- the curated layer of AXIS A (which CIKs are",
+    "the same economic company). Sibling of `registrant_cutover.json`, and deliberately a",
+    "SEPARATE file, because the two answer different questions and are read by different",
+    "code.",
+    "",
+    "WHEN AN ENTRY BELONGS HERE RATHER THAN IN THE REGISTER. The register declares which CIKs",
+    "a ticker's FILINGS may be walked from, and its dated SPLIT decides which registrant owns",
+    "each 10-K / 10-Q / DEF 14A date. So a register entry must name the ticker's own SUCCESSIVE",
+    "REGISTRANTS -- a new legal parent, or the same business re-registered elsewhere. An",
+    "ACQUIRED company is not that: it is the same economic group afterwards but it was never",
+    "this ticker's registrant, and putting it in the register would hand the dated split the",
+    "TARGET's proxy as the ticker's board of record for those years. Those cases live here,",
+    "where they change entity identity and nothing else.",
+    "",
+    "TWO ENTRY SHAPES, because the grey band produces two kinds of verdict:",
+    "  `same_entity`: [cik, ...]  -- these CIKs are ONE company; they are unioned.",
+    "  `own_entity`:  [cik, ...]  -- this CIK is NOT the ticker it filed under. A CIK with no",
+    "                                row anywhere is already its own entity, so this shape",
+    "                                changes no outcome -- it RECORDS the verdict, so that a",
+    "                                deliberate 'no' is distinguishable from 'never looked'.",
+    "",
+    "EVERY ENTRY NEEDS `evidence`, for the reason the register gives: an undocumented identity",
+    "decision is a guess that silently deletes or silently imports a decade of filings, and it",
+    "cannot raise on its own.",
+    "",
+    "WHY THESE AND NOT OTHERS. The owner-overlap oracle (do the same reporting owners appear",
+    "on both CIKs' Forms 3/4/5) decides the clear cases: 0 shared owners -> unrelated, and",
+    "jaccard >= 0.05 or >= 5 shared -> the same entity. Between those it REFUSES to decide and",
+    "the build RAISES, because the measured grey band holds both a genuine predecessor (COHR,",
+    "726 filings) and a genuine symbol reuse (CEG, 334) with nearly identical scores -- 0.037",
+    "against 0.032. A threshold that split them would be fitted to two data points.",
+    "",
+    "Measured 2026-09-11 over 621 candidate CIKs and all 500 universe tickers: 39 pairs",
+    "decided `same` automatically, 73 `unrelated`, 13 grey. The 13 are adjudicated below,",
+    "minus the two `IR` rows, which fall out of the `TT` register entry with no `IR`-specific",
+    "rule anywhere."
+  ],
+
+  "_d19_allowlist": {
+    "_README": [
+      "THE D19 CROSS-CHECK'S EXCEPTION LIST. D19 asserts that `entity_of(sp500_tickers.cik[T])`",
+      "agrees with the entity of the CIK that dominates symbol T in `symbol_tenure` today. It",
+      "exists because the roster CIK comes from Wikipedia and has been wrong before (XOM, found",
+      "2026-09-09), and a disagreement is that class of defect until proven otherwise.",
+      "",
+      "Measured 2026-09-11 over all 500 tickers: 490 AGREE, 10 disagree, and Sharadar's",
+      "independent `secfilings` CIK agrees with the roster on 498 of 498. NONE of the 10 is a",
+      "wrong roster CIK. Each is listed below with the reading that clears it; anything NOT on",
+      "this list must raise."
+    ],
+    "BF-B": "Brown-Forman (0000014693) types its symbol as the two-symbol string 'BFA, BFB' (and 'BF'B', 'BFA/BFB', 'BFA,BFB'), never the roster's hyphenated 'BF-B'. Same CIK, 1,136 filings. A symbol-SPELLING gap, not an identity one.",
+    "BRK-B": "Berkshire Hathaway (0001067983) files under 'BRK.B' (101) and 'BRKB' (4). Same CIK; the roster spells the class suffix with a hyphen because that is Yahoo's price symbol.",
+    "FOXA": "Fox Corp (0001754301) files under 'FOX', the Class-B symbol, never 'FOXA'. Same CIK -- and under D4 both classes are one entity anyway, so there is nothing here to resolve.",
+    "NWSA": "News Corp (0001564708) files under 'NWS'. Identical to FOXA.",
+    "LEN": "Lennar (0000920760) types 'LEN, LEN.B' -- both share classes in one field. Same CIK, 836 filings.",
+    "VMRK": "Vivmark Residential's roster CIK 0000906107 is Equity Residential's, which files under 'EQR' (1,434 filings). A 2026 rename the Form 345 sets have not seen yet; the CIK is right.",
+    "BNY": "BNY Mellon (0001390777) still files under its former ticker 'BK' (1,923 filings). Symbol 'BNY' in the Form 345 sets belongs to BlackRock New York Municipal Income Trust (0001137390, 68 filings), an unrelated closed-end fund -- which is a symbol-reuse fact, correctly, and not a roster error.",
+    "ECHO": "EchoStar (0001415404) files under 'SATS' (550 filings). Symbol 'ECHO' in the Form 345 sets was Electronic Clearing House to 2008 and Echo Global Logistics 2009-2021, both unrelated. Again a reuse fact, not a roster error.",
+    "FDXF": "FedEx Freight (0002082247) is a 2026 spin-off with no Form 3/4/5 yet. Sharadar's independent CIK agrees with the roster.",
+    "HONA": "Honeywell Aerospace (0002089271) is a 2026 spin-off with no Form 3/4/5 yet. Sharadar's independent CIK agrees with the roster."
+  },
+
+  "COHR/coherent-inc": {
+    "same_entity": ["0000021510", "0000820318"],
+    "evidence": "Coherent Inc (0000021510, 726 Form 3/4/5 filings 2006-02-01 .. 2022-07-02) was acquired by II-VI Incorporated on 2022-07-01; II-VI then renamed itself Coherent Corp and took the COHR symbol (0000820318, filing under COHR from 2022-09-13). Owner overlap is 3 shared / jaccard 0.037 -- a thin board carry-over, which is why the oracle cannot call it. NOT a register entry: II-VI's own CIK never changed, so the register would be declaring a RENAME, which it rejects by name; and the dated split would then hand COHR its pre-2022 proxies from the TARGET rather than from II-VI. ⚠ The accounting acquirer is II-VI, so this entry admits the target's insider history onto the successor's ticker -- a deliberate decision (plan D6), not an oracle result.",
+    "accepted_cost": [
+      "⚠ DO NOT 'FIX' THE DOUBLE COUNT BELOW -- IT IS A DECISION, RE-AFFIRMED 2026-09-11.",
+      "",
+      "COHR is the ONLY entity here whose two CIKs were separately listed and filing AT THE",
+      "SAME TIME. Every other multi-CIK entity is sequential (DuPont E I ends 2017-09, DuPont",
+      "de Nemours starts 2019-06), which is what the UNION rule for event forms was designed",
+      "for. Measured in `insider_transactions` 2026-09-11, COHR holds 4,552 rows:",
+      "    0000820318  II-VI INC        2,157 rows  35 owners  2006-02-09 .. 2022-08-30",
+      "    0000021510  COHERENT INC     2,017 rows  30 owners  2006-02-01 .. 2022-07-01",
+      "    0000820318  COHERENT CORP.     378 rows  28 owners  2022-09-13 .. 2026-03-18",
+      "so for SIXTEEN YEARS two public companies' insider populations are summed onto one",
+      "ticker -- ~65 'COHR insiders' in years when the answer was ~35. Any counting or summing",
+      "feature (distinct buyers, cluster buys, total $ bought, net buy/sell) carries that.",
+      "",
+      "A second, quieter consequence: COHR's PRICE series is II-VI's (mid-2015 close 18.48,",
+      "mid-2017 32.30), while Coherent Inc traded far higher in those years. So the 2,017",
+      "Coherent Inc rows are paired with another company's bars, and any $-normalised feature",
+      "(value_usd / market cap) is off by the ratio of two unrelated market caps.",
+      "",
+      "Note the two are NOT separable by entity: `II-VI INC` and `COHERENT CORP.` are ONE CIK,",
+      "0000820318, which is also COHR's roster CIK -- so `universe_entity('COHR')` is defined by",
+      "it and it cannot be excluded. Splitting them would need date-bounded entity membership",
+      "for event forms, which FORM_POLICY deliberately does not have.",
+      "",
+      "Dropping Coherent Inc instead would cost NO history: II-VI's own 2,157 rows already run",
+      "continuously from 2006-02-09. That option was put and declined; the entry stands."
+    ],
+    "decided": "2026-09-11"
+  },
+
+  "TT/trane-inc": {
+    "same_entity": ["0000836102", "0001466258"],
+    "evidence": "Trane Inc (0000836102, 82 filings 2007-11-30 .. 2008-06-10) was acquired by Ingersoll-Rand in June 2008; the group later renamed itself Trane Technologies plc and took the TT symbol on the same registrant CIK 0001466258. Owner overlap 2 shared / jaccard 0.027. Here rather than in the register for the same reason as COHR: Trane Inc was a target, never TT's registrant, and a register segment would give the dated split Trane Inc's 2007-08 proxy as TT's board of record. TT's actual registrant chain (Ingersoll-Rand Co Ltd -> Ingersoll-Rand plc) IS in the register, as a domestication.",
+    "decided": "2026-09-11"
+  },
+
+  "CEG/old-constellation-energy-group": {
+    "own_entity": ["0001004440"],
+    "evidence": "Constellation Energy Group Inc (0001004440, 334 filings 2006-01-04 .. 2012-03-15) was ACQUIRED BY EXELON in March 2012 and ceased to exist as a separate company. The name and the CEG symbol were revived ten years later by a SEPARATE 2022 Exelon spin-off, Constellation Energy Corp (0001868275), whose first Form 4 is 2022-02-10. Two shared owners / jaccard 0.032 is the residue of Exelon-era directors, not continuity. Recorded as its own entity so the verdict is stated rather than merely absent -- this is the textbook symbol-revival case and the one most likely to be 'fixed' by someone who sees only the name.",
+    "decided": "2026-09-11"
+  },
+
+  "ES/energysolutions": {
+    "own_entity": ["0001393744"],
+    "evidence": "EnergySolutions, Inc. (0001393744, 233 filings 2007-11-14 .. 2013-05-30) IPO'd on the NYSE under ES in 2007 and was taken private by Energy Capital Partners in 2013. Northeast Utilities renamed itself Eversource Energy in 2015 and took the vacated ES symbol (0000072741, filing under ES from 2015-02-24). A nuclear-services roll-up and a New England utility: 1 shared owner out of 39 and 48 is noise, and the tenures do not even overlap.",
+    "decided": "2026-09-11"
+  },
+
+  "HLT/hilton-hotels-corp": {
+    "same_entity": ["0000047580", "0001585689"],
+    "evidence": "Hilton Hotels Corp (0000047580, 180 filings 2006-01-03 .. 2007-10-25) was taken private by Blackstone in the October 2007 LBO; the SAME hotel business was re-registered as Hilton Worldwide Holdings Inc (0001585689) and re-listed under HLT in December 2013. Continuous ownership of the same brands and properties through a private interval -- unlike CEG, nothing was absorbed into an acquirer and no unrelated company held the symbol in between. The single shared owner is the expected signature of an LBO, which replaces the board wholesale; it is exactly why the oracle cannot decide this one.",
+    "decided": "2026-09-11"
+  },
+
+  "TMUS/t-mobile-usa": {
+    "same_entity": ["0001097609", "0001283699"],
+    "evidence": "T-Mobile USA, Inc. (0001097609) is T-Mobile US, Inc.'s own operating subsidiary and co-registrant -- the entity that carried the Deutsche Telekom US business into the 2013 MetroPCS reverse merger that created T-Mobile US (0001283699). 3 filings, 4 shared owners out of a 4-owner set: the jaccard is only 0.036 because the parent's owner set is 112 wide, which is precisely the dilution failure mode the second threshold exists for and still misses at this size.",
+    "decided": "2026-09-11"
+  },
+
+  "IRM/iron-mountain-global": {
+    "same_entity": ["0001132694", "0001020569"],
+    "evidence": "Iron Mountain Global Inc (0001132694) is a co-registrant inside Iron Mountain's own group; 1 filing, 1 shared owner. Immaterial either way, recorded so the build does not stop on it.",
+    "decided": "2026-09-11"
+  },
+
+  "WFC/wfc-holdings": {
+    "same_entity": ["0000105598", "0000072971"],
+    "evidence": "WFC Holdings Corp (0000105598) is a Wells Fargo & Co subsidiary and co-registrant; 1 filing, 1 shared owner. Immaterial either way, recorded so the build does not stop on it.",
+    "decided": "2026-09-11"
+  },
+
+  "TPL/renn-fund": {
+    "own_entity": ["0000919567"],
+    "evidence": "RENN Fund, Inc. (0000919567) is a closed-end fund managed by Horizon Kinetics, which was one of Texas Pacific Land's largest holders through the 2020-21 trust-to-corporation conversion and its proxy fight. Three Form 4s filed 2020-09-29 .. 2020-12-01 carry TPL in ISSUERTRADINGSYMBOL; the issuer is the fund, not the land company. The single shared owner is the Horizon Kinetics principal who sat on both sides, which is why this scores in the grey band rather than at zero.",
+    "decided": "2026-09-11"
+  },
+
+  "AKAM/wtc-corp-cik-typo": {
+    "own_entity": ["0000108622"],
+    "evidence": "One filing, 2006-05-08, carrying AKAM as the symbol under CIK 0000108622 (WTC CORP). Akamai's own CIK is 0001086222: the filed value is that string with the final digit lost, so this is a CIK typo rather than a company. Recorded as its own entity anyway -- admitting the CIK would pull EVERY filing WTC Corp ever made onto AKAM, and the cost of refusing is one filing.",
+    "decided": "2026-09-11"
+  },
+
+  "TECH/rim-drive-wheel-cik-typo": {
+    "own_entity": ["0000084023"],
+    "evidence": "One filing, 2007-10-25, carrying TECH as the symbol under CIK 0000084023 (RIM DRIVE WHEEL INC). Bio-Techne's own CIK is 0000842023 -- the same digits with one dropped. Same reasoning as AKAM: refusing costs one filing, admitting would pull an unrelated registrant's whole book onto TECH.",
+    "decided": "2026-09-11"
+  }
+}

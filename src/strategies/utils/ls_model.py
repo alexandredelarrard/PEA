@@ -22,7 +22,7 @@ from src.data_store.schema import Tables
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common import data_utils as du
-from src.data_aggregate.utils.assemble.cube import panel_from_cube
+from src.data_aggregate.utils.assemble.cube import panel_from_cube, target_column
 from src.modelling.long_short.utils import model as ml
 from src.utils.macro import load_macro_series
 
@@ -72,22 +72,27 @@ def _load_models(context: Context, cube_cfg: DictConfig, model_cfg: DictConfig):
 
 
 def _project_cube(context: Context, meta: dict, models: dict, target_type: str,
-                  start: pd.Timestamp, end) -> tuple[pd.DataFrame, str]:
+                  start: pd.Timestamp, end) -> pd.DataFrame:
+    """Project the cube to the model's features plus ONE label column per trained horizon.
+
+    The cube is one row per (date, ticker) with the targets wide, so the horizons select
+    COLUMNS, not rows -- there is no row filter to apply and the caller resolves each
+    horizon's label with `target_column` as it loops."""
     store = context.store
     cube_cols = set(store.columns(Tables.cube))
-    target_col = (f"target_{target_type}" if f"target_{target_type}" in cube_cols
-                  else "target" if "target" in cube_cols else None)
-    if target_col is None:
-        raise KeyError(f"Target column 'target_{target_type}' not in cube; rebuild the cube.")
+    tcols = [target_column(target_type, int(h)) for h in models]
+    missing = [c for c in tcols if c not in cube_cols]
+    if missing:
+        raise KeyError(f"Target columns {missing} not in cube; rebuild it with '{target_type}' "
+                       f"in build_cube.targets.labels and those horizons in "
+                       f"build_cube.targets.horizons.")
 
     want = list(dict.fromkeys(meta["feature_cols"] + meta.get("categorical_cols", [])))
-    load_cols = list(dict.fromkeys(["date", "ticker", "target_horizon", target_col]
+    load_cols = list(dict.fromkeys(["date", "ticker"] + tcols
                                    + [c for c in want if c in cube_cols]))
     # bound parameters, not f-string interpolation: `date >= '{start.date()}'` was the one
     # query in the repo pasting a value straight into SQL
-    return store.load(Tables.cube, columns=load_cols,
-                      where={"target_horizon": sorted(int(h) for h in models)},
-                      since=start, until=end), target_col
+    return store.load(Tables.cube, columns=load_cols, since=start, until=end)
 
 
 def _returns(context: Context, config: DictConfig, cube_cfg: DictConfig, model_cfg: DictConfig,
@@ -119,7 +124,7 @@ def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle
     meta, models, target_type, _ = _load_models(context, cube_cfg, model_cfg)
     start = pd.Timestamp(meta["train_end"])
     train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
-    cube, _ = _project_cube(context, meta, models, target_type, start, end)
+    cube = _project_cube(context, meta, models, target_type, start, end)
     close, stock_ret, spy_ret = _returns(context, config, cube_cfg, model_cfg, start)
     end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp(cube["date"].max())
 

@@ -27,6 +27,7 @@ import pandas as pd
 
 from src.constants.constants import MACRO_ALL_SERIES, MACRO_MARKET_SERIES
 from src.context import get_config_context
+from src.data_aggregate.utils.assemble.cube import TARGET_COL_RE
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_wide
 
@@ -129,7 +130,12 @@ def main(lo: str, hi: str):
     if cmin is None:
         print("   cube not built yet.")
     else:
-        cw = store.load(Tables.cube, columns=["date", "ticker", "target_horizon"],
+        # the cube is one row per (date, ticker) with the targets WIDE, so a horizon is a
+        # COLUMN: the per-horizon breakdown is now "how many dates does each label column
+        # actually carry a value on", which is what separates a MISSING date from a date that
+        # is present but whose label is still immature (NaN).
+        tcols = sorted(c for c in store.columns(Tables.cube) if TARGET_COL_RE.match(c))
+        cw = store.load(Tables.cube, columns=["date", "ticker"] + tcols,
                         since=lo, until=hi, optional=True)
         if cw is None:
             print("   cube rows in window: 0")
@@ -137,8 +143,14 @@ def main(lo: str, hi: str):
             cw["date"] = pd.to_datetime(cw["date"]).dt.normalize()
             print(f"   cube rows in window: {len(cw):,}  dates: {cw['date'].nunique()}  "
                   f"tickers: {cw['ticker'].nunique()}")
-            by_h = cw.groupby("target_horizon")["date"].nunique()
-            print(f"   distinct dates per horizon in window:\n{by_h.to_string()}")
+            if tcols:
+                print("   rows/dates carrying a NON-NULL label, per target column:")
+                for c in tcols:
+                    ok = cw.loc[cw[c].notna(), "date"]
+                    print(f"     {c:<26} dates {ok.nunique():>4}  rows {len(ok):>8,}")
+            else:
+                print("   cube carries NO target_<label>_h<horizon> column -> the targets part "
+                      "never made it into the assemble.")
         print(f"   cube overall range: {pd.Timestamp(cmin).date()} .. "
               f"{pd.Timestamp(cmax).date()}")
 

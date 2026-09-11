@@ -260,6 +260,7 @@ def fetch_def14a_llm(
     max_chars: int | None = None,
     cache: bool | None = None,
     workers: int = _LLM_WORKERS,
+    full: bool = False,
 ) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
@@ -270,6 +271,17 @@ def fetch_def14a_llm(
     `model` / `max_chars` / `cache` default to `config.gpt`; pass an explicit keyword to
     pin one for research without touching config (how a prior measurement ran
     `gpt-4o-mini` while production had been running `gpt-5-mini` all along).
+
+    ⚠ `full` EXISTS BECAUSE A SAME-DAY SINGLE-TICKER RERUN WAS A SILENT NO-OP. Both gates
+    below are shared state keyed on the whole run, not on the tickers asked for: the manifest's
+    `last_run_date` is global, and `_is_up_to_date` only asks whether the requested tickers have
+    ANY rows. So once any def14a run has happened today, `def14a -t X` returns in seconds with
+    exit 0 and zero LLM calls -- even when X's registrant chain just grew and its whole
+    pre-boundary proxy history is missing. That is exactly what happened to AVGO twice: BLK's
+    run poisoned it on 2026-09-10 and STE's poisoned the retry on 2026-09-11, and the second
+    time was 12 minutes later, so "wait for a new calendar day" is not a workaround either.
+    `full` bypasses the up-to-date check AND pins the listing window to the whole
+    `years_history` span, because a narrow window would find nothing to backfill anyway.
     """
     config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars,
                                 cache=cache)
@@ -278,7 +290,7 @@ def fetch_def14a_llm(
 
     cik_map = load_cik_mapping(context, tickers)
 
-    if _is_up_to_date(context, cik_map["ticker"].tolist()):
+    if not full and _is_up_to_date(context, cik_map["ticker"].tolist()):
         existing = context.store.load(Tables.def14a_llm)
         context.log.info("DEF 14A LLM already up to date — every requested ticker present "
                          "(%d rows) — skipping", len(existing))
@@ -301,7 +313,7 @@ def fetch_def14a_llm(
         context, Tables.def14a_llm, len(cik_map),
         fallback_since=pd.Timestamp.today() - pd.DateOffset(years=years),
         full_rescan_days=rescan_days)
-    list_since = None if is_full_rescan else (manifest_since - pd.Timedelta(days=1))
+    list_since = None if (full or is_full_rescan) else (manifest_since - pd.Timedelta(days=1))
 
     try:
         extractor = LLMExtractor(context, config, action="def14a", threads=workers)

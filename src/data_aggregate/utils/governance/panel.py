@@ -339,11 +339,9 @@ def _expire(frame: pd.DataFrame, history: pd.DataFrame, field: str, feature: str
 #: norm to standardize against either. Founder-led firms behave differently (long-termism, skin
 #: in the game) and the raw indicator says so directly.
 #:
-#: ⚠ THIS MOVES A LIVE COMPOSITE. `f_founder_ceo_xs` was a member of `governance` in
-#: `configs/build_cube.yml`, which averages eight [0, 1] percentile ranks; `f_founder_ceo`
-#: replaces it there. A raw 0/1 has a WIDER spread than a binary's rank encoding (which
-#: compresses toward the base rate), so founder-CEO now carries more weight inside that
-#: composite than it did. Authorised explicitly, not a silent consequence.
+#: `f_founder_ceo` ships as the raw 0/1 and `f_founder_ceo_xs` is gone. A rank encoding of a
+#: binary compresses toward the base rate; the raw indicator keeps the wider spread and says
+#: the thing directly.
 _RAW_DEF14A_FIELDS: list[tuple[str, str]] = [
     ("ceo_is_founder", "founder_ceo"),
     # `say_on_pay_support` is a FRACTION with an absolute meaning -- 0.60 is a near-revolt at
@@ -359,10 +357,8 @@ _RAW_DEF14A_FIELDS: list[tuple[str, str]] = [
 #:
 #: `_xs` IS GONE ENTIRELY. It is `rank(axis=1, pct=True)`, a per-DATE monotone map, so the
 #: per-date Spearman correlation with the raw level is 1.0000 -- a within-date model cannot tell
-#: them apart. Its one legitimate consumer was the `governance` composite in
-#: `configs/build_cube.yml`, which averaged eight percentile ranks on a common [0, 1] scale;
-#: that composite was deleted as carrying no predictive power, and a grep then found ZERO
-#: remaining references to any of the eight `_xs` legs.
+#: them apart. Its one legitimate consumer needed the eight legs on a common [0, 1] scale and
+#: no longer exists; a grep then found ZERO remaining references to any of the eight legs.
 #:
 #: `_vs_peers` SURVIVES ON FOUR, on between-sector variance share (a peer norm has to exist
 #: before standardizing against one is meaningful; `profitMargins` scores 9.0% and
@@ -406,8 +402,8 @@ _VS_HIST_LEGACY: frozenset[str] = frozenset({"avg_board_tenure"})
 #: inverted**. Neither is remotely sector-driven (2.9% between-sector variance share each,
 #: against 9.0% for `profitMargins`) -- the subtraction already removed the sector component.
 #: `_xs` is gentler (it preserves the ordering, so only 5.4% / 20.3% cross the midpoint) but
-#: still discards the zero, and with the `governance` composite deleted nothing needs the
-#: bounded scale that forced a percentile encoding here.
+#: still discards the zero, and nothing now needs the bounded scale that forced a percentile
+#: encoding here.
 #:
 #: ⚠ RAW DOES NOT MEAN UNBOUNDED, and until 2026-09-08 it did. These are the only two
 #: governance columns with no encoding at all -- no peer z, no self-history leg, hence no +-8

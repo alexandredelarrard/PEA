@@ -2,7 +2,8 @@
 step_cube_target.py  (src/data_aggregate/transformers/step_cube_target.py)
 ----------------------------------------------------------------------
 Factor panel -> rolling multi-factor betas -> multi-horizon factor-neutral labels, persisted
-as the two long parts the assemble step joins (`cube_part_targets`, `cube_part_betas`).
+as the two parts the assemble step joins: `cube_part_targets` (WIDE -- one row per
+(date, ticker), one `target_<label>_h<horizon>` column per pair) and `cube_part_betas`.
 
 INCREMENTAL, with a twist the feature parts do not have: betas are backward-looking so they
 just append dates after the stored max, but TARGETS are FORWARD-looking -- a label at date d
@@ -19,7 +20,7 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
-from src.data_aggregate.utils.assemble.cube import _betas_to_long, _labels_to_long
+from src.data_aggregate.utils.assemble.cube import _betas_to_long, labels_to_wide
 from src.data_aggregate.utils.common.gics import load_gics_maps
 from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
 from src.data_aggregate.utils.common.pit import daily_market_cap
@@ -315,15 +316,19 @@ class StepCubeTarget(Step):
     # ---- persist ---- #
     def _persist(self, labels: dict, betas: dict, window,
                  calendar: pd.DatetimeIndex, max_h: int) -> int:
-        targets_long, betas_long = _labels_to_long(labels), _betas_to_long(betas)
+        targets_wide, betas_long = labels_to_wide(labels), _betas_to_long(betas)
 
-        # targets: overwrite the trailing max_horizon window so MATURED labels refresh. This
-        # is the widest refresh in the pipeline (~90 trading days vs the backward-looking
-        # parts' 5) and `write_part` gives an explicit `refresh_from` precedence, so passing
-        # it keeps the maturing-label window rather than narrowing to the shared one.
+        # targets: overwrite the trailing max_horizon window so MATURED labels refresh -- the
+        # widest refresh in the pipeline (~90 trading days vs the backward-looking parts' 5).
+        # `write_part` gives `refresh_from` explicit precedence, so passing it keeps the
+        # maturing-label window rather than narrowing to the shared one. The pivot to wide does
+        # not change that: a wide row matures too, `target_*_h90` flipping from NaN to a value
+        # while `target_*_h30` is already set. What it DOES fix is the key -- `write_part`'s
+        # default `keys=PANEL_KEYS` (["date","ticker"]) is now this part's true grain, where
+        # the long format left a latent 2-vs-3 mismatch against the registry.
         refresh_from = (None if window.is_full
                         else window_start(calendar, window.last, max_h))
-        n = write_part(self._store, Tables.cube_part_targets, targets_long, window,
+        n = write_part(self._store, Tables.cube_part_targets, targets_wide, window,
                        refresh_from=refresh_from)
         if n == COLUMNS_CHANGED:
             return n

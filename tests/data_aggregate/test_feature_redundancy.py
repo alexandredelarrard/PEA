@@ -18,9 +18,8 @@ pairs sat at Pearson r = 1.0000 in production for a whole vintage of the table:
 and the sector layer added two more, where a KPI reduced to a GICS-masked copy of a
 general-purpose ratio (`implied_cap_rate` and `ebitdax_to_ev` both == `ebitda_to_ev`).
 
-A duplicate is not merely wasteful. It doubles a theme's weight on one underlying quantity
-inside a composite, and it hands a tree model two identical splits whose importances then
-each read as half the truth.
+A duplicate is not merely wasteful. It hands a tree model two identical splits whose
+importances then each read as half the truth.
 
 REAL DATA, deliberately: the defect is a property of what the live table can feed, and a
 synthetic frame that hand-builds the missing column reproduces none of it.
@@ -70,8 +69,8 @@ def feature_frames() -> dict[str, pd.DataFrame]:
 
     ⚠ THE PENSION TABLES ARE PART OF PRODUCTION'S INPUT AND MUST BE PASSED. Without them
     `_pension_pool` returns empty and every pension feature silently disappears from the
-    matrix — the same unfaithful-fixture defect that was fixed in `test_composites_config`'s
-    `real_panel` during Phase 4 and missed here. Passing them raises the comparable-feature
+    matrix — an unfaithful-fixture defect of the same shape as one Phase 4 fixed elsewhere,
+    and missed here. Passing them raises the comparable-feature
     count from 99 to 103, and it is what let this test do its job: it caught
     `net_debt_incl_offbs_to_ebitda` collapsing onto `net_debt_to_ebitda` after the distress
     block moved to the reconciled `totalDebt`, and that feature was deleted as a result."""

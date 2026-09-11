@@ -569,8 +569,8 @@ def closing(m: dict) -> list[tuple]:
          "**The guard only worked once its fixture was made faithful.** It had never been "
          "passed `pension_facts` / `notes_num`, so every pension feature was silently absent "
          "from its matrix and the pair read as *exactly* 1.000000 — a fixture artefact rather "
-         "than a measurement. That is the same unfaithful-fixture defect Phase 4 fixed in "
-         "`test_composites_config`; this one was missed. Passing them took the comparable-feature "
+         "than a measurement. That is an unfaithful-fixture defect of the same shape as the one "
+         "Phase 4 fixed; this one was missed. Passing them took the comparable-feature "
          "count from 99 to 103 and turned a wrong number into the right one."),
         ("p",
          "**⚠ Impact analysis — the distress ratios are safe, enterprise value is not.** Adding "
@@ -754,10 +754,10 @@ def closing(m: dict) -> list[tuple]:
          "names carrying a `loss_intensity`, and 260,689 of 263,776 loss-maker rows covered "
          "(98.8%; the rest have no market cap). The five yields are untouched."),
         ("p",
-         "It is deliberately **not** a member of the `value` composite. That composite averages "
-         "yields on a “high = cheap = good” thesis; `loss_intensity` is not a cheapness measure, "
+         "It is deliberately **not** treated as a value signal. A cheapness measure reads "
+         "“high = cheap = good” on a yield; `loss_intensity` is not a cheapness measure, "
          "and its measured direction is a distress/high-beta rebound that merely happens to point "
-         "the same way. Folding it into a hand-weighted average would re-impose exactly the "
+         "the same way. Averaging it in with the yields would re-impose exactly the "
          "cancellation the separate column exists to prevent."),
         ("p",
          "**One finding recorded rather than actioned**: `book_yield`'s *positive* subset has IC "

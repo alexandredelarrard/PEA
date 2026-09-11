@@ -43,9 +43,9 @@ from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, quarter_periods,
 )
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.sec_utils import (
-    load_cik_mapping, bulk_ingested_quarters, load_processed_universe,
-    save_processed_universe, cik_to_ticker)
+    bulk_ingested_quarters, load_processed_universe, save_processed_universe)
 
 logger = logging.getLogger(__name__)
 
@@ -256,34 +256,119 @@ def _footnotes(notes: pd.DataFrame, keep_accessions: set[str]) -> pd.DataFrame:
     return out.dropna(subset=["accession_number", "footnote_id"])
 
 
-def _filter_universe(df: pd.DataFrame, universe: set[str], cik2tkr: dict) -> pd.DataFrame:
-    """Keep issuers in our universe; resolve ticker by trading SYMBOL first, else by issuer
-    CIK (zero-padded to the 10-digit form used in `sp500_tickers`).
+#: Quarantine rows carry every `insider_transactions` column plus the verdict (see
+#: `Tables.insider_transactions_quarantine`).
+_VERDICT_COLS = ["reject_reason", "resolved_entity_id", "universe_entity_id", "screened_on"]
+_QUARANTINE_COLS = _OUT_COLS + _VERDICT_COLS
 
-    ⚠ SYMBOL-FIRST IS RIGHT, AND IT IS ALSO WHAT HID A REGISTRANT-BOUNDARY BUG FOR A YEAR.
-    Most reorganisations keep the trading symbol, so the symbol path kept resolving and
-    nothing looked wrong. It fails exactly where the symbol moved TOO -- and there the CIK
-    fallback was the only defence, against a map that held one CIK per ticker:
+#: Columns the stored-row sweep reads over the WHOLE table; the full rows of the rejects are
+#: re-read by accession afterwards. 2M rows x 5 narrow columns instead of 2M x 38.
+_SWEEP_COLS = ["accession_number", "security_type", "transaction_sk", "ticker", "issuer_cik"]
 
-        GOOGL  insider_transactions starts 2015-10-08   (boundary 2015-10-02, predecessor GOOG)
-        VTRS   insider_transactions starts 2020-11-16   (predecessor traded MYL)
-        APA    insider_transactions starts 2006-01-04   -- saved ONLY because APA never moved
 
-    The repair is in `cik_to_ticker`, which now carries every segment CIK, so the fallback
-    consults the whole chain without this function changing shape. Forms 3/4/5 are EVENTS and
-    combine as a UNION, so there is deliberately NO date filter here: a predecessor's Form 4
-    filed after the boundary is still a real insider transaction in this issuer's security.
-    Contrast `notes_*` and `pension_facts`, which are consolidating and take the dated split.
+def _verdicts(df: pd.DataFrame, universe, identity) -> pd.DataFrame:
+    """Resolve every row CIK-first and attach the three verdict columns. Pure.
+
+    Returns `df` plus `claimed_ticker` (what the row said), `ticker` (what its CIK resolves
+    to), `resolved_entity_id`, `universe_entity_id` and `reject_reason` -- NaN on the rows
+    that are kept. Split out of `_filter_universe` because the stored-row sweep
+    (`_screen_stored_rows`) needs exactly the same adjudication on rows that came back out of
+    the database rather than out of a zip.
     """
+    universe = set(universe)
+    raw = df["issuer_cik"]
+    # ~2k distinct issuers per quarter against ~150k transaction rows: resolve once per CIK.
+    uniq = [v for v in pd.unique(raw) if v is not None and not pd.isna(v)]
+    to_ticker = {v: identity.entity_ticker(v) for v in uniq}
+    to_entity = {v: identity.entity_of(v) for v in uniq}
+
+    claimed = df["ticker"].astype("string")
+    resolved = raw.map(to_ticker).astype("string")
+    # `universe_entity` RAISES on a ticker absent from the roster, which is the common case
+    # here (the claimed string is a filer's free-typed symbol), so it is asked only about
+    # tickers the roster actually has.
+    known = {t: identity.universe_entity(t) for t in set(claimed.dropna())
+             & set(identity.roster_cik)}
+
+    out = df.assign(
+        claimed_ticker=claimed,
+        ticker=resolved,
+        resolved_entity_id=raw.map(to_entity).astype("string"),
+        universe_entity_id=claimed.map(known).astype("string"),
+        screened_on=df["filing_date"] if "filing_date" in df.columns else pd.NaT,
+    )
+
+    keep = resolved.isin(universe)
+    reason = pd.Series(pd.NA, index=df.index, dtype="string")
+    reason[~keep] = "entity_not_in_universe"
+    reason[~keep & claimed.isin(universe)] = "entity_mismatch"
+    reason[~keep & (raw.isna() | (raw.astype("string").str.strip() == ""))] = "no_issuer_cik"
+    return out.assign(reject_reason=reason)
+
+
+def _filter_universe(df: pd.DataFrame, universe: set[str],
+                     identity) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Partition into (kept, rejected). Resolution is CIK-FIRST: the row's own `issuer_cik`
+    names an ENTITY, and the entity names today's universe ticker.
+
+    ⚠ THIS REPLACED A SYMBOL-FIRST SCREEN, AND THE HISTORY IS THE REASON THE MODULE IS
+    CAREFUL. The old line accepted whatever `ISSUERTRADINGSYMBOL` the filer typed provided
+    that string was in today's universe, with the CIK map only as a fallback. Most
+    reorganisations keep the trading symbol, so the symbol path kept resolving and nothing
+    looked wrong -- it failed exactly where the symbol moved TOO, and the CIK fallback was
+    the only defence:
+
+        GOOGL  insider_transactions started 2015-10-08  (boundary 2015-10-02, predecessor GOOG)
+        VTRS   insider_transactions started 2020-11-16  (predecessor traded MYL)
+        APA    insider_transactions started 2006-01-04  -- saved ONLY because APA never moved
+
+    What symbol-first could not see at all is a symbol ANOTHER LIVE COMPANY held earlier:
+    2,075 Trane Technologies rows under `IR`, 1,207 CoreSite under `COR`, 2,046 Weight
+    Watchers under `WTW`. The filer typed a true symbol; it was simply not this company's.
+
+    So the symbol is now a CROSS-CHECK, kept on the rejected rows as `claimed_ticker`, and
+    never a resolver. `no_issuer_cik` measured ZERO across all 4,402,307 filings in the 81
+    cached quarters, so there is no symbol fallback to build.
+
+    ⚠ STILL NO DATE FILTER, AND THAT IS DELIBERATE. Forms 3/4/5 are EVENTS and combine as a
+    UNION (`registrant.FORM_POLICY`): a predecessor's Form 4 filed after a registrant
+    boundary is still a real insider transaction in this issuer's security, and a date cut
+    here is the named XOM-`SCHEDULE 13G` regression. Contrast `notes_*` and `pension_facts`,
+    which are consolidating and take the dated split. `screened_on` is recorded anyway -- a
+    verdict without the date it was taken against is not auditable.
+
+    ⚠ THE PARTITION IS NOT EXHAUSTIVE OVER `df`, AND IT MUST NOT BE. `df` is every filer in
+    the quarter (~54k filings), so quarantining every non-universe row would store ~50M rows
+    about companies nothing in the pipeline reads. `rejected` is scoped to rows that either
+    CLAIMED a universe ticker or resolve to a roster company -- the rows the old screen would
+    have admitted, which is what makes them evidence. Everything else is dropped as it always
+    was. The stored-row sweep in `_screen_stored_rows` is the exhaustive one, because there
+    every row is already in the table and must either stay or leave.
+    """
+    empty = pd.DataFrame(columns=_QUARANTINE_COLS)
     if df.empty:
-        return df
-    df = df.copy()
-    df["ticker"] = df["ticker"].where(df["ticker"].isin(universe))
-    need = df["ticker"].isna() & df["issuer_cik"].notna()
-    if need.any() and cik2tkr:
-        df.loc[need, "ticker"] = (df.loc[need, "issuer_cik"].astype("string")
-                                  .str.zfill(10).map(cik2tkr))
-    return df[df["ticker"].isin(universe)]
+        return df, empty
+    scored = _verdicts(df, universe, identity)
+    keep = scored["reject_reason"].isna()
+    # scope: claimed a universe ticker, resolves to a roster company, or carries no CIK at all
+    in_scope = (scored["claimed_ticker"].isin(set(universe))
+                | scored["ticker"].notna()
+                | (scored["reject_reason"] == "no_issuer_cik"))
+    return scored[keep], scored[~keep & in_scope]
+
+
+def _to_quarantine(rejected: pd.DataFrame) -> pd.DataFrame:
+    """Rejected rows in `insider_transactions_quarantine` shape.
+
+    `ticker` becomes the ticker the row CLAIMED, not the NULL its CIK resolved to: the claim
+    is the whole evidence -- `IR` on a Trane Technologies filing is what the old screen
+    believed. The resolved side is preserved as `resolved_entity_id`, which is an entity id
+    and so cannot be mistaken for a tradable symbol by a downstream join.
+    """
+    if rejected is None or rejected.empty:
+        return pd.DataFrame(columns=_QUARANTINE_COLS)
+    out = rejected.assign(ticker=rejected["claimed_ticker"])
+    return out[[c for c in _QUARANTINE_COLS if c in out.columns]]
 
 
 # --------------------------------------------------------------------------- #
@@ -311,6 +396,65 @@ def _read_tables(path: Path):
         return None
 
 
+def _screen_stored_rows(context: Context, universe, identity: Identity,
+                        chunk: int = 2_000) -> tuple[int, int]:
+    """Re-adjudicate EVERY STORED ROW against today's universe; quarantine then DELETE the
+    rejects. Returns `(quarantined, deleted)`.
+
+    ⚠ THIS EXISTS BECAUSE `store.save` UPSERTS AND SO CAN NEVER REMOVE A ROW. The parse-time
+    screen stops a wrong row being written, and that is all it can do: a `--reparse` simply
+    declines to re-write the 10,717 out-of-lineage rows already in the table, and they would
+    stay there for ever. The RELABELLED rows need none of this -- `ticker` is not in the
+    primary key (`accession_number`, `security_type`, `transaction_sk`), so a row whose ticker
+    moves `IR` -> `TT` UPDATES in place and the table cannot double -- but a row rejected
+    outright has nothing to update it.
+
+    It is also the only thing that reconciles a SHRINKING universe. 8,099 stored rows carry a
+    ticker no longer in `load_universe_tickers`: `EA` 6,161 and `AVB` 1,788 (both gone from
+    the roster), plus 150 across the five spin-offs now in `INSUFFICIENT_HISTORY_TICKERS`. No
+    parse would ever revisit them, because a parse only ever looks at what the zips contain.
+
+    ⚠ UNLIKE THE PARSE SCREEN, THIS PARTITION IS EXHAUSTIVE, and it has to be: every stored
+    row either stays or is quarantined, which is what makes the before/after row count close
+    arithmetically instead of approximately. One accession's rows all share one `issuer_cik`
+    and therefore one verdict, so the DELETE can key on `accession_number` alone without
+    touching a row that was kept.
+    """
+    keys = context.store.load(Tables.insider_transactions,
+                              columns=["accession_number", "ticker", "issuer_cik"],
+                              optional=True)
+    if keys is None or keys.empty:
+        return 0, 0
+    # One verdict per (accession, claimed ticker, cik): the grain it is actually decided at,
+    # so the whole-table pass costs ~1.3M dedup keys rather than 2M full rows.
+    scored = _verdicts(keys.drop_duplicates().assign(filing_date=pd.NaT), universe, identity)
+    accessions = sorted(scored.loc[scored["reject_reason"].notna(), "accession_number"]
+                        .dropna().unique())
+    if not accessions:
+        logger.info("insider: stored-row sweep -- 0 of %d row(s) rejected", len(keys))
+        return 0, 0
+
+    quarantined = deleted = 0
+    for start in range(0, len(accessions), chunk):
+        batch = accessions[start:start + chunk]
+        rows = context.store.load(Tables.insider_transactions,
+                                  where={"accession_number": batch}, optional=True)
+        if rows is None or rows.empty:
+            continue
+        rejected = _verdicts(rows, universe, identity)
+        rejected = rejected[rejected["reject_reason"].notna()]
+        if rejected.empty:                  # re-adjudicated clean on the full row: leave it
+            continue
+        quarantined += context.store.save(Tables.insider_transactions_quarantine,
+                                          _to_quarantine(rejected))
+        deleted += context.store.delete(
+            Tables.insider_transactions,
+            where={"accession_number": sorted(rejected["accession_number"].unique())})
+    logger.info("insider: stored-row sweep -- quarantined %d row(s) over %d accession(s), "
+                "deleted %d", quarantined, len(accessions), deleted)
+    return quarantined, deleted
+
+
 def fetch_insider_transactions(context: Context, tickers: list[str], years_history: int = 15,
                                reparse: bool = False) -> int:
     """Download (cached) the insider-transactions data sets over `years_history`,
@@ -330,8 +474,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     fields NULL on the oldest data and populated on the rest. A split like that is worse than
     either state alone, because nothing downstream could tell it from a real coverage cliff."""
 
-    cikmap = load_cik_mapping(context)
-    cik2tkr = cik_to_ticker(cikmap)
+    identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
 
     done_q = bulk_ingested_quarters(context.store, Tables.insider_transactions)
@@ -348,7 +491,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     span = (pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1) if reparse else years_history + 1
     quarters = quarter_periods(span, SEC_INSIDER_FIRST_YEAR)
 
-    saved = notes_saved = 0
+    saved = notes_saved = quarantined = 0
     for q in tqdm(quarters, desc="insider data sets"):
         if q in done_q and not new_tickers and not reparse:
             continue                          # complete quarter already ingested
@@ -361,7 +504,12 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
         if tables is None:
             continue
         sub, own, nonderiv, deriv, notes = tables
-        df = _filter_universe(_parse_insider(sub, own, nonderiv, deriv), tickers, cik2tkr)
+        df, rejected = _filter_universe(
+            _parse_insider(sub, own, nonderiv, deriv), tickers, identity)
+        if not rejected.empty:
+            quarantined += context.store.save(
+                Tables.insider_transactions_quarantine,
+                _to_quarantine(rejected.assign(quarter=q)))
         if df.empty:
             continue
         df["quarter"] = q
@@ -371,9 +519,14 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
         if not foot.empty:
             notes_saved += context.store.save(Tables.insider_footnotes, foot[_FOOTNOTE_COLS])
 
+    # The upsert above cannot REMOVE anything, so the stored rows are reconciled separately.
+    swept, deleted = _screen_stored_rows(context, tickers, identity)
+    quarantined += swept
     save_processed_universe(cache, Tables.insider_transactions, tickers)   # so a converged re-run skips
     logger.info("insider_transactions: upserted %d rows (+%d footnotes) over %d quarters "
-                "(%s -> %s)", saved, notes_saved, len(quarters), quarters[0], quarters[-1])
+                "(%s -> %s); quarantined %d, deleted %d", saved, notes_saved, len(quarters),
+                quarters[0], quarters[-1], quarantined, deleted)
     record_run(context, Tables.insider_transactions, len(tickers), saved)
     record_run(context, Tables.insider_footnotes, len(tickers), notes_saved)
+    record_run(context, Tables.insider_transactions_quarantine, len(tickers), quarantined)
     return saved

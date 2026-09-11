@@ -124,6 +124,72 @@ class Tables:
         read_columns=("snapshot_date", "dataroma_code", "manager_name", "cik",
                       "resolution", "source_url"))
 
+    # Which issuer CIK held a trading SYMBOL, and WHEN -- axis B of the identity problem
+    # (`entity_lineage` is axis A). Derived from `ISSUERTRADINGSYMBOL` + `ISSUERCIK` +
+    # `FILING_DATE` in the Form 345 bulk data sets: a PRIMARY-SOURCE, free, offline oracle
+    # over 81 cached quarters (2006q1 -> 2026q1), 4.3M filings, ~27.4k distinct symbols.
+    # ~9% of symbols have had more than one issuer CIK and those carry ~20% of all Form
+    # 3/4/5 filings, so symbol reuse is not a long-tail problem.
+    #
+    # ⚠ THE SEC PUBLISHES NO HISTORICAL TICKER->CIK DATASET. `company_tickers.json` is a
+    # current snapshot with no dates; `data.sec.gov/submissions` carries `formerNames` but
+    # no `formerTickers` (Meta's CIK 1326801 returns only `META` -- the string `FB` appears
+    # nowhere). The fact is published only INSIDE the filings, which is why this table is
+    # DERIVED rather than fetched.
+    #
+    # ⚠ TENURES ARE NOT ALWAYS DISJOINT: ~1/3 of adjacent pairs overlap in time (`COR` has
+    # Cortex Pharmaceuticals and CoreSite Realty both filing 2010-2012). `valid_to` is the
+    # OBSERVED end of that CIK's own filing window, not the start of the next CIK's, so a
+    # "last writer wins" collapse would be wrong. Resolution is a MEMBERSHIP test ("did this
+    # CIK hold X at d"), never a lookup expecting one answer.
+    #
+    # `symbol` is the filer's own typed string, upper-cased. It is not validated against any
+    # exchange listing; a filer typo becomes a one-filing tenure, visible as `n_filings=1`.
+    #
+    # `valid_from` is an OBSERVATION (first Form 3/4/5 filed), not a listing date -- a
+    # company can have traded under the symbol for years before its first insider filing.
+    # Coverage starts 2006q1 because the bulk sets do, while `insider_transactions` holds
+    # rows from 1990, so tenure is NULL for 16 years of it. That costs nothing: the `owns()`
+    # predicate is ENTITY-based and does not read this table (D7).
+    symbol_tenure = Table(
+        "symbol_tenure", ("symbol", "issuer_cik", "valid_from"), KIND_REFERENCE,
+        ticker_col=None, date_type_cols=("valid_from", "valid_to"),
+        read_columns=("symbol", "issuer_cik", "valid_from", "valid_to",
+                      "n_filings", "source", "evidence"))
+
+    # Which CIKs are THE SAME ECONOMIC COMPANY -- axis A of the identity problem, and the
+    # table the `owns()` predicate actually reads. `entity_id` is `"E" + the oldest CIK in
+    # the group`: a natural key with no allocation state, so a full re-derive reproduces the
+    # same ids.
+    #
+    # ⚠ ONLY NON-SINGLETON GROUPS AND THE ROSTER CIKs ARE STORED. A CIK with no row IS its
+    # own entity (`E{cik}`), which is why `owns()` correctly DROPS a symbol reuse it has
+    # never seen: absence is a verdict here, not a gap. The roster CIKs are stored even when
+    # singleton so the table states a verdict for all 500 rather than relying on the default.
+    #
+    # ISSUER grain, not share class: `GOOG` and `GOOGL` are one entity, because Forms 3/4/5
+    # carry an issuer CIK and no class, so a class-level id could not be assigned to an
+    # insider row at all. Only one class per CIK is ever in the universe anyway --
+    # `_dedupe_share_classes` keeps the longest symbol and `configs.yml` excludes the rest.
+    #
+    # `source` is the oracle that decided, highest priority first: `register` (the 16
+    # hand-evidenced `registrant_cutover.json` chains), `manual` (the curated adjudications
+    # in `entity_lineage_manual.json`), `owner_overlap` (do the same reporting owners appear
+    # on both CIKs' Forms 3/4/5), `roster` (a singleton roster CIK). `confidence` carries the
+    # owner-overlap jaccard and is RECORDED, NEVER READ -- a contested case is decided by
+    # hand in the curated layer, not by a threshold at read time.
+    #
+    # ⚠ `sharadar_permaticker` IS NOT A SOURCE HERE, AND THAT IS A MEASURED RESULT, NOT AN
+    # OVERSIGHT. Sharadar mints a NEW permaticker for a delisted predecessor (DuPont E I is
+    # `DD1`/199769 against DuPont de Nemours' 199776), so across the 621 candidate CIKs
+    # exactly ZERO permatickers are shared by two of them, and on the 8 known predecessor
+    # pairs permaticker says DIFFERENT 4 times and is absent 4 times. It is used as a
+    # CROSS-CHECK on ticker->CIK instead, where its `secfilings` URL covers 17,867/17,867
+    # rows. The table therefore carries no Sharadar-licensed content at all.
+    entity_lineage = Table(
+        "entity_lineage", ("cik",), KIND_REFERENCE, ticker_col=None,
+        read_columns=("cik", "entity_id", "source", "confidence", "evidence"))
+
     # ----------------------------------------------------------------- #
     # Extract -- prices & market data                                   #
     # ----------------------------------------------------------------- #
@@ -409,7 +475,14 @@ class Tables:
                         "lastquarter", "lastupdated"),
         read_columns=("table", "permaticker", "ticker", "name", "exchange", "isdelisted",
                       "category", "currency", "sector", "industry", "siccode", "location",
-                      "firstquarter", "lastquarter"))
+                      "firstquarter", "lastquarter", "secfilings", "relatedtickers"))
+    # ⚠ `secfilings` IS THE ONLY PLACE A CIK APPEARS IN ANY SHARADAR TABLE -- it is an EDGAR
+    # browse URL and the CIK is embedded in its query string (`...&CIK=0000320193&...`).
+    # Every one of the 17,867 rows carries one, so it is a full-coverage third opinion on
+    # ticker->CIK, independent of both the Wikipedia-sourced `sp500_tickers.cik` and EDGAR's
+    # own ticker table. `relatedtickers` is added alongside it for the same reason.
+    # `cusips` and `figi` are likewise stored and unread; they are the natural inputs to the
+    # deferred `cusip_ticker_map` date axis, which is out of scope here.
     # Corporate actions: dividends, splits, spinoffs, acquisitions, name/SIC changes and
     # `relation` (the link from a common share to a sibling security).
     #
@@ -546,6 +619,52 @@ class Tables:
     insider_footnotes = Table("insider_footnotes",
                               ("accession_number", "footnote_id"), date_col=None,
                               ticker_col=None)
+    # Rows the IDENTITY SCREEN rejected, kept rather than deleted -- the repo's first
+    # quarantine table. They are the evidence the screen worked, and a later point-in-time
+    # universe may readmit some of them, so `_filter_universe` partitions rather than filters.
+    #
+    # ⚠ `ticker` IS THE TICKER THE ROW WAS CLAIMING, NOT A TICKER WE VOUCH FOR. It is the
+    # filer's own `ISSUERTRADINGSYMBOL` (or the label a previous run stored), which is exactly
+    # the string the old symbol-first screen trusted. Never join this table to `prices` or the
+    # cube on it: 2,075 rows carry `IR` and belong to Trane Technologies.
+    #
+    # `resolved_entity_id` is the entity `issuer_cik` ACTUALLY belongs to and
+    # `universe_entity_id` the entity that ticker names today. The PAIR is stored rather than a
+    # boolean so an `entity_id` shift (a lineage group gaining an older CIK) surfaces as a diff
+    # instead of a silent re-verdict. `universe_entity_id` is NULL when the claimed ticker is
+    # not in today's universe at all -- there is no entity to compare against.
+    #
+    # `reject_reason`:
+    #   `entity_mismatch`         the claimed symbol IS a universe ticker but the CIK's entity
+    #                             is another company's. The defect this table exists for:
+    #                             measured 10,717 rows over 48 tickers, 3,690 of them P/S.
+    #   `entity_not_in_universe`  the claimed ticker is not in today's universe and the CIK's
+    #                             entity holds none either -- a row a PREVIOUS run's universe
+    #                             admitted (measured 8,099: `EA` 6,161, `AVB` 1,788, plus 150
+    #                             across the five insufficient-history spin-offs).
+    #   `no_issuer_cik`           CIK-first cannot resolve at all. Measured ZERO across all
+    #                             4,402,307 filings in the 81 cached quarters, which is why no
+    #                             symbol fallback is built.
+    #
+    # `screened_on` is the row's `filing_date` -- the field `symbol_tenure` is derived from, so
+    # any later dated re-adjudication aligns by construction. The insider verdict is itself
+    # date-independent (Forms 3/4/5 are UNION events); the date is recorded because a verdict
+    # without the date it was taken against is not auditable.
+    #
+    # PK is `insider_transactions`' OWN pk, unextended: a rejected row is one (accession,
+    # security type, sk) line, and every row of one accession shares one `issuer_cik` and so
+    # one verdict. No invented `row_hash`.
+    insider_transactions_quarantine = Table(
+        "insider_transactions_quarantine",
+        ("accession_number", "security_type", "transaction_sk"),
+        date_col="filing_date",
+        date_type_cols=("transaction_date", "filing_date", "period_of_report",
+                        "deemed_execution_date", "exercise_date", "expiration_date",
+                        "screened_on"),
+        read_columns=("ticker", "issuer_cik", "issuer_name", "filing_date",
+                      "transaction_date", "transaction_code", "value_usd", "shares",
+                      "security_type", "document_type", "reject_reason",
+                      "resolved_entity_id", "universe_entity_id", "screened_on"))
     # SC 13D activist filings + amendments: one row PER REPORTING PERSON per filing, keyed
     # (ticker, accession, rp_seq) -- a single 13D can have multiple co-filers (e.g. a fund
     # + its GP), and `rp_seq` is used rather than CIK since a reporting person without an
@@ -727,8 +846,9 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Aggregate -- pipeline outputs                                     #
     # ----------------------------------------------------------------- #
-    cube = Table("cube", ("ticker", "date", "target_horizon"), KIND_AGGREGATE,
-                 date_col="date")
+    # ("ticker","date") since the wide rebuild: the targets part carries one column per
+    # (label, horizon), so a (date, ticker) appears exactly once instead of once per horizon.
+    cube = Table("cube", ("ticker", "date"), KIND_AGGREGATE, date_col="date")
     cube_signal = Table("cube_signal", ("ticker", "date"), KIND_AGGREGATE, date_col="date")
     predictions = Table("predictions", ("ticker", "date"), KIND_AGGREGATE, date_col="date")
     # LIVE predictions in LONG form, one row per (as-of date, ticker, horizon, model): each
@@ -920,12 +1040,13 @@ class Tables:
     # used to define) comes off cube_part_prices' own dates.
     cube_part_prices = Table("cube_part_prices", ("date", "ticker"), KIND_PART,
                              date_col="date", managed=False)
-    # NOT ("date","ticker"): `_labels_to_long` (utils/assemble/cube.py) stamps
-    # `target_horizon` per horizon and concatenates, so the grain is three-part. Declaring
-    # the narrower key would let an upsert path collapse the horizons into one row -- and
-    # there IS such a path: `copy_load` falls back to an upsert on the registry PK for
-    # frames carrying list-valued cells.
-    cube_part_targets = Table("cube_part_targets", ("date", "ticker", "target_horizon"),
+    # ("date","ticker") since the wide rebuild: `labels_to_wide` (utils/assemble/cube.py) emits
+    # one column per (label, horizon) instead of stamping `target_horizon` and concatenating.
+    # The narrower key is now the true grain, which also removes a real hazard -- `copy_load`
+    # falls back to an upsert on the registry PK for frames with list-valued cells, and under
+    # the old 3-part declaration `write_part` was writing this part on the 2-part PANEL_KEYS
+    # anyway.
+    cube_part_targets = Table("cube_part_targets", ("date", "ticker"),
                               KIND_PART, date_col="date", managed=False)
     cube_part_betas = Table("cube_part_betas", ("date", "ticker"), KIND_PART,
                             date_col="date", managed=False)

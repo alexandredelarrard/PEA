@@ -150,6 +150,13 @@ def cik_to_ticker(cikmap: pd.DataFrame, *, config_dir: str | None = None) -> dic
     problem the register was built to prevent. `insider_transactions` is UNION (Forms 3/4/5
     are events) and takes no date filter. See `registrant.FORM_POLICY`.
 
+    ⚠ SUPERSEDED FOR THE INSIDER PATH BY `identity.entity_ticker`, AND LEFT IN PLACE ON
+    PURPOSE. This map answers "which ticker" from a hand list of 16 register chains; the
+    identity layer answers it from a DERIVED lineage of ~556 CIKs, so it resolves ~40
+    predecessors this map has never heard of -- measured at 1,133 filings / 2,275 rows the
+    symbol-first path drops today. `notes_*`, `pension_facts` and the fundamentals fetchers
+    still depend on this exact shape, so nothing here changes until those move too.
+
     Returns `dict[str, str]` exactly as before, so no call site changes shape.
     """
     if cikmap.empty or "ticker" not in cikmap.columns:

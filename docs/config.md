@@ -32,7 +32,7 @@ never replace OmegaConf.
 | `local.paths` | `paths.yml` | `root: ./`, `data_store: data`, `logs: .log` — resolved into `context.paths` |
 | `logging` | `logging.yml` | stdlib `dictConfig` tree; `formatters.file.format` also feeds the in-memory log buffer |
 | `peers` | `peers.yml` | peer-basket construction |
-| `build_cube` | `build_cube.yml` | **the largest config** — betas, targets, features, intrinsic DCF, self-history windows, composites, output flags |
+| `build_cube` | `build_cube.yml` | **the largest config** — betas, targets, features, intrinsic DCF, self-history windows, output flags |
 | `model`, `train` | `modellling.yml` | shared modelling config + the training window (note the triple `l` in the filename) |
 | `linear`, `lgbm`, `random_forest` | `configs/models/*_modelling.yml` | per-family hyperparameters **and each family's own feature `columns`** |
 | `strategy_ls`, `strategy_long_book`, `strategy_trend`, `strategy_eq_long_only` | `configs/strategy/*.yml` | per-sleeve construction params |
@@ -67,33 +67,7 @@ comments before changing a value; several encode a specific finding.
 | `features` | `standardize_method: rank` | |
 | `intrinsic` | `discount_rate: 0.10`, `terminal_growth: 0.025`, `years: 5`, `growth_cap/floor` | two-stage DCF; `terminal_growth` must be `< discount_rate` |
 | `hist` | `window: 1260`, `min_periods: 252` | self-history window for `f_<yield>_vs_hist` |
-| `composites` | `enabled`, `method: zscore`, `groups: {…}` | ~25 thematic groups. See below |
 | `output` | `save_cube/panel/signal/cv_results/predictions/shap/models` | |
-
-### The composite rules (three, and they are load-bearing)
-
-A composite is a NaN-tolerant mean of sign-oriented, re-standardized members; a `-` prefix inverts
-one so every member reads "higher = long side". Composites are **additive** — raw features are kept.
-
-1. **One view per concept.** `_xs` = universe percentile of the level; `_vs_peers` = peer-basket z;
-   `_vs_hist` = the firm's own 1260d history. Never two views of one underlying in one group —
-   `value` used to carry five yields as both `_xs` and `_vs_hist`, so half its weight was a
-   time-series re-rating bet wearing the cross-sectional value label. That view now has its own
-   group (`value_rerating`).
-2. **Sector-varying metrics use `_vs_peers`; sector-neutral ones use `_xs`.** A universe percentile
-   of gross margin ranks *industries*, not firms.
-3. **Homogeneous coverage.** Because the mean is NaN-tolerant, a member populated for only one
-   sector would silently change what the score *means* for those names. Sparse / sector-only metrics
-   therefore get their own groups (`pension_risk`, `bank_health`, `insurance_health`, `reit_health`,
-   `energy_health`) rather than diluting the universal ones.
-
-Two groups deliberately **disagree**: `expectations` (high consensus bar) and `eps_beat` (which
-carries `-f_eps_expectation_growth_xs`, i.e. a low bar is easier to clear). They are meant to be kept
-apart, not averaged. `ai_capability` / `ai_opportunity` are likewise opposite theses, split because
-averaging them cancelled the signal.
-
-`tests/data_aggregate/test_composites_config.py` guards the config; `test_composites.py` guards the
-math (including the agreed double membership of `-f_accruals_xs`).
 
 ## `model` / `train` (modellling.yml)
 

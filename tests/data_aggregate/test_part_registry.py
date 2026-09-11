@@ -85,8 +85,7 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
     config = OmegaConf.create({
         # no market_ticker / other_tickers: the market and commodity/FX series are named
         # rows in `prices_macro` now, not config-selected tickers inside `prices`
-        "build_cube": {"targets": {"horizons": [30, 60, 90]},
-                       "composites": {"enabled": False}},
+        "build_cube": {"targets": {"horizons": [30, 60, 90]}},
         "data_extract": {"redundant_ticks": []},
     })
     # `config` on the context too: sub-steps resolve their universe through

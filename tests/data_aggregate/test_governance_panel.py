@@ -259,8 +259,7 @@ def test_governance_panel_encoding_and_empty_guard():
       * `_vs_hist` on `avg_board_tenure` alone -- the only field whose self-history z held its
         sign across both halves of the sample (+0.0128 then +0.0270) while raw and peer flipped;
       * NO `_xs` anywhere. It is a per-date monotone map of raw (per-date Spearman exactly
-        1.0), and its one consumer -- the `governance` composite -- was deleted as carrying no
-        predictive power.
+        1.0), so a within-date model cannot tell the two apart, and nothing consumes it.
     """
     idx = pd.date_range("2023-01-02", "2026-07-01", freq="B")
     peers = {t: {p: 1.0 for p in ("AAA", "BBB", "CCC", "DDD") if p != t}

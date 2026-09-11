@@ -21,6 +21,13 @@ assemble step now merges through here too.
 It is also cheaper. Chained `DataFrame.merge` re-copies the whole accumulator once per
 panel; this holds the panels (date, ticker)-indexed and does a single `concat(axis=1)`, so
 peak memory is the panels themselves rather than N partial copies of their union.
+
+THE DUPLICATE-KEY GUARD IS THAT DESIGN'S `validate="one_to_one"`. `concat(axis=1)` takes no
+`validate=`, and a repeated key does not fail cleanly there: it either multiplies the row
+count on the cross-product or raises an opaque reindex error far from the panel that caused
+it. `add()` therefore checks the grain itself, before indexing, and names the offending
+label. Keeping the check here is what lets the accumulator stay a single concat -- chained
+merges would buy the same guarantee by re-copying ~570 columns once per part.
 """
 from __future__ import annotations
 
@@ -35,6 +42,10 @@ from src.constants.constants import PANEL_KEYS
 class FeatureCollisionError(ValueError):
     """Two feature panels emit the same feature name -- merging would split it into
     pandas `_x` / `_y` columns instead of failing loudly."""
+
+
+class DuplicateKeyError(ValueError):
+    """A panel repeats a (date, ticker) -- the cross-part combine must be one-to-one."""
 
 
 class PanelMerger:
@@ -57,13 +68,20 @@ class PanelMerger:
 
         An empty / None panel is logged and skipped (a source that has not been fetched
         yet is normal, not an error). A duplicate feature name raises, naming the panel
-        that already owns it."""
+        that already owns it; so does a duplicate KEY, which would otherwise blow up the
+        row count inside `concat(axis=1)` with no mention of this panel."""
         if panel is None or panel.empty:
             self._log.warning(empty_msg or f"No {label} features built.")
             return 0
         missing = [k for k in self._keys if k not in panel.columns]
         if missing:
             raise ValueError(f"{label} panel is missing the join key(s) {missing}")
+        dup = int(panel.duplicated(self._keys).sum())
+        if dup:
+            ex = panel.loc[panel.duplicated(self._keys, keep=False), self._keys].head(5)
+            raise DuplicateKeyError(
+                f"'{label}' panel has {dup} duplicate {self._keys} row(s) -- the merge must be "
+                f"one-to-one. First offenders:\n{ex.to_string(index=False)}")
 
         features = [c for c in panel.columns if c not in self._keys]
         clash = sorted(c for c in features if c in self._owner)

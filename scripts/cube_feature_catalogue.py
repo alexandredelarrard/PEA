@@ -228,7 +228,7 @@ add("roic_ex_intangibles", "ma_digestion", "The same NOPAT over invested capital
     "NO LONGER identical to its twin: the pair was r = 1.0000 because the deduction read the bare `goodwill`, which subtracted nothing. Measured r after moving to Sharadar's `intangibles`: 0.549.",
     "Structurally higher than the incl-version (a smaller denominator). It is a WIDER deduction than a textbook ex-goodwill ROIC -- it also removes purchased patents, customer lists and brands -- but it is the same deduction for every ticker, which is what makes the cross-sectional rank meaningful.")
 add("intangibles_roic_drag", "ma_digestion", "`roic_incl_intangibles - roic_ex_intangibles`: how much acquired intangibles dilute returns.",
-    "STRUCTURALLY NEGATIVE, and the composite signs it '+' for that reason. It was identically zero across 3.04M rows while the deduction was empty.",
+    "STRUCTURALLY NEGATIVE -- `roic_ex_intangibles` carries the smaller denominator, so it is always the higher of the pair and the difference cannot be positive. Nearer zero is the good side. It was identically zero across 3.04M rows while the deduction was empty.",
     "The most negative names are the serial acquirers who overpaid; nearer zero is organic growth or a well-digested deal.")
 add("intangibles_to_assets", "ma_digestion", "Acquired intangibles / ex-lease total assets.", "A balance-sheet weight, not a flow.",
     "Above ~0.5 means most of the balance sheet is purchase accounting -- the writedown exposure.")
@@ -326,7 +326,7 @@ add("employee_growth", "workforce", "YoY change in headcount.",
     "Large positives are acquisitions or hiring sprees; large negatives are restructurings -- both real corporate events.")
 add("revenue_per_employee_growth", "workforce", "YoY growth in revenue per employee -- productivity trend.",
     "Asks whether revenue is outgrowing headcount (operating leverage) or merely scaling with the people pool.",
-    "The positive tail is genuine automation/AI-era productivity gains, which is why the composite uses it.")
+    "The positive tail is genuine automation/AI-era productivity gains.")
 add("headcount_elasticity", "workforce", "%dEmployees / %dRevenue.",
     "Same >= 2% revenue guard as the other elasticities.",
     "Below 1 = revenue outgrowing the people pool (scale/synergies captured); around 1 = headcount scaling 1:1 with acquired revenue, i.e. integration not landing.")

@@ -43,6 +43,78 @@ CREATE TABLE IF NOT EXISTS "superinvestor_roster" (
 );
 CREATE INDEX IF NOT EXISTS ix_superinvestor_roster_cik ON "superinvestor_roster" ("cik");
 
+-- [reference] symbol_tenure  (pk: symbol, issuer_cik, valid_from)
+-- WHICH ISSUER CIK HELD A TRADING SYMBOL, AND WHEN -- axis B of ticker identity
+-- (`entity_lineage` is axis A). DERIVED, not fetched: the SEC publishes no historical
+-- ticker->CIK data set (`company_tickers.json` is an undated snapshot and
+-- data.sec.gov/submissions has `formerNames` but no `formerTickers`), so the fact exists
+-- only inside the filings. Built offline from the `SUBMISSION.TSV` member of the 81 cached
+-- Form 345 quarterly zips: 4.34M filings -> 30,530 rows over 27,393 symbols, 2,467 of which
+-- have had more than one issuer CIK.
+--
+-- `valid_from <= d < valid_to`, half-open, the SAME convention as
+-- `registrant.Segment.covers`, so the two identity layers cannot disagree about a boundary.
+-- `valid_to` is `last_filed + 1 day`; NULL means no end has been OBSERVED (the tenure's last
+-- filing falls in the most recent cached quarter), never "forever". `valid_from` is likewise
+-- an OBSERVATION -- the first Form 3/4/5 -- not a listing date, so a date before it is
+-- UNKNOWN, not not-held.
+--
+-- ⚠ TENURES OVERLAP: 993 of 3,137 adjacent pairs do (`COR` had Cortex Pharmaceuticals and
+-- CoreSite Realty both filing 2010-2012). Reads are MEMBERSHIP tests ("did this CIK hold X
+-- at d"), never a lookup expecting one answer; collapsing overlaps onto one winner would
+-- silently rewrite history.
+--
+-- No extra index: the read pattern is symbol-first and the PK's leading column already
+-- covers it. Revisit only if the fails-to-deliver / short-interest measurement needs one.
+
+CREATE TABLE IF NOT EXISTS "symbol_tenure" (
+    "symbol" TEXT NOT NULL,
+    "issuer_cik" TEXT NOT NULL,
+    "valid_from" DATE NOT NULL,
+    "valid_to" DATE,
+    "n_filings" BIGINT,
+    "source" TEXT,
+    "evidence" TEXT,
+    PRIMARY KEY ("symbol", "issuer_cik", "valid_from")
+);
+
+-- [reference] entity_lineage  (pk: cik)
+-- WHICH CIKs ARE THE SAME ECONOMIC COMPANY -- axis A of ticker identity, and the table the
+-- `owns()` predicate actually reads. `entity_id` is `"E" + the oldest CIK in the group`: a
+-- natural key with no allocation state, so a full re-derive reproduces the same ids.
+--
+-- ⚠ ONLY NON-SINGLETON GROUPS, THE ROSTER CIKs AND THE HAND-ADJUDICATED CIKs ARE STORED. A
+-- CIK with no row IS its own entity (`E{cik}`), which is why `owns()` correctly DROPS a
+-- symbol reuse it has never seen: absence is a verdict, not a gap. Roster CIKs are stored
+-- even when singleton so the table states a verdict for all 500; a hand verdict of "this CIK
+-- is NOT that ticker" is stored for the same reason.
+--
+-- ISSUER grain, not share class: `GOOG` and `GOOGL` are one entity, because Forms 3/4/5 carry
+-- an issuer CIK and no class. Harmless, because only one class per CIK is ever investable.
+--
+-- `source` is the deciding oracle, highest priority first: `register` (the hand-evidenced
+-- chains in configs/sec/registrant_cutover.json), `manual`
+-- (configs/sec/entity_lineage_manual.json), `owner_overlap` (do the same reporting owners
+-- appear on both CIKs' Forms 3/4/5), `roster` (a singleton roster CIK). `confidence` holds the
+-- owner-overlap jaccard and is RECORDED, NEVER READ -- contested cases are decided by hand,
+-- not by a threshold at read time.
+--
+-- Measured 2026-09-11: 621 candidate CIKs -> 556 rows over 505 entities (500 of them one per
+-- universe ticker); 38 register, 16 manual, 24 owner_overlap, 478 roster.
+--
+-- Index on `entity_id` is HAND-ADDED: the generator only emits ticker_col / date_col indexes
+-- and would drop it on a regeneration. `ciks_for(entity_id)` is a real read pattern.
+
+CREATE TABLE IF NOT EXISTS "entity_lineage" (
+    "cik" TEXT NOT NULL,
+    "entity_id" TEXT,
+    "source" TEXT,
+    "confidence" DOUBLE PRECISION,
+    "evidence" TEXT,
+    PRIMARY KEY ("cik")
+);
+CREATE INDEX IF NOT EXISTS ix_entity_lineage_entity_id ON "entity_lineage" ("entity_id");
+
 -- [extract] prices  (pk: ticker, date)
 -- TWO price columns, written from ONE yfinance response so they cannot drift apart.
 --   close_split -- Yahoo `Close` under auto_adjust=False: restated for SPLITS ONLY, no
@@ -868,6 +940,63 @@ CREATE TABLE IF NOT EXISTS "insider_transactions" (
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_ticker ON "insider_transactions" ("ticker");
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_transaction_date ON "insider_transactions" ("transaction_date");
 
+-- [extract] insider_transactions_quarantine  (pk: accession_number, security_type, transaction_sk)
+-- Rows the identity screen REJECTED. Same columns as `insider_transactions` plus the verdict.
+-- `ticker` is the ticker the row CLAIMED (the filer's own ISSUERTRADINGSYMBOL, or the label a
+-- previous run stored) -- never join it to prices or the cube: 2,075 rows say `IR` and are
+-- Trane Technologies. `resolved_entity_id` is the entity `issuer_cik` really belongs to;
+-- `universe_entity_id` the entity that ticker names today (NULL when it names none).
+-- `reject_reason`: entity_mismatch (10,717 rows / 48 tickers -- the defect) |
+-- entity_not_in_universe (8,099 -- a previous universe's leftovers) | no_issuer_cik (0).
+
+CREATE TABLE IF NOT EXISTS "insider_transactions_quarantine" (
+    "accession_number" TEXT NOT NULL,
+    "security_type" TEXT NOT NULL,
+    "transaction_sk" TEXT NOT NULL,
+    "ticker" TEXT,
+    "issuer_cik" TEXT,
+    "issuer_name" TEXT,
+    "owner_cik" TEXT,
+    "owner_name" TEXT,
+    "is_director" DOUBLE PRECISION,
+    "is_officer" DOUBLE PRECISION,
+    "is_ten_pct_owner" DOUBLE PRECISION,
+    "is_other" DOUBLE PRECISION,
+    "officer_title" TEXT,
+    "document_type" TEXT,
+    "transaction_date" DATE,
+    "filing_date" DATE,
+    "period_of_report" DATE,
+    "security_title" TEXT,
+    "transaction_code" TEXT,
+    "acquired_disposed" TEXT,
+    "shares" DOUBLE PRECISION,
+    "price_per_share" DOUBLE PRECISION,
+    "value_usd" DOUBLE PRECISION,
+    "shares_owned_after" DOUBLE PRECISION,
+    "direct_indirect" TEXT,
+    "quarter" TEXT,
+    "is_10b5_1" DOUBLE PRECISION,
+    "transaction_form_type" TEXT,
+    "equity_swap_involved" TEXT,
+    "deemed_execution_date" DATE,
+    "nature_of_ownership" TEXT,
+    "transaction_timeliness" TEXT,
+    "exercise_price" DOUBLE PRECISION,
+    "exercise_date" DATE,
+    "expiration_date" DATE,
+    "underlying_security_title" TEXT,
+    "underlying_shares" DOUBLE PRECISION,
+    "underlying_value" DOUBLE PRECISION,
+    "reject_reason" TEXT,
+    "resolved_entity_id" TEXT,
+    "universe_entity_id" TEXT,
+    "screened_on" DATE,
+    PRIMARY KEY ("accession_number", "security_type", "transaction_sk")
+);
+CREATE INDEX IF NOT EXISTS ix_insider_transactions_quarantine_ticker ON "insider_transactions_quarantine" ("ticker");
+CREATE INDEX IF NOT EXISTS ix_insider_transactions_quarantine_reject_reason ON "insider_transactions_quarantine" ("reject_reason");
+
 -- [extract] insider_footnotes  (pk: accession_number, footnote_id)
 
 CREATE TABLE IF NOT EXISTS "insider_footnotes" (
@@ -1355,14 +1484,20 @@ CREATE TABLE IF NOT EXISTS "ticker_embeddings" (
     PRIMARY KEY ("ticker")
 );
 
--- [aggregate] cube  (pk: ticker, date, target_horizon) -- CARRIED OVER: not present in the database that generated this file, so its previous DDL is preserved verbatim.
+-- [aggregate] cube  (pk: ticker, date) -- CARRIED OVER: not present in the database that generated this file, so its previous DDL is preserved verbatim.
 
 CREATE TABLE IF NOT EXISTS "cube" (
     "date" TIMESTAMP NOT NULL,
     "ticker" TEXT NOT NULL,
-    "target_rank" DOUBLE PRECISION,
-    "target_zscore" DOUBLE PRECISION,
-    "target_horizon" BIGINT NOT NULL,
+    "target_rank_h30" DOUBLE PRECISION,
+    "target_rank_h60" DOUBLE PRECISION,
+    "target_rank_h90" DOUBLE PRECISION,
+    "target_zscore_h30" DOUBLE PRECISION,
+    "target_zscore_h60" DOUBLE PRECISION,
+    "target_zscore_h90" DOUBLE PRECISION,
+    "target_epsilon_h30" DOUBLE PRECISION,
+    "target_epsilon_h60" DOUBLE PRECISION,
+    "target_epsilon_h90" DOUBLE PRECISION,
     "mom_12_1" DOUBLE PRECISION,
     "rev_5" DOUBLE PRECISION,
     "rev_21" DOUBLE PRECISION,
@@ -1931,7 +2066,7 @@ CREATE TABLE IF NOT EXISTS "cube" (
     "peers" TEXT,
     "sector" BIGINT,
     "industry_group" BIGINT,
-    PRIMARY KEY ("ticker", "date", "target_horizon")
+    PRIMARY KEY ("ticker", "date")
 );
 
 -- SKIPPED (no live schema and no previous DDL): cube_signal

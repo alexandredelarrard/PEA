@@ -88,7 +88,7 @@ def _make_step(store, monkeypatch):
     step._context = _FakeCtx(store)
     step._config = None
     step._log = logging.getLogger("test")
-    step._cfg = {}                                       # composites disabled -> _add_composites returns early
+    step._cfg = {}
     # the peer dict is read through utils/common/peers_io, so stub that rather than an attribute
     monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube.load_peers_or_raise",
                         lambda ctx, cfg=None: {"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}})

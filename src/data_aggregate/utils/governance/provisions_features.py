@@ -518,8 +518,8 @@ def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex,
                         tally: dict[str, int]) -> dict[str, pd.DataFrame]:
     """`board_independence_delta_1y` and the -10pp flag derived from it.
 
-    `pct_independent_directors` keeps shipping as a LEVEL from `panel.py` (D3, a live
-    `comp_governance` member); this is additive to it.
+    `pct_independent_directors` keeps shipping as a LEVEL from `panel.py` (D3); this is
+    additive to it.
     """
     field = "pct_independent_directors"
     d = _annual_delta(hist, field, tally)

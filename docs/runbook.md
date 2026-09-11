@@ -163,7 +163,7 @@ build-momentum        # -> cube_part_momentum
 build-text            # -> cube_part_text
 build-institutionals  # -> cube_part_institutionals   (13F, elite 13F, insider, short flow)
 build-governance      # -> cube_part_governance          (DEF 14A + Item 5.07; a HEAVY part)
-assemble-cube         # read the parts -> composites -> the `cube` table
+assemble-cube         # read the parts -> the `cube` table
 build-cube            # all eight in ONE process (what main.py does)
 cube-status           # JSON status of every part; exit 2 if any part is behind
 ```

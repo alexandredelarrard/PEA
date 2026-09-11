@@ -177,12 +177,6 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # rows by 10^2 so the consensus repair fires -- a fixture where a repair never runs cannot
 # detect that repair breaking.
 #
-# `panel.composites` is byte-identical DESPITE the `insider` composite group being renamed in
-# `configs/build_cube.yml` in the same change. That is correct and worth stating: `compute()`
-# builds composites over the fundamentals+superinvestor merge, which never contained an
-# `f_ic_insider_*` column, so all four members were being skipped in silence before and after.
-# It is a demonstration of the silent-skip failure mode, not evidence the rename was inert.
-#
 # The baseline was then re-verified and re-written a second time within Phase 2.3, for the
 # coverage-mask fix (a ticker that only ever SOLD now reads 0 on the buy features rather than
 # NaN, keyed on the union of purchases and sales). Diff against the first 2.3 baseline: set
@@ -363,7 +357,7 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     for must in ("panel.price", "panel.fundamental", "panel.sector", "panel.earnings",
                  "panel.employee", "panel.dividend", "panel.governance",
                  "panel.short_interest", "panel.institutional", "panel.superinvestor",
-                 "panel.insider", "panel.betas", "panel.composites", "panel.raw_features"):
+                 "panel.insider", "panel.betas", "panel.raw_features"):
         assert must in baseline, f"{must} is not fingerprinted"
         assert baseline[must]["rows"] > 0, f"{must} fingerprinted as empty"
         assert baseline[must]["cols"] > 2, f"{must} has no feature columns"

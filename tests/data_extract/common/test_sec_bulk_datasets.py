@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.data_extract.utils.common.identity import build_identity
 from src.data_store.store import DataStore
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
@@ -88,10 +89,22 @@ def test_insider_parse_and_universe_filter_synthetic():
     assert a1["ticker"] == "AAPL" and a1["is_officer"] == 1.0 and a1["transaction_code"] == "P"
     assert abs(a1["value_usd"] - 150000.0) < 1e-6            # 1000 * 150
 
-    filt = ins._filter_universe(out, {"AAPL"}, {"0000999999": "ZZZZ"})
-    assert set(filt["ticker"]) == {"AAPL"}                    # ZZZZ mapped but not in universe
+    # `ZZZZ`'s issuer is nobody's entity, so it is neither kept nor quarantined: quarantine
+    # is scoped to rows that CLAIMED a universe ticker, or ~50M unrelated filers' rows would
+    # be stored as evidence of nothing.
+    identity = build_identity(
+        lineage=pd.DataFrame([{"cik": "0000320193", "entity_id": "E0000320193",
+                               "source": "roster", "confidence": None, "evidence": "test"}]),
+        tenure=pd.DataFrame([{"symbol": "AAPL", "issuer_cik": "0000320193",
+                              "valid_from": pd.Timestamp("2006-01-03"), "valid_to": None,
+                              "n_filings": 900, "source": "form345", "evidence": ""}]),
+        roster=pd.DataFrame([{"ticker": "AAPL", "cik": "0000320193"}]))
+    filt, rejected = ins._filter_universe(out, {"AAPL"}, identity)
+    assert set(filt["ticker"]) == {"AAPL"}
+    assert rejected.empty
     print("\n=== SANITY: insider parse + universe filter ===")
-    print(f"  a1 AAPL officer PURCHASE 1000@150 = $150k; universe filter kept AAPL, dropped ZZZZ. Validated.")
+    print(f"  a1 AAPL officer PURCHASE 1000@150 = $150k; CIK-first kept AAPL, dropped the "
+          f"unrelated ZZZZ filer without quarantining it. Validated.")
 
 
 @pytest.mark.skipif(not INSIDER_ZIP.exists(), reason="cached insider 2024q1 zip absent")

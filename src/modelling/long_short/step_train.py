@@ -11,7 +11,8 @@ from src.data_store.schema import Tables
 from src.utils.step import Step
 from src.context import Context
 from src.constants.constants import (PREDICTION_MODEL_BLENDED, PREDICTION_MODEL_ENSEMBLE)
-from src.data_aggregate.utils.assemble.cube import panel_from_cube, CUBE_META_COLS
+from src.data_aggregate.utils.assemble.cube import (panel_from_cube, target_column,
+                                                    horizons_in, is_meta_column)
 from src.modelling.long_short.utils import model as ml
 from src.modelling.long_short.utils import baselines
 from src.modelling.long_short.utils import diagnostics
@@ -44,11 +45,12 @@ class StepModelling(Step):
         to the latest cube date (no train_end cutoff, no OOS holdout) — used after the backtest to
         fit the model that generates the live predictions for the allocation.
 
-        MEMORY-LIGHT: the cube is LONG by target_horizon and models are trained PER HORIZON, so we
-        never hold every horizon at once. `_setup` resolves columns/horizons with NO data load, then
-        `_process_horizons` reads ONLY one horizon's rows+cols at a time (float32), cross-validates,
-        trains, saves, scores it for the blend, and FREES it before the next -> peak memory ~ a
-        single horizon instead of the whole labelled cube (x its column-duplication across horizons)."""
+        MEMORY-LIGHT: the cube is one row per (date, ticker) with the targets WIDE, and models are
+        trained PER HORIZON, so we never hold every horizon at once. `_setup` resolves
+        columns/horizons with NO data load, then `_process_horizons` reads ONLY one horizon at a
+        time (float32) -- narrowed by COLUMNS (that horizon's label plus its feature set) and by
+        ROWS (label IS NOT NULL, pushed into SQL) -- cross-validates, trains, saves, scores it for
+        the blend, and FREES it before the next, so peak memory is a single horizon's panel."""
         self._full_history = full_history
         self._setup()                        # columns + horizons; NO cube data loaded
         self._process_horizons()             # per-horizon: load -> CV -> train -> save-score -> free
@@ -71,17 +73,17 @@ class StepModelling(Step):
         self.model_types = list(ens) if ens else [self._config.model.get("type", "lightgbm")]
 
         cube_cols = self._cube_columns()
-        self._target_col = self._target_column(cube_cols)
-        self._load_cols, dropped = self._select_load_columns(cube_cols, self._target_col)
-        self.horizons = self._distinct_horizons(self._target_col)
+        self._load_cols, dropped = self._select_load_columns(cube_cols)
+        self.horizons = self._distinct_horizons(cube_cols)
         if not self.horizons:
             raise FileNotFoundError(
-                f"No cube rows with a non-null target '{self._target_col}'. Run StepBuildCube "
-                f"first (and confirm build_cube.targets.labels includes '{self.target_type}').")
+                f"The cube carries no 'target_{self.target_type}_h*' column at all. Run "
+                f"StepBuildCube first (and confirm build_cube.targets.labels includes "
+                f"'{self.target_type}').")
 
         # per-member column sets = configured allow-list INTERSECTED with what the cube actually has
         # (from the schema; no data scan). Each member/horizon keeps its own (possibly leaner) set.
-        avail = {c for c in cube_cols if c not in CUBE_META_COLS and c != self.label_column}
+        avail = {c for c in cube_cols if not is_meta_column(c) and c != self.label_column}
         self.linear_cols = [c for c in self._linear_columns() if c in avail]
         self.lgbm_cols = [c for c in self._lgbm_columns() if c in avail]
         self.rf_cols = [c for c in self._rf_columns() if c in avail]
@@ -97,19 +99,21 @@ class StepModelling(Step):
             raise ValueError("No configured features present in the cube; check "
                              "linear_modelling.yml / lgbm_modelling.yml `columns`.")
         self._panel_cols = list(dict.fromkeys(self.feature_cols + self.categorical_cols))
-        self._log.info("Setup: target=%s horizons=%s target_type=%s models=%s | features -> "
-                       "linear:%d lgbm:%d (+%d cats) union:%d", self._target_col, self.horizons,
+        self._log.info("Setup: horizons=%s target_type=%s models=%s | features -> "
+                       "linear:%d lgbm:%d (+%d cats) union:%d", self.horizons,
                        self.target_type, self.model_types, len(self.linear_cols), len(self.lgbm_cols),
                        len(self.categorical_cols), len(self.feature_cols))
         if dropped:
             self._log.info("modelling.yml columns absent from the cube (not loaded, %d): %s",
                            len(dropped), dropped)
 
-    def _distinct_horizons(self, target_col: str) -> list:
-        """Sorted horizons that HAVE a non-null label — a cheap DISTINCT (no feature scan)."""
-        store = self._context.store
-        return store.distinct(Tables.cube, "target_horizon",
-                              where={target_col: store.NOT_NULL}, order="asc")
+    def _distinct_horizons(self, cube_cols: set[str]) -> list[int]:
+        """Horizons the cube has a label COLUMN for, from the schema alone — no data scan.
+
+        A column's PRESENCE is all the schema can prove: an all-NaN label column is
+        indistinguishable from a populated one without a scan, so a horizon whose panel comes
+        back empty is dropped in `_process_horizons` instead, with a warning naming it."""
+        return horizons_in(cube_cols, self.target_type)
 
     @staticmethod
     def _downcast_f32(df: pd.DataFrame) -> pd.DataFrame:
@@ -120,13 +124,17 @@ class StepModelling(Step):
         return df
 
     def _load_horizon_panel(self, horizon) -> pd.DataFrame | None:
-        """Read ONLY this horizon's labelled rows (SQL WHERE target_horizon = h), projected to the
-        model's columns and float32, then shape into a modelling panel + apply the train window.
-        None if the horizon has no rows after filtering."""
+        """Read ONLY this horizon's labelled rows, projected to the model's columns and float32,
+        then shape into a modelling panel + apply the train window. None if the horizon has no
+        rows after filtering.
+
+        The horizon narrows COLUMNS (its own `target_<type>_h<horizon>` label), not rows — every
+        cube row is a candidate for every horizon. The `IS NOT NULL` push-down on that one
+        column is what keeps the loaded row count to this horizon's labelled rows."""
         store = self._context.store
-        raw = store.load(Tables.cube, columns=self._load_cols,
-                         where={self._target_col: store.NOT_NULL,
-                                "target_horizon": int(horizon)},
+        tcol = target_column(self.target_type, horizon)
+        raw = store.load(Tables.cube, columns=self._load_cols_for(tcol),
+                         where={tcol: store.NOT_NULL},
                          optional=True)
         if raw is None:
             return None
@@ -148,18 +156,6 @@ class StepModelling(Step):
     def _cube_columns(self) -> set[str]:
         """Column names actually present in the `cube` table (no data scan)."""
         return set(self._context.store.columns(Tables.cube))
-
-    def _target_column(self, cube_cols: set[str]) -> str:
-        """Stored target column for the configured `target_type` (falls back to a
-        legacy single `target` column), matching panel_from_cube's own resolution."""
-        col = f"target_{self.target_type}"
-        if col in cube_cols:
-            return col
-        if "target" in cube_cols:
-            return "target"
-        raise KeyError(
-            f"Target column '{col}' not in cube; rebuild the cube with "
-            f"'{self.target_type}' in build_cube.targets.labels.")
 
     # ---- per-model config accessors: linear_modelling.yml (`linear:`) and
     #      lgbm_modelling.yml (`lgbm:`), each with its OWN hyperparams + `columns`.
@@ -261,19 +257,23 @@ class StepModelling(Step):
             out += list(inp.columns)
         return list(dict.fromkeys(out))
 
-    def _select_load_columns(self, cube_cols: set[str], target_col: str
-                             ) -> tuple[list[str], list[str]]:
-        """Columns to pull: the index + target, plus the modelling.yml numeric
-        allow-list and categoricals that exist in the cube. Returns (load_cols,
-        dropped) where `dropped` are configured names absent from the cube."""
+    def _select_load_columns(self, cube_cols: set[str]) -> tuple[list[str], list[str]]:
+        """Horizon-INDEPENDENT part of the cube projection: the index, plus the modelling.yml
+        numeric allow-list and categoricals that exist in the cube. No target column — each
+        horizon appends its own via `_load_cols_for`. Returns (load_cols, dropped) where
+        `dropped` are configured names absent from the cube."""
         wanted = self._union_all_columns()   # default + every columns_by_horizon override
         cats = self._lgbm_categoricals()
         requested = wanted + cats
-        meta = ["date", "ticker", "target_horizon", target_col]
-        feats = [c for c in requested if c in cube_cols and c not in meta]
+        meta = ["date", "ticker"]
+        feats = [c for c in requested if c in cube_cols and not is_meta_column(c)]
         dropped = [c for c in requested if c not in cube_cols]
         load_cols = list(dict.fromkeys(meta + feats))          # de-dup, keep order
         return load_cols, dropped
+
+    def _load_cols_for(self, target_col: str) -> list[str]:
+        """The shared projection plus the ONE label column this horizon trains on."""
+        return list(dict.fromkeys(self._load_cols + [target_col]))
 
     def _load_cube_where_labelled(self, load_cols: list[str], target_col: str
                                   ) -> pd.DataFrame:
@@ -830,7 +830,11 @@ class StepModelling(Step):
 
         Crucially it does NOT use panel_from_cube (which drops null-target rows) — the latest date's
         forward target has not matured, so we build the feature panel DIRECTLY from the cube so the
-        newest date is actually predictable."""
+        newest date is actually predictable. That newest date now EXISTS in the cube: the wide
+        targets part is LEFT-joined onto the feature panel, so a (date, ticker) whose every label
+        is still immature keeps its row with NaN labels. Under the long cube `stack()` dropped it
+        entirely, and this method was quietly predicting off a date up to `max_horizon` sessions
+        stale. No target column is loaded at all here — this scores, it does not evaluate."""
         meta, models = self._load_saved_ensemble()
         feat_cols = list(meta["feature_cols"])
         cat_cols = list(meta.get("categorical_cols", []))
@@ -844,27 +848,26 @@ class StepModelling(Step):
 
         cube_cols = self._cube_columns()
         want = [c for c in dict.fromkeys(feat_cols + cat_cols) if c in cube_cols]
-        load_cols = list(dict.fromkeys(["date", "ticker", "target_horizon"] + want))
+        load_cols = list(dict.fromkeys(["date", "ticker"] + want))
         cube = self._context.store.load(
-            Tables.cube, columns=load_cols,
-            where={"target_horizon": [int(h) for h in models]}, since=start, optional=True)
-        if cube is None:
-            raise RuntimeError(f"No cube rows on/after {start.date()} for horizons {list(models)}.")
+            Tables.cube, columns=load_cols, since=start, optional=True)
+        if cube is None or cube.empty:
+            raise RuntimeError(f"No cube rows on/after {start.date()}.")
+
+        # every horizon now scores the SAME rows — that is the point of the wide cube: the newest
+        # date carries the feature set for all of them, so no horizon is silently a day behind.
+        present = [c for c in (feat_cols + cat_cols) if c in cube.columns]
+        missing = [c for c in (feat_cols + cat_cols) if c not in cube.columns]
+        panel = cube[["date", "ticker"] + present].copy()
+        if missing:                                          # add any absent model feature as NaN (one concat)
+            panel = pd.concat(
+                [panel, pd.DataFrame(np.nan, index=panel.index, columns=missing)], axis=1)
+        keys = panel[["date", "ticker"]]
 
         long_rows: list[pd.DataFrame] = []
         ens_wide = None                       # per-horizon ensemble z, for the cross-horizon blend
         for h, members in models.items():
-            sub = cube[cube["target_horizon"] == h]
-            if sub.empty:
-                continue
-            present = [c for c in (feat_cols + cat_cols) if c in sub.columns]
-            missing = [c for c in (feat_cols + cat_cols) if c not in sub.columns]
-            panel = sub[["date", "ticker"] + present].copy()
-            if missing:                                      # add any absent model feature as NaN (one concat)
-                panel = pd.concat(
-                    [panel, pd.DataFrame(np.nan, index=panel.index, columns=missing)], axis=1)
             scores, member_preds = ml.ensemble_predict(members, panel, feat_cols)
-            keys = panel[["date", "ticker"]]
             # every MEMBER, then the horizon's ENSEMBLE — all per-day z-scored so they are
             # comparable across horizons and members
             per_model = {**{name: p.to_numpy() for name, p in member_preds.items()},

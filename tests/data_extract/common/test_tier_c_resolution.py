@@ -20,6 +20,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.common.registrant import (
     Registrant, Segment, drop_rows_outside_segment)
 from src.data_extract.utils.common.sec_utils import cik_to_ticker
@@ -50,6 +51,25 @@ REGISTRANTS = {"GOOGL": GOOGL, "VTRS": VTRS, "APA": APA}
 
 ROSTER = pd.DataFrame({"cik": ["0001652044", "0001792044", "0001841666", "0000320193"],
                        "ticker": ["GOOGL", "VTRS", "APA", "AAPL"]})
+
+#: The insider path no longer reads `cik_to_ticker` at all -- it resolves through
+#: `entity_lineage`, of which the register is the highest-priority oracle. This is the
+#: same four registrants expressed as that table, so the two paths are compared on one
+#: set of facts rather than on two hand-kept dicts that could drift apart.
+IDENTITY = build_identity(
+    lineage=pd.DataFrame(
+        [{"cik": c, "entity_id": e, "source": "register"} for c, e in [
+            ("0001288776", "E0001288776"), ("0001652044", "E0001288776"),   # GOOGL
+            ("0001623613", "E0001623613"), ("0001792044", "E0001623613"),   # VTRS
+            ("0000006769", "E0000006769"), ("0001841666", "E0000006769"),   # APA
+            ("0000320193", "E0000320193"),                                  # AAPL
+        ]]).assign(confidence=None, evidence="test"),
+    tenure=pd.DataFrame(
+        [{"symbol": s, "issuer_cik": c, "valid_from": pd.Timestamp("2006-01-03"),
+          "valid_to": None, "n_filings": 500, "source": "form345", "evidence": ""}
+         for s, c in [("GOOGL", "0001652044"), ("VTRS", "0001792044"),
+                      ("APA", "0000006769"), ("AAPL", "0000320193")]]),
+    roster=ROSTER[["ticker", "cik"]])
 
 
 # --------------------------------------------------------------------------- #
@@ -124,24 +144,33 @@ def test_a_union_table_keeps_that_same_row():
     after the boundary is still a real insider transaction in this issuer's security. That is
     the 4,287-vs-4 trade, taken deliberately."""
     df = pd.DataFrame({"ticker": [None, None], "issuer_cik": ["0000006769", "0000006769"],
-                       "filed": ["2019-05-01", "2022-05-01"]})
-    out = _filter_universe(df, {"APA"}, {"0000006769": "APA"})
+                       "filing_date": [pd.Timestamp("2019-05-01"), pd.Timestamp("2022-05-01")]})
+    out, rejected = _filter_universe(df, {"APA"}, IDENTITY)
 
     assert len(out) == 2, "the union path must not apply a date filter"
+    assert rejected.empty
     print("\n=== SANITY CHECK: the UNION path keeps a post-boundary event ===")
     print("  both Apache-CIK Form 4 rows kept, including the 2022 one. Validated.")
 
 
-def test_symbol_first_still_wins_where_the_symbol_never_moved():
-    """The APA shape. Symbol-first resolution is right and recovers rows the CIK map would
-    miss; it just could not carry a ticker whose symbol moved too."""
+def test_cik_first_resolution_labels_the_row_whether_the_symbol_is_typed_or_not():
+    """The APA shape, which symbol-first got RIGHT only because APA never moved. CIK-first
+    reaches the same answer from the one field that is always present -- measured zero of
+    4,402,307 filings lack `ISSUERCIK` -- so the blank-symbol row needs no fallback.
+
+    ⚠ This test used to be called `symbol_first_still_wins`. The assertion is unchanged and
+    the reasoning is inverted: the symbol is now a cross-check kept as `claimed_ticker`,
+    never a resolver."""
     df = pd.DataFrame({"ticker": ["APA", None], "issuer_cik": ["0000006769", "0000006769"],
-                       "filed": ["2019-05-01", "2019-06-01"]})
-    out = _filter_universe(df, {"APA"}, {"0000006769": "APA"})
+                       "filing_date": [pd.Timestamp("2019-05-01"), pd.Timestamp("2019-06-01")]})
+    out, rejected = _filter_universe(df, {"APA"}, IDENTITY)
 
     assert list(out["ticker"]) == ["APA", "APA"]
-    print("\n=== SANITY CHECK: symbol-first resolution is preserved ===")
-    print("  one row resolved by symbol, one by the CIK fallback. Validated.")
+    assert out["claimed_ticker"].tolist()[0] == "APA"
+    assert pd.isna(out["claimed_ticker"].tolist()[1])
+    assert rejected.empty
+    print("\n=== SANITY CHECK: CIK-first resolves both rows ===")
+    print("  Apache Corp's CIK names APA's entity whether the filer typed the symbol or not.")
 
 
 def test_a_ticker_with_no_register_entry_is_untouched():

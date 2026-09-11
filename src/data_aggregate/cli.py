@@ -116,8 +116,8 @@ def build_governance(config_path: str, full: bool) -> None:
     _step(StepCubeGovernance, config_path).run(full=full)
 
 
-@cli.command(help="Read all persisted parts -> features + composites + betas + peers + "
-                  "targets -> save the `cube` table.", help_priority=8)
+@cli.command(help="Read all persisted parts -> features + betas + peers + targets "
+                  "-> save the `cube` table.", help_priority=8)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def assemble_cube(config_path: str) -> None:
     _step(StepAssembleCube, config_path).run()

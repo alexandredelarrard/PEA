@@ -133,7 +133,7 @@ register on disk (`configs/sec/registrant_cutover.json`), one resolver over it.
 | `StepCubeText` | `cube_part_text` | `close` | earnings-call FinBERT sentiment + embedding KPIs (both **stream** their sources) |
 | `StepCubeInstitutionals` | `cube_part_institutionals` | `close, volume` | 13F, elite 13F, insider, short interest + fails-to-deliver |
 | `StepCubeGovernance` | `cube_part_governance` | `close_split, close_total` | DEF 14A board/pay levels, the three executive-compensation families (turnover-guarded pay growth, the exact CEO Pay Slice, pay-vs-performance misalignment), the entrenchment-provision transitions + board busyness + the auditor block, the four Item 5.07 shareholder-dissent families, and the two PER-PERSON children — board quality (turnover, entrenchment, dispersion, the ISS overboarded share) and Item 402(k) director pay. ⚠ The children also **repair** the board averages: `avg_other_public_boards` / `avg_director_age` are derived from `def14a_directors` before `impute_def14a` interpolates, so interpolation is the last resort rather than the first move |
-| `StepAssembleCube` | `cube` | — | read the parts → composites → per-horizon streamed write |
+| `StepAssembleCube` | `cube` | — | read the parts → per-horizon streamed write |
 
 **Memory invariant.** Each sub-step keeps its heavy frames LOCAL to `run()` and reads the price
 grid back from `cube_part_prices` **projected to its declared `_FIELDS`**. Peak memory is the

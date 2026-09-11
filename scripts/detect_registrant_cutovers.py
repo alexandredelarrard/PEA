@@ -711,7 +711,15 @@ def roster_crosscheck(conn, registrants: dict) -> pd.DataFrame:
     return df
 
 
-def audit_chains(context, registrants: dict) -> list[dict]:
+#: The earliest segment's own archive is allowed to begin slightly AFTER the price history
+#: without that meaning a hop is missing: EDGAR's electronic mandate phased in through
+#: 1993-1996 while `prices` floors at 1995-09-01, so a 1996 first filing against a 1995 price
+#: start is the paper-filing era, not a cutover. Measured slack on the entries that PASS is
+#: under half a year; BLK failed by 7.2, AVGO by 6.0 and STE by 19.2. 1.5 sits between.
+ARCHIVE_START_SLACK_Y = 1.5
+
+
+def audit_chains(context, registrants: dict, price_start: dict) -> list[dict]:
     """Does any register entry have an EARLIER hop it does not declare?
 
     ⚠ A TWO-SEGMENT ENTRY FOR A TWO-HOP CHAIN LOOKS LIKE A FIX AND IS HALF A FIX, which is the
@@ -727,6 +735,19 @@ def audit_chains(context, registrants: dict) -> list[dict]:
 
     So this runs oracle 3 against the OLDEST segment's CIK, asking the same question one hop
     further back. It is the closing loop the offline screens cannot provide.
+
+    ⚠ ORACLE 3 ALONE IS NOT ENOUGH HERE, and BLK, AVGO and STE are the measured proof. Each
+    one's earliest segment was ITSELF a reorganisation vehicle -- `New Boise, Inc.` for the
+    MLIM merger, `Pavonia Ltd` for Avago/Broadcom, the STERIS UK plc for Synergy Health -- so
+    the co-indexed filer scan finds a real registrant with real filings one hop back, returns
+    `chain complete`, and stops years short of the origin. A HOLDCO THAT LOOKS LIKE AN ORIGIN
+    is invisible to every co-filer test, because it genuinely is a filer.
+
+    The test that does catch it is arithmetic and needs no network beyond the submissions doc
+    already fetched: **the earliest segment's own archive must begin at or before the ticker's
+    price history**, because a registrant files (S-1, 8-A) before its shares trade. BLK's
+    began 2006 against prices from 1999, AVGO's 2015 against 2009, STE's 2014 against 1995.
+    `archive_gap_y` carries it and is reported independently of `cls`.
     """
     out: list[dict] = []
     for ticker, reg in sorted(registrants.items()):
@@ -744,6 +765,11 @@ def audit_chains(context, registrants: dict) -> list[dict]:
         r = oracle3(context, ticker, oldest.cik, own_first)
         r["oldest_cik"] = oldest.cik
         r["oldest_first_filing"] = own_first
+        p0 = price_start.get(ticker)
+        r["price_start"] = str(p0) if p0 is not None else None
+        r["archive_gap_y"] = (None if p0 is None else
+                              round((pd.Timestamp(own_first) - pd.Timestamp(p0)).days / 365.25,
+                                    1))
         out.append(r)
     return out
 
@@ -793,6 +819,10 @@ def main(argv: list[str] | None = None) -> int:
         crosscheck = roster_crosscheck(conn, registrants)
         roster = pd.DataFrame(conn.execute(text(
             "select ticker, lpad(cik::text, 10, '0') as cik from sp500_tickers")).mappings().all())
+        # The archive-start test's denominator. Read here because the connection closes
+        # before `--audit-chains` runs, and the test must not open a second one.
+        price_start = dict(conn.execute(text(
+            "select ticker, min(date)::date from prices group by 1")).all())
 
     ciks = dict(zip(roster["ticker"], roster["cik"]))
     # Two columns, not one. `namechange` is every `namechangefrom` in window and is the
@@ -841,21 +871,38 @@ def main(argv: list[str] | None = None) -> int:
                   "cutover": "EARLIER HOP, confirmed",
                   "unconfirmed_cutover": "EARLIER HOP, unconfirmed",
                   "ambiguous": "EARLIER HOP, ambiguous"}
-        earlier = []
-        for r in audit_chains(context, registrants):
+        earlier, short_archive = [], []
+        for r in audit_chains(context, registrants, price_start):
+            gap = r.get("archive_gap_y")
+            mark = ("" if gap is None or gap <= ARCHIVE_START_SLACK_Y
+                    else f"  ⚠ archive starts {gap}y AFTER prices ({r.get('price_start')})")
             print(f"  {r['ticker']:6} oldest={r.get('oldest_cik')} "
                   f"first={r.get('oldest_first_filing')} "
                   f"{labels.get(r['cls'], r['cls']):26} "
-                  f"{str(r.get('predecessor_name') or '')[:34]}")
+                  f"{str(r.get('predecessor_name') or '')[:34]}{mark}")
             if r["cls"] in ("cutover", "unconfirmed_cutover", "ambiguous"):
                 earlier.append(r)
+            if mark:
+                short_archive.append(r)
         if earlier:
             print(f"\n  ⚠ {len(earlier)} entr(y|ies) may be missing an earlier segment: "
                   f"{', '.join(r['ticker'] for r in earlier)}")
             print("    A two-segment entry for a two-hop chain looks like a fix and is half "
                   "one -- the screens stop flagging the ticker while a decade stays missing.")
         else:
-            print("\n  OK: no register entry has an undeclared earlier hop.")
+            print("\n  OK: no register entry has an undeclared earlier hop by oracle 3.")
+        # Reported separately because the two tests disagree by construction: oracle 3 says
+        # "chain complete" on a holdco that looks like an origin, and this is the only test
+        # that saw BLK, AVGO and STE. A ticker can fail here while passing above.
+        if short_archive:
+            print(f"\n  ⚠ ARCHIVE-START: {len(short_archive)} entr(y|ies) whose OLDEST segment "
+                  f"begins after the price history: "
+                  f"{', '.join(r['ticker'] for r in short_archive)}")
+            print("    A registrant files before its shares trade, so this gap is filings we "
+                  "cannot see. Research the origin by hand -- oracle 3 will not find it.")
+        else:
+            print(f"  OK: every oldest segment's archive begins within "
+                  f"{ARCHIVE_START_SLACK_Y}y of the price history.")
 
     results: list[dict] = []
     if args.classify:

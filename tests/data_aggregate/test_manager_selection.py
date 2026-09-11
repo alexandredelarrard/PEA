@@ -346,35 +346,6 @@ def test_build_cube_yml_declares_the_selection_block_and_parses_it():
           '`mode` is a string rather than YAML 1.1\'s boolean False ===')
 
 
-def test_every_composite_member_is_a_feature_some_builder_emits():
-    """A dead name in `composites` is skipped in silence, which is exactly how the cube
-    degraded before: 46 field names and 39 features went stale with 68 tests green. This
-    checks the `ic_super_` members against the module's own emission map."""
-    from omegaconf import OmegaConf
-
-    from src.data_aggregate.utils.institutionals.superinvestor_features import EMISSION
-
-    cfg = OmegaConf.to_container(OmegaConf.load("configs/build_cube.yml"),
-                                 resolve=True)["build_cube"]
-    members = []
-    for group in cfg["composites"].values():
-        if isinstance(group, dict):
-            for names in group.values():
-                members += [str(n).lstrip("-") for n in names]
-    super_members = sorted({m for m in members if m.startswith("f_ic_super_")})
-
-    emitted = set()
-    for name, cls in EMISSION.items():
-        emitted.add(f"f_{name}")
-        if cls.endswith("+xs"):
-            emitted.add(f"f_{name}_xs")
-    dead = [m for m in super_members if m not in emitted]
-    print(f"`ic_super_` composite members: {len(super_members)} -> {super_members}")
-    print(f"dead (named in a composite, emitted by nothing): {dead}")
-    assert not dead, dead
-    print("=== 14. every `ic_super_` composite member is a feature the builder emits ===")
-
-
 def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
     """`StepCubeInstitutionals._superinvestor_selector` is the only place config becomes a
     weight, and until now nothing exercised it. Also pins the memo: `roster_as_of` reloads

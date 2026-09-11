@@ -47,7 +47,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import yaml
 
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 
@@ -575,7 +574,6 @@ def primitive_fixtures(rng: np.random.Generator) -> dict[str, pd.DataFrame]:
 # --------------------------------------------------------------------------- #
 def compute() -> dict:
     from src.data_aggregate.utils.target.betas import estimate_all_betas
-    from src.data_aggregate.utils.assemble.composites import build_composites
     from src.data_aggregate.utils.fundamentals.dividend_features import build_dividend_feature_panel
     from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel
     from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
@@ -695,15 +693,6 @@ def compute() -> dict:
         cusip_map=cusip_map, universe=tickers))
     out["panel.insider"] = frame_digest(build_insider_feature_panel(
         insider, peers, idx, shares_out_history=fund, stock_close=close))
-
-    # ---- composites over the merged panel ---- #
-    merged = fp.merge(sp, on=["date", "ticker"], how="outer")
-    cfg = yaml.safe_load((ROOT / "configs" / "build_cube.yml").read_text(encoding="utf-8"))
-    groups = next(v["composites"]["groups"] for v in cfg.values()
-                  if isinstance(v, dict) and "composites" in v)
-    comp = build_composites(merged, groups, method="zscore")
-    out["panel.composites"] = frame_digest(
-        comp[["date", "ticker"] + sorted(c for c in comp.columns if c.startswith("comp_"))])
 
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame({

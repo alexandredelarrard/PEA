@@ -44,12 +44,17 @@ def test_impute_rules_synthetic():
         # --- pay ratio: total + ratio present, median missing -> deduce median
         _row("BBB", "2021-04-01", board_size=12, ceo_total_comp=12_000_000, ceo_pay_ratio=200,
              median_employee_pay=np.nan),
-        # --- temporal gap: CCC board_size 9 -> NaN -> 11 ; ceo_is_founder 1 -> NaN -> (carry) 1
+        # --- temporal gap: CCC board_size 9 -> NaN -> 11. The gap CARRIES 9, it does not
+        # interpolate to 10: the 11 is not knowable on 2020-04-01. ceo_is_founder carries too.
         _row("CCC", "2019-04-01", board_size=9, ceo_is_founder=1.0),
         _row("CCC", "2020-04-01", board_size=np.nan, ceo_is_founder=np.nan),
         _row("CCC", "2021-04-01", board_size=11, ceo_is_founder=1.0),
-        # --- trailing edge gap must NOT be filled (no later filled value)
+        # --- the TRAILING gap is now filled, from 2021 and within the carry cap. The old
+        # interior-only rule left it NaN, which is the live/backtest asymmetry this closed.
         _row("CCC", "2022-04-01", board_size=np.nan, ceo_is_founder=np.nan),
+        # --- a LEADING gap stays NaN: there is nothing behind it to carry
+        _row("DDD", "2019-04-01", board_size=np.nan, ceo_is_founder=np.nan),
+        _row("DDD", "2020-04-01", board_size=7, ceo_is_founder=0.0),
     ])
     raw = df.copy()
     out, stats = impute_def14a(df)
@@ -69,12 +74,17 @@ def test_impute_rules_synthetic():
     assert out.loc[("AAA", pd.Timestamp("2021-04-01")), "n_directors"] == 10
     # 3. median pay = total / ratio
     assert out.loc[("BBB", pd.Timestamp("2021-04-01")), "median_employee_pay"] == pytest.approx(60_000)
-    # 4. temporal: interior gap interpolated (9,11 -> 10), integer-rounded; flag carried forward
-    assert out.loc[("CCC", pd.Timestamp("2020-04-01")), "board_size"] == 10
+    # 4. temporal: the interior gap CARRIES the last known 9 -- NOT the 10 a linear
+    #    interpolation between 9 and 11 would write, because the 11 was filed in 2021 and the
+    #    row being filled is dated 2020. That single assertion is the whole point-in-time fix.
+    assert out.loc[("CCC", pd.Timestamp("2020-04-01")), "board_size"] == 9
     assert out.loc[("CCC", pd.Timestamp("2020-04-01")), "ceo_is_founder"] == 1.0
-    # 4. trailing edge NOT filled
-    assert pd.isna(out.loc[("CCC", pd.Timestamp("2022-04-01")), "board_size"])
-    assert pd.isna(out.loc[("CCC", pd.Timestamp("2022-04-01")), "ceo_is_founder"])
+    # 4. the TRAILING gap IS filled now, from the 2021 filing, within the carry cap
+    assert out.loc[("CCC", pd.Timestamp("2022-04-01")), "board_size"] == 11
+    assert out.loc[("CCC", pd.Timestamp("2022-04-01")), "ceo_is_founder"] == 1.0
+    # 4. a LEADING gap is still NaN -- a carry has nothing behind it to read
+    assert pd.isna(out.loc[("DDD", pd.Timestamp("2019-04-01")), "board_size"])
+    assert pd.isna(out.loc[("DDD", pd.Timestamp("2019-04-01")), "ceo_is_founder"])
 
     # global non-destructiveness: every originally-present cell is byte-for-byte unchanged
     r = raw.set_index(["ticker", "as_of"]); r.index = r.index.set_levels(
@@ -91,8 +101,9 @@ def test_impute_rules_synthetic():
     print(f"  rules fired: {stats}")
     print("  CEO total=sum(components) & single component=total-others (clip>=0); real inconsistent")
     print("  total (99M pension-gap row) PRESERVED; pct_tech=n_tech/board; n_directors=board_size;")
-    print("  median_pay=total/ratio (60k); interior board_size gap interpolated 9,11->10 (int);")
-    print("  founder flag carried across interior gap; TRAILING edge left NaN; 0 present cells changed.")
+    print("  median_pay=total/ratio (60k); interior board_size gap CARRIES 9, not the 10 a")
+    print("  linear interpolation between 9 and 11 would invent from a 2021 filing; founder flag")
+    print("  carried; TRAILING edge now filled (11); LEADING edge left NaN; 0 present cells changed.")
 
 
 def test_impute_real_data_nondestructive():

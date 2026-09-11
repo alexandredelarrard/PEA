@@ -9,6 +9,10 @@ sources; throttle the heavy / rate-limited ones via pools). Invoked as:
 
 Every command builds a fresh Context, resolves the ticker universe (or a --tickers subset) and runs
 its fetcher. Fetchers are incremental (resume from the DB), so re-running nightly only pulls new data.
+
+Commands are grouped by the STEP that owns them -- prices, institutionals (13F, superinvestors,
+insiders, 13D, 8-K, short interest, FTD), fundamentals, structure, behavioral -- mirroring
+`src/data_extract/utils/<group>/` and, for institutionals, the cube part of the same name.
 """
 import click
 
@@ -19,18 +23,26 @@ from src.constants.command_line_interface import (
 )
 from src.context import Context, get_config_context
 from src.utils.cli_helper import SpecialHelpOrder
-from src.utils.universe import load_universe_tickers
+from src.utils.universe import load_universe_tickers, unverified_ciks
 
 # --- prices / market / macro ------------------------------------------------ #
 from src.data_extract.utils.prices.fetch_prices import fetch_price_history
 from src.data_extract.utils.prices.fetch_dividends import fetch_dividends
 from src.data_extract.utils.prices.fetch_splits import fetch_splits
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
-from src.data_extract.utils.prices.fetch_short_interest import fetch_short_interest
-from src.data_extract.utils.prices.fetch_fails_to_deliver import fetch_fails_to_deliver
-from src.data_extract.utils.prices.fetch_13f import fetch_13f
-from src.data_extract.utils.prices.fetch_superinvestors import build_superinvestors_json
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
+# --- institutionals: who owns, trades and shorts each name ------------------ #
+from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
+from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
+from src.data_extract.utils.institutionals.fetch_superinvestors import (
+    seed_roster_history, upsert_roster_snapshot)
+from src.data_extract.utils.institutionals.fetch_insider_transactions import (
+    fetch_insider_transactions)
+from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
+from src.data_extract.utils.institutionals.fetch_8k_edgar import fetch_8k_edgar
+from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
+from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
 # --- fundamentals ----------------------------------------------------------- #
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
@@ -50,13 +62,10 @@ from src.data_extract.utils.fundamentals_sharadar.gap_check import (
     DEFAULT_REPORT_PATH as GAP_REPORT_PATH, run_gap_check,
 )
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
-from src.data_extract.utils.prices.fetch_insider_transactions import fetch_insider_transactions
 # --- structure -------------------------------------------------------------- #
 from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
-from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
-from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
 from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text
 # --- behavioral ------------------------------------------------------------- #
 from src.data_extract.utils.behavioral.fetch_wiki_pageviews import fetch_wiki_pageviews
@@ -95,6 +104,21 @@ def seed_universe(config_path: str, refresh: bool) -> None:
         context.log.info(F"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (refresh={refresh})")
         get_sp500_tickers(context)
     context.log.info("Universe ready: %d tickers.", len(load_universe_tickers(context)))
+    # ⚠ A WRONG CIK IS INVISIBLE TO EVERY LATER STAGE, so it is reported HERE. `prices` keys on
+    # the ticker, so a company whose company ID is wrong still looks entirely present -- Exxon
+    # carried CIK 0002115436 (real: 34088), had 7,803 price rows, and contributed 4,092 rows to
+    # the governance cube with ZERO non-null proxy features. A feature audit thirty phases
+    # downstream is what eventually found it. Reported, never raised: a genuine recent spin-off
+    # has no filing rows either, and `shape` is what tells the two apart.
+    suspect = [r for r in unverified_ciks(context) if r["shape"] == "SUSPECT CIK"]
+    for row in suspect:
+        context.log.warning(
+            "%s: CIK %s appears in NO filing table (%s) yet the ticker HAS price history — "
+            "verify the company ID against EDGAR", row["ticker"], row["cik"],
+            ", ".join(row["filing_tables_checked"]))
+    if suspect:
+        context.log.warning("%d universe CIK(s) unconfirmed by any filing table.",
+                            len(suspect))
 
 
 # --------------------------------------------------------------------------- #
@@ -169,11 +193,28 @@ def thirteen_f(config_path: str) -> None:
     fetch_13f(context)
 
 
-@cli.command(help="Superinvestor roster (Dataroma) -> ranked CIK subset JSON. Needs 13F. Light.")
+@cli.command(name="thirteen-f-managers",
+             help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def superinvestors(config_path: str) -> None:
+@click.option(*YEARS_ARGS, **YEARS_KWARGS)
+def thirteen_f_managers(config_path: str, years: int | None) -> None:
+    """Reads its scope from `superinvestor_roster` -- the UNION of every CIK ever on a snapshot,
+    so a manager who left the roster in 2019 keeps its 2016 book. Run `superinvestors --seed`
+    first on a cold database: an empty roster raises rather than fetching nothing quietly."""
+    config, context = _ctx(config_path)
+    fetch_13f_managers(context, years_history=years or config.data_extract.years_history)
+
+
+@cli.command(help="Superinvestor roster (Dataroma) -> today's `superinvestor_roster` snapshot. Light.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option("--seed", is_flag=True, default=False,
+              help="ONE-OFF: also replay the 13 committed web.archive.org captures "
+                   "(2013-2026) so the roster has a history to be point-in-time about.")
+def superinvestors(config_path: str, seed: bool) -> None:
     _, context = _ctx(config_path)
-    build_superinvestors_json(context)
+    if seed:
+        seed_roster_history(context)
+    upsert_roster_snapshot(context)
 
 
 # --------------------------------------------------------------------------- #
@@ -383,25 +424,33 @@ def earnings_surprises(config_path: str, tickers: str | None) -> None:
 @cli.command(help="SEC Financial Statement Data Sets -> pension_facts (num/sub XBRL). SEC-bulk.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def financial_statements(config_path: str, tickers: str | None) -> None:
+@click.option("--reparse", is_flag=True, default=False,
+              help="Re-read every cached period even when already ingested. For a PARSE change -- a new column, or a registrant-resolution change -- not a data change. Nothing is re-downloaded.")
+def financial_statements(config_path: str, tickers: str | None, reparse: bool) -> None:
     _, context = _ctx(config_path)
-    fetch_financial_statements(context, tickers=_tickers(context, tickers))
+    fetch_financial_statements(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
-@cli.command(help="SEC insider transactions (Forms 3/4/5) -> insider_transactions. SEC-bulk.")
+@cli.command(help="SEC insider transactions (Forms 3/4/5) -> insider_transactions "
+                  "+ insider_footnotes. SEC-bulk.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def insider_transactions(config_path: str, tickers: str | None) -> None:
+@click.option("--reparse", is_flag=True, default=False,
+              help="Re-read every cached quarter even when already ingested. For a PARSE "
+                   "change (a new column), not a data change -- nothing is re-downloaded.")
+def insider_transactions(config_path: str, tickers: str | None, reparse: bool) -> None:
     _, context = _ctx(config_path)
-    fetch_insider_transactions(context, tickers=_tickers(context, tickers))
+    fetch_insider_transactions(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
 @cli.command(help="SEC Financial Statement & NOTES sets -> notes_num / notes_text. VERY HEAVY.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def financial_notes(config_path: str, tickers: str | None) -> None:
+@click.option("--reparse", is_flag=True, default=False,
+              help="Re-read every cached period even when already ingested. For a PARSE change -- a new column, or a registrant-resolution change -- not a data change. Nothing is re-downloaded.")
+def financial_notes(config_path: str, tickers: str | None, reparse: bool) -> None:
     _, context = _ctx(config_path)
-    fetch_financial_notes(context, tickers=_tickers(context, tickers))
+    fetch_financial_notes(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
 # --------------------------------------------------------------------------- #
@@ -445,6 +494,20 @@ def sec_8k_votes(config_path: str, tickers: str | None) -> None:
 def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
     config, context = _ctx(config_path)
     fetch_13d_edgar(context, tickers=_tickers(context, tickers), full=full,
+                    years_history=years or config.data_extract.years_history)
+
+
+@cli.command(help="SC 13G passive 5%+ beneficial ownership + amendments (edgartools). HEAVY.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*YEARS_ARGS, **YEARS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
+    """The passive counterpart of `sec-13d`, and ~7x its volume (~52 filings/ticker against
+    13D's ~8). Chunk it with `-t` + `-F` for a from-scratch backfill: the manifest's incremental
+    test is "did the universe change size", which a chunked walk defeats."""
+    config, context = _ctx(config_path)
+    fetch_13g_edgar(context, tickers=_tickers(context, tickers), full=full,
                     years_history=years or config.data_extract.years_history)
 
 

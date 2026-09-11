@@ -10,7 +10,7 @@ Triggered by the extraction DAG once ALL sources have refreshed (schedule=None).
                          │   every later step reads that part                  build_text
                          │   back, projected to the fields it needs)              │
                          │                                                        ▼
-                         │                                                   build_extras
+                         │                                               build_institutionals
                          │                                                        │
                          │                                                        ▼
                          │                                                 build_governance
@@ -92,7 +92,7 @@ deduce_peers = run("deduce-peers", base=PEERS, pool="default_pool", task_id="ded
 #    Peak memory is now the largest single step rather than the sum of two parallel pool slots,
 #    so the `aggregate` pool is unnecessary
 #    and the old institutional -> superinvestor -> fundamental serialization (which existed
-#    only to keep those three off each other's memory) is gone: they are `build-extras` and
+#    only to keep those three off each other's memory) is gone: they are `build-institutionals` and
 #    `build-fundamentals`, sequential by construction.
 step_tasks = [run(cmd, pool="default_pool", task_id=cmd.replace("-", "_")) for cmd in CHAIN]
 

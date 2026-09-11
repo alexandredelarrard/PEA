@@ -61,7 +61,7 @@ Base class: [src/utils/step.py](../src/utils/step.py) — 36 lines. It gives you
 `self._config`, `self._context`, `self._log` (a stdlib logger), `self._today`.
 
 ```python
-class StepCubeExtras(Step):
+class StepCubeInstitutionals(Step):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)   # ALWAYS call this
         self._cfg = config.build_cube
@@ -89,14 +89,17 @@ Rules:
 
 ```
 StepExtractAllData              src/data_extract/step_extract_all_data.py
-  ├─ StepExtractStructure         DEF 14A (LLM + edgartools), 8-K, 13D, filing text
+  ├─ StepExtractPrices            prices, dividends, splits, market/macro-asset series
+  ├─ StepExtractInstitutionals    WHO owns/trades/shorts each name: 13F (+cusip map),
+  │                               superinvestor roster, insider Forms 3/4/5, 13D, 8-K,
+  │                               short interest, FTD. Mirrors the cube's `institutionals`
+  │                               part; runs BEFORE structure, whose vote parser reads `sec_8k`
   ├─ StepExtractFundamentalsSharadar  Sharadar SF1 + tickers/actions/sp500 -> the MERGED
   │                               `fundamentals_history`. Runs BEFORE the SEC step: the two
   │                               producers are independent, and the merge it ends with reads
   │                               whatever `fundamentals_history_sec` already holds
   ├─ StepExtractFundamentals      SEC XBRL per-filing facts, earnings surprises, macro, notes
-  ├─ StepExtractPrices            prices+dividends, short interest, FTD, 13F, superinvestors,
-  │                               market/macro-asset series
+  ├─ StepExtractStructure         DEF 14A (LLM + edgartools), filing text, 8-K vote tallies
   └─ StepExtractBehavioral        Wikipedia pageviews, Google Trends, earnings-call transcripts
 StepDeducePeers                 src/data_peers/ -> peer dict JSON at paths["SECTOR_PEERS_PATH"]
 StepBuildCube                   src/data_aggregate/ -> 8 cube_part_* tables -> `cube`
@@ -105,8 +108,19 @@ StepPortfolio                   src/portfolio/ -> blend the sleeves vs SP-hold
 StepStrategyMoves               src/portfolio/ -> the `strategy` trade ledger
 ```
 
-Note the extraction order in `StepExtractAllData.run()`: **structure → fundamentals → prices →
-behavioral**, not the docstring's numbering.
+Extraction order in `StepExtractAllData.run()`: **prices → institutionals → fundamentals-sharadar →
+fundamentals → structure → behavioral**. The one ordering CONSTRAINT is institutionals before
+structure: `fetch_8k_votes_llm` parses the `sec_8k` Item 5.07 narratives institutionals stores.
+
+**Registrant resolution has exactly one authority**, cutting across all three of those SEC steps:
+[`data_extract/utils/common/registrant.py`](../src/data_extract/utils/common/registrant.py)
+decides which CIKs a ticker's filings may come from and how they combine, for all thirteen
+SEC-derived tables. `edgar_driver.new_filings` is a thin wrapper over it, and `FORM_POLICY` is
+where the union-vs-dated-split rule lives — declared per form and **raising** on an undeclared
+one. It sits in `common/` deliberately: it was once under `fundamentals/`, and that home is why
+the five event fetchers reached across for it while the three bulk-dataset fetchers
+(`insider_transactions`, `notes_*`, `pension_facts`) never learned it existed at all. One
+register on disk (`configs/sec/registrant_cutover.json`), one resolver over it.
 
 ### StepBuildCube: 7 sub-steps, 8 part tables (+ the assembler)
 
@@ -117,7 +131,7 @@ behavioral**, not the docstring's numbering.
 | `StepCubeFundamentals` | `cube_part_fundamentals` | (via `PitFrames`) | fundamental, sector-KPI, earnings, workforce, dividend |
 | `StepCubeMomentum` | `cube_part_momentum` | `close, open, high, low, volume, ret, sector_ret` | momentum, vol, trend, lottery, liquidity, seasonality, MACD/RSI/ATR |
 | `StepCubeText` | `cube_part_text` | `close` | earnings-call FinBERT sentiment + embedding KPIs (both **stream** their sources) |
-| `StepCubeExtras` | `cube_part_extras` | `close, volume` | 13F, elite 13F, insider, short interest, attention |
+| `StepCubeInstitutionals` | `cube_part_institutionals` | `close, volume` | 13F, elite 13F, insider, short interest + fails-to-deliver |
 | `StepCubeGovernance` | `cube_part_governance` | `close_split, close_total` | DEF 14A board/pay levels, the three executive-compensation families (turnover-guarded pay growth, the exact CEO Pay Slice, pay-vs-performance misalignment), the entrenchment-provision transitions + board busyness + the auditor block, the four Item 5.07 shareholder-dissent families, and the two PER-PERSON children — board quality (turnover, entrenchment, dispersion, the ISS overboarded share) and Item 402(k) director pay. ⚠ The children also **repair** the board averages: `avg_other_public_boards` / `avg_director_age` are derived from `def14a_directors` before `impute_def14a` interpolates, so interpolation is the last resort rather than the first move |
 | `StepAssembleCube` | `cube` | — | read the parts → composites → per-horizon streamed write |
 

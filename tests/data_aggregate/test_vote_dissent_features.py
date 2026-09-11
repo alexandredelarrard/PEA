@@ -427,7 +427,7 @@ def test_real_data_panel_coverage():
 
 
 def test_the_encoding_rule_is_declared_and_no_field_gets_xs():
-    """Every vote field ships RAW; only the twelve bounded LEVELS also get a peer leg.
+    """Every vote field ships RAW; only the ten bounded LEVELS also get a peer leg.
 
     ⚠ THE `_xs` HALF IS A MATHEMATICAL FACT, not a preference. `_xs` is
     `rank(axis=1, pct=True)` -- a per-DATE monotone map -- so its per-date Spearman
@@ -453,7 +453,14 @@ def test_the_encoding_rule_is_declared_and_no_field_gets_xs():
     for f in EVENT_FIELDS:
         if f.endswith("_delta_1y") or "excess" in f or "spread" in f or "_vs_" in f:
             assert f not in PEER_RELATIVE_FIELDS, f"{f} is a difference; it ships raw only"
-    assert len(EVENT_FIELDS) == 28 and len(PEER_RELATIVE_FIELDS) == 12
+    # ⚠ 28 and 12 until 2026-09-08. Phase 4 retired `sop_against_pct` and
+    # `auditor_vote_against_pct`, which differ from their `_dissent` twins ONLY by abstentions:
+    # measured r = 0.9949 and 0.9867 on the live part, with `auditor_vote_dissent` a strict
+    # SUPERSET of its twin (254 cells more, 0 the other way). Both were levels with a peer leg,
+    # so the counts drop by 2 each and FOUR columns leave the part, not two.
+    assert len(EVENT_FIELDS) == 26 and len(PEER_RELATIVE_FIELDS) == 10
+    for retired in ("sop_against_pct", "auditor_vote_against_pct"):
+        assert retired not in EVENT_FIELDS and retired not in PEER_RELATIVE_FIELDS
 
     print("\n=== SANITY CHECK: the encoding rule ===")
     print("  per-date rho(raw, _xs) == 1.0 on every date -> `_xs` cannot re-order a")

@@ -37,12 +37,12 @@ import pandas as pd
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
-    PROGRAMMING_ERRORS, new_filings, run_edgar_fetch,
+    PROGRAMMING_ERRORS, filed_by, period_of_report, run_edgar_fetch,
 )
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
-from src.data_extract.utils.fundamentals.cik_cutover import (
-    Cutover, cutover_filings, load_cutovers)
+from src.data_extract.utils.common.registrant import (
+    Registrant, load_registrants, resolve_registrant_filings)
 from src.data_extract.utils.fundamentals.fundamentals_employees import (
     employee_fact_frame, history_by_ticker, is_headcount_form)
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
@@ -627,8 +627,7 @@ class _FilingStamp:
             accession_number=filing.accession_number,
             form=filing.form,
             filed=pd.Timestamp(filing.filing_date),
-            reported=pd.to_datetime(getattr(filing, "period_of_report", None),
-                                    errors="coerce"),
+            reported=pd.to_datetime(period_of_report(filing), errors="coerce"),
             is_amendment=str(filing.form).upper().endswith("/A"))
 
 
@@ -860,25 +859,30 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
 def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | None = None,
                               done_accessions: frozenset[str] = frozenset(),
                               catalogue: Catalogue, gics_by_ticker: dict[str, dict],
-                              cutovers: dict[str, Cutover] | None = None,
+                              registrants: dict[str, Registrant] | None = None,
                               headcounts: dict[str, list[int]] | None = None,
                               ) -> dict[Table, pd.DataFrame]:
-    """One ticker's facts, walking BOTH registrants where it re-registered.
+    """One ticker's facts, walking EVERY registrant in its chain.
 
-    `Company(ticker)` sees only the current registrant, so without the cutover register APA
-    loses 2011-02 to 2021-05 and GOOGL 2011-2015 -- silently, with no error and no gap. The
-    walk is DATED, never a union: Apache Corp kept filing its own 10-K/10-Q through
-    2024-11-07 as a subsidiary, so a union would duplicate ~15 filings and blend two legal
-    entities' consolidated statements. See `cik_cutover`.
+    `Company(ticker)` sees only the current registrant, so without the register APA loses
+    2011-02 to 2021-05 and GOOGL 2011-2015 -- silently, with no error and no gap.
+
+    The walk is DATED, never a union, and `FUNDAMENTALS_FORMS` is declared SPLIT in
+    `registrant.FORM_POLICY` for that reason: Apache Corp kept filing its own 10-K/10-Q
+    through 2024-11-07 as a subsidiary, so a union would duplicate ~15 filings AND blend two
+    legal entities' consolidated statements into one series. This is the leg the whole
+    "never a union" rule was written to protect.
+
+    N SEGMENTS, NOT TWO. The register is a chain -- PSKY is CBS -> Viacom -> ViacomCBS ->
+    Paramount Global -> Paramount Skydance -- and the previous two-CIK call gave such a
+    ticker one hop and left every earlier boundary truncated.
 
     The `cik` recorded on each row is the registrant that actually FILED it, not the
     ticker's current one, so a row's provenance survives the boundary.
     """
-    
-    cutover = (cutovers or {}).get(ticker)
-    filings = (cutover_filings(cutover, FUNDAMENTALS_FORMS, since, done_accessions)
-               if cutover else new_filings(ticker, FUNDAMENTALS_FORMS, since,
-                                           done_accessions))
+    filings = resolve_registrant_filings(ticker, FUNDAMENTALS_FORMS, since=since,
+                                         done_accessions=done_accessions,
+                                         registrants=registrants)
     rows: list[dict] = []
     # Headcount rides the SAME walk (decision 35): the number is in the 10-K prose this loop
     # already has a handle on, so a separate fetcher would list, download and date those
@@ -891,7 +895,10 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
     # that quietly drops filings and a walk that finds none look identical in the row count.
     failures: list[tuple[str, str]] = []
     for filing in filings:
-        filing_cik = (cutover.cik_for(filing.filing_date) if cutover else cik)
+        # The CIK that FILED this document. The SPLIT walk lists per segment, so the
+        # filing already carries its own registrant's CIK; `filed_by` just falls back
+        # to the roster's when a filing exposes none.
+        filing_cik = filed_by(filing, cik)
         rows.extend(filing_rows(ticker, filing_cik, filing, catalogue,
                                 gics_by_ticker.get(ticker), failures=failures))
         if not is_headcount_form(getattr(filing, "form", None)):
@@ -928,11 +935,12 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
     # duplicate accession would double a period's facts and every downstream sum with them.
     before = df["accession_number"].nunique()
     df = df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")
-    if cutover and df["accession_number"].nunique() != before:
+    entry = (registrants if registrants is not None else load_registrants()).get(ticker)
+    if entry is not None and df["accession_number"].nunique() != before:
         raise ValueError(
-            f"{ticker}: the {cutover.predecessor_cik} -> {cutover.successor_cik} cutover at "
-            f"{cutover.cutover_date.date()} lost accessions in dedup "
-            f"({before} -> {df['accession_number'].nunique()}); the two walks overlap")
+            f"{ticker}: the {' -> '.join(entry.all_ciks())} chain "
+            f"({', '.join(str(b.date()) for b in entry.boundaries)}) lost accessions in dedup "
+            f"({before} -> {df['accession_number'].nunique()}); the segment walks overlap")
     # Two 10-K/A amendments filed the same day would collide on the employees PK.
     employees = employees.drop_duplicates(subset=["ticker", "as_of"], keep="last")
     return {Tables.fundamentals_facts: df, Tables.fundamentals_employees: employees}
@@ -964,17 +972,18 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str],
     headcounts = history_by_ticker(
         stored.rename(columns={"as_of": "filing_date", "employees": "value"})
         if stored is not None else None)
-    cutovers = load_cutovers(context.config_dir)
-    if cutovers:
-        context.log.info("fundamentals: %d CIK cutover(s) declared -- %s", len(cutovers),
-                         ", ".join(f"{t} @{c.cutover_date.date()}"
-                                   for t, c in sorted(cutovers.items())))
+    registrants = load_registrants(context.config_dir)
+    if registrants:
+        context.log.info(
+            "fundamentals: %d registrant chain(s) declared -- %s", len(registrants),
+            ", ".join(f"{t} @{'/'.join(str(b.date()) for b in r.boundaries)}"
+                      for t, r in sorted(registrants.items())))
     run_edgar_fetch(
         context, tickers, years_history,
         # `fundamentals_facts` stays FIRST: it keys the manifest window and the accession
         # dedup set, and headcount is a by-product of the same filings.
         tables=(Tables.fundamentals_facts, Tables.fundamentals_employees),
         build=partial(build_ticker_fundamentals, catalogue=catalogue,
-                      gics_by_ticker=gics, cutovers=cutovers, headcounts=headcounts),
+                      gics_by_ticker=gics, registrants=registrants, headcounts=headcounts),
         desc="fundamentals (linkbase)", full=full, cik_map=cik_map,
         max_workers=int(context.config.data_extract.fundamentals_workers))

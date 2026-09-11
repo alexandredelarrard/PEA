@@ -17,6 +17,32 @@ CREATE TABLE IF NOT EXISTS "sp500_tickers" (
     PRIMARY KEY ("ticker")
 );
 
+-- [reference] superinvestor_roster  (pk: snapshot_date, dataroma_code)
+-- Dataroma's curated elite-manager roster, ONE ROW PER (snapshot, manager), so membership is
+-- a fact over time: `roster_as_of(q)` reads the most recent snapshot at or before q. Seeded
+-- from 13 web.archive.org captures (2013 -> 2026, 879 rows, 104 codes) and appended to by
+-- every live scrape.
+--
+-- PK is `dataroma_code`, NOT `cik`: `cik` is NULL while a manager is unresolved (a nullable
+-- column cannot be a PK member) and is not unique either -- `brk` and `BRK` are two codes for
+-- CIK 0001067983. It gets the non-unique index below instead, which is HAND-ADDED: the
+-- generator only emits ticker_col / date_col indexes and would drop it on a regeneration.
+--
+-- `resolution` records where the CIK came from -- 'edgar' (company search), 'override'
+-- (SUPERINVESTOR_CIK_OVERRIDES) or 'unresolved' -- so a hand-mapped CIK is never mistaken
+-- for one EDGAR returned.
+
+CREATE TABLE IF NOT EXISTS "superinvestor_roster" (
+    "snapshot_date" DATE NOT NULL,
+    "dataroma_code" TEXT NOT NULL,
+    "manager_name" TEXT,
+    "cik" TEXT,
+    "resolution" TEXT,
+    "source_url" TEXT,
+    PRIMARY KEY ("snapshot_date", "dataroma_code")
+);
+CREATE INDEX IF NOT EXISTS ix_superinvestor_roster_cik ON "superinvestor_roster" ("cik");
+
 -- [extract] prices  (pk: ticker, date)
 -- TWO price columns, written from ONE yfinance response so they cannot drift apart.
 --   close_split -- Yahoo `Close` under auto_adjust=False: restated for SPLITS ONLY, no
@@ -343,7 +369,7 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     "dilutedShares" DOUBLE PRECISION,
     "sharesOutstanding" DOUBLE PRECISION,
     -- Point-in-time twin of `sharesOutstanding`: sharesbas / F(d), the count that really
-    -- existed on the day. ONLY consumers are `inst_ownership_pct` and the insider
+    -- existed on the day. ONLY consumers are `ic_inst_ownership_pct` and the insider
     -- %-of-shares leg, which divide an as-filed 13F / Form-4 count by a share count. Every
     -- other consumer wants `sharesOutstanding` on the vendor basis, where F(d) cancels
     -- against `close_split`.
@@ -773,6 +799,29 @@ CREATE TABLE IF NOT EXISTS "sec13f_hr" (
     PRIMARY KEY ("cik", "period", "ticker", "cusip")
 );
 
+-- [extract] sec13f_manager_holdings  (pk: cik, period, cusip)
+
+CREATE TABLE IF NOT EXISTS "sec13f_manager_holdings" (
+    "cik" TEXT NOT NULL,
+    "period" DATE NOT NULL,
+    "filing_date" DATE,
+    "cusip" TEXT NOT NULL,
+    "issuer_name" TEXT,
+    "title_of_class" TEXT,
+    "position_type" TEXT,
+    "shares" DOUBLE PRECISION,
+    "value_usd" DOUBLE PRECISION,
+    "call_shares" DOUBLE PRECISION,
+    "call_value" DOUBLE PRECISION,
+    "put_shares" DOUBLE PRECISION,
+    "put_value" DOUBLE PRECISION,
+    "debt_prn" DOUBLE PRECISION,
+    "debt_value" DOUBLE PRECISION,
+    "other_value" DOUBLE PRECISION,
+    PRIMARY KEY ("cik", "period", "cusip")
+);
+CREATE INDEX IF NOT EXISTS ix_sec13f_manager_holdings_period ON "sec13f_manager_holdings" ("period");
+
 -- [extract] insider_transactions  (pk: accession_number, security_type, transaction_sk)
 
 CREATE TABLE IF NOT EXISTS "insider_transactions" (
@@ -802,10 +851,31 @@ CREATE TABLE IF NOT EXISTS "insider_transactions" (
     "shares_owned_after" DOUBLE PRECISION,
     "direct_indirect" TEXT,
     "quarter" TEXT,
+    "is_10b5_1" DOUBLE PRECISION,
+    "transaction_form_type" TEXT,
+    "equity_swap_involved" TEXT,
+    "deemed_execution_date" DATE,
+    "nature_of_ownership" TEXT,
+    "transaction_timeliness" TEXT,
+    "exercise_price" DOUBLE PRECISION,
+    "exercise_date" DATE,
+    "expiration_date" DATE,
+    "underlying_security_title" TEXT,
+    "underlying_shares" DOUBLE PRECISION,
+    "underlying_value" DOUBLE PRECISION,
     PRIMARY KEY ("accession_number", "security_type", "transaction_sk")
 );
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_ticker ON "insider_transactions" ("ticker");
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_transaction_date ON "insider_transactions" ("transaction_date");
+
+-- [extract] insider_footnotes  (pk: accession_number, footnote_id)
+
+CREATE TABLE IF NOT EXISTS "insider_footnotes" (
+    "accession_number" TEXT NOT NULL,
+    "footnote_id" TEXT NOT NULL,
+    "footnote_text" TEXT,
+    PRIMARY KEY ("accession_number", "footnote_id")
+);
 
 -- [extract] sec_13d  (pk: ticker, accession_number, rp_seq)
 
@@ -861,6 +931,44 @@ CREATE TABLE IF NOT EXISTS "sec_13d_transactions" (
 );
 CREATE INDEX IF NOT EXISTS ix_sec_13d_transactions_filing_date ON "sec_13d_transactions" ("filing_date");
 
+-- [extract] sec_13g  (pk: ticker, accession_number, rp_seq)
+
+CREATE TABLE IF NOT EXISTS "sec_13g" (
+    "ticker" TEXT NOT NULL,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "filing_date" DATE,
+    "rp_seq" BIGINT NOT NULL,
+    "is_amendment" DOUBLE PRECISION,
+    "amendment_number" DOUBLE PRECISION,
+    "cusip" TEXT,
+    "issuer_name" TEXT,
+    "date_of_event" DATE,
+    "has_structured_data" DOUBLE PRECISION,
+    "rule_designation" TEXT,
+    "reporting_person_name" TEXT,
+    "reporting_person_cik" TEXT,
+    "reporting_person_citizenship" TEXT,
+    "type_of_reporting_person" TEXT,
+    "reporting_person_comment" TEXT,
+    "is_group_member" TEXT,
+    "sole_voting_power" DOUBLE PRECISION,
+    "shared_voting_power" DOUBLE PRECISION,
+    "sole_dispositive_power" DOUBLE PRECISION,
+    "shared_dispositive_power" DOUBLE PRECISION,
+    "aggregate_amount" DOUBLE PRECISION,
+    "percent_of_class" DOUBLE PRECISION,
+    "primary_document" TEXT,
+    "doc_url" TEXT,
+    PRIMARY KEY ("ticker", "accession_number", "rp_seq")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_13g_filing_date ON "sec_13g" ("filing_date");
+-- Hand-added, like the 8 other indexes the generator does not emit: the 13G->13D escalation
+-- join keys on the reporting person, not on the issuer. `ticker` needs no index of its own --
+-- it is the PK's leading column.
+CREATE INDEX IF NOT EXISTS ix_sec_13g_reporting_person_cik ON "sec_13g" ("reporting_person_cik");
+
 -- [extract] def14a_llm  (pk: ticker, accession_number)
 
 CREATE TABLE IF NOT EXISTS "def14a_llm" (
@@ -894,7 +1002,10 @@ CREATE TABLE IF NOT EXISTS "def14a_llm" (
     "total_neo_comp" DOUBLE PRECISION,
     "sct_years" DOUBLE PRECISION,
     "insider_ownership_pct" DOUBLE PRECISION,
+    "insider_voting_pct" DOUBLE PRECISION,
+    "insider_shares" DOUBLE PRECISION,
     "ceo_ownership_pct" DOUBLE PRECISION,
+    "ceo_voting_pct" DOUBLE PRECISION,
     "n_five_percent_holders" BIGINT,
     "independent_chair" DOUBLE PRECISION,
     "lead_independent_director" DOUBLE PRECISION,
@@ -1018,6 +1129,7 @@ CREATE TABLE IF NOT EXISTS "def14a_ownership" (
     "holder_type" TEXT NOT NULL,
     "shares" DOUBLE PRECISION,
     "percent_of_class" DOUBLE PRECISION,
+    "percent_of_voting_power" DOUBLE PRECISION,
     PRIMARY KEY ("ticker", "accession_number", "holder_name", "holder_type")
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_ownership_as_of ON "def14a_ownership" ("as_of");

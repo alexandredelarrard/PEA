@@ -104,7 +104,19 @@ def build_ticker_def14a_edgar(ticker: str, cik: str, *, since: pd.Timestamp | No
             continue                       # pre-402(v) fiscal year -- correct behaviour, no row
         row = ecd_row(facts)
         row.update(
-            ticker=ticker, cik=cik, accession_number=f.accession_number,
+            # ⚠ THE CIK COMES OFF THE FILING, NOT OFF THE ROSTER. `new_filings` resolves by
+            # TICKER, so stamping the roster's `cik` recorded a value that need not be the one
+            # that filed: measured 2026-09-09, 521 XOM `sec_8k` rows carried CIK 2115436
+            # (ExxonMobil Holdings Corp, 29 filings, first on 2026-07-01) against filings going
+            # back to 1996 that were actually the predecessor's, CIK 34088.
+            #
+            # This does NOT fix resolution -- you can only read a CIK off filings you already
+            # have, and a wrong roster CIK yields none to read (that is what the cutover
+            # register in `def14a/fetch.py` is for). What it fixes is OBSERVABILITY: with the
+            # filer's own CIK stored, a reorganisation shows up immediately as two CIKs either
+            # side of a date instead of hiding behind a uniformly-stamped column.
+            ticker=ticker, cik=str(getattr(f, "cik", cik) or cik).zfill(10),
+            accession_number=f.accession_number,
             form=str(f.form), filing_date=pd.Timestamp(f.filing_date).normalize(),
             # From the filing index, like every sibling fetcher. `ProxyStatement.fiscal_year_end`
             # was the previous source and never once resolved -- 0 of 329 stored rows had it.

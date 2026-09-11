@@ -30,6 +30,7 @@ import logging
 
 import pandas as pd
 
+from src.data_extract.utils.common.edgar_driver import period_of_report
 from src.data_extract.utils.common.edgar_extract import extract_employee_count, html_to_text
 
 #: The `fundamentals_facts.field` value this module writes. Declared here because this
@@ -158,8 +159,8 @@ def employee_fact_frame(
     """
     if not is_headcount_form(getattr(filing, "form", None)):
         return None
-    period_of_report = getattr(filing, "period_of_report", None)
-    if not period_of_report:
+    reported = period_of_report(filing)
+    if not reported:
         return None
 
     try:
@@ -187,7 +188,7 @@ def employee_fact_frame(
         "value": float(count),
         "unit": EMPLOYEES_UNIT,
         "period_start": pd.NaT,
-        "period_end": pd.Timestamp(period_of_report).normalize(),
+        "period_end": pd.Timestamp(reported).normalize(),
         "period_type": "instant",
         "fiscal_year": None,
         "fiscal_period": None,

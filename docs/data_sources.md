@@ -22,18 +22,20 @@ tables they land in, see [data_schema.md](data_schema.md); for current coverage,
 | Earnings surprises / forward P/E | yfinance | no | `earnings_surprises` | `fundamentals/fetch_earnings_surprises.py` |
 | Pension facts | SEC Financial Statement Data Sets (zip) | `SEC_USER_AGENT` | `pension_facts` | `fundamentals/fetch_financial_statements.py` |
 | Footnote numbers + narrative | SEC Financial Statement **and Notes** sets (zip, `.tsv`) | `SEC_USER_AGENT` | `notes_num`, `notes_text` | `fundamentals/fetch_financial_notes.py` |
-| Institutional holdings | SEC Form 13F bulk sets | `SEC_USER_AGENT`, `OPENFIGI_API_KEY` (optional) | `sec13f_hr`, `cusip_ticker_map` | `prices/fetch_13f.py`, `fetch_cusip_map.py` |
-| Elite-manager subset | Dataroma roster → CIK filter over 13F | no | `data/superinvestors/superinvestors.json` | `prices/fetch_superinvestors.py` |
-| Insider trades | SEC Insider Data Sets (Forms 3/4/5, quarterly zips) | `SEC_USER_AGENT` | `insider_transactions` | `prices/fetch_insider_transactions.py` |
+| Institutional holdings | SEC Form 13F bulk sets | `SEC_USER_AGENT`, `OPENFIGI_API_KEY` (optional) | `sec13f_hr`, `cusip_ticker_map` | `institutionals/fetch_13f.py`, `institutionals/fetch_cusip_map.py` |
+| Elite-manager subset | Dataroma roster (+ 13 web.archive.org captures 2013→2026) → SEC EDGAR company search for the CIK | `SEC_USER_AGENT` | `superinvestor_roster` | `institutionals/fetch_superinvestors.py` |
+| Insider trades | SEC Insider Data Sets (Forms 3/4/5, quarterly zips) | `SEC_USER_AGENT` | `insider_transactions`, `insider_footnotes` | `institutionals/fetch_insider_transactions.py` |
 | Governance / comp / ownership | SEC **DEF 14A** via OpenAI structured output | `OPENAI_API_KEY`, `SEC_USER_AGENT` | `def14a_llm` | `structure/def14a/` |
 | Pay-versus-Performance (deterministic) | SEC DEF 14A **inline XBRL** (ECD taxonomy), read direct from `filing.xbrl()` | `SEC_USER_AGENT` | `sec_def14a` (2023+ by regulation) | `structure/def14a/ecd.py`, `structure/fetch_def14a_edgar.py` |
-| Corporate events | SEC Form 8-K | `SEC_USER_AGENT` | `sec_8k` | `structure/fetch_8k_edgar.py` |
+| Corporate events | SEC Form 8-K | `SEC_USER_AGENT` | `sec_8k` | `institutionals/fetch_8k_edgar.py` |
 | Shareholder votes | SEC Form 8-K **Item 5.07**, re-read from `sec_8k.item_text` (no new download) | `OPENAI_API_KEY` | `sec_8k_votes` (2010-03+ by regulation) | `structure/votes/` |
 | Governance child tables | flattened out of the SAME paid `def14a_llm.def14a_json` blob | — | `def14a_directors`, `def14a_executive_comp`, `def14a_director_comp`, `def14a_ownership` | `structure/def14a/` |
-| Activist stakes | SEC Schedule 13D / 13D-A | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions` | `structure/fetch_13d_edgar.py` |
+| Activist stakes | SEC Schedule 13D / 13D-A | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions` | `institutionals/fetch_13d_edgar.py` |
+| Passive stakes | SEC Schedule 13G / 13G-A | `SEC_USER_AGENT` | `sec_13g` | `institutionals/fetch_13g_edgar.py` |
+| Manager books | SEC 13F-HR, walked per roster CIK | `SEC_USER_AGENT` | `sec13f_manager_holdings` | `institutionals/fetch_13f_managers.py` |
 | Filing narrative | SEC 10-K Item 1A / Item 7, 10-Q Item 2 | `SEC_USER_AGENT` | `sec_filing_text` | `structure/fetch_filing_text.py` |
-| Short volume | FINRA RegSHO daily files | no | `short_interest` | `prices/fetch_short_interest.py` |
-| Settlement fails | SEC Market FOIA (semi-monthly zips) | no | `sec_fails_to_deliver` | `prices/fetch_fails_to_deliver.py` |
+| Short volume | FINRA RegSHO daily files | no | `short_interest` | `institutionals/fetch_short_interest.py` |
+| Settlement fails | SEC Market FOIA (semi-monthly zips) | no | `sec_fails_to_deliver` | `institutionals/fetch_fails_to_deliver.py` |
 | Retail attention | Wikipedia pageviews API | no | `wiki_pageviews` | `behavioral/fetch_wiki_pageviews.py` |
 | Retail attention | Google Trends | no | `google_trends` | `behavioral/fetch_google_trends.py` |
 | Earnings-call transcripts (deep history) | HuggingFace `kurry/sp500_earnings_transcripts` | no | `earnings_call_sections` | `behavioral/fetch_hf_transcripts.py` |
@@ -59,6 +61,10 @@ Environment variables live in a git-ignored `.env` at the repo root (see `.env.e
   self-healing), `sec_utils.py` (rate limiting ~10 req/s, state), `form_registry.py`
   (`FORM_REGISTRY`), `rate_limit.py`, `parallel_fetch.py`, `run_manifest.py`. The LLM client
   itself is NOT here: it lives in `src/gpt_extract/` (see that package's README).
+- [data_extract/utils/common/registrant.py](../src/data_extract/utils/common/registrant.py) —
+  **the single authority on which CIKs a ticker's filings may come from**, reading
+  `configs/sec/registrant_cutover.json`. Every SEC pipeline resolves through it; see the
+  registrant-boundary trap below.
 - Airflow pools cap the load: `sec_bulk` 2, `sec_api` 2, `scrape` 2, `aggregate` 3.
 
 ## Free-source realities you must design around
@@ -310,7 +316,58 @@ to reject the stub destroys two correct filings.
   but loses Item 3's end boundary when Item 4's caption varies, swallowing Item 4 whole.
 - Amendment item coverage well below 100% is **Rule 13d-2(a) working as intended** — an
   amendment restates only materially changed items. Not a carve deficiency to chase.
-- 13G (passive stakes) is **deliberately excluded**; this table is activist-only.
+- `sec_13d` is activist-only; the passive 13G channel is its own table — see below.
+
+### Schedule 13G (passive 5%+ stakes)
+
+- **Same two form-string eras as 13D**, and the same trap: `SC 13G` through 2024-12-16,
+  `SCHEDULE 13G` from 2024-12-17. All four spellings live in `constants.SEC_13G_FORMS`.
+- **Every numeric is NULL before 2024-12-17.** Beneficial-ownership XML became mandatory that
+  day; before it edgartools builds the object from the SGML header alone and returns class
+  defaults — 0 for the percentage, the aggregate and all four power fields. Measured on ETN
+  `0000315066-24-002743`: `has_structured_data=False`, every numeric 0. `num_or_null` turns
+  those into NaN, because publishing the 0 would claim a 0% stake nobody disclosed.
+  **`has_structured_data` is the only guard needed here**, unlike 13D: a 13G has no Item 5
+  narrative for a filer to defer its numbers to.
+- **The reporting-person CIK arrives by two different routes, one per era.** Pre-mandate the
+  header path fills it; post-mandate the 13G XML cover page has *no CIK element at all* and
+  edgartools hard-codes `cik=''` (measured: Vanguard Capital Management on ETN
+  `0002100119-26-000028` parses with `percent_of_class=7.48` and an empty CIK). Since that is
+  the escalation join key, `fetch_13g_edgar` backfills it from the filing header's own filer
+  list — free, because `filing.xml()` and `filing.header` resolve through the same memoized
+  `filing.sgml()`.
+- **The issuer/filer guard does far more work than on 13D.** An S&P 500 asset manager or bank
+  files hundreds of 13Gs *against other issuers*, and they all appear in its own filing
+  listing. Measured 2026-09-08: JNJ lists 159 filings, 99 within a 15-year window, of which
+  **60 are JNJ disclosing stakes in Rallybio, CVRx and Rapport Therapeutics** — dropped. AAPL
+  loses none. The guard costs nothing to be wrong about in *rows*, but it is what stops every
+  field describing a different company.
+- **Two columns are structurally always NULL**, and neither NULL means what it looks like:
+  `reporting_person_comment` (edgartools' 13G parser hard-codes `comment=None`, though the
+  document does carry the text) and `is_group_member`. They are kept for column parity with
+  `sec_13d`, so the escalation union needs no special-casing.
+- `is_passive_investor` is **not stored** — edgartools implements it as `return True` for every
+  13G. `rule_designation` is the field that actually discriminates (b) qualified institutional
+  from (c) passive from (d) exempt, and it is post-mandate only.
+
+### Ownership coverage limits (measured 2026-09-08)
+
+Every one of these is a SOURCE limit, not a fetch gap. `scripts/source_coverage_report.py`
+regenerates them on demand — run it after any backfill, because a walk that fails to extend
+coverage looks like progress in a row count.
+
+| table | first usable | why |
+|---|---|---|
+| `sec13f_hr` | **2013-06-30** | `min(period)` is 1987-03-31 but the coverage is not real before mid-2013. Distinct managers per ticker: 14.0 (2012-09-30) → 22.1 (2012-12-31) → 41.4 (2013-03-31) → **555.9** (2013-06-30). Earlier quarters carry a handful of managers per name, so every breadth / concentration / QoQ-delta statistic on them describes the FETCH. The numbers look valid, which is what makes this a consumer's responsibility |
+| `insider_transactions` | **2006-01-03** on `filing_date` | the bulk data set's own floor. `min(transaction_date)` is 1990-05-07 because a Form 3 holding or a late Form 5 legitimately reports a much older trade — cutting on `transaction_date` keeps a thin, unrepresentative tail |
+| `sec_short_interest` | **2018-08-01**, and it MOVES | FINRA serves the RegSHO files from a rolling ~8-year CDN window. Binary-searched: last 403 `20180731`, first 200 `20180801`, ~8.10 years before the probe. The stored `min(date)` of 2017-12-29 is one anomalous file that survives outside the window, **not** a history start. Rows below the boundary cannot be re-fetched if lost |
+| `sec_fails_to_deliver` | **2009-07-01** | where SEC's published series begins — a fixed start, unlike RegSHO |
+
+⚠ `sec13f_hr` is the **S&P 500 slice** of each manager's book, not the book: the extraction
+filters to the universe, so a portfolio weight computed from it is inflated by a
+manager-specific factor. Measured on 2026Q1: Atlantic Investment 8.3% of positions / 13.1% of
+value, Berkshire 65.5% / 96.9%, AltaRock 100% / 100%. `sec13f_manager_holdings` is the
+denominator that fixes it.
 
 ### Earnings calls
 
@@ -334,8 +391,54 @@ windows and stitching** — a single long request is silently rescaled to monthl
 
 No returns and no CIKs on the site; a broken SSL chain; manager names carry an `"Updated"` suffix.
 The roster is resolved to CIKs via `constants.SUPERINVESTOR_CIK_OVERRIDES` and then used as a
-manager-CIK filter over `sec13f_hr` to produce the `f_super_*` features. Best-effort: a Dataroma
+manager-CIK filter over `sec13f_hr` to produce the `f_ic_super_*` features. Best-effort: a Dataroma
 failure must never break price extraction.
+
+### Registrant boundaries — the trap that hides itself
+
+**A ticker's prices follow the ECONOMIC entity; its filings follow the LEGAL registrant.** When a
+company reorganises under a new holding company or re-registers abroad, its CIK changes and its
+price history does not. `Company(ticker)` resolves exactly ONE CIK — the one EDGAR's ticker table
+points at today — so everything the predecessor filed becomes invisible **with no error, no
+exception and no gap signal**. The ticker simply arrives with 22 filings where its peers have 62.
+
+`configs/sec/registrant_cutover.json` is the register that supplies the missing CIKs, as an
+ordered, contiguous list of `segments` per ticker (chains are real: PSKY is CBS → Viacom →
+ViacomCBS → Paramount Global → Paramount Skydance). `common/registrant.py` loads and validates it
+and is the only thing that resolves registrants.
+
+**How segments combine is a property of the FORM, not of the register** (`FORM_POLICY`), and the
+two rules are not reconcilable. Measured against APA's 2021-03-01 boundary, the predecessor
+Apache Corp filed 4,291 Form 4s (4 after it) and 140 10-K/10-Qs (15 after):
+
+- **event** forms (8-K, 13D, 13G, Forms 3/4/5) take the **UNION** — an event happened whoever
+  indexed it, so the union gains 4,287 filings and risks 4. Named case: XOM's SCHEDULE 13G of
+  2026-08-07 is filed by the PREDECESSOR after the boundary and is already stored, so a split
+  would discard data we hold.
+- **consolidating** forms (10-K, 10-Q, DEF 14A, and the Item 1A/7 text carved out of them) take
+  the **DATED SPLIT** — a union would blend 15 subsidiary 10-K/10-Qs into the parent's accounts,
+  a fuller-looking history that is quietly wrong.
+
+⚠ **A form with no declared policy RAISES.** A silent default is exactly how this class stayed
+invisible for a year.
+
+⚠ **A RENAME IS NOT A CUTOVER.** CVS Caremark → CVS Health and Facebook → Meta keep their CIK, and
+an entry would walk one CIK twice and duplicate every filing. Sharadar emits `namechangefrom`
+whether or not the CIK moved — IVZ carries one (AMVESCAP plc) and is NOT a cutover, because CIK
+914208 filed continuously from 1994 with 1,594 20-F/6-K documents. The loader rejects
+`kind: rename` by name.
+
+**Finding a boundary**: `scripts/detect_registrant_cutovers.py` runs four oracles — two free DB
+screens, `sharadar_actions` shell names, a co-indexed filer scan, and the comparative-column test
+(*whose P&L is the successor's prior-year comparative column?*, which identifies the accounting
+acquirer and therefore the entity whose price series the ticker continues). It exits non-zero
+while any candidate is unresolved, so it can stand as a nightly check. ⚠ The comparative test
+**abstains before 2009** — XBRL does not exist earlier — so pre-2009 merger-of-equals boundaries
+must be adjudicated by hand rather than guessed.
+
+⚠ **The roster CIK can itself be wrong.** `sp500_tickers.cik` comes from **Wikipedia**, and
+Wikipedia had already moved XOM to the holdco. The detector cross-checks it against Sharadar's
+`secfilings` (measured: 497 of 498 agree; the one disagreement was XOM, where Sharadar was right).
 
 ### SEC bulk sets — three different products, do not confuse them
 

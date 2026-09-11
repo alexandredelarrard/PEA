@@ -1,0 +1,15 @@
+panel,feature,cov%,uniq/date,swing_pp,drift,"rho(raw,xs)","rho(raw,peer)",peer_nan%,peer_clip%
+inst,ic_inst_holders,96.1,382,51.2,0.429,0.8261,0.81,1.1,0.15
+inst,ic_inst_breadth_chg,95.2,148,56.7,6.411,0.7129,0.813,0.9,0.23
+inst,ic_inst_shares_chg,95.2,471,32.4,314.301,0.8249,0.6284,0.9,1.87
+inst,ic_inst_value_chg,95.2,478,54.5,32.587,0.7111,0.7036,0.9,1.71
+inst,ic_inst_new_buyers,95.2,150,72.4,3.56,0.6753,0.813,0.9,0.19
+inst,ic_inst_exiters,95.2,123,63.6,3.989,0.6755,0.8092,0.9,0.11
+inst,ic_inst_cluster_buying,96.1,445,30.9,0.227,0.932,0.8387,1.1,0.78
+inst,ic_inst_new_buyer_ratio,95.2,448,62.9,3.408,0.7555,0.793,0.9,1.97
+inst,ic_inst_net_options_ratio,96.1,443,24.9,0.067,0.9295,0.7044,1.1,1.81
+inst,ic_inst_net_options_ratio_chg,95.1,450,18.0,0.068,0.9539,0.7325,0.9,2.06
+inst,ic_inst_concentration,96.0,465,88.0,0.991,0.5564,0.8499,1.1,1.13
+inst,ic_inst_ownership_pct,93.0,475,13.0,0.688,0.9297,0.8222,0.0,2.03
+inst,ic_inst_value_to_mcap,92.9,475,83.1,0.776,0.607,0.8237,0.0,1.55
+inst,ic_inst_flow_to_mcap,92.7,472,52.5,0.894,0.7366,0.7969,0.1,1.22

@@ -9,11 +9,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.extras.institutional_features import (
+from src.data_aggregate.utils.institutionals.institutional_features import (
     _quarter_features, build_institutional_feature_panel,
 )
-from src.data_extract.utils.prices.fetch_13f import _holdings_frame
-from src.data_extract.utils.prices.fetch_cusip_map import _parse_openfigi
+from src.data_extract.utils.institutionals.fetch_13f import _holdings_frame
+from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 
 
 def _frame(infotable):
@@ -24,7 +24,7 @@ def _holdings():
     """Deterministic manager-grain 13F for ticker A over 2 quarters:
       Q1 (2022-03-31): M1=100, M2=200            -> holders 2, shares 300
       Q2 (2022-06-30): M1=150 (up), M3=50 (new)  -> M2 exited
-        => new_buyers=1, exiters=1, breadth_chg=0, increasers=1(M1), decreasers=0,
+        => ic_inst_new_buyers=1, ic_inst_exiters=1, breadth_chg=0, increasers=1(M1), decreasers=0,
            cluster=(1-0)/2=0.5, shares 200 -> shares_chg=200/300-1=-1/3
     Ticker B present only in Q1 (single holder) so it exercises the no-prior path."""
     rows = [
@@ -40,17 +40,17 @@ def _holdings():
 def test_quarter_feature_math():
     qf = _quarter_features(_holdings())
     a2 = qf[(qf["ticker"] == "A") & (qf["as_of"] == pd.Timestamp("2022-06-30") + pd.Timedelta(days=45))].iloc[0]
-    assert a2["inst_holders"] == 2
-    assert a2["new_buyers"] == 1 and a2["exiters"] == 1
-    assert a2["inst_breadth_chg"] == 0
-    assert abs(a2["cluster_buying"] - 0.5) < 1e-9
-    assert abs(a2["inst_shares_chg"] - (200 / 300 - 1)) < 1e-9
+    assert a2["ic_inst_holders"] == 2
+    assert a2["ic_inst_new_buyers"] == 1 and a2["ic_inst_exiters"] == 1
+    assert a2["ic_inst_breadth_chg"] == 0
+    assert abs(a2["ic_inst_cluster_buying"] - 0.5) < 1e-9
+    assert abs(a2["ic_inst_shares_chg"] - (200 / 300 - 1)) < 1e-9
     # Q1 has no prior quarter -> change features NaN
     a1 = qf[(qf["ticker"] == "A") & (qf["as_of"] == pd.Timestamp("2022-03-31") + pd.Timedelta(days=45))].iloc[0]
-    assert np.isnan(a1["inst_breadth_chg"]) and np.isnan(a1["new_buyers"])
+    assert np.isnan(a1["ic_inst_breadth_chg"]) and np.isnan(a1["ic_inst_new_buyers"])
     print("\n=== SANITY CHECK: 13F quarter-over-quarter math ===")
     print(f"  A Q2: holders=2, new=1, exit=1, breadth_chg=0, cluster=0.5, "
-          f"shares_chg={a2['inst_shares_chg']:.3f}; Q1 changes NaN (no prior). Validated.")
+          f"shares_chg={a2['ic_inst_shares_chg']:.3f}; Q1 changes NaN (no prior). Validated.")
 
 
 def test_filing_lag_point_in_time():
@@ -59,7 +59,7 @@ def test_filing_lag_point_in_time():
     # rebuild the daily field directly to check the lag boundary
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
     qf = _quarter_features(_holdings())
-    daily = fundamentals_to_daily(qf, "cluster_buying", idx)["A"]
+    daily = fundamentals_to_daily(qf, "ic_inst_cluster_buying", idx)["A"]
     q2_asof = pd.Timestamp("2022-06-30") + pd.Timedelta(days=45)     # 2022-08-14
     before = daily.loc[idx[idx < pd.Timestamp("2022-08-14")]]
     after = daily.loc[idx[idx >= q2_asof]]
@@ -67,7 +67,7 @@ def test_filing_lag_point_in_time():
     assert not (np.isclose(before.dropna(), 0.5)).any(), "13F leaked before filing lag"
     assert np.isclose(after.dropna().iloc[0], 0.5), "13F feature missing after filing lag"
     print("\n=== SANITY CHECK: 45-day filing-lag point-in-time ===")
-    print(f"  Q2 (Jun-30) cluster_buying only visible from {q2_asof.date()} onward, "
+    print(f"  Q2 (Jun-30) ic_inst_cluster_buying only visible from {q2_asof.date()} onward, "
           f"never before. Leak-free. Validated.")
 
 
@@ -80,8 +80,8 @@ def test_panel_columns_and_ownership_pct():
                           "sharesOutstandingPit": 1000.0}
                          for t in tickers])
     panel = build_institutional_feature_panel(_holdings(), peers, idx, shares_out_history=fund)
-    for c in ("f_inst_breadth_chg_xs", "f_cluster_buying_xs", "f_new_buyers_xs",
-              "f_inst_holders_xs", "f_inst_ownership_pct_xs"):
+    for c in ("f_ic_inst_breadth_chg_xs", "f_ic_inst_cluster_buying_xs", "f_ic_inst_new_buyers_xs",
+              "f_ic_inst_holders_xs", "f_ic_inst_ownership_pct_xs"):
         assert c in panel.columns, f"{c} missing from panel"
     # A's ownership pct at a late date = 200 shares / 1000 = 0.2 (raw before xs-rank)
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
@@ -89,8 +89,8 @@ def test_panel_columns_and_ownership_pct():
     inst_sh = fundamentals_to_daily(qf, "inst_shares", idx)["A"].dropna().iloc[-1]
     assert abs(inst_sh - 200.0) < 1e-9
     print("\n=== SANITY CHECK: 13F panel columns + ownership pct ===")
-    print(f"  panel exposes f_inst_breadth_chg/cluster_buying/new_buyers/holders/"
-          f"ownership_pct (_xs); A latest inst_shares={inst_sh:.0f} (/1000 = 0.2). Validated.")
+    print(f"  panel exposes f_ic_inst_breadth_chg / _cluster_buying / _new_buyers / _holders "
+          f"/ _ownership_pct (_xs); A latest inst_shares={inst_sh:.0f} (/1000 = 0.2). Validated.")
 
 
 def test_extractor_parsers():
@@ -187,18 +187,18 @@ def test_value_flow_options_and_concentration():
     q2 = qf[qf["as_of"] == pd.Timestamp("2026-03-31") + pd.Timedelta(days=45)].iloc[0]
     # the crux: a March-31 quarter is only public ~mid-May
     assert q2["as_of"] == pd.Timestamp("2026-05-15")
-    assert abs(q2["inst_value_chg"] - (4e6 / 3e6 - 1)) < 1e-9              # +33.3% VALUE flow
-    assert abs(q2["inst_shares_chg"] - (400 / 300 - 1)) < 1e-9            # +33.3% VOLUME flow
+    assert abs(q2["ic_inst_value_chg"] - (4e6 / 3e6 - 1)) < 1e-9              # +33.3% VALUE flow
+    assert abs(q2["ic_inst_shares_chg"] - (400 / 300 - 1)) < 1e-9            # +33.3% VOLUME flow
     # net options = (calls - puts) / (long value + calls + puts) = 400k / 4.4M
-    assert abs(q2["net_options_ratio"] - (400_000 / 4_400_000)) < 1e-6
-    assert q2["net_options_ratio_chg"] > 0                                # shifted bullish vs Q1
-    assert abs(q2["new_buyer_ratio"] - (1 / 3)) < 1e-9                    # M4 new of 3 holders
+    assert abs(q2["ic_inst_net_options_ratio"] - (400_000 / 4_400_000)) < 1e-6
+    assert q2["ic_inst_net_options_ratio_chg"] > 0                                # shifted bullish vs Q1
+    assert abs(q2["ic_inst_new_buyer_ratio"] - (1 / 3)) < 1e-9                    # M4 new of 3 holders
     # Herfindahl of manager value shares (1.0/1.5/1.5 of 4.0M)
-    assert abs(q2["inst_concentration"] - ((1 / 4) ** 2 + 2 * (1.5 / 4) ** 2)) < 1e-6
+    assert abs(q2["ic_inst_concentration"] - ((1 / 4) ** 2 + 2 * (1.5 / 4) ** 2)) < 1e-6
     print("\n=== SANITY CHECK: 13F value flow / options / concentration ===")
-    print(f"  Q2(2026-03-31) as_of={q2['as_of'].date()} (leak-free); value_chg={q2['inst_value_chg']:.3f} "
-          f"net_options={q2['net_options_ratio']:.4f} (chg {q2['net_options_ratio_chg']:+.4f}) "
-          f"HHI={q2['inst_concentration']:.3f} new_buyer_ratio={q2['new_buyer_ratio']:.3f}. Validated.")
+    print(f"  Q2(2026-03-31) as_of={q2['as_of'].date()} (leak-free); value_chg={q2['ic_inst_value_chg']:.3f} "
+          f"net_options={q2['ic_inst_net_options_ratio']:.4f} (chg {q2['ic_inst_net_options_ratio_chg']:+.4f}) "
+          f"HHI={q2['ic_inst_concentration']:.3f} ic_inst_new_buyer_ratio={q2['ic_inst_new_buyer_ratio']:.3f}. Validated.")
 
 
 def test_value_to_mcap_and_flow_panel():
@@ -211,9 +211,9 @@ def test_value_to_mcap_and_flow_panel():
     close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)           # price 10 -> mcap 10M
     panel = build_institutional_feature_panel(
         _holdings_opts(), peers, idx, shares_out_history=fund, stock_close=close)
-    for c in ("f_inst_value_chg_xs", "f_net_options_ratio_xs", "f_net_options_ratio_chg_xs",
-              "f_inst_concentration_xs", "f_new_buyer_ratio_xs",
-              "f_inst_value_to_mcap_xs", "f_inst_flow_to_mcap_xs"):
+    for c in ("f_ic_inst_value_chg_xs", "f_ic_inst_net_options_ratio_xs", "f_ic_inst_net_options_ratio_chg_xs",
+              "f_ic_inst_concentration_xs", "f_ic_inst_new_buyer_ratio_xs",
+              "f_ic_inst_value_to_mcap_xs", "f_ic_inst_flow_to_mcap_xs"):
         assert c in panel.columns, f"{c} missing from panel"
     # A after its Q2 becomes public: long value 4.0M / mcap 10M = 0.40 (raw, pre xs-rank)
     from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily

@@ -45,8 +45,8 @@ load_dotenv(ROOT / ".env")
 
 from src.constants.constants import (                                  # noqa: E402
     FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_FORMS, FUNDAMENTALS_ROSTERS_FILENAME)
-from src.data_extract.utils.fundamentals.cik_cutover import (              # noqa: E402
-    cutover_filings, load_cutovers)
+from src.data_extract.utils.common.registrant import (                     # noqa: E402
+    load_registrants, resolve_registrant_filings)
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import (  # noqa: E402
     rows_from_xbrl)
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue  # noqa: E402
@@ -101,7 +101,7 @@ def sweep_ticker(ticker: str, catalogue, gics: dict | None,
                  cutovers: dict | None = None) -> pd.DataFrame:
     """One ticker's whole filing history, resolved BOTH ways off one parse per filing.
 
-    Honours `fundamentals_cik_cutover.json` exactly as `build_ticker_fundamentals` does. It
+    Honours `configs/sec/registrant_cutover.json` exactly as `build_ticker_fundamentals` does. It
     has to: `Company(ticker)` sees only the current registrant, so without it APA arrives
     with 22 filings instead of ~62 and every rate measured off this ledger would describe a
     pipeline nobody runs.
@@ -110,12 +110,9 @@ def sweep_ticker(ticker: str, catalogue, gics: dict | None,
 
     company = Company(ticker)
     cik = str(getattr(company, "cik", "")).zfill(10)
-    cutover = (cutovers or {}).get(ticker)
-    if cutover is not None:
-        filings = cutover_filings(cutover, FUNDAMENTALS_FORMS, None, frozenset())
-    else:
-        filings = sorted(company.get_filings(form=list(FUNDAMENTALS_FORMS)),
-                         key=lambda f: pd.Timestamp(f.filing_date))
+    filings = resolve_registrant_filings(ticker, FUNDAMENTALS_FORMS, since=None,
+                                         done_accessions=frozenset(),
+                                         registrants=cutovers)
     frames: list[pd.DataFrame] = []
     for filing in filings:
         try:
@@ -174,13 +171,14 @@ def main() -> int:
         wanted = {args.roster: all_rosters[args.roster]}
 
     catalogue = load_catalogue(str(config_dir))
-    cutovers = load_cutovers(str(config_dir))
+    cutovers = load_registrants(str(config_dir))
     tickers = [t for names in wanted.values() for t in names]
     gics = gics_lookup(tickers)
     affected = sorted(set(cutovers) & set(tickers))
     if affected:
-        print(f"  CIK cutovers in play: "
-              + ", ".join(f"{t}@{cutovers[t].cutover_date.date()}" for t in affected))
+        print("  registrant chains in play: "
+              + ", ".join(f"{t}@{'/'.join(str(b.date()) for b in cutovers[t].boundaries)}"
+                          for t in affected))
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 

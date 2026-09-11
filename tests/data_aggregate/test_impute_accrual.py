@@ -7,9 +7,14 @@ The two identity-aware fills phase 2 adds to `impute_def14a`:
     interpolation had no identity check, so 103 of its 1,597 fills invented an age BETWEEN an
     outgoing and an incoming CEO. This proves the anchor cannot do that, and measures what
     the swap costs and buys.
-  * **`ceo_salary` interpolated on same-CEO interior gaps only** (D31), and the number that
+  * **`ceo_salary` CARRIED forward on same-CEO gaps only** (D31), and the number that
     decides whether it collides with the §3.4 zero-diff guard: how many `ceo_total_comp`
     cells the salary fill unlocks. If that is not zero, the legacy `ceo_pay_growth` moved.
+
+⚠ BOTH FILLS WERE INTERPOLATIONS WHEN THIS MODULE WAS WRITTEN, and neither is now — the whole
+temporal fill went forward-only on 2026-09-09. The interpolation still appears throughout as
+the COUNTERFACTUAL these tests measure against, which is deliberate: `ceo_age`'s D33 defect and
+`ceo_salary`'s D31 gate are both defined by what an ungated interpolation would have done.
 
 It also discharges §3.6's "measure the marginal gain and STOP" obligation for
 `ceo_since_year`: the anchor is deliberately NOT applied to it, and the report says what
@@ -25,7 +30,7 @@ from src.data_aggregate.utils.governance.accrual import (
     accrual_anchor, accrual_dispersion, accrue,
 )
 from src.data_aggregate.utils.governance.def14a_impute import (
-    INTERP, IDENTITY_GATED_INTERP, impute_def14a,
+    CARRY_LEVELS, CARRY_MAX_DAYS, IDENTITY_GATED_CARRY, impute_def14a,
 )
 from src.data_aggregate.utils.governance.names import ceo_identity_series
 
@@ -78,7 +83,8 @@ def test_ceo_age_never_interpolates_across_a_succession():
     # A plain interpolation would have written (60 + 45) / 2 = 52.5 -> 53 after rounding:
     # an age belonging to neither person. The anchor has no key for that row, so it stays NaN.
     assert pd.isna(gap), f"an age was invented across a CEO change: {gap}"
-    assert "ceo_age" not in INTERP, "ceo_age is back in INTERP — the D33 defect is reopened"
+    assert "ceo_age" not in CARRY_LEVELS, \
+        "ceo_age is back in CARRY_LEVELS — the D33 defect is reopened"
 
     # ...and where the CEO IS the same, the anchor fills, including at the EDGE
     same = [
@@ -95,9 +101,10 @@ def test_ceo_age_never_interpolates_across_a_succession():
     print("  AAA: Alice(60) -> [gap] -> Bob(45). Interpolation would write 53, an age")
     print(f"       belonging to neither. The anchor writes {gap} (NaN = unknown).")
     print(f"  BBB: Carol 50, [gap], 'C. Clark' 52, [TRAILING gap] -> {ages}")
-    print("       the interior gap fills to 51 AND the trailing edge to 53 — an edge an")
-    print("       `limit_area='inside'` interpolation refuses. The respelling is the same")
-    print("       person under `ceo_identity`, so one anchor covers all four rows.")
+    print("       the interior gap fills to 51 AND the LEADING/trailing edges — which the")
+    print("       forward carry cannot reach, and which a clock legitimately can. The")
+    print("       respelling is the same person under `ceo_identity`, so one anchor covers")
+    print("       all four rows.")
     print(f"  rules fired: {stats}")
 
 
@@ -112,27 +119,37 @@ def test_salary_gate_and_zero_diff_on_the_totals():
     if raw is None or raw.empty:
         pytest.skip("def14a_llm empty")
 
-    assert IDENTITY_GATED_INTERP == frozenset({"ceo_salary"}), \
-        "the identity-gated interpolation set changed — D31 covers ceo_salary ONLY"
+    assert IDENTITY_GATED_CARRY == frozenset({"ceo_salary"}), \
+        "the identity-gated carry set changed — D31 covers ceo_salary ONLY"
 
     imp, stats = impute_def14a(raw)
-    filled = int(stats.get("interp: ceo_salary", 0))
+    filled = int(stats.get("carry: ceo_salary", 0))
     declined = int(stats.get("declined (identity changed): ceo_salary", 0))
+    stale = int(stats.get(f"declined (>{CARRY_MAX_DAYS}d stale): ceo_salary", 0))
 
-    # --- what an UNGATED interpolation would have filled, for the gate's cost ---
+    # --- what an UNGATED carry would have filled, for the gate's cost ---
+    # ⚠ Counted with the SAME bounded forward carry the module now uses, not the old
+    # `limit_area="inside"` interpolation: the gate's cost is what the gate declines, so the
+    # baseline has to differ from the shipped run in the GATE alone.
     base = raw.copy()
     base["as_of"] = pd.to_datetime(base["as_of"], errors="coerce")
     base = base.sort_values(["ticker", "as_of"])
     gb = base.groupby("ticker", sort=False)
-    ungated = int((base["ceo_salary"].isna() & gb["ceo_salary"].transform(
-        lambda s: s.interpolate(method="linear", limit_area="inside")).notna()).sum())
+    fwd = gb["ceo_salary"].ffill()
+    src = base["as_of"].where(base["ceo_salary"].notna()).groupby(base["ticker"],
+                                                                 sort=False).ffill()
+    age = (base["as_of"] - src).dt.days
+    ungated = int((base["ceo_salary"].isna() & fwd.notna() & (age <= CARRY_MAX_DAYS)).sum())
+    assert ungated == filled + declined, (
+        f"the gate's arithmetic does not close: {ungated} carryable != {filled} filled + "
+        f"{declined} declined")
 
     # --- THE ZERO-DIFF QUESTION: did any ceo_total_comp cell appear because of it? ---
     # The counterfactual is the same pipeline with the gate's input removed: with no
-    # `ceo_name_proxy`, `_same_ceo_across_gap` is False everywhere and the salary
-    # interpolation is declined on every row -- i.e. phase-1 behaviour. Neither
-    # `ceo_name_proxy` nor `ceo_age` feeds `ceo_total_comp`, so the difference between the
-    # two runs' totals isolates the salary fill exactly.
+    # `ceo_name_proxy`, `_same_ceo_as_source` is False everywhere and the salary carry is
+    # declined on every row -- i.e. phase-1 behaviour. Neither `ceo_name_proxy` nor `ceo_age`
+    # feeds `ceo_total_comp`, so the difference between the two runs' totals isolates the
+    # salary fill exactly.
     ungated_run = raw.copy()
     ungated_run["ceo_name_proxy"] = None
     without, _ = impute_def14a(ungated_run)
@@ -143,25 +160,26 @@ def test_salary_gate_and_zero_diff_on_the_totals():
     moved = int((~np.isclose(a.to_numpy(), b.to_numpy(), equal_nan=True)).sum()) - unlocked
 
     assert unlocked == 0, (
-        f"{unlocked} ceo_total_comp cells were unlocked by the salary interpolation — the "
-        "legacy `ceo_pay_growth` is no longer bit-identical and §3.4's zero-diff guard fails")
+        f"{unlocked} ceo_total_comp cells were unlocked by the salary carry — the legacy "
+        "`ceo_pay_growth` is no longer bit-identical and §3.4's zero-diff guard fails")
     assert moved == 0, f"{moved} ceo_total_comp cells changed VALUE"
     assert float(imp["comp_imputed"].sum()) == 0.0
 
-    print("\n=== SANITY CHECK: ceo_salary identity-gated interpolation (D31) ===")
-    print(f"  interior-fillable ceo_salary cells (ungated): {ungated}")
-    print(f"    filled (same CEO both sides)             : {filled}")
-    print(f"    DECLINED (a succession inside the gap)   : {declined}")
+    print("\n=== SANITY CHECK: ceo_salary identity-gated forward carry (D31) ===")
+    print(f"  carryable ceo_salary cells within {CARRY_MAX_DAYS}d (ungated): {ungated}")
+    print(f"    filled (source row names the SAME CEO)   : {filled}")
+    print(f"    DECLINED (the CEO changed, or is unnamed): {declined}")
+    print(f"    DECLINED separately, >{CARRY_MAX_DAYS}d stale : {stale}")
     print(f"  ceo_salary fill rate: {raw['ceo_salary'].notna().mean():.1%} -> "
           f"{imp['ceo_salary'].notna().mean():.1%}")
     print(f"  >>> ceo_total_comp cells UNLOCKED by the salary fill: {unlocked}  (values "
           f"moved: {moved})")
     print(f"  >>> comp_imputed population: {int(imp['comp_imputed'].sum())} rows")
     print("  CONCLUSION: D31 and §3.4's zero-diff guard do NOT collide. Not one row has")
-    print("  salary as its ONLY absent component, so no total is derived from an")
-    print("  interpolated one and the legacy `ceo_pay_growth` is bit-identical. The ~0.5%")
-    print("  distortion D31 budgeted for is, on this table, exactly zero — and `comp_imputed`")
-    print("  is what keeps that checkable if the extraction's coverage shifts.")
+    print("  salary as its ONLY absent component, so no total is derived from a carried")
+    print("  one and the legacy `ceo_pay_growth` is bit-identical. The ~0.5% distortion D31")
+    print("  budgeted for is, on this table, exactly zero — and `comp_imputed` is what keeps")
+    print("  that checkable if the extraction's coverage shifts.")
 
 
 def test_comp_imputed_fires_when_it_should():
@@ -169,9 +187,15 @@ def test_comp_imputed_fires_when_it_should():
 
     A provenance flag that is always zero is indistinguishable from a provenance flag that is
     broken. This constructs the exact situation D31 budgeted for — salary is the ONLY absent
-    component of a row whose total is also absent, and the gap is bounded by the same CEO —
-    and asserts the whole chain fires: interpolate the salary, sum the six components into
-    `ceo_total_comp`, and STAMP the total as derived from an interpolated part.
+    component of a row whose total is also absent, and the same CEO is named on the source row
+    and the filled one — and asserts the whole chain fires: CARRY the salary, sum the six
+    components into `ceo_total_comp`, and STAMP the total as derived from a filled part.
+
+    ⚠ THE EXPECTED SALARY IS 100, NOT 200. Until 2026-09-09 the fill was a linear
+    interpolation, so a gap between 100 and 300 became the midpoint 200 — a number computed
+    from the 2017 filing while sitting on the 2016 row. The carry writes the last KNOWN salary,
+    100, which is what 2016 could actually have known. The flag under test is unchanged; only
+    the value it is stamped on top of is.
     """
     others = {"ceo_bonus": 10.0, "ceo_stock_awards": 20.0, "ceo_option_awards": 30.0,
               "ceo_non_equity_incentive": 40.0, "ceo_all_other_comp": 50.0}
@@ -187,15 +211,16 @@ def test_comp_imputed_fires_when_it_should():
     out, stats = impute_def14a(pd.DataFrame(rows))
     mid = out.loc[out["as_of"] == pd.Timestamp("2016-04-01")].iloc[0]
 
-    assert mid["ceo_salary"] == pytest.approx(200.0), "the gated salary interpolation did not fire"
-    assert mid["ceo_total_comp"] == pytest.approx(350.0), "the sum identity did not pick it up"
+    assert mid["ceo_salary"] == pytest.approx(100.0), "the gated salary carry did not fire"
+    assert mid["ceo_total_comp"] == pytest.approx(250.0), "the sum identity did not pick it up"
     assert mid["comp_imputed"] == 1.0, "comp_imputed did NOT fire on a derived total"
     assert out["comp_imputed"].sum() == 1.0, "comp_imputed fired on a filer-stated total too"
 
     print("\n=== SANITY CHECK: comp_imputed is live, not dead (D31 provenance) ===")
     print("  AAA 2016: salary NULL, other 5 components present (150), total NULL, CEO unchanged")
-    print(f"    salary interpolated 100 -> {mid['ceo_salary']:.0f} <- 300")
-    print(f"    ceo_total_comp derived = {mid['ceo_total_comp']:.0f}  (200 + 150)")
+    print(f"    salary CARRIED 100 -> {mid['ceo_salary']:.0f}   (an interpolation would have")
+    print("      written 200, the midpoint toward a 2017 filing 2016 could not see)")
+    print(f"    ceo_total_comp derived = {mid['ceo_total_comp']:.0f}  (100 + 150)")
     print(f"    comp_imputed = {mid['comp_imputed']:.0f}, and 0 on the two filer-stated rows")
     print(f"  rules: {stats}")
     print("  CONCLUSION: the flag FIRES on the exact shape D31 budgeted a ~0.5% distortion")
@@ -208,8 +233,15 @@ def test_twelve_legacy_features_are_bit_identical(monkeypatch):
 
     The aggregate fingerprint covers this end-to-end, but only as one hash over everything.
     This names the twelve features and diffs them cell by cell against a PHASE-1-EQUIVALENT
-    impute -- `ceo_age` back in `INTERP`, no salary interpolation, no accrual -- so a future
+    impute -- `ceo_age` back in `CARRY_LEVELS`, no salary carry, no accrual -- so a future
     change that moves one of them says WHICH one.
+
+    ⚠ "PHASE-1-EQUIVALENT" IS NO LONGER BIT-EQUIVALENT TO PHASE 1, and cannot be: phase 1's
+    temporal fill was a linear interpolation and this module's is a forward carry, so both
+    arms of the diff moved together on 2026-09-09. What the guard still proves is the thing it
+    was built to prove -- that the accrual and the salary gate move nothing -- because both
+    arms share the same carry. The interpolation-vs-carry change is measured by its own
+    rebuild diff, not here.
     """
     try:
         from src.context import get_config_context
@@ -237,16 +269,26 @@ def test_twelve_legacy_features_are_bit_identical(monkeypatch):
         norm to standardize against and now ship RAW (D49-D50). That is a change of ENCODING,
         not of value -- which is precisely what this guard has to keep proving, so it reads both
         builders rather than lowering its count to ten.
+
+        ⚠ AND IT NOW FILTERS TO THE TWELVE BY NAME, because `_governance_fields` is no longer
+        allowed to emit only those twelve. Phase 5 added `control_wedge` (insider voting power
+        minus economic ownership), so an unfiltered read made this guard fail on the ARRIVAL of
+        a new feature rather than on a change to a legacy one -- which is not what it is for.
+        The subject of the test is the twelve, and `LEGACY_EXEMPT_FROM_EXPIRY` is exactly that
+        set, so it is also the right filter. `control_wedge` is deliberately NOT added to that
+        frozenset: it names the twelve LEGACY levels and carries their D3 history, whereas
+        `_control_wedge` takes the 1,095-day level horizon by passing it explicitly.
         """
-        return {**_governance_fields(hist, index, fund), **_def14a_raw_fields(hist, index)}
+        built = {**_governance_fields(hist, index, fund), **_def14a_raw_fields(hist, index)}
+        return {k: v for k, v in built.items() if k in LEGACY_EXEMPT_FROM_EXPIRY}
 
     idx = pd.bdate_range("2011-01-03", "2026-09-04")
     shipped, _ = impute_def14a(raw)
     after = legacy_twelve(shipped, idx)
 
     # ...the same pipeline as phase 1 left it
-    monkeypatch.setattr(mod, "INTERP", mod.INTERP + ["ceo_age"])
-    monkeypatch.setattr(mod, "IDENTITY_GATED_INTERP", frozenset())
+    monkeypatch.setattr(mod, "CARRY_LEVELS", mod.CARRY_LEVELS + ["ceo_age"])
+    monkeypatch.setattr(mod, "IDENTITY_GATED_CARRY", frozenset())
     monkeypatch.setattr(mod, "_accrue_ceo_age", lambda df, stats: pd.Series(False, index=df.index))
     legacy_run, _ = mod.impute_def14a(raw)
     before = legacy_twelve(legacy_run, idx)

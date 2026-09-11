@@ -434,5 +434,32 @@
       "since": null,
       "tickers": null
     }
+  },
+  "superinvestor_roster": {
+    "columns": [
+      "cik",
+      "dataroma_code",
+      "manager_name",
+      "resolution",
+      "snapshot_date",
+      "source_url"
+    ],
+    "date_max": "2026-09-08",
+    "date_min": "2013-01-01",
+    "null_rate": {
+      "cik": 0.015592515592515593,
+      "dataroma_code": 0.0,
+      "manager_name": 0.0,
+      "resolution": 0.0,
+      "snapshot_date": 0.0,
+      "source_url": 0.0
+    },
+    "recorded_at": "2026-09-08T21:32:18+00:00",
+    "rows": 962,
+    "scope": {
+      "limit": null,
+      "since": null,
+      "tickers": null
+    }
   }
 }

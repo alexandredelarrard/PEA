@@ -47,6 +47,9 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.governance.def14a_impute import fill_total_from_components
+from src.data_aggregate.utils.governance.staleness import (
+    LEVEL_MAX_AGE_DAYS, expire_level_fields,
+)
 
 #: ⚠ The COLUMN PROJECTION for `def14a_director_comp` lives in `utils/common/sources.py` — one
 #: registry for every cube step, asserted by `test_cube_incremental`, never a second copy here.
@@ -64,6 +67,46 @@ DIRECTOR_COMPONENTS: tuple[str, ...] = (
 #: parse failure, not a board that works for free.
 _MIN_DENOMINATOR = 0.0
 
+#: ⚠ THE NUMERATOR IS GUARDED AT `>= 0`, NOT `> 0`, AND THE DIFFERENCE IS THE WHOLE POINT.
+#: `_ceo_ratio` previously guarded only the denominator, so a NEGATIVE `ceo_total_comp` would
+#: have produced a negative pay ratio. EQT's 2009 proxy extracts
+#: `ceo_total_comp = -8,920,166` against a `ceo_salary` of $649,036, so the case is real.
+#: Negative pay is impossible; it is rejected here.
+#:
+#: ⚠ ZERO IS NOT REJECTED, even though the four tickers observed at 0 are all defects. A $0 CEO
+#: total EXISTS: TSLA reports exactly that for Musk across five filings (2021-2025), with
+#: `ceo_salary` also 0 and `median_employee_pay` populated each time. He takes no pay.
+#:
+#: The zeros in THIS column are a different story and none of them is provable from the value's
+#: own range — every one needs the total compared against its components or against the same
+#: CEO's neighbouring years, which is the post-write SCT sanity step's job, not a bound's:
+#:
+#:     F    2011  total 0, salary 0        between $13.6M (2009) and $15.5M (2012)  2,769 cells
+#:     AIZ  2009  total 0, salary 0        followed by $6.4M, $7.9M, $9.4M            502 cells
+#:     TTWO 2011  total 0, salary 0        neighbours are $7,051 and $11,424          501 cells
+#:     COHR 2013  total 0, salary $628,000 SELF-CONTRADICTORY within the row           251 cells
+#:
+#: Rejecting zero here would blank all four AND any future Tesla-shaped truth, on a rule that
+#: cannot tell them apart. A domain guard may only reject the IMPOSSIBLE.
+_MIN_NUMERATOR = 0.0
+
+#: The two pay-MIX shares are shares of a whole, so [0, 1], and the two are treated
+#: DIFFERENTLY on purpose — this is the one deliberate clip in the governance panel.
+#:
+#: `director_equity_pay_pct` is BLANKED outside the range. Measured breach: **2,492 cells / 8
+#: tickers spanning -0.907 to 2.951**. A share of 2.95 means `sum(stock_awards)` exceeds
+#: `sum(total)` threefold, i.e. the denominator is wrong, and clipping it to 1.0 would publish
+#: "this board was paid entirely in equity" as though it had been measured.
+#:
+#: `director_cash_fee_pct` is CLIPPED to [0, 1] and the clip is counted. Measured breach:
+#: **492 cells / 2 tickers, entirely within 1.001-1.093** — traced to 41 individual director
+#: rows where `fees_earned > total`, a summation-and-rounding artefact in the filed table
+#: rather than a broken denominator. The values are otherwise usable and blanking 492 cells to
+#: protect against a 9% overshoot would cost more than it saves. ⚠ If this breach ever exceeds
+#: ~1.10 or spreads past a handful of tickers, it has stopped being a rounding artefact and the
+#: clip must become a blank.
+_SHARE_DOMAIN: tuple[float, float] = (0.0, 1.0)
+
 #: Every field this module can emit — the exhaustiveness anchor.
 #:
 #: ⚠ `log_median_director_pay` DEVIATES from the plan's `median_director_pay` in name and in
@@ -78,10 +121,24 @@ ALL_FIELDS: frozenset[str] = frozenset({
     "ceo_to_director_pay_ratio",
 })
 
-#: ⚠ NONE OF THESE IS AN EVENT (D21). Director pay is a LEVEL — a retainer structure persists
-#: between proxies, exactly as `ceo_pay_slice` and `log_ceo_total_comp` do — so nothing here is
-#: aged out. `EVENT_FIELDS` is declared empty rather than omitted so the next reader can see the
-#: decision was taken rather than forgotten.
+#: ⚠ NONE OF THESE IS AN EVENT (D21), and that claim STILL HOLDS. Director pay is a LEVEL — a
+#: retainer structure persists between proxies, exactly as `ceo_pay_slice` and
+#: `log_ceo_total_comp` do — so none of it belongs on the 548-day event clock. `EVENT_FIELDS` is
+#: declared empty rather than omitted so the next reader can see the decision was taken.
+#:
+#: ⚠ WHAT DID NOT HOLD is the conclusion drawn from it: "not an event" was read as "nothing here
+#: is aged out", and with no level horizon in the module to point at, an empty `EVENT_FIELDS`
+#: meant an UNBOUNDED forward-fill. Measured cost: `f_log_median_director_pay` held ONE value
+#: for 20.4 years of daily coverage on WMB and 18.5 on PSA, and Ford's
+#: `f_ceo_to_director_pay_ratio` was exactly 0 for 2,769 consecutive trading days — a 2011 CEO
+#: leg extracted as 0 welded to a director leg that then vanished for ten years.
+#:
+#: Phase 3 supplies `LEVEL_MAX_AGE_DAYS`, so the family now declares its levels AS levels and
+#: expires them on the 1,095-day clock. Every field is one, which is the same statement
+#: `ALL_FIELDS` makes — hence the alias rather than a second hand-maintained set that could
+#: drift from it.
+LEVEL_FIELDS: frozenset[str] = ALL_FIELDS
+
 EVENT_FIELDS: frozenset[str] = frozenset()
 
 #: ⚠ THE FIRST PEER LEGS ANY NEW FAMILY HAS EARNED SINCE PHASE 2, and they are earned on the
@@ -167,7 +224,17 @@ def _per_filing_pay(dc: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | N
             tally[f"skipped: no {col} -> no {name}"] = 1
             continue
         part = pd.to_numeric(d[col], errors="coerce").groupby(g, sort=False).sum(min_count=1)
-        out[name] = part / total_sum.where(total_sum > _MIN_DENOMINATOR)
+        share = part / total_sum.where(total_sum > _MIN_DENOMINATOR)
+        lo, hi = _SHARE_DOMAIN
+        outside = share.notna() & ((share < lo) | (share > hi))
+        if name == "director_cash_fee_pct":
+            # The deliberate exception -- clipped, not blanked. See `_SHARE_DOMAIN`.
+            share = share.clip(lower=lo, upper=hi)
+            tally[f"{name}: clipped into [0, 1]"] = int(outside.sum())
+        else:
+            share = share.where(~outside)
+            tally[f"{name}: blanked outside [0, 1]"] = int(outside.sum())
+        out[name] = share
     # The groupby was on named Series, so `reset_index` restores `ticker` / `as_of` by name.
     out = out.reset_index()
     tally["director-pay filings"] = len(out)
@@ -185,6 +252,10 @@ def _ceo_ratio(pay: pd.DataFrame, def14a: pd.DataFrame | None,
     `(ticker, as_of)` filing, so there is no time alignment to get wrong. What it DOES inherit is
     both parents' missingness, which is why it lands at ~59.5% against the family's 64% — the
     intersection of two independently incomplete disclosures, not a join defect.
+
+    ⚠ THE NUMERATOR IS GUARDED TOO, but at `>= 0` rather than `> 0` — see `_MIN_NUMERATOR`
+    for why a $0 CEO total is kept (TSLA reports one, five years running) while a NEGATIVE one
+    is rejected (EQT 2009 extracts -$8.9M).
     """
     if def14a is None or def14a.empty or "ceo_total_comp" not in def14a.columns:
         tally["skipped: no ceo_total_comp -> no ceo_to_director_pay_ratio"] = 1
@@ -199,12 +270,15 @@ def _ceo_ratio(pay: pd.DataFrame, def14a: pd.DataFrame | None,
         tally["skipped: no filing carries both a CEO total and a director median"] = 1
         return None
     den = m["median_director_pay"].where(m["median_director_pay"] > _MIN_DENOMINATOR)
-    m["ceo_to_director_pay_ratio"] = m["ceo_total_comp"] / den
+    num = m["ceo_total_comp"].where(m["ceo_total_comp"] >= _MIN_NUMERATOR)
+    m["ceo_to_director_pay_ratio"] = num / den
     m = m.replace([np.inf, -np.inf], np.nan)
     tally["ceo_to_director_pay_ratio: filings with both legs"] = int(
         m["ceo_to_director_pay_ratio"].notna().sum())
     tally["ceo_to_director_pay_ratio: rejected (median <= 0)"] = int(
         (m["median_director_pay"].notna() & den.isna()).sum())
+    tally["ceo_to_director_pay_ratio: rejected (ceo total < 0)"] = int(
+        (m["ceo_total_comp"].notna() & num.isna()).sum())
     return m[["ticker", "as_of", "ceo_to_director_pay_ratio"]]
 
 
@@ -254,4 +328,15 @@ def director_pay_fields(director_comp: pd.DataFrame | None,
     undeclared = set(frames) - ALL_FIELDS
     if undeclared:
         raise AssertionError(f"director-pay fields not in ALL_FIELDS: {sorted(undeclared)}")
+
+    # THE LEVEL HORIZON. Expired against `pay` -- this family's OWN per-filing frame -- so the
+    # age of a director-pay cell is the age of the director-comp table that disclosed it, not
+    # of whatever else the same proxy happened to contain. That distinction is the Ford case:
+    # its `def14a_llm` row kept arriving every year while the 402(k) table was absent for ten,
+    # and dating these cells off the proxy would have called a ten-year-old retainer fresh.
+    frames, expiry = expire_level_fields(frames, pay, LEVEL_FIELDS)
+    for name, (expired, before) in expiry.items():
+        if expired:
+            tally[f"expired >{LEVEL_MAX_AGE_DAYS}d: {name}"] = expired
+            tally[f"non-null before expiry: {name}"] = before
     return frames, tally

@@ -7,10 +7,13 @@ rather than quoted:
   * the §1.2 recovery table — raw fill, post-impute fill, cells recovered, and the MODERN-era
     (≥2011) fill that is the number the governance families actually live on. It is a moving
     target as `fetch_def14a_llm` runs, which is why it is regenerated rather than pinned;
-  * **the D23 interpolation-artifact number**: the share of year-over-year delta observations
-    whose either leg came from an interpolation rather than a filing. D23 accepted that
+  * **the D23 fill-artifact number**: the share of year-over-year delta observations whose
+    either leg came from the temporal fill rather than a filing. D23 accepted that
     `avg_other_public_boards` and `say_on_pay_support_pct` deltas partly measure the fill;
-    the deal was that the price is *stated*, and this is where it gets stated.
+    the deal was that the price is *stated*, and this is where it gets stated. The fill became
+    a bounded forward CARRY on 2026-09-09, so a filled segment now has a first difference of
+    exactly zero -- the delta asserts "unchanged" where it used to report the fill's slope.
+    Still fabricated, so still counted here; only the fabricated number changed.
 
 Nothing here asserts a fill RATE — the table is a report, not a contract. What it does assert
 is the invariant that makes the report meaningful: impute never lowers coverage, and no era
@@ -21,7 +24,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.governance.def14a_impute import INTERP, impute_def14a
+from src.data_aggregate.utils.governance.def14a_impute import CARRY_LEVELS, impute_def14a
 
 #: The fields §1.2 tabulates — the ones the governance families read, plus the three whose
 #: coverage is a REGIME staircase rather than an extraction gap (kind A).
@@ -32,7 +35,7 @@ _REPORTED = [
     "avg_board_tenure", "ceo_is_board_chair", "ceo_name_proxy", "ceo_age", "ceo_salary",
     "ceo_pay_ratio", "board_size",
 ]
-#: The two fields whose DELTA is a feature and whose level is interpolated anyway (D23).
+#: The two fields whose DELTA is a feature and whose level is filled anyway (D23).
 _DELTA_SOURCES = ["avg_other_public_boards", "say_on_pay_support_pct"]
 
 
@@ -82,8 +85,8 @@ def test_impute_coverage_table():
     print("  kind A (the disclosure did not exist), not extraction failure, and are left NaN.")
 
 
-def test_d23_interpolation_artifact_share():
-    """What share of a YoY delta on an INTERP field measures the fill instead of the company."""
+def test_d23_fill_artifact_share():
+    """What share of a YoY delta on a CARRIED field measures the fill, not the company."""
     raw = _load()
     imp, _ = impute_def14a(raw)
 
@@ -93,13 +96,13 @@ def test_d23_interpolation_artifact_share():
     key = ["ticker", "accession_number"]
     assert not raw.duplicated(key).any(), "(ticker, accession_number) is not unique"
 
-    print("\n=== SANITY CHECK: D23 — the interpolation artifact in the deltas ===")
+    print("\n=== SANITY CHECK: D23 — the temporal-fill artifact in the deltas ===")
     print(f"  {'delta source':<28} {'obs':>8} {'1 leg imputed':>15} {'both real':>11}")
     reported = []
     for f in _DELTA_SOURCES:
         if f not in imp.columns:
             continue
-        assert f in INTERP, f"{f} is no longer interpolated — D23's premise changed"
+        assert f in CARRY_LEVELS, f"{f} is no longer filled — D23's premise changed"
         raw_present = raw.set_index(key)[f].notna()
         d = imp[key + ["as_of", f]].copy()
         d["_imp"] = d[f].notna() & ~pd.MultiIndex.from_frame(d[key]).map(
@@ -115,6 +118,6 @@ def test_d23_interpolation_artifact_share():
 
     assert reported, "neither D23 field is present"
     print("  CONCLUSION: this is the price D23 knowingly accepted — a delta with an imputed")
-    print("  leg partly measures the interpolation, not the company. It is reported here and")
+    print("  leg partly measures the fill, not the company. It is reported here and")
     print("  carried into the DoD rather than hidden. The VOTE-derived deltas phases 3-5 add")
     print("  are unaffected: `sec_8k_votes` is never imputed and is 99.5% filled.")

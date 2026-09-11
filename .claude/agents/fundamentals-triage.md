@@ -162,7 +162,7 @@ rtk git checkout -b bugfix/{description}
 - **Code** (`build_history.py`, `xbrl_linkbase.py`, `periods.py`, a check module): apply it,
   record the commit.
 - **`configs/`** (`fundamentals_kpis.json`, `fundamentals_exceptions.json`,
-  `fundamentals_regimes.json`, `fundamentals_cik_cutover.json`): **RISK ZONE — PROPOSE THE
+  `fundamentals_regimes.json`, `configs/sec/registrant_cutover.json`): **RISK ZONE — PROPOSE THE
   DIFF, NEVER APPLY IT.** The cluster stays OPEN until a human approves. A large share of real
   fundamentals fixes are config (the `never_use` entry that closed MTB and AXP; a `by_ticker`
   widening; a cutover entry), and `configs/` is the one artifact where a wrong entry is

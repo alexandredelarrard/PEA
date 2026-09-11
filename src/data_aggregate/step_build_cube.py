@@ -10,7 +10,7 @@ and hands nothing else to the next one:
   3. fundamentals  SEC filings: fundamental, sector-KPI, earnings, workforce, dividend
   4. momentum      everything derived from price variation (momentum, vol, MACD, liquidity)
   5. text          earnings-call sentiment + embedding KPIs
-  6. extras        13F, elite 13F, insider, short interest, attention
+  6. institutionals 13F, elite 13F, insider, short interest + fails-to-deliver
   7. governance    DEF 14A + Item 5.07: dissent, executive pay, board, provisions
   8. assemble      read the parts -> composites -> the `cube` table
 
@@ -32,7 +32,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
-from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
+from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
@@ -57,7 +57,7 @@ class StepBuildCube(Step):
         self._fundamentals = StepCubeFundamentals(context=context, config=config)
         self._momentum = StepCubeMomentum(context=context, config=config)
         self._text = StepCubeText(context=context, config=config)
-        self._extras = StepCubeExtras(context=context, config=config)
+        self._institutionals = StepCubeInstitutionals(context=context, config=config)
         self._governance = StepCubeGovernance(context=context, config=config)
         self._assemble = StepAssembleCube(context=context, config=config)
 
@@ -70,7 +70,7 @@ class StepBuildCube(Step):
         # self._momentum.run(full=full)
         # self._fundamentals.run(full=full)
         # self._text.run(full=full)
-        self._extras.run(full=full)
+        self._institutionals.run(full=full)
         # self._governance.run(full=full)
         # self._assemble.run()
 

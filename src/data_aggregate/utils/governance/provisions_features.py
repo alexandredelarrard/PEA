@@ -44,7 +44,9 @@ from src.data_aggregate.utils.governance.auditors import (
     BIG4, canonical_auditor_series, unrecognised_auditor_names,
 )
 from src.data_aggregate.utils.governance.def14a_impute import DELTA_PROVENANCE_COLUMNS
-from src.data_aggregate.utils.governance.staleness import expire_event_fields
+from src.data_aggregate.utils.governance.staleness import (
+    LEVEL_MAX_AGE_DAYS, expire_event_fields, expire_level_fields,
+)
 
 #: The seven tri-state / boolean provision columns the transition detector runs over. Every one
 #: is stored 1.0 / 0.0 / NULL by `flatten._bnum`, and NULL means the proxy was silent.
@@ -106,18 +108,27 @@ IMPROVEMENT_FLAGS: tuple[str, ...] = (
 _MIN_EVENTS = 1
 
 #: ⚠ DELTAS GATED ON PROVENANCE, the second measured correction. Both these columns are in
-#: `impute_def14a.INTERP`, and that module's own rule is the one being honoured here: *never
-#: linearly interpolate a level whose YoY change is itself a feature*, because the delta then
-#: measures the FILL's slope rather than the company's change. D23 knowingly took that trade for
-#: `avg_other_public_boards`; phase 2 §5 required the share to be measured before shipping.
+#: `impute_def14a.CARRY_LEVELS`, and that module's own rule is the one being honoured here:
+#: *never fill a level whose YoY change is itself a feature* without recording it, because the
+#: delta then measures the FILL rather than the company's change. D23 knowingly took that trade
+#: for `avg_other_public_boards`; phase 2 §5 required the share to be measured before shipping.
 #:
-#: Measured 2026-09-08, share of adjacent pairs with at least one INTERPOLATED leg:
+#: ⚠ THE FILL BECAME A FORWARD CARRY ON 2026-09-09, so the shape of the fabrication changed and
+#: the reason for the gate did not. A linearly-filled segment had a constant NON-ZERO first
+#: difference, so its delta reported the fill's slope; a carried segment has a first difference
+#: of exactly ZERO, so its delta asserts "this board changed nothing". Both are claims about the
+#: company that no filing made, so both legs still have to be un-imputed. The percentages below
+#: were measured under interpolation and move with the carry; `test_impute_coverage.py`
+#: regenerates them.
+#:
+#: Measured 2026-09-08, share of adjacent pairs with at least one FILLED leg:
 #:     avg_other_public_boards      65.5%  (6,556 of 10,004)   <- the majority, not a corner
 #:     pct_independent_directors    20.7%  (2,329 of 11,224)
 #:
-#: 65.5% is not a trade worth taking: a linearly-filled segment has a CONSTANT first difference,
-#: so two thirds of `board_busyness_delta_1y` would have been one number repeated. Both deltas
-#: are therefore computed only where BOTH legs were disclosed, which `impute_def14a` records in
+#: 65.5% is not a trade worth taking: a filled segment has a CONSTANT first difference either
+#: way, so two thirds of `board_busyness_delta_1y` would have been one number repeated -- the
+#: fill's slope under interpolation, a flat zero under the carry. Both deltas are therefore
+#: computed only where BOTH legs were disclosed, which `impute_def14a` records in
 #: `<column>_imputed`. The cost is coverage and it is reported in the tally.
 #:
 #: The LEVELS keep the fill. A carried board average is a defensible estimate of a standing
@@ -252,6 +263,15 @@ ALL_FIELDS: frozenset[str] = frozenset(
        "ceo_is_board_chair",
        "auditor_changed", "auditor_tenure", "auditor_tenure_censored", "auditor_is_big4"}
 )
+
+#: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (1,095 days) rather than on no horizon.
+#:
+#: ⚠ DEFINED AS THE COMPLEMENT so the two horizons are EXHAUSTIVE by construction. Every field
+#: this module emits is now in exactly one of `EVENT_FIELDS` / `LEVEL_FIELDS`, which is what
+#: stops the next field added here from inheriting the old third state -- "not an event", and
+#: therefore silently never expiring. `ALL_FIELDS` is the exhaustiveness anchor that makes the
+#: complement trustworthy; phase 4 recorded above what it cost to learn that.
+LEVEL_FIELDS: frozenset[str] = ALL_FIELDS - EVENT_FIELDS
 
 
 # --------------------------------------------------------------------------- #
@@ -405,11 +425,28 @@ def _flag_frame(hist: pd.DataFrame, name: str, values: pd.Series) -> pd.DataFram
 
 def _expire(frames: dict[str, pd.DataFrame], hist: pd.DataFrame, tally: dict[str, int],
             sources: dict[str, str] | None = None) -> dict[str, pd.DataFrame]:
-    """`expire_event_fields` plus the tally lines, which every caller here wants together."""
+    """BOTH horizons plus the tally lines, which every caller here wants together.
+
+    ⚠ THE LEVEL PASS IS NOT OPTIONAL AND IT IS WHY THIS IS ONE FUNCTION. Five fields here are
+    structural levels (`auditor_is_big4`, `auditor_tenure`, `auditor_tenure_censored`,
+    `board_busyness`, `ceo_is_board_chair`), correctly kept off the 548-day event clock and
+    then, until this pass existed, forward-filled with NO cutoff -- so a single parsed proxy
+    was asserted as current for as long as the trading index ran. "Not an event" is not the
+    same statement as "never expires"; see `directors.LEVEL_FIELDS` for the measured size.
+
+    Applying both here rather than at each call site means a field added to this module cannot
+    quietly acquire no horizon at all: it is in one set or the other, and `LEVEL_FIELDS` is
+    defined as the complement of `EVENT_FIELDS` so the two are exhaustive by construction.
+    """
     capped, stats = expire_event_fields(frames, hist, EVENT_FIELDS, sources=sources)
     for name, (expired, before) in stats.items():
         if expired:
             tally[f"expired >548d: {name}"] = expired
+            tally[f"non-null before expiry: {name}"] = before
+    capped, lvl = expire_level_fields(capped, hist, LEVEL_FIELDS, sources=sources)
+    for name, (expired, before) in lvl.items():
+        if expired:
+            tally[f"expired >{LEVEL_MAX_AGE_DAYS}d: {name}"] = expired
             tally[f"non-null before expiry: {name}"] = before
     return capped
 
@@ -524,7 +561,11 @@ def _busyness(hist: pd.DataFrame, idx: pd.DatetimeIndex,
     if level.empty or not level.notna().any().any():
         tally["skipped: avg_other_public_boards all null -> no board busyness"] = 1
         return out
-    out["board_busyness"] = level
+    # The LEVEL is expired against its own source column: the feature is called
+    # `board_busyness` but the filing discloses `avg_other_public_boards`, and
+    # `_expire_family` ages a cell by looking the FEATURE name up in the history frame.
+    out["board_busyness"] = _expire({"board_busyness": level}, hist, tally,
+                                    sources={"board_busyness": field})["board_busyness"]
 
     d = _annual_delta(hist, field, tally)
     if d is None:
@@ -640,7 +681,14 @@ def _auditor_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
     changed = fundamentals_to_daily(h, "auditor_changed", idx)
     if not changed.empty and changed.notna().any().any():
         out["auditor_changed"] = _expire({"auditor_changed": changed}, h, tally)["auditor_changed"]
-    return out
+
+    # ⚠ THE THREE LEVELS EXPIRE HERE, and `auditor_tenure` needs a `sources` entry because it
+    # is DERIVED rather than filed: there is no `auditor_tenure` column in `h` for
+    # `_expire_family` to age it against, so it ages against the filing that supplied the start
+    # date it accrues from. Re-expiring `auditor_changed` in the same call is idempotent -- the
+    # event mask is the same one it already carries.
+    out = _expire(out, h, tally, sources={"auditor_tenure": "_tenure_start_ord"})
+    return {k: v for k, v in out.items() if not v.empty and v.notna().any().any()}
 
 
 # --------------------------------------------------------------------------- #
@@ -684,7 +732,11 @@ def provision_fields(
     # impute, 99.7% in the modern era.
     duality = fundamentals_to_daily(def14a, "ceo_is_board_chair", idx)
     if not duality.empty and duality.notna().any().any():
-        frames["ceo_is_board_chair"] = duality
+        # Filed under its own name, so it needs no `sources` mapping -- and it is on the LEVEL
+        # horizon like the other four: whether the CEO holds the chair is a standing fact, but
+        # a standing fact from 2018 is not evidence about today.
+        frames["ceo_is_board_chair"] = _expire(
+            {"ceo_is_board_chair": duality}, def14a, tally)["ceo_is_board_chair"]
 
     undeclared = set(frames) - ALL_FIELDS
     if undeclared:

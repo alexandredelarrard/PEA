@@ -167,7 +167,7 @@ def test_build_ticker_filing_text_skips_done_accessions_and_pre_since_filings(mo
     new_filing = _fake_filing(accession="0001-new", filing_date="2024-06-01", obj=obj)
     fake_company = SimpleNamespace(get_filings=lambda form: [old_filing, done_filing, new_filing])
     monkeypatch.setattr(
-        "src.data_extract.utils.common.edgar_driver.Company",
+        "edgar.Company",
         lambda ticker: fake_company,
     )
 
@@ -185,7 +185,7 @@ def test_build_ticker_filing_text_returns_no_rows_for_an_unparseable_filing(monk
     filing = _fake_filing(accession="0001-bad")   # obj/text both raise
     fake_company = SimpleNamespace(get_filings=lambda form: [filing])
     monkeypatch.setattr(
-        "src.data_extract.utils.common.edgar_driver.Company",
+        "edgar.Company",
         lambda ticker: fake_company,
     )
     out = build_ticker_filing_text("AAPL", "0000320193")[Tables.filing_risk_text]

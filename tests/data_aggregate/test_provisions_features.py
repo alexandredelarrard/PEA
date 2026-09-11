@@ -461,9 +461,22 @@ def test_the_real_data_readout():
     #      majority_voting            72.4%                   -> 422
     #      lead_independent_director  87.3%                   -> 465
     #      avg_other_public_boards    45.8% raw, and the delta needs two DISCLOSED legs -> 427
+    #    ⚠ `board_busyness` CANNOT REACH 480 AND NEVER COULD -- the default floor was misapplied
+    #    to it, which is a bug in this test rather than in the data. Measured 2026-09-09:
+    #    488 tickers have proxies, and **10 of them carry no `avg_other_public_boards` on any
+    #    filing** (ERIE with 30 proxies and 364 director rows, none disclosing other public
+    #    directorships; plus nine recent listings -- DDOG, EVRG, AMCR, ABNB, APO, TKO, KKR,
+    #    RDDT, BX). So 478 is the arithmetic ceiling. The 1,095-day LEVEL horizon then removes
+    #    four more, and each is correct: MGM (last disclosed 1997-03-26), EG (2000-04-13),
+    #    CHTR (2003-06-24) and EME (2006-04-26) have their ENTIRE series more than three years
+    #    stale on an index that starts 2011-01-03, so every cell they had was forward-filled
+    #    fiction. 474 is the true ceiling, floored at 470 for headroom.
+    #    Not a re-extraction regression: `avg_other_public_boards` fill is 46.0% (5,676/12,343)
+    #    against the 45.8% recorded before it, and child fill is 29.3%, unchanged.
     thin_floor = {"poison_pill_removed": 150, "majority_voting_added": 410,
                   "majority_voting_removed": 410, "lead_independent_director_added": 455,
-                  "lead_independent_director_lost": 455, "board_busyness_delta_1y": 410}
+                  "lead_independent_director_lost": 455, "board_busyness_delta_1y": 410,
+                  "board_busyness": 470}
     for name, frame in F.items():
         n = int(frame.notna().any().sum())
         assert n >= thin_floor.get(name, 480), f"{name} covers only {n} tickers"

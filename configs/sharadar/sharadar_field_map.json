@@ -128,7 +128,7 @@
     "why the four feature columns now keep it and only the PIT twin undoes it.",
     "",
     "`sharesOutstandingPit` = sharesbas / F(d), where F(d) is the product of every genuine",
-    "split dated AFTER the row's own filing date. Its ONLY consumers are `inst_ownership_pct`",
+    "split dated AFTER the row's own filing date. Its ONLY consumers are `ic_inst_ownership_pct`",
     "and the insider %-of-shares leg -- both divide an as-filed 13F / Form-4 share count by a",
     "share count, so both legs must be as-filed. `basicShares` / `dilutedShares` feed",
     "per-share ratios where the factor cancels, and a PIT `dividendsPerShare` has no consumer.",

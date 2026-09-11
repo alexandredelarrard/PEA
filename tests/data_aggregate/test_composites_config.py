@@ -334,7 +334,7 @@ def test_every_configured_member_is_a_real_feature(groups, real_panel):
     `nci_income_share` / `buyback_intensity` / the workforce and REIT families).
 
     A WHOLLY-unresolved theme is a BUILD GAP and is reported, not failed: every one of its
-    members is missing because the part that owns them was never built here. `cube_part_extras`
+    members is missing because the part that owns them was never built here. `cube_part_institutionals`
     (insider, 13F, superinvestor, short interest, attention), `cube_part_governance` (DEF 14A +
     Item 5.07 -- governance left `_extras` when it got its own part) and `cube_part_text`
     (earnings-call) may not exist in this database, and no amount of config correctness would
@@ -377,7 +377,7 @@ def test_every_configured_member_is_a_real_feature(groups, real_panel):
         print(f"     {len(gaps)} theme(s) wholly unbuilt in this database "
               f"({sum(gaps.values())} members): "
               + ", ".join(f"{t} ({n})" for t, n in sorted(gaps.items())))
-        print("     -> these need `build-extras` / `build-text`; the config is not wrong.")
+        print("     -> these need `build-institutionals` / `build-text`; the config is not wrong.")
     print("     SANITY CHECK: no theme is PARTIALLY unresolved, which is the signature a "
           "typo or an unpropagated rename would leave.")
 

@@ -18,7 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
-from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
+from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
@@ -38,7 +38,7 @@ OWNER = {
     "build-fundamentals": StepCubeFundamentals,
     "build-momentum": StepCubeMomentum,
     "build-text": StepCubeText,
-    "build-extras": StepCubeExtras,
+    "build-institutionals": StepCubeInstitutionals,
     "build-governance": StepCubeGovernance,
 }
 
@@ -113,7 +113,7 @@ def test_substep_price_fields_are_declared_and_valid():
     projection meaningful -- a step asking for everything would undo the memory win."""
     declared = {cls.__name__: cls._FIELDS for cls in
                 (StepCubeTarget, StepCubeFundamentals, StepCubeMomentum, StepCubeText,
-                 StepCubeExtras, StepCubeGovernance)}
+                 StepCubeInstitutionals, StepCubeGovernance)}
     for name, fields in declared.items():
         assert fields, f"{name} declares no price fields"
         unknown = [f for f in fields if f not in ALL_FIELDS]
@@ -128,14 +128,14 @@ def test_substep_price_fields_are_declared_and_valid():
     # must never take the total-return series -- a market cap or an EV computed on it would
     # compound every dividend ever paid into the level. It SHOULD take `level_factor`, which
     # is the other half of a correct level and is not a price at all.
-    for name in ("StepCubeFundamentals", "StepCubeText", "StepCubeExtras"):
+    for name in ("StepCubeFundamentals", "StepCubeText", "StepCubeInstitutionals"):
         assert "close_total" not in declared[name], (
             f"{name} builds LEVELS (market cap, EV, per-share ratios), so it must never take "
             f"the total-return series")
         assert not ({"open", "high", "low"} & set(declared[name])), (
             f"{name} does not build bars, so materialising the OHLC range is pure memory")
     assert set(StepCubeFundamentals._FIELDS) == {"close_split", "level_factor"}
-    assert set(StepCubeExtras._FIELDS) == {"close_split", "volume", "level_factor"}
+    assert set(StepCubeInstitutionals._FIELDS) == {"close_split", "volume", "level_factor"}
     # Governance is the third and last step allowed `close_total`: pay-vs-performance
     # differences pay growth against a trailing shareholder RETURN, and a return is exactly
     # what the total-return series is for. That is why the exemption above stays a named
@@ -158,16 +158,19 @@ def test_substep_price_fields_are_declared_and_valid():
 
 
 def test_feature_parts_cover_every_group_exactly_once():
-    """The 14 feature groups of the old exploded DAG map onto the feature parts, each group
-    owned by exactly one part. The count is 14 whether `governance` sits on `extras` or on
-    its own part -- a MOVE must not change it, only a genuinely new group would."""
+    """The feature groups of the old exploded DAG map onto the feature parts, each group
+    owned by exactly one part. The count is invariant to WHERE a group lives -- it was 14
+    whether `governance` sat on the old `extras` part or on its own -- so a MOVE must never
+    change it. It is 13 now because `attention` was DELETED, not moved: the panel was dead
+    code (defined, never called from `run()`) and went with the `extras` -> `institutionals`
+    rename. Only a genuine add or delete may touch this number, and it must say which."""
     owners: dict[str, list[str]] = {}
     for part in FEATURE_PARTS:
         for group, _ in part.binding_lookbacks:
             owners.setdefault(group, []).append(part.name)
     dupes = {g: p for g, p in owners.items() if len(p) > 1}
     assert not dupes, f"feature group(s) claimed by more than one part: {dupes}"
-    assert len(owners) == 14, f"expected 14 feature groups, got {len(owners)}: {sorted(owners)}"
+    assert len(owners) == 13, f"expected 13 feature groups, got {len(owners)}: {sorted(owners)}"
 
     print("\n=== SANITY CHECK: feature groups -> parts ===")
     for part in FEATURE_PARTS:

@@ -69,7 +69,7 @@ class StepAssembleCube(Step):
             # and COPYs into the existing schema (and `ensure_columns` only ever ADDS). So a
             # missing part leaves its columns in place, entirely NULL, and the cube's column
             # set still looks perfect -- observed here as 574 == 574 columns with 0 added / 0
-            # removed while every f_inst_*/f_super_*/f_insider_*/f_ceo_* value was NULL.
+            # removed while every f_ic_inst_*/f_ic_super_*/f_ic_insider_*/f_ceo_* value was NULL.
             self._log.warning("Feature part '%s' is MISSING -> its features will be ALL-NULL in "
                               "the cube (the column set will still look unchanged). Run its "
                               "build step, then re-run assemble-cube.", name)

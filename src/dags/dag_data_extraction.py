@@ -14,6 +14,12 @@ Airflow POOLS (created in airflow-init):
   * default             — light / fast: macro, short_interest, earnings_surprises,
                           superinvestors  (+ the one heavy yfinance pull: price_history)
 
+⚠ Tasks are grouped by POOL (what throttles them), NOT by the step that owns them in
+`src/data_extract/transformers/`. The INSTITUTIONALS step's sources are therefore spread across
+three groups here: thirteen_f / insider_transactions / fails_to_deliver (sec_bulk),
+sec_8k_items / sec_13d (sec_api), short_interest / superinvestors (default). That is deliberate
+-- an 8-K pull and a 13F zip contend for different resources -- so do not re-group them by step.
+
 Flow: seed_universe -> (all fetchers in parallel, pool-throttled) -> extraction_complete -> trigger
 the data_aggregation DAG. The gate is a visible WARNING, not a hard block (trigger_rule=ALL_DONE), so
 aggregation still runs on a red gate; flip to ALL_SUCCESS to hard-stop prediction on stale data.
@@ -90,12 +96,16 @@ financial_statements = fetch("financial-statements", pool="sec_bulk")
 insider_transactions = fetch("insider-transactions", pool="sec_bulk")
 financial_notes = fetch("financial-notes", pool="sec_bulk")           # VERY heavy
 superinvestors = fetch("superinvestors")                              # light, needs 13F
+thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")    # roster books, needs roster
+#   ^ institutionals step: thirteen_f, insider_transactions, fails_to_deliver,
+#     superinvestors, short-interest (in `light`), sec_8k_items, sec_13d and sec_13g (below)
 
 # 3) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 fundamentals = fetch("fundamentals", pool="sec_api")                  # incl. 10-K headcount
 def14a = fetch("def14a", pool="sec_api")                              # + LLM
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")                 # 8-K item codes (structured)
 sec_13d = fetch("sec-13d", pool="sec_api")                           # SC 13D activist filings
+sec_13g = fetch("sec-13g", pool="sec_api")                           # SC 13G passive 5%+ stakes
 filing_text = fetch("filing-text", pool="sec_api")                   # 10-K Item 1A + Item 7 text
 
 # 4) external scraping — capped to 2 (site rate limits)
@@ -120,13 +130,15 @@ trigger_aggregation = TriggerDagRunOperator(
 # --- wiring ---
 all_fetchers = light + [price_history, fails_to_deliver, thirteen_f, financial_statements,
                         insider_transactions, financial_notes, fundamentals, def14a,
-                        sec_8k_items, sec_13d, filing_text, 
+                        sec_8k_items, sec_13d, sec_13g, filing_text,
                         download_earnings_calls] #wiki_pageviews, google_trends,
 
 seed_universe >> all_fetchers
 thirteen_f >> superinvestors                                         # roster reads the 13F holdings
+superinvestors >> thirteen_f_managers                                # roster IS the walk scope
 download_earnings_calls >> ingest_earnings_calls                     # ingest parses the downloaded files
 
 # all sources refreshed -> trigger aggregation
-(all_fetchers + [superinvestors, ingest_earnings_calls]) >> extraction_complete
+(all_fetchers + [superinvestors, thirteen_f_managers,
+                 ingest_earnings_calls]) >> extraction_complete
 extraction_complete >> trigger_aggregation

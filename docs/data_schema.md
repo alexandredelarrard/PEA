@@ -47,6 +47,7 @@ Derived views are comprehensions, never hand-lists: `ALL`, `BY_NAME`, `MANAGED`,
 | Table | PK | Notes |
 |---|---|---|
 | `sp500_tickers` | `ticker` | THE universe. `name, sector, industry_group, sub_industry, cik`. Also the only ticker→CIK source (the old `cik_mapping` table was dropped). Resolved via [src/utils/universe.py](../src/utils/universe.py)`::load_universe_tickers`, which drops `constants.INSUFFICIENT_HISTORY_TICKERS`. Swap universe by replacing rows only — no step code changes. |
+| `superinvestor_roster` | `snapshot_date, dataroma_code` | Dataroma's elite-manager roster, ONE ROW PER (snapshot, manager) — `manager_name, cik, resolution, source_url`. Seeded from 13 web.archive.org captures (2013→2026, 879 rows) plus one row-set per live scrape. Read via [src/utils/superinvestor_roster.py](../src/utils/superinvestor_roster.py)`::roster_as_of`, the PIT accessor; `roster_cik_union` is the 13F walk scope. ⚠ PK is the **code**, not the CIK: `cik` is NULL for the 2 managers that never filed a 13F-HR (CMAFX, LUK) and is not unique — 12 CIKs carry 2–3 codes, because Dataroma renamed its fund-ticker codes to adviser codes (`ARFFX`+`CAAPX`+`AI` are all Ariel, 0000936753). **Count churn on the resolved CIK**: 121 codes ever vs 106 managers. |
 
 The market / commodity / energy series (`SPY`, `^VIX`, `CL=F`, `GC=F`, `XLE`) do **not** go into
 `prices`. They are close-only rows in `prices_macro`, stored under SERIES names (`equity_tr`,
@@ -95,12 +96,20 @@ is gone. See [tests/data_extract/test_macro_prices_separation.py](../tests/data_
 
 ## Extract — ownership & institutional
 
+Written by `StepExtractInstitutionals` ([transformers/step_extract_institutionals.py](../src/data_extract/transformers/step_extract_institutionals.py),
+fetchers in `utils/institutionals/`) together with `sec_8k`, `short_interest` and
+`sec_fails_to_deliver` below — one step for every source that answers *who owns, trades or
+shorts this name*, mirroring the cube's `institutionals` part.
+
 | Table | PK | date_col | Fresh | Notes |
 |---|---|---|---|---|
 | `sec13f_hr` | `cik, period, ticker, cusip` | `period` | quarterly | **21.7M rows, 6.1 GB — THE reason projections exist.** Long-only quarterly snapshot, 45-day filing lag. Split into stock / call / put / debt legs. Institutional "moves" come from QoQ **share** deltas, not value deltas |
-| `insider_transactions` | `accession_number, security_type, transaction_sk` | `transaction_date` (fresh on `filing_date`) | quarterly | Forms 3/4/5 bulk sets; roles, transaction codes, shares, price |
+| `insider_transactions` | `accession_number, security_type, transaction_sk` | `transaction_date` (fresh on `filing_date`) | quarterly | Forms 3/4/5 bulk sets; roles, transaction codes, shares, price, plus the 10b5-1 flag and the derivative block. **`is_10b5_1` is a float, not a bool**: `AFF10B5ONE` exists in the source only from 2023q1, so NaN before it means *the source has no such field*, which a False would misstate. Availability: `filing_date` from **2006-01-03** (the data set's own floor); `transaction_date` reaches 1990-05-07 because a Form 3/5 legitimately reports a much older trade |
 | `sec_13d` | `ticker, accession_number, rp_seq` | `filing_date` | — | one row **per reporting person** per filing (`rp_seq`, not CIK — an RP without a CIK is common). Numeric ownership fields are **NULL, not 0**, whenever the 0 is a parser default rather than a disclosure: `has_structured_data` false (pre-2024-12-17 filings have no XML), or all six numerics 0 alongside a `reporting_person_comment` deferring them to Item 5. A real 0 with no comment is kept |
 | `sec_13d_transactions` | `ticker, accession_number, trade_seq` | `filing_date` | — | Item 5(c) 60-day trade log; an independent grain from `sec_13d` |
+| `sec_13g` | `ticker, accession_number, rp_seq` | `filing_date` | — | the PASSIVE >5% channel: same grain and column names as `sec_13d` so the 13G→13D escalation join is a plain union on `(ticker, reporting_person_cik)`. **Every numeric is NULL before 2024-12-17** — beneficial-ownership XML became mandatory then, and edgartools builds earlier filings from the SGML header alone, returning 0 defaults that would read as a 0% stake. `rule_designation` ((b) qualified institutional / (c) passive / (d) exempt) is post-mandate only. `reporting_person_comment` and `is_group_member` are ALWAYS NULL: the 13G parser does not populate them |
+| `sec13f_manager_holdings` | `cik, period, cusip` | `period` | quarterly | the **complete** book of every CIK ever on `superinvestor_roster`, at CUSIP grain with **no universe filter** — the denominator `sec13f_hr` cannot give, since its S&P 500 filter inflates a portfolio weight by a manager-specific 1.0x–7.6x. No ticker column by design; `position_type` ∈ {common, call, put, debt, other} labels the row's dominant leg while the per-type value columns stay authoritative |
+| `insider_footnotes` | `accession_number, footnote_id` | — | quarterly | Form 3/4/5 footnote prose, free from the cached zips. What distinguishes an exercise-and-sell package from a discretionary sale, and what carries 10b5-1 language on the 68 quarters predating `AFF10B5ONE`. Stored only for in-universe accessions |
 
 ## Extract — governance (DEF 14A) & events
 
@@ -237,10 +246,10 @@ from `sql/schema.sql`.
 FILING-SPACE.** 3,031,768 rows × 108 columns (106 features + `date`/`ticker`), 1995-09-13 →
 2026-09-04, 491 tickers; encoding split **87 raw / 18 `_vs_peers` / 1 `_vs_hist` / 0 `_xs`**, and
 zero interaction columns by design. It holds the DEF 14A board and pay levels (the twelve features
-that used to ship from `cube_part_extras`, carried across byte-identical), the executive-pay
+that used to ship from `cube_part_institutionals`, carried across byte-identical), the executive-pay
 families, the entrenchment-provision transitions, the auditor block, the four Item 5.07
 shareholder-dissent families, and — from the two per-person children — board quality and Item
-402(k) director pay. **Why it is its own part rather than more of `_extras`:** its sources are
+402(k) director pay. **Why it is its own part rather than a sixth `institutionals` panel:** its sources are
 annual proxies and 8-K vote records, so every YoY delta is a filing-to-filing difference needing
 no grid warm-up, while `_extras`' sources are daily and quarterly market data; the two have no
 shared input beyond `close_total`. The part is nonetheless declared **heavy** (1,260-day warm-up)

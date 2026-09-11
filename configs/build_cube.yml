@@ -57,6 +57,89 @@ build_cube:
     growth_cap: 0.15         # winsorize the firm's own growth used in the DCF
     growth_floor: -0.10
 
+  institutionals:            # informed-capital panels (13F, insider, 13D/G, short flow)
+    decay_halflife:          # trading days for the exponential event-decay transform.
+                             # An EVENT is 0 on ~99.9% of ticker-days, and a peer basket of
+                             # all-zeros has zero dispersion -> `peer_relative` returns NaN by
+                             # policy, so the undecayed flag is an ABSENT feature. Decay is
+                             # what makes these signals survive peer-relativization.
+      super: 63              # one quarter: elite 13F conviction, refreshed quarterly anyway
+      inst: 63               # one quarter: matches the 13F reporting cadence
+      insider: 63            # one quarter: Form 4 information is stale well inside a year
+      act: 126               # two quarters: an activist campaign plays out over months, not
+      bo: 126                # weeks -- same for a buyout/13D approach, so both decay slower
+
+    superinvestor:           # elite-manager (Dataroma roster) 13F panel
+      stale_quarters: 4      # quarters after a manager's last PUBLIC filing before their
+                             # book stops counting. A 13F filer silent for a year has
+                             # deregistered or fallen under the $100M threshold; without
+                             # this they stay a phantom holder in every name they ever
+                             # owned, and 23 roster managers are in exactly that state.
+
+      # Point-in-time manager selection on CONCENTRATION (plan D3b / Phase 2.2b).
+      # `sel(m, q)` in [0,1] multiplies EVERY elite aggregate, so this decides what
+      # `ic_super_holders` and friends actually mean:
+      #
+      #   "off"      sel = 1.0 for everyone -> "how many of the ~50 roster managers hold
+      #              this name". No selection; the behaviour before 2.2b.
+      #   top_k      sel = 1.0 for the k most concentrated managers public at that date,
+      #              0 otherwise -> "how many of the k most concentrated hold this".
+      #              ⚠ ALSO CHANGES COVERAGE, AND THE COST IS LARGE, NOT MARGINAL: a name
+      #              held only by managers outside the top k has no counted holder and
+      #              leaves the panel rather than reading 0. TWO coverage numbers, and
+      #              they differ by 4x, so quote the right one:
+      #                * FRESH holdings -- ticker-quarters with a top-k manager filing that
+      #                  quarter: 38/quarter against 398 under "off", 11%, 230 of 488 names
+      #                  ever, and the absent 89% carry 56% of the elite dollars.
+      #                * PANEL WIDTH -- in-universe tickers actually non-NaN on a given
+      #                  date, which is what a model sees: median 262 of 488 at the
+      #                  configured k=20, against 430 under "off" (61%). k=15 gives 195 and
+      #                  k=25 gives 313. `stale_quarters: 4` keeps a name live for a year
+      #                  after its last selected holder filed, so the panel is far wider
+      #                  than the fresh-filing count suggests.
+      #              The second number is the one that matters for `_xs` and for how many
+      #              names the model can score. `k` is the dial -- see the ladder below.
+      #   continuous sel = the concentration percentile itself -> "how concentrated are
+      #              this name's backers". Discards nobody, keeps the gradient, and is the
+      #              better shape for a boosted model.
+      #
+      # ⚠ QUOTE "off". PyYAML is YAML 1.1, where bare `off`/`no`/`on` parse as BOOLEANS.
+      #
+      # ⚠ TURNING THIS ON CHANGES EVERY `ic_super_*` VALUE (plan D8). What it buys, measured
+      # over 58 quarterly rebalances on the corrected pool (roster as published at `q`,
+      # filings read only once public): the top-15 concentrated consensus basket returns
+      # -0.32%/yr, i.e. it does NOT beat the equal-weight index -- the +3.41%/yr in README
+      # Finding 4(d) was two thirds manager survivorship and one third look-ahead. What
+      # survives is a ~1.8pp/yr SPREAD over the least-concentrated control, which is what a
+      # cross-sectional feature needs and what this weight is for.
+      selection:
+        mode: top_k          # "off" | top_k | continuous. ⚠ `continuous` is what the
+                             # evidence alone would pick -- a hard cut asserts a cliff
+                             # between manager k and k+1 and the measurement shows a
+                             # gradient. `top_k` is a deliberate choice for an
+                             # INTERPRETABLE aggregate ("how many of the 15 most
+                             # concentrated hold this") over a marginally better-shaped one.
+        k: 20                # top_k only. Measured coverage ladder (tickers/quarter median,
+                             # % of `off` ticker-quarters, names ever covered, and the
+                             # within-quarter Spearman of the weighted book against `off`):
+                             #    k= 5    6   1.3%   53 names  rho 0.34
+                             #    k=10   20   5.2%  146 names  rho 0.20
+                             #    k=15   38  10.0%  230 names  rho 0.25
+                             #    k=20   68  16.5%  303 names  rho 0.61   <- here
+                             #    k=30  146  33.7%  392 names  rho 0.72
+                             #    k=60  360  83.7%  485 names  rho 0.94
+                             # rho stays low up to k~20 because the cut genuinely REORDERS
+                             # the cross-section rather than just thinning it -- which is
+                             # the point of selecting, and also why k trades signal
+                             # distinctiveness against how much of the universe is scored.
+        min_quarters: 4      # prior filings before a manager may be scored; a two-quarter
+                             # concentration estimate is noise. Free: -0.32% -> -0.27%.
+        min_positions: 0     # universe positions required. ⚠ 0 ON PURPOSE, not the 3 the
+                             # plan proposed: gating on the index sleeve while scoring the
+                             # whole book costs 1.3pp/yr and collapses the top-minus-bottom
+                             # spread from +1.97pp to +0.63pp. Raise it only alongside a
+                             # slice-basis score.
+
   hist:                      # self-history (valuation mean-reversion) window for
                              # the f_<yield>_vs_hist features ("cheap vs own past")
     window: 1260             # ~5 trading years of trailing daily observations
@@ -211,18 +294,39 @@ build_cube:
 
       # ---- OWNERSHIP FLOW: who is buying. Three separate groups because insiders,
       #      elite 13F managers and the all-filer 13F crowd are different signals. ----
-      insider: [f_insider_net_buy_ratio_xs, f_insider_buy_sell_count_ratio_xs,
-                f_insider_buy_count_xs, f_insider_net_buy_to_mcap_xs]
-      superinvestor: [f_super_flow_to_mcap_xs, f_super_value_to_mcap_xs,
-                      f_super_breadth_chg_xs, f_super_cluster_buying_xs,
-                      f_super_new_buyer_ratio_xs, f_super_shares_chg_xs]
-      institutional: [f_inst_flow_to_mcap_xs, f_inst_breadth_chg_xs,
-                      f_inst_shares_chg_xs, f_new_buyer_ratio_xs, "-f_exiters_xs",
-                      "-f_inst_concentration_xs"]   # concentrated holders = fragile ownership
+      # ⚠ All four members were renamed 2026-09-10 by the Phase 2.3 rebuild, which replaced
+      # the 4 legacy insider features with the registry's 14. The old names
+      # (`net_buy_ratio`, `buy_sell_count_ratio`, `buy_count`, `net_buy_to_mcap`) no longer
+      # exist, and `composites` skips an absent member IN SILENCE -- the failure mode the
+      # cube-degradation audit was written about. `net_buy_ratio_180d` and
+      # `distinct_buyers_120d` are the RAW legs deliberately: both lost their `_xs` leg on
+      # the measured tie fraction (74.8% and 98.1%), so an `_xs` suffix here names nothing.
+      insider: [f_ic_insider_net_buy_ratio_180d, f_ic_insider_distinct_buyers_120d,
+                f_ic_insider_buy_value_mcap_180d_xs, f_ic_insider_buy_shares_so_180d_xs]
+      # ⚠ Three members were dropped 2026-09-10: `f_ic_super_value_to_mcap_xs` (price
+      # contaminated), `f_ic_super_cluster_buying_xs` and `f_ic_super_new_buyer_ratio_xs`
+      # (subsumed by the initiations/exits events, which carry a magnitude). They had not
+      # existed since the Phase 2.2 rebuild and `composites` skips absent members in
+      # silence, so this composite was already running on the three below -- removing the
+      # dead names is numerically inert.
+      #
+      # NOT REPLACED, DELIBERATELY. `f_ic_super_initiations_xs` / `-f_ic_super_full_exits_xs`
+      # are the natural stand-ins, but the whole `composites` mechanism is slated for removal
+      # at the cube-assemble refactor, so a three-member group is left as it is rather than
+      # rebalanced on its way out.
+      # ⚠ `f_ic_super_breadth_chg` is the RAW leg on purpose: `breadth_chg` lost its `_xs`
+      # leg on 2026-09-10 (96% of its cross-section is tied under `top_k`), so
+      # `f_ic_super_breadth_chg_xs` is a column that no longer exists. Left as the same
+      # three members rather than re-picked -- the group dies at the cube-assemble refactor.
+      superinvestor: [f_ic_super_flow_to_mcap_xs, f_ic_super_breadth_chg,
+                      f_ic_super_shares_chg_xs]
+      institutional: [f_ic_inst_flow_to_mcap_xs, f_ic_inst_breadth_chg_xs,
+                      f_ic_inst_shares_chg_xs, f_ic_inst_new_buyer_ratio_xs, "-f_ic_inst_exiters_xs",
+                      "-f_ic_inst_concentration_xs"]   # concentrated holders = fragile ownership
 
       # ---- SHORT / SETTLEMENT PRESSURE: heavy shorting and rising fails are bearish ----
-      short_pressure: ["-f_short_vol_ratio_xs", "-f_short_vol_ratio_chg_xs",
-                       "-f_fails_to_deliver_ratio_xs", "-f_fails_to_deliver_chg_xs"]
+      short_pressure: ["-f_ic_shortvol_ratio_xs", "-f_ic_shortvol_ratio_chg_xs",
+                       "-f_ic_ftd_ratio_xs", "-f_ic_ftd_chg_xs"]
 
       # ---- EARNINGS-CALL TONE (f_ec_*): positive, confident, coherent, unchanged
       #      narrative = bullish. Populated only once transcripts are ingested and

@@ -23,11 +23,14 @@ from typing import Callable
 
 from src.constants.constants import (
     DEF14A_FORMS, FUNDAMENTALS_FORMS, SEC_8K_FORMS, SEC_13D_FORMS, SEC_13F_FORMS,
+    SEC_13G_FORMS,
 )
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
-from src.data_extract.utils.prices.fetch_13f import fetch_13f
-from src.data_extract.utils.structure.fetch_8k_edgar import fetch_8k_edgar
-from src.data_extract.utils.structure.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
+from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
+from src.data_extract.utils.institutionals.fetch_8k_edgar import fetch_8k_edgar
+from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
 from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
 from src.data_extract.utils.structure.fetch_filing_text import (
@@ -80,6 +83,19 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
              "reporting-person name/CIK/voting-power + CUSIP + amendment metadata. Grain "
              "changed to (ticker, accession_number, rp_seq): one row PER REPORTING PERSON, "
              "since a single 13D can have multiple co-filers"),
+    "sec_13g": FormHandlerSpec(
+        name="sec_13g", sec_forms=tuple(SEC_13G_FORMS),
+        discovery="per_cik_accession", table="sec_13g",
+        handler=fetch_13g_edgar, call_shape="(context, tickers, years_history)",
+        step_chain_wired=True,
+        notes="the PASSIVE >5% beneficial-ownership channel, the counterpart of sec_13d and "
+             "the same grain (ticker, accession_number, rp_seq). EVERY NUMERIC IS NULL BEFORE "
+             "2024-12-17: beneficial-ownership XML became mandatory that day and edgartools "
+             "builds earlier filings from the SGML header alone, returning 0 defaults that "
+             "`num_or_null` turns into NaN rather than publishing a 0% stake nobody disclosed. "
+             "The reporting-person CIK -- the 13G->13D escalation key -- is backfilled from "
+             "the header's filer list, because the post-mandate XML cover page has no CIK "
+             "element and edgartools hard-codes cik=''"),
     "def_14": FormHandlerSpec(
         name="def_14", sec_forms=tuple(DEF14A_FORMS),
         discovery="per_cik_accession", table="def14a_llm",
@@ -115,4 +131,15 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
              "moved off SEC's quarterly bulk data sets (published weeks after a quarter "
              "closes) onto edgartools by filing date; the all-filers grain and the "
              "(cik, period, ticker, cusip) PK are unchanged, so there is no accession column"),
+    "sec13f_manager_holdings": FormHandlerSpec(
+        name="sec13f_manager_holdings", sec_forms=tuple(SEC_13F_FORMS),
+        discovery="per_cik_accession", table="sec13f_manager_holdings",
+        handler=fetch_13f_managers, call_shape="(context, years_history)  # roster CIKs, no tickers",
+        years_config_key="years_history", step_chain_wired=True,
+        notes="the ROSTER walk, per manager CIK -- `sec13f_hr` above remains the all-filer one. "
+             "Same form, different question: this table keeps a manager's COMPLETE book at CUSIP "
+             "grain with no universe filter, because `sec13f_hr`'s S&P 500 filter inflates any "
+             "portfolio weight computed from it by a manager-specific 1.0x-7.6x. Scope is the "
+             "UNION of every CIK ever on `superinvestor_roster`, never today's roster, so the "
+             "history is not survivorship-filtered"),
 }

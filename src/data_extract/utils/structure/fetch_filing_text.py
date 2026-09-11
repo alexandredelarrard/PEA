@@ -22,7 +22,7 @@ import re
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
+from src.data_extract.utils.common.edgar_driver import filed_by, new_filings, run_edgar_fetch
 from src.data_store.schema import Table, Tables
 
 FILING_TEXT_FORMS = ["10-K", "10-Q"]
@@ -197,7 +197,10 @@ def build_ticker_filing_text(ticker: str, cik: str, *, since: pd.Timestamp | Non
         filed = pd.Timestamp(f.filing_date).normalize()
         for section, body in _filing_sections(f).items():
             rows.append({
-                "ticker": ticker, "cik": cik, "accession_number": f.accession_number,
+                # The CIK that FILED it -- see `edgar_driver.filed_by`. `FILING_TEXT_FORMS`
+                # is SPLIT, so each row's registrant is unambiguous and worth recording.
+                "ticker": ticker, "cik": filed_by(f, cik),
+                "accession_number": f.accession_number,
                 "form": str(f.form), "filed": filed,
                 "period_of_report": f.period_of_report,
                 "section": section, "text": body, "n_words": len(body.split()),

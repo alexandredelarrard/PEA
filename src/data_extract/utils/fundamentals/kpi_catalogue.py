@@ -47,10 +47,14 @@ from src.constants.constants import (
     DEFAULT_CONFIG_DIR, FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_EXCEPTIONS_FILENAME,
     FUNDAMENTALS_KPIS_FILENAME, FUNDAMENTALS_REGIMES_FILENAME,
 )
+from src.data_extract.utils.common.config_paths import resolve_config_dir
 
 # `DEFAULT_CONFIG_DIR` re-exported (not re-declared): `field_map.py`, `gap_check.py`,
 # `merge_history.py` and `periods.py` all import it from this module rather than from
 # `constants` directly -- one declaration in `constants.py`, one import path here.
+# `resolve_config_dir` is re-exported for the same reason, but it now LIVES in
+# `common/config_paths.py`: the registrant register is read by tiers A, B and C, and a
+# loader in `common/` cannot import from `fundamentals/` without inverting the layering.
 
 #: Keys whose leading underscore marks them as documentation, not data. The JSONs carry
 #: their own rationale inline (a `_README` block, `_authority` notes) so the contract and
@@ -631,21 +635,24 @@ def _build_field(name: str, entry: dict[str, Any]) -> FieldSpec:
     )
 
 
-@cache
-def resolve_config_dir(config_dir: str | None = None) -> str:
-    """One canonical absolute path for a config directory, whatever spelling reached us.
-
-    Every `@cache`d loader in this package keys on its ARGUMENT, so `None`, `"./configs"`
-    and an absolute path pointing at the same directory were three cache entries -- and one
-    `StepExtractAllData.run()` parsed the 169 KB catalogue and ran all six validation passes
-    twice, because the no-arg and explicit conventions both exist in the tree. Resolving
-    first makes that mistake cheap instead of doubling the work.
-    """
-    return str(Path(config_dir or DEFAULT_CONFIG_DIR).resolve())
-
-
 def load_catalogue(config_dir: str | None = DEFAULT_CONFIG_DIR) -> Catalogue:
-    """The validated catalogue, built once per (process, config DIRECTORY)"""
+    """The validated catalogue, built once per (process, config DIRECTORY).
+
+    ⚠ DELIBERATELY NOT `@cache`d. A `@cache` here keys on the SPELLING -- `None`,
+    `"./configs"` and the absolute path are three entries -- which is the exact duplication
+    `resolve_config_dir` + the inner `_catalogue_at` exist to remove, reintroduced one level
+    up. It is also silently WRONG, not merely wasteful: `_catalogue_at.cache_clear()` then
+    leaves the outer cache holding objects built before the clear, so
+
+        _catalogue_at.cache_clear()
+        a = load_catalogue(None)          # outer miss -> inner miss -> NEW object
+        b = load_catalogue("./configs")   # outer HIT  -> the object from BEFORE the clear
+        assert a is b                     # fails, while cache_info().misses is still 1
+
+    which is how `test_config_dir_cache` failed: the miss count looked right and the
+    identity did not. Caching belongs on `_catalogue_at`, which is keyed on the resolved
+    absolute path; this wrapper must stay a plain call so the two never disagree.
+    """
     return _catalogue_at(resolve_config_dir(config_dir))
 
 

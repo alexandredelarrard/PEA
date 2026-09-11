@@ -140,7 +140,13 @@ class BeneficialOwner(BaseModel):
     percent_of_class: Optional[float] = Field(
         None, description="Percent of the CLASS of shares outstanding, as a decimal "
                           "(0.0963 = 9.63%). NULL for '*' or '<1%' — those are a BOUND, not a "
-                          "measurement. Never a '% of total voting power' column")
+                          "measurement. If the row shows only ONE percent column and it is not "
+                          "labelled as voting power, put it here")
+    percent_of_voting_power: Optional[float] = Field(
+        None, description="This holder's '% of total voting power' / 'combined voting power', "
+                          "as a decimal, when the table prints such a column BESIDE the percent "
+                          "of class. NULL when the table has no voting-power column. Do NOT "
+                          "copy the percent of class here")
 
 
 class GovernanceProfile(BaseModel):
@@ -211,16 +217,56 @@ class GovernanceProfile(BaseModel):
         None, description="TOTAL auditor fees for the PRIOR fiscal year, WHOLE USD — the proxy "
                           "shows two years side by side. Enables a fee-growth signal")
     # ---- ownership / alignment (from the beneficial-ownership summary) ----
-    # Both must read the PERCENT OF CLASS column. Dual-class issuers print a "% of total voting
-    # power" column alongside it, and 2 of 8 populated values sampled had taken the voting
-    # column instead -- a materially different number (voting power >> economic stake).
+    # ⚠ ASK FOR BOTH COLUMNS, DO NOT ASK THE MODEL TO CHOOSE. A dual-class proxy's ownership
+    # table prints "Percent of Class" and "Percent of Total Voting Power" side by side. The
+    # previous schema told the model three times to read the first and never the second; it
+    # still returned voting power on 59 of 12,343 filings, 98.3% of them dual-class, giving
+    # UHS 100.00% and META 99.8% insider ownership where the real economic stakes are ~14%.
+    # Extracting both columns is a task a model does reliably; SUPPRESSING a column it can see
+    # has been tried, is recorded here as tried, and does not hold. CODE picks the economic leg
+    # downstream, and the difference of the two is a feature in its own right
+    # (`f_control_wedge`): a founder controlling 61% of the votes on 14% of the equity faces a
+    # different incentive structure from one holding 14% of both.
+    # ⚠ AND THE DENOMINATOR IS THE SECOND HALF OF THE DEFECT, measured on Alphabet's own 2026
+    # table. Its columns are `Class A Shares | Class A % | Class B Shares | Class B % | Total
+    # Voting Power %` and there is NO combined economic column at all: Larry Page's 46.5% is
+    # 389,051,160 shares as a share of CLASS B (~837M), not of the ~12bn shares outstanding,
+    # which would be ~3%. So a percentage read off a per-class column is LITERALLY CORRECT for
+    # that column and is NOT economic ownership -- and for this filer shape an insider economic
+    # percentage is not a disclosed fact at all, only a computable one.
+    #
+    # The field therefore asks for the COMBINED basis and for NULL when only per-class columns
+    # exist, rather than accepting a number that would be wrong by a factor of 15. The share
+    # COUNTS are exact and always disclosed, so `insider_shares` carries the evidence a
+    # combined percentage can be computed from downstream.
     insider_ownership_pct: Optional[float] = Field(
-        None, description="Percent of shares owned by ALL directors and executive officers AS A GROUP, "
-                          "as a decimal (0.03 = 3%); null if shown as '*'/<1%. Read the PERCENT OF "
-                          "CLASS (economic) column, never a '% of total voting power' column")
+        None, description="Percent of TOTAL shares outstanding (ALL classes combined) held by "
+                          "ALL directors and executive officers AS A GROUP, as a decimal "
+                          "(0.03 = 3%); null if shown as '*'/<1%. If the table prints only "
+                          "PER-CLASS percentage columns (e.g. 'Class A %' and 'Class B %') "
+                          "and no combined/total column, return NULL — do NOT substitute one "
+                          "class's percentage. If there is a single percent column not "
+                          "labelled as voting power, use it here")
+    insider_shares: Optional[float] = Field(
+        None, description="TOTAL NUMBER OF SHARES (not a percent) beneficially owned by all "
+                          "directors and executive officers AS A GROUP, summed across every "
+                          "share class if the table separates them. Null if the table shows "
+                          "no group share count")
+    insider_voting_pct: Optional[float] = Field(
+        None, description="'Percent of TOTAL VOTING POWER' (or 'combined voting power') for ALL "
+                          "directors and executive officers AS A GROUP, as a decimal, when the "
+                          "table prints such a column. Null if the table has no voting-power "
+                          "column. Do NOT copy the ownership percentage here")
     ceo_ownership_pct: Optional[float] = Field(
-        None, description="Percent of shares beneficially owned by the CEO, as a decimal; null if "
-                          "'*'/<1%. PERCENT OF CLASS (economic), never '% of total voting power'")
+        None, description="Percent of TOTAL shares outstanding (ALL classes combined) "
+                          "beneficially owned by the CEO, as a decimal; null if '*'/<1%. As "
+                          "with the group figure: if the table prints only PER-CLASS percent "
+                          "columns and no combined one, return NULL rather than one class's "
+                          "percentage. A single unlabelled percent column belongs here")
+    ceo_voting_pct: Optional[float] = Field(
+        None, description="The CEO's '% of total voting power' / 'combined voting power', as a "
+                          "decimal, when the table prints such a column. Null if the table has "
+                          "no voting-power column. Do NOT copy the ownership percentage here")
     n_five_percent_holders: Optional[int] = Field(
         None, description="Number of beneficial owners holding 5% or more of the shares")
 

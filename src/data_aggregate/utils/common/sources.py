@@ -16,12 +16,20 @@ The projection MUST cover every column its builder requires --
 drops a needed column fails there rather than silently emptying a feature.
 
 BUT it must also tolerate a column the builder treats as OPTIONAL and the live table does not
-have. `short_interest` is the case that bites: the builder only adds `days_to_cover` when
-`{"short_interest", "avg_daily_volume"}.issubset(hist.columns)`, yet the projection listed
-them unconditionally -- and `DataStore.read_table` resolves columns via `tbl.c[name]`, which
-raises `KeyError` for an absent one. The live table has only
+have. `sec_short_interest` is the case that bites: the builder only adds
+`ic_shortvol_days_to_cover` when `{"short_interest", "avg_daily_volume"}.issubset(hist.columns)`,
+yet the projection listed them unconditionally -- and `DataStore.read_table` resolves columns
+via `tbl.c[name]`, which raises `KeyError` for an absent one. The live table has only
 `date, ticker, short_volume, total_volume`, so the read died instead of degrading. Use
 `project_existing` rather than indexing `SOURCE_COLUMNS` directly.
+
+⚠ THE KEYS ARE PHYSICAL TABLE NAMES (`Table.name`), NOT REGISTRY ATTRIBUTE NAMES. Five
+registry entries differ between the two -- `Tables.short_interest` is the table
+`sec_short_interest`, and `dividends`, `sharadar_fundamentals`, `def14a_edgar`,
+`filing_risk_text` are the others. This map was keyed on `"short_interest"`, which matches no
+table: `store.exists` returned False, `_load_source` returned None, and the three
+`ic_shortvol_*` features were absent from the cube while 956,640 rows sat in the table. Call
+sites pass `table.name`, so a future entry must be keyed the same way.
 """
 from __future__ import annotations
 
@@ -33,15 +41,27 @@ SOURCE_COLUMNS: dict[str, list[str]] = {
     # institutional_features + superinvestor_features (the ~21.7M-row table)
     "sec13f_hr": ["cik", "period", "ticker", "shares", "value_usd",
                   "call_value", "put_value", "filing_date"],
-    # insider_features
-    "insider_transactions": ["ticker", "filing_date", "transaction_code", "value_usd"],
-    # short_interest_features: RegSHO short/total volume + reported short interest / ADV
-    "short_interest": ["date", "ticker", "short_volume", "total_volume",
-                       "short_interest", "avg_daily_volume"],
+    # insider_features + insider_quality. Wider than it looks, and every column earns it:
+    # `security_type`/`security_title` scope the read to common stock (a preferred row at par
+    # put BAC's reference price at $57.80), `price_per_share` + `shares` are what the
+    # consensus screen repairs `value_usd` from, `accession_number`/`transaction_date` link an
+    # exercise-and-sell package, and `shares_owned_after`/`direct_indirect` are the two legs
+    # of #36. Dropping any of them does not degrade a feature, it deletes it.
+    "insider_transactions": ["accession_number", "ticker", "owner_cik", "owner_name",
+                             "filing_date", "transaction_date", "transaction_code", "shares",
+                             "price_per_share", "value_usd", "shares_owned_after",
+                             "security_type", "security_title", "direct_indirect",
+                             "officer_title", "is_director", "is_officer",
+                             "is_ten_pct_owner", "is_10b5_1"],
+    # short_interest_features: RegSHO short/total volume + reported short interest / ADV.
+    # Keyed on the PHYSICAL name -- `Tables.short_interest.name` is `sec_short_interest`.
+    "sec_short_interest": ["date", "ticker", "short_volume", "total_volume",
+                           "short_interest", "avg_daily_volume"],
     "sec_fails_to_deliver": ["date", "ticker", "fails_quantity"],
-    # attention_features
-    "wiki_pageviews": ["date", "ticker", "pageviews"],
-    "google_trends": ["date", "ticker", "search_interest"],
+    # NOTE `wiki_pageviews` / `google_trends` are deliberately ABSENT. Their only consumer
+    # was the attention panel, which is deleted; both tables are still EXTRACTED and still
+    # sit in the DB, so a future consumer adds its projection back here. A projection with
+    # no reader is not free -- it is a claim that some builder needs those columns.
     # ---- the two PER-PERSON DEF 14A children (StepCubeGovernance) ----
     # 134,490 + 80,252 rows is a real read beside the 21.7M-row 13F table in the same build,
     # and both are WIDE with columns the governance builders never touch (`cik`, `gender_basis`,
@@ -65,8 +85,8 @@ SOURCE_COLUMNS: dict[str, list[str]] = {
 # Columns a builder uses only IF present, so projecting them must not hard-fail when the live
 # table predates them. Each entry is `table -> the optional columns of its projection`.
 OPTIONAL_SOURCE_COLUMNS: dict[str, frozenset[str]] = {
-    # short_interest_features adds `days_to_cover` only when BOTH are reported
-    "short_interest": frozenset({"short_interest", "avg_daily_volume"}),
+    # short_interest_features adds `ic_shortvol_days_to_cover` only when BOTH are reported
+    "sec_short_interest": frozenset({"short_interest", "avg_daily_volume"}),
     # institutional_features zero-fills the option legs when they are absent
     "sec13f_hr": frozenset({"call_value", "put_value", "filing_date"}),
 }

@@ -9,7 +9,8 @@ This replaces three parallel dicts that had to be kept in sync by hand
 list inside `cube_parts_status`), plus a fourth copy in the Airflow DAG whose comment
 read "must match StepBuildCube._GROUP_SOURCES". They drifted: `attention` was commented
 out of the DAG but still listed in `_GROUP_SOURCES`, so the status gate reported
-`cube_part_attention` missing on every run.
+`cube_part_attention` missing on every run. That panel has since been deleted outright;
+the registry is why its removal needed one edit here rather than four in lockstep.
 
 WARM-UPS. Each part is rebuilt incrementally -- read its latest date, recompute only a
 warm-up-padded trailing window, append the rows after that date. `warmup_trading_days` is
@@ -79,9 +80,13 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     CubePart(Tables.cube_part_text, "build-text", "features", 130,
              (("earnings_call_sentiment", 0),   # QoQ over reported quarters
               ("earnings_call_embedding", 0))),  # QoQ embedding drift
-    CubePart(Tables.cube_part_extras, "build-extras", "features", 160,
+    # `short_interest` is now the BINDING look-back at 103: the `attention` entry (63) went with
+    # the attention panel itself. The warm-up stays 160 -- it still covers 103 with buffer, and
+    # the price-conditioning look-backs that will be added to this part have to be re-checked
+    # against it anyway. `test_part_registry.py` asserts every warm-up covers its members, so
+    # that check is enforced rather than remembered.
+    CubePart(Tables.cube_part_institutionals, "build-institutionals", "features", 160,
              (("short_interest", 103),    # short-vol rolling(63) + FTD shift(40)
-              ("attention", 63),          # spike rolling(63) / level rolling(21)
               ("institutional", 0),       # QoQ vs the prior 13F period
               ("superinvestor", 0),
               ("insider", 0))),           # rolling('180D') over the FULL transaction calendar

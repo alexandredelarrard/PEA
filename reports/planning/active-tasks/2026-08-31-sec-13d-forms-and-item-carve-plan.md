@@ -47,7 +47,7 @@ code is needed.
 
 **Key files**
 - `src/constants/constants.py` — `SEC_13D_FORMS`
-- `src/data_extract/utils/structure/fetch_13d_edgar.py` — anchors, carve, `_num_or_null`, `_COLS`
+- `src/data_extract/utils/institutionals/fetch_13d_edgar.py` — anchors, carve, `_num_or_null`, `_COLS`
 - `src/data_extract/cli.py` — `sec_13d` command (no `-F/--full` yet)
 - `sql/schema.sql:765` — `sec_13d` DDL
 - `tests/data_extract/structure/test_fetch_8k_13d_edgar.py`
@@ -94,7 +94,7 @@ embedding similarity noise floor for the whole cleaning suite, which does not ju
    SEC_13D_FORMS = ["SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"]
    ```
 
-2. `src/data_extract/utils/structure/fetch_13d_edgar.py`:
+2. `src/data_extract/utils/institutionals/fetch_13d_edgar.py`:
    - [x] Thread `full` through `fetch_13d_edgar` into `run_edgar_fetch` (which already accepts it).
    ```python
    def fetch_13d_edgar(context: Context, tickers: list[str], years_history: int,
@@ -137,7 +137,7 @@ When item4's anchor misses, item3's body runs to the next matching anchor — MN
 
 **Changes**:
 
-1. `src/data_extract/utils/structure/fetch_13d_edgar.py`:
+1. `src/data_extract/utils/institutionals/fetch_13d_edgar.py`:
    - [x] Keep `_ITEM_ANCHORS` **exactly as it is today** — it is the measured fallback, and
          widening it in place would invalidate the measurement.
    - [x] Add captions + a line-anchored anchor set:
@@ -242,7 +242,7 @@ Agreement\x94` in STX) and begin with runs of box-drawing characters (STX's item
 
 **Changes**:
 
-1. `src/data_extract/utils/structure/fetch_13d_edgar.py`:
+1. `src/data_extract/utils/institutionals/fetch_13d_edgar.py`:
    - [x] Add the normalizer and apply it to each carved body inside `_carve_with`, before the
          `_ITEM_TEXT_MIN_CHARS` gate.
    ```python
@@ -305,7 +305,7 @@ discriminating. Filers exploit `<commentContent>` to defer the numbers:
 
 **Changes**:
 
-1. `src/data_extract/utils/structure/fetch_13d_edgar.py`:
+1. `src/data_extract/utils/institutionals/fetch_13d_edgar.py`:
    - [x] Add `reporting_person_comment` to `_COLS` (after `type_of_reporting_person`).
    - [x] Add the placeholder test and honour it in `_num_or_null`:
    ```python

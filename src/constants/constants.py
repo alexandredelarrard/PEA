@@ -73,8 +73,15 @@ SEC_8K_FORMS = ["8-K", "8-K/A"]
 # "SC 13D", filings from 2024-12-17 are "SCHEDULE 13D". `get_filings(form=...)` matches EXACTLY,
 # so dropping either pair silently truncates the table at the changeover -- measured: 461 filings
 # across 91 S&P 500 tickers were invisible until both pairs were listed.
-SEC_13D_FORMS = ["SC 13D", "SC 13D/A",   # activist (13G = passive is deliberately excluded)
+SEC_13D_FORMS = ["SC 13D", "SC 13D/A",   # activist; the passive 13G channel is SEC_13G_FORMS
                  "SCHEDULE 13D", "SCHEDULE 13D/A"]
+
+# Schedule 13G: >5% beneficial ownership WITHOUT intent to influence control -- the passive
+# counterpart of a 13D, filed by qualified institutions (Rule 13d-1(b)), passive investors
+# (13d-1(c)) and exempt investors (13d-1(d)). Same two-era form-string split as 13D, and the
+# same trap: "SC 13G" through 2024-12-16, "SCHEDULE 13G" from 2024-12-17. All four spellings
+# must be listed or the table stops dead at the changeover.
+SEC_13G_FORMS = ["SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"]
 
 # 13F institutional holdings, walked per-filing-date via edgartools (fetch_13f.py). 
 SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
@@ -83,7 +90,24 @@ SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
 FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
 
 # DEF 14A proxy + the DEF 14C information-statement equivalent that CONTROLLED companies file
-DEF14A_FORMS = ["DEF 14A", "DEF 14C"]
+# + DEFC14A, the CONTESTED annual proxy, which REPLACES the DEF 14A rather than supplementing
+# it -- so a proxy fight made the whole year invisible to every governance feature.
+#
+# Measured over the 500-ticker universe, 2026-09-09 (`_cache/defc14a_scan.log`): 41 ticker-years
+# across 36 tickers had a definitive proxy the pipeline could not see, and the list corroborates
+# itself against known campaigns -- DIS 2023/2024 (Peltz), QCOM 2018 (Broadcom), PG 2017 (Peltz),
+# MCD 2022 and EBAY 2014 (Icahn), TGT 2009 (Ackman), GM 2017 (Greenlight), CSX 2008, AXP 2010-12.
+# XOM 2021 (Engine No. 1) is a 42nd, absent from that scan only because it was taken before the
+# registrant cutover landed and the roster CIK held no proxies at all.
+#
+# ⚠ DEFR14A IS DELIBERATELY EXCLUDED. It is a REVISED proxy, normally filed ALONGSIDE the
+# original, so it is a duplicate far more often than a recovery: of 232 DEFR14A ticker-years,
+# 220 already hold the DEF 14A. Adding it would fetch 247 filings to recover 3 ticker-years
+# (BDX 2019, BEN 2021, TROW 2001) -- which therefore remain lost, on purpose and on record.
+#
+# DEFM14A / DEFS14A / DEFN14A stay out because they are not annual meetings (merger, special
+# and consent solicitations), so they carry no board, pay or ownership tables to extract.
+DEF14A_FORMS = ["DEF 14A", "DEF 14C", "DEFC14A"]
 
 # The three JSON files that ARE the fundamentals contract -- one entry per KPI (tier, kind,
 # sign, unit, definition, primary-source authority, and how to resolve it), the regime ->
@@ -95,7 +119,6 @@ FUNDAMENTALS_CATALOGUE_SUBDIR = "fundamentals"
 FUNDAMENTALS_KPIS_FILENAME = "fundamentals_kpis.json"
 FUNDAMENTALS_REGIMES_FILENAME = "fundamentals_regimes.json"
 FUNDAMENTALS_EXCEPTIONS_FILENAME = "fundamentals_exceptions.json"
-FUNDAMENTALS_CIK_CUTOVER_FILENAME = "fundamentals_cik_cutover.json"
 FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 
 # --------------------------------------------------------------------------- #

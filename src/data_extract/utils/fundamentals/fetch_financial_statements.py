@@ -37,6 +37,7 @@ from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, quarter_periods,
 )
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.registrant import drop_rows_outside_segment
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, bulk_ingested_quarters, load_processed_universe,
     save_processed_universe, cik_to_ticker)
@@ -132,10 +133,23 @@ def _read_pension_facts(path: Path) -> pd.DataFrame | None:
     return _join_pension(num, sub)
 
 
-def fetch_financial_statements(context: Context, tickers: list[str], years_history: int= 15 ) -> int:
+def fetch_financial_statements(context: Context, tickers: list[str],
+                               years_history: int = 15, reparse: bool = False) -> int:
     """Download (cached) the Financial Statement Data Sets over `years_history`,
     extract pension facts for the universe, upsert to `pension_facts`. Returns the
-    number of rows upserted."""
+    number of rows upserted.
+
+    ⚠ `reparse` RE-READS EVERY CACHED PERIOD, and it exists because the incremental test
+    cannot see a resolution change. That test is "did the ticker universe gain members?" --
+    and a registrant-register change gains none: the same 491 tickers resolve through MORE
+    CIKs. Without this flag the recovered predecessor rows would never be parsed.
+
+    ⚠ A PARTIAL RE-PARSE IS WORSE THAN EITHER STATE ALONE. It leaves the oldest periods
+    carrying the old resolution while the rest carry the new, and nothing downstream can tell
+    that from a real coverage cliff. So this re-reads the whole window, not a suffix of it.
+
+    Costs no network: a past period's data set is final and every zip is already on disk.
+    """
 
     cikmap = load_cik_mapping(context)
     cik2tkr = cik_to_ticker(cikmap) 
@@ -146,10 +160,12 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
     if new_tickers:
         logger.info("finstmt: %d new/changed tickers -> re-parsing cached quarters",
                     len(new_tickers))
+    if reparse:
+        logger.info("finstmt: --reparse -> re-reading every cached quarter (no re-download)")
 
     saved = 0
     for q in tqdm(quarter_periods(years_history +1, SEC_FINSTMT_FIRST_YEAR), desc="financial-statement data sets"):
-        if q in done_q and not new_tickers:
+        if q in done_q and not new_tickers and not reparse:
             continue
         path = ensure_zip(context, cache / f"{q}.zip",
                           SEC_FINSTMT_URL_TEMPLATE.format(quarter=q),
@@ -161,6 +177,10 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
             continue
         facts["ticker"] = facts["cik"].map(cik2tkr)
         facts = facts[facts["ticker"].isin(tickers)]
+        # `pension_facts` is CONSOLIDATING: a predecessor CIK resolves to the ticker, but only
+        # for the dates that registrant actually owned. See `FORM_POLICY`.
+        facts = drop_rows_outside_segment(facts, cik_col="cik", ticker_col="ticker",
+                                          filed_col="filed")
         if facts.empty:
             continue
         # keep the latest-filed value per (cik, tag, period-end, duration)

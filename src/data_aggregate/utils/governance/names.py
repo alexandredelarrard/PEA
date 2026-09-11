@@ -80,3 +80,28 @@ def ceo_identity_series(values: pd.Series) -> pd.Series:
     keeps the Nones as Nones, so `!=` stays a plain boolean comparison.
     """
     return values.astype(object).map(ceo_identity)
+
+
+def ceo_identity_changed(names: pd.Series, groups: pd.Series) -> pd.Series:
+    """1.0 where the CEO CHANGED versus the previous row of the same `groups` value, 0.0 where
+    it is the same person, NaN where either side's identity is UNKNOWN. Indexed like `names`.
+
+    `names` are raw `ceo_name_proxy` cells and `groups` the ticker column beside them. The
+    caller must already have sorted the frame chronologically WITHIN `groups`: the comparison
+    is a plain `shift(1)` and cannot detect a frame handed to it out of order.
+
+    ⚠ THE CALLER MUST EXPAND THIS FROM THE SAME ROWS AS THE VALUE IT GUARDS. Both consumers
+    forward-fill onto a daily grid, and `fundamentals_to_daily` fills each column over the
+    rows that CARRY it -- so a flag pivoted from a wider row set than its value can present a
+    LATER filing's flag against an EARLIER filing's growth. That is the desync that leaked 515
+    cells past the phase-0 insider-ownership gate before it was found; here it would silently
+    un-guard a transition. `panel._ceo_pay_growth` pivots both legs out of one subset for
+    exactly this reason.
+
+    ⚠ NaN IS NOT "no change" -- see the module docstring. What each caller then DOES with an
+    unknown is its own decision, and both are recorded: `pay_features._comp_history` nulls the
+    growth, `panel._ceo_pay_growth` keeps it and counts it.
+    """
+    idents = ceo_identity_series(names)
+    prev = idents.groupby(groups, sort=False).shift(1)
+    return (idents != prev).astype("float64").where(idents.notna() & prev.notna())

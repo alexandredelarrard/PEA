@@ -54,6 +54,7 @@ from src.data_extract.utils.common.bulk_cache import (
     cache_dir, ensure_zip, ingested_periods,
 )
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.registrant import drop_rows_outside_segment
 from src.data_extract.utils.common.sec_utils import (
     load_cik_mapping, load_processed_universe, save_processed_universe,
     cik_to_ticker)
@@ -187,7 +188,11 @@ def _sub_meta(sub: pd.DataFrame, cik2tkr: dict[str, str], universe: set[str]) ->
         "filed": pd.to_datetime(sub["filed"], format="%Y%m%d", errors="coerce"),
     })
     s["ticker"] = s["cik"].map(cik2tkr)
-    return s[s["ticker"].isin(universe)]
+    s = s[s["ticker"].isin(universe)]
+    # `notes` is a CONSOLIDATING table, so a predecessor CIK resolving to the ticker is only
+    # half the rule -- the row must also fall in the segment that CIK owned. Without this,
+    # Apache Corp's post-2021 subsidiary notes would blend into APA's. See `FORM_POLICY`.
+    return drop_rows_outside_segment(s, cik_col="cik", ticker_col="ticker", filed_col="filed")
 
 
 def _join_notes_num(num: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
@@ -269,13 +274,26 @@ def _read_notes(path: Path, cik2tkr: dict[str, str],
     return _join_notes_num(num, sub_meta), _join_notes_text(txt, sub_meta)
 
 
-def fetch_financial_notes(context: Context, tickers: list[str], years_history : int = 15) -> int:
+def fetch_financial_notes(context: Context, tickers: list[str], years_history: int = 15,
+                          reparse: bool = False) -> int:
     """Download (cached) the SEC Financial Statement & Notes data sets over
     `notes_years_history`, extract footnote pension NUMERICS -> `notes_num` and
     high-signal note TEXT -> `notes_text` for the universe. Returns total rows
     upserted (num + text). Incremental: a period already in the DB is skipped
     (no re-download) unless the universe gained tickers (then cached zips are
-    re-parsed, no re-download)."""
+    re-parsed, no re-download).
+
+    ⚠ `reparse` RE-READS EVERY CACHED PERIOD, and it exists because the incremental test
+    cannot see a resolution change. That test is "did the ticker universe gain members?" --
+    and a registrant-register change gains none: the same 491 tickers resolve through MORE
+    CIKs. Without this flag the recovered predecessor rows would never be parsed.
+
+    ⚠ A PARTIAL RE-PARSE IS WORSE THAN EITHER STATE ALONE. It leaves the oldest periods
+    carrying the old resolution while the rest carry the new, and nothing downstream can tell
+    that from a real coverage cliff. So this re-reads the whole window, not a suffix of it.
+
+    Costs no network: a past period's data set is final and every zip is already on disk.
+    """
 
     cikmap = load_cik_mapping(context)
     cik2tkr = cik_to_ticker(cikmap) 
@@ -285,12 +303,14 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history : 
     new_tickers = set(tickers) - load_processed_universe(cache, Tables.notes_num)   # empty once converged
     if new_tickers:
         logger.info("notes: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
+    if reparse:
+        logger.info("notes: --reparse -> re-reading every cached period (no re-download)")
 
     n_num = n_txt = 0
     periods = _notes_periods(context, years_history+1)
     for period in tqdm(periods, desc="SEC financial-statement notes"):
 
-        if period in done and not new_tickers:
+        if period in done and not new_tickers and not reparse:
             continue
 
         path = ensure_zip(context, cache / f"{period}_notes.zip",

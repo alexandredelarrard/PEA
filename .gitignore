@@ -124,7 +124,5 @@ data/
 # work with LLM 
 specs/
 reports/
-scripts/
 **/specs/**
 **/reports/**
-**/scripts/**

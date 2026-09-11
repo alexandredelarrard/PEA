@@ -9,7 +9,7 @@ each, for the Airflow `data_aggregation` DAG:
     python -m src data_aggregate build-fundamentals    # -> cube_part_fundamentals
     python -m src data_aggregate build-momentum        # -> cube_part_momentum
     python -m src data_aggregate build-text            # -> cube_part_text
-    python -m src data_aggregate build-extras          # -> cube_part_extras
+    python -m src data_aggregate build-institutionals  # -> cube_part_institutionals
     python -m src data_aggregate build-governance      # -> cube_part_governance
     python -m src data_aggregate assemble-cube         # read the parts -> build + save `cube`
     python -m src data_aggregate cube-status           # JSON status of every part
@@ -34,7 +34,7 @@ from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
 from src.context import get_config_context
 from src.data_aggregate.step_build_cube import StepBuildCube
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
-from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
+from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
@@ -100,12 +100,12 @@ def build_text(config_path: str, full: bool) -> None:
     _step(StepCubeText, config_path).run(full=full)
 
 
-@cli.command(help="13F institutional, elite 13F, insider, short interest and attention "
-                  "features -> cube_part_extras.", help_priority=6)
+@cli.command(help="13F institutional, elite 13F, insider, and short interest / fails-to-deliver "
+                  "features -> cube_part_institutionals.", help_priority=6)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
-def build_extras(config_path: str, full: bool) -> None:
-    _step(StepCubeExtras, config_path).run(full=full)
+def build_institutionals(config_path: str, full: bool) -> None:
+    _step(StepCubeInstitutionals, config_path).run(full=full)
 
 
 @cli.command(help="DEF 14A + Item 5.07 governance alpha (shareholder dissent, executive pay, "
@@ -124,7 +124,7 @@ def assemble_cube(config_path: str) -> None:
 
 
 @cli.command(help="Run all eight sub-steps in ONE process (what main.py does): prices -> "
-                  "target -> fundamentals -> momentum -> text -> extras -> governance -> "
+                  "target -> fundamentals -> momentum -> text -> institutionals -> governance -> "
                   "assemble.", help_priority=9)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)

@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_store.store import DataStore
-from src.data_extract.utils.prices import fetch_insider_transactions as ins
+from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.

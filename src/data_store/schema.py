@@ -99,6 +99,31 @@ class Tables:
     # redundant duplicate.
     sp500_tickers = Table("sp500_tickers", ("ticker",), KIND_REFERENCE)
 
+    # Dataroma's curated "superinvestors" roster, ONE ROW PER (snapshot, manager). Seeded
+    # from 13 web.archive.org captures (2013 -> 2026, 879 manager-rows, 104 distinct codes)
+    # and appended to by every live scrape, so membership is a queryable fact over time:
+    # `utils/superinvestor_roster.roster_as_of(q)` answers "who was a superinvestor at q",
+    # which the flat `{cik: name}` JSON it replaces structurally could not.
+    # Columns: snapshot_date, dataroma_code, manager_name, cik (padded, NULL while
+    # unresolved), resolution (`edgar` | `override` | `unresolved`), source_url.
+    #
+    # PK is `dataroma_code`, NOT `cik`. `cik` is NULL for a manager EDGAR cannot resolve and
+    # a nullable column cannot be a PK member; it is also not unique, because the same
+    # manager legitimately appears under two codes (`brk` and `BRK` both resolve to
+    # 0001067983). It carries a non-unique index instead (hand-spliced into sql/schema.sql).
+    #
+    # Roster CHURN is counted on the RESOLVED CIK, never on the code or the name: the
+    # code-based count says 23 managers were lost between 2013 and 2026 and the
+    # name-normalised count says 32, and both are wrong -- codes are re-cased and names are
+    # rewritten (`SEQUX` carries 7 distinct names across the 13 snapshots) while the CIK is
+    # the manager.
+    superinvestor_roster = Table(
+        "superinvestor_roster", ("snapshot_date", "dataroma_code"), KIND_REFERENCE,
+        date_col="snapshot_date", ticker_col=None,
+        date_type_cols=("snapshot_date",),
+        read_columns=("snapshot_date", "dataroma_code", "manager_name", "cik",
+                      "resolution", "source_url"))
+
     # ----------------------------------------------------------------- #
     # Extract -- prices & market data                                   #
     # ----------------------------------------------------------------- #
@@ -111,11 +136,19 @@ class Tables:
     # its own frontier rather than the price one.
     # NOT a market-cap input -- see the table comment in sql/schema.sql.
     prices_splits = Table("prices_splits", ("ticker", "date"), date_col="date")
+    # ⚠ FIRST USABLE DATE 2018-08-01, and it MOVES FORWARD. FINRA serves the RegSHO daily
+    # files from a rolling ~8-year CDN window (probed 2026-09-08: last 403 2018-07-31, first
+    # 200 2018-08-01, ~8.10 years deep). The stored min(date) of 2017-12-29 is one anomalous
+    # file that survives outside the window, not a history start -- see
+    # `fetch_short_interest`'s docstring for the full probe. Rows below the boundary cannot be
+    # re-fetched if lost.
+    # NAME IS A MISNOMER: this holds short-sale VOLUME, not reported short interest. Kept
+    # because the table is live with consumers; corrected at the feature level.
     short_interest = Table(
         "sec_short_interest", ("ticker", "date"), date_col="date", freshness="daily",
         # short_interest_features: RegSHO short/total volume + reported short interest / ADV.
         # `short_interest` and `avg_daily_volume` are OPTIONAL -- the builder only adds
-        # `days_to_cover` when BOTH are present, and the live table has only
+        # `ic_shortvol_days_to_cover` when BOTH are present, and the live table has only
         # date/ticker/short_volume/total_volume. Demanding them unconditionally is what
         # killed the read instead of degrading it.
         read_columns=("date", "ticker", "short_volume", "total_volume",
@@ -124,6 +157,8 @@ class Tables:
     # SEC Fails-to-Deliver: settlement fails per ticker x date. Same grain as
     # short_interest but a separate table -> its semi-monthly, ~2-month-lagged files don't
     # pollute short_interest's global-max-date incremental; combined at the feature layer.
+    # First usable date 2009-07-01 (measured), which is where SEC's own published series
+    # begins -- unlike RegSHO above, this one is a fixed start, not a rolling window.
     sec_fails_to_deliver = Table(
         "sec_fails_to_deliver", ("ticker", "date"), date_col="date",
         date_type_cols=("date",), freshness="biweekly",
@@ -216,7 +251,7 @@ class Tables:
             # -- the roll-up that needs BOTH sources, then the 2 SEC-owned added columns,
             #    then the point-in-time share count (see `_SPLIT_ADJUSTMENT` in
             #    sharadar_field_map.json -- it is the ONLY de-adjusted column, and only
-            #    `inst_ownership_pct` and the insider %-of-shares leg may read it)
+            #    `ic_inst_ownership_pct` and the insider %-of-shares leg may read it)
             "stockholdersEquityInclNci", "employees_sec", "regime_sec", "sharesOutstandingPit",
             # -- the 26 Sharadar EXTRAS, renamed to repo camelCase. They are keyed by their
             #    VENDOR column in sharadar_field_map.json (`cashneq` -> cashAndEquivalents).
@@ -407,6 +442,18 @@ class Tables:
     # Renamed from `institutional_holdings` to match the form-dispatch registry's logical
     # name for 13F-HR. 13F is an all-filers pull walked by filing date (fetch_13f.py), so the
     # grain stays one row per manager x security x period -- no accession_number.
+    #
+    # ⚠ THIS TABLE IS THE S&P 500 SLICE OF EACH MANAGER'S BOOK, not the book. The extraction
+    # filters to the universe, so a portfolio weight computed here is inflated by a
+    # manager-specific 1.0x-7.6x. Use `sec13f_manager_holdings` below for any denominator.
+    #
+    # ⚠ NOT USABLE BEFORE 2013-06-30, even though min(period) is 1987-03-31. Distinct managers
+    # per ticker per quarter: 14 (2012-09-30), 22 (2012-12-31), 41 (2013-03-31), then 556
+    # (2013-06-30). The 15-year all-filer backfill only reached real coverage from mid-2013, so
+    # every earlier quarter carries a handful of managers per name and every breadth /
+    # concentration / QoQ-delta statistic computed on them describes THE FETCH, not the market.
+    # The numbers themselves look perfectly valid, which is what makes the cutoff a consumer's
+    # responsibility rather than something a null check would catch.
     sec13f_hr = Table(
         "sec13f_hr", ("cik", "period", "ticker", "cusip"), date_col="period",
         freshness="quarterly",
@@ -416,15 +463,89 @@ class Tables:
                       "call_value", "put_value", "filing_date"),
         # institutional_features zero-fills the option legs when they are absent
         optional_columns=frozenset({"call_value", "put_value", "filing_date"}))
+    # The COMPLETE quarterly book of every manager that has ever been on the Dataroma roster, at
+    # CUSIP grain and with NO universe filter -- the denominator `sec13f_hr` above cannot supply.
+    #
+    # `sec13f_hr` is filtered to the S&P 500 at extraction (`fetch_13f._resolve_tickers`), so a
+    # portfolio weight computed from it is inflated by a manager-specific factor. Measured over
+    # 12 roster managers' 2026Q1 filings: median S&P 500 coverage 47% of positions and 52% of
+    # value, ranging from Atlantic Investment at 8.3%/13.1% to AltaRock at 100%/100% -- a
+    # 1.0x-7.6x spread that makes cross-manager conviction comparison meaningless without this
+    # table. Never recompute a weight from `sec13f_hr`.
+    #
+    # NO TICKER COLUMN, by design. A conviction denominator needs value and shares, not a symbol,
+    # and resolving the non-S&P500 CUSIPs would cost thousands of OpenFIGI lookups for securities
+    # nothing else reads. S&P 500 rows join through `cusip_ticker_map` when a ticker is needed.
+    #
+    # `position_type` in {common, call, put, debt, other} is the classification
+    # `fetch_13f._classify_holdings` already performs, carried here rather than re-derived. It is
+    # what keeps puts, calls and debt out of a single-name common-equity conviction denominator.
+    #
+    # The walk scope is the UNION of every CIK ever on `superinvestor_roster`, not today's
+    # roster: walking only current members would rebuild the exact survivorship bias the
+    # point-in-time roster table exists to remove.
+    sec13f_manager_holdings = Table(
+        "sec13f_manager_holdings", ("cik", "period", "cusip"), date_col="period",
+        ticker_col=None, freshness="quarterly",
+        date_type_cols=("period", "filing_date"),
+        read_columns=("cik", "period", "filing_date", "cusip", "issuer_name",
+                      "title_of_class", "position_type", "shares", "value_usd",
+                      "call_shares", "call_value", "put_shares", "put_value",
+                      "debt_prn", "debt_value", "other_value"))
     # SEC Insider Transactions Data Sets (Forms 3/4/5): one row per reported transaction
     # (non-derivative + derivative), keyed by accession + table + SK.
+    #
+    # FIRST USABLE DATE 2006-01-03 -- but on `filing_date`, not on `transaction_date`. The bulk
+    # data set itself begins 2006q1 (a source start, not a fetch limit), while min
+    # (transaction_date) is 1990-05-07: a Form 3 holding or a late Form 5 legitimately reports a
+    # trade decades older than the filing that discloses it. Cutting the history on
+    # `transaction_date` would therefore keep a thin, non-representative pre-2006 tail.
+    #
+    # `is_10b5_1` is a FLOAT, not a bool, and the distinction is the point: NaN means the
+    # quarter's SUBMISSION.tsv had no `AFF10B5ONE` column at all, which is every quarter before
+    # 2023q1 (measured across all 81 cached zips). A False there would assert that 68 quarters
+    # of insiders traded outside a plan, which is not something the source says. Even within the
+    # column's own era the raw values are mixed-encoding -- 2026q1: '0' 42,435, 'false' 11,525,
+    # '1' 3,620, 'true' 1,162, NaN 10,517 -- so all four spellings are normalised.
+    #
+    # The derivative block (`exercise_price`, `exercise_date`, `expiration_date`,
+    # `underlying_*`) is NULL on every `security_type='nonderiv'` row by construction, not by
+    # omission -- so ANY fill rate for it must be taken over `security_type='deriv'` alone.
+    # Over the whole table it cannot exceed 29.3%, because nonderiv is 1,374,331 of 1,942,795
+    # rows.
+    #
+    # ⚠ ON `exercise_price`, NULL AND 0 ARE THE SAME STATEMENT for anything that is not an
+    # option. An RSU converts one-for-one at no cost, so no strike exists; filers express that
+    # either by omitting the field or by writing an explicit 0, and both are common. Measured:
+    #
+    #   security kind (deriv rows)      NULL      = 0     > 0
+    #   option                         1,741      921  217,478   -> 99.2% filled, 0.4% of them 0
+    #   RSU / phantom / performance  219,565  100,772   27,987   -> 78.3% of non-nulls are 0
+    #
+    # Reading `exercise_price = 0` as a zero-strike option is wrong, and so is imputing the
+    # NULL as missing. On options the same 0 is rare enough (0.4%) to be a filer error.
+    # The deriv-row fill rate falls 73.8% (2006) -> 41.6% (2025) purely because executive
+    # compensation shifted from options to RSUs; the data did not degrade.
     insider_transactions = Table(
         "insider_transactions",
         ("accession_number", "security_type", "transaction_sk"),
         date_col="transaction_date",
-        date_type_cols=("transaction_date", "filing_date", "period_of_report"),
+        date_type_cols=("transaction_date", "filing_date", "period_of_report",
+                        "deemed_execution_date", "exercise_date", "expiration_date"),
         freshness="quarterly", freshness_date_col="filing_date",
-        read_columns=("ticker", "filing_date", "transaction_code", "value_usd"))
+        read_columns=("ticker", "filing_date", "transaction_date", "transaction_code",
+                      "value_usd", "shares", "security_type", "is_10b5_1",
+                      "transaction_form_type", "acquired_disposed", "is_director",
+                      "is_officer", "is_ten_pct_owner"))
+    # Form 3/4/5 footnote prose, one row per (accession, footnote id). Free -- already inside the
+    # cached zips, and the PK holds without dedup (0 duplicate (accession, id) pairs measured on
+    # 2023q1 and 2026q1). Footnote text is what distinguishes an exercise-and-sell package from
+    # a discretionary open-market sale, and what carries 10b5-1 plan language on the 68 quarters
+    # that predate the `AFF10B5ONE` field. Stored only for accessions whose issuer is in the
+    # universe -- the raw file is ~167k rows per quarter for all filers.
+    insider_footnotes = Table("insider_footnotes",
+                              ("accession_number", "footnote_id"), date_col=None,
+                              ticker_col=None)
     # SC 13D activist filings + amendments: one row PER REPORTING PERSON per filing, keyed
     # (ticker, accession, rp_seq) -- a single 13D can have multiple co-filers (e.g. a fund
     # + its GP), and `rp_seq` is used rather than CIK since a reporting person without an
@@ -442,6 +563,36 @@ class Tables:
     sec_13d_transactions = Table(
         "sec_13d_transactions", ("ticker", "accession_number", "trade_seq"),
         date_col="filing_date", date_type_cols=("filing_date", "trade_date"))
+    # Schedule 13G: the PASSIVE >5% beneficial-ownership channel. One row PER REPORTING PERSON
+    # per filing, mirroring `sec_13d`'s grain and column names wherever they overlap so the
+    # 13G->13D escalation join is a plain (ticker, reporting_person_cik) union ordered by
+    # filing_date.
+    #
+    # EVERY NUMERIC IS NULL BEFORE 2024-12-17. Beneficial-ownership XML became mandatory then;
+    # before it edgartools builds the object from the SGML header alone (`_partial_from_header`)
+    # and returns class defaults -- 0 for percent_of_class / aggregate_amount / all four power
+    # fields, '' for date_of_event, the CUSIP and the security title. Measured on ETN
+    # 0000315066-24-002743 (SC 13G/A, 2024-11-12): has_structured_data=False, every numeric 0.
+    # Writing that 0 would claim a 0% stake the filer never disclosed, so `num_or_null` returns
+    # NaN instead -- the rule `sec_13d` already follows.
+    #
+    # The reporting person's NAME and CIK survive both eras, which is what makes the event-shape
+    # features work back to 2011 -- but by DIFFERENT routes, and only one of them is edgartools'.
+    # Pre-mandate the header path fills `cik`; post-mandate the XML cover page has no CIK element
+    # at all and edgartools hard-codes cik='' (measured: Vanguard Capital Management on ETN
+    # 0002100119-26-000028 parses with percent_of_class=7.48 and cik=''). `fetch_13g_edgar`
+    # backfills it from the filing header's own filer list, so the escalation key is populated in
+    # both eras.
+    #
+    # 13G-ONLY column beyond the 13D schema: `rule_designation` (the Rule 13d-1 paragraph the
+    # filer designated -- (b) qualified institutional, (c) passive, (d) exempt), post-mandate
+    # only. There are no Item 3/4/5/6 narrative columns: a 13G has no purpose-of-transaction
+    # item. edgartools' `is_passive_investor` is NOT stored -- it is a hard-coded `return True`
+    # on every 13G, so the column would carry no information; `rule_designation` is the field
+    # that actually discriminates the three filer regimes.
+    sec_13g = Table("sec_13g", ("ticker", "accession_number", "rp_seq"),
+                    date_col="filing_date",
+                    date_type_cols=("filing_date", "date_of_event"))
 
     # ----------------------------------------------------------------- #
     # Extract -- governance (DEF 14A) & events                          #
@@ -784,11 +935,17 @@ class Tables:
                                date_col="date", managed=False)
     cube_part_text = Table("cube_part_text", ("date", "ticker"), KIND_PART,
                            date_col="date", managed=False)
-    cube_part_extras = Table("cube_part_extras", ("date", "ticker"), KIND_PART,
-                             date_col="date", managed=False)
-    # DEF 14A + Item 5.07 governance alpha. Its own part rather than a seventh `extras` panel:
-    # it reads five filing-space tables (the proxy archive, its per-NEO and per-director
-    # children, the certified 8-K vote record, fundamentals) where every other extras panel
+    # Every panel here is a MOVE BY A DISCLOSING CAPITAL ALLOCATOR: all-filer 13F, elite-manager
+    # 13F, corporate insiders (Forms 3/4/5), activists and passive 5% holders (13D/13G), and
+    # short sellers. It was called `extras`, which named no shared property and invited unrelated
+    # panels in -- retail attention lived here until it was deleted as dead code. The name is now
+    # the membership rule: a panel belongs iff its source is a filing somebody was REQUIRED to
+    # make. Never existed in the DB under the old name, so the rename cost no migration.
+    cube_part_institutionals = Table("cube_part_institutionals", ("date", "ticker"), KIND_PART,
+                                     date_col="date", managed=False)
+    # DEF 14A + Item 5.07 governance alpha. Its own part rather than a sixth institutionals
+    # panel: it reads five filing-space tables (the proxy archive, its per-NEO and per-director
+    # children, the certified 8-K vote record, fundamentals) where every other panel there
     # reads one, and it is the only part needing a trailing RETURN.
     cube_part_governance = Table("cube_part_governance", ("date", "ticker"), KIND_PART,
                                  date_col="date", managed=False)

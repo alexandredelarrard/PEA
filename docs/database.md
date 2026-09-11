@@ -67,9 +67,12 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `sec13f_hr` | 21,659,435 | **6.1 GB** | 15 | 497 | `period` | 1987-03-31 → 2026-03-31 |
 | `earnings_call_sections` | 109,899 | 1.5 GB | 6 | 494 | `as_of` | 2005-10-13 → 2026-07-24 |
 | `sec_filing_text` | 34,127 | 1.2 GB | 9 | 498 | `filed` | 2011-07-27 → 2026-08-03 |
-| `insider_transactions` | 1,381,478 | 497 MB | 26 | 491 | `transaction_date` | 1990-05-07 → **2026-03-31** |
+| `insider_transactions` | **1,942,945** | 929 MB | **38** | 498 | `transaction_date` | 1990-05-07 → **2026-03-31** *(09-08)* |
+| `insider_footnotes` | **1,860,827** | 713 MB | 3 | — | — | no date column; joins on `accession_number` *(09-08)* |
 | `notes_text` | 96,576 | 411 MB | 15 | — | `ddate` | 2006-12-31 → 2026-05-31 |
 | `sec_8k` | 95,789 | 137 MB | 14 | 486 | `filing_date` | 2011-08-04 → 2026-08-03 |
+| `sec13f_manager_holdings` | **342,501** | 85 MB | 16 | — | `period` | 2011-09-30 → 2026-06-30 *(09-08)* |
+| `sec_13g` | **29,176** | 12 MB | 27 | **498** | `filing_date` | 2011-09-09 → 2026-09-08 *(09-09)* |
 | `wiki_pageviews` | 1,699,202 | 136 MB | 3 | 500 | `date` | **2016-07-16** → 2026-07-23 |
 | `fails_to_deliver` | 993,775 | 98 MB | 5 | 499 | `date` | 2010-01-04 → **2026-07-14** |
 | `short_interest` | 963,115 | 84 MB | 4 | 502 | `date` | **2017-12-29** → 2026-07-31 |
@@ -102,6 +105,7 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `def14a_directors` | 4,650 | — | 11 | **14** | `as_of` | 15 smoke tickers only |
 | `def14a_director_comp` | 2,519 | — | 14 | **14** | `as_of` | 15 smoke tickers only |
 | `sp500_tickers` | 500 | 128 kB | 6 | 500 | — | — |
+| `superinvestor_roster` | 962 | — | 6 | — | `snapshot_date` | 2013-01-01 → today (14 snapshots, 50 → 83 managers) |
 
 - **The four validator tables hold TWO comparable runs** (`3df52ae9af75` → `725bae7bf8ed`,
   54 tickers, all tiers). They are written only by `src/validate/` and gate nothing.
@@ -121,6 +125,98 @@ Ordered by size. `tickers` = distinct non-null tickers.
 
 ## Coverage gotchas worth knowing before you build a feature
 
+- **⚠ `sec13f_hr` has TWO BROKEN QUARTERS, and counting tickers will never show you.**
+  Measured 2026-09-09 by `scripts/source_coverage_report.py`: **2023-12-31 holds 463 distinct
+  managers** and **2025-06-30 holds 254**, against ~6,200 and ~7,300 in the quarters either side
+  — 13x and 29x short. Ticker counts stay at 492–499 throughout, so every ticker-based coverage
+  check passes; only the MANAGER axis exposes it. Both look like interrupted fetches, not SEC
+  gaps, since the neighbouring quarters are healthy. **Any feature that differences consecutive
+  quarters — breadth, concentration, QoQ deltas, add/reduce/exit inference — will read those
+  drops as managers exiting the name.** Four quarterly transitions are affected. Re-fetch those
+  quarters or exclude the transitions explicitly. This is separate from, and much sharper than,
+  the known structural 2013-06-30 break (41.4 → 555.9 managers per ticker).
+- **`sec_13g` has a structured-data CLIFF at 2024-12-17, and it is the same one as `sec_13d`.**
+  Before that date the SEC accepted Schedule 13G as unstructured text, so the numeric block is
+  effectively empty: `percent_of_class`, `aggregate_amount` and the four voting/dispositive power
+  columns are **0.2% filled on 14,713 pre-mandate rows** and **100% filled on 2,903 post-mandate
+  rows**. What the pre-mandate era DOES give is the event stream — *who* filed on *whom* and
+  *when* (`reporting_person_name` 99.8%, `reporting_person_cik` 99.7%) — so treat it as an event
+  source before 2025 and a position source after. Two columns are always NULL by design and
+  documented in `schema.py`. `reporting_person_cik` drops to 80.4% post-mandate: those are
+  joint-filing co-filers, and 99.2% of filings still resolve at least one CIK.
+- **`sec13f_manager_holdings` is the DENOMINATOR table; `sec13f_hr` is a universe-filtered
+  slice.** `sec13f_hr` keeps only S&P 500 tickers, so a portfolio weight computed from it is
+  inflated by a manager-specific factor — measured across 12 roster managers' 2026Q1 filings, the
+  median S&P 500 share is 47% of positions and 52% of value, spanning Atlantic Investment at
+  8.3%/13.1% to AltaRock at 100%/100%. Use `sec13f_manager_holdings` for anything that divides.
+  ⚠ It covers **87 of the 106 roster CIKs**: the other 19 carry a CIK that files no 13F at all
+  (fund-vs-adviser resolution), listed by name in the informed-capital plan README.
+- **`insider_footnotes` has no ticker, and does not need one.** Grain is
+  `(accession_number, footnote_id)`; **100% of its 653,480 accessions resolve** to a ticker
+  through `insider_transactions`. It is attached at FILING grain — the raw zips' 12/19 `_FN`
+  pointer columns, which say *which field on which row* a note explains, were deliberately not
+  stored (measured: filing-level attribution is already right for 93.3% of multi-row 10b5-1
+  filings). Its main use is recovering what the structured columns do not carry: the
+  **`is_10b5_1` flag is 0.0% before 2023**, while a footnote naming a 10b5-1 plan runs at
+  9.3–13.7% back to 2006 and tracks the structured flag where they overlap (2024: 12.2% vs 13.5%).
+- **`insider_transactions`: NULL on the derivative block is a STATEMENT, not a gap.**
+  `exercise_price`, `exercise_date`, `expiration_date` and `underlying_shares` are NULL on all
+  1,374,374 non-derivative rows by construction. On options they are 99.2% / 50.9% / 98.3% /
+  99.5% filled. ⚠ **`exercise_date` is the date first EXERCISABLE (vesting), not the date
+  exercised** — it is present on 23.5% of grant rows and 46,300 of those postdate the
+  transaction; the exercise event is `transaction_code='M'` on `transaction_date`. Where it is
+  NULL on an option, 97.5% of those rows sit on a filing carrying a vesting footnote.
+  ⚠ **7,949 rows (0.41%, tickers EA and AVB) predate the 2026-09-08 enrichment and carry none of
+  the 12 new columns** — they left the S&P 500 before the re-parse, so the universe filter
+  skipped them. Enrichment fill is 100.00% for every in-universe ticker and 0.00% for those two.
+- **⚠ `insider_transactions.value_usd` CANNOT BE SUMMED OR AVERAGED AS STORED.** Measured
+  2026-09-10, and note carefully **which population each number describes** — they are three
+  different ones and mixing them is how this defect reads as smaller than it is:
+
+  | population | rows | sum | mean | median |
+  |---|---|---|---|---|
+  | whole table, `value_usd` non-null | 1,934,681 | **$8.66e17** | **$447,771,735,138** | $16,516 |
+  | non-derivative only | 1,412,708 | $2.18e16 | $15,409,854,524 | $54,173 |
+  | market-priced non-deriv `P`/`S`/`F` | 875,361 | $2.14e16 | — | — |
+  | **after scope + repair** (what a feature may sum) | 673,746 | **$1,576bn** | **$2,339,662** | $114,116 |
+
+  A **$447bn mean per Form 4 line is not a transaction size, it is one row**: the single
+  largest (`NCLH` 2021-03-09, "Exchangeable Senior Notes due 2026", 414m "shares" at
+  "$1.03e9") is **49.4% of the whole-table sum on its own**, the top three are **79%**, and
+  dropping the top five leaves **0.04%**. Those three are convertible/exchangeable NOTES
+  where the filer put the principal amount in `shares`. The median, $16,516, is sane
+  throughout — only the tail is broken.
+
+  Within the population a price screen can reach — market-priced non-derivative `P`/`S`/`F`
+  rows — **210 rows of 875,361 (0.024%) carry 99.99% of that population's total**, because
+  `price_per_share` is wrong on them. `value_usd == shares × price_per_share` holds on 100%
+  of them, so the multiplication is right and the price is the corrupt field. 157 of the 210
+  are decimal slips (74 at 10⁻¹, 70 at 10⁻², 13 at 10⁻³); the rest are the transaction total
+  typed into the per-share box (`AMD` 2017-08-04, 40m shares "@ $525,600,000"). ⚠ The three
+  note rows above are **not** among the 210 — they are derivative rows, removed by SCOPE
+  rather than by the price screen, which is why a repair alone is not enough and the scope
+  cut is not optional.
+
+  Phase 1b reconciled this table against the SEC's own zips with 0 mismatches, so **these are
+  the filers' numbers and there is nothing to correct upstream.** Any consumer must scope and
+  repair: `data_aggregate/utils/institutionals/insider_quality.py` keeps common-stock,
+  open-market, priced rows and repairs the price against a per-ticker, **per-share-class**
+  median filed price in a centred 31-day window — split-free, because both sides carry the
+  same unknown split basis. Post-repair the open-market tape reads **$142.2bn of purchases
+  (median $30,494) against $1,434.1bn of sales (median $120,850)** over 2006–2026, a 10:1
+  sell/buy ratio that matches the known stylised fact and is the independent check that the
+  repaired figures are the right order of magnitude.
+- **⚠ `insider_transactions.ticker` IS RESOLVED SYMBOL-FIRST, so a reused ticker carries another
+  company's insiders.** `_filter_universe` keeps a row whose SEC trading symbol is in the
+  universe and only falls back to the issuer CIK. Measured against the registrant register:
+  **38,910 rows (1.92%), 8,640 of them P/S, across 72 in-universe tickers** hold an `issuer_cik` outside
+  their ticker's lineage — 2,075 Trane rows under `IR` (CIK 0001466258, which is `TT`'s own
+  universe CIK), 2,046 Weight Watchers under `WTW`, 1,207 CoreSite under `COR`, 1,111 the old
+  Constellation Energy under `CEG`, Axovant Sciences under `AXON`. The same screen also names
+  ~40 **genuine** predecessors missing from the register (DuPont under `DD`, Chubb Corp under
+  `CB`, Avago under `AVGO`), and the two are indistinguishable by date span, so a blanket
+  CIK-first cut would delete real history. Unfixed as of 2026-09-10; the reparse that would
+  apply a fix needs **no download** (`insider-transactions --reparse`, 81 cached quarters).
 - **`sec_def14a` is 2023+ BY REGULATION, and that is correct behaviour rather than a gap.**
   Item 402(v) (Pay-versus-Performance) applies to fiscal years ending on or after 2022-12-16, so a
   proxy covering an earlier year carries no `ecd:` facts and gets NO ROW at all. Measured over the
@@ -190,9 +286,41 @@ Ordered by size. `tickers` = distinct non-null tickers.
 - **`insider_transactions` stops 2026-03-31** and `pension_facts` 2026-02-28 — both are quarterly
   bulk-zip sources with a real publication lag, not stale extraction.
 - **`sec13f_hr` reaches back to 1987** but the universe is today's S&P 500; survivorship applies.
+  ⚠ It is also **not usable before 2013-06-30**: distinct managers per ticker run 14.0
+  (2012-09-30) → 22.1 → 41.4 → **555.9** (2013-06-30). The earlier quarters are the FETCH, not
+  the market, and they look perfectly valid. `scripts/source_coverage_report.py` regenerates
+  that series on demand.
+- **`sec13f_hr` is the S&P 500 SLICE of each manager's book**, not the book — the extraction
+  filters to the universe. A portfolio weight computed from it is inflated by a manager-specific
+  1.0x–7.6x (measured 2026Q1: Atlantic Investment 8.3% of positions, AltaRock 100%). Use
+  `sec13f_manager_holdings` as the denominator.
+- **`short_interest` starts 2018-08-01, and that floor MOVES.** FINRA serves the RegSHO files
+  from a rolling ~8-year CDN window (probed 2026-09-08: last 403 `20180731`, first 200
+  `20180801`). The stored `min(date)` of 2017-12-29 is one anomalous file outside the window,
+  not a history start — and rows below the boundary cannot be re-fetched if lost.
 - Vector columns (`embedding` on `earning_calls_embedding`, `ticker_embeddings`) are Postgres
   `float8[]`. **SQLite's driver refuses to bind a Python list**, which is why
   `tests/conftest.py::FakeStore` exists alongside `sqlite_store`.
+
+### ⚠ `cik` means THE FILER, not the roster (semantic change, 2026-09-10)
+
+On every SEC-derived table `cik` is the CIK that **actually filed the document**. It used to be a
+stamp: the tier-A fetchers resolved by TICKER and then wrote `sp500_tickers.cik` onto each row, so
+`sec_8k` held **0 of 491** tickers with more than one distinct CIK and **0** rows where
+`sec_8k.cik <> sp500_tickers.cik`. XOM's 526 8-K rows back to 1996 all carried CIK 2115436 — an
+entity whose entire archive is 29 filings beginning 2026-07-01. The one column that would have
+made a registrant boundary self-announcing instead reported the roster back to itself.
+
+Consequences for anyone reading these tables:
+
+- **Do not join `cik` as an identity key.** A ticker that crossed a registrant boundary carries
+  two or more CIKs by design; group on `ticker`.
+- **A register ticker showing one CIK means its rows predate the re-fetch**, not that no boundary
+  exists.
+- `sec_13d` / `sec_13g` always read the ISSUER's CIK off the filing's structured data, which is
+  why `sec_13g` alone showed 25 tickers with more than one CIK before this change.
+- The register itself lives in `configs/sec/registrant_cutover.json`; see
+  [data_sources.md](data_sources.md) for how segments combine per form.
 
 ## Handling the missing `prices` table
 

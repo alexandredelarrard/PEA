@@ -109,12 +109,23 @@ Shared options: `-c/--config-path` (default `./configs`), `-t/--tickers` (defaul
 
 ### `data_extract` — one command per source
 
+Commands are listed under the STEP that owns them (`src/data_extract/transformers/`); the
+CLI itself is flat, one command per source.
+
 ```
 seed-universe              # MUST run first; everything resolves the universe from sp500_tickers
+# -- prices --
 price-history              # prices + dividends (HEAVY)
-short-interest  fails-to-deliver  macro
+macro
+# -- institutionals: who owns, trades and shorts each name --
 thirteen-f                 # 13F bulk + OpenFIGI cusip map (HEAVY)
-superinvestors             # needs 13F
+superinvestors             # today's roster snapshot; --seed also replays the 13 Wayback captures
+thirteen-f-managers        # roster managers' COMPLETE books (no universe filter). Needs the roster
+insider-transactions       # --reparse re-reads the 81 cached quarters (a PARSE change, no download)
+short-interest  fails-to-deliver
+sec-8k-items  sec-13d      # RUN BEFORE the vote parser: it reads the sec_8k narratives
+sec-13g                    # passive 5%+ stakes; ~7x sec-13d's volume, chunk it (HEAVY)
+# -- fundamentals --
 fundamentals               # both layers: facts (network, HEAVY) then history (replay)
 fundamentals-facts         # SEC XBRL per-filing -> fundamentals_facts (+ headcount). HEAVY
 fundamentals-history-sec   # fundamentals_facts -> fundamentals_history_sec + _reason_codes. No network
@@ -124,10 +135,11 @@ sharadar-tickers  sharadar-actions  sharadar-sp500   # one table each, for a tar
 fundamentals-history-merged # rebuild ONLY the merged table. No network; -F deletes first
 sharadar-gap-check         # READ-ONLY: where Sharadar and the SEC layer disagree. --propose
 sharadar-diagnostics       # READ-ONLY acceptance gates -> a markdown report. Writes no data
-earnings-surprises  financial-statements  insider-transactions
+earnings-surprises  financial-statements
 financial-notes            # VERY HEAVY
+# -- structure --
 def14a                     # LLM-parsed governance (costs OpenAI calls)
-sec-8k-items  sec-13d  filing-text
+filing-text
 wiki-pageviews  google-trends
 download-earnings-calls    # to disk, no DB (HEAVY)
 ingest-earnings-calls      # cached transcripts -> earnings_call_sections; -F re-parses all
@@ -149,7 +161,7 @@ build-target          # -> cube_part_targets + cube_part_betas
 build-fundamentals    # -> cube_part_fundamentals
 build-momentum        # -> cube_part_momentum
 build-text            # -> cube_part_text
-build-extras          # -> cube_part_extras
+build-institutionals  # -> cube_part_institutionals   (13F, elite 13F, insider, short flow)
 build-governance      # -> cube_part_governance          (DEF 14A + Item 5.07; a HEAVY part)
 assemble-cube         # read the parts -> composites -> the `cube` table
 build-cube            # all eight in ONE process (what main.py does)
@@ -234,8 +246,37 @@ land as one parquet per ticker under `data/fundamentals_sweep/` (gitignored), so
   multi-hour SEC download here before) and confirm none remain before restarting.
 - Wall clock: ~5-9 min per batch of 4 at `--workers 4`, so ~60-90 min for all 52. It is
   CPU-bound in XBRL parsing, not network-bound, so more workers than cores does not help.
-- The sweep honours `fundamentals_cik_cutover.json`. Without that it would walk only the current
+- The sweep honours `configs/sec/registrant_cutover.json`. Without that it would walk only the current
   registrant and measure APA at 22 filings instead of 65 — a pipeline nobody runs.
+
+### Registrant-cutover re-extraction
+
+```bash
+REG=$(rtk "$PY" -c "from src.data_extract.utils.common.registrant import load_registrants; \
+                    print(','.join(sorted(load_registrants())))")
+rtk "$PY" scripts/registrant_impact.py --snapshot baseline_$(date +%F)   # BEFORE anything
+rtk "$PY" -m src data_extract insider-transactions --reparse             # no network
+rtk "$PY" -m src data_extract financial-notes      --reparse             # no network
+rtk "$PY" -m src data_extract financial-statements --reparse             # no network
+rtk "$PY" -m src data_extract sec-8k-items -t "$REG"                     # then EDGAR, SERIALLY
+rtk "$PY" scripts/registrant_impact.py --compare baseline_<date> --tickers "$REG"
+```
+
+- ⚠ **`--reparse` is mandatory for the three bulk sets and needs no network.** Their incremental
+  test is "did the ticker universe gain members?", and a register change gains none — the same 491
+  tickers resolve through MORE CIKs — so without the flag the recovered predecessor rows are never
+  parsed. Every zip is already on disk (81 insider / 76 notes / 65 finstmt, ~32 GB).
+- ⚠ **A partial re-parse is worse than either state alone**: the oldest periods keep the old
+  resolution while the rest carry the new, and nothing downstream can tell that from a real
+  coverage cliff. The flag re-reads the whole window on purpose.
+- ⚠ **ONE EDGAR WALK AT A TIME.** The rate limiter is per-PROCESS, so two concurrent walks put
+  ~18 req/s against SEC's limit of 10. The block is silent and has already cost this project 18
+  roster managers' entire books. The bulk re-parses need no network, so they go first.
+- ⚠ **Do not read these runs' exit codes through a pipe** — redirect to a log and read the log.
+- ⚠ **Never kill these by image name.** Kill by PID only.
+- Take a per-table `pg_dump` before the first write; every step is an upsert of recovered history,
+  so the failure mode is extra rows rather than corrupted ones, but restore-from-dump is the only
+  sanctioned rollback (never a hand-written `DELETE`).
 
 `measure_total_liabilities_legs.py` used to sit here as a third instrument. It was DELETED in
 plan-5b: its finding is now a standing constraint in `cross_identity`'s docstring -- 0 of 44
@@ -339,6 +380,36 @@ rtk "$PY" -m src data_extract sec-13d -F
 - **`-F/--full` is not optional**, for the same reason as the fundamentals backfill: the DELETE
   does not touch the run manifest, so an incremental run resumes from the last run date and lists
   nothing.
+
+### SC 13G backfill (same shape, ~7x the volume)
+
+```bash
+# chunked, because edgartools never releases its per-filing caches and -F is what defeats the
+# manifest's "did the universe change size" incremental test on a chunked walk
+tr ',' '
+' < universe.txt | split -l 50 - chunk_
+for f in chunk_*; do
+  rtk "$PY" -m src data_extract sec-13g -t "$(paste -sd, "$f")" --years 15 -F
+done
+```
+
+- The walk cost is set by the LISTING size, not by what is stored: a ticker that is itself an
+  institutional filer lists hundreds of 13Gs against other issuers, all of which are parsed and
+  then dropped by the issuer guard. Measured 2026-09-08: JNJ lists 159 filings, 99 in a 15-year
+  window, of which **60 are JNJ disclosing stakes in other companies** (Rallybio, CVRx, Rapport)
+  and only 39 are 13Gs filed *against* JNJ. AAPL drops none.
+
+### Insider re-parse after a parse change
+
+```bash
+# take the rollback first -- the re-parse upserts 1.94M rows
+MSYS_NO_PATHCONV=1 docker exec pea_db pg_dump -U alexandre -d pea   -t insider_transactions --data-only --format=custom > insider_pre.dump
+rtk "$PY" -m src data_extract insider-transactions --reparse
+```
+
+- Nothing is re-downloaded: a past quarter's zip is final once the quarter ends, and all 81 are
+  cached. `--reparse` exists because adding a column leaves 20 years of stored rows with it NULL
+  and the incremental path would never revisit them.
 - Cost: ~1,700 filings re-fetched, plus the **461** post-mandate filings that were never ingested
   (91 tickers, 2024-12-17 → today) and now become visible for the first time.
 - `reporting_person_comment` is a new column; `store.ensure_table` adds it on first write.

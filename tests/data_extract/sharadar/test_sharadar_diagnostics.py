@@ -24,9 +24,10 @@ import pandas as pd
 import pytest
 
 from src.constants.constants import (
-    FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_CIK_CUTOVER_FILENAME,
+    FUNDAMENTALS_CATALOGUE_SUBDIR,
     SHARADAR_CONFIG_SUBDIR, SHARADAR_ZERO_FILLED_FIELDS, SHARADAR_ZERO_RULES_FILENAME,
 )
+from src.data_extract.utils.common.registrant import load_registrants
 from src.data_store.schema import Tables
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import (
     confirm_sign_conventions, cross_check_shares, gate_completeness, gate_zero_fill,
@@ -278,10 +279,15 @@ def test_sharesbas_is_split_adjusted_not_point_in_time(frames):
 # D19 -- verified the moment a cutover ticker is stored                        #
 # --------------------------------------------------------------------------- #
 def _cutover_tickers() -> dict[str, str]:
-    """`{ticker: cutover_date}` from the registrant-boundary register."""
-    path = CONFIG_DIR / FUNDAMENTALS_CATALOGUE_SUBDIR / FUNDAMENTALS_CIK_CUTOVER_FILENAME
-    blob = json.loads(path.read_text(encoding="utf-8"))
-    return {k: v["cutover_date"] for k, v in blob.items() if not k.startswith("_")}
+    """`{ticker: first boundary date}` from the registrant-boundary register.
+
+    Read through `load_registrants` rather than off the JSON: one parser over one file is
+    what stops a schema change in `configs/sec/` from breaking a test in this package. A
+    chain contributes its OLDEST boundary, which is the earliest date the SEC-vs-Sharadar
+    join could lose half a history at.
+    """
+    return {t: str(r.boundaries[0].date())
+            for t, r in load_registrants(str(CONFIG_DIR)).items() if r.boundaries}
 
 
 def test_cik_cutover_continuity(context, frames):

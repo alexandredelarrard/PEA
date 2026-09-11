@@ -15,6 +15,7 @@ import pytest
 
 from src.data_extract.utils.common import edgar_driver
 from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
+from src.data_extract.utils.common.registrant import Registrant, Segment
 from src.data_extract.utils.common.run_manifest import get_entry
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_store import schema
@@ -72,7 +73,7 @@ def _rows(table, ticker, accession):
 def test_new_filings_drops_done_accessions_filters_since_and_sorts_oldest_first(monkeypatch):
     listed = [_filing("c", "2023-06-01"), _filing("a", "2020-01-01"),
               _filing("d", "2024-03-01"), _filing("b", "2021-05-01")]
-    monkeypatch.setattr(edgar_driver, "Company",
+    monkeypatch.setattr("edgar.Company",
                         lambda t: types.SimpleNamespace(get_filings=lambda form: listed))
 
     out = new_filings("AAPL", ["8-K"], pd.Timestamp("2021-01-01"), frozenset({"c"}))
@@ -86,7 +87,7 @@ def test_new_filings_drops_done_accessions_filters_since_and_sorts_oldest_first(
 
 def test_new_filings_without_since_returns_everything_sorted(monkeypatch):
     listed = [_filing("c", "2023-06-01"), _filing("a", "2020-01-01")]
-    monkeypatch.setattr(edgar_driver, "Company",
+    monkeypatch.setattr("edgar.Company",
                         lambda t: types.SimpleNamespace(get_filings=lambda form: listed))
 
     got = new_filings("AAPL", ["8-K"], None, frozenset())
@@ -95,6 +96,131 @@ def test_new_filings_without_since_returns_everything_sorted(monkeypatch):
 
     print("\n=== SANITY CHECK: new_filings with since=None ===")
     print("  no cutoff -> both filings kept, still oldest-first. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# new_filings across a registrant cutover                                      #
+# --------------------------------------------------------------------------- #
+#: XOM's real shape, measured 2026-09-09. `Company("XOM")` resolves to the PREDECESSOR (EDGAR
+#: has not remapped the ticker), so the successor's filings are invisible without the register.
+_CUTOVER_DATE = pd.Timestamp("2026-07-01")
+
+
+def _xom_cutover():
+    """XOM's real two-segment chain, as a `Registrant`."""
+    return Registrant(ticker="XOM", kind="reorganisation", segments=(
+        Segment(cik="0000034088", valid_from=None, valid_to=_CUTOVER_DATE,
+                evidence="test fixture"),
+        Segment(cik="0002115436", valid_from=_CUTOVER_DATE, valid_to=None,
+                evidence="test fixture")))
+
+
+def _patch_registrants(monkeypatch, by_cik: dict, cutover=None):
+    """`Company(x)` -> that registrant's filings, and the register -> `cutover` or empty.
+
+    ⚠ PATCHES `edgar.Company`, NOT `edgar_driver.Company`. `new_filings` is now a wrapper over
+    `registrant.resolve_registrant_filings`, which imports `Company` at call time from the
+    lowest layer -- so patching the driver's own name silently patches nothing and every one
+    of these tests reaches the live SEC API instead. That failure mode is loud (an
+    `IdentityNotSetError` from inside a retry wrapper) but it reads as a network fault rather
+    than a stale patch point, so it is called out here.
+
+    Keys are what the resolver passes: the TICKER string for the ticker-resolved lookup, and
+    an `int` CIK for each segment.
+    """
+    monkeypatch.setattr("edgar.Company",
+                        lambda x: types.SimpleNamespace(
+                            get_filings=lambda form: by_cik.get(x, [])))
+    monkeypatch.setattr("src.data_extract.utils.common.registrant.load_registrants",
+                        lambda *a, **k: ({"XOM": cutover} if cutover else {}))
+
+
+def test_new_filings_unions_the_successor_registrant(monkeypatch):
+    """The defect this fixes: three real XOM 8-Ks reached no table at all, because the ticker
+    resolves to the predecessor and nothing walked the successor."""
+    _patch_registrants(monkeypatch, {
+        "XOM": [_filing("pred-old", "2026-05-01")],
+        2115436: [_filing("suc-1", "2026-07-07"), _filing("suc-2", "2026-08-28")],
+    }, cutover=_xom_cutover())
+
+    out = new_filings("XOM", ["8-K"], None, frozenset())
+
+    assert [f.accession_number for f in out] == ["pred-old", "suc-1", "suc-2"]
+
+    print("\n=== SANITY CHECK: cutover union recovers the successor's filings ===")
+    print("  successor-only accessions ['suc-1', 'suc-2'] now reachable. Validated.")
+
+
+def test_new_filings_keeps_a_predecessor_filing_dated_after_the_cutover(monkeypatch):
+    """⚠ THE ANTI-REGRESSION TEST, and the reason this path UNIONS where `cutover_filings`
+    SPLITS. XOM's SCHEDULE 13G of 2026-08-07 is filed under the PREDECESSOR, five weeks after
+    the 2026-07-01 boundary. A dated split would discard it -- a filing already in the
+    database -- so applying the fundamentals rule to the event pipelines loses data."""
+    _patch_registrants(monkeypatch, {
+        "XOM": [_filing("pred-late", "2026-08-07")],
+        2115436: [_filing("suc-1", "2026-07-07")],
+    }, cutover=_xom_cutover())
+
+    out = new_filings("XOM", ["SCHEDULE 13G"], None, frozenset())
+    kept = [f.accession_number for f in out]
+
+    assert "pred-late" in kept, "a dated split would have dropped this"
+    assert pd.Timestamp(out[-1].filing_date) > _CUTOVER_DATE
+    assert kept == ["suc-1", "pred-late"]
+
+    print("\n=== SANITY CHECK: predecessor filings after the cutover survive ===")
+    print("  'pred-late' (2026-08-07, past a 2026-07-01 boundary) kept. Validated.")
+
+
+def test_new_filings_takes_a_co_indexed_document_once(monkeypatch):
+    """XOM's 2026-08-03 10-Q carries ONE accession indexed under BOTH CIKs -- which is why
+    fundamentals stayed clean while `sec_8k` lost filings. It must not arrive twice."""
+    shared = _filing("0000034088-26-000093", "2026-08-03")
+    _patch_registrants(monkeypatch, {
+        "XOM": [shared], 34088: [shared], 2115436: [shared],
+    }, cutover=_xom_cutover())
+
+    out = new_filings("XOM", ["10-Q"], None, frozenset())
+
+    assert [f.accession_number for f in out] == ["0000034088-26-000093"]
+
+    print("\n=== SANITY CHECK: a co-indexed accession is taken once ===")
+    print("  same accession under both registrants -> 1 filing. Validated.")
+
+
+def test_new_filings_survives_an_unresolvable_cutover_cik(monkeypatch):
+    """A dead CIK in the register must cost that registrant's filings, not the whole walk."""
+    def _company(x):
+        if x == 2115436:
+            raise ValueError("no such company")
+        return types.SimpleNamespace(get_filings=lambda form: [_filing("pred", "2026-05-01")])
+
+    monkeypatch.setattr("edgar.Company", _company)
+    monkeypatch.setattr("src.data_extract.utils.common.registrant.load_registrants",
+                        lambda *a, **k: {"XOM": _xom_cutover()})
+
+    out = new_filings("XOM", ["8-K"], None, frozenset())
+
+    assert [f.accession_number for f in out] == ["pred"]
+
+    print("\n=== SANITY CHECK: a dead cutover CIK does not kill the walk ===")
+    print("  successor unresolvable -> predecessor's filing still returned. Validated.")
+
+
+def test_def14a_forms_covers_contested_proxies_but_not_revised_ones():
+    """The contested proxy REPLACES the annual DEF 14A, so 42 ticker-years across 37 tickers
+    were invisible to every governance feature. DEFR14A is excluded on measurement, not taste:
+    220 of its 232 ticker-years already hold the DEF 14A, so it is a duplicate far more often
+    than a recovery."""
+    from src.constants.constants import DEF14A_FORMS
+
+    assert "DEFC14A" in DEF14A_FORMS
+    assert "DEFR14A" not in DEF14A_FORMS
+    for not_an_annual_meeting in ("DEFM14A", "DEFS14A", "DEFN14A"):
+        assert not_an_annual_meeting not in DEF14A_FORMS
+
+    print("\n=== SANITY CHECK: DEF14A_FORMS scope ===")
+    print(f"  {DEF14A_FORMS} -- contested in, revised and non-annual out. Validated.")
 
 
 # --------------------------------------------------------------------------- #

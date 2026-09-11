@@ -49,7 +49,7 @@ Every `src/` subfolder owns a `step_*.py` orchestrator: inherit `Step`, call
 
 ```
 data_store/   the ONLY SQL — schema.py (table registry), store.py (DataStore), ddl.py
-data_extract/ StepExtractAllData + 5 sub-steps + fetchers (incl. fundamentals_sharadar/)
+data_extract/ StepExtractAllData + 6 sub-steps; fetchers grouped by step (institutionals/ = who owns)
 data_peers/   StepDeducePeers                               -> sector_peers.json
 data_aggregate/ StepBuildCube: 7 sub-steps -> 8 cube_part_* -> cube
 modelling/    long_short/ (trained ensemble), trend/, long_book/

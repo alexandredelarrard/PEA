@@ -345,7 +345,7 @@ def test_governance_panel_encoding_and_empty_guard():
     #     `LEGACY_EXEMPT_FROM_EXPIRY` rather than typed here, so the two can never drift -- that
     #     frozenset is the same one `expire_stale` consults, and it is named on the FEATURE side.
     #     `test_impute_accrual.py` proves the VALUES are unmoved; this proves they still EXIST
-    #     after governance was lifted out of `cube_part_extras` into its own part.
+    #     after governance was lifted out of `cube_part_institutionals` into its own part.
     missing_legacy = [n for n in sorted(LEGACY_EXEMPT_FROM_EXPIRY) if f"f_{n}" not in cols]
     assert not missing_legacy, f"legacy governance features lost by the move: {missing_legacy}"
 

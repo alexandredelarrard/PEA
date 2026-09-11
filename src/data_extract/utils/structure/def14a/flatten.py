@@ -22,7 +22,7 @@ from src.data_extract.utils.common.frame_sanitize import strip_nul
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.validate import (
     DEF14A_AUDIT_FEE_MIN_PLAUSIBLE, clean_holder_name, clean_person_name, clean_text,
-    is_subtotal_holder, rescale_block, sum_fee_total,
+    is_subtotal_holder, repair_pay_ratio, rescale_block, sum_fee_total,
 )
 from src.data_store.schema import Table, Tables
 from src.gpt_extract.utils.schemas_gpt import LlmResult
@@ -45,8 +45,11 @@ _NUMERIC_COLS = [
     "n_neos", "total_neo_comp", "sct_years",
     # child-table row counts (so a silent recall regression is visible on the parent row)
     "n_director_comp_rows", "n_ownership_rows",
-    # ownership
-    "insider_ownership_pct", "ceo_ownership_pct", "n_five_percent_holders",
+    # ownership -- the ECONOMIC leg and the VOTING leg are separate columns on purpose. The
+    # schema used to ask the model to read the first and suppress the second, and it returned
+    # voting power as ownership on 59 filings; both are now extracted and code picks the leg.
+    "insider_ownership_pct", "insider_voting_pct", "insider_shares",
+    "ceo_ownership_pct", "ceo_voting_pct", "n_five_percent_holders",
     # governance provisions
     "independent_chair", "lead_independent_director", "classified_board",
     "dual_class_shares", "poison_pill", "majority_voting", "say_on_pay_support_pct",
@@ -205,8 +208,23 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
         "sct_years": len({c.fiscal_year for c in extract.compensation
                           if c.fiscal_year is not None}) or None,
         # ---- Ownership / alignment (direct from the beneficial-ownership summary) ----
+        # ⚠ FOUR COLUMNS, TWO PAIRS, NO DERIVATION HERE. `*_ownership_pct` is the percent of
+        # CLASS (economic) and `*_voting_pct` the percent of total voting power, each stored
+        # exactly as extracted. A null voting leg means "this filing's ownership table printed
+        # no voting-power column", which is the ordinary single-class case -- it is NOT
+        # back-filled from the ownership leg here, because that would make the stored table a
+        # mixture of what a filer disclosed and what we inferred. The single-class identity
+        # (voting == ownership) is applied in the cube, where `f_control_wedge` is built and
+        # the inference can be labelled as one.
         "insider_ownership_pct": g("insider_ownership_pct"),
+        "insider_voting_pct": g("insider_voting_pct"),
+        # The group's SHARE COUNT, which is always disclosed and exact, unlike a combined
+        # economic percentage -- Alphabet's table prints per-class percentages and total voting
+        # power and no combined column at all, so for that filer shape the percentage is
+        # COMPUTABLE (shares / shares outstanding) and not extractable.
+        "insider_shares": g("insider_shares"),
         "ceo_ownership_pct": g("ceo_ownership_pct"),
+        "ceo_voting_pct": g("ceo_voting_pct"),
         "n_five_percent_holders": g("n_five_percent_holders"),
         # ---- Governance provisions ----
         "independent_chair": _bnum(g("independent_chair")),
@@ -253,6 +271,11 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
     # on the fee tables that have no Total row, where the model reports the `Audit Fees` line as
     # the total (BA 39.1M -> 43.6M, T 34.2M -> 38.9M).
     sum_fee_total(row, "auditor_fees", list(_FEE_CATEGORY_COLS))
+    # The WITHIN-ROW half of the CEO-pay sanity step (D4). It belongs here because it compares
+    # only this row's own three pay-ratio columns; the rest of that step needs the same CEO's
+    # OTHER filings for its neighbour reference, which one flattened filing cannot see, so it
+    # runs as a batch over stored rows instead (`scripts/def14a_sct_sanity.py`).
+    row = repair_pay_ratio(row)
     return row
 
 
@@ -402,6 +425,7 @@ def _ownership_rows(ticker: str, filing: pd.Series, extract: Def14AExtract) -> l
             "holder_type": holder_type or "director_officer",
             "shares": h.shares,
             "percent_of_class": h.percent_of_class,
+            "percent_of_voting_power": h.percent_of_voting_power,
         })
     return rows
 
@@ -446,6 +470,41 @@ def _child_frames(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dic
         "def14a_directors": _director_rows(ticker, filing, extract),
     }
 
+#: The `=== LABEL ===` block the carve emits for the Item 402(k) table. A populated section with
+#: zero extracted rows is a RECALL failure and nothing else -- see `_log_director_comp_recall`.
+_DIRECTOR_COMP_SECTION = "=== DIRECTOR COMPENSATION TABLE ==="
+
+
+def _log_director_comp_recall(ticker: str, filing: pd.Series, payload: str,
+                              n_rows: int) -> None:
+    """Warn when the model was SHOWN a director-compensation table and returned no rows.
+
+    ⚠ THIS IS THE CHECK WHOSE ABSENCE LET 1,097 FILINGS FAIL SILENTLY across 272 companies --
+    12.45% of every post-2007 proxy in the archive yielding zero Item 402(k) rows, with IBM, WMB
+    and LNT at 20 of 20 filings each and nothing anywhere saying so. `n_director_comp_rows` was
+    already written to the parent row, so the number was in the database the whole time; what
+    was missing was anything that read it.
+
+    The distinction it draws is the one that matters, and it is the same A/B/C triage the
+    diagnostic uses. A zero row count is only evidence of a defect when the table REACHED the
+    payload: if the carve emitted no section the fault is the classifier (fixed in `tables.py`,
+    and silent here because there is nothing to blame the model for), and if the filing predates
+    the 2007 proxy season there is no table to find at all. So this fires only on the narrow
+    case the message names, which is what stops it becoming noise nobody reads.
+    """
+    if n_rows or _DIRECTOR_COMP_SECTION not in (payload or ""):
+        return
+    body = (payload or "").split(_DIRECTOR_COMP_SECTION, 1)[1]
+    body = body.split("\n=== ", 1)[0]
+    if len(body.strip()) < 200:                 # an emitted but empty/truncated section
+        return
+    logger.warning(
+        "%s %s (%s): the carve supplied a %d-char DIRECTOR COMPENSATION TABLE and the extract "
+        "returned ZERO director-comp rows — extraction RECALL failure, not a carve miss",
+        ticker, filing.get("filing_date", ""), filing.get("accession_number", ""),
+        len(body.strip()))
+
+
 def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
     """One answer -> the five frames it fans out to, save-ready.
 
@@ -456,6 +515,9 @@ def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
     ticker = str(result.task.meta["ticker"])
     filing = result.task.meta["filing"]
     extract = result.parsed
+
+    _log_director_comp_recall(ticker, filing, result.task.payload,
+                              len(_director_comp_rows(ticker, filing, extract)))
 
     frames: dict[Table, pd.DataFrame] = {}
     for name, child_rows in _child_frames(ticker, filing, extract).items():
@@ -480,7 +542,7 @@ _CHILD_SPEC = {
          "pension_change", "other_compensation", "total", "reconciles"),
         ["ticker", "accession_number", "name"]),
     "def14a_ownership": (
-        ("shares", "percent_of_class"),
+        ("shares", "percent_of_class", "percent_of_voting_power"),
         ["ticker", "accession_number", "holder_name", "holder_type"]),
     "def14a_directors": (
         ("age", "tenure_years", "is_independent", "other_public_company_boards"),

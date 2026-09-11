@@ -18,27 +18,55 @@ from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_extract.utils.prices.fetch_macro import derive_series, fill_short_gaps, to_long
 
 
-def test_fill_short_gaps_mean_and_week_guard():
-    """A short interior gap (< 1 week) is filled with the MEAN of the two bracketing days;
-    a >= 1 week gap and leading/trailing NaNs are left untouched."""
+def test_fill_short_gaps_carries_forward_and_keeps_the_week_guard():
+    """A short interior gap (< 1 week) is filled with the value BEFORE it -- never a blend with
+    the value after; a >= 1 week gap and leading / trailing NaNs are left untouched.
+
+    ⚠ THIS ASSERTED `mean(10, 16) == 13` UNTIL 2026-09-09. That fill wrote into an earlier row a
+    number computed from a later observation, in the EXTRACTION layer, so `prices_macro` stored
+    cells no downstream check could distinguish from real quotes. The fingerprint is arithmetic:
+    FRED quotes to 2 dp and the mean of two 2-dp numbers needs a third about half the time, which
+    is how ~2% of cells per series were counted (a floor -- the other half round back to 2 dp).
+
+    The `fillable` MASK is deliberately unchanged, `next_val` and all: `equity_tr`'s rows are the
+    cube's trading calendar, so a mask that admitted trailing gaps would invent trading days.
+    Only the VALUE moved. This test pins both halves of that -- the carried value, and the fact
+    that exactly the same cells are still filled.
+    """
     idx = pd.date_range("2024-01-01", "2024-01-20", freq="D")
     s = pd.Series(np.nan, index=idx)
     s["2024-01-01"] = 10.0            # valid
-    # 01-02, 01-03 missing -> gap span 01-01..01-04 = 3 days (< 7) -> fill mean(10,16)=13
+    # 01-02, 01-03 missing -> gap span 01-01..01-04 = 3 days (< 7) -> carry 10.0 forward
     s["2024-01-04"] = 16.0            # valid
     # 01-05 .. 01-14 missing -> gap span 01-04..01-15 = 11 days (>= 7) -> NOT filled
     s["2024-01-15"] = 20.0            # valid
     s["2024-01-16":] = np.nan         # trailing NaNs -> untouched
     df = pd.DataFrame({"x": s})
 
-    out = fill_short_gaps(df, ["x"], max_gap_days=7)
-    assert out.loc["2024-01-02", "x"] == pytest.approx(13.0)   # mean(10, 16)
-    assert out.loc["2024-01-03", "x"] == pytest.approx(13.0)
+    out = fill_short_gaps(df.copy(), ["x"], max_gap_days=7)
+    assert out.loc["2024-01-02", "x"] == pytest.approx(10.0)   # the value BEFORE the gap
+    assert out.loc["2024-01-03", "x"] == pytest.approx(10.0)
+    assert out.loc["2024-01-02", "x"] != pytest.approx(13.0), "the midpoint fill is back"
     assert pd.isna(out.loc["2024-01-08", "x"])                 # long gap left NaN
     assert pd.isna(out.loc["2024-01-18", "x"])                 # trailing NaN untouched
     assert out.loc["2024-01-01", "x"] == 10.0 and out.loc["2024-01-15", "x"] == 20.0
-    print("\n=== SANITY CHECK: short-gap mean fill ===")
-    print("  2-day gap filled with mean(10,16)=13; 11-day gap + trailing NaNs untouched. Validated.")
+
+    # the FILLED CELL SET is identical to the old rule's -- only the value changed. Anything
+    # else would move `equity_tr`'s row count and with it the cube's trading calendar.
+    filled_now = set(out.index[out["x"].notna()]) - set(df.index[df["x"].notna()])
+    assert filled_now == {pd.Timestamp("2024-01-02"), pd.Timestamp("2024-01-03")}
+
+    # PIT: the answer must not depend on a future the caller does not have yet
+    truncated = fill_short_gaps(df.loc[:"2024-01-04"].copy(), ["x"], max_gap_days=7)
+    assert truncated.loc["2024-01-02", "x"] == pytest.approx(10.0)
+
+    print("\n=== SANITY CHECK: short-gap forward carry ===")
+    print(f"  2-day gap between 10.0 and 16.0 -> filled {out.loc['2024-01-02', 'x']:.1f} "
+          "(the value before it), NOT the 13.0 midpoint the old rule wrote")
+    print(f"  cells filled: {sorted(d.date() for d in filled_now)} -- the same set as the mean "
+          "rule filled, so the trading calendar cannot move")
+    print("  11-day gap and trailing NaNs untouched; the same answer on a frame truncated at "
+          "the gap, so no future observation is read for the value. Validated.")
 
 
 def test_derived_spreads_are_exact_differences():

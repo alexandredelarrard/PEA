@@ -205,8 +205,20 @@ class StepCubeGovernance(Step):
         return df
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
-        """`totalRevenue` — the denominator leg of `ceo_pay_vs_revenue_growth`. Absent, that
-        one feature is skipped and the rest of the panel still builds."""
+        """TWO columns are read off this frame, and the second is easy to miss.
+
+        `totalRevenue` is the denominator leg of `ceo_pay_vs_revenue_growth`; absent, that one
+        feature is skipped and the rest of the panel still builds.
+
+        ⚠ `sharesOutstandingPit` IS THE DENOMINATOR OF `f_insider_ownership_pct` ITSELF, via
+        `panel.economic_ownership`. A dual-class proxy prints per-class percentages and total
+        voting power and NO combined economic column, so insider economic ownership is not a
+        disclosed fact for those 104 tickers -- it is computed as the group's filed share count
+        over this. Loaded in FULL on purpose: `fundamentals_history` is deliberately absent
+        from `sources.SOURCE_COLUMNS`, and **if a projection is ever added for it, this column
+        has to be in the list** or the ownership feature silently reverts to reporting whatever
+        the extraction happened to read off a per-class column.
+        """
         df = self._store.load(Tables.fundamentals_history, optional=True)
         if df is None or df.empty:
             self._log.warning("No fundamentals history -> the pay-vs-revenue-growth "
@@ -230,9 +242,9 @@ class StepCubeGovernance(Step):
 
         # ⚠ THE ORDER IS THE DESIGN (D35, §3.2). The directors table is filled per person, the
         # board averages are DERIVED from it, the derivation is merged into the parent rows under
-        # D39's precedence -- and only THEN does `impute_def14a` run, so its linear interpolation
-        # is the LAST resort rather than the first move. `INTERP` itself is unchanged: this is a
-        # change of order, not of the interpolation rule.
+        # D39's precedence -- and only THEN does `impute_def14a` run, so its forward carry is the
+        # LAST resort rather than the first move. `CARRY_LEVELS` itself is unchanged: this is a
+        # change of order, not of the fill rule.
         directors = self._load_directors()
         if directors is not None:
             df, mstats = merge_board_aggregates(df, board_aggregates(directors))

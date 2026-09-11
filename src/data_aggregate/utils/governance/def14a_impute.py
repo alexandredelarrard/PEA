@@ -16,8 +16,8 @@ of these, and no other kind of fill is allowed anywhere in the governance packag
 | kind | how to recognise it | treatment | example |
 |---|---|---|---|
 | **A — structurally absent** | the disclosure regime did not exist at that `as_of` | **leave NaN, never fill.** The feature's history simply starts at the regime date | `ceo_total_comp` pre-2006 (Reg S-K), `say_on_pay_support_pct` pre-2011 (Dodd-Frank §951), `ceo_pay_ratio` pre-2018 (Item 402(u)) |
-| **B — disclosed but unextracted** | era-flat or era-noisy fill, no legislative cliff | **deduce**: within-row identities, then a bounded temporal fill between two KNOWN observations | `avg_other_public_boards`, `lead_independent_director`, the 42,386 NULL NEO totals |
-| **C — silent by choice (tri-state)** | the extraction deliberately writes NULL when the document says nothing | **carry forward only between two known observations**; never infer FALSE from silence | `poison_pill`, `majority_voting` |
+| **B — disclosed but unextracted** | era-flat or era-noisy fill, no legislative cliff | **deduce**: within-row identities, then a bounded forward CARRY from the last known observation | `avg_other_public_boards`, `lead_independent_director`, the 42,386 NULL NEO totals |
+| **C — silent by choice (tri-state)** | the extraction deliberately writes NULL when the document says nothing | **carry the last known value forward**, bounded; never infer FALSE from silence | `poison_pill`, `majority_voting` |
 
 ⚠ **Kind A is NOT detected in code and must not be.** No date literal, no `if year < 2006`
 branch: a regime cliff is visible in the coverage report and belongs in prose, not in a
@@ -26,46 +26,85 @@ Also forbidden here, by the same argument: cross-sectional / peer-median fills, 
 and any fitted (model-based) imputation, which would leak cross-sectional information into a
 point-in-time feature.
 
-⚠ **NEVER LINEARLY INTERPOLATE A LEVEL WHOSE YoY CHANGE IS ITSELF A FEATURE** — because the
-interpolation *is* the change. Pay growth measured on an interpolated pay series measures the
-fill, not the company. That is why `INTERP` holds slow-moving structural ratios and NOT
-`ceo_total_comp`: its 68.6% → 76.0% recovery comes entirely from the within-row component
-identity. Two fields knowingly take the trade (`avg_other_public_boards`,
-`say_on_pay_support_pct`) and their deltas therefore partly measure the interpolation; the
-affected share is measured and reported rather than hidden.
+⚠ **NEVER READ A LATER FILING TO FILL AN EARLIER ROW.** Every temporal fill here is a FORWARD
+carry: the value comes from the most recent observation at or before the row it lands on, and
+nothing else. **The one exception is `_accrue_ceo_age`**, which fits a per-CEO birth year over
+all of that person's disclosed ages, later ones included — admissible because a birth year is
+TIME-INVARIANT, so a 2020 disclosure pins the same constant a 2015 one would and the 2015 age it
+implies was knowable in 2015. That argument works for a constant and for nothing else; it is not
+a licence to fit anything else across time.
 
-Measured recovery on the live table, 2026-09-07 — 12,343 rows, 488 tickers,
+This rule replaced linear interpolation on 2026-09-09, and the defect it closes was not subtle:
+`limit_area="inside"` fills a gap by drawing a line between the observations either
+side, so **every intermediate value was computed from a filing that did not exist yet**. LVS
+`insider_ownership_pct`: 0.1080 filed 2020-04-01, silence, 0.0120 filed 2024-03-28; the shipped
+2021 / 2022 / 2023 values were 0.0840 / 0.0600 / 0.0360, so the June-2021 feature asserted 8.4%
+— arithmetic on a filing three years in its future. 12,607 interior gaps across 13 fields were
+built that way, 46% of everything `f_board_busyness` shipped, and `03_pit` cannot see any of it
+because the future value is laundered onto a row whose own `as_of` is legitimately in the past.
+
+⚠ **A CARRY IS BOUNDED, AT `CARRY_MAX_DAYS` (1,095 days).** Not a taste question: `expire_stale`
+dates a cell by the last filing that carried the field, so anything written here is dated to the
+row it lands on and reads as age 0 downstream. An unbounded `ffill` would push 10,400 cells —
+some copying a 30-year-old observation — straight through the level horizon.
+
+⚠ **NEVER CARRY A LEVEL WHOSE YoY CHANGE IS ITSELF A FEATURE** without recording it, because the
+fill *is* the change: a carried segment has a first difference of exactly zero, so the delta
+asserts "nothing changed". That is why `CARRY_LEVELS` holds slow-moving structural ratios and NOT
+`ceo_total_comp`: its 68.4% → 76.0% recovery comes entirely from the within-row component
+identity. Two fields knowingly take the trade (`avg_other_public_boards`,
+`pct_independent_directors`) and their deltas therefore partly measure the fill; the affected
+share is flagged per cell in `DELTA_PROVENANCE_COLUMNS` rather than hidden.
+
+Measured recovery on the live table, 2026-09-09 — 12,372 rows, 489 tickers,
 1995-09-13 → 2026-09-04 (a moving target as `fetch_def14a_llm` runs):
 
 | field | raw | after impute | recovered | modern (≥2011) fill | modern holes |
 |---|---|---|---|---|---|
-| `avg_other_public_boards` | 45.8% | 84.9% | +4,828 | 88.5% | 829 |
-| `majority_voting` | 36.0% | 58.0% | +2,714 | 72.4% | 1,990 |
-| `lead_independent_director` | 50.1% | 66.9% | +2,080 | 87.3% | 915 |
-| `ceo_is_founder` | 77.7% | 94.3% | +2,051 | 97.6% | 175 |
-| `ceo_since_year` | 79.6% | 94.2% | +1,812 | 96.1% | 285 |
-| `ceo_age` | 81.9% | 96.3% | +1,782 | 97.2% | 202 |
-| `pct_independent_directors` | 83.6% | 94.9% | +1,388 | 99.2% | 59 |
-| `independent_chair` | 89.7% | 98.0% | +1,024 | 99.2% | 57 |
-| `avg_board_tenure` | 89.6% | 97.8% | +1,005 | 98.7% | 92 |
-| `insider_ownership_pct` | 60.8% | 68.4% | +944 | 57.7% | 3,054 |
-| `ceo_total_comp` | 68.6% | 76.0% | +915 | 95.9% | 294 |
-| `say_on_pay_support_pct` | 37.9% | 45.1% | +895 | 76.0% | 1,737 |
-| `poison_pill` | 8.5% | 14.6% | +763 | 20.0% | 5,776 |
-| `ceo_salary` | 91.4% | 97.4% | +752 | 99.3% | 51 |
-| `ceo_is_board_chair` | 95.8% | 99.3% | +425 | 99.7% | 22 |
-| `board_size` | 99.3% | 100.0% | +76 | 100.0% | 3 |
-| `ceo_name_proxy` | 99.2% | 99.8% | +71 | 99.9% | 8 |
+| `avg_other_public_boards` | 46.1% | 72.0% | +3,202 | 74.7% | 1,833 |
+| `majority_voting` | 36.1% | 52.4% | +2,007 | 67.6% | 2,344 |
+| `ceo_age` | 81.8% | 96.3% | +1,789 | 97.2% | 200 |
+| `ceo_is_founder` | 78.1% | 92.0% | +1,728 | 96.7% | 237 |
+| `lead_independent_director` | 50.1% | 62.5% | +1,535 | 82.7% | 1,254 |
+| `ceo_since_year` | 79.6% | 91.2% | +1,429 | 94.3% | 415 |
+| `pct_independent_directors` | 84.0% | 94.3% | +1,272 | 99.3% | 53 |
+| `insider_ownership_pct` | 55.5% | 65.6% | +1,254 | 55.8% | 3,200 |
+| `independent_chair` | 89.8% | 97.4% | +941 | 99.0% | 74 |
+| `ceo_total_comp` | 68.4% | 76.0% | +932 | 95.9% | 298 |
+| `say_on_pay_support_pct` | 37.8% | 44.8% | +861 | 75.8% | 1,749 |
+| `avg_board_tenure` | 89.7% | 95.9% | +773 | 97.3% | 197 |
+| `poison_pill` | 8.5% | 13.4% | +613 | 19.2% | 5,850 |
+| `ceo_salary` | 91.4% | 95.4% | +504 | 98.1% | 136 |
+| `ceo_is_board_chair` | 96.0% | 99.1% | +394 | 99.6% | 29 |
+| `ceo_pay_ratio` | 32.2% | 33.4% | +145 | 56.9% | 3,122 |
+| `board_size` | 99.3% | 100.0% | +78 | 100.0% | 1 |
+| `ceo_name_proxy` | 99.2% | 99.2% | **+0** | 99.5% | 38 |
 
 The single most important column is the second-to-last: **in the modern era the fields the
-governance families need are 88-100% filled after impute**, and the remaining sparsity is
+governance families need are 75-100% filled after impute**, and the remaining sparsity is
 concentrated in eras where the disclosure did not legally exist. `poison_pill` at 8.5% raw is
 kind C, not a defect — 91.5% "unknown" is the honest state of the world, and inferring FALSE
 from silence is what made it degenerate (TRUE in 0.1% of rows) before the tri-state fix.
 
-⚠ `recovered` here is `after − before` and is consistent with the fill columns beside it
-(45.8% → 84.9% over 12,343 rows IS ~4,828). The plan's §1.2 prints larger figures in that one
-column that its own percentages contradict; the percentages are the half that reproduces.
+⚠ THIS TABLE FELL when the fill went forward-only on 2026-09-09, and the drop is the point,
+not a regression. `avg_other_public_boards` went 84.9% → 72.0%, `ceo_salary` 97.4% → 95.4%,
+`avg_board_tenure` 97.8% → 95.9%; `ceo_name_proxy` recovers **nothing** where it used to
+recover 71. Two separate rules did that, and their costs are counted separately in `stats`:
+
+  * **the 1,095-day cap** — 10,400 candidate cells copy an observation older than the level
+    horizon, so they are refused here instead of being laundered past it downstream. The
+    largest single decline is `ceo_ownership_pct` at 4,067 cells, a column whose old coverage
+    was carried up to 30 years;
+  * **forward-only itself** — a value the old rule computed from a LATER filing has no
+    replacement, only the last known one, and where there is no last known one the cell stays
+    NaN.
+
+What was lost was mostly not information. A cell filled by interpolating across a 10-year gap
+was an invented number that then read as freshly filed; a cell filled from a 3-year-old
+disclosure is a stated estimate with a stated age. The one real loss is `ceo_name_proxy`'s 68
+correct fills, given up to avoid 18 fabricated CEO identities — see `CARRY_FORBIDDEN`.
+
+⚠ `recovered` here is `after − before` and is consistent with the fill columns beside it.
 `test_impute_coverage.py` regenerates the whole table, which is the only defence against it
 going stale — it moves every time `fetch_def14a_llm` runs.
 
@@ -80,14 +119,17 @@ Deductions:
      with the fields themselves -- they were an opinion, not an extraction.
   3. Pay ratio. `ceo_pay_ratio == ceo_total_comp / median_employee_pay` -> fill the median
      employee pay (or the ratio) from the other two.
-  4. Temporal gap-fill. Per ticker (sorted by filing date), fill a value missing BETWEEN
-     two filled years -- linear interpolation for levels/ratios, carry-forward for stable
-     flags -- via `limit_area='inside'`, so leading/trailing gaps and special-meeting
-     proxies at the edges are left untouched. `AGREEMENT_REQUIRED_FLAGS` narrows that
-     carry-forward for a PERSON: an identity gap is filled only when the same human stands
-     on both sides of it, because a bounded gap proves a value was disclosed either side,
-     not that it was the same value. `IDENTITY_GATED_INTERP` applies the same gate to
-     `ceo_salary`, which is a property of a CONTRACT and not of a company.
+  4. Temporal gap-fill. Per ticker (sorted by filing date), carry the last KNOWN value
+     forward into a gap -- ONE rule for levels/ratios and stable flags alike -- bounded by
+     `CARRY_MAX_DAYS` from the `as_of` that sourced it. Leading gaps stay NaN because there
+     is nothing behind them; TRAILING gaps are now filled, which the old interior-only rule
+     refused, and that asymmetry was itself a defect: a gap at the live edge has no "after",
+     so a backtest filled situations a live run structurally cannot. `CARRY_FORBIDDEN` blocks
+     the carry entirely for `ceo_name_proxy` -- a wrong CEO name lets the turnover guard
+     compare old-vs-old and compute pay growth across the succession it exists to catch, and
+     forward-only cannot tell which gaps hide one. `IDENTITY_GATED_CARRY` applies a weaker,
+     satisfiable version of that gate to `ceo_salary`, a property of a CONTRACT and not of a
+     company: the CEO named on the source row must be the CEO named on the row being filled.
   5. Accrual. `ceo_age` is a CLOCK, not a level: it is recomputed from a per-CEO median
      birth-year anchor (`accrual.py`) rather than interpolated between neighbours.
 
@@ -112,79 +154,138 @@ import pandas as pd
 
 from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrue
 from src.data_aggregate.utils.governance.names import ceo_identity_series
+from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS
 
 CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards",
             "ceo_non_equity_incentive", "ceo_all_other_comp"]
-# levels / ratios that vary smoothly -> linear interpolate an interior gap.
-# ⚠ `ceo_age` was here and is NOT any more: it is an ACCRUAL, filled by `_accrue_ceo_age`.
-INTERP = ["board_size", "n_directors", "avg_director_age", "avg_board_tenure",
-          "pct_independent_directors", "pct_female_directors",
-          "avg_other_public_boards", "insider_ownership_pct",
-          "ceo_ownership_pct", "n_five_percent_holders", "say_on_pay_support_pct",
-          "median_employee_pay", "ceo_pay_ratio"]
-#: Interior gaps interpolated ONLY when the same CEO stands on both sides (D31). A salary is a
-#: term of one person's CONTRACT, so a gap spanning a succession has no smooth path across it.
+
+#: How far a forward carry may reach, in days, measured from the `as_of` of the observation it
+#: copies. **NOT a free parameter** -- it is `LEVEL_MAX_AGE_DAYS`, the same 1,095 days the daily
+#: panel expires a level on, and it has to be, for a reason that is easy to miss:
 #:
-#: `ceo_salary` earns interpolation and the other pay components do not, on measurement.
-#: Median YoY |change|: salary **3.8%**, stock awards 22.8%, non-equity incentive 29.3%,
-#: bonus **40.0%** (p90 100%, only 20.4% of years within ±10%). The last three ARE the
-#: performance-sensitive part of the package -- interpolating them would manufacture exactly
-#: the variation the pay features exist to measure. Salary is the one component sticky enough.
+#: `staleness.expire_stale` drops NULL rows before it dates a cell, so it ages a value against
+#: the last filing that CARRIED that field. A value written here onto a 2026 filing row is
+#: therefore dated 2026 downstream -- age 0, indistinguishable from a real disclosure. An
+#: unbounded `ffill` would launder stale values straight through the horizon phase 3 built:
+#: measured 2026-09-09 on the live table, 21,518 carryable cells of which **10,400 (48%) copy an
+#: observation more than 1,095 days old**, the worst reaching 10,984 days (30.1 years, on
+#: `ceo_ownership_pct`). This is the last place the true age is still knowable, so it is the only
+#: place the bound can be applied.
 #:
-#: Cost, quantified rather than argued: salary is a mean 13.4% of CEO total comp (p90 23.6%),
-#: so an interpolated salary summed with five real components moves a derived total by ~0.5%.
-#: Measured 2026-09-07 on the live table, the realised cost is **zero**: 766 interior-fillable
-#: salary cells (752 same-CEO, 14 declined), and NOT ONE of them sits on a row where salary is
-#: the only absent component -- so no `ceo_total_comp` is unlocked, and the legacy
-#: `ceo_pay_growth` is bit-identical. `comp_imputed` exists to keep that checkable if the
-#: extraction's coverage shifts.
-IDENTITY_GATED_INTERP = frozenset({"ceo_salary"})
-#: ⚠ INTERP columns whose YoY CHANGE also ships as a feature, and which therefore need
-#: PROVENANCE. This module's own headline rule is "never linearly interpolate a level whose YoY
-#: change is itself a feature", and these two are the standing exceptions to it: the LEVEL is
-#: worth filling (a carried board average is a defensible estimate of a standing fact) while the
-#: DELTA across the fill is not, because a linearly-filled segment has a constant first
-#: difference -- so the delta reports the fill's slope rather than the company's change.
+#: ⚠ THE LINEAR INTERPOLATION THIS REPLACED LAUNDERED TOO, and that was recorded nowhere: its
+#: interior gaps reach 10,593 days on `avg_other_public_boards`. The cap is therefore not a cost
+#: of going forward-only -- it closes a second, independent defect that predates it.
+CARRY_MAX_DAYS = LEVEL_MAX_AGE_DAYS
+
+#: Levels and ratios that PERSIST between disclosures -> carry the last KNOWN value forward into
+#: a gap, bounded by `CARRY_MAX_DAYS`.
+#:
+#: ⚠ FORWARD-ONLY, AND THAT IS THE WHOLE POINT. These were linearly interpolated until
+#: 2026-09-09, via `limit_area="inside"`, which fills a gap by drawing a line between the
+#: observation BEFORE it and the observation AFTER it -- so every intermediate value was computed
+#: from a filing that did not exist yet. Worked example, LVS `insider_ownership_pct`: filed
+#: 0.1080 on 2020-04-01, nothing for three years, then 0.0120 on 2024-03-28. The interpolation
+#: shipped 0.0840 / 0.0600 / 0.0360 for 2021 / 2022 / 2023 -- a ramp in steps of -0.024 in which
+#: the June-2021 feature asserts 8.4%, a number arithmetically derived from a filing three years
+#: in its future. 12,607 interior gaps across these fields were built that way, 46% of everything
+#: `f_board_busyness` shipped. `03_pit` cannot see it: the future value is laundered onto a row
+#: whose own `as_of` is legitimately in the past, so the check looks one layer below the defect.
+#:
+#: A forward carry answers 0.1080 for all three years -- the last thing anyone could have known --
+#: and, because it needs no later filing, it also fills the TRAILING gap the old rule refused
+#: (LVS 2026-04-01 = 0.0120). That matters more than it sounds: under the old rule a gap at the
+#: live edge could never be filled, because "after" does not exist yet, so a backtest filled
+#: situations that a live run structurally cannot. The carry treats both the same.
+#:
+#: `ceo_age` was here and is NOT any more: it is an ACCRUAL, filled by `_accrue_ceo_age`.
+CARRY_LEVELS = ["board_size", "n_directors", "avg_director_age", "avg_board_tenure",
+                "pct_independent_directors", "pct_female_directors",
+                "avg_other_public_boards", "insider_ownership_pct",
+                "ceo_ownership_pct", "n_five_percent_holders", "say_on_pay_support_pct",
+                "median_employee_pay", "ceo_pay_ratio"]
+#: Carried ONLY when the CEO named on the source row is the CEO named on THIS row (D31). A salary
+#: is a term of one person's CONTRACT, so carrying it across a succession states the outgoing
+#: CEO's pay as the incoming one's.
+#:
+#: ⚠ THE GATE IS FORWARD-ONLY, unlike the one it replaced. The old test was "the same person
+#: bounds the gap on BOTH sides", which read the later filing; the new one compares the source
+#: row against the current row, both at or before the date being filled. It is also STRICTER: a
+#: row that does not name its CEO can no longer be filled, because the old `bfill` leg supplied
+#: an identity such a row does not have.
+#:
+#: `ceo_salary` earns a carry and the other pay components do not, on measurement. Median YoY
+#: |change|: salary **3.8%**, stock awards 22.8%, non-equity incentive 29.3%, bonus **40.0%**
+#: (p90 100%, only 20.4% of years within ±10%). A carry asserts "unchanged", so it is defensible
+#: exactly to the extent the field is sticky -- 3.8% for salary, and the last three ARE the
+#: performance-sensitive part of the package, where the assertion would manufacture precisely the
+#: variation the pay features exist to measure.
+#:
+#: Cost, quantified rather than argued: salary is a mean 13.4% of CEO total comp (p90 23.6%), so
+#: a carried salary summed with five real components moves a derived total by ~0.5%.
+#: `comp_imputed` keeps that population stateable if the extraction's coverage shifts.
+IDENTITY_GATED_CARRY = frozenset({"ceo_salary"})
+#: ⚠ CARRIED columns whose YoY CHANGE also ships as a feature, and which therefore need
+#: PROVENANCE. The LEVEL is worth filling -- a carried board average is a defensible estimate of
+#: a standing fact -- while the DELTA across the fill is not, and the forward carry does not make
+#: that better, only different in shape: a carried segment has a first difference of **exactly
+#: zero**, so the delta asserts "this board changed nothing that year", which is a claim about
+#: the company and not a measurement of it. (The interpolation it replaced had a constant
+#: NON-zero first difference, so the delta reported the fill's slope. Both are fabricated; only
+#: the fabricated number changed.)
 #:
 #: Rather than choose between the two, the fill happens and its footprint is recorded: each
 #: column gains `<column>_imputed` (1.0 where the temporal fill wrote the value, else 0.0), and
 #: `provisions_features._annual_delta` requires BOTH legs of a delta to be un-imputed. Measured
-#: 2026-09-08, the share of adjacent pairs this rejects:
+#: 2026-09-08 under the old interpolation, the share of adjacent pairs this rejects:
 #:     avg_other_public_boards      65.5%  (6,556 of 10,004)
 #:     pct_independent_directors    20.7%  (2,329 of 11,224)
-#: The rejected share exceeds the interpolated-CELL count (4,828 and 1,388) because one invented
-#: value invalidates up to two deltas -- the one landing on it and the one whose earlier leg it
-#: is.
+#: The rejected share exceeds the filled-CELL count because one invented value invalidates up to
+#: two deltas -- the one landing on it and the one whose earlier leg it is. ⚠ Both figures are
+#: pre-carry and move with it; `test_impute_coverage.py` regenerates them.
 #:
 #: Same shape as `comp_imputed` (D31) and for the same reason: a flag keeps the population
 #: STATEABLE instead of assumed, where a repair-in-place makes it unknowable. The columns are
 #: always present, even when nothing was filled.
 DELTA_PROVENANCE_COLUMNS: tuple[str, ...] = ("avg_other_public_boards",
                                              "pct_independent_directors")
-# stable per-company/CEO facts -> carry the last known value forward within an interior gap
-# `poison_pill` and `majority_voting` are now TRI-STATE at extraction (null when the proxy is
+# Stable per-company/CEO facts -> carry the last known value forward, bounded by
+# `CARRY_MAX_DAYS`, exactly as `CARRY_LEVELS` now is. These were already a carry rather than an
+# interpolation, but they were gated on `fwd.notna() & bwd.notna()` -- an INTERIOR test, so a gap
+# was filled only when a LATER filing existed. The value written was never from the future; the
+# DECISION to write it was, and it produced the same live/backtest asymmetry: a gap at the live
+# edge has no "after" and so could never be filled.
+#
+# `poison_pill` and `majority_voting` are TRI-STATE at extraction (null when the proxy is
 # silent), so a carry-forward here fills a genuine gap rather than propagating a fabricated
 # FALSE -- which is what made `majority_voting` flip 21.2% year-over-year before.
 FLAGS = ["ceo_is_founder", "ceo_is_board_chair", "independent_chair", "lead_independent_director",
          "classified_board", "dual_class_shares", "poison_pill", "majority_voting",
          "ceo_since_year", "ceo_name_proxy"]
-#: Columns whose interior gap is filled ONLY when the value before the gap and the value after
-#: it are the same PERSON. A carry-forward is a sound prior for a bylaw -- "unchanged since the
-#: last disclosure" is what a provision usually is -- but for a person it is a guess about who
-#: held a job, and the plain `ffill` gets it wrong in the one case that matters most.
+#: Columns a forward carry must NOT touch at all, because the carry cannot be validated without
+#: reading a LATER filing -- which is the thing this module stopped doing on 2026-09-09.
 #:
-#: Measured 2026-09-07: 85 interior `ceo_name_proxy` gaps, of which 14 have a DIFFERENT CEO on
-#: each side, i.e. a real transition happened inside the gap (ACGL Mosca->Appel, AMD Ruiz->Meyer,
-#: CNC Neidorff->London). An unconditional fill hands those 14 the OLD CEO's name, so the
-#: turnover guard compares old-vs-old, sees no change, and computes pay growth straight across
-#: the transition it exists to catch. Requiring agreement leaves them NaN = UNKNOWN, and unknown
-#: is the correct output for "we do not know who ran this company that year".
+#: `ceo_name_proxy` is the whole set, and it is here reluctantly. A carry-forward is a sound
+#: prior for a bylaw -- "unchanged since the last disclosure" is what a provision usually is --
+#: and it is even a defensible real-time BELIEF for a person ("as far as anyone knew, Ruiz still
+#: ran AMD"). But a wrong CEO name does specific downstream damage: the turnover guard compares
+#: old-vs-old, sees no change, and computes pay growth straight across the succession it exists
+#: to catch. Unknown is the correct output for "we do not know who ran this company that year".
 #:
-#: Agreement is judged on `ceo_identity`, never the raw string: that keeps 71 of the 85 against
-#: the 63 a string comparison finds, because `Timothy D. Cook` and `Tim Cook` ARE agreement.
-#: (71/14 rather than the 70/15 a BARE `person_key` gives -- `ceo_identity` splits a co-CEO cell
-#: first, so one further gap reconciles. Reproduced by `test_governance_names.py`.)
-AGREEMENT_REQUIRED_FLAGS = frozenset({"ceo_name_proxy"})
+#: Until 2026-09-09 the gap was filled when the same person bounded it on BOTH sides, which
+#: separated the safe fills from the unsafe ones using the future. Forward-only cannot make that
+#: distinction, so the question became binary, and it was settled by measuring rather than
+#: arguing (live table, 2026-09-09): **87 interior gaps, 86 inside the carry cap, of which 18
+#: have a DIFFERENT CEO on each side** -- a real transition inside the gap (ACGL Mosca->Appel,
+#: AMD Ruiz->Meyer, CNC Neidorff->London). Carrying all 86 fabricates 18 identities; carrying
+#: none loses 68 correct fills, 0.7% of the column, which stays 99.2% filled from the extraction
+#: alone. 68 knowable cells is the measured price of 18 unknowable ones.
+#:
+#: ⚠ A PIT-VALID GATE WAS LOOKED FOR AND DOES NOT EXIST. `ceo_since_year` would give one -- if
+#: this row's start year matches the source row's, the same person is in post, using only the
+#: present and the past. It fills **0 of the 86**: a row that fails to name its CEO fails to
+#: disclose the start year too, because both come from the same extraction. Recorded so the next
+#: reader does not re-derive it.
+CARRY_FORBIDDEN = frozenset({"ceo_name_proxy"})
 INT_COLS = ["n_directors", "board_size", "ceo_age",
             "n_five_percent_holders", "n_neos", "ceo_since_year"]
 
@@ -227,20 +328,43 @@ def _reconcile_rows(df: pd.DataFrame, stats: dict) -> None:
         _fill(df, "ceo_pay_ratio", (med > 0) & tot.notna(), tot / med, stats, "pay_ratio = total / median")
 
 
-def _same_ceo_across_gap(df: pd.DataFrame, g) -> pd.Series:
-    """True where the same CEO identity bounds the row on BOTH sides.
+def _carry(df: pd.DataFrame, col: str, gk: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """`(value carried forward from the last known observation, its age in days)`.
 
-    Computed on the raw disclosed `ceo_name_proxy`, before the FLAGS carry-forward touches
-    it, so the gate is judged on what the filings actually said. Judged on `ceo_identity`
-    rather than the raw string so a respelling (`Timothy D. Cook` / `Tim Cook`) counts as
-    agreement, and with an explicit `notna` on both keys so two UNKEYABLE cells never agree
-    with each other by both being None.
+    The two halves have to be produced together, because the age is measured against the
+    `as_of` of the row that SOURCED the value -- not the previous row, and not the previous
+    row that merely exists. `df["as_of"].where(df[col].notna())` then `ffill` carries the
+    source DATE as a payload alongside the value, the same trick `staleness.expire_stale`
+    uses with `_produced_at`, so the two agree on what "age" means.
+
+    Reads only rows at or before each row: this is the point-in-time guarantee, and it is a
+    property of `ffill` rather than of a guard that has to be remembered.
+    """
+    fwd = df[col].groupby(gk, sort=False).ffill()
+    src = df["as_of"].where(df[col].notna()).groupby(gk, sort=False).ffill()
+    return fwd, (df["as_of"] - src).dt.days
+
+
+def _same_ceo_as_source(df: pd.DataFrame, col: str, gk: pd.Series) -> pd.Series:
+    """True where the CEO named on THIS row is the CEO named on the row sourcing `col`'s carry.
+
+    Both legs are at or before the row being filled, which is what makes the gate PIT. It
+    replaces a `ffill`/`bfill` pair that asked whether the same person BOUNDED the gap -- a
+    question only a later filing can answer.
+
+    Judged on `ceo_identity` rather than the raw string so a respelling (`Timothy D. Cook` /
+    `Tim Cook`) counts as agreement, with an explicit `notna` on both keys so two UNKEYABLE
+    cells never agree by both being None. Read off the raw disclosed `ceo_name_proxy`, before
+    the FLAGS loop touches it, so the gate is judged on what the filings actually said.
+
+    ⚠ STRICTER THAN ITS PREDECESSOR, deliberately: a row that does not name its CEO now fails
+    the gate, where the old `bfill` leg handed it an identity it does not have.
     """
     if "ceo_name_proxy" not in df.columns:
         return pd.Series(False, index=df.index)
-    k_fwd = ceo_identity_series(g["ceo_name_proxy"].ffill())
-    k_bwd = ceo_identity_series(g["ceo_name_proxy"].bfill())
-    return k_fwd.notna() & k_bwd.notna() & (k_fwd == k_bwd)
+    ident = ceo_identity_series(df["ceo_name_proxy"])
+    at_source = ident.where(df[col].notna()).groupby(gk, sort=False).ffill()
+    return ident.notna() & at_source.notna() & (ident == at_source)
 
 
 def _accrue_ceo_age(df: pd.DataFrame, stats: dict) -> pd.Series:
@@ -261,9 +385,11 @@ def _accrue_ceo_age(df: pd.DataFrame, stats: dict) -> pd.Series:
     never the bare figure. The fix does not depend on the magnitude: a per-person anchor
     cannot span a succession at any of them.
 
-    The anchor also fills EDGE gaps, which `limit_area="inside"` refuses. That is correct for
-    a clock and is why the fill count goes UP while the population gets stricter: an age
-    before a CEO's first disclosed one is not unknown, it is `first_age - elapsed_years`.
+    The anchor also fills LEADING gaps, which the forward carry cannot: it is the one fill in
+    this module that legitimately runs backwards, because an age before a CEO's first disclosed
+    one is not unknown, it is `first_age - elapsed_years`. A birth year is a CONSTANT, so the
+    anchor is not an estimate that decays -- which is why it is exempt from `CARRY_MAX_DAYS`
+    while every carry above it is bound by it.
     """
     if "ceo_age" not in df.columns or "ceo_name_proxy" not in df.columns:
         return pd.Series(False, index=df.index)
@@ -285,41 +411,59 @@ def _accrue_ceo_age(df: pd.DataFrame, stats: dict) -> pd.Series:
 
 
 def _temporal_fill(df: pd.DataFrame, stats: dict) -> None:
+    """Fill cross-filing gaps by carrying the last KNOWN value forward, and nothing else.
+
+    ⚠ ONE RULE FOR BOTH BLOCKS, which was not true before 2026-09-09: the levels were linearly
+    interpolated between the observations either side of a gap, and the flags were carried
+    forward but only INSIDE a gap that a later filing closed. Both therefore read a filing dated
+    after the row they wrote to -- the levels for the VALUE, the flags for the DECISION. Now both
+    read only the past, and both are bounded by `CARRY_MAX_DAYS`.
+
+    Order matters and is unchanged: the levels first, then the `ceo_age` accrual, then the flags.
+    `ceo_name_proxy` is carried LAST (and, being in `CARRY_FORBIDDEN`, not at all) so every
+    identity gate above it is judged on the raw disclosed name.
+    """
     df.sort_values(["ticker", "as_of"], inplace=True)
-    g = df.groupby("ticker", sort=False)
-    same_ceo = _same_ceo_across_gap(df, g)
-    for col in INTERP + sorted(IDENTITY_GATED_INTERP):
-        if col in df.columns:
-            filled = g[col].transform(lambda s: s.interpolate(method="linear", limit_area="inside"))
-            newly = df[col].isna() & filled.notna()
-            if col in IDENTITY_GATED_INTERP:
-                declined = int((newly & ~same_ceo).sum())
-                if declined:
-                    stats[f"declined (identity changed): {col}"] = declined
-                newly &= same_ceo
-            n = int(newly.sum())
-            if n:
-                df.loc[newly, col] = filled[newly]
-                stats[f"interp: {col}"] = n
+    gk = df["ticker"]
+    for col in CARRY_LEVELS + sorted(IDENTITY_GATED_CARRY):
+        _carry_one(df, col, gk, stats)
     _accrue_ceo_age(df, stats)
     for col in FLAGS:
-        if col in df.columns:
-            fwd, bwd = g[col].ffill(), g[col].bfill()
-            inside = df[col].isna() & fwd.notna() & bwd.notna()      # bounded by a known value each side
-            if col in AGREEMENT_REQUIRED_FLAGS:
-                # The two sides must be the same PERSON, not merely both present. Compared on
-                # the identity key so a respelling counts as agreement, and with an explicit
-                # `notna` on both keys so two unkeyable cells never agree by both being None.
-                k_fwd, k_bwd = ceo_identity_series(fwd), ceo_identity_series(bwd)
-                agree = k_fwd.notna() & k_bwd.notna() & (k_fwd == k_bwd)
-                declined = int((inside & ~agree).sum())
-                if declined:
-                    stats[f"declined (identity changed): {col}"] = declined
-                inside &= agree
-            n = int(inside.sum())
-            if n:
-                df.loc[inside, col] = fwd[inside]
-                stats[f"carry: {col}"] = n
+        _carry_one(df, col, gk, stats)
+
+
+def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, stats: dict) -> None:
+    """Carry `col` forward into its gaps, bounded and gated, and record what was declined.
+
+    Every reason a candidate cell is NOT filled gets its own counter, because a fill count on
+    its own cannot distinguish "nothing was missing" from "everything was refused". The three
+    reasons are mutually exclusive by construction: the cap is applied before the identity
+    gate, so no cell is reported twice.
+    """
+    if col not in df.columns:
+        return
+    fwd, age = _carry(df, col, gk)
+    candidate = df[col].isna() & fwd.notna()
+    if col in CARRY_FORBIDDEN:
+        blocked = int((candidate & (age <= CARRY_MAX_DAYS)).sum())
+        if blocked:
+            stats[f"declined (carry cannot be validated): {col}"] = blocked
+        return
+    within = age <= CARRY_MAX_DAYS
+    stale = int((candidate & ~within).sum())
+    if stale:
+        stats[f"declined (>{CARRY_MAX_DAYS}d stale): {col}"] = stale
+    newly = candidate & within
+    if col in IDENTITY_GATED_CARRY:
+        same_ceo = _same_ceo_as_source(df, col, gk)
+        declined = int((newly & ~same_ceo).sum())
+        if declined:
+            stats[f"declined (identity changed): {col}"] = declined
+        newly &= same_ceo
+    n = int(newly.sum())
+    if n:
+        df.loc[newly, col] = fwd[newly]
+        stats[f"carry: {col}"] = n
 
 
 def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -366,7 +510,7 @@ def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             df[f"{c}_imputed"] = filled.astype("float64")
             n = int(filled.sum())
             if n:
-                stats[f"{c}_imputed (interpolated -> delta legs excluded)"] = n
+                stats[f"{c}_imputed (carried -> delta legs excluded)"] = n
 
     for c, na in was_na.items():        # keep DEDUCED counts integral (never touch real values)
         filled = na & df[c].notna()

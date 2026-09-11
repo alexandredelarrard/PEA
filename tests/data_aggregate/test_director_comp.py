@@ -17,9 +17,10 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.governance.director_comp import (
-    ALL_FIELDS, DIRECTOR_COMPONENTS, EVENT_FIELDS, PEER_RELATIVE_FIELDS,
+    ALL_FIELDS, DIRECTOR_COMPONENTS, EVENT_FIELDS, LEVEL_FIELDS, PEER_RELATIVE_FIELDS,
     director_pay_fields, impute_director_comp,
 )
+from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS
 from src.data_store.schema import Tables
 
 IDX = pd.bdate_range("2019-01-01", "2025-06-30")
@@ -161,8 +162,29 @@ def test_the_ceo_ratio_is_NaN_and_never_inf_on_a_zero_denominator():
 
 
 def test_the_encoding_and_expiry_contracts():
-    """Director pay is a LEVEL (D21): a retainer structure persists between proxies exactly as
-    `ceo_pay_slice` and `log_ceo_total_comp` do, so nothing here is aged out.
+    """Director pay is a LEVEL (D21) -- and a level is now given a LEVEL HORIZON, not none.
+
+    ⚠ THIS TEST ASSERTED THE OPPOSITE UNTIL 2026-09-09, and the inversion is the point rather
+    than a detail. It read: *"a retainer structure persists between proxies exactly as
+    `ceo_pay_slice` and `log_ceo_total_comp` do, so nothing here is aged out"*, and probed a
+    2020 filing at 2025-06-02 -- 1,858 days later -- demanding a value. Both halves of that
+    sentence were accepted; only the conclusion is overturned. A retainer structure DOES
+    persist between proxies. It does not persist for five years through two missed annual
+    cycles, and "persists between proxies" is not a reason to report it forever: an unbounded
+    forward-fill returns a plausible number with no filing behind it at all.
+
+    So the family moved onto `LEVEL_MAX_AGE_DAYS` (1,095 days = two whole missed annual
+    cycles), not onto the 548-day EVENT clock -- which is what the original reasoning was
+    right to reject. The cost is D2, measured on the live archive: Ford's
+    `f_ceo_to_director_pay_ratio` ran **2,769 consecutive days at exactly 0** off a single
+    2011 filing, and now runs **753**, ending 2014-03-31 -- exactly 1,095 days after
+    2011-04-01 -- with the 2022 filing reopening the series on its own date.
+
+    ⚠ The probe is the WHOLE INDEX partitioned by age, not two dates. A two-point probe on
+    this fixture is a trap: `index.asof` walks back to the previous business day, so a date
+    computed as `filed + horizon` can land on a weekend and be measured a day younger than
+    intended. Partitioning every date is also strictly stronger -- it catches an off-by-one
+    at the boundary in either direction.
 
     ⚠ TWO PEER LEGS, the first any new family has earned since phase 3, and only the two the
     between-sector variance share supports: `director_cash_fee_pct` 11.94% and
@@ -171,6 +193,8 @@ def test_the_encoding_and_expiry_contracts():
     consultant; the pay LEVEL (6.84%) and the CEO RATIO (5.16%) are not, and ship raw.
     """
     assert EVENT_FIELDS == frozenset(), "director pay was declared an event"
+    assert LEVEL_FIELDS == ALL_FIELDS, \
+        "a director-pay field is on neither horizon -- that is the phase-3 defect's own shape"
     assert PEER_RELATIVE_FIELDS == {"director_cash_fee_pct", "director_equity_pay_pct"}, \
         "the peer-leg set changed without a re-measured sector share"
     assert PEER_RELATIVE_FIELDS < ALL_FIELDS
@@ -178,16 +202,37 @@ def test_the_encoding_and_expiry_contracts():
         "a ratio whose absolute level is the thesis was peer-centred"
     assert ALL_FIELDS == {"log_median_director_pay", "director_equity_pay_pct",
                           "director_cash_fee_pct", "ceo_to_director_pay_ratio"}
-    frames, _ = director_pay_fields(_rows(), None, IDX)
-    late = frames["director_cash_fee_pct"].loc[pd.Timestamp("2025-06-02"), "AAA"]
-    assert not np.isnan(late), "a standing pay LEVEL was expired"
+
+    frames, tally = director_pay_fields(_rows(), None, IDX)
+    fee = frames["director_cash_fee_pct"]["AAA"]
+    filed = pd.Timestamp("2020-05-01")
+    age = (fee.index - filed).days
+
+    inside = fee[(age >= 0) & (age <= LEVEL_MAX_AGE_DAYS)]
+    outside = fee[age > LEVEL_MAX_AGE_DAYS]
+    assert inside.notna().all(), \
+        f"{int(inside.isna().sum())} cell(s) INSIDE the level horizon were expired"
+    assert outside.notna().sum() == 0, \
+        f"{int(outside.notna().sum())} cell(s) survived past {LEVEL_MAX_AGE_DAYS} days"
+    assert len(inside) and len(outside), "the fixture no longer spans the horizon"
+
+    expired = next((v for k, v in tally.items()
+                    if k.startswith(f"expired >{LEVEL_MAX_AGE_DAYS}d: director_cash_fee_pct")
+                    and "of non-null" not in k), 0)
+    assert expired == len(outside), \
+        f"the tally says {expired} expired cells, the frame shows {len(outside)}"
+
     print("\n=== SANITY CHECK: the director-pay encoding + expiry contracts ===")
     print(f"  ALL_FIELDS = {sorted(ALL_FIELDS)}")
     print(f"  EVENT_FIELDS = {set(EVENT_FIELDS) or '{} (all levels)'} ; "
-          f"PEER_RELATIVE_FIELDS = {set(PEER_RELATIVE_FIELDS) or '{} (raw only, measured)'}")
-    print(f"  a 2020 filing still reports its cash-fee share in 2025: {late:.4f}")
-    print("  CONCLUSION: four fields, all levels, none expired, none peer-relativized. "
-          "Validated.")
+          f"LEVEL_FIELDS = all {len(LEVEL_FIELDS)} ; "
+          f"PEER_RELATIVE_FIELDS = {sorted(PEER_RELATIVE_FIELDS)}")
+    print(f"  one 2020-05-01 filing, index {fee.index[0].date()} .. {fee.index[-1].date()}")
+    print(f"  <= {LEVEL_MAX_AGE_DAYS}d after it: {len(inside):>4} cells, all reported")
+    print(f"  >  {LEVEL_MAX_AGE_DAYS}d after it: {len(outside):>4} cells, all expired "
+          f"(tally agrees: {expired})")
+    print("  CONCLUSION: four fields, all LEVELS, all on the 1,095-day level horizon rather "
+          "than on no horizon at all. Validated.")
 
 
 def test_the_real_director_comp_readout():

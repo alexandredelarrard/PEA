@@ -9,7 +9,7 @@ linear:
   max_iter: 1000
   tol: 1.0e-06
   columns:
-  - f_short_vol_ratio_vs_peers
+  - f_ic_shortvol_ratio_vs_peers
   - f_goodwill_impairment_intensity_vs_peers
   - f_rd_capitalized_roic_xs
   - f_current_ratio_xs
@@ -24,7 +24,7 @@ linear:
   - f_nwc_elasticity_vs_peers
   - f_dio_vs_peers
   - f_gross_profitability_vs_peers
-  - f_insider_net_buy_ratio_xs
+  - f_ic_insider_net_buy_ratio_180d
   - f_gmroi_xs
   - f_deferred_rev_intensity_xs
   - f_patent_cliff_vs_peers
@@ -44,7 +44,7 @@ linear:
   - f_gross_margin_chg_vs_peers
   - f_diluted_shares_growth_xs
   - volume_cv_63
-  - f_insider_net_buy_ratio_vs_peers
-  - f_super_new_buyer_ratio_xs
+  - f_ic_insider_buy_value_mcap_180d_xs
+  - f_ic_super_initiations_xs
   - f_pension_overhang_leverage_xs
   - f_fixed_cost_coverage_margin_xs

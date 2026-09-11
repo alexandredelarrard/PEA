@@ -209,7 +209,7 @@ def test_build_ticker_skips_done_accessions_and_pre_since_filings(monkeypatch):
     filings = [_fake_filing(accession="0001-old", filing_date="2020-01-01"),
                _fake_filing(accession="0001-done", filing_date="2024-01-01"),
                _fake_filing(accession="0001-new", filing_date="2024-06-01")]
-    monkeypatch.setattr("src.data_extract.utils.common.edgar_driver.Company",
+    monkeypatch.setattr("edgar.Company",
                         lambda ticker: SimpleNamespace(get_filings=lambda form: filings))
 
     df = build_ticker_def14a_edgar(
@@ -234,7 +234,7 @@ def test_a_filing_without_xbrl_is_skipped_not_crashed(monkeypatch):
     raising = _fake_filing(accession="0001-raises", filing_date="2025-03-09")
     raising.xbrl = lambda: (_ for _ in ()).throw(RuntimeError("xbrl parse failed"))
 
-    monkeypatch.setattr("src.data_extract.utils.common.edgar_driver.Company",
+    monkeypatch.setattr("edgar.Company",
                         lambda ticker: SimpleNamespace(
                             get_filings=lambda form: [good, empty, raising]))
 
@@ -252,7 +252,7 @@ def test_company_name_falls_back_to_the_filing_index(monkeypatch):
     facts = _facts(_FIXTURE)
     stripped = facts[facts["concept"].astype(str) != "dei:EntityRegistrantName"]
     f.xbrl = lambda: SimpleNamespace(facts=SimpleNamespace(to_dataframe=lambda: stripped))
-    monkeypatch.setattr("src.data_extract.utils.common.edgar_driver.Company",
+    monkeypatch.setattr("edgar.Company",
                         lambda ticker: SimpleNamespace(get_filings=lambda form: [f]))
 
     df = build_ticker_def14a_edgar("BA", "0000012927")[Tables.def14a_edgar]

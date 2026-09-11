@@ -1,0 +1,315 @@
+{
+  "_README": [
+    "THE REGISTRANT BOUNDARY REGISTER -- every CIK a ticker's filings may come from.",
+    "",
+    "A ticker's price history follows the ECONOMIC entity; its filings follow the LEGAL",
+    "registrant. When a company reorganises under a new holding company or re-registers in",
+    "another jurisdiction, the registrant's CIK changes and the price history does not.",
+    "`Company(ticker)` resolves exactly one CIK -- the one EDGAR's ticker table points at",
+    "TODAY -- so everything the predecessor filed becomes invisible with no error, no",
+    "exception and no gap signal. The ticker simply arrives with 22 filings where its peers",
+    "have 62, and nothing says why.",
+    "",
+    "SEGMENTS, NOT TWO CIKs. `segments` is ordered oldest-first and CONTIGUOUS: the",
+    "`valid_from` of each segment equals the `valid_to` of the one before it, the oldest omits",
+    "`valid_from` and the newest omits `valid_to`. Chains are real -- PSKY is CBS -> Viacom ->",
+    "ViacomCBS -> Paramount Global -> Paramount Skydance -- and a two-CIK schema gives such a",
+    "ticker one hop and leaves the rest truncated.",
+    "",
+    "A BOUNDARY IS `< valid_to` AND `>= valid_from`: strictly before / on-or-after. Adjacent",
+    "segments are therefore disjoint by construction rather than by de-duplication.",
+    "",
+    "HOW THE SEGMENTS COMBINE IS A PROPERTY OF THE FORM, NOT OF THIS FILE. Event forms (8-K,",
+    "13D, 13G, Forms 3/4/5) take the UNION of every segment CIK; consolidating forms (10-K,",
+    "10-Q, DEF 14A) take the DATED SPLIT. Both rules are measured, and they are not",
+    "reconcilable into one: against APA's 2021-03-01 boundary the predecessor filed 4,291",
+    "Form 4s (4 after the boundary) and 140 10-K/10-Qs (15 after). A union of the event stream",
+    "gains 4,287 filings and risks 4; a union of the consolidating stream would blend 15",
+    "subsidiary 10-K/10-Qs into the parent's accounts -- a fuller-looking history that is",
+    "quietly wrong, which is the dangerous direction. See `common/registrant.FORM_POLICY`.",
+    "",
+    "A RENAME IS NOT A CUTOVER AND BELONGS NOWHERE IN THIS FILE. CVS Caremark -> CVS Health",
+    "and Facebook -> Meta keep their CIK; an entry for either would walk one CIK twice and",
+    "duplicate every filing. `kind` may only be `reorganisation` or `domestication`, and the",
+    "loader rejects `kind: rename` BY NAME so the mistake cannot be made quietly. Sharadar",
+    "records a name change whether or not the CIK moved, which is exactly why the shell-name",
+    "evidence that motivates most entries here also fits a pure rename -- IVZ (AMVESCAP plc ->",
+    "Invesco) carries such an action and is NOT in this file, because CIK 914208 filed",
+    "continuously from 1994.",
+    "",
+    "⚠ RISK ZONE. The failure mode is QUIET DATA LOSS: a `valid_to` set a year early drops the",
+    "predecessor's last four filings and admits nothing in their place, and nothing downstream",
+    "can tell that from a company that genuinely filed nothing. A wrong entry cannot raise on",
+    "its own, which is why every segment carries `evidence` and why the loader raises on every",
+    "malformed entry it CAN detect. Add an entry only with three oracles agreeing; see",
+    "`scripts/detect_registrant_cutovers.py`.",
+    "",
+    "A curated JSON rather than an `sp500_tickers` column: that table is rebuilt from",
+    "Wikipedia, so a roster refresh would silently overwrite hand-established evidence. And",
+    "Wikipedia can itself be wrong in this exact way -- it had already moved XOM to the holdco."
+  ],
+  "APA": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000006769",
+        "valid_to": "2021-03-01",
+        "evidence": "Apache Corp, the pre-2021 registrant. Measured against live EDGAR 2026-08-23: 125 10-K/10-Q filings before the boundary, 1994-03-21 .. 2021-02-26, 0 duplicate accessions and no gap -- the 2021-02-26 10-K is followed directly by the successor's 2021-05-07 10-Q. CRITICAL: Apache Corp KEPT FILING its own 10-K/10-Q through 2024-11-07 as a subsidiary with registered public debt, so those ~15 filings are correctly excluded by the dated split on consolidating forms and correctly ADMITTED by the union on event forms. It is the reference case for both rules."
+      },
+      {
+        "cik": "0001841666",
+        "valid_from": "2021-03-01",
+        "evidence": "APA Corp, the holding company created in the reorganisation effective 2021-03-01. 22 filings on or after the boundary (2021-05-07 ..) as measured 2026-08-23."
+      }
+    ]
+  },
+  "APO": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001411494",
+        "valid_to": "2022-05-10",
+        "evidence": "Apollo Asset Management Inc (CIK 0001411494) -- the entity FORMERLY named Apollo Global Management, renamed when the new parent took its name in the 2022 reorganisation. Found by the co-indexed filer scan; it filed 5 proxies of its own before the boundary and stopped filing 10-K/10-Q entirely at 2023-08-07 (51 filings, 2011-05-12 .. 2023-08-07, 0 after). BOUNDARY HAND-ADJUDICATED 2026-09-10 to 2022-05-10, the successor's first 10-Q, and NOT the 2023-08-08 the automatic rule proposed. ⚠ APO is the one register entry where both registrants filed a FULL quarterly consolidating series in parallel -- AAM 2022-05 .. 2023-08 at a 91-day median cadence alongside the new parent's own 92-day series -- so the generic 'day after the predecessor's last filing' rule would have kept AAM's 2022-2023 SUBSIDIARY accounts and excluded the parent's for five quarters, which is the blend the dated split exists to prevent. Oracle 4 fixes the date independently: the successor's first 10-K restates AAM's FY2021 as its comparative column (8 of 8 annual facts agree), so FY2022 is the first period the parent owns and the seam falls at Q1 2022. Contrast LIN and VTRS, where the successor's pre-boundary filings are SPARSE (3 filings over 12 months, and Upjohn carve-out reports respectively) and are correctly excluded instead."
+      },
+      {
+        "cik": "0001858681",
+        "valid_from": "2022-05-10",
+        "evidence": "Apollo Global Management Inc (CIK 0001858681), the parent created in the 2022 reorganisation. Its own archive starts 2022-01-03, and it has filed 18 10-K/10-Q from 2022-05-10 at a 92-day median cadence -- a full parent series from the seam, not a shell's occasional pre-merger report."
+      }
+    ]
+  },
+  "AVGO": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001441634",
+        "valid_to": "2015-12-18",
+        "evidence": "HAND-ADJUDICATED 2026-09-10 (user-supplied research, verified against EDGAR metadata). Avago Technologies LTD, CIK 0001441634 -- the 2009 IPO registrant and the origin of the AVGO ticker. Archive 695 filings 2008-08-21 .. 2017-02-14, including 6 DEF 14A (2010-02-22 .. 2015-02-20), 7 10-K (2009-12-15 .. 2015-12-17) and 103 8-K (2009-08-14 .. 2016-02-02). AVGO's price history starts 2009-08-06 and this CIK's first 8-K is 2009-08-14, i.e. the IPO, so it closes the whole pre-2015 hole. MECHANISM: CIK 0001649338 is NOT the origin -- EDGAR's formerNames show it was incorporated as 'Pavonia Ltd' (2015-07-29 .. 2015-10-20) purely as the holding company for the Avago / Broadcom Corp merger, then renamed 'Broadcom Ltd' (2016-01-22 .. 2018-04-04); it covers only the 2015-2018 span before the 2018 US redomiciliation to Broadcom Inc (0001730168). ⚠ CIK 0001054374 (BROADCOM CORP, CA, 5 DEF 14A 2011-2015) is DELIBERATELY EXCLUDED: Avago was the accounting acquirer in the February 2016 merger, so Broadcom Corp is the ACQUIRED company, not a predecessor of this ticker. Including it would blend an acquiree's governance into AVGO's series -- the same error oracle 4 rejected when the detector proposed PORTAL SOFTWARE as ORCL's predecessor. NOT comparative-column confirmed: the 2015 seam predates usable XBRL comparatives for this filer, so this rests on EDGAR's formerNames plus the IPO-date match. boundary = the day after the predecessor's LAST consolidating filing (10-K, 2015-12-17); the successor's first 10-K is 2016-12-23 and its first DEF 14A 2016-02-23, so the gap contains no consolidating form of either entity."
+      },
+      {
+        "cik": "0001649338",
+        "valid_from": "2015-12-18",
+        "valid_to": "2018-03-16",
+        "evidence": "PROPOSED 2026-09-10. Broadcom Ltd (CIK 0001649338), the pre-boundary registrant. Found by the co-indexed filer scan on 4 of the successor's registrant-filed documents nearest the boundary. It filed 5 proxies of its own before the seam (last 2018-03-09), so it was the public registrant, and its filing rate went 346 -> 12 (0.035x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2017 ProfitLoss of 1,784,000,000 is Broadcom Ltd's own reported figure (10 of 10 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2018-03-16. It kept filing until 2018-03-15, only -3 months past the successor's first (2018-06-14) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 9 of its filings are kept (2016-03-10 .. 2018-03-15). The successor contributes 34 filings from 2018-06-14; its 0 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+      },
+      {
+        "cik": "0001730168",
+        "valid_from": "2018-03-16",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001730168. Its own archive starts 2018-02-06 (45 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 34 10-K/10-Q from 2018-06-14."
+      }
+    ]
+  },
+  "BG": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001144519",
+        "valid_to": "2023-10-27",
+        "evidence": "PROPOSED 2026-09-10. BUNGELTD (CIK 0001144519), the pre-boundary registrant. Found by the co-indexed filer scan on 7 of the successor's registrant-filed documents nearest the boundary. It filed 20 proxies of its own before the seam (last 2023-08-07), so it was the public registrant, and its filing rate went 281 -> 0 (0.0x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2022 Revenues of 67,232,000,000 is BUNGELTD's own reported figure (19 of 19 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2023-10-27. It kept filing until 2023-10-26, only -4 months past the successor's first (2024-02-22) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 83 of its filings are kept (2004-07-27 .. 2023-10-26). The successor contributes 11 filings from 2024-02-22; its 0 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+      },
+      {
+        "cik": "0001996862",
+        "valid_from": "2023-10-27",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001996862. Its own archive starts 2023-11-01 (49 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 11 10-K/10-Q from 2024-02-22."
+      }
+    ]
+  },
+  "BKR": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000808362",
+        "valid_to": "2017-07-28",
+        "evidence": "PROPOSED 2026-09-10. BAKER HUGHES a GE Co LLC (CIK 0000808362), the pre-boundary registrant. Found by the co-indexed filer scan on 23 of the successor's registrant-filed documents nearest the boundary. It filed 25 proxies of its own before the seam (last 2017-05-30), so it was the public registrant, and its filing rate went 491 -> 105 (0.214x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2017 SalesRevenueNet of 3,010,000,000 is BAKER HUGHES a GE Co LLC's own reported figure (6 of 20 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the successor's first consolidating filing, 2017-07-28, because the predecessor kept filing 10-K/10-Q for 75 months past it (2017-07-28 .. 2023-10-26, 26 filings) and is therefore a CONTINUING SUBSIDIARY. Those 26 are correctly excluded from the parent's accounts by the dated split and correctly admitted as events by the union. The predecessor keeps 101 filings (1994-02-14 .. 2017-04-28)."
+      },
+      {
+        "cik": "0001701605",
+        "valid_from": "2017-07-28",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001701605. Its own archive starts 2017-03-29 (96 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 37 10-K/10-Q from 2017-07-28."
+      }
+    ]
+  },
+  "BLK": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001060021",
+        "valid_to": "2006-08-10",
+        "evidence": "HAND-ADJUDICATED 2026-09-10. BlackRock, Inc. -- the 1999 IPO registrant. EDGAR's own formerNames on CIK 0001060021 records exactly one prior name, 'BLACKROCK INC /NY', valid 1999-11-12 .. 2006-09-22; the entity is now named 'BlackRock Holdco 2, Inc.'. Its archive is 437 filings 1999-05-13 .. 2020-02-13, including 6 10-K (2000-03-28 .. 2006-03-08), 21 10-Q (1999-11-12 .. 2006-08-09), 45 8-K (1999-10-27 .. 2006-08-03) and 7 DEF 14A (2000-03-28 .. 2006-04-28); SIC 6282 Investment Advice, DE -- an operating registrant, not a shell. WHY THIS ONE: BLK prices start 1999-10-01 and this CIK's first 8-K is 1999-10-27 and its first 10-Q 1999-11-12, i.e. the IPO quarter, so it closes the whole pre-2006 hole that left BLK's 8-K history starting 2006-10-30. MECHANISM: the 2006 Merrill Lynch Investment Managers merger (announced 2006-02-15, closed ~2006-09-29) put a NEW holding company, 'New Boise, Inc.', over the business; New Boise became the listed BlackRock, Inc. = CIK 0001364742, whose archive starts 2006-11-14, and the original entity was renamed BlackRock Holdco 2. NOT CONFIRMED BY THE COMPARATIVE-COLUMN TEST: XBRL does not exist in 2006, so oracle 4 abstains -- this rests on EDGAR's formerNames transition plus the filing-cadence handover, NOT on an accounting-acquirer measurement. boundary = the day after the predecessor's LAST consolidating filing (10-Q, 2006-08-09), the same rule the 2024 segment uses. The gap to the successor's first filing (2006-11-14) contains no consolidating form, and EDGAR's rename date (2006-09-22) and the merger close both fall inside it, so the three candidate boundaries are indistinguishable for the dated split. Its 26 SC 13G/A run to 2007-02-15, AFTER the boundary -- kept by the UNION policy for event forms, which is what that policy is for. Found because --audit-chains flagged BLK's chain as incomplete."
+      },
+      {
+        "cik": "0001364742",
+        "valid_from": "2006-08-10",
+        "valid_to": "2024-08-07",
+        "evidence": "PROPOSED 2026-09-10. BlackRock Finance, Inc. (CIK 0001364742), the pre-boundary registrant. Found by the co-indexed filer scan on 15 of the successor's registrant-filed documents nearest the boundary. It filed 19 proxies of its own before the seam (last 2024-04-04), so it was the public registrant, and its filing rate went 7541 -> 8 (0.001x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2023 Revenues of 11,012,000,000 is BlackRock Finance, Inc.'s own reported figure (8 of 8 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2024-08-07. It kept filing until 2024-08-06, only -3 months past the successor's first (2024-11-06) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 73 of its filings are kept (2006-11-14 .. 2024-08-06). The successor contributes 8 filings from 2024-11-06; its 0 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+      },
+      {
+        "cik": "0002012383",
+        "valid_from": "2024-08-07",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0002012383. Its own archive starts 2024-02-20 (234 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 8 10-K/10-Q from 2024-11-06."
+      }
+    ]
+  },
+  "CI": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000701221",
+        "valid_to": "2018-11-02",
+        "evidence": "PROPOSED 2026-09-10. Cigna Holding Co (CIK 0000701221), the pre-boundary registrant. Found by the co-indexed filer scan on 2 of the successor's registrant-filed documents nearest the boundary. It filed 27 proxies of its own before the seam (last 2018-07-16), so it was the public registrant, and its filing rate went 379 -> 70 (0.185x) across it. Chosen over 1 other collapsing predecessor(s) by the comparative-column test: the successor's FY2017 Revenues of 41,806,000,000 is Cigna Holding Co's own reported figure (12 of 12 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2018-11-02. It kept filing until 2018-11-01, only -4 months past the successor's first (2019-02-28) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 104 of its filings are kept (1994-03-25 .. 2018-11-01). The successor contributes 31 filings from 2019-02-28; its 0 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+      },
+      {
+        "cik": "0001739940",
+        "valid_from": "2018-11-02",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001739940. Its own archive starts 2018-05-16 (128 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 31 10-K/10-Q from 2019-02-28."
+      }
+    ]
+  },
+  "DIS": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001001039",
+        "valid_to": "2019-02-06",
+        "evidence": "PROPOSED 2026-09-10. TWDC Enterprises 18 Corp. (CIK 0001001039), the pre-boundary registrant. Found by the co-indexed filer scan on 5 of the successor's registrant-filed documents nearest the boundary. It filed 25 proxies of its own before the seam (last 2019-01-11), so it was the public registrant, and its filing rate went 292 -> 51 (0.175x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2018 ProfitLoss of 13,066,000,000 is TWDC Enterprises 18 Corp.'s own reported figure (7 of 7 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2019-02-06. It kept filing until 2019-02-05, only -3 months past the successor's first (2019-05-08) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 110 of its filings are kept (1996-02-14 .. 2019-02-05). The successor contributes 32 filings from 2019-05-08; its 0 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+      },
+      {
+        "cik": "0001744489",
+        "valid_from": "2019-02-06",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001744489. Its own archive starts 2018-06-25 (268 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 32 10-K/10-Q from 2019-05-08."
+      }
+    ]
+  },
+  "ETN": {
+    "kind": "domestication",
+    "segments": [
+      {
+        "cik": "0000031277",
+        "valid_to": "2012-11-01",
+        "evidence": "Eaton Corp (Ohio). 78 filings 1994-03-28 .. 2012-10-31, measured 2026-08-23. Unlike APA the predecessor stopped filing entirely at the boundary, so there is no subsidiary double-coverage to exclude."
+      },
+      {
+        "cik": "0001551182",
+        "valid_from": "2012-11-01",
+        "evidence": "Eaton Corp plc (Ireland), re-registered in the 2012 Cooper Industries transaction. The date is 2012-11-01 rather than the transaction's late-November closing because the successor's FIRST filing is the 2012-11-14 10-Q while the predecessor's LAST is the 2012-10-31 10-Q: 2012-11-01 is the only boundary that is both gapless and non-overlapping. 56 filings from 2012-11-14, 0 duplicate accessions. KNOWN EDGE CASE, do not 'fix' it here: both registrants filed a 10-Q for period 2012-09-30, the successor's carrying the holdco's 5M shell balance sheet against the predecessor's 18,800M. Two publication events is the correct grain and the split handles them disjointly; the value defect is fundamentals' and its scope is 1 ticker / 1 period / 2 rows."
+      }
+    ]
+  },
+  "GOOGL": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001288776",
+        "valid_to": "2015-10-02",
+        "evidence": "Google Inc. 48 filings 2004-08-16 .. 2015-07-23, measured 2026-08-23. The predecessor traded as GOOG, which is why the insider pipeline -- which resolves by trading SYMBOL first -- also lost this history and starts at 2015-10-08."
+      },
+      {
+        "cik": "0001652044",
+        "valid_from": "2015-10-02",
+        "evidence": "Alphabet Inc, the holding company effective 2015-10-02. 46 filings from 2015-10-29, 0 duplicate accessions, no gap at the Q3-2015 boundary."
+      }
+    ]
+  },
+  "ICE": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001174746",
+        "valid_to": "2013-11-06",
+        "evidence": "PROPOSED 2026-09-10. INTERCONTINENTALEXCHANGE INC (CIK 0001174746), the pre-boundary registrant. Found by the co-indexed filer scan on 5 of the successor's registrant-filed documents nearest the boundary. It filed 10 proxies of its own before the seam (last 2013-04-30), so it was the public registrant, and its filing rate went 248 -> 43 (0.173x) across it. Chosen over 1 other collapsing predecessor(s) by the comparative-column test: the successor's FY2012 Revenues of 1,363,000,000 is INTERCONTINENTALEXCHANGE INC's own reported figure (9 of 9 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2013-11-06. It kept filing until 2013-11-05, only 3 months past the successor's first (2013-08-07) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 33 of its filings are kept (2006-03-10 .. 2013-11-05). The successor contributes 56 filings from 2014-02-14; its 2 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+      },
+      {
+        "cik": "0001571949",
+        "valid_from": "2013-11-06",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001571949. Its own archive starts 2013-03-20 (195 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 58 10-K/10-Q from 2013-08-07."
+      }
+    ]
+  },
+  "LIN": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000884905",
+        "valid_to": "2018-11-10",
+        "evidence": "PROPOSED 2026-09-10. PRAXAIR INC (CIK 0000884905), the pre-boundary registrant. Found by the co-indexed filer scan on 14 of the successor's registrant-filed documents nearest the boundary. It filed 22 proxies of its own before the seam (last 2017-08-16), so it was the public registrant, and its filing rate went 303 -> 43 (0.142x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2017 ProfitLoss of 1,306,000,000 is PRAXAIR INC's own reported figure (7 of 7 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2018-11-10. It kept filing until 2018-11-09, only 12 months past the successor's first (2017-10-30) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 88 of its filings are kept (1996-08-07 .. 2018-11-09). The successor contributes 31 filings from 2019-03-18; its 3 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+      },
+      {
+        "cik": "0001707925",
+        "valid_from": "2018-11-10",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001707925. Its own archive starts 2017-06-01 (517 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 34 10-K/10-Q from 2017-10-30."
+      }
+    ]
+  },
+  "MDT": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000064670",
+        "valid_to": "2015-02-28",
+        "evidence": "PROPOSED 2026-09-10. MEDTRONIC INC (CIK 0000064670), the pre-boundary registrant. Found by the co-indexed filer scan on 2 of the successor's registrant-filed documents nearest the boundary. It filed 22 proxies of its own before the seam (last 2014-11-21), so it was the public registrant, and its filing rate went 358 -> 69 (0.193x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2014 SalesRevenueNet of 17,005,000,000 is MEDTRONIC INC's own reported figure (10 of 10 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2015-02-28. It kept filing until 2015-02-27, only 0 months past the successor's first (2015-02-27) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 99 of its filings are kept (1994-03-04 .. 2015-02-27). The successor contributes 46 filings from 2015-06-23; its 1 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+      },
+      {
+        "cik": "0001613103",
+        "valid_from": "2015-02-28",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001613103. Its own archive starts 2014-07-14 (185 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 47 10-K/10-Q from 2015-02-27."
+      }
+    ]
+  },
+  "STE": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000815065",
+        "valid_to": "2015-10-31",
+        "evidence": "HAND-ADJUDICATED 2026-09-10 (user-supplied research, verified against EDGAR metadata). STERIS CORP, CIK 0000815065 -- the original Ohio corporation and the origin of the STE ticker. State OH, SIC 'Orthopedic, Prosthetic & Surgical Appliances & Supplies'. Its recent block alone is 1,000 filings 1999-11-15 .. 2021-03-26 AND there is a further archive page behind it, so the real archive starts earlier still; it holds 16 DEF 14A (2000-06-22 .. 2015-07-08), 14 10-K (2002-06-20 .. 2015-05-27), 49 10-Q (1999-11-15 .. 2015-10-30) and 158 8-K (2002-06-10 .. 2015-11-06). STE prices start 1995-09-01 and this is the only registrant filing in that era, so it closes the 20.8-year proxy gap that left STE with 11 proxies starting 2016-06-13. MECHANISM: STERIS ran TWO cross-border reorganisations in four years -- Ohio -> UK plc (0001624899, on the 2015-11 Synergy Health combination) -> Irish plc (0001757898, 2019) -- and each re-incorporation minted a new CIK, so the ticker's history is split three ways rather than the usual two. NOT comparative-column confirmed: the 2015 seam predates usable XBRL comparatives for this filer, so this rests on the archive span, the state of incorporation and the cadence handover. boundary = the day after the predecessor's LAST consolidating filing (10-Q, 2015-10-30). Its 8-K of 2015-11-06 falls after the boundary and is kept by the UNION policy for event forms, which is correct -- that 8-K reports the combination itself."
+      },
+      {
+        "cik": "0001624899",
+        "valid_from": "2015-10-31",
+        "valid_to": "2019-02-12",
+        "evidence": "PROPOSED 2026-09-10. STERIS plc (CIK 0001624899), the pre-boundary registrant. Found by the co-indexed filer scan on 1 of the successor's registrant-filed documents nearest the boundary. It filed 4 proxies of its own before the seam (last 2019-01-31), so it was the public registrant, and its filing rate went 166 -> 29 (0.175x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2018 Revenues of 2,619,996,000 is STERIS plc's own reported figure (12 of 12 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2019-02-12. It kept filing until 2019-02-11, only -4 months past the successor's first (2019-05-30) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 13 of its filings are kept (2016-02-09 .. 2019-02-11). The successor contributes 30 filings from 2019-05-30; its 0 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+      },
+      {
+        "cik": "0001757898",
+        "valid_from": "2019-02-12",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001757898. Its own archive starts 2018-11-06 (142 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 30 10-K/10-Q from 2019-05-30."
+      }
+    ]
+  },
+  "VTRS": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000069499",
+        "valid_to": "2015-05-01",
+        "evidence": "Mylan Inc (CIK 0000069499), the pre-2015 US registrant. FOUND BY RE-RUNNING ORACLE 3 ON THE MIDDLE SEGMENT after the insider re-parse recovered VTRS only back to 2015-02-27 rather than 2006 -- Mylan N.V. was itself created in 2015, so a two-segment entry captured one hop of a two-hop chain and left a decade truncated. Measured 2026-09-10: 22 proxies of its own before the seam (last 2014-12-24), filing rate collapsed 255 -> 44 across it, and 90 10-K/10-Q from 1994-02-07 to 2015-04-30. The seam is the day after that last filing; Mylan N.V.'s first is 2015-05-08, so the two are gapless and non-overlapping with 8 days between them. The gate correctly rejected the two other co-filers: Teva (never a US proxy filer) and Perrigo (filing rate ROSE 1.68x, i.e. an acquirer, not a predecessor)."
+      },
+      {
+        "cik": "0001623613",
+        "valid_to": "2020-11-07",
+        "evidence": "Mylan N.V. (CIK 0001623613), the Dutch entity created for the 2015 Abbott generics transaction. Chosen over Upjohn as VTRS's predecessor by the comparative-column test: the successor's first 10-K restates Mylan's FY2019 as its own comparative (6 of 6 annual facts agree, revenue $11,500.5M), so Mylan is the accounting acquirer and Upjohn's own pre-combination 10-K/10-Qs are correctly excluded. 28 10-K/10-Q, 2015-05-08 .. 2020-11-06.",
+        "valid_from": "2015-05-01"
+      },
+      {
+        "cik": "0001792044",
+        "valid_from": "2020-11-07",
+        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001792044. Its own archive starts 2019-10-25 (217 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 32 10-K/10-Q from 2020-05-07."
+      }
+    ]
+  },
+  "XOM": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000034088",
+        "valid_to": "2026-07-01",
+        "evidence": "Exxon Mobil Corp (formerly EXXON CORP), which holds the full multi-decade archive and every DEF 14A. Measured 2026-09-09: 1,000 filings on the recent page alone (2019-12-18 .. 2026-08-07) plus two older archive pages. ⚠ IT KEEPS FILING AFTER THE BOUNDARY: its SCHEDULE 13G of 2026-08-07 is a predecessor filing dated after the cutover, already stored, and is the named regression case proving event forms must UNION rather than split."
+      },
+      {
+        "cik": "0002115436",
+        "valid_from": "2026-07-01",
+        "evidence": "ExxonMobil Holdings Corp. Measured against live EDGAR 2026-09-09 and re-verified 2026-09-10: its FIRST filing is an 8-K12B on 2026-07-01 -- the form filed precisely to register a successor's securities under Section 12(b) on a holding-company reorganisation -- and it holds 29 filings in total (2026-07-01 .. 2026-08-28) with NO older archive pages. The co-indexed filer scan over those 29 returns ('EXXON MOBIL CORP', '0000034088') on 2 accessions, recovering the predecessor mechanically. EDGAR has remapped the XOM ticker to this shell, and so had Wikipedia, so `sp500_tickers.cik` points here too."
+      }
+    ]
+  }
+}

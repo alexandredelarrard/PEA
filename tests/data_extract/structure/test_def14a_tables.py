@@ -290,6 +290,162 @@ def test_director_comp_and_sct_are_not_confused():
     print(f"\n  'Restricted Stock Units' + 'Fees Earned' + no Salary -> {matched}")
 
 
+#: The FOUR real headers the old five-conjunct rule rejected, verbatim from the filings, plus
+#: what each one is paid in. Every one of them failed on `stock_col` and on nothing else.
+_REAL_402K_HEADERS = {
+    # Netflix pays its directors in OPTIONS. `_DIR_STOCK_COLS` has no option label.
+    "NFLX": ("Name", "Fees Earned or Paid in Cash ($)", "Option Awards ($)", "Total ($)"),
+    # Williams writes "fees earned or paid in STOCK" -- not "stock award".
+    "WMB": ("NAME", "FEES EARNED OR PAID IN CASH", "FEES EARNED OR PAID IN STOCK",
+            "OPTION AWARDS", "TOTAL"),
+    # IBM's directors take cash plus All Other Compensation, no equity column at all.
+    "IBM": ("Name (a)", "Fees earned or paid in cash ($) (b)",
+            "All other compensation ($) (c)", "Total ($) (d)"),
+    # Alliant's carries the pension/deferred column instead.
+    "LNT": ("Name", "Fees Earned or Paid in Cash ($)",
+            "Change in Pension Value and Non-qualified Deferred Compensation Earnings ($)",
+            "Total ($)"),
+}
+
+
+def _people_table(header: tuple[str, ...], n: int = 10) -> str:
+    """A table with `header` and `n` rows labelled by PERSON, values in every other column."""
+    head = "".join(f"<th>{h}</th>" for h in header)
+    body = ""
+    for i in range(n):
+        cells = "".join(f"<td>{100000 + i * 1000}</td>" for _ in header[1:])
+        body += f"<tr><td>Director {chr(65 + i)} Surname</td>{cells}</tr>"
+    return f"<table><tr>{head}</tr>{body}</table>"
+
+
+@pytest.mark.parametrize("ticker", sorted(_REAL_402K_HEADERS))
+def test_a_402k_table_without_a_stock_award_column_is_still_classified(ticker):
+    """The 12.5% coverage gap, reproduced as four unit cases and closed.
+
+    ⚠ THESE ARE NOT INVENTED HEADERS. Each is the real merged header of the Director
+    Compensation Table in that company's own proxy, and each was rejected by the old rule's
+    `_DIR_STOCK_COLS` conjunct while satisfying the other four. Because
+    `DIRECTOR COMPENSATION TABLE` is a `_TABLE_TARGETS` section with no anchor fallback, that
+    rejection did not truncate the table in the payload -- it removed it, at 0 characters, and
+    the model was then asked for rows it had never been shown. 1,097 of 8,808 post-2007 filings
+    across 272 companies, IBM/WMB/LNT at 20 of 20 filings each.
+    """
+    matched = classify_table(*_grid(_people_table(_REAL_402K_HEADERS[ticker])))
+    assert "director_comp" in matched, f"{ticker}: still rejected -> {matched}"
+    assert SCT not in matched, f"{ticker}: classified as the SCT too -> {matched}"
+    print(f"\n  {ticker}: {' | '.join(_REAL_402K_HEADERS[ticker])[:78]} -> {matched}")
+
+
+def test_a_cash_only_board_is_classified_on_its_ROWS_not_its_columns():
+    """Berkshire pays its directors cash and nothing else, so its 402(k) table is two columns:
+    `Fees Earned or Paid in Cash | Total`. No column vocabulary can rescue that -- there is no
+    non-cash column in the filing to match on -- so the rule falls back to asking whether the
+    ROWS are a roster of people. Ten named directors is a roster."""
+    html = _people_table(("Name", "Fees Earned or Paid in Cash", "Total"), n=10)
+    matched = classify_table(*_grid(html))
+    assert "director_comp" in matched, matched
+    print(f"\n  10 named directors, cash + total only -> {matched}")
+
+
+def test_a_director_FEE_SCHEDULE_is_still_rejected():
+    """The table the relaxation could plausibly have swept up, and the reason the fallback is
+    a ROW test rather than a row COUNT. A fee schedule carries the same fee vocabulary in its
+    header and can carry a Total, so no column test separates it -- but its rows are ROLES."""
+    schedule = """<table>
+      <tr><th>Position</th><th>Annual Retainer</th><th>Total</th></tr>
+      <tr><td>Board Chair</td><td>150,000</td><td>150,000</td></tr>
+      <tr><td>Lead Independent Director</td><td>40,000</td><td>40,000</td></tr>
+      <tr><td>Audit Committee Chair</td><td>30,000</td><td>30,000</td></tr>
+      <tr><td>Compensation Committee Chair</td><td>25,000</td><td>25,000</td></tr>
+      <tr><td>Each other non-employee director</td><td>110,000</td><td>110,000</td></tr>
+    </table>"""
+    matched = classify_table(*_grid(schedule))
+    assert "director_comp" not in matched, f"a fee SCHEDULE was taken for the table: {matched}"
+    print(f"\n  5 role-labelled rows, retainer + total -> {matched or 'nothing'}")
+
+
+def test_a_colspand_table_title_does_not_hide_the_header():
+    """FITB's and TRMB's shape: the filer wraps the table in a full-width TITLE row, so
+    `merge_header_rows` returns the title -- repeated once per column -- and the genuine
+    `Name | Fees Earned | ... | Total` row is left behind as the first data row.
+
+    Measured as the largest residual cause after the column vocabulary: 15 failing filings for
+    FITB, 14 for TRMB, and it is what kept FORD -- D2's own exemplar, the CEO-to-director pay
+    ratio stuck at 0 for eleven years -- in the gap after the first two relaxations.
+    """
+    titled = """<table>
+      <tr><th colspan="4">2025 Director Compensation</th></tr>
+      <tr><td>Name</td><td>Fees Earned or Paid in Cash ($)</td>
+          <td>Stock Awards ($)</td><td>Total ($)</td></tr>
+      <tr><td>Nicholas K. Akins</td><td>140,000</td><td>175,000</td><td>315,000</td></tr>
+      <tr><td>B. Evan Bayh, III</td><td>130,000</td><td>175,000</td><td>305,000</td></tr>
+      <tr><td>Jorge L. Benitez</td><td>150,000</td><td>175,000</td><td>325,000</td></tr>
+    </table>"""
+    header, rows = _grid(titled)
+    assert "director" in " ".join(header).lower(), \
+        "the fixture no longer reproduces the title-as-header shape"
+    matched = classify_table(header, rows)
+    assert "director_comp" in matched, f"the title still hides the header: {matched}"
+    print(f"\n  header merged to {header[:2]} ... promoted from rows[0] -> {matched}")
+
+
+def test_a_title_promotion_needs_the_fee_vocabulary_in_the_promoted_row():
+    """The guard that makes the promotion safe: it fires only when the current header carries
+    NO director-fee vocabulary AND the candidate row DOES. A table whose first data row is
+    ordinary data must not be read as a header."""
+    from src.data_extract.utils.structure.def14a.tables import _promoted_header
+
+    # a real header already -> nothing to promote
+    assert _promoted_header(["Name", "Fees Earned or Paid in Cash", "Total"],
+                            [["A. Director", "1", "2"]]) is None
+    # a title, but no fee vocabulary anywhere in the first rows -> nothing to promote
+    assert _promoted_header(["2025 Ownership", "2025 Ownership"],
+                            [["Name", "Shares"], ["A. Holder", "10"]]) is None
+    # a title AND the fee row -> promoted
+    got = _promoted_header(["2025 Director Compensation", "2025 Director Compensation"],
+                           [["Name", "Fees Earned or Paid in Cash"], ["A. Director", "1"]])
+    assert got == ["Name", "Fees Earned or Paid in Cash"], got
+    print("\n  promotion fires only on (title header) AND (fee row). Validated.")
+
+
+def test_the_sct_can_never_be_classified_as_director_comp():
+    """⚠ THE RISK THE RELAXATION HAD TO CLOSE, and it is closed STRUCTURALLY rather than by
+    measurement. Executive pay entering a director-pay column would be far worse than the 12.5%
+    gap it fixes: the magnitudes are plausible, so nothing downstream would notice.
+
+    The two rules are mutually exclusive by construction. The SCT rule admits a table only when
+    `has(salary) or not has(fee_col)`; the director rule requires `not has(salary) and
+    has(fee_col)` -- the exact negation of both disjuncts. So no table satisfies both, whatever
+    else is relaxed, and this test asserts that over a real SCT header plus every combination
+    the discriminator can take.
+    """
+    sct = """<table>
+      <tr><th>Name and Principal Position</th><th>Year</th><th>Salary ($)</th>
+          <th>Bonus ($)</th><th>Stock Awards ($)</th><th>Option Awards ($)</th>
+          <th>Non-Equity Incentive Plan Compensation ($)</th>
+          <th>All Other Compensation ($)</th><th>Total ($)</th></tr>
+      <tr><td>A. Chief, CEO</td><td>2025</td><td>1,300,000</td><td>0</td><td>12,000,000</td>
+          <td>3,000,000</td><td>4,200,000</td><td>250,000</td><td>20,750,000</td></tr>
+      <tr><td>B. Money, CFO</td><td>2025</td><td>800,000</td><td>0</td><td>5,000,000</td>
+          <td>1,000,000</td><td>1,600,000</td><td>90,000</td><td>8,490,000</td></tr>
+      <tr><td>C. Legal, GC</td><td>2025</td><td>700,000</td><td>0</td><td>3,000,000</td>
+          <td>500,000</td><td>1,100,000</td><td>70,000</td><td>5,370,000</td></tr>
+    </table>"""
+    matched = classify_table(*_grid(sct))
+    assert SCT in matched, f"the SCT stopped being an SCT: {matched}"
+    assert "director_comp" not in matched, f"the SCT was taken for director pay: {matched}"
+
+    # and the same table with a fee column ADDED -- the shape closest to the boundary
+    both = sct.replace("<th>Bonus ($)</th>", "<th>Bonus ($)</th><th>Fees Earned ($)</th>")
+    m2 = classify_table(*_grid(both))
+    assert "director_comp" not in m2, f"salary + a fee column reached director pay: {m2}"
+
+    print(f"\n  a real SCT -> {matched}")
+    print(f"  the same SCT with a 'Fees Earned' column bolted on -> {m2}")
+    print("  CONCLUSION: `has(fee_col) and not has(salary)` is the exact negation of the SCT "
+          "rule's admitting condition, so the two targets cannot both match. Validated.")
+
+
 def test_one_table_can_serve_both_ownership_targets():
     """Filers routinely publish ONE beneficial-ownership table holding the >=5% institutions
     AND the directors-and-officers rows (AAPL 2026's is 16 rows). Under first-match-wins that

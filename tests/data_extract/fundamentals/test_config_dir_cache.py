@@ -17,7 +17,8 @@ import os
 
 import pytest
 
-from src.data_extract.utils.fundamentals import cik_cutover, periods
+from src.data_extract.utils.common import registrant
+from src.data_extract.utils.fundamentals import periods
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
     DEFAULT_CONFIG_DIR, _catalogue_at, load_catalogue, resolve_config_dir)
 from src.data_extract.utils.fundamentals_sharadar import field_map
@@ -29,7 +30,7 @@ SPELLINGS = (None, DEFAULT_CONFIG_DIR, os.path.abspath(DEFAULT_CONFIG_DIR))
 @pytest.mark.parametrize(("name", "load", "cached"), [
     ("load_catalogue", load_catalogue, _catalogue_at),
     ("load_guards", periods.load_guards, periods._guards_at),
-    ("load_cutovers", cik_cutover.load_cutovers, cik_cutover._cutovers_at),
+    ("load_registrants", registrant.load_registrants, registrant._registrants_at),
     ("load_field_map", field_map.load_field_map, field_map._field_map_at),
 ])
 def test_one_directory_is_one_cache_entry(name, load, cached):

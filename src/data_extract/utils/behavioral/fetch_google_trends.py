@@ -18,8 +18,12 @@ Why this is not a thin `pytrends` wrapper:
     independently), then rescale the whole series to 0-100.
 
 CAVEATS (research-grade signal): the series is normalised within the requested window
-and revised over time, so it is an attention proxy, not a precise point-in-time value;
-the attention_features builder only uses within-name relative spikes (the robust part).
+and revised over time, so it is an attention proxy, not a precise point-in-time value.
+It currently has NO consumer: the `attention_features` builder that read it was deleted with
+the `extras` -> `institutionals` rename (it was a blended retail-attention panel, defined but
+never called from `run()`). The table is still extracted and still in the DB, so a future
+consumer re-adds its projection to `data_aggregate/utils/common/sources.py` -- and should use
+within-name relative spikes only, which is the robust part of a re-normalised series.
 
 Network access is isolated in `_TrendsClient`; the stitching / windowing helpers
 (`_weekly_windows`, `_stitch_chunks`, `_scale_to_reference`) are pure and unit-tested.

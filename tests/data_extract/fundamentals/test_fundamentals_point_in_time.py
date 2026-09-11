@@ -106,7 +106,7 @@ def test_the_grain_is_one_row_per_publication_event_and_every_repeat_is_explaine
 
       1. `(ticker, as_of)` is UNIQUE. That is the table's primary key and the real grain.
       2. Every repeated `fiscal_end` is EXPLAINED — by an amendment row (`is_amendment`), or by
-         a declared registrant boundary in `fundamentals_cik_cutover.json`, where two legal
+         a declared registrant boundary in `configs/sec/registrant_cutover.json`, where two legal
          entities each filed for a period that straddles the cutover. Anything else is a
          genuine duplicate and fails.
 
@@ -121,8 +121,8 @@ def test_the_grain_is_one_row_per_publication_event_and_every_repeat_is_explaine
     groups = df[repeated].groupby(["ticker", "fiscal_end"])
 
     try:
-        from src.data_extract.utils.fundamentals.cik_cutover import load_cutovers
-        cutovers = load_cutovers("./configs")
+        from src.data_extract.utils.common.registrant import load_registrants
+        cutovers = load_registrants("./configs")
     except Exception:                                               # noqa: BLE001
         cutovers = {}
 
@@ -130,9 +130,13 @@ def test_the_grain_is_one_row_per_publication_event_and_every_repeat_is_explaine
     for (ticker, fiscal_end), group in groups:
         if bool(group["is_amendment"].fillna(False).any()):
             continue                                    # a restatement: the whole point
-        cutover = cutovers.get(ticker)
-        if cutover is not None and abs(
-                (pd.Timestamp(fiscal_end) - cutover.cutover_date).days) <= 400:
+        # ANY boundary in the chain excuses it, not just the latest. A ticker can have
+        # several -- PSKY is CBS -> Viacom -> ViacomCBS -> Paramount Global -> Paramount
+        # Skydance -- and each seam can produce the same two-publication-events shape.
+        entry = cutovers.get(ticker)
+        if entry is not None and any(
+                abs((pd.Timestamp(fiscal_end) - boundary).days) <= 400
+                for boundary in entry.boundaries):
             continue        # two registrants either side of a DECLARED, evidenced boundary
         unexplained.append((ticker, str(fiscal_end.date()), len(group)))
 

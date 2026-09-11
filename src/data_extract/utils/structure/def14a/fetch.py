@@ -65,6 +65,7 @@ from src.constants.constants import DATE_FORMAT, DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
+from src.data_extract.utils.common.registrant import Registrant, load_registrants
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping, sec_get
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
@@ -127,6 +128,69 @@ def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None
         logger.warning("%s %s: DEF 14A filing could not be read (%s)",
                        ticker, filing.get("filing_date", ""), e)
         return None
+
+
+def _list_across_registrants(
+    context: Context, ticker: str, cik: str, company: str, years: int,
+    since: pd.Timestamp | None, cutovers: dict[str, Registrant],
+) -> pd.DataFrame:
+    """That ticker's DEF 14A filings, across a registrant boundary when it has one.
+
+    ⚠ THIS MODULE IS THE ONLY PIPELINE IN THE REPO THAT RESOLVES BY CIK. Every other EDGAR
+    fetcher goes through `edgar_driver.new_filings`, i.e. `Company(ticker)`. That makes
+    `sp500_tickers.cik` a single-pipeline dependency -- and it is why a wrong or superseded CIK
+    shows up as a governance-only hole while prices, fundamentals and 8-K stay clean.
+
+    XOM is the measured case (2026-09-09). EDGAR remapped the XOM ticker to ExxonMobil Holdings
+    Corp (CIK 2115436), whose first filing is an 8-K12B on 2026-07-01 and which holds no proxy
+    forms at all, so this loop listed ZERO proxies and XOM carried 0 rows in all five
+    `def14a_*` tables while its 4,092 `cube_part_governance` rows held no non-null governance
+    feature. The full proxy history is under the predecessor, CIK 34088.
+
+    ⚠ THE SPLIT IS DATED, NEVER A UNION OF CIKS, and `DEF14A_FORMS` is declared SPLIT in
+    `registrant.FORM_POLICY` for it. Two legal entities can file concurrently, and
+    concatenating both CIKs blends a subsidiary's disclosures into the parent's -- on this
+    table that means two boards and two pay tables for one company-year, which corrupts the
+    governance grain rather than merely duplicating a row. Each segment contributes only
+    filings inside `[valid_from, valid_to)`, so the sets are disjoint by construction.
+
+    N SEGMENTS, NOT TWO: the register is a chain, and a two-CIK loop gave PSKY one hop.
+
+    ⚠ THE PER-FILING CIK COMES OUT RIGHT FOR FREE, and that is the point of listing per
+    registrant rather than post-labelling. `list_filings` stamps each row with the CIK whose
+    submissions document it parsed, so a row's `cik` is the CIK that actually filed it. Compare
+    `fetch_def14a_edgar.build_ticker_def14a_edgar`, which stamps `cik=cik` from the roster onto
+    filings it resolved by TICKER -- which is how 521 XOM 8-K rows came to carry a CIK holding
+    29 filings.
+    """
+    entry = cutovers.get(ticker)
+    if entry is None:
+        return list_filings(context, cik, DEF14A_FORMS, years, company, since=since)
+
+    frames = []
+    for segment in entry.segments:
+        part = list_filings(context, segment.cik, DEF14A_FORMS, years, company, since=since)
+        if part is None or part.empty:
+            continue
+        filed = pd.to_datetime(part["filing_date"])
+        part = part[filed.map(segment.covers)]
+        if not part.empty:
+            frames.append(part)
+            context.log.info(
+                "%s: %d DEF 14A filing(s) from CIK %s (%s .. %s)", ticker, len(part),
+                segment.cik,
+                segment.valid_from.date() if segment.valid_from else "start",
+                segment.valid_to.date() if segment.valid_to else "now")
+    if not frames:
+        return pd.DataFrame(columns=["ticker", "cik", "accession_number", "filing_date"])
+    out = pd.concat(frames, ignore_index=True)
+    dupes = int(out["accession_number"].duplicated().sum())
+    if dupes:
+        # The dated split makes this impossible; if it fires, the register is wrong rather
+        # than the data, and silently deduping would hide that.
+        context.log.warning("%s: %d duplicate accession(s) across the %s chain",
+                            ticker, dupes, " -> ".join(entry.all_ciks()))
+    return out
 
 
 def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
@@ -246,6 +310,14 @@ def fetch_def14a_llm(
         existing = context.store.load(Tables.def14a_llm, optional=True)
         return existing if existing is not None else pd.DataFrame(columns=["ticker", "as_of"])
 
+    # The registrant-boundary register. Curated JSON rather than an `sp500_tickers` column
+    # precisely because that table is rebuilt from Wikipedia, so a roster refresh would
+    # silently overwrite it -- see `cik_cutover`. `{}` when the file is absent.
+    cutovers = load_registrants()
+    if cutovers:
+        context.log.info("DEF 14A: %d registrant cutover(s) in force: %s",
+                         len(cutovers), ", ".join(sorted(cutovers)))
+
     total_new, tickers_touched, total_skipped = 0, 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
         ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
@@ -254,7 +326,8 @@ def fetch_def14a_llm(
         # last run date onward are listed. The accession skip below then sends ONLY the
         # not-yet-stored filings to the LLM (gap-filling, per ticker / per date).
         try:
-            filings = list_filings(context, cik, DEF14A_FORMS, years, company, since=list_since)
+            filings = _list_across_registrants(context, ticker, cik, company, years,
+                                               list_since, cutovers)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue

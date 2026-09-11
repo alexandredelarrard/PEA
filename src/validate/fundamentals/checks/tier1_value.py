@@ -1112,7 +1112,7 @@ def filing_continuity(sub: Substrates) -> list[Finding]:
 
     THREE EXCUSING MECHANISMS, and only a short history with NONE of them is a work item:
 
-      1. a `fundamentals_cik_cutover.json` entry (the fix, already applied for the known ones);
+      1. a `configs/sec/registrant_cutover.json` entry (the fix, applied for the known ones);
       2. a recent first-trade or index-add date -- a 2019 IPO has no 2015 filings and never did;
       3. an `accepted` entry in the check register.
 

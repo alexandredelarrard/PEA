@@ -15,7 +15,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
+from src.data_aggregate.utils.governance.def14a_impute import (
+    CARRY_MAX_DAYS, impute_def14a,
+)
 from src.data_aggregate.utils.governance.directors import (
     DERIVED_AGGREGATES, SOURCE_DERIVED, SOURCE_FILED, SOURCE_INTERPOLATED,
     board_aggregates, fill_director_attributes, finalize_board_source, merge_board_aggregates,
@@ -71,10 +73,26 @@ def _set(df: pd.DataFrame, ticker: str, i: int, col: str, value: float) -> None:
     df.loc[(df["ticker"] == ticker) & (df["accession_number"] == f"{ticker}-{i}"), col] = value
 
 
-def test_the_agreement_gate_fills_a_match_and_declines_a_mismatch():
-    """D37. `other_public_company_boards` changes in 46% of a director's consecutive filings, so
-    an interior gap is evidence that a value was DISCLOSED either side, not that it was the same
-    value. Only agreement is evidence of the value itself."""
+def test_the_forward_carry_fills_a_gap_a_trailing_edge_and_refuses_a_stale_one():
+    """D37, revised 2026-09-09. The child fill is a BOUNDED FORWARD CARRY, not an agreement gate.
+
+    Three behaviours, one per shape, mirroring `def14a_impute`'s
+    `test_the_forward_carry_gates_on_identity_and_refuses_the_name_outright` one grain up:
+
+      * an interior gap carries the EARLIER value -- never the later one, and never a blend;
+      * a TRAILING gap carries too, which the agreement gate could not reach at any price
+        because "the next filing" does not exist yet. That asymmetry was itself a defect: a
+        backtest filled situations a live run structurally cannot;
+      * a gap wider than `CARRY_MAX_DAYS` is REFUSED, which the agreement gate never did -- it
+        asked only whether the two sides matched, never how far apart they were, so a 9-year-old
+        count could be written and then dated by `expire_stale` to the row it landed on.
+
+    ⚠ THE DISAGREEMENT CASE NOW FILLS, and that is the change, stated plainly. `Dan Disagree`
+    reports 1.0, is silent, then reports 4.0; the carry answers **1.0** -- the last thing anyone
+    could have known at that date -- where the old rule answered NaN. It is stale ~46% of the
+    time and `<col>_imputed` says so on every cell, which is the trade D8.1 chose knowingly:
+    the alternative bought its accuracy by reading the 4.0 that had not been filed yet.
+    """
     filled, stats = fill_director_attributes(_directors())
     agree = filled[(filled["ticker"] == "AAA") & (filled["name"] == "Ann Agree")
                    ].sort_values("as_of")
@@ -83,20 +101,49 @@ def test_the_agreement_gate_fills_a_match_and_declines_a_mismatch():
 
     assert agree["other_public_company_boards"].tolist() == [2.0] * 5
     assert agree["other_public_company_boards_imputed"].tolist() == [0, 0, 1, 0, 0]
-    assert np.isnan(dis["other_public_company_boards"].iloc[2]), \
-        "a gap between 1.0 and 4.0 was filled -- the gate is not gating"
-    assert dis["other_public_company_boards_imputed"].sum() == 0
+    assert dis["other_public_company_boards"].tolist() == [1.0, 1.0, 1.0, 4.0, 4.0], \
+        "the gap must carry the EARLIER 1.0, never the later 4.0 and never a blend of the two"
+    assert dis["other_public_company_boards_imputed"].tolist() == [0, 0, 1, 0, 0]
 
-    assert stats["child interior gaps: other_public_company_boards"] == 2
-    assert stats["child filled (both sides agree): other_public_company_boards"] == 1
-    assert stats["child declined (the two sides disagree): other_public_company_boards"] == 1
-    print("\n=== SANITY CHECK: the D37 agreement gate ===")
-    print(f"  interior gaps {stats['child interior gaps: other_public_company_boards']}, "
-          f"filled {stats['child filled (both sides agree): other_public_company_boards']}, "
-          f"declined {stats['child declined (the two sides disagree): other_public_company_boards']}")
-    print("  CONCLUSION: 2.0 -> gap -> 2.0 fills at 2.0; 1.0 -> gap -> 4.0 stays NaN, because a "
-          "carry across a real board change is wrong half the time. Validated.")
+    # a TRAILING gap: silence after the last disclosure still carries
+    trailing = pd.DataFrame([
+        {"ticker": "TTT", "accession_number": f"TTT-{i}", "as_of": y, "name": "Tess Trail",
+         "age": 60 + i, "tenure_years": 5 + i,
+         "other_public_company_boards": 3.0 if i < 2 else None}
+        for i, y in enumerate(_YEARS)])
+    t_filled, t_stats = fill_director_attributes(trailing)
+    t_vals = t_filled.sort_values("as_of")["other_public_company_boards"].tolist()
+    assert t_vals == [3.0] * 5, f"a trailing gap was not carried: {t_vals}"
 
+    # a gap WIDER than the cap: refused
+    stale = pd.DataFrame([
+        {"ticker": "SSS", "accession_number": "SSS-0", "as_of": "2010-05-01",
+         "name": "Rip Winkle", "age": 55, "tenure_years": 10,
+         "other_public_company_boards": 2.0},
+        {"ticker": "SSS", "accession_number": "SSS-1", "as_of": "2019-05-01",
+         "name": "Rip Winkle", "age": 64, "tenure_years": 19,
+         "other_public_company_boards": None}])
+    s_filled, s_stats = fill_director_attributes(stale)
+    assert np.isnan(s_filled.sort_values("as_of")["other_public_company_boards"].iloc[1]), \
+        f"a {CARRY_MAX_DAYS}-day cap did not refuse a 3,287-day gap"
+    assert s_stats[f"child declined (>{CARRY_MAX_DAYS}d stale): "
+                   "other_public_company_boards"] == 1
+
+    print("\n=== SANITY CHECK: the D37 bounded forward carry ===")
+    print(f"  gaps {stats['child gaps: other_public_company_boards']}, "
+          f"carried {stats['child carried: other_public_company_boards']}, "
+          f"declined stale "
+          f"{stats[f'child declined (>{CARRY_MAX_DAYS}d stale): other_public_company_boards']}, "
+          f"declined no-prior "
+          f"{stats['child declined (no prior disclosure): other_public_company_boards']}")
+    print(f"  Ann Agree   2 -> gap -> 2  carries 2.0 (unchanged by the new rule)")
+    print(f"  Dan Disagree 1 -> gap -> 4  carries 1.0, the last KNOWN value (was NaN)")
+    print(f"  Tess Trail  3, 3, then silence -> {t_vals[2:]} "
+          f"({t_stats['child carried: other_public_company_boards']} trailing cells the "
+          "agreement gate could never reach)")
+    print(f"  Rip Winkle  2010 -> 2019 (3,287 d) REFUSED at the {CARRY_MAX_DAYS}-day cap")
+    print("  CONCLUSION: every filled cell is the last value disclosed at or before its own "
+          "date, bounded by the same horizon the features use. Validated.")
 
 def test_the_accrual_anchor_reaches_an_EDGE_gap():
     """D38. An age is a CLOCK: `interpolate(limit_area="inside")` refuses a leading gap by
@@ -155,8 +202,8 @@ def test_the_precedence_chain_prefers_a_complete_filed_value_and_overrides_a_thi
 
     # CCC 2019: the filer states a value AND every director already reported -> filed stands
     _set(parent, "CCC", 0, "avg_other_public_boards", 99.0)
-    # AAA 2021: the filer states a value, and the child fill ADDED a reporting director
-    #           (Ann's 2021 count was interpolated in) -> derived overrides
+    # AAA 2021: the filer states a value, and the child fill ADDED reporting directors
+    #           (both Ann's and Dan's 2021 counts were carried in) -> derived overrides
     _set(parent, "AAA", 2, "avg_other_public_boards", 99.0)
 
     merged, stats = merge_board_aggregates(parent, board_aggregates(filled))
@@ -165,7 +212,13 @@ def test_the_precedence_chain_prefers_a_complete_filed_value_and_overrides_a_thi
 
     assert ccc["avg_other_public_boards"] == 99.0, "a COMPLETE filed value was overridden"
     assert ccc["avg_other_public_boards_source"] == SOURCE_FILED
-    assert aaa["avg_other_public_boards"] == pytest.approx(2.0), \
+    # 1.5 = mean(Ann 2.0, Dan 1.0). ⚠ THIS WAS 2.0 UNDER THE AGREEMENT GATE, which
+    # filled only Ann -- Dan's 1.0 -> gap -> 4.0 disagreed and was declined, so the derived
+    # mean had a denominator of ONE. The bounded forward carry fills both, each from that
+    # director's own last disclosure, so the board mean is now taken over the whole board.
+    # The moved number IS the change, not a defect: what the assertion tests is that a
+    # filed value with a THINNER denominator is overridden, and it still is.
+    assert aaa["avg_other_public_boards"] == pytest.approx(1.5), \
         "a filed value whose own coverage was thinner was NOT overridden"
     assert aaa["avg_other_public_boards_source"] == SOURCE_DERIVED
     # step 3: where the parent is NULL the derivation simply supplies it
@@ -260,9 +313,11 @@ def test_the_real_archive_readout():
     print("  child fill:")
     for c in ("other_public_company_boards", "age"):
         print(f"    {c:28s} {before[c]:.1%} -> {after[c]:.1%}")
-    gate_filled = fstats["child filled (both sides agree): other_public_company_boards"]
-    gate_declined = fstats["child declined (the two sides disagree): other_public_company_boards"]
-    print(f"    agreement gate: {gate_filled:,} filled / {gate_declined:,} declined")
+    carried = fstats["child carried: other_public_company_boards"]
+    stale = fstats[f"child declined (>{CARRY_MAX_DAYS}d stale): other_public_company_boards"]
+    no_prior = fstats["child declined (no prior disclosure): other_public_company_boards"]
+    print(f"    bounded forward carry: {carried:,} carried / {stale:,} refused as "
+          f"stale / {no_prior:,} with no prior disclosure")
     print("  §1.1 derived vs FILED (pre-fill, like for like):")
     for f, (n, corr, med) in ident.items():
         print(f"    {f:28s} n={n:,}  corr {corr:.4f}  median|diff| {med:.4f}")

@@ -122,8 +122,28 @@ def fundamentals() -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # fixed inputs: seeded synthetic sources                                       #
 # --------------------------------------------------------------------------- #
-def _rng() -> np.random.Generator:
-    return np.random.default_rng(SEED)
+def rng_for(name: str) -> np.random.Generator:
+    """One INDEPENDENT generator per fixture, seeded off the fixture's own name.
+
+    ⚠ THIS REPLACES A SINGLE GENERATOR THREADED THROUGH EVERY `synthetic_*` BUILDER IN ORDER,
+    which coupled fixtures that have nothing to do with each other: whoever edited one fixture
+    re-phased the draw stream for every fixture built AFTER it, so unrelated outputs moved and
+    the diff blamed the production code.
+
+    It is not hypothetical -- it is why this baseline had to be regenerated. Making
+    `insider_ownership_pct` conditional in `synthetic_def14a` skipped a draw on the 3 tickers
+    with `i % 4 == 0` across 8 years: **measured 888 -> 864 draws**. Six outputs that no
+    production change touched -- `prim.safe_div`, `prim.ratio_helpers`, `prim.xs_standardize`,
+    `prim.forward_windows`, `prim.macro_factor_returns`, `prim.peer_relative_panel` -- then
+    differed from the baseline, and `prim.super_quarter_features` even lost a row (659 -> 658)
+    because a `(ticker, quarter)` group lost its last roster holder. Restoring those 24 draws
+    put all seven back byte-identical, which is how the coupling was proved rather than assumed.
+
+    Seeding off the NAME (not a positional index) means reordering the calls, or deleting a
+    fixture, also changes nothing for the others -- `synthetic_attention` was kept purely as a
+    stream spacer under the old scheme and no longer needs to be.
+    """
+    return np.random.default_rng([SEED, *name.encode("utf-8")])
 
 
 def synthetic_prices(tickers: list[str], rng: np.random.Generator) -> dict[str, pd.DataFrame]:
@@ -219,8 +239,43 @@ def synthetic_def14a(tickers: list[str], idx: pd.DatetimeIndex,
                 "pct_female_directors": float(rng.uniform(0.1, 0.5)),
                 "board_size": float(rng.integers(7, 15)),
                 "avg_board_tenure": float(rng.uniform(3, 14)),
-                "say_on_pay_support_pct": float(rng.uniform(60, 99)),
-                "insider_ownership_pct": float(rng.uniform(0.001, 0.08)),
+                # a FRACTION, like every other share-of-a-whole in this fixture. It was
+                # `uniform(60, 99)` -- percent -- and phase 0's `(0, 1)` domain gate then
+                # blanked every synthetic cell, so `_def14a_raw_fields` silently dropped
+                # `f_say_on_pay_support` from the panel and the baseline lost a whole
+                # feature. The live column is 0.034 .. 1.0 (median 0.94).
+                "say_on_pay_support_pct": float(rng.uniform(0.60, 0.99)),
+                # ⚠ THE OWNERSHIP BLOCK EXERCISES FOUR CODE PATHS AND USED TO EXERCISE NONE.
+                # Without `insider_shares` and `insider_voting_pct` this fixture made
+                # `panel.economic_ownership`, `panel.repair_ownership_basis` and
+                # `panel._control_wedge` all return early on their first guard, so the whole
+                # phase-5 ownership rework was absent from the digest -- and regenerating the
+                # baseline over that would have frozen `f_control_wedge` as permanently
+                # untested. That is exactly what happened to `f_say_on_pay_support` above, and
+                # the note there is the reason this one exists.
+                #
+                # The four paths, by ticker and year:
+                #   single-class (i % 4 != 0)  -> a DISCLOSED percentage plus a share count, so
+                #       `economic_ownership` must PREFER the disclosed value; the wedge is 0 by
+                #       the single-class identity.
+                #   dual-class, later years    -> ownership NULL (a per-class table returns
+                #       nothing), so the computed leg FILLS the hole and the wedge is positive.
+                #   dual-class, first year     -> a per-class-looking 0.92 ABOVE the voting
+                #       0.55, so `repair_ownership_basis` blanks it and the computation then
+                #       refills it -- which is the only path that proves the two run in the
+                #       right ORDER.
+                #
+                # `insider_shares` is deliberately ~2-8e6: small enough that dividing by ANY
+                # real S&P share count (5e7 .. 1.5e10 in the frozen fundamentals slice) lands
+                # inside the (0, 1] guard, so the path fires for every ticker without this
+                # fixture needing to know each one's share count.
+                "insider_ownership_pct": (
+                    np.nan if (i % 4 == 0 and k > 0)
+                    else 0.92 if i % 4 == 0
+                    else float(rng.uniform(0.001, 0.08))),
+                "insider_voting_pct": (
+                    float(0.55 + 0.01 * (i % 5) + 0.005 * k) if i % 4 == 0 else np.nan),
+                "insider_shares": float(2.0e6 + 3.0e5 * i + 1.0e5 * k),
                 "ceo_is_founder": float(int(rng.integers(0, 2))),
                 "ceo_since_year": float(since),
             })
@@ -330,26 +385,6 @@ def synthetic_exec_comp(proxies: pd.DataFrame, rng: np.random.Generator) -> pd.D
     return pd.DataFrame(rows)
 
 
-def synthetic_attention(tickers: list[str], idx: pd.DatetimeIndex,
-                        rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Daily Wikipedia pageviews + WEEKLY Google Trends (the weekly->daily bounded ffill
-    is a real code path). One ticker is deliberately absent from Trends so the rank-blend
-    single-source fallback is exercised."""
-    wiki = pd.DataFrame({
-        "date": np.repeat(idx.to_numpy(), len(tickers)),
-        "ticker": np.tile(np.array(tickers), len(idx)),
-        "pageviews": rng.lognormal(7.0, 0.7, len(idx) * len(tickers)).round(0),
-    })
-    weekly = pd.date_range(idx[0], idx[-1], freq="W-SUN")
-    gt_tickers = tickers[:-1]
-    trends = pd.DataFrame({
-        "date": np.repeat(weekly.to_numpy(), len(gt_tickers)),
-        "ticker": np.tile(np.array(gt_tickers), len(weekly)),
-        "search_interest": rng.integers(0, 101, len(weekly) * len(gt_tickers)).astype(float),
-    })
-    return wiki, trends
-
-
 def synthetic_short_interest(tickers: list[str], idx: pd.DatetimeIndex,
                              rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
     n = len(idx) * len(tickers)
@@ -374,22 +409,70 @@ def synthetic_short_interest(tickers: list[str], idx: pd.DatetimeIndex,
 
 def synthetic_insider(tickers: list[str], idx: pd.DatetimeIndex,
                       rng: np.random.Generator) -> pd.DataFrame:
-    """Forms 3/4/5 rows including the non-discretionary codes the builder must ignore."""
+    """Forms 3/4/5 rows including the non-discretionary codes the builder must ignore.
+
+    ⚠ WIDENED 2026-09-10, AND THE OLD SHAPE WAS PINNING A HOLE. Phase 2.3 rebuilt the insider
+    panel on the full Form 4 record -- share class, price, owner identity, post-trade holding,
+    the 10b5-1 flag -- and the four-column fixture this used to return produced an **empty**
+    panel through the new builder (`panel.insider` 43,010 rows x 10 cols -> 0 x 0). A baseline
+    regenerated on that would have frozen the absence of a feature family, which is exactly
+    what the elite panel's fixture did in Phase 2.2. Every column below is READ by
+    `insider_quality.clean_transactions` or by a feature; none is decoration.
+
+    A handful of rows are deliberately MISPRICED (~1.5%, a 10^2 slip) so the consensus repair
+    has something to catch -- a fixture in which the repair never fires cannot detect the
+    repair breaking.
+    """
     codes = np.array(["P", "S", "A", "M", "F", "G"])
     n = 40 * len(tickers)
     days = pd.to_datetime(rng.choice(idx.to_numpy(), n))
+    tkr = rng.choice(np.array(tickers), n)
+    shares = rng.lognormal(6.0, 1.0, n).round(0)
+    # One price level per ticker so the +/-15-day consensus is well defined and the mispriced
+    # rows stand out against it rather than against noise.
+    level = {t: float(20.0 + 80.0 * rng.random()) for t in tickers}
+    price = np.array([level[t] for t in tkr]) * (1.0 + 0.05 * rng.standard_normal(n))
+    price = np.abs(price).round(2)
+    slipped = rng.random(n) < 0.015
+    filed_price = np.where(slipped, price * 100.0, price)
+    owners = np.array([f"{9000000 + 13 * i:010d}" for i in range(12)])
+    titles = np.array(["Chief Executive Officer", "Chief Financial Officer",
+                       "President and COO", "Executive Vice President", ""])
+    title = rng.choice(titles, n, p=[0.15, 0.15, 0.1, 0.1, 0.5])
     return pd.DataFrame({
-        "ticker": rng.choice(np.array(tickers), n),
+        "accession_number": [f"{1000000000 + 7 * i:010d}-00-{i % 1000:06d}" for i in range(n)],
+        "ticker": tkr,
+        "owner_cik": rng.choice(owners, n),
+        "owner_name": rng.choice(np.array(["Doe Jane", "Roe Rick", "Poe Pat"]), n),
         "filing_date": days,
+        # Two business days before the filing, which is the Form 4 deadline: the stamp must be
+        # `filing_date`, and a fixture where the two are equal cannot show that.
+        "transaction_date": days - pd.Timedelta(days=2),
         "transaction_code": rng.choice(codes, n, p=[0.25, 0.35, 0.15, 0.1, 0.1, 0.05]),
-        "value_usd": rng.lognormal(12.0, 1.5, n).round(2),
+        "shares": shares,
+        "price_per_share": filed_price,
+        "value_usd": (shares * filed_price).round(2),
+        "shares_owned_after": (shares * (1.0 + 9.0 * rng.random(n))).round(0),
+        "security_type": np.where(rng.random(n) < 0.08, "deriv", "nonderiv"),
+        "security_title": rng.choice(np.array(["Common Stock", "Class A Common Stock",
+                                               "Preferred Stock, Series H"]),
+                                     n, p=[0.8, 0.15, 0.05]),
+        "direct_indirect": rng.choice(np.array(["D", "I"]), n, p=[0.7, 0.3]),
+        "officer_title": title,
+        "is_director": (title == "").astype("float64"),
+        "is_officer": (title != "").astype("float64"),
+        "is_ten_pct_owner": (rng.random(n) < 0.05).astype("float64"),
+        # NaN before the 10b5-1 floor, as in the real table: the flag does not exist in the
+        # source before 2023, and a 0 there would be a claim the data cannot support.
+        "is_10b5_1": np.where(days >= pd.Timestamp("2023-07-01"),
+                              (rng.random(n) < 0.6).astype("float64"), np.nan),
     })
 
 
 def synthetic_13f(tickers: list[str], idx: pd.DatetimeIndex,
                   rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
     """Manager-grain 13F: one row per (manager, ticker, quarter). Managers enter and exit
-    so new_buyers / exiters / breadth_chg are non-degenerate. Half the CIKs form the
+    so ic_inst_new_buyers / ic_inst_exiters / breadth_chg are non-degenerate. Half the CIKs form the
     'superinvestor' roster."""
     periods = pd.date_range(idx[0], idx[-1], freq="QE")
     ciks = [f"{1000000 + 7919 * i:010d}" for i in range(N_MANAGERS)]
@@ -411,6 +494,46 @@ def synthetic_13f(tickers: list[str], idx: pd.DatetimeIndex,
     holdings = pd.DataFrame(rows)
     roster = {"cik_to_name": {c: f"Manager {k}" for k, c in enumerate(ciks[: N_MANAGERS // 2])}}
     return holdings, roster
+
+
+def synthetic_manager_book(holdings: pd.DataFrame, tickers: list[str],
+                           rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`sec13f_manager_holdings`: CUSIP grain, and the manager's WHOLE book.
+
+    ⚠ A SEPARATE FIXTURE FROM `synthetic_13f`, MIRRORING A SEPARATE TABLE. The elite panel
+    reads the complete book so that `portfolio_weight` divides by the manager's real total;
+    the all-filer panel reads `sec13f_hr`, which is universe-filtered at extraction. Feeding
+    one frame to both is what the whole Phase 2.2 rebuild exists to stop, and a fixture that
+    did it would fingerprint a denominator the production code never sees.
+
+    ⚠ IT ALSO DRAWS FROM ITS OWN RNG STREAM AND LEAVES `holdings` UNTOUCHED, so
+    `panel.institutional` stays byte-identical. Off-universe positions are appended, never
+    interleaved, for the same reason -- an order-coupled draw is how this fixture previously
+    faked drift in seven outputs.
+    """
+    cusip_map = pd.DataFrame({
+        "cusip": [f"{i:08d}C" for i in range(len(tickers))],
+        "ticker": sorted(tickers),
+    })
+    by_ticker = dict(zip(cusip_map["ticker"], cusip_map["cusip"]))
+    book = holdings.assign(cusip=holdings["ticker"].map(by_ticker),
+                           position_type="common")
+    book = book.drop(columns=[c for c in ("ticker", "call_value", "put_value")
+                              if c in book.columns])
+
+    # the rest of each manager's book: names outside the analysis universe, which carry a
+    # median ~40-50% of real book value and are exactly what the slice denominator missed.
+    keys = holdings[["cik", "period", "filing_date"]].drop_duplicates()
+    extra = []
+    for cik, period, filed in keys.itertuples(index=False):
+        for j in range(int(rng.integers(2, 7))):
+            shares = float(rng.lognormal(11.0, 0.9))
+            extra.append({"cik": cik, "period": period, "filing_date": filed,
+                          "cusip": f"OTC{j:05d}X", "position_type": "common",
+                          "shares": round(shares, 0),
+                          "value_usd": round(shares * float(rng.uniform(20, 400)), 2)})
+    book = pd.concat([book, pd.DataFrame(extra)], ignore_index=True)
+    return book, cusip_map
 
 
 def primitive_fixtures(rng: np.random.Generator) -> dict[str, pd.DataFrame]:
@@ -451,7 +574,6 @@ def primitive_fixtures(rng: np.random.Generator) -> dict[str, pd.DataFrame]:
 # the fingerprint                                                              #
 # --------------------------------------------------------------------------- #
 def compute() -> dict:
-    from src.data_aggregate.utils.extras.attention_features import build_combined_attention_panel
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.assemble.composites import build_composites
     from src.data_aggregate.utils.fundamentals.dividend_features import build_dividend_feature_panel
@@ -469,8 +591,8 @@ def compute() -> dict:
     from src.data_aggregate.utils.governance.director_comp import impute_director_comp
     from src.data_aggregate.utils.governance.directors import fill_director_attributes
     from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
-    from src.data_aggregate.utils.extras.insider_features import build_insider_feature_panel
-    from src.data_aggregate.utils.extras.institutional_features import (
+    from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+    from src.data_aggregate.utils.institutionals.institutional_features import (
         _quarter_features, build_institutional_feature_panel,
     )
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
@@ -479,37 +601,43 @@ def compute() -> dict:
         winsorize_xs, xs_rank_pct, xs_standardize, xs_z,
     )
     from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
-    from src.data_aggregate.utils.extras.short_interest_features import (
+    from src.data_aggregate.utils.institutionals.short_interest_features import (
         build_short_interest_feature_panel,
     )
-    from src.data_aggregate.utils.extras.superinvestor_features import (
-        _super_quarter_features, _weight_map, build_superinvestor_feature_panel,
+    from src.data_aggregate.utils.institutionals.superinvestor_features import (
+        _prepare, attach_tickers, build_superinvestor_feature_panel,
+        manager_quarter_state, manager_stock_conviction,
     )
     from src.data_aggregate.utils.target.targets import (
         build_targets_multi, cross_sectional_rank, cross_sectional_zscore,
     )
 
-    rng = _rng()
     fund = fundamentals()
     tickers = sorted(fund["ticker"].unique())
-    px = synthetic_prices(tickers, rng)
+    px = synthetic_prices(tickers, rng_for("prices"))
     close, idx = px["close"], px["close"].index
     returns = close.pct_change(fill_method=None)
     sector_ret = returns.rolling(5).mean().bfill()             # deterministic stand-in
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
 
-    div = synthetic_dividends(tickers, idx, rng)
-    earn = synthetic_earnings(tickers, idx, rng)
-    proxies = synthetic_def14a(tickers, idx, rng)
-    neo_comp = synthetic_exec_comp(proxies, rng)
-    board = synthetic_directors(proxies, rng)
+    # Each fixture draws from its OWN generator -- see `rng_for`. Editing any one of these can
+    # no longer move the numbers produced by any other, which is what made the previous
+    # baseline diff unreadable. `synthetic_attention` used to be called here purely to hold the
+    # shared stream's position after the attention panel was deleted; with the streams isolated
+    # that spacer has no job, so it is gone.
+    div = synthetic_dividends(tickers, idx, rng_for("dividends"))
+    earn = synthetic_earnings(tickers, idx, rng_for("earnings"))
+    proxies = synthetic_def14a(tickers, idx, rng_for("def14a"))
+    neo_comp = synthetic_exec_comp(proxies, rng_for("exec_comp"))
+    board = synthetic_directors(proxies, rng_for("directors"))
     board_filled, _ = fill_director_attributes(board)
-    board_pay, _ = impute_director_comp(synthetic_director_comp(board, rng))
-    wiki, trends = synthetic_attention(tickers, idx, rng)
-    short_hist, ftd = synthetic_short_interest(tickers, idx, rng)
-    insider = synthetic_insider(tickers, idx, rng)
-    holdings, roster = synthetic_13f(tickers, idx, rng)
-    fx = primitive_fixtures(rng)
+    board_pay, _ = impute_director_comp(synthetic_director_comp(board, rng_for("director_comp")))
+    short_hist, ftd = synthetic_short_interest(tickers, idx, rng_for("short_interest"))
+    insider = synthetic_insider(tickers, idx, rng_for("insider"))
+    holdings, roster = synthetic_13f(tickers, idx, rng_for("13f"))
+    book, cusip_map = synthetic_manager_book(holdings, tickers,
+                                             rng_for("13f_manager_book"))
+    fx = primitive_fixtures(rng_for("primitives"))
 
     out: dict[str, dict] = {}
 
@@ -554,14 +682,17 @@ def compute() -> dict:
         proxies, peers, idx, fundamentals_history=fund,
         exec_comp=neo_comp, directors=board_filled, director_comp=board_pay,
         close_total=close)[0])
-    out["panel.attention"] = frame_digest(build_combined_attention_panel(
-        wiki, trends, peers, idx))
     out["panel.short_interest"] = frame_digest(build_short_interest_feature_panel(
         short_hist, peers, idx, fails_history=ftd, volume=px["volume"]))
     out["panel.institutional"] = frame_digest(build_institutional_feature_panel(
         holdings, peers, idx, shares_out_history=fund, stock_close=close))
+    # ⚠ `cusip_map` AND `universe` ARE BOTH REQUIRED. Without a cusip map `attach_tickers`
+    # nulls every ticker and the builder returns an EMPTY frame -- which is what this
+    # fingerprint silently digested between the Phase 2.2 rebuild and 2026-09-10, pinning a
+    # hole exactly as the say-on-pay gate once did.
     out["panel.superinvestor"] = frame_digest(build_superinvestor_feature_panel(
-        holdings, roster, peers, idx, shares_out_history=fund, stock_close=close))
+        book, roster, peers, idx, shares_out_history=fund, stock_close=close,
+        cusip_map=cusip_map, universe=tickers))
     out["panel.insider"] = frame_digest(build_insider_feature_panel(
         insider, peers, idx, shares_out_history=fund, stock_close=close))
 
@@ -669,9 +800,17 @@ def compute() -> dict:
 
     out["prim.quarter_features"] = frame_digest(
         _quarter_features(holdings).sort_values(["ticker", "as_of"]).reset_index(drop=True))
-    out["prim.super_quarter_features"] = frame_digest(
-        _super_quarter_features(holdings, _weight_map(roster))
-        .sort_values(["ticker", "as_of"]).reset_index(drop=True))
+    # The two INTERMEDIATES the elite panel turns on, replacing `prim.super_quarter_features`
+    # (whose function the Phase 2.2 rebuild deleted). `manager_quarter_state` carries the
+    # conviction DENOMINATOR and the concentration legs the selector ranks on;
+    # `manager_stock_conviction` carries the portfolio weight and the order-independent rank.
+    _book_t = _prepare(attach_tickers(book, cusip_map, tickers))
+    _state = manager_quarter_state(_book_t)
+    out["prim.super_manager_state"] = frame_digest(
+        _state.sort_values(["cik", "period"]).reset_index(drop=True))
+    out["prim.super_conviction"] = frame_digest(
+        manager_stock_conviction(_book_t, _state)
+        .sort_values(["cik", "period", "cusip"]).reset_index(drop=True))
 
     out["prim.pit"] = frame_digest(pd.concat({
         "shares_outstanding": fundamentals_to_daily(fund, "sharesOutstanding", idx),

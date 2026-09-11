@@ -1,11 +1,14 @@
 """
 CEO identity for the governance cube (src/data_aggregate/utils/governance/names.py) and the
-agreement-gated identity gap fill it enables in `def14a_impute`.
+identity gates it enables in `def14a_impute`.
 
 Three things under test:
   1. a co-CEO cell keys to the FIRST person listed (D28), not to a chimera of both;
-  2. an interior `ceo_name_proxy` gap is filled only when the same PERSON stands on both sides
-     (D27), judged on the key so a respelling still counts as agreement;
+  2. the temporal fill's gates, all four of them, on their own fixtures -- and in particular
+     that `ceo_name_proxy` is NOT filled at all any more (D27 is overridden): the old rule
+     required the same PERSON on BOTH sides of the gap, which reads a later filing, and the
+     forward-only fill of 2026-09-09 cannot. Respelling tolerance survives on `ceo_salary`,
+     the gate that is satisfiable without the future;
   3. the live archive reproduces the measurements phase 4's turnover guard is sized on -- these
      must be regenerated, never quoted from the plan document.
 """
@@ -16,7 +19,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.governance.def14a_impute import (
-    AGREEMENT_REQUIRED_FLAGS, impute_def14a,
+    CARRY_FORBIDDEN, CARRY_MAX_DAYS, impute_def14a,
 )
 from src.data_aggregate.utils.governance.names import (
     ceo_identity, is_multi_name, split_co_names,
@@ -62,59 +65,120 @@ def test_a_co_ceo_cell_keys_to_the_first_person_listed():
           "Accepted cost: a genuine co-CEO transition reads as NO turnover. Validated.")
 
 
-# ------------------------------------------------------------- the agreement-gated gap fill ---
-def test_identity_gap_fills_only_when_the_same_person_stands_on_both_sides():
-    """The plain `ffill` fills a bounded gap whenever SOMETHING exists each side, never checking
-    that the two agree -- so on a real transition it hands the gap year the OLD CEO's name, and
-    the turnover guard then compares old-vs-old, sees no change, and computes pay growth
-    straight across the transition it exists to catch."""
+# --------------------------------------------------------- the forward carry and its gates ---
+def test_the_forward_carry_gates_on_identity_and_refuses_the_name_outright():
+    """The ways the temporal fill can decline, each on its own fixture.
+
+    ⚠ THE `ceo_name_proxy` FILL IS GONE, and this test used to assert the opposite. Until
+    2026-09-09 a gap was filled when the same person bounded it on BOTH sides -- which reads the
+    LATER filing, and reading later filings is what this module stopped doing. Forward-only
+    cannot tell a quiet gap from one hiding a succession, so the honest answer for the name is
+    UNKNOWN: measured live, 86 carryable gaps of which 18 hide a real transition, so carrying
+    them all would fabricate 18 CEO identities to gain 68 correct ones. A wrong name lets the
+    turnover guard compare old-vs-old and compute pay growth across the succession it exists to
+    catch, so the 68 are the measured price and `CARRY_FORBIDDEN` is where it is paid.
+
+    `ceo_identity`'s respelling tolerance is still load-bearing -- it moved to the gate that
+    survived, on `ceo_salary`, which is satisfiable forward-only because the row being filled
+    names its own CEO.
+    """
     df = pd.DataFrame([
-        # AGREE, same spelling -> filled
-        _row("SAME", "2019-04-01", ceo_name_proxy="Timothy D. Cook", classified_board=1.0),
-        _row("SAME", "2020-04-01", ceo_name_proxy=None, classified_board=np.nan),
-        _row("SAME", "2021-04-01", ceo_name_proxy="Timothy D. Cook", classified_board=1.0),
-        # AGREE under the KEY though the strings differ -> filled (a raw comparison would not)
-        _row("DRIFT", "2019-04-01", ceo_name_proxy="Timothy D. Cook"),
-        _row("DRIFT", "2020-04-01", ceo_name_proxy=None),
-        _row("DRIFT", "2021-04-01", ceo_name_proxy="Tim Cook"),
-        # DISAGREE -- a real ACGL-shaped turnover inside the gap -> left NaN
-        _row("TURN", "1999-03-16", ceo_name_proxy="Mark D. Mosca"),
-        _row("TURN", "2000-03-16", ceo_name_proxy=None),
-        _row("TURN", "2001-03-16", ceo_name_proxy="Peter A. Appel"),
-        # a PROVISION gap on the same disagreeing ticker must still carry forward
+        # AGREE, same spelling -> the salary carries
+        _row("SAME", "2019-04-01", ceo_name_proxy="Timothy D. Cook", ceo_salary=3_000_000.0,
+             classified_board=1.0),
+        _row("SAME", "2020-04-01", ceo_name_proxy="Timothy D. Cook", ceo_salary=np.nan,
+             classified_board=np.nan),
+        # AGREE under the KEY though the strings differ -> carries (a raw comparison would not)
+        _row("DRIFT", "2019-04-01", ceo_name_proxy="Timothy D. Cook", ceo_salary=3_000_000.0),
+        _row("DRIFT", "2020-04-01", ceo_name_proxy="Tim Cook", ceo_salary=np.nan),
+        # DISAGREE -- an ACGL-shaped succession -> the salary is a CONTRACT term, declined
+        _row("TURN", "1999-03-16", ceo_name_proxy="Mark D. Mosca", ceo_salary=500_000.0),
+        _row("TURN", "2000-03-16", ceo_name_proxy="Peter A. Appel", ceo_salary=np.nan),
+        # the row names NOBODY -> declined, where the old `bfill` leg lent it an identity
+        _row("MUTE", "2019-04-01", ceo_name_proxy="Sam Sole", ceo_salary=400_000.0),
+        _row("MUTE", "2020-04-01", ceo_name_proxy=None, ceo_salary=np.nan),
+        # a genuine NAME gap -> stays NaN, and is COUNTED rather than silently skipped
+        _row("NAMEGAP", "2019-04-01", ceo_name_proxy="Ann Ash"),
+        _row("NAMEGAP", "2020-04-01", ceo_name_proxy=None),
+        _row("NAMEGAP", "2021-04-01", ceo_name_proxy="Ann Ash"),
+        # a PROVISION gap must still carry forward
         _row("PROV", "2019-04-01", classified_board=1.0, poison_pill=0.0),
         _row("PROV", "2020-04-01", classified_board=np.nan, poison_pill=np.nan),
         _row("PROV", "2021-04-01", classified_board=0.0, poison_pill=1.0),
+        # a TRAILING gap -- filled now, refused by the old interior-only rule
+        _row("TRAIL", "2019-04-01", board_size=10.0),
+        _row("TRAIL", "2020-04-01", board_size=np.nan),
+        # a gap WIDER than the carry cap -> declined, so the level horizon cannot be laundered
+        _row("STALE", "2010-04-01", board_size=8.0),
+        _row("STALE", "2020-04-01", board_size=np.nan),
     ])
     out, stats = impute_def14a(df)
     out = out.set_index(["ticker", "as_of"])
 
-    assert out.loc[("SAME", pd.Timestamp("2020-04-01")), "ceo_name_proxy"] == "Timothy D. Cook"
-    assert out.loc[("DRIFT", pd.Timestamp("2020-04-01")), "ceo_name_proxy"] == "Timothy D. Cook"
-    assert pd.isna(out.loc[("TURN", pd.Timestamp("2000-03-16")), "ceo_name_proxy"]), (
-        "a gap with a DIFFERENT CEO each side must stay NaN = UNKNOWN")
-    # the other FLAGS columns keep the plain carry-forward: "unchanged since the last
-    # disclosure" is a sound prior for a bylaw and a guess about who holds a job
-    assert out.loc[("PROV", pd.Timestamp("2020-04-01")), "classified_board"] == 1.0
-    assert out.loc[("PROV", pd.Timestamp("2020-04-01")), "poison_pill"] == 0.0
-    assert out.loc[("SAME", pd.Timestamp("2020-04-01")), "classified_board"] == 1.0
-    assert AGREEMENT_REQUIRED_FLAGS == frozenset({"ceo_name_proxy"}), (
-        "only the identity gets the agreement rule; widening it would stop provisions carrying")
-    assert stats.get("declined (identity changed): ceo_name_proxy") == 1
+    def at(t, d, c):
+        return out.loc[(t, pd.Timestamp(d)), c]
 
-    print("\n=== SANITY CHECK: identity gap fill requires agreement (D27) ===")
-    print(f"  SAME  (Cook / gap / Cook)              -> filled: "
-          f"{out.loc[('SAME', pd.Timestamp('2020-04-01')), 'ceo_name_proxy']!r}")
-    print(f"  DRIFT ('Timothy D. Cook' / gap / 'Tim Cook') -> filled: "
-          f"{out.loc[('DRIFT', pd.Timestamp('2020-04-01')), 'ceo_name_proxy']!r}  "
+    # --- the identity gate on ceo_salary, forward-only ---
+    assert at("SAME", "2020-04-01", "ceo_salary") == 3_000_000.0
+    assert at("DRIFT", "2020-04-01", "ceo_salary") == 3_000_000.0, \
+        "a respelling is the same person under the key"
+    assert pd.isna(at("TURN", "2000-03-16", "ceo_salary")), \
+        "a salary was carried across a succession"
+    assert pd.isna(at("MUTE", "2020-04-01", "ceo_salary")), \
+        "a salary was carried onto a row that names no CEO"
+    assert stats.get("declined (identity changed): ceo_salary") == 2      # TURN + MUTE
+
+    # --- the name itself is never carried ---
+    assert pd.isna(at("NAMEGAP", "2020-04-01", "ceo_name_proxy")), \
+        "ceo_name_proxy was carried -- CARRY_FORBIDDEN is not being honoured"
+    assert CARRY_FORBIDDEN == frozenset({"ceo_name_proxy"}), (
+        "only the NAME is forbidden; widening this would stop the provisions carrying")
+    # 2, not 1: NAMEGAP's interior gap AND the trailing unnamed row on MUTE. Both are carry
+    # candidates under a forward rule -- which is the point, since the old interior-only test
+    # would have seen only the first.
+    assert stats.get("declined (carry cannot be validated): ceo_name_proxy") == 2, \
+        "a refused carry must be COUNTED, or a fill of 0 cannot be told from nothing missing"
+
+    # --- provisions carry, a trailing gap now fills, a stale one does not ---
+    assert at("PROV", "2020-04-01", "classified_board") == 1.0
+    assert at("PROV", "2020-04-01", "poison_pill") == 0.0
+    assert at("SAME", "2020-04-01", "classified_board") == 1.0
+    assert at("TRAIL", "2020-04-01", "board_size") == 10.0, \
+        "the trailing gap was refused -- the live/backtest asymmetry is back"
+    assert pd.isna(at("STALE", "2020-04-01", "board_size")), \
+        f"a {CARRY_MAX_DAYS}d-stale value was carried and would read as fresh downstream"
+    assert stats.get(f"declined (>{CARRY_MAX_DAYS}d stale): board_size") == 1
+
+    # NON-DESTRUCTIVE: every disclosed value survives untouched
+    for t, d, c, v in (("SAME", "2019-04-01", "ceo_salary", 3_000_000.0),
+                       ("TURN", "1999-03-16", "ceo_salary", 500_000.0),
+                       ("PROV", "2021-04-01", "poison_pill", 1.0),
+                       ("STALE", "2010-04-01", "board_size", 8.0)):
+        assert at(t, d, c) == v, f"{t} {c} was overwritten"
+
+    print("\n=== SANITY CHECK: the forward carry and its declines ===")
+    print(f"  SAME  (Cook -> Cook)                    salary -> "
+          f"{at('SAME', '2020-04-01', 'ceo_salary'):,.0f}  carried")
+    print(f"  DRIFT ('Timothy D. Cook' -> 'Tim Cook') salary -> "
+          f"{at('DRIFT', '2020-04-01', 'ceo_salary'):,.0f}  carried "
           "(agreement judged on the KEY, not the string)")
-    print("  TURN  (Mosca / gap / Appel)            -> left NaN = UNKNOWN")
-    print(f"  provisions still carry forward: classified_board=1.0, poison_pill=0.0")
+    print(f"  TURN  (Mosca -> Appel)                  salary -> "
+          f"{at('TURN', '2000-03-16', 'ceo_salary')}  DECLINED, a contract term")
+    print(f"  MUTE  (Sole -> unnamed)                 salary -> "
+          f"{at('MUTE', '2020-04-01', 'ceo_salary')}  DECLINED, the row names nobody")
+    print(f"  NAMEGAP (Ash / gap / Ash)               name   -> "
+          f"{at('NAMEGAP', '2020-04-01', 'ceo_name_proxy')}  FORBIDDEN, not merely gated")
+    print(f"  TRAIL  board_size after the last filing -> "
+          f"{at('TRAIL', '2020-04-01', 'board_size')}  carried (the old rule refused this)")
+    print(f"  STALE  board_size 3,653 days later      -> "
+          f"{at('STALE', '2020-04-01', 'board_size')}  DECLINED, past {CARRY_MAX_DAYS}d")
     print(f"  stats: {stats}")
-    print("  CONCLUSION: a bounded gap proves a value was disclosed either side, NOT that it was "
-          "the same value. The identity fills only on agreement; every other FLAGS column keeps "
-          "the plain carry-forward. Non-destructive by construction -- this only ever DECLINES "
-          "to fill a NaN. Validated.")
+    print("  CONCLUSION: the fill reads only the past. The name is refused outright because "
+          "forward-only cannot tell a quiet gap from a succession; the salary is gated on the "
+          "CEO named by the row being filled; a carry past the level horizon is refused so it "
+          "cannot read as fresh downstream; and a TRAILING gap now fills, which closes the "
+          "asymmetry where a backtest filled what a live run structurally could not. "
+          "Non-destructive by construction. Validated.")
 
 
 # ----------------------------------------------------------------- the live re-measurement ---
@@ -288,54 +352,85 @@ def test_the_ceo_to_neo_cross_table_match_measured_on_the_live_archive():
           "Pay Slice assert the CEO sits inside its own top-5 denominator. Validated.")
 
 
-def test_the_identity_gap_fill_measured_on_the_live_archive():
-    """The §3.3 population, live: how many interior identity gaps exist, how many the key says
-    agree (and are therefore filled), and how many are declined because a real transition
-    happened inside the gap."""
+def test_the_price_of_refusing_the_name_carry_measured_on_the_live_archive():
+    """What `CARRY_FORBIDDEN` costs and what it buys, regenerated rather than quoted.
+
+    The decision this measures is not a preference. Forward-only, a `ceo_name_proxy` gap is
+    either carried or it is not -- there is no gate, because every gate that could separate the
+    safe gaps from the unsafe ones needs the LATER filing. So the question reduces to a count:
+    how many gaps hide a real succession? Those are the fabrications a blanket carry would
+    commit; the rest are correct fills it would win. Both numbers are printed, and the choice
+    (refuse) is defensible only while the second is small relative to the column's own coverage.
+
+    ⚠ `fwd`/`bwd` HERE ARE A MEASUREMENT, NOT THE PIPELINE. This test reads the future on
+    purpose -- that is the only way to score a forward-only rule's mistakes after the fact. The
+    module under test never does.
+    """
     raw = _live_def14a()
     df = raw[["ticker", "as_of", "ceo_name_proxy"]].copy()
     df["as_of"] = pd.to_datetime(df["as_of"], errors="coerce")
     df = df.sort_values(["ticker", "as_of"])
     g = df.groupby("ticker", sort=False)
     fwd, bwd = g["ceo_name_proxy"].ffill(), g["ceo_name_proxy"].bfill()
-    inside = df["ceo_name_proxy"].isna() & fwd.notna() & bwd.notna()
+    src = df["as_of"].where(df["ceo_name_proxy"].notna()).groupby(df["ticker"],
+                                                                 sort=False).ffill()
+    age = (df["as_of"] - src).dt.days
 
-    agree_str = inside & (fwd == bwd)
+    carryable = df["ceo_name_proxy"].isna() & fwd.notna() & (age <= CARRY_MAX_DAYS)
     k_f = fwd.astype(object).map(ceo_identity)
     k_b = bwd.astype(object).map(ceo_identity)
-    agree_key = inside & k_f.notna() & k_b.notna() & (k_f == k_b)
+    # scored against the future: would a blanket carry have been right?
+    would_be_right = carryable & k_b.notna() & k_f.notna() & (k_f == k_b)
+    would_be_wrong = carryable & k_b.notna() & k_f.notna() & (k_f != k_b)
+    unverifiable = carryable & ~(would_be_right | would_be_wrong)
 
-    n_gaps, n_str, n_key = int(inside.sum()), int(agree_str.sum()), int(agree_key.sum())
-    assert n_key >= n_str, "the key can only ever find MORE agreement than a raw string"
-    assert n_key <= n_gaps
+    n_carry = int(carryable.sum())
+    n_right, n_wrong = int(would_be_right.sum()), int(would_be_wrong.sum())
+    assert n_right + n_wrong + int(unverifiable.sum()) == n_carry, "the split does not close"
+    assert n_wrong > 0, (
+        "no gap hides a succession on this table, so refusing the carry costs coverage and "
+        "buys nothing -- CARRY_FORBIDDEN needs re-deciding, not re-asserting")
 
     _, stats = impute_def14a(raw)
-    declined = stats.get("declined (identity changed): ceo_name_proxy", 0)
+    refused = int(stats.get("declined (carry cannot be validated): ceo_name_proxy", 0))
+    assert stats.get("carry: ceo_name_proxy") is None, \
+        "ceo_name_proxy was carried -- CARRY_FORBIDDEN is not being honoured on live data"
+    assert refused == n_carry, (
+        f"the module refused {refused} but {n_carry} are carryable -- the counter and the "
+        "population disagree")
 
-    disagreeing = df[inside & ~agree_key]
-    print("\n=== SANITY CHECK: identity gap fills, measured live ===")
-    print(f"  interior ceo_name_proxy gaps (a value present each side): {n_gaps}")
-    print(f"    agreeing on the RAW STRING -> fillable: {n_str}")
-    print(f"    agreeing on the KEY        -> fillable: {n_key}  (+{n_key - n_str} the key "
-          "recovers that a string comparison would leave NaN)")
-    print(f"    DECLINED, a different CEO each side:    {n_gaps - n_key}")
-    print(f"  impute_def14a on the full table reports declined={declined}, "
-          f"carried={stats.get('carry: ceo_name_proxy', 0)}")
-    if not disagreeing.empty:
-        show = disagreeing.head(5).assign(before=fwd[disagreeing.index],
-                                          after=bwd[disagreeing.index])
-        print("  the declined gaps are unambiguous real transitions, e.g.:")
+    # the refusal must not be load-bearing for the column's coverage
+    coverage = float(raw["ceo_name_proxy"].notna().mean())
+    assert coverage > 0.95, (
+        f"ceo_name_proxy is only {coverage:.1%} filled from the extraction, so refusing "
+        f"{n_right} correct carries is no longer a cheap choice")
+
+    wrong_rows = df[would_be_wrong]
+    print("\n=== SANITY CHECK: the price of refusing the ceo_name_proxy carry ===")
+    print(f"  extraction alone fills                        : {coverage:.1%}")
+    print(f"  gaps a bounded forward carry COULD fill       : {n_carry}")
+    print(f"    the future says the same CEO  -> would be RIGHT : {n_right}  (the price paid)")
+    print(f"    the future says a new CEO     -> would be WRONG : {n_wrong}  (what it buys)")
+    print(f"    no later name to score against -> unverifiable  : {int(unverifiable.sum())}")
+    print(f"  module reports refused={refused}, carried=0")
+    if not wrong_rows.empty:
+        show = wrong_rows.head(5).assign(before=fwd[wrong_rows.index],
+                                         after=bwd[wrong_rows.index])
+        print("  the successions a blanket carry would have papered over, e.g.:")
         for _, r in show.iterrows():
             print(f"    {r['ticker']:<6} {str(r['as_of'])[:10]}  "
                   f"{r['before']!r} -> {r['after']!r}")
-    print("  CONCLUSION: the plain ffill would give every declined gap the OUTGOING CEO's name, "
-          "blinding the turnover guard to the exact transition it exists to catch. Requiring "
-          "agreement keeps the drifts and drops only the real changes. Validated.")
+    print(f"  CONCLUSION: carrying the name would win {n_right} correct cells and fabricate "
+          f"{n_wrong} CEO identities. A fabricated identity blinds the turnover guard to the "
+          "exact transition it exists to catch and lets pay growth be computed straight across "
+          f"it, so the {n_right} are given up on purpose. The column still ships at "
+          f"{coverage:.1%} from the extraction alone, which is what makes that affordable. "
+          "Validated.")
 
 
 if __name__ == "__main__":
     test_a_co_ceo_cell_keys_to_the_first_person_listed()
-    test_identity_gap_fills_only_when_the_same_person_stands_on_both_sides()
+    test_the_forward_carry_gates_on_identity_and_refuses_the_name_outright()
     test_normalisation_measured_on_the_live_archive()
     test_the_turnover_guards_true_cost_on_computable_pay_pairs()
     test_the_identity_gap_fill_measured_on_the_live_archive()

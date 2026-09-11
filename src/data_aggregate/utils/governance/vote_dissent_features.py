@@ -63,7 +63,7 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset({
 })
 
 #: THE ONLY fields that also get a peer-relative leg. Everything this module emits ships RAW
-#: as `f_<name>`; these twelve additionally get `f_<name>_vs_peers`. Nothing gets `_xs`.
+#: as `f_<name>`; these ten additionally get `f_<name>_vs_peers`. Nothing gets `_xs`.
 #:
 #: ⚠ WHY NO `_xs` ANYWHERE IN THIS MODULE, measured 2026-09-07. `_xs` is
 #: `rank(axis=1, pct=True)` -- a per-DATE monotone map of the raw level -- so the per-date
@@ -75,7 +75,7 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset({
 #: keep the magnitude instead: a dissent fraction is absolutely interpretable, and a pooled
 #: model that needs de-trending can difference the raw level.
 #:
-#: ⚠ WHY ONLY THESE TWELVE GET PEERS. Between-sector share of cross-sectional variance is
+#: ⚠ WHY ONLY THESE TEN GET PEERS. Between-sector share of cross-sectional variance is
 #: **2.1%-6.6%** for every field here, against **9.0% for profitMargins** and **8.1% for
 #: totalRevenue** on the identical measure -- shareholder dissent is a FIRM-SPECIFIC event, not
 #: a sector characteristic. So the peer leg is kept only for the bounded LEVELS, where "high
@@ -86,17 +86,48 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset({
 #:     because `min_peers=3` cannot be met on a field present in 17.7% of ballots;
 #:   * the four flags, where a peer z of a Bernoulli draw over ~7 peers reads as "how many of
 #:     my peers also tripped this", close to the opposite of the intended signal.
+#:
+#: ⚠ `sop_against_pct` AND `auditor_vote_against_pct` LEFT THIS SET AND THE MODULE ENTIRELY on
+#: 2026-09-08, taking their peer legs with them. `_dissent` is `(against + abstain) / valid` and
+#: `_against_pct` is `against / valid`, so the two differ ONLY by abstentions -- a mean 0.668 pp
+#: of the ballot on say-on-pay and 0.222 pp on the auditor vote. Measured on the live part:
+#:
+#:     pair                                                 Pearson    n_dissent   n_against
+#:     f_sop_dissent            ~ f_sop_against_pct          0.9949    1,627,822   1,627,822
+#:     f_auditor_vote_dissent   ~ f_auditor_vote_against_pct 0.9867    1,745,332   1,745,078
+#:     f_sop_dissent_vs_peers   ~ f_sop_against_pct_vs_peers 0.9849    1,605,288   1,605,288
+#:     f_auditor_..._vs_peers   ~ f_auditor_..._pct_vs_peers 0.9491    1,733,585   1,733,244
+#:
+#: WHICH TWIN SURVIVES, decided on coverage first. For the auditor pair `_dissent` is a STRICT
+#: SUPERSET: 254 cells and 6 distinct values more, and NOT ONE cell where only `_against_pct`
+#: exists (measured both directions -- `only_dissent` 254, `only_against` 0). Keeping it loses
+#: nothing. The say-on-pay pair is an exact tie (identical non-null counts, identical 6,669
+#: distinct values), so two other arguments decide it:
+#:
+#:   1. `sop_dissent` is the PARENT of five derived features -- `_excess_10`, `_excess_20`,
+#:      `_gt_10`, `_gt_20`, `_delta_1y`. Dropping `_against_pct` costs nothing structurally;
+#:      dropping `_dissent` would orphan five columns.
+#:   2. ABSTENTION IS OPPOSITION in these two votes specifically. Auditor ratification is the
+#:      cheapest available protest vote and say-on-pay is advisory, so an abstention is a
+#:      deliberate withholding rather than an absence -- which is why ISS reads against +
+#:      abstain. `_against_pct` throws that away.
+#:
+#: ⚠ THE FOURTH ROW IS NOT ITSELF EVIDENCE OF REDUNDANCY. At r = 0.9491 the auditor PEER pair
+#: sits below the 0.985 line and was never flagged; `f_auditor_vote_against_pct_vs_peers` goes
+#: because a peer z of a column that no longer exists cannot be built, not because it duplicates
+#: anything. Four columns leave, not three: 106 -> 102 features (87 -> 85 raw, 18 -> 16 peer,
+#: 1 self-history unchanged).
 PEER_RELATIVE_FIELDS: frozenset[str] = frozenset({
-    "sop_dissent", "sop_against_pct",
+    "sop_dissent",
     "board_dissent_mean", "board_dissent_median", "board_dissent_max", "board_dissent_p90",
     "board_dissent_breadth_10", "board_dissent_breadth_20",
     "board_pct_nominees_below_70_support", "ceo_director_dissent",
-    "auditor_vote_dissent", "auditor_vote_against_pct",
+    "auditor_vote_dissent",
 })
 
 #: The say-on-pay family (proposal-level tallies).
 _SOP_LEVELS: tuple[str, ...] = (
-    "sop_dissent", "sop_against_pct", "sop_dissent_excess_10", "sop_dissent_excess_20",
+    "sop_dissent", "sop_dissent_excess_10", "sop_dissent_excess_20",
     "sop_dissent_gt_10", "sop_dissent_gt_20",
 )
 _SOP_DELTAS: dict[str, str] = {"sop_dissent_delta_1y": "sop_dissent"}
@@ -124,7 +155,7 @@ _ELECTION_DELTAS: dict[str, str] = {
 #: ratification normally passes with overwhelming support, so 5% opposition is already the
 #: tail, where say-on-pay routinely runs to 10%.
 _AUDITOR_LEVELS: tuple[str, ...] = (
-    "auditor_vote_dissent", "auditor_vote_against_pct",
+    "auditor_vote_dissent",
     "auditor_dissent_gt_05", "auditor_dissent_gt_10",
 )
 _AUDITOR_DELTAS: dict[str, str] = {"auditor_vote_dissent_delta_1y": "auditor_vote_dissent"}
@@ -268,13 +299,19 @@ def _say_on_pay_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFr
     tally["rows: say_on_pay"] = len(rows)
     if rows.empty:
         return None
-    against, abstain, favour, valid = _proposal_legs(rows, tally, "say_on_pay")
+    # `valid` is unpacked and unused: it was the denominator of the retired
+    # `_against_pct` leg. Kept in the unpack rather than dropped from
+    # `_proposal_legs`, whose other callers still need it.
+    against, abstain, favour, _valid = _proposal_legs(rows, tally, "say_on_pay")
     dissent = _sanitize(_dissent(against, abstain, favour), tally, "sop_dissent")
     hist = pd.DataFrame({
         "ticker": rows["ticker"].astype(str),
         "as_of": _as_of(rows),
         "sop_dissent": dissent,
-        "sop_against_pct": _sanitize(against / valid, tally, "sop_against_pct"),
+        # `sop_against_pct` (= against / valid) used to be emitted here. Removed rather than
+        # left computed-but-unselected, because `_sanitize` writes tally entries and a build
+        # log reporting the hygiene of a column nobody ships is a trap for the next reader.
+        # See `PEER_RELATIVE_FIELDS` for the r = 0.9949 that retired it.
         # Excess-over-threshold: zero for a normal vote, and LINEAR in the tail beyond it, so
         # a 35% revolt is distinguishable from a 21% one where the flag below saturates.
         "sop_dissent_excess_10": (dissent - 0.10).clip(lower=0.0),
@@ -462,14 +499,17 @@ def _auditor_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame
     tally["rows: auditor_ratification"] = len(rows)
     if rows.empty:
         return None
-    against, abstain, favour, valid = _proposal_legs(rows, tally, "auditor_ratification")
+    # `valid` is unpacked and unused: it was the denominator of the retired
+    # `_against_pct` leg. Kept in the unpack rather than dropped from
+    # `_proposal_legs`, whose other callers still need it.
+    against, abstain, favour, _valid = _proposal_legs(rows, tally, "auditor_ratification")
     dissent = _sanitize(_dissent(against, abstain, favour), tally, "auditor_vote_dissent")
     hist = pd.DataFrame({
         "ticker": rows["ticker"].astype(str),
         "as_of": _as_of(rows),
         "auditor_vote_dissent": dissent,
-        "auditor_vote_against_pct": _sanitize(against / valid, tally,
-                                              "auditor_vote_against_pct"),
+        # `auditor_vote_against_pct` used to be emitted here; `_dissent` is a strict SUPERSET
+        # of it (254 cells more, 0 the other way) at r = 0.9867. Same reason as say-on-pay's.
         "auditor_dissent_gt_05": _flag(dissent, 0.05),
         "auditor_dissent_gt_10": _flag(dissent, 0.10),
     })

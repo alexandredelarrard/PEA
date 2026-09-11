@@ -19,12 +19,10 @@ from src.data_store.schema import Tables
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.strategies.base import Strategy, PortfolioInputs, StrategyResult
-from src.strategies.utils.superinvestors import (
-    _load_superinvestor_roster,
-    _aggregate_superinvestors,
-)
+from src.strategies.utils.superinvestors import _aggregate_superinvestors
 from src.strategies.utils.replication import replicate_superinvestors
 from src.utils.macro import load_macro_series
+from src.utils.superinvestor_roster import roster_as_of
 from src.utils.risk_parity import series_metrics
 from src.strategies.analysis.super_investors_analysis import (
     analyze_super_investors, analyze_super_investors_by_cik)
@@ -134,12 +132,13 @@ class SuperInvestorsStrategy(Strategy):
         store = self._context.store
         _FUNDS_COLS = ["cik", "ticker", "filing_date", "period", "shares", "value_usd"]
 
-        roster_ciks = _load_superinvestor_roster(self._context)
+        roster_ciks = roster_as_of(self._context)
         if not roster_ciks:
-            raise RuntimeError("super_investors: superinvestors roster resolved to no manager "
-                               "-- check data/superinvestors/superinvestors.json.")
+            raise RuntimeError(
+                f"super_investors: '{Tables.superinvestor_roster}' resolved to no manager "
+                "-- run `data_extract superinvestors --seed`.")
         df_funds = store.load(Tables.sec13f_hr, columns=_FUNDS_COLS,
-                              where={"cik": set(roster_ciks.keys())})
+                              where={"cik": roster_ciks})
         # `close_split` renamed to `close` for the replication helper: this is an EXECUTION
         # price (what a mirrored share is marked at), so it wants the split-adjusted quote,
         # not the dividend-reinvested path. A 13F mirror holds shares, not a total-return

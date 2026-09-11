@@ -154,7 +154,7 @@ so `tests/dod/conftest.py` loads `dod_lib` by path. The hook tests set `LOCALAPP
 ## The aggregation fingerprint baseline
 
 [tests/data_aggregate/test_aggregate_regression.py](../tests/data_aggregate/test_aggregate_regression.py)
-hashes 35 aggregation outputs (15 panels, 13 deduplicated primitives, 6 labels, the frozen input)
+hashes 34 aggregation outputs (14 panels, 13 deduplicated primitives, 6 labels, the frozen input)
 against `aggregate_fingerprint_baseline.json`.
 
 > **The baseline may be regenerated only in a commit that touches no `src/` file, or in a PR that is

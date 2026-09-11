@@ -43,16 +43,16 @@ lgbm:
     - f_interest_coverage_vs_peers: 1
     - f_net_debt_to_ebitda_xs: -1
     - f_refinancing_risk_xs: -1
-    - f_insider_net_buy_ratio_xs: 1
+    - f_ic_insider_net_buy_ratio_180d: 1
     - f_tier1_capital_ratio_xs: 1
     - f_combined_ratio_xs: -1
     - mom_12_1: 1
     - max_21: -1
-    - f_inst_flow_to_mcap_xs: 1
-    - f_super_flow_to_mcap_xs: 1
-    - f_short_vol_ratio_xs: -1
-    - f_short_vol_ratio_chg_xs: -1
-    - f_fails_to_deliver_ratio_xs: -1
+    - f_ic_inst_flow_to_mcap_xs: 1
+    - f_ic_super_flow_to_mcap_xs: 1
+    - f_ic_shortvol_ratio_xs: -1
+    - f_ic_shortvol_ratio_chg_xs: -1
+    - f_ic_ftd_ratio_xs: -1
     - f_ec_tone_xs: 1
     - f_ec_tone_delta_xs: 1
     - f_ec_qa_gap_xs: 1
@@ -66,7 +66,7 @@ lgbm:
     - f_float_growth_xs: 1
     - f_affo_dividend_coverage_xs: 1
     - f_nii_growth_xs: 1
-    - f_super_new_buyer_ratio_vs_peers: 1
+    - f_ic_super_initiations_xs: 1
     - f_q_margin_vs_ttm_vs_peers: 1
     - f_eps_expectation_growth_vs_peers: 1
     - f_intrinsic_yield_vs_peers: 1
@@ -119,13 +119,13 @@ lgbm:
   - f_interest_coverage_vs_peers
   - f_net_debt_to_ebitda_xs
   - f_refinancing_risk_xs
-  - f_insider_net_buy_ratio_xs
-  - f_inst_flow_to_mcap_xs
-  - f_super_new_buyer_ratio_vs_peers
-  - f_super_flow_to_mcap_xs
-  - f_short_vol_ratio_xs
-  - f_short_vol_ratio_chg_xs
-  - f_fails_to_deliver_ratio_xs
+  - f_ic_insider_net_buy_ratio_180d
+  - f_ic_inst_flow_to_mcap_xs
+  - f_ic_super_initiations_xs
+  - f_ic_super_flow_to_mcap_xs
+  - f_ic_shortvol_ratio_xs
+  - f_ic_shortvol_ratio_chg_xs
+  - f_ic_ftd_ratio_xs
   - f_ec_tone_xs
   - f_ec_tone_delta_xs
   - f_ec_qa_gap_xs

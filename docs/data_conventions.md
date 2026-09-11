@@ -90,8 +90,7 @@ Scale, so you know what an unprojected read costs: `sec13f_hr` 21.7M rows / 6.1 
 | Site | Status |
 |---|---|
 | `Table.read_columns` in [schema.py](../src/data_store/schema.py) | **canonical** — drives `project=True` |
-| `SOURCE_COLUMNS` in [utils/common/sources.py](../src/data_aggregate/utils/common/sources.py) | still live: `StepCubeExtras._load_source` calls its `project_existing`, and `tests/data_aggregate/test_cube_incremental.py` asserts against it |
-| `SOURCE_COLUMNS` in [step_cube_extras.py:54](../src/data_aggregate/transformers/step_cube_extras.py#L54) | **dead duplicate** — declared but never read. Do not extend it |
+| `SOURCE_COLUMNS` in [utils/common/sources.py](../src/data_aggregate/utils/common/sources.py) | the ONLY one. `StepCubeInstitutionals._load_source` calls its `project_existing` and `tests/data_aggregate/test_cube_incremental.py` asserts against it. The dead duplicate that used to sit in the step module is deleted |
 
 A projection **must** cover every column its builder requires (asserted by
 `test_cube_incremental.py`) but must also tolerate an *optional* column the live table lacks —
@@ -148,10 +147,10 @@ One place decides full-vs-incremental:
 [utils/common/incremental.py](../src/data_aggregate/utils/common/incremental.py).
 
 ```python
-window = plan_window(store, Tables.cube_part_extras, full=full,
+window = plan_window(store, Tables.cube_part_institutionals, full=full,
                      warmup=self._warmup(), trading_index=load_trading_calendar(store))
 ...
-n = write_part(store, Tables.cube_part_extras, panel, window, drop_empty=True)
+n = write_part(store, Tables.cube_part_institutionals, panel, window, drop_empty=True)
 if n == COLUMNS_CHANGED:
     return self.run(full=True)        # the required response — always handle this
 ```

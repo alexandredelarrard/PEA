@@ -14,8 +14,16 @@ Sources, and the grain each arrives on:
     close_total             daily                       -> the shareholder-return leg
 
 ⚠ WHY THE TURNOVER GUARD IS THE POINT OF FAMILY 5. A partial-year incoming CEO's package is
-not organic pay growth, and the pre-existing `ceo_pay_growth` has no guard at all. The guarded
-field ships under a NEW name (D13) because the unguarded one is a live feature.
+not organic pay growth. The guarded field ships under a NEW name (D13) rather than replacing
+`ceo_pay_growth`, which was a live feature at the time.
+
+⚠ THE LEGACY LEG IS NO LONGER UNGUARDED. Phase 1 (2026-09-08) gave `panel._ceo_pay_growth` the
+same guard, so the two families now share ONE definition of "the CEO changed" --
+`names.ceo_identity_changed` -- and cannot disagree about a transition. They still differ where
+it matters: this one is a LOG growth with an adjacency guard and a both-sides-positive guard,
+that one a PCT change with neither, bounded instead by a cross-sectional trim. Measured after
+phase 1 they run at Pearson r = 0.516 and Spearman rho = 0.958 over 3.78M overlapping cells --
+close to rank-identical, which is a question for the deduplication phase and not a defect.
 
 ⚠ IDENTITY COMES FROM `ceo_identity`, NEVER A RAW-STRING COMPARISON. Measured on the live
 archive, comparing `ceo_name_proxy` as text manufactures **356 spurious turnovers out of
@@ -48,8 +56,14 @@ from src.data_aggregate.utils.common.pit import (
     infer_yoy_periods,
 )
 from src.data_aggregate.utils.common.xs import winsorize_xs
-from src.data_aggregate.utils.governance.names import ceo_identity_series, is_multi_name
-from src.data_aggregate.utils.governance.staleness import expire_event_fields
+from src.data_aggregate.utils.governance.names import (
+    ceo_identity_changed,
+    ceo_identity_series,
+    is_multi_name,
+)
+from src.data_aggregate.utils.governance.staleness import (
+    LEVEL_MAX_AGE_DAYS, expire_event_fields, expire_level_fields,
+)
 from src.utils.names import person_key
 
 #: Binary indicators. A flag ships RAW and is never peer-z-scored: the peer z of a Bernoulli
@@ -98,6 +112,22 @@ EVENT_FIELDS: frozenset[str] = frozenset({
     "pay_up_revenue_down_severity", "pay_up_return_down_severity",
 })
 
+#: Fields whose value depends on the WHOLE CROSS-SECTION on their date, not only on the
+#: filer's own archive. Both are built as `winsorize_xs(peer_relative(pay)) -
+#: winsorize_xs(peer_relative(prf))`, so a ticker's value moves when the peer basket changes
+#: OR when the 1%/99% trim bound moves -- neither of which requires the ticker's own filings to
+#: change at all.
+#:
+#: Declared because a per-ticker attribution check cannot otherwise tell them apart from a raw
+#: characteristic. `reports/validate/governance/_scripts/21_fetch_attribution.py` gates on
+#: "a raw feature moves only for a ticker whose own filings changed", and these two are exempt
+#: from that gate BY CONSTRUCTION. Reading the exemption off the name would have been wrong:
+#: they carry no `_vs_peers` suffix, and on the 2026-09-10 rebuild they moved for 424 and 417
+#: untouched tickers respectively -- correctly.
+CROSS_SECTIONAL_FIELDS: frozenset[str] = frozenset(
+    {f"pay_{lab}_peer_misalignment" for lab in ("revenue", "return")}
+)
+
 #: Every field this module can emit. `_alignment_family` names its members from a LABEL
 #: (`revenue` / `return`), so the two sets above can only be checked against the builder by
 #: enumerating what it produces -- which is what caught `pay_up_stock_down`, a name the plan
@@ -111,6 +141,19 @@ ALL_FIELDS: frozenset[str] = frozenset(
     | {f"pay_up_{lab}_down" for lab in ("revenue", "return")}
     | {f"pay_up_{lab}_down_severity" for lab in ("revenue", "return")}
 )
+
+#: The two pay LEVELS, on `LEVEL_MAX_AGE_DAYS` (1,095 days) rather than on no horizon at all.
+#:
+#: ⚠ The `EVENT_FIELDS` note above says these two are "standing facts between proxies", and
+#: that is right -- it just is not an argument for keeping them forever. A package set in 2014
+#: is no more evidence about today than a 2019 say-on-pay vote is; the two claims differ in
+#: HALF-LIFE, which is what two horizons express and what excluding them from both did not.
+#: Defined as the complement of `EVENT_FIELDS` so the two are exhaustive over `ALL_FIELDS`.
+#:
+#: These two carry the largest measured exposure of the twelve fields this change reaches:
+#: 3,956 cells past 1,095 days (**0.15%**) and a maximum forward-fill age of 4,428 days --
+#: 12.1 years of one proxy's number reported as current.
+LEVEL_FIELDS: frozenset[str] = ALL_FIELDS - EVENT_FIELDS
 
 #: A YoY pair must be two filings roughly ONE year apart. Proxy filing dates drift by weeks
 #: between years, so the window is generous; what it rejects is the pair that straddles a
@@ -194,7 +237,7 @@ def _comp_history(def14a: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame |
     })
     raw_names = (def14a["ceo_name_proxy"] if "ceo_name_proxy" in def14a.columns
                  else pd.Series(None, index=def14a.index, dtype="object"))
-    h["ident"] = ceo_identity_series(raw_names)
+    h["name"] = raw_names.astype(object)
     h = h.dropna(subset=["ticker", "as_of"]).sort_values(["ticker", "as_of"])
     if h.empty:
         return None
@@ -205,12 +248,14 @@ def _comp_history(def14a: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame |
     # on purpose: identity continuity is a question about the previous FILING whatever its
     # date, and pairing it with the strict comp leg is what keeps a gap year out of the growth.
     prev_comp = prior_annual_leg(h, "comp")
-    prev_ident = g["ident"].shift(1)
     prev_any_comp = g["comp"].shift(1)
 
+    # ONE definition of "the CEO changed", shared with `panel._ceo_pay_growth` (phase 1) so the
+    # guarded field and the unguarded legacy leg can never disagree about a transition.
+    changed = ceo_identity_changed(h["name"], h["ticker"])
     positive = (h["comp"] > 0) & (prev_comp > 0)
-    known = h["ident"].notna() & prev_ident.notna()
-    unchanged = known & (h["ident"] == prev_ident)
+    known = changed.notna()
+    unchanged = changed == 0.0
     adjacent = prev_comp.notna()
 
     out = h[["ticker", "as_of"]].copy()
@@ -220,7 +265,7 @@ def _comp_history(def14a: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame |
     # The flag does NOT take the adjacency guard: a CEO change between two filings three years
     # apart is still a CEO change, only imprecisely dated. Requiring both names to be known is
     # what keeps it from reading a gap as continuity.
-    out["ceo_turnover_flag"] = (h["ident"] != prev_ident).astype("float64").where(known)
+    out["ceo_turnover_flag"] = changed
 
     tally["comp observations"] = int(h["comp"].notna().sum())
     tally["with a prior-filing comp"] = int(prev_any_comp.notna().sum())
@@ -493,6 +538,10 @@ def pay_fields(
         if not f.empty and f.notna().any().any():
             family5[name] = f
     family5, expiry5 = expire_event_fields(family5, comp_hist, EVENT_FIELDS)
+    # `log_ceo_total_comp` is a LEVEL: a CEO's package is a standing fact between proxies, so it
+    # is correctly off the 548-day event clock -- but "not an event" was allowed to mean "never
+    # expires", and a 2014 package is not evidence about today either. 1,095 days.
+    family5, expiry_lvl = expire_level_fields(family5, comp_hist, LEVEL_FIELDS)
 
     # ---- family 6: the exact CEO Pay Slice ---- #
     family6: dict[str, pd.DataFrame] = {}
@@ -517,6 +566,10 @@ def pay_fields(
                 family6, slices, EVENT_FIELDS,
                 sources={"ceo_pay_slice_delta_1y": "ceo_pay_slice"})
             expiry5.update(expiry6)
+            # `ceo_pay_slice` is the other LEVEL -- the CEO's share of the top five is a
+            # standing fact of the same filing, and it ages against its own history frame.
+            family6, lvl6 = expire_level_fields(family6, slices, LEVEL_FIELDS)
+            expiry_lvl.update(lvl6)
 
     # ---- family 7: pay vs performance ---- #
     growth = family5.get("ceo_comp_growth_1y", pd.DataFrame())
@@ -553,6 +606,12 @@ def pay_fields(
     for name, (expired, before) in expiry5.items():
         if expired:
             tally[f"expired >548d: {name}"] = expired
+            tally[f"non-null before expiry: {name}"] = before
+    # Tallied under their OWN horizon, not folded into the 548-day lines: a reader comparing
+    # two counts has to be able to see which clock each was measured on.
+    for name, (expired, before) in expiry_lvl.items():
+        if expired:
+            tally[f"expired >{LEVEL_MAX_AGE_DAYS}d: {name}"] = expired
             tally[f"non-null before expiry: {name}"] = before
 
     frames.update(family5)

@@ -372,6 +372,48 @@ _DIR_FEE_COLS = ("fees earned or paid in cash", "fees earned", "cash fees", "ret
                  "fees paid in cash", "annual retainer")
 #: `Restricted Stock Units` and `Share Awards` are what nulled CAT's and GE's stock column.
 _DIR_STOCK_COLS = ("stock award", "restricted stock unit", "share award", "stock unit award")
+#: EVERY mandated NON-CASH column of an Item 402(k) table, not just the equity ones.
+#:
+#: ⚠ REQUIRING AN EQUITY COLUMN COST 12.5% OF THE ARCHIVE -- 1,097 of 8,808 post-2007 filings
+#: across 272 companies yielded ZERO director-compensation rows, and the diagnostic
+#: (`_scripts/14_director_comp_carve_diag.py`) found all of the sampled real tables failing on
+#: this one condition and no other. `DIRECTOR COMPENSATION TABLE` is a `_TABLE_TARGETS` section
+#: with NO anchor fallback, so a table this classifier rejects is not merely truncated in the
+#: payload -- the section is 0 characters and the model never sees the table at all.
+#:
+#: Reg S-K 402(k)(1) prescribes: Name · Fees Earned or Paid in Cash · Stock Awards · Option
+#: Awards · Non-Equity Incentive Plan Compensation · Change in Pension Value and Nonqualified
+#: Deferred Compensation Earnings · All Other Compensation · Total. Four of the five sampled
+#: failures print one of those and no "stock award" variant anywhere:
+#:
+#:     NFLX   Fees Earned or Paid in Cash | OPTION AWARDS | Total       -- paid in options
+#:     WMB    ... | FEES EARNED OR PAID IN STOCK | OPTION AWARDS | ...  -- stock, not "award"
+#:     IBM    Fees earned or paid in cash | ALL OTHER COMPENSATION | Total
+#:     LNT    Fees Earned or Paid in Cash | CHANGE IN PENSION VALUE ...
+#:
+#: `all other compensation` is safe to include even though the SCT also carries it: a table
+#: that has it AND a fee column AND no `salary` column is not an SCT, and see the structural
+#: argument on the rule itself.
+_DIR_PAY_COLS = _DIR_STOCK_COLS + (
+    "option award", "fees earned or paid in stock", "fees paid in stock",
+    "all other compensation", "non-equity incentive", "change in pension",
+    "deferred compensation", "deferred stock", "restricted share",
+)
+#: Words that label the ROWS of a director-fee SCHEDULE -- `Board Chair | $30,000`, `Audit
+#: Committee Member | $15,000` -- which is the one table a relaxed rule could plausibly pick up
+#: instead of the real one. A 402(k) table's rows are PEOPLE, and a person's name contains none
+#: of these. This is what admits BERKSHIRE's genuinely two-column `Fees Earned or Paid in Cash |
+#: Total` table (a cash-only board, so NO mandated non-cash column exists to match on) without
+#: also admitting LNT's 2-row `Year | Annual Retainer for Board Service | Board Chair | ...`
+#: fee schedule.
+_DIR_ROLE_ROW_WORDS = (
+    "chair", "member", "committee", "lead independent", "board service", "retainer",
+    "each director", "non-employee director", "per meeting", "presiding", "vice chair",
+    "audit", "compensation", "nominating", "governance", "total", "aggregate", "all direct",
+)
+#: A board is 6-20 people; the NEO table this must never be is 5 by regulation. Three is the
+#: floor for calling a set of rows a roster at all.
+_DIR_MIN_PEOPLE_ROWS = 3
 #: EXACT fee-category labels. Substring matching is what produced 23 wrong picks.
 _FEE_LABELS = ("audit fees", "audit-related fees", "audit related fees", "tax fees",
                "all other fees", "other fees")
@@ -417,6 +459,65 @@ def _row_labels(rows: list[list[str]]) -> list[str]:
     return [(r[0] or "").lower() for r in rows if r]
 
 
+def _promoted_header(header: list[str], rows: list[list[str]]) -> list[str] | None:
+    """The FIRST DATA ROW, when it is plainly the real column header and `header` is a title.
+
+    ⚠ A COLSPAN'D TABLE TITLE EATS THE HEADER, and it is the largest single residual cause of
+    the director-pay gap after the column vocabulary. `merge_header_rows` folds the `<th>` rows
+    together, and when a filer wraps the table in a full-width title row the merge returns that
+    TITLE -- repeated once per column -- while the genuine `Name | Fees Earned | ... | Total`
+    row stays behind as `rows[0]`. Measured on the sample:
+
+        FITB 2026   header `2025 Director Compensation` x6, rows[0] = ['name', 'nicholas k.
+                    akins', 'b. evan bayh, iii', ...]                 -- 15 failing filings
+        TRMB 2026   header `NON-EMPLOYEE DIRECTOR COMPENSATION TABLE - 2025` x n,
+                    rows[0] = ['name', 'james c. dalton (4)', ...]    -- 14 failing filings
+        PPL  2009   header `Fees Earned or Paid in Cash` x4, rows[0] leads to 'Name of Director'
+
+    The signature is unambiguous and cheap to require, which is what makes this safe: the
+    current header must carry NO director-fee vocabulary, and the candidate row MUST. A title
+    row cannot satisfy the second condition and a real header cannot satisfy the first, so this
+    never fires on a table whose header already parsed correctly.
+
+    ⚠ APPLIED TO THE DIRECTOR-COMP DECISION ONLY, deliberately. Promoting a header inside
+    `merge_header_rows` would change the input of all five targets at once -- the SCT, both
+    ownership targets and the fee table -- and this plan's own risk register says a general
+    carve rewrite is a separate task. Confining it here means the blast radius is one target.
+    Returns None when there is nothing to promote.
+    """
+    hb = _blob(header)
+    if _has(hb, *_DIR_FEE_COLS) or not rows:
+        return None
+    for row in rows[:2]:
+        if _has(_blob(row), *_DIR_FEE_COLS):
+            return row
+    return None
+
+
+def _rows_are_people(rows: list[list[str]]) -> bool:
+    """True when this table's rows are a ROSTER OF PEOPLE rather than a schedule of roles.
+
+    The one table a relaxed `DIRECTOR_COMP` rule could plausibly pick up instead of the real
+    one is the director-fee SCHEDULE that most proxies print beside it -- `Board Chair |
+    $30,000`, `Audit Committee Member | $15,000`. It carries the same fee vocabulary in its
+    header and can carry a Total, so no column test separates the two. Its ROWS do: a fee
+    schedule's rows are labelled by ROLE and a 402(k) table's by PERSON, and a person's name
+    contains none of `_DIR_ROLE_ROW_WORDS`.
+
+    Requires a MAJORITY of labelled rows to be person-shaped, not merely one -- a fee schedule
+    that happens to name the incumbent in one row must not qualify -- and at least
+    `_DIR_MIN_PEOPLE_ROWS` of them, because three names is the floor for calling anything a
+    roster. This is the condition that admits BERKSHIRE's `Fees Earned or Paid in Cash | Total`
+    (10 directors, cash-only board, so NO mandated non-cash column exists to match on) while
+    rejecting LNT's 2-row `Year | Annual Retainer for Board Service | Board Chair | ...`.
+    """
+    labels = [lab for lab in _row_labels(rows) if lab.strip()]
+    if not labels:
+        return False
+    people = [lab for lab in labels if not _has(lab, *_DIR_ROLE_ROW_WORDS)]
+    return len(people) >= max(_DIR_MIN_PEOPLE_ROWS, (len(labels) // 2) + 1)
+
+
 def _n_numeric(rows: list[list[str]]) -> int:
     return sum(1 for r in rows for c in r if _NUMERIC_CELL_RE.match(c or ""))
 
@@ -458,9 +559,48 @@ def classify_table(header: list[str], rows: list[list[str]]) -> list[str]:
             if _has(hb, "salary") or not _has(hb, *_DIR_FEE_COLS):
                 matched.append(SCT)
 
-    # ---- director comp: a fee column AND a stock column AND Total, and NO Salary ----
-    if (_has(hb, *_DIR_FEE_COLS) and _has(hb, *_DIR_STOCK_COLS) and _has(hb, "total")
-            and not _has(hb, "salary") and not _has(ab, *_PVP_MARKERS)):
+    # ---- director comp: a fee column, NO Salary, no PvP, and EITHER the mandated 402(k)
+    # column set (a non-cash column and a Total) OR a roster of PEOPLE ----
+    #
+    # ⚠ TWO CONJUNCTS WERE RELAXED AND BOTH DISCRIMINATORS WERE KEPT, each relaxation paid for
+    # by a counted failure with a named mechanism. `not _has(hb, "salary")` and
+    # `_has(hb, *_DIR_FEE_COLS)` are UNTOUCHED: together they are what keeps the Summary
+    # Compensation Table out, and see the mutual-exclusion note below for why that is
+    # structural rather than incidental.
+    #
+    # 1. `_DIR_STOCK_COLS` -> `_DIR_PAY_COLS`. Requiring an EQUITY column rejected four of the
+    #    five real tables sampled (NFLX pays in options, WMB in "fees paid in STOCK", IBM and
+    #    LNT in cash plus a pension/other column) -- see `_DIR_PAY_COLS`.
+    # 2. `_has(hb, "total")` is now required only ALONGSIDE a pay column, not absolutely,
+    #    because the header it was tested on is frequently the TRUNCATED one. Measured over a
+    #    120-filing sample of the failing population, `total_col` was the SOLE rejection on 10
+    #    filings, and the mechanism is a header-merge failure rather than a missing column:
+    #    FICO 2010, RL 2007 and TPR 2012 all merge to
+    #        Fees Earned or Paid in | Fees Earned or Paid in | Stock | Stock | Option | Option
+    #    -- the canonical 402(k) column sequence with 8-13 person-labelled rows, and with
+    #    `Total` stranded in a header row `merge_header_rows` did not fold in.
+    #
+    # So the rule now reads: the header says "director fees" and does NOT say "salary", and
+    # then EITHER the column set looks like Item 402(k) OR the rows are people. The fee
+    # SCHEDULE that a relaxed rule would otherwise sweep up is rejected by `_rows_are_people`,
+    # not by the Total column -- verified on LNT's, TPR's, ES's and GD's own schedules.
+    #
+    # ⚠ THE TWO TARGETS ARE NOW MUTUALLY EXCLUSIVE BY CONSTRUCTION, which is stronger than the
+    # measurement that motivated it. The SCT rule above admits a table only when
+    # `_has(hb, "salary") or not _has(hb, *_DIR_FEE_COLS)`; this rule requires the exact
+    # negation of both. So no table can ever satisfy both rules, no matter how the remaining
+    # conjuncts here are widened -- an SCT entering the director-pay features (the risk that
+    # makes this relaxation dangerous at all) is not merely unmeasured, it is unreachable.
+    # `hb` first; then, only if the header turned out to be a colspan'd TITLE, the real header
+    # row that `merge_header_rows` left behind in the data (`_promoted_header`).
+    dir_hb = hb
+    promoted = _promoted_header(header, rows)
+    if promoted is not None:
+        dir_hb = _blob(promoted)
+    if (_has(dir_hb, *_DIR_FEE_COLS)
+            and not _has(dir_hb, "salary") and not _has(ab, *_PVP_MARKERS)
+            and ((_has(dir_hb, *_DIR_PAY_COLS) and _has(dir_hb, "total"))
+                 or _rows_are_people(rows))):
         matched.append(DIRECTOR_COMP)
 
     # ---- ownership: two targets, and ONE table may serve both (see the docstring) ----

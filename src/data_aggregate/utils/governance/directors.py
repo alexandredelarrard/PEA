@@ -67,8 +67,13 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrual_dispersion, accrue
-from src.data_aggregate.utils.governance.staleness import expire_event_fields
+from src.data_aggregate.utils.governance.def14a_impute import CARRY_MAX_DAYS
+from src.data_aggregate.utils.governance.accrual import (
+    accrual_anchor, accrual_dispersion, accrue,
+)
+from src.data_aggregate.utils.governance.staleness import (
+    LEVEL_MAX_AGE_DAYS, expire_event_fields, expire_level_fields,
+)
 from src.utils.names import person_key
 
 #: ⚠ The COLUMN PROJECTION for `def14a_directors` lives in `utils/common/sources.py`, which is
@@ -76,17 +81,60 @@ from src.utils.names import person_key
 #: It is not restated here: two copies of a projection is exactly how a builder ends up needing
 #: a column the read no longer fetches.
 
-#: The child column whose interior gap is filled ONLY when the same director reports the SAME
-#: count on both sides (D37).
+#: The child column filled by a BOUNDED FORWARD CARRY: the last value this director disclosed,
+#: carried into a gap and refused once it is older than `CARRY_MAX_DAYS` (D37, revised).
 #:
-#: The gate exists because the attribute is NOT STICKY: `other_public_company_boards` changes in
-#: 46% of a director's consecutive filings, so an ungated carry propagates a stale directorship
-#: count across a real board change roughly half the time. Measured 2026-09-07: 16,288 interior
-#: gaps, of which **8,160 agree and 8,128 are declined** -- almost exactly the coin flip the 46%
-#: predicts, which is what makes the looser rules (§1.3's interior carry, ffill+bfill) wrong
-#: rather than merely bolder. They reach 41.4% and 71.3% child coverage against this rule's
-#: 35.4%, and they get there by inventing the half that disagrees.
-AGREEMENT_GATED_CHILD: tuple[str, ...] = ("other_public_company_boards",)
+#: ⚠ THIS WAS AN AGREEMENT GATE UNTIL 2026-09-09 -- fill only when the same director reports the
+#: SAME count either side of the gap -- and its argument was made before point-in-time was a
+#: constraint. Both halves of that rule read a LATER filing: `bwd` supplied the value, and
+#: `fwd.notna() & bwd.notna()` supplied the DECISION that the gap was worth filling. It is the
+#: same defect `def14a_impute` closed one grain up on the same day, reached by the other path, so
+#: the feature it feeds -- `avg_other_public_boards` -> `f_board_busyness` and
+#: `f_board_busyness_delta_1y` -- was repaired at the parent and left broken at the child.
+#:
+#: THE MEASURED CASE, live table 2026-09-09 (135,162 rows, 20,015 people, 489 tickers, column
+#: 29.5% filled):
+#:
+#:     | rule                            | PIT | cells filled |
+#:     |---------------------------------|-----|--------------|
+#:     | agreement gate (what was here)  | no  | 8,213        |
+#:     | bounded forward carry (this)    | yes | 21,488       |
+#:     | no fill at all                  | yes | 0            |
+#:
+#: The carry also gains **10,147 TRAILING cells** the old rule could not reach at any price: a gap
+#: at the live edge has no "after", so a backtest filled situations a live run structurally
+#: cannot. And it REFUSES 13,786 candidates as more than 1,095 days stale -- which the agreement
+#: gate never did, because it asked only whether the two sides matched and never how far apart
+#: they were. Measured on a synthetic 2010->2020 gap, the old rule wrote a value sourced 3,287
+#: days (9.0 years) back and `expire_stale` then dated it to the row it landed on.
+#:
+#: ⚠ THE "46% WRONG" FIGURE IS A STALENESS STATISTIC AND WAS READ WRONGLY ONCE ALREADY, in this
+#: docstring's own predecessor ("8,160 agree and 8,128 are declined ... the looser rules get
+#: there by inventing the half that disagrees"). What it measures is how often a carried value
+#: differs from the NEXT disclosure:
+#:
+#:     | carry age (days) | scorable | differs |    % |
+#:     |------------------|---------:|--------:|-----:|
+#:     | 0-200            |       70 |      19 | 27.1 |
+#:     | 200-400          |    6,894 |   2,944 | 42.7 |
+#:     | 400-600          |       61 |      26 | 42.6 |
+#:     | 600-800          |    3,301 |   1,648 | 49.9 |
+#:     | 800-1,095        |    1,008 |     530 | 52.6 |
+#:     | 1,095-2,000      |    3,074 |   1,743 | 56.7 |
+#:     | >2,000           |    1,966 |   1,257 | 63.9 |
+#:     | **all**          |   16,381 |   8,168 | 49.9 |
+#:
+#: The same statistic on the PARENT board average is **91.5%**, and on prices it would be ~100%.
+#: Every forward-fill in this repo differs from the next observation most of the time; that is
+#: what a forward-fill IS. It is evidence that the carry is STALE, not that it is fabricated, and
+#: the answer to staleness is the cap plus the `<col>_imputed` flag -- both of which are here --
+#: not a rule that buys accuracy with the future. A tighter cap does not rescue the old argument
+#: either: even over one missed annual cycle the value differs 42.7% of the time.
+#:
+#: ⚠ `ceo_name_proxy` IS A GENUINELY DIFFERENT CASE and stays in `def14a_impute.CARRY_FORBIDDEN`.
+#: A wrong NAME corrupts an identity join and lets pay growth be computed straight across a CEO
+#: succession; a stale COUNT is a stale number of exactly the kind the horizon already governs.
+CARRY_GATED_CHILD: tuple[str, ...] = ("other_public_company_boards",)
 
 #: The child column that is a CLOCK and therefore ANCHORED, not carried (D38, same instrument as
 #: `ceo_age`). Measured on 92,086 person-pairs in this table, `age` accrues at a median slope of
@@ -153,6 +201,22 @@ BOARD_QUALITY_FIELDS: tuple[str, ...] = (
 )
 EVENT_FIELDS: frozenset[str] = frozenset({"board_turnover"})
 
+#: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (1,095 days) rather than on NO horizon.
+#:
+#: ⚠ "NOT AN EVENT" IS NOT THE SAME STATEMENT AS "NEVER EXPIRES", and until this set existed
+#: these five made it so: correctly kept off the 548-day event clock, then forward-filled with
+#: no cutoff at all, so one parsed proxy was asserted as current for as long as the trading
+#: index ran. That is the identical reasoning error phase 3 fixed for the twelve fields in
+#: `LEVEL_HORIZON_FIELDS`; these are the residue it did not reach.
+#:
+#: Measured on the live part before the change (aged against each ticker's most recent proxy,
+#: which is a LOWER bound because it does not require that proxy to have carried this field):
+#: 1,161-1,209 cells past 1,095 days per field = **0.04%**, max age 1,822 days (5.0 years).
+#: So the fix is a contract-consistency one, not a data emergency -- `insider_ownership_pct`,
+#: the field that motivated phase 3, was 18.89% and 29.5 years. Stated plainly because the
+#: temptation with a 0.04% finding is to oversell it.
+LEVEL_FIELDS: frozenset[str] = frozenset(BOARD_QUALITY_FIELDS) - EVENT_FIELDS
+
 #: Every field this module can emit -- the exhaustiveness anchor phase 4 learned to need.
 ALL_FIELDS: frozenset[str] = frozenset(BOARD_QUALITY_FIELDS)
 
@@ -201,23 +265,39 @@ def _prepared(df: pd.DataFrame) -> pd.DataFrame | None:
     return out.sort_values(["_pk", "as_of"]).reset_index(drop=True)
 
 
-def _agreement_gated_fill(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
-    """Fill an interior gap in `col` ONLY where the same person reports the SAME value either
-    side of it. Writes `<col>_imputed` provenance (1.0 where this wrote the value).
+def _carry_gated_fill(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
+    """Carry the last value this director DISCLOSED forward into their gaps, bounded and counted.
 
-    NaN-safe on both legs: `fwd.notna() & bwd.notna()` is what makes the gap INTERIOR, and the
-    equality is then a plain comparison between two known numbers.
+    Reads only rows at or before each row: that is a property of `ffill`, not of a guard someone
+    has to remember, and it is what the `ffill()`/`bfill()` pair here until 2026-09-09 did not
+    have. Writes `<col>_imputed` provenance (1.0 where this wrote the value), which is what lets
+    `board_tenure_dispersion` and the delta features reconstruct the RAW column.
+
+    ⚠ THE AGE IS MEASURED AGAINST THE `as_of` THAT SOURCED THE VALUE, never the previous row --
+    the same payload trick `def14a_impute._carry` and `staleness.expire_stale` both use, so the
+    fill and the clock agree on what "age" means. Without it a person filing every year for a
+    decade and then falling silent would look freshly disclosed forever.
+
+    Every reason a candidate is NOT filled gets its own counter, because a fill count alone
+    cannot distinguish "nothing was missing" from "everything was refused". The two reasons are
+    mutually exclusive: a cell with no prior disclosure has no age to test.
     """
-    g = out.groupby("_pk", sort=False)[col]
-    fwd, bwd = g.ffill(), g.bfill()
-    interior = out[col].isna() & fwd.notna() & bwd.notna()
-    agree = interior & (fwd == bwd)
-    n, declined = int(agree.sum()), int((interior & ~agree.fillna(False)).sum())
-    out.loc[agree, col] = fwd[agree]
-    out[f"{col}_imputed"] = agree.astype("float64")
-    stats[f"child interior gaps: {col}"] = int(interior.sum())
-    stats[f"child filled (both sides agree): {col}"] = n
-    stats[f"child declined (the two sides disagree): {col}"] = declined
+    gk = out["_pk"]
+    fwd = out.groupby(gk, sort=False)[col].ffill()
+    src = out["as_of"].where(out[col].notna()).groupby(gk, sort=False).ffill()
+    age = (out["as_of"] - src).dt.days
+
+    gaps = out[col].isna()
+    candidate = gaps & fwd.notna()
+    within = age <= CARRY_MAX_DAYS
+    newly = candidate & within
+
+    out.loc[newly, col] = fwd[newly]
+    out[f"{col}_imputed"] = newly.astype("float64")
+    stats[f"child gaps: {col}"] = int(gaps.sum())
+    stats[f"child carried: {col}"] = int(newly.sum())
+    stats[f"child declined (>{CARRY_MAX_DAYS}d stale): {col}"] = int((candidate & ~within).sum())
+    stats[f"child declined (no prior disclosure): {col}"] = int((gaps & fwd.isna()).sum())
 
 
 def _accrue_child(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
@@ -226,9 +306,13 @@ def _accrue_child(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
     The anchor also reaches EDGE gaps, which is the point: a director's age before their first
     disclosed one is not unknown, it is `first_age - elapsed_years`.
 
-    `accrual_dispersion` is logged beside it because it is the key-collision alarm -- a spread of
-    +/-1 implied year is a birthday falling either side of a filing date, while a spread of 10
-    means two PEOPLE are sharing one key.
+    `accrual_dispersion` is reported beside it because it is the key-collision alarm,
+    and since 2026-09-09 `accrual_anchor` GATES on the same evidence: a spread of +/-1
+    implied year is a birthday falling either side of a filing date, while
+    `PHM|William J. Pulte` spans 56 years across two generations. Such a series is
+    refused an anchor entirely rather than accrued to a median belonging to neither
+    person. `child anchors REFUSED` counts them; the raw spread is still reported
+    beside it, because the two disagree exactly where a SINGLE age is mis-extracted.
     """
     obs = pd.DataFrame({"pk": out["_pk"], "as_of": out["as_of"], col: out[col]})
     anchor = accrual_anchor(obs, col, key="pk", date="as_of")
@@ -243,7 +327,9 @@ def _accrue_child(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
     spread = accrual_dispersion(obs, col, key="pk", date="as_of")
     stats[f"child accrued: {col}"] = int(newly.sum())
     stats[f"child anchors: {col}"] = int(len(anchor))
-    stats[f"child anchor spread > 2y (key-collision alarm): {col}"] = int((spread > 2).sum())
+    stats[f"child anchors REFUSED (two people share a key): {col}"] = int(
+        len(set(obs['pk'].dropna()) - set(anchor.index)))
+    stats[f"child anchor spread > 2y (raw alarm): {col}"] = int((spread > 2).sum())
 
 
 def fill_director_attributes(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
@@ -251,7 +337,8 @@ def fill_director_attributes(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     mutated, and a value is only ever written where it is currently NaN.
 
     Two rules and no others, matching `def14a_impute`'s taxonomy exactly:
-      * `other_public_company_boards` -- agreement-gated interior fill (D37, kind B);
+      * `other_public_company_boards` -- bounded forward carry (D37, kind B), sharing
+        `def14a_impute.CARRY_MAX_DAYS` so the two grains cannot drift apart;
       * `age` -- anchor-and-accrue (D38, a clock).
 
     ⚠ NO temporal fill of `tenure_years` and NO fill of `is_independent`. The second is a
@@ -268,10 +355,10 @@ def fill_director_attributes(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
         return (df if df is not None else pd.DataFrame()), {}
     stats: dict[str, int] = {"child rows": len(out),
                              "child person-series": int(out["_pk"].nunique())}
-    for col in AGREEMENT_GATED_CHILD:
+    for col in CARRY_GATED_CHILD:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
-            _agreement_gated_fill(out, col, stats)
+            _carry_gated_fill(out, col, stats)
     for col in ACCRUED_CHILD:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
@@ -564,8 +651,11 @@ def board_quality_fields(directors: pd.DataFrame, idx: pd.DatetimeIndex,
             tally[f"skipped: {name} empty on the daily grid"] = 1
             continue
         frames[name] = daily
-        if name in EVENT_FIELDS:
-            hist[name] = h
+        # EVERY field needs its history now, not just the event members: the five levels are
+        # on the 1,095-day LEVEL horizon rather than on no horizon at all, and `_expire_family`
+        # ages a cell against the `as_of` of the filing that produced it, which it can only
+        # read from this frame.
+        hist[name] = h
         tally[f"{name}: filings"] = int(pf["value"].notna().sum())
 
     if frames and hist:
@@ -579,6 +669,11 @@ def board_quality_fields(directors: pd.DataFrame, idx: pd.DatetimeIndex,
         for name, (expired, before) in stats.items():
             if expired:
                 tally[f"expired >548d: {name}"] = expired
+                tally[f"non-null before expiry: {name}"] = before
+        capped, lvl_stats = expire_level_fields(capped, merged_hist, LEVEL_FIELDS)
+        for name, (expired, before) in lvl_stats.items():
+            if expired:
+                tally[f"expired >{LEVEL_MAX_AGE_DAYS}d: {name}"] = expired
                 tally[f"non-null before expiry: {name}"] = before
         frames = {k: v for k, v in capped.items() if not v.empty and v.notna().any().any()}
 

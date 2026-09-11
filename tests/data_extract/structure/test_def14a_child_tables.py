@@ -342,3 +342,45 @@ def test_consensus_prints_conclusion():
     assert stats["people"] == 3
     assert stats["overturned"] == 1 and stats["filled"] == 1
     assert out[out["name"] == "R. Williams"].iloc[0]["gender"] == "male"
+
+
+def test_a_populated_section_with_zero_director_rows_is_logged_as_a_RECALL_failure(caplog):
+    """⚠ THE CHECK WHOSE ABSENCE LET 1,097 FILINGS FAIL SILENTLY, across 272 companies —
+    12.45% of every post-2007 proxy yielding zero Item 402(k) rows, with IBM, WMB and LNT at
+    20 of 20 filings each and nothing anywhere saying so. `n_director_comp_rows` was written to
+    the parent row the whole time; what was missing was anything that READ it.
+
+    It fires only on the narrow case its message names — the carve DID supply a substantial
+    table and the extract returned nothing — because that is the only case where the model is
+    the layer at fault. A missing section is the classifier's problem (fixed in `tables.py`)
+    and a pre-2007 filing has no table to find, so neither should produce noise here.
+    """
+    import logging
+
+    from src.data_extract.utils.structure.def14a.flatten import _log_director_comp_recall
+
+    section = "\n\n=== DIRECTOR COMPENSATION TABLE ===\n" + (
+        "Name\tFees Earned or Paid in Cash\tStock Awards\tTotal\n"
+        + "".join(f"Director {c}\t120000\t175000\t295000\n" for c in "ABCDEFGHIJ"))
+
+    with caplog.at_level(logging.WARNING):
+        _log_director_comp_recall("IBM", FILING, section, 0)
+    assert any("RECALL failure" in r.message for r in caplog.records), \
+        "a populated section with zero rows was not reported"
+
+    # and the three cases that must stay SILENT
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _log_director_comp_recall("IBM", FILING, section, 11)          # rows came through
+        _log_director_comp_recall("IBM", FILING, "=== SUMMARY COMPENSATION TABLE ===\nx", 0)
+        _log_director_comp_recall("IBM", FILING, "", 0)                # no payload at all
+        _log_director_comp_recall(                                     # emitted but empty
+            "IBM", FILING, "\n\n=== DIRECTOR COMPENSATION TABLE ===\nName\tTotal\n", 0)
+    assert not caplog.records, f"the check fired on a non-defect: {caplog.records}"
+
+    print("\n=== SANITY CHECK: the director-comp recall warning ===")
+    print("  populated section + 0 rows  -> WARNS (the model missed a table it was shown)")
+    print("  populated section + 11 rows -> silent")
+    print("  NO section (classifier miss) -> silent: that is tables.py's fault, not the model's")
+    print("  section emitted but < 200 chars -> silent (truncated, nothing to recall)")
+    print("  CONCLUSION: it fires only where the model is the layer at fault. Validated.")

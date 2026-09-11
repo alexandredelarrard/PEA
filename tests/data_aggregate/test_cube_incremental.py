@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.momentum.features import build_feature_panel
-from src.data_aggregate.transformers.step_cube_extras import StepCubeExtras
+from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common.incremental import (
     PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part, window_start,
 )
@@ -31,6 +31,7 @@ from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
 from src.data_aggregate.utils.common.sources import (
     OPTIONAL_SOURCE_COLUMNS, SOURCE_COLUMNS, project_existing,
 )
+from src.data_store.schema import ALL, Tables, name_of
 
 
 def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
@@ -152,10 +153,13 @@ def test_per_part_warmup_covers_binding_lookback():
                 f"{need} of member group '{group}'")
             covered[group] = part.warmup_trading_days
 
-    # the 14 feature groups the old exploded DAG ran as separate tasks are all still owned
+    # the feature groups the old exploded DAG ran as separate tasks are all still owned.
+    # `attention` is absent because that panel was DELETED (dead code: defined, never called
+    # from `run()`) with the `extras` -> `institutionals` rename -- not because a group lost
+    # its owner, which is what this assertion exists to catch.
     assert set(covered) == {
         "price", "fundamental", "sector", "earnings", "governance", "employee", "dividend",
-        "attention", "institutional", "superinvestor", "insider", "short_interest",
+        "institutional", "superinvestor", "insider", "short_interest",
         "earnings_call_sentiment", "earnings_call_embedding",
     }, f"feature groups lost/added: {sorted(covered)}"
 
@@ -310,11 +314,12 @@ def test_source_column_projection_covers_builder_needs():
         "sec13f_hr": {"cik", "period", "ticker", "shares", "value_usd",
                       "call_value", "put_value", "filing_date"},
         "insider_transactions":   {"ticker", "filing_date", "transaction_code", "value_usd"},
-        "short_interest":         {"date", "ticker", "short_volume", "total_volume",
+        "sec_short_interest":     {"date", "ticker", "short_volume", "total_volume",
                                    "short_interest", "avg_daily_volume"},
         "sec_fails_to_deliver":   {"date", "ticker", "fails_quantity"},
-        "wiki_pageviews":         {"date", "ticker", "pageviews"},
-        "google_trends":          {"date", "ticker", "search_interest"},
+        # `wiki_pageviews` / `google_trends` are NOT here: their only builder was the attention
+        # panel, now deleted. Both tables are still extracted and still in the DB, so this
+        # contract comes back the day something reads them again.
         # the two per-person DEF 14A children, read by StepCubeGovernance. `accession_number`
         # is in the directors set because the per-FILING aggregates key on it (an `as_of` can
         # carry two filings), and every one of the six Item 402(k) components is required
@@ -334,23 +339,27 @@ def test_source_column_projection_covers_builder_needs():
         assert need <= proj, f"{tbl}: projection is MISSING required cols {need - proj}"
 
     # the extras step must FORWARD the projection to the store; an unmapped table -> full load
-    step = object.__new__(StepCubeExtras)
+    step = object.__new__(StepCubeInstitutionals)
     seen: dict[str, list | None] = {}
     # what each table really has, so the projection can be narrowed to it
     live = {"sec13f_hr": SOURCE_COLUMNS["sec13f_hr"],
             "fundamentals_history": ["ticker", "as_of", "totalRevenue"]}
 
     class _Store:
-        """One object now that the step reads columns AND rows from the same store."""
+        """One object now that the step reads columns AND rows from the same store.
 
-        def exists(self, name):
-            return name in live
+        Resolves through `name_of` exactly as `DataStore` does, because the step now hands it
+        `Table` objects rather than name strings -- a fake keyed on the attribute name would
+        re-admit the bug this signature change fixed."""
 
-        def columns(self, name):
-            return live.get(name)
+        def exists(self, table):
+            return name_of(table) in live
 
-        def load(self, name, columns=None, **kw):
-            seen[name] = columns
+        def columns(self, table):
+            return live.get(name_of(table))
+
+        def load(self, table, columns=None, **kw):
+            seen[name_of(table)] = columns
             return pd.DataFrame()
 
     class _Ctx:
@@ -359,8 +368,8 @@ def test_source_column_projection_covers_builder_needs():
     step._context = _Ctx()
     step._store = step._context.store
     step._log = logging.getLogger("test")
-    step._load_source("sec13f_hr")
-    step._load_source("fundamentals_history")             # not in the projection map
+    step._load_source(Tables.sec13f_hr)
+    step._load_source(Tables.fundamentals_history)        # not in the projection map
     assert seen["sec13f_hr"] == SOURCE_COLUMNS["sec13f_hr"]
     assert seen["fundamentals_history"] is None            # small table -> loaded in full
 
@@ -369,19 +378,49 @@ def test_source_column_projection_covers_builder_needs():
         print(f"  {tbl:<24} -> {len(SOURCE_COLUMNS[tbl])} cols (covers builder needs)")
     print("  def14a_directors keeps `is_independent` projected-but-unread on purpose (D79).")
     print("  sec13f_hr (~21.7M rows) drops the call/put/cusip-era bloat; small tables load "
-          "full. StepCubeExtras forwards the projection to the store. Validated.")
+          "full. StepCubeInstitutionals forwards the projection to the store. Validated.")
+
+
+def test_source_columns_is_keyed_on_physical_table_names():
+    """Every `SOURCE_COLUMNS` key must be a REGISTERED PHYSICAL table name.
+
+    Five registry entries carry an attribute name that is not their table name -- the one
+    that bit is `Tables.short_interest`, whose table is `sec_short_interest`. Keyed on the
+    attribute name, `store.exists()` returned False, `_load_source` returned None, and the
+    three `ic_shortvol_*` features were absent from `cube_part_institutionals` while 956,640
+    rows sat unread in the table. Nothing failed: the projection map, the step and this file's
+    other tests all agreed on a name no table has.
+
+    The invariant is one line and it closes the whole class."""
+    physical = {t.name for t in ALL}
+    stray = sorted(k for k in SOURCE_COLUMNS if k not in physical)
+    assert not stray, (f"SOURCE_COLUMNS keys that match no registered table: {stray} -- key on "
+                       f"`Tables.<attr>.name`, not on `<attr>`")
+    stray_opt = sorted(k for k in OPTIONAL_SOURCE_COLUMNS if k not in physical)
+    assert not stray_opt, f"OPTIONAL_SOURCE_COLUMNS keys that match no table: {stray_opt}"
+
+    mismatched = {a: t.name for a, t in vars(Tables).items()
+                  if hasattr(t, "name") and a != t.name}
+    print()
+    print("=== SANITY: projection keys are physical table names ===")
+    print(f"  {len(SOURCE_COLUMNS)} projected sources, all resolve to a registered table")
+    print(f"  {len(mismatched)} registry entries where attribute != table name -- the trap:")
+    for attr, real in sorted(mismatched.items()):
+        print(f"      Tables.{attr:22} -> {real}"
+              + ("   <- the one that broke ic_shortvol_*" if attr == "short_interest" else ""))
+    assert name_of(Tables.short_interest) == "sec_short_interest"
 
 
 def test_projection_tolerates_an_absent_optional_column():
     """A column the BUILDER treats as optional must not make the READ fail.
 
     `read_table` resolves each projected column via `tbl.c[name]`, which raises KeyError for
-    an absent one. The live `short_interest` table has only date/ticker/short_volume/
+    an absent one. The live `sec_short_interest` table has only date/ticker/short_volume/
     total_volume, while the projection also lists `short_interest` + `avg_daily_volume` --
     which `_short_fields` uses only `if {...}.issubset(hist.columns)`. Demanding them
     unconditionally killed the whole extras step with `KeyError: 'short_interest'`."""
     live_short = ["date", "ticker", "short_volume", "total_volume"]
-    got = project_existing(live_short, "short_interest")
+    got = project_existing(live_short, Tables.short_interest.name)
     assert got == live_short, got
     assert "short_interest" not in got and "avg_daily_volume" not in got
 
@@ -390,7 +429,8 @@ def test_projection_tolerates_an_absent_optional_column():
     assert project_existing(full_13f, "sec13f_hr") == full_13f
 
     # unknown column list (table shape unreadable) -> project the full wanted list
-    assert project_existing(None, "short_interest") == SOURCE_COLUMNS["short_interest"]
+    assert (project_existing(None, Tables.short_interest.name)
+            == SOURCE_COLUMNS["sec_short_interest"])
     # a table absent from the map -> no projection (load in full)
     assert project_existing(["a", "b"], "fundamentals_history") is None
 

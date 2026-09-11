@@ -21,14 +21,24 @@ return FALSE when the proxy does not indicate them. For poison_pill and
 majority_voting_for_directors return TRUE or FALSE only when the proxy STATES the 
 provision's status, and null when the proxy is SILENT — do not infer FALSE from silence.
 - Ownership: insider_ownership_pct = the 'all directors and executive officers AS A GROUP' 
-percent; ceo_ownership_pct = the CEO's own row; both as decimals (a '*' or '<1%' -> null). 
-Both percents must come from the PERCENT OF THE CLASS of shares outstanding (economic 
-ownership). Dual-class issuers print a '% of total voting power' / 'combined voting power' 
-column beside it — NEVER take that one. n_five_percent_holders = count of owners 
-holding >=5%.
+percent of TOTAL shares outstanding, ALL CLASSES COMBINED; ceo_ownership_pct = the same basis 
+for the CEO's own row; both as decimals (a '*' or '<1%' -> null). Also give insider_shares = 
+the group's total SHARE COUNT, summed across classes.
+  Dual-class issuers print a '% of total voting power' / 'combined voting power' column. PUT 
+  IT IN ITS OWN FIELD: insider_voting_pct / ceo_voting_pct. Never put the same number in both 
+  an ownership field and a voting field.
+  ⚠ Many dual-class tables print PER-CLASS percent columns ('Class A %', 'Class B %') and NO 
+  combined column — e.g. `Class A Shares | Class A % | Class B Shares | Class B % | Total 
+  Voting Power %`. In that case set insider_ownership_pct and ceo_ownership_pct to NULL and 
+  still fill insider_shares and the voting fields. Do NOT report one class's percentage as the 
+  ownership percentage: 46.5% of Class B can be 3% of the company.
+  When there is only ONE percent column and it is not labelled as voting power, it is the 
+  ownership percentage and the two voting fields are null.
+  n_five_percent_holders = count of owners holding >=5%.
 - ownership_holders: one entry per HOLDER row across both ownership blocks. Exclude subtotal 
 and 'as a group' rows, and exclude a row whose name is only a street address. 
-`percent_of_class` is null for '*' / '<1%'.
+`percent_of_class` is null for '*' / '<1%'; `percent_of_voting_power` carries that row's 
+voting-power column when the table prints one, and is null otherwise.
 - Auditor: `auditor_name` is the accounting FIRM NAME only, never a sentence. Report the four 
 fee categories for the CURRENT year plus the prior-year TOTAL. Every fee must be WHOLE USD — 
 apply any '(in thousands)' or '($ in millions)' note in the table header or the sentence 

@@ -8,28 +8,22 @@ public-disclosure date, then outer-merge them into one wide panel keyed by (tick
 `as_of` is always the date the information became publicly knowable, never the underlying
 trade/period date, so a signal built on this panel can never look ahead of what a trader could
 actually see that day (mirrors the point-in-time convention in
-`src/data_aggregate/utils/extras/{insider,institutional,superinvestor}_features.py`, which this
+`src/data_aggregate/utils/institutionals/{insider,institutional,superinvestor}_features.py`, which this
 module cannot import -- `strategies` and `data_aggregate` are separate pipeline subfolders).
 
-Every `_aggregate_*` function is a pure DataFrame -> DataFrame transform (unit-tested in
-`tests/strategies/test_superinvestors.py`); `load_positions_panel` is the only IO entry point.
+Every function here is a pure DataFrame -> DataFrame transform (unit-tested in
+`tests/strategies/test_superinvestors.py`). There is no IO: the step owns the reads, and
+the roster itself comes from `utils/superinvestor_roster.roster_as_of`.
 """
 from __future__ import annotations
 
-import json
 import logging
-import re
 import pandas as pd
-from pathlib import Path
 
-from src.context import Context
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
 
-
-class SuperinvestorRosterError(RuntimeError):
-    """The superinvestors roster JSON exists but cannot be parsed."""
 
 def _aggregate_insiders(df: pd.DataFrame) -> pd.DataFrame:
     """Officer/director/10%-owner Form 3/4/5 transactions -> per (ticker, as_of) net $
@@ -306,41 +300,3 @@ def merge_positions_panel(insiders: pd.DataFrame,
     for p in panels[1:]:
         out = out.merge(p, on=["ticker", "as_of"], how="outer")
     return out.sort_values(["ticker", "as_of"]).reset_index(drop=True)
-
-
-def _strip_json_line_comments(text: str) -> str:
-    """Make the hand-curated roster parseable as JSON. The file is maintained by commenting
-    managers in and out, which strict JSON does not survive, so two relaxations are applied:
-
-      * drop lines whose FIRST non-whitespace characters are `//`. Deliberately anchored at the
-        start of the line -- a blanket `//` strip would truncate the
-        `"https://www.dataroma.com/..."` values the same file carries;
-      * drop a trailing comma before `}` / `]`. Commenting out the LAST entry of the map
-        necessarily orphans the comma on the line above it, so this is not an edge case but
-        the normal result of the editing workflow. A comma inside a quoted name is untouched:
-        the pattern only fires on a comma followed by whitespace and a closing bracket.
-    """
-    no_comments = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("//"))
-    return re.sub(r",(\s*[}\]])", r"\1", no_comments)
-
-
-def _load_superinvestor_roster(context: Context) -> dict[str, str]:
-    """`{padded_cik: name}` roster map, read directly from the JSON rather than through
-    `data_extract.fetch_superinvestors.load_superinvestors` -- cross-importing between
-    `src/` pipeline subfolders is not allowed (same choice as
-    `data_aggregate/transformers/step_cube_extras.py::_load_superinvestor_roster`).
-
-    A MISSING file is a legitimate "not built yet" state -> empty roster. A file that exists
-    but does not parse is NOT: it silently reduced the whole sleeve to zero managers (the live
-    roster had one hand-commented entry, and the swallowed JSONDecodeError made 83 managers
-    read as 0 with no error anywhere), so it raises instead."""
-    path = context.paths["DATA_STORE"] / Path(context.config.local.paths.superinvestors)
-    if not path.exists():
-        logger.warning("Superinvestors roster missing at %s -> no elite managers; run "
-                       "fetch_superinvestors.build_superinvestors_json.", path)
-        return {}
-    try:
-        roster = json.loads(_strip_json_line_comments(path.read_text(encoding="utf-8")))
-    except (json.JSONDecodeError, OSError) as e:
-        raise SuperinvestorRosterError(f"Superinvestors roster at {path} is unreadable: {e}") from e
-    return {pad_cik(k): v for k, v in (roster.get("cik_to_name") or {}).items()}

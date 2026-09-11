@@ -50,11 +50,47 @@ MAX_GAP_DAYS = 7                 # fill sporadic daily gaps strictly shorter tha
 
 def fill_short_gaps(df: pd.DataFrame, cols: list[str],
                     max_gap_days: int = MAX_GAP_DAYS) -> pd.DataFrame:
-    """Fill sporadic interior NaN runs (holidays / one-off source misses / the yfinance and
-    FRED calendars not lining up) in each of `cols` with the MEAN of the two bracketing
-    observations, but ONLY when the gap spans fewer than `max_gap_days` calendar days.
-    Longer outages and leading / trailing NaNs are left untouched -- a series that genuinely
-    starts in 2003 must not be back-filled to 1995. `df` must have a DatetimeIndex."""
+    """Carry the last observation FORWARD across a sporadic interior NaN run (holidays, one-off
+    source misses, the yfinance and FRED calendars not lining up) in each of `cols`, but ONLY
+    when the gap spans fewer than `max_gap_days` calendar days. Longer outages and leading /
+    trailing NaNs are left untouched -- a series that genuinely starts in 2003 must not be
+    back-filled to 1995. `df` must have a DatetimeIndex.
+
+    ⚠ THE VALUE WAS THE MEAN OF THE TWO BRACKETING DAYS UNTIL 2026-09-09, i.e.
+    `(prev_val + next_val) / 2`, which wrote into an EARLIER row a number computed from a LATER
+    observation. It runs in EXTRACTION and is written to `prices_macro`, so once stored no
+    downstream check could tell those cells from real quotes and every consumer inherited them.
+
+    HOW BIG. FRED quotes these series to two decimal places, and the average of two 2-dp numbers
+    needs a third about half the time -- `(4.25 + 4.28) / 2 = 4.265` -- so a third decimal is an
+    arithmetic fingerprint of the fill. Measured on the live table, 2026-09-09:
+
+        yield_30y 169/8,088 (2.09%) | baa_credit_spread 161 (1.99%) | cash_rate 160 (1.98%)
+        yield_10y 159 (1.97%)       | yield_2y 142 (1.76%)          | breakeven_10y 123 (1.99%)
+
+    ⚠ That is a FLOOR, not the count: a midpoint that lands back on two decimals is invisible to
+    it, and roughly half do, so the true filled population is about **twice** these figures --
+    on the order of 4% of cells per series. The look-ahead per cell is at most 6 calendar days.
+
+    ⚠ `next_val` IS STILL READ, AND ONLY TO DECIDE THE GAP IS INTERIOR -- a deliberate, bounded
+    exception, recorded here rather than left to be re-derived as an oversight. The purist fix
+    (bound on age alone, drop the interior requirement) is NOT available: `MACRO_MARKET_SERIES`
+    is `equity_tr`, and `StepCubePrices._trading_calendar` derives **the cube's entire trading
+    calendar** from that series' rows. Dropping the interior test would fill trailing gaps and
+    ADD rows; dropping the fill entirely would REMOVE them. Either shifts the date axis of every
+    feature in the build -- an enormous blast radius for a fix worth ~2% of cells in six series.
+    Keeping the test leaves `fillable` bit-identical to the old rule, so the row count and the
+    calendar cannot move, and the future is used only to establish "this is an interior gap in a
+    live series", never to compute a number.
+
+    Why that exception is acceptable here and was NOT in `def14a_impute`: there, filling the
+    trailing gap was the POINT -- it closed a live-versus-backtest asymmetry on an annual
+    feature. Here the trailing gap IS the end of the calendar, and extending it would invent
+    trading days on which no equity price exists.
+
+    A forward carry is also what the rest of the repo does with a daily gap
+    (`pit.fundamentals_to_daily`), so this stops being the one place with a rule of its own.
+    """
     df = df.sort_index()
     idx = pd.Series(df.index, index=df.index)
     for c in cols:
@@ -66,7 +102,7 @@ def fill_short_gaps(df: pd.DataFrame, cols: list[str],
         obs = idx.where(s.notna())                       # observation date, else NaT
         span_days = (obs.bfill() - obs.ffill()).dt.days  # bracketing-days distance
         fillable = gap & prev_val.notna() & next_val.notna() & (span_days < max_gap_days)
-        df.loc[fillable, c] = (prev_val[fillable] + next_val[fillable]) / 2.0
+        df.loc[fillable, c] = prev_val[fillable]
     return df
 
 
@@ -219,7 +255,8 @@ def build_macro_frame(context: Context, years_history: int) -> pd.DataFrame:
     fred = _fetch_fred_leg(since)
 
     # union of both calendars (yfinance trades US market days, FRED publishes on its own),
-    # then mean-fill only the sporadic short gaps that misalignment creates
+    # then carry the last observation across only the sporadic short gaps that
+    # misalignment creates -- forward-only, so no stored cell is derived from a later day
     wide = prices.join(fred, how="outer").sort_index()
     wide = fill_short_gaps(wide, list(wide.columns))
     wide = derive_series(wide, context)

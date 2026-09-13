@@ -123,18 +123,28 @@ def test_substep_price_fields_are_declared_and_valid():
     # close_split for the four features that pair with open/high/low/volume.
     assert set(StepCubeMomentum._FIELDS) >= {"close_split", "close_total", "open", "high",
                                              "low", "volume"}
-    # ⚠ THE RULE IS ABOUT `close_total`, NOT ABOUT THE FIELD COUNT. A step that builds LEVELS
-    # must never take the total-return series -- a market cap or an EV computed on it would
-    # compound every dividend ever paid into the level. It SHOULD take `level_factor`, which
-    # is the other half of a correct level and is not a price at all.
-    for name in ("StepCubeFundamentals", "StepCubeText", "StepCubeInstitutionals"):
+    # ⚠ THE RULE IS ABOUT WHAT A STEP BUILDS, NOT ABOUT THE FIELD COUNT. A step that builds
+    # only LEVELS must never take the total-return series -- a market cap or an EV computed on
+    # it would compound every dividend ever paid into the level. It SHOULD take `level_factor`,
+    # which is the other half of a correct level and is not a price at all.
+    for name in ("StepCubeFundamentals", "StepCubeText"):
         assert "close_total" not in declared[name], (
             f"{name} builds LEVELS (market cap, EV, per-share ratios), so it must never take "
             f"the total-return series")
+    for name in ("StepCubeFundamentals", "StepCubeText", "StepCubeInstitutionals"):
         assert not ({"open", "high", "low"} & set(declared[name])), (
             f"{name} does not build bars, so materialising the OHLC range is pure memory")
     assert set(StepCubeFundamentals._FIELDS) == {"close_split", "level_factor"}
-    assert set(StepCubeInstitutionals._FIELDS) == {"close_split", "volume", "level_factor"}
+    # ⚠ INSTITUTIONALS NOW TAKES BOTH BASES, and it is the second step (with momentum) that
+    # legitimately needs them -- the price-conditioning layer added in Phase 2.6 is a family of
+    # RETURNS measured from a disclosure date (`ic_sig_*_ret_since` and the two excursions),
+    # while the 13F / insider families still scale dollars by a market cap. The discipline the
+    # blanket ban used to enforce is enforced at the call site instead: `daily_market_cap` is
+    # keyword-only in `level_factor` and documents that `close_total` reintroduces the defect,
+    # and the step passes it `frames.close_split`. `sector_ret` makes the conditioning returns
+    # sector-residual; `ret` is the persisted daily return the realized vol comes from.
+    assert set(StepCubeInstitutionals._FIELDS) == {"close_split", "close_total", "volume",
+                                                   "level_factor", "sector_ret", "ret"}
     # Governance is the third and last step allowed `close_total`: pay-vs-performance
     # differences pay growth against a trailing shareholder RETURN, and a return is exactly
     # what the total-return series is for. That is why the exemption above stays a named
@@ -152,24 +162,40 @@ def test_substep_price_fields_are_declared_and_valid():
     for name, fields in declared.items():
         print(f"  {name:<24} {len(fields)} field(s): {', '.join(fields)}")
     print("  CONCLUSION: only the momentum step materialises full OHLCV; fundamentals and text "
-          "read close alone, extras close+volume, governance the return series alone. "
-          "Validated.")
+          "read close alone, governance the return series alone, institutionals both bases "
+          "(levels on close_split, ic_sig_* returns on close_total). Validated.")
 
 
 def test_feature_parts_cover_every_group_exactly_once():
     """The feature groups of the old exploded DAG map onto the feature parts, each group
     owned by exactly one part. The count is invariant to WHERE a group lives -- it was 14
     whether `governance` sat on the old `extras` part or on its own -- so a MOVE must never
-    change it. It is 13 now because `attention` was DELETED, not moved: the panel was dead
-    code (defined, never called from `run()`) and went with the `extras` -> `institutionals`
-    rename. Only a genuine add or delete may touch this number, and it must say which."""
+    change it. Only a genuine add or delete may touch this number, and it must say which:
+
+      14 -> 13   `attention` DELETED (dead code: defined, never called from `run()`), with the
+                 `extras` -> `institutionals` rename.
+      13 -> 15   Phase 2.6/2.7 ADDED two derived panels to `cube_part_institutionals` --
+                 `conditioning` (`ic_sig_*`, look-back 252: the excursion cap) and
+                 `cross_source` (`ic_xs_*`, look-back 126: the distinct-ACTOR window). The
+                 same edit RENAMED `short_interest` -> `short_flow`, which is a move and does
+                 not change the count; its look-back moved 103 -> 322 because the family
+                 gained a 252-day self-history z and a 30-day persistence count.
+      15 -> 16   `ownership` DECLARED. ⚠ NOT AN ADD -- the beneficial-ownership panel has been
+                 merged into `cube_part_institutionals` since Phase 2.5 and was simply MISSING
+                 from `binding_lookbacks`, so this test counted 15 while the part merged seven
+                 panels. Its 378 (`ownership_features.HOLDER_ACTIVE_DAYS`, both the 13G holder
+                 ffill limit and the rolling distinct-filer denominator) is the LONGEST bounded
+                 look-back in the part, and the warm-up covering it was luck: 390 vs 378.
+                 A count that can go down when a group is forgotten is the failure this test
+                 exists to catch, and it did not catch this one -- an omission reads as "not
+                 added yet", which is why the entry carries a comment saying otherwise."""
     owners: dict[str, list[str]] = {}
     for part in FEATURE_PARTS:
         for group, _ in part.binding_lookbacks:
             owners.setdefault(group, []).append(part.name)
     dupes = {g: p for g, p in owners.items() if len(p) > 1}
     assert not dupes, f"feature group(s) claimed by more than one part: {dupes}"
-    assert len(owners) == 13, f"expected 13 feature groups, got {len(owners)}: {sorted(owners)}"
+    assert len(owners) == 16, f"expected 16 feature groups, got {len(owners)}: {sorted(owners)}"
 
     print("\n=== SANITY CHECK: feature groups -> parts ===")
     for part in FEATURE_PARTS:

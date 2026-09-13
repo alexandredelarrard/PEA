@@ -402,3 +402,49 @@ def test_no_usable_transaction_returns_an_empty_panel_not_a_crash():
     print("SANITY: an absent table, a grants-only table and a derivatives-only table each "
           "return an empty (date, ticker) frame -- the merge chain reports 'No "
           "insider-trading features built.' rather than raising.")
+
+
+def test_the_sink_receives_one_shares_column_not_two():
+    """The defect that killed the first full `build-institutionals`, 25 minutes and six merged
+    panels in.
+
+    `clean_transactions` returns the SOURCE `shares` column AND its own numeric `shares_n`, so
+    `buys.rename(shares_n -> shares)` produced a frame with two columns of that name. Every
+    later `events["insider"]["shares"]` was then a DataFrame, and `signal_conditioning` died on
+    `pd.to_numeric(...)`. Nothing here is synthetic-only: `_txn` has carried `shares` from the
+    first version of this file -- the gap was that no test ever passed a sink.
+    """
+    from src.data_aggregate.utils.institutionals.sink import ConditioningSink
+
+    rows = [_txn(accession_number=f"a{i}", filing_date=f"2015-0{6 + i}-01",
+                 transaction_date=f"2015-0{5 + i}-29", shares=1_000.0 * (i + 1),
+                 value_usd=100_000.0 * (i + 1)) for i in range(3)]
+    fh, close = _prices()
+    sink = ConditioningSink()
+    build_insider_feature_panel(_frame(rows), _peers(), TRADING_INDEX,
+                                shares_out_history=fh, stock_close=close, sink=sink)
+
+    events = sink.events["insider"]
+    assert list(events.columns) == ["ticker", "date", "value", "shares"]
+    assert not events.columns.duplicated().any()
+    assert isinstance(events["shares"], pd.Series), "a duplicate name makes this a DataFrame"
+    # and the numbers are the numeric leg, not the raw object column
+    assert sorted(events["shares"].tolist()) == [1_000.0, 2_000.0, 3_000.0]
+    assert list(sink.actors["insider"].columns) == ["ticker", "date", "actor"]
+    assert sink.actors["insider"]["actor"].eq("0001").all()
+    print(f"SANITY: the sink received {len(events)} insider events with exactly "
+          f"{list(events.columns)} -- one `shares` column carrying the NUMERIC leg "
+          f"({events['shares'].tolist()}), and {len(sink.actors['insider'])} actor rows.")
+
+
+def test_the_sink_refuses_an_ambiguous_column_at_the_contract_point():
+    """A duplicate name must fail HERE, with the family named, rather than 25 minutes later in
+    a different module on a `to_numeric` type error."""
+    from src.data_aggregate.utils.institutionals.sink import ConditioningSink
+
+    frame = pd.DataFrame([[1, "AAA", pd.Timestamp("2015-06-01"), 2]],
+                         columns=["shares", "ticker", "date", "shares"])
+    with pytest.raises(ValueError, match="duplicate column"):
+        ConditioningSink().add_events("insider", frame)
+    print("SANITY: ConditioningSink.add_events raises ValueError naming the duplicate column "
+          "instead of forwarding an ambiguous frame.")

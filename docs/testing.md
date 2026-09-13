@@ -154,8 +154,12 @@ so `tests/dod/conftest.py` loads `dod_lib` by path. The hook tests set `LOCALAPP
 ## The aggregation fingerprint baseline
 
 [tests/data_aggregate/test_aggregate_regression.py](../tests/data_aggregate/test_aggregate_regression.py)
-hashes 34 aggregation outputs (14 panels, 13 deduplicated primitives, 6 labels, the frozen input)
-against `aggregate_fingerprint_baseline.json`.
+hashes 37 aggregation outputs (16 panels, 14 deduplicated primitives, 6 labels, the frozen input)
+against `aggregate_fingerprint_baseline.json`. The panel count is asserted as a floor that equals
+the test's own `must` tuple, because a free-floating number went stale silently twice — and the
+prose count went stale a third time in the same place: it read "34 outputs (14 panels, 13
+primitives)" when the file held 13 panels and 14 primitives, i.e. the two figures were swapped
+and only their sum was right. Count them from the file, do not copy the sentence.
 
 > **The baseline may be regenerated only in a commit that touches no `src/` file, or in a PR that is
 > exclusively a declared numeric change.**

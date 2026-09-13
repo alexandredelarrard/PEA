@@ -788,6 +788,7 @@ def build_superinvestor_feature_panel(
     selection: pd.Series | Callable | None = None,
     decay_halflife: float = 63.0,
     stale_quarters: int = _STALE_QUARTERS,
+    sink=None,
 ) -> pd.DataFrame:
     """Long-format elite-manager 13F panel -- `f_ic_super_*` (+ `_xs` where the scale drifts).
 
@@ -796,7 +797,9 @@ def build_superinvestor_feature_panel(
     S&P500 leg without touching the denominator.
     `selection` is `sel(m, q)` indexed by `(cik, period)` -- None means flat 1.0 (Phase 2.2b
     supplies the point-in-time concentration score). `splits` is `prices_splits`, used to
-    restate a prior quarter's share count before any QoQ ratio is taken.
+    restate a prior quarter's share count before any QoQ ratio is taken. `sink` is the
+    optional `ConditioningSink` the price-conditioning and cross-source panels read (see
+    `_fill_sink`); passing nothing changes nothing.
 
     Empty when there are no holdings or the roster resolves to no manager.
     """
@@ -852,7 +855,32 @@ def build_superinvestor_feature_panel(
                 fields[str(kind)] = frame
 
     fields = {k: v for k, v in fields.items() if v is not None and not v.empty}
+    _fill_sink(sink, contrib, fields)
     emission = {k: EMISSION[k] for k in fields if k in EMISSION}
     logger.info("elite 13F panel: %s features over %s managers / %s quarters",
                 len(fields), state["cik"].nunique(), state["period"].nunique())
     return build_peer_relative_panel(fields, peer_dict, emission=emission)
+
+
+def _fill_sink(sink, contrib: pd.DataFrame, fields: dict) -> None:
+    """Hand the derived panels this family's event dates, bullish actors and signal frames.
+
+    ⚠ THE TWO EVENT SETS ARE DIFFERENT AND THAT IS THE POINT. `events` is every disclosure by
+    a selected manager who holds the name -- the date the conditioning layer measures its
+    price path FROM, regardless of direction. `actors` is the bullish subset: a manager whose
+    portfolio weight in the name ROSE (an initiation counts, since `prev_w` is absent), which
+    is an act rather than a restatement. Counting disclosures as bullish would make
+    `ic_xs_bullish_actor_count` a holder count.
+
+    `avail` is already `max(period + 45d, filing_date)` per manager, so nothing here is
+    visible before the filing that disclosed it.
+    """
+    if sink is None or contrib is None or contrib.empty:
+        return
+    live = contrib["held"].fillna(False).to_numpy(dtype=bool) & (contrib["sel"] > 0).to_numpy()
+    disclosures = contrib.loc[live, ["ticker", "avail"]].rename(columns={"avail": "date"})
+    sink.add_events("super", disclosures.drop_duplicates())
+    added = live & (contrib["w"].fillna(0.0) > contrib["prev_w"].fillna(0.0)).to_numpy()
+    sink.add_actors("super", contrib.loc[added, ["ticker", "avail", "cik"]].rename(
+        columns={"avail": "date", "cik": "actor"}))
+    sink.keep_signals(fields)

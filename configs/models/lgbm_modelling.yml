@@ -50,9 +50,9 @@ lgbm:
     - max_21: -1
     - f_ic_inst_flow_to_mcap_xs: 1
     - f_ic_super_flow_to_mcap_xs: 1
-    - f_ic_shortvol_ratio_xs: -1
-    - f_ic_shortvol_ratio_chg_xs: -1
-    - f_ic_ftd_ratio_xs: -1
+    - f_ic_shortvol_ratio_20d_vs_peers: -1
+    - f_ic_shortvol_acceleration: -1
+    - f_ic_ftd_to_adv20_xs: -1
     - f_ec_tone_xs: 1
     - f_ec_tone_delta_xs: 1
     - f_ec_qa_gap_xs: 1
@@ -123,9 +123,9 @@ lgbm:
   - f_ic_inst_flow_to_mcap_xs
   - f_ic_super_initiations_xs
   - f_ic_super_flow_to_mcap_xs
-  - f_ic_shortvol_ratio_xs
-  - f_ic_shortvol_ratio_chg_xs
-  - f_ic_ftd_ratio_xs
+  - f_ic_shortvol_ratio_20d_vs_peers
+  - f_ic_shortvol_acceleration
+  - f_ic_ftd_to_adv20_xs
   - f_ec_tone_xs
   - f_ec_tone_delta_xs
   - f_ec_qa_gap_xs

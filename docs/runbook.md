@@ -161,15 +161,40 @@ build-target          # -> cube_part_targets + cube_part_betas
 build-fundamentals    # -> cube_part_fundamentals
 build-momentum        # -> cube_part_momentum
 build-text            # -> cube_part_text
-build-institutionals  # -> cube_part_institutionals   (13F, elite 13F, insider, short flow)
+build-institutionals  # -> cube_part_institutionals  (7 panels: 13F, elite 13F, insider,
+                      #    13D/13G, short flow, ic_sig_* conditioning, ic_xs_* cross-source)
 build-governance      # -> cube_part_governance          (DEF 14A + Item 5.07; a HEAVY part)
-assemble-cube         # read the parts -> the `cube` table
+assemble-cube         # parts -> base LEFT JOIN wide targets -> `cube`, one row per (date, ticker)
 build-cube            # all eight in ONE process (what main.py does)
 cube-status           # JSON status of every part; exit 2 if any part is behind
 ```
 
 Each build command is **incremental by default** (reads its part's latest date, recomputes a
 warm-up-padded trailing window, appends). `-F/--full` forces a rebuild.
+
+⚠ **`build-institutionals` is the one part whose incremental run costs as much as a full one**,
+and that is deliberate. It still *writes* only the tail; it *computes* over the whole trading
+calendar every time, because six of its feature families have no finite look-back — an
+age-since-last-event, a distinct-actor count to date, a new-holder flag, an expanding-window
+owner surprise, a price path measured from an anchor that may be fifteen years back. A warm-up
+is the right instrument for a bounded look-back and reaches none of these.
+
+The version before 2026-09-12 bounded that part's grid at `window.since` like every other part,
+and measured against a rebuild **76 of 127 columns drifted**, with the drift reaching the newest
+row — the only row an append actually writes. `f_ic_bo_new_holder` was wrong on **490 of 491**
+tickers on the last date; `f_ic_sig_insider_age_days` by a median of **674 days**. The sharpest
+edge was `decay.snap_to_grid`, which moves an event onto the first trading day ≥ its date: on a
+trimmed grid every event predating the window landed *on the window's first day*, so a 2010 13D
+read as a 2025 13D. Now `_load_frames` takes no `since` argument at all, which is affordable
+because `_load_source` never trimmed the event tables anyway — that read is the dominant cost
+and it is unchanged.
+
+⚠ **Changing `build_cube.targets.horizons` or `.labels` changes the targets part's COLUMN SET**
+(`target_<label>_h<horizon>`, one per pair), so an incremental append cannot express it. This is
+already automatic — `write_part` returns `COLUMNS_CHANGED` and `StepCubeTarget.run` re-invokes
+itself with `full=True` — but the rebuild is unavoidable, not a flag you can skip. Then re-run
+`assemble-cube`: it refuses a targets part that still carries `target_horizon` rather than
+silently producing a horizon-duplicated cube.
 
 ### `modelling` / `portfolio`
 
@@ -333,7 +358,15 @@ live in `scripts/verify_fundamentals_history.py`:
 "$PY" -m src validate status set <cluster_id> --note "..."   # a wontfix; a NUMBER is enforced
 "$PY" -m src validate status clear <cluster_id>
 "$PY" -m src validate checks                      # what does this tool actually test?
+"$PY" -m src validate prices [--report-path P] [--no-write]
+"$PY" -m src validate institutionals [--coverage-floor 0.05] [--report-path P] [--no-write]
 ```
+
+⚠ `validate institutionals` **REBUILDS `cube_part_institutionals` in memory** (through
+`StepCubeInstitutionals.build_panel`, the step's own merge chain) rather than reading the
+persisted table — reading it back would score whatever was last written, which is how a
+stale-row false green happens. Budget it like a `build-institutionals -F`: ~30 minutes and a
+peak around 12 GB, so do not run it beside one.
 
 Reports default to `reports/validate/YYYY-MM-DD/<scope>.md` with a `.json` beside it -- markdown
 for a human, JSON for an agent. Findings are ranked as **clusters**: one `(ticker, field)`

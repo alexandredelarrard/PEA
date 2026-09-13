@@ -76,7 +76,8 @@ import click
 import pandas as pd
 
 from src.constants.command_line_interface import (
-    CONFIG_ARGS, CONFIG_KWARGS, TICKERS_ARGS, TICKERS_KWARGS)
+    CONFIG_ARGS, CONFIG_KWARGS, COVERAGE_FLOOR_ARGS, COVERAGE_FLOOR_KWARGS, NO_WRITE_ARGS,
+    NO_WRITE_KWARGS, REPORT_PATH_ARGS, REPORT_PATH_KWARGS, TICKERS_ARGS, TICKERS_KWARGS)
 from src.constants.constants import FIX_EVIDENCE_KEYS, FIX_LAYERS
 from src.context import Context, get_config_context
 from src.data_store.schema import Tables
@@ -88,6 +89,7 @@ from src.validate.fundamentals.finding import QUEUE_SEVERITIES
 from src.validate.fundamentals.ledger import CLUSTER_WIDE, Ledger
 from src.validate.fundamentals.report import ReportModel
 from src.validate.fundamentals.validator import FundamentalsValidator
+from src.validate.institutionals import COVERAGE_FLOOR, run_institutionals_validation
 from src.validate.prices import run_prices_validation
 
 #: Where the rosters live. Read here rather than re-declared: `fundamentals_rosters.json`
@@ -248,11 +250,10 @@ def fundamentals(config_path: str, tickers: str | None, rosters: tuple[str, ...]
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option("--since", default=None,
               help="Only score filing rows on/after this date (the price scan is full-history).")
-@click.option("--report", "report_path", default=None,
-              help="Where to write the markdown report (default: reports/validate/<date>/).")
+@click.option(*REPORT_PATH_ARGS, **REPORT_PATH_KWARGS)
 @click.option("--skip-spike", is_flag=True, default=False,
               help="Skip invariant 3, the only one that reads the full price history.")
-@click.option("--no-write", is_flag=True, default=False, help="Print only; write no file.")
+@click.option(*NO_WRITE_ARGS, **NO_WRITE_KWARGS)
 def prices(config_path: str, tickers: str | None, since: str | None,
            report_path: str | None, skip_spike: bool, no_write: bool) -> None:
     """The three adjustment-basis invariants. Reports; corrects nothing.
@@ -279,6 +280,44 @@ def prices(config_path: str, tickers: str | None, since: str | None,
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     context.log.info("Wrote %s", path)
+
+
+@cli.command(help="Validate cube_part_institutionals: leakage, ranges, saturation, coverage.",
+             help_priority=2)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*COVERAGE_FLOOR_ARGS, **COVERAGE_FLOOR_KWARGS, default=COVERAGE_FLOOR)
+@click.option(*REPORT_PATH_ARGS, **REPORT_PATH_KWARGS)
+@click.option(*NO_WRITE_ARGS, **NO_WRITE_KWARGS)
+def institutionals(config_path: str, coverage_floor: float, report_path: str | None,
+                   no_write: bool) -> None:
+    """Part 2 Phase 2.8 -- CORRECTNESS of the informed-capital part (D15). Corrects nothing.
+
+    ⚠ IT REBUILDS THE PANEL IN MEMORY rather than reading `cube_part_institutionals`, for the
+    reason `validate report` exists: re-running to read a report is how a stale-row false green
+    happens, and the inverse holds too -- scoring the persisted table scores whatever was last
+    written, not what the current code builds. The build is the expensive part of this command.
+
+    ⚠ THE SKIPPED REGISTER IS PART OF THE RESULT. Checks owned by a later phase (B1 and L8
+    need the Phase 2.6 `ic_sig_*` layer; L7 needs Phase 2.7's incremental run; G4 needs the
+    full feature population) print as SKIP with the phase that owes them. A green summary over
+    a short check list is not a passing part."""
+    config, context = _ctx(config_path)
+    report_model = run_institutionals_validation(context, config, floor=coverage_floor)
+    for result in report_model.checks:
+        context.log.info(result.summary())
+    blocking = report_model.blocking_failures
+    text = report_model.to_markdown()
+    if no_write:
+        click.echo(text)
+    else:
+        path = Path(report_path) if report_path else _default_report_path("institutionals")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        context.log.info("Wrote %s", path)
+    if blocking:
+        raise click.ClickException(
+            f"{len(blocking)} BLOCKING check(s) failed: "
+            f"{', '.join(c.check_id for c in blocking)}. Phase 2.8 stops here (10.1).")
 
 
 @cli.command(help="Re-render a recorded run's report from the tables. No re-run, no writes.",

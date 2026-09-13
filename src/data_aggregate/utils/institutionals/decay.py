@@ -45,6 +45,43 @@ import numpy as np
 import pandas as pd
 
 
+def snap_to_grid(dates: pd.Series, trading_index: pd.DatetimeIndex) -> pd.Series:
+    """Each date moved onto the first trading day >= it; NaT past the end of the grid.
+
+    THE SAME RULE `decay_events` APPLIES INTERNALLY, exposed because the FFILL-based dense
+    features need it too: a `filing_date` that lands on a non-trading day (a weekend filing,
+    an SEC-open market holiday) is silently DROPPED by a plain `reindex` instead of being
+    carried forward. Rounding it backwards instead would be a look-ahead -- the next session
+    is the first day the information can be acted on.
+    """
+    idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
+    d = pd.to_datetime(dates, errors="coerce").dt.normalize().to_numpy()
+    if len(idx) == 0:
+        return pd.Series(pd.NaT, index=dates.index)
+    pos = idx.searchsorted(d, side="left")
+    grid = idx.to_numpy()
+    snapped = np.where(pos < len(idx), grid[np.clip(pos, 0, len(idx) - 1)],
+                       np.datetime64("NaT"))
+    return pd.Series(snapped, index=dates.index)
+
+
+def days_since_last_true(bool_wide: pd.DataFrame) -> pd.DataFrame:
+    """Trading days since the last True per column; **NaN before the first True**, 0 on it.
+
+    Vectorised cummax-of-position: the running maximum of "the row index where a True was
+    seen" is the last event's position, and -1 until one has been. NaN rather than 0 for the
+    never-yet region is the same decision `decay_events` makes -- "no event has ever happened"
+    and "an event happened today" must not share a value.
+    """
+    idx = bool_wide.index
+    n = len(idx)
+    pos = np.where(bool_wide.to_numpy(), np.arange(n)[:, None], -1)
+    pos = np.maximum.accumulate(pos, axis=0)
+    age = (np.arange(n)[:, None] - pos).astype(float)
+    age[pos < 0] = np.nan
+    return pd.DataFrame(age, index=idx, columns=bool_wide.columns)
+
+
 def decay_events(
     events: pd.DataFrame,
     trading_index: pd.DatetimeIndex,

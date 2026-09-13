@@ -89,6 +89,17 @@ def _requires_tables(store: DataStore, *tables: str) -> None:
         pytest.skip(f"table(s) not present in this database: {', '.join(absent)}")
 
 
+def _requires_columns(store: DataStore, table: str, *columns: str) -> None:
+    """Skip when the table exists but predates a column this case names. The wide target
+    columns (`target_<label>_h<horizon>`) only appear after `build-target --full`, and a
+    cube left from the long era would fail these with a SQL error rather than a verdict."""
+    have = set(store.columns(table))
+    absent = [c for c in columns if c not in have]
+    if absent:
+        pytest.skip(f"{table} has no column(s) {', '.join(absent)} "
+                    f"-- rebuild the cube (`build-target --full` + `assemble-cube`)")
+
+
 def _norm(df: pd.DataFrame) -> pd.DataFrame:
     """Column order and row order are NOT part of the contract -- content is."""
     return (df.reindex(sorted(df.columns), axis=1)
@@ -162,18 +173,24 @@ def test_distinct_matches_sec_utils_ingested_quarters(store):
     assert set(store.distinct("earnings_call_sections", "quarter")) == old
 
 
-def test_distinct_with_notnull_matches_step_train_horizons(store):
-    """`step_train._distinct_horizons` -- `SELECT DISTINCT target_horizon FROM cube
-    WHERE "<target>" IS NOT NULL ORDER BY target_horizon` (step_train.py:114). This is the
-    case that needs an IS NOT NULL predicate composed with DISTINCT."""
+def test_distinct_with_notnull_matches_the_latest_labelled_cube_date(store):
+    """DISTINCT composed with an IS NOT NULL predicate, plus ORDER + LIMIT.
+
+    The horizon axis is COLUMNS now, so nothing asks the cube for its distinct horizons any
+    more -- `step_train._distinct_horizons` reads them off `store.columns(cube)` with no
+    query at all. The same composition is still issued, by the newest-labelled-date lookup
+    in `tests/modelling/test_model_persistence.py`: `SELECT DISTINCT date FROM cube WHERE
+    "target_rank_h30" IS NOT NULL ORDER BY date DESC LIMIT 1`. The label is a wide column,
+    so it is the predicate rather than the thing selected."""
     _requires(store, "distinct", "NOT_NULL")
     _requires_tables(store, "cube")
-    old = _sql(store, 'SELECT DISTINCT target_horizon FROM cube '
-                      'WHERE "target_rank" IS NOT NULL ORDER BY target_horizon'
-               )["target_horizon"].tolist()
-    new = store.distinct("cube", "target_horizon",
-                         where={"target_rank": store.NOT_NULL}, order="asc")
-    assert new == old
+    _requires_columns(store, "cube", "target_rank_h30")
+    old = _sql(store, 'SELECT DISTINCT date FROM cube '
+                      'WHERE "target_rank_h30" IS NOT NULL ORDER BY date DESC LIMIT :n',
+               {"n": 5})["date"].tolist()
+    new = store.distinct("cube", "date", where={"target_rank_h30": store.NOT_NULL},
+                         order="desc", limit=5)
+    assert [pd.Timestamp(d) for d in new] == [pd.Timestamp(d) for d in old]
 
 
 def test_distinct_ordered_and_limited_matches_step_train_recent_dates(store):
@@ -241,18 +258,21 @@ def test_since_matches_ls_model_prices_window(store):
 
 
 def test_notnull_and_equality_compose_like_step_train_panel(store):
-    """`step_train._load_horizon_panel` -- `SELECT <proj> FROM cube WHERE "<target>" IS NOT
-    NULL AND target_horizon = :h` (step_train.py:132): a projection, an IS NOT NULL and an
-    equality, ANDed. Scoped to one ticker so it does not scan 5.6M rows."""
+    """`step_train._load_horizon_panel` -- `SELECT <proj> FROM cube WHERE
+    "target_rank_h30" IS NOT NULL AND ticker = :t`: a projection, an IS NOT NULL and an
+    equality, ANDed. Scoped to one ticker so it does not scan the whole cube.
+
+    The horizon selects the label COLUMN (`target_<type>_h<horizon>`) and its IS NOT NULL is
+    what bounds the row count -- there is no `target_horizon = :h` row filter to compose any
+    more. The projection loads that one label and no other, which is the leak guard."""
     _requires(store, "load", "NOT_NULL")
-    cols = ["date", "ticker", "target_horizon", "target_rank"]
     _requires_tables(store, "cube")
-    old = _sql(store, 'SELECT "date", "ticker", "target_horizon", "target_rank" FROM cube '
-                      'WHERE "target_rank" IS NOT NULL AND target_horizon = :h '
-                      "AND ticker = :t", {"h": 30, "t": TICKER})
+    _requires_columns(store, "cube", "target_rank_h30")
+    cols = ["date", "ticker", "target_rank_h30"]
+    old = _sql(store, 'SELECT "date", "ticker", "target_rank_h30" FROM cube '
+                      'WHERE "target_rank_h30" IS NOT NULL AND ticker = :t', {"t": TICKER})
     new = store.load("cube", columns=cols,
-                     where={"target_rank": store.NOT_NULL, "target_horizon": 30,
-                            "ticker": TICKER})
+                     where={"target_rank_h30": store.NOT_NULL, "ticker": TICKER})
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
 

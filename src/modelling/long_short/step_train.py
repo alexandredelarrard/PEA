@@ -104,8 +104,13 @@ class StepModelling(Step):
                        self.target_type, self.model_types, len(self.linear_cols), len(self.lgbm_cols),
                        len(self.categorical_cols), len(self.feature_cols))
         if dropped:
-            self._log.info("modelling.yml columns absent from the cube (not loaded, %d): %s",
-                           len(dropped), dropped)
+            # WARNING, not info: a configured column that the cube does not have is a silently
+            # SHRUNK feature set, and the model trains and scores anyway. Fourteen `f_ic_*`
+            # names in these three files outlived the features they referred to and nothing
+            # said so, which is the same silence that let 39 dead features sit in the cube
+            # through 68 green tests.
+            self._log.warning("modelling.yml columns absent from the cube -- the feature set is "
+                              "SMALLER than configured (%d dropped): %s", len(dropped), dropped)
 
     def _distinct_horizons(self, cube_cols: set[str]) -> list[int]:
         """Horizons the cube has a label COLUMN for, from the schema alone — no data scan.
@@ -453,7 +458,11 @@ class StepModelling(Step):
         for h in self.horizons:
             panel = self._load_horizon_panel(h)
             if panel is None or panel.empty:
-                self._log.warning("horizon %s: no labelled rows after the train window -> skipped", h)
+                # two ways to land here now: the train window excludes every labelled row, or
+                # the horizon's label column exists but is entirely NaN (which the schema-only
+                # `_distinct_horizons` cannot tell apart from a populated one).
+                self._log.warning("horizon %s: no labelled rows in the cube or the train "
+                                  "window -> skipped", h)
                 continue
             self._log.info("horizon %s: %s rows, %s tickers, %s days", h, len(panel),
                            panel["ticker"].nunique(), panel["date"].nunique())

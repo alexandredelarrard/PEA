@@ -13,12 +13,15 @@ Crucially it builds the feature panel DIRECTLY from the cube (NOT panel_from_cub
 null-target rows), so the newest date — whose forward target has not matured — is still
 predictable.
 
-`test_predicts_for_*` are pure unit tests; the end-to-end one needs a populated `cube` + trained
-artifacts and SKIPS cleanly otherwise.
+`test_predicts_for_*` and `test_predict_latest_scores_the_newest_date_*` are pure unit
+tests (the latter drives the real method against a spy store); the end-to-end one needs a
+populated `cube` + trained artifacts and SKIPS cleanly otherwise.
 """
 from __future__ import annotations
 
+import logging
 import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -86,6 +89,109 @@ def test_prediction_rows_are_long_and_stamped():
     print("  one row per (date, ticker) for this (horizon=30, model=lgbm); predicted_at is the "
           "RUN time, predicts_for follows each row's own as-of date; pred z-scored per day. "
           "Validated.")
+
+
+class _StubModel:
+    """Anything with `.predict(X)` is an ensemble member (see `ml.ensemble_predict`)."""
+
+    def __init__(self, weight: float = 1.0):
+        self._w = weight
+
+    def predict(self, X):
+        return np.asarray(X["f_a"], dtype="float64") * self._w
+
+
+class _SpyStore:
+    """Records what `predict_latest` asks the cube for, and what it writes back."""
+
+    NOT_NULL = object()
+
+    def __init__(self, cube: pd.DataFrame):
+        self._cube = cube
+        self.load_kwargs: dict = {}
+        self.written: pd.DataFrame | None = None
+
+    def columns(self, table):
+        return list(self._cube.columns)
+
+    def distinct(self, table, col, order=None, limit=None, **kw):
+        d = sorted(pd.Timestamp(x) for x in self._cube[col].unique())
+        if order == "desc":
+            d = d[::-1]
+        return d[:limit] if limit else d
+
+    def load(self, table, columns=None, since=None, optional=False, **kw):
+        self.load_kwargs = {"columns": list(columns or []), "since": since, **kw}
+        df = self._cube
+        if since is not None:
+            df = df[df["date"] >= pd.Timestamp(since)]
+        return df[list(columns)].copy() if columns else df.copy()
+
+    def replace(self, table, df, **kw):
+        self.written = df.copy()
+        return len(df)
+
+
+def test_predict_latest_scores_the_newest_date_even_with_all_labels_nan(monkeypatch):
+    """THE defect the wide cube fixes, pinned without a DB.
+
+    The newest cube date has matured NO horizon, so every one of its `target_*` columns is
+    NaN. Under the long cube `stack()` produced no row for it at all and this method
+    silently scored a date up to `max_horizon` sessions stale. The wide part LEFT-joins onto
+    the feature panel, so the row exists — and `predict_latest` must return it.
+
+    It must also load NO target column: this method scores, it does not evaluate, and a
+    label in the projection is what made the staleness invisible."""
+    dates = pd.to_datetime(["2026-09-08", "2026-09-09", "2026-09-10"])
+    tickers = ["AAA", "BBB", "CCC"]
+    rows = [{"date": d, "ticker": t, "f_a": float(i + 1) * (j + 1)}
+            for j, d in enumerate(dates) for i, t in enumerate(tickers)]
+    cube = pd.DataFrame(rows)
+    # labels mature oldest-first; the NEWEST date has nothing at any horizon
+    cube["target_rank_h30"] = [0.1, 0.5, 0.9] * 2 + [np.nan] * 3
+    cube["target_rank_h90"] = [0.2, 0.6, 0.8] + [np.nan] * 6
+    newest = dates.max()
+    assert cube.loc[cube["date"] == newest, ["target_rank_h30", "target_rank_h90"]] \
+        .isna().all(axis=None), "fixture must have an ALL-NaN newest date"
+
+    store = _SpyStore(cube)
+    step = StepModelling.__new__(StepModelling)
+    step._context = SimpleNamespace(store=store)
+    step._log = logging.getLogger("predict_latest_test")
+    meta = {"feature_cols": ["f_a"], "categorical_cols": [],
+            "train_ic_ir": {"30": 0.6, "90": 0.4}}
+    models = {30: {"lgbm": _StubModel(1.0)}, 90: {"lgbm": _StubModel(-1.0)}}
+    monkeypatch.setattr(StepModelling, "_load_saved_ensemble", lambda self: (meta, models))
+
+    out = step.predict_latest(n_dates=1)
+
+    # 1. the newest date is what got scored
+    assert out["date"].nunique() == 1
+    assert out["date"].max() == newest, f"scored {out['date'].max()}, not the newest {newest}"
+    assert set(out.loc[out["model"] == PREDICTION_MODEL_BLENDED, "ticker"]) == set(tickers)
+
+    # 2. no target column was ever requested
+    asked = store.load_kwargs["columns"]
+    assert [c for c in asked if c.startswith("target")] == [], asked
+    assert asked == ["date", "ticker", "f_a"]
+
+    # 3. both horizons scored the SAME rows — the wide grain's whole point
+    for h in (30, 90):
+        sl = out[(out["horizon"] == h) & (out["model"] == PREDICTION_MODEL_ENSEMBLE)]
+        assert set(sl["ticker"]) == set(tickers), f"h{h} scored {sorted(sl['ticker'])}"
+        assert (sl["date"] == newest).all()
+
+    # 4. it was persisted, not just returned
+    assert store.written is not None and len(store.written) == len(out)
+
+    print("\n=== SANITY CHECK: predict_latest reaches the unlabelled newest date ===")
+    print(f"  cube dates {[str(d.date()) for d in dates]}; {newest.date()} has "
+          f"target_rank_h30 AND target_rank_h90 all NaN")
+    print(f"  -> scored as-of {out['date'].max().date()} for {len(tickers)} names x "
+          f"{sorted(out['horizon'].unique())} horizons x {sorted(out['model'].unique())}")
+    print(f"  projection asked for {asked}: ZERO target columns loaded")
+    print("  the long cube had no row for this date at all, so this method predicted off a "
+          "stale one. Validated.")
 
 
 def test_predict_latest_makes_sense():

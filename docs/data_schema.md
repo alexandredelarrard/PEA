@@ -226,7 +226,7 @@ and 2,684 N-PX filings in 2025 mention Apple's CUSIP alone.
 
 | Table | PK | Notes |
 |---|---|---|
-| `cube` | `ticker, date, target_horizon` | THE feature table. ~570 columns, LONG by horizon. **Reference size ~26 GB / ~5.7M rows** across horizons 30/60/90. Never read unprojected |
+| `cube` | `ticker, date` | THE feature table. ~570 feature columns **plus 9 wide label columns** `target_<label>_h<horizon>` (`[rank, zscore, epsilon]` x `[30, 60, 90]`). One row per (date, ticker): the horizon is a COLUMN axis, so a row is a candidate for every horizon and the panel is no longer tripled. Built as `base LEFT JOIN cube_part_targets`, so its row count and max date EQUAL `cube_part_prices`' — the newest ~`max_horizon` sessions are present with NULL labels, which is what makes `predict_latest` score today rather than a stale date. Never read unprojected |
 | `predictions` | `ticker, date` | backtest-time scores; fully replaced each training run |
 | `cube_signal` | `ticker, date` | the blended cross-horizon signal |
 | `predictions_latest` | `date, ticker, horizon, model` | **live** predictions, LONG form. Each row carries its own `predicts_for` (as-of + horizon business days), because the h30 and h90 predictions made on one day are about different future dates. `model` ∈ {member name, `ensemble` = that horizon's member average, `blended` = the IR-weighted blend across horizons}. `predicted_at` (when the run produced the row) is deliberately distinct from `date` (the as-of date of the features) |
@@ -240,10 +240,12 @@ and 2,684 N-PX filings in 2025 mention Apple's CUSIP alone.
 
 ## Parts — private plumbing between cube sub-steps
 
-`cube_part_prices`, `_targets`, `_betas`, `_fundamentals`, `_momentum`, `_text`, `_extras`,
-`_governance` — the eight `schema.PARTS`, in registry order. All `managed=False`: rebuilt
-wholesale by their owning step, each carrying DDL inferred from the frame it writes, excluded
-from `sql/schema.sql`.
+`cube_part_prices`, `_targets`, `_betas`, `_fundamentals`, `_momentum`, `_text`,
+`_institutionals`, `_governance` — the eight `schema.PARTS`, in registry order. All
+`managed=False`: rebuilt wholesale by their owning step, each carrying DDL inferred from the
+frame it writes, excluded from `sql/schema.sql`. (This list read `_extras` until 2026-09-11:
+that part was renamed to `_institutionals` in Phase 2.1 and `cube_part_extras` has never
+existed in the database.)
 
 **`cube_part_governance` is the newest part and the only one whose sources are all
 FILING-SPACE.** 3,031,768 rows × 108 columns (106 features + `date`/`ticker`), 1995-09-13 →
@@ -254,13 +256,41 @@ families, the entrenchment-provision transitions, the auditor block, the four It
 shareholder-dissent families, and — from the two per-person children — board quality and Item
 402(k) director pay. **Why it is its own part rather than a sixth `institutionals` panel:** its sources are
 annual proxies and 8-K vote records, so every YoY delta is a filing-to-filing difference needing
-no grid warm-up, while `_extras`' sources are daily and quarterly market data; the two have no
-shared input beyond `close_total`. The part is nonetheless declared **heavy** (1,260-day warm-up)
+no grid warm-up, while `_institutionals`' sources are daily and quarterly market data; the two
+have no shared input beyond `close_total`. The part is nonetheless declared **heavy** (1,260-day warm-up)
 because one feature, `f_avg_board_tenure_vs_hist`, takes a trailing five-year self-z on the DAILY
 frame — under-declaring that made the incremental tail silently disagree with a rebuild rather
 than emit NaN. Coverage is thin before 2006 (Reg S-K created the SCT `Total` column) and before
 2010-03 (Rel. 33-9089 created the Item 5.07 vote record); both are regulatory regimes, reported
 as coverage and never filled.
+
+**`cube_part_institutionals` is the widest of the disclosure parts** and the only one built
+from a SINK. 2,644,390 rows × 129 columns (**127 features** + `date`/`ticker`), 1995-09-06 →
+2026-09-04, 491 tickers, 1,440 MB. Seven panels: broad 13F (`ic_inst_*`, 16 cols), elite 13F
+(`ic_super_*`, 27), insider (`ic_insider_*`, 23), short flow (`ic_shortvol_*` / `ic_ftd_*`, 19),
+beneficial ownership (`ic_act_*` / `ic_bo_*`, 19), and two DERIVED — the daily price-conditioning
+layer (`ic_sig_*`, 18) and cross-source agreement (`ic_xs_*`, 5). The derived pair reads a
+`ConditioningSink` the first five fill on the way past, because re-deriving the insider event
+dates means repeating a 2M-row scope-and-repair pass and the elite ones the per-manager
+availability join. Declared **heavy** (390-day warm-up, up from 160): the longest BOUNDED look-back is the
+ownership group's `HOLDER_ACTIVE_DAYS` (378), then short flow's 322 (252 z-window + 40 FTD
+publication lag + 30 persistence), then `excursion_lookback` (252) on the two insider excursion
+legs. ⚠ **The warm-up is not what makes this part correct.** Several of its families have no
+finite look-back at all — an age since the last event, a distinct-actor count to date, a
+new-holder flag, an expanding-window owner surprise — so it computes over the **full trading
+calendar on every run** and lets `write_part` slice the tail. Bounding the grid at
+`window.since`, as every other part does, drifted **76 of 127 columns** from a rebuild on
+2026-09-12, with the drift reaching the newest row.
+
+**Coverage is a property of the SOURCES and is reported, never filled**: each family is NaN
+before its measured availability date (D16) — `ic_insider_*` 2006-01-03, `ic_ftd_*` 2009-07-01,
+`ic_inst_*`/`ic_super_*` 2013-06-30 (the 13F fetch regime start, 192 → 3,045 in-universe filers),
+`ic_shortvol_*` 2017-12-29, and the four 13D/13G numerics 2024-12-17 (the beneficial-ownership
+XML mandate). Two 13F quarters are HOLES with every feature suppressed (2023-12-31 at 463
+filers, 2025-06-30 at 254) and eleven are BREAKS with the deltas nulled (D17). Both of those are
+universe-wide; a **third, per-ticker** guard nulls the same delta set on any quarter whose
+predecessor carried fewer than 100 filers **for that name** — coverage onset on a spin-off or an
+IPO, which read as flows of up to +34,264,348% before it (`MIN_PRIOR_HOLDERS`).
 
 PK is `(date, ticker)` for every part, `cube_part_targets` included: `labels_to_wide` emits one
 `target_<label>_h<horizon>` column per pair (9 for `[rank, zscore, epsilon]` x `[30, 60, 90]`)

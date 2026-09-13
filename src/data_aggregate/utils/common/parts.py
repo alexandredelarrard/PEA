@@ -19,9 +19,32 @@ buffer. Source tables (fundamentals / 13F / insider / def14a / ...) are read in 
 builder whose look-back is in FILING or QUARTER space needs ~no grid warm-up and is
 floored at ~6 months.
 
+⚠ THAT LAST SENTENCE IS TRUE FOR A *BOUNDED* LOOK-BACK AND FALSE FOR AN UNBOUNDED ONE, and one
+part had to stop relying on it. Reading the source in full puts every event in memory; it does
+NOT put every event on the grid, because the grid starts at `window.since`. A feature that asks
+"how many trading days since the last insider buy", "what has the price done since the last
+13D", "is this holder new" or any expanding-window statistic is therefore computed from the
+first event INSIDE the window, and no value of `warmup_trading_days` can fix it -- those
+look-backs have no finite length. Worse, `decay.snap_to_grid` moves an event onto the first
+trading day >= its date, so on a trimmed grid an event PREDATING the window lands on the
+window's first day: a 2010 13D became a 2025 13D. Measured on `cube_part_institutionals`,
+2026-09-12, over a 567-day incremental window: **76 of 127 columns drifted**, and the drift
+reached the newest row, which is the only row an append writes. `f_ic_bo_new_holder` was wrong
+on 490 of 491 tickers on the last date; `f_ic_sig_insider_age_days` by a median 674 days and up
+to 4,412.
+
+FIXED by `StepCubeInstitutionals._load_frames`, which takes no `since` at all: that part
+COMPUTES over the full calendar on both paths and lets `write_part` slice the tail. It is
+affordable there precisely because `_load_source` never trimmed the event tables anyway. Any
+future part carrying an unbounded look-back needs the same treatment, not a bigger warm-up.
+
 `binding_lookbacks` records, per merged feature group, the look-back that actually binds.
 It is DATA rather than a literal duplicated in the test, so
 `tests/data_aggregate/test_part_registry.py` can assert every warm-up covers its members.
+⚠ It records the longest *bounded* one, so a green test is still not evidence that an
+incremental build is correct -- L7 in `validate institutionals` is. And a group can go MISSING
+without anything noticing: the beneficial-ownership panel had no entry until 2026-09-12, which
+is why nothing flagged `HOLDER_ACTIVE_DAYS = 378` as the part's longest bounded look-back.
 """
 from __future__ import annotations
 
@@ -80,15 +103,28 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     CubePart(Tables.cube_part_text, "build-text", "features", 130,
              (("earnings_call_sentiment", 0),   # QoQ over reported quarters
               ("earnings_call_embedding", 0))),  # QoQ embedding drift
-    # `short_interest` is now the BINDING look-back at 103: the `attention` entry (63) went with
-    # the attention panel itself. The warm-up stays 160 -- it still covers 103 with buffer, and
-    # the price-conditioning look-backs that will be added to this part have to be re-checked
-    # against it anyway. `test_part_registry.py` asserts every warm-up covers its members, so
-    # that check is enforced rather than remembered.
-    CubePart(Tables.cube_part_institutionals, "build-institutionals", "features", 160,
-             (("short_interest", 103),    # short-vol rolling(63) + FTD shift(40)
+    # ⚠ 160 -> 390, and the two families that forced it are the ones Phase 2.5/2.6 added:
+    #   * `short_flow` 322 -- a 252-day self-history z, then a 30-day persistence count on top
+    #     of it, then the 40-day FTD publication shift. Its predecessor entry (103) described
+    #     a module that no longer exists.
+    #   * `conditioning` 252 -- the excursion cap on `ic_sig_insider_max_dd/runup_since_buy`
+    #     (`build_cube.institutionals.excursion_lookback`).
+    # 390 is the same warm-up targets/betas already use, which is not a coincidence: it is one
+    # 252-day look-back plus the ~130-day buffer a trailing recompute needs to reproduce the
+    # rolling statistic at the window's oldest rewritten date. `test_part_registry.py` asserts
+    # every warm-up covers its members, so this is enforced rather than remembered.
+    CubePart(Tables.cube_part_institutionals, "build-institutionals", "features", 390,
+             (("short_flow", 322),        # z252 + persistence(30) + FTD shift(40)
+              # `ownership_features.HOLDER_ACTIVE_DAYS`: both the 13G holder ffill(limit=)
+              # and the rolling distinct-filer denominator. The LONGEST bounded look-back in
+              # the part, and it was MISSING from this tuple entirely -- which is why
+              # `test_part_registry.py` stayed green while the panel it describes was the one
+              # `f_ic_bo_new_holder` went wrong in.
+              ("ownership", 378),
+              ("conditioning", 252),      # capped max-drawdown / run-up since the last buy
               ("institutional", 0),       # QoQ vs the prior 13F period
               ("superinvestor", 0),
+              ("cross_source", 126),      # trailing distinct-ACTOR window
               ("insider", 0))),           # rolling('180D') over the FULL transaction calendar
     # Governance sources are all FILING-space (annual proxies, 8-K vote records), so every YoY
     # delta needs no grid warm-up at all. TWO legs bind on the daily grid, and the longer one

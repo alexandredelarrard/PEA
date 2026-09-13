@@ -9,7 +9,7 @@ linear:
   max_iter: 1000
   tol: 1.0e-06
   columns:
-  - f_ic_shortvol_ratio_vs_peers
+  - f_ic_shortvol_ratio_20d_vs_peers
   - f_goodwill_impairment_intensity_vs_peers
   - f_rd_capitalized_roic_xs
   - f_current_ratio_xs

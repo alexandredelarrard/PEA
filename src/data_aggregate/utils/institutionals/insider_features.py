@@ -173,6 +173,7 @@ def build_insider_feature_panel(
     stock_close: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
     decay_halflife: float = DEFAULT_DECAY_HALFLIFE,
+    sink=None,
 ) -> pd.DataFrame:
     """Long-format insider feature panel (`f_<name>` and `f_<name>_xs`, per `EMISSION`).
 
@@ -181,6 +182,14 @@ def build_insider_feature_panel(
     ones (`distinct_buyers`, `cluster_buy`, `days_since_last_buy`, `net_buy_ratio`,
     `purchase_pct_prior`, `owner_surprise`) are emitted, because a dollar flow that is not
     divided by the company's size is a market-cap proxy.
+
+    `sink` is the optional `ConditioningSink` the price-conditioning and cross-source panels
+    read. ⚠ IT IS FILLED FROM `buys` RATHER THAN FROM THE PANEL, and that is the reason it
+    exists: `buys` is the output of `clean_transactions`, a scope-and-repair pass over 2M rows
+    and the most expensive read in the step, so the conditioning layer must take the event
+    dates from here rather than repeat it. The `value`/`shares` it carries are the REPAIRED
+    value and the AS-FILED share count -- the split restatement the cost anchor needs belongs
+    to the consumer, which is the only place the price basis is known.
     """
     t, diag = clean_transactions(insider)
     if t.empty:
@@ -211,6 +220,20 @@ def build_insider_feature_panel(
             fields.pop(name)
             continue
         fields[name] = frame.where(floor, axis=0)
+
+    if sink is not None:
+        # ⚠ PROJECT FIRST, THEN RENAME. `buys` carries BOTH the source `shares` column and
+        # `clean_transactions`' numeric `shares_n`, so renaming `shares_n -> shares` on the
+        # whole frame produces two columns of that name and every later `ev["shares"]` is a
+        # DataFrame, not a Series. That is what broke the first full build, ~28 minutes in and
+        # past six merged panels -- the unit fixtures only ever carried `shares_n`.
+        ev = buys.loc[:, ["ticker", "day", "value", "shares_n"]].rename(
+            columns={"day": "date", "shares_n": "shares"})
+        sink.add_events("insider", ev)
+        if "owner_cik" in buys.columns:
+            sink.add_actors("insider", buys.loc[:, ["ticker", "day", "owner_cik"]].rename(
+                columns={"day": "date", "owner_cik": "actor"}))
+        sink.keep_signals(fields)
 
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)",
               len(fields), len(t), len(buys), len(sells))

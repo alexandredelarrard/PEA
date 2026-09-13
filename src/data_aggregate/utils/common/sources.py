@@ -16,12 +16,16 @@ The projection MUST cover every column its builder requires --
 drops a needed column fails there rather than silently emptying a feature.
 
 BUT it must also tolerate a column the builder treats as OPTIONAL and the live table does not
-have. `sec_short_interest` is the case that bites: the builder only adds
-`ic_shortvol_days_to_cover` when `{"short_interest", "avg_daily_volume"}.issubset(hist.columns)`,
-yet the projection listed them unconditionally -- and `DataStore.read_table` resolves columns
-via `tbl.c[name]`, which raises `KeyError` for an absent one. The live table has only
-`date, ticker, short_volume, total_volume`, so the read died instead of degrading. Use
-`project_existing` rather than indexing `SOURCE_COLUMNS` directly.
+have, because `DataStore.read_table` resolves columns via `tbl.c[name]` and raises `KeyError`
+for an absent one -- so an over-declared projection kills the read instead of degrading the
+feature. Use `project_existing` rather than indexing `SOURCE_COLUMNS` directly.
+
+`sec_short_interest` was the case that bit: the projection listed `short_interest` /
+`avg_daily_volume` unconditionally for a `ic_shortvol_days_to_cover` feature, the live table
+has only `date, ticker, short_volume, total_volume`, and the whole family died. That feature is
+now gone for a better reason than the missing columns -- days-to-cover needs FINRA's twice
+-monthly short-INTEREST positions, which this repo does not fetch, and short VOLUME cannot
+approximate a position (see `short_flow_features`). The projection no longer asks for them.
 
 ⚠ THE KEYS ARE PHYSICAL TABLE NAMES (`Table.name`), NOT REGISTRY ATTRIBUTE NAMES. Five
 registry entries differ between the two -- `Tables.short_interest` is the table
@@ -53,11 +57,22 @@ SOURCE_COLUMNS: dict[str, list[str]] = {
                              "security_type", "security_title", "direct_indirect",
                              "officer_title", "is_director", "is_officer",
                              "is_ten_pct_owner", "is_10b5_1"],
-    # short_interest_features: RegSHO short/total volume + reported short interest / ADV.
+    # short_flow_features: RegSHO short/total volume, and nothing else -- the table has only
+    # these four columns and short VOLUME is all it reports.
     # Keyed on the PHYSICAL name -- `Tables.short_interest.name` is `sec_short_interest`.
-    "sec_short_interest": ["date", "ticker", "short_volume", "total_volume",
-                           "short_interest", "avg_daily_volume"],
+    "sec_short_interest": ["date", "ticker", "short_volume", "total_volume"],
     "sec_fails_to_deliver": ["date", "ticker", "fails_quantity"],
+    # ownership_features: canonical-event construction (max per accession+cusip, never sum)
+    # needs the group-membership + ownership-number columns; `is_amendment` and
+    # `item4_purpose_of_transaction` are 13D-only concepts (13G has neither).
+    "sec_13d": ["ticker", "accession_number", "cusip", "filing_date", "is_amendment",
+               "percent_of_class", "reporting_person_cik", "reporting_person_name",
+               "item4_purpose_of_transaction"],
+    "sec_13g": ["ticker", "accession_number", "cusip", "filing_date",
+               "percent_of_class", "reporting_person_cik", "reporting_person_name"],
+    # NOTE `sec_13d_transactions` is deliberately ABSENT, same reasoning as `wiki_pageviews`
+    # below: the registry marks it "not used" for this feature set (18 tickers total) and a
+    # projection with no reader is not free. Add it back if a future feature reads it.
     # NOTE `wiki_pageviews` / `google_trends` are deliberately ABSENT. Their only consumer
     # was the attention panel, which is deleted; both tables are still EXTRACTED and still
     # sit in the DB, so a future consumer adds its projection back here. A projection with
@@ -85,8 +100,6 @@ SOURCE_COLUMNS: dict[str, list[str]] = {
 # Columns a builder uses only IF present, so projecting them must not hard-fail when the live
 # table predates them. Each entry is `table -> the optional columns of its projection`.
 OPTIONAL_SOURCE_COLUMNS: dict[str, frozenset[str]] = {
-    # short_interest_features adds `ic_shortvol_days_to_cover` only when BOTH are reported
-    "sec_short_interest": frozenset({"short_interest", "avg_daily_volume"}),
     # institutional_features zero-fills the option legs when they are absent
     "sec13f_hr": frozenset({"call_value", "put_value", "filing_date"}),
 }

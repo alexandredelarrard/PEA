@@ -212,11 +212,15 @@ class Tables:
     # because the table is live with consumers; corrected at the feature level.
     short_interest = Table(
         "sec_short_interest", ("ticker", "date"), date_col="date", freshness="daily",
-        # short_interest_features: RegSHO short/total volume + reported short interest / ADV.
-        # `short_interest` and `avg_daily_volume` are OPTIONAL -- the builder only adds
-        # `ic_shortvol_days_to_cover` when BOTH are present, and the live table has only
-        # date/ticker/short_volume/total_volume. Demanding them unconditionally is what
-        # killed the read instead of degrading it.
+        # Read by `institutionals/short_flow_features.py` (the old `short_interest_features`
+        # module is gone) for the RegSHO short/total volume legs.
+        # `short_interest` and `avg_daily_volume` are OPTIONAL and no live consumer reads
+        # them: they backed `ic_shortvol_days_to_cover`, a feature REMOVED BY DESIGN -- days
+        # -to-cover needs reported bi-monthly short interest, which this table does not hold
+        # and the fetcher does not collect. They stay declared-and-optional so that a future
+        # fetch of the FINRA short-interest file can land in the same table without a schema
+        # change; they are not a pending column. Keeping them non-optional is what killed the
+        # read instead of degrading it, back when the projection demanded them unconditionally.
         read_columns=("date", "ticker", "short_volume", "total_volume",
                       "short_interest", "avg_daily_volume"),
         optional_columns=frozenset({"short_interest", "avg_daily_volume"}))

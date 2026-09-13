@@ -157,10 +157,37 @@ def test_per_part_warmup_covers_binding_lookback():
     # `attention` is absent because that panel was DELETED (dead code: defined, never called
     # from `run()`) with the `extras` -> `institutionals` rename -- not because a group lost
     # its owner, which is what this assertion exists to catch.
+    #
+    # `short_interest` -> `short_flow` is a RENAME, not a loss: the panel now builds from RegSHO
+    # daily short VOLUME and fails-to-deliver, and `ic_shortvol_days_to_cover` went with the old
+    # name because days-to-cover needs FINRA short-INTEREST positions this repo does not fetch.
+    # `conditioning` and `cross_source` are the two DERIVED panels added in Phase 2.6/2.7; they
+    # read the `ConditioningSink` rather than a source table, but they still own a daily-grid
+    # look-back (the 252-day excursion window is one of the two that bind this part's warm-up).
+    #
+    # `ownership` was ADDED to the set on 2026-09-12 and that is a DECLARATION, not a new panel:
+    # `cube_part_institutionals` had been merging SEVEN panels while declaring six, so the
+    # beneficial-ownership family (`ic_bo_*` / `ic_act_*`) had no entry and nothing here could
+    # check its warm-up. Its `HOLDER_ACTIVE_DAYS = 378` is in fact the longest bounded look-back
+    # in the part, covered by the 390-day warm-up with 12 days to spare -- which was luck, and
+    # `f_ic_bo_new_holder` was the single worst column in the 2026-09-12 L7 run, wrong on 490 of
+    # 491 tickers on the newest date.
+    #
+    # ⚠ THIS ASSERTION IS STILL WEAKER THAN IT LOOKS. A group's declared number is its longest
+    # BOUNDED look-back, and several families here are UNBOUNDED: an age-since-last-event, a
+    # distinct-actor count to date, an expanding-window owner surprise, a price path measured
+    # from an anchor fifteen years back. `parts.py`'s premise -- source tables are read in full,
+    # so filing-space builders need no grid warm-up -- holds for a rolling window and fails for
+    # these, because the events are all read but are projected onto a grid that starts at
+    # `window.since`. No value of `warmup_trading_days` fixes that. `cube_part_institutionals`
+    # answers it structurally instead (`_load_frames` takes no `since`; it computes over the
+    # full calendar and lets `write_part` slice the tail), so for THAT part the warm-up is now
+    # belt-and-braces. For every other part this test passing is still not evidence that an
+    # incremental build is correct -- L7 in `validate institutionals` is.
     assert set(covered) == {
         "price", "fundamental", "sector", "earnings", "governance", "employee", "dividend",
-        "institutional", "superinvestor", "insider", "short_interest",
-        "earnings_call_sentiment", "earnings_call_embedding",
+        "institutional", "superinvestor", "insider", "short_flow", "conditioning",
+        "cross_source", "ownership", "earnings_call_sentiment", "earnings_call_embedding",
     }, f"feature groups lost/added: {sorted(covered)}"
 
     # heavy parts read ~5y; every other part stays light (this is where the memory win is)
@@ -313,10 +340,26 @@ def test_source_column_projection_covers_builder_needs():
     required = {  # columns each builder actually consumes from the table (the contract)
         "sec13f_hr": {"cik", "period", "ticker", "shares", "value_usd",
                       "call_value", "put_value", "filing_date"},
-        "insider_transactions":   {"ticker", "filing_date", "transaction_code", "value_usd"},
-        "sec_short_interest":     {"date", "ticker", "short_volume", "total_volume",
-                                   "short_interest", "avg_daily_volume"},
+        "insider_transactions":   {"ticker", "owner_cik", "filing_date", "transaction_code",
+                                   "shares", "price_per_share", "value_usd",
+                                   "security_type", "shares_owned_after"},
+        # ⚠ FOUR COLUMNS, NOT SIX. `short_interest` / `avg_daily_volume` were in this contract
+        # for `ic_shortvol_days_to_cover` -- a feature that no longer exists, and whose absence
+        # is a DESIGN decision rather than a missing projection: the live `sec_short_interest`
+        # table carries RegSHO daily short VOLUME only, and days-to-cover needs FINRA's
+        # twice-monthly short-INTEREST positions, which this repo does not fetch. Asserting the
+        # two dead columns here made the projection look broken when it was the contract that
+        # was stale. Do not add them back without a fetcher that populates them.
+        "sec_short_interest":     {"date", "ticker", "short_volume", "total_volume"},
         "sec_fails_to_deliver":   {"date", "ticker", "fails_quantity"},
+        # ownership_features (13D/13G). `accession_number` + `cusip` are the canonical-event
+        # key (a group files one 13D under many reporting persons; summing their
+        # `percent_of_class` would double-count the same block), and `filing_date` is the ONLY
+        # legal stamp -- `date_of_event` is never projected, which is what makes L4 structural.
+        "sec_13d":                {"ticker", "accession_number", "cusip", "filing_date",
+                                   "is_amendment", "percent_of_class", "reporting_person_cik"},
+        "sec_13g":                {"ticker", "accession_number", "cusip", "filing_date",
+                                   "percent_of_class", "reporting_person_cik"},
         # `wiki_pageviews` / `google_trends` are NOT here: their only builder was the attention
         # panel, now deleted. Both tables are still extracted and still in the DB, so this
         # contract comes back the day something reads them again.

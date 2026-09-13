@@ -3,18 +3,22 @@ selected at model time.
 
   * _apply_label            -> exact rank / z-score transforms of the residual
   * build_targets_multi     -> computes epsilon once, emits BOTH versions
-  * _labels_to_long         -> nested targets become target_rank / target_zscore
-  * panel_from_cube         -> `target_type` picks the column (legacy fallback)
+  * panel_from_cube         -> (target_type, horizon) picks ONE wide column
+
+`labels_to_wide` -- the {horizon: {label: DataFrame}} -> `target_<label>_h<horizon>` pivot
+itself -- is pinned by `test_target_wide.py`, which covers the grain, the immature-label
+tail and the legacy-mapping refusal. This file stops at the column the model reads.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.data_aggregate.utils.target.targets import (
     _apply_label, build_targets_multi, cross_sectional_zscore,
 )
-from src.data_aggregate.utils.assemble.cube import _labels_to_long, panel_from_cube
+from src.data_aggregate.utils.assemble.cube import panel_from_cube
 
 
 def test_zscore_target_is_winsorized():
@@ -99,27 +103,18 @@ def test_build_targets_multi_returns_rank_and_zscore():
 
 
 # --------------------------------------------------------------------------- #
-# 3. cube plumbing: nested labels -> columns, panel_from_cube selects type      #
+# 3. cube plumbing: panel_from_cube picks ONE wide column                       #
 # --------------------------------------------------------------------------- #
-def test_labels_to_long_creates_per_version_columns():
-    dates = pd.bdate_range("2020-01-01", periods=2)
-    tkrs = ["AAA", "BBB", "CCC"]
-    mk = lambda v: pd.DataFrame(v, index=dates, columns=tkrs)
-    labels = {5: {"rank": mk([[0.2, 0.5, 0.8]] * 2),
-                  "zscore": mk([[-1.0, 0.0, 1.0]] * 2)}}
-    long = _labels_to_long(labels)
-    assert {"target_rank", "target_zscore", "target_horizon", "date", "ticker"}.issubset(long.columns)
-    print("\n=== SANITY CHECK: _labels_to_long nested ===")
-    print(f"  columns -> {sorted(long.columns)} (one target_<version> each). Validated.")
-
-
 def _mini_cube():
+    """A WIDE cube: one row per (date, ticker), one column per (label, horizon). The
+    horizon is a column axis, so the same 6 rows serve h5 and h20."""
     dates = pd.bdate_range("2020-01-01", periods=2)
     rows = []
     for d in dates:
         for tk, r, z, f in [("AAA", 0.2, -1.0, 1.1), ("BBB", 0.5, 0.0, 2.2), ("CCC", 0.8, 1.0, 3.3)]:
-            rows.append(dict(date=d, ticker=tk, target_horizon=5,
-                             target_rank=r, target_zscore=z, f_feat=f))
+            rows.append(dict(date=d, ticker=tk, f_feat=f,
+                             target_rank_h5=r, target_zscore_h5=z,
+                             target_rank_h20=r / 2, target_zscore_h20=z / 2))
     return pd.DataFrame(rows)
 
 
@@ -128,24 +123,52 @@ def test_panel_from_cube_selects_target_type():
     p_rank = panel_from_cube(cube, 5, "y", feature_cols=["f_feat"], target_type="rank")
     p_z = panel_from_cube(cube, 5, "y", feature_cols=["f_feat"], target_type="zscore")
 
-    assert list(p_rank["y"]) == [0.2, 0.5, 0.8, 0.2, 0.5, 0.8]     # target_rank
-    assert list(p_z["y"]) == [-1.0, 0.0, 1.0, -1.0, 0.0, 1.0]      # target_zscore
-    # the OTHER target column must not leak in as a feature
-    assert "target_zscore" not in p_rank.columns and "target_rank" not in p_z.columns
+    assert list(p_rank["y"]) == [0.2, 0.5, 0.8, 0.2, 0.5, 0.8]     # target_rank_h5
+    assert list(p_z["y"]) == [-1.0, 0.0, 1.0, -1.0, 0.0, 1.0]      # target_zscore_h5
+    # (date, ticker) is the whole grain now: no horizon filter, so every row is a candidate
+    assert len(p_rank) == len(cube) == 6
+    # NO other target column may leak in -- not the sibling label, and not the OTHER
+    # horizon's column of the same label, which an enumerated meta-column set would miss
+    assert [c for c in p_rank.columns if c.startswith("target")] == []
+    assert [c for c in p_z.columns if c.startswith("target")] == []
     assert "f_feat" in p_rank.columns
 
-    print("\n=== SANITY CHECK: panel_from_cube target_type selection ===")
-    print("  target_type='rank' -> y is target_rank; 'zscore' -> y is target_zscore; "
-          "other target column dropped. Validated.")
+    print("\n=== SANITY CHECK: panel_from_cube target_type selection (wide cube) ===")
+    print(f"  cube has {len([c for c in cube.columns if c.startswith('target')])} target "
+          f"columns; target_type='rank', horizon=5 -> y is target_rank_h5, 'zscore' -> "
+          f"target_zscore_h5")
+    print(f"  {len(p_rank)} rows (no horizon row-filter); every other target_* column dropped, "
+          f"including target_rank_h20. Validated.")
 
 
-def test_panel_from_cube_legacy_single_target_fallback():
-    # old cube with a single 'target' column -> still works
-    dates = pd.bdate_range("2020-01-01", periods=1)
-    cube = pd.DataFrame([dict(date=dates[0], ticker="AAA", target_horizon=5,
-                              target=0.7, f_feat=1.0)])
-    p = panel_from_cube(cube, 5, "y", feature_cols=["f_feat"], target_type="rank")
-    assert list(p["y"]) == [0.7]
+def test_panel_from_cube_selects_the_horizon_not_just_the_label():
+    """Horizon is now a COLUMN choice. Asking for h20 must return h20's values off the very
+    same rows -- a bug that ignored the horizon would silently train every horizon on h5."""
+    cube = _mini_cube()
+    p5 = panel_from_cube(cube, 5, "y", feature_cols=["f_feat"], target_type="rank")
+    p20 = panel_from_cube(cube, 20, "y", feature_cols=["f_feat"], target_type="rank")
 
-    print("\n=== SANITY CHECK: legacy single-target cube fallback ===")
-    print("  a pre-existing 'target'-only cube still loads (falls back). Validated.")
+    assert list(p20["y"]) == [v / 2 for v in p5["y"]]
+    assert p5[["date", "ticker"]].equals(p20[["date", "ticker"]])
+
+    print("\n=== SANITY CHECK: horizon picks the column, not a row subset ===")
+    print(f"  h5 y={list(p5['y'])[:3]} vs h20 y={list(p20['y'])[:3]} on IDENTICAL "
+          f"(date, ticker) rows. Validated.")
+
+
+def test_panel_from_cube_unknown_horizon_raises_and_names_what_exists():
+    """The legacy single-`target` fallback is gone by decision: a cube that has no column for
+    the requested (label, horizon) must say so, and list what it does have, rather than
+    silently train on some other column."""
+    cube = _mini_cube()
+
+    with pytest.raises(KeyError) as ei:
+        panel_from_cube(cube, 60, "y", feature_cols=["f_feat"], target_type="rank")
+    msg = str(ei.value)
+    assert "target_rank_h60" in msg and "target_rank_h5" in msg      # wanted + available
+    assert "build_cube.targets" in msg                               # the actionable fix
+
+    print("\n=== SANITY CHECK: missing target column raises ===")
+    print(f"  horizon 60 is not built -> KeyError naming target_rank_h60, the available "
+          f"target_* columns and the config keys to rebuild with. No silent fallback. "
+          f"Validated.")

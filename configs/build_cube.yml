@@ -140,6 +140,32 @@ build_cube:
                              # spread from +1.97pp to +0.63pp. Raise it only alongside a
                              # slice-basis score.
 
+    coverage_break_pct: 0.50 # D17. A quarter-on-quarter move larger than this in the
+                             # universe-wide 13F FILER COUNT is a coverage discontinuity, not
+                             # a market event, and every QoQ delta that quarter is nulled.
+                             # ⚠ MEASURED ON THE 2026-09-11 FULL BUILD (22,498,267 rows), it
+                             # fires on 11 quarters, with these filer counts:
+                             #   2002-03-31    2   2013-03-31   192   2024-03-31  6,655
+                             #   2006-12-31    5   2013-06-30 3,046   2025-06-30    254 HOLE
+                             #   2008-12-31    9   2023-12-31   463   2025-09-30  7,297
+                             #   2009-12-31   17                HOLE
+                             #   2012-12-31  107
+                             # SEVEN of the eleven sit at or before the D16 delta floor
+                             # (2013-09-30) and are already nulled by it, so the guard only
+                             # removes a value the floor had not removed on FOUR: 2023-12-31,
+                             # 2024-03-31, 2025-06-30, 2025-09-30 -- the two broken quarters
+                             # and the recovery quarter after each. The two HOLES have their
+                             # LEVELS suppressed as well, because a delta against a hole reads
+                             # as the whole universe initiating at once.
+
+    excursion_lookback: 252  # trading days. Caps `ic_sig_insider_max_dd_since_buy` /
+                             # `_max_runup_since_buy`: an excursion measured since a purchase
+                             # filed nine years ago describes the decade, not the insider.
+                             # ⚠ THIS IS THE BINDING LOOK-BACK OF THE WHOLE PART -- raising it
+                             # requires raising `cube_part_institutionals.warmup_trading_days`
+                             # in `parts.py` (390 today), which `test_part_registry.py`
+                             # enforces rather than trusting.
+
   hist:                      # self-history (valuation mean-reversion) window for
                              # the f_<yield>_vs_hist features ("cheap vs own past")
     window: 1260             # ~5 trading years of trailing daily observations

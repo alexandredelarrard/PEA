@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pandas as pd
 
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
-from src.data_aggregate.utils.institutionals.short_interest_features import (
-    build_short_interest_feature_panel, _FTD_PUB_LAG)
+from src.data_aggregate.utils.institutionals.short_flow_features import (
+    build_short_flow_feature_panel, FTD_PUB_LAG)
 
 
 def test_periods_semimonthly_bounded():
@@ -131,7 +131,7 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
 
 
 def test_ftd_feature_ranks_high_fails_and_is_leak_free():
-    idx = pd.bdate_range("2024-01-01", periods=120)
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-01", periods=120))
     days = idx[:30]
     fails = pd.concat([
         pd.DataFrame({"date": days, "ticker": "HI", "fails_quantity": 1e5}),
@@ -141,18 +141,21 @@ def test_ftd_feature_ranks_high_fails_and_is_leak_free():
     volume = pd.DataFrame({t: 1e6 for t in ("HI", "MID", "LO")}, index=idx)
     peers = {"HI": {"MID": 1.0, "LO": 1.0}, "MID": {"HI": 1.0, "LO": 1.0}, "LO": {"HI": 1.0, "MID": 1.0}}
 
-    panel = build_short_interest_feature_panel(None, peers, idx, fails_history=fails, volume=volume)
-    assert "f_ic_ftd_ratio_xs" in panel.columns
+    panel = build_short_flow_feature_panel(None, peers, idx, fails_history=fails,
+                                           volume=volume)
+    assert "f_ic_ftd_to_adv20_xs" in panel.columns
 
-    # after the publication lag, HI (0.1 fails/vol) ranks above LO (0.0001)
-    d = idx[_FTD_PUB_LAG + 25]
+    # after the publication lag, HI (0.1 fails/ADV20) ranks above LO (0.0001)
+    d = idx[FTD_PUB_LAG + 25]
     row = panel[panel["date"] == d].set_index("ticker")
-    assert row["f_ic_ftd_ratio_xs"]["HI"] > row["f_ic_ftd_ratio_xs"]["LO"]
+    assert row["f_ic_ftd_to_adv20_xs"]["HI"] > row["f_ic_ftd_to_adv20_xs"]["LO"]
+    assert row["f_ic_ftd_to_adv20"]["HI"] > row["f_ic_ftd_to_adv20"]["LO"]
 
     # leak-free: before the publication lag the fails signal is not yet visible
     early = panel[panel["date"] == idx[5]]
-    assert early.empty or early["f_ic_ftd_ratio_xs"].isna().all()
+    assert early.empty or early["f_ic_ftd_to_adv20"].isna().all()
 
-    print("\n=== SANITY: FTD feature (fails/volume, publication-lagged) ===")
-    print(f"  HI fails/vol 0.10 ranks above LO 0.0001 after the {_FTD_PUB_LAG}d lag; "
+    print("\n=== SANITY: FTD feature (fails/ADV20, publication-lagged) ===")
+    print(f"  HI fails/ADV20 {row['f_ic_ftd_to_adv20']['HI']:.4f} ranks above LO "
+          f"{row['f_ic_ftd_to_adv20']['LO']:.6f} after the {FTD_PUB_LAG}d lag; "
           f"pre-lag signal absent (leak-free). Validated.")

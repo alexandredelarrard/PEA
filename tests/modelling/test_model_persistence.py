@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.assemble.cube import panel_from_cube
+from src.data_aggregate.utils.assemble.cube import panel_from_cube, target_column
 from src.modelling.long_short.utils import model as ml
 
 
@@ -19,8 +19,10 @@ _WINDOW_DAYS = 400          # ~one trading year back from the latest labelled da
 def sample_panel():
     """One horizon's modelling panel, read scoped to a RECENT labelled window.
 
-    Was `store.load("cube")` -- the whole 5.6M x 574 table, ~7GB -- to keep 8000 rows. Both
-    narrowings `panel_from_cube` performs (one horizon, non-null label) are pushed into SQL.
+    Was `store.load("cube")` -- the whole table, ~7GB -- to keep 8000 rows. Both narrowings
+    `panel_from_cube` performs are pushed into SQL; against the wide cube the horizon is one
+    of them, selecting the `target_<type>_h<horizon>` COLUMN and filtering it non-null,
+    rather than an equality on a `target_horizon` row key.
 
     The window is anchored on the LATEST labelled date, not the earliest: the oldest rows have
     no `mom_12_1` yet (252-day warm-up), so an earliest-first slice returns an all-NULL column
@@ -32,14 +34,17 @@ def sample_panel():
     config, ctx = get_config_context("./configs", use_cache=False, save=False)
     label = config.model.label_column
     h = int(config.build_cube.targets.primary_horizon)
+    target_type = config.model.get("target_type", "rank")   # same key step_train reads
     cube_cols = ctx.store.columns("cube")
     if not cube_cols:
         pytest.skip("cube table does not exist")
 
     # cfg.lgbm.columns, not the long-gone cfg.inputs.columns: this trains a LightGBM ranker
     feats = [c for c in config.lgbm.columns if c in cube_cols][:12]
-    target_col = "target_rank" if "target_rank" in cube_cols else "target"
-    scope = {"target_horizon": h, target_col: ctx.store.NOT_NULL}
+    target_col = target_column(target_type, h)
+    if target_col not in cube_cols:
+        pytest.skip(f"cube carries no {target_col} column")
+    scope = {target_col: ctx.store.NOT_NULL}
 
     latest = ctx.store.distinct("cube", "date", where=scope, order="desc", limit=1)
     if not latest:
@@ -47,12 +52,13 @@ def sample_panel():
     since = pd.Timestamp(latest[0]) - pd.Timedelta(days=_WINDOW_DAYS)
 
     cube = ctx.store.load("cube",
-                          columns=["date", "ticker", "target_horizon", target_col] + feats,
+                          columns=["date", "ticker", target_col] + feats,
                           where=scope, since=since, optional=True)
     if cube is None:
         pytest.skip("no labelled cube rows in the recent window")
 
-    panel = panel_from_cube(cube, h, label, feats).tail(_PANEL_ROWS)
+    panel = panel_from_cube(cube, h, label, feats,
+                            target_type=target_type).tail(_PANEL_ROWS)
     if panel.empty:
         pytest.skip("empty modelling panel")
     return panel, feats, label, h

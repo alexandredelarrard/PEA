@@ -191,6 +191,67 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # ticker has a planned sale, so its column set was already complete, while the discretionary
 # leg excludes exercise-and-sell packages and left some tickers empty -- those are the NaN ->
 # 0 cells.
+#
+# Regenerated an EIGHTH time, 2026-09-11, for the wide-target cube + composite removal. The
+# cleanest diff there has been, and the only one that is a PURE KEY REMOVAL:
+#
+#     35 outputs -> 34.  REMOVED 1 (`panel.composites`)   ADDED 0   SHARED-AND-MOVED 0
+#     all 34 shared digests byte-identical, `_meta` aside
+#
+# That zero is the whole point of running the diff before writing. Four phases had just
+# rewritten the targets part from long to wide, replaced `stack()` with a per-label pivot,
+# turned the cube's assemble into `base LEFT JOIN targets`, and changed every read-side
+# projection -- and none of it may move a feature VALUE. The six `label.*` digests are the
+# sharpest of the 34: `compute()` builds them through `build_targets_multi`, so a pivot that
+# mis-aligned a (date, ticker) or silently dropped an immature cell would land there. They did
+# not move. `panel.composites` is gone because `comp_<theme>` no longer exists in `src/` at all.
+#
+# Regenerated a NINTH time, 2026-09-12, for informed-capital Phases 2.5-2.8. The largest set
+# change so far and still a clean one:
+#
+#     34 outputs -> 37.  REMOVED 1   ADDED 4   SHARED 33, of which 30 BYTE-IDENTICAL and 3 moved
+#
+# REMOVED `panel.short_interest` -- `short_interest_features.py` is deleted from `src/`, not
+# renamed away from the fingerprint. ADDED `panel.short_flow` (its replacement, built from RegSHO
+# short VOLUME and fails-to-deliver), `panel.ownership` (13D/13G; a builder that was live in the
+# step and had never been fingerprinted at all), and the two DERIVED panels
+# `panel.signal_conditioning` and `panel.cross_source`.
+#
+# The three that moved, each for one nameable reason:
+#
+#   * `panel.institutional` 30 -> 18 cols. The D27/D28 emission redesign: 23 `_xs` / `_vs_peers`
+#     legs removed and 11 raw legs added, because the emission map now assigns per feature on
+#     MEASURED re-rank cardinality instead of emitting all three legs for everything. Three of
+#     the removals are renames whose new name is in the ADDED list (`new_buyers` ->
+#     `new_buyer_ratio`, `exiters` -> `exit_ratio`, `value_chg` -> `flow_to_mcap`, i.e. D28's
+#     count -> share). Exactly ONE shared column moved in VALUE, `f_ic_inst_shares_chg_xs`, and
+#     it is the split restatement -- the raw `f_ic_inst_shares_chg` is new, so only its
+#     percentile leg has a predecessor to differ from.
+#   * `panel.superinvestor` 28 -> 28 cols, `f_ic_super_shares_chg` and its `_xs` leg only. Same
+#     cause: the prior quarter's share count is now restated onto the current split basis, so a
+#     20-for-1 split stops reading as +1,900% accumulation.
+#   * `prim.quarter_features` 16 -> 14 cols. The same three renames, plus `period` now carried
+#     out of the builder (the per-quarter guards key on the PERIOD, never on the availability
+#     date -- two quarters share no date). Values moved in `ic_inst_breadth_chg`,
+#     `ic_inst_cluster_buying` and `ic_inst_holders`: all three are D28's denominator, the
+#     quarter's filer COUNT becoming a SHARE of the filer pool.
+#
+# ⚠ `ic_inst_shares_chg` DID NOT MOVE, AND THAT IS THE POINT OF ONE FIXTURE ARGUMENT. The same
+# phase added a per-ticker coverage-onset guard (`MIN_PRIOR_HOLDERS = 100`) that nulls the QoQ
+# deltas where a ticker's PRIOR quarter carried too few filers for the delta to describe a flow;
+# on the live table it nulls 1,128 of the 33,540 non-null `ic_inst_shares_chg` values (the
+# affected-TICKER count was not measured -- the whole-mask figure counts every name that has an
+# early thin quarter already nulled by D16/D17, so it is not this guard's population).
+# `N_MANAGERS` is 8, so left on it would have nulled EVERY delta in this fixture and the baseline
+# would have frozen a frame of NaN -- stable, and no longer protecting the delta half of the 13F
+# arithmetic. `aggregate_fingerprint` therefore passes `min_prior_holders=0` at both call sites
+# and the guard is covered by test_institutional_features.py::test_per_ticker_coverage_onset_guard
+# instead. An unchanged `ic_inst_shares_chg` digest is the evidence that opt-out is in force.
+#
+# The 30 byte-identical digests are the load-bearing half of this regeneration: the same phase
+# rewrote `StepCubeInstitutionals`' grid contract (no `since`; full calendar, tail-only write),
+# and the six `label.*` digests, `panel.price`, `panel.fundamental`, `panel.governance`,
+# `panel.insider` and every `prim.*` outside the 13F family all held.
 DECLARED_DRIFT: frozenset[str] = frozenset()
 
 
@@ -354,10 +415,17 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # every panel a cube part is built from. `panel.attention` was here until the attention
     # panel was deleted (D6) and `build_combined_attention_panel` with it; it is named in no
     # cube part now, so requiring it would pin a builder that cannot be built.
+    # ⚠ `panel.short_interest` -> `panel.short_flow` is a RENAME (the module stopped claiming
+    # to measure short interest, which it never did). The three ADDITIONS are
+    # `panel.ownership` -- live in the cube since Phase 2.4 and never fingerprinted, which is
+    # the `cube-silently-degraded` shape and the reason this tuple is hand-maintained -- plus
+    # the two derived panels Phase 2.6/2.7 added, `panel.signal_conditioning` and
+    # `panel.cross_source`.
     for must in ("panel.price", "panel.fundamental", "panel.sector", "panel.earnings",
                  "panel.employee", "panel.dividend", "panel.governance",
-                 "panel.short_interest", "panel.institutional", "panel.superinvestor",
-                 "panel.insider", "panel.betas", "panel.raw_features"):
+                 "panel.short_flow", "panel.institutional", "panel.superinvestor",
+                 "panel.insider", "panel.ownership", "panel.signal_conditioning",
+                 "panel.cross_source", "panel.betas", "panel.raw_features"):
         assert must in baseline, f"{must} is not fingerprinted"
         assert baseline[must]["rows"] > 0, f"{must} fingerprinted as empty"
         assert baseline[must]["cols"] > 2, f"{must} has no feature columns"
@@ -384,7 +452,15 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # numbers. `>= 15` outlived its cause the moment `panel.attention` was deleted and had to
     # be hand-corrected here -- the same way the `> 100` slice-width assertion below went stale
     # silently. A floor that cannot be derived from what it guards will drift again.
-    assert len(panels) >= 14, f"panel coverage regressed: {panels}"
+    #
+    # 14 -> 13 on the 2026-09-11 composite removal: `panel.composites` was the 14th, and
+    # `comp_<theme>` exists nowhere in `src/` any more. Caught by this test failing on the
+    # regeneration, which is the intended workflow -- the same way the primitive tuple caught
+    # `prim.super_quarter_features` vanishing. The floor now equals the `must` tuple's length.
+    #
+    # 13 -> 16 on the Phase 2.5-2.7 regeneration: `panel.ownership` (a builder that was live
+    # and unguarded), `panel.signal_conditioning` and `panel.cross_source`.
+    assert len(panels) >= 16, f"panel coverage regressed: {panels}"
     assert len(prims) >= 13, f"primitive coverage regressed: {prims}"
     assert len(labels) >= 6, f"only {len(labels)} target variants fingerprinted"
     # the frozen input must be pinned too: a silent DB change would otherwise look like a
@@ -411,8 +487,10 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     print(f"\n[coverage] {len(panels)} panels + {len(prims)} deduplicated primitives + "
           f"{len(labels)} labels + the frozen fundamentals input "
           f"({len(slice_cols)} columns, enrichments included)")
-    print("    SANITY CHECK: all 13 panel builders and all 13 to-be-merged primitives are "
-          "fingerprinted and non-empty, so no dedup step is unguarded.")
+    print(f"    SANITY CHECK: all {len(panels)} panel builders and all {len(prims)} "
+          "to-be-merged primitives are fingerprinted and non-empty, so no dedup step is "
+          "unguarded. (The counts are read off the baseline, not typed: the previous literal "
+          "'13 panel builders' was already wrong by three.)")
 
 
 def test_momentum_dedup_is_provably_identical(baseline):

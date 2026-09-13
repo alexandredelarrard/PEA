@@ -1,8 +1,9 @@
-"""Step 4 — 13F institutional-ownership features.
+"""Broad 13F institutional-ownership features (`ic_inst_*`, registry section 1).
 
-Checks the QoQ aggregation math (breadth change, new/exit, cluster buying,
-accumulation), the 45-day filing-lag point-in-time stamping, ownership %, the
-built f_* panel columns, and the pure extractor parsers (SEC join + OpenFIGI).
+Covers the QoQ aggregation math on the D28 breadth SHARE, the 45-day filing-lag
+point-in-time stamping, the SPLIT restatement (a 20-for-1 split must not read as
+accumulation -- value-sanity V4), the D16 hard cutoff and the D17 coverage guards, the
+emitted `f_*` columns, and the pure extractor parsers (SEC join + OpenFIGI).
 """
 from __future__ import annotations
 
@@ -10,10 +11,31 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.institutionals.institutional_features import (
-    _quarter_features, build_institutional_feature_panel,
+    EMISSION, INST_DELTA_FLOOR_PERIOD, INST_LEVEL_FLOOR_PERIOD, MIN_PRIOR_HOLDERS,
+    _quarter_features as _qf, build_institutional_feature_panel as _panel,
 )
 from src.data_extract.utils.institutionals.fetch_13f import _holdings_frame
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
+
+LAG = pd.Timedelta(days=45)
+
+
+# ⚠ THE PER-TICKER COVERAGE-ONSET GUARD IS OFF BY DEFAULT IN THIS MODULE, and that is a
+# deliberate, narrow decision rather than a convenience. `MIN_PRIOR_HOLDERS` is 100 -- a floor
+# measured against the production 13F universe, where the median S&P name carries over a
+# thousand filers -- while every fixture below holds two or three synthetic managers. Left on,
+# it would null every QoQ delta in the file and the arithmetic tests would be asserting NaN ==
+# NaN and passing for the wrong reason. So the wrappers default it to 0: a test that means to
+# exercise the ARITHMETIC gets the arithmetic, and the one test that means to exercise the
+# GUARD passes a floor explicitly and says which. Adding a fixture here does not re-enable it.
+def _quarter_features(holdings, **kw):
+    kw.setdefault("min_prior_holders", 0)
+    return _qf(holdings, **kw)
+
+
+def build_institutional_feature_panel(holdings, *a, **kw):
+    kw.setdefault("min_prior_holders", 0)
+    return _panel(holdings, *a, **kw)
 
 
 def _frame(infotable):
@@ -24,9 +46,9 @@ def _holdings():
     """Deterministic manager-grain 13F for ticker A over 2 quarters:
       Q1 (2022-03-31): M1=100, M2=200            -> holders 2, shares 300
       Q2 (2022-06-30): M1=150 (up), M3=50 (new)  -> M2 exited
-        => ic_inst_new_buyers=1, ic_inst_exiters=1, breadth_chg=0, increasers=1(M1), decreasers=0,
-           cluster=(1-0)/2=0.5, shares 200 -> shares_chg=200/300-1=-1/3
-    Ticker B present only in Q1 (single holder) so it exercises the no-prior path."""
+        => new_buyer_ratio = 1/2, exit_ratio = 1/2, increasers=1 (M1), decreasers=0,
+           cluster=(1-0)/2=0.5, shares 200 -> shares_chg = 200/300-1 = -1/3
+    Ticker B is present only in Q1 (single holder) so it exercises the no-prior path."""
     rows = [
         {"cik": "M1", "period": "2022-03-31", "ticker": "A", "shares": 100, "value_usd": 1.0},
         {"cik": "M2", "period": "2022-03-31", "ticker": "A", "shares": 200, "value_usd": 2.0},
@@ -37,30 +59,79 @@ def _holdings():
     return pd.DataFrame(rows)
 
 
-def test_quarter_feature_math():
+def test_quarter_feature_math_on_the_d28_share():
     qf = _quarter_features(_holdings())
-    a2 = qf[(qf["ticker"] == "A") & (qf["as_of"] == pd.Timestamp("2022-06-30") + pd.Timedelta(days=45))].iloc[0]
-    assert a2["ic_inst_holders"] == 2
-    assert a2["ic_inst_new_buyers"] == 1 and a2["ic_inst_exiters"] == 1
-    assert a2["ic_inst_breadth_chg"] == 0
+    a2 = qf[(qf["ticker"] == "A") &
+            (qf["as_of"] == pd.Timestamp("2022-06-30") + LAG)].iloc[0]
+    # D28: `ic_inst_holders` is holders / the quarter's own filer count, not a headcount.
+    # Q2's universe filers are {M1, M3} = 2, both of which hold A -> 1.0.
+    assert a2["ic_inst_holders"] == 1.0
+    assert abs(a2["ic_inst_new_buyer_ratio"] - 0.5) < 1e-9      # M3 of 2 holders
+    assert abs(a2["ic_inst_exit_ratio"] - 0.5) < 1e-9           # M2 of 2 prior holders
     assert abs(a2["ic_inst_cluster_buying"] - 0.5) < 1e-9
     assert abs(a2["ic_inst_shares_chg"] - (200 / 300 - 1)) < 1e-9
-    # Q1 has no prior quarter -> change features NaN
-    a1 = qf[(qf["ticker"] == "A") & (qf["as_of"] == pd.Timestamp("2022-03-31") + pd.Timedelta(days=45))].iloc[0]
-    assert np.isnan(a1["ic_inst_breadth_chg"]) and np.isnan(a1["ic_inst_new_buyers"])
-    print("\n=== SANITY CHECK: 13F quarter-over-quarter math ===")
-    print(f"  A Q2: holders=2, new=1, exit=1, breadth_chg=0, cluster=0.5, "
-          f"shares_chg={a2['ic_inst_shares_chg']:.3f}; Q1 changes NaN (no prior). Validated.")
+    # Q1 has no prior quarter -> every delta is NaN, never 0
+    a1 = qf[(qf["ticker"] == "A") &
+            (qf["as_of"] == pd.Timestamp("2022-03-31") + LAG)].iloc[0]
+    assert np.isnan(a1["ic_inst_breadth_chg"]) and np.isnan(a1["ic_inst_new_buyer_ratio"])
+    assert np.isnan(a1["ic_inst_exit_ratio"]) and np.isnan(a1["ic_inst_shares_chg"])
+    print("\n=== SANITY CHECK: 13F quarter-over-quarter math (D28 share) ===")
+    print(f"  A Q2: holders_share={a2['ic_inst_holders']:.2f} (2 of 2 filers), "
+          f"new_buyer_ratio=0.5, exit_ratio=0.5, cluster=0.5, "
+          f"shares_chg={a2['ic_inst_shares_chg']:.3f}; Q1 deltas all NaN (no prior). Validated.")
+
+
+def _growing_universe(pairs: list[tuple[str, int, int]]) -> pd.DataFrame:
+    """`(period, n_filers, n_holding_A)` -> manager-grain rows. The filers who do not hold A
+    hold Z instead, so they count toward the universe pool without touching A's numerator."""
+    rows = []
+    for period, n_filers, n_a in pairs:
+        for m in range(n_filers):
+            rows.append({"cik": f"M{m}", "period": period,
+                         "ticker": "A" if m < n_a else "Z", "shares": 100, "value_usd": 1.0})
+    return pd.DataFrame(rows)
+
+
+def test_the_breadth_share_survives_a_filer_count_jump():
+    """D28's reason to exist: the raw holder COUNT grows with the fetch, the SHARE does not.
+    A's holder count rises 5 -> 6 while the universe grows 10 -> 12 filers, so the share is
+    0.50 throughout and the change is 0.00 rather than +1 holder."""
+    qf = _quarter_features(_growing_universe(
+        [("2022-03-31", 10, 5), ("2022-06-30", 12, 6)]))
+    a = qf[qf["ticker"] == "A"].sort_values("as_of")
+    assert abs(a.iloc[0]["ic_inst_holders"] - 0.5) < 1e-9
+    assert abs(a.iloc[1]["ic_inst_holders"] - 0.5) < 1e-9
+    assert abs(a.iloc[1]["ic_inst_breadth_chg"]) < 1e-9
+    print("\n=== SANITY CHECK: D28 breadth share vs filer-count growth ===")
+    print("  A's holder COUNT 5 -> 6 while the universe went 10 -> 12 filers: the share stays "
+          "0.50 and ic_inst_breadth_chg is 0.00, not +1. Validated.")
+
+
+def test_a_filer_count_jump_past_the_threshold_nulls_the_delta_anyway():
+    """The share absorbs a PROPORTIONAL coverage change; D17 catches the rest. Tripling the
+    filer count is not something a market does, so even though the share is unchanged
+    (2/5 -> 6/15) the delta is suppressed -- the two guards are belt and braces, and this is
+    the one assertion that says so."""
+    qf = _quarter_features(_growing_universe(
+        [("2022-03-31", 5, 2), ("2022-06-30", 15, 6)]))
+    a = qf[qf["ticker"] == "A"].sort_values("as_of")
+    assert abs(a.iloc[0]["ic_inst_holders"] - 2 / 5) < 1e-9
+    assert abs(a.iloc[1]["ic_inst_holders"] - 6 / 15) < 1e-9     # the LEVEL survives
+    assert np.isnan(a.iloc[1]["ic_inst_breadth_chg"]), "D17 did not null a +200% filer jump"
+    print("\n=== SANITY CHECK: D28 share + D17 guard together ===")
+    print("  universe 5 -> 15 filers (+200%): the share is legitimately unchanged at 0.40 and "
+          "the LEVEL survives, but every delta on that quarter is NaN because a tripling of "
+          "coverage is a fetch event, not a market one. Validated.")
 
 
 def test_filing_lag_point_in_time():
     idx = pd.bdate_range("2022-01-03", "2023-06-30")
-    panel = build_institutional_feature_panel(_holdings(), peer_dict={}, trading_index=idx)
+    build_institutional_feature_panel(_holdings(), peer_dict={}, trading_index=idx)
     # rebuild the daily field directly to check the lag boundary
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
     qf = _quarter_features(_holdings())
     daily = fundamentals_to_daily(qf, "ic_inst_cluster_buying", idx)["A"]
-    q2_asof = pd.Timestamp("2022-06-30") + pd.Timedelta(days=45)     # 2022-08-14
+    q2_asof = pd.Timestamp("2022-06-30") + LAG                       # 2022-08-14
     before = daily.loc[idx[idx < pd.Timestamp("2022-08-14")]]
     after = daily.loc[idx[idx >= q2_asof]]
     # Q2 cluster (0.5) must NOT appear before its as_of; appears on/after
@@ -71,26 +142,251 @@ def test_filing_lag_point_in_time():
           f"never before. Leak-free. Validated.")
 
 
-def test_panel_columns_and_ownership_pct():
+def _two_quarters(shares_q1: dict, shares_q2: dict) -> pd.DataFrame:
+    rows = []
+    for period, book in (("2022-03-31", shares_q1), ("2022-06-30", shares_q2)):
+        for cik, sh in book.items():
+            rows.append({"cik": cik, "period": period, "ticker": "A", "shares": sh,
+                         "value_usd": float(sh)})
+    return pd.DataFrame(rows)
+
+
+def test_a_split_is_not_accumulation():
+    """V4. A 20-for-1 split between the two quarters multiplies every holder's reported count
+    by 20 with no trade taking place. Unrestated, `shares_chg` reads +1,900% and EVERY holder
+    counts as an increaser, so `cluster_buying` prints its maximum +1.0 -- a fabricated
+    unanimous-conviction signal on the one quarter nobody decided anything."""
+    book = {"M1": 100.0, "M2": 200.0, "M3": 300.0}
+    post = {k: v * 20 for k, v in book.items()}
+    holdings = _two_quarters(book, post)
+    splits = pd.DataFrame({"ticker": ["A"], "date": [pd.Timestamp("2022-05-10")],
+                           "ratio": [20.0]})
+
+    naive = _quarter_features(holdings, splits=None)
+    naive_q2 = naive[naive["as_of"] == pd.Timestamp("2022-06-30") + LAG].iloc[0]
+    assert abs(naive_q2["ic_inst_shares_chg"] - 19.0) < 1e-9      # +1,900%, the defect
+    assert abs(naive_q2["ic_inst_cluster_buying"] - 1.0) < 1e-9   # every holder an "increaser"
+
+    fixed = _quarter_features(holdings, splits=splits)
+    q2 = fixed[fixed["as_of"] == pd.Timestamp("2022-06-30") + LAG].iloc[0]
+    assert abs(q2["ic_inst_shares_chg"]) < 1e-9, "split still read as accumulation"
+    assert abs(q2["ic_inst_cluster_buying"]) < 1e-9, "split still read as cluster buying"
+    print("\n=== SANITY CHECK: V4 split guard on the 13F share legs ===")
+    print(f"  unrestated: shares_chg={naive_q2['ic_inst_shares_chg']:+.0%}, "
+          f"cluster_buying={naive_q2['ic_inst_cluster_buying']:+.2f} (both fabricated); "
+          f"restated through prices_splits: {q2['ic_inst_shares_chg']:+.4f} / "
+          f"{q2['ic_inst_cluster_buying']:+.4f}. A real purchase after the split still "
+          "registers. Validated.")
+
+    # and a REAL purchase on top of the split still registers
+    real = _quarter_features(_two_quarters(book, {k: v * 20 * 1.1 for k, v in book.items()}),
+                             splits=splits)
+    r2 = real[real["as_of"] == pd.Timestamp("2022-06-30") + LAG].iloc[0]
+    assert abs(r2["ic_inst_shares_chg"] - 0.1) < 1e-9
+    assert abs(r2["ic_inst_cluster_buying"] - 1.0) < 1e-9
+
+
+def test_coverage_hole_and_break_guards():
+    """D17 + the hole extension. A quarter whose universe filer count collapses is missing
+    data, not a market event: its deltas AND levels are suppressed, and the RECOVERY quarter
+    (whose level is fine but whose predecessor is the hole) loses only its deltas."""
+    periods = ["2021-06-30", "2021-09-30", "2021-12-31", "2022-03-31"]
+    counts = [40, 40, 2, 40]                       # 2021-12-31 is the hole
+    rows = []
+    for period, n in zip(periods, counts):
+        for m in range(n):
+            rows.append({"cik": f"M{m}", "period": period, "ticker": "A",
+                         "shares": 100.0 + m, "value_usd": 100.0 + m})
+    qf = _quarter_features(pd.DataFrame(rows)).set_index("period")
+
+    hole, recovery = pd.Timestamp("2021-12-31"), pd.Timestamp("2022-03-31")
+    normal = pd.Timestamp("2021-09-30")
+    assert np.isnan(qf.loc[hole, "ic_inst_holders"]), "hole level not suppressed"
+    assert np.isnan(qf.loc[hole, "ic_inst_concentration"])
+    assert np.isnan(qf.loc[hole, "ic_inst_breadth_chg"])
+    assert np.isnan(qf.loc[hole, "inst_shares"]), "hole value leg not suppressed"
+    # the recovery quarter keeps its LEVEL (40 filers really did file) and loses its DELTAS
+    assert np.isfinite(qf.loc[recovery, "ic_inst_holders"])
+    assert np.isnan(qf.loc[recovery, "ic_inst_shares_chg"]), "delta against a hole survived"
+    assert np.isnan(qf.loc[recovery, "ic_inst_new_buyer_ratio"])
+    # an ordinary quarter is untouched
+    assert np.isfinite(qf.loc[normal, "ic_inst_holders"])
+    assert np.isfinite(qf.loc[normal, "ic_inst_breadth_chg"])
+    print("\n=== SANITY CHECK: D17 coverage-discontinuity guards ===")
+    print(f"  filer counts {dict(zip(periods, counts))}: the 2021-12-31 HOLE has every level "
+          f"and delta NaN; 2022-03-31 keeps holders="
+          f"{qf.loc[recovery, 'ic_inst_holders']:.2f} but its deltas are NaN (differenced "
+          f"against a hole); 2021-09-30 untouched. Validated.")
+
+
+def test_per_ticker_coverage_onset_guard():
+    """The per-ticker analogue of D16/D17 (`MIN_PRIOR_HOLDERS`). D16 asks when the MARKET's 13F
+    coverage began and D17 when it jumped; neither asks when THIS TICKER's did, so a name that
+    arrives in the index on a spin-off or an IPO has one filer in its first quarter and several
+    hundred in its second, and `shares / prev_shares - 1` reads that as a flow of millions of
+    percent (CCI, 2014-12-31: 34,264,348).
+
+    The fixture is that shape exactly, placed after the D16 floors so nothing else can suppress
+    it: one filer holding 9 shares, then 400 filers holding ~300M. Every DELTA must go; the
+    LEVELS must stay, because a thinly-held name really is thinly held that quarter and
+    `ic_inst_holders` is the feature that measures it."""
+    onset, broad = "2015-03-31", "2015-06-30"
+    rows = [{"cik": "M0", "period": onset, "ticker": "A", "shares": 9.0, "value_usd": 9.0}]
+    rows += [{"cik": f"M{m}", "period": broad, "ticker": "A",
+              "shares": 750_000.0 + m, "value_usd": 750_000.0 + m} for m in range(400)]
+    # a second name broadly held in BOTH quarters, so the universe filer count never moves
+    # enough to fire D17 and this test is about the per-ticker guard alone
+    rows += [{"cik": f"M{m}", "period": p, "ticker": "B", "shares": 500.0 + m,
+              "value_usd": 500.0 + m} for p in (onset, broad) for m in range(400)]
+
+    off = _quarter_features(pd.DataFrame(rows)).set_index(["ticker", "period"])
+    on = _quarter_features(pd.DataFrame(rows),
+                           min_prior_holders=MIN_PRIOR_HOLDERS).set_index(["ticker", "period"])
+    key = ("A", pd.Timestamp(broad))
+
+    unguarded = off.loc[key, "ic_inst_shares_chg"]
+    assert unguarded > 1e6, f"fixture no longer reproduces the defect: {unguarded}"
+    for c in ("ic_inst_shares_chg", "ic_inst_breadth_chg", "ic_inst_new_buyer_ratio",
+              "ic_inst_exit_ratio", "ic_inst_cluster_buying", "inst_value_flow"):
+        assert np.isnan(on.loc[key, c]), f"{c} survived the per-ticker onset guard"
+    # levels untouched, on both the guarded ticker and its broadly-held neighbour
+    assert np.isfinite(on.loc[key, "ic_inst_holders"])
+    assert np.isfinite(on.loc[key, "ic_inst_concentration"])
+    assert np.isfinite(on.loc[("B", pd.Timestamp(broad)), "ic_inst_shares_chg"]), \
+        "a name held by 400 filers in BOTH quarters must keep its delta"
+    print("\n=== SANITY CHECK: per-ticker coverage-onset guard ===")
+    print(f"  A: 1 filer/9 shares -> 400 filers/300M shares reads as shares_chg="
+          f"{unguarded:,.0f} unguarded; NaN at the {MIN_PRIOR_HOLDERS}-filer floor, while "
+          f"ic_inst_holders={on.loc[key, 'ic_inst_holders']:.3f} survives. B, broadly held "
+          "throughout, keeps its delta. Validated.")
+
+
+def test_d16_hard_cutoff_before_the_2013_break():
+    """D16. The 13F numbers before 2013-06-30 exist and look valid but describe the fetch, so
+    every level is NaN before that period's availability date and every delta before the
+    next one's."""
+    periods = ["2012-12-31", "2013-03-31", "2013-06-30", "2013-09-30"]
+    rows = [{"cik": f"M{m}", "period": p, "ticker": "A", "shares": 100.0 + m,
+             "value_usd": 100.0 + m}
+            for p in periods for m in range(30)]
+    qf = _quarter_features(pd.DataFrame(rows)).set_index("period")
+    for p in ("2012-12-31", "2013-03-31"):
+        assert np.isnan(qf.loc[pd.Timestamp(p), "ic_inst_holders"]), f"{p} level survived D16"
+    assert np.isfinite(qf.loc[INST_LEVEL_FLOOR_PERIOD, "ic_inst_holders"])
+    assert np.isnan(qf.loc[INST_LEVEL_FLOOR_PERIOD, "ic_inst_breadth_chg"]), \
+        "the first post-break quarter has no comparable predecessor (L10)"
+    assert np.isfinite(qf.loc[INST_DELTA_FLOOR_PERIOD, "ic_inst_breadth_chg"])
+    print("\n=== SANITY CHECK: D16 hard cutoff ===")
+    print(f"  levels NaN before {INST_LEVEL_FLOOR_PERIOD.date()} and deltas before "
+          f"{INST_DELTA_FLOOR_PERIOD.date()}, both measured from the 192 -> 3,046 filer jump. "
+          "Validated.")
+
+
+def test_panel_columns_match_the_emission_map():
     idx = pd.bdate_range("2022-01-03", "2023-06-30")
     tickers = ["A", "B", "C", "D"]
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
-    # shares outstanding for ownership %
     fund = pd.DataFrame([{"ticker": t, "as_of": "2022-01-01", "sharesOutstanding": 1000.0,
                           "sharesOutstandingPit": 1000.0}
                          for t in tickers])
-    panel = build_institutional_feature_panel(_holdings(), peers, idx, shares_out_history=fund)
-    for c in ("f_ic_inst_breadth_chg_xs", "f_ic_inst_cluster_buying_xs", "f_ic_inst_new_buyers_xs",
-              "f_ic_inst_holders_xs", "f_ic_inst_ownership_pct_xs"):
-        assert c in panel.columns, f"{c} missing from panel"
-    # A's ownership pct at a late date = 200 shares / 1000 = 0.2 (raw before xs-rank)
+    close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)
+    panel = build_institutional_feature_panel(_holdings(), peers, idx,
+                                              shares_out_history=fund, stock_close=close)
+    expected = set()
+    for name, mode in EMISSION.items():
+        expected.add(f"f_{name}")
+        if mode == "raw+xs":
+            expected.add(f"f_{name}_xs")
+        elif mode == "raw+peers":
+            expected.add(f"f_{name}_vs_peers")
+    emitted = {c for c in panel.columns if c.startswith("f_")}
+    # every emitted column is declared, and the two-leg shape matches the map exactly
+    assert emitted <= expected, f"undeclared column(s): {sorted(emitted - expected)}"
+    assert "f_ic_inst_holders" in emitted and "f_ic_inst_holders_xs" not in emitted
+    assert "f_ic_inst_ownership_pct_vs_peers" in emitted
+    assert "f_ic_inst_concentration_xs" in emitted
+    # A's ownership pct at a late date = 200 shares / 1000 = 0.2
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
     qf = _quarter_features(_holdings())
     inst_sh = fundamentals_to_daily(qf, "inst_shares", idx)["A"].dropna().iloc[-1]
     assert abs(inst_sh - 200.0) < 1e-9
-    print("\n=== SANITY CHECK: 13F panel columns + ownership pct ===")
-    print(f"  panel exposes f_ic_inst_breadth_chg / _cluster_buying / _new_buyers / _holders "
-          f"/ _ownership_pct (_xs); A latest inst_shares={inst_sh:.0f} (/1000 = 0.2). Validated.")
+    print("\n=== SANITY CHECK: 13F emitted columns vs the EMISSION map ===")
+    print(f"  {len(emitted)} legs emitted, all declared ({len(EMISSION)} features); "
+          f"holders is raw-only, ownership_pct carries the peer leg, concentration the "
+          f"percentile. A latest inst_shares={inst_sh:.0f} (/1000 = 0.2). Validated.")
+
+
+def _holdings_opts():
+    """Manager-grain 13F WITH option exposure over 2 quarters (ticker A), using real recent
+    quarter-ends to exercise the March->May availability lag:
+      Q1 2025-12-31: M1/M2/M3, long value 3.0M, calls 200k / puts 100k
+      Q2 2026-03-31: M3 exits, M4 new; long value 4.0M, calls 400k / puts 0 (bullish shift)"""
+    return pd.DataFrame([
+        {"cik": "M1", "period": "2025-12-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
+         "call_value": 100_000, "put_value": 50_000},
+        {"cik": "M2", "period": "2025-12-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
+         "call_value": 50_000, "put_value": 50_000},
+        {"cik": "M3", "period": "2025-12-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
+         "call_value": 50_000, "put_value": 0},
+        {"cik": "M1", "period": "2026-03-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
+         "call_value": 200_000, "put_value": 0},
+        {"cik": "M2", "period": "2026-03-31", "ticker": "A", "shares": 150, "value_usd": 1_500_000,
+         "call_value": 100_000, "put_value": 0},
+        {"cik": "M4", "period": "2026-03-31", "ticker": "A", "shares": 150, "value_usd": 1_500_000,
+         "call_value": 100_000, "put_value": 0},
+    ])
+
+
+def test_options_concentration_and_the_availability_date():
+    qf = _quarter_features(_holdings_opts())
+    q2 = qf[qf["as_of"] == pd.Timestamp("2026-03-31") + LAG].iloc[0]
+    # the crux: a March-31 quarter is only public ~mid-May
+    assert q2["as_of"] == pd.Timestamp("2026-05-15")
+    assert abs(q2["ic_inst_shares_chg"] - (400 / 300 - 1)) < 1e-9            # +33.3% VOLUME
+    # net options = (calls - puts) / (long value + calls + puts) = 400k / 4.4M
+    assert abs(q2["ic_inst_net_options_ratio"] - (400_000 / 4_400_000)) < 1e-6
+    assert abs(q2["ic_inst_new_buyer_ratio"] - (1 / 3)) < 1e-9               # M4 of 3 holders
+    assert abs(q2["ic_inst_exit_ratio"] - (1 / 3)) < 1e-9                    # M3 of 3 prior
+    # Herfindahl of manager value shares (1.0/1.5/1.5 of 4.0M)
+    assert abs(q2["ic_inst_concentration"] - ((1 / 4) ** 2 + 2 * (1.5 / 4) ** 2)) < 1e-6
+    # registry section 1: `inst_value_chg` and `net_options_ratio_chg` are DROPPED -- price
+    # -contaminated and redundant against flow_to_mcap / the level respectively.
+    assert "ic_inst_value_chg" not in qf.columns
+    assert "ic_inst_net_options_ratio_chg" not in qf.columns
+    print("\n=== SANITY CHECK: 13F options / concentration / availability ===")
+    print(f"  Q2(2026-03-31) as_of={q2['as_of'].date()} (leak-free); "
+          f"shares_chg={q2['ic_inst_shares_chg']:+.3f} "
+          f"net_options={q2['ic_inst_net_options_ratio']:.4f} "
+          f"HHI={q2['ic_inst_concentration']:.3f} "
+          f"new_buyer_ratio={q2['ic_inst_new_buyer_ratio']:.3f} "
+          f"exit_ratio={q2['ic_inst_exit_ratio']:.3f}; the two dropped features are absent. "
+          "Validated.")
+
+
+def test_value_to_mcap_and_flow_panel():
+    idx = pd.bdate_range("2025-10-01", "2026-09-30")
+    tickers = ["A", "B", "C", "D"]
+    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
+    fund = pd.DataFrame([{"ticker": t, "as_of": "2025-01-01", "sharesOutstanding": 1_000_000.0,
+                          "sharesOutstandingPit": 1_000_000.0}
+                         for t in tickers])
+    close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)           # price 10 -> mcap 10M
+    panel = build_institutional_feature_panel(
+        _holdings_opts(), peers, idx, shares_out_history=fund, stock_close=close)
+    for c in ("f_ic_inst_net_options_ratio", "f_ic_inst_concentration",
+              "f_ic_inst_value_to_mcap", "f_ic_inst_value_to_mcap_xs",
+              "f_ic_inst_flow_to_mcap", "f_ic_inst_flow_to_mcap_xs"):
+        assert c in panel.columns, f"{c} missing from panel"
+    # A after its Q2 becomes public: long value 4.0M / mcap 10M = 0.40 (raw, pre xs-rank)
+    from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+    qf = _quarter_features(_holdings_opts())
+    iv = fundamentals_to_daily(qf, "inst_value", idx)["A"].dropna().iloc[-1]
+    mc = daily_market_cap(fund, close, level_factor=None)["A"].iloc[-1]
+    assert abs(iv / mc - 0.40) < 1e-6
+    print("\n=== SANITY CHECK: institutional weight (value / market cap) ===")
+    print(f"  A inst_value=${iv:,.0f} / mcap=${mc:,.0f} = {iv / mc:.2f}; panel exposes "
+          f"value_to_mcap + flow_to_mcap (raw + percentile) and the two bounded ratios. "
+          "Validated.")
 
 
 def test_extractor_parsers():
@@ -161,77 +457,33 @@ def test_holdings_frame_reads_edgartools_columns():
           "same buckets as the bulk CUSIP/VALUE/SSHPRNAMT/SSHPRNAMTTYPE names. Validated.")
 
 
-def _holdings_opts():
-    """Manager-grain 13F WITH option exposure over 2 quarters (ticker A), using
-    real recent quarter-ends to exercise the March->May availability lag:
-      Q1 2025-12-31: M1/M2/M3, long value 3.0M, calls 200k / puts 100k
-      Q2 2026-03-31: M3 exits, M4 new; long value 4.0M, calls 400k / puts 0 (bullish shift)"""
-    return pd.DataFrame([
-        {"cik": "M1", "period": "2025-12-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
-         "call_value": 100_000, "put_value": 50_000},
-        {"cik": "M2", "period": "2025-12-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
-         "call_value": 50_000, "put_value": 50_000},
-        {"cik": "M3", "period": "2025-12-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
-         "call_value": 50_000, "put_value": 0},
-        {"cik": "M1", "period": "2026-03-31", "ticker": "A", "shares": 100, "value_usd": 1_000_000,
-         "call_value": 200_000, "put_value": 0},
-        {"cik": "M2", "period": "2026-03-31", "ticker": "A", "shares": 150, "value_usd": 1_500_000,
-         "call_value": 100_000, "put_value": 0},
-        {"cik": "M4", "period": "2026-03-31", "ticker": "A", "shares": 150, "value_usd": 1_500_000,
-         "call_value": 100_000, "put_value": 0},
-    ])
+def test_ownership_above_the_ceiling_is_nulled_not_clipped():
+    """The 2026-09-12 build found `f_ic_inst_ownership_pct` reaching **9.68** (DUK), with all
+    twelve extreme tickers carrying splits -- the recorded `sharesOutstandingPit` split defect
+    arriving through the denominator.
 
+    Three properties, and each has been got wrong somewhere in this repo before:
+      * above 100% is NOT nulled. Securities lending double-counts a position, so 100-130% is a
+        real reading and 24,347 of 1.5M cells sat there;
+      * above the ceiling is NULLED, not clipped -- a clip would invent a 200%-owned company
+        and hand the model a fabricated level;
+      * everything below is untouched, to the bit.
+    """
+    from src.data_aggregate.utils.institutionals.institutional_features import (
+        OWNERSHIP_CEILING, _capped_ownership)
 
-def test_value_flow_options_and_concentration():
-    qf = _quarter_features(_holdings_opts())
-    q2 = qf[qf["as_of"] == pd.Timestamp("2026-03-31") + pd.Timedelta(days=45)].iloc[0]
-    # the crux: a March-31 quarter is only public ~mid-May
-    assert q2["as_of"] == pd.Timestamp("2026-05-15")
-    assert abs(q2["ic_inst_value_chg"] - (4e6 / 3e6 - 1)) < 1e-9              # +33.3% VALUE flow
-    assert abs(q2["ic_inst_shares_chg"] - (400 / 300 - 1)) < 1e-9            # +33.3% VOLUME flow
-    # net options = (calls - puts) / (long value + calls + puts) = 400k / 4.4M
-    assert abs(q2["ic_inst_net_options_ratio"] - (400_000 / 4_400_000)) < 1e-6
-    assert q2["ic_inst_net_options_ratio_chg"] > 0                                # shifted bullish vs Q1
-    assert abs(q2["ic_inst_new_buyer_ratio"] - (1 / 3)) < 1e-9                    # M4 new of 3 holders
-    # Herfindahl of manager value shares (1.0/1.5/1.5 of 4.0M)
-    assert abs(q2["ic_inst_concentration"] - ((1 / 4) ** 2 + 2 * (1.5 / 4) ** 2)) < 1e-6
-    print("\n=== SANITY CHECK: 13F value flow / options / concentration ===")
-    print(f"  Q2(2026-03-31) as_of={q2['as_of'].date()} (leak-free); value_chg={q2['ic_inst_value_chg']:.3f} "
-          f"net_options={q2['ic_inst_net_options_ratio']:.4f} (chg {q2['ic_inst_net_options_ratio_chg']:+.4f}) "
-          f"HHI={q2['ic_inst_concentration']:.3f} ic_inst_new_buyer_ratio={q2['ic_inst_new_buyer_ratio']:.3f}. Validated.")
-
-
-def test_value_to_mcap_and_flow_panel():
-    idx = pd.bdate_range("2025-10-01", "2026-09-30")
-    tickers = ["A", "B", "C", "D"]
-    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
-    fund = pd.DataFrame([{"ticker": t, "as_of": "2025-01-01", "sharesOutstanding": 1_000_000.0,
-                          "sharesOutstandingPit": 1_000_000.0}
-                         for t in tickers])
-    close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)           # price 10 -> mcap 10M
-    panel = build_institutional_feature_panel(
-        _holdings_opts(), peers, idx, shares_out_history=fund, stock_close=close)
-    for c in ("f_ic_inst_value_chg_xs", "f_ic_inst_net_options_ratio_xs", "f_ic_inst_net_options_ratio_chg_xs",
-              "f_ic_inst_concentration_xs", "f_ic_inst_new_buyer_ratio_xs",
-              "f_ic_inst_value_to_mcap_xs", "f_ic_inst_flow_to_mcap_xs"):
-        assert c in panel.columns, f"{c} missing from panel"
-    # A after its Q2 becomes public: long value 4.0M / mcap 10M = 0.40 (raw, pre xs-rank)
-    from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
-    qf = _quarter_features(_holdings_opts())
-    iv = fundamentals_to_daily(qf, "inst_value", idx)["A"].dropna().iloc[-1]
-    mc = daily_market_cap(fund, close, level_factor=None)["A"].iloc[-1]
-    assert abs(iv / mc - 0.40) < 1e-6
-    print("\n=== SANITY CHECK: institutional weight (value / market cap) ===")
-    print(f"  A inst_value=${iv:,.0f} / mcap=${mc:,.0f} = {iv / mc:.2f}; panel exposes "
-          f"value_to_mcap + flow_to_mcap + options + concentration (_xs). Validated.")
-
-
-if __name__ == "__main__":
-    test_quarter_feature_math()
-    test_filing_lag_point_in_time()
-    test_panel_columns_and_ownership_pct()
-    test_extractor_parsers()
-    test_holdings_frame_splits_holding_types()
-    test_holdings_frame_reads_edgartools_columns()
-    test_value_flow_options_and_concentration()
-    test_value_to_mcap_and_flow_panel()
+    idx = pd.DatetimeIndex(pd.bdate_range("2020-01-01", periods=4))
+    raw = pd.DataFrame({"OK": [0.40, 0.95, 1.25, 1.99],          # all legitimate
+                        "BAD": [0.40, 2.01, 9.68, np.nan]},      # two impossible
+                       index=idx)
+    out = _capped_ownership(raw)
+    assert out["OK"].tolist() == raw["OK"].tolist(), "a legitimate >100% reading was touched"
+    assert out.loc[idx[0], "BAD"] == 0.40
+    assert out["BAD"].isna().sum() == 3, "2.01 and 9.68 must both go, and the NaN stays NaN"
+    assert (out.to_numpy(dtype="float64")[np.isfinite(out.to_numpy(dtype="float64"))]
+            <= OWNERSHIP_CEILING).all()
+    assert not (out == OWNERSHIP_CEILING).any().any(), "nulled, never clipped to the ceiling"
+    print("\n=== SANITY CHECK: ownership ceiling ===")
+    print(f"  ceiling {OWNERSHIP_CEILING}x: 1.25 and 1.99 kept (securities-lending "
+          f"double-counting is real), 2.01 and 9.68 NULLED, and no cell is left sitting AT "
+          f"the ceiling. Validated.")

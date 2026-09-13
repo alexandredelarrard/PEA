@@ -20,7 +20,10 @@ MEMORY-LIGHT, and this is the step that used to OOM-kill the DAG. The cube was L
 `target_horizon`, so a single `targets.merge(base)` broadcast every feature column across all
 horizons at once -- dates x tickers x horizons x ~570 columns held in RAM, then serialized in
 one shot. The horizon factor is gone from the SHAPE (targets are wide, ~9 label columns on the
-same grain), but `base` is still ~1.9M rows x ~570 float32 columns, so the streaming stays:
+same grain), but `base` is still **3.83M rows** x ~570 float32 columns, so the streaming stays.
+⚠ The row count is the panel's, NOT the targets part's, and it does not shrink with the wide
+pivot: measured 3,830,311 in `cube_part_prices` against 3,211,139 in the wide targets part.
+Sizing this step off the targets part is how it came to be under-budgeted:
 
   1. float32 every feature part as it is read,
   2. build `base` ONCE (features + betas + peers + GICS codes), indexed and sorted,

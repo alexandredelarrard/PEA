@@ -20,17 +20,17 @@ random_forest:
   # orthogonal). Used for ANY horizon that has no entry under columns_by_horizon.
   columns:
   - f_pegy_vs_peers
-  - f_ic_inst_new_buyer_ratio_vs_peers
+  - f_ic_inst_new_buyer_ratio
   - f_goodwill_intangibles_to_assets_vs_peers
   - f_current_ratio_xs
   - f_pegy_xs
-  - f_ic_inst_holders_vs_peers
+  - f_ic_inst_holders
   - f_goodwill_intangibles_to_assets_xs
   - f_refinancing_risk_xs
   - f_current_ratio_vs_peers
   - f_fixed_cost_coverage_margin_vs_peers
   - f_book_yield_xs
-  - f_ic_inst_value_chg_xs
+  - f_ic_inst_flow_to_mcap_xs
   - f_intrinsic_yield_xs
   - f_intangible_amortization_share_vs_peers
   - f_fwd_eps_yield_xs
@@ -38,8 +38,7 @@ random_forest:
   - f_sbc_intensity_vs_peers
   - f_implied_useful_life_vs_peers
   - f_implied_useful_life_xs
-  - f_ic_inst_new_buyer_ratio_xs
-  - f_ic_inst_ownership_pct_xs
+  - f_ic_inst_ownership_pct_vs_peers
   - f_ic_insider_distinct_buyers_120d
   - f_dividend_growth_xs
   - f_sales_yield_xs
@@ -55,7 +54,7 @@ random_forest:
   - f_asset_growth_vs_peers
   - f_asset_age_vs_peers
   - f_ic_super_shares_chg_xs
-  - f_ic_inst_concentration_vs_peers
+  - f_ic_inst_concentration_xs
   - f_acquisition_intensity_vs_peers
   - f_aoci_to_equity_vs_peers
   - f_eps_surprise_last_xs
@@ -70,41 +69,41 @@ random_forest:
   - f_earningsGrowth_xs
   - f_diluted_shares_growth_xs
   # Per-horizon OVERRIDES: the model uses the list for the horizon it is training
-  # (target_horizon) if present here, else falls back to  above.
+  # (its `target_<label>_h<horizon>` cube column) if present here, else `columns` above.
   columns_by_horizon:
     30:   # 30-day RF 50-feature set (earnings-surprise / growth / distress tilted)
     - f_pegy_vs_peers
     - f_pegy_xs
-    - f_ic_inst_net_options_ratio_chg_xs
+    - f_ic_inst_net_options_ratio
     - f_refinancing_risk_xs
     - f_goodwill_intangibles_to_assets_vs_peers
     - f_current_ratio_xs
     - f_goodwill_intangibles_to_assets_xs
     - f_book_yield_xs
-    - f_ic_inst_ownership_pct_xs
+    - f_ic_inst_ownership_pct_vs_peers
     - f_aoci_to_equity_xs
     - f_roic_ex_goodwill_xs
     - f_dividend_growth_xs
     - f_current_ratio_vs_peers
-    - f_ic_inst_holders_vs_peers
+    - f_ic_inst_holders
     - f_days_inventory_outstanding_vs_peers
     - f_sbc_intensity_xs
     - f_sga_intensity_xs
-    - f_ic_inst_exiters_vs_peers
+    - f_ic_inst_exit_ratio
     - f_employee_growth_xs
     - f_fwd_eps_yield_xs
-    - f_ic_inst_value_chg_vs_peers
+    - f_ic_inst_flow_to_mcap
     - f_gmroi_xs
     - f_ic_insider_distinct_buyers_120d
     - f_eps_expectation_growth_xs
-    - f_ic_inst_value_chg_xs
+    - f_ic_inst_flow_to_mcap_xs
     - volume_trend_63
     - f_q_margin_vs_ttm_xs
     - f_y_earnings_growth_xs
     - f_capex_intensity_xs
     - f_effective_tax_rate_vs_peers
     - f_fixed_cost_coverage_margin_vs_peers
-    - f_ic_inst_new_buyer_ratio_vs_peers
+    - f_ic_inst_new_buyer_ratio
     - f_dio_xs
     - f_fcf_yield_vs_peers
     - f_eps_surprise_last_xs
@@ -117,7 +116,7 @@ random_forest:
     - f_capex_to_dep_xs
     - f_operating_margin_5y_chg_vs_peers
     - f_shares_growth_xs
-    - f_ic_inst_net_options_ratio_chg_vs_peers
+    - f_ic_inst_net_options_ratio
     - f_diluted_shares_growth_vs_peers
     - f_q_earnings_growth_vs_peers
     - f_asset_growth_vs_peers

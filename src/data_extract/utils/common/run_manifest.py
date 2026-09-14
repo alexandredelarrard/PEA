@@ -114,24 +114,47 @@ def record_run(
     rows_added: int,
     is_full_rescan: bool = False,
     run_date: pd.Timestamp | str | None = None,
+    backfill_window: tuple[str, str] | None = None,
 ) -> None:
     """Merge this table's run stats into the shared manifest (read-modify-write --
     every fetcher in a step run shares the one file, so this must not clobber
     sibling tables' entries). `last_run_date` is always set to `run_date`
     (default today); `last_full_rescan_date` is set to it too when
-    `is_full_rescan` or this table has no prior entry, else left unchanged."""
+    `is_full_rescan` or this table has no prior entry, else left unchanged.
+
+    ⚠ `backfill_window` MARKS A RUN THAT REFILLED A HOLE BEHIND THE HEAD, and such a run
+    advances NOTHING. `last_run_date` is a resume cutoff (`manifest_window` returns it as
+    the next `since`), so stamping it from a backfill would claim the table had been brought
+    current when the run never looked at the head at all -- and the next incremental would
+    then start from the backfill's date. The window is appended to a `backfills` list and
+    every other field is carried through from the prior entry unchanged."""
     run_ts = pd.Timestamp(run_date).normalize() if run_date is not None else pd.Timestamp.today().normalize()
     run_date_str = run_ts.strftime(DATE_FORMAT)
 
     name = name_of(table)
     manifest = _load_manifest(context)
     prior = manifest.get(name) or {}
+
+    if backfill_window is not None:
+        entry = dict(prior)
+        entry["backfills"] = [*prior.get("backfills", []), {
+            "window": f"{backfill_window[0]}:{backfill_window[1]}",
+            "rows_added": int(rows_added),
+            "run_date": run_date_str,
+        }]
+        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+        manifest[name] = entry
+        _manifest_path(context).write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        return
+
     last_full_rescan_date = (
         run_date_str if (is_full_rescan or not prior.get("last_full_rescan_date"))
         else prior["last_full_rescan_date"]
     )
-    
+
     manifest[name] = {
+        **{k: v for k, v in prior.items() if k == "backfills"},
         "last_run_date": run_date_str,
         "last_full_rescan_date": last_full_rescan_date,
         "ticker_count": int(ticker_count),

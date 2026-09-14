@@ -143,8 +143,25 @@ def _resolve_tickers(holdings: pd.DataFrame, cmap: pd.DataFrame,
     return out[out["ticker"].isin(universe)]
 
 
+def _record(context: Context, tickers: list[str] | None, saved: int,
+            filing_window: tuple[str, str] | None) -> None:
+    """Log the run, as an incremental or as a backfill.
+
+    A windowed run must NOT read as a normal incremental: `last_run_date` is a resume cutoff
+    (`manifest_window`), and stamping it from a backfill would claim the table had been
+    brought current when the run only refilled a hole behind the head. `backfill_window`
+    routes it to the manifest's backfill list instead, leaving every watermark untouched."""
+    n_tickers = len(set(tickers or ()))
+    if filing_window is None:
+        record_run(context, Tables.sec13f_hr, n_tickers, saved)
+    else:
+        record_run(context, Tables.sec13f_hr, n_tickers, saved,
+                   backfill_window=tuple(filing_window))
+
+
 def fetch_13f(context: Context, tickers: list[str] | None = None, years_history: int = 15,
-              save_every: int = 600, lookback_days: int = 7) -> None:
+              save_every: int = 600, lookback_days: int = 7,
+              filing_window: tuple[str, str] | None = None) -> None:
     """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date`, minus
     `lookback_days`.
 
@@ -153,26 +170,52 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, years_history:
     `lookback_days` re-reads the tail of the window because there is no accession dedup and
     `_read_filing` swallows per-filing failures -- without it, a filing that failed
     transiently would sit behind the advanced watermark and never be retried. A full rescan
-    is the wrong self-heal here: 15y is ~528k filings, ~16h."""
+    is the wrong self-heal here: 15y is ~528k filings, ~16h.
+
+    ⚠ `filing_window` IS A BACKFILL, NOT A RESUME, and it deliberately bypasses the
+    watermark in both directions: it does not read it and it does not advance it. The
+    watermark is `max(filing_date)`, so a gap BEHIND it is unreachable by design --
+    `since = watermark - 7d` can never look back two months, and `lookback_days` was sized
+    for a transient per-filing failure, not for a lost season. Measured 2026-09-14:
+    `sec13f_hr` had no row filed in 2024-01/02 or 2025-06..08, which is exactly the two
+    filing seasons for periods 2023-12-31 and 2025-06-30, and both quarters read 13x and
+    29x short on the filer axis as a result (463 and 254 filers against ~6,400 and ~7,200
+    in their neighbours).
+
+    Re-reading a filing already stored is IDEMPOTENT: `sec13f_hr`'s PK is
+    `(cik, period, ticker, cusip)` and `store.save` upserts on it, so an overlapping window
+    restates rows rather than appending them. There is no accession column and no accession
+    dedup, and this is the reason a backfill does not need one.
+
+    ⚠ ONE EDGAR WALK AT A TIME. The rate limiter is per-PROCESS, so two concurrent walks run
+    at ~18 req/s against SEC's 10 and the block is silent."""
 
     context.ensure_edgar_identity()
     today = pd.Timestamp.today().normalize()
 
-    watermark = context.store.max_date(Tables.sec13f_hr, "filing_date")
-    if watermark is None:
-        since = today - pd.DateOffset(years=years_history)
-        logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- "
-                       f"full history from {since:%Y-%m-%d}")
+    if filing_window is not None:
+        since, until = (pd.Timestamp(d).normalize() for d in filing_window)
+        if since > until:
+            raise ValueError(f"filing_window is inverted: {since:%Y-%m-%d} > {until:%Y-%m-%d}")
+        logger.warning(f"13F BACKFILL of filing window {since:%Y-%m-%d}:{until:%Y-%m-%d} -- "
+                       f"the watermark is neither read nor advanced by this run")
     else:
-        since = watermark - pd.Timedelta(days=lookback_days)
+        until = today
+        watermark = context.store.max_date(Tables.sec13f_hr, "filing_date")
+        if watermark is None:
+            since = today - pd.DateOffset(years=years_history)
+            logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- "
+                           f"full history from {since:%Y-%m-%d}")
+        else:
+            since = watermark - pd.Timedelta(days=lookback_days)
 
     filings = get_filings(form=SEC_13F_FORMS,
-                          filing_date=f"{since:%Y-%m-%d}:{today:%Y-%m-%d}") or []
+                          filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}") or []
     total = len(filings)
-    logger.info(f"13F: {total} filing(s) to read since {since:%Y-%m-%d}")
+    logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
 
     if not total:
-        record_run(context, Tables.sec13f_hr, len(set(tickers)), 0)
+        _record(context, tickers, 0, filing_window)
         return
 
     saved, suspect, batch, looked_up, cmap = 0, 0, [], set(), None
@@ -200,4 +243,4 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, years_history:
                        f"{_IMPLIED_PRICE_BAND} -- check edgartools' per-filing $thousands "
                        f"detection before trusting value_usd")
     logger.info(f"13F: saved {saved} row(s) from {total} filing(s) to {Tables.sec13f_hr}")
-    record_run(context, Tables.sec13f_hr, len(set(tickers)), saved)
+    _record(context, tickers, saved, filing_window)

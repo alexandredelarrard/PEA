@@ -61,6 +61,44 @@ DEGENERATE_MAX = 0.20
 #: panel must not move before it.
 F13_LAG_DAYS = 45
 
+#: V13. A bucket carrying less than this share of its OWN calendar position's median is a
+#: fetch hole, not a quiet season. A fraction, never an absolute floor: a 13F season is two
+#: heavy months plus a light tail month, and measured 2026-09-14 on `sec13f_hr` the tail
+#: months run 2,328-28,712 rows against 492,028 for a heavy one -- a 200x spread that any
+#: single absolute number either false-fires on or sleeps through. Sized from the ratio
+#: distribution on the same date: the five known-missing months sit at exactly 0.000 and the
+#: lowest LEGITIMATE month is 2016-03 at 0.378, so 0.20 separates them with 1.9x headroom and
+#: fires on nothing real. On the elite table's season axis the lowest legitimate bucket is
+#: 0.894, so the same floor carries 4.5x headroom there.
+FILING_COVERAGE_FLOOR = 0.20
+
+#: V13's bucket grain, PER TABLE, because the right grain is the finest one on which that
+#: table is actually dense -- and the two differ. Scored against the live tables 2026-09-14:
+#:
+#:   sec13f_hr  @month  158 scored, 0 skipped, fires on 5 -- EXACTLY the five missing months
+#:   sec13f_hr  @season  52 scored, 0 skipped, fires on 2 -- both gaps, but merged
+#:   mgr        @month  118 scored, 59 skipped, fires on 5 -- ALL FIVE ARE FALSE
+#:   mgr        @season  58 scored, 0 skipped, fires on 0
+#:
+#: `sec13f_hr` takes the MONTH because it is the sharpest grain that is clean: every month is
+#: populated at ~6,400 filers, and a single lost month reads 0.00 monthly but only ~0.62 as
+#: part of its season, which sails past the floor. The elite table takes the SEASON because
+#: its month axis false-fires: 2012-04, 2016-04, 2019-04, 2019-10 and 2021-01 score 0.026-0.157
+#: on 4-34 rows, yet every one of those SEASONS is complete (no season falls below 0.894). At
+#: ~75-106 managers, which of a season's two heavy months a manager files in is timing noise,
+#: not coverage. Its 59 light tail months are not the issue and never were -- they skip
+#: automatically at both grains, their calendar position's median being 0.
+FILING_COVERAGE_GRAIN = {"sec13f_hr": "MS", "sec13f_manager_holdings": "QS"}
+
+#: L10 / R4. 2013-06-30 is the BROAD 13F coverage regime start (192 -> 3,046 filers), so its
+#: QoQ deltas have no comparable prior quarter and must be NaN rather than a universe-wide
+#: positive, and every LEVEL before it is nulled by D16. Imported from the builder rather than
+#: retyped: two spellings of one date is how a guard and its check drift apart.
+from src.data_aggregate.utils.institutionals.institutional_features import (  # noqa: E402
+    COVERAGE_BREAK_DEFAULT, INST_LEVEL_FLOOR_PERIOD, _coverage_periods)
+
+FIRST_13F_PERIOD = INST_LEVEL_FLOOR_PERIOD
+
 PASS, FAIL, REPORT, SKIP = "PASS", "FAIL", "REPORT", "SKIP"
 
 #: G2. A per-FEATURE availability floor, for the four legs whose window is narrower than their
@@ -419,6 +457,66 @@ def _distribution(series: pd.Series) -> dict[str, float | None]:
             "p50": round(float(p50), 4), "p99": round(float(p99), 4),
             "max": round(float(values.max()), 4),
             "pct_zero": round(100.0 * float(np.mean(values == 0.0)), 2)}
+
+
+def value_filing_coverage(check_id: str, holdings: pd.DataFrame | None, table_name: str,
+                          floor: float = FILING_COVERAGE_FLOOR) -> CheckResult:
+    """V13a/V13b -- no fetch hole on the FILING axis of a 13F source table.
+
+    ⚠ THIS IS THE ONE AXIS NOTHING WAS WATCHING, AND A WHOLE SEASON WENT MISSING BEHIND IT.
+    Measured 2026-09-14: `sec13f_hr` held ZERO rows filed in 2024-01, 2024-02, 2025-06,
+    2025-07 or 2025-08 -- precisely the two filing seasons for periods 2023-12-31 and
+    2025-06-30, which came back 13x and 29x short on the filer axis (463 and 254 against
+    ~6,400 and ~7,200 in their neighbours). Every period-space check stayed green throughout:
+    the TICKER count in those quarters was 492 and 497, entirely normal, because the handful
+    of managers who did file still covered the index. Only the manager axis moved, and only
+    the filing axis explains it. A freshness check on `period` is structurally incapable of
+    seeing a hole in `filing_date`.
+
+    ⚠ THE FLOOR IS RELATIVE TO THE BUCKET'S OWN CALENDAR POSITION, never absolute. A 13F
+    season is two heavy months plus a light tail month and the spread is 200x, so one
+    absolute number cannot serve both; see `FILING_COVERAGE_FLOOR`. The grain is per table
+    (`FILING_COVERAGE_GRAIN`) because the elite table is legitimately sparse month-to-month.
+
+    The first and last buckets are dropped: `filing_date`'s min and max land mid-bucket, so
+    both are partial by construction and would score as holes on every run for ever. A
+    calendar position whose median is 0 is skipped rather than failed -- there the table has
+    no expectation to hold it to, which is exactly the elite table's tail months.
+    """
+    title = f"No missing filing bucket in {table_name}"
+    if holdings is None or holdings.empty or "filing_date" not in holdings.columns:
+        return CheckResult(check_id, "value", title, SKIP,
+                           measured=f"{table_name} absent, empty, or without filing_date")
+
+    filed = pd.to_datetime(holdings["filing_date"], errors="coerce").dropna()
+    if filed.empty:
+        return CheckResult(check_id, "value", title, SKIP,
+                           measured=f"{table_name} has no parseable filing_date")
+
+    grain = FILING_COVERAGE_GRAIN.get(table_name, "MS")
+    counts = (filed.groupby(filed.dt.to_period(grain[0]).dt.to_timestamp()).size()
+              .reindex(pd.date_range(filed.min(), filed.max(), freq=grain), fill_value=0))
+    interior = counts.iloc[1:-1]
+    if len(interior) < 4:
+        return CheckResult(check_id, "value", title, SKIP,
+                           measured=f"{len(interior)} interior bucket(s) -- too short to score")
+
+    position = interior.index.month if grain == "MS" else interior.index.quarter
+    median = interior.groupby(position).median()
+    expected = pd.Series(position, index=interior.index).map(median)
+    ratio = (interior / expected.where(expected > 0))
+
+    holes = [{"bucket": str(b.date()), "rows": int(interior[b]),
+              "seasonal_median": int(expected[b]), "ratio": round(float(ratio[b]), 4)}
+             for b in interior.index[ratio.notna() & (ratio < floor)]]
+    scored = int(ratio.notna().sum())
+    return CheckResult(
+        check_id, "value", title, FAIL if holes else PASS,
+        measured=(f"{len(holes)} of {scored} scored {'month' if grain == 'MS' else 'season'}(s) "
+                  f"below {floor:.0%} of their seasonal median"
+                  + (": " + ", ".join(h["bucket"] for h in holes[:12]) if holes else "")),
+        expected=f"0 (every bucket >= {floor:.0%} of the median for its calendar position)",
+        detail=holes, blocking=True)
 
 
 def value_universe_scope(panel: pd.DataFrame, universe: set[str] | None) -> CheckResult:
@@ -1216,8 +1314,18 @@ def run_institutionals_validation(context, config, *, panel: pd.DataFrame | None
 
     declared = _declared_emission_maps()
     floors = family_floors(store, context.log)
-    holdings = (store.load(Tables.sec13f_hr, columns=["ticker", "period", "cik"], optional=True)
+    holdings = (store.load(Tables.sec13f_hr,
+                           columns=["ticker", "period", "cik", "filing_date"], optional=True)
                 if store.exists(Tables.sec13f_hr) else None)
+    # ⚠ V13a IS SCORED BEFORE THE UNIVERSE NARROWING BELOW, on the table as fetched. It asks
+    # whether the FETCH lost a filing season, which is a property of the walk and not of the
+    # panel's ticker scope; narrowing first would let a hole hide behind a universe change.
+    filing_coverage = [value_filing_coverage("V13a", holdings, Tables.sec13f_hr.name)]
+    if store.exists(Tables.sec13f_manager_holdings):
+        filing_coverage.append(value_filing_coverage(
+            "V13b", store.load(Tables.sec13f_manager_holdings, columns=["cik", "filing_date"],
+                               optional=True),
+            Tables.sec13f_manager_holdings.name))
     # ⚠ R4 MUST READ THE SAME SOURCE SCOPE THE BUILDER READS. The step now cuts `sec13f_hr` to
     # the universe before aggregating, so its D28 denominator is the filer count over
     # IN-UNIVERSE holdings. Re-counting here over the whole table made the denominator 3 filers
@@ -1254,6 +1362,7 @@ def run_institutionals_validation(context, config, *, panel: pd.DataFrame | None
         value_peer_z(panel),
         value_xs_unit(panel),
         value_universe_scope(panel, price_universe),
+        *filing_coverage,
         value_degenerate_legs(panel),
         value_decay_behaviour(panel),
         value_signal_age(panel),

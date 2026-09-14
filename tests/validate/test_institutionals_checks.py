@@ -408,3 +408,138 @@ def test_r4_excludes_the_hole_quarters_it_would_otherwise_compare_across():
     print("\n=== SANITY CHECK: R4 hole-quarter exclusion ===")
     print(f"  4 quarters, one collapsed 400 -> 8 filers. Drawn: {sorted(drawn)} -- the hole is "
           f"absent, and the remaining pairs reconcile ({res.measured}). Validated.")
+
+
+# --------------------------------------------------------------------------- V13
+
+def _filed(profile: dict[str, int]) -> pd.DataFrame:
+    """A holdings frame carrying `rows` filings in each named month."""
+    stamps = [pd.Timestamp(m) + pd.Timedelta(days=5) for m, n in profile.items() for _ in range(n)]
+    return pd.DataFrame({"cik": "M1", "filing_date": stamps})
+
+
+def _season_shape(years: range, heavy: tuple[int, int] = (250, 400),
+                  tail: int = 8) -> dict[str, int]:
+    """The measured `sec13f_hr` seasonal shape: two heavy months then a light tail month,
+    repeating.
+
+    The RATIOS are the live ones (2026-09-14: tail months 2.3k-28.7k rows against up to 492k
+    for a heavy one -- the ~50x within-season swing that rules out an absolute floor); the
+    magnitudes are scaled down 1000x on purpose. The check is scale-free, so the shape is the
+    only part that carries meaning, and materialising the real counts builds a 13M-row frame
+    to test arithmetic that never looks at the row count."""
+    out: dict[str, int] = {}
+    for y in years:
+        for q, (m1, m2, m3) in enumerate(((1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12))):
+            out[f"{y}-{m1:02d}-01"] = heavy[0]
+            out[f"{y}-{m2:02d}-01"] = heavy[1]
+            out[f"{y}-{m3:02d}-01"] = tail
+    return out
+
+
+def test_v13_passes_on_a_healthy_13f_filing_axis():
+    """The seasonal shape alone must not fire the check -- that is the false-positive the
+    relative floor exists to avoid."""
+    res = iv.value_filing_coverage("V13a", _filed(_season_shape(range(2020, 2025))), "sec13f_hr")
+    assert res.status is iv.PASS, f"healthy seasonal shape scored {res.status}: {res.measured}"
+    assert not res.detail
+
+    print("\n=== SANITY CHECK: V13a on a healthy filing axis ===")
+    print(f"  5y x 12 months, tail:heavy ratio 8:250:400 (the live ~50x within-season "
+          f"swing): {res.measured}. No false fire. Validated.")
+
+
+def test_v13_fails_naming_the_month_when_a_filing_season_is_lost():
+    """The 2024-01/02 and 2025-06..08 defect, reproduced: whole months at zero."""
+    profile = _season_shape(range(2020, 2025))
+    for lost in ("2022-01-01", "2022-02-01"):
+        profile[lost] = 0
+    res = iv.value_filing_coverage("V13a", _filed(profile), "sec13f_hr")
+
+    assert res.status is iv.FAIL and res.blocking
+    named = {h["bucket"] for h in res.detail}
+    assert named == {"2022-01-01", "2022-02-01"}, f"wrong months named: {named}"
+    assert "2022-01-01" in res.measured, "the FAIL must name the months, not just count them"
+    assert all(h["ratio"] == 0.0 for h in res.detail)
+
+    print("\n=== SANITY CHECK: V13a on a lost filing season ===")
+    print(f"  Removed 2022-01 and 2022-02 (the shape of the real 2024-01/02 gap). "
+          f"{res.measured}; detail names exactly {sorted(named)}. Validated.")
+
+
+def test_v13_catches_a_single_lost_month_which_is_why_the_grain_is_the_month():
+    """A season loses ONE of its two heavy months. At month grain the ratio is 0.00; the
+    season total only falls to ~0.73 and would sail past the floor. This is the measured
+    reason `sec13f_hr` is scored monthly rather than by season."""
+    profile = _season_shape(range(2020, 2025))
+    profile["2022-04-01"] = 0
+    res = iv.value_filing_coverage("V13a", _filed(profile), "sec13f_hr")
+    assert res.status is iv.FAIL
+    assert [h["bucket"] for h in res.detail] == ["2022-04-01"]
+
+    season_ratio = (400 + 8) / (250 + 400 + 8)
+    assert season_ratio > iv.FILING_COVERAGE_FLOOR
+
+    print("\n=== SANITY CHECK: V13a month grain vs season grain ===")
+    print(f"  One heavy month lost. Month grain: ratio 0.0 -> FAIL ({res.measured}). "
+          f"Season grain would read {season_ratio:.2f}, above the {iv.FILING_COVERAGE_FLOOR:.0%} "
+          f"floor, and MISS it. The finer grain is load-bearing. Validated.")
+
+
+def test_v13_season_grain_absorbs_the_elite_tables_filing_timing_noise():
+    """`sec13f_manager_holdings` is scored by SEASON because its month axis false-fires.
+
+    At ~75-106 managers, which of a season's two heavy months a manager files in is timing
+    noise. Measured 2026-09-14, month grain fires on 2012-04, 2016-04, 2019-04, 2019-10 and
+    2021-01 (ratios 0.026-0.157 on 4-34 rows) while every one of those SEASONS is complete --
+    five false holes. Season grain fires on none. Reproduced here: one season's managers
+    nearly all file in month 2 instead of month 1."""
+    profile = {m: (0 if pd.Timestamp(m).month % 3 == 0 else 100)
+               for m in _season_shape(range(2018, 2025))}
+    profile["2021-01-01"], profile["2021-02-01"] = 3, 197      # the season total is intact
+
+    frame = _filed(profile)
+    by_season = iv.value_filing_coverage("V13b", frame, "sec13f_manager_holdings")
+    by_month = iv.value_filing_coverage("V13x", frame, "a_table_with_no_declared_grain")
+
+    assert by_season.status is iv.PASS, f"season grain false-fired: {by_season.measured}"
+    assert by_month.status is iv.FAIL, "the month grain is supposed to false-fire here"
+    assert [h["bucket"] for h in by_month.detail] == ["2021-01-01"]
+
+    print("\n=== SANITY CHECK: V13b season grain absorbs filing-timing noise ===")
+    print(f"  A season's filings shift 3/197 across its two heavy months, total unchanged. "
+          f"Month grain: {by_month.status} on 2021-01 -- a hole that is not one. "
+          f"Season grain: {by_season.status} ({by_season.measured}). This is the measured "
+          f"reason the elite table is scored by season. Validated.")
+
+
+def test_v13_skips_a_calendar_position_the_table_never_fills():
+    """The elite table's 59 light tail months are empty by nature, not by loss. Where a
+    calendar position's median is 0 there is no expectation to score against, so the bucket is
+    SKIPPED rather than failed -- at either grain. This is why the empty tails were never the
+    reason for the season grain."""
+    profile = {m: (0 if pd.Timestamp(m).month % 3 == 0 else 100)
+               for m in _season_shape(range(2018, 2025))}
+    res = iv.value_filing_coverage("V13x", _filed(profile), "a_table_with_no_declared_grain")
+
+    assert res.status is iv.PASS, f"a never-filled calendar position was scored: {res.measured}"
+    n_empty = sum(1 for m, n in profile.items() if n == 0)
+
+    print("\n=== SANITY CHECK: V13 skips never-filled calendar positions ===")
+    print(f"  {n_empty} tail months empty by nature; month grain still {res.status} "
+          f"({res.measured}) because their position median is 0. Validated.")
+
+
+def test_v13_ignores_the_partial_first_and_last_buckets():
+    """`filing_date`'s min and max land mid-bucket, so both end buckets are partial by
+    construction. Scoring them would fail every run for ever."""
+    profile = _season_shape(range(2020, 2025))
+    first, last = min(profile), max(profile)
+    profile[first] = profile[last] = 1          # both partial, ratio ~0.000004
+    res = iv.value_filing_coverage("V13a", _filed(profile), "sec13f_hr")
+
+    assert res.status is iv.PASS, f"a partial boundary bucket was scored: {res.measured}"
+
+    print("\n=== SANITY CHECK: V13a boundary handling ===")
+    print(f"  {first} and {last} cut to 1 row each. {res.measured} -- both dropped as partial, "
+          f"so the check does not fail on its own window edges. Validated.")

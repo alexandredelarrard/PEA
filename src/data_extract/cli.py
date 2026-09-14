@@ -192,9 +192,22 @@ def macro(config_path: str) -> None:
 
 @cli.command(help="13F institutional holdings (EDGAR by filing date + OpenFIGI cusip map). HEAVY.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def thirteen_f(config_path: str) -> None:
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option("--filing-window", default=None, metavar="FROM:TO",
+              help="BACKFILL a lost filing season, e.g. 2024-01-01:2024-03-01. Replaces the "
+                   "watermark and advances nothing -- a gap BEHIND max(filing_date) is "
+                   "unreachable by the normal 7-day lookback. ONE EDGAR WALK AT A TIME.")
+def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None) -> None:
+    """⚠ `tickers` is the universe the CUSIP map is resolved against, and it was previously
+    left as None here -- `set(tickers)` then raised on the first save."""
     _, context = _ctx(config_path)
-    fetch_13f(context)
+    window = None
+    if filing_window:
+        parts = filing_window.split(":")
+        if len(parts) != 2 or not all(parts):
+            raise click.BadParameter("--filing-window must be FROM:TO, e.g. 2024-01-01:2024-03-01")
+        window = (parts[0], parts[1])
+    fetch_13f(context, tickers=_tickers(context, tickers), filing_window=window)
 
 
 @cli.command(name="thirteen-f-managers",

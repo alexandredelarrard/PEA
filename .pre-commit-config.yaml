@@ -1,0 +1,53 @@
+repos:
+  # General sanity checks & secret protection
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1000"] # Blocks accidental commit of large CSV/Parquet data
+      - id: detect-private-key # Prevents committing broker/exchange API secret keys
+
+  # Fast Python linting and formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Poetry configuration & lockfile integrity
+  - repo: https://github.com/python-poetry/poetry
+    rev: 1.8.0
+    hooks:
+      - id: poetry-check
+      - id: poetry-lock
+        args: [--check]
+
+  # Type checking.
+  #
+  # pre-commit installs pyright into its OWN managed environment rather than shelling out to
+  # `poetry run`. Measured 2026-09-14: `poetry` is not on PATH on this machine (only the
+  # Poetry virtualenv's python is), AND pyright was not installed inside that virtualenv
+  # either, so `poetry run pyright` failed with "Executable `poetry` not found" on every
+  # commit -- a hook that cannot start is a hook that checks nothing.
+  #
+  # ⚠ THIS ENV HAS ONLY PYRIGHT IN IT, NOT THE PROJECT'S DEPENDENCIES, so imports resolve
+  # against pre-commit's bare env unless pyright is told where the real interpreter lives.
+  # Point it at the Poetry virtualenv (`AGENTS.md` -> "Running") with a `[tool.pyright]` block
+  # carrying `venvPath` / `venv` in `pyproject.toml`, or a `--pythonpath <venv python>` arg
+  # here. Left unset deliberately: both spellings hardcode one machine's absolute user path
+  # into a committed file, and that is the developer's call, not this file's.
+  - repo: local
+    hooks:
+      - id: pyright
+        name: pyright
+        entry: pyright
+        language: python
+        additional_dependencies: ["pyright==1.1.405"]
+        types_or: [python, pyi]
+        pass_filenames: false

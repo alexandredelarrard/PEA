@@ -238,6 +238,7 @@ def _split_factors(h: pd.DataFrame, splits: pd.DataFrame | None) -> dict:
     pairs = h[["ticker", "period"]].drop_duplicates().sort_values(["ticker", "period"])
     if pairs.empty:
         return {}
+    
     pairs["prev_period"] = pairs.groupby("ticker")["period"].shift(1)
     pairs = pairs.dropna(subset=["prev_period"])
     if pairs.empty:
@@ -294,22 +295,15 @@ def _report_late_filings(h: pd.DataFrame) -> None:
     (ticker, manager, quarter) rows whose `filing_date` falls after the deadline, and the share
     of 13F VALUE they carry -- which is the number that matters, since one late mega-filer
     outweighs a hundred late small ones.
-
-    ⚠ This function exists because the docstring above CLAIMED the residual was "measured and
-    reported by the step" when nothing measured it. A stated number that no code produces is
-    worse than an admitted unknown.
     """
-    if "filing_date" not in h.columns:
-        logger.info("13F deadline stamp: `filing_date` is not in the projection, so the "
-                    "late-filing residual CANNOT be measured on this run")
-        return
-    filed = pd.to_datetime(h["filing_date"], errors="coerce")
+    
     deadline = h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-    late = filed.gt(deadline).fillna(False)
+    late = h["filing_date"].gt(deadline).fillna(False)
     if not len(h):
         return
-    value = pd.to_numeric(h.get("value_usd"), errors="coerce").fillna(0.0)
-    total = float(value.sum())
+    
+    value = h.get("value_usd")
+    total = float(h.get("value_usd").sum())
     logger.info("13F deadline stamp: %s of %s (ticker, manager, quarter) rows filed AFTER "
                 "period+%sd (%.1f%%), carrying %.1f%% of 13F value; those holdings are visible "
                 "from the deadline rather than from their filing date (documented departure "
@@ -318,26 +312,31 @@ def _report_late_filings(h: pd.DataFrame) -> None:
                 100.0 * float(late.mean()),
                 100.0 * float(value[late].sum()) / total if total > 0 else 0.0)
 
+def clean_holdings(
+        holdings: pd.DataFrame | None,
+) -> pd.DataFrame:
 
-def _quarter_features(holdings: pd.DataFrame, splits: pd.DataFrame | None = None,
+    h = holdings.copy()
+
+    for col in ['period', 'filing_date']:
+        h[col] = pd.to_datetime(h[col], format="%Y-%m-%d", errors="coerce")
+
+    for c in ("shares", "value_usd", "call_value", "put_value"):
+            h[c] = pd.to_numeric(h[c], errors="coerce").fillna(0.0) if c in h.columns \
+                else pd.Series(0.0, index=h.index) 
+
+    h = h.dropna(subset=["ticker", "cik", "period"]) #0 dropped 
+    h = h.drop_duplicates(["ticker", "cik", "period"], keep="last")
+    h = h.sort_values("filing_date")
+    
+    return h
+
+def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
                       break_pct: float = COVERAGE_BREAK_DEFAULT,
                       min_prior_holders: int = MIN_PRIOR_HOLDERS) -> pd.DataFrame:
     """Manager-grain 13F -> one row per (ticker, quarter) with the eleven features, stamped
     `as_of = period + 45 days` (the leak-free availability date)."""
-    h = holdings.copy()
-    h["period"] = pd.to_datetime(h["period"]).dt.normalize()
-    h = h.dropna(subset=["ticker", "cik", "period"])
-    for c in ("shares", "value_usd", "call_value", "put_value"):
-        h[c] = pd.to_numeric(h[c], errors="coerce").fillna(0.0) if c in h.columns \
-            else pd.Series(0.0, index=h.index)
-    # amendments: keep the last-filed row per (ticker, manager, quarter)
-    if "filing_date" in h.columns:
-        h = h.sort_values("filing_date")
-    h = h.drop_duplicates(["ticker", "cik", "period"], keep="last")
-    if h.empty:
-        return pd.DataFrame()
 
-    _report_late_filings(h)
     holes, breaks, coverage = _coverage_periods(h, break_pct)
     if holes or breaks:
         logger.info("13F coverage guard: %s hole quarter(s) %s (every feature nulled), "
@@ -346,6 +345,7 @@ def _quarter_features(holdings: pd.DataFrame, splits: pd.DataFrame | None = None
                     len(breaks), sorted(str(p.date()) for p in breaks),
                     {str(p.date()): int(coverage.loc[p, "filers"])
                      for p in sorted(holes | breaks)})
+        
     # D28: the denominator that turns the holder COUNT into a breadth share.
     n_filers = coverage["filers"]
     factors = _split_factors(h, splits)
@@ -375,6 +375,7 @@ def _quarter_features(holdings: pd.DataFrame, splits: pd.DataFrame | None = None
             put_v = float(cur_rows["put_value"].sum())
             total_invested = inst_value + call_v + put_v      # long equity + option exposure
             opt_ratio = ((call_v - put_v) / total_invested) if total_invested > 0 else np.nan
+            
             # crowding: Herfindahl of managers' VALUE shares (high = few dominant holders)
             mv = cur_rows.groupby("cik")["value_usd"].sum()
             tot_mv = float(mv.sum())
@@ -389,6 +390,7 @@ def _quarter_features(holdings: pd.DataFrame, splits: pd.DataFrame | None = None
                 "ticker": ticker,
                 "period": pd.Timestamp(p),
                 "as_of": pd.Timestamp(p) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS),
+
                 # Carried only so the per-ticker coverage-onset guard can be applied
                 # vectorised below; dropped before the frame is returned.
                 "_prev_holders": float(n_prev) if has_prev else np.nan,
@@ -486,6 +488,11 @@ def build_institutional_feature_panel(
         logger.warning("No `prices_splits` -> 13F share changes are NOT split-restated; a "
                        "20-for-1 split will read as +1,900%% accumulation.")
 
+    # clean and report holdings 
+    holdings = clean_holdings(holdings)
+    _report_late_filings(holdings)
+
+    # build features
     qf = _quarter_features(holdings, splits=splits, break_pct=break_pct,
                            min_prior_holders=min_prior_holders)
     if qf.empty:

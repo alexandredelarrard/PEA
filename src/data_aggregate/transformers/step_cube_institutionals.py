@@ -149,10 +149,11 @@ class StepCubeInstitutionals(Step):
         # event table in full on both paths (22.5M `sec13f_hr` rows, 2.0M insider rows) -- that
         # is the dominant I/O and it is unchanged. What incremental still buys is the WRITE:
         # an append of ~5 dates against a 2.6M-row replace.
-        frames = self._load_frames()
+        price_frames = self._load_frames()
 
         # shares outstanding for the market-cap scaling shared by 13F / insider panels
         shares = self._load_shares_out()
+
         # `prices_splits` is read ONCE here rather than per panel: three families need the
         # same restatement (13F share counts, elite prior-quarter counts, insider filed
         # prices) and the table is small enough that the cost is the read, not the memory.
@@ -163,21 +164,21 @@ class StepCubeInstitutionals(Step):
         sink = ConditioningSink()
 
         merger = PanelMerger(self._log)
-        merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
-        merger.add(self._institutional_panel(frames, shares, splits), "institutional (13F)",
+        merger.add(price_frames.skeleton().assign(_grid=1.0), "universe-grid")
+        merger.add(self._institutional_panel(price_frames, shares, splits), "institutional (13F)",
                    "No institutional (13F) features built.")
-        merger.add(self._superinvestor_panel(frames, shares, splits, sink),
+        merger.add(self._superinvestor_panel(price_frames, shares, splits, sink),
                    "superinvestor (elite 13F)",
                    "No superinvestor (elite 13F) features built.")
-        merger.add(self._insider_panel(frames, shares, sink), "insider-trading",
+        merger.add(self._insider_panel(price_frames, shares, sink), "insider-trading",
                    "No insider-trading features built.")
-        merger.add(self._short_flow_panel(frames, shares, splits, sink), "short-flow",
+        merger.add(self._short_flow_panel(price_frames, shares, splits, sink), "short-flow",
                    "No short-flow features built.")
-        merger.add(self._ownership_panel(frames, sink), "beneficial-ownership",
+        merger.add(self._ownership_panel(price_frames, sink), "beneficial-ownership",
                    "No beneficial-ownership features built.")
-        merger.add(self._conditioning_panel(frames, splits, sink), "price-conditioning",
+        merger.add(self._conditioning_panel(price_frames, splits, sink), "price-conditioning",
                    "No price-conditioning features built.")
-        merger.add(self._cross_source_panel(frames, sink), "cross-source",
+        merger.add(self._cross_source_panel(price_frames, sink), "cross-source",
                    "No cross-source features built.")
 
         return self._restrict_to_grid(merger.to_long()), window
@@ -299,7 +300,9 @@ class StepCubeInstitutionals(Step):
         return df.loc[keep]
 
     def _load_shares_out(self) -> pd.DataFrame | None:
-        df = self._context.store.load(Tables.fundamentals_history, optional=True)
+        df = self._context.store.load(Tables.fundamentals_history, 
+                                      columns=['ticker', 'as_of', 'sharesOutstandingPit'],
+                                        optional=True)
         if df is None:
             self._log.warning("No fundamentals history -> the market-cap-scaled ownership "
                               "features are skipped.")
@@ -319,6 +322,7 @@ class StepCubeInstitutionals(Step):
         holdings = self._load_source(Tables.sec13f_hr, frames.universe)
         if holdings is None:
             return None
+        
         return build_institutional_feature_panel(
             holdings, frames.peers, frames.trading_index,
             shares_out_history=shares, stock_close=frames.close_split,

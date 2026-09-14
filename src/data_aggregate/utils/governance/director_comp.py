@@ -51,8 +51,9 @@ from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS, expire_level_fields,
 )
 
-#: ⚠ The COLUMN PROJECTION for `def14a_director_comp` lives in `utils/common/sources.py` — one
-#: registry for every cube step, asserted by `test_cube_incremental`, never a second copy here.
+#: ⚠ The COLUMN PROJECTION for `def14a_director_comp` lives on its registry entry
+#: (`schema.Tables.def14a_director_comp.read_columns`) — one declaration for every cube
+#: step, asserted by `test_cube_incremental`, never a second copy here.
 
 #: The SIX Item 402(k) components, against Item 402(c)'s seven. ⚠ The first is `fees_earned`
 #: where the NEO table has `salary` and `bonus`: a non-employee director draws a retainer and

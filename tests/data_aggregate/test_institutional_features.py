@@ -13,9 +13,12 @@ import pandas as pd
 from src.data_aggregate.utils.institutionals.institutional_features import (
     EMISSION, INST_DELTA_FLOOR_PERIOD, INST_LEVEL_FLOOR_PERIOD, MIN_PRIOR_HOLDERS,
     _quarter_features as _qf, build_institutional_feature_panel as _panel,
+    clean_holdings as _clean_holdings,
 )
+from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_extract.utils.institutionals.fetch_13f import _holdings_frame
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
+from tests.conftest import make_frames
 
 LAG = pd.Timedelta(days=45)
 
@@ -29,13 +32,22 @@ LAG = pd.Timedelta(days=45)
 # exercise the ARITHMETIC gets the arithmetic, and the one test that means to exercise the
 # GUARD passes a floor explicitly and says which. Adding a fixture here does not re-enable it.
 def _quarter_features(holdings, **kw):
+    # ⚠ CLEAN FIRST, because `_qf` is INTERNAL and its contract is a CLEANED frame. The
+    # coercion that used to sit inside it -- dates to midnight, the four numeric legs
+    # zero-filled when the source omits them, amendments collapsed last-filed-wins -- now
+    # lives once in `holdings_clean.clean_holdings`, and `build_institutional_feature_panel`
+    # calls it before `_qf` on the production path. A fixture handed straight to `_qf` has
+    # no `call_value` / `put_value` and raises `KeyError`; that is the test bypassing a
+    # production step, not the builder demanding a column the source lacks.
     kw.setdefault("min_prior_holders", 0)
-    return _qf(holdings, **kw)
+    return _qf(_clean_holdings(holdings), **kw)
 
 
-def build_institutional_feature_panel(holdings, *a, **kw):
+def build_institutional_feature_panel(frames, holdings, **kw):
+    # Mirrors the real signature since step 1.6: `frames` first, then the source, and every
+    # remaining argument keyword-only. `*a` would swallow `frames` into `holdings`.
     kw.setdefault("min_prior_holders", 0)
-    return _panel(holdings, *a, **kw)
+    return _panel(frames, holdings, **kw)
 
 
 def _frame(infotable):
@@ -126,7 +138,7 @@ def test_a_filer_count_jump_past_the_threshold_nulls_the_delta_anyway():
 
 def test_filing_lag_point_in_time():
     idx = pd.bdate_range("2022-01-03", "2023-06-30")
-    build_institutional_feature_panel(_holdings(), peer_dict={}, trading_index=idx)
+    build_institutional_feature_panel(make_frames(idx, {}), _holdings())
     # rebuild the daily field directly to check the lag boundary
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
     qf = _quarter_features(_holdings())
@@ -290,8 +302,7 @@ def test_panel_columns_match_the_emission_map():
                           "sharesOutstandingPit": 1000.0}
                          for t in tickers])
     close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)
-    panel = build_institutional_feature_panel(_holdings(), peers, idx,
-                                              shares_out_history=fund, stock_close=close)
+    panel = build_institutional_feature_panel(make_frames(idx, peers, close_split=close), _holdings(), shares_out_history=fund)
     expected = set()
     for name, mode in EMISSION.items():
         expected.add(f"f_{name}")
@@ -371,8 +382,7 @@ def test_value_to_mcap_and_flow_panel():
                           "sharesOutstandingPit": 1_000_000.0}
                          for t in tickers])
     close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)           # price 10 -> mcap 10M
-    panel = build_institutional_feature_panel(
-        _holdings_opts(), peers, idx, shares_out_history=fund, stock_close=close)
+    panel = build_institutional_feature_panel(make_frames(idx, peers, close_split=close), _holdings_opts(), shares_out_history=fund)
     for c in ("f_ic_inst_net_options_ratio", "f_ic_inst_concentration",
               "f_ic_inst_value_to_mcap", "f_ic_inst_value_to_mcap_xs",
               "f_ic_inst_flow_to_mcap", "f_ic_inst_flow_to_mcap_xs"):
@@ -487,3 +497,74 @@ def test_ownership_above_the_ceiling_is_nulled_not_clipped():
     print(f"  ceiling {OWNERSHIP_CEILING}x: 1.25 and 1.99 kept (securities-lending "
           f"double-counting is real), 2.01 and 9.68 NULLED, and no cell is left sitting AT "
           f"the ceiling. Validated.")
+
+
+def test_the_shared_cleaner_handles_the_LIVE_dtypes_not_just_strings():
+    """One cleaner, both grains, and it must survive the dtypes the DB actually returns.
+
+    ⚠ THE FIXTURE IS `datetime.date` OBJECTS AND `pd.Timestamp`s CARRYING A TIME, NOT STRINGS,
+    and that is the entire point. Postgres `DATE` columns come back as `datetime.date` and
+    `TIMESTAMP` ones as timed `Timestamp`s; a parquet-cached or string-literal fixture hides
+    this whole bug class. The WIP cleaner used
+    `pd.to_datetime(col, format="%Y-%m-%d", errors="coerce")`, where:
+
+      * on a real `DATE`/`TIMESTAMP` column the format is IGNORED, so it bought nothing;
+      * it does NOT strip a time component, where `.dt.normalize()` does;
+      * and on a STRING carrying a time it returns `NaT` -- so the row is dropped by the
+        `dropna` and the holding silently vanishes.
+
+    Also pinned: `filing_date` is OPTIONAL on `sec13f_hr`, so the cleaner must not raise when
+    the projection left it out -- reading `h["filing_date"]` unguarded is what took 10 tests
+    in this file down -- and the amendment must still win when it IS there.
+    """
+    import datetime as dt
+
+    from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
+
+    rows = [
+        # the ORIGINAL filing, and its AMENDMENT four days later with a corrected count
+        {"ticker": "AAA", "cik": "0001", "period": dt.date(2024, 3, 31),
+         "filing_date": pd.Timestamp("2024-05-10 14:32:05"), "shares": 1_000.0,
+         "value_usd": 100_000.0},
+        {"ticker": "AAA", "cik": "0001", "period": dt.date(2024, 3, 31),
+         "filing_date": pd.Timestamp("2024-05-14 09:00:00"), "shares": 2_500.0,
+         "value_usd": 250_000.0},
+        {"ticker": "BBB", "cik": "0002", "period": dt.date(2024, 3, 31),
+         "filing_date": pd.Timestamp("2024-05-11 00:00:00"), "shares": 700.0,
+         "value_usd": 70_000.0},
+    ]
+    out = clean_holdings(pd.DataFrame(rows), key=("ticker", "cik", "period"))
+
+    assert len(out) == 2, out
+    assert out["period"].dt.normalize().equals(out["period"]), "period is not at midnight"
+    assert out["filing_date"].dt.normalize().equals(out["filing_date"]), "time not stripped"
+    amended = out.loc[out["ticker"] == "AAA", "shares"].iloc[0]
+    assert amended == 2_500.0, f"the amendment must win, got {amended}"
+    # the option legs the elite table never carries are created, not demanded
+    assert (out["call_value"] == 0.0).all() and (out["put_value"] == 0.0).all()
+
+    # ... and with `filing_date` projected away it must DEGRADE, not raise
+    no_fd = pd.DataFrame(rows).drop(columns=["filing_date"])
+    degraded = clean_holdings(no_fd, key=("ticker", "cik", "period"))
+    assert len(degraded) == 2, degraded
+
+    # the format string that was there before turns a timed value into NaT -- the row would
+    # have been dropped by the dropna, silently
+    timed = pd.Series(["2024-05-10 14:32:05"])
+    assert pd.to_datetime(timed, format="%Y-%m-%d", errors="coerce").isna().all()
+    assert to_day(timed).notna().all()
+
+    print()
+    print("=== SANITY: the shared 13F cleaner on LIVE dtypes ===")
+    print(f"  in : 3 rows, period as {type(rows[0]['period']).__name__}, "
+          f"filing_date as timed Timestamp")
+    print(f"  out: {len(out)} rows after the amendment collapse; "
+          f"AAA shares = {amended:,.0f} (the amendment, not the original)")
+    print(f"  period dtype {out['period'].dtype}, all at midnight; "
+          f"time stripped from filing_date")
+    print(f"  with `filing_date` projected away -> {len(degraded)} rows, no exception")
+    print("  `to_datetime('2024-05-10 14:32:05', format='%Y-%m-%d') -> NaT` "
+          "while `to_day` -> a real date")
+    print("  CONCLUSION: one cleaner serves both grains, normalizes the dtypes the DB really "
+          "returns, degrades when the optional column is absent, and lets the amendment win. "
+          "Validated.")

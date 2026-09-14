@@ -106,9 +106,11 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings as _clean
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.institutionals.split_basis import future_split_factor
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 
 logger = logging.getLogger(__name__)
 
@@ -295,47 +297,54 @@ def _report_late_filings(h: pd.DataFrame) -> None:
     (ticker, manager, quarter) rows whose `filing_date` falls after the deadline, and the share
     of 13F VALUE they carry -- which is the number that matters, since one late mega-filer
     outweighs a hundred late small ones.
+
+    ⚠ `filing_date` IS OPTIONAL ON THIS TABLE (`sec13f_hr.optional_columns`), so the measure
+    has to be skippable. Reading it unguarded raised `KeyError` on every fixture and on any
+    live table predating the column -- it killed the whole panel to print a diagnostic.
     """
-    
-    deadline = h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-    late = h["filing_date"].gt(deadline).fillna(False)
     if not len(h):
         return
-    
+    if "filing_date" not in h.columns:
+        logger.info("13F deadline stamp: no `filing_date` column -> the late-filing residual "
+                    "cannot be measured on this read; the period+%sd stamp is unaffected.",
+                    SEC_13F_FILING_LAG_DAYS)
+        return
+
+    deadline = h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
+    late = h["filing_date"].gt(deadline).fillna(False)
+
     value = h.get("value_usd")
-    total = float(h.get("value_usd").sum())
+    total = float(value.sum()) if value is not None else 0.0
     logger.info("13F deadline stamp: %s of %s (ticker, manager, quarter) rows filed AFTER "
                 "period+%sd (%.1f%%), carrying %.1f%% of 13F value; those holdings are visible "
                 "from the deadline rather than from their filing date (documented departure "
                 "from registry 0.5, deliberate for a multi-thousand-filer aggregate)",
                 f"{int(late.sum()):,}", f"{len(h):,}", SEC_13F_FILING_LAG_DAYS,
                 100.0 * float(late.mean()),
-                100.0 * float(value[late].sum()) / total if total > 0 else 0.0)
+                100.0 * float(value[late].sum()) / total
+                if (total > 0 and value is not None) else 0.0)
 
-def clean_holdings(
-        holdings: pd.DataFrame | None,
-) -> pd.DataFrame:
+def clean_holdings(holdings: pd.DataFrame) -> pd.DataFrame:
+    """`sec13f_hr` at its own grain: one row per (ticker, manager, quarter).
 
-    h = holdings.copy()
-
-    for col in ['period', 'filing_date']:
-        h[col] = pd.to_datetime(h[col], format="%Y-%m-%d", errors="coerce")
-
-    for c in ("shares", "value_usd", "call_value", "put_value"):
-            h[c] = pd.to_numeric(h[c], errors="coerce").fillna(0.0) if c in h.columns \
-                else pd.Series(0.0, index=h.index) 
-
-    h = h.dropna(subset=["ticker", "cik", "period"]) #0 dropped 
-    h = h.drop_duplicates(["ticker", "cik", "period"], keep="last")
-    h = h.sort_values("filing_date")
-    
-    return h
+    A thin call into the SHARED cleaner -- `holdings_clean.clean_holdings` -- which both 13F
+    tables now go through. The only thing that is specific here is the KEY: this table has a
+    `ticker` column and the elite one does not, and `position_type` is already resolved at
+    extraction so there is nothing to filter, and `cik` arrives padded.
+    """
+    return _clean(holdings, key=("ticker", "cik", "period"))
 
 def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
                       break_pct: float = COVERAGE_BREAK_DEFAULT,
                       min_prior_holders: int = MIN_PRIOR_HOLDERS) -> pd.DataFrame:
     """Manager-grain 13F -> one row per (ticker, quarter) with the eleven features, stamped
     `as_of = period + 45 days` (the leak-free availability date)."""
+
+    # TODO: verify as_of = filing_date is better than the 45 days rule applied -> real filling date 
+    # TODO: check the 2 holes : '2023-12-31', '2025-06-30'. 
+    # TODO: clean trade values lower than 1000 ?? larger than 4.e+11 -> seems crazy -> verify who and why
+    # TODO: keep (h['deadline']- h['filing_date']).dt.days between(-30,50) -> otherwise do not know when it was done ... To verify
+    # TODO: Remove the sec 13 hr data before 2013 cut date, its noise and wrong, do it before looping, save compute and time
 
     holes, breaks, coverage = _coverage_periods(h, break_pct)
     if holes or breaks:
@@ -362,6 +371,7 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
             holders = len(cur_ciks)
             n_prev = len(prev_ciks)
             has_prev = n_prev > 0
+
             # The prior quarter's counts, restated onto THIS quarter's split basis.
             factor = factors.get((ticker, p), 1.0) if has_prev else 1.0
             both = cur_ciks & prev_ciks
@@ -375,7 +385,7 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
             put_v = float(cur_rows["put_value"].sum())
             total_invested = inst_value + call_v + put_v      # long equity + option exposure
             opt_ratio = ((call_v - put_v) / total_invested) if total_invested > 0 else np.nan
-            
+
             # crowding: Herfindahl of managers' VALUE shares (high = few dominant holders)
             mv = cur_rows.groupby("cik")["value_usd"].sum()
             tot_mv = float(mv.sum())
@@ -389,7 +399,7 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
             rows.append({
                 "ticker": ticker,
                 "period": pd.Timestamp(p),
-                "as_of": pd.Timestamp(p) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS),
+                "as_of": pd.Timestamp(p) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS), # 
 
                 # Carried only so the per-ticker coverage-onset guard can be applied
                 # vectorised below; dropped before the frame is returned.
@@ -397,6 +407,7 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
                 "ic_inst_holders": share,
                 "inst_shares": inst_shares,
                 "inst_value": inst_value,
+
                 # net QoQ dollar flow (long value); NaN on the first observed quarter
                 "inst_value_flow": (inst_value - prev_value)
                                    if (has_prev and np.isfinite(prev_value)) else np.nan,
@@ -429,6 +440,7 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
     for c in LEVEL_FEATURES + tuple(value_cols):
         if c in qf.columns:
             qf.loc[is_hole, c] = np.nan
+
     # D16: a hard cutoff on the PERIOD, so nothing computed off the pre-break regime survives.
     qf.loc[qf["period"] < INST_LEVEL_FLOOR_PERIOD,
            [c for c in LEVEL_FEATURES if c in qf.columns] + value_cols] = np.nan
@@ -441,6 +453,7 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
     # NaN; `< floor` is False there, so the first quarter is not double-counted in the log.
     delta_cols = [c for c in DELTA_FEATURES if c in qf.columns] + ["inst_value_flow"]
     thin = qf["_prev_holders"] < min_prior_holders
+
     # ⚠ REPORT THE ROWS THIS GUARD ACTUALLY REMOVES, NOT THE ROWS IT MATCHES. Most thin
     # quarters are already NaN from D16 or D17, and counting tickers over the whole `thin`
     # mask says "488 tickers" -- essentially the universe, because nearly every name has some
@@ -457,12 +470,10 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
 
 
 def build_institutional_feature_panel(
+    frames: PriceFrames,
     holdings: pd.DataFrame | None,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
+    *,
     shares_out_history: pd.DataFrame | None = None,
-    stock_close: pd.DataFrame | None = None,
-    level_factor: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
     break_pct: float = COVERAGE_BREAK_DEFAULT,
     min_prior_holders: int = MIN_PRIOR_HOLDERS,
@@ -480,7 +491,26 @@ def build_institutional_feature_panel(
     so the production floor would null every delta in it and a test of the QoQ arithmetic would
     be asserting against NaN. A test that means to exercise the arithmetic passes 0 and says so;
     a test that means to exercise the guard passes the floor it is testing.
+
+    ⚠ `frames` RATHER THAN FOUR UNPACKED FIELDS. `peer_dict`, `trading_index`, `stock_close` and
+    `level_factor` were all read off one `PriceFrames` at the call site. Naming the object makes
+    the basis un-mistakable: there is one `close_split` and one `close_total` on it, and neither
+    can arrive under the other's parameter name.
+
+    ⚠ NO `frames.require(...)`, AND THAT IS MEASURED RATHER THAN FORGOTTEN. Every wide frame
+    this builder reads sits behind an explicit `is None` guard, or is handed to a callee that
+    documents `None` as a MEANING rather than an error -- `daily_market_cap`'s
+    `level_factor=None` IS "S is 1.0 everywhere". `require` would turn each of those graceful
+    degrades into a raise, which is exactly what its own docstring warns against.
+
+    The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
+    `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
+    call; the keyword form makes it unrepresentable.
     """
+    peer_dict = frames.peers
+    trading_index = frames.trading_index
+    stock_close = frames.close_split
+    level_factor = frames.level_factor
     need = {"cik", "period", "ticker", "shares"}
     if holdings is None or holdings.empty or not need.issubset(holdings.columns):
         return pd.DataFrame(columns=["date", "ticker"])
@@ -505,6 +535,7 @@ def build_institutional_feature_panel(
     if have_shares:
         # ownership % by SHARES (aggregate 13F shares / shares outstanding)
         inst_sh = fundamentals_to_daily(qf, "inst_shares", trading_index)
+
         # ⚠ `sharesOutstandingPit`, NOT `sharesOutstanding`. A 13F reports the shares a
         # manager ACTUALLY HELD on the filing date, so the denominator must be the count that
         # actually existed then. The vendor-basis column is back-filled to today's split
@@ -521,7 +552,16 @@ def build_institutional_feature_panel(
         # daily market cap (ffilled sharesOutstanding x daily close x S(d)).
         mcap = daily_market_cap(shares_out_history, stock_close,
                                 level_factor=level_factor)
-        if not mcap.empty:
+        if mcap.empty:
+            # ⚠ NOT SILENT. An empty return here means `shares_out_history` was projected
+            # without `sharesOutstanding` (the VENDOR basis `daily_market_cap` requires, NOT
+            # `sharesOutstandingPit`), and the two features below would simply be absent from
+            # the cube with nothing in the log saying so.
+            logger.warning("daily_market_cap returned no columns (shares_out_history has %s; "
+                           "it needs `sharesOutstanding`, the VENDOR basis) -> "
+                           "ic_inst_value_to_mcap / ic_inst_flow_to_mcap are skipped.",
+                           sorted(shares_out_history.columns))
+        else:
             mpos = mcap.where(mcap > 0)
             inst_val = fundamentals_to_daily(qf, "inst_value", trading_index)
             iv = (inst_val / mpos).replace([np.inf, -np.inf], np.nan)

@@ -427,3 +427,42 @@ def synthetic_factor_model():
     )
     y = pd.Series(y, index=dates, name="STOCK")
     return y, shared, sector, true_betas
+
+
+# --------------------------------------------------------------------------- #
+# PriceFrames for the seven cube builders                                      #
+# --------------------------------------------------------------------------- #
+def make_frames(trading_index, peers: dict | None = None,
+                universe=None, **fields):
+    """A `PriceFrames` for a builder test, carrying only the wide frames the scenario needs.
+
+    Since the builders take one `PriceFrames` rather than four-to-six unpacked fields, every
+    test that calls one has to construct that object; this is the single place it happens.
+
+    ⚠ LIVES IN THE **ROOT** conftest, NOT in `tests/data_aggregate/`. pytest prepends each
+    test directory to `sys.path`, so a second module named `conftest` lower in the tree
+    SHADOWS this one for the six test files that do a bare `from conftest import FakeStore`
+    -- six collection errors, in packages that have nothing to do with the cube.
+
+    ⚠ `universe` IS DERIVED WHEN NOT GIVEN, and the order matters. It is the cross-section
+    every `_xs` percentile ranks over, so a frames object whose `universe` does not cover the
+    tickers its wide frames carry ranks over the wrong denominator -- the same defect the
+    step's universe push-down exists to prevent. Preference: an explicit `universe`, then the
+    columns of whichever wide frame was passed, then the peer keys.
+
+    Every field not named stays `None`, which is what `PriceFrames` means by "this step did
+    not load it" -- so a builder's degrade-on-absent path is reachable by simply not passing
+    the frame.
+    """
+    from src.data_aggregate.utils.common.price_frames import PriceFrames
+
+    idx = pd.DatetimeIndex(trading_index)
+    if idx.name is None:
+        idx = idx.rename("date")
+    peers = peers if peers is not None else {}
+    if universe is None:
+        wide = next((f for f in fields.values()
+                     if isinstance(f, pd.DataFrame) and not f.empty), None)
+        universe = list(wide.columns) if wide is not None else list(peers)
+    return PriceFrames(trading_index=idx, universe=tuple(str(t) for t in universe),
+                       peers=peers, **fields)

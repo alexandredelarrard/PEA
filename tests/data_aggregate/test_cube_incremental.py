@@ -28,10 +28,9 @@ from src.data_aggregate.utils.common.incremental import (
     PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part, window_start,
 )
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
-from src.data_aggregate.utils.common.sources import (
-    OPTIONAL_SOURCE_COLUMNS, SOURCE_COLUMNS, project_existing,
+from src.data_store.schema import (
+    ALL, Tables, name_of, projection, projection_report, resolve,
 )
-from src.data_store.schema import ALL, Tables, name_of
 
 
 def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
@@ -333,16 +332,21 @@ def test_refresh_never_narrows_the_written_span():
         f"{PRICE_REFRESH_TRADING_DAYS} BDay re-pull floor")
 
 
-def test_source_column_projection_covers_builder_needs():
+def test_read_projection_covers_builder_needs():
     """Each tall-table source load is projected to only the columns its builder reads (the
-    memory fix for the OOM). The projection MUST cover every column the builder requires —
-    this test is the contract that guards against a projection dropping a needed column."""
+    memory fix for the OOM), and the projection MUST cover every column the builder requires.
+
+    The projection now lives ONCE, on the registry (`Table.read_columns`), and reaches the
+    builders through `store.load(project=True)`. This test is the contract that guards against
+    a registry edit dropping a needed column -- it fails here rather than silently emptying a
+    feature family.
+    """
     required = {  # columns each builder actually consumes from the table (the contract)
-        "sec13f_hr": {"cik", "period", "ticker", "shares", "value_usd",
-                      "call_value", "put_value", "filing_date"},
-        "insider_transactions":   {"ticker", "owner_cik", "filing_date", "transaction_code",
-                                   "shares", "price_per_share", "value_usd",
-                                   "security_type", "shares_owned_after"},
+        Tables.sec13f_hr: {"cik", "period", "ticker", "shares", "value_usd",
+                           "call_value", "put_value", "filing_date"},
+        Tables.insider_transactions: {"ticker", "owner_cik", "filing_date", "transaction_code",
+                                      "shares", "price_per_share", "value_usd",
+                                      "security_type", "shares_owned_after"},
         # ⚠ FOUR COLUMNS, NOT SIX. `short_interest` / `avg_daily_volume` were in this contract
         # for `ic_shortvol_days_to_cover` -- a feature that no longer exists, and whose absence
         # is a DESIGN decision rather than a missing projection: the live `sec_short_interest`
@@ -350,19 +354,16 @@ def test_source_column_projection_covers_builder_needs():
         # twice-monthly short-INTEREST positions, which this repo does not fetch. Asserting the
         # two dead columns here made the projection look broken when it was the contract that
         # was stale. Do not add them back without a fetcher that populates them.
-        "sec_short_interest":     {"date", "ticker", "short_volume", "total_volume"},
-        "sec_fails_to_deliver":   {"date", "ticker", "fails_quantity"},
+        Tables.short_interest: {"date", "ticker", "short_volume", "total_volume"},
+        Tables.sec_fails_to_deliver: {"date", "ticker", "fails_quantity"},
         # ownership_features (13D/13G). `accession_number` + `cusip` are the canonical-event
         # key (a group files one 13D under many reporting persons; summing their
         # `percent_of_class` would double-count the same block), and `filing_date` is the ONLY
         # legal stamp -- `date_of_event` is never projected, which is what makes L4 structural.
-        "sec_13d":                {"ticker", "accession_number", "cusip", "filing_date",
-                                   "is_amendment", "percent_of_class", "reporting_person_cik"},
-        "sec_13g":                {"ticker", "accession_number", "cusip", "filing_date",
-                                   "percent_of_class", "reporting_person_cik"},
-        # `wiki_pageviews` / `google_trends` are NOT here: their only builder was the attention
-        # panel, now deleted. Both tables are still extracted and still in the DB, so this
-        # contract comes back the day something reads them again.
+        Tables.sec_13d: {"ticker", "accession_number", "cusip", "filing_date",
+                         "is_amendment", "percent_of_class", "reporting_person_cik"},
+        Tables.sec_13g: {"ticker", "accession_number", "cusip", "filing_date",
+                         "percent_of_class", "reporting_person_cik"},
         # the two per-person DEF 14A children, read by StepCubeGovernance. `accession_number`
         # is in the directors set because the per-FILING aggregates key on it (an `as_of` can
         # carry two filings), and every one of the six Item 402(k) components is required
@@ -371,27 +372,45 @@ def test_source_column_projection_covers_builder_needs():
         # `pct_independent_directors` is one of the twelve D3-protected features, so deriving
         # it from the child would move live cells). Left in the projection on purpose -- do not
         # "tidy" it out, it is the substrate for that deferred work.
-        "def14a_directors":       {"ticker", "accession_number", "as_of", "name", "age",
-                                   "tenure_years", "other_public_company_boards"},
-        "def14a_director_comp":   {"ticker", "as_of", "total", "fees_earned", "stock_awards",
-                                   "option_awards", "non_equity_incentive", "pension_change",
-                                   "other_compensation"},
+        Tables.def14a_directors: {"ticker", "accession_number", "as_of", "name", "age",
+                                  "tenure_years", "other_public_company_boards"},
+        Tables.def14a_director_comp: {"ticker", "as_of", "total", "fees_earned",
+                                      "stock_awards", "option_awards", "non_equity_incentive",
+                                      "pension_change", "other_compensation"},
     }
-    for tbl, need in required.items():
-        proj = set(SOURCE_COLUMNS[tbl])
-        assert need <= proj, f"{tbl}: projection is MISSING required cols {need - proj}"
+    for table, need in required.items():
+        proj = set(table.read_columns)
+        assert proj, f"{table.name}: registry declares no read_columns"
+        assert need <= proj, f"{table.name}: projection is MISSING required {need - proj}"
 
-    # the extras step must FORWARD the projection to the store; an unmapped table -> full load
+    print()
+    print("=== SANITY: registry read_columns cover every builder need ===")
+    for table in required:
+        print(f"  {table.name:<24} -> {len(table.read_columns)} cols (covers builder needs)")
+    print("  def14a_directors keeps `is_independent` projected-but-unread on purpose (D79).")
+    print("  sec13f_hr (~21.7M rows) drops the cusip-era bloat; a table declaring no "
+          "read_columns loads in full. Validated.")
+
+
+def test_step_forwards_the_registry_projection_to_the_store():
+    """`_load_source` must hand the store `project=True` and nothing else.
+
+    The step used to resolve the projection itself and pass `columns=`; the registry now owns
+    it, so what this asserts is that the step DELEGATES -- `project=True` and no column list of
+    its own, for a projected table and an unprojected one alike.
+
+    `prices_splits` is the unprojected case ON PURPOSE: it is one of the two tables
+    `_load_source` really reads whole (`cusip_ticker_map` is the other), so this pins that the
+    switch to `project=True` did not narrow them. Every OTHER table the step reads declares
+    `read_columns`, and each one reproduces its pre-switch column list exactly.
+    """
     step = object.__new__(StepCubeInstitutionals)
-    seen: dict[str, list | None] = {}
-    # what each table really has, so the projection can be narrowed to it
-    live = {"sec13f_hr": SOURCE_COLUMNS["sec13f_hr"],
-            "fundamentals_history": ["ticker", "as_of", "totalRevenue"]}
+    seen: dict[str, dict] = {}
+    live = {"sec13f_hr": list(Tables.sec13f_hr.read_columns),
+            "prices_splits": ["ticker", "date", "split_ratio"]}
 
     class _Store:
-        """One object now that the step reads columns AND rows from the same store.
-
-        Resolves through `name_of` exactly as `DataStore` does, because the step now hands it
+        """Resolves through `name_of` exactly as `DataStore` does, because the step hands it
         `Table` objects rather than name strings -- a fake keyed on the attribute name would
         re-admit the bug this signature change fixed."""
 
@@ -399,11 +418,15 @@ def test_source_column_projection_covers_builder_needs():
             return name_of(table) in live
 
         def columns(self, table):
-            return live.get(name_of(table))
+            return live.get(name_of(table), [])
 
-        def load(self, table, columns=None, **kw):
-            seen[name_of(table)] = columns
-            return pd.DataFrame()
+        def distinct(self, table, column, **kw):
+            return []
+
+        def load(self, table, columns=None, *, project=False, where=None, **kw):
+            seen[name_of(table)] = {"columns": columns, "project": project, "where": where}
+            cols = projection(table, self.columns(table)) if project else columns
+            return pd.DataFrame(columns=cols or ["ticker"])
 
     class _Ctx:
         store = _Store()
@@ -412,41 +435,112 @@ def test_source_column_projection_covers_builder_needs():
     step._store = step._context.store
     step._log = logging.getLogger("test")
     step._load_source(Tables.sec13f_hr)
-    step._load_source(Tables.fundamentals_history)        # not in the projection map
-    assert seen["sec13f_hr"] == SOURCE_COLUMNS["sec13f_hr"]
-    assert seen["fundamentals_history"] is None            # small table -> loaded in full
+    step._load_source(Tables.prices_splits)           # declares no read_columns
 
-    print("\n=== SANITY: source-column projection ===")
-    for tbl in required:
-        print(f"  {tbl:<24} -> {len(SOURCE_COLUMNS[tbl])} cols (covers builder needs)")
-    print("  def14a_directors keeps `is_independent` projected-but-unread on purpose (D79).")
-    print("  sec13f_hr (~21.7M rows) drops the call/put/cusip-era bloat; small tables load "
-          "full. StepCubeInstitutionals forwards the projection to the store. Validated.")
+    for name, call in seen.items():
+        assert call["project"] is True, f"{name}: step must delegate the projection"
+        assert call["columns"] is None, f"{name}: step must not pass its own column list"
+    assert projection(Tables.sec13f_hr, live["sec13f_hr"]) == live["sec13f_hr"]
+    assert projection(Tables.prices_splits, live["prices_splits"]) is None
+
+    print()
+    print("=== SANITY: the step delegates the projection ===")
+    print(f"  calls seen: {seen}")
+    print("  CONCLUSION: `_load_source` passes `project=True` for every table and resolves no "
+          "column list of its own, so the registry is the single declaration. Validated.")
 
 
-def test_source_columns_is_keyed_on_physical_table_names():
-    """Every `SOURCE_COLUMNS` key must be a REGISTERED PHYSICAL table name.
+def test_universe_scope_is_pushed_down_to_the_read():
+    """The universe cut must reach the DATABASE as a `WHERE ticker IN (...)`, not the frame.
+
+    The step used to load every in-DB ticker and discard the off-universe ones in pandas. The
+    cut itself is about `_xs` (D26: a same-day percentile ranks a ticker against every other
+    ticker on that date, and in the cube that set is the universe) -- but doing it after the
+    read meant paying for ~21.7M `sec13f_hr` rows in order to throw some away.
+
+    Three things are pinned here, and the third is the one a refactor breaks silently:
+      (a) a table WITH a ticker column and a universe -> `where` carries the sorted ticker list
+      (b) a table with NO `ticker_col` (`sec13f_manager_holdings`) -> no `where` at all, rather
+          than a `WHERE None IN (...)`. The guard is the REGISTRY's `ticker_col`, because the
+          frame does not exist yet -- `"ticker" in df.columns` has nothing to look at
+      (c) the off-universe DIAGNOSTIC survives, as its own cheap `SELECT DISTINCT ticker`.
+          Once the rows never arrive, the report cannot be taken from the frame, and losing it
+          would mean the S&P 500 membership boundary moves with nothing saying so.
+    """
+    step = object.__new__(StepCubeInstitutionals)
+    calls: dict[str, dict] = {}
+    distincts: list[tuple[str, str]] = []
+    universe = ["AAPL", "MSFT", "NVDA"]
+
+    class _Store:
+        def exists(self, table):
+            return True
+
+        def columns(self, table):
+            return list(resolve(table).read_columns) or ["cik", "period", "cusip"]
+
+        def distinct(self, table, column, **kw):
+            distincts.append((name_of(table), column))
+            return universe + ["DELISTED_A", "DELISTED_B"]
+
+        def load(self, table, columns=None, *, project=False, where=None, **kw):
+            calls[name_of(table)] = {"where": where, "project": project}
+            return pd.DataFrame({"ticker": universe})
+
+    class _Ctx:
+        store = _Store()
+
+    step._context = _Ctx()
+    step._store = step._context.store
+    step._log = logging.getLogger("test")
+
+    step._load_source(Tables.sec13f_hr, universe)              # (a) has ticker_col
+    step._load_source(Tables.sec13f_manager_holdings, universe)  # (b) ticker_col is None
+    step._load_source(Tables.prices_splits)                    # no universe -> no where
+
+    assert calls["sec13f_hr"]["where"] == {"ticker": sorted(universe)}, calls["sec13f_hr"]
+    assert Tables.sec13f_manager_holdings.ticker_col is None
+    assert calls["sec13f_manager_holdings"]["where"] is None
+    assert calls["prices_splits"]["where"] is None
+    # (c) the diagnostic fired for the ticker'd table only, and only once
+    assert distincts == [("sec13f_hr", "ticker")], distincts
+
+    print()
+    print("=== SANITY: the universe cut is a SQL predicate, not a pandas mask ===")
+    for name, call in calls.items():
+        print(f"  {name:<26} where={call['where']}")
+    print(f"  SELECT DISTINCT queries issued: {distincts}")
+    print("  CONCLUSION: the in-universe read carries `WHERE ticker IN (...)`, the table with "
+          "no ticker column carries none, and the off-universe report survives as one cheap "
+          "DISTINCT instead of a 21.7M-row load-and-discard. Validated.")
+
+
+def test_every_projected_table_resolves_to_a_registered_physical_table():
+    """A projection must hang off a REGISTERED table, and the registry key trap is real.
 
     Five registry entries carry an attribute name that is not their table name -- the one
-    that bit is `Tables.short_interest`, whose table is `sec_short_interest`. Keyed on the
-    attribute name, `store.exists()` returned False, `_load_source` returned None, and the
-    three `ic_shortvol_*` features were absent from `cube_part_institutionals` while 956,640
-    rows sat unread in the table. Nothing failed: the projection map, the step and this file's
-    other tests all agreed on a name no table has.
+    that bit is `Tables.short_interest`, whose table is `sec_short_interest`. A projection map
+    keyed on the ATTRIBUTE name meant `store.exists()` returned False, `_load_source` returned
+    None, and the three `ic_shortvol_*` features were absent from `cube_part_institutionals`
+    while 956,640 rows sat unread in the table. Nothing failed: the map, the step and this
+    file's other tests all agreed on a name no table has.
 
-    The invariant is one line and it closes the whole class."""
-    physical = {t.name for t in ALL}
-    stray = sorted(k for k in SOURCE_COLUMNS if k not in physical)
-    assert not stray, (f"SOURCE_COLUMNS keys that match no registered table: {stray} -- key on "
-                       f"`Tables.<attr>.name`, not on `<attr>`")
-    stray_opt = sorted(k for k in OPTIONAL_SOURCE_COLUMNS if k not in physical)
-    assert not stray_opt, f"OPTIONAL_SOURCE_COLUMNS keys that match no table: {stray_opt}"
+    Hanging `read_columns` off the `Table` object makes the whole class unrepresentable --
+    there is no key left to get wrong. This test states that, and prints the trap it closes.
+    """
+    projected = [t for t in ALL if t.read_columns]
+    for t in projected:
+        assert resolve(t.name) is t, f"{t.name}: not reachable by its own physical name"
+        assert set(t.optional_columns) <= set(t.read_columns), (
+            f"{t.name}: optional_columns "
+            f"{sorted(set(t.optional_columns) - set(t.read_columns))} are not in read_columns "
+            f"-- a dead exemption would silently tolerate a real missing column")
 
     mismatched = {a: t.name for a, t in vars(Tables).items()
                   if hasattr(t, "name") and a != t.name}
     print()
-    print("=== SANITY: projection keys are physical table names ===")
-    print(f"  {len(SOURCE_COLUMNS)} projected sources, all resolve to a registered table")
+    print("=== SANITY: projections hang off the Table object, not a name key ===")
+    print(f"  {len(projected)} tables declare read_columns, all reachable by physical name")
     print(f"  {len(mismatched)} registry entries where attribute != table name -- the trap:")
     for attr, real in sorted(mismatched.items()):
         print(f"      Tables.{attr:22} -> {real}"
@@ -455,43 +549,51 @@ def test_source_columns_is_keyed_on_physical_table_names():
 
 
 def test_projection_tolerates_an_absent_optional_column():
-    """A column the BUILDER treats as optional must not make the READ fail.
+    """A column the BUILDER treats as optional must not make the READ fail, and a missing
+    REQUIRED one must be REPORTED rather than swallowed.
 
     `read_table` resolves each projected column via `tbl.c[name]`, which raises KeyError for
     an absent one. The live `sec_short_interest` table has only date/ticker/short_volume/
-    total_volume, while the projection also lists `short_interest` + `avg_daily_volume` --
+    total_volume, while the projection also declares `short_interest` + `avg_daily_volume` --
     which `_short_fields` uses only `if {...}.issubset(hist.columns)`. Demanding them
-    unconditionally killed the whole extras step with `KeyError: 'short_interest'`."""
+    unconditionally killed the whole institutionals step with `KeyError: 'short_interest'`.
+    """
     live_short = ["date", "ticker", "short_volume", "total_volume"]
-    got = project_existing(live_short, Tables.short_interest.name)
-    assert got == live_short, got
-    assert "short_interest" not in got and "avg_daily_volume" not in got
+    cols, required_missing, optional_missing = projection_report(Tables.short_interest,
+                                                                 live_short)
+    assert cols == live_short, cols
+    assert not required_missing
+    assert sorted(optional_missing) == ["avg_daily_volume", "short_interest"]
 
     # a table with every projected column present is unchanged
-    full_13f = list(SOURCE_COLUMNS["sec13f_hr"])
-    assert project_existing(full_13f, "sec13f_hr") == full_13f
+    full_13f = list(Tables.sec13f_hr.read_columns)
+    assert projection(Tables.sec13f_hr, full_13f) == full_13f
 
-    # unknown column list (table shape unreadable) -> project the full wanted list
-    assert (project_existing(None, Tables.short_interest.name)
-            == SOURCE_COLUMNS["sec_short_interest"])
-    # a table absent from the map -> no projection (load in full)
-    assert project_existing(["a", "b"], "fundamentals_history") is None
+    # a missing REQUIRED column is REPORTED, not dropped in silence -- that is the half of
+    # this that a quiet degrade would hide
+    _, req_missing, _ = projection_report(Tables.sec13f_hr,
+                                          [c for c in full_13f if c != "value_usd"])
+    assert req_missing == ["value_usd"], req_missing
 
-    # every OPTIONAL column must actually appear in that table's projection, else the
-    # exemption is dead and a real missing column would be silently tolerated
-    for tbl, optional in OPTIONAL_SOURCE_COLUMNS.items():
-        assert optional <= set(SOURCE_COLUMNS[tbl]), f"{tbl}: stale optional cols"
+    # unknown column list (table shape unreadable) -> project the full declared list
+    assert (projection(Tables.short_interest, None)
+            == list(Tables.short_interest.read_columns))
+    # a table declaring no projection -> None (load in full)
+    assert projection(Tables.prices_splits, ["a", "b"]) is None
 
-    print("\n=== SANITY CHECK: optional projected columns degrade, required ones warn ===")
-    print(f"  short_interest live cols {live_short} -> projection {got}")
-    print(f"  optional-by-table: { {k: sorted(v) for k, v in OPTIONAL_SOURCE_COLUMNS.items()} }")
+    print()
+    print("=== SANITY CHECK: optional projected columns degrade, required ones report ===")
+    print(f"  short_interest live cols {live_short} -> projection {cols}")
+    print(f"  dropped as optional: {sorted(optional_missing)}")
+    print(f"  sec13f_hr without `value_usd` -> required_missing={req_missing}")
     print("  CONCLUSION: an optional column missing from the live table is dropped from the "
-          "projection instead of raising KeyError and killing the step. Validated.")
+          "projection instead of raising KeyError and killing the step, while a missing "
+          "REQUIRED one is surfaced. Validated.")
 
 
 if __name__ == "__main__":
     test_windowed_build_reproduces_full_tail()
     test_incremental_horizon_arithmetic()
     test_per_part_warmup_covers_binding_lookback()
-    test_source_column_projection_covers_builder_needs()
+    test_read_projection_covers_builder_needs()
     test_projection_tolerates_an_absent_optional_column()

@@ -10,6 +10,7 @@ import pytest
 
 from src.data_aggregate.utils.fundamentals.fundamental_features import _pension_deficit_daily, _NET_PENSION_TAGS
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+from tests.conftest import make_frames
 
 PRIMARY, VARIANT = _NET_PENSION_TAGS
 
@@ -78,7 +79,7 @@ def test_insider_signal_ordering_and_leak_free():
     peers = {"BULL": {"BEAR": 1.0, "MIX": 1.0},
              "BEAR": {"BULL": 1.0, "MIX": 1.0},
              "MIX":  {"BULL": 1.0, "BEAR": 1.0}}
-    panel = build_insider_feature_panel(_insider_txns(), peers, idx)
+    panel = build_insider_feature_panel(make_frames(idx, peers), _insider_txns())
     assert not panel.empty and "f_ic_insider_net_buy_ratio_180d" in panel.columns
 
     d = pd.Timestamp("2024-04-01")           # inside the 180d window, after the March filings
@@ -109,8 +110,7 @@ def test_insider_buy_value_is_scaled_by_market_cap():
                            "sharesOutstanding": [1e8, 1e8, 1e8],
                            "sharesOutstandingPit": [1e8, 1e8, 1e8]})
     close = pd.DataFrame({t: 50.0 for t in ("BULL", "BEAR", "MIX")}, index=idx)
-    panel = build_insider_feature_panel(_insider_txns(), peers, idx,
-                                        shares_out_history=shares, stock_close=close)
+    panel = build_insider_feature_panel(make_frames(idx, peers, close_split=close), _insider_txns(), shares_out_history=shares)
     assert "f_ic_insider_buy_value_mcap_180d" in panel.columns
     d = pd.Timestamp("2024-04-01")
     row = panel[panel["date"] == d].set_index("ticker")

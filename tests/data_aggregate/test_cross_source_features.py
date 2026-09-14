@@ -16,6 +16,7 @@ from src.data_aggregate.utils.institutionals.cross_source_features import (
 from src.data_aggregate.utils.institutionals.sink import (
     BEARISH_INPUTS, BULLISH_INPUTS, NEGATED_INPUTS, ConditioningSink,
 )
+from tests.conftest import make_frames
 
 IDX = pd.DatetimeIndex(pd.bdate_range("2022-01-03", periods=300))
 TICKERS = [f"T{i}" for i in range(10)]
@@ -57,7 +58,7 @@ def test_a_family_count_counts_FAMILIES_above_the_percentile():
     for role, name in BEARISH_INPUTS.items():
         sink.signals[name] = _bearish_signal(role, ["T9"])
 
-    panel = build_cross_source_panel(sink, PEERS, IDX, universe=pd.Index(TICKERS))
+    panel = build_cross_source_panel(make_frames(IDX, PEERS, universe=pd.Index(TICKERS)), sink)
     day = panel[panel["date"] == IDX[-1]].set_index("ticker")
     assert day.loc["T0", "f_ic_xs_bullish_family_count"] == 3.0
     assert day.loc["T9", "f_ic_xs_bullish_family_count"] == 1.0
@@ -84,7 +85,7 @@ def test_absence_of_evidence_is_never_bearish_and_a_count_of_nothing_is_nan():
         frame.loc[:, "T5"] = np.nan              # T5 is unknown to every bearish family
         sink.signals[name] = frame
 
-    panel = build_cross_source_panel(sink, PEERS, IDX, universe=pd.Index(TICKERS))
+    panel = build_cross_source_panel(make_frames(IDX, PEERS, universe=pd.Index(TICKERS)), sink)
     day = panel[panel["date"] == IDX[-1]].set_index("ticker")
     assert np.isnan(day.loc["T5", "f_ic_xs_bearish_family_count"]), \
         "a ticker with no bearish input read as a count instead of NaN"
@@ -111,7 +112,7 @@ def test_distinct_actors_not_rows_and_the_window_releases():
     sink.add_actors("super", pd.DataFrame(
         [{"ticker": "T1", "date": IDX[10], "actor": "OWNER-1"}]))
 
-    panel = build_cross_source_panel(sink, PEERS, IDX, universe=pd.Index(TICKERS))
+    panel = build_cross_source_panel(make_frames(IDX, PEERS, universe=pd.Index(TICKERS)), sink)
     col = "f_ic_xs_bullish_actor_count"
     at = panel[panel["date"] == IDX[25]].set_index("ticker")[col]
     assert at["T0"] == 1.0, f"ten filings from one owner counted as {at['T0']}"
@@ -139,7 +140,7 @@ def test_the_conflict_flag_is_the_weaker_side():
     for role in roles_s[2:]:
         sink.signals[BEARISH_INPUTS[role]] = _bearish_signal(role, ["T9"])
 
-    panel = build_cross_source_panel(sink, PEERS, IDX, universe=pd.Index(TICKERS))
+    panel = build_cross_source_panel(make_frames(IDX, PEERS, universe=pd.Index(TICKERS)), sink)
     day = panel[panel["date"] == IDX[-1]].set_index("ticker")
     # T0: 3 bullish families and 2 bearish -> a conflict of strength 2, not 3
     assert day.loc["T0", "f_ic_xs_bullish_family_count"] == 3.0
@@ -160,7 +161,7 @@ def test_it_refuses_to_build_a_family_count_from_one_family():
     sink.signals[BULLISH_INPUTS[list(BULLISH_INPUTS)[0]]] = _ramp(["T0"])
     for role, name in BEARISH_INPUTS.items():
         sink.signals[name] = _bearish_signal(role, ["T9"])
-    panel = build_cross_source_panel(sink, PEERS, IDX, universe=pd.Index(TICKERS))
+    panel = build_cross_source_panel(make_frames(IDX, PEERS, universe=pd.Index(TICKERS)), sink)
     assert "f_ic_xs_bullish_family_count" not in panel.columns
     assert "f_ic_xs_conflict" not in panel.columns, "the conflict flag needs both sides"
     assert "f_ic_xs_bearish_family_count" in panel.columns
@@ -177,7 +178,7 @@ def test_declared_vs_emitted():
         sink.signals[name] = _bearish_signal(role, ["T9"])
     sink.add_actors("insider", pd.DataFrame(
         [{"ticker": t, "date": IDX[20], "actor": "O1"} for t in TICKERS]))
-    panel = build_cross_source_panel(sink, PEERS, IDX, universe=pd.Index(TICKERS))
+    panel = build_cross_source_panel(make_frames(IDX, PEERS, universe=pd.Index(TICKERS)), sink)
     expected = set()
     for name, mode in EMISSION.items():
         expected.add(f"f_{name}")

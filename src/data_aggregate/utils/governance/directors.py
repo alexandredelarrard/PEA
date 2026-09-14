@@ -76,8 +76,9 @@ from src.data_aggregate.utils.governance.staleness import (
 )
 from src.utils.names import person_key
 
-#: ⚠ The COLUMN PROJECTION for `def14a_directors` lives in `utils/common/sources.py`, which is
-#: the single registry every cube step reads and which `test_cube_incremental` asserts against.
+#: ⚠ The COLUMN PROJECTION for `def14a_directors` lives on its registry entry
+#: (`schema.Tables.def14a_directors.read_columns`), which every cube step reads through
+#: `store.load(project=True)` and which `test_cube_incremental` asserts against.
 #: It is not restated here: two copies of a projection is exactly how a builder ends up needing
 #: a column the read no longer fetches.
 

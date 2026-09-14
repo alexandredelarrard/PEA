@@ -31,7 +31,6 @@ from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames, load_price_frames, load_trading_calendar,
 )
-from src.data_aggregate.utils.common.sources import project_existing
 from src.data_aggregate.utils.governance.def14a_impute import (
     impute_def14a,
     impute_exec_comp,
@@ -97,7 +96,7 @@ class StepCubeGovernance(Step):
     def _load_def14a(self) -> pd.DataFrame | None:
         """The proxy archive, read in FULL: one row per annual proxy per ticker, so the whole
         table is small enough that a projection would cost more in maintenance than it saves
-        in memory (`utils/common/sources.py` deliberately lists no projection for it)."""
+        in memory (the registry deliberately declares no `read_columns` for it)."""
         df = self._store.load(Tables.def14a_llm, optional=True)
         if df is None or df.empty:
             return None
@@ -108,8 +107,7 @@ class StepCubeGovernance(Step):
     def _load_votes(self) -> pd.DataFrame | None:
         """The Item 5.07 vote record, read in FULL and unprojected.
 
-        `sec_8k_votes` is deliberately absent from `utils/common/sources.py::SOURCE_COLUMNS`:
-        at ~35k rows over the whole 2010-2026 history it is two orders of magnitude smaller
+        `sec_8k_votes` deliberately declares no `read_columns` in the registry: at ~35k rows over the whole 2010-2026 history it is two orders of magnitude smaller
         than anything that needs a projection, and it is WIDE (47 columns, 21 of them
         per-role vote sums) in a way that would make a column list a maintenance liability
         for no memory saved.
@@ -152,7 +150,7 @@ class StepCubeGovernance(Step):
     def _load_directors(self) -> pd.DataFrame | None:
         """The per-DIRECTOR roster, PROJECTED and cleaned on read.
 
-        134,490 rows over 12,239 filings, and the read is projected (`utils/common/sources.py`)
+        134,490 rows over 12,239 filings, and the read is projected (`def14a_directors.read_columns`)
         because this table is wide with columns no governance builder touches -- `cik`,
         `gender`, `gender_basis` -- and it is read in the same build as the 21.7M-row 13F table.
 
@@ -168,8 +166,7 @@ class StepCubeGovernance(Step):
             self._log.warning("No %s -> the board averages stay on the parent scalar and the "
                               "board-quality family is skipped.", table.name)
             return None
-        df = self._store.load(table, optional=True,
-                              columns=project_existing(self._store.columns(table), table.name))
+        df = self._store.load(table, project=True, optional=True)
         if df is None or df.empty:
             return None
         df, stats = fill_director_attributes(df)
@@ -194,8 +191,7 @@ class StepCubeGovernance(Step):
         if not self._store.exists(table):
             self._log.warning("No %s -> the four director-pay features are skipped.", table.name)
             return None
-        df = self._store.load(table, optional=True,
-                              columns=project_existing(self._store.columns(table), table.name))
+        df = self._store.load(table, project=True, optional=True)
         if df is None or df.empty:
             return None
         df, stats = impute_director_comp(df)
@@ -215,7 +211,7 @@ class StepCubeGovernance(Step):
         voting power and NO combined economic column, so insider economic ownership is not a
         disclosed fact for those 104 tickers -- it is computed as the group's filed share count
         over this. Loaded in FULL on purpose: `fundamentals_history` is deliberately absent
-        from `sources.SOURCE_COLUMNS`, and **if a projection is ever added for it, this column
+        from `schema.read_columns`, and **if a projection is ever added for it, this column
         has to be in the list** or the ownership feature silently reverts to reporting whatever
         the extraction happened to read off a per-class column.
         """

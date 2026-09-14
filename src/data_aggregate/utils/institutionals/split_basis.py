@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from src.data_aggregate.utils.common.data_utils import to_day
 
 
 def split_cum_product(splits: pd.DataFrame | None, tickers: pd.Series,
@@ -63,7 +64,7 @@ def split_cum_product(splits: pd.DataFrame | None, tickers: pd.Series,
     # ⚠ BOTH SIDES FORCED TO ns. `prices_splits.date` is a Postgres TIMESTAMP arriving as
     # `datetime64[us]`; periods built from a quarter-end are `datetime64[s]`. numpy compares
     # them fine but `searchsorted` on mixed resolutions silently mis-places dates.
-    s["date"] = pd.to_datetime(s["date"]).dt.normalize().astype("datetime64[ns]")
+    s["date"] = to_day(s["date"]).astype("datetime64[ns]")
     s = s.sort_values(["ticker", "date"])
     s["cum"] = s.groupby("ticker")["ratio"].cumprod()
 

@@ -90,6 +90,27 @@ from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_t
 from src.data_aggregate.utils.institutionals.decay import decay_events
 from src.data_aggregate.utils.institutionals.insider_quality import (
     FLAG_PCT_SHARES_OUTSTANDING, asof_values, clean_transactions, report_oversized)
+from src.data_aggregate.utils.common.price_frames import PriceFrames
+
+
+#: D5: every builder answers an absent source with the SAME empty frame. A fresh object each
+#: call, never a module-level constant -- `PanelMerger.add` and several callers reindex or
+#: assign onto what they get back, and a shared instance would be mutated across builds.
+def _EMPTY_PANEL() -> pd.DataFrame:
+    return pd.DataFrame(columns=["date", "ticker"])
+
+
+def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
+    """True when `df` cannot be built from: missing, empty, or short a required column.
+
+    The three-part test is the D5 entry contract stated once. `need` is the set the builder
+    dereferences unconditionally -- a column it only uses `if present` does NOT belong here,
+    or an optional projection turns into an empty panel.
+    """
+    if df is None or df.empty:
+        return True
+    return bool(need) and not need.issubset(df.columns)
+
 
 _log = logging.getLogger(__name__)
 
@@ -166,12 +187,10 @@ DEFAULT_DECAY_HALFLIFE = 63.0
 
 
 def build_insider_feature_panel(
+    frames: PriceFrames,
     insider: pd.DataFrame | None,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
+    *,
     shares_out_history: pd.DataFrame | None = None,
-    stock_close: pd.DataFrame | None = None,
-    level_factor: pd.DataFrame | None = None,
     decay_halflife: float = DEFAULT_DECAY_HALFLIFE,
     sink=None,
 ) -> pd.DataFrame:
@@ -190,7 +209,32 @@ def build_insider_feature_panel(
     dates from here rather than repeat it. The `value`/`shares` it carries are the REPAIRED
     value and the AS-FILED share count -- the split restatement the cost anchor needs belongs
     to the consumer, which is the only place the price basis is known.
+
+    ⚠ `frames` RATHER THAN FOUR UNPACKED FIELDS. `peer_dict`, `trading_index`, `stock_close` and
+    `level_factor` were all read off one `PriceFrames` at the call site. Naming the object makes
+    the basis un-mistakable: there is one `close_split` and one `close_total` on it, and neither
+    can arrive under the other's parameter name.
+
+    ⚠ NO `frames.require(...)`, AND THAT IS MEASURED RATHER THAN FORGOTTEN. Every wide frame
+    this builder reads sits behind an explicit `is None` guard, or is handed to a callee that
+    documents `None` as a MEANING rather than an error -- `daily_market_cap`'s
+    `level_factor=None` IS "S is 1.0 everywhere". `require` would turn each of those graceful
+    degrades into a raise, which is exactly what its own docstring warns against.
+
+    The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
+    `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
+    call; the keyword form makes it unrepresentable.
     """
+    peer_dict = frames.peers
+    trading_index = frames.trading_index
+    stock_close = frames.close_split
+    level_factor = frames.level_factor
+    # D5 entry guard. `clean_transactions` tolerates None, but stating the contract here
+    # keeps all seven builders answering an absent source the same way.
+    need = {"ticker", "filing_date", "transaction_code", "shares"}
+    if insider is None or insider.empty or not need.issubset(insider.columns):
+        return _EMPTY_PANEL()
+
     t, diag = clean_transactions(insider)
     if t.empty:
         return pd.DataFrame(columns=["date", "ticker"])
@@ -565,7 +609,18 @@ def _market_cap(shares_out_history: pd.DataFrame | None, stock_close: pd.DataFra
                      "are skipped.")
         return None
     mcap = daily_market_cap(shares_out_history, stock_close, level_factor=level_factor)
-    return mcap if not mcap.empty else None
+    if mcap.empty:
+        # ⚠ THIS PATH USED TO BE SILENT, and that is what let a projection delete 10 features
+        # across three builders with a clean-looking build log. `daily_market_cap` returns a
+        # COLUMN-LESS frame when its input has no `sharesOutstanding` column, so the caller's
+        # `if not mcap.empty` branch just never fires. The inputs are present -- the warning
+        # above only covers their absence -- so the column is what has to be named.
+        _log.warning("daily_market_cap returned no columns (shares_out_history has %s; it "
+                     "needs `sharesOutstanding`, the VENDOR basis, not `sharesOutstandingPit`)"
+                     " -> the 11 size-scaled insider features are skipped.",
+                     sorted(shares_out_history.columns))
+        return None
+    return mcap
 
 
 def _report_oversized(t: pd.DataFrame, shares_out: pd.DataFrame) -> None:

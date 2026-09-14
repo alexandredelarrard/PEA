@@ -19,6 +19,7 @@ import pandas as pd
 from src.data_aggregate.utils.institutionals.signal_conditioning import (
     COST_ANCHOR_WINDOW, EMISSION, EXCURSION_LOOKBACK, build_signal_conditioning_panel,
 )
+from tests.conftest import make_frames
 
 IDX = pd.DatetimeIndex(pd.bdate_range("2020-01-01", periods=520))
 TICKERS = ["A", "B", "C", "D"]
@@ -45,8 +46,7 @@ def test_age_days_is_nan_before_the_first_event_then_counts_trading_days():
     before the ticker's first event is NaN -- never 0, which would read as "an event happened
     today" on a name that has never had one."""
     close = _close()
-    panel = build_signal_conditioning_panel(
-        _events({"A": [100, 300]}), PEERS, IDX, close_total=close, close_split=close)
+    panel = build_signal_conditioning_panel(make_frames(IDX, PEERS, close_total=close, close_split=close), _events({"A": [100, 300]}))
     a = panel[panel["ticker"] == "A"].set_index("date").sort_index()
     age = a["f_ic_sig_insider_age_days"]
     assert age.loc[IDX[:100]].isna().all(), "age carried a value before the first event"
@@ -71,8 +71,8 @@ def test_the_panel_moves_on_every_day_with_no_filing():
     days. A step-function feature would be flat and is what this proves the layer replaces."""
     close = _close(seed=5)
     panel = build_signal_conditioning_panel(
-        _events({"A": [100], "B": [90]}), PEERS, IDX, close_total=close, close_split=close,
-        sector_ret=close.pct_change().rolling(5).mean().bfill())
+        make_frames(IDX, PEERS, close_total=close, close_split=close, sector_ret=close.pct_change().rolling(5).mean().bfill()),
+        _events({"A": [100], "B": [90]}))
     span = IDX[150:180]                                # 30 trading days, no event anywhere
     a = panel[(panel["ticker"] == "A") & panel["date"].isin(span)].set_index("date").sort_index()
     daily = ("f_ic_sig_insider_age_days", "f_ic_sig_insider_ret_since",
@@ -94,12 +94,9 @@ def test_no_future_prices_reach_a_conditioning_value():
     identical. A leak would show up as the truncated run disagreeing."""
     close = _close(seed=9)
     events = _events({"A": [100], "B": [40], "C": [220]})
-    full = build_signal_conditioning_panel(events, PEERS, IDX, close_total=close,
-                                           close_split=close)
+    full = build_signal_conditioning_panel(make_frames(IDX, PEERS, close_total=close, close_split=close), events)
     cut = 300
-    truncated = build_signal_conditioning_panel(
-        events, PEERS, IDX[:cut], close_total=close.iloc[:cut],
-        close_split=close.iloc[:cut])
+    truncated = build_signal_conditioning_panel(make_frames(IDX[:cut], PEERS, close_total=close.iloc[:cut], close_split=close.iloc[:cut]), events)
     cols = [c for c in full.columns if c.startswith("f_")]
     a = full[full["date"] <= IDX[cut - 1]].set_index(["date", "ticker"])[cols].sort_index()
     b = truncated.set_index(["date", "ticker"])[cols].sort_index()
@@ -122,8 +119,7 @@ def test_excursions_are_signed_capped_and_anchored():
     Capping only the search would divide a trailing minimum by a price from 380 days back and
     report a favourable "max adverse excursion" on any name that had since doubled."""
     close = _close(seed=13)
-    panel = build_signal_conditioning_panel(
-        _events({"A": [20]}), PEERS, IDX, close_total=close, close_split=close)
+    panel = build_signal_conditioning_panel(make_frames(IDX, PEERS, close_total=close, close_split=close), _events({"A": [20]}))
     a = panel[panel["ticker"] == "A"].set_index("date").sort_index()
     runup, dd = a["f_ic_sig_insider_max_runup_since_buy"], a["f_ic_sig_insider_max_dd_since_buy"]
     assert (runup.dropna() >= -1e-12).all(), "a run-up went negative"
@@ -159,10 +155,8 @@ def test_the_cost_anchor_is_restated_across_a_split():
         {"ticker": "A", "date": IDX[400], "value": 100_000.0, "shares": 100.0}])}
     splits = pd.DataFrame({"ticker": ["A"], "date": [IDX[450]], "ratio": [10.0]})
 
-    naive = build_signal_conditioning_panel(events, PEERS, IDX, close_total=close,
-                                            close_split=close, splits=None)
-    fixed = build_signal_conditioning_panel(events, PEERS, IDX, close_total=close,
-                                            close_split=close, splits=splits)
+    naive = build_signal_conditioning_panel(make_frames(IDX, PEERS, close_total=close, close_split=close), events, splits=None)
+    fixed = build_signal_conditioning_panel(make_frames(IDX, PEERS, close_total=close, close_split=close), events, splits=splits)
     day = IDX[460]                                  # after the split, inside the 126d window
     got_naive = naive.loc[(naive["ticker"] == "A") & (naive["date"] == day),
                           "f_ic_sig_insider_price_vs_buy"].iloc[0]
@@ -179,10 +173,10 @@ def test_the_cost_anchor_is_restated_across_a_split():
 def test_every_declared_feature_is_emitted():
     close = _close(seed=21)
     panel = build_signal_conditioning_panel(
-        _events({"A": [100, 300], "B": [40], "C": [220], "D": [10, 250]}), PEERS, IDX,
-        close_total=close, close_split=close,
-        sector_ret=close.pct_change().rolling(5).mean().bfill(),
-        ret=close.pct_change())
+        make_frames(IDX, PEERS, close_total=close, close_split=close,
+                    sector_ret=close.pct_change().rolling(5).mean().bfill(),
+                    ret=close.pct_change()),
+        _events({"A": [100, 300], "B": [40], "C": [220], "D": [10, 250]}))
     expected = set()
     for name, mode in EMISSION.items():
         expected.add(f"f_{name}")

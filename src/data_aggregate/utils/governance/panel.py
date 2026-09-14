@@ -239,7 +239,7 @@ def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeInd
     Verified: the leak falls from 766 cells to LVS's 251 intended ones.
 
     ⚠ THE COLUMN IS AVAILABLE IN PRODUCTION AND THAT IS NOT AN ACCIDENT. `def14a_llm` is
-    deliberately ABSENT from `sources.SOURCE_COLUMNS`, so it loads in FULL (the table is small
+    deliberately declares no `schema.read_columns`, so it loads in FULL (the table is small
     and a projection saves nothing), and `provisions_features` already reads
     `dual_class_shares` off this same frame to build `f_dual_class_added`. If a projection is
     ever added for `def14a_llm`, this column has to be in it.

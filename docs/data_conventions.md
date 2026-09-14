@@ -85,12 +85,19 @@ Scale, so you know what an unprojected read costs: `sec13f_hr` 21.7M rows / 6.1 
 `earning_calls_embedding` 8.6 GB · `fundamentals_facts` 7.8M rows / 5.2 GB · `cube` ~570 columns,
 ~26 GB. These are OOMs, not slow queries.
 
-**Three projection declaration sites exist. Prefer the registry.**
+**ONE projection declaration site: the registry.**
 
 | Site | Status |
 |---|---|
-| `Table.read_columns` in [schema.py](../src/data_store/schema.py) | **canonical** — drives `project=True` |
-| `SOURCE_COLUMNS` in [utils/common/sources.py](../src/data_aggregate/utils/common/sources.py) | the ONLY one. `StepCubeInstitutionals._load_source` calls its `project_existing` and `tests/data_aggregate/test_cube_incremental.py` asserts against it. The dead duplicate that used to sit in the step module is deleted |
+| `Table.read_columns` / `Table.optional_columns` in [schema.py](../src/data_store/schema.py) | **the only one.** `store.load(project=True)` resolves it through `projection_report`; `StepCubeInstitutionals._load_source` and `StepCubeGovernance` both delegate, and `tests/data_aggregate/test_cube_incremental.py` asserts against it. A table declaring no `read_columns` loads in FULL, which is the right default for the small ones |
+
+`utils/common/sources.py` (`SOURCE_COLUMNS` / `project_existing`) was DELETED 2026-09-14: it
+was a second declaration of the same fact, and it had already drifted — `insider_transactions`
+carried 13 columns in the registry against the live 19, while `sec_13d`, `sec_13g` and the two
+DEF 14A children declared none at all. Hanging the projection off the `Table` object also
+removes the key-lookup trap that once cost three `ic_shortvol_*` features: the map was keyed on
+the ATTRIBUTE name `short_interest`, whose table is `sec_short_interest`, so `exists()` returned
+False and 956,640 rows sat unread. There is no key left to get wrong.
 
 A projection **must** cover every column its builder requires (asserted by
 `test_cube_incremental.py`) but must also tolerate an *optional* column the live table lacks —

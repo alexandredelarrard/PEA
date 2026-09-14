@@ -17,6 +17,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
     EMISSION, FTD_PUB_LAG, SHORTVOL_PUB_LAG, _fails_fields, _shortvol_fields,
     build_short_flow_feature_panel,
 )
+from tests.conftest import make_frames
 
 
 def test_parse_regsho():
@@ -155,9 +156,8 @@ def test_panel_columns_match_the_emission_map():
         "date": np.repeat(dates.to_numpy(), len(tickers))[keep],
         "ticker": np.tile(np.array(tickers), len(dates))[keep],
         "fails_quantity": rng.lognormal(8, 1.2, int(keep.sum())).round(0)})
-    panel = build_short_flow_feature_panel(hist, peers, dates, fails_history=ftd,
-                                           volume=volume, shares_out_history=fund,
-                                           close_total=close)
+    panel = build_short_flow_feature_panel(
+        make_frames(dates, peers, volume=volume, close_total=close), hist, fails_history=ftd, shares_out_history=fund)
     expected = set()
     for name, mode in EMISSION.items():
         expected.add(f"f_{name}")

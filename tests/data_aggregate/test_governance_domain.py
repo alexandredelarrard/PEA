@@ -421,8 +421,8 @@ def test_insider_ownership_bound_fails_closed_without_the_discriminator():
     F = _governance_fields(hist, IDX, None, tally)
     assert F["insider_ownership_pct"]["BAD"].isna().all()
     # ...and it SAYS SO. A missing discriminator is a regression, not a normal state: the
-    # column is in production today because `def14a_llm` has no projection in
-    # `sources.SOURCE_COLUMNS` and loads in full. If that ever changes, the build log has to
+    # column is in production today because `def14a_llm` declares no `read_columns` in the
+    # registry and loads in full. If that ever changes, the build log has to
     # be the thing that notices, not a coverage diff three weeks later.
     assert [k for k in tally if k.startswith("⚠ domain gate on insider_ownership_pct")], tally
 

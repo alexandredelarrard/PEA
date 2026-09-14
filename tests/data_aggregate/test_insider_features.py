@@ -6,6 +6,9 @@ the two defects these tests exist for survived: a `value_usd` total of $182,982,
 """
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -15,8 +18,35 @@ from src.data_aggregate.utils.institutionals.insider_features import (
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES, clean_transactions, common_stock_mask, consensus_price,
     officer_role, security_class)
+from tests.conftest import make_frames
 
 TRADING_INDEX = pd.bdate_range("2015-01-01", "2016-12-31")
+
+
+@contextmanager
+def _capture_warnings(logger_name: str):
+    """Collect WARNING records from one logger as formatted strings.
+
+    A plain `caplog` would do, but these builders log through a module-level `logging`
+    handle and the assertion here is about WHICH logger spoke -- an empty market cap has to
+    be reported by the builder that lost the feature, not by something upstream.
+    """
+    records: list[str] = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    log = logging.getLogger(logger_name)
+    handler = _Sink(level=logging.WARNING)
+    log.addHandler(handler)
+    previous, log.disabled = log.disabled, False
+    try:
+        yield records
+    finally:
+        log.removeHandler(handler)
+        log.disabled = previous
+
 
 
 def _txn(**kw) -> dict:
@@ -149,8 +179,7 @@ def test_an_exercise_and_sell_package_is_not_a_discretionary_sale():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, close = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(_frame(rows), _peers(), idx, shares_out_history=fh,
-                                        stock_close=close)
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     col = "f_ic_insider_discretionary_sell_mcap_60d"
     after = panel[panel["date"].ge("2024-06-03")][col].dropna()
     one_sale = 100_000.0 / (1_000_000.0 * 100.0)
@@ -201,8 +230,7 @@ def test_owner_surprise_uses_only_that_owners_prior_purchases():
                  filing_date=f"2015-0{i + 1}-15", transaction_date=f"2015-0{i + 1}-14",
                  shares_owned_after=v + 10_000.0) for i, v in enumerate(sizes)]
     fh, close = _prices()
-    panel = build_insider_feature_panel(_frame(rows), _peers(), TRADING_INDEX,
-                                        shares_out_history=fh, stock_close=close)
+    panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     got = panel.set_index("date")["f_ic_insider_owner_surprise_120d"]
     on_second = got.loc["2015-02-16"]
     leaky = float(pd.Series(sizes).rank(pct=True).iloc[1])          # = 0.5
@@ -223,8 +251,7 @@ def test_nothing_is_emitted_before_the_measured_availability_floors():
     idx = pd.bdate_range("2004-01-01", "2026-01-01")
     fh, close = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(_frame(rows), _peers(), idx, shares_out_history=fh,
-                                        stock_close=close)
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     cols = [c for c in panel.columns if c not in ("date", "ticker")]
     before = panel[panel["date"] < INSIDER_FLOOR]
     assert before[cols].notna().to_numpy().sum() == 0
@@ -243,12 +270,11 @@ def test_a_feature_never_sees_a_transaction_filed_after_the_date():
                  filing_date=f"2015-{m:02d}-15", transaction_date=f"2015-{m:02d}-14")
             for i, m in enumerate([2, 4, 6, 8, 10])]
     fh, close = _prices()
-    full = build_insider_feature_panel(_frame(rows), _peers(), TRADING_INDEX,
-                                       shares_out_history=fh, stock_close=close)
+    full = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     cut = pd.Timestamp("2015-07-01")
     truncated = build_insider_feature_panel(
-        _frame([r for r in rows if pd.Timestamp(r["filing_date"]) < cut]),
-        _peers(), TRADING_INDEX, shares_out_history=fh, stock_close=close)
+        make_frames(TRADING_INDEX, _peers(), close_split=close), _frame([r for r in rows if pd.Timestamp(r["filing_date"]) < cut]),
+        shares_out_history=fh)
     cols = [c for c in full.columns if c in truncated.columns and c not in ("date", "ticker")]
     a = full[full["date"] < cut].set_index(["date", "ticker"])[cols]
     b = truncated[truncated["date"] < cut].set_index(["date", "ticker"])[cols]
@@ -272,8 +298,7 @@ def test_distinct_buyers_counts_people_not_filings():
                              filing_date=d, transaction_date=d, shares=3.0,
                              value_usd=300.0, shares_owned_after=10_003.0))
     fh, close = _prices()
-    panel = build_insider_feature_panel(_frame(rows), _peers(), TRADING_INDEX,
-                                        shares_out_history=fh, stock_close=close)
+    panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     n = panel.set_index("date")["f_ic_insider_distinct_buyers_120d"]
     peak = n.max()
     assert peak == 3.0
@@ -295,8 +320,7 @@ def test_cluster_is_two_distinct_buyers_not_two_filings():
     col = "f_ic_insider_cluster_buy_120d"
     got = {}
     for name, rows in (("one buyer, 4 filings", solo), ("two buyers", pair)):
-        panel = build_insider_feature_panel(_frame(rows), _peers(), TRADING_INDEX,
-                                            shares_out_history=fh, stock_close=close)
+        panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
         got[name] = panel.set_index("date")[col].loc["2015-03-10"]
     assert got["one buyer, 4 filings"] == 0.0
     assert got["two buyers"] == 2.0 >= CLUSTER_MIN
@@ -316,8 +340,7 @@ def test_the_ten_b5_1_split_separates_planned_from_discretionary():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(_frame(rows), _peers(), idx, shares_out_history=fh,
-                                        stock_close=close)
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     day = panel[panel["date"].eq("2024-03-01")].iloc[0]
     mcap = 1_000_000.0 * 100.0
     assert day["f_ic_insider_discretionary_sell_mcap_60d"] == pytest.approx(100_000 / mcap)
@@ -331,8 +354,7 @@ def test_the_ten_b5_1_split_separates_planned_from_discretionary():
 def test_net_buy_ratio_is_nan_when_nothing_was_filed_not_zero():
     rows = [_txn(filing_date="2015-06-01", transaction_date="2015-05-29")]
     fh, close = _prices()
-    panel = build_insider_feature_panel(_frame(rows), _peers(), TRADING_INDEX,
-                                        shares_out_history=fh, stock_close=close)
+    panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     s = panel.set_index("date")["f_ic_insider_net_buy_ratio_180d"]
     assert pd.isna(s.loc["2015-05-01"]) and s.loc["2015-06-01"] == 1.0
     assert pd.isna(s.loc["2016-06-01"])
@@ -359,8 +381,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(_frame(rows), _peers(), idx, shares_out_history=fh,
-                                        stock_close=close)
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     cols = {c for c in panel.columns if c not in ("date", "ticker")}
     expected = {f"f_{n}" for n in EMISSION} | {
         f"f_{n}_xs" for n, m in EMISSION.items() if m == "raw+xs"}
@@ -380,7 +401,7 @@ def test_without_a_market_cap_the_dollar_features_are_absent_not_counts():
                  officer_title="Chief Executive Officer", is_officer=1.0, is_director=1.0,
                  filing_date=f"2015-0{i + 1}-15", transaction_date=f"2015-0{i + 1}-14",
                  shares=1_000.0 + i, shares_owned_after=11_000.0 + i) for i in range(3)]
-    panel = build_insider_feature_panel(_frame(rows), _peers(), TRADING_INDEX)
+    panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers()), _frame(rows))
     got = {c.removeprefix("f_").removesuffix("_xs") for c in panel.columns
            if c not in ("date", "ticker")}
     scale_free = {"ic_insider_distinct_buyers_120d", "ic_insider_cluster_buy_120d",
@@ -396,8 +417,7 @@ def test_no_usable_transaction_returns_an_empty_panel_not_a_crash():
     for label, rows in (("nothing at all", []),
                         ("grants only", [_txn(transaction_code="A")]),
                         ("derivatives only", [_txn(security_type="deriv")])):
-        panel = build_insider_feature_panel(_frame(rows) if rows else None, _peers(),
-                                            TRADING_INDEX)
+        panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers()), _frame(rows) if rows else None)
         assert list(panel.columns) == ["date", "ticker"] and panel.empty
     print("SANITY: an absent table, a grants-only table and a derivatives-only table each "
           "return an empty (date, ticker) frame -- the merge chain reports 'No "
@@ -421,8 +441,7 @@ def test_the_sink_receives_one_shares_column_not_two():
                  value_usd=100_000.0 * (i + 1)) for i in range(3)]
     fh, close = _prices()
     sink = ConditioningSink()
-    build_insider_feature_panel(_frame(rows), _peers(), TRADING_INDEX,
-                                shares_out_history=fh, stock_close=close, sink=sink)
+    build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh, sink=sink)
 
     events = sink.events["insider"]
     assert list(events.columns) == ["ticker", "date", "value", "shares"]
@@ -448,3 +467,71 @@ def test_the_sink_refuses_an_ambiguous_column_at_the_contract_point():
         ConditioningSink().add_events("insider", frame)
     print("SANITY: ConditioningSink.add_events raises ValueError naming the duplicate column "
           "instead of forwarding an ambiguous frame.")
+
+
+def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them():
+    """The seven `*_mcap_*` insider features must EXIST, and losing them must be AUDIBLE.
+
+    ⚠ THE FAILURE MODE IS ABSENCE, WHICH IS WHY THIS TEST IS SHAPED AS A DELTA.
+    `daily_market_cap` reads `sharesOutstanding` -- the VENDOR basis -- while the 13F and
+    insider ownership-% denominator is `sharesOutstandingPit`. Both columns exist in
+    `fundamentals_history` and both are fully populated (measured 2026-09-14: 51,504 rows,
+    51,504 non-null each, differing on 14,296 of them), so it is easy to read one as a synonym
+    of the other. It is not: projecting the read to the PIT column alone made
+    `fundamentals_to_daily` take its `if field not in columns` branch, `daily_market_cap`
+    return a COLUMN-LESS frame, and every `if not mcap.empty` branch in three builders simply
+    not fire.
+
+    Nothing logged when they went, so 10 features (~20 emitted columns) disappeared from the
+    cube behind a clean build log. Both halves are pinned here: the seven build on the VENDOR
+    basis, and dropping that column now produces a WARNING NAMING IT rather than silence.
+    """
+    # the fixture of `test_every_emitted_column_is_declared_and_every_declaration_is_emitted`:
+    # repeated owner CIKs, both officer roles, and a discretionary / 10b5-1 sell pair, which
+    # is what it takes for all seven size-scaled legs to be non-degenerate at once.
+    rows = [_txn(accession_number=f"p{i}", owner_cik=f"{i % 2:04d}", officer_title=title,
+                 is_officer=1.0 if title else 0.0, is_director=0.0 if title else 1.0,
+                 filing_date=f"2024-0{i + 1}-15", transaction_date=f"2024-0{i + 1}-14",
+                 shares=1_000.0 + 100 * i, value_usd=100_000.0 + 10_000 * i,
+                 shares_owned_after=11_000.0 + i)
+            for i, title in enumerate(["Chief Executive Officer", "Chief Financial Officer",
+                                       "", "Executive Vice President", ""])]
+    rows += [_txn(accession_number="s1", transaction_code="S", filing_date="2024-07-01",
+                  transaction_date="2024-06-28", is_10b5_1=0.0),
+             _txn(accession_number="s2", transaction_code="S", filing_date="2024-07-01",
+                  transaction_date="2024-06-28", is_10b5_1=1.0)]
+    idx = pd.bdate_range("2024-01-01", "2024-12-31")
+    fh, _ = _prices()
+    close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
+
+    mcap_feats = [f for f in EMISSION if "mcap" in f]
+    assert len(mcap_feats) == 7, mcap_feats
+
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    missing = [f for f in mcap_feats if f"f_{f}" not in panel.columns]
+    assert not missing, f"size-scaled insider features absent from the panel: {missing}"
+    built = {f: int(panel[f"f_{f}"].notna().sum()) for f in mcap_feats}
+    assert all(built.values()), f"an mcap feature is all-NaN: {built}"
+
+    # ... and the PIT column ALONE is not a substitute.
+    pit_only = fh.drop(columns=["sharesOutstanding"])
+    with _capture_warnings(
+            "src.data_aggregate.utils.institutionals.insider_features") as logged:
+        degraded = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=pit_only)
+    survived = [f for f in mcap_feats if f"f_{f}" in degraded.columns]
+    assert not survived, survived
+    assert any("sharesOutstanding" in m for m in logged), (
+        f"the empty-market-cap path must name the missing column; logged: {logged}")
+
+    print()
+    print("=== SANITY: the size-scaled insider family is built on the VENDOR share basis ===")
+    print(f"  shares_out_history columns passed: {sorted(fh.columns)}")
+    for f, n in built.items():
+        print(f"    {f:<42} {n:>4} non-null rows")
+    print(f"  with `sharesOutstanding` dropped -> {len(survived)} of {len(mcap_feats)} "
+          f"features survive, and the builder logs:")
+    for m in logged:
+        print(f"    WARNING {m}")
+    print("  CONCLUSION: all 7 mcap features build from `sharesOutstanding`; projecting only "
+          "`sharesOutstandingPit` deletes every one of them, and that deletion is now "
+          "REPORTED instead of silent. Validated.")

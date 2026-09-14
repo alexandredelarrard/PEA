@@ -79,6 +79,7 @@ import pandas as pd
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.institutionals.decay import days_since_last_true, snap_to_grid
 from src.data_aggregate.utils.institutionals.split_basis import future_split_factor
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 
 logger = logging.getLogger(__name__)
 
@@ -282,13 +283,9 @@ def _insider_price_legs(events: pd.DataFrame | None, mask: pd.DataFrame | None,
 
 
 def build_signal_conditioning_panel(
+    frames: PriceFrames,
     events: dict[str, pd.DataFrame] | None,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
-    close_total: pd.DataFrame | None = None,
-    close_split: pd.DataFrame | None = None,
-    sector_ret: pd.DataFrame | None = None,
-    ret: pd.DataFrame | None = None,
+    *,
     splits: pd.DataFrame | None = None,
     excursion_lookback: int = EXCURSION_LOOKBACK,
 ) -> pd.DataFrame:
@@ -297,7 +294,28 @@ def build_signal_conditioning_panel(
     `events` is the sink the panel builders filled: `{family: [ticker, date, ...]}`. Empty
     when no family supplied events or `close_total` is absent -- every feature here is a
     price path measured from an event date, so neither input has a fallback.
+
+    ⚠ `frames` RATHER THAN SIX UNPACKED FIELDS. `peer_dict`, `trading_index`, `close_total`,
+    `close_split`, `sector_ret` and `ret` were all read off one `PriceFrames` at the call site.
+    Naming the object makes the basis un-mistakable: there is one `close_split` and one
+    `close_total` on it, and neither can arrive under the other's parameter name.
+
+    ⚠ NO `frames.require(...)`, AND THAT IS MEASURED RATHER THAN FORGOTTEN. Every wide frame
+    this builder reads sits behind an explicit `is None` guard, or is handed to a callee that
+    documents `None` as a MEANING rather than an error -- `daily_market_cap`'s
+    `level_factor=None` IS "S is 1.0 everywhere". `require` would turn each of those graceful
+    degrades into a raise, which is exactly what its own docstring warns against.
+
+    The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
+    `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
+    call; the keyword form makes it unrepresentable.
     """
+    peer_dict = frames.peers
+    trading_index = frames.trading_index
+    close_total = frames.close_total
+    close_split = frames.close_split
+    sector_ret = frames.sector_ret
+    ret = frames.ret
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
     if not events or close_total is None or close_total.empty or idx.empty:
         return pd.DataFrame(columns=["date", "ticker"])

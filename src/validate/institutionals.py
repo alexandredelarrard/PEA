@@ -61,15 +61,6 @@ DEGENERATE_MAX = 0.20
 #: panel must not move before it.
 F13_LAG_DAYS = 45
 
-#: L10 / R4. 2013-06-30 is the BROAD 13F coverage regime start (192 -> 3,046 filers), so its
-#: QoQ deltas have no comparable prior quarter and must be NaN rather than a universe-wide
-#: positive, and every LEVEL before it is nulled by D16. Imported from the builder rather than
-#: retyped: two spellings of one date is how a guard and its check drift apart.
-from src.data_aggregate.utils.institutionals.institutional_features import (  # noqa: E402
-    COVERAGE_BREAK_DEFAULT, INST_LEVEL_FLOOR_PERIOD, _coverage_periods)
-
-FIRST_13F_PERIOD = INST_LEVEL_FLOOR_PERIOD
-
 PASS, FAIL, REPORT, SKIP = "PASS", "FAIL", "REPORT", "SKIP"
 
 #: G2. A per-FEATURE availability floor, for the four legs whose window is narrower than their
@@ -911,8 +902,8 @@ def leak_event_date_stamping(check_id: str, family: str, source_columns: list[st
     """L3 / L4 -- a family must be stamped on `filing_date`, never on the event date.
 
     Scored STRUCTURALLY where it can be: if the family's source projection does not read the
-    event-date column at all, no feature can be stamped on it, and the projection in
-    `utils/common/sources.py` is the evidence. That is a stronger proof than a sampled
+    event-date column at all, no feature can be stamped on it, and the table's own
+    `read_columns` is the evidence. That is a stronger proof than a sampled
     change-date test and it costs nothing -- `sec_13d` / `sec_13g` never read `date_of_event`,
     so L4 holds by construction. Where the column IS read (insider reads `transaction_date` to
     link an exercise-and-sell package) the check falls back to REPORT, because reading it is
@@ -1245,17 +1236,17 @@ def run_institutionals_validation(context, config, *, panel: pd.DataFrame | None
         price_universe = set(store.load(Tables.cube_part_prices, columns=["ticker"])["ticker"]
                              .astype(str).unique())
 
-    from src.data_aggregate.utils.common.sources import SOURCE_COLUMNS
-
+    # L3/L4 score the READ PROJECTION, which is now the registry's own `read_columns` -- the
+    # same list `store.load(project=True)` hands the builder, so the check cannot drift from it.
     checks: list[CheckResult] = [
         leak_availability(panel, floors),
         leak_13f_lag(panel, holdings["period"] if holdings is not None else pd.Series(dtype=object)),
         leak_event_date_stamping("L3", "insider_transactions",
-                                 SOURCE_COLUMNS.get("insider_transactions", []),
+                                 list(Tables.insider_transactions.read_columns),
                                  "transaction_date"),
         leak_event_date_stamping("L4", "sec_13d/sec_13g",
-                                 SOURCE_COLUMNS.get("sec_13d", []) +
-                                 SOURCE_COLUMNS.get("sec_13g", []), "date_of_event"),
+                                 list(Tables.sec_13d.read_columns) +
+                                 list(Tables.sec_13g.read_columns), "date_of_event"),
         leak_first_period_delta(panel),
         reconcile_group_summing(sec_13d),
         reconcile_holder_count(panel, holdings),

@@ -78,6 +78,7 @@ import re
 
 import numpy as np
 import pandas as pd
+from src.data_aggregate.utils.common.data_utils import to_day
 
 _log = logging.getLogger(__name__)
 
@@ -259,7 +260,7 @@ def clean_transactions(insider: pd.DataFrame, *,
     t = insider.copy()
     t["ticker"] = t["ticker"].astype(str).str.upper().str.strip()
     t["code"] = t["transaction_code"].astype(str).str.upper().str.strip()
-    t["day"] = pd.to_datetime(t["filing_date"], errors="coerce").dt.normalize()
+    t["day"] = to_day(t["filing_date"])
     t["shares_n"] = pd.to_numeric(t["shares"], errors="coerce")
     pps = pd.to_numeric(t.get("price_per_share"), errors="coerce")
 

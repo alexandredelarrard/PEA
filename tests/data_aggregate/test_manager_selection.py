@@ -26,6 +26,7 @@ import pandas as pd
 from src.data_aggregate.utils.institutionals.manager_selection import (
     eligibility, elite_weight, manager_concentration_score, selection_diagnostics,
 )
+from tests.conftest import make_frames
 
 _PERIODS = pd.to_datetime(["2020-03-31", "2020-06-30", "2020-09-30", "2020-12-31",
                            "2021-03-31", "2021-06-30", "2021-09-30", "2021-12-31"])
@@ -253,8 +254,8 @@ def _panel(holdings, **kw):
         build_superinvestor_feature_panel,
     )
     return build_superinvestor_feature_panel(
-        holdings, _ROSTER, _PEERS, _INDEX, cusip_map=_CUSIP_MAP,
-        universe=_UNIVERSE, **kw)
+        make_frames(_INDEX, _PEERS, universe=_UNIVERSE), holdings, _ROSTER,
+        cusip_map=_CUSIP_MAP, **kw)
 
 
 def _keys(holdings) -> pd.MultiIndex:

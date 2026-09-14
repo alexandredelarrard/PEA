@@ -58,6 +58,28 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.institutionals.split_basis import split_adjust_frame
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.xs import self_history_z
+from src.data_aggregate.utils.common.data_utils import to_day
+from src.data_aggregate.utils.common.price_frames import PriceFrames
+
+
+#: D5: every builder answers an absent source with the SAME empty frame. A fresh object each
+#: call, never a module-level constant -- `PanelMerger.add` and several callers reindex or
+#: assign onto what they get back, and a shared instance would be mutated across builds.
+def _EMPTY_PANEL() -> pd.DataFrame:
+    return pd.DataFrame(columns=["date", "ticker"])
+
+
+def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
+    """True when `df` cannot be built from: missing, empty, or short a required column.
+
+    The three-part test is the D5 entry contract stated once. `need` is the set the builder
+    dereferences unconditionally -- a column it only uses `if present` does NOT belong here,
+    or an optional projection turns into an empty panel.
+    """
+    if df is None or df.empty:
+        return True
+    return bool(need) and not need.issubset(df.columns)
+
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +247,7 @@ def _fails_fields(fails_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     """#64-#67. Zero-filled ONLY on the dates the FTD file covers -- see the module docstring."""
     fails = _pivot(fails_hist, "fails_quantity", idx)
     covered = pd.DatetimeIndex(
-        pd.to_datetime(fails_hist["date"], errors="coerce").dropna().dt.normalize().unique())
+        to_day(fails_hist["date"]).dropna().unique())
     on_file = pd.Series(idx.isin(covered), index=idx)
     logger.info("FTD file covers %s of %s trading days in the window (%.1f%%); an absent "
                 "ticker on a covered date is 0 fails, an absent date is NaN",
@@ -266,13 +288,11 @@ def _fails_fields(fails_hist: pd.DataFrame, idx: pd.DatetimeIndex,
 
 
 def build_short_flow_feature_panel(
+    frames: PriceFrames,
     short_history: pd.DataFrame | None,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
+    *,
     fails_history: pd.DataFrame | None = None,
-    volume: pd.DataFrame | None = None,
     shares_out_history: pd.DataFrame | None = None,
-    close_total: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
     sink=None,
 ) -> pd.DataFrame:
@@ -283,7 +303,32 @@ def build_short_flow_feature_panel(
     `shares_out_history` (fundamentals carrying `sharesOutstandingPit`) backs the two
     share-count-scaled features; `close_total` backs the two price interactions. Each is
     optional and its absence removes only the features that need it.
+
+    ⚠ `frames` RATHER THAN FOUR UNPACKED FIELDS. `peer_dict`, `trading_index`, `volume` and
+    `close_total` were all read off one `PriceFrames` at the call site. Naming the object makes
+    the basis un-mistakable: there is one `close_split` and one `close_total` on it, and neither
+    can arrive under the other's parameter name.
+
+    ⚠ NO `frames.require(...)`, AND THAT IS MEASURED RATHER THAN FORGOTTEN. Every wide frame
+    this builder reads sits behind an explicit `is None` guard, or is handed to a callee that
+    documents `None` as a MEANING rather than an error -- `daily_market_cap`'s
+    `level_factor=None` IS "S is 1.0 everywhere". `require` would turn each of those graceful
+    degrades into a raise, which is exactly what its own docstring warns against.
+
+    The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
+    `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
+    call; the keyword form makes it unrepresentable.
     """
+    peer_dict = frames.peers
+    trading_index = frames.trading_index
+    volume = frames.volume
+    close_total = frames.close_total
+    # D5 entry guard. BOTH legs are optional here and the panel is built from whichever
+    # arrived -- RegSHO short volume and fails-to-deliver are separate fetchers on separate
+    # clocks -- so the guard is "neither", not "either".
+    if _absent(short_history) and _absent(fails_history):
+        return _EMPTY_PANEL()
+
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
     shares_out = None
     if shares_out_history is not None and not shares_out_history.empty:

@@ -610,10 +610,23 @@ class Tables:
         date_type_cols=("transaction_date", "filing_date", "period_of_report",
                         "deemed_execution_date", "exercise_date", "expiration_date"),
         freshness="quarterly", freshness_date_col="filing_date",
-        read_columns=("ticker", "filing_date", "transaction_date", "transaction_code",
-                      "value_usd", "shares", "security_type", "is_10b5_1",
-                      "transaction_form_type", "acquired_disposed", "is_director",
-                      "is_officer", "is_ten_pct_owner"))
+        # insider_features + insider_quality. Wider than it looks, and every column earns it:
+        # `security_type`/`security_title` scope the read to common stock (a preferred row at
+        # par put BAC's reference price at $57.80), `price_per_share` + `shares` are what the
+        # consensus screen repairs `value_usd` from, `accession_number`/`transaction_date`
+        # link an exercise-and-sell package, and `shares_owned_after`/`direct_indirect` are
+        # the two legs of the direct/indirect ownership split. Dropping any of them does not
+        # degrade a feature, it deletes it.
+        # `transaction_form_type` / `acquired_disposed` are deliberately ABSENT: the fetcher
+        # writes both, but no cube builder reads either (measured 2026-09-14 -- the only
+        # non-fetcher hits are two test fixtures), and a projection with no reader is a claim
+        # that some builder needs the column.
+        read_columns=("accession_number", "ticker", "owner_cik", "owner_name",
+                      "filing_date", "transaction_date", "transaction_code", "shares",
+                      "price_per_share", "value_usd", "shares_owned_after",
+                      "security_type", "security_title", "direct_indirect",
+                      "officer_title", "is_director", "is_officer",
+                      "is_ten_pct_owner", "is_10b5_1"))
     # Form 3/4/5 footnote prose, one row per (accession, footnote id). Free -- already inside the
     # cached zips, and the PK holds without dedup (0 duplicate (accession, id) pairs measured on
     # 2023q1 and 2026q1). Footnote text is what distinguishes an exercise-and-sell package from
@@ -678,7 +691,16 @@ class Tables:
     # real would claim false 0% stakes.
     sec_13d = Table("sec_13d", ("ticker", "accession_number", "rp_seq"),
                     date_col="filing_date",
-                    date_type_cols=("filing_date", "date_of_event"))
+                    date_type_cols=("filing_date", "date_of_event"),
+                    # ownership_features: canonical-event construction (max per
+                    # accession+cusip, never sum) needs the group-membership and the
+                    # ownership-number columns. `is_amendment` and
+                    # `item4_purpose_of_transaction` are 13D-ONLY concepts -- a 13G has
+                    # neither, which is why the two projections differ by exactly those two.
+                    read_columns=("ticker", "accession_number", "cusip", "filing_date",
+                                  "is_amendment", "percent_of_class",
+                                  "reporting_person_cik", "reporting_person_name",
+                                  "item4_purpose_of_transaction"))
     # Item 5(c) 60-day transaction log: one row PER DISCLOSED TRADE, keyed (ticker,
     # accession, trade_seq) -- an independent grain from `sec_13d` (no rp_seq
     # relationship). Parsed from each filing's "TRADING DATA" exhibit; the exhibit number
@@ -715,7 +737,12 @@ class Tables:
     # that actually discriminates the three filer regimes.
     sec_13g = Table("sec_13g", ("ticker", "accession_number", "rp_seq"),
                     date_col="filing_date",
-                    date_type_cols=("filing_date", "date_of_event"))
+                    date_type_cols=("filing_date", "date_of_event"),
+                    # ownership_features, same shape as `sec_13d` minus the two 13D-only
+                    # columns above.
+                    read_columns=("ticker", "accession_number", "cusip", "filing_date",
+                                  "percent_of_class", "reporting_person_cik",
+                                  "reporting_person_name"))
 
     # ----------------------------------------------------------------- #
     # Extract -- governance (DEF 14A) & events                          #
@@ -734,7 +761,17 @@ class Tables:
     # gender consensus pass is a GROUP BY over this table and cannot be written without it.
     def14a_directors = Table(
         "def14a_directors", ("ticker", "accession_number", "name"),
-        date_col="as_of", date_type_cols=("as_of",), freshness="yearly")
+        date_col="as_of", date_type_cols=("as_of",), freshness="yearly",
+        # StepCubeGovernance. 134,490 rows is a real read beside the 21.7M-row 13F table in
+        # the same build, and the table is WIDE with columns the governance builders never
+        # touch (`cik`, `gender_basis`, `reconciles`, `fiscal_year`).
+        #
+        # ⚠ `tenure_years` IS REQUIRED -- `pct_long_tenured` and `board_tenure_dispersion`
+        # both read it, and the six-column list that omitted it predates the board-quality
+        # family. `gender` is deliberately absent: `pct_female_directors` is D3-protected and
+        # stays on the parent scalar (D36).
+        read_columns=("ticker", "accession_number", "as_of", "name", "age", "tenure_years",
+                      "is_independent", "other_public_company_boards"))
     # Summary Compensation Table rows (Item 402(c)): one row per NEO per fiscal year, ~3 years
     # per filing. 34,741 such rows already sat inside the JSON against the retired edgar table's
     # 2,378, and better on every axis: title 100% vs 45.4%, stock awards 93.8% vs 45.4%, and
@@ -749,7 +786,13 @@ class Tables:
     # depends on. Exists only from the 2008 proxy season (Reg S-K 2006, FY ending >= 2006-12-15).
     def14a_director_comp = Table(
         "def14a_director_comp", ("ticker", "accession_number", "name"),
-        date_col="as_of", date_type_cols=("as_of",), freshness="yearly")
+        date_col="as_of", date_type_cols=("as_of",), freshness="yearly",
+        # StepCubeGovernance, 80,252 rows. ⚠ SIX components, and the first is `fees_earned` --
+        # Item 402(k) has no `salary` and no `bonus` line. `impute_director_comp` sums
+        # exactly these six into a NULL `total`.
+        read_columns=("ticker", "accession_number", "as_of", "name", "total",
+                      "fees_earned", "stock_awards", "option_awards",
+                      "non_equity_incentive", "pension_change", "other_compensation"))
     # Beneficial-ownership rows (Item 403). KNOWINGLY redundant with 13F / SC 13D-G /
     # Forms 3-4-5, which are the preferred sources and whose as-of dates these never align with;
     # the proxy-only figure is the directors-and-officers GROUP aggregate, which is the

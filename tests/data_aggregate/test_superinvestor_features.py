@@ -27,6 +27,7 @@ from src.data_aggregate.utils.institutionals.superinvestor_features import (
     attach_tickers, build_superinvestor_feature_panel, load_superinvestor_holdings,
     manager_quarter_state, manager_stock_conviction, pad_cik, public_state,
 )
+from tests.conftest import make_frames
 
 #: Two roster managers. `BIG` runs a 10-name book of which only 2 are in the universe --
 #: the case README Finding 2 measured at 8.3% position coverage. `SMALL` is index-only.
@@ -230,8 +231,7 @@ def test_a_superseded_backfiling_is_never_readable():
 def test_the_panel_is_empty_before_the_first_filing_is_public():
     idx = pd.bdate_range("2025-10-01", "2026-09-30")
     peers = {t: {p: 1.0 for p in _UNIVERSE if p != t} for t in _UNIVERSE}
-    panel = build_superinvestor_feature_panel(
-        _holdings(), _ROSTER, peers, idx, cusip_map=_CUSIP_MAP, universe=_UNIVERSE)
+    panel = build_superinvestor_feature_panel(make_frames(idx, peers, universe=_UNIVERSE), _holdings(), _ROSTER, cusip_map=_CUSIP_MAP)
     feats = [c for c in panel.columns if c.startswith("f_")]
     before = panel[panel["date"] < pd.Timestamp("2025-11-14")]
     after = panel[panel["date"] >= pd.Timestamp("2026-02-14")]
@@ -252,8 +252,7 @@ def test_the_panel_is_empty_before_the_first_filing_is_public():
 def test_the_family_emits_no_peer_leg_and_never_a_rank_alone():
     idx = pd.bdate_range("2025-10-01", "2026-09-30")
     peers = {t: {p: 1.0 for p in _UNIVERSE if p != t} for t in _UNIVERSE}
-    panel = build_superinvestor_feature_panel(
-        _holdings(), _ROSTER, peers, idx, cusip_map=_CUSIP_MAP, universe=_UNIVERSE)
+    panel = build_superinvestor_feature_panel(make_frames(idx, peers, universe=_UNIVERSE), _holdings(), _ROSTER, cusip_map=_CUSIP_MAP)
     feats = [c for c in panel.columns if c.startswith("f_")]
     peer_legs = [c for c in feats if c.endswith("_vs_peers")]
     raws = {c[2:] for c in feats if not c.endswith("_xs")}

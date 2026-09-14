@@ -49,6 +49,7 @@ import numpy as np
 import pandas as pd
 
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
+from tests.conftest import make_frames
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("aggregate_fingerprint_baseline.json")
@@ -778,8 +779,8 @@ def compute() -> dict:
     # 1/F(d) factor without it -- which is how a 1-for-8 reverse split printed a "coverage" of
     # 2.26 on the live build. A fixture that never passes splits cannot detect that regressing.
     out["panel.short_flow"] = frame_digest(build_short_flow_feature_panel(
-        short_hist, peers, idx, fails_history=ftd, volume=px["volume"],
-        shares_out_history=fund, close_total=close, splits=splits, sink=sink))
+        make_frames(idx, peers, volume=px["volume"], close_total=close), short_hist, fails_history=ftd, shares_out_history=fund, splits=splits,
+        sink=sink))
     # ⚠ `min_prior_holders=0` HERE AND AT `prim.quarter_features`, AND THE GATE DEPENDS ON IT.
     # The production floor is 100 filers (`MIN_PRIOR_HOLDERS`) and `N_MANAGERS` is 8, so the
     # per-ticker coverage-onset guard would null EVERY QoQ delta in this fixture. The digest
@@ -789,27 +790,23 @@ def compute() -> dict:
     # say-on-pay hole), so the guard is turned OFF here and covered instead by
     # test_institutional_features.py::test_per_ticker_coverage_onset_guard.
     out["panel.institutional"] = frame_digest(build_institutional_feature_panel(
-        holdings, peers, idx, shares_out_history=fund, stock_close=close, splits=splits,
-        min_prior_holders=0))
+        make_frames(idx, peers, close_split=close), holdings, shares_out_history=fund, splits=splits, min_prior_holders=0))
     # ⚠ `cusip_map` AND `universe` ARE BOTH REQUIRED. Without a cusip map `attach_tickers`
     # nulls every ticker and the builder returns an EMPTY frame -- which is what this
     # fingerprint silently digested between the Phase 2.2 rebuild and 2026-09-10, pinning a
     # hole exactly as the say-on-pay gate once did.
     out["panel.superinvestor"] = frame_digest(build_superinvestor_feature_panel(
-        book, roster, peers, idx, shares_out_history=fund, stock_close=close,
-        cusip_map=cusip_map, universe=tickers, splits=splits, sink=sink))
+        make_frames(idx, peers, close_split=close, universe=tickers), book, roster, shares_out_history=fund, cusip_map=cusip_map, splits=splits,
+        sink=sink))
     out["panel.insider"] = frame_digest(build_insider_feature_panel(
-        insider, peers, idx, shares_out_history=fund, stock_close=close, sink=sink))
-    out["panel.ownership"] = frame_digest(build_ownership_feature_panel(
-        sec_13d, sec_13g, peers, idx, sink=sink))
+        make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, sink=sink))
+    out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g, sink=sink))
     # The two DERIVED panels, in the order the step builds them. `close` stands in for both
     # price bases here, as it does for the dividend and governance panels -- the synthetic
     # series carries no dividends, so the split-only and total-return bases coincide.
     out["panel.signal_conditioning"] = frame_digest(build_signal_conditioning_panel(
-        sink.events, peers, idx, close_total=close, close_split=close,
-        sector_ret=sector_ret, ret=returns, splits=splits))
-    out["panel.cross_source"] = frame_digest(build_cross_source_panel(
-        sink, peers, idx, universe=pd.Index(tickers)))
+        make_frames(idx, peers, close_total=close, close_split=close, sector_ret=sector_ret, ret=returns), sink.events, splits=splits))
+    out["panel.cross_source"] = frame_digest(build_cross_source_panel(make_frames(idx, peers, universe=pd.Index(tickers)), sink))
 
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame({

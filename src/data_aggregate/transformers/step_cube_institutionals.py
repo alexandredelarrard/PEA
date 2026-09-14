@@ -55,7 +55,6 @@ from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames, load_price_frames, load_trading_calendar,
 )
-from src.data_aggregate.utils.common.sources import project_existing
 from src.data_aggregate.utils.institutionals.cross_source_features import (
     build_cross_source_panel,
 )
@@ -84,13 +83,6 @@ from src.utils.superinvestor_roster import (
     first_snapshot_date, roster_as_of, roster_cik_union, roster_map_as_of,
 )
 
-# NOTE there is deliberately no SOURCE_COLUMNS map here. This module used to carry its own
-# copy of one, which `_load_source` never read -- the projection comes from
-# `utils/common/sources.py` via `project_existing`. The copy had already drifted (it omitted
-# short_interest's `short_interest` / `avg_daily_volume` legs), which is the exact failure the
-# parts registry was built to end: two declarations of one fact, only one of them live.
-
-
 class StepCubeInstitutionals(Step):
 
     #: ⚠ SIX price fields, and each one is load-bearing. `close_split` is the LEVEL basis (market
@@ -117,7 +109,7 @@ class StepCubeInstitutionals(Step):
     def build_panel(self, full: bool = False) -> tuple[pd.DataFrame, PartWindow]:
         """The merge chain, WITHOUT the write. Extracted so `validate institutionals` scores
         the same panel this step persists instead of carrying a second copy of the chain --
-        the "two declarations of one fact" failure the `SOURCE_COLUMNS` note above records.
+        the "two declarations of one fact" failure the registry's `read_columns` exists to end.
 
         `frames` and `shares` are locals and die with the frame on return, which is what the
         `del` before `write_part` used to buy."""
@@ -241,68 +233,124 @@ class StepCubeInstitutionals(Step):
 
     def _load_source(self, table: Table,
                      universe: Sequence[str] | None = None) -> pd.DataFrame | None:
-        """Load one source, PROJECTED to the columns its builder reads (see
-        `utils/common/sources.py`); a table absent from that map loads in full.
+        """Load one source PROJECTED to `table.read_columns` and SCOPED to the universe.
 
-        Pass `universe` for any table whose tickers become a feature CROSS-SECTION -- see
-        `_scope_to_universe`. Lookup tables (`cusip_ticker_map`) and the split calendar are
-        deliberately left whole: they are joined against, not ranked over.
+        Both halves are `store.load` arguments: `project=True` resolves the projection through
+        the registry (`projection_report` narrows it to the columns that actually EXIST), and
+        `where=` pushes the universe down to a SQL `IN`, so the off-universe rows are never
+        read at all. A table declaring no `read_columns` loads in FULL, which is the right
+        default for the small ones.
 
-        The projection is narrowed to the columns that actually exist: `read_table` resolves
-        each via `tbl.c[name]` and raises `KeyError` otherwise, so demanding a column the
-        builder treats as optional (short interest's `ic_shortvol_days_to_cover` inputs) killed
-        the read instead of degrading.
+        The projection narrowing is not tidiness -- `read_table` resolves each column via
+        `tbl.c[name]` and raises `KeyError` otherwise, so demanding a column the builder treats
+        as optional (short interest's `ic_shortvol_days_to_cover` inputs) killed the read
+        instead of degrading it.
 
-        ⚠ TAKES A `Table`, NEVER A NAME STRING, and `project_existing` is keyed on
-        `table.name`. Five registry entries have an attribute name that differs from their
-        physical table (`Tables.short_interest` -> `sec_short_interest`), so a string literal
-        here is a silent `exists() is False` and a whole feature family that never builds --
-        which is exactly what `"short_interest"` did to the three `ic_shortvol_*` features
-        while 956,640 rows sat in the table unread."""
-        if not self._context.store.exists(table):
-            self._log.warning("%s is absent -> its features are skipped.", table.name)
-            return None
-        columns = project_existing(self._store.columns(table), table.name)
-        df = self._context.store.load(table, columns=columns, optional=True)
+        ⚠ THE UNIVERSE CUT IS ABOUT `_xs`, NOT ABOUT ROW COUNTS -- that is why it exists at
+        all. D26 defines `_xs` as a same-day percentile "ranking a ticker against every other
+        ticker on that date", and in the cube that set is the universe. The source tables are
+        wider than it -- `sec13f_hr` carries 501 tickers and `sec_fails_to_deliver` 501 against
+        the universe's 491 -- so every `_xs` leg in this part was ranking over a denominator no
+        other part uses, and `peer_relative` was resolving baskets partly out of names the
+        model never sees. `superinvestor_features` already took a `universe=` for exactly this
+        reason; this applies the same rule to the other four families, AT THE READ.
+
+        Pass `universe` for any table whose tickers become a feature cross-section. Lookup
+        tables (`cusip_ticker_map`) and the split calendar are deliberately left whole: they
+        are joined against, not ranked over.
+
+        ⚠ THE PUSH-DOWN IS FOR THE CROSS-SECTION, NOT FOR THE CLOCK, and on `sec13f_hr` it is
+        measurably SLOWER. Measured 2026-09-14 against the live table: 22,498,267 rows full
+        against 22,336,036 scoped, so the universe removes **0.72%** of them -- and the
+        projected COPY runs 38.3s unfiltered against 42.9s with `WHERE ticker IN (491)`,
+        because `institutional_holdings_pkey` leads with `cik` and 99.3% of rows match, so the
+        planner seq-scans either way and only pays for the predicate. An index on
+        `sec13f_hr(ticker)` would not change that -- the filter is not selective. The four
+        SMALL sources are where the read genuinely shrinks. Do not re-justify this on speed.
+
+        ⚠ THE DIAGNOSTIC IS A SEPARATE QUERY, and on ONE table it is not a cheap one. Pushing
+        the filter down means the dropped rows never arrive, so the off-universe report cannot
+        be taken from the frame any more; `store.distinct` re-asks it as `SELECT DISTINCT
+        ticker`. That is an index-only scan wherever the table has an index leading with
+        `ticker` -- measured 0.7s on `sec_fails_to_deliver` (PK is `(ticker, date)`) and 2.2s
+        on `insider_transactions` (`ix_insider_transactions_ticker`) -- but `sec13f_hr` has
+        none, and there it is a 52.3s seq scan. It is kept anyway: the set is the S&P 500
+        membership boundary and it moves, so a jump here is a universe problem to look at, and
+        52s against a build measured in tens of minutes is the cheapest way to see it. Adding
+        `sec13f_hr(ticker)` would cut it to ~1s and is the fix if that ever stops being true.
+
+        ⚠ TAKES A `Table`, NEVER A NAME STRING. Five registry entries have an attribute name
+        that differs from their physical table (`Tables.short_interest` -> `sec_short_interest`),
+        so a string literal here is a silent `exists() is False` and a whole feature family
+        that never builds -- which is exactly what `"short_interest"` did to the three
+        `ic_shortvol_*` features while 956,640 rows sat in the table unread.
+        """
+        where = None
+        # ⚠ GUARD ON THE REGISTRY'S `ticker_col`, NOT ON `"ticker" in df.columns`. The frame
+        # does not exist yet -- that is the whole point of the push-down -- and
+        # `sec13f_manager_holdings` genuinely has no ticker column (`ticker_col=None`), so a
+        # frame-shaped guard has nothing to look at.
+        if universe is not None and table.ticker_col:
+            where = {table.ticker_col: sorted(set(map(str, universe)))}
+            self._report_off_universe(table, universe)
+        df = self._store.load(table, project=True, where=where, optional=True)
         if df is None:
+            self._log.warning("%s is absent or empty -> its features are skipped.", table.name)
             return None
         self._log.info("Loaded %s: %s rows x %s cols", table.name, len(df), len(df.columns))
-        return self._scope_to_universe(df, table.name, universe)
+        return df
 
-    def _scope_to_universe(self, df: pd.DataFrame, label: str,
-                           universe: Sequence[str] | None) -> pd.DataFrame:
-        """Cut a source table to the cube's own cross-section.
+    def _report_off_universe(self, table: Table, universe: Sequence[str]) -> None:
+        """Name the tickers the push-down is about to exclude, once per table.
 
-        ⚠ THIS IS ABOUT `_xs`, NOT ABOUT ROW COUNTS. D26 defines `_xs` as a same-day
-        percentile "ranking a ticker against every other ticker on that date", and in the cube
-        that set is the universe. The source tables are wider than it -- `sec13f_hr` carries
-        501 tickers and `sec_fails_to_deliver` 501 against the universe's 491 -- so every
-        `_xs` leg in this part was ranking over a denominator no other part uses, and
-        `peer_relative` was resolving baskets partly out of names the model never sees.
-        `superinvestor_features` already took a `universe=` for exactly this reason; this
-        applies the same rule to the other four families, at the read, where it also saves
-        the work rather than doing it and discarding it.
+        ⚠ THE TICKER AXIS, NOT THE ROW AXIS, and that is a deliberate downgrade from what the
+        post-hoc pandas filter used to print. Counting the ROWS dropped now costs a second full
+        scan to report a number nothing acts on -- and on `sec13f_hr` that number is 162,231 of
+        22,498,267, i.e. 0.72%, which is exactly the sort of figure that reads as reassurance
+        and means nothing. The ticker SET is what a reader checks, because it is the S&P 500
+        membership boundary and a jump in it is a universe problem rather than noise.
 
-        Off-universe rows are reported once per table rather than dropped in silence: the set
-        is the S&P 500 membership boundary and it moves, so a jump in this number is a
-        universe problem to look at, not noise.
+        Measured 2026-09-14, source tickers against the 491-name universe: `sec13f_hr` 501,
+        `sec_fails_to_deliver` 501, `sec_13g` 499, `insider_transactions` 491 (none off),
+        `sec_short_interest` 489, `sec_13d` 274.
         """
-        if universe is None or "ticker" not in df.columns:
-            return df
-        keep = df["ticker"].astype(str).isin(set(map(str, universe)))
-        if keep.all():
-            return df
-        dropped = df.loc[~keep, "ticker"].astype(str)
-        self._log.info("%s: %s of %s rows are outside the %s-name universe (%s ticker(s): %s)"
-                       " -- cut so the `_xs` cross-section is the cube's",
-                       label, f"{int((~keep).sum()):,}", f"{len(df):,}", len(universe),
-                       dropped.nunique(), ", ".join(sorted(dropped.unique())[:15]))
-        return df.loc[keep]
+        col = table.ticker_col
+        if not col:
+            return
+        present = {str(t) for t in self._store.distinct(table, col)}
+        off = sorted(present - set(map(str, universe)))
+        if not off:
+            return
+        self._log.info("%s: %s of its %s ticker(s) are outside the %s-name universe (%s) -- "
+                       "not read, so the `_xs` cross-section is the cube's",
+                       table.name, len(off), len(present), len(universe),
+                       ", ".join(off[:15]) + (", ..." if len(off) > 15 else ""))
+
+    #: ⚠ BOTH SHARE COLUMNS, AND THEY ARE NOT INTERCHANGEABLE.
+    #:   `sharesOutstandingPit`  -- point-in-time, the 13F / insider ownership-% DENOMINATOR
+    #:   `sharesOutstanding`     -- vendor basis, what `daily_market_cap` requires
+    #: `daily_market_cap` needs the vendor basis because the future-split factor CANCELS
+    #: against `close_split`; handing it the PIT column breaks that cancellation. They are
+    #: genuinely different columns, both fully populated -- measured 2026-09-14: 51,504 rows,
+    #: 51,504 non-null each, differing on 14,296 of them (27.8%).
+    #:
+    #: Projecting only the PIT column empties `daily_market_cap` and SILENTLY deletes 10
+    #: features (~20 emitted columns): `ic_inst_value_to_mcap`, `ic_inst_flow_to_mcap`,
+    #: `ic_super_flow_to_mcap` and the seven insider `*_mcap_*` legs. Every one of them sits
+    #: behind an `if not mcap.empty` branch that simply does not fire, so the build looks
+    #: clean. The three builders now log at WARNING on that path -- see `_market_cap`.
+    _SHARES_OUT_COLS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit")
 
     def _load_shares_out(self) -> pd.DataFrame | None:
-        df = self._context.store.load(Tables.fundamentals_history, 
-                                      columns=['ticker', 'as_of', 'sharesOutstandingPit'],
-                                        optional=True)
+        """The share-count history the market-cap scaling needs, on BOTH bases.
+
+        ⚠ A CLARITY PROJECTION, NOT A MEMORY ONE. `fundamentals_history` is ~51k rows, so
+        four columns against 93 saves nothing worth measuring -- unlike `sec13f_hr`. It is
+        here to say which four columns this step depends on. That also means widening it
+        "for symmetry" with the tall sources buys nothing; narrowing it is what costs.
+        """
+        df = self._store.load(Tables.fundamentals_history,
+                              columns=list(self._SHARES_OUT_COLS), optional=True)
         if df is None:
             self._log.warning("No fundamentals history -> the market-cap-scaled ownership "
                               "features are skipped.")
@@ -322,11 +370,9 @@ class StepCubeInstitutionals(Step):
         holdings = self._load_source(Tables.sec13f_hr, frames.universe)
         if holdings is None:
             return None
-        
+
         return build_institutional_feature_panel(
-            holdings, frames.peers, frames.trading_index,
-            shares_out_history=shares, stock_close=frames.close_split,
-            level_factor=frames.level_factor, splits=splits,
+            frames, holdings, shares_out_history=shares, splits=splits,
             break_pct=float(self._institutionals_cfg().get("coverage_break_pct",
                                                            COVERAGE_BREAK_DEFAULT)))
 
@@ -350,24 +396,30 @@ class StepCubeInstitutionals(Step):
         performance-driven, so it is survivorship correlated with the selection criterion.
         Narrowing to who was listed at `q` is the selector's job and it can only narrow
         what was read."""
-        union = roster_cik_union(self._context)
+
+        union = roster_cik_union(self._context)  # 106 managers as of 2026-09-08
         if not union:
             self._log.warning("`superinvestor_roster` has no snapshot -> elite 13F features "
                               "skipped (run `data_extract superinvestors --seed`).")
             return None
+
         holdings = load_superinvestor_holdings(self._context, union)
+        # ⚠ AFTER the None check, not before it. `load_superinvestor_holdings` passes
+        # `optional=True`, so a cold or absent `sec13f_manager_holdings` returns None and
+        # `len(holdings)` is a TypeError -- the builder's own D5 guard cannot help a caller
+        # that crashes while logging on the way in.
         if holdings is None or holdings.empty:
-            self._log.warning("No elite-manager 13F holdings -> superinvestor features skipped.")
+            self._log.warning("No elite-manager 13F holdings -> superinvestor features "
+                              "skipped.")
             return None
         self._log.info("Elite 13F books: %s rows across %s ever-listed managers (%s on "
                        "today's roster)", len(holdings), len(union),
                        len(roster_map_as_of(self._context)))
+
         return build_superinvestor_feature_panel(
-            holdings, union, frames.peers, frames.trading_index,
-            shares_out_history=shares, stock_close=frames.close_split,
-            level_factor=frames.level_factor,
+            frames, holdings, union,
+            shares_out_history=shares,
             cusip_map=self._load_source(Tables.cusip_ticker_map),
-            universe=frames.universe,
             splits=splits,
             selection=self._superinvestor_selector(),
             decay_halflife=float(self._decay_halflife("super")),
@@ -470,9 +522,7 @@ class StepCubeInstitutionals(Step):
         if insider is None:
             return None
         return build_insider_feature_panel(
-            insider, frames.peers, frames.trading_index,
-            shares_out_history=shares, stock_close=frames.close_split,
-            level_factor=frames.level_factor,
+            frames, insider, shares_out_history=shares,
             decay_halflife=float(self._decay_halflife("insider")),
             sink=sink)
 
@@ -484,12 +534,9 @@ class StepCubeInstitutionals(Step):
         one trading day; FTD by ~2 months (its publication delay)."""
         short = self._load_source(Tables.short_interest, frames.universe)
         fails = self._load_source(Tables.sec_fails_to_deliver, frames.universe)
-        if short is None and fails is None:
-            return None
         return build_short_flow_feature_panel(
-            short, frames.peers, frames.trading_index,
-            fails_history=fails, volume=frames.volume, shares_out_history=shares,
-            close_total=frames.close_total, splits=splits, sink=sink)
+            frames, short, fails_history=fails, shares_out_history=shares,
+            splits=splits, sink=sink)
 
     def _ownership_panel(self, frames: PriceFrames,
                          sink: ConditioningSink) -> pd.DataFrame | None:
@@ -498,10 +545,8 @@ class StepCubeInstitutionals(Step):
         docstring."""
         d13 = self._load_source(Tables.sec_13d, frames.universe)
         d13g = self._load_source(Tables.sec_13g, frames.universe)
-        if d13 is None and d13g is None:
-            return None
         return build_ownership_feature_panel(
-            d13, d13g, frames.peers, frames.trading_index,
+            frames, d13, d13g,
             decay_halflife_act=float(self._decay_halflife("act")),
             decay_halflife_bo=float(self._decay_halflife("bo")),
             sink=sink)
@@ -511,12 +556,8 @@ class StepCubeInstitutionals(Step):
         """The `ic_sig_*` layer: days since each family's last disclosure and the price path
         since, sector-residualized and vol-scaled. THE PANEL'S ONLY DAILY-MOVING FAMILY, and
         the direct evidence for the two-layer architecture (report acceptance test #13)."""
-        if not sink.events:
-            return None
         return build_signal_conditioning_panel(
-            sink.events, frames.peers, frames.trading_index,
-            close_total=frames.close_total, close_split=frames.close_split,
-            sector_ret=frames.sector_ret, ret=frames.ret, splits=splits,
+            frames, sink.events, splits=splits,
             excursion_lookback=int(self._institutionals_cfg().get("excursion_lookback",
                                                                   EXCURSION_LOOKBACK)))
 
@@ -524,8 +565,4 @@ class StepCubeInstitutionals(Step):
                             sink: ConditioningSink) -> pd.DataFrame | None:
         """The `ic_xs_*` layer: how many independent families -- and how many distinct
         ACTORS -- are flagging this name at once, plus the both-sides conflict flag."""
-        if not sink.signals and not sink.actors:
-            return None
-        return build_cross_source_panel(
-            sink, frames.peers, frames.trading_index,
-            universe=pd.Index(frames.universe))
+        return build_cross_source_panel(frames, sink)

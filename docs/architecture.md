@@ -165,7 +165,7 @@ merge in assemble.
 | `prices.py` | momentum, trailing vol, forward windows, `price_column_returns` |
 | `incremental.py` | part lifecycle + the full-vs-incremental decision (`plan_window`, `write_part`, `COLUMNS_CHANGED`) |
 | `parts.py`, `part_status.py` | the part registry and the DAG status gate (its dict shape is a contract) |
-| `panel_merge.py`, `capital.py`, `sector_gates.py`, `gics.py`, `peers_io.py`, `sources.py`, `data_utils.py` | see each module docstring |
+| `panel_merge.py`, `capital.py`, `sector_gates.py`, `gics.py`, `peers_io.py`, `data_utils.py` | see each module docstring |
 
 Domain builders live in `utils/{target,fundamentals,momentum,text,extras,governance,assemble}/`.
 `fundamental_features._derived_fields` is a thin composition over ~30 per-block

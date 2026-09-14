@@ -4,8 +4,9 @@ ownership_features.py (src/data_aggregate/utils/institutionals/ownership_feature
 Beneficial-ownership panel: Schedule 13D (`ic_act_*`, activist) and Schedule 13G (`ic_bo_*`,
 passive >5%) event history. Sources: `sec_13d`, `sec_13g`. `sec_13d_transactions` (the Item
 5(c) 60-day trade log) is deliberately NOT read here -- the registry marks it "not used" for
-this feature set (18 tickers total), and a projection with no reader is not free (see
-`utils/common/sources.py`); it stays available in the DB for a future consumer.
+this feature set (18 tickers total), and a projection with no reader is not free -- so
+its registry entry declares no `read_columns`; it stays available in the DB for a future
+consumer.
 
 CANONICAL EVENT CONSTRUCTION (the group-summing trap). Both tables are at reporting-person
 grain (`rp_seq`): a joint filing repeats the SAME `aggregate_amount` / `percent_of_class` on
@@ -102,6 +103,35 @@ import pandas as pd
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.institutionals.decay import (
     days_since_last_true, decay_events, snap_to_grid)
+from src.data_aggregate.utils.common.price_frames import PriceFrames
+
+
+#: D5: every builder answers an absent source with the SAME empty frame. A fresh object each
+#: call, never a module-level constant -- `PanelMerger.add` and several callers reindex or
+#: assign onto what they get back, and a shared instance would be mutated across builds.
+def _EMPTY_PANEL() -> pd.DataFrame:
+    return pd.DataFrame(columns=["date", "ticker"])
+
+
+#: The columns `_canonicalize` reads off EITHER schedule without checking first. The
+#: canonical-event key (`ticker`, `accession_number`, `cusip`) plus the only legal stamp
+#: (`filing_date` -- `date_of_event` is never projected, which is what makes L4 structural)
+#: plus the two ownership/identity legs.
+_NEED = {"ticker", "accession_number", "cusip", "filing_date", "percent_of_class",
+         "reporting_person_cik"}
+
+
+def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
+    """True when `df` cannot be built from: missing, empty, or short a required column.
+
+    The three-part test is the D5 entry contract stated once. `need` is the set the builder
+    dereferences unconditionally -- a column it only uses `if present` does NOT belong here,
+    or an optional projection turns into an empty panel.
+    """
+    if df is None or df.empty:
+        return True
+    return bool(need) and not need.issubset(df.columns)
+
 
 #: D28: 13G filing volume is not constant over 15 years, so the raw filer count is meaningless
 #: on its own -- see the module docstring.
@@ -451,10 +481,10 @@ def _cross_fields(canon_13d: pd.DataFrame, canon_13g: pd.DataFrame, idx: pd.Date
 
 
 def build_ownership_feature_panel(
+    frames: PriceFrames,
     sec_13d: pd.DataFrame | None,
     sec_13g: pd.DataFrame | None,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
+    *,
     decay_halflife_act: float = ACT_HALFLIFE_DEFAULT,
     decay_halflife_bo: float = BO_HALFLIFE_DEFAULT,
     sink=None,
@@ -465,7 +495,33 @@ def build_ownership_feature_panel(
     `sink` is the optional `ConditioningSink`. The `act` family hands it EVERY 13D filing as
     its event dates (an amendment restates a live campaign, so it is news and the conditioning
     clock should restart on it) but only the INITIAL filings as bullish acts, since an
-    amendment can as easily disclose a sale."""
+    amendment can as easily disclose a sale.
+
+    ⚠ `frames` RATHER THAN TWO UNPACKED FIELDS. `peer_dict` and `trading_index` were all read
+    off one `PriceFrames` at the call site. Collapsing them is not about the basis here -- this
+    builder reads no wide price frame -- but about arity: three of the old parameters were one
+    object at every call site, and unpacking them at 39 of those is what let them drift apart.
+
+    ⚠ NO `frames.require(...)`: this builder dereferences no optional wide frame at all.
+    `trading_index` and `peers` are non-Optional fields of `PriceFrames`, so requiring them
+    would assert something the type already guarantees.
+
+    The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
+    `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
+    call; the keyword form makes it unrepresentable.
+    """
+    peer_dict = frames.peers
+    trading_index = frames.trading_index
+    # D5 entry guard, PER LEG. The two channels are independent fetchers -- a universe with
+    # 13G coverage and no 13D still builds the `ic_bo_*` half -- so a leg that cannot be used
+    # is nulled rather than failing the whole panel. `_NEED` is what `_canonicalize`
+    # dereferences unconditionally; `is_amendment` and the Item 4 text are NOT in it, because
+    # they are 13D-only and it already builds its column list around their absence.
+    sec_13d = None if _absent(sec_13d, _NEED) else sec_13d
+    sec_13g = None if _absent(sec_13g, _NEED) else sec_13g
+    if sec_13d is None and sec_13g is None:
+        return _EMPTY_PANEL()
+
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
     if idx.empty:
         return pd.DataFrame(columns=["date", "ticker"])

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from src.data_aggregate.utils.common.data_utils import to_day
 
 
 def snap_to_grid(dates: pd.Series, trading_index: pd.DatetimeIndex) -> pd.Series:
@@ -55,7 +56,7 @@ def snap_to_grid(dates: pd.Series, trading_index: pd.DatetimeIndex) -> pd.Series
     is the first day the information can be acted on.
     """
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
-    d = pd.to_datetime(dates, errors="coerce").dt.normalize().to_numpy()
+    d = to_day(dates).to_numpy()
     if len(idx) == 0:
         return pd.Series(pd.NaT, index=dates.index)
     pos = idx.searchsorted(d, side="left")
@@ -110,7 +111,7 @@ def decay_events(
         return pd.DataFrame(index=idx, dtype="float64")
 
     ev = events.loc[:, [c for c in (date_col, ticker_col, magnitude_col) if c]].copy()
-    ev[date_col] = pd.to_datetime(ev[date_col], errors="coerce").dt.normalize()
+    ev[date_col] = to_day(ev[date_col])
     ev = ev.dropna(subset=[date_col, ticker_col])
     if magnitude_col:
         ev["_m"] = pd.to_numeric(ev[magnitude_col], errors="coerce")

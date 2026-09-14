@@ -64,9 +64,12 @@ from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings as _clean
 from src.data_aggregate.utils.institutionals.decay import decay_events
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
+from src.data_aggregate.utils.common.data_utils import to_day
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 
 logger = logging.getLogger(__name__)
 
@@ -203,14 +206,9 @@ def load_superinvestor_holdings(context: Context,
     ciks = sorted(_selection_ciks(roster))
     if not ciks:
         return None
-    store = context.store
-    if not store.exists(Tables.sec13f_manager_holdings):
-        logger.warning("`%s` is absent -> run `data_extract 13f-managers` before the cube "
-                       "build; the elite panel is skipped.",
-                       Tables.sec13f_manager_holdings.name)
-        return None
-    return store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS,
-                      where={"cik": ciks}, optional=True)
+    
+    return context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS,
+                        where={"cik": ciks}, optional=True)
 
 
 def _selection_ciks(roster: dict | list | set | None) -> set[str]:
@@ -225,6 +223,7 @@ def _selection_ciks(roster: dict | list | set | None) -> set[str]:
     concentration selector ranks highest. Narrowing to who was listed at `q` is
     `manager_selection.eligibility`'s job, and it can only narrow what was read.
     """
+
     if roster is None:
         return set()
     if isinstance(roster, (set, frozenset)) or (
@@ -270,21 +269,18 @@ def attach_tickers(holdings: pd.DataFrame, cusip_map: pd.DataFrame | None,
 
 
 def _prepare(holdings: pd.DataFrame) -> pd.DataFrame:
-    """Normalize types, keep COMMON STOCK only, and collapse amendments to the last-filed
-    row per `(cik, period, cusip)`."""
-    h = holdings.copy()
-    h["cik"] = h["cik"].map(pad_cik)
-    h["period"] = pd.to_datetime(h["period"], errors="coerce").dt.normalize()
-    h = h.dropna(subset=["cik", "period", "cusip"])
-    if "position_type" in h.columns:
-        h = h[h["position_type"].astype(str).str.lower() == "common"]
-    for c in ("shares", "value_usd"):
-        h[c] = (pd.to_numeric(h[c], errors="coerce").fillna(0.0) if c in h.columns
-                else pd.Series(0.0, index=h.index))
-    if "filing_date" in h.columns:
-        h["filing_date"] = pd.to_datetime(h["filing_date"], errors="coerce")
-        h = h.sort_values("filing_date")
-    return h.drop_duplicates(["cik", "period", "cusip"], keep="last")
+    """`sec13f_manager_holdings` at its own grain: one row per (manager, quarter, CUSIP).
+
+    A thin call into the SHARED cleaner -- `holdings_clean.clean_holdings`. Three things are
+    specific to this table and each is an argument: the key is CUSIP-grained because there is
+    no `ticker` column at all; `common_only` because this table carries the raw
+    `position_type` classification and a conviction denominator must not include puts, calls
+    or debt; and `pad_ciks` because the fetcher writes `cik` straight from the SEC submission,
+    while the roster join expects it padded.
+    """
+    return _clean(holdings, key=("cik", "period", "cusip"),
+                  numeric=("shares", "value_usd"),
+                  common_only=True, pad_ciks=True)
 
 
 def manager_quarter_state(holdings: pd.DataFrame) -> pd.DataFrame:
@@ -300,8 +296,10 @@ def manager_quarter_state(holdings: pd.DataFrame) -> pd.DataFrame:
     selects better is an open question the plan requires be measured BOTH ways before the
     selector is wired; this function supplies the whole-book leg.
     """
+
     if holdings.empty:
         return pd.DataFrame()
+    
     g = holdings.groupby(["cik", "period"], sort=True)
     state = g.agg(total_common_value=("value_usd", "sum"),
                   n_positions=("cusip", "nunique")).reset_index()
@@ -418,7 +416,7 @@ def attach_split_factor(contrib: pd.DataFrame,
     # ⚠ BOTH SIDES FORCED TO ns. `prices_splits.date` is a Postgres TIMESTAMP and arrives as
     # `datetime64[us]`, while the periods built here are `datetime64[s]`; `merge_asof`
     # refuses to join two datetime resolutions rather than coercing them.
-    s["date"] = pd.to_datetime(s["date"]).dt.normalize().astype("datetime64[ns]")
+    s["date"] = to_day(s["date"]).astype("datetime64[ns]")
     s = s[s["ticker"].isin(out["ticker"].unique())].sort_values(["ticker", "date"])
     if s.empty:
         return out
@@ -513,10 +511,11 @@ def _contributions(conv: pd.DataFrame, state: pd.DataFrame,
     stops appearing and the aggregate would forward-fill the old position forever. The frame
     is built over the manager's filed periods, not over the ticker's, for the same reason.
 
-    `avail` is the date the row became public, `max(period + 45d, filing_date)`, made
-    MONOTONE in period by a running maximum. Without that running max a back-filed 13F --
-    measured here at up to 1,311 days late -- would let an old period arrive after a newer
-    one and overwrite it, which is a look-ahead in reverse.
+    `avail` is the date the row became public, `max(period + 45d, filing_date)`. It is NOT
+    forced monotone in period -- `public_state` instead DROPS the filings that are never the
+    manager's public state, and the comment on that call below says why a running maximum is
+    the wrong instrument. A back-filed 13F -- measured here at up to 1,311 days late -- is
+    removed by that supersession test, not by flattening it onto its successor.
     """
     c = conv[conv["ticker"].notna()].copy()
     if c.empty or state.empty:
@@ -596,11 +595,13 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame,
                stale_quarters: int = _STALE_QUARTERS
                ) -> tuple[dict[str, pd.DataFrame], pd.DatetimeIndex]:
     """Aggregate ACROSS managers on the availability grid -> `{feature: (date x ticker)}`."""
+    
     grid = pd.DatetimeIndex(sorted(contrib["avail"].dropna().unique()))
     pairs = pd.MultiIndex.from_frame(
         contrib[["cik", "ticker"]].drop_duplicates().sort_values(["cik", "ticker"]),
         names=["cik", "ticker"])
     tickers = pd.Index(sorted(contrib["ticker"].unique()), name="ticker")
+    
     # A filer who has gone quiet is not still holding: a manager's contribution expires
     # `stale_quarters` quarters after the filing that is currently effective. ⚠ MEASURED
     # FROM THE EFFECTIVE ROW, never from the manager's last-ever filing -- the latter is a
@@ -775,15 +776,12 @@ def _to_long(frame: pd.DataFrame, name: str) -> pd.DataFrame:
 
 
 def build_superinvestor_feature_panel(
+    frames: PriceFrames,
     holdings: pd.DataFrame | None,
     roster: dict | list | None,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
+    *,
     shares_out_history: pd.DataFrame | None = None,
-    stock_close: pd.DataFrame | None = None,
-    level_factor: pd.DataFrame | None = None,
     cusip_map: pd.DataFrame | None = None,
-    universe: Sequence[str] | None = None,
     splits: pd.DataFrame | None = None,
     selection: pd.Series | Callable | None = None,
     decay_halflife: float = 63.0,
@@ -802,8 +800,31 @@ def build_superinvestor_feature_panel(
     `_fill_sink`); passing nothing changes nothing.
 
     Empty when there are no holdings or the roster resolves to no manager.
+
+    ⚠ `frames` RATHER THAN FIVE UNPACKED FIELDS. `peer_dict`, `trading_index`, `stock_close`,
+    `level_factor` and `universe` were all read off one `PriceFrames` at the call site. Naming
+    the object makes the basis un-mistakable: there is one `close_split` and one `close_total`
+    on it, and neither can arrive under the other's parameter name.
+
+    ⚠ NO `frames.require(...)`, AND THAT IS MEASURED RATHER THAN FORGOTTEN. Every wide frame
+    this builder reads sits behind an explicit `is None` guard, or is handed to a callee that
+    documents `None` as a MEANING rather than an error -- `daily_market_cap`'s
+    `level_factor=None` IS "S is 1.0 everywhere". `require` would turn each of those graceful
+    degrades into a raise, which is exactly what its own docstring warns against.
+
+    The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
+    `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
+    call; the keyword form makes it unrepresentable.
     """
+    peer_dict = frames.peers
+    trading_index = frames.trading_index
+    stock_close = frames.close_split
+    level_factor = frames.level_factor
+    universe = frames.universe
     empty = pd.DataFrame(columns=["date", "ticker"])
+    # D5 entry guard: None, empty, and the columns this builder cannot run without.
+    # ⚠ `attach_tickers` opens with `holdings.copy()`, so a missing guard here is an
+    # `AttributeError` on a cold or absent `sec13f_manager_holdings`, not an empty panel.
     need = {"cik", "period", "cusip", "shares", "value_usd"}
     if holdings is None or holdings.empty or not need.issubset(holdings.columns):
         return empty
@@ -813,10 +834,12 @@ def build_superinvestor_feature_panel(
     h = _prepare(attach_tickers(holdings, cusip_map, universe))
     if h.empty:
         return empty
+    
     state = manager_quarter_state(h)
     conv = manager_stock_conviction(h, state)
     if state.empty or conv.empty:
         return empty
+    
     # `avail` is attached HERE rather than inside `public_state` because a callable
     # `selection` needs it: `manager_selection` ranks each manager against the peers who
     # were public when their filing landed, which is not answerable from `period` alone.
@@ -836,7 +859,15 @@ def build_superinvestor_feature_panel(
     if (flow is not None and shares_out_history is not None and not shares_out_history.empty
             and stock_close is not None and not stock_close.empty):
         mcap = daily_market_cap(shares_out_history, stock_close, level_factor=level_factor)
-        if not mcap.empty:
+        if mcap.empty:
+            # ⚠ NOT SILENT -- same trap as `institutional_features`: a `shares_out_history`
+            # projected without `sharesOutstanding` (the VENDOR basis, not the PIT one)
+            # returns a column-less frame and deletes the feature without a word.
+            logger.warning("daily_market_cap returned no columns (shares_out_history has %s; "
+                           "it needs `sharesOutstanding`, the VENDOR basis) -> "
+                           "ic_super_flow_to_mcap is skipped.",
+                           sorted(shares_out_history.columns))
+        else:
             daily = fundamentals_to_daily(_to_long(flow, "ic_super_flow_to_mcap"),
                                           "ic_super_flow_to_mcap", trading_index)
             f2m = (daily / mcap.where(mcap > 0)).replace([np.inf, -np.inf], np.nan)

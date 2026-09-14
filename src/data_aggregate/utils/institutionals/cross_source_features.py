@@ -51,6 +51,7 @@ from src.data_aggregate.utils.institutionals.decay import snap_to_grid
 from src.data_aggregate.utils.institutionals.sink import (
     BEARISH_INPUTS, BULLISH_INPUTS, NEGATED_INPUTS,
 )
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 
 logger = logging.getLogger(__name__)
 
@@ -169,10 +170,9 @@ def _rolling_distinct_actors(events: pd.DataFrame, idx: pd.DatetimeIndex,
 
 
 def build_cross_source_panel(
+    frames: PriceFrames,
     sink,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
-    universe: pd.Index | None = None,
+    *,
     percentile: float = PERCENTILE,
     actor_window: int = ACTOR_WINDOW,
 ) -> pd.DataFrame:
@@ -181,7 +181,28 @@ def build_cross_source_panel(
     `sink` is the `ConditioningSink` the source panels filled: its `signals` back the two
     family counts and its `events` (the `actor` column) back the distinct-actor count. Empty
     when neither direction resolves enough inputs.
+
+    ⚠ `frames` RATHER THAN THREE UNPACKED FIELDS. `peer_dict`, `trading_index` and `universe`
+    were all read off one `PriceFrames` at the call site. Collapsing them is not about the basis
+    here -- this builder reads no wide price frame -- but about arity: three of the old
+    parameters were one object at every call site, and unpacking them at 39 of those is what let
+    them drift apart.
+
+    ⚠ NO `frames.require(...)`: this builder dereferences no optional wide frame at all.
+    `trading_index` and `peers` are non-Optional fields of `PriceFrames`, so requiring them
+    would assert something the type already guarantees.
+
+    The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
+    `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
+    call; the keyword form makes it unrepresentable.
     """
+    peer_dict = frames.peers
+    trading_index = frames.trading_index
+    universe = pd.Index(frames.universe)
+    # ⚠ NOT `to_day`, and deliberately so at all eight of these sites. `to_day` is for a
+    # COLUMN -- it returns a Series -- while this normalizes an already-datetime INDEX, which
+    # has no `.dt` accessor and must stay an index. The two are not interchangeable, so this
+    # is not a site the `to_day` sweep missed.
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
     signals = getattr(sink, "signals", {}) or {}
     if idx.empty or (not signals and not getattr(sink, "actors", {})):

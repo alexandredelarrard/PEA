@@ -9,6 +9,7 @@ import pandas as pd
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     build_short_flow_feature_panel, FTD_PUB_LAG)
+from tests.conftest import make_frames
 
 
 def test_periods_semimonthly_bounded():
@@ -141,8 +142,7 @@ def test_ftd_feature_ranks_high_fails_and_is_leak_free():
     volume = pd.DataFrame({t: 1e6 for t in ("HI", "MID", "LO")}, index=idx)
     peers = {"HI": {"MID": 1.0, "LO": 1.0}, "MID": {"HI": 1.0, "LO": 1.0}, "LO": {"HI": 1.0, "MID": 1.0}}
 
-    panel = build_short_flow_feature_panel(None, peers, idx, fails_history=fails,
-                                           volume=volume)
+    panel = build_short_flow_feature_panel(make_frames(idx, peers, volume=volume), None, fails_history=fails)
     assert "f_ic_ftd_to_adv20_xs" in panel.columns
 
     # after the publication lag, HI (0.1 fails/ADV20) ranks above LO (0.0001)

@@ -22,7 +22,7 @@ and revised over time, so it is an attention proxy, not a precise point-in-time 
 It currently has NO consumer: the `attention_features` builder that read it was deleted with
 the `extras` -> `institutionals` rename (it was a blended retail-attention panel, defined but
 never called from `run()`). The table is still extracted and still in the DB, so a future
-consumer re-adds its projection to `data_aggregate/utils/common/sources.py` -- and should use
+consumer declares its `read_columns` on the registry entry -- and should use
 within-name relative spikes only, which is the robust part of a re-normalised series.
 
 Network access is isolated in `_TrendsClient`; the stitching / windowing helpers

@@ -13,6 +13,7 @@ from src.data_aggregate.utils.institutionals.ownership_features import (
     EMISSION, HOLDER_ACTIVE_DAYS, MANDATE_FLOOR, _act_fields, _bo_fields, _canonicalize,
     _cross_fields, build_ownership_feature_panel,
 )
+from tests.conftest import make_frames
 
 IDX = pd.bdate_range("2023-01-03", "2025-06-30")
 
@@ -146,7 +147,7 @@ def test_panel_mandate_floor_masks_percent_features():
          "item4_purpose_of_transaction": None},
     ])
     peers = _peers(["AAA", "BBB"])
-    panel = build_ownership_feature_panel(d13, None, peers, IDX)
+    panel = build_ownership_feature_panel(make_frames(IDX, peers), d13, None)
     assert MANDATE_FLOOR > pd.Timestamp("2023-05-01")
     row = panel[(panel["ticker"] == "AAA") & (panel["date"] == pd.Timestamp("2023-05-01"))]
     if not row.empty and "f_ic_act_percent_of_class" in row.columns:
@@ -171,7 +172,7 @@ def test_panel_columns_and_emission_coverage():
         for acc, day, pct in (("1001", "2025-02-03", 6.0), ("1002", "2025-05-05", 8.0))
     ])
     peers = _peers(["AAA", "BBB"])
-    panel = build_ownership_feature_panel(d13, d13g, peers, IDX)
+    panel = build_ownership_feature_panel(make_frames(IDX, peers), d13, d13g)
     assert not panel.empty
     # Features that ALWAYS fire on this data (unlike repeat_activist/escalation/strategic,
     # which need a specific trigger this synthetic scenario does not construct -- those are
@@ -251,8 +252,8 @@ def test_holder_count_is_a_bounded_share_and_lapses():
 
 
 def test_build_ownership_feature_panel_empty_when_no_source():
-    assert build_ownership_feature_panel(None, None, {}, IDX).empty
-    assert build_ownership_feature_panel(pd.DataFrame(), pd.DataFrame(), {}, IDX).empty
+    assert build_ownership_feature_panel(make_frames(IDX, {}), None, None).empty
+    assert build_ownership_feature_panel(make_frames(IDX, {}), pd.DataFrame(), pd.DataFrame()).empty
 
 
 if __name__ == "__main__":

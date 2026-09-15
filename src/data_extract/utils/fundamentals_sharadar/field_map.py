@@ -47,29 +47,45 @@ Not a formality. A regenerated proposal is byte-identical to a reviewed decision
 the check "human-approved" is a sentence in a docstring, and the one thing these files exist
 to guarantee is that a human looked at the entries.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+from fractions import Fraction
 from functools import cache, cached_property
 from pathlib import Path
-
-from fractions import Fraction
 
 import numpy as np
 import pandas as pd
 
 from src.constants.constants import (
-    SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT, SHARADAR_APPROVAL_KEY,
-    SHARADAR_CONFIG_SUBDIR, SHARADAR_CORRECTION_ACTIONS, SHARADAR_CORRECTIONS_FILENAME,
-    SHARADAR_FIELD_MAP_FILENAME, SHARADAR_FLOW_FIELDS, SHARADAR_MAP_KINDS, SHARADAR_MAP_OPS,
-    SHARADAR_MAP_SPLIT_BASES, SHARADAR_NEGATE_IF_NON_POSITIVE, SHARADAR_REGISTER_DOC_PREFIX,
-    SHARADAR_SF1_COLUMNS, SHARADAR_ZERO_FILLED_FIELDS, SHARADAR_ZERO_RULES_FILENAME,
+    SHARADAR_ACTION_SPINOFF,
+    SHARADAR_ACTION_SPLIT,
+    SHARADAR_APPROVAL_KEY,
+    SHARADAR_CONFIG_SUBDIR,
+    SHARADAR_CORRECTION_ACTIONS,
+    SHARADAR_CORRECTIONS_FILENAME,
+    SHARADAR_FIELD_MAP_FILENAME,
+    SHARADAR_FLOW_FIELDS,
+    SHARADAR_MAP_KINDS,
+    SHARADAR_MAP_OPS,
+    SHARADAR_MAP_SPLIT_BASES,
+    SHARADAR_NEGATE_IF_NON_POSITIVE,
+    SHARADAR_REGISTER_DOC_PREFIX,
+    SHARADAR_SF1_COLUMNS,
+    SHARADAR_ZERO_FILLED_FIELDS,
+    SHARADAR_ZERO_RULES_FILENAME,
 )
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
-    DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER, Catalogue, load_catalogue,
-    resolve_config_dir)
+    DEFAULT_CONFIG_DIR,
+    HISTORY_STATEMENT_ORDER,
+    Catalogue,
+    load_catalogue,
+    resolve_config_dir,
+)
 
 log = logging.getLogger(__name__)
 
@@ -81,8 +97,7 @@ DURATION, INSTANT, MEAN = "duration", "instant", "mean"
 #: The vendor identifier columns every stage carries through untouched. `date` is the FILING
 #: date on the Direct channel (Nasdaq Data Link calls it `datekey`); `reportperiod` is the
 #: period end. Both are needed downstream and neither is a value.
-KEY_COLUMNS: tuple[str, ...] = ("ticker", "dimension", "calendardate", "date",
-                                "reportperiod", "fiscalperiod")
+KEY_COLUMNS: tuple[str, ...] = ("ticker", "dimension", "calendardate", "date", "reportperiod", "fiscalperiod")
 
 #: Applied to `0.0` only, never to a small number. Sharadar writes a LITERAL zero where it
 #: has nothing, so an approximate test would null real values that happen to round small.
@@ -150,25 +165,25 @@ class TranslationReport:
     zero_nulled: dict[str, int] = dataclass_field(default_factory=dict)
     corrected: dict[str, int] = dataclass_field(default_factory=dict)
     negation_nulled: dict[str, int] = dataclass_field(default_factory=dict)
+    sign_nulled: dict[str, int] = dataclass_field(default_factory=dict)
     split_deadjusted: dict[str, int] = dataclass_field(default_factory=dict)
     splits_applied: list[str] = dataclass_field(default_factory=list)
     splits_rejected: list[str] = dataclass_field(default_factory=list)
 
     def summary(self) -> str:
         """One block a human can read in a log or a test's sanity print."""
-        return "\n".join([
-            f"rows in                 : {self.rows_in}",
-            f"zero-rule NULLs         : {sum(self.zero_nulled.values())} "
-            f"over {len(self.zero_nulled)} field(s) {self.zero_nulled or '{}'}",
-            f"correction NULLs        : {sum(self.corrected.values())} "
-            f"{self.corrected or '{}'}",
-            f"sign-guard NULLs        : {sum(self.negation_nulled.values())} "
-            f"{self.negation_nulled or '{}'}",
-            f"split de-adjusted cells : {sum(self.split_deadjusted.values())} "
-            f"{self.split_deadjusted or '{}'}",
-            f"splits applied          : {self.splits_applied or 'none'}",
-            f"splits rejected         : {self.splits_rejected or 'none'}",
-        ])
+        return "\n".join(
+            [
+                f"rows in                 : {self.rows_in}",
+                f"zero-rule NULLs         : {sum(self.zero_nulled.values())} " f"over {len(self.zero_nulled)} field(s) {self.zero_nulled or '{}'}",
+                f"correction NULLs        : {sum(self.corrected.values())} " f"{self.corrected or '{}'}",
+                f"sign-guard NULLs        : {sum(self.negation_nulled.values())} " f"{self.negation_nulled or '{}'}",
+                f"declared-sign NULLs     : {sum(self.sign_nulled.values())} " f"{self.sign_nulled or '{}'}",
+                f"split de-adjusted cells : {sum(self.split_deadjusted.values())} " f"{self.split_deadjusted or '{}'}",
+                f"splits applied          : {self.splits_applied or 'none'}",
+                f"splits rejected         : {self.splits_rejected or 'none'}",
+            ]
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -191,7 +206,8 @@ def _require_approval(raw: dict, path: Path) -> None:
         raise RuntimeError(
             f"{path} carries no usable `{SHARADAR_APPROVAL_KEY}` block (needs `on` and "
             f"`scope`). It is a PROPOSAL until a human approves it, and phase 3 refuses to "
-            f"run against a proposal -- see the file's own _README.")
+            f"run against a proposal -- see the file's own _README."
+        )
 
 
 def load_zero_rules(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, str]:
@@ -203,12 +219,10 @@ def load_zero_rules(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, str]:
     rules = {name: block["rule"] for name, block in _entries(raw).items()}
     missing = sorted(SHARADAR_ZERO_FILLED_FIELDS - set(rules))
     if missing:
-        raise RuntimeError(f"{path} has no rule for {len(missing)} zero-filled field(s): "
-                           f"{missing}")
+        raise RuntimeError(f"{path} has no rule for {len(missing)} zero-filled field(s): " f"{missing}")
     unknown = sorted(set(rules.values()) - {"null", "keep"})
     if unknown:
-        raise RuntimeError(f"{path} uses unknown rule(s) {unknown}; only `null` and `keep` "
-                           f"exist")
+        raise RuntimeError(f"{path} uses unknown rule(s) {unknown}; only `null` and `keep` " f"exist")
     return rules
 
 
@@ -221,8 +235,7 @@ def load_corrections(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, dict[str
     """
     path = Path(config_dir) / SHARADAR_CONFIG_SUBDIR / SHARADAR_CORRECTIONS_FILENAME
     if not path.exists():
-        raise FileNotFoundError(f"{path} is missing; the field map refuses to run without "
-                                f"the correction register (phase-3 §0)")
+        raise FileNotFoundError(f"{path} is missing; the field map refuses to run without " f"the correction register (phase-3 §0)")
     raw = json.loads(path.read_text(encoding="utf-8"))
     _require_approval(raw, path)
     register = _entries(raw)
@@ -231,12 +244,10 @@ def load_corrections(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, dict[str
             where = f"{path}: {field}/{ticker}"
             action = entry.get("action")
             if action not in SHARADAR_CORRECTION_ACTIONS:
-                raise RuntimeError(f"{where} has action {action!r}; the vocabulary is closed "
-                                   f"to {sorted(SHARADAR_CORRECTION_ACTIONS)}")
+                raise RuntimeError(f"{where} has action {action!r}; the vocabulary is closed " f"to {sorted(SHARADAR_CORRECTION_ACTIONS)}")
             for key in ("reason", "evidence"):
                 if not str(entry.get(key, "")).strip():
-                    raise RuntimeError(f"{where} has no `{key}`. Every correction states what "
-                                       f"was measured or which filing was read.")
+                    raise RuntimeError(f"{where} has no `{key}`. Every correction states what " f"was measured or which filing was read.")
     return register
 
 
@@ -256,38 +267,34 @@ def _basis_for(name: str, source: str, catalogue: Catalogue) -> str:
     return DURATION if source in SHARADAR_FLOW_FIELDS else INSTANT
 
 
-def _spec_from(name: str, entry: dict, *, catalogue, path: Path,
-               basis: str | None = None) -> ColumnSpec:
+def _spec_from(name: str, entry: dict, *, catalogue, path: Path, basis: str | None = None) -> ColumnSpec:
     """One JSON entry -> a validated `ColumnSpec`."""
     kind = entry.get("kind")
     if kind not in SHARADAR_MAP_KINDS:
-        raise RuntimeError(f"{path}: {name} has kind {kind!r}; the vocabulary is closed to "
-                           f"{sorted(SHARADAR_MAP_KINDS)}")
+        raise RuntimeError(f"{path}: {name} has kind {kind!r}; the vocabulary is closed to " f"{sorted(SHARADAR_MAP_KINDS)}")
     source = entry.get("from")
     split_basis = entry.get("split_basis")
     if split_basis is not None and split_basis not in SHARADAR_MAP_SPLIT_BASES:
-        raise RuntimeError(f"{path}: {name} has split_basis {split_basis!r}; expected one of "
-                           f"{sorted(SHARADAR_MAP_SPLIT_BASES)}")
+        raise RuntimeError(f"{path}: {name} has split_basis {split_basis!r}; expected one of " f"{sorted(SHARADAR_MAP_SPLIT_BASES)}")
     negate = entry.get("negate")
     if negate is not None and negate != SHARADAR_NEGATE_IF_NON_POSITIVE:
         raise RuntimeError(
             f"{path}: {name} has negate {negate!r}. The only accepted spelling is "
             f"{SHARADAR_NEGATE_IF_NON_POSITIVE!r} -- `true` flips unconditionally, and 13 of "
             f"1,346 stored rows carry a positive `capex`, so it writes a negative into a "
-            f"`non_negative` column.")
+            f"`non_negative` column."
+        )
 
     if kind == "direct":
         if source not in set(SHARADAR_SF1_COLUMNS):
-            raise RuntimeError(f"{path}: {name} maps from {source!r}, which SF1 does not "
-                               f"deliver ({len(SHARADAR_SF1_COLUMNS)} columns)")
-        return ColumnSpec(name=name, kind=kind, source=source, negate=negate,
-                          split_basis=split_basis,
-                          basis=basis or _basis_for(name, source, catalogue))
+            raise RuntimeError(f"{path}: {name} maps from {source!r}, which SF1 does not " f"deliver ({len(SHARADAR_SF1_COLUMNS)} columns)")
+        return ColumnSpec(
+            name=name, kind=kind, source=source, negate=negate, split_basis=split_basis, basis=basis or _basis_for(name, source, catalogue)
+        )
     if kind == "derived":
         op = entry.get("op")
         if op not in SHARADAR_MAP_OPS:
-            raise RuntimeError(f"{path}: {name} has op {op!r}; the vocabulary is closed to "
-                               f"{sorted(SHARADAR_MAP_OPS)}")
+            raise RuntimeError(f"{path}: {name} has op {op!r}; the vocabulary is closed to " f"{sorted(SHARADAR_MAP_OPS)}")
         inputs = tuple(entry.get("inputs", ()))
         formula = entry.get("formula")
         _assert_formula_matches(name, op, inputs, formula, path)
@@ -295,8 +302,7 @@ def _spec_from(name: str, entry: dict, *, catalogue, path: Path,
     return ColumnSpec(name=name, kind=kind, basis=basis)
 
 
-def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula: str | None,
-                            path: Path) -> None:
+def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula: str | None, path: Path) -> None:
     """The prose `formula` is for a reader; `op` + `inputs` is what runs. Asserting they
     agree keeps the config honest -- a formula string nobody executes is a comment that drifts.
     """
@@ -306,8 +312,7 @@ def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula
         expected = " + ".join(inputs)
     elif op == "sum_optional":
         # the formula has to SHOW which legs are optional, or the two ops read identically
-        expected = (" + ".join([inputs[0]] + [f"coalesce({i}, 0)" for i in inputs[1:]])
-                    if len(inputs) >= 2 else None)
+        expected = " + ".join([inputs[0]] + [f"coalesce({i}, 0)" for i in inputs[1:]]) if len(inputs) >= 2 else None
     elif op == "ratio":
         expected = " / ".join(inputs) if len(inputs) == 2 else None
     else:
@@ -315,8 +320,7 @@ def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula
     if expected is None:
         raise RuntimeError(f"{path}: {name} op {op!r} has the wrong arity for inputs {inputs}")
     if formula != expected:
-        raise RuntimeError(f"{path}: {name} declares formula {formula!r} but `op`/`inputs` "
-                           f"compute {expected!r}")
+        raise RuntimeError(f"{path}: {name} declares formula {formula!r} but `op`/`inputs` " f"compute {expected!r}")
 
 
 def load_field_map(config_dir: str | None = DEFAULT_CONFIG_DIR) -> FieldMap:
@@ -340,10 +344,8 @@ def _field_map_at(config_dir: str) -> FieldMap:
     raw = json.loads(path.read_text(encoding="utf-8"))
     catalogue = load_catalogue(config_dir)
 
-    columns = {n: _spec_from(n, e, catalogue=catalogue, path=path)
-               for n, e in raw["columns"].items()}
-    added = {n: _spec_from(n, e, catalogue=catalogue, path=path)
-             for n, e in raw["added_columns"].items()}
+    columns = {n: _spec_from(n, e, catalogue=catalogue, path=path) for n, e in raw["columns"].items()}
+    added = {n: _spec_from(n, e, catalogue=catalogue, path=path) for n, e in raw["added_columns"].items()}
     # An extra is keyed by its VENDOR name and emitted under its repo one. `to` is required:
     # D16 says "where no repo counterpart exists, keep Sharadar's own name", and that was read
     # as "keep Sharadar's own SPELLING" -- which left `ncfx`, `prefdivis` and `accoci` sitting
@@ -354,47 +356,50 @@ def _field_map_at(config_dir: str) -> FieldMap:
     # outflow-negative, and while the key was silently dropped here the column reached the
     # cube on the vendor's sign, inverting `payout_ratio` across 2.96 M rows and collapsing
     # `sustainable_growth_rate` onto `returnOnEquity`.
-    extras = {e["to"]: ColumnSpec(name=e["to"], kind="direct", source=n, basis=e["basis"],
-                                  split_basis=e.get("split_basis"), negate=e.get("negate"))
-              for n, e in raw["extras"].items()}
+    extras = {
+        e["to"]: ColumnSpec(name=e["to"], kind="direct", source=n, basis=e["basis"], split_basis=e.get("split_basis"), negate=e.get("negate"))
+        for n, e in raw["extras"].items()
+    }
 
     unmapped = [n for n in HISTORY_STATEMENT_ORDER if n not in columns]
     if unmapped:
-        raise RuntimeError(f"{path} leaves {len(unmapped)} contract column(s) unmapped: "
-                           f"{unmapped}")
+        raise RuntimeError(f"{path} leaves {len(unmapped)} contract column(s) unmapped: " f"{unmapped}")
     stray = sorted(set(columns) - set(HISTORY_STATEMENT_ORDER))
     if stray:
-        raise RuntimeError(f"{path} maps {stray}, which are not in HISTORY_STATEMENT_ORDER. "
-                           f"A column beyond the 60 belongs in `added_columns`.")
+        raise RuntimeError(f"{path} maps {stray}, which are not in HISTORY_STATEMENT_ORDER. " f"A column beyond the 60 belongs in `added_columns`.")
     # ⚠ Checked on the SOURCE, not on the emitted name. An extra is now keyed by its vendor
     # column and emitted under a repo one, so testing the OUTPUT against `SHARADAR_SF1_COLUMNS`
     # would reject every correctly renamed extra and accept a `to` that shadows a contract
     # column -- exactly backwards on both counts.
     for name, spec in extras.items():
         if spec.source not in set(SHARADAR_SF1_COLUMNS):
-            raise RuntimeError(f"{path}: extra {name!r} reads {spec.source!r}, which is not an "
-                               f"SF1 column")
+            raise RuntimeError(f"{path}: extra {name!r} reads {spec.source!r}, which is not an " f"SF1 column")
         if name in set(HISTORY_STATEMENT_ORDER) or name in columns or name in added:
-            raise RuntimeError(f"{path}: extra {spec.source!r} renames to {name!r}, which is "
-                               f"already a contract column. Two sources would write one "
-                               f"column and the later one would win silently.")
+            raise RuntimeError(
+                f"{path}: extra {spec.source!r} renames to {name!r}, which is "
+                f"already a contract column. Two sources would write one "
+                f"column and the later one would win silently."
+            )
         if spec.basis not in (DURATION, INSTANT):
-            raise RuntimeError(f"{path}: extra {name!r} has basis {spec.basis!r}; expected "
-                               f"{DURATION!r} or {INSTANT!r}")
+            raise RuntimeError(f"{path}: extra {name!r} has basis {spec.basis!r}; expected " f"{DURATION!r} or {INSTANT!r}")
         if spec.negate is not None and spec.negate != SHARADAR_NEGATE_IF_NON_POSITIVE:
-            raise RuntimeError(f"{path}: extra {name!r} has negate {spec.negate!r}; the only "
-                               f"accepted spelling is {SHARADAR_NEGATE_IF_NON_POSITIVE!r} "
-                               f"(see the contract-column check for why never `true`)")
-    collisions = sorted(n for n in extras if sum(1 for e in raw["extras"].values()
-                                                 if e["to"] == n) > 1)
+            raise RuntimeError(
+                f"{path}: extra {name!r} has negate {spec.negate!r}; the only "
+                f"accepted spelling is {SHARADAR_NEGATE_IF_NON_POSITIVE!r} "
+                f"(see the contract-column check for why never `true`)"
+            )
+    collisions = sorted(n for n in extras if sum(1 for e in raw["extras"].values() if e["to"] == n) > 1)
     if collisions:
-        raise RuntimeError(f"{path}: {collisions} is the `to` of more than one extra; the "
-                           f"dict would silently keep only the last.")
+        raise RuntimeError(f"{path}: {collisions} is the `to` of more than one extra; the " f"dict would silently keep only the last.")
 
-    field_map = FieldMap(columns=columns, added=added, extras=extras,
-                         excluded=frozenset(raw["excluded"]),
-                         zero_rules=load_zero_rules(config_dir),
-                         corrections=load_corrections(config_dir))
+    field_map = FieldMap(
+        columns=columns,
+        added=added,
+        extras=extras,
+        excluded=frozenset(raw["excluded"]),
+        zero_rules=load_zero_rules(config_dir),
+        corrections=load_corrections(config_dir),
+    )
     _assert_derived_inputs_resolve(field_map, path)
     return field_map
 
@@ -407,19 +412,19 @@ def _assert_derived_inputs_resolve(field_map: FieldMap, path: Path) -> None:
     for name, spec in derived.items():
         for source in spec.inputs:
             if source not in outputs:
-                raise RuntimeError(f"{path}: {name} reads {source!r}, which the map does not "
-                                   f"produce")
+                raise RuntimeError(f"{path}: {name} reads {source!r}, which the map does not " f"produce")
             if source in derived:
-                raise RuntimeError(f"{path}: {name} reads the derived column {source!r}. "
-                                   f"Formulas run in ONE pass, so a derived input would be "
-                                   f"read before it is computed.")
+                raise RuntimeError(
+                    f"{path}: {name} reads the derived column {source!r}. "
+                    f"Formulas run in ONE pass, so a derived input would be "
+                    f"read before it is computed."
+                )
 
 
 # --------------------------------------------------------------------------- #
 # the vendor-frame cleaning stages                                             #
 # --------------------------------------------------------------------------- #
-def apply_zero_rules(frame: pd.DataFrame, rules: dict[str, str], *,
-                     report: TranslationReport | None = None) -> pd.DataFrame:
+def apply_zero_rules(frame: pd.DataFrame, rules: dict[str, str], *, report: TranslationReport | None = None) -> pd.DataFrame:
     """Replace `0.0` with NaN for every field ruled `"null"`.
 
     Runs on the VENDOR frame, before any sum. A zero that survives into a TTM contributes
@@ -431,8 +436,7 @@ def apply_zero_rules(frame: pd.DataFrame, rules: dict[str, str], *,
     """
     ungoverned = sorted((SHARADAR_ZERO_FILLED_FIELDS & set(frame.columns)) - set(rules))
     if ungoverned:
-        raise RuntimeError(f"no zero rule for {ungoverned}; every zero-filled field in the "
-                           f"frame needs one")
+        raise RuntimeError(f"no zero rule for {ungoverned}; every zero-filled field in the " f"frame needs one")
     out = frame.copy()
     for name, rule in rules.items():
         if rule != "null" or name not in out.columns:
@@ -446,8 +450,7 @@ def apply_zero_rules(frame: pd.DataFrame, rules: dict[str, str], *,
     return out
 
 
-def apply_corrections(frame: pd.DataFrame, corrections: dict[str, dict[str, dict]], *,
-                      report: TranslationReport | None = None) -> pd.DataFrame:
+def apply_corrections(frame: pd.DataFrame, corrections: dict[str, dict[str, dict]], *, report: TranslationReport | None = None) -> pd.DataFrame:
     """Apply the (field, ticker) register to the VENDOR frame.
 
     Before the field map, so `fundamentals_sharadar` stays a faithful record of what the
@@ -545,8 +548,7 @@ def _is_simple_split(ratio: float) -> bool:
     return frac.denominator == 1 or frac.numerator == 1
 
 
-def split_events(actions: pd.DataFrame, yf_splits: pd.DataFrame | None = None, *,
-                 report: TranslationReport | None = None) -> pd.DataFrame:
+def split_events(actions: pd.DataFrame, yf_splits: pd.DataFrame | None = None, *, report: TranslationReport | None = None) -> pd.DataFrame:
     """The GENUINE share splits, as `(ticker, date, value)`, from BOTH vendors.
 
     ⚠ A `split` row CO-DATED WITH A SPINOFF IS STILL A SPLIT. This function used to drop
@@ -599,10 +601,14 @@ def split_events(actions: pd.DataFrame, yf_splits: pd.DataFrame | None = None, *
     # An EMPTY frame still needs a datetime `date`: the union subtracts two date columns, and
     # on a bare `pd.DataFrame(columns=...)` that column is `object` and the subtraction raises
     # TypeError -- turning "this ticker has no Sharadar rows" into a crash.
-    empty = pd.DataFrame({"ticker": pd.Series(dtype="object"),
-                          "date": pd.Series(dtype="datetime64[ns]"),
-                          "value": pd.Series(dtype="float64"),
-                          "label": pd.Series(dtype="object")})
+    empty = pd.DataFrame(
+        {
+            "ticker": pd.Series(dtype="object"),
+            "date": pd.Series(dtype="datetime64[ns]"),
+            "value": pd.Series(dtype="float64"),
+            "label": pd.Series(dtype="object"),
+        }
+    )
     codated: set[tuple] = set()
     if actions is None or actions.empty:
         sharadar = empty
@@ -610,16 +616,19 @@ def split_events(actions: pd.DataFrame, yf_splits: pd.DataFrame | None = None, *
         frame = actions.copy()
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
         candidates = frame[frame["action"] == SHARADAR_ACTION_SPLIT]
-        kept = [{"ticker": row["ticker"], "date": row["date"], "value": float(row["value"]),
-                 "label": f"{row['ticker']} {pd.Timestamp(row['date']).date()} "
-                          f"x{row['value']}"}
-                for _, row in candidates.iterrows()]
-        sharadar = (pd.DataFrame(kept, columns=["ticker", "date", "value", "label"])
-                    if kept else empty)
+        kept = [
+            {
+                "ticker": row["ticker"],
+                "date": row["date"],
+                "value": float(row["value"]),
+                "label": f"{row['ticker']} {pd.Timestamp(row['date']).date()} " f"x{row['value']}",
+            }
+            for _, row in candidates.iterrows()
+        ]
+        sharadar = pd.DataFrame(kept, columns=["ticker", "date", "value", "label"]) if kept else empty
         # `spinoff` rows no longer VETO anything -- they are read purely to name the rows
         # this function's behaviour changed on, which is the only set worth a human's time.
-        codated = set(map(tuple, frame.loc[frame["action"] == SHARADAR_ACTION_SPINOFF,
-                                           ["ticker", "date"]].to_numpy()))
+        codated = set(map(tuple, frame.loc[frame["action"] == SHARADAR_ACTION_SPINOFF, ["ticker", "date"]].to_numpy()))
 
     yf = pd.DataFrame(columns=["ticker", "date", "value"])
     if yf_splits is not None and not yf_splits.empty:
@@ -643,21 +652,26 @@ def _log_codated(out: pd.DataFrame, codated: set[tuple]) -> None:
     """
     if out.empty or not codated:
         return
-    hit = [f"{r.ticker} {pd.Timestamp(r.date).date()} x{r.value}" for r in out.itertuples()
-           if (r.ticker, pd.Timestamp(r.date)) in codated]
+    hit = [f"{r.ticker} {pd.Timestamp(r.date).date()} x{r.value}" for r in out.itertuples() if (r.ticker, pd.Timestamp(r.date)) in codated]
     if not hit:
         return
-    log.warning("%d split(s) co-dated with a spinoff are now KEPT (the veto that dropped "
-                "them was wrong -- see `split_events`): %s", len(hit), ", ".join(sorted(hit)))
+    log.warning(
+        "%d split(s) co-dated with a spinoff are now KEPT (the veto that dropped " "them was wrong -- see `split_events`): %s",
+        len(hit),
+        ", ".join(sorted(hit)),
+    )
     odd = [h for h in hit if not _is_simple_split(float(h.rsplit("x", 1)[1]))]
     if odd:
-        log.warning("of those, %d is/are split-shaped but NOT n:1 or 1:n -- the shape test "
-                    "is the only filter left, so confirm each against the filer's own "
-                    "disclosure: %s", len(odd), ", ".join(odd))
+        log.warning(
+            "of those, %d is/are split-shaped but NOT n:1 or 1:n -- the shape test "
+            "is the only filter left, so confirm each against the filer's own "
+            "disclosure: %s",
+            len(odd),
+            ", ".join(odd),
+        )
 
 
-def _resolve_ratio_conflict(yf_row: pd.Series,
-                            near: pd.DataFrame) -> tuple[float, str | None]:
+def _resolve_ratio_conflict(yf_row: pd.Series, near: pd.DataFrame) -> tuple[float, str | None]:
     """`(ratio to keep, a warning line or None)` for one corroborated event.
 
     Returns yfinance's ratio unchanged whenever the two vendors agree to within
@@ -677,19 +691,22 @@ def _resolve_ratio_conflict(yf_row: pd.Series,
             continue
         yf_ok, sh_ok = _is_split_shaped(yf_value), _is_split_shaped(sh_value)
         if sh_ok and not yf_ok:
-            return sh_value, (f"{label}: yfinance x{yf_value} vs sharadar x{sh_value} "
-                              f"-> KEPT x{sh_value} (only the sharadar ratio is "
-                              f"split-shaped; the yfinance one is the spinoff's PRICE "
-                              f"factor)")
-        return yf_value, (f"{label}: yfinance x{yf_value} vs sharadar x{sh_value} "
-                          f"-> KEPT x{yf_value} (yfinance, "
-                          f"{'both' if yf_ok and sh_ok else 'neither'} split-shaped -- "
-                          f"no evidence to prefer the other)")
+            return sh_value, (
+                f"{label}: yfinance x{yf_value} vs sharadar x{sh_value} "
+                f"-> KEPT x{sh_value} (only the sharadar ratio is "
+                f"split-shaped; the yfinance one is the spinoff's PRICE "
+                f"factor)"
+            )
+        return yf_value, (
+            f"{label}: yfinance x{yf_value} vs sharadar x{sh_value} "
+            f"-> KEPT x{yf_value} (yfinance, "
+            f"{'both' if yf_ok and sh_ok else 'neither'} split-shaped -- "
+            f"no evidence to prefer the other)"
+        )
     return yf_value, None
 
 
-def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *,
-                        report: TranslationReport | None = None) -> pd.DataFrame:
+def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: TranslationReport | None = None) -> pd.DataFrame:
     """Apply the four-case corroboration rule to two already-cleaned event lists.
 
     Split out from `split_events` so the rule is testable on a synthetic fixture with no DB
@@ -711,9 +728,7 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *,
     kept_both = kept_yf = kept_sharadar = 0
 
     for _, row in yf.iterrows():
-        near = sharadar.index[(sharadar["ticker"] == row["ticker"])
-                              & ((sharadar["date"] - row["date"]).abs()
-                                 <= pd.Timedelta(days=SPLIT_MATCH_DAYS))]
+        near = sharadar.index[(sharadar["ticker"] == row["ticker"]) & ((sharadar["date"] - row["date"]).abs() <= pd.Timedelta(days=SPLIT_MATCH_DAYS))]
         matched_sharadar.update(near)
         value = float(row["value"])
         # Corroboration overrides shape: an event BOTH vendors report is genuine whatever
@@ -728,8 +743,8 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *,
         else:
             if report is not None:
                 report.splits_rejected.append(
-                    f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} "
-                    "(yfinance-only, not split-shaped)")
+                    f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} " "(yfinance-only, not split-shaped)"
+                )
             continue
         events.append({"ticker": row["ticker"], "date": row["date"], "value": value})
 
@@ -737,40 +752,38 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *,
     for idx, row in sharadar.iterrows():
         if idx in matched_sharadar:
             continue
-        label = row["label"] if "label" in row else (
-            f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']}")
+        label = row["label"] if "label" in row else (f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']}")
         if _is_split_shaped(float(row["value"])):
-            events.append({"ticker": row["ticker"], "date": row["date"],
-                           "value": float(row["value"])})
+            events.append({"ticker": row["ticker"], "date": row["date"], "value": float(row["value"])})
             uncorroborated.append(label)
             kept_sharadar += 1
         elif report is not None:
             report.splits_rejected.append(f"{label} (uncorroborated, not split-shaped)")
 
     if uncorroborated:
-        log.warning("%d split event(s) in sharadar_actions but NOT in yfinance, kept because "
-                    "the ratio is split-shaped -- review: %s",
-                    len(uncorroborated), ", ".join(uncorroborated))
+        log.warning(
+            "%d split event(s) in sharadar_actions but NOT in yfinance, kept because " "the ratio is split-shaped -- review: %s",
+            len(uncorroborated),
+            ", ".join(uncorroborated),
+        )
     if conflicts:
-        log.warning("%d date(s) where the two vendors report DIFFERENT ratios -- resolved: "
-                    "%s", len(conflicts), "; ".join(conflicts))
+        log.warning("%d date(s) where the two vendors report DIFFERENT ratios -- resolved: " "%s", len(conflicts), "; ".join(conflicts))
         if report is not None:
             report.splits_rejected.extend(conflicts)
 
-    out = (pd.DataFrame(events, columns=["ticker", "date", "value"])
-           .drop_duplicates(subset=["ticker", "date"])
-           .sort_values(["ticker", "date"])
-           .reset_index(drop=True))
-    log.info("split events: %d corroborated, %d yfinance-only, %d sharadar-only -> %d total",
-             kept_both, kept_yf, kept_sharadar, len(out))
+    out = (
+        pd.DataFrame(events, columns=["ticker", "date", "value"])
+        .drop_duplicates(subset=["ticker", "date"])
+        .sort_values(["ticker", "date"])
+        .reset_index(drop=True)
+    )
+    log.info("split events: %d corroborated, %d yfinance-only, %d sharadar-only -> %d total", kept_both, kept_yf, kept_sharadar, len(out))
     if report is not None:
-        report.splits_applied.extend(
-            f"{r.ticker} {pd.Timestamp(r.date).date()} x{r.value}" for r in out.itertuples())
+        report.splits_applied.extend(f"{r.ticker} {pd.Timestamp(r.date).date()} x{r.value}" for r in out.itertuples())
     return out
 
 
-def forward_split_factor(tickers: pd.Series, dates: pd.Series,
-                         splits: pd.DataFrame) -> pd.Series:
+def forward_split_factor(tickers: pd.Series, dates: pd.Series, splits: pd.DataFrame) -> pd.Series:
     """The product of every genuine split dated STRICTLY AFTER each row's own filing date.
 
     That product is exactly the factor Sharadar applied retroactively, so dividing a count by
@@ -787,9 +800,14 @@ def forward_split_factor(tickers: pd.Series, dates: pd.Series,
     return factor
 
 
-def deadjust_splits(frame: pd.DataFrame, field_map: FieldMap, actions: pd.DataFrame | None,
-                    yf_splits: pd.DataFrame | None = None, *,
-                    report: TranslationReport | None = None) -> pd.DataFrame:
+def deadjust_splits(
+    frame: pd.DataFrame,
+    field_map: FieldMap,
+    actions: pd.DataFrame | None,
+    yf_splits: pd.DataFrame | None = None,
+    *,
+    report: TranslationReport | None = None,
+) -> pd.DataFrame:
     """Undo Sharadar's RETROACTIVE split adjustment on the columns that carry it.
 
     SF1 reports a pre-split quarter on the POST-split basis across its whole share block --
@@ -828,8 +846,9 @@ def deadjust_splits(frame: pd.DataFrame, field_map: FieldMap, actions: pd.DataFr
         return frame
     splits = split_events(actions, yf_splits, report=report)
     if splits.empty:
-        log.warning("no genuine split events available -- the share block stays on Sharadar's "
-                    "retroactively adjusted basis, which is NOT point-in-time")
+        log.warning(
+            "no genuine split events available -- the share block stays on Sharadar's " "retroactively adjusted basis, which is NOT point-in-time"
+        )
         return frame
     out = frame.copy()
     factor = forward_split_factor(out["ticker"], out["date"], splits)
@@ -840,8 +859,7 @@ def deadjust_splits(frame: pd.DataFrame, field_map: FieldMap, actions: pd.DataFr
         hit = touched & out[name].notna()
         if not hit.any():
             continue
-        out.loc[hit, name] = (out.loc[hit, name] / factor[hit] if spec.split_basis == "count"
-                              else out.loc[hit, name] * factor[hit])
+        out.loc[hit, name] = out.loc[hit, name] / factor[hit] if spec.split_basis == "count" else out.loc[hit, name] * factor[hit]
         if report is not None:
             report.split_deadjusted[name] = int(hit.sum())
     return out
@@ -850,8 +868,7 @@ def deadjust_splits(frame: pd.DataFrame, field_map: FieldMap, actions: pd.DataFr
 # --------------------------------------------------------------------------- #
 # the rename                                                                   #
 # --------------------------------------------------------------------------- #
-def translate(frame: pd.DataFrame, field_map: FieldMap, *,
-              report: TranslationReport | None = None) -> pd.DataFrame:
+def translate(frame: pd.DataFrame, field_map: FieldMap, *, report: TranslationReport | None = None) -> pd.DataFrame:
     """A vendor ARQ frame -> the repo-named ARQ frame, still on the DISCRETE-quarter grain.
 
     Zero rules, then corrections, then the direct renames with their sign guard. Derived
@@ -872,9 +889,11 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *,
 
     missing = [s.source for s in field_map.direct.values() if s.source not in frame.columns]
     if missing:
-        raise RuntimeError(f"the vendor frame is missing {len(missing)} mapped column(s): "
-                           f"{sorted(set(missing))}. `fields=` silently drops an unavailable "
-                           f"field, so this is a projection or a typo, never an empty column.")
+        raise RuntimeError(
+            f"the vendor frame is missing {len(missing)} mapped column(s): "
+            f"{sorted(set(missing))}. `fields=` silently drops an unavailable "
+            f"field, so this is a projection or a typo, never an empty column."
+        )
 
     cleaned = apply_zero_rules(frame, field_map.zero_rules, report=report)
     cleaned = apply_corrections(cleaned, field_map.corrections, report=report)
@@ -886,6 +905,8 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *,
         values = cleaned[spec.source].astype("float64")
         if spec.negate == SHARADAR_NEGATE_IF_NON_POSITIVE:
             values = _negate_if_non_positive(values, name, report)
+        if name in SIGN_ENFORCED:
+            values = _null_if_negative(values, name, report)
         columns[name] = values
     for name, spec in field_map.outputs.items():
         if spec.kind in ("sec", "null"):
@@ -895,8 +916,50 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *,
     return pd.concat([keys, pd.DataFrame(columns, index=cleaned.index)], axis=1)
 
 
-def _negate_if_non_positive(values: pd.Series, name: str,
-                            report: TranslationReport) -> pd.Series:
+#: Direct columns whose CATALOGUE-DECLARED sign is enforced here, at map time.
+#:
+#: The corrections register's `_APPROVED` note states the doctrine this implements: a ticker
+#: entry is for a SYSTEMATIC per-filer defect, while a cell whose sign the column cannot hold
+#: is handled by a guard that NULLs it and counts it. `capex` had such a guard
+#: (`negate: if_non_positive`); `interestExpense` had none, so it was declared
+#: `sign: non_negative` and carried 748 negative cells over 129 tickers -- 1.45% of its
+#: non-null rows, measured 2026-09-15. A register entry per filer cannot cover 129 of them.
+#:
+#: A negative `intexp` is Sharadar reporting interest NET of interest income, which is the
+#: exact basis defect the register's NKE entry describes: "Negating is NOT lossless here: it
+#: would report an $8m interest expense NKE never incurred ... the honest answer is NULL."
+#: The same reasoning applies column-wide, so the cells are nulled rather than flipped.
+#:
+#: ⚠ SCOPED TO ONE COLUMN ON PURPOSE. Five further duration columns violate their declared
+#: sign on the same Q4-by-subtraction mechanism -- `sbcomp` 1,255 cells, `depamor` 234,
+#: `cor` 76, `sgna` 73, `rnd` 21 -- and enforcing all six would null 2,407 cells and move
+#: cube features. That is a wider declared numeric change and is deliberately NOT taken here;
+#: add a name to this set when it is.
+SIGN_ENFORCED: frozenset[str] = frozenset({"interestExpense"})
+
+
+def _null_if_negative(values: pd.Series, name: str, report: TranslationReport) -> pd.Series:
+    """NULL the cells whose sign the column's declared `non_negative` cannot hold.
+
+    Not a flip: the negative is evidence the cell is on a NET basis, so its magnitude is not
+    the gross figure the column means. Counted, because a silent null is indistinguishable
+    from a column the vendor never sent.
+    """
+    violations = values < 0
+    count = int(violations.sum())
+    if count:
+        values = values.copy()
+        values[violations] = np.nan
+        report.sign_nulled[name] = report.sign_nulled.get(name, 0) + count
+        log.warning(
+            "%s: %d cell(s) are negative in a column declared non_negative -- NULLed " "(a net-basis or Q4-by-subtraction figure, not a gross one)",
+            name,
+            count,
+        )
+    return values
+
+
+def _negate_if_non_positive(values: pd.Series, name: str, report: TranslationReport) -> pd.Series:
     """Flip the sign where Sharadar's convention holds; NULL the cells where it does not.
 
     `capex` is the only user. The repo declares it `sign: non_negative` and Sharadar stores it
@@ -910,16 +973,14 @@ def _negate_if_non_positive(values: pd.Series, name: str,
     if count:
         out[violations] = np.nan
         report.negation_nulled[name] = report.negation_nulled.get(name, 0) + count
-        log.warning("%s: %d row(s) violate Sharadar's sign convention and were NULLed rather "
-                    "than flipped into a negative", name, count)
+        log.warning("%s: %d row(s) violate Sharadar's sign convention and were NULLed rather " "than flipped into a negative", name, count)
     return out
 
 
 # --------------------------------------------------------------------------- #
 # the derived formulas -- LAST, on the TTM frame                               #
 # --------------------------------------------------------------------------- #
-def apply_derived(frame: pd.DataFrame, field_map: FieldMap,
-                  only: set[str] | None = None) -> pd.DataFrame:
+def apply_derived(frame: pd.DataFrame, field_map: FieldMap, only: set[str] | None = None) -> pd.DataFrame:
     """Evaluate every `derived` column on the TTM frame.
 
     A ratio of two TTM levels, never the TTM of a ratio: `profitMargins` is TTM net income

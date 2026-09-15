@@ -71,7 +71,9 @@ random_forest:
   # Per-horizon OVERRIDES: the model uses the list for the horizon it is training
   # (its `target_<label>_h<horizon>` cube column) if present here, else `columns` above.
   columns_by_horizon:
-    30:   # 30-day RF 50-feature set (earnings-surprise / growth / distress tilted)
+    30:   # 30-day RF 49-feature set (earnings-surprise / growth / distress tilted).
+          # Was written as 50 and carried `f_ic_inst_net_options_ratio` TWICE; the repeat is
+          # gone and the count is the distinct one, matching `columns` above.
     - f_pegy_vs_peers
     - f_pegy_xs
     - f_ic_inst_net_options_ratio
@@ -116,7 +118,6 @@ random_forest:
     - f_capex_to_dep_xs
     - f_operating_margin_5y_chg_vs_peers
     - f_shares_growth_xs
-    - f_ic_inst_net_options_ratio
     - f_diluted_shares_growth_vs_peers
     - f_q_earnings_growth_vs_peers
     - f_asset_growth_vs_peers

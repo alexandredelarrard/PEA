@@ -5,18 +5,18 @@ the same security appears as '037833100' and '37833100'. The map must canonicali
 both the stored and the queried CUSIP (zfill 9) so the incremental 'already mapped?'
 check actually SKIPS instead of re-running the rate-limited OpenFIGI lookup each time.
 """
+
 from __future__ import annotations
 
 import types
 
-import pandas as pd
-
 import src.data_extract.utils.institutionals.fetch_cusip_map as cm
-from conftest import FakeStore     # the ONE shared store double
 from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.data_extract.utils.institutionals.fetch_cusip_map import (
-    normalize_cusip, build_cusip_ticker_map,
+    build_cusip_ticker_map,
+    normalize_cusip,
 )
+from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
 # `build_cusip_ticker_map` now always merges the curated CINS overrides
 # (CUSIP_TICKER_OVERRIDES) into its result, so the returned frame is a SUPERSET of what
@@ -34,10 +34,10 @@ def _ctx():
 
 
 def test_normalize_cusip():
-    assert normalize_cusip("37833100") == "037833100"      # dropped leading zero restored
-    assert normalize_cusip("037833100") == "037833100"     # already 9 -> unchanged
-    assert normalize_cusip(" 037833100 ") == "037833100"   # stripped
-    assert normalize_cusip("aapl0001x") == "AAPL0001X"     # uppercased (9-char no-op)
+    assert normalize_cusip("37833100") == "037833100"  # dropped leading zero restored
+    assert normalize_cusip("037833100") == "037833100"  # already 9 -> unchanged
+    assert normalize_cusip(" 037833100 ") == "037833100"  # stripped
+    assert normalize_cusip("aapl0001x") == "AAPL0001X"  # uppercased (9-char no-op)
     for bad in (None, "", "nan", "NaN", "<NA>", float("nan")):
         assert normalize_cusip(bad) is None
     print("\n=== SANITY: normalize_cusip ===")
@@ -52,6 +52,7 @@ def test_build_cusip_map_skips_across_zfill(monkeypatch):
     def fake_req(cusips, api_key):
         calls["n"] += 1
         return [{"data": [{"ticker": "AAPL"}]} for _ in cusips]
+
     monkeypatch.setattr(cm, "_openfigi_request", fake_req)
 
     ctx = _ctx()
@@ -71,8 +72,10 @@ def test_build_cusip_map_skips_across_zfill(monkeypatch):
     assert calls["n"] == 2
 
     print("\n=== SANITY: cusip map incremental skip across zfill ===")
-    print("  run1 mapped '037833100' (1 call); run2 '37833100' (same security) -> 0 new calls "
-          "(skipped); run3 new CUSIP -> 1 call. No more re-doing every run. Validated.")
+    print(
+        "  run1 mapped '037833100' (1 call); run2 '37833100' (same security) -> 0 new calls "
+        "(skipped); run3 new CUSIP -> 1 call. No more re-doing every run. Validated."
+    )
 
 
 def test_unmapped_cusip_recorded_not_requeried(monkeypatch):
@@ -83,19 +86,21 @@ def test_unmapped_cusip_recorded_not_requeried(monkeypatch):
 
     def fake_req(cusips, api_key):
         calls["n"] += 1
-        return [({"data": [{"ticker": "AAPL"}]} if c == "037833100" else {"data": []})
-                for c in cusips]                       # 999999999 = genuine no-match
+        return [({"data": [{"ticker": "AAPL"}]} if c == "037833100" else {"data": []}) for c in cusips]  # 999999999 = genuine no-match
+
     monkeypatch.setattr(cm, "_openfigi_request", fake_req)
 
     ctx = _ctx()
     out1 = build_cusip_ticker_map(ctx, ["037833100", "999999999"], pause=0.0)
     assert calls["n"] == 1
-    assert _looked_up(out1) == {"037833100"}           # only the real mapping is returned
+    assert _looked_up(out1) == {"037833100"}  # only the real mapping is returned
     # the unmappable cusip was recorded -> NOT re-queried on the next run
     out2 = build_cusip_ticker_map(ctx, ["037833100", "999999999"], pause=0.0)
     assert calls["n"] == 1, "unmapped CUSIP was re-queried (the 'takes ages' bug is not fixed)"
     assert _looked_up(out2) == {"037833100"}
 
     print("\n=== SANITY: unmapped CUSIP recorded, not re-queried ===")
-    print("  '999999999' (no OpenFIGI match) recorded as attempted -> run2 makes 0 new calls; "
-          "only real mappings feed the merge. The rate-limited tail no longer re-runs. Validated.")
+    print(
+        "  '999999999' (no OpenFIGI match) recorded as attempted -> run2 makes 0 new calls; "
+        "only real mappings feed the merge. The rate-limited tail no longer re-runs. Validated."
+    )

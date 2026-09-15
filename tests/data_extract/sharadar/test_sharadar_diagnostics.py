@@ -14,6 +14,7 @@ test run can never overwrite the report.
 !! Nothing here touches `src/validate/` or the `fundamentals_check*` tables (D25). The
 diagnostic writes no production data.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,15 +25,20 @@ import pandas as pd
 import pytest
 
 from src.constants.constants import (
-    FUNDAMENTALS_CATALOGUE_SUBDIR,
-    SHARADAR_CONFIG_SUBDIR, SHARADAR_ZERO_FILLED_FIELDS, SHARADAR_ZERO_RULES_FILENAME,
+    SHARADAR_CONFIG_SUBDIR,
+    SHARADAR_ZERO_FILLED_FIELDS,
+    SHARADAR_ZERO_RULES_FILENAME,
 )
 from src.data_extract.utils.common.registrant import load_registrants
-from src.data_store.schema import Tables
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import (
-    confirm_sign_conventions, cross_check_shares, gate_completeness, gate_zero_fill,
-    load_sec, load_sharadar,
+    confirm_sign_conventions,
+    cross_check_shares,
+    gate_completeness,
+    gate_zero_fill,
+    load_sec,
+    load_sharadar,
 )
+from src.data_store.schema import Tables
 
 CONFIG_DIR = Path("./configs")
 
@@ -45,6 +51,37 @@ MAX_POSITIVE_CAPEX_RATE = 0.05
 #: the history has been retroactively re-based. A real share-class or reporting difference is
 #: a LEVEL shift and holds flat over time; only a split moves the ratio within one ticker.
 SPLIT_RATIO_SPAN = 1.5
+
+#: Half-width of the window D19's continuity is measured in, around each ticker's own cutover
+#: date. A registrant change can only lose filings near its own boundary, so two years each
+#: side is eight quarters of margin on both -- wide enough that a predecessor's last filings
+#: and a successor's first ones are both inside it, narrow enough that a vendor's sparse early
+#: history (BG carries one ARQ row per year before 2004, 21 years before its 2023 cutover)
+#: cannot be mistaken for a hole the cutover caused.
+CUTOVER_WINDOW_YEARS = 2
+
+#: Cutover holes that ARE REAL, measured, and not repairable from Sharadar -- so they are
+#: named here rather than asserted away. A hole NOT in this map still fails, which is the
+#: point: this records what is known, it does not switch the check off.
+#:
+#: BKR: Sharadar's ARQ series for BKR begins at 2016-12-31 (three filings of that one quarter,
+#: the merger re-filings) and then jumps to 2017-09-30. `Baker Hughes, a GE company` became
+#: the registrant on 2017-07-03, so 2017Q1 and 2017Q2 were filed by the PREDECESSOR, Baker
+#: Hughes Incorporated, under a different CIK -- and Sharadar's ticker-keyed series does not
+#: carry them. This is D19's failure mode occurring, not a check that misfired: the premise
+#: that "Sharadar's series is ticker-keyed and continuous" is FALSE here, and closing the gap
+#: means fetching the predecessor registrant, not re-running the vendor.
+#: STE: the same shape. Sharadar carries STE's quarter ended 2014-03-30 four times (the
+#: Synergy Health deal re-filings) and then nothing until 2015-12-31. STERIS plc replaced
+#: STERIS Corporation as the registrant on 2015-11-02, so the six quarters between were filed
+#: by the predecessor under its own CIK.
+#:
+#: Measured over all 17 register tickers stored: BKR and STE are the ONLY two with a hole
+#: inside their window; the other 15 span their boundary cleanly.
+CUTOVER_KNOWN_HOLES: dict[str, tuple[str, ...]] = {
+    "BKR": ("2017Q1", "2017Q2"),
+    "STE": ("2014Q2", "2014Q3", "2014Q4", "2015Q1", "2015Q2", "2015Q3"),
+}
 
 #: The only tickers allowed a `sharefactor != 1.0`. Sharadar documents `sharefactor` as a
 #: multiplicant in its `marketcap` calculation that adjusts for DUAL SHARE CLASSES, and these
@@ -61,11 +98,12 @@ DUAL_CLASS_SHAREFACTOR_TICKERS = frozenset({"BRK-B", "V"})
 def context():
     """A real Context (DB + .env), skipping rather than erroring when either is missing."""
     from src.context import get_config_context
+
     try:
         _, ctx = get_config_context(str(CONFIG_DIR), use_cache=False, save=False)
         with ctx.store.engine.connect():
             pass
-    except Exception as exc:                                            # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"context/database unavailable ({type(exc).__name__}: {exc})")
     if ctx.store.row_count(Tables.sharadar_fundamentals) == 0:
         pytest.skip(f"{Tables.sharadar_fundamentals} is empty -- run fundamentals-sharadar")
@@ -85,10 +123,8 @@ def frames(context):
     if arq.empty:
         pytest.skip(f"{Tables.sharadar_fundamentals} has no ARQ rows")
     return SimpleNamespace(
-        all=frame,
-        arq=arq,
-        art=by_dimension.get("ART", frame.iloc[:0]),
-        sec=load_sec(context, sorted(arq["ticker"].astype(str).unique())))
+        all=frame, arq=arq, art=by_dimension.get("ART", frame.iloc[:0]), sec=load_sec(context, sorted(arq["ticker"].astype(str).unique()))
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -102,8 +138,7 @@ def test_completeness_gate_runs(frames):
 
     print("\n=== SANITY CHECK: gate 1, completeness ===")
     print(f"  tickers measured    : {len(frame)}")
-    print(f"  quarters stored     : {int(frame['n_quarters'].sum())} across "
-          f"{frame['first_quarter'].min()}..{frame['last_quarter'].max()}")
+    print(f"  quarters stored     : {int(frame['n_quarters'].sum())} across " f"{frame['first_quarter'].min()}..{frame['last_quarter'].max()}")
     print(f"  tickers with a gap  : {len(with_gaps)}")
     print(f"  missing quarters    : {int(frame['n_missing'].sum())}")
     print(f"  duplicate quarters  : {int(frame['n_duplicate_quarters'].sum())}")
@@ -112,8 +147,7 @@ def test_completeness_gate_runs(frames):
 
     assert not frame.empty, "the completeness gate measured no ticker at all"
     assert (frame["n_quarters"] > 0).all(), "a ticker was measured with zero quarters"
-    print(f"  OK: {len(frame)} tickers measured, "
-          f"{int(frame['n_missing'].sum())} missing quarter(s) found.")
+    print(f"  OK: {len(frame)} tickers measured, " f"{int(frame['n_missing'].sum())} missing quarter(s) found.")
 
 
 # --------------------------------------------------------------------------- #
@@ -139,27 +173,32 @@ def test_sign_conventions_hold(frames):
 
     print("\n=== SANITY CHECK: sign conventions, from stored data ===")
     for dimension, block in result["dimensions"].items():
-        print(f"  {dimension}: capex rows={block['capex_rows']}, "
-              f"positive={block['capex_positive']} (max {block['capex_max']:,.0f}) | "
-              f"fcf rows={block['fcf_rows']}, "
-              f"max |fcf-(ncfo+capex)|={block['fcf_max_abs_residual']:,.4f} "
-              f"at {block['fcf_worst_row']}, violations={block['fcf_violations']}")
+        print(
+            f"  {dimension}: capex rows={block['capex_rows']}, "
+            f"positive={block['capex_positive']} (max {block['capex_max']:,.0f}) | "
+            f"fcf rows={block['fcf_rows']}, "
+            f"max |fcf-(ncfo+capex)|={block['fcf_max_abs_residual']:,.4f} "
+            f"at {block['fcf_worst_row']}, violations={block['fcf_violations']}"
+        )
     print(f"  fcf == ncfo + capex   : {result['fcf_identity_holds']}  <- asserted strictly")
-    print(f"  capex <= 0 throughout : {result['capex_sign_holds']}  "
-          f"({result['capex_positive_total']} of {result['capex_rows_total']} rows positive "
-          f"= {rate:.2%}, on {result['capex_positive_tickers']})")
+    print(
+        f"  capex <= 0 throughout : {result['capex_sign_holds']}  "
+        f"({result['capex_positive_total']} of {result['capex_rows_total']} rows positive "
+        f"= {rate:.2%}, on {result['capex_positive_tickers']})"
+    )
     for row in result["capex_positive_rows"].head(20).itertuples(index=False):
-        print(f"    +capex  {row.ticker:5s} {row.dimension} {row.fiscalperiod} "
-              f"{pd.Timestamp(row.date).date()}  {row.capex:>16,.0f}")
+        print(f"    +capex  {row.ticker:5s} {row.dimension} {row.fiscalperiod} " f"{pd.Timestamp(row.date).date()}  {row.capex:>16,.0f}")
 
-    assert result["fcf_identity_holds"], (
-        "fcf is not ncfo + capex -- `freeCashflow <- fcf` needs a reconstruction after all")
+    assert result["fcf_identity_holds"], "fcf is not ncfo + capex -- `freeCashflow <- fcf` needs a reconstruction after all"
     assert rate < MAX_POSITIVE_CAPEX_RATE, (
         f"positive-capex rows are {rate:.2%} of the table, over the {MAX_POSITIVE_CAPEX_RATE:.0%} "
         f"bound. A guarded sign flip is no longer good enough -- the map needs a real "
-        f"capex mapping, not an exception list")
-    print(f"  OK: fcf identity exact; capex sign violated on {rate:.2%} of rows, which the map "
-          f"handles by NULLing the exceptions rather than flipping them.")
+        f"capex mapping, not an exception list"
+    )
+    print(
+        f"  OK: fcf identity exact; capex sign violated on {rate:.2%} of rows, which the map "
+        f"handles by NULLing the exceptions rather than flipping them."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -175,8 +214,7 @@ def test_zero_rules_cover_every_flagged_field(frames):
     rules = {k: v for k, v in blob.items() if not k.startswith("_")}
     missing = sorted(SHARADAR_ZERO_FILLED_FIELDS - set(rules))
     extra = sorted(set(rules) - SHARADAR_ZERO_FILLED_FIELDS)
-    bad_rule = {k: v.get("rule") for k, v in rules.items()
-                if v.get("rule") not in ("null", "keep")}
+    bad_rule = {k: v.get("rule") for k, v in rules.items() if v.get("rule") not in ("null", "keep")}
     no_reason = sorted(k for k, v in rules.items() if not str(v.get("reason", "")).strip())
     measured = gate_zero_fill(frames.arq, frames.art, frames.sec)
     nulled = sorted(k for k, v in rules.items() if v["rule"] == "null")
@@ -201,7 +239,8 @@ def test_zero_rules_cover_every_flagged_field(frames):
         "the rule file has no `_APPROVED` block. A regenerated PROPOSAL is byte-identical to a "
         "reviewed decision, so without this marker `human-approved` is only a claim in a "
         "docstring -- and the one thing this file exists to guarantee is that somebody looked "
-        "at the `null` rules before they nulled real cells")
+        "at the `null` rules before they nulled real cells"
+    )
     assert not missing, f"the transform would fail loudly on {len(missing)} field(s): {missing}"
     assert not extra, f"the rule file names fields Sharadar does not zero-fill: {extra}"
     assert not bad_rule, f"only 'null' and 'keep' are valid rules, found: {bad_rule}"
@@ -236,18 +275,20 @@ def test_sharesbas_is_split_adjusted_not_point_in_time(frames):
     print(f"  median ratio == 1.0         : {len(agree)}  <- so NOT a share-class problem")
     print(f"  ratio_span >= {SPLIT_RATIO_SPAN}          : {len(split)}  <- SPLIT-ADJUSTED history")
     for row in frame.head(30).itertuples(index=False):
-        print(f"    {row.ticker:5s} n={row.n_dates:3d} median={row.median_ratio:8.4f} "
-              f"span={row.ratio_span:7.4f} sharefactor={row.median_sharefactor:.1f}  "
-              f"{row.verdict}")
+        print(
+            f"    {row.ticker:5s} n={row.n_dates:3d} median={row.median_ratio:8.4f} "
+            f"span={row.ratio_span:7.4f} sharefactor={row.median_sharefactor:.1f}  "
+            f"{row.verdict}"
+        )
     if len(split):
-        print("  => `sharesbas` is NOT point-in-time for "
-              f"{', '.join(split['ticker'].head(10))}. Multiplying it by an as-filed price")
+        print("  => `sharesbas` is NOT point-in-time for " f"{', '.join(split['ticker'].head(10))}. Multiplying it by an as-filed price")
         print("     yields a market cap wrong by the split factor for every pre-split date.")
         print("     `build_ttm` de-adjusts using sharadar_actions, which carries the splits.")
 
     assert len(agree) >= len(frame) - len(split), (
         "a ticker disagrees with the SEC cover-page count for a reason that is NOT a split -- "
-        "that would be the share-class summing question D-decision actually asked about")
+        "that would be the share-class summing question D-decision actually asked about"
+    )
     # `sharefactor` must stay 1.0 on every SINGLE-CLASS name, because that is the assumption
     # the split de-adjustment rests on: if it started carrying the split factor, de-adjusting
     # with `sharadar_actions` on top of it would double-count.
@@ -264,15 +305,15 @@ def test_sharesbas_is_split_adjusted_not_point_in_time(frames):
     off = frame[frame["median_sharefactor"] != 1.0]
     unexpected = sorted(set(off["ticker"]) - set(DUAL_CLASS_SHAREFACTOR_TICKERS))
     if len(off):
-        print(f"  sharefactor != 1.0 on {len(off)} ticker(s): "
-              + ", ".join(f"{r.ticker}={r.median_sharefactor:g}"
-                          for r in off.itertuples(index=False)))
+        print(
+            f"  sharefactor != 1.0 on {len(off)} ticker(s): " + ", ".join(f"{r.ticker}={r.median_sharefactor:g}" for r in off.itertuples(index=False))
+        )
     assert not unexpected, (
         f"`sharefactor` is no longer 1.0 for {unexpected}, which are not known dual-class "
         f"names -- it may now encode the split adjustment, which would change how the "
-        f"de-adjustment has to work (de-adjusting on top of it would double-count)")
-    print(f"  OK: {len(agree)}/{len(frame)} agree on level; {len(split)} carry a split-adjusted "
-          f"history that `build_ttm` de-adjusts.")
+        f"de-adjustment has to work (de-adjusting on top of it would double-count)"
+    )
+    print(f"  OK: {len(agree)}/{len(frame)} agree on level; {len(split)} carry a split-adjusted " f"history that `build_ttm` de-adjusts.")
 
 
 # --------------------------------------------------------------------------- #
@@ -286,8 +327,7 @@ def _cutover_tickers() -> dict[str, str]:
     chain contributes its OLDEST boundary, which is the earliest date the SEC-vs-Sharadar
     join could lose half a history at.
     """
-    return {t: str(r.boundaries[0].date())
-            for t, r in load_registrants(str(CONFIG_DIR)).items() if r.boundaries}
+    return {t: str(r.boundaries[0].date()) for t, r in load_registrants(str(CONFIG_DIR)).items() if r.boundaries}
 
 
 def test_cik_cutover_continuity(context, frames):
@@ -310,20 +350,60 @@ def test_cik_cutover_continuity(context, frames):
     if not testable:
         print("  => D19 IS UNVERIFIED. None of the register's cutover tickers has been")
         print("     extracted yet. This test runs as soon as one of them is stored.")
-        pytest.skip(f"no cutover ticker stored: register={sorted(cutovers)} "
-                    f"vs {len(stored)} stored tickers. D19 UNVERIFIED.")
+        pytest.skip(f"no cutover ticker stored: register={sorted(cutovers)} " f"vs {len(stored)} stored tickers. D19 UNVERIFIED.")
 
-    completeness = gate_completeness(
-        frames.arq[frames.arq["ticker"].isin(testable)]).set_index("ticker")
-    sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of"],
-                             where={"ticker": testable}, optional=True)
+    # ⚠ MEASURED IN A WINDOW AROUND THE CUTOVER, not over the whole stored series, which is
+    # what this test claims to check and what it silently did not. A registrant change can
+    # only lose filings NEAR its own boundary; a hole two decades earlier is vendor sparsity
+    # and says nothing about D19. Measured: BG's cutover is 2023-10-27 and its only gaps are
+    # 2002Q1-Q3 and 2003Q1-Q3, because Sharadar carries a single Q4 ARQ row for each of 2001,
+    # 2002 and 2003 and full quarters only from 2004. Asserting zero gaps ever failed BG on
+    # evidence from 21 years before the event under test.
+    full = gate_completeness(frames.arq[frames.arq["ticker"].isin(testable)]).set_index("ticker")
+    sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of"], where={"ticker": testable}, optional=True)
+    dates = pd.to_datetime(frames.arq["calendardate"], errors="coerce")
     for ticker in testable:
-        row = completeness.loc[ticker]
+        cutover = pd.Timestamp(cutovers[ticker])
+        near = frames.arq[
+            (frames.arq["ticker"] == ticker)
+            & dates.between(cutover - pd.DateOffset(years=CUTOVER_WINDOW_YEARS), cutover + pd.DateOffset(years=CUTOVER_WINDOW_YEARS))
+        ]
+        row, whole = full.loc[ticker], gate_completeness(near).set_index("ticker")
         sec_rows = 0 if sec is None else int((sec["ticker"] == ticker).sum())
-        print(f"    {ticker}: cutover {cutovers[ticker]}, sharadar "
-              f"{row['first_quarter']}..{row['last_quarter']} with {row['n_missing']} gap(s), "
-              f"{sec_rows} SEC row(s)")
-        assert row["n_missing"] == 0, (
-            f"{ticker} has {row['n_missing']} missing quarter(s) around its CIK cutover "
-            f"({cutovers[ticker]}): {row['missing_quarters']}")
-    print(f"  OK: {len(testable)} cutover ticker(s) span their boundary with no gap.")
+        print(
+            f"    {ticker}: cutover {cutovers[ticker]}, sharadar "
+            f"{row['first_quarter']}..{row['last_quarter']} with {row['n_missing']} gap(s) "
+            f"over the whole series, {sec_rows} SEC row(s)"
+        )
+        assert not whole.empty, (
+            f"{ticker} has NO quarter within {CUTOVER_WINDOW_YEARS}y of its cutover "
+            f"{cutovers[ticker]} -- the boundary itself is unobserved, so D19 is untested"
+        )
+        at = whole.loc[ticker]
+        print(
+            f"      +/-{CUTOVER_WINDOW_YEARS}y of the cutover: {at['first_quarter']}.."
+            f"{at['last_quarter']}, {at['n_missing']} gap(s) -> {at['missing_quarters']}"
+        )
+        found = tuple(q.strip() for q in str(at["missing_quarters"]).split(",") if q.strip() and q.strip() != "-")
+        known = CUTOVER_KNOWN_HOLES.get(ticker, ())
+        unexpected = [q for q in found if q not in known]
+        if known:
+            print(f"      KNOWN cutover hole (predecessor CIK, see CUTOVER_KNOWN_HOLES): " f"{list(known)}")
+        assert not unexpected, (
+            f"{ticker} has {len(unexpected)} UNRECORDED missing quarter(s) within "
+            f"{CUTOVER_WINDOW_YEARS}y of its CIK cutover ({cutovers[ticker]}): "
+            f"{unexpected}. THIS is the hole a registrant change causes -- read the "
+            f"predecessor's filings before adding it to CUTOVER_KNOWN_HOLES."
+        )
+        # A recorded hole that has been FILLED must be removed, or the record goes stale the
+        # way every other frozen expectation in this repo has.
+        healed = [q for q in known if q not in found]
+        assert not healed, (
+            f"{ticker}: {healed} is in CUTOVER_KNOWN_HOLES but the quarter is now present. "
+            f"Delete it from the map -- a stale exception hides the next real hole."
+        )
+    print(
+        f"  OK: {len(testable)} cutover ticker(s) span their boundary with no gap "
+        f"inside +/-{CUTOVER_WINDOW_YEARS}y beyond the recorded ones "
+        f"({sum(len(v) for v in CUTOVER_KNOWN_HOLES.values())} quarter(s))."
+    )

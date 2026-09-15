@@ -6,6 +6,7 @@ The last-extracted day is read PER TICKER from the stored `wiki_pageviews` table
 ticker) and only days AFTER it are requested; a ticker current within the publication lag makes
 NO request. Pace defaults to <=1 request/second. Network + article resolution are mocked.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -13,34 +14,38 @@ import types
 
 import pandas as pd
 
-from conftest import FakeStore     # the ONE shared store double
 from src.constants.constants import DATE_FORMAT_COMPACT
 from src.data_extract.utils.behavioral import fetch_wiki_pageviews as wp
+from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
 
 def test_wiki_incremental_reads_last_date_per_ticker(tmp_path, monkeypatch):
     today = pd.Timestamp.today().normalize()
-    aaa_last = today - pd.Timedelta(days=10)     # STALE -> re-extract from aaa_last + 1
-    bbb_last = today - pd.Timedelta(days=1)      # CURRENT (within refetch window) -> skip, no call
+    aaa_last = today - pd.Timedelta(days=10)  # STALE -> re-extract from aaa_last + 1
+    bbb_last = today - pd.Timedelta(days=1)  # CURRENT (within refetch window) -> skip, no call
 
     names = pd.DataFrame({"ticker": ["AAA", "BBB"], "name": ["Aaa Inc", "Bbb Corp"]})
-    existing = pd.DataFrame({"date": [aaa_last, bbb_last], "ticker": ["AAA", "BBB"],
-                             "pageviews": [100.0, 200.0]})
+    existing = pd.DataFrame({"date": [aaa_last, bbb_last], "ticker": ["AAA", "BBB"], "pageviews": [100.0, 200.0]})
 
     store = FakeStore({"sp500_tickers": names, "wiki_pageviews": existing})
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
     ctx = types.SimpleNamespace(
-        store=store, paths={"DATA_STORE": tmp_path},
-        config=types.SimpleNamespace(local=types.SimpleNamespace(
-            filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
-            paths=types.SimpleNamespace(call_transcripts="call_transcripts"))))
+        store=store,
+        paths={"DATA_STORE": tmp_path},
+        config=types.SimpleNamespace(
+            local=types.SimpleNamespace(
+                filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
+                paths=types.SimpleNamespace(call_transcripts="call_transcripts"),
+            )
+        ),
+    )
 
     calls: list[tuple[str, str, str]] = []
 
     def fake_fetch(article, start, end):
         calls.append((article, start, end))
-        return [{"timestamp": start + "00", "views": 5.0}]     # one day at `start`
+        return [{"timestamp": start + "00", "views": 5.0}]  # one day at `start`
 
     monkeypatch.setattr(wp, "_fetch_article", fake_fetch)
     monkeypatch.setattr(wp, "_resolve_wiki_article", lambda name, **k: name.replace(" ", "_"))
@@ -57,13 +62,12 @@ def test_wiki_incremental_reads_last_date_per_ticker(tmp_path, monkeypatch):
 
     print("\n=== SANITY CHECK: Wikipedia incremental per-ticker ===")
     print(f"  stored max: AAA={aaa_last.date()} (stale), BBB={bbb_last.date()} (current)")
-    print(f"  requests: {[(a, s) for a, s, _ in calls]} -> AAA re-extracted from {expected_start} "
-          f"(last+1); BBB skipped (no call)")
-    print(f"  default pause = {inspect.signature(wp.fetch_wiki_pageviews).parameters['pause'].default}s "
-          "-> <=1 req/s. Validated.")
+    print(f"  requests: {[(a, s) for a, s, _ in calls]} -> AAA re-extracted from {expected_start} " f"(last+1); BBB skipped (no call)")
+    print(f"  default pause = {inspect.signature(wp.fetch_wiki_pageviews).parameters['pause'].default}s " "-> <=1 req/s. Validated.")
 
 
 if __name__ == "__main__":
     import tempfile
     from pathlib import Path
+
     test_wiki_incremental_reads_last_date_per_ticker(Path(tempfile.mkdtemp()), None)

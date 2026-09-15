@@ -5,22 +5,29 @@ The DAG ingest step re-runs daily on a full transcript cache; it must SKIP (tick
 in earnings_call_sections instead of re-reading + re-parsing every cached HTML (the "warning then
 nothing happens" stall). Verified with a tiny on-disk cache + a fake store.
 """
+
 from __future__ import annotations
 
 import types
 
 import pandas as pd
 
-from conftest import FakeStore     # the ONE shared store double
 from src.data_extract.utils.behavioral import fetch_earnings_calls as fe
+from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
-_PREP = ("Good morning and welcome to the call. Revenue grew and margins expanded across every "
-         "region this quarter, with strong momentum into the next period. " * 4)
-_QA = ("Analyst: How is demand trending next quarter? CEO: Demand is strong and pricing held up "
-       "well across the whole portfolio and we expect that to continue. " * 4)
-_HTML = (f'<html><body><div class="transcript-content">\nCALL PARTICIPANTS\n'
-         f'Jane Doe -- Chief Executive Officer\nOperator\n{_PREP}\nQuestions and Answers\n{_QA}\n'
-         f'</div></body></html>')
+_PREP = (
+    "Good morning and welcome to the call. Revenue grew and margins expanded across every "
+    "region this quarter, with strong momentum into the next period. " * 4
+)
+_QA = (
+    "Analyst: How is demand trending next quarter? CEO: Demand is strong and pricing held up "
+    "well across the whole portfolio and we expect that to continue. " * 4
+)
+_HTML = (
+    f'<html><body><div class="transcript-content">\nCALL PARTICIPANTS\n'
+    f"Jane Doe -- Chief Executive Officer\nOperator\n{_PREP}\nQuestions and Answers\n{_QA}\n"
+    f"</div></body></html>"
+)
 
 
 def _seed_cache(tmp_path, pairs):
@@ -33,16 +40,20 @@ def _seed_cache(tmp_path, pairs):
 
 
 def _ctx(tmp_path, existing_keys):
-    existing = pd.DataFrame(existing_keys, columns=["ticker", "quarter"]) if existing_keys \
-        else pd.DataFrame(columns=["ticker", "quarter"])
+    existing = pd.DataFrame(existing_keys, columns=["ticker", "quarter"]) if existing_keys else pd.DataFrame(columns=["ticker", "quarter"])
     store = FakeStore({"earnings_call_sections": existing} if existing_keys else {})
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
     return types.SimpleNamespace(
-        store=store, paths={"DATA_STORE": tmp_path},
-        config=types.SimpleNamespace(local=types.SimpleNamespace(
-            filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
-            paths=types.SimpleNamespace(call_transcripts="call_transcripts"))))
+        store=store,
+        paths={"DATA_STORE": tmp_path},
+        config=types.SimpleNamespace(
+            local=types.SimpleNamespace(
+                filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
+                paths=types.SimpleNamespace(call_transcripts="call_transcripts"),
+            )
+        ),
+    )
 
 
 def test_ingest_skips_already_ingested(tmp_path):
@@ -77,4 +88,5 @@ def test_ingest_skips_already_ingested(tmp_path):
 if __name__ == "__main__":
     import tempfile
     from pathlib import Path
+
     test_ingest_skips_already_ingested(Path(tempfile.mkdtemp()))

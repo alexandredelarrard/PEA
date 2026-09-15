@@ -109,6 +109,7 @@ from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_t
 from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings as _clean
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.institutionals.split_basis import future_split_factor
+from src.data_aggregate.utils.institutionals.value_basis import log_register, repair_value_basis
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 
@@ -518,8 +519,18 @@ def build_institutional_feature_panel(
         logger.warning("No `prices_splits` -> 13F share changes are NOT split-restated; a "
                        "20-for-1 split will read as +1,900%% accumulation.")
 
-    # clean and report holdings 
+    # clean and report holdings
     holdings = clean_holdings(holdings)
+    # ⚠ THE UNIT REPAIR RUNS BEFORE ANYTHING READS A VALUE, and that ordering is the whole
+    # point: `_report_late_filings` reports a share OF VALUE, and `_quarter_features` sums
+    # value into `ic_inst_concentration`, `ic_inst_net_options_ratio`, `ic_inst_value_to_mcap`
+    # and `ic_inst_flow_to_mcap`. Measured 2026-09-14 on the repaired table, 1.074% of rows
+    # (2,458 filings in the divide-by-1000 band) carry 84.08% of the table's filed dollars,
+    # against 15.22% for the 95.57% of rows that are already correct. Every value-weighted
+    # statement made before this call is a statement about those 2,458 filings.
+    value_before = pd.to_numeric(holdings.get("value_usd"), errors="coerce").sum()
+    holdings, register = repair_value_basis(holdings, stock_close)
+    log_register(register, float(value_before), logger)
     _report_late_filings(holdings)
 
     # build features

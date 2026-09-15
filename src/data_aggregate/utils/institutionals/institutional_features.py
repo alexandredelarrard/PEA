@@ -21,16 +21,24 @@ missed; it cannot be applied to a 3,000-filer aggregate without re-aggregating t
 universe once per date, because the honest per-filer version makes a count visible in as many
 instalments as it has contributors.
 
-MEASURED RESIDUAL (2026-09-12 full build, and `_report_late_filings` re-measures it every run):
-**2,969,232 of 22,335,985 (ticker, manager, quarter) rows -- 13.3% -- were filed AFTER
-period+45d, and they carry 19.3% of 13F value.** So roughly a fifth of the dollars behind these
-eleven features become visible on the statutory date rather than on the date they were actually
-filed. That is the size of the compromise, stated rather than implied, and it is the same shape
-of finding Phase 2.2 measured for the elite family (16.5% of filings / 36.7% of value) and there
-chose to FIX, because 87 managers can be put on an availability grid and 3,000 filers cannot be
-cheaply. Removing it here means emitting the aggregate per availability date over the filings
-public at that date -- a real change, not a parameter -- and it is recorded as open work rather
-than pretended away.
+MEASURED RESIDUAL (2026-09-14 full read, and `_report_late_filings` re-measures it every run):
+**2,027,808 of 22,595,891 (ticker, manager, quarter) rows -- 8.97% -- were filed AFTER
+period+45d, and they carry 11.53% of repaired 13F value.** So roughly an eighth of the dollars
+behind these eleven features become visible on the statutory date rather than on the date they
+were actually filed. That is the size of the compromise, stated rather than implied, and it is
+the same shape of finding Phase 2.2 measured for the elite family (16.5% of filings / 36.7% of
+value) and there chose to FIX, because 87 managers can be put on an availability grid and 3,000
+filers cannot be cheaply. Removing it here means emitting the aggregate per availability date
+over the filings public at that date -- a real change, not a parameter -- and it is recorded as
+open work rather than pretended away.
+
+⚠ BOTH FIGURES ARE MEASURED ON THE BANDED FRAME AND THE RESIDUAL IS NOW BOUNDED. The
+`[-45, +60]` filing band (`F13_MAX_EARLY_DAYS` / `F13_MAX_LATE_DAYS`, applied in
+`clean_holdings`) drops every row filed more than 60 days past the deadline, so the worst
+back-dating this compromise can now do is 60 days rather than the 4,000 the table used to
+carry. It is also why the residual fell: the share of VALUE back-dated went 19.3% -> 11.53%,
+and the two figures are not comparable in any other respect, because the value leg is also now
+unit-repaired (see `value_basis`) and the old one was not.
 
 SPLIT RESTATEMENT (registry #3/#6, and value-sanity V4). 13F share counts are AS FILED, so
 `Sigma shares(q) / Sigma shares(q-1)` reads GOOGL's 2022 20-for-1 split as +1,900% of
@@ -42,26 +50,37 @@ restated ticker-quarters is logged (V5).
 
 D28 -- `ic_inst_holders` IS A SHARE, NOT A COUNT: `holders(q) / n_filers(q)`, the filer count
 being every distinct `cik` in the table that quarter. The raw count jumps 41 -> 556 per ticker
-at 2013-06-30 on a fetch artifact; the share does not, and the same normalization is what keeps
-the two broken quarters below from moving it. `ic_inst_breadth_chg` therefore differences the
-SHARE, not the count.
+at 2013-06-30 on a fetch artifact; the share does not, and the same normalization is what held
+the two interrupted quarters below in place before they were refilled. `ic_inst_breadth_chg`
+therefore differences the SHARE, not the count.
 
-D16 / D17 -- THE COVERAGE GUARDS, AND BOTH FIRE ON LIVE DATA. Measured distinct filers per
-quarter on `sec13f_hr` **after the step's universe cut** (2026-09-12 build) -- that scope is the
+D16 / D17 -- THE COVERAGE GUARDS. Measured distinct filers per quarter on `sec13f_hr` **after
+the step's universe cut and the `[-45, +60]` filing band** (2026-09-14) -- that scope is the
 point, because this is the same population the D28 denominator counts, and a filer whose only
-holdings are off-universe names belongs in neither:
+holdings are off-universe names, or whose filing arrived two years late, belongs in neither:
 
     period       filers    what it is
-    2013-03-31      192    the pre-break regime
-    2013-06-30    3,045    +1,486%: the coverage REGIME START (a fetch artifact, not a market
+    2013-03-31       63    the pre-break regime
+    2013-06-30    2,938    +4,563%: the coverage REGIME START (a fetch artifact, not a market
                            event) -> `INST_LEVEL_FLOOR_PERIOD`, and its deltas have no
                            comparable predecessor -> `INST_DELTA_FLOOR_PERIOD` is the next one
-    2023-09-30    6,199
-    2023-12-31      463    -92.5%: a HOLE. Not a regime change -- 2024-03-31 returns to 6,648
-    2025-03-31    7,230
-    2025-06-30      254    -96.5%: the second hole; 2025-09-30 returns to 7,286
+    2013-09-30    2,966    and from here the axis is monotone-ish and healthy ...
+    2023-09-30    5,953
+    2023-12-31    6,354    ... including the two quarters that used to be 13x and 29x short
+    2024-03-31    6,361
+    2025-03-31    7,099
+    2025-06-30    7,180    the second one
+    2026-06-30    7,898
 
-so the guard has two halves, because a hole and a regime start need different treatment:
+⚠ THE TWO HOLES ARE GONE, AND THAT IS A FACT ABOUT THE TABLE, NOT ABOUT THIS GUARD. 2023-12-31
+held 463 filers and 2025-06-30 held 254 until the 2026-09-14 window backfill refilled both
+(`thirteen-f --filing-window`, which bypasses the watermark in both directions -- a gap BEHIND
+`max(filing_date) - lookback_days` is unreachable by the incremental path, which is why they
+survived). The guard is kept at full strength anyway: it costs nothing when it finds nothing,
+and `validate institutionals` V13a now scores the same axis on the raw table so the next
+interrupted fetch is caught rather than discovered.
+
+The guard has two halves, because a hole and a regime start need different treatment:
 
   * a HOLE (a quarter whose filer count is under half of BOTH neighbours) has every feature
     it can corrupt SUPPRESSED, level and delta alike -- extending D17, which as written covers
@@ -75,18 +94,19 @@ so the guard has two halves, because a hole and a regime start need different tr
     DELTAS, which is D17 exactly. This catches the regime start at 2013-06-30 and the two
     RECOVERY quarters, whose levels are correct but whose predecessor is a hole.
 
-⚠ THE BREAK GUARD FIRES ON ELEVEN QUARTERS, NOT THREE, and the count matters because a reader
-who expects three will treat the other eight as a bug. Measured on the same build:
+⚠ THE BREAK GUARD NOW FIRES ON EXACTLY ONE QUARTER -- 2013-06-30 (2,938 filers), the regime
+start -- AND NULLS NOTHING D16 HAD NOT. It used to fire on eleven: the two holes, their two
+recovery quarters, and a seven-quarter pre-2013 sparse tail running back to 2002-03-31 (2
+filers). The refill removed the first four and the band removed the tail, which is the more
+interesting half of the finding:
 
-    2002-03-31 (2 filers)   2009-12-31 (17)    2013-06-30 (3,045)   2025-06-30 (254)
-    2006-12-31 (5)          2012-12-31 (107)   2023-12-31 (463)     2025-09-30 (7,286)
-    2008-12-31 (9)          2013-03-31 (192)   2024-03-31 (6,648)
-
-SEVEN of them sit at or before `INST_DELTA_FLOOR_PERIOD` and are already NaN from D16, so the
-guard removes something D16 had not on exactly FOUR: the two holes and the two recoveries. The
-pre-2013 firings are the sparse tail of the same fetch artifact -- a quarter with 2 filers in
-it -- and cost nothing, because a guard that only fires where it is load-bearing is a guard
-tuned to the data it was measured on.
+⚠ EVERY PRE-2013 ROW IN THIS TABLE WAS FILED LATE, AND THAT IS WHY THE PRE-FLOOR CUT IS SAFE.
+`min(filing_date)` on the whole table is **2013-05-20** -- nothing was filed before EDGAR's
+13F-HR full-text era, so the 65,634 rows carrying a pre-2013 `period` are back-filed archive
+entries, every one of them more than 60 days past its own deadline. The band removes them all
+on its own, and after it the earliest surviving period is 2013-03-31. So `INST_LEVEL_FLOOR_PERIOD`
+is not just a threshold somebody chose from a filer-count jump: it is where the table's
+point-in-time history actually begins, arrived at from a second, independent direction.
 
 Both lists are logged with their measured filer counts, never applied silently.
 
@@ -98,6 +118,7 @@ reads that as a flow of millions of percent -- `f_ic_inst_shares_chg` peaked at 
 (CCI, 2014-12-31). `MIN_PRIOR_HOLDERS` is the per-ticker analogue, applied to the same column set
 as D17's break guard; its constant carries the measured band table it was sized on.
 """
+
 from __future__ import annotations
 
 import logging
@@ -105,18 +126,19 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
-from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings as _clean
+from src.constants.constants import F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS, SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings as _clean
 from src.data_aggregate.utils.institutionals.split_basis import future_split_factor
 from src.data_aggregate.utils.institutionals.value_basis import log_register, repair_value_basis
-from src.constants.constants import SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 
 logger = logging.getLogger(__name__)
 
 #: D16. The first period whose all-filer coverage describes the market rather than the fetch
-#: (measured above: 192 -> 3,046 filers). Every LEVEL is NaN before its availability date.
+#: (measured above: 63 -> 2,938 in-universe filers, post-band). Every LEVEL is NaN before its
+#: availability date, and since step 2.4 those periods are not computed at all.
 INST_LEVEL_FLOOR_PERIOD = pd.Timestamp("2013-06-30")
 
 #: D16. The first period whose PREDECESSOR is also post-break, so a QoQ delta is meaningful.
@@ -139,26 +161,34 @@ COVERAGE_BREAK_DEFAULT = 0.50
 #: then 308,379,140 held by 452).
 #:
 #: 100 is where the measured cliff is. Distribution of the surviving delta by the prior
-#: quarter's filer count, over the 22,070 (ticker, quarter) pairs that already clear D16 + D17
-#: (measured 2026-09-12 on the in-universe `sec13f_hr`):
+#: quarter's filer count, over the 22,917 (ticker, quarter) pairs that already clear D16 + D17
+#: (re-measured 2026-09-14 on the in-universe `sec13f_hr`, after the refill, the `[-45, +60]`
+#: band and the value-unit repair). The values are `shares / prev_shares - 1` as a RATIO, so
+#: 2.52 is +252% and 5,326,051 is the CCI-shaped artifact, not a percentage:
 #:
-#:     prior filers        n     p50      p95         p99          max
-#:     1                 620   0.000  6,471.1   411,069.3   34,264,347.9
-#:     2                 212   0.000  9,170.8   145,148.6      357,122.9
-#:     3                 115   0.006  9,774.8    70,960.7      313,086.3
-#:     4-5                85   0.052 23,140.2    81,427.8      168,347.9
-#:     6-10               45   0.189 23,495.3    67,808.5      101,091.1
-#:     11-20              12  50.189  1,569.2     1,913.0        1,998.9
-#:     21-50              19  24.280    183.6       207.3          213.2
-#:     51-100             27   0.276     74.8       153.2          176.5
-#:     101-200           257   0.012      0.6        34.1           89.9
-#:     >200           20,678  -0.001      0.1         0.2           46.2
+#:     prior filers        n       p50         p95         p99          max
+#:     1                  33     2.523 2,709,575.3 4,861,247.1  5,326,051.5
+#:     2                   6   545.049    78,362.1    96,689.7    101,271.6
+#:     3                   1 1,211.432     1,211.4     1,211.4      1,211.4
+#:     4-5                 3    84.639       112.7       115.2        115.9
+#:     6-10                7   225.522     5,979.3     7,262.9      7,583.8
+#:     11-20               7    53.571       880.3     1,136.5      1,200.6
+#:     21-50              17    35.242       259.1       283.4        289.5
+#:     51-100             26     0.240        41.7        49.8         51.3
+#:     101-200           303     0.012         0.5         4.2         83.9
+#:     >200           22,514     0.002         0.1         0.2         17.8
 #:
-#: A MEDIAN of +2,400% (the 11-20 band) is not a flow. The >200 band is the healthy one and
-#: 93.7% of the population sits in it. The marginal cost of the floor is tiny and its marginal
-#: benefit is not: raising it from 10 to 100 nulls **58 more rows (0.26%)** and takes the
-#: surviving maximum from 1,998.9 to 89.9. At 100 the guard nulls 1,133 of 22,070 deltas
-#: (5.13%), against 2.81% for a floor of 2 that leaves a 357,122x survivor standing.
+#: A MEDIAN of +54,504% (the 2-filer band) is not a flow. The >200 band is the healthy one and
+#: 98.2% of the population sits in it.
+#:
+#: ⚠ THE CLIFF IS IN THE SAME PLACE IT WAS, AND THE GUARD IS NOW TWELVE TIMES CHEAPER. Raising
+#: the floor from 10 to 100 still takes the surviving maximum from 2,235.6 to 83.9 (it was
+#: 1,998.9 -> 89.9 on the 2026-09-12 population), and a floor of 2 still leaves a 101,271x
+#: survivor standing. What changed is the COST: at 100 the guard now nulls **100 of 22,917
+#: deltas (0.44%)**, against 1,133 of 22,070 (5.13%) before, because the band filter deletes
+#: the late-filed rows that were most of what made a name look newly discovered. The constant
+#: is NOT re-tuned on this measurement (out of scope, README) -- it is restated because the
+#: population under it changed, and 100 is still where the cliff is.
 #:
 #: NOT IN CONFIG, deliberately, and for the same reason `INST_LEVEL_FLOOR_PERIOD` and
 #: `OWNERSHIP_CEILING` are not: it is a measured fact about when 13F coverage of a name begins,
@@ -175,8 +205,12 @@ MIN_PRIOR_HOLDERS = 100
 #: break quarter (D17). `new_buyer_ratio` / `exit_ratio` / `cluster_buying` are all statements
 #: about the PREVIOUS quarter's filer set, so they belong here with the arithmetic differences.
 DELTA_FEATURES: tuple[str, ...] = (
-    "ic_inst_breadth_chg", "ic_inst_shares_chg", "ic_inst_new_buyer_ratio",
-    "ic_inst_exit_ratio", "ic_inst_cluster_buying", "ic_inst_flow_to_mcap",
+    "ic_inst_breadth_chg",
+    "ic_inst_shares_chg",
+    "ic_inst_new_buyer_ratio",
+    "ic_inst_exit_ratio",
+    "ic_inst_cluster_buying",
+    "ic_inst_flow_to_mcap",
 )
 
 #: `ic_inst_ownership_pct` above this many times shares outstanding is a denominator defect,
@@ -187,8 +221,11 @@ OWNERSHIP_CEILING = 2.0
 
 #: The level features. Nulled before `INST_LEVEL_FLOOR_PERIOD` (D16).
 LEVEL_FEATURES: tuple[str, ...] = (
-    "ic_inst_holders", "ic_inst_concentration", "ic_inst_net_options_ratio",
-    "ic_inst_ownership_pct", "ic_inst_value_to_mcap",
+    "ic_inst_holders",
+    "ic_inst_concentration",
+    "ic_inst_net_options_ratio",
+    "ic_inst_ownership_pct",
+    "ic_inst_value_to_mcap",
 )
 
 #: Emission (D27, registry section 0.10), with the two corrections section 0.10a MEASURED on this
@@ -199,17 +236,17 @@ LEVEL_FEATURES: tuple[str, ...] = (
 #: `raw+peers` assignment is confirmed -- institutional ownership is the textbook sector-normed
 #: rate, where an absolute 40% means nothing without the sector's norm.
 EMISSION: dict[str, str] = {
-    "ic_inst_holders":           "raw",       # D28 share of the quarter's filers, in [0, 1]
-    "ic_inst_breadth_chg":       "raw",       # a difference of that share
-    "ic_inst_shares_chg":        "raw+xs",    # unbounded growth rate, distribution drifts
-    "ic_inst_new_buyer_ratio":   "raw",       # bounded [0, 1]
-    "ic_inst_exit_ratio":        "raw",       # bounded [0, 1]
-    "ic_inst_cluster_buying":    "raw",       # bounded [-1, 1]
-    "ic_inst_concentration":     "raw+xs",    # Herfindahl; measured rho 0.556
-    "ic_inst_net_options_ratio": "raw",       # bounded [-1, 1]
-    "ic_inst_ownership_pct":     "raw+peers",  # sector-normed rate; measured rho 0.930
-    "ic_inst_value_to_mcap":     "raw+xs",    # measured rho 0.607
-    "ic_inst_flow_to_mcap":      "raw+xs",    # mcap-scaled dollar flow, skewed and drifting
+    "ic_inst_holders": "raw",  # D28 share of the quarter's filers, in [0, 1]
+    "ic_inst_breadth_chg": "raw",  # a difference of that share
+    "ic_inst_shares_chg": "raw+xs",  # unbounded growth rate, distribution drifts
+    "ic_inst_new_buyer_ratio": "raw",  # bounded [0, 1]
+    "ic_inst_exit_ratio": "raw",  # bounded [0, 1]
+    "ic_inst_cluster_buying": "raw",  # bounded [-1, 1]
+    "ic_inst_concentration": "raw+xs",  # Herfindahl; measured rho 0.556
+    "ic_inst_net_options_ratio": "raw",  # bounded [-1, 1]
+    "ic_inst_ownership_pct": "raw+peers",  # sector-normed rate; measured rho 0.930
+    "ic_inst_value_to_mcap": "raw+xs",  # measured rho 0.607
+    "ic_inst_flow_to_mcap": "raw+xs",  # mcap-scaled dollar flow, skewed and drifting
 }
 
 
@@ -241,7 +278,7 @@ def _split_factors(h: pd.DataFrame, splits: pd.DataFrame | None) -> dict:
     pairs = h[["ticker", "period"]].drop_duplicates().sort_values(["ticker", "period"])
     if pairs.empty:
         return {}
-    
+
     pairs["prev_period"] = pairs.groupby("ticker")["period"].shift(1)
     pairs = pairs.dropna(subset=["prev_period"])
     if pairs.empty:
@@ -251,9 +288,10 @@ def _split_factors(h: pd.DataFrame, splits: pd.DataFrame | None) -> dict:
     factor = np.divide(f_prev, f_now, out=np.ones_like(f_prev), where=f_now > 0)
     n = int((np.abs(factor - 1.0) > 1e-9).sum())
     if n:
-        logger.info("13F split restatement: %s of %s (ticker, quarter) pairs had the prior "
-                    "quarter's share count rebased (V5 trigger count)", n, len(pairs))
-    return {(t, p): f for t, p, f in zip(pairs["ticker"], pairs["period"], factor)}
+        logger.info(
+            "13F split restatement: %s of %s (ticker, quarter) pairs had the prior " "quarter's share count rebased (V5 trigger count)", n, len(pairs)
+        )
+    return {(t, p): f for t, p, f in zip(pairs["ticker"], pairs["period"], factor, strict=False)}
 
 
 def _capped_ownership(ratio: pd.DataFrame) -> pd.DataFrame:
@@ -265,9 +303,14 @@ def _capped_ownership(ratio: pd.DataFrame) -> pd.DataFrame:
     and data vendors publish such figures. Measured on the 2026-09-12 build: 24,347 of
     1,516,801 cells (1.6%) above 1.05 and 3,623 above 1.30, which is that phenomenon.
 
-    What is NOT credible is the extreme tail: 231 cells above 2.0, topping out at **9.68**
-    (DUK), and **all twelve** of the tickers involved -- DUK, NVDA, SMCI, TSCO, AMCR, ANET,
-    PANW, DD, TPL, APH, MNST, ETR -- have splits in `prices_splits`. That is the recorded
+    What is NOT credible is the extreme tail: **169 of 1,449,884 cells (0.0117%) above 2.0
+    across 9 tickers, topping out at 9.676 (DUK)** -- re-measured 2026-09-14 after the refill,
+    the band and the value-unit repair. ⚠ THE MAXIMUM DID NOT MOVE, AND THAT IS THE POINT: the
+    1000x defect `value_basis` repairs is in `value_usd`, and this ratio is built from `shares`,
+    which that repair never touches. A number that survives a repair of the wrong column
+    unchanged is evidence the defect is somewhere else -- here, in the denominator. The tickers
+    involved -- DUK, NVDA, SMCI, TSCO, AMCR, ANET and the rest -- all have splits in
+    `prices_splits`. That is the recorded
     `sharesOutstandingPit` split defect (right on 40 of 49 sampled names, out by up to 4x on
     multi-split ones, and rescaling by the split factor makes it WORSE) arriving through the
     denominator. It is a fundamentals-layer defect, not one this module can fix.
@@ -280,12 +323,16 @@ def _capped_ownership(ratio: pd.DataFrame) -> pd.DataFrame:
     over = ratio.gt(OWNERSHIP_CEILING)
     n = int(over.to_numpy().sum())
     if n:
-        logger.info("ownership guard: %s of %s non-null `ic_inst_ownership_pct` cells (%.3f%%) "
-                    "above %.1fx shares outstanding -> nulled (the `sharesOutstandingPit` split "
-                    "defect, not a holder); max seen %.2f",
-                    f"{n:,}", f"{int(ratio.notna().to_numpy().sum()):,}",
-                    100.0 * n / max(1, int(ratio.notna().to_numpy().sum())),
-                    OWNERSHIP_CEILING, float(np.nanmax(ratio.to_numpy(dtype='float64'))))
+        logger.info(
+            "ownership guard: %s of %s non-null `ic_inst_ownership_pct` cells (%.3f%%) "
+            "above %.1fx shares outstanding -> nulled (the `sharesOutstandingPit` split "
+            "defect, not a holder); max seen %.2f",
+            f"{n:,}",
+            f"{int(ratio.notna().to_numpy().sum()):,}",
+            100.0 * n / max(1, int(ratio.notna().to_numpy().sum())),
+            OWNERSHIP_CEILING,
+            float(np.nanmax(ratio.to_numpy(dtype="float64"))),
+        )
     return ratio.mask(over)
 
 
@@ -306,9 +353,11 @@ def _report_late_filings(h: pd.DataFrame) -> None:
     if not len(h):
         return
     if "filing_date" not in h.columns:
-        logger.info("13F deadline stamp: no `filing_date` column -> the late-filing residual "
-                    "cannot be measured on this read; the period+%sd stamp is unaffected.",
-                    SEC_13F_FILING_LAG_DAYS)
+        logger.info(
+            "13F deadline stamp: no `filing_date` column -> the late-filing residual "
+            "cannot be measured on this read; the period+%sd stamp is unaffected.",
+            SEC_13F_FILING_LAG_DAYS,
+        )
         return
 
     deadline = h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
@@ -316,14 +365,18 @@ def _report_late_filings(h: pd.DataFrame) -> None:
 
     value = h.get("value_usd")
     total = float(value.sum()) if value is not None else 0.0
-    logger.info("13F deadline stamp: %s of %s (ticker, manager, quarter) rows filed AFTER "
-                "period+%sd (%.1f%%), carrying %.1f%% of 13F value; those holdings are visible "
-                "from the deadline rather than from their filing date (documented departure "
-                "from registry 0.5, deliberate for a multi-thousand-filer aggregate)",
-                f"{int(late.sum()):,}", f"{len(h):,}", SEC_13F_FILING_LAG_DAYS,
-                100.0 * float(late.mean()),
-                100.0 * float(value[late].sum()) / total
-                if (total > 0 and value is not None) else 0.0)
+    logger.info(
+        "13F deadline stamp: %s of %s (ticker, manager, quarter) rows filed AFTER "
+        "period+%sd (%.1f%%), carrying %.1f%% of 13F value; those holdings are visible "
+        "from the deadline rather than from their filing date (documented departure "
+        "from registry 0.5, deliberate for a multi-thousand-filer aggregate)",
+        f"{int(late.sum()):,}",
+        f"{len(h):,}",
+        SEC_13F_FILING_LAG_DAYS,
+        100.0 * float(late.mean()),
+        100.0 * float(value[late].sum()) / total if (total > 0 and value is not None) else 0.0,
+    )
+
 
 def clean_holdings(holdings: pd.DataFrame) -> pd.DataFrame:
     """`sec13f_hr` at its own grain: one row per (ticker, manager, quarter).
@@ -332,32 +385,57 @@ def clean_holdings(holdings: pd.DataFrame) -> pd.DataFrame:
     tables now go through. The only thing that is specific here is the KEY: this table has a
     `ticker` column and the elite one does not, and `position_type` is already resolved at
     extraction so there is nothing to filter, and `cik` arrives padded.
-    """
-    return _clean(holdings, key=("ticker", "cik", "period"))
 
-def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
-                      break_pct: float = COVERAGE_BREAK_DEFAULT,
-                      min_prior_holders: int = MIN_PRIOR_HOLDERS) -> pd.DataFrame:
+    ⚠ AND THE FILING BAND, which this table opts INTO and the elite one does not. A holding
+    filed a year after the quarter it describes is a real position that nobody could have
+    known about, and the deadline stamp above turns it into one that everybody could have --
+    so it is dropped rather than back-dated. Measured 2026-09-14: 1,050,431 of 23,801,899 rows
+    (4.413%) across 2,679 filers, carrying 1.052% of as-filed value; the constants carry the
+    full lateness table. The elite table abstains pending its own measurement.
+    """
+    return _clean(holdings, key=("ticker", "cik", "period"), filing_band=(F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS))
+
+
+def _quarter_features(
+    h: pd.DataFrame, splits: pd.DataFrame | None = None, break_pct: float = COVERAGE_BREAK_DEFAULT, min_prior_holders: int = MIN_PRIOR_HOLDERS
+) -> pd.DataFrame:
     """Manager-grain 13F -> one row per (ticker, quarter) with the eleven features, stamped
     `as_of = period + 45 days` (the leak-free availability date)."""
 
-    # TODO: verify as_of = filing_date is better than the 45 days rule applied -> real filling date 
-    # TODO: check the 2 holes : '2023-12-31', '2025-06-30'. 
-    # TODO: clean trade values lower than 1000 ?? larger than 4.e+11 -> seems crazy -> verify who and why
-    # TODO: keep (h['deadline']- h['filing_date']).dt.days between(-30,50) -> otherwise do not know when it was done ... To verify
-    # TODO: Remove the sec 13 hr data before 2013 cut date, its noise and wrong, do it before looping, save compute and time
+    # TODO: verify as_of = filing_date is better than the 45 days rule applied -> real filling date
 
     holes, breaks, coverage = _coverage_periods(h, break_pct)
     if holes or breaks:
-        logger.info("13F coverage guard: %s hole quarter(s) %s (every feature nulled), "
-                    "%s break quarter(s) %s (deltas nulled). Filer counts: %s",
-                    len(holes), sorted(str(p.date()) for p in holes),
-                    len(breaks), sorted(str(p.date()) for p in breaks),
-                    {str(p.date()): int(coverage.loc[p, "filers"])
-                     for p in sorted(holes | breaks)})
-        
+        logger.info(
+            "13F coverage guard: %s hole quarter(s) %s (every feature nulled), " "%s break quarter(s) %s (deltas nulled). Filer counts: %s",
+            len(holes),
+            sorted(str(p.date()) for p in holes),
+            len(breaks),
+            sorted(str(p.date()) for p in breaks),
+            {str(p.date()): int(coverage.loc[p, "filers"]) for p in sorted(holes | breaks)},
+        )
+
     # D28: the denominator that turns the holder COUNT into a breadth share.
     n_filers = coverage["filers"]
+
+    # ⚠ THE PRE-FLOOR CUT RUNS AFTER `_coverage_periods`, NEVER BEFORE IT. The guard is a
+    # statement about the TABLE's coverage, and it is what identifies 2013-06-30 as the regime
+    # start in the first place; cutting first would delete the evidence for the floor and then
+    # report a clean axis. Cutting here instead is provably free: every surviving period keeps
+    # its own `n_filers`, and `isin(holes | breaks)` below simply matches nothing for the
+    # periods that are gone.
+    #
+    # The reason for the cut is NOT speed -- measured 2026-09-14, pre-floor is 65,634 of
+    # 23,801,899 rows (0.28%) and the saving is negligible. It is that D16 nulls every feature
+    # computed from those quarters a hundred lines below, so the loop was doing work whose
+    # output is discarded, and a reader had no way to tell that from the code.
+    #
+    # ⚠ IT DOES NOT MOVE THE FIRST SURVIVING QUARTER. `prev` is carried across periods, so
+    # 2013-06-30 loses the 2013-03-31 predecessor its deltas were differenced against -- but
+    # `INST_DELTA_FLOOR_PERIOD` (2013-09-30) already nulls exactly those deltas, and
+    # 2013-09-30's own predecessor (2013-06-30) survives the cut intact. Asserted in
+    # `test_the_pre_floor_cut_leaves_the_delta_floor_onward_identical`, not assumed.
+    h = h[h["period"] >= INST_LEVEL_FLOOR_PERIOD]
     factors = _split_factors(h, splits)
 
     rows = []
@@ -367,7 +445,7 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
         prev_period = None
         for p in sorted(tdf["period"].unique()):
             cur_rows = tdf[tdf["period"] == p]
-            cur = dict(zip(cur_rows["cik"], cur_rows["shares"]))
+            cur = dict(zip(cur_rows["cik"], cur_rows["shares"], strict=False))
             cur_ciks, prev_ciks = set(cur), set(prev)
             holders = len(cur_ciks)
             n_prev = len(prev_ciks)
@@ -384,7 +462,7 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
             inst_value = float(cur_rows["value_usd"].sum())
             call_v = float(cur_rows["call_value"].sum())
             put_v = float(cur_rows["put_value"].sum())
-            total_invested = inst_value + call_v + put_v      # long equity + option exposure
+            total_invested = inst_value + call_v + put_v  # long equity + option exposure
             opt_ratio = ((call_v - put_v) / total_invested) if total_invested > 0 else np.nan
 
             # crowding: Herfindahl of managers' VALUE shares (high = few dominant holders)
@@ -393,38 +471,31 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
             hhi = float(((mv / tot_mv) ** 2).sum()) if tot_mv > 0 else np.nan
             pool = float(n_filers.get(p, np.nan))
             share = holders / pool if pool > 0 else np.nan
-            prev_pool = float(n_filers.get(prev_period, np.nan)) if prev_period is not None \
-                else np.nan
+            prev_pool = float(n_filers.get(prev_period, np.nan)) if prev_period is not None else np.nan
             prev_share = n_prev / prev_pool if (has_prev and prev_pool > 0) else np.nan
 
-            rows.append({
-                "ticker": ticker,
-                "period": pd.Timestamp(p),
-                "as_of": pd.Timestamp(p) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS), # 
-
-                # Carried only so the per-ticker coverage-onset guard can be applied
-                # vectorised below; dropped before the frame is returned.
-                "_prev_holders": float(n_prev) if has_prev else np.nan,
-                "ic_inst_holders": share,
-                "inst_shares": inst_shares,
-                "inst_value": inst_value,
-
-                # net QoQ dollar flow (long value); NaN on the first observed quarter
-                "inst_value_flow": (inst_value - prev_value)
-                                   if (has_prev and np.isfinite(prev_value)) else np.nan,
-                "ic_inst_breadth_chg": (share - prev_share)
-                                   if np.isfinite(prev_share) else np.nan,
-                "ic_inst_shares_chg": (inst_shares / prev_shares - 1.0)
-                                   if (has_prev and prev_shares > 0) else np.nan,
-                "ic_inst_new_buyer_ratio": (len(cur_ciks - prev_ciks) / holders)
-                                   if (has_prev and holders > 0) else np.nan,
-                "ic_inst_exit_ratio": (len(prev_ciks - cur_ciks) / n_prev)
-                                   if has_prev else np.nan,
-                "ic_inst_cluster_buying": ((inc - dec) / holders)
-                                   if (has_prev and holders > 0) else np.nan,
-                "ic_inst_net_options_ratio": opt_ratio,
-                "ic_inst_concentration": hhi,
-            })
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "period": pd.Timestamp(p),
+                    "as_of": pd.Timestamp(p) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS),  #
+                    # Carried only so the per-ticker coverage-onset guard can be applied
+                    # vectorised below; dropped before the frame is returned.
+                    "_prev_holders": float(n_prev) if has_prev else np.nan,
+                    "ic_inst_holders": share,
+                    "inst_shares": inst_shares,
+                    "inst_value": inst_value,
+                    # net QoQ dollar flow (long value); NaN on the first observed quarter
+                    "inst_value_flow": (inst_value - prev_value) if (has_prev and np.isfinite(prev_value)) else np.nan,
+                    "ic_inst_breadth_chg": (share - prev_share) if np.isfinite(prev_share) else np.nan,
+                    "ic_inst_shares_chg": (inst_shares / prev_shares - 1.0) if (has_prev and prev_shares > 0) else np.nan,
+                    "ic_inst_new_buyer_ratio": (len(cur_ciks - prev_ciks) / holders) if (has_prev and holders > 0) else np.nan,
+                    "ic_inst_exit_ratio": (len(prev_ciks - cur_ciks) / n_prev) if has_prev else np.nan,
+                    "ic_inst_cluster_buying": ((inc - dec) / holders) if (has_prev and holders > 0) else np.nan,
+                    "ic_inst_net_options_ratio": opt_ratio,
+                    "ic_inst_concentration": hhi,
+                }
+            )
             prev, prev_value, prev_period = cur, inst_value, pd.Timestamp(p)
 
     qf = pd.DataFrame(rows)
@@ -443,10 +514,8 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
             qf.loc[is_hole, c] = np.nan
 
     # D16: a hard cutoff on the PERIOD, so nothing computed off the pre-break regime survives.
-    qf.loc[qf["period"] < INST_LEVEL_FLOOR_PERIOD,
-           [c for c in LEVEL_FEATURES if c in qf.columns] + value_cols] = np.nan
-    qf.loc[qf["period"] < INST_DELTA_FLOOR_PERIOD,
-           [c for c in DELTA_FEATURES if c in qf.columns] + ["inst_value_flow"]] = np.nan
+    qf.loc[qf["period"] < INST_LEVEL_FLOOR_PERIOD, [c for c in LEVEL_FEATURES if c in qf.columns] + value_cols] = np.nan
+    qf.loc[qf["period"] < INST_DELTA_FLOOR_PERIOD, [c for c in DELTA_FEATURES if c in qf.columns] + ["inst_value_flow"]] = np.nan
 
     # The per-ticker coverage-onset guard (see `MIN_PRIOR_HOLDERS`). Same column set as D17's
     # break guard, applied on the TICKER's own prior filer count instead of the universe's.
@@ -462,10 +531,15 @@ def _quarter_features(h: pd.DataFrame, splits: pd.DataFrame | None = None,
     # the row count and the ticker count describe the same population.
     removed = thin & qf[delta_cols].notna().any(axis=1)
     if removed.any():
-        logger.info("13F per-ticker onset guard: %s of %s (ticker, quarter) deltas nulled "
-                    "-- the prior quarter carried fewer than %s filers for that name "
-                    "(%s ticker(s))", f"{int(removed.sum()):,}", f"{len(qf):,}",
-                    min_prior_holders, qf.loc[removed, "ticker"].nunique())
+        logger.info(
+            "13F per-ticker onset guard: %s of %s (ticker, quarter) deltas nulled "
+            "-- the prior quarter carried fewer than %s filers for that name "
+            "(%s ticker(s))",
+            f"{int(removed.sum()):,}",
+            f"{len(qf):,}",
+            min_prior_holders,
+            qf.loc[removed, "ticker"].nunique(),
+        )
     qf.loc[thin, delta_cols] = np.nan
     return qf.drop(columns=["_prev_holders"])
 
@@ -516,8 +590,7 @@ def build_institutional_feature_panel(
     if holdings is None or holdings.empty or not need.issubset(holdings.columns):
         return pd.DataFrame(columns=["date", "ticker"])
     if splits is None or splits.empty:
-        logger.warning("No `prices_splits` -> 13F share changes are NOT split-restated; a "
-                       "20-for-1 split will read as +1,900%% accumulation.")
+        logger.warning("No `prices_splits` -> 13F share changes are NOT split-restated; a " "20-for-1 split will read as +1,900%% accumulation.")
 
     # clean and report holdings
     holdings = clean_holdings(holdings)
@@ -534,8 +607,7 @@ def build_institutional_feature_panel(
     _report_late_filings(holdings)
 
     # build features
-    qf = _quarter_features(holdings, splits=splits, break_pct=break_pct,
-                           min_prior_holders=min_prior_holders)
+    qf = _quarter_features(holdings, splits=splits, break_pct=break_pct, min_prior_holders=min_prior_holders)
     if qf.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
@@ -552,26 +624,25 @@ def build_institutional_feature_panel(
         # actually existed then. The vendor-basis column is back-filled to today's split
         # basis, which would read GOOGL's post-2022 ownership 20x too low. This ratio and the
         # insider one are the only two consumers of the PIT column in the whole repo.
-        shares = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit",
-                                       trading_index)
+        shares = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", trading_index)
         if not shares.empty and shares.notna().any().any():
-            fields["ic_inst_ownership_pct"] = _capped_ownership(
-                (inst_sh / shares.where(shares > 0)).replace([np.inf, -np.inf], np.nan))
+            fields["ic_inst_ownership_pct"] = _capped_ownership((inst_sh / shares.where(shares > 0)).replace([np.inf, -np.inf], np.nan))
 
     if have_shares and stock_close is not None and not stock_close.empty:
         # institutional WEIGHT by VALUE and size-scaled net $ flow, via a point-in-time
         # daily market cap (ffilled sharesOutstanding x daily close x S(d)).
-        mcap = daily_market_cap(shares_out_history, stock_close,
-                                level_factor=level_factor)
+        mcap = daily_market_cap(shares_out_history, stock_close, level_factor=level_factor)
         if mcap.empty:
             # ⚠ NOT SILENT. An empty return here means `shares_out_history` was projected
             # without `sharesOutstanding` (the VENDOR basis `daily_market_cap` requires, NOT
             # `sharesOutstandingPit`), and the two features below would simply be absent from
             # the cube with nothing in the log saying so.
-            logger.warning("daily_market_cap returned no columns (shares_out_history has %s; "
-                           "it needs `sharesOutstanding`, the VENDOR basis) -> "
-                           "ic_inst_value_to_mcap / ic_inst_flow_to_mcap are skipped.",
-                           sorted(shares_out_history.columns))
+            logger.warning(
+                "daily_market_cap returned no columns (shares_out_history has %s; "
+                "it needs `sharesOutstanding`, the VENDOR basis) -> "
+                "ic_inst_value_to_mcap / ic_inst_flow_to_mcap are skipped.",
+                sorted(shares_out_history.columns),
+            )
         else:
             mpos = mcap.where(mcap > 0)
             inst_val = fundamentals_to_daily(qf, "inst_value", trading_index)

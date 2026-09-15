@@ -13,6 +13,7 @@ the dedup KEY, the `position_type == "common"` filter, and whether `cik` needs p
 Everything else -- the date coercion, the numeric coercion, the required-key dropna, and the
 amendment-wins ordering -- is identical and is stated once.
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,6 +21,7 @@ from collections.abc import Sequence
 
 import pandas as pd
 
+from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.utils.string import pad_cik
 
@@ -44,10 +46,61 @@ _NUMERIC_13F = ("shares", "value_usd", "call_value", "put_value")
 _DATES = ("period", "filing_date")
 
 
-def clean_holdings(holdings: pd.DataFrame, *, key: Sequence[str],
-                   numeric: Sequence[str] = _NUMERIC_13F,
-                   common_only: bool = False,
-                   pad_ciks: bool = False) -> pd.DataFrame:
+def _apply_filing_band(h: pd.DataFrame, band: tuple[int, int]) -> pd.DataFrame:
+    """Drop rows whose `filing_date` sits outside `[-early, +late]` days of the deadline.
+
+    ⚠ THIS RUNS BEFORE THE AMENDMENT DEDUP, AND THE ORDER IS THE DECISION. Filter first and a
+    filer who amended three years later keeps its ORIGINAL, on-time row; dedup first and the
+    late amendment wins `keep="last"` and is then dropped, taking the whole filing with it.
+    The band is about when a position became KNOWABLE, and the on-time original is exactly the
+    row that answers that.
+
+    A row with no `filing_date` value is KEPT and counted separately: the column-level degrade
+    below already covers a table that never had the column, and nulling row-wise on a missing
+    date would silently delete holdings on any partially-stamped table.
+    """
+    early, late = band
+    if "filing_date" not in h.columns or "period" not in h.columns:
+        logger.info(
+            "13F clean: no `filing_date`/`period` -> the [-%s, +%s] filing band CANNOT " "be applied on this read; every row kept", early, late
+        )
+        return h
+
+    lag = (h["filing_date"] - (h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))).dt.days
+    unknown = lag.isna()
+    drop = ~lag.between(-early, late) & ~unknown
+    if not drop.any():
+        return h
+
+    value = pd.to_numeric(h["value_usd"], errors="coerce") if "value_usd" in h.columns else None
+    total = float(value.sum()) if value is not None else 0.0
+    logger.info(
+        "13F filing band [-%sd, +%sd] vs deadline: %s of %s row(s) dropped (%.3f%%) "
+        "across %s filer(s), carrying %.3f%% of as-filed value (PRE unit-repair, so "
+        "that share is only indicative); %s early, %s late, %s row(s) undated and kept",
+        early,
+        late,
+        f"{int(drop.sum()):,}",
+        f"{len(h):,}",
+        100.0 * float(drop.mean()),
+        f"{h.loc[drop, 'cik'].nunique():,}" if "cik" in h.columns else "?",
+        100.0 * float(value[drop].sum()) / total if (value is not None and total > 0) else 0.0,
+        f"{int((lag < -early).sum()):,}",
+        f"{int((lag > late).sum()):,}",
+        f"{int(unknown.sum()):,}",
+    )
+    return h[~drop]
+
+
+def clean_holdings(
+    holdings: pd.DataFrame,
+    *,
+    key: Sequence[str],
+    numeric: Sequence[str] = _NUMERIC_13F,
+    common_only: bool = False,
+    pad_ciks: bool = False,
+    filing_band: tuple[int, int] | None = None,
+) -> pd.DataFrame:
     """The shared 13F cleaner for BOTH tables.
 
     `key` is the grain: `sec13f_hr` dedups on `(ticker, cik, period)` and
@@ -63,6 +116,18 @@ def clean_holdings(holdings: pd.DataFrame, *, key: Sequence[str],
     `numeric` is the set to coerce and zero-fill -- see `_NUMERIC_13F`. The elite table passes
     only `("shares", "value_usd")`, because it resolves options by ROW (`position_type`) and
     two all-zero option columns on its conviction frame would be noise.
+
+    `filing_band` is `(max_early_days, max_late_days)` against the deadline, or `None` for no
+    band. OPT-IN rather than defaulted, and that is the point of the argument: the band is a
+    measured property of `sec13f_hr` (`F13_MAX_EARLY_DAYS` / `F13_MAX_LATE_DAYS` carry the
+    table), and `sec13f_manager_holdings` is a different population that must be measured on
+    its own terms before it inherits a cut sized on someone else's.
+
+    ⚠ THE BAND CANNOT BE APPLIED TO A TABLE WITH HOLE QUARTERS. It is a LATE filter, so it
+    takes a quarter that is already short and makes it shorter -- measured before the step 2.1
+    refill, 2023-12-31 went 463 -> 108 filers and 2025-06-30 went 254 -> 66. On the refilled
+    table that is no longer a live risk, but the dependency is real and is why this argument
+    exists instead of the filter simply always running.
 
     ⚠ `sort_values("filing_date")` BEFORE `drop_duplicates(keep="last")` is what makes an
     AMENDMENT win over the original. Reordering these two lines silently keeps the superseded
@@ -83,17 +148,20 @@ def clean_holdings(holdings: pd.DataFrame, *, key: Sequence[str],
         if col in h.columns:
             h[col] = to_day(h[col])
     for col in numeric:
-        h[col] = (pd.to_numeric(h[col], errors="coerce").fillna(0.0) if col in h.columns
-                  else pd.Series(0.0, index=h.index))
+        h[col] = pd.to_numeric(h[col], errors="coerce").fillna(0.0) if col in h.columns else pd.Series(0.0, index=h.index)
 
     h = h.dropna(subset=list(key))
     if common_only and "position_type" in h.columns:
         h = h[h["position_type"].astype(str).str.lower() == "common"]
+    if filing_band is not None:
+        h = _apply_filing_band(h, filing_band)
 
     if "filing_date" in h.columns:
         h = h.sort_values("filing_date")
     else:
-        logger.info("13F clean: no `filing_date` column -> amendments cannot be ordered, so "
-                    "`keep='last'` falls back to source order for %s duplicate key(s)",
-                    f"{int(h.duplicated(list(key)).sum()):,}")
+        logger.info(
+            "13F clean: no `filing_date` column -> amendments cannot be ordered, so "
+            "`keep='last'` falls back to source order for %s duplicate key(s)",
+            f"{int(h.duplicated(list(key)).sum()):,}",
+        )
     return h.drop_duplicates(list(key), keep="last")

@@ -10,10 +10,12 @@ score ROWS THAT EXIST, so a missing row is invisible to every one of them. `pric
 day -- the 45 rows present were perfectly adjusted. The damage landed downstream, where
 `cube_part_momentum` ranked 13 of its 28 features over those 45 names.
 """
+
+from typing import Any
+
 import pandas as pd
 
-from src.validate.prices import (
-    DAY_COVERAGE_FLOOR, DAY_COVERAGE_WINDOW, PricesReport, invariant_day_coverage)
+from src.validate.prices import DAY_COVERAGE_FLOOR, DAY_COVERAGE_WINDOW, PricesReport, invariant_day_coverage
 
 DATES = pd.bdate_range("2024-01-01", periods=120)
 
@@ -31,20 +33,24 @@ class _Ctx:
         shuffled = self._frame.sample(frac=1.0, random_state=3).reset_index(drop=True)
         size = max(1, len(shuffled) // self._chunks)
         for i in range(0, len(shuffled), size):
-            yield shuffled.iloc[i:i + size][list(columns)]
+            yield shuffled.iloc[i : i + size][list(columns)]
+
+
+def _ctx(frame: pd.DataFrame, chunks: int = 3) -> Any:
+    """Helper factory to pass duck-typed test context to Pyright."""
+    return _Ctx(frame, chunks)
 
 
 def _grid(n_names: int = 100, thin: dict[pd.Timestamp, int] | None = None) -> pd.DataFrame:
     rows = []
     for d in DATES:
         live = (thin or {}).get(d, n_names)
-        rows += [{"ticker": f"T{i:03d}", "date": d, "close_split": 10.0}
-                 for i in range(live)]
+        rows += [{"ticker": f"T{i:03d}", "date": d, "close_split": 10.0} for i in range(live)]
     return pd.DataFrame(rows)
 
 
 def test_full_coverage_passes():
-    res = invariant_day_coverage(_Ctx(_grid()))
+    res = invariant_day_coverage(_ctx(_grid()))
     print(f"  {res.summary()}")
     assert res.failed == 0 and not res.detail
     assert res.share == 0.0
@@ -55,7 +61,7 @@ def test_full_coverage_passes():
 def test_the_live_hole_shape_is_caught():
     """45 of 491, with the full universe on both neighbours."""
     bad = DATES[80]
-    res = invariant_day_coverage(_Ctx(_grid(thin={bad: 9})))
+    res = invariant_day_coverage(_ctx(_grid(thin={bad: 9})))
     print(f"  {res.summary()}")
     print(f"  detail: {res.detail}")
     assert len(res.detail) == 1
@@ -72,27 +78,25 @@ def test_growing_universe_is_not_flagged():
 
     Measured against the global median on the live table, the floor flagged 2026-08-28 AND 20
     legitimate 2005 dates, where `prices` genuinely carried 383-385 of an eventual 491."""
-    thin = {d: min(100, 40 + i) for i, d in enumerate(DATES)}      # 40 -> 100, monotone
-    res = invariant_day_coverage(_Ctx(_grid(thin=thin)))
-    print(f"  ramp 40 -> 100 names over {len(DATES)} sessions -> "
-          f"{len(res.detail)} short day(s)")
+    thin = {d: min(100, 40 + i) for i, d in enumerate(DATES)}  # 40 -> 100, monotone
+    res = invariant_day_coverage(_ctx(_grid(thin=thin)))
+    print(f"  ramp 40 -> 100 names over {len(DATES)} sessions -> " f"{len(res.detail)} short day(s)")
     assert not res.detail, f"structural growth flagged: {res.detail}"
 
 
 def test_a_permanently_smaller_universe_is_not_flagged():
     """A table that simply holds fewer names is not defective; it is judged against itself."""
-    res = invariant_day_coverage(_Ctx(_grid(n_names=12)))
+    res = invariant_day_coverage(_ctx(_grid(n_names=12)))
     assert not res.detail
     assert res.tickers == 12
 
 
 def test_floor_binds_where_the_constant_says():
-    just_under = int(DAY_COVERAGE_FLOOR * 100) - 1        # 59
-    just_over = int(DAY_COVERAGE_FLOOR * 100) + 1         # 61
-    lo = invariant_day_coverage(_Ctx(_grid(thin={DATES[80]: just_under})))
-    hi = invariant_day_coverage(_Ctx(_grid(thin={DATES[80]: just_over})))
-    print(f"  {just_under}/100 -> {len(lo.detail)} short; {just_over}/100 -> "
-          f"{len(hi.detail)} short")
+    just_under = int(DAY_COVERAGE_FLOOR * 100) - 1  # 59
+    just_over = int(DAY_COVERAGE_FLOOR * 100) + 1  # 61
+    lo = invariant_day_coverage(_ctx(_grid(thin={DATES[80]: just_under})))
+    hi = invariant_day_coverage(_ctx(_grid(thin={DATES[80]: just_over})))
+    print(f"  {just_under}/100 -> {len(lo.detail)} short; {just_over}/100 -> " f"{len(hi.detail)} short")
     assert len(lo.detail) == 1 and not hi.detail
 
 
@@ -100,7 +104,7 @@ def test_a_short_run_is_flagged_on_every_day():
     """`shift(1)` on the reference: a run must not drag its own median down day by day, so a
     burst well inside the window is caught in full, not just on its first date."""
     run = {d: 9 for d in DATES[80:85]}
-    res = invariant_day_coverage(_Ctx(_grid(thin=run)))
+    res = invariant_day_coverage(_ctx(_grid(thin=run)))
     print(f"  {len(run)} consecutive short sessions -> {len(res.detail)} flagged")
     assert len(res.detail) == len(run)
 
@@ -115,17 +119,19 @@ def test_an_outage_longer_than_half_the_window_stops_being_flagged():
     warning. The alternative (a global median) is strictly worse: measured on the live table
     it flagged 20 legitimate 2005 dates as well, because the universe really did grow from
     383 names to 491. `momentum.features.MIN_XS_POPULATION_FRAC` carries the same trade."""
-    run = {d: 9 for d in DATES[80:80 + DAY_COVERAGE_WINDOW]}
-    res = invariant_day_coverage(_Ctx(_grid(thin=run)))
+    run = {d: 9 for d in DATES[80 : 80 + DAY_COVERAGE_WINDOW]}
+    res = invariant_day_coverage(_ctx(_grid(thin=run)))
     caught = len(res.detail)
-    print(f"  {len(run)} consecutive short sessions (= the {DAY_COVERAGE_WINDOW}-day window) "
-          f"-> {caught} flagged before the reference follows them down")
+    print(
+        f"  {len(run)} consecutive short sessions (= the {DAY_COVERAGE_WINDOW}-day window) "
+        f"-> {caught} flagged before the reference follows them down"
+    )
     assert 0 < caught < len(run)
     assert caught >= DAY_COVERAGE_WINDOW // 2, "must still catch the onset"
 
 
 def test_empty_table_is_not_a_failure():
-    res = invariant_day_coverage(_Ctx(pd.DataFrame(columns=["ticker", "date"])))
+    res = invariant_day_coverage(_ctx(pd.DataFrame(columns=["ticker", "date"])))
     assert res.rows == 0 and res.failed == 0 and res.share == 0.0
 
 
@@ -133,7 +139,7 @@ def test_report_renders_the_date_clustered_shape():
     """`InvariantResult` clusters by TICKER for invariants 1-3 and by DATE here, so
     `to_markdown` needs its own branch -- the ticker-shaped branch would print 'No failures.'
     over a real hole, since `failing_tickers` is empty by construction."""
-    res = invariant_day_coverage(_Ctx(_grid(thin={DATES[80]: 9})))
+    res = invariant_day_coverage(_ctx(_grid(thin={DATES[80]: 9})))
     assert res.clustered_by == "date"
     assert not res.failing_tickers, "clusters live in `detail` for this invariant"
     md = PricesReport([res]).to_markdown()
@@ -148,7 +154,8 @@ def test_report_renders_the_date_clustered_shape():
 def test_detail_is_json_serializable():
     """The DoD report writes this straight to JSON; a numpy scalar would raise there."""
     import json
-    res = invariant_day_coverage(_Ctx(_grid(thin={DATES[80]: 9})))
+
+    res = invariant_day_coverage(_ctx(_grid(thin={DATES[80]: 9})))
     json.dumps(res.detail)
     for d in res.detail:
         assert all(type(v) in (str, int, float) for v in d.values()), d

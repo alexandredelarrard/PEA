@@ -5,8 +5,8 @@ description = ""
 authors = [
     {name = "Your Name",email = "you@example.com"}
 ]
-readme = "README.md"
-requires-python = ">=3.13"
+readme = "docs/README.md"
+requires-python = ">=3.13, <3.15"
 dependencies = [
     "streamlit (>=1.35)",
     "yfinance (>=0.2.40)",
@@ -39,12 +39,6 @@ dependencies = [
 [tool.poetry]
 package-mode = false
 
-# Airflow "composer" for the industrialised nightly pipeline. Declared here per project convention,
-# but it runs in its OWN container (apache/airflow, Python 3.12) — see Dockerfile.airflow /
-# docker-compose.yml — NOT in this Python 3.13 venv (Airflow supports <=3.12 and pins SQLAlchemy
-# <2.0, which conflicts with the pipeline's 2.0). The `python = "<3.13"` marker + `optional = true`
-# keep it out of the local 3.13 resolution so the main lock is unaffected; the container gets
-# Airflow from its base image and the pipeline deps from requirements-airflow.txt.
 [tool.poetry.group.airflow]
 optional = true
 
@@ -65,7 +59,6 @@ requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
-# Set maximum line length to 150 characters for both formatter and linter
 line-length = 150
 
 [tool.ruff.lint]

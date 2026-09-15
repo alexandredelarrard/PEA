@@ -4,14 +4,14 @@ constants.py  (src/constants/constants.py)
 Project-wide constants. Import these instead of hardcoding the same date
 formats or SEC endpoints across modules, so a change happens in one place.
 """
-from __future__ import annotations
 
+from __future__ import annotations
 
 # --------------------------------------------------------------------------- #
 # Date formats                                                                #
 # --------------------------------------------------------------------------- #
-DATE_FORMAT = "%Y-%m-%d"          # ISO day — as_of / filing / query dates
-DATE_FORMAT_COMPACT = "%Y%m%d"    # SEC / FINRA daily-file name stamps
+DATE_FORMAT = "%Y-%m-%d"  # ISO day — as_of / filing / query dates
+DATE_FORMAT_COMPACT = "%Y%m%d"  # SEC / FINRA daily-file name stamps
 
 # --------------------------------------------------------------------------- #
 # Config directory                                                            #
@@ -25,23 +25,27 @@ DEFAULT_CONFIG_DIR = "./configs"
 # --------------------------------------------------------------------------- #
 # HEADER for extract                                                          #
 # --------------------------------------------------------------------------- #
-_HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/124.0 Safari/537.36; contact@example.com")}
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " "AppleWebKit/537.36 (KHTML, like Gecko) " "Chrome/124.0 Safari/537.36; contact@example.com"
+    )
+}
 
 # Tickers EXCLUDED from the modelling universe for INSUFFICIENT HISTORY (< 4 years of price
 # data): recent IPOs / spin-offs that can't support the cube's multi-year look-backs.
-INSUFFICIENT_HISTORY_TICKERS: frozenset[str] = frozenset({
-    "HONA",   # Honeywell Aerospace spin-off (2026)
-    "FDXF",   # FedEx Freight spin-off (2026)
-    "Q",      # recent listing (2025)
-    "SNDK",   # Sandisk / Western Digital spin-off (2025)
-    "GEV",    # GE Vernova spin-off (2024)
-    "SOLV",   # Solventum / 3M spin-off (2024)
-    "VLTO",   # Veralto / Danaher spin-off (2023)
-    "KVUE",   # Kenvue / J&J spin-off (2023)
-    "GEHC",   # GE HealthCare spin-off (2022, ~3.6y -- closest to the 4y cutoff)
-})
+INSUFFICIENT_HISTORY_TICKERS: frozenset[str] = frozenset(
+    {
+        "HONA",  # Honeywell Aerospace spin-off (2026)
+        "FDXF",  # FedEx Freight spin-off (2026)
+        "Q",  # recent listing (2025)
+        "SNDK",  # Sandisk / Western Digital spin-off (2025)
+        "GEV",  # GE Vernova spin-off (2024)
+        "SOLV",  # Solventum / 3M spin-off (2024)
+        "VLTO",  # Veralto / Danaher spin-off (2023)
+        "KVUE",  # Kenvue / J&J spin-off (2023)
+        "GEHC",  # GE HealthCare spin-off (2022, ~3.6y -- closest to the 4y cutoff)
+    }
+)
 
 # --------------------------------------------------------------------------- #
 # SEC EDGAR endpoints (free, no key; require a descriptive User-Agent)         #
@@ -56,14 +60,41 @@ SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 # `as_of = quarter_end + this` to stay leak-free; it was duplicated as a private
 # `_FILING_LAG_DAYS = 45` in each of them.
 SEC_13F_FILING_LAG_DAYS = 45
+
+# The 13F filing BAND, in days against the deadline (`filing_date - (period + 45d)`). A row
+# outside it is dropped by `holdings_clean.clean_holdings(filing_band=...)`: the position is
+# real, but nobody can say WHEN it became knowable, and a quarter-end snapshot filed three
+# years later is not an observation of that quarter, it is an archive entry.
+#
+# Measured 2026-09-14 on `sec13f_hr` (23,801,899 rows, after the step 2.1 refill), by lag
+# against the deadline:
+#
+#     on time (<= deadline)   20,710,086   87.010%
+#     1-60d late   (KEPT)      2,041,382    8.577%
+#     61-90d late                125,823    0.529%
+#     91-365d late               390,863    1.642%
+#     >365d late                 533,745    2.242%
+#
+# so the band drops 1,050,431 rows (4.413%) across 2,679 filers, carrying 1.052% of as-filed
+# value. It also cuts the per-pair filing-date spread that makes a filing-date emission grid
+# affordable at all.
+#
+# ⚠ THE EARLY HALF IS NON-BINDING AND IS KEPT AS AN ASSERTION, NOT AS WORK. Zero rows in the
+# table have `filing_date < period` at all, let alone 45 days before the deadline, so
+# `F13_MAX_EARLY_DAYS` has never dropped a row. It stays because a future extraction bug that
+# stamps a filing before its own period is exactly the kind of thing that should be caught by
+# a filter rather than ffilled into the panel -- but nobody should read it as doing work today.
+F13_MAX_EARLY_DAYS = 45
+F13_MAX_LATE_DAYS = 60
+
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 # EDGAR company-name search (atom): the authoritative NAME -> CIK lookup. Filtered to
 # 13F-HR filers so a fund name resolves to its institutional-manager CIK. {company}
 # must be URL-quoted. Response: one <company-info> block per match with <cik> +
 # <conformed-name> (tags are lower-case).
 SEC_EDGAR_COMPANY_SEARCH_URL = (
-    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}"
-    "&type=13F-HR&dateb=&owner=include&count=10&output=atom")
+    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}" "&type=13F-HR&dateb=&owner=include&count=10&output=atom"
+)
 
 # 8-K events -> `sec_8k`, one row per item code (see fetch_8k_edgar.py
 SEC_8K_FORMS = ["8-K", "8-K/A"]
@@ -73,8 +104,12 @@ SEC_8K_FORMS = ["8-K", "8-K/A"]
 # "SC 13D", filings from 2024-12-17 are "SCHEDULE 13D". `get_filings(form=...)` matches EXACTLY,
 # so dropping either pair silently truncates the table at the changeover -- measured: 461 filings
 # across 91 S&P 500 tickers were invisible until both pairs were listed.
-SEC_13D_FORMS = ["SC 13D", "SC 13D/A",   # activist; the passive 13G channel is SEC_13G_FORMS
-                 "SCHEDULE 13D", "SCHEDULE 13D/A"]
+SEC_13D_FORMS = [
+    "SC 13D",
+    "SC 13D/A",  # activist; the passive 13G channel is SEC_13G_FORMS
+    "SCHEDULE 13D",
+    "SCHEDULE 13D/A",
+]
 
 # Schedule 13G: >5% beneficial ownership WITHOUT intent to influence control -- the passive
 # counterpart of a 13D, filed by qualified institutions (Rule 13d-1(b)), passive investors
@@ -83,7 +118,7 @@ SEC_13D_FORMS = ["SC 13D", "SC 13D/A",   # activist; the passive 13G channel is 
 # must be listed or the table stops dead at the changeover.
 SEC_13G_FORMS = ["SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"]
 
-# 13F institutional holdings, walked per-filing-date via edgartools (fetch_13f.py). 
+# 13F institutional holdings, walked per-filing-date via edgartools (fetch_13f.py).
 SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
 
 # Fundamentals (financial-statement) via edgartools -> `fundamentals_facts` / `fundamentals_history_sec`.
@@ -138,23 +173,119 @@ SHARADAR_BASE_URL = "https://api.sharadar.com/v1.0"
 # this tuple is an error, not a shrug.
 SHARADAR_SF1_COLUMNS: tuple[str, ...] = (
     # identifiers (7)
-    "ticker", "dimension", "calendardate", "date", "reportperiod", "fiscalperiod",
+    "ticker",
+    "dimension",
+    "calendardate",
+    "date",
+    "reportperiod",
+    "fiscalperiod",
     "lastupdated",
     # the 105 value columns, alphabetical as Sharadar delivers them
-    "accoci", "assets", "assetsavg", "assetsc", "assetsnc", "assetturnover", "bvps",
-    "capex", "cashneq", "cashnequsd", "cor", "consolinc", "currentratio", "de", "debt",
-    "debtc", "debtnc", "debtusd", "deferredrev", "depamor", "deposits", "divyield", "dps",
-    "ebit", "ebitda", "ebitdamargin", "ebitdausd", "ebitusd", "ebt", "eps", "epsdil",
-    "epsusd", "equity", "equityavg", "equityusd", "ev", "evebit", "evebitda", "fcf",
-    "fcfps", "fxusd", "gp", "grossmargin", "intangibles", "intexp", "invcap", "invcapavg",
-    "inventory", "investments", "investmentsc", "investmentsnc", "liabilities",
-    "liabilitiesc", "liabilitiesnc", "marketcap", "ncf", "ncfbus", "ncfcommon", "ncfdebt",
-    "ncfdiv", "ncff", "ncfi", "ncfinv", "ncfo", "ncfx", "netinc", "netinccmn",
-    "netinccmnusd", "netincdis", "netincnci", "netmargin", "opex", "opinc", "payables",
-    "payoutratio", "pb", "pe", "pe1", "ppnenet", "prefdivis", "price", "ps", "ps1",
-    "receivables", "retearn", "revenue", "revenueusd", "rnd", "roa", "roe", "roic", "ros",
-    "sbcomp", "sgna", "sharefactor", "sharesbas", "shareswa", "shareswadil", "sps",
-    "tangibles", "taxassets", "taxexp", "taxliabilities", "tbvps", "workingcapital",
+    "accoci",
+    "assets",
+    "assetsavg",
+    "assetsc",
+    "assetsnc",
+    "assetturnover",
+    "bvps",
+    "capex",
+    "cashneq",
+    "cashnequsd",
+    "cor",
+    "consolinc",
+    "currentratio",
+    "de",
+    "debt",
+    "debtc",
+    "debtnc",
+    "debtusd",
+    "deferredrev",
+    "depamor",
+    "deposits",
+    "divyield",
+    "dps",
+    "ebit",
+    "ebitda",
+    "ebitdamargin",
+    "ebitdausd",
+    "ebitusd",
+    "ebt",
+    "eps",
+    "epsdil",
+    "epsusd",
+    "equity",
+    "equityavg",
+    "equityusd",
+    "ev",
+    "evebit",
+    "evebitda",
+    "fcf",
+    "fcfps",
+    "fxusd",
+    "gp",
+    "grossmargin",
+    "intangibles",
+    "intexp",
+    "invcap",
+    "invcapavg",
+    "inventory",
+    "investments",
+    "investmentsc",
+    "investmentsnc",
+    "liabilities",
+    "liabilitiesc",
+    "liabilitiesnc",
+    "marketcap",
+    "ncf",
+    "ncfbus",
+    "ncfcommon",
+    "ncfdebt",
+    "ncfdiv",
+    "ncff",
+    "ncfi",
+    "ncfinv",
+    "ncfo",
+    "ncfx",
+    "netinc",
+    "netinccmn",
+    "netinccmnusd",
+    "netincdis",
+    "netincnci",
+    "netmargin",
+    "opex",
+    "opinc",
+    "payables",
+    "payoutratio",
+    "pb",
+    "pe",
+    "pe1",
+    "ppnenet",
+    "prefdivis",
+    "price",
+    "ps",
+    "ps1",
+    "receivables",
+    "retearn",
+    "revenue",
+    "revenueusd",
+    "rnd",
+    "roa",
+    "roe",
+    "roic",
+    "ros",
+    "sbcomp",
+    "sgna",
+    "sharefactor",
+    "sharesbas",
+    "shareswa",
+    "shareswadil",
+    "sps",
+    "tangibles",
+    "taxassets",
+    "taxexp",
+    "taxliabilities",
+    "tbvps",
+    "workingcapital",
 )
 
 # The 41 indicators Sharadar documents as ZERO-FILLED: "Where this item is not contained on
@@ -167,14 +298,51 @@ SHARADAR_SF1_COLUMNS: tuple[str, ...] = (
 # ARQ rows: `intexp = 0` for JPM and GS, which is provably false. So the rule must be
 # PER-FIELD and measured, never global. Phase 1 only records the list; phase 2 measures its
 # prevalence and phase 3 acts on it.
-SHARADAR_ZERO_FILLED_FIELDS: frozenset[str] = frozenset({
-    "revenue", "revenueusd", "cor", "sgna", "rnd", "intexp", "taxexp", "netincnci",
-    "prefdivis", "netincdis", "dps", "cashneq", "cashnequsd", "investments", "investmentsc",
-    "investmentsnc", "receivables", "inventory", "intangibles", "ppnenet", "taxassets",
-    "debt", "debtc", "debtnc", "debtusd", "deferredrev", "payables", "deposits",
-    "taxliabilities", "accoci", "depamor", "ncfi", "capex", "ncfbus", "ncfinv", "ncff",
-    "ncfcommon", "ncfdebt", "ncfdiv", "ncfx", "divyield",
-})
+SHARADAR_ZERO_FILLED_FIELDS: frozenset[str] = frozenset(
+    {
+        "revenue",
+        "revenueusd",
+        "cor",
+        "sgna",
+        "rnd",
+        "intexp",
+        "taxexp",
+        "netincnci",
+        "prefdivis",
+        "netincdis",
+        "dps",
+        "cashneq",
+        "cashnequsd",
+        "investments",
+        "investmentsc",
+        "investmentsnc",
+        "receivables",
+        "inventory",
+        "intangibles",
+        "ppnenet",
+        "taxassets",
+        "debt",
+        "debtc",
+        "debtnc",
+        "debtusd",
+        "deferredrev",
+        "payables",
+        "deposits",
+        "taxliabilities",
+        "accoci",
+        "depamor",
+        "ncfi",
+        "capex",
+        "ncfbus",
+        "ncfinv",
+        "ncff",
+        "ncfcommon",
+        "ncfdebt",
+        "ncfdiv",
+        "ncfx",
+        "divyield",
+    }
+)
 
 # --------------------------------------------------------------------------- #
 # Sharadar phase-2 DIAGNOSTICS -- the vocabulary the read-only gate runner      #
@@ -216,9 +384,13 @@ SHARADAR_REGISTER_DOC_PREFIX = "_"
 #: The correction register's CLOSED action vocabulary. Closed on purpose: a free-form
 #: expression field would be code in a config file, and `apply_corrections` raises on an
 #: action it does not know rather than skipping it silently.
-SHARADAR_CORRECTION_ACTIONS: frozenset[str] = frozenset({
-    "null", "null_if_positive", "null_if_negative",
-})
+SHARADAR_CORRECTION_ACTIONS: frozenset[str] = frozenset(
+    {
+        "null",
+        "null_if_positive",
+        "null_if_negative",
+    }
+)
 
 #: The field map's CLOSED vocabularies, for the same reason.
 SHARADAR_MAP_KINDS: frozenset[str] = frozenset({"direct", "derived", "sec", "null"})
@@ -230,8 +402,7 @@ SHARADAR_MAP_KINDS: frozenset[str] = frozenset({"direct", "derived", "sec", "nul
 #: REITs file an unclassified balance sheet (ASC 210-10-05-4) and so report no CURRENT
 #: investments line at all. The two ops are separate on purpose: which legs are mandatory
 #: is a per-field accounting judgement, not a global one.
-SHARADAR_MAP_OPS: frozenset[str] = frozenset({"sum", "sum_optional", "ratio",
-                                              "ratio_minus_one", "quarter"})
+SHARADAR_MAP_OPS: frozenset[str] = frozenset({"sum", "sum_optional", "ratio", "ratio_minus_one", "quarter"})
 SHARADAR_MAP_SPLIT_BASES: frozenset[str] = frozenset({"count", "per_share"})
 
 #: The only `negate` spelling the map accepts. `true` was the plan's original and phase 2
@@ -289,15 +460,45 @@ SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS = ("revenueusd", "cashnequsd", "debtusd", "div
 #: Per-share (`eps`, `epsdil`, `dps`), weighted-average share counts (`shareswa`,
 #: `shareswadil`) and ratios (`divyield`) are EXCLUDED even though they are period figures:
 #: they are averages and quotients, not sums, so ΣQ != FY for them by construction.
-SHARADAR_FLOW_FIELDS: frozenset[str] = frozenset({
-    # income statement
-    "revenue", "revenueusd", "cor", "gp", "opex", "sgna", "rnd", "opinc", "intexp", "ebit",
-    "ebitda", "ebt", "taxexp", "consolinc", "netincnci", "netinc", "prefdivis", "netinccmn",
-    "netincdis",
-    # cash flow
-    "ncfo", "depamor", "sbcomp", "ncfi", "capex", "ncfbus", "ncfinv", "ncff", "ncfcommon",
-    "ncfdebt", "ncfdiv", "ncfx", "ncf", "fcf",
-})
+SHARADAR_FLOW_FIELDS: frozenset[str] = frozenset(
+    {
+        # income statement
+        "revenue",
+        "revenueusd",
+        "cor",
+        "gp",
+        "opex",
+        "sgna",
+        "rnd",
+        "opinc",
+        "intexp",
+        "ebit",
+        "ebitda",
+        "ebt",
+        "taxexp",
+        "consolinc",
+        "netincnci",
+        "netinc",
+        "prefdivis",
+        "netinccmn",
+        "netincdis",
+        # cash flow
+        "ncfo",
+        "depamor",
+        "sbcomp",
+        "ncfi",
+        "capex",
+        "ncfbus",
+        "ncfinv",
+        "ncff",
+        "ncfcommon",
+        "ncfdebt",
+        "ncfdiv",
+        "ncfx",
+        "ncf",
+        "fcf",
+    }
+)
 
 #: Fields where a NEGATIVE value is an artefact, never a fact. This is the ABT failure mode:
 #: Sharadar CONSTRUCTS Q4 as `ARY - Σ(Q1..Q3)`, and the legacy Quandl documentation shows that
@@ -309,15 +510,49 @@ SHARADAR_FLOW_FIELDS: frozenset[str] = frozenset({
 #: `taxexp` (a tax benefit), every `netinc*`, `ebit`/`ebitda`, `fcf`, and all `ncf*` --
 #: those are signed by design. `capex` is excluded too: Sharadar stores it NEGATIVE, and its
 #: sign is asserted separately by `confirm_sign_conventions`.
-SHARADAR_NON_NEGATIVE_FIELDS: frozenset[str] = frozenset({
-    "revenue", "revenueusd", "cor", "sgna", "rnd", "opex", "intexp",
-    "assets", "assetsc", "assetsnc", "cashneq", "cashnequsd", "investments", "investmentsc",
-    "investmentsnc", "receivables", "inventory", "intangibles", "ppnenet", "taxassets",
-    "liabilities", "liabilitiesc", "liabilitiesnc", "debt", "debtc", "debtnc", "debtusd",
-    "deferredrev", "payables", "deposits", "taxliabilities",
-    "depamor", "sbcomp", "prefdivis", "dps", "divyield",
-    "shareswa", "shareswadil", "sharesbas",
-})
+SHARADAR_NON_NEGATIVE_FIELDS: frozenset[str] = frozenset(
+    {
+        "revenue",
+        "revenueusd",
+        "cor",
+        "sgna",
+        "rnd",
+        "opex",
+        "intexp",
+        "assets",
+        "assetsc",
+        "assetsnc",
+        "cashneq",
+        "cashnequsd",
+        "investments",
+        "investmentsc",
+        "investmentsnc",
+        "receivables",
+        "inventory",
+        "intangibles",
+        "ppnenet",
+        "taxassets",
+        "liabilities",
+        "liabilitiesc",
+        "liabilitiesnc",
+        "debt",
+        "debtc",
+        "debtnc",
+        "debtusd",
+        "deferredrev",
+        "payables",
+        "deposits",
+        "taxliabilities",
+        "depamor",
+        "sbcomp",
+        "prefdivis",
+        "dps",
+        "divyield",
+        "shareswa",
+        "shareswadil",
+        "sharesbas",
+    }
+)
 
 #: Sharadar field -> (the `fundamentals_history_sec` columns that make up its counterpart,
 #: how comparable the two bases are). The SECOND element is the whole point of this map: a
@@ -341,27 +576,27 @@ SHARADAR_NON_NEGATIVE_FIELDS: frozenset[str] = frozenset({
 #: NO counterpart in the 60-field SEC catalogue, so their zeros can only be judged on
 #: Sharadar-internal evidence. Say so in the report rather than implying a check ran.
 SHARADAR_SEC_COUNTERPART: dict[str, tuple[tuple[str, ...], str]] = {
-    "revenue":      (("totalRevenue",), "exact"),
-    "revenueusd":   (("totalRevenue",), "exact"),
-    "cor":          (("costOfRevenue",), "exact"),
-    "sgna":         (("sellingGeneralAdmin",), "exact"),
-    "rnd":          (("researchAndDevelopment",), "exact"),
-    "intexp":       (("interestExpense",), "exact"),
-    "taxexp":       (("incomeTaxExpense",), "exact"),
-    "depamor":      (("depAmort",), "exact"),
-    "capex":        (("capex",), "exact"),
-    "cashneq":      (("cash",), "sec_wider"),
-    "cashnequsd":   (("cash",), "sec_wider"),
+    "revenue": (("totalRevenue",), "exact"),
+    "revenueusd": (("totalRevenue",), "exact"),
+    "cor": (("costOfRevenue",), "exact"),
+    "sgna": (("sellingGeneralAdmin",), "exact"),
+    "rnd": (("researchAndDevelopment",), "exact"),
+    "intexp": (("interestExpense",), "exact"),
+    "taxexp": (("incomeTaxExpense",), "exact"),
+    "depamor": (("depAmort",), "exact"),
+    "capex": (("capex",), "exact"),
+    "cashneq": (("cash",), "sec_wider"),
+    "cashnequsd": (("cash",), "sec_wider"),
     "investmentsc": (("shortTermInvestments",), "exact"),
-    "receivables":  (("accountsReceivable",), "exact"),
-    "inventory":    (("inventory",), "exact"),
-    "intangibles":  (("goodwill", "intangiblesExGoodwill"), "sec_wider"),
-    "ppnenet":      (("ppeNet",), "exact"),
-    "debt":         (("totalDebt",), "sec_wider"),
-    "debtusd":      (("totalDebt",), "sec_wider"),
-    "debtc":        (("shortTermDebt",), "exact"),
-    "debtnc":       (("longTermDebt",), "exact"),
-    "payables":     (("accountsPayable",), "exact"),
+    "receivables": (("accountsReceivable",), "exact"),
+    "inventory": (("inventory",), "exact"),
+    "intangibles": (("goodwill", "intangiblesExGoodwill"), "sec_wider"),
+    "ppnenet": (("ppeNet",), "exact"),
+    "debt": (("totalDebt",), "sec_wider"),
+    "debtusd": (("totalDebt",), "sec_wider"),
+    "debtc": (("shortTermDebt",), "exact"),
+    "debtnc": (("longTermDebt",), "exact"),
+    "payables": (("accountsPayable",), "exact"),
 }
 
 #: Fields describing a DISCRETE EVENT rather than a continuing state or flow. A zero here is a
@@ -371,9 +606,16 @@ SHARADAR_SEC_COUNTERPART: dict[str, tuple[tuple[str, ...], str]] = {
 #:
 #: `ncfdiv` and `dps` are deliberately NOT here even though they look similar. Every DJIA
 #: constituent pays a dividend every quarter, so a zero in those is a gap, not a quiet quarter.
-SHARADAR_EVENT_FIELDS: frozenset[str] = frozenset({
-    "ncfbus", "ncfinv", "ncfcommon", "ncfdebt", "ncfx", "netincdis",
-})
+SHARADAR_EVENT_FIELDS: frozenset[str] = frozenset(
+    {
+        "ncfbus",
+        "ncfinv",
+        "ncfcommon",
+        "ncfdebt",
+        "ncfx",
+        "netincdis",
+    }
+)
 
 #: Share of the zeros THE SEC LAYER COULD ACTUALLY JUDGE (a non-null counterpart) that must be
 #: contradicted before the diagnostic proposes `"null"`. A rate over the judged cells, not over
@@ -450,10 +692,18 @@ SHARADAR_GAP_MIN_DATES = 4
 #: The basis forks phase 3 DESIGNED IN. Each of these gaps is expected, is explained in
 #: `sharadar_field_map.json`, and is NOT an override candidate -- the report names them so
 #: they do not drown the real finding, which is anything gapping that is not on this list.
-SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset({
-    "stockholdersEquity", "ppeNet", "shortTermDebt", "longTermDebt", "accountsReceivable",
-    "accountsPayable", "cash", "ebitda",
-})
+SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset(
+    {
+        "stockholdersEquity",
+        "ppeNet",
+        "shortTermDebt",
+        "longTermDebt",
+        "accountsReceivable",
+        "accountsPayable",
+        "cash",
+        "ebitda",
+    }
+)
 
 # --------------------------------------------------------------------------- #
 # Earnings-call transcripts (The Motley Fool — free, full text, no API key)    #
@@ -485,12 +735,12 @@ NO_EARNINGS_CALL_TICKERS: frozenset[str] = frozenset({"BRK-B", "BRK-A"})
 # ticker; `transcript` returns {symbol, year, quarter, date, content} for one fiscal quarter.
 ROIC_EARNINGS_LIST_URL = "https://api.roic.ai/v2/company/earnings-calls/list/{ticker}"
 ROIC_EARNINGS_TRANSCRIPT_URL = "https://api.roic.ai/v2/company/earnings-calls/transcript/{ticker}"
-ROIC_REQUEST_PAUSE = 12.5              # free tier = 5 req/min -> >= 12s between calls
+ROIC_REQUEST_PAUSE = 12.5  # free tier = 5 req/min -> >= 12s between calls
 
 # per-turn `tag` values in EARNINGS_CALL_EMBEDDING_TABLE
-EARNINGS_CALL_TAG_QUESTION = "question"      # a sell-side analyst turn (asks)
-EARNINGS_CALL_TAG_ANSWER = "answer"          # a management turn answering the current question
-EARNINGS_CALL_TAG_PREPARED = "prepared"      # a prepared-remarks (scripted) management turn
+EARNINGS_CALL_TAG_QUESTION = "question"  # a sell-side analyst turn (asks)
+EARNINGS_CALL_TAG_ANSWER = "answer"  # a management turn answering the current question
+EARNINGS_CALL_TAG_PREPARED = "prepared"  # a prepared-remarks (scripted) management turn
 # Sections we score for tone (the high-signal prose); 'participants'/'full' are skipped
 # for KPIs ('full' stays in the sections table as a format-proof fallback).
 EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")
@@ -517,37 +767,37 @@ FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
 # identifier silently attributes another issuer's holdings to your ticker. Applied as an
 # override so it also corrects a miss already cached in `cusip_ticker_map`.
 CUSIP_TICKER_OVERRIDES: dict[str, str] = {
-    "G0450A105": "ACGL",    # ARCH CAPITAL GROUP LTD          (Bermuda)
-    "G1151C101": "ACN",     # ACCENTURE PLC                   (Ireland)
-    "G0176J109": "ALLE",    # ALLEGION PLC                    (Ireland)
-    "G0250X107": "AMCR",    # AMCOR PLC                       (Jersey)
-    "G0403H108": "AON",     # AON PLC                         (Ireland)
-    "G3265R107": "APTV",    # APTIV PLC                       (Jersey)
-    "H11356104": "BG",      # BUNGE GLOBAL SA                 (Switzerland)
-    "H1467J104": "CB",      # CHUBB LIMITED                   (Switzerland)
-    "143658300": "CCL",     # CARNIVAL CORP                   (US-listed pair of Carnival plc)
-    "G25508105": "CRH",     # CRH PLC                         (Ireland)
-    "26614N102": "DD",      # DUPONT DE NEMOURS INC           (US - absent from the map, not a CINS)
-    "G3223R108": "EG",      # EVEREST GROUP LTD               (Bermuda)
-    "G29183103": "ETN",     # EATON CORP PLC                  (Ireland)
-    "Y2573F102": "FLEX",    # FLEX LTD                        (Singapore)
-    "H2906T109": "GRMN",    # GARMIN LTD                      (Switzerland)
-    "438516106": "HON",     # HONEYWELL INTL INC              (US - absent from the map)
-    "G51502105": "JCI",     # JOHNSON CONTROLS INTERNATIONAL  (Ireland)
-    "G54950103": "LIN",     # LINDE PLC                       (Ireland)
-    "N53745100": "LYB",     # LYONDELLBASELL INDUSTRIES NV    (Netherlands)
-    "G5960L103": "MDT",     # MEDTRONIC PLC                   (Ireland)
-    "G66721104": "NCLH",    # NORWEGIAN CRUISE LINE HLDGS     (Bermuda)
-    "N6596X109": "NXPI",    # NXP SEMICONDUCTORS NV           (Netherlands)
-    "G7S00T104": "PNR",     # PENTAIR PLC                     (Ireland)
-    "V7780T103": "RCL",     # ROYAL CARIBBEAN GROUP           (Liberia)
-    "G8473T100": "STE",     # STERIS PLC                      (Ireland)
-    "G7997R103": "STX",     # SEAGATE TECHNOLOGY HLDGS PLC    (Ireland)
-    "G8267P108": "SW",      # SMURFIT WESTROCK PLC            (Ireland)
-    "G87052109": "TEL",     # TE CONNECTIVITY PLC             (Switzerland/Ireland)
-    "G8994E103": "TT",      # TRANE TECHNOLOGIES PLC          (Ireland)
-    "G96629103": "WTW",     # WILLIS TOWERS WATSON PLC        (Ireland)
-    "30231G102": "XOM",     # EXXON MOBIL CORP                (US - absent from the map)
+    "G0450A105": "ACGL",  # ARCH CAPITAL GROUP LTD          (Bermuda)
+    "G1151C101": "ACN",  # ACCENTURE PLC                   (Ireland)
+    "G0176J109": "ALLE",  # ALLEGION PLC                    (Ireland)
+    "G0250X107": "AMCR",  # AMCOR PLC                       (Jersey)
+    "G0403H108": "AON",  # AON PLC                         (Ireland)
+    "G3265R107": "APTV",  # APTIV PLC                       (Jersey)
+    "H11356104": "BG",  # BUNGE GLOBAL SA                 (Switzerland)
+    "H1467J104": "CB",  # CHUBB LIMITED                   (Switzerland)
+    "143658300": "CCL",  # CARNIVAL CORP                   (US-listed pair of Carnival plc)
+    "G25508105": "CRH",  # CRH PLC                         (Ireland)
+    "26614N102": "DD",  # DUPONT DE NEMOURS INC           (US - absent from the map, not a CINS)
+    "G3223R108": "EG",  # EVEREST GROUP LTD               (Bermuda)
+    "G29183103": "ETN",  # EATON CORP PLC                  (Ireland)
+    "Y2573F102": "FLEX",  # FLEX LTD                        (Singapore)
+    "H2906T109": "GRMN",  # GARMIN LTD                      (Switzerland)
+    "438516106": "HON",  # HONEYWELL INTL INC              (US - absent from the map)
+    "G51502105": "JCI",  # JOHNSON CONTROLS INTERNATIONAL  (Ireland)
+    "G54950103": "LIN",  # LINDE PLC                       (Ireland)
+    "N53745100": "LYB",  # LYONDELLBASELL INDUSTRIES NV    (Netherlands)
+    "G5960L103": "MDT",  # MEDTRONIC PLC                   (Ireland)
+    "G66721104": "NCLH",  # NORWEGIAN CRUISE LINE HLDGS     (Bermuda)
+    "N6596X109": "NXPI",  # NXP SEMICONDUCTORS NV           (Netherlands)
+    "G7S00T104": "PNR",  # PENTAIR PLC                     (Ireland)
+    "V7780T103": "RCL",  # ROYAL CARIBBEAN GROUP           (Liberia)
+    "G8473T100": "STE",  # STERIS PLC                      (Ireland)
+    "G7997R103": "STX",  # SEAGATE TECHNOLOGY HLDGS PLC    (Ireland)
+    "G8267P108": "SW",  # SMURFIT WESTROCK PLC            (Ireland)
+    "G87052109": "TEL",  # TE CONNECTIVITY PLC             (Switzerland/Ireland)
+    "G8994E103": "TT",  # TRANE TECHNOLOGIES PLC          (Ireland)
+    "G96629103": "WTW",  # WILLIS TOWERS WATSON PLC        (Ireland)
+    "30231G102": "XOM",  # EXXON MOBIL CORP                (US - absent from the map)
     # DELIBERATELY NOT MAPPED — resolve these before adding:
     #  * IVZ  — the recovery scan's top hit for "INVESCO" was 46090E103 = the INVESCO QQQ TRUST
     #    ETF, not Invesco Ltd the asset manager. 13F filers hold QQQ enormously, so filer-count
@@ -568,8 +818,8 @@ CUSIP_TICKER_OVERRIDES: dict[str, str] = {
 # each row can carry its OWN `predicts_for` -- the h30 and h90 predictions made on the same day
 # target different future dates, which a wide pred_h30/pred_h60 layout cannot express.
 # `model` values: one per ensemble member, plus these two aggregates.
-PREDICTION_MODEL_ENSEMBLE = "ensemble"      # the per-horizon average of that horizon's members
-PREDICTION_MODEL_BLENDED = "blended"        # the IR-weighted blend ACROSS horizons
+PREDICTION_MODEL_ENSEMBLE = "ensemble"  # the per-horizon average of that horizon's members
+PREDICTION_MODEL_BLENDED = "blended"  # the IR-weighted blend ACROSS horizons
 
 # --------------------------------------------------------------------------- #
 # Data-freshness cadence THRESHOLDS -- declarative metadata, no consumer today. #
@@ -580,12 +830,15 @@ PREDICTION_MODEL_BLENDED = "blended"        # the IR-weighted blend ACROSS horiz
 # source's expected refresh rate. Wire a new consumer to `freshness_tables()`
 # rather than reintroducing a parallel table list here.
 DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
-    "daily": 4, "weekly": 10, "biweekly": 20, "monthly": 45,
-    "quarterly": 140, "yearly": 460,
+    "daily": 4,
+    "weekly": 10,
+    "biweekly": 20,
+    "monthly": 45,
+    "quarterly": 140,
+    "yearly": 460,
 }
 # cadence tiers from the tightest to the loosest (daily -> yearly)
-DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = (
-    "daily", "weekly", "biweekly", "monthly", "quarterly", "yearly")
+DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = ("daily", "weekly", "biweekly", "monthly", "quarterly", "yearly")
 
 # --------------------------------------------------------------------------- #
 # Incremental cube-part builds (Airflow data_aggregation DAG)                  #
@@ -630,13 +883,13 @@ GICS_GROUP_PHARMA_BIOTECH = "Pharmaceuticals, Biotechnology & Life Sciences"
 # `energy` is scoped at sector level: services / refiners simply report no exploration
 # expense or oil&gas property, leaving those KPIs NaN as before.
 SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
-    "bank":       ("industry_group", (GICS_GROUP_BANKS,)),
-    "insurance":  ("industry_group", (GICS_GROUP_INSURANCE,)),
-    "financials": ("sector",         (GICS_SECTOR_FINANCIALS,)),
-    "reit":       ("industry_group", (GICS_GROUP_EQUITY_REITS,)),
-    "energy":     ("sector",         (GICS_SECTOR_ENERGY,)),
-    "utilities":  ("sector",         (GICS_SECTOR_UTILITIES,)),
-    "pharma":     ("industry_group", (GICS_GROUP_PHARMA_BIOTECH,)),
+    "bank": ("industry_group", (GICS_GROUP_BANKS,)),
+    "insurance": ("industry_group", (GICS_GROUP_INSURANCE,)),
+    "financials": ("sector", (GICS_SECTOR_FINANCIALS,)),
+    "reit": ("industry_group", (GICS_GROUP_EQUITY_REITS,)),
+    "energy": ("sector", (GICS_SECTOR_ENERGY,)),
+    "utilities": ("sector", (GICS_SECTOR_UTILITIES,)),
+    "pharma": ("industry_group", (GICS_GROUP_PHARMA_BIOTECH,)),
 }
 
 # --------------------------------------------------------------------------- #

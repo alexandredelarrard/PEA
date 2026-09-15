@@ -64,7 +64,7 @@ Ordered by size. `tickers` = distinct non-null tickers.
 |---|---|---|---|---|---|---|
 | `earning_calls_embedding` | 1,375,495 | **8.6 GB** | 13 | 494 | `as_of` | 2005-10-30 → 2026-07-24 |
 | `prices` | 1,777,827 | — | — | **500** | `date` | 2011-08-19 → 2026-08-19 *(08-26)* |
-| `sec13f_hr` | 21,659,435 | **6.1 GB** | 15 | 497 | `period` | 1987-03-31 → 2026-03-31 |
+| `sec13f_hr` | 23,801,899 | **6.2 GB** | 15 | 501 | `period` | 1987-03-31 → 2026-06-30 *(09-14)* |
 | `earnings_call_sections` | 109,899 | 1.5 GB | 6 | 494 | `as_of` | 2005-10-13 → 2026-07-24 |
 | `sec_filing_text` | 34,127 | 1.2 GB | 9 | 498 | `filed` | 2011-07-27 → 2026-08-03 |
 | `insider_transactions` | **2,014,745** | — | **38** | **491** | `transaction_date` | 2006-01-03 → **2026-03-31** *(09-11, post identity screen)* |
@@ -128,16 +128,19 @@ Ordered by size. `tickers` = distinct non-null tickers.
 
 ## Coverage gotchas worth knowing before you build a feature
 
-- **⚠ `sec13f_hr` has TWO BROKEN QUARTERS, and counting tickers will never show you.**
-  Measured 2026-09-09 by `scripts/source_coverage_report.py`: **2023-12-31 holds 463 distinct
-  managers** and **2025-06-30 holds 254**, against ~6,200 and ~7,300 in the quarters either side
-  — 13x and 29x short. Ticker counts stay at 492–499 throughout, so every ticker-based coverage
-  check passes; only the MANAGER axis exposes it. Both look like interrupted fetches, not SEC
-  gaps, since the neighbouring quarters are healthy. **Any feature that differences consecutive
-  quarters — breadth, concentration, QoQ deltas, add/reduce/exit inference — will read those
-  drops as managers exiting the name.** Four quarterly transitions are affected. Re-fetch those
-  quarters or exclude the transitions explicitly. This is separate from, and much sharper than,
-  the known structural 2013-06-30 break (41.4 → 555.9 managers per ticker).
+- **⚠ `sec13f_hr` COVERAGE IS COUNTED ON MANAGERS, NEVER ON TICKERS.** Two quarters were once
+  13x and 29x short of their neighbours (2023-12-31 at 463 distinct managers, 2025-06-30 at 254)
+  while their ticker counts sat at a healthy 492–499 — so every ticker-based coverage check
+  passed and only the MANAGER axis exposed it. Both were interrupted fetches, and both were
+  refilled on 2026-09-14 by `thirteen-f --filing-window`, which walks a window explicitly
+  instead of reading the watermark (a gap BEHIND `max(filing_date) - lookback_days` is
+  structurally unreachable by the incremental path, which is why they survived so long).
+  Measured after the refill: **no calendar month between `min` and `max(filing_date)` is empty**,
+  and `_coverage_periods` reports **0 hole quarters**. `validate institutionals` check **V13a**
+  now scores this axis every run so the next one is caught rather than discovered.
+  ⚠ The manager counts are still the thing to look at: `scripts/source_coverage_report.py`
+  regenerates the series, and the one real discontinuity that remains is the structural
+  2013-06-30 regime start (41.4 → 555.9 managers per ticker).
 - **`sec_13g` has a structured-data CLIFF at 2024-12-17, and it is the same one as `sec_13d`.**
   Before that date the SEC accepted Schedule 13G as unstructured text, so the numeric block is
   effectively empty: `percent_of_class`, `aggregate_amount` and the four voting/dispositive power

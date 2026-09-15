@@ -140,6 +140,46 @@ build_cube:
                              # spread from +1.97pp to +0.63pp. Raise it only alongside a
                              # slice-basis score.
 
+    # THE 13F AVAILABILITY GRID (D1). A 13F period is public only once it is filed, so each
+    # `(ticker, period)` is first published at its availability date over the filings public
+    # by then, and re-emitted on each later date a material filing arrives. Both dials trade
+    # STALENESS against COMPLETENESS, which is why they are here and not only in
+    # `constants.py` -- the constants are the declared defaults and carry the full sweep
+    # tables that sized them.
+    f13_settle_trading_days: 3   # trading days past the 45-day deadline SNAPPED FORWARD onto
+                                 # the trading calendar (the 45th day is not a session on 13
+                                 # of 53 quarters). Measured on SHARES -- a raw `value_usd`
+                                 # sweep is contaminated by the 1000x unit defect and reads
+                                 # 2020-12-31 as 33% complete against the true 91%.
+                                 # ⚠ 3 IS NOT THE COMPLETENESS KNEE (that is 1, which
+                                 # collects the weekend population: 9 quarters below 90%
+                                 # complete -> 4). 3 is where the NAIVE quarter-on-quarter
+                                 # difference overtakes a matched sample as an estimator of
+                                 # the fully-revised truth -- median absolute error, two
+                                 # disjoint ticker samples agreeing:
+                                 #   N=0  naive 4.05pp  matched 2.03pp
+                                 #   N=2  naive 2.19pp  matched 2.01pp
+                                 #   N=3  naive 1.83pp  matched 2.01pp  <- here
+                                 #   N=4  naive 1.58pp  matched 2.00pp
+                                 # Matched is FLAT (it cancels the maturity mismatch and is
+                                 # then stuck with early-filer selection); naive improves
+                                 # monotonically. So 3 is what makes "no matched-sample
+                                 # self-join" measured rather than inherited. Realised lag
+                                 # p50 50 calendar days.
+                                 # ⚠ RAISING IT PAST ~10 breaks the emission-window ordering
+                                 # `_assert_emission_windows_ordered` guards, because the
+                                 # revision window still runs to period+105d.
+    f13_revision_min_move: 0.001 # a revision is emitted only when the new filings move the
+                                 # ticker's aggregate share count by at least this fraction
+                                 # of the last EMITTED aggregate. Safe because every emission
+                                 # is CUMULATIVE: an immaterial date is deferred to the next
+                                 # emission, never dropped. Measured emission size --
+                                 #   0.02%  152,441 rows   99.967% of shares on their own date
+                                 #   0.10%   98,911 rows   99.866%                  <- here
+                                 #   1.00%   46,709 rows   99.285%
+                                 # against 312,138 ungated availability dates and 23,406
+                                 # ticker-quarters.
+
     coverage_break_pct: 0.50 # D17. A quarter-on-quarter move larger than this in the
                              # universe-wide 13F FILER COUNT is a coverage discontinuity, not
                              # a market event, and every QoQ delta that quarter is nulled.

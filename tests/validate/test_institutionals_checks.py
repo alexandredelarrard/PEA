@@ -94,24 +94,46 @@ def test_availability_check_ignores_a_family_with_no_measured_floor():
     assert result.status == iv.PASS and result.detail == []
 
 
-def test_first_period_delta_must_be_nan_on_the_first_13f_deadline():
-    """L10 / D17. 2013-06-30 has no prior quarter; a value there is a universe-wide phantom."""
-    dates = pd.bdate_range("2013-08-12", periods=6)
-    panel = _panel({"f_ic_inst_breadth_chg": [0.4] * 6}, dates=dates, tickers=("AAA", "BBB"))
+def test_first_period_delta_must_be_nan_on_the_first_13f_availability_date():
+    """L10 / D17. 2013-06-30 has no prior quarter; a value there is a universe-wide phantom.
+
+    ⚠ THE DATE SCORED IS THE AVAILABILITY DATE, NOT THE BARE DEADLINE, and the fixture is
+    built to prove the check moved with the builder. 2013-06-30's deadline is 2013-08-14; the
+    first emission is three trading sessions later, 2013-08-19. A panel nulled only to
+    2013-08-14 -- which is what the pre-availability fixture did -- must still FAIL, because
+    the phantom delta now lands on the 19th."""
+    dates = pd.bdate_range("2013-08-12", periods=10)
+    availability = iv.availability_date(pd.DatetimeIndex([iv.FIRST_13F_PERIOD]), dates).iloc[0]
+    assert availability == pd.Timestamp("2013-08-19"), availability
+
+    panel = _panel({"f_ic_inst_breadth_chg": [0.4] * 10}, dates=dates, tickers=("AAA", "BBB"))
     result = iv.leak_first_period_delta(panel)
     assert result.status == iv.FAIL and result.blocking
 
+    deadline_only = panel.copy()
+    deadline_only.loc[deadline_only["date"] <= "2013-08-14", "f_ic_inst_breadth_chg"] = np.nan
+    assert iv.leak_first_period_delta(deadline_only).status == iv.FAIL, \
+        "nulling to the bare deadline must not satisfy a check scored on the availability date"
+
     clean = panel.copy()
-    clean.loc[clean["date"] <= "2013-08-14", "f_ic_inst_breadth_chg"] = np.nan
+    clean.loc[clean["date"] <= availability, "f_ic_inst_breadth_chg"] = np.nan
     assert iv.leak_first_period_delta(clean).status == iv.PASS
+
+    print("\n=== SANITY CHECK: L10 scores the availability date, not the deadline ===")
+    print(f"  2013-06-30 deadline 2013-08-14 -> first emission {availability.date()}; a panel "
+          f"nulled only to the deadline still FAILS, nulled to {availability.date()} PASSES. "
+          "Validated.")
 
 
 def test_13f_lag_fails_on_a_cohort_step_that_is_not_a_deadline():
     """L2 as a STEP-date test: a forward-filled panel is non-null on period+44d by design, so
     "NaN before the deadline" is untestable. What must not happen is a step on the wrong day."""
     dates = pd.bdate_range("2025-04-01", periods=60)
-    periods = pd.Series([pd.Timestamp("2025-03-31")])  # deadline 2025-05-15
+    periods = pd.Series([pd.Timestamp("2025-03-31")])  # deadline 2025-05-15, +3 sessions
     tickers = tuple(f"T{i}" for i in range(10))
+    availability = iv.availability_date(pd.DatetimeIndex([pd.Timestamp("2025-03-31")]),
+                                        dates).iloc[0]
+    assert availability == pd.Timestamp("2025-05-20"), availability
 
     early = [1.0 if d < pd.Timestamp("2025-05-02") else 2.0 for d in dates]
     result = iv.leak_13f_lag(_panel({"f_ic_inst_holders": early}, dates=dates, tickers=tickers),
@@ -119,14 +141,19 @@ def test_13f_lag_fails_on_a_cohort_step_that_is_not_a_deadline():
     assert result.status == iv.FAIL and result.blocking
     assert result.detail[0]["first_off_deadline"] == "2025-05-02"
 
-    late = [1.0 if d < pd.Timestamp("2025-05-15") else 2.0 for d in dates]
-    assert iv.leak_13f_lag(_panel({"f_ic_inst_holders": late}, dates=dates, tickers=tickers),
-                           periods).status == iv.PASS
+    on_availability = [1.0 if d < availability else 2.0 for d in dates]
+    assert iv.leak_13f_lag(_panel({"f_ic_inst_holders": on_availability}, dates=dates,
+                                  tickers=tickers), periods).status == iv.PASS
 
 
 def test_13f_lag_does_not_fail_a_price_scaled_feature():
     """A `*_to_mcap` leg moves every day because its denominator is a close. It has no step
-    dates to place, so calling that a leak would be wrong -- it is reported as daily."""
+    dates to place, so calling that a leak would be wrong -- it is reported as daily.
+
+    ⚠ AND A PANEL MADE ENTIRELY OF SUCH LEGS NOW SKIPS RATHER THAN PASSING, which is the
+    non-vacuity half of L2: the check placed zero step dates, so it has no evidence and a
+    green light would be unearned. On the live panel most `inst` raw legs do step, so this
+    SKIP is a property of the fixture, not of the build."""
     dates = pd.bdate_range("2025-04-01", periods=60)
     rng = np.random.default_rng(5)
     walk = (1.0 + rng.normal(0, 0.01, 60)).cumprod().tolist()
@@ -134,8 +161,21 @@ def test_13f_lag_does_not_fail_a_price_scaled_feature():
         _panel({"f_ic_inst_value_to_mcap": walk}, dates=dates,
                tickers=tuple(f"T{i}" for i in range(10))),
         pd.Series([pd.Timestamp("2025-03-31")]))
-    assert result.status == iv.PASS
+    assert result.status == iv.SKIP, result.measured
     assert result.detail[0]["verdict"].startswith("daily")
+    assert "0 leg(s) with a cohort step to place" in result.measured, result.measured
+
+    # the same panel with ONE stepping leg beside it: now there is evidence, so it scores
+    availability = iv.availability_date(pd.DatetimeIndex([pd.Timestamp("2025-03-31")]),
+                                        dates).iloc[0]
+    both = _panel({"f_ic_inst_value_to_mcap": walk,
+                   "f_ic_inst_holders": [1.0 if d < availability else 2.0 for d in dates]},
+                  dates=dates, tickers=tuple(f"T{i}" for i in range(10)))
+    scored = iv.leak_13f_lag(both, pd.Series([pd.Timestamp("2025-03-31")]))
+    assert scored.status == iv.PASS, scored.measured
+    print("\n=== SANITY CHECK: L2 non-vacuity ===")
+    print(f"  a price-scaled leg alone -> {result.status}; add one stepping leg -> "
+          f"{scored.status}. A check with nothing to place no longer reports green. Validated.")
 
 
 def test_event_date_stamping_passes_by_construction_when_the_column_is_unread():
@@ -388,15 +428,19 @@ def test_r4_excludes_the_hole_quarters_it_would_otherwise_compare_across():
                          if m < n_held else "BBB", "shares": 100.0})
     holdings = pd.DataFrame(rows)
 
-    # the panel: each quarter's own share, except the hole, which holds the prior quarter's
-    dates, values = [], []
+    # The panel: each quarter's own share from its AVAILABILITY DATE, except the hole, which
+    # holds the prior quarter's. ⚠ A CONTINUOUS TRADING GRID, not three days per quarter:
+    # `availability_date` counts the settle in SESSIONS OF THIS GRID, so on a sparse fixture
+    # the buffer steps into the next quarter and the check scores the wrong row.
+    grid = pd.bdate_range("2015-04-01", "2016-04-01")
+    availability = iv.availability_date(
+        pd.DatetimeIndex([pd.Timestamp(p) for p in periods]), grid)
     shares = [held[0] / pool[0], held[1] / pool[1], held[1] / pool[1], held[3] / pool[3]]
+    values = np.full(len(grid), np.nan)
     for p, share in zip(periods, shares):
-        deadline = pd.Timestamp(p) + pd.Timedelta(days=iv.F13_LAG_DAYS)
-        for k in range(3):
-            dates.append(deadline + pd.Timedelta(days=k))
-            values.append(share)
-    panel = pd.DataFrame({"date": dates, "ticker": "AAA", "f_ic_inst_holders": values})
+        values[grid >= availability[pd.Timestamp(p)]] = share
+    panel = pd.DataFrame({"date": grid, "ticker": "AAA",
+                          "f_ic_inst_holders": values}).dropna()
 
     res = iv.reconcile_holder_count(panel, holdings, samples=50)
     drawn = {r["period"] for r in (res.detail or [])}
@@ -543,3 +587,59 @@ def test_v13_ignores_the_partial_first_and_last_buckets():
     print("\n=== SANITY CHECK: V13a boundary handling ===")
     print(f"  {first} and {last} cut to 1 row each. {res.measured} -- both dropped as partial, "
           f"so the check does not fail on its own window edges. Validated.")
+
+
+# --------------------------------------------------------------------------- V14
+
+
+def _seasons(profile: list[tuple[str, int, int]]) -> pd.DataFrame:
+    """`(period, big-filer lag in days past the deadline, small-filer count)` -> holdings.
+
+    Every quarter holds `n_small` filers of 10 shares each plus one `BIG` filer of 900, so the
+    BIG filer's own lateness is what moves the share-weighted coverage while the filer COUNT
+    barely notices -- which is the asymmetry V14 exists to see.
+    """
+    rows = []
+    for period, big_lag, n_small in profile:
+        deadline = pd.Timestamp(period) + pd.Timedelta(days=45)
+        for i in range(n_small):
+            rows.append({"cik": f"S{i}", "period": pd.Timestamp(period), "ticker": "AAA",
+                         "filing_date": deadline - pd.Timedelta(days=5), "shares": 10.0,
+                         "value_usd": 10.0})
+        rows.append({"cik": "BIG", "period": pd.Timestamp(period), "ticker": "AAA",
+                     "filing_date": deadline + pd.Timedelta(days=big_lag), "shares": 900.0,
+                     "value_usd": 900.0})
+    return pd.DataFrame(rows)
+
+
+def test_v14_fires_on_a_quarter_that_was_thin_at_its_own_availability_date():
+    """V14. A quarter whose 13F coverage at its availability date is below the floor must FAIL,
+    and a quarter that merely has a late SMALL filer must not.
+
+    ⚠ THE FIXTURE IS BUILT SO THE FILER COUNT CANNOT SEE THE DEFECT. In the thin quarter 9 of
+    10 filers reported on time -- a count-based check reads 90% and passes -- but the absentee
+    held 90% of the prior quarter's shares. That is the live failure shape: on `sec13f_hr` the
+    filer-count basis never falls below 96.67% while the share-weighted basis reaches 82.58%.
+    """
+    grid = pd.bdate_range("2021-01-01", "2023-06-30")
+    # 2022-06-30 is the thin one: BIG files 85 days past the deadline, so it is inside the
+    # `[-45, +60]` band's successor window but well past the availability date.
+    thin = iv.value_availability_coverage(
+        _seasons([("2022-03-31", 5, 9), ("2022-06-30", 85, 9)]), grid)
+    assert thin.status == iv.FAIL and thin.blocking, thin.measured
+    assert thin.detail[0]["period"] == "2022-06-30"
+    assert thin.detail[0]["coverage_pct"] < 100 * iv.F13_COVERAGE_FLOOR
+
+    # the same shape with BIG on time: the coverage is complete and the check passes
+    healthy = iv.value_availability_coverage(
+        _seasons([("2022-03-31", 5, 9), ("2022-06-30", 2, 9)]), grid)
+    assert healthy.status == iv.PASS, healthy.measured
+
+    # and with no trading calendar there is no availability date to score against
+    assert iv.value_availability_coverage(
+        _seasons([("2022-03-31", 5, 9)]), None).status == iv.SKIP
+
+    print("\n=== SANITY CHECK: V14 availability coverage ===")
+    print(f"  one mega-filer 85 days late -> {thin.detail[0]['coverage_pct']}% coverage, "
+          f"{thin.status} (floor {iv.F13_COVERAGE_FLOOR:.0%}); the same filer on time -> "
+          f"{healthy.status}. A filer COUNT reads 90% in both cases. Validated.")

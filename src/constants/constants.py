@@ -87,6 +87,87 @@ SEC_13F_FILING_LAG_DAYS = 45
 F13_MAX_EARLY_DAYS = 45
 F13_MAX_LATE_DAYS = 60
 
+# The 13F AVAILABILITY DATE, in TRADING days past the snapped deadline.
+#
+# The statutory deadline is `period + 45 calendar days`, but the 45th day is not a trading
+# day on 13 of 53 quarters (measured 2026-09-15 against `cube_part_prices`' own calendar: 6
+# Saturdays, 7 Sundays) and the deadline crowd then files on the next session. So the
+# availability date is the deadline SNAPPED FORWARD onto the trading calendar, then advanced
+# this many trading days -- the same snap `decay.snap_to_grid` applies to any event date that
+# misses a session. `availability.availability_date` is the one declaration of that rule.
+#
+# ⚠ SIZED ON SHARES, NEVER ON `value_usd`. A share count carries neither the 1000x unit
+# defect `value_basis` repairs nor a price move; on 2020-12-31 the raw-value basis reads the
+# quarter 33.2% complete and shares read 91.3%, so a sweep on raw value picks the wrong N.
+#
+# Swept 2026-09-15 on the in-universe, banded frame (1,053,978 (ticker, period, filing_date)
+# groups, 489 tickers, 53 quarters), scoring each quarter's SHARES public at its own
+# availability date against its final banded total:
+#
+#     settle N   quarters <90%   <95%   <97%   p50 complete   realised lag (p50)
+#            0               9     23     39         95.71%         45d
+#            1               4     16     29         96.66%         46d
+#            2               4     15     27         96.85%         49d
+#            3               4     14     23         97.64%         50d
+#            4               4     11     21         97.87%         51d
+#            5               4     11     18         98.38%         52d
+#
+# ⚠ THERE IS NO COMPLETENESS KNEE PAST N=1, AND THAT IS NOT WHAT SIZES THIS CONSTANT. N=1
+# collects the weekend population (9 bad quarters -> 4) and everything after it buys the
+# middle of the distribution smoothly. What picks 3 is the DELTA BASIS: the first
+# publication's `shares_chg` is compared against the fully-revised truth on two bases --
+# naive (`q` at first publication against a revised `q-1`) and a matched sample (both sides
+# cut to the filers public at `q`'s first publication) -- and 3 is exactly where naive
+# overtakes matched. Measured on two DISJOINT ticker samples (61 tickers / 3.06M filer-rows,
+# 122 tickers / 5.25M), median absolute error in percentage points:
+#
+#     settle N    naive   matched   winner     (122-ticker sample)
+#            0    4.053     2.034   matched
+#            1    2.699     2.016   matched
+#            2    2.194     2.014   matched
+#            3    1.825     2.012   NAIVE
+#            4    1.581     2.003   NAIVE
+#
+# The matched sample is FLAT at ~2.01pp regardless of N (it cancels the maturity mismatch by
+# construction and is then stuck with the early-filer selection bias); naive improves
+# monotonically and crosses at 3. Both samples give the same crossover. So N=3 is the
+# smallest buffer at which the simple naive difference is the better estimator -- which is
+# what makes "no matched-sample self-join" a measured decision instead of an inherited one.
+#
+# ⚠ THE FOUR RESIDUAL QUARTERS ARE ONE FILER, NOT A DATA GAP AND NOT THE CALENDAR.
+# 2017-06-30 (85.2%), 2018-09-30 (86.5%), 2019-06-30 (85.9%) and 2023-09-30 (85.3%) are the
+# quarters VANGUARD (CIK 0000102909) or BLACKROCK (0001364742) filed late: one filer, 18.9bn
+# to 30.2bn shares, arriving on day 54-79. Each quarter reaches 99.7-100% inside the
+# `[-45, +60]` band, so nothing is lost -- those shares enter the panel on the day they were
+# actually filed, through the revision mechanism. No settle buffer can reach them and none
+# should try.
+F13_SETTLE_TRADING_DAYS = 3
+
+# The materiality gate on a REVISION. A period is first published at its availability date
+# and re-emitted on each later date one of its filings arrives, but only when the new filings
+# move the ticker's aggregate share count by at least this fraction of the last EMITTED
+# aggregate.
+#
+# ⚠ THE GATE IS SAFE ONLY BECAUSE THE AGGREGATE IS CUMULATIVE. Skipping an immaterial
+# revision date DELAYS those filings to the next emitted date; it never drops them, because
+# every emission sums every filing public at its own date. Do not "fix" this into a filter.
+#
+# Measured 2026-09-15 (in-universe, banded, `F13_SETTLE_TRADING_DAYS = 3`). 23,406
+# ticker-quarters carry 312,138 distinct availability dates between them, and 3.34% of shares
+# sit behind their period's first publication:
+#
+#     threshold   emit rows   of which revisions   shares emitted on their own date
+#       0.02%       152,441             129,035        99.967%
+#       0.05%       120,725              97,319        99.924%
+#       0.10%        98,911              75,505        99.866%
+#       0.20%        80,516              57,110        99.771%
+#       1.00%        46,709              23,303        99.285%
+#
+# 0.10% takes the emission from 312k rows to 99k -- against 23.4k under a one-stamp-per-period
+# rule -- and still stamps 99.866% of shares on the date they became public. The 0.13% it
+# defers is deferred by one revision, not lost.
+F13_REVISION_MIN_MOVE = 0.001
+
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 # EDGAR company-name search (atom): the authoritative NAME -> CIK lookup. Filtered to
 # 13F-HR filers so a fund name resolves to its institutional-manager CIK. {company}

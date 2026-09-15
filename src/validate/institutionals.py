@@ -33,11 +33,15 @@ from dataclasses import field as dataclass_field
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import F13_MAX_LATE_DAYS, SEC_13F_FILING_LAG_DAYS
+from src.data_aggregate.utils.institutionals.availability import availability_date
 from src.data_aggregate.utils.institutionals.institutional_features import (  # noqa: E402
     COVERAGE_BREAK_DEFAULT,
     INST_LEVEL_FLOOR_PERIOD,
+    _availability_coverage,
     _coverage_periods,
 )
+from src.data_aggregate.utils.institutionals.institutional_features import _stamp_availability as _stamp_13f_availability
 from src.data_aggregate.utils.institutionals.institutional_features import clean_holdings as clean_13f_holdings
 
 #: Coverage floor (D14). Applied to a feature's non-null share INSIDE its own availability
@@ -66,9 +70,29 @@ SHOULDER_HEALTHY = (1.6, 2.5)
 #: peer-unrankable and belongs on `raw+xs`.
 DEGENERATE_MAX = 0.20
 
-#: 13F availability: the filing deadline is 45 calendar days after the period end, and the
-#: panel must not move before it.
-F13_LAG_DAYS = 45
+#: The 13F families take the AVAILABILITY DATE of their earliest period as their floor, not a
+#: fixed day offset: `availability_date` snaps the `period + SEC_13F_FILING_LAG_DAYS` deadline
+#: forward onto the trading calendar and then adds the settle buffer, and neither step is
+#: expressible as a `Timedelta`. This sentinel stands in `FAMILY_SOURCES`' lag slot to say
+#: "call the shared function", so the rule stays declared in exactly one place.
+#:
+#: ⚠ IT IS STRICTLY LATER THAN THE OLD `period + 45d`, SO IT CAN ONLY CATCH MORE. A floor that
+#: moved EARLIER would be the dangerous direction; this one moves the bar up by 2-5 days.
+F13_AVAILABILITY = "13f-availability"
+
+#: V14. A quarter whose 13F coverage at its own availability date falls below this is too thin
+#: to publish an aggregate from -- the "stamp a 16%-complete quarter and forward-fill it for
+#: 90 days" failure mode, which is what this check exists to make impossible to reintroduce
+#: silently. Scored on `_availability_coverage`: the share of the PREVIOUS quarter's 13F SHARES
+#: held by filers that have reported for this quarter by its availability date.
+#:
+#: Measured 2026-09-15 over 52 quarters (in-universe, banded, settle 3): p50 96.12%, p05
+#: 85.52%, min 82.58% (2026-03-31), 10 quarters below 90% and NONE below 80%. So 0.70 clears
+#: the worst live quarter by 1.18x and still fires on anything resembling the 15.6%-36.0%
+#: readings the bare deadline used to produce. A floor at 0.90 would fire on ten healthy
+#: quarters; the four worst of those are one late mega-filer each (Vanguard / BlackRock) and
+#: are not a data defect.
+F13_COVERAGE_FLOOR = 0.70
 
 #: V13. A bucket carrying less than this share of its OWN calendar position's median is a
 #: fetch hole, not a quiet season. A fraction, never an absolute floor: a 13F season is two
@@ -129,15 +153,15 @@ FEATURE_FLOORS: dict[str, pd.Timestamp] = {
 #: The two DERIVED families take the floor of the source they are derived FROM: a conditioning
 #: feature cannot exist before the disclosure it dates from, and a cross-source count cannot
 #: exist before the earliest of its four inputs (13G, 1996).
-FAMILY_SOURCES: dict[str, tuple[str, str, int]] = {
-    "f_ic_inst_": ("sec13f_hr", "period", F13_LAG_DAYS),
-    "f_ic_super_": ("sec13f_manager_holdings", "period", F13_LAG_DAYS),
+FAMILY_SOURCES: dict[str, tuple[str, str, int | str]] = {
+    "f_ic_inst_": ("sec13f_hr", "period", F13_AVAILABILITY),
+    "f_ic_super_": ("sec13f_manager_holdings", "period", F13_AVAILABILITY),
     "f_ic_insider_": ("insider_transactions", "filing_date", 0),
     "f_ic_act_": ("sec_13d", "filing_date", 0),
     "f_ic_bo_": ("sec_13g", "filing_date", 0),
     "f_ic_shortvol_": ("sec_short_interest", "date", 0),
     "f_ic_ftd_": ("sec_fails_to_deliver", "date", 0),
-    "f_ic_sig_super_": ("sec13f_manager_holdings", "period", F13_LAG_DAYS),
+    "f_ic_sig_super_": ("sec13f_manager_holdings", "period", F13_AVAILABILITY),
     "f_ic_sig_insider_": ("insider_transactions", "filing_date", 0),
     "f_ic_sig_act_": ("sec_13d", "filing_date", 0),
     # ⚠ `sec_13d`, NOT `sec_13g`. The cross-source count exists as soon as ANY of its four
@@ -222,7 +246,7 @@ SKIPPED: tuple[tuple[str, str, str, str], ...] = (
     (
         "L2",
         "leakage",
-        "13F invisible on period+44d, visible on period+45d",
+        "13F invisible before its availability date, visible on it",
         "Implemented as L2 below; it is the only 13F leak check that runs today.",
     ),
     (
@@ -577,6 +601,96 @@ def value_filing_coverage(check_id: str, holdings: pd.DataFrame | None, table_na
         ),
         expected=f"0 (every bucket >= {floor:.0%} of the median for its calendar position)",
         detail=holes,
+        blocking=True,
+    )
+
+
+def value_availability_coverage(
+    holdings: pd.DataFrame | None, trading_index: pd.DatetimeIndex | None, floor: float = F13_COVERAGE_FLOOR
+) -> CheckResult:
+    """V14 -- no 13F quarter publishes an aggregate that was too thin at its availability date.
+
+    ⚠ THIS IS THE CHECK FOR THE FAILURE MODE THAT WENT UNSEEN THE LONGEST. Under the bare
+    `period + 45d` stamp the panel published, on day 45, whatever had been filed by then --
+    and `fundamentals_to_daily` forward-filled it for the next ~90 days. On the quarters whose
+    45th day is a weekend that was a 15.6%-36.0%-complete aggregate carried as the quarter's
+    truth, and nothing in the build or the check suite said a word: the TICKER count in those
+    quarters is normal, the FILER count is normal (measured: it never falls below 96.67%), and
+    only a SHARE-weighted measure moves at all. The availability grid fixes the cause; this
+    scores the symptom so it cannot come back quietly.
+
+    ⚠ WEIGHTED BY THE PRIOR QUARTER'S SHARES, WHICH IS WHAT MAKES IT POINT-IN-TIME, and
+    weighted by SHARES rather than value, which is what makes it immune to the 1000x unit
+    defect and to price moves. `_availability_coverage` is the builder's own function -- this
+    check reads it rather than restating the definition.
+
+    Scored on the RAW table through the builder's cleaner, so a fetch gap shows up here as
+    well as in V13: a quarter nobody filed for reads near zero on this axis too.
+    """
+    if holdings is None or holdings.empty or trading_index is None or not len(trading_index):
+        return CheckResult(
+            "V14",
+            "value-sanity",
+            "13F availability coverage",
+            SKIP,
+            measured="no `sec13f_hr` read, or no trading calendar to snap the availability date onto",
+        )
+    src = clean_13f_holdings(holdings)
+    src = src.loc[src["period"] >= INST_LEVEL_FLOOR_PERIOD]
+    if src.empty or "filing_date" not in src.columns:
+        return CheckResult(
+            "V14",
+            "value-sanity",
+            "13F availability coverage",
+            SKIP,
+            measured=(
+                f"no 13F period at or after the D16 level floor ({INST_LEVEL_FLOOR_PERIOD.date()})"
+                if src.empty
+                else "`filing_date` was not projected, so no filing can be placed against an availability date"
+            ),
+        )
+    src = _stamp_13f_availability(src, trading_index)
+    coverage = _availability_coverage(src)
+    if coverage.empty:
+        # ⚠ NAME THE PROJECTION, because that is what went wrong the first time this ran. The
+        # diagnostic is weighted by `shares`, and `clean_holdings` zero-fills a numeric leg the
+        # read did not project -- so a missing column reads as a complete absence of data.
+        zero_shares = float(pd.to_numeric(src["shares"], errors="coerce").abs().sum()) == 0.0
+        return CheckResult(
+            "V14",
+            "value-sanity",
+            "13F availability coverage",
+            SKIP,
+            measured=(
+                "`shares` is all zero on this read -- project it (`clean_holdings` zero-fills "
+                "a missing numeric leg), or this check has nothing to weight by"
+                if zero_shares
+                else "no quarter has a PRIOR quarter to weight against"
+            ),
+        )
+
+    rows = [
+        {
+            "period": str(pd.Timestamp(p).date()),
+            "coverage_pct": round(100.0 * float(v), 2),
+            "verdict": "THIN" if v < floor else "ok",
+        }
+        for p, v in coverage.sort_values().items()
+    ]
+    thin = [r for r in rows if r["verdict"] == "THIN"]
+    return CheckResult(
+        "V14",
+        "value-sanity",
+        "13F availability coverage (prior-quarter SHARE-weighted)",
+        FAIL if thin else PASS,
+        measured=(
+            f"{len(thin)} of {len(coverage)} quarter(s) below {floor:.0%}; "
+            f"median {100.0 * float(coverage.median()):.2f}%, min "
+            f"{100.0 * float(coverage.min()):.2f}% on {pd.Timestamp(coverage.idxmin()).date()}"
+            + (" -> " + ", ".join(f"{r['period']}={r['coverage_pct']}%" for r in thin[:8]) if thin else "")
+        ),
+        expected=f"every quarter >= {floor:.0%} of the prior quarter's 13F shares reported by its availability date",
+        detail=thin or rows[:20],
         blocking=True,
     )
 
@@ -1039,7 +1153,9 @@ def leak_availability(panel: pd.DataFrame, family_floors: dict[str, pd.Timestamp
     """L1 + L9 -- no feature carries a value before its family's source could have been public.
 
     The floor is MEASURED from the source table, never declared here: 13F families take
-    `min(period) + 45 calendar days`, filing-space families take `min(filing_date)`. A
+    `availability_date(min(period))` -- the statutory deadline snapped onto the trading
+    calendar plus the settle buffer, which is 2-5 days LATER than the bare `min(period) + 45d`
+    and can therefore only catch more -- and filing-space families take `min(filing_date)`. A
     hand-written effective-start table is a second declaration and would be wrong the first
     time a source is backfilled.
     """
@@ -1077,9 +1193,9 @@ def leak_availability(panel: pd.DataFrame, family_floors: dict[str, pd.Timestamp
 
 
 def leak_13f_lag(panel: pd.DataFrame, periods: pd.Series, cohort: float = 0.20, tolerance: int = 3, daily_share: float = 0.50) -> CheckResult:
-    """L2 -- a 13F feature may only STEP on a filing deadline (`period + 45 days`).
+    """L2 -- a 13F feature may only STEP on an availability date (`availability_date(period)`).
 
-    ⚠ THE PLAN'S WORDING IS NOT TESTABLE AS WRITTEN. "NaN on period+44d, non-NaN on +45d" is
+    ⚠ THE PLAN'S WORDING IS NOT TESTABLE AS WRITTEN. "NaN before the date, non-NaN on it" is
     not what a forward-filled panel does: the feature carries the PREVIOUS quarter's value
     throughout and is non-null all along. What a leak would actually look like is a STEP on the
     wrong day, so the check finds the days on which a cohort of tickers changed value at once
@@ -1089,27 +1205,48 @@ def leak_13f_lag(panel: pd.DataFrame, periods: pd.Series, cohort: float = 0.20, 
     denominator is a close. Those are separated out as `daily` and REPORTED, not failed -- a
     daily-moving feature has no step dates to place, and calling it a leak would be wrong.
 
-    ⚠ THE TWO 13F FAMILIES OBEY DIFFERENT RULES, and scoring them alike was a check defect that
-    failed six correct features on the 2026-09-12 run. `ic_inst_*` is stamped on the DEADLINE
-    (the documented departure from registry 0.5 -- a 3,000-filer aggregate cannot go on a
-    per-filer availability grid), so its steps must land ON a deadline. `ic_super_*` is stamped
-    on the AVAILABILITY GRID, `max(deadline, filing_date)`, because Phase 2.2 measured the
-    deadline stamp leaking on 16.5% of filings / 36.7% of value for that family and fixed it.
-    A late elite filer therefore SHOULD produce a step after the deadline -- 2015-07-23 for a
-    2015-03-31 period, whose deadline was 2015-05-15. What must never happen there is a step
-    BEFORE the deadline, so that is what is scored: on-deadline for `inst`, not-early for
-    `super`.
+    ⚠ THE `inst` RULE IS AN EMISSION **WINDOW**, NOT A SINGLE DATE, AND THE FIRST DRAFT OF
+    THIS CHECK GOT THAT WRONG -- measured 2026-09-15, it failed 9 correct legs on 171-184
+    cohort step dates each. The reasoning that failed was: "a revision is one late filer, so
+    it moves a few tickers and never forms a cohort". **A 13F is ONE filing covering a
+    manager's whole book.** The off-date steps resolve to single filers covering 227, 297 and
+    347 S&P names on one day (2013-12-04, 2013-08-27, 2013-09-17) -- so one late mega-filer IS
+    a universe-wide cohort step, on a date that is entirely legitimate because that is the day
+    it became public.
+
+    So both families are scored NOT-EARLY, and `inst` additionally has a closed window. Its
+    period emits from `availability_date(period)` until the band closes the period at
+    `period + SEC_13F_FILING_LAG_DAYS + F13_MAX_LATE_DAYS`; those windows do not overlap
+    (asserted in the builder), so every legitimate step lies inside exactly one of them. A
+    step in a GAP between windows, or before the first one, is the leak. That is strictly
+    stronger than "not early" -- it also catches a step arriving after a period was closed.
+
+    `ic_super_*` is stamped on `max(deadline, filing_date)` PER MANAGER with no revision
+    window to close, so it keeps the plain not-early rule.
+
+    ⚠ NON-VACUITY IS ASSERTED, NOT ASSUMED. A check that evaluates zero step dates and reports
+    PASS is worse than one that fails, so a leg with no cohort step at all is recorded as such
+    and the result SKIPs when no leg produced one.
     """
     columns = [c for c in feature_columns(panel) if c.startswith(("f_ic_inst_", "f_ic_super_")) and split_leg(c)[1] == "raw"]
     quarters = sorted(pd.to_datetime(pd.Series(periods).dropna().unique()))
     if not columns or not quarters:
-        return CheckResult("L2", "leakage", "13F steps only on period+45d", SKIP, measured="no 13F feature legs, or no periods in the source")
-    deadlines = pd.DatetimeIndex([pd.Timestamp(p) + pd.Timedelta(days=F13_LAG_DAYS) for p in quarters]).sort_values()
+        return CheckResult(
+            "L2", "leakage", "13F steps only on an availability date", SKIP, measured="no 13F feature legs, or no periods in the source"
+        )
     grid = pd.DatetimeIndex(sorted(panel["date"].unique()))
-    #: A deadline that is not a trading day is honoured on the next one, so the allowed step
-    #: dates are the deadlines SNAPPED FORWARD onto the grid -- the same rule `decay_events`
-    #: uses, and without it every Saturday deadline reads as a violation.
-    snapped = grid[np.clip(grid.searchsorted(deadlines, side="left"), 0, len(grid) - 1)]
+    # ⚠ THE BUILDER'S OWN FUNCTION, NOT A SECOND DECLARATION OF THE RULE. This used to
+    # re-derive the snap here (`grid[np.clip(grid.searchsorted(deadlines))]`), which meant the
+    # availability rule existed twice and the SETTLE BUFFER existed in only one of them -- so
+    # the check scored the deadline while the builder stamped the deadline plus two sessions,
+    # and the disagreement read as a leak. `availability_date` is now the single declaration.
+    opens = availability_date(pd.DatetimeIndex(quarters), grid).dropna().sort_values()
+    snapped = pd.DatetimeIndex(opens.unique())
+    # Each period's emission window: open at its availability date, closed when the filing
+    # band closes the period. `F13_MAX_LATE_DAYS` is measured against the DEADLINE, so the
+    # close is `period + 45 + 60`. Sorted by open, and non-overlapping by construction.
+    closes = pd.DatetimeIndex(opens.index) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS + F13_MAX_LATE_DAYS)
+    windows = sorted(zip(opens.to_numpy(), closes.to_numpy(), strict=True))
 
     # Narrowed BEFORE the sort: a `sort_values` over the whole ~100-column panel copies it,
     # and at 3.9M rows that is the difference between 200MB and 1.5GB. Same reason
@@ -1144,28 +1281,41 @@ def leak_13f_lag(panel: pd.DataFrame, periods: pd.Series, cohort: float = 0.20, 
             ]
             verdict = "clean (late steps allowed: availability grid)" if not off else "STEPS BEFORE A DEADLINE"
         else:
-            off = [d for d in steps if not len(snapped) or abs(grid.searchsorted(d) - grid.searchsorted(snapped)).min() > tolerance]
-            verdict = "clean" if not off else "STEPS OFF A DEADLINE"
+            # Inside some period's emission window, or within `tolerance` sessions of one
+            # opening -- the tolerance covers a stamp the panel's own grid rounds differently.
+            def _placed(d: pd.Timestamp) -> bool:
+                if len(snapped) and abs(grid.searchsorted(d) - grid.searchsorted(snapped)).min() <= tolerance:
+                    return True
+                return any(open_ <= d.to_datetime64() <= close for open_, close in windows)
+
+            off = [d for d in steps if not windows or not _placed(d)]
+            verdict = "clean" if not off else "STEPS OUTSIDE EVERY EMISSION WINDOW"
         rows.append(
             {
                 "feature": column,
                 "cohort_steps": len(steps),
                 "off_deadline": len(off),
                 "first_off_deadline": str(off[0].date()) if off else "-",
-                "rule": "not-early (availability grid)" if elite else "on-deadline",
+                "rule": "not-early (per-manager availability)" if elite else "inside an emission window",
                 "verdict": verdict,
             }
         )
     bad = [r for r in rows if r["off_deadline"]]
+    # ⚠ THE NON-VACUITY TEST. `rows` being non-empty only says legs were FOUND; a leg whose
+    # cohort never steps contributes no evidence, and a result built entirely from those is a
+    # green light nobody earned.
+    scored = [r for r in rows if r["cohort_steps"] and not r["verdict"].startswith("daily")]
     return CheckResult(
         "L2",
         "leakage",
-        "13F features step only on a filing deadline",
-        FAIL if bad else (PASS if rows else SKIP),
+        "13F features step only on an availability date",
+        FAIL if bad else (PASS if scored else SKIP),
         measured=f"{len(rows) - len(bad)}/{len(rows)} 13F raw legs clean "
         f"({sum(r['verdict'].startswith('daily') for r in rows)} "
-        f"daily by construction)",
-        expected="every cohort step within " f"{tolerance} trading days of a period+{F13_LAG_DAYS}d deadline",
+        f"daily by construction, {len(scored)} leg(s) with a cohort step to place, "
+        f"{sum(r['cohort_steps'] for r in scored):,} step date(s) scored against "
+        f"{len(snapped)} availability date(s))",
+        expected=f"every cohort step inside a period's emission window [availability_date(period), period+{SEC_13F_FILING_LAG_DAYS + F13_MAX_LATE_DAYS}d]",
         detail=rows,
         blocking=True,
     )
@@ -1215,7 +1365,14 @@ def leak_first_period_delta(panel: pd.DataFrame) -> CheckResult:
     such break, and its own history starts 2011-11-14; by 2013-08-14 it has six prior quarters
     and a delta there is the correct value, not a phantom.
     """
-    deadline = FIRST_13F_PERIOD + pd.Timedelta(days=F13_LAG_DAYS)
+    # The availability date, not the bare deadline: `availability_date` is what the builder
+    # stamps, and taking the panel's first date at or after a 2-5-days-earlier deadline would
+    # land in the gap where the panel still holds the PREVIOUS quarter -- scoring the wrong row
+    # and passing for the wrong reason.
+    grid = pd.DatetimeIndex(sorted(panel["date"].unique()))
+    deadline = availability_date(pd.DatetimeIndex([FIRST_13F_PERIOD]), grid).iloc[0]
+    if pd.isna(deadline):
+        deadline = FIRST_13F_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
     columns = [c for c in feature_columns(panel) if c.startswith("f_ic_inst_") and any(k in c for k in ("_chg", "_delta", "_qoq"))]
     day = panel.loc[panel["date"] == panel.loc[panel["date"] >= deadline, "date"].min()]
     if not columns or day.empty:
@@ -1248,7 +1405,20 @@ def leak_first_period_delta(panel: pd.DataFrame) -> CheckResult:
 
 def reconcile_holder_count(panel: pd.DataFrame, holdings: pd.DataFrame | None, samples: int = 5) -> CheckResult:
     """R4 -- `ic_inst_holders` reconciles to a direct `COUNT(DISTINCT cik)` on `sec13f_hr`,
-    read on the first trading day at or after the 45-day deadline.
+    read on the period's own availability date.
+
+    ⚠ THE SOURCE COUNT IS CUT TO THE FILERS PUBLIC BY THAT DATE, and that is now the point of
+    the check rather than an adjustment to it. The panel's first publication for a period
+    contains only the filings public at `availability_date(period)`, so counting every filer
+    of the period against it would fail by exactly the ~2% that had not filed yet -- and would
+    fail hardest on the quarters where a mega-filer is late, which is where the cutoff matters
+    most. Counting `cik` with `filing_date <= availability_date(period)` scores the cutoff
+    itself: a leak would make the panel's implied count HIGHER than this number.
+
+    ⚠ THE DENOMINATOR IS STILL THE WHOLE PERIOD'S FILER COUNT, because D28's denominator is:
+    `_coverage_periods` runs on the uncut frame, so `n_filers(q)` counts every filer of the
+    quarter however late. Cutting the numerator and not the denominator is the asymmetry the
+    builder has, and the check has to match it or it is scoring its own arithmetic.
 
     ⚠ **`ic_inst_holders` IS A SHARE, NOT A COUNT** (D28: `holders(ticker, q) / filers(q)`),
     so the reconciliation is `panel_value x universe_filers(q) == distinct cik`, not
@@ -1303,8 +1473,24 @@ def reconcile_holder_count(panel: pd.DataFrame, holdings: pd.DataFrame | None, s
             measured=f"no 13F period at or after the D16 level floor " f"({INST_LEVEL_FLOOR_PERIOD.date()})",
         )
     rows = []
-    for (ticker, period), expected in counts.sample(min(samples, len(counts)), random_state=7).items():
-        deadline = period + pd.Timedelta(days=F13_LAG_DAYS)
+    grid = pd.DatetimeIndex(sorted(panel["date"].unique()))
+    avail = availability_date(pd.DatetimeIndex(sorted(counts.index.get_level_values("period").unique())), grid)
+    dated = "filing_date" in src.columns
+    if dated:
+        src["filing_date"] = pd.to_datetime(src["filing_date"], errors="coerce")
+    for (ticker, period), _every_filer in counts.sample(min(samples, len(counts)), random_state=7).items():
+        deadline = avail.get(period)
+        if deadline is None or pd.isna(deadline):
+            continue
+        # The filers PUBLIC at the availability date -- see the docstring. Without
+        # `filing_date` the read cannot make the cut, so it falls back to the whole period and
+        # the row says so, rather than silently scoring a different quantity.
+        rows_q = src.loc[(src["ticker"] == ticker) & (src["period"] == period)]
+        if dated:
+            rows_q = rows_q.loc[rows_q["filing_date"].isna() | (rows_q["filing_date"] <= deadline)]
+        expected = int(rows_q["cik"].nunique())
+        if not expected:
+            continue
         slice_ = panel.loc[(panel["ticker"] == ticker) & (panel["date"] >= deadline)]
         if slice_.empty:
             continue
@@ -1315,6 +1501,8 @@ def reconcile_holder_count(panel: pd.DataFrame, holdings: pd.DataFrame | None, s
             {
                 "ticker": ticker,
                 "period": str(period.date()),
+                "as_of": str(pd.Timestamp(deadline).date()),
+                "basis": "filers public at as_of" if dated else "every filer (no filing_date read)",
                 "source_distinct_cik": int(expected),
                 "universe_filers": int(denom) if pd.notna(denom) else None,
                 "panel_share": None if pd.isna(got) else round(float(got), 6),
@@ -1486,10 +1674,18 @@ def reconcile_group_summing(sec_13d: pd.DataFrame | None) -> CheckResult:
 
 
 def family_floors(store, log=None) -> dict[str, pd.Timestamp]:
-    """Per-family availability floor, MEASURED from each source table."""
+    """Per-family availability floor, MEASURED from each source table.
+
+    ⚠ THE 13F FAMILIES GO THROUGH `availability_date`, NOT THROUGH A DAY OFFSET
+    (`F13_AVAILABILITY` in the lag slot). Their floor is the earliest period's deadline
+    SNAPPED onto the trading calendar plus the settle buffer, which is 2-5 days later than
+    `min(period) + 45d` -- so the bar moves UP and the check can only catch more. Writing it
+    as a `Timedelta` here would be a second, weaker declaration of the builder's own rule.
+    """
     from src.data_store.schema import Tables
 
     by_name = {t.name: t for t in vars(Tables).values() if hasattr(t, "name")}
+    grid: pd.DatetimeIndex | None = None
     floors: dict[str, pd.Timestamp] = {}
     for prefix, (table_name, column, lag) in FAMILY_SOURCES.items():
         table = by_name.get(table_name)
@@ -1499,8 +1695,19 @@ def family_floors(store, log=None) -> dict[str, pd.Timestamp]:
         if frame is None or frame.empty:
             continue
         earliest = pd.to_datetime(frame[column], errors="coerce").min()
-        if pd.notna(earliest):
-            floors[prefix] = earliest + pd.Timedelta(days=lag)
+        if pd.isna(earliest):
+            continue
+        if lag == F13_AVAILABILITY:
+            if grid is None:
+                from src.data_aggregate.utils.common.price_frames import load_trading_calendar
+
+                grid = load_trading_calendar(store)
+            floor = availability_date(pd.DatetimeIndex([earliest]), grid).iloc[0]
+            # A 13F period whose availability date is past the end of the calendar cannot
+            # produce a feature at all, so the bare deadline is the only floor left to state.
+            floors[prefix] = floor if pd.notna(floor) else earliest + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
+        else:
+            floors[prefix] = earliest + pd.Timedelta(days=int(lag))
     if log is not None:
         log.info("Availability floors: %s", {k: str(v.date()) for k, v in sorted(floors.items())})
     return floors
@@ -1515,6 +1722,7 @@ def run_institutionals_validation(context, config, *, panel: pd.DataFrame | None
     same rule.
     """
     from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
+    from src.data_aggregate.utils.common.price_frames import load_trading_calendar
     from src.data_store.schema import Tables
 
     store = context.store
@@ -1529,19 +1737,33 @@ def run_institutionals_validation(context, config, *, panel: pd.DataFrame | None
 
     declared = _declared_emission_maps()
     floors = family_floors(store, context.log)
+    # ⚠ `shares` IS IN THE PROJECTION FOR V14, and leaving it out is not a silent cost: the
+    # coverage diagnostic is weighted by it, and `clean_holdings` zero-fills a numeric leg the
+    # read omitted, so the check reported SKIP with a message about missing quarters. One
+    # float64 column on a 23.8M-row read is the cheapest of the five this projection carries.
     holdings = (
-        store.load(Tables.sec13f_hr, columns=["ticker", "period", "cik", "filing_date"], optional=True) if store.exists(Tables.sec13f_hr) else None
+        store.load(Tables.sec13f_hr, columns=["ticker", "period", "cik", "filing_date", "shares"], optional=True)
+        if store.exists(Tables.sec13f_hr)
+        else None
     )
     # ⚠ V13a IS SCORED BEFORE THE UNIVERSE NARROWING BELOW, on the table as fetched. It asks
     # whether the FETCH lost a filing season, which is a property of the walk and not of the
     # panel's ticker scope; narrowing first would let a hole hide behind a universe change.
     filing_coverage = [value_filing_coverage("V13a", holdings, Tables.sec13f_hr.name)]
+    # V14 needs the same trading calendar the builder snapped its availability dates onto, and
+    # `load_trading_calendar` IS that definition -- `cube_part_prices`' own distinct dates.
+    try:
+        calendar: pd.DatetimeIndex | None = load_trading_calendar(store)
+    except RuntimeError as exc:  # prices part not built -> V14 SKIPs rather than the run dying
+        context.log.info("V14: no trading calendar (%s) -> the availability-coverage check is skipped", exc)
+        calendar = None
     if store.exists(Tables.sec13f_manager_holdings):
         filing_coverage.append(
             value_filing_coverage(
                 "V13b", store.load(Tables.sec13f_manager_holdings, columns=["cik", "filing_date"], optional=True), Tables.sec13f_manager_holdings.name
             )
         )
+    filing_coverage.append(value_availability_coverage(holdings, calendar))
     # ⚠ R4 MUST READ THE SAME SOURCE SCOPE THE BUILDER READS. The step now cuts `sec13f_hr` to
     # the universe before aggregating, so its D28 denominator is the filer count over
     # IN-UNIVERSE holdings. Re-counting here over the whole table made the denominator 3 filers
@@ -1629,6 +1851,8 @@ __all__ = [
     "CheckResult",
     "DECLARED_BOUNDS",
     "FAMILY_SOURCES",
+    "F13_AVAILABILITY",
+    "F13_COVERAGE_FLOOR",
     "InstitutionalsReport",
     "SKIPPED",
     "behavioural_moves_without_a_filing",
@@ -1639,6 +1863,7 @@ __all__ = [
     "gate_redundancy",
     "leak_13f_lag",
     "leak_availability",
+    "value_availability_coverage",
     "leak_event_date_stamping",
     "leak_first_period_delta",
     "reconcile_group_summing",

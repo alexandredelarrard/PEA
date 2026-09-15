@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from src.constants.constants import F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS
+from src.constants.constants import F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS, F13_SETTLE_TRADING_DAYS
+from src.data_aggregate.utils.institutionals.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.institutionals import institutional_features as _mod
 from src.data_aggregate.utils.institutionals.institutional_features import (
@@ -28,6 +30,11 @@ from src.data_aggregate.utils.institutionals.institutional_features import (
 )
 from src.data_aggregate.utils.institutionals.institutional_features import (
     clean_holdings as _clean_holdings,
+)
+from src.data_aggregate.utils.institutionals.institutional_features import (
+    _assert_emission_windows_ordered,
+    _availability_coverage,
+    _stamp_availability,
 )
 from src.data_extract.utils.institutionals.fetch_13f import _holdings_frame
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
@@ -757,3 +764,327 @@ def test_no_band_and_no_filing_date_both_degrade_instead_of_dropping():
     assert len(_banded(no_fd)) == 2
     print("\n=== SANITY CHECK: the band degrades ===")
     print("  band=None -> 2 rows (the elite table's opt-out); no `filing_date` column -> " "2 rows and a logged note, never a raise. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 -- the availability grid                                             #
+# --------------------------------------------------------------------------- #
+
+_GRID = pd.bdate_range("2013-01-01", "2027-06-30")
+
+
+def _stamped(holdings: pd.DataFrame, *, settle: int = F13_SETTLE_TRADING_DAYS, grid=None) -> pd.DataFrame:
+    """`clean_holdings` then the availability stamp -- the production order."""
+    return _stamp_availability(_clean_holdings(holdings), _GRID if grid is None else grid, settle_trading_days=settle)
+
+
+def test_the_availability_date_snaps_a_weekend_deadline_and_then_settles():
+    """The rule, stated as arithmetic: deadline -> next SESSION -> plus N sessions.
+
+    ⚠ THE SNAP IS ON THE TRADING CALENDAR, NOT ON `BDay`, and the fixture proves the
+    difference is real rather than theoretical: with 2019-08-15/16 removed from the grid (a
+    two-day market closure), the same period's availability date must move to the next session
+    the grid actually has, where a `BDay` rule would land on a day the panel has no row for."""
+    periods = pd.DatetimeIndex(["2019-06-30", "2021-06-30", "2022-03-31"])
+
+    # 2019-06-30 + 45d = 2019-08-14, a Wednesday -> snap is a no-op, +3 sessions = 08-19.
+    # 2021-06-30 + 45d = 2021-08-14, a SATURDAY  -> snaps to Mon 08-16, +3 sessions = 08-19.
+    # 2022-03-31 + 45d = 2022-05-15, a SUNDAY    -> snaps to Mon 05-16, +3 sessions = 05-19.
+    got = availability_date(periods, _GRID)
+    assert got.tolist() == [pd.Timestamp("2019-08-19"), pd.Timestamp("2021-08-19"), pd.Timestamp("2022-05-19")]
+
+    # the settle is the only thing between the snapped deadline and the stamp
+    bare = availability_date(periods, _GRID, settle_trading_days=0)
+    assert bare.tolist() == [pd.Timestamp("2019-08-14"), pd.Timestamp("2021-08-16"), pd.Timestamp("2022-05-16")]
+
+    holiday_grid = _GRID[~_GRID.isin(pd.DatetimeIndex(["2019-08-15", "2019-08-16"]))]
+    assert availability_date(periods[:1], holiday_grid).iloc[0] == pd.Timestamp("2019-08-21")
+
+    # past the end of the calendar there is NO availability date -- never the last session
+    short = pd.bdate_range("2019-01-01", "2019-08-01")
+    assert pd.isna(availability_date(periods[:1], short).iloc[0])
+
+    print("\n=== SANITY CHECK: the 13F availability date ===")
+    print(
+        f"  deadline -> snapped -> +{F13_SETTLE_TRADING_DAYS} sessions: "
+        f"2019-06-30 (Wed) {bare.iloc[0].date()}->{got.iloc[0].date()}, "
+        f"2021-06-30 (Sat) {bare.iloc[1].date()}->{got.iloc[1].date()}, "
+        f"2022-03-31 (Sun) {bare.iloc[2].date()}->{got.iloc[2].date()}; a two-day closure moves "
+        f"the first to 2019-08-21, and a calendar that ends first gives NaT, not a clamp. Validated."
+    )
+
+
+def _timed(rows: list[tuple[str, str, str, float]]) -> pd.DataFrame:
+    """`(cik, period, filing_date, shares)` -> a manager-grain frame for ticker A."""
+    return pd.DataFrame(
+        [
+            {"cik": c, "period": p, "filing_date": f, "ticker": "A", "shares": sh, "value_usd": float(sh)}
+            for c, p, f, sh in rows
+        ]
+    )
+
+
+def test_a_filing_after_the_availability_date_is_revised_never_excluded():
+    """The cutoff, and the half of it that is easy to get wrong.
+
+    One quarter, two filers: M1 files on time and M2 files 30 days late. The FIRST publication
+    must contain M1 alone -- that is the leak being removed. A second row must then appear on
+    M2's own filing date carrying BOTH -- that is the information not being thrown away. A
+    design that only did the first half would make the panel permanently blind to the late
+    filer, which on four real quarters is Vanguard."""
+    h = _timed(
+        [
+            ("M1", "2022-03-31", "2022-05-10", 100.0),
+            ("M2", "2022-03-31", "2022-06-20", 900.0),
+        ]
+    )
+    qf = _qf(_stamped(h), min_prior_holders=0)
+    assert len(qf) == 2, qf[["as_of", "inst_shares"]]
+
+    first, revision = qf.iloc[0], qf.iloc[1]
+    assert first["as_of"] == pd.Timestamp("2022-05-19")  # 05-15 is a Sunday -> Mon + 3 sessions
+    assert first["inst_shares"] == 100.0, "the late filer's 900 shares leaked into the first publication"
+    assert revision["as_of"] == pd.Timestamp("2022-06-20"), "the revision must be stamped on the FILING date"
+    assert revision["inst_shares"] == 1000.0, "the revision must be CUMULATIVE, not just the new filing"
+    assert revision["period"] == first["period"]
+
+    print("\n=== SANITY CHECK: the availability cutoff revises rather than excludes ===")
+    print(
+        f"  2022-03-31, M1 filed 05-10 and M2 filed 06-20: first publication "
+        f"{first['as_of'].date()} carries {first['inst_shares']:.0f} shares (M1 only, no leak); "
+        f"revision {revision['as_of'].date()} carries {revision['inst_shares']:.0f} (both, "
+        f"cumulative). Nothing is dropped. Validated."
+    )
+
+
+def test_the_materiality_gate_defers_a_revision_it_does_not_drop_it():
+    """`F13_REVISION_MIN_MOVE` skips a DATE, never a filing -- because every emission is
+    cumulative, so the next one sums the skipped filings in.
+
+    Three late filers: a 0.01% mover, then another 0.01% mover, then a 50% mover. At a 1%
+    threshold the first two dates are skipped and the third emission must still carry all
+    three -- 1,000 + 0.1 + 0.1 + 1,000. If the gate were a FILTER instead, the total would
+    come back 2,000 and 0.2 shares would have vanished."""
+    h = _timed(
+        [
+            ("M1", "2022-03-31", "2022-05-10", 1000.0),
+            ("M2", "2022-03-31", "2022-06-01", 0.1),
+            ("M3", "2022-03-31", "2022-06-02", 0.1),
+            ("M4", "2022-03-31", "2022-06-03", 1000.0),
+        ]
+    )
+    stamped = _stamped(h)
+    gated = _qf(stamped, min_prior_holders=0, revision_min_move=0.01)
+    assert len(gated) == 2, gated[["as_of", "inst_shares"]]
+    assert gated["as_of"].tolist() == [pd.Timestamp("2022-05-19"), pd.Timestamp("2022-06-03")]
+    assert abs(gated.iloc[-1]["inst_shares"] - 2000.2) < 1e-9, "the skipped dates' filings must still be in the total"
+    assert gated.iloc[-1]["ic_inst_holders"] == gated.iloc[-1]["ic_inst_holders"]  # not NaN
+    assert _qf(stamped, min_prior_holders=0, revision_min_move=0.01).shape[0] == 2
+
+    ungated = _qf(stamped, min_prior_holders=0, revision_min_move=0.0)
+    assert len(ungated) == 4
+    assert ungated.iloc[-1]["inst_shares"] == gated.iloc[-1]["inst_shares"], "the gate must not change the FINAL state"
+
+    print("\n=== SANITY CHECK: the revision materiality gate DEFERS ===")
+    print(
+        f"  4 availability dates, threshold 1%: {len(ungated)} emissions ungated -> {len(gated)} gated, "
+        f"and the final share count is {gated.iloc[-1]['inst_shares']:.1f} either way. The two "
+        f"skipped 0.1-share filings are deferred into the last emission, not dropped. Validated."
+    )
+
+
+def test_the_cutoff_changes_nothing_when_no_filing_is_late():
+    """THE ISOLATION TEST. The availability machinery must be inert on a quarter that was
+    filed entirely on time -- bit-identical feature values to the no-cutoff path, with only
+    `as_of` moving.
+
+    That is what separates "the cutoff changed the numbers" from "something else did". The
+    no-cutoff path is `_quarter_features` on a frame with no `as_of` column, which stamps one
+    emission per period on the bare `period + 45d` deadline -- exactly the pre-Phase-3 rule.
+
+    ⚠ FLOAT EQUALITY, NOT `allclose`, AND DELIBERATELY. The aggregates are now accumulated
+    over a `[:k]` slice rather than re-derived per period, and each leg keeps the summation
+    order its predecessor used precisely so this assertion can be exact. An `allclose` here
+    would hide a reordering that a fingerprint diff would then find."""
+    on_time = _timed(
+        [
+            ("M1", "2022-03-31", "2022-05-10", 100.0),
+            ("M2", "2022-03-31", "2022-05-11", 200.0),
+            ("M3", "2022-03-31", "2022-05-12", 300.0),
+            ("M1", "2022-06-30", "2022-08-09", 150.0),
+            ("M2", "2022-06-30", "2022-08-10", 250.0),
+            ("M4", "2022-06-30", "2022-08-11", 50.0),
+        ]
+    )
+    cutoff = _qf(_stamped(on_time), min_prior_holders=0)
+    no_cutoff = _qf(_clean_holdings(on_time), min_prior_holders=0)
+
+    assert len(cutoff) == len(no_cutoff) == 2, "an all-on-time frame must emit exactly one row per period"
+    features = [c for c in no_cutoff.columns if c not in ("as_of",)]
+    pd.testing.assert_frame_equal(
+        cutoff[features].reset_index(drop=True), no_cutoff[features].reset_index(drop=True), check_exact=True
+    )
+    # only the stamp moved, and it moved LATER (the snap plus the settle), never earlier
+    assert (cutoff["as_of"].to_numpy() > no_cutoff["as_of"].to_numpy()).all()
+
+    print("\n=== SANITY CHECK: isolation -- the cutoff is inert on an on-time quarter ===")
+    print(
+        f"  {len(features)} feature column(s) bit-identical across both paths on 2 quarters; "
+        f"`as_of` moves {no_cutoff['as_of'].iloc[0].date()} -> {cutoff['as_of'].iloc[0].date()} "
+        f"and {no_cutoff['as_of'].iloc[1].date()} -> {cutoff['as_of'].iloc[1].date()}, both LATER. Validated."
+    )
+
+
+def test_emission_windows_do_not_overlap_across_consecutive_periods():
+    """`as_of` must be strictly increasing in `period`, per ticker AND universe-wide.
+
+    ⚠ THIS IS WHAT MAKES `fundamentals_to_daily` SAFE WITH SEVERAL ROWS PER PERIOD. It pivots
+    on `as_of` with `aggfunc="last"`, so if a quarter's last revision reached the next
+    quarter's first publication the panel would step BACKWARDS on a coin toss. The clearance
+    comes from the band: revisions stop at `period + 105d` and the next period first publishes
+    at about `period + 136d`. Widen `F13_MAX_LATE_DAYS` past ~130 and this breaks silently,
+    which is why the builder raises rather than trusting it."""
+    rows = []
+    for i, period in enumerate(("2022-03-31", "2022-06-30", "2022-09-30", "2022-12-31")):
+        deadline = pd.Timestamp(period) + pd.Timedelta(days=45)
+        # one on-time filer and one filing at the very edge of the band (+60d past the deadline)
+        rows.append((f"M{i}a", period, str((deadline - pd.Timedelta(days=5)).date()), 100.0))
+        rows.append((f"M{i}b", period, str((deadline + pd.Timedelta(days=60)).date()), 900.0))
+    qf = _qf(_stamped(_timed(rows)), min_prior_holders=0)
+
+    span = qf.groupby("period")["as_of"].agg(["min", "max"]).sort_index()
+    clearance = (span["min"] - span["max"].shift(1)).dropna()
+    assert (clearance > pd.Timedelta(0)).all(), span
+    assert not qf.duplicated(["ticker", "as_of"]).any()
+    _assert_emission_windows_ordered(qf)  # the builder's own guard, on the same frame
+
+    print("\n=== SANITY CHECK: emission windows are ordered ===")
+    print(
+        f"  4 quarters, each filing at the band's late edge (+60d): minimum clearance between "
+        f"one quarter's last revision and the next's first publication is "
+        f"{int(clearance.dt.days.min())} days, and no (ticker, as_of) pair repeats. Validated."
+    )
+
+
+def test_the_coverage_diagnostic_is_share_weighted_not_filer_weighted():
+    """Step 3.2's diagnostic must see a late MEGA-filer that a filer COUNT cannot.
+
+    Nine small filers report on time and one holding 90% of the shares reports 40 days late.
+    The filer-count view reads 9/10 = 90% and shrugs; the share-weighted view reads 10% and
+    alarms. That asymmetry is the whole reason the diagnostic is weighted, and on the live
+    table it is the difference between a floor of 96.67% (count) and 82.58% (shares)."""
+    rows = []
+    for period, lag_big in (("2022-03-31", 5), ("2022-06-30", 85)):
+        deadline = pd.Timestamp(period) + pd.Timedelta(days=45)
+        for i in range(9):
+            rows.append((f"S{i}", period, str((deadline - pd.Timedelta(days=5)).date()), 10.0))
+        rows.append(("BIG", period, str((deadline + pd.Timedelta(days=lag_big)).date()), 900.0))
+    coverage = _availability_coverage(_stamped(_timed(rows)))
+
+    assert list(coverage.index) == [pd.Timestamp("2022-06-30")], coverage
+    got = float(coverage.iloc[0])
+    assert abs(got - 90.0 / 990.0) < 1e-12, got  # 9 x 10 of (9 x 10 + 900) prior-quarter shares
+
+    print("\n=== SANITY CHECK: the availability-coverage diagnostic is SHARE-weighted ===")
+    print(
+        f"  2022-06-30: 9 of 10 filers reported on time (a filer COUNT reads 90%), but the one "
+        f"absentee held 90% of the prior quarter's shares -> coverage {got * 100:.2f}%. A "
+        f"count-based diagnostic would have missed it entirely. Validated."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 -- the first-publication error, on REAL filings                      #
+# --------------------------------------------------------------------------- #
+
+#: The measured median absolute error of a first publication's `ic_inst_shares_chg` against
+#: the fully-revised value, in percentage points, and the ceiling this test holds it under.
+#:
+#: MEASURED 2026-09-15 at `F13_SETTLE_TRADING_DAYS = 3` on two DISJOINT ticker samples of the
+#: live `sec13f_hr` (61 tickers / 3.06M filer-rows -> 1.718pp; 122 tickers / 5.25M -> 1.825pp),
+#: against a matched-sample basis that scores 2.012pp on the same rows.
+#:
+#: ⚠ THIS NUMBER IS THE JUSTIFICATION FOR NOT BUILDING THE MATCHED-SAMPLE SELF-JOIN, which is
+#: why it is defended by a test rather than just recorded. The naive difference wins only
+#: because the settle buffer takes the first publication to ~98% completeness; if it regresses
+#: past the matched sample's flat ~2.01pp then the simple design has stopped being the better
+#: one and the self-join is back on the table. The ceiling carries ~35% headroom over the
+#: measured value because this test reads a SMALL ticker sample and the median is noisy on one.
+FIRST_PUBLICATION_ERROR_PP = 1.825
+FIRST_PUBLICATION_ERROR_CEILING_PP = 2.50
+
+
+def test_first_publication_shares_chg_error_does_not_regress():
+    """The naive delta basis must stay nearer the revised truth than a matched sample.
+
+    Reads real `sec13f_hr` filings for a ticker sample and compares, per (ticker, quarter),
+    `ic_inst_shares_chg` as first PUBLISHED against the same quantity once every in-band
+    filing has landed. Skips when the DB is unreachable -- it is an integration test.
+    """
+    from tests.conftest import _store
+
+    store = _store()
+    from src.data_store.schema import Tables
+
+    if not store.exists(Tables.sec13f_hr) or not store.exists(Tables.cube_part_prices):
+        pytest.skip("sec13f_hr or cube_part_prices is absent from this DB")
+
+    tickers = sorted(str(t) for t in store.distinct(Tables.cube_part_prices, "ticker"))[::24]
+    grid = pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(store.distinct(Tables.cube_part_prices, "date"))).dt.normalize().unique()))
+    holdings = store.load(
+        Tables.sec13f_hr,
+        columns=["ticker", "cik", "period", "filing_date", "shares", "value_usd"],
+        where={"ticker": tickers},
+        optional=True,
+    )
+    if holdings is None or holdings.empty:
+        pytest.skip("no 13F holdings for the sampled tickers")
+
+    stamped = _stamp_availability(_clean_holdings(holdings), grid)
+    stamped = stamped[stamped["period"] >= INST_LEVEL_FLOOR_PERIOD]
+
+    # `truth` is every in-band filing for the period; `published` only those public at the
+    # period's own first publication. Both are differenced against a FULLY REVISED q-1, which
+    # is the naive basis the builder uses.
+    total = stamped.groupby(["ticker", "period"], as_index=False).agg(truth=("shares", "sum"))
+    public = stamped[stamped["as_of"] <= stamped["first_pub"]].groupby(["ticker", "period"], as_index=False).agg(published=("shares", "sum"))
+    frame = total.merge(public, on=["ticker", "period"], how="inner").sort_values(["ticker", "period"])
+    frame["prev_truth"] = frame.groupby("ticker")["truth"].shift(1)
+    frame["prev_period"] = frame.groupby("ticker")["period"].shift(1)
+    frame = frame[(frame["prev_truth"] > 0) & ((frame["period"] - frame["prev_period"]).dt.days.between(80, 100))]
+    if len(frame) < 200:
+        pytest.skip(f"only {len(frame)} consecutive ticker-quarter pairs in the sample")
+
+    # The matched sample, for the comparison the design decision turns on: both sides cut to
+    # the filers public at `q`'s first publication.
+    cur = stamped[stamped["as_of"] <= stamped["first_pub"]].groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum()
+    prv = stamped.groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum().rename(columns={"shares": "prev_shares"})
+    prv = prv.merge(frame[["ticker", "period", "prev_period"]].rename(columns={"period": "_q", "prev_period": "period"}), on=["ticker", "period"])
+    matched = cur.merge(prv.rename(columns={"_q": "period", "period": "_prev"}), on=["ticker", "period", "cik"], how="inner")
+    matched = matched.groupby(["ticker", "period"], as_index=False).agg(m_cur=("shares", "sum"), m_prev=("prev_shares", "sum"))
+
+    frame = frame.merge(matched, on=["ticker", "period"], how="left")
+    frame = frame[frame["m_prev"] > 0]
+    truth_chg = frame["truth"] / frame["prev_truth"] - 1.0
+    naive = (frame["published"] / frame["prev_truth"] - 1.0 - truth_chg).abs() * 100.0
+    matched_err = (frame["m_cur"] / frame["m_prev"] - 1.0 - truth_chg).abs() * 100.0
+    completeness = (frame["published"] / frame["truth"]).median()
+
+    assert float(naive.median()) < FIRST_PUBLICATION_ERROR_CEILING_PP, (
+        f"the naive first-publication error regressed to {float(naive.median()):.3f}pp "
+        f"(measured {FIRST_PUBLICATION_ERROR_PP}pp, ceiling {FIRST_PUBLICATION_ERROR_CEILING_PP}pp)"
+    )
+    assert float(naive.median()) < float(matched_err.median()), (
+        f"the matched sample ({float(matched_err.median()):.3f}pp) now beats naive "
+        f"({float(naive.median()):.3f}pp) -- the settle buffer is too short, or the "
+        f"no-self-join decision needs revisiting"
+    )
+
+    print("\n=== SANITY CHECK: first-publication delta error on real 13F filings ===")
+    print(
+        f"  {len(frame):,} consecutive (ticker, quarter) pairs over {frame['ticker'].nunique()} "
+        f"tickers, settle {F13_SETTLE_TRADING_DAYS}: median completeness at first publication "
+        f"{completeness * 100:.2f}%; median |error| in `shares_chg` naive "
+        f"{float(naive.median()):.3f}pp vs matched-sample {float(matched_err.median()):.3f}pp. "
+        f"Naive wins, so the per-filer self-join stays unbuilt. Validated."
+    )

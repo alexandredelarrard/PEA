@@ -75,7 +75,7 @@ Environment variables live in a git-ignored `.env` at the repo root (see `.env.e
 **Forward P/E and 13F accrue point-in-time going forward only.** yfinance and 13F have no clean
 back-history for those, so the features build up over successive runs. Do not expect 15 years.
 
-**13F is a long-only quarterly snapshot with a 45-day filing lag**, split into stock / call / put /
+**13F is a long-only quarterly snapshot whose availability date is the 45-day deadline snapped onto the trading calendar plus a settle buffer** (measured: the 45th day is not a session on 13 of 53 quarters), split into stock / call / put /
 debt. Institutional "moves" come from **quarter-over-quarter share deltas, not value deltas** —
 value moves with price and would encode the return you are trying to predict.
 

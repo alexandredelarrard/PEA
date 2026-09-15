@@ -58,6 +58,7 @@ from src.data_aggregate.utils.common.price_frames import (
 from src.data_aggregate.utils.institutionals.cross_source_features import (
     build_cross_source_panel,
 )
+from src.constants.constants import F13_REVISION_MIN_MOVE, F13_SETTLE_TRADING_DAYS
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.institutional_features import (
     COVERAGE_BREAK_DEFAULT, build_institutional_feature_panel,
@@ -363,7 +364,9 @@ class StepCubeInstitutionals(Step):
         """The registry's eleven `ic_inst_*`: breadth SHARE (D28), split-restated share
         accumulation, new-buyer / exit ratios, cluster buying, Herfindahl concentration, net
         put/call sentiment, ownership %, value/market-cap weight and net $ flow -- stamped
-        point-in-time with the 45-day filing lag.
+        point-in-time on each period's AVAILABILITY DATE (the 45-day deadline snapped onto the
+        trading calendar plus a settle buffer) over only the filings public by then, and
+        re-emitted on each later date a material filing for that period arrives.
 
         No sink: an all-filer aggregate has no single event date to condition on (registry
         section 7), and none of the cross-source inputs is an `ic_inst_*` feature."""
@@ -371,10 +374,14 @@ class StepCubeInstitutionals(Step):
         if holdings is None:
             return None
 
+        cfg = self._institutionals_cfg()
         return build_institutional_feature_panel(
             frames, holdings, shares_out_history=shares, splits=splits,
-            break_pct=float(self._institutionals_cfg().get("coverage_break_pct",
-                                                           COVERAGE_BREAK_DEFAULT)))
+            break_pct=float(cfg.get("coverage_break_pct", COVERAGE_BREAK_DEFAULT)),
+            settle_trading_days=int(cfg.get("f13_settle_trading_days",
+                                            F13_SETTLE_TRADING_DAYS)),
+            revision_min_move=float(cfg.get("f13_revision_min_move",
+                                            F13_REVISION_MIN_MOVE)))
 
     def _superinvestor_panel(self, frames: PriceFrames, shares: pd.DataFrame | None,
                              splits: pd.DataFrame | None,

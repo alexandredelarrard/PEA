@@ -10,35 +10,56 @@ Input `holdings` is manager-grain long (one row per manager x security x quarter
 `period` is the quarter-end; `value_usd` is long-equity value (era-adjusted upstream),
 `call_value` / `put_value` the option exposure the manager reported on the name.
 
-POINT-IN-TIME. A 13F reports positions as of the quarter END and is public only at the SEC
-deadline ~45 days later, so every quarter's aggregate is stamped
-`as_of = period + SEC_13F_FILING_LAG_DAYS` and forward-filled from there.
+POINT-IN-TIME. A 13F reports positions as of the quarter END and is public only once it is
+filed, so each period is aggregated over ONLY the filings public at the date it is stamped --
+see `availability.availability_date`, which is the one declaration of that date.
 
-⚠ THE AGGREGATE IS STAMPED ON THE DEADLINE, NOT ON `max(deadline, filing_date)`, and that is a
-deliberate departure from registry section 0.5. The rule is right for the ELITE family, where one
-manager IS the feature and a late filer must not become visible on the statutory date it
-missed; it cannot be applied to a 3,000-filer aggregate without re-aggregating the whole
-universe once per date, because the honest per-filer version makes a count visible in as many
-instalments as it has contributors.
+⚠ EACH `(ticker, period)` IS FIRST PUBLISHED ONCE AND THEN REVISED, and the revision is the
+half that is easy to mistake for a leak. The first publication is at
+`availability_date(period)` over `filing_date <= as_of`; the period is then RE-EMITTED on
+each later date one of its filings arrives, stamped on that date, aggregated cumulatively,
+and gated on materiality (`F13_REVISION_MIN_MOVE`). A filing that lands on day 79 is real new
+public information about the quarter and it enters the panel on day 79 -- not on day 45 (a
+leak) and not never (a blind spot). What the family does NOT do is re-aggregate on every date
+INSIDE the pre-deadline window: measured below, the aggregate is under 15% complete for most
+of those days, so those emissions would carry a sawtooth and no information.
 
-MEASURED RESIDUAL (2026-09-14 full read, and `_report_late_filings` re-measures it every run):
-**2,027,808 of 22,595,891 (ticker, manager, quarter) rows -- 8.97% -- were filed AFTER
-period+45d, and they carry 11.53% of repaired 13F value.** So roughly an eighth of the dollars
-behind these eleven features become visible on the statutory date rather than on the date they
-were actually filed. That is the size of the compromise, stated rather than implied, and it is
-the same shape of finding Phase 2.2 measured for the elite family (16.5% of filings / 36.7% of
-value) and there chose to FIX, because 87 managers can be put on an availability grid and 3,000
-filers cannot be cheaply. Removing it here means emitting the aggregate per availability date
-over the filings public at that date -- a real change, not a parameter -- and it is recorded as
-open work rather than pretended away.
+MEASURED, 2026-09-15, on the in-universe banded frame at `F13_SETTLE_TRADING_DAYS = 3`:
+**2.32% of filer-rows and 3.34% of SHARES arrive after their period's first publication**,
+across 23,359 of 23,406 ticker-quarters, and the materiality gate turns 312,138 candidate
+availability dates into ~99k emissions (23,406 first publications + ~75.5k revisions) while
+still stamping 99.866% of shares on the date they became public. `_report_first_publication_shortfall`
+re-measures the first two figures per quarter on every build.
 
-⚠ BOTH FIGURES ARE MEASURED ON THE BANDED FRAME AND THE RESIDUAL IS NOW BOUNDED. The
-`[-45, +60]` filing band (`F13_MAX_EARLY_DAYS` / `F13_MAX_LATE_DAYS`, applied in
-`clean_holdings`) drops every row filed more than 60 days past the deadline, so the worst
-back-dating this compromise can now do is 60 days rather than the 4,000 the table used to
-carry. It is also why the residual fell: the share of VALUE back-dated went 19.3% -> 11.53%,
-and the two figures are not comparable in any other respect, because the value leg is also now
-unit-repaired (see `value_basis`) and the old one was not.
+⚠ THE FILING SEASON IS VIOLENTLY BACK-LOADED, AND FILER COUNT IS NOT A PROXY FOR IT. Mean
+cumulative share of a `(ticker, period)`'s final total by days since period end:
+
+    days since period end   shares   value   filers
+    0-34                     0.079   0.074    0.375
+    35-39                    0.147   0.142    0.493
+    40-44                    0.471   0.476    0.680
+    45-49                    0.871   0.875    0.887
+    50-54                    0.989   0.989    0.983
+
+Small filers file early and the mega-filers file at the deadline, so at day 40 the filer
+COUNT is 68% complete while the dollars are 48%. Any gate or diagnostic built on filer count
+fires too early -- which is why the coverage diagnostic below is weighted by SHARES
+(universe-wide, the filer-count basis never falls below 96.7% while the shares basis reaches
+82.6%).
+
+⚠ EXPECT MEASURED IC ON THIS FAMILY TO FALL, AND EXPECT THAT. The stamp used to be the bare
+`period + 45d` deadline for every row of the period, so a filing made on day 90 sat inside
+the number published on day 45. That is look-ahead being removed, not signal being lost, and
+a backtest that IMPROVES on this change has a bug.
+
+⚠ THE `[-45, +60]` BAND (`F13_MAX_EARLY_DAYS` / `F13_MAX_LATE_DAYS`, applied in
+`clean_holdings`) NOW EARNS ITS PLACE FOR TWO DIFFERENT REASONS, and they are not
+interchangeable. Its LATE half no longer protects the current period -- anything filed after
+`as_of` is stamped on its own filing date rather than back-dated, so nothing needs excluding.
+What it still does is (a) bound the REVISION window at `period + 105d`, past which a period
+is closed and a back-file would disturb a quarter nothing is reading any more, and (b) keep a
+2015 period back-filed in 2025 out of the PRIOR-QUARTER lookup that `q`'s deltas difference
+against. `sec13f_manager_holdings` keeps its own rule and inherits neither.
 
 SPLIT RESTATEMENT (registry #3/#6, and value-sanity V4). 13F share counts are AS FILED, so
 `Sigma shares(q) / Sigma shares(q-1)` reads GOOGL's 2022 20-for-1 split as +1,900% of
@@ -126,10 +147,17 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS, SEC_13F_FILING_LAG_DAYS
+from src.constants.constants import (
+    F13_MAX_EARLY_DAYS,
+    F13_MAX_LATE_DAYS,
+    F13_REVISION_MIN_MOVE,
+    F13_SETTLE_TRADING_DAYS,
+    SEC_13F_FILING_LAG_DAYS,
+)
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.institutionals.availability import availability_date
 from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings as _clean
 from src.data_aggregate.utils.institutionals.split_basis import future_split_factor
 from src.data_aggregate.utils.institutionals.value_basis import log_register, repair_value_basis
@@ -336,45 +364,229 @@ def _capped_ownership(ratio: pd.DataFrame) -> pd.DataFrame:
     return ratio.mask(over)
 
 
-def _report_late_filings(h: pd.DataFrame) -> None:
-    """Measure the residual the deadline stamp accepts -- the module docstring's one caveat.
+def _stamp_availability(h: pd.DataFrame, trading_index: pd.DatetimeIndex, *, settle_trading_days: int = F13_SETTLE_TRADING_DAYS) -> pd.DataFrame:
+    """Add `first_pub` (the period's availability date) and `as_of` (this ROW's) to `h`.
 
-    Stamping the aggregate on `period + 45d` rather than `max(deadline, filing_date)` makes a
-    LATE filer's holdings visible on the statutory date it missed. The size of that is a
-    property of the table, not an assumption, so it is measured here every build: the share of
-    (ticker, manager, quarter) rows whose `filing_date` falls after the deadline, and the share
-    of 13F VALUE they carry -- which is the number that matters, since one late mega-filer
-    outweighs a hundred late small ones.
+        first_pub = availability_date(period)
+        as_of     = max(first_pub, filing_date)
 
-    ⚠ `filing_date` IS OPTIONAL ON THIS TABLE (`sec13f_hr.optional_columns`), so the measure
-    has to be skippable. Reading it unguarded raised `KeyError` on every fixture and on any
-    live table predating the column -- it killed the whole panel to print a diagnostic.
+    ⚠ REVISED, NOT EXCLUDED. A filing that misses its period's availability date is NOT
+    dropped: it is real new public information about the quarter and it enters the panel on the
+    day it arrives, with `as_of` set to its own filing date. Dropping it instead would make the
+    panel permanently blind to 3.34% of 13F shares -- and, worse, blind to exactly the filings
+    a daily refresh exists to pick up, including the four quarters where the missing filer is
+    Vanguard (see `F13_SETTLE_TRADING_DAYS`).
+
+    ⚠ `NaT` PROPAGATES FROM `first_pub`, WHICH IS WHY THIS IS NOT A BARE `.max(axis=1)`.
+    `DataFrame.max` skips NaN, so a period whose availability date is past the end of the
+    trading grid would fall back to its raw `filing_date` -- publishing the newest quarter
+    weeks early, which is the one thing the whole rule exists to prevent. A row whose
+    `filing_date` is absent keeps `first_pub`, matching the filing band, which KEEPS an undated
+    row rather than assuming it late.
+
+    ⚠ NO `filing_date` COLUMN MEANS NO CUTOFF IS POSSIBLE. That is a real read on this table
+    (`sec13f_hr.optional_columns`) and on fixtures, so it degrades to `as_of = first_pub` for
+    every row -- one emission per period, every filing inside it -- and says so.
     """
-    if not len(h):
-        return
+    h = h.copy()
+    h["first_pub"] = availability_date(h["period"], trading_index, settle_trading_days=settle_trading_days)
+
     if "filing_date" not in h.columns:
         logger.info(
-            "13F deadline stamp: no `filing_date` column -> the late-filing residual "
-            "cannot be measured on this read; the period+%sd stamp is unaffected.",
-            SEC_13F_FILING_LAG_DAYS,
+            "13F availability: no `filing_date` column -> `as_of` is the period's "
+            "availability date for every row; the cutoff CANNOT be applied on this read, so "
+            "a late filing is inside the first publication",
         )
+        h["as_of"] = h["first_pub"]
+    else:
+        later = h["filing_date"].notna() & h["first_pub"].notna() & (h["filing_date"] > h["first_pub"])
+        h["as_of"] = h["first_pub"].where(~later, h["filing_date"])
+
+    unavailable = h["as_of"].isna()
+    if unavailable.any():
+        # The trading grid has not reached these periods' availability dates. They cannot be
+        # published on any date the panel has a row for, so they are dropped HERE rather than
+        # silently reindexed away later -- and `prev` must not carry a period the panel never
+        # emitted, or the next quarter's deltas difference against an invisible predecessor.
+        logger.info(
+            "13F availability: %s row(s) across period(s) %s have no availability date "
+            "inside the trading calendar (it ends %s) -> not emitted",
+            f"{int(unavailable.sum()):,}",
+            sorted({str(pd.Timestamp(p).date()) for p in h.loc[unavailable, "period"].unique()})[:6],
+            str(pd.DatetimeIndex(trading_index).max().date()) if len(trading_index) else "(empty)",
+        )
+        h = h[~unavailable]
+    return h
+
+
+def _assert_emission_windows_ordered(qf: pd.DataFrame) -> None:
+    """Every period's LAST emission must precede the next period's FIRST one.
+
+    ⚠ ASSERTED RATHER THAN TRUSTED, BECAUSE IT DEPENDS ON THE BAND EDGE. `q-1`'s revisions
+    stop at `q-1 + 105d` (`F13_MAX_LATE_DAYS`) and `q` first publishes at about `q-1 + 141d`,
+    so the clearance is ~36 days and `as_of` is strictly increasing in `period`. That is what
+    lets `fundamentals_to_daily`'s `pivot_table(aggfunc="last").ffill()` stay correct with
+    several rows per period: no two periods ever compete for one `(ticker, as_of)` cell, so
+    "last" is never a coin toss. Widen the band past ~`+130d` and this breaks SILENTLY -- one
+    quarter's revision would overwrite the next quarter's first publication and the panel
+    would go BACKWARDS in time. This log is the alarm.
+
+    Raw FILING windows do overlap by ~10 days (period 2015-03-31's filings run to 2015-07-10
+    and 2015-06-30's start 2015-07-01); that is harmless and is not what this checks. Only the
+    EMISSION windows matter.
+    """
+    span = qf.groupby("period")["as_of"].agg(["min", "max"]).sort_index()
+    # `bad` marks the LATER period of an offending pair -- the one whose first publication is
+    # at or before its predecessor's last revision -- so the pair is `(index[i - 1], index[i])`.
+    bad = np.flatnonzero((span["max"].shift(1) >= span["min"]).to_numpy())
+    if len(bad):
+        overlaps = [(str(span.index[i - 1].date()), str(span.index[i].date())) for i in bad]
+        raise ValueError(
+            "13F emission windows OVERLAP across consecutive periods -- a later quarter's "
+            f"first publication is at or before an earlier one's last revision: {overlaps[:6]}. "
+            "`fundamentals_to_daily` would resolve the collision with `aggfunc='last'` and the "
+            "panel would step backwards. Narrow `F13_MAX_LATE_DAYS` or widen the settle."
+        )
+    duplicated = int(qf.duplicated(["ticker", "as_of"]).sum())
+    if duplicated:
+        raise ValueError(
+            f"13F emission: {duplicated:,} (ticker, as_of) pair(s) are emitted twice, so "
+            "`fundamentals_to_daily` would silently keep one of them. Two periods share an "
+            "availability date, which the window ordering above should have made impossible."
+        )
+
+
+def _report_first_publication_shortfall(h: pd.DataFrame) -> None:
+    """How much of each quarter arrives AFTER its own first publication -- logged per quarter.
+
+    This is the number the availability cutoff makes meaningful. It is NOT an exclusion rate:
+    a filing behind its period's first publication is stamped on its own filing date and
+    emitted as a REVISION, so what this measures is how much of a quarter the panel learns
+    late, not how much it never learns. A quarter whose shortfall jumps is a filing-season
+    anomaly worth seeing, and it is the same axis `validate institutionals` V14 scores.
+
+    ⚠ MEASURED ON SHARES, NOT ON `value_usd`, and the docstring of `F13_SETTLE_TRADING_DAYS`
+    carries why: a share count is immune to the 1000x unit defect and to price moves, and on
+    2020-12-31 the raw-value basis reads a 91%-complete quarter as 33% complete.
+
+    ⚠ `as_of` / `filing_date` ARE OPTIONAL ON THIS TABLE (`sec13f_hr.optional_columns`), so
+    the measure has to be skippable -- reading either unguarded raised `KeyError` on every
+    fixture that omits them and killed the whole panel to print a diagnostic.
+    """
+    if not len(h) or not {"as_of", "first_pub"}.issubset(h.columns):
+        logger.info("13F availability: no `as_of`/`first_pub` -> the first-publication shortfall cannot be measured on this read")
         return
 
-    deadline = h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-    late = h["filing_date"].gt(deadline).fillna(False)
-
-    value = h.get("value_usd")
-    total = float(value.sum()) if value is not None else 0.0
+    late = (h["as_of"] > h["first_pub"]).fillna(False)
+    shares = pd.to_numeric(h["shares"], errors="coerce")
+    total_sh = float(shares.sum())
     logger.info(
-        "13F deadline stamp: %s of %s (ticker, manager, quarter) rows filed AFTER "
-        "period+%sd (%.1f%%), carrying %.1f%% of 13F value; those holdings are visible "
-        "from the deadline rather than from their filing date (documented departure "
-        "from registry 0.5, deliberate for a multi-thousand-filer aggregate)",
+        "13F availability (settle %s trading day(s)): %s of %s filer-row(s) (%.2f%%) and "
+        "%.2f%% of SHARES arrive after their period's first publication -> emitted as "
+        "revisions on their own filing date, never back-dated",
+        F13_SETTLE_TRADING_DAYS,
         f"{int(late.sum()):,}",
         f"{len(h):,}",
-        SEC_13F_FILING_LAG_DAYS,
         100.0 * float(late.mean()),
-        100.0 * float(value[late].sum()) / total if (total > 0 and value is not None) else 0.0,
+        100.0 * float(shares[late].sum()) / total_sh if total_sh > 0 else 0.0,
+    )
+
+    per_q = pd.DataFrame({"period": h["period"], "shares": shares, "behind": shares.where(late, 0.0)}).groupby("period").sum()
+    shortfall = (per_q["behind"] / per_q["shares"].replace(0.0, np.nan)).dropna().sort_values(ascending=False)
+    worst = shortfall.head(6)
+    logger.info(
+        "13F availability: worst 6 quarters by share of SHARES behind the first publication: %s (universe-wide median %.2f%%)",
+        {str(pd.Timestamp(p).date()): f"{100.0 * v:.2f}%" for p, v in worst.items()},
+        100.0 * float(shortfall.median()),
+    )
+
+
+def _availability_coverage(h: pd.DataFrame) -> pd.Series:
+    """Per period: the share of the PREVIOUS quarter's 13F SHARES held by filers that have
+    reported for this quarter by its first publication. Universe-wide, one number per quarter.
+
+    ⚠ WEIGHTED BY THE PRIOR QUARTER, NOT BY THIS ONE, and that is what makes it point-in-time.
+    A filer's prior-quarter book is known at `as_of(q)`; this quarter's universe total is not,
+    so weighting by it would score the quarter against a number nobody had yet. The prior
+    quarter also supplies the only honest denominator for "who is missing": a filer absent
+    from `q` contributes its `q-1` size, which is exactly the weight its silence costs.
+
+    ⚠ SHARES, NEVER VALUE. See `F13_SETTLE_TRADING_DAYS`; and see the module docstring for why
+    a FILER-COUNT version of this diagnostic is useless -- measured 2026-09-15, the filer-count
+    basis never falls below 96.67% while this one reaches 82.58%.
+
+    A DIAGNOSTIC, NOT A GATE, and the measurement is what settles that. With the unit defect
+    repaired and the two fetch holes refilled, the fixed `snap + settle` rule puts every
+    quarter that has data above 82%, so an adaptive gate has nothing left to fix; its only
+    remaining effect would be to defer the same quarters the hole guard already suppresses,
+    and two mechanisms nulling one quarter for overlapping reasons is how a guard stops being
+    auditable. The number is logged and scored by `validate institutionals` V14 instead.
+
+    Measured 2026-09-15 (52 quarters, in-universe, banded, settle 3): p50 96.12%, p05 85.52%,
+    min 82.58% (2026-03-31), 10 quarters below 90% and none below 80%.
+    """
+    if not len(h) or "first_pub" not in h.columns:
+        return pd.Series(dtype="float64")
+    # ⚠ AN UNPROJECTED `shares` IS THE FAILURE MODE THIS GUARD EXISTS FOR, and it has already
+    # happened once. `clean_holdings` CREATES a missing numeric leg as 0.0 (see `_NUMERIC_13F`),
+    # so a read that projected `[ticker, period, cik, filing_date]` arrives here with an
+    # all-zero share column, every weight sums to 0, and the coverage comes back EMPTY -- which
+    # a caller reads as "no quarter has a prior quarter", a true-sounding sentence about the
+    # wrong thing. Raising the distinction to the caller is the point: no data and no basis for
+    # the measurement are different answers.
+    if float(pd.to_numeric(h["shares"], errors="coerce").abs().sum()) == 0.0:
+        logger.info(
+            "13F availability coverage: the `shares` column is all zero -- it was almost "
+            "certainly projected away and zero-filled by `clean_holdings`, so there is no "
+            "basis to weight the diagnostic on. Not measured."
+        )
+        return pd.Series(dtype="float64")
+
+    # One row per (cik, period): the filer's universe-wide share count, and the first date any
+    # of its filings for that period was public.
+    per_filer = h.groupby(["cik", "period"], sort=False).agg(shares=("shares", "sum"), pub=("as_of", "min")).reset_index()
+    first_pub = h.groupby("period")["first_pub"].first()
+    periods = pd.Index(sorted(first_pub.dropna().index))
+    pos = {p: i for i, p in enumerate(periods)}
+    per_filer["pi"] = per_filer["period"].map(pos)
+    per_filer = per_filer.dropna(subset=["pi"])
+
+    # `q-1`'s filers, aligned onto `q`, then matched against the filers public at `q`'s own
+    # first publication. `pub <= first_pub(q)` IS "reported by the availability date".
+    prior = per_filer[["cik", "pi", "shares"]].assign(pi=lambda x: x["pi"] + 1)
+    reported = per_filer.loc[per_filer["pub"] <= per_filer["period"].map(first_pub), ["cik", "pi"]].assign(_seen=True)
+    joined = prior.merge(reported, on=["cik", "pi"], how="left")
+    # ⚠ `pi + 1` PUTS THE LAST QUARTER'S FILERS ONE PAST THE END, and that row has no quarter
+    # to describe. Dropping it BEFORE the groupby rather than trimming the index afterwards is
+    # what keeps the index assignment length-safe -- the earlier form filtered the list and not
+    # the Series, which would raise on exactly the frame that triggered it.
+    joined = joined[joined["pi"] < len(periods)]
+    if joined.empty:
+        return pd.Series(dtype="float64")
+    seen = joined["_seen"].fillna(False).to_numpy(dtype=bool)
+    weight = joined.groupby("pi")["shares"].sum().replace(0.0, np.nan)
+    held = joined.loc[seen].groupby("pi")["shares"].sum()
+    coverage = (held.reindex(weight.index).fillna(0.0) / weight).dropna()
+    coverage.index = pd.DatetimeIndex([periods[int(i)] for i in coverage.index])
+    return coverage.sort_index()
+
+
+def _report_availability_coverage(h: pd.DataFrame) -> None:
+    """Log `_availability_coverage` beside the filer-count coverage table."""
+    coverage = _availability_coverage(h)
+    if coverage.empty:
+        return
+    thin = coverage[coverage < 0.90]
+    logger.info(
+        "13F availability coverage (share of q-1's SHARES held by filers public by as_of(q)): "
+        "median %.2f%%, p05 %.2f%%, min %.2f%% on %s; %s of %s quarter(s) below 90%%%s",
+        100.0 * float(coverage.median()),
+        100.0 * float(coverage.quantile(0.05)),
+        100.0 * float(coverage.min()),
+        str(pd.Timestamp(coverage.idxmin()).date()),
+        len(thin),
+        len(coverage),
+        (" -> " + ", ".join(f"{pd.Timestamp(p).date()}={100.0 * v:.1f}%" for p, v in thin.sort_values().head(8).items())) if len(thin) else "",
     )
 
 
@@ -387,22 +599,45 @@ def clean_holdings(holdings: pd.DataFrame) -> pd.DataFrame:
     extraction so there is nothing to filter, and `cik` arrives padded.
 
     ⚠ AND THE FILING BAND, which this table opts INTO and the elite one does not. A holding
-    filed a year after the quarter it describes is a real position that nobody could have
-    known about, and the deadline stamp above turns it into one that everybody could have --
-    so it is dropped rather than back-dated. Measured 2026-09-14: 1,050,431 of 23,801,899 rows
-    (4.413%) across 2,679 filers, carrying 1.052% of as-filed value; the constants carry the
-    full lateness table. The elite table abstains pending its own measurement.
+    filed a year after the quarter it describes is a real position, but the quarter it
+    describes is long closed: the band's late edge is what CLOSES a period's revision window
+    (`period + 105d`) and what keeps a 2015 quarter back-filed in 2025 out of the
+    prior-quarter lookup the next quarter's deltas difference against. It is no longer
+    protecting the CURRENT period from back-dating -- the availability stamp does that, by
+    putting every filing on its own filing date. Measured 2026-09-14: 1,050,431 of 23,801,899
+    rows (4.413%) across 2,679 filers, carrying 1.052% of as-filed value; the constants carry
+    the full lateness table. The elite table abstains pending its own measurement.
     """
     return _clean(holdings, key=("ticker", "cik", "period"), filing_band=(F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS))
 
 
 def _quarter_features(
-    h: pd.DataFrame, splits: pd.DataFrame | None = None, break_pct: float = COVERAGE_BREAK_DEFAULT, min_prior_holders: int = MIN_PRIOR_HOLDERS
+    h: pd.DataFrame,
+    splits: pd.DataFrame | None = None,
+    break_pct: float = COVERAGE_BREAK_DEFAULT,
+    min_prior_holders: int = MIN_PRIOR_HOLDERS,
+    revision_min_move: float = F13_REVISION_MIN_MOVE,
 ) -> pd.DataFrame:
-    """Manager-grain 13F -> one row per (ticker, quarter) with the eleven features, stamped
-    `as_of = period + 45 days` (the leak-free availability date)."""
+    """Manager-grain 13F -> one row per `(ticker, period, as_of)` with the eleven features.
 
-    # TODO: verify as_of = filing_date is better than the 45 days rule applied -> real filling date
+    `h` must already carry `as_of` (and `first_pub`) from `availability.availability_date` --
+    `build_institutional_feature_panel` stamps them. A frame WITHOUT `as_of` degrades to one
+    emission per period on the bare `period + 45d` deadline, which is the pre-availability
+    behaviour: it exists for the isolation test and for fixtures, not as a production path.
+
+    ⚠ ONE PERIOD EMITS SEVERAL ROWS, AND EACH IS CUMULATIVE OVER `filing_date <= as_of`. The
+    walk advances through a period's availability dates in order, accumulating; every emission
+    therefore contains every filing public at its own stamp. That is what makes
+    `revision_min_move` safe: skipping an immaterial date DELAYS those filings to the next
+    emitted one and never drops them.
+
+    ⚠ `prev` IS THE FULLY REVISED PREVIOUS PERIOD, NOT ITS FIRST PUBLICATION, and that is the
+    NAIVE delta basis -- measured (see `F13_SETTLE_TRADING_DAYS`) to beat a matched sample at
+    this settle buffer. It is also leak-free rather than merely convenient: `q-1`'s revision
+    window closes at `q-1 + 105d` and `q` first publishes at about `q-1 + 141d`, so every
+    filing in `prev` was public before `q`'s first emission.
+    `test_emission_windows_do_not_overlap` asserts that clearance rather than trusting it.
+    """
 
     holes, breaks, coverage = _coverage_periods(h, break_pct)
     if holes or breaks:
@@ -438,65 +673,140 @@ def _quarter_features(
     h = h[h["period"] >= INST_LEVEL_FLOOR_PERIOD]
     factors = _split_factors(h, splits)
 
-    rows = []
-    for ticker, tdf in h.groupby("ticker"):
+    if "as_of" in h.columns:
+        walk = h
+    else:
+        # The degraded path, announced rather than silent -- this IS the leaking behaviour.
+        logger.info(
+            "13F emission: no `as_of` column -> one emission per period on the bare "
+            "period+%sd deadline, with no availability cutoff (every filing for the "
+            "period is inside it, including the late ones)",
+            SEC_13F_FILING_LAG_DAYS,
+        )
+        walk = h.assign(as_of=h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))
+    # `kind="stable"` keeps each stamp's rows in the order `clean_holdings` left them, which is
+    # what makes the numeric aggregates reproducible across runs rather than merely close.
+    walk = walk.sort_values(["ticker", "period", "as_of"], kind="stable")
+
+    rows: list[dict] = []
+    n_revisions = n_skipped = 0
+    for ticker, tdf in walk.groupby("ticker", sort=False):
         prev: dict = {}
+        prev_total = np.nan
         prev_value = np.nan
         prev_period = None
-        for p in sorted(tdf["period"].unique()):
-            cur_rows = tdf[tdf["period"] == p]
-            cur = dict(zip(cur_rows["cik"], cur_rows["shares"], strict=False))
-            cur_ciks, prev_ciks = set(cur), set(prev)
-            holders = len(cur_ciks)
-            n_prev = len(prev_ciks)
-            has_prev = n_prev > 0
+        for p, pdf in tdf.groupby("period", sort=True):
+            ciks = pdf["cik"].to_numpy()
+            shares = pdf["shares"].to_numpy(dtype="float64")
+            values = pdf["value_usd"].to_numpy(dtype="float64")
+            calls = pdf["call_value"].to_numpy(dtype="float64")
+            puts = pdf["put_value"].to_numpy(dtype="float64")
+            stamps = pdf["as_of"].to_numpy()
+            # END position of each availability date's block, so `[:k]` is "public by `k`".
+            ends = np.flatnonzero(np.r_[stamps[1:] != stamps[:-1], True]) + 1
+            # Sorting the cik axis ONCE per period keeps the Herfindahl identical to the
+            # `groupby("cik")` it replaces: with one row per (ticker, cik, period) the groups
+            # are singletons, so the group sum is just the value in cik-sorted order.
+            cik_order = np.argsort(ciks, kind="stable")
+            cik_list, share_list = ciks.tolist(), shares.tolist()
 
+            n_prev = len(prev)
+            has_prev = n_prev > 0
             # The prior quarter's counts, restated onto THIS quarter's split basis.
             factor = factors.get((ticker, p), 1.0) if has_prev else 1.0
-            both = cur_ciks & prev_ciks
-            inc = sum(1 for c in both if cur[c] > prev[c] * factor)
-            dec = sum(1 for c in both if cur[c] < prev[c] * factor)
-
-            inst_shares = float(sum(cur.values()))
-            prev_shares = float(sum(prev.values())) * factor if has_prev else np.nan
-            inst_value = float(cur_rows["value_usd"].sum())
-            call_v = float(cur_rows["call_value"].sum())
-            put_v = float(cur_rows["put_value"].sum())
-            total_invested = inst_value + call_v + put_v  # long equity + option exposure
-            opt_ratio = ((call_v - put_v) / total_invested) if total_invested > 0 else np.nan
-
-            # crowding: Herfindahl of managers' VALUE shares (high = few dominant holders)
-            mv = cur_rows.groupby("cik")["value_usd"].sum()
-            tot_mv = float(mv.sum())
-            hhi = float(((mv / tot_mv) ** 2).sum()) if tot_mv > 0 else np.nan
+            prev_shares = prev_total * factor if has_prev else np.nan
             pool = float(n_filers.get(p, np.nan))
-            share = holders / pool if pool > 0 else np.nan
             prev_pool = float(n_filers.get(prev_period, np.nan)) if prev_period is not None else np.nan
             prev_share = n_prev / prev_pool if (has_prev and prev_pool > 0) else np.nan
 
-            rows.append(
-                {
-                    "ticker": ticker,
-                    "period": pd.Timestamp(p),
-                    "as_of": pd.Timestamp(p) + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS),  #
-                    # Carried only so the per-ticker coverage-onset guard can be applied
-                    # vectorised below; dropped before the frame is returned.
-                    "_prev_holders": float(n_prev) if has_prev else np.nan,
-                    "ic_inst_holders": share,
-                    "inst_shares": inst_shares,
-                    "inst_value": inst_value,
-                    # net QoQ dollar flow (long value); NaN on the first observed quarter
-                    "inst_value_flow": (inst_value - prev_value) if (has_prev and np.isfinite(prev_value)) else np.nan,
-                    "ic_inst_breadth_chg": (share - prev_share) if np.isfinite(prev_share) else np.nan,
-                    "ic_inst_shares_chg": (inst_shares / prev_shares - 1.0) if (has_prev and prev_shares > 0) else np.nan,
-                    "ic_inst_new_buyer_ratio": (len(cur_ciks - prev_ciks) / holders) if (has_prev and holders > 0) else np.nan,
-                    "ic_inst_exit_ratio": (len(prev_ciks - cur_ciks) / n_prev) if has_prev else np.nan,
-                    "ic_inst_cluster_buying": ((inc - dec) / holders) if (has_prev and holders > 0) else np.nan,
-                    "ic_inst_net_options_ratio": opt_ratio,
-                    "ic_inst_concentration": hhi,
-                }
-            )
-            prev, prev_value, prev_period = cur, inst_value, pd.Timestamp(p)
+            # Running per-filer counters, advanced row by row. The SET arithmetic
+            # (`cur & prev`, the increaser / decreaser tally) is incremental because each
+            # filer joins the aggregate exactly once and never leaves it; only the numeric
+            # sums are re-derived over the `[:k]` slice, which is what keeps them
+            # bit-identical to a single-stamp aggregation of the same rows.
+            n_both = inc = dec = 0
+            at = 0
+            last_emitted = np.nan
+            for k in ends:
+                for cik, held in zip(cik_list[at:k], share_list[at:k], strict=False):
+                    was = prev.get(cik)
+                    if was is not None:
+                        n_both += 1
+                        restated = was * factor
+                        if held > restated:
+                            inc += 1
+                        elif held < restated:
+                            dec += 1
+                at = int(k)
+
+                # ⚠ EVERY NUMERIC LEG IS RE-DERIVED OVER `[:k]`, NOT ACCUMULATED ACROSS STAMPS,
+                # and that is what makes the isolation test exact rather than approximate: a
+                # period with one availability date reduces over the same array, with the same
+                # reduction, as a period with twelve. Accumulating `+=` across stamps instead
+                # would make a quarter's total depend on how many times it was emitted, at
+                # ~1e-16 -- small, and a bit-identity claim that is quietly false.
+                inst_shares = float(shares[:k].sum())
+                if np.isfinite(last_emitted):
+                    move = abs(inst_shares - last_emitted) / last_emitted if last_emitted > 0 else np.inf
+                    if move < revision_min_move:
+                        n_skipped += 1
+                        continue
+                    n_revisions += 1
+
+                holders = int(k)
+                inst_value = float(values[:k].sum())
+                call_v = float(calls[:k].sum())
+                put_v = float(puts[:k].sum())
+                total_invested = inst_value + call_v + put_v  # long equity + option exposure
+                opt_ratio = ((call_v - put_v) / total_invested) if total_invested > 0 else np.nan
+
+                # crowding: Herfindahl of managers' VALUE shares (high = few dominant holders)
+                mv = values[cik_order[cik_order < k]]
+                tot_mv = float(mv.sum())
+                hhi = float(((mv / tot_mv) ** 2).sum()) if tot_mv > 0 else np.nan
+                share = holders / pool if pool > 0 else np.nan
+
+                rows.append(
+                    {
+                        "ticker": ticker,
+                        "period": pd.Timestamp(p),
+                        "as_of": pd.Timestamp(stamps[k - 1]),
+                        # Carried only so the per-ticker coverage-onset guard can be applied
+                        # vectorised below; dropped before the frame is returned.
+                        "_prev_holders": float(n_prev) if has_prev else np.nan,
+                        "ic_inst_holders": share,
+                        "inst_shares": inst_shares,
+                        "inst_value": inst_value,
+                        # net QoQ dollar flow (long value); NaN on the first observed quarter
+                        "inst_value_flow": (inst_value - prev_value) if (has_prev and np.isfinite(prev_value)) else np.nan,
+                        "ic_inst_breadth_chg": (share - prev_share) if np.isfinite(prev_share) else np.nan,
+                        "ic_inst_shares_chg": (inst_shares / prev_shares - 1.0) if (has_prev and prev_shares > 0) else np.nan,
+                        "ic_inst_new_buyer_ratio": ((holders - n_both) / holders) if (has_prev and holders > 0) else np.nan,
+                        "ic_inst_exit_ratio": ((n_prev - n_both) / n_prev) if has_prev else np.nan,
+                        "ic_inst_cluster_buying": ((inc - dec) / holders) if (has_prev and holders > 0) else np.nan,
+                        "ic_inst_net_options_ratio": opt_ratio,
+                        "ic_inst_concentration": hhi,
+                    }
+                )
+                last_emitted = inst_shares
+
+            # The next quarter differences against this one FULLY REVISED -- see the docstring.
+            prev = dict(zip(cik_list, share_list, strict=False))
+            prev_total = float(sum(prev.values()))
+            prev_value = float(values.sum())
+            prev_period = pd.Timestamp(p)
+
+    if n_revisions or n_skipped:
+        logger.info(
+            "13F emission: %s first publication(s) + %s revision(s) = %s row(s); %s "
+            "candidate revision date(s) skipped as immaterial (< %.3f%% of the last "
+            "emitted share count -- DEFERRED to the next emission, never dropped)",
+            f"{len(rows) - n_revisions:,}",
+            f"{n_revisions:,}",
+            f"{len(rows):,}",
+            f"{n_skipped:,}",
+            100.0 * revision_min_move,
+        )
 
     qf = pd.DataFrame(rows)
     if qf.empty:
@@ -552,6 +862,8 @@ def build_institutional_feature_panel(
     splits: pd.DataFrame | None = None,
     break_pct: float = COVERAGE_BREAK_DEFAULT,
     min_prior_holders: int = MIN_PRIOR_HOLDERS,
+    settle_trading_days: int = F13_SETTLE_TRADING_DAYS,
+    revision_min_move: float = F13_REVISION_MIN_MOVE,
 ) -> pd.DataFrame:
     """Long-format 13F feature panel (`f_<name>` per `EMISSION`). Empty if no holdings.
 
@@ -566,6 +878,12 @@ def build_institutional_feature_panel(
     so the production floor would null every delta in it and a test of the QoQ arithmetic would
     be asserting against NaN. A test that means to exercise the arithmetic passes 0 and says so;
     a test that means to exercise the guard passes the floor it is testing.
+
+    `settle_trading_days` and `revision_min_move` are the two availability dials, and both are
+    research parameters in the sense that they trade STALENESS against COMPLETENESS -- so the
+    step passes the configured values in and the constants are the declared defaults, the same
+    pattern as `break_pct`. `settle_trading_days=0` with no `filing_date` column reproduces the
+    pre-availability behaviour exactly, which is what the isolation test uses.
 
     ⚠ `frames` RATHER THAN FOUR UNPACKED FIELDS. `peer_dict`, `trading_index`, `stock_close` and
     `level_factor` were all read off one `PriceFrames` at the call site. Naming the object makes
@@ -595,21 +913,26 @@ def build_institutional_feature_panel(
     # clean and report holdings
     holdings = clean_holdings(holdings)
     # ⚠ THE UNIT REPAIR RUNS BEFORE ANYTHING READS A VALUE, and that ordering is the whole
-    # point: `_report_late_filings` reports a share OF VALUE, and `_quarter_features` sums
-    # value into `ic_inst_concentration`, `ic_inst_net_options_ratio`, `ic_inst_value_to_mcap`
-    # and `ic_inst_flow_to_mcap`. Measured 2026-09-14 on the repaired table, 1.074% of rows
-    # (2,458 filings in the divide-by-1000 band) carry 84.08% of the table's filed dollars,
-    # against 15.22% for the 95.57% of rows that are already correct. Every value-weighted
-    # statement made before this call is a statement about those 2,458 filings.
+    # point: `_quarter_features` sums value into `ic_inst_concentration`,
+    # `ic_inst_net_options_ratio`, `ic_inst_value_to_mcap` and `ic_inst_flow_to_mcap`.
+    # Measured 2026-09-14 on the repaired table, 1.074% of rows (2,458 filings in the
+    # divide-by-1000 band) carry 84.08% of the table's filed dollars, against 15.22% for the
+    # 95.57% of rows that are already correct. Every value-weighted statement made before this
+    # call is a statement about those 2,458 filings.
     value_before = pd.to_numeric(holdings.get("value_usd"), errors="coerce").sum()
     holdings, register = repair_value_basis(holdings, stock_close)
     log_register(register, float(value_before), logger)
-    _report_late_filings(holdings)
+    holdings = _stamp_availability(holdings, trading_index, settle_trading_days=settle_trading_days)
+    _report_first_publication_shortfall(holdings)
+    _report_availability_coverage(holdings)
 
     # build features
-    qf = _quarter_features(holdings, splits=splits, break_pct=break_pct, min_prior_holders=min_prior_holders)
+    qf = _quarter_features(
+        holdings, splits=splits, break_pct=break_pct, min_prior_holders=min_prior_holders, revision_min_move=revision_min_move
+    )
     if qf.empty:
         return pd.DataFrame(columns=["date", "ticker"])
+    _assert_emission_windows_ordered(qf)
 
     feats = [c for c in EMISSION if c in qf.columns]
     fields = {f: fundamentals_to_daily(qf, f, trading_index) for f in feats}
@@ -658,8 +981,20 @@ def build_institutional_feature_panel(
     # market-cap-scaled fields (their numerator is a quarterly value but their denominator is
     # a daily close, so `fundamentals_to_daily` is not the only thing that fills them), and a
     # date-space floor is what L1/L9 actually scores.
-    level_floor = INST_LEVEL_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-    delta_floor = INST_DELTA_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
+    #
+    # ⚠ THE AVAILABILITY DATE, NOT `period + 45d`. The bare deadline leaves a 2-5 day window in
+    # which the two market-cap-scaled fields could carry a value that no emission stands
+    # behind -- and L1/L9 now takes the same availability floor, so the two would disagree by
+    # exactly that window and the check would fail on a correct panel.
+    floors = availability_date(
+        pd.DatetimeIndex([INST_LEVEL_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD]), trading_index, settle_trading_days=settle_trading_days
+    )
+    level_floor = floors.get(INST_LEVEL_FLOOR_PERIOD, INST_LEVEL_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))
+    delta_floor = floors.get(INST_DELTA_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))
+    if pd.isna(level_floor):
+        level_floor = INST_LEVEL_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
+    if pd.isna(delta_floor):
+        delta_floor = INST_DELTA_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
     for name, frame in list(fields.items()):
         if frame is None or frame.empty:
             fields.pop(name)

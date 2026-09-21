@@ -56,6 +56,9 @@ class TableSpec:
     frozen_min_days: int
     min_tickers_xs: int
     universe_expected: int
+    coverage_min_share: float
+    edge_days: int
+    recent_sessions: int
     # -- per-table declarations (None == undeclared == the check abstains) ----------- #
     xs_suffix: str | None = None
     peer_suffix: str | None = None
@@ -122,6 +125,9 @@ def load_spec(config: DictConfig, table: Any, **overrides: Any) -> TableSpec:
         frozen_min_days=int(merged["frozen_min_days"]),
         min_tickers_xs=int(merged["min_tickers_xs"]),
         universe_expected=int(merged["universe_expected"]),
+        coverage_min_share=float(merged["coverage_min_share"]),
+        edge_days=int(merged["edge_days"]),
+        recent_sessions=int(merged["recent_sessions"]),
         xs_suffix=merged.get("xs_suffix"),
         peer_suffix=merged.get("peer_suffix"),
         clip_peer=None if merged.get("clip_peer") is None else float(merged["clip_peer"]),

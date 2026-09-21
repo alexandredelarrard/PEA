@@ -39,8 +39,11 @@ log = logging.getLogger(__name__)
 #: `cube_part_institutionals` (129 columns) measured 2.71 GB at 200,000 and 0.88 GB at 50,000
 #: -- psycopg2's server-side cursor materialises `max_row_buffer` rows as Python objects
 #: before pandas ever sees them, so the cost is rows x columns x ~24B of boxed floats, and it
-#: scales with this number. 50,000 keeps the widest table (249 columns) inside the 2 GB budget
-#: this package is built to.
+#: scales with this number AND with the table's width: the same 50,000 on
+#: `cube_part_fundamentals` (249 columns, 3,315,035 rows -> 1,223.9 MB of parquet in 1,148 s)
+#: peaked at **1.66 GB**. That is the widest part in this database and it is the number the
+#: 2 GB budget is set against, so a wider table than that needs a smaller chunk, not a
+#: bigger machine.
 CHUNK_ROWS = 50_000
 
 CACHE_DIR, OUT_DIR, PLOTS_DIR = "_cache", "_out", "plots"
@@ -150,6 +153,15 @@ def pull(context: Context, table: Table | str, out: str | Path, *,
     return target
 
 
+def cache_used(out: str | Path | None, table: Table | str) -> bool:
+    """Will a read with `cache=out` actually come off disk?
+
+    Every check records its source in `scope`, and "cache" must mean a file was read, not
+    that a run directory was passed: a `--out` with no `pull` in it reads the DB, and a run
+    whose JSON claimed otherwise would make the float32 caveats unreadable."""
+    return out is not None and cache_path(out, table).exists()
+
+
 def read_meta(out: str | Path) -> dict | None:
     path = meta_path(out)
     if not path.exists():
@@ -182,3 +194,19 @@ def iter_source(context: Context, table: Table | str, columns: Sequence[str], *,
             yield batch.to_pandas()
         return
     yield from context.store.iter_load(table, columns=list(columns), chunksize=chunksize)
+
+
+def read_columns(context: Context, table: Table | str, columns: Sequence[str], *,
+                 cache: str | Path | None = None,
+                 chunksize: int = CHUNK_ROWS) -> pd.DataFrame:
+    """Every row of `columns`, streamed and concatenated.
+
+    A NARROW full-table read, and the caller owns the width: `profile` passes a group of 8
+    (210 MB on `cube_part_fundamentals`) where the whole frame would be 6.6 GB. Nothing here
+    guards the width, because the checks that need the DB's float64 rather than the cache's
+    float32 also need to pass `cache=None`, and one function cannot decide both."""
+    parts = [chunk for chunk in iter_source(context, table, columns, cache=cache,
+                                            chunksize=chunksize)]
+    if not parts:
+        return pd.DataFrame(columns=list(columns))
+    return pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]

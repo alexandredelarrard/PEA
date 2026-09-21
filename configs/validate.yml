@@ -44,6 +44,22 @@ validate:
     # `load_universe_tickers` -- sp500_tickers (500) minus INSUFFICIENT_HISTORY_TICKERS and
     # data_extract.redundant_ticks. NOT 500: sp500_tickers is a snapshot with no date column.
     universe_expected: 491
+    # The floor on BOTH of `coverage`'s per-ticker shares -- the interior of a ticker's own
+    # span in the table, and its last `recent_sessions`. Measured 2026-09-21 over 491 names on
+    # three parts, the two populations are far apart and this sits in the gap:
+    #   clean   -- momentum interior min 1.000, institutionals 0.991, governance p01 1.000
+    #   defects -- governance BX 0.000 (trailing), KKR 0.457 (interior), PSKY 0.556
+    # ⚠ NOT a floor on a ticker's share of its whole price history. That ratio runs to a
+    # median of 0.87 on institutionals and 0.027 at worst on governance, and every bit of it
+    # is each source's own start date -- see the coverage.py docstring.
+    coverage_min_share: 0.98
+    # The tail of the panel `coverage` inspects one session at a time. A partial write shows
+    # up ONLY at the edge and only as a thin ticker count; the rows that are there are right.
+    edge_days: 15
+    # ~1 trading year. The window `coverage` judges staleness over: long enough that one
+    # quiet week is not a defect, short enough that a name which stopped updating a year ago
+    # cannot be averaged away by thirty years of correct history.
+    recent_sessions: 252
 
   tables:
 

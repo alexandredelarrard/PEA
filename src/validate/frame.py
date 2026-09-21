@@ -33,6 +33,36 @@ def key_columns(table: Table | str) -> tuple[str, ...]:
     return resolve(table).pk
 
 
+def _is_leg(series: pd.Series) -> bool:
+    """Is this column a numeric leg under test?
+
+    ⚠ AN ALL-NULL COLUMN MUST ANSWER YES, AND THAT IS THE WHOLE REASON THIS IS NOT A DTYPE
+    TEST. A `double precision` column with no non-null value in the window pandas is looking
+    at comes back as `object`, not `float64` -- measured on `cube_part_institutionals`, five
+    legs, every one `double precision` in Postgres (the same drift `io._coerce` pins). A
+    dtype test therefore drops precisely the dead legs `profile` exists to find: the
+    2026-09-04 cube audit's 65-of-179 entirely-null features would have been filtered out
+    before being measured, and the run would have come back clean.
+
+    So an `object` column counts as a leg when its values coerce to numbers, and also when it
+    has no values at all -- a column that is null everywhere is a dead leg whatever its
+    declared type. `profile` re-tests coercibility on the FULL table and files anything
+    genuinely textual under `skipped_text` rather than as a defect.
+
+    Booleans are excluded outright: a flag has no percentile and no correlation worth the name.
+    """
+    if is_bool_dtype(series):
+        return False
+    if is_numeric_dtype(series):
+        return True
+    if series.dtype != object:
+        return False
+    present = series.dropna()
+    if present.empty:
+        return True
+    return not pd.to_numeric(present, errors="coerce").isna().any()
+
+
 def feature_columns(context: Context, table: Table | str, *,
                     frame: pd.DataFrame | None = None) -> list[str]:
     """The numeric columns under test: everything that is not part of the grain.
@@ -40,12 +70,11 @@ def feature_columns(context: Context, table: Table | str, *,
     Dtypes come from a `LIMIT` sample rather than from reflection, because the store facade
     exposes column NAMES but not their SQL types -- and reaching past it for
     `information_schema` is exactly what `tests/data_store/test_store_boundary.py` forbids.
-    Booleans are excluded: a flag has no percentile and no correlation worth the name."""
+    See `_is_leg` for why the sample's dtype is not the test."""
     keys = set(key_columns(table))
     if frame is None:
         frame = context.store.load(table, limit=_DTYPE_SAMPLE_ROWS)
-    return [c for c in frame.columns
-            if c not in keys and is_numeric_dtype(frame[c]) and not is_bool_dtype(frame[c])]
+    return [c for c in frame.columns if c not in keys and _is_leg(frame[c])]
 
 
 def as_ts(values: Any) -> Any:

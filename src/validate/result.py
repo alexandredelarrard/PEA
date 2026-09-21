@@ -30,6 +30,16 @@ EXIT: dict[str, int] = {"pass": 0, "fail": 1, "abstain": 3}
 #: the same score the same way; the prose defining each band stays in `data-check.md`.
 _SEVERITY_BANDS: tuple[tuple[int, str], ...] = ((9, "critical"), (7, "high"), (4, "medium"), (1, "info"))
 
+#: The lowest score that turns a run red. Findings BELOW it are `info` -- recorded in the
+#: JSON, printed in the summary, and deliberately not a failure.
+#:
+#: ⚠ THIS EXISTS FOR A MEASURED FALSE POSITIVE. `coverage` must report the nine declared
+#: universe exclusions (`FDXF GEHC GEV HONA KVUE Q SNDK SOLV VLTO`) so a reader can see they
+#: were considered, but filing them as defects is exactly the false positive
+#: `momentum/_scripts/08` recorded as D-08: they are absent BY DECLARATION. A check with
+#: nowhere to put "I looked at this and it is fine" either hides the evidence or fails on it.
+_FAIL_FLOOR: int = 4
+
 
 def severity_for(score: int) -> str:
     """The `data-check.md` band a 1-10 score falls in."""
@@ -106,9 +116,10 @@ class CheckResult:
     @classmethod
     def measured(cls, check: str, table: str, findings: list[Finding], *,
                  scope: dict[str, Any], metrics: dict[str, Any], reason: str = "") -> "CheckResult":
-        """`pass` iff nothing was filed. A check that measured and found nothing is the only
-        thing allowed to report a pass."""
-        return cls(check=check, table=table, status="fail" if findings else "pass",
+        """`pass` iff nothing above the `info` band was filed -- see `_FAIL_FLOOR`. A check
+        that measured and found nothing is the only thing allowed to report a pass."""
+        red = any(f.score >= _FAIL_FLOOR for f in findings)
+        return cls(check=check, table=table, status="fail" if red else "pass",
                    reason=reason, scope=scope, findings=list(findings), metrics=metrics)
 
     @property
@@ -143,6 +154,24 @@ class CheckResult:
                           "evidence": f.evidence} for f in self.findings],
             "metrics": self.metrics,
         })
+
+
+def full_table_only(check: str, table: str, tickers: list[str] | None) -> CheckResult | None:
+    """ABSTAIN rather than answer a full-table question about a subset.
+
+    `-t/--tickers` is meaningful for the per-ticker checks and meaningless for the ones whose
+    whole claim is "over every row of this table". Silently ignoring the flag would print a
+    full-table verdict for a run the caller believes was scoped to three names; honouring it
+    would print a three-name verdict under a check whose findings are worded as table-wide.
+    Neither is a result, so the check declines to run."""
+    if not tickers:
+        return None
+    return CheckResult.abstained(
+        check, table,
+        f"`{check}` always measures the full table, and -t/--tickers was given "
+        f"({', '.join(tickers[:5])}{'...' if len(tickers) > 5 else ''}) -- a subset answer "
+        f"under a table-wide finding is not a result. Drop -t, or use a per-ticker check.",
+        tickers=tickers)
 
 
 def gate(result: CheckResult) -> tuple[bool, str]:

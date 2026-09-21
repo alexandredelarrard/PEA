@@ -1,0 +1,115 @@
+# validate.yml -- what each check is allowed to assume about each table.
+#
+# `defaults` are TABLE-AGNOSTIC by construction: a Pearson r of 0.985 means the same thing on
+# every table. `tables.<name>` holds what does NOT generalise, and a table with no entry makes
+# the checks that need one ABSTAIN (exit 3) rather than guess.
+#
+# WHY THAT IS NOT OVER-ENGINEERING. Measured over six same-shaped cube parts, the mean number
+# of legs frozen inside a quarter runs 0.1 of 28 on cube_part_momentum to 66.4 of 103 on
+# cube_part_governance -- and governance is CORRECT, because it ffills quarterly proxy data
+# onto a daily grid. One built-in frozen-run rule fires on two thirds of governance and never
+# on momentum.
+#
+# ⚠ ADD AN ENTRY ONLY WITH A MEASUREMENT OR AN EXISTING CONSTANT BEHIND IT. An absent entry
+# abstains loudly; an invented one lies quietly. Every value below carries its evidence.
+validate:
+
+  defaults:
+    # `reports/validate/2026-09-21-institutionals/_scripts/check_05.R_FLAG`. Institutionals and
+    # governance both used 0.985; momentum used 0.99, and the looser value is kept because the
+    # 2026-09-04 cube audit's seven r=1.0000 pairs clear either.
+    redundancy_r: 0.985
+    # Exact equality is asked as `a != b`, not `|a-b| > tol`: "one column under two names" is a
+    # stronger and cheaper claim than a correlation, and a tolerance would weaken it to a
+    # near-correlation the r test already makes.
+    exact_equal_tol: 0.0
+    # check_06.CLIP_LIMIT -- more than 9% of a peer-z leg sitting ON the clip is "investigate".
+    clip_limit_share: 0.09
+    # check_06.TIE_LIMIT -- half a cross-section on one rank is a plateau, not a ranking.
+    tie_limit_share: 0.50
+    # check_08.JUMP_Z / JUMP_SPAN / JUMP_MIN_DISTINCT. ⚠ ALL THREE GATES ARE LOAD-BEARING. The
+    # z gate alone produced 296,926 "jumps" scoring up to 6.5e9 on cube_part_institutionals: a
+    # decayed-event leg takes tiny decay steps, so its MAD is near zero and any real move
+    # scores astronomically. The move must ALSO cover half the leg's own p1-p99 span, and
+    # small-integer legs are excluded outright -- on a leg ranging over {0,1,2,3} a +1 step IS
+    # half the span by definition, so both gates fire on the feature working.
+    jump_z: 12.0
+    jump_span_frac: 0.50
+    jump_min_distinct: 20
+    # check_08.HOLE_MIN / FROZEN_MIN, in trading sessions.
+    hole_min_days: 5
+    frozen_min_days: 30
+    # Fewer names than this on a date and a cross-sectional statistic is noise, not a ranking.
+    min_tickers_xs: 20
+    # `load_universe_tickers` -- sp500_tickers (500) minus INSUFFICIENT_HISTORY_TICKERS and
+    # data_extract.redundant_ticks. NOT 500: sp500_tickers is a snapshot with no date column.
+    universe_expected: 491
+
+  tables:
+
+    # 129 columns, 2,644,212 rows. Standardised views carry both suffixes; the peer clip is
+    # xs.XS_CLIP_PEER.
+    cube_part_institutionals:
+      xs_suffix: "_xs"
+      peer_suffix: "_vs_peers"
+      clip_peer: 8.0
+      cadence: daily
+      # Legs the builder re-computes EVERY session, so a flat run is a defect rather than a
+      # between-deadline hold: `_to_mcap` legs divide a filed quantity by a daily market cap,
+      # and every `sig_*` return/excursion leg reads that day's close. A quarterly 13F leg
+      # holding its value between deadlines is CORRECT and is not in this list.
+      # (check_08.DAILY_SUFFIXES, matched as prefix or suffix.)
+      daily_legs: ["_to_mcap", "_ret_since", "_resid_ret_since", "_vol_scaled_move",
+                   "_price_vs_buy", "_max_runup_since_buy", "_max_dd_since_buy"]
+      # Feature prefix -> the source table whose PUBLICATION clock bounds it (check_07). The
+      # check reads `resolve(src).freshness_col`, so the four tables publishing on a different
+      # clock than the period they describe are handled by the registry, not by a copy here.
+      pit_sources:
+        f_ic_insider_:     insider_transactions
+        f_ic_sig_insider_: insider_transactions
+        f_ic_act_:         sec_13d
+        f_ic_sig_act_:     sec_13d
+        f_ic_shortvol_:    sec_short_interest
+        f_ic_ftd_:         sec_fails_to_deliver
+        f_ic_bo_:          [sec_13d, sec_13g]
+      # A percent OF A SHARE CLASS cannot exceed 100. Measured 0 -> 99.99 (act) and 0 -> 97.98
+      # (bo), so the bound is the semantic one and the data sits inside it today.
+      # ⚠ The other percent-NAMED legs are NOT here: f_ic_inst_ownership_pct (5.2e-08 -> 1.97),
+      # f_ic_ftd_pct_so (0 -> 0.147) are FRACTIONS despite the name, and inst_ownership_pct
+      # exceeding 1.0 is a question for `profile`, not a bound to assert around.
+      bounds:
+        f_ic_act_percent_of_class: [0.0, 100.0]
+        f_ic_bo_percent_of_class:  [0.0, 100.0]
+
+    # 105 columns, 3,045,028 rows. Peer-z views only -- there is no `_xs` leg in this part, so
+    # declaring one would make `clip` measure tie mass over an empty set and call it a pass.
+    cube_part_governance:
+      peer_suffix: "_vs_peers"
+      clip_peer: 8.0
+      # ⚠ QUARTERLY, AND THE FROZEN CHECK MUST KNOW IT. DEF 14A data is annual/quarterly ffilled
+      # onto a daily grid: 66.4 of 103 legs are frozen inside an average quarter and every one
+      # of those is correct. No `ffill_horizon_days` is declared because none has been measured
+      # -- so the FROZEN sub-check ABSTAINS here while JUMP and HOLE still run. An invented
+      # horizon would turn the whole part green or the whole part red, and neither is a result.
+      cadence: quarterly
+      # Shares of a total, measured 0 -> 1 across the part (independent 0 -> 1.0,
+      # female 0 -> 0.778, insider_ownership 1.7e-05 -> 0.91, say_on_pay 0.034 -> 1.0,
+      # sop_dissent 0 -> 0.913, board_dissent_mean 0 -> 0.733). Fractions, not percents.
+      bounds:
+        f_pct_independent_directors: [0.0, 1.0]
+        f_pct_female_directors:      [0.0, 1.0]
+        f_insider_ownership_pct:     [0.0, 1.0]
+        f_say_on_pay_support:        [0.0, 1.0]
+        f_sop_dissent:               [0.0, 1.0]
+        f_board_dissent_mean:        [0.0, 1.0]
+
+    # 30 columns, 3,262,925 rows. NO standardised-view suffix exists in this part, so `clip`
+    # abstains here -- which is the correct answer, not a gap. Daily with no exemptions: 0.1 of
+    # 28 legs frozen inside an average quarter, so FROZEN runs on every leg.
+    cube_part_momentum:
+      cadence: daily
+
+    # The label part. Declared so `leakage`'s horizon half has a home; it needs no suffix,
+    # cadence or source map -- the horizons bound each other.
+    cube_part_targets:
+      cadence: daily

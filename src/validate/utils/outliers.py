@@ -13,58 +13,6 @@ deviation enough to hide itself. The median and the median absolute deviation do
 the spike still scores far from the centre. That is the whole reason this repo flags level
 outliers this way, and it is why every caller must use the SAME kernel -- two subtly different
 "outlier counts" for the same column would be worse than one.
-
-## THE KERNEL SCORES A LOG CHANGE, NOT A LEVEL (plan-5b decision 60)
-
-`detect_level_outliers` used to score `modified_zscore(raw levels)`. That rule flags the
-entire recent era of any growing company: a filer whose revenue compounds 10x over 15 years
-has a median sitting near its mid-history level, and every recent quarter is many MADs above
-it -- correctly, and uselessly. The measurement is in `tests/validate/test_outliers.py`: a
-smooth 10x compound-growth series over 60 quarters produced findings on the raw-level kernel
-and produces ZERO here.
-
-So both passes score a SCALE-FREE log change:
-
-  * the level pass scores `log(v_t / v_{t-1})` -- "is this STEP unlike this field's other
-    steps?", which is the question the check was always described as asking;
-  * the YoY pass scores `log(v_t / v_{t-4})` rather than the old `diff(4)`. Decision 60 says
-    to keep the YoY check, and this keeps it: a year-on-year comparison immune to seasonality.
-    Its kernel had the SAME defect as the level pass -- a 4-period difference on an
-    exponentially growing series grows exponentially too -- so fixing one and not the other
-    would have left half the bug in place. Recorded as a deviation from the letter of
-    decision 60 (which says only "keep the YoY `diff(4)` check") for exactly that reason.
-
-## WHERE IT ABSTAINS -- read this before trusting a zero
-
-A log ratio does not exist across a sign change or a zero. `log_change` returns NaN when
-either endpoint is <= 0 or when the two disagree in sign, and NaN scores as NaN, which
-compares False against every threshold. So this check is BLIND to:
-
-  * a value crossing zero (APA's revenue going to 0 / -$467M) -- that is `impossible_value`
-    and `sign_convention`, not this;
-  * a series that is zero throughout (VRT's pre-merger shell) -- no dispersion, no finding;
-  * the first period (level pass) and the first four (YoY pass), which have no prior.
-
-Two negatives are scored on their magnitude ratio, because a liability line tagged negative
-throughout has a perfectly well-defined series of steps.
-
-Design notes
-  * `reference` EXISTS FOR THE LAGGED PATHS. Both passes score a lagged quantity whose first
-    entries are undefined. Those entries must be scored (as NaN, so they can never be
-    flagged) but must NOT contribute to the median/MAD -- filling them with 0 first was a
-    real false-positive bug, since a 0 in a series of large changes is itself an outlier.
-    So: statistics from `reference`, scores over `values`.
-  * `fallback_to_mean_abs_dev` IS NOT COSMETIC. When MAD == 0 (more than half the series is
-    identical -- common for a flat balance-sheet line) the level check falls back to the mean
-    absolute deviation so a genuine lone spike is still caught. The YoY check deliberately
-    does NOT: a zero MAD there means the changes are essentially constant, and every caller
-    of that path treats "no dispersion" as "nothing to say".
-  * Returns NaN where the input is NaN, and zeros when there is no dispersion at all. Both
-    compare False against any threshold, so a caller's `z > threshold` mask is safe without
-    any extra NaN handling.
-  * `mad_center_scale` / `modified_zscore` / `count_mad_outliers` are UNCHANGED. They are the
-    statistical kernel `scripts/dod/data_profile.py` consumes directly, on its own columns;
-    decision 60 touches only what `detect_level_outliers` feeds them.
 """
 from __future__ import annotations
 

@@ -15,96 +15,11 @@ lives on `cube_part_prices`, produced by `StepCubePrices`; this module recompute
 same two tables through the same function so the validator can run against a database whose
 cube has not been rebuilt yet, and so a validator run can never be the thing that changes a
 number it is about to judge.
-
-## The 12.6% was NOT the vendor's fault, and this file used to say it was
-
-⚠ This docstring previously argued that invariant 1 fails on 12.6% of rows "even on a CORRECT
-table, because Sharadar is the inconsistent side". **That was wrong**, and it cost a month:
-the failure was real, it was ours, and it was measurable. The decomposition, taken on the live
-panel, puts it beyond doubt:
-
-    leg_shares  (sharesOutstanding / sharesbas)     100.00%   the share leg is exact
-    leg_vendor  (sharadar.price x sharesbas / mcap)  99.82%   the vendor is self-consistent
-    leg_price   (close_split / sharadar.price)       87.59%   OURS is the leg that moves
-
-The missing factor is `S(d)` -- the SPINOFF adjustment Yahoo applies to `Close` and nobody
-applies to a share count. Multiplying the price leg by it takes invariant 1 from **87.44% to
-98.30%** and invariant 2 from **87.33% to 98.18%**, and breaks 3 rows while fixing 5,516. See
-`src/data_aggregate/utils/common/level_basis.py` for the derivation.
-
-`configs/prices/yf_price_bugfix.json` then takes them to **99.03%** and **98.88%**: nine
-tickers where the defect is in Yahoo's own data and no event feed expresses it, so `S` is
-structurally blind to them. Applied here too -- the register is a SOURCE, not a cube artifact
--- and every entry is re-measured against Sharadar before it fires.
-
-The lesson is the reusable part: "the reference is inconsistent" is the most comfortable
-possible explanation for a failing invariant, and it must be the LAST one accepted, after the
-identity has been decomposed leg by leg.
-
-## What blocks, and why only one of them
-
-`gate()` blocks the cube build on INVARIANT 3 ALONE, and that is still right -- but for a
-different reason than the one written here before. Invariant 1's residual is no longer a
-12.6% wall; it is ~1.0%, and the largest single contributor left is JCI (82 rows), whose
-Yahoo series is corrupt in a way no factor can express. MNST's vintage and the stock-dividend
-names are repaired by the register; Visa's multi-class `sharesbas` and as-of join noise are
-the rest.
-Raising a gate on it is now a defensible decision rather than an impossible one -- but it is a
-SEPARATE decision, so `MCAP_BLOCK_SHARE` stays `None`. Invariant 3 keeps blocking because its
-failures have no ambiguity: an unexplained >50% round-trip with no split on the books is
-always a data fault, and it is the mechanism that silently re-corrupts the table every time a
-stock splits.
-
-Invariant 4 is a different KIND of check from the other three and was added because of what
-they cannot see. Invariants 1-3 all score ROWS THAT EXIST, so a missing row is invisible to
-every one of them: `prices` held 45 of 491 tickers on 2026-08-28 with 491 on both
-neighbouring sessions, and all three invariants passed that day because the 45 rows present
-were perfectly adjusted. The damage was downstream, where `cube_part_momentum` ranked 13 of
-its 28 features over those 45 names and published ordinary-looking percentiles.
-
-## The four invariants
-
-1. THE MARKET-CAP IDENTITY (reported, not blocking -- see above)
-       | close_split(d) x S(d) x sharesOutstanding(d) / sharadar.marketcap(d) - 1 |  <  1%
-   Two independent vendors, one arithmetic identity. Both legs carry the same retroactive
-   SPLIT restatement so the split factor cancels; `S(d)` supplies the SPINOFF factor that does
-   not. Reported BOTH raw and S-adjusted, so the size of the wedge stays visible instead of
-   being absorbed into a headline rate.
-
-2. PRICE VINTAGE FRESHNESS
-       | close_split(d) x S(d) / sharadar.price(d) - 1 |  <  0.5%     on filing dates
-   With `S` applied the two feeds are on the same basis, so what remains is a genuine STALE
-   ADJUSTMENT VINTAGE rather than a convention difference. This is the check that would have
-   flagged MNST in July 2026 instead of an audit finding it in September.
-
-   ⚠ For the eight tickers carrying a registered LEVEL wedge this is partly SELF-REFERENTIAL,
-   because the wedge was measured against the same `sharadar.price` it scores against. The
-   independent alternative is the spun-off child's own price via `sharadar_actions
-   .contraticker`, which needs history for securities outside the universe.
-
-3. SPIKE-AND-REVERT
-   ⚠ THE ONLY INVARIANT THAT STILL SCORES THE RAW TABLE, deliberately. It is the tripwire for
-   vendor defects nobody has looked at yet, so it must keep firing on MNST's six 2026 jumps
-   even though the register repairs them downstream -- that firing is the observation the
-   register's own re-verification depends on. A cluster here means "the raw feed is broken",
-   not "the cube is wrong"; cross-check `yf_price_bugfix.json` before acting on one.
-
-   A >50% jump whose LEVEL comes back within a few bars, with no corroborating row in
-   `prices_splits`, is two adjustment vintages meeting inside one ticker -- not a market
-   event. Genuine moves must pass: 2020-03-09's oil crash (APA/OXY/FANG/TRGP), PCG's
-   bankruptcy, CVNA 2022.
-
-4. DAY COVERAGE (reported, not blocking)
-       tickers with a bar on day d  >=  0.9 x the median day's count
-   The only invariant that scores rows that are ABSENT. Clustered by DATE, since that is what
-   the failure is a property of. Not in `gate()`: choosing a blocking threshold is a separate
-   decision needing its own evidence, exactly as recorded for `MCAP_BLOCK_SHARE`.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dataclass_field
 
-import numpy as np
 import pandas as pd
 
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT

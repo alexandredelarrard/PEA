@@ -120,8 +120,15 @@ validate:
         f_board_dissent_mean:        [0.0, 1.0]
 
     # 30 columns, 3,262,925 rows. NO standardised-view suffix exists in this part, so `clip`
-    # abstains here -- which is the correct answer, not a gap. Daily with no exemptions: 0.1 of
-    # 28 legs frozen inside an average quarter, so FROZEN runs on every leg.
+    # abstains here -- which is the correct answer, not a gap.
+    # ⚠ AND NO `daily_legs`, DELIBERATELY, so `timeseries`' FROZEN sub-check abstains too.
+    # Every leg in this part is a cross-sectional percentile -- measured 2026-09-21 on the
+    # full table, amihud_63 / atr_14 / dollar_volume_63 / idio_vol_63 / range_21 / vol_63 all
+    # run min 0.0020, max 1.0000, median 0.5012 -- so a value changes only when the name's
+    # RANK changes. Running FROZEN on "every leg because the table is daily" produced 4,661
+    # flat spells here: AAPL at dollar_volume_63 == 1.0000 for 2,071 consecutive sessions
+    # (the largest dollar volume in the universe on every one of them), MSFT at
+    # amihud_63 == 0.006135 (rank 3 of 489) for 347. A stable rank is a stable value.
     cube_part_momentum:
       cadence: daily
 

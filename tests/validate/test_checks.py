@@ -24,7 +24,8 @@ from omegaconf import OmegaConf
 from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 from src.data_store.schema import Tables
 from src.validate.checks import (check_bounds, check_catalogue, check_clip, check_coverage,
-                                 check_grain, check_profile, check_redundancy)
+                                 check_grain, check_leakage, check_profile,
+                                 check_redundancy, check_timeseries)
 from src.validate.spec import UndeclaredTableError
 
 #: The part the synthetic frames borrow their grain from: `pk == (date, ticker)`, `date_col ==
@@ -326,3 +327,135 @@ def test_catalogue_asserts_both_directions(sqlite_store, tmp_path, capsys):
         print(f"\n  catalogue: both directions -- f_renamed_away catalogued but absent "
               f"(score 9), f_undocumented live but undescribed (score 4), f_live clean; "
               f"no --catalogue -> ABSTAIN")
+
+
+# --------------------------------------------------------------------------------------- #
+# timeseries                                                                              #
+# --------------------------------------------------------------------------------------- #
+def test_timeseries_separates_a_hole_a_freeze_and_a_jump(sqlite_store, capsys):
+    """Three kernels, three planted defects, and the FROZEN gate asserted in both directions.
+
+    The jump leg is the load-bearing one: it must clear BOTH gates while the smooth legs
+    clear neither -- the z gate alone flagged 296,926 steps on the live part, because a
+    near-zero MAD makes every real move astronomical. And FROZEN must refuse to run on a
+    table that declares no `daily_legs`: `cube_part_momentum` is daily and every leg in it is
+    a cross-sectional percentile, where a name holding its rank holds its value."""
+    def hole(i, ticker):                      # a 6-row gap, AAA only
+        return np.nan if (ticker == "AAA" and 15 <= i < 21) else round(0.01 * i, 4)
+
+    def jump(i, ticker):                      # one +500 spike, AAA only
+        return float(i) + (500.0 if (ticker == "AAA" and i == 20) else 0.0)
+
+    frame = _panel(["AAA", "BBB"], f_hole=hole, f_jump=jump, f_flat=lambda i, t: 5.0)
+    sqlite_store.save(PART, frame)
+    context = _Ctx(sqlite_store, _config())
+
+    result = check_timeseries(context, PART, config=context.config)
+
+    by_field = {f.field: f for f in result.findings}
+    assert result.status == "fail"
+    assert set(result.metrics["legs_with_holes"]) == {"f_hole"}
+    assert set(result.metrics["legs_with_jumps"]) == {"f_jump"},         "a smooth series must clear neither gate"
+    assert by_field["f_hole"].evidence["worst"]["days"] == 6
+    assert by_field["f_hole"].ticker == "AAA"
+    # Jumps are INFO by design: reported and ranked, never the reason a run is red.
+    assert by_field["f_jump"].score == 3
+    assert by_field["f_jump"].evidence["worst"]["change_over_span"] >= 0.5
+    # ... and f_flat never moves, yet nothing is filed: momentum declares no `daily_legs`.
+    assert result.metrics["n_frozen"] == 0 and result.scope["frozen_legs"] == 0
+    assert "ABSTAINED" in result.scope["frozen_scope"] and "ABSTAINED" in result.reason
+
+    # -- the same kernel on a table that DOES declare which legs are rebuilt daily -------- #
+    daily = _panel(["AAA"],
+                   f_ic_stall_to_mcap=lambda i, t: 0.5,                 # flat, interior
+                   f_ic_rank_to_mcap=lambda i, t: round(0.5 + 0.01 * i, 4) if i < 8 else 1.0,
+                   f_ic_quarterly_holding=lambda i, t: 7.0)             # flat, NOT a daily leg
+    sqlite_store.save(Tables.cube_part_institutionals, daily)
+    frozen = check_timeseries(context, Tables.cube_part_institutionals, config=context.config)
+
+    scored = {f.field: f for f in frozen.findings}
+    assert set(frozen.metrics["legs_with_frozen"]) == {"f_ic_stall_to_mcap"},         "a leg the builder does not rebuild daily is allowed to hold its value"
+    assert scored["f_ic_stall_to_mcap"].score == 7
+    # A run pinned at the series' own extreme is a saturation, not a stalled input: measured
+    # on the live part, AAPL held `dollar_volume_63 == 1.0` for 2,071 sessions because it was
+    # the largest dollar volume in the universe on every one of them.
+    assert set(frozen.metrics["legs_saturated"]) == {"f_ic_rank_to_mcap"}
+    assert scored["f_ic_rank_to_mcap"].score == 3
+    assert scored["f_ic_rank_to_mcap"].evidence["worst"]["days"] == len(SESSIONS) - 8
+    with capsys.disabled():
+        worst_jump = by_field["f_jump"].evidence["worst"]
+        print("")
+        print(f"  timeseries: f_hole 6-row gap (score 6), f_jump z={worst_jump['z']:,.1f} "
+              f"at {worst_jump['change_over_span']:.2f}x its p1-p99 span (score 3, info); "
+              f"FROZEN ABSTAINS on momentum (no daily_legs) and on institutionals files "
+              f"f_ic_stall_to_mcap at 7, f_ic_rank_to_mcap (pinned at its own max) at 3, "
+              f"and the non-daily leg not at all")
+
+
+# --------------------------------------------------------------------------------------- #
+# leakage                                                                                 #
+# --------------------------------------------------------------------------------------- #
+def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsys):
+    """Both halves: the horizon ladder must recede, and no feature may precede its source.
+
+    The horizon half is asserted in both directions -- clean first, then the SAME frame with
+    one horizon pushed to the last price session -- because a check that cannot fail is not
+    evidence that the table is clean."""
+    prices = _panel(["AAA", "BBB"], close=lambda i, t: 100.0 + i)[["date", "ticker", "close"]]
+    prices.to_sql("prices", sqlite_store.engine, index=False)
+    last_session = SESSIONS[-1]
+
+    def label(offset):                        # non-null until `offset` sessions from the end
+        return lambda i, t: float(i) if i < len(SESSIONS) - offset else np.nan
+
+    # TWO families at the SAME three horizons, which is the live shape: cube_part_targets
+    # carries target_rank_*, target_zscore_* and target_epsilon_*. Legs at one horizon end on
+    # one day BECAUSE they are one horizon, and comparing across families reported six leaks
+    # on the live part where there were none.
+    clean = _panel(["AAA", "BBB"],
+                   f_ret_h30=label(5), f_ret_h60=label(10), f_ret_h90=label(15),
+                   f_vol_h30=label(5), f_vol_h60=label(10), f_vol_h90=label(15))
+    sqlite_store.save(Tables.cube_part_targets, clean)
+    context = _Ctx(sqlite_store, _config())
+
+    ok = check_leakage(context, Tables.cube_part_targets, config=context.config)
+    ladder = [e for e in ok.metrics["horizon_ladder"] if e["family"] == "f_ret"]
+    assert ok.status == "pass", ok.findings
+    assert ok.metrics["horizon_families"] == ["f_ret", "f_vol"]
+    assert [e["horizon_days"] for e in ladder] == [30, 60, 90]
+    # 5 sessions apart, asserted in the CALENDAR days the ladder reports -- a business-day
+    # grid makes those two different numbers, and the check must not silently mean sessions.
+    step = (SESSIONS[34] - SESSIONS[29]).days
+    assert all(e["recedes_by"] == step for e in ladder[1:])
+    assert all(e["days_behind_last_price"] > 0 for e in ladder)
+    assert "pit_sources" in ok.reason, "cube_part_targets declares none -- say so, do not pass"
+
+    # ... and the same check on a frame whose 90-day label reaches the last price session.
+    leaked = clean.copy()
+    leaked.loc[leaked["date"] == last_session, "f_ret_h90"] = 1.0
+    sqlite_store.replace(Tables.cube_part_targets, leaked)
+    bad = check_leakage(context, Tables.cube_part_targets, config=context.config)
+    assert bad.status == "fail" and bad.worst_score == 10
+    assert {f.field for f in bad.findings} == {"f_ret_h90"},         "f_vol_h90 is clean and must not be dragged in by its sibling family"
+    assert len(bad.findings) == 2, "it reaches the last price AND stops receding"
+
+    # -- the point-in-time half, on a table that declares its sources --------------------- #
+    ftd = pd.DataFrame({"ticker": ["AAA", "BBB"],
+                        "date": [SESSIONS[10], SESSIONS[0]],
+                        "fails_quantity": [1.0, 2.0]})
+    ftd.to_sql("sec_fails_to_deliver", sqlite_store.engine, index=False)
+    panel = _panel(["AAA", "BBB"], f_ic_ftd_pct_so=lambda i, t: float(i))
+    sqlite_store.save(Tables.cube_part_institutionals, panel)
+
+    pit = check_leakage(context, Tables.cube_part_institutionals, config=context.config)
+    leak = next(f for f in pit.findings if f.field == "f_ic_ftd_pct_so")
+    assert pit.status == "fail" and leak.score == 10
+    assert leak.ticker == "AAA" and leak.evidence["n_tickers"] == 1
+    assert leak.evidence["worst"]["lead_days"] == (SESSIONS[10] - SESSIONS[0]).days
+    assert "pit" in pit.scope["halves_run"]
+    with capsys.disabled():
+        print(f"\n  leakage: clean ladder h30 -> h60 -> h90 receding 5 sessions each and all "
+              f"behind {last_session.date()} (step {step}d) -> PASS; the same frame with h90 pushed to "
+              f"{last_session.date()} -> 2 findings at score 10; PIT caught AAA carrying "
+              f"f_ic_ftd_pct_so {leak.evidence['worst']['lead_days']} days before its first "
+              f"sec_fails_to_deliver row")

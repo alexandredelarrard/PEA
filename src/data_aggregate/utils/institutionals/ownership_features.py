@@ -92,6 +92,7 @@ and each was caught by a measurement, not by reading the code:
 Half-lives (`act` and `bo`, both default 126 trading days -- "campaigns run for quarters, not
 weeks") come from `build_cube.institutionals.decay_halflife`.
 """
+
 from __future__ import annotations
 
 import re
@@ -100,25 +101,16 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.institutionals.decay import (
-    days_since_last_true, decay_events, snap_to_grid)
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-
-
-#: D5: every builder answers an absent source with the SAME empty frame. A fresh object each
-#: call, never a module-level constant -- `PanelMerger.add` and several callers reindex or
-#: assign onto what they get back, and a shared instance would be mutated across builds.
-def _EMPTY_PANEL() -> pd.DataFrame:
-    return pd.DataFrame(columns=["date", "ticker"])
-
+from src.data_aggregate.utils.institutionals.decay import days_since_last_true, decay_events, snap_to_grid
 
 #: The columns `_canonicalize` reads off EITHER schedule without checking first. The
 #: canonical-event key (`ticker`, `accession_number`, `cusip`) plus the only legal stamp
 #: (`filing_date` -- `date_of_event` is never projected, which is what makes L4 structural)
 #: plus the two ownership/identity legs.
-_NEED = {"ticker", "accession_number", "cusip", "filing_date", "percent_of_class",
-         "reporting_person_cik"}
+_NEED = {"ticker", "accession_number", "cusip", "filing_date", "percent_of_class", "reporting_person_cik"}
 
 
 def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
@@ -153,13 +145,10 @@ MANDATE_FLOOR = pd.Timestamp("2024-12-17")
 #: reached 1.23.
 HOLDER_ACTIVE_DAYS = 378
 
-_BOARD_RE = re.compile(
-    r"board seat|board representation|board of directors|nominat|director representation",
-    re.IGNORECASE)
+_BOARD_RE = re.compile(r"board seat|board representation|board of directors|nominat|director representation", re.IGNORECASE)
 _STRATEGIC_RE = re.compile(
-    r"strategic alternative|strategic review|sale of the (?:issuer|company)|"
-    r"business combination|merger|explore.{0,20}alternative",
-    re.IGNORECASE)
+    r"strategic alternative|strategic review|sale of the (?:issuer|company)|" r"business combination|merger|explore.{0,20}alternative", re.IGNORECASE
+)
 
 #: Emission, on the Phase 2.2b TIE-FRACTION criterion, measured on the panel this module
 #: builds from the live tables (7,803 trading days x the 500-name universe, 2026-09-11):
@@ -189,20 +178,20 @@ _STRATEGIC_RE = re.compile(
 #: DVA 2012-10-10 13G then 2017-08-11 13D; Paulson -> TMUS 2013-02-14 then 2013-03-01, both
 #: confirmed against EDGAR).
 EMISSION: dict[str, str] = {
-    "ic_act_initial_13d":              "raw",       # decayed occurrence; 0.3% ties, no drift
-    "ic_act_amendment_intensity":      "raw",       # 0.2% ties
-    "ic_act_campaign_age_days":        "raw+xs",    # 2.9% ties AND a real drift -- see below
-    "ic_act_repeat_activist":          "raw",       # 2.2% ties, 36 tickers ever
-    "ic_act_purpose_board":            "raw",       # 0.0% ties
-    "ic_act_purpose_strategic":        "raw",       # 0.1% ties
-    "ic_act_percent_of_class":         "raw+xs",    # NOT peers -- measured 0.0% non-null, below
-    "ic_act_delta_percent_class":      "raw+xs",    # 13.4% ties, still informative
-    "ic_bo_holder_count":              "raw",       # D28-normalized; 70.3% ties -> no xs leg
-    "ic_bo_new_holder":                "raw",       # 2.9% ties
-    "ic_bo_escalation_13g_to_13d":     "raw",
-    "ic_bo_de_escalation_13d_to_13g":  "raw",       # 23.4% ties
-    "ic_bo_percent_of_class":          "raw+peers",
-    "ic_bo_delta_percent_class":       "raw+xs",    # 17.2% ties
+    "ic_act_initial_13d": "raw",  # decayed occurrence; 0.3% ties, no drift
+    "ic_act_amendment_intensity": "raw",  # 0.2% ties
+    "ic_act_campaign_age_days": "raw+xs",  # 2.9% ties AND a real drift -- see below
+    "ic_act_repeat_activist": "raw",  # 2.2% ties, 36 tickers ever
+    "ic_act_purpose_board": "raw",  # 0.0% ties
+    "ic_act_purpose_strategic": "raw",  # 0.1% ties
+    "ic_act_percent_of_class": "raw+xs",  # NOT peers -- measured 0.0% non-null, below
+    "ic_act_delta_percent_class": "raw+xs",  # 13.4% ties, still informative
+    "ic_bo_holder_count": "raw",  # D28-normalized; 70.3% ties -> no xs leg
+    "ic_bo_new_holder": "raw",  # 2.9% ties
+    "ic_bo_escalation_13g_to_13d": "raw",
+    "ic_bo_de_escalation_13d_to_13g": "raw",  # 23.4% ties
+    "ic_bo_percent_of_class": "raw+peers",
+    "ic_bo_delta_percent_class": "raw+xs",  # 17.2% ties
 }
 
 #: ⚠ `ic_act_percent_of_class` TAKES NO `_vs_peers` LEG, AND THE DECLARED ONE WAS DEAD. Built
@@ -224,14 +213,12 @@ EMISSION: dict[str, str] = {
 #: its own units), but the within-date percentile is what makes 2003 comparable to 2026.
 
 
-def _canonicalize(df: pd.DataFrame, text_col: str | None = None,
-                   has_amendment: bool = True) -> pd.DataFrame:
+def _canonicalize(df: pd.DataFrame, text_col: str | None = None, has_amendment: bool = True) -> pd.DataFrame:
     """One row per `(ticker, accession_number, cusip)` -- see module docstring. `filer_id` is
     the group's identity for time-series tracking; `n_reporting_persons` is the co-filer count
     kept SEPARATE from any ownership number, exactly so nothing downstream is tempted to fold
     it back in."""
-    cols = ["ticker", "accession_number", "cusip", "filing_date", "percent_of_class",
-            "filer_id", "n_reporting_persons"]
+    cols = ["ticker", "accession_number", "cusip", "filing_date", "percent_of_class", "filer_id", "n_reporting_persons"]
     if has_amendment:
         cols.append("is_amendment")
     if text_col:
@@ -245,10 +232,8 @@ def _canonicalize(df: pd.DataFrame, text_col: str | None = None,
     if d.empty:
         return pd.DataFrame(columns=cols)
     d["cusip"] = d["cusip"].fillna("") if "cusip" in d.columns else ""
-    cik = d["reporting_person_cik"] if "reporting_person_cik" in d.columns else pd.Series(
-        index=d.index, dtype=object)
-    name = d["reporting_person_name"] if "reporting_person_name" in d.columns else pd.Series(
-        index=d.index, dtype=object)
+    cik = d["reporting_person_cik"] if "reporting_person_cik" in d.columns else pd.Series(index=d.index, dtype=object)
+    name = d["reporting_person_name"] if "reporting_person_name" in d.columns else pd.Series(index=d.index, dtype=object)
     cik = cik.astype(object).where(cik.notna() & (cik.astype(str).str.len() > 0), None)
     d["_filer_key"] = cik.where(cik.notna(), name)
 
@@ -256,15 +241,13 @@ def _canonicalize(df: pd.DataFrame, text_col: str | None = None,
     agg_map = {
         "filing_date": ("filing_date", "first"),
         "percent_of_class": ("percent_of_class", "max"),
-        "filer_id": ("_filer_key", lambda s: (s.dropna().sort_values().iloc[0]
-                                               if s.notna().any() else None)),
+        "filer_id": ("_filer_key", lambda s: (s.dropna().sort_values().iloc[0] if s.notna().any() else None)),
         "n_reporting_persons": ("_filer_key", "nunique"),
     }
     if has_amendment:
         agg_map["is_amendment"] = ("is_amendment", "first")
     if text_col and text_col in d.columns:
-        agg_map["text"] = (text_col, lambda s: next(
-            (x for x in s if isinstance(x, str) and x.strip()), None))
+        agg_map["text"] = (text_col, lambda s: next((x for x in s if isinstance(x, str) and x.strip()), None))
     return d.groupby(key, sort=False).agg(**agg_map).reset_index()
 
 
@@ -279,8 +262,7 @@ def _days_since(bool_wide: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
     return days_since_last_true(bool_wide.reindex(idx))
 
 
-def _ticker_level_and_mask(canon: pd.DataFrame, value_col: str,
-                            idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _ticker_level_and_mask(canon: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
     """`(level held forward, event mask)`, per ticker. No per-filer split -- the right shape
     for #48 (`ic_act_percent_of_class` is a per-ticker latest-reported value, not a sum).
 
@@ -310,8 +292,7 @@ def _delta_state(level: pd.DataFrame, mask: pd.DataFrame) -> pd.DataFrame:
     return level.diff().where(mask.reindex_like(level).fillna(False)).ffill()
 
 
-def _filer_frame(canon: pd.DataFrame, value_col: str,
-                  idx: pd.DatetimeIndex) -> pd.DataFrame | None:
+def _filer_frame(canon: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) -> pd.DataFrame | None:
     """The raw `(ticker, filer_id)`-columned frame of `value_col` on the grid, unfilled: a
     value on the days a filing landed, NaN elsewhere. `None` when nothing qualifies."""
     e = canon.dropna(subset=["filing_date", value_col, "filer_id"]).sort_values("filing_date")
@@ -320,8 +301,7 @@ def _filer_frame(canon: pd.DataFrame, value_col: str,
     e = e.assign(_grid_date=_snap_to_grid(e["filing_date"], idx)).dropna(subset=["_grid_date"])
     if e.empty:
         return None
-    wide = e.pivot_table(index="_grid_date", columns=["ticker", "filer_id"],
-                         values=value_col, aggfunc="last")
+    wide = e.pivot_table(index="_grid_date", columns=["ticker", "filer_id"], values=value_col, aggfunc="last")
     return wide.reindex(idx)
 
 
@@ -338,8 +318,7 @@ def _filer_delta_sum(raw: pd.DataFrame) -> pd.DataFrame:
     return _sum_over_filers(_delta_state(raw.ffill(), raw.notna()))
 
 
-def _rolling_distinct(events: pd.DataFrame, idx: pd.DatetimeIndex,
-                       window: int) -> pd.Series:
+def _rolling_distinct(events: pd.DataFrame, idx: pd.DatetimeIndex, window: int) -> pd.Series:
     """Distinct `filer_id` with an event in the trailing `window` TRADING DAYS, as of each
     grid day.
 
@@ -388,8 +367,7 @@ def _sum_over_filers(wide: pd.DataFrame) -> pd.DataFrame:
     return wide.T.groupby(level="ticker").sum(min_count=1).T
 
 
-def _act_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex,
-                 halflife: float) -> dict[str, pd.DataFrame]:
+def _act_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
     if canon.empty:
         return out
@@ -406,8 +384,7 @@ def _act_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex,
 
     initial_sorted = initial.dropna(subset=["filer_id"]).sort_values("filing_date")
     prior_campaigns = initial_sorted.groupby("filer_id").cumcount()
-    out["ic_act_repeat_activist"] = decay_events(
-        initial_sorted[prior_campaigns >= 3], idx, halflife, date_col="filing_date")
+    out["ic_act_repeat_activist"] = decay_events(initial_sorted[prior_campaigns >= 3], idx, halflife, date_col="filing_date")
 
     if "text" in canon.columns:
         has_text = canon["text"].notna()
@@ -427,8 +404,7 @@ def _act_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex,
     return out
 
 
-def _bo_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex,
-                halflife: float) -> dict[str, pd.DataFrame]:
+def _bo_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
     if canon.empty:
         return out
@@ -436,8 +412,7 @@ def _bo_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex,
 
     occ = ce.assign(_flag=1.0, _grid_date=_snap_to_grid(ce["filing_date"], idx))
     occ = occ.dropna(subset=["_grid_date"])
-    occ_wide = occ.pivot_table(index="_grid_date", columns=["ticker", "filer_id"],
-                               values="_flag", aggfunc="max")
+    occ_wide = occ.pivot_table(index="_grid_date", columns=["ticker", "filer_id"], values="_flag", aggfunc="max")
     # `limit=` is the whole exit policy: a filer counts as a holder for HOLDER_ACTIVE_DAYS
     # after each filing, then lapses. See the constant.
     occ_wide = occ_wide.reindex(idx).ffill(limit=HOLDER_ACTIVE_DAYS)
@@ -446,8 +421,7 @@ def _bo_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex,
     denom = _rolling_distinct(ce, idx, window=HOLDER_ACTIVE_DAYS)
     out["ic_bo_holder_count"] = active_count.divide(denom.where(denom > 0), axis=0)
 
-    first_holder = ce.sort_values("filing_date").drop_duplicates(
-        subset=["ticker", "filer_id"], keep="first")
+    first_holder = ce.sort_values("filing_date").drop_duplicates(subset=["ticker", "filer_id"], keep="first")
     out["ic_bo_new_holder"] = decay_events(first_holder, idx, halflife, date_col="filing_date")
 
     raw = _filer_frame(ce, "percent_of_class", idx)
@@ -457,24 +431,25 @@ def _bo_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex,
     return out
 
 
-def _cross_fields(canon_13d: pd.DataFrame, canon_13g: pd.DataFrame, idx: pd.DatetimeIndex,
-                   halflife: float) -> dict[str, pd.DataFrame]:
+def _cross_fields(canon_13d: pd.DataFrame, canon_13g: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> dict[str, pd.DataFrame]:
     """13G<->13D escalation, keyed on each filer's FIRST-EVER filing of each type per ticker
     (an amendment does not re-trigger the transition)."""
     out: dict[str, pd.DataFrame] = {}
     if canon_13d.empty or canon_13g.empty:
         return out
-    first_d = (canon_13d.dropna(subset=["filer_id"]).sort_values("filing_date")
-               .drop_duplicates(subset=["ticker", "filer_id"], keep="first")
-               [["ticker", "filer_id", "filing_date"]])
-    first_g = (canon_13g.dropna(subset=["filer_id"]).sort_values("filing_date")
-               .drop_duplicates(subset=["ticker", "filer_id"], keep="first")
-               [["ticker", "filer_id", "filing_date"]])
+    first_d = (
+        canon_13d.dropna(subset=["filer_id"])
+        .sort_values("filing_date")
+        .drop_duplicates(subset=["ticker", "filer_id"], keep="first")[["ticker", "filer_id", "filing_date"]]
+    )
+    first_g = (
+        canon_13g.dropna(subset=["filer_id"])
+        .sort_values("filing_date")
+        .drop_duplicates(subset=["ticker", "filer_id"], keep="first")[["ticker", "filer_id", "filing_date"]]
+    )
     merged = first_d.merge(first_g, on=["ticker", "filer_id"], suffixes=("_d", "_g"))
-    esc = (merged[merged["filing_date_g"] < merged["filing_date_d"]]
-           .rename(columns={"filing_date_d": "filing_date"})[["ticker", "filing_date"]])
-    deesc = (merged[merged["filing_date_d"] < merged["filing_date_g"]]
-             .rename(columns={"filing_date_g": "filing_date"})[["ticker", "filing_date"]])
+    esc = merged[merged["filing_date_g"] < merged["filing_date_d"]].rename(columns={"filing_date_d": "filing_date"})[["ticker", "filing_date"]]
+    deesc = merged[merged["filing_date_d"] < merged["filing_date_g"]].rename(columns={"filing_date_g": "filing_date"})[["ticker", "filing_date"]]
     out["ic_bo_escalation_13g_to_13d"] = decay_events(esc, idx, halflife, date_col="filing_date")
     out["ic_bo_de_escalation_13d_to_13g"] = decay_events(deesc, idx, halflife, date_col="filing_date")
     return out
@@ -520,14 +495,13 @@ def build_ownership_feature_panel(
     sec_13d = None if _absent(sec_13d, _NEED) else sec_13d
     sec_13g = None if _absent(sec_13g, _NEED) else sec_13g
     if sec_13d is None and sec_13g is None:
-        return _EMPTY_PANEL()
+        return _empty_panel()
 
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
     if idx.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
-    canon_13d = _canonicalize(sec_13d, text_col="item4_purpose_of_transaction",
-                               has_amendment=True)
+    canon_13d = _canonicalize(sec_13d, text_col="item4_purpose_of_transaction", has_amendment=True)
     canon_13g = _canonicalize(sec_13g, has_amendment=False)
     if canon_13d.empty and canon_13g.empty:
         return pd.DataFrame(columns=["date", "ticker"])
@@ -538,8 +512,7 @@ def build_ownership_feature_panel(
     fields.update(_cross_fields(canon_13d, canon_13g, idx, decay_halflife_bo))
 
     floor = pd.Series(idx >= MANDATE_FLOOR, index=idx)
-    for name in ("ic_act_percent_of_class", "ic_act_delta_percent_class",
-                 "ic_bo_percent_of_class", "ic_bo_delta_percent_class"):
+    for name in ("ic_act_percent_of_class", "ic_act_delta_percent_class", "ic_bo_percent_of_class", "ic_bo_delta_percent_class"):
         if name in fields and fields[name] is not None and not fields[name].empty:
             fields[name] = fields[name].where(floor, axis=0)
 
@@ -550,13 +523,14 @@ def build_ownership_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
 
     if sink is not None and not canon_13d.empty:
-        sink.add_events("act", canon_13d[["ticker", "filing_date"]]
-                        .rename(columns={"filing_date": "date"}).drop_duplicates())
+        sink.add_events("act", canon_13d[["ticker", "filing_date"]].rename(columns={"filing_date": "date"}).drop_duplicates())
         initial = canon_13d[~canon_13d["is_amendment"].fillna(0).astype(float).eq(1.0)]
-        sink.add_actors("act", initial.dropna(subset=["filer_id"])
-                        .assign(actor=lambda d: d["filer_id"])
-                        [["ticker", "filing_date", "actor"]]
-                        .rename(columns={"filing_date": "date"}))
+        sink.add_actors(
+            "act",
+            initial.dropna(subset=["filer_id"])
+            .assign(actor=lambda d: d["filer_id"])[["ticker", "filing_date", "actor"]]
+            .rename(columns={"filing_date": "date"}),
+        )
     if sink is not None:
         sink.keep_signals(fields)
 

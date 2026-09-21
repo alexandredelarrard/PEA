@@ -27,15 +27,17 @@ The old code loaded the whole history and then called `_trim_window` to throw ~9
 away. Here the window is decided FIRST, from the market part's dates alone (~15k rows),
 and the trim is pushed into SQL.
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import pandas as pd
 
 from src.constants.constants import PANEL_KEYS
+from src.data_store.schema import Table
 from src.data_store.store import DataStore
 
 # `write_part` returns this instead of a row count when the part's feature set changed, to
@@ -60,11 +62,13 @@ PART_REFRESH_TRADING_DAYS = 5
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass(frozen=True, slots=True)
 class PartWindow:
     """`last` is the part's stored max date (None -> full rebuild); `since` is the first
     date to READ and compute from (warm-up padded); `refresh_from` is the first date to
     REWRITE (None -> append strictly after `last`, the pre-refresh behaviour)."""
+
     last: pd.Timestamp | None
     since: pd.Timestamp | None
     refresh_from: pd.Timestamp | None = None
@@ -74,16 +78,15 @@ class PartWindow:
         return self.last is None
 
 
-def window_start(trading_index: pd.DatetimeIndex, last: pd.Timestamp,
-                 n_back: int) -> pd.Timestamp:
+def window_start(trading_index: pd.DatetimeIndex, last: pd.Timestamp, n_back: int) -> pd.Timestamp:
     """The date `n_back` trading days BEFORE `last` on the (untrimmed) price calendar."""
     pos = int(trading_index.searchsorted(pd.Timestamp(last).normalize()))
     return trading_index[max(0, pos - n_back)]
 
 
-def plan_window(store: DataStore, part: str, *, warmup: int, full: bool,
-                trading_index: pd.DatetimeIndex | None = None,
-                extra_back: int = 0, refresh: int = 0) -> PartWindow:
+def plan_window(
+    store: DataStore, part: Table, *, warmup: int, full: bool, trading_index: pd.DatetimeIndex | None = None, extra_back: int = 0, refresh: int = 0
+) -> PartWindow:
     """Decide what to rebuild.
 
     `full=True`, a missing part, or no usable calendar -> a full rebuild. Otherwise the
@@ -105,13 +108,11 @@ def plan_window(store: DataStore, part: str, *, warmup: int, full: bool,
     if last is None or trading_index is None or len(trading_index) == 0:
         return PartWindow(None, None)
     return PartWindow(
-        last,
-        window_start(trading_index, last, warmup + extra_back + refresh),
-        window_start(trading_index, last, refresh) if refresh else None)
+        last, window_start(trading_index, last, warmup + extra_back + refresh), window_start(trading_index, last, refresh) if refresh else None
+    )
 
 
-def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str],
-                            part: str) -> pd.DataFrame:
+def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str], part: str) -> pd.DataFrame:
     """Drop (date, ticker) rows where EVERY feature is NaN.
 
     The merge-based builders left-join onto the full universe grid, so a name with no
@@ -125,15 +126,20 @@ def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str],
     keep = rows[fcols].notna().any(axis=1)
     dropped = int((~keep).sum())
     if dropped:
-        logger.info("%s: dropped %s all-NaN grid rows (%.1f%% of %s)", part, dropped,
-                 100 * dropped / len(rows), len(rows))
+        logger.info("%s: dropped %s all-NaN grid rows (%.1f%% of %s)", part, dropped, 100 * dropped / len(rows), len(rows))
     return rows[keep]
 
 
-def write_part(store: DataStore, part: str, rows: pd.DataFrame, window: PartWindow,
-               *, keys: Sequence[str] = tuple(PANEL_KEYS),
-               refresh_from: pd.Timestamp | None = None,
-               drop_empty: bool = False) -> int:
+def write_part(
+    store: DataStore,
+    part: Table,
+    rows: pd.DataFrame,
+    window: PartWindow,
+    *,
+    keys: Sequence[str] = tuple(PANEL_KEYS),
+    refresh_from: pd.Timestamp | None = None,
+    drop_empty: bool = False,
+) -> int:
     """Persist a part according to `window`.
 
     FULL -> replace. INCREMENTAL -> compare the stored column set against `rows` and
@@ -156,15 +162,14 @@ def write_part(store: DataStore, part: str, rows: pd.DataFrame, window: PartWind
     """
     if rows is not None and not rows.empty and drop_empty:
         rows = drop_empty_feature_rows(rows, keys, part)
-        
+
     if rows is None or rows.empty:
         logger.warning("%s produced no rows -> nothing persisted.", part)
         return 0
 
     if window.is_full:
         n = store.replace(part, rows)
-        logger.info("Persisted %s (FULL): %s rows x %s cols.", part, n,
-                 len([c for c in rows.columns if c not in keys]))
+        logger.info("Persisted %s (FULL): %s rows x %s cols.", part, n, len([c for c in rows.columns if c not in keys]))
         return n
 
     # `columns` returns [] for a table that does not exist -- "no stored column set to
@@ -172,8 +177,7 @@ def write_part(store: DataStore, part: str, rows: pd.DataFrame, window: PartWind
     # report COLUMNS_CHANGED for an absent part.
     existing = store.columns(part)
     if existing and set(existing) != set(rows.columns):
-        logger.warning("%s column set changed (%s stored vs %s built) -> full rebuild needed.",
-                    part, len(existing), len(rows.columns))
+        logger.warning("%s column set changed (%s stored vs %s built) -> full rebuild needed.", part, len(existing), len(rows.columns))
         return COLUMNS_CHANGED
 
     cutoff = refresh_from if refresh_from is not None else window.refresh_from
@@ -182,6 +186,5 @@ def write_part(store: DataStore, part: str, rows: pd.DataFrame, window: PartWind
         cutoff = window.last
     tail = rows[rows["date"] >= cutoff] if inclusive else rows[rows["date"] > cutoff]
     n = store.append_tail(part, tail, cutoff, inclusive=inclusive)
-    logger.info("Appended %s (INCREMENTAL): +%s rows %s %s.", part, n,
-             ">=" if inclusive else ">", pd.Timestamp(cutoff).date())
+    logger.info("Appended %s (INCREMENTAL): +%s rows %s %s.", part, n, ">=" if inclusive else ">", pd.Timestamp(cutoff).date())
     return n

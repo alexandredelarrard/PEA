@@ -1,57 +1,61 @@
 """
 superinvestor_features.py  (src/data_aggregate/utils/institutionals/superinvestor_features.py)
 ----------------------------------------------------------------------------------------------
-ELITE-MANAGER 13F features -- the Dataroma superinvestor roster -- layered on top of the
-all-filer institutional panel. Where `institutional_features` asks "are institutions in
-aggregate accumulating?", this asks "are the managers who take few, deliberate bets
-accumulating?", and it answers with a CONVICTION WEIGHT rather than a headcount.
+Elite-manager 13F features for the Dataroma superinvestor roster.
 
-⚠ THE DENOMINATOR IS THE WHOLE POINT, and it is why this module reads
-`sec13f_manager_holdings` and not `sec13f_hr`. `sec13f_hr` is filtered to the S&P 500 at
-extraction, so a portfolio weight computed from it divides by the manager's INDEX SLEEVE
-rather than by their book. Measured over 12 roster managers' 2026Q1 filings, that sleeve is a
-median 47% of positions and 52% of value, ranging from Atlantic Investment at 8.3%/13.1% to
-AltaRock at 100%/100% -- a manager-specific 1.0x-7.6x inflation that makes any cross-manager
-conviction comparison meaningless. `sec13f_manager_holdings` carries the complete book at
-CUSIP grain with no universe filter, so `w = value_usd / total_common_value` is the real
-portfolio weight and the numbers ARE comparable across managers.
+This family complements the all-filer institutional panel by measuring whether
+selected, concentrated managers are accumulating a stock. Manager opinions are
+combined using portfolio-conviction weights rather than simple holder counts.
 
-The consequence to state plainly: the eight features that kept their names through the
-`ic_` rename now have MATERIALLY DIFFERENT VALUES. Nothing computed against the old
-S&P500-slice denominator is comparable to what this module emits.
+Portfolio-weight denominator
+----------------------------
+Conviction must be calculated from `sec13f_manager_holdings`, which contains
+each manager's complete common-equity book at CUSIP grain:
 
-WHAT IS AN INTERMEDIATE AND WHAT IS A FEATURE. Manager-level quantities -- position count,
-effective-N, top-10 weight, filing lag, portfolio weight -- are NEVER features; the cube's
-grain is `(ticker, date)` and nothing in it is keyed by manager. They are computed here, in
-memory, and aggregated ACROSS managers for each ticker. The three steps are
-`_manager_quarter_state` -> `_manager_stock_conviction` -> `_ticker_quarter_panel`.
+    portfolio_weight = value_usd / total_common_value
 
-SELECTION IS A WEIGHT, NOT A FILTER. Every aggregate below is `sum over managers of
-sel(m, q) * <quantity>`, where `sel(m, q)` in [0, 1] says how much manager `m`'s opinion
-counts in quarter `q`. It arrives through the `selection` argument -- a Series, or a
-callable over the manager state -- and `manager_selection` is what the cube step passes.
-`None` means flat 1.0, every roster manager counting the same, which is what
-`build_cube.institutionals.superinvestor.selection.mode: "off"` resolves to.
+Do not derive these weights from `sec13f_hr`. That table is restricted to the
+investment universe, so its denominator represents only the manager's
+in-universe sleeve and can materially inflate conviction. Values produced from
+the old filtered denominator are not comparable with this module's output.
 
-⚠ SWITCHING THE SELECTOR ON CHANGES EVERY VALUE THIS MODULE EMITS (plan D8), and under
-`top_k` it changes COVERAGE too: a name held only by managers outside the top `k` has no
-counted holder at all, so `_aggregate`'s first-appearance mask leaves it out of the panel
-rather than at zero. `continuous` discards nobody and only reweights.
+Computation grain
+-----------------
+Manager-level statistics such as portfolio weight, position count, effective
+number of positions, top-10 weight, and filing lag are intermediate values,
+not emitted features. They are reduced to the `(ticker, date)` cube grain
+through:
 
-⚠ `sel` IS INDEXED BY `(cik, period)`, AND EVERY PRIOR-QUARTER TERM MUST USE `sel(m, q-1)`.
-The version of this module that predates PIT selection could reuse one weight per manager
-because the roster assigned it once. Under a selector that varies per quarter, reusing
-`sel(m, q)` on the `q-1` leg makes a manager ENTERING the elite set look like a purchase
-they never made -- a phantom accumulation on every name they already held. The prior-quarter
-weighted shares and values below are therefore built from the shifted manager panel, which
-carries its own quarter's `sel`.
+    _manager_quarter_state
+        -> _manager_stock_conviction
+        -> _ticker_quarter_panel
 
-AVAILABILITY. `sec13f_manager_holdings` starts 2011-09-30 and the all-filer table has a
-fetch-driven structural break at 2013-06-30 (a 13.6x jump in manager count in one quarter).
-The hard per-family cutoff that turns the pre-break region into NaN rather than a
-plausible-looking wrong number is a separate change (plan D16/D17); this module emits what
-the source supports.
+Manager selection
+-----------------
+Selection is a weight, not necessarily a filter. Each ticker aggregate has the
+form:
+
+    sum(sel(manager, period) * quantity)
+
+where `sel` is in `[0, 1]` and is supplied through `selection`.
+
+* `None` gives every roster manager weight `1.0`.
+* Continuous selection reweights managers without removing them.
+* Top-k selection can also change ticker coverage: a stock held only by
+  excluded managers is absent rather than emitted as zero.
+
+Selection is indexed by `(cik, period)`. Every prior-quarter term must therefore
+use `sel(manager, q - 1)`, not the current quarter's weight. Otherwise, a
+manager entering the selected set can create false accumulation in positions
+they already owned.
+
+Availability
+------------
+The module emits the history supported by `sec13f_manager_holdings`, which
+starts at 2011-09-30. Any family-level cutoff required to handle the separate
+all-filer coverage break is applied outside this module.
 """
+
 from __future__ import annotations
 
 import logging
@@ -62,22 +66,22 @@ import pandas as pd
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.context import Context
+from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
-from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings as _clean
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.decay import decay_events
+from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
+from src.data_aggregate.utils.institutionals.value_basis import repair_value_basis
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
-from src.data_aggregate.utils.common.data_utils import to_day
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 
 logger = logging.getLogger(__name__)
 
 #: Columns read from the manager-book table. `position_type` is required -- the conviction
 #: denominator is COMMON STOCK only, so the debt / call / put legs must be identifiable and
 #: excluded rather than summed into `total_common_value`.
-_HOLDINGS_COLS = ["cik", "period", "filing_date", "cusip", "position_type",
-                  "shares", "value_usd"]
+_HOLDINGS_COLS = ["cik", "period", "filing_date", "cusip", "position_type", "shares", "value_usd"]
 
 #: Ranks at or below this count as a "top holding" for #17/#18/#22.
 _TOP_N = 10
@@ -98,88 +102,46 @@ _SPLIT_TOL = 0.01
 #: reaches them (tests, notebooks).
 _STALE_QUARTERS = 4
 
-#: Emission class per feature (plan D25 / D27, registry §0.10).
+#: Emission policy for elite-manager features (D25/D27).
 #:
-#: NO `_vs_peers` LEG ANYWHERE IN THIS FAMILY (D25). The signal is "concentrated managers
-#: want this ticker" -- an absolute statement about the name, not a claim about how it ranks
-#: against its sector. It is also what lets the future k-ladder rungs emit an identical column
-#: shape: at 8% ticker coverage a 7-name peer basket resolves 1.5% of the time, so a rung that
-#: carried a peer leg would be carrying a ~99% NaN column.
+#: This family never emits `_vs_peers`: elite-manager conviction is an absolute
+#: signal, and sparse ticker coverage would make peer-relative legs almost entirely
+#: missing.
 #:
-#: `raw` vs `raw+xs` is MEASURED, not reasoned, and an `_xs` leg is an ADDITIONAL column --
-#: no magnitude is ever lost by having one; the cost is a collinear column, a SHAP slot and
-#: a chance for the model to fit the same fact twice.
+#: `_xs` is an additional within-date percentile leg used only when it contributes
+#: meaningful cross-date normalization. Pooled raw-vs-percentile correlation is not
+#: sufficient: under manager selection, low-cardinality features create large tie
+#: plateaus whose percentiles mostly reflect changing panel composition.
 #:
-#: `_xs` is a strictly monotone transform WITHIN a date, so it cannot change any same-day
-#: ordering: all it can add is removal of cross-date drift. The first test was therefore the
-#: POOLED Spearman between the raw leg and its percentile, where 1.0 means the raw value
-#: already ranks the same pooled and `_xs` is pure redundancy.
+#: Count-like and heavily tied features therefore emit `raw` only:
+#: `top10_holders`, `holders`, `holders_yoy`, `breadth_chg`,
+#: `selection_score`, `conviction_weight`, and `conviction_chg`.
 #:
-#: ⚠ THE POOLED rho IS NOT SUFFICIENT ON ITS OWN, AND `mode: top_k` IS WHAT EXPOSED THAT.
-#: Re-measured per selection mode on the live book (2011-2026; whole book in, columns subset
-#: to the index afterwards -- filter the book FIRST and `total_common_value` becomes the
-#: index total, inflating every `portfolio_weight` and pinning `sp500_share` at 1.0):
+#: `shares_chg`, `sp500_share`, and `quarters_held` emit `raw+xs` because their
+#: selected cross-sections remain sufficiently continuous. `max_conviction` emits
+#: `raw` because its raw values already preserve essentially the same pooled ranking.
 #:
-#:     feature                    rho off   rho top_k20   uniq/date   ties/date   emit
-#:     top10_holders                0.848         0.659      13 -> 5        98%    raw
-#:     holders_yoy                  0.856         0.682      30 -> 8        97%    raw
-#:     breadth_chg                  0.855         0.737      27 -> 10       96%    raw
-#:     holders                      0.983         0.746      27 -> 6        98%    raw
-#:     selection_score                  -         0.728        -> 28        89%    raw
-#:     conviction_weight            0.998         0.744        -> 69        72%    raw
-#:     conviction_chg               0.993         0.814        -> 78        69%    raw
-#:     quarters_held                0.883         0.967      50 -> 45       84%    raw+xs
-#:     sp500_share                  0.779         0.900        -> 29        53%    raw+xs
-#:     shares_chg                   0.992         0.942        -> 38        36%    raw+xs
-#:     max_conviction               0.997         0.996        -> 256         0%    raw
-#:
-#: ⚠ THE TIE FRACTION BARELY MOVES WITH `k`, WHICH IS WHY IT IS THE CRITERION AND rho IS
-#: NOT. Widening k=15 -> 20 -> 25 lifts panel width 195 -> 262 -> 313 of 488 names and lifts
-#: every rho with it (top10_holders 0.654 -> 0.659 -> 0.676), but the three dropped features
-#: sit at 96-98% ties at EVERY rung: more managers voting does not create more distinct
-#: counts, it just spreads the same few integers over more names. A criterion that flipped
-#: with `k` would make the column set a function of a tunable, which is not a contract.
-#:
-#: Read naively, rho FALLING from 0.85 to 0.65 says `_xs` reorders more under selection and
-#: therefore earns its keep. It does not, and the ties column is the tell: with 4-9 distinct
-#: values across ~195 present names, 96-98% of the cross-section is TIED. `rank(pct=True)`
-#: tie-averages, so `_xs` on a counting feature is a handful of plateaus, and it moves
-#: between dates mainly because the number of names sitting on each plateau changed. That is
-#: composition noise wearing a percentile's clothes.
-#:
-#: So `top10_holders`, `holders_yoy` and `breadth_chg` LOST their `_xs` leg: they are the
-#: three features whose cardinality collapses under selection. `holders`, `conviction_weight`
-#: and `selection_score` would QUALIFY for one on the rho rule alone and deliberately do not
-#: get one, for the same tie reason. THE CRITERION IS THE TIE FRACTION, NOT THE rho.
-#:
-#: ⚠ WHAT SURVIVES, AND WHY. `shares_chg`, `sp500_share` and `quarters_held` keep `_xs`
-#: because they stay genuinely continuous (39%/56%/80% ties on a 19-193 value spread), so
-#: their percentile is a percentile. `max_conviction` at 0% ties and rho 0.989 needs none --
-#: it already ranks the same pooled.
-#:
-#: ⚠ A QoQ OR YoY DIFFERENCE IS NOT AUTOMATICALLY DATE-STATIONARY. Differencing removes the
-#: TICKER's level, not the DATE's, which is why `holders_yoy` reordered at all -- elite
-#: breadth moves market-wide. It ships raw now because of the ties, not because the
-#: difference made it stationary.
+#: The governing criterion is measured tie rate and cardinality, not whether a
+#: feature is bounded, differenced, or evaluated under a particular `top_k`.
 EMISSION: dict[str, str] = {
-    "ic_super_holders":               "raw",       # a SHARE of the eligible pool (D28)
-    "ic_super_breadth_chg":             "raw",       # 96% ties under top_k -- see below
-    "ic_super_conviction_weight":     "raw",       # a weighted-AVERAGE weight in [0,1] (D28)
-    "ic_super_max_conviction":        "raw",       # a portfolio weight in [0,1]
-    "ic_super_conviction_chg":        "raw",
+    "ic_super_holders": "raw",  # a SHARE of the eligible pool (D28)
+    "ic_super_breadth_chg": "raw",  # 96% ties under top_k -- see below
+    "ic_super_conviction_weight": "raw",  # a weighted-AVERAGE weight in [0,1] (D28)
+    "ic_super_max_conviction": "raw",  # a portfolio weight in [0,1]
+    "ic_super_conviction_chg": "raw",
     "ic_super_conviction_weight_yoy": "raw",
-    "ic_super_holders_yoy":             "raw",       # 97% ties under top_k
-    "ic_super_top10_holders":           "raw",       # 98% ties under top_k
-    "ic_super_quarters_held":         "raw+xs",    # measured rho 0.933
-    "ic_super_sp500_share":           "raw+xs",    # measured rho 0.942
-    "ic_super_selection_score":       "raw",       # a mean of `sel` in [0,1]; see #27
-    "ic_super_shares_chg":            "raw+xs",
-    "ic_super_flow_to_mcap":          "raw+xs",
-    "ic_super_new_top10":             "raw+xs",    # decayed intensities, all five
-    "ic_super_rank_jump":             "raw+xs",
-    "ic_super_initiations":           "raw+xs",
-    "ic_super_full_exits":            "raw+xs",
-    "ic_super_exit_after_top10":      "raw+xs",
+    "ic_super_holders_yoy": "raw",  # 97% ties under top_k
+    "ic_super_top10_holders": "raw",  # 98% ties under top_k
+    "ic_super_quarters_held": "raw+xs",  # measured rho 0.933
+    "ic_super_sp500_share": "raw+xs",  # measured rho 0.942
+    "ic_super_selection_score": "raw",  # a mean of `sel` in [0,1]; see #27
+    "ic_super_shares_chg": "raw+xs",
+    "ic_super_flow_to_mcap": "raw+xs",
+    "ic_super_new_top10": "raw+xs",  # decayed intensities, all five
+    "ic_super_rank_jump": "raw+xs",
+    "ic_super_initiations": "raw+xs",
+    "ic_super_full_exits": "raw+xs",
+    "ic_super_exit_after_top10": "raw+xs",
 }
 
 #: The five features above marked "decayed intensities" are the SPARSE (class-S) ones. An
@@ -190,8 +152,7 @@ EMISSION: dict[str, str] = {
 #: map.
 
 
-def load_superinvestor_holdings(context: Context,
-                                roster: dict | list | None) -> pd.DataFrame | None:
+def load_superinvestor_holdings(context: Context, roster: dict | list | set | None) -> pd.DataFrame | None:
     """The roster managers' COMPLETE quarterly books from `sec13f_manager_holdings`.
 
     `cik` is written by ONE producer with `pad_cik` already applied -- verified on the live
@@ -206,9 +167,8 @@ def load_superinvestor_holdings(context: Context,
     ciks = sorted(_selection_ciks(roster))
     if not ciks:
         return None
-    
-    return context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS,
-                        where={"cik": ciks}, optional=True)
+
+    return context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS, where={"cik": ciks}, optional=True)
 
 
 def _selection_ciks(roster: dict | list | set | None) -> set[str]:
@@ -218,17 +178,12 @@ def _selection_ciks(roster: dict | list | set | None) -> set[str]:
     which is what `roster_cik_union` returns and what the READ SCOPE must be.
 
     ⚠ THE READ SCOPE IS THE UNION, NOT TODAY'S ROSTER (plan D19/D20). Loading only today's
-    83 managers drops the 19 culled managers that have a book -- Arlington Value, Wintergreen,
-    RBS Partners, Tilson and 15 others -- and those are exactly the concentrated names a
-    concentration selector ranks highest. Narrowing to who was listed at `q` is
-    `manager_selection.eligibility`'s job, and it can only narrow what was read.
+    83 managers drops the 19 culled managers that have a book
     """
 
     if roster is None:
         return set()
-    if isinstance(roster, (set, frozenset)) or (
-            isinstance(roster, (list, tuple))
-            and all(isinstance(m, str) for m in roster)):
+    if isinstance(roster, set | frozenset) or (isinstance(roster, list | tuple) and all(isinstance(m, str) for m in roster)):
         return {c for m in roster if (c := pad_cik(m))}
     if isinstance(roster, dict):
         mapping = roster.get("cik_to_name")
@@ -242,8 +197,7 @@ def _selection_ciks(roster: dict | list | set | None) -> set[str]:
     return {c for m in managers if (c := pad_cik(m.get("cik")))}
 
 
-def attach_tickers(holdings: pd.DataFrame, cusip_map: pd.DataFrame | None,
-                   universe: Sequence[str] | None = None) -> pd.DataFrame:
+def attach_tickers(holdings: pd.DataFrame, cusip_map: pd.DataFrame | None, universe: Sequence[str] | None = None) -> pd.DataFrame:
     """LEFT-join `cusip_ticker_map` onto the book, adding a nullable `ticker`.
 
     ⚠ A LEFT JOIN, AND THE UNMAPPED ROWS ARE KEPT ON PURPOSE. They are the rest of the
@@ -268,21 +222,6 @@ def attach_tickers(holdings: pd.DataFrame, cusip_map: pd.DataFrame | None,
     return h.merge(m[["cusip", "ticker"]], on="cusip", how="left")
 
 
-def _prepare(holdings: pd.DataFrame) -> pd.DataFrame:
-    """`sec13f_manager_holdings` at its own grain: one row per (manager, quarter, CUSIP).
-
-    A thin call into the SHARED cleaner -- `holdings_clean.clean_holdings`. Three things are
-    specific to this table and each is an argument: the key is CUSIP-grained because there is
-    no `ticker` column at all; `common_only` because this table carries the raw
-    `position_type` classification and a conviction denominator must not include puts, calls
-    or debt; and `pad_ciks` because the fetcher writes `cik` straight from the SEC submission,
-    while the roster join expects it padded.
-    """
-    return _clean(holdings, key=("cik", "period", "cusip"),
-                  numeric=("shares", "value_usd"),
-                  common_only=True, pad_ciks=True)
-
-
 def manager_quarter_state(holdings: pd.DataFrame) -> pd.DataFrame:
     """Per `(cik, period)` portfolio state -- INTERMEDIATE, never a feature, never persisted.
 
@@ -299,29 +238,31 @@ def manager_quarter_state(holdings: pd.DataFrame) -> pd.DataFrame:
 
     if holdings.empty:
         return pd.DataFrame()
-    
+
     g = holdings.groupby(["cik", "period"], sort=True)
-    state = g.agg(total_common_value=("value_usd", "sum"),
-                  n_positions=("cusip", "nunique")).reset_index()
+    state = g.agg(total_common_value=("value_usd", "sum"), n_positions=("cusip", "nunique")).reset_index()
 
     val = holdings[["cik", "period", "value_usd"]].copy()
     val = val.merge(state[["cik", "period", "total_common_value"]], on=["cik", "period"])
     tot = val["total_common_value"].where(val["total_common_value"] > 0)
     val["w"] = val["value_usd"] / tot
 
-    conc = val.groupby(["cik", "period"])["w"].agg(
-        eff_n=lambda s: 1.0 / float((s ** 2).sum()) if float((s ** 2).sum()) > 0 else np.nan,
-        top1_weight="max",
-        top5_weight=lambda s: float(s.nlargest(5).sum()),
-        top10_weight=lambda s: float(s.nlargest(_TOP_N).sum()),
-    ).reset_index()
+    conc = (
+        val.groupby(["cik", "period"])["w"]
+        .agg(
+            eff_n=lambda s: 1.0 / float((s**2).sum()) if float((s**2).sum()) > 0 else np.nan,
+            top1_weight="max",
+            top5_weight=lambda s: float(s.nlargest(5).sum()),
+            top10_weight=lambda s: float(s.nlargest(_TOP_N).sum()),
+        )
+        .reset_index()
+    )
     state = state.merge(conc, on=["cik", "period"], how="left")
 
     if "filing_date" in holdings.columns:
         lag = g["filing_date"].max().reset_index()
         lag["filing_lag_days"] = (lag["filing_date"] - lag["period"]).dt.days
-        state = state.merge(lag[["cik", "period", "filing_date", "filing_lag_days"]],
-                            on=["cik", "period"], how="left")
+        state = state.merge(lag[["cik", "period", "filing_date", "filing_lag_days"]], on=["cik", "period"], how="left")
     else:
         state["filing_date"], state["filing_lag_days"] = pd.NaT, np.nan
 
@@ -329,8 +270,7 @@ def manager_quarter_state(holdings: pd.DataFrame) -> pd.DataFrame:
     # as feature #26 rather than left as an invisible bias.
     if "ticker" in holdings.columns:
         g_idx = holdings[holdings["ticker"].notna()].groupby(["cik", "period"])
-        idx = g_idx.agg(sp500_value=("value_usd", "sum"),
-                        n_index_positions=("ticker", "nunique")).reset_index()
+        idx = g_idx.agg(sp500_value=("value_usd", "sum"), n_index_positions=("ticker", "nunique")).reset_index()
         state = state.merge(idx, on=["cik", "period"], how="left")
         state["sp500_value"] = state["sp500_value"].fillna(0.0)
         # `n_index_positions` is NOT a concentration measure -- it is the eligibility floor
@@ -350,8 +290,7 @@ def manager_stock_conviction(holdings: pd.DataFrame, state: pd.DataFrame) -> pd.
     "this manager just moved the name into their top ten" expressible."""
     if holdings.empty or state.empty:
         return pd.DataFrame()
-    c = holdings.merge(state[["cik", "period", "total_common_value"]],
-                       on=["cik", "period"], how="left")
+    c = holdings.merge(state[["cik", "period", "total_common_value"]], on=["cik", "period"], how="left")
     denom = c["total_common_value"].where(c["total_common_value"] > 0)
     c["portfolio_weight"] = c["value_usd"] / denom
     # ⚠ THE TIE-BREAK IS `cusip`, NOT ROW ORDER. `rank(method="first")` numbers equal values
@@ -361,16 +300,14 @@ def manager_stock_conviction(holdings: pd.DataFrame, state: pd.DataFrame) -> pd.
     # Ranks feed `is_top10`, `new_top10` and `rank_jump`, so an order-coupled rank makes
     # those features non-reproducible. Sorting on (value desc, cusip asc) and counting gives
     # a strict total order that depends only on the filing's contents.
-    c = c.sort_values(["cik", "period", "value_usd", "cusip"],
-                      ascending=[True, True, False, True])
+    c = c.sort_values(["cik", "period", "value_usd", "cusip"], ascending=[True, True, False, True])
     c["rank_in_book"] = c.groupby(["cik", "period"]).cumcount() + 1
     c["conviction_pct"] = c.groupby(["cik", "period"])["value_usd"].rank(pct=True)
     c["is_top10"] = c["rank_in_book"] <= _TOP_N
     return c
 
 
-def _selection_series(state: pd.DataFrame,
-                      selection: pd.Series | Callable | None) -> pd.Series:
+def _selection_series(state: pd.DataFrame, selection: pd.Series | Callable | None) -> pd.Series:
     """`sel(m, q)` in [0, 1], indexed by `(cik, period)`.
 
     Three shapes, because the caller is in three different situations:
@@ -396,8 +333,7 @@ def _selection_series(state: pd.DataFrame,
     return sel
 
 
-def attach_split_factor(contrib: pd.DataFrame,
-                        splits: pd.DataFrame | None) -> pd.DataFrame:
+def attach_split_factor(contrib: pd.DataFrame, splits: pd.DataFrame | None) -> pd.DataFrame:
     """Restate each manager's PRIOR-quarter share count onto the current quarter's basis.
 
     A 20-for-1 split multiplies every holder's share count by 20 with no trade taking place,
@@ -432,21 +368,17 @@ def attach_split_factor(contrib: pd.DataFrame,
         A NaT date (the manager's first filing has no previous period) is floored rather
         than dropped: it resolves to 1.0, and that row's `prev_shares` is NaN anyway, so the
         factor it receives can never reach a feature."""
-        left = pd.DataFrame({"ticker": out["ticker"].to_numpy(),
-                             "_d": pd.to_datetime(dates).astype("datetime64[ns]")})
+        left = pd.DataFrame({"ticker": out["ticker"].to_numpy(), "_d": pd.to_datetime(dates).astype("datetime64[ns]")})
         left["_d"] = left["_d"].fillna(floor)
         left["_i"] = np.arange(len(left))
-        merged = pd.merge_asof(left.sort_values("_d"), right,
-                               left_on="_d", right_on="date", by="ticker",
-                               direction="backward")
+        merged = pd.merge_asof(left.sort_values("_d"), right, left_on="_d", right_on="date", by="ticker", direction="backward")
         return merged.sort_values("_i")["cum"].fillna(1.0).to_numpy()
 
     factor = cum_at(out["period"]) / cum_at(out["prev_period"])
     out["prev_shares_adj"] = out["prev_shares"] * factor
     n = int((factor != 1.0).sum())
     if n:
-        logger.info("split restatement: %s manager-quarters had their prior share count "
-                    "rebased (a split fell between the two periods)", n)
+        logger.info("split restatement: %s manager-quarters had their prior share count " "rebased (a split fell between the two periods)", n)
     return out
 
 
@@ -473,6 +405,7 @@ def _as_of_stamp(state: pd.DataFrame) -> pd.Series:
         return deadline
     return pd.concat([deadline, pd.to_datetime(filed)], axis=1).max(axis=1)
 
+
 def public_state(state: pd.DataFrame, sel: pd.Series) -> pd.DataFrame:
     """`(cik, period, sel, avail, seq)` for the filings that are ever a manager's PUBLIC
     STATE, in period order.
@@ -490,19 +423,16 @@ def public_state(state: pd.DataFrame, sel: pd.Series) -> pd.DataFrame:
     """
     st = state[["cik", "period"]].copy()
     st["sel"] = sel.to_numpy()
-    st["avail"] = (state["avail"] if "avail" in state.columns
-                   else _as_of_stamp(state)).to_numpy()
+    st["avail"] = (state["avail"] if "avail" in state.columns else _as_of_stamp(state)).to_numpy()
     st = st.sort_values(["cik", "period"])
-    superseded = (st[::-1].groupby("cik")["avail"].cummin()[::-1]
-                  .groupby(st["cik"]).shift(-1))
+    superseded = st[::-1].groupby("cik")["avail"].cummin()[::-1].groupby(st["cik"]).shift(-1)
     st = st[st["avail"] < superseded.fillna(pd.Timestamp.max)].copy()
     st["prev_sel"] = st.groupby("cik")["sel"].shift(1)
     st["seq"] = st.groupby("cik").cumcount()
     return st
 
 
-def _contributions(conv: pd.DataFrame, state: pd.DataFrame,
-                   sel: pd.Series) -> pd.DataFrame:
+def _contributions(conv: pd.DataFrame, state: pd.DataFrame, sel: pd.Series) -> pd.DataFrame:
     """One row per `(cik, ticker, period)` for EVERY period the manager filed, carrying that
     manager's own previous- and year-ago-period values for the name.
 
@@ -524,10 +454,13 @@ def _contributions(conv: pd.DataFrame, state: pd.DataFrame,
     c["sel"] = sel.reindex(key).to_numpy()
     # one manager can hold two CUSIPs of one issuer (share classes): sum the position and
     # keep the BEST rank -- "is this a top-ten name for them" is about the issuer.
-    c = (c.groupby(["cik", "period", "ticker"], as_index=False)
-          .agg(sel=("sel", "first"), w=("portfolio_weight", "sum"),
-               shares=("shares", "sum"), value_usd=("value_usd", "sum"),
-               rank_in_book=("rank_in_book", "min")))
+    c = c.groupby(["cik", "period", "ticker"], as_index=False).agg(
+        sel=("sel", "first"),
+        w=("portfolio_weight", "sum"),
+        shares=("shares", "sum"),
+        value_usd=("value_usd", "sum"),
+        rank_in_book=("rank_in_book", "min"),
+    )
 
     st = public_state(state, sel)
 
@@ -563,18 +496,16 @@ def _contributions(conv: pd.DataFrame, state: pd.DataFrame,
     # consecutive quarters held, ending at this period: `(~held).cumsum()` labels each
     # unbroken streak, so a running count inside the label IS the streak length and a
     # repurchase after a gap correctly restarts at 1.
-    full["run_len"] = (full.groupby(["cik", "ticker", (~full["held"]).cumsum()],
-                                    sort=False).cumcount() + 1).where(full["held"])
+    full["run_len"] = (full.groupby(["cik", "ticker", (~full["held"]).cumsum()], sort=False).cumcount() + 1).where(full["held"])
     if "sp500_share" in state.columns:
-        full = full.merge(state[["cik", "period", "sp500_share"]],
-                          on=["cik", "period"], how="left")
+        full = full.merge(state[["cik", "period", "sp500_share"]], on=["cik", "period"], how="left")
     full["prev_period"] = full.groupby(["cik", "ticker"], sort=False)["period"].shift(1)
     return full
 
 
-def _effective(contrib: pd.DataFrame, column: str, grid: pd.DatetimeIndex,
-               pairs: pd.MultiIndex,
-               stale_after: pd.DataFrame | None = None) -> pd.DataFrame:
+def _effective(
+    contrib: pd.DataFrame, column: str, grid: pd.DatetimeIndex, pairs: pd.MultiIndex, stale_after: pd.DataFrame | None = None
+) -> pd.DataFrame:
     """`column` for each `(cik, ticker)` as it stood on each availability date -- the
     manager's most recent PUBLIC filing, forward-filled and then dropped once stale.
 
@@ -585,23 +516,21 @@ def _effective(contrib: pd.DataFrame, column: str, grid: pd.DatetimeIndex,
     manager-quarters carrying 36.7% of book value are filed after it. Only a per-manager
     stamp is both timely and leak-free.
     """
-    wide = (contrib.pivot_table(index="avail", columns=["cik", "ticker"], values=column,
-                                aggfunc="last", dropna=False)
-            .reindex(index=grid, columns=pairs).ffill())
+    wide = (
+        contrib.pivot_table(index="avail", columns=["cik", "ticker"], values=column, aggfunc="last", dropna=False)
+        .reindex(index=grid, columns=pairs)
+        .ffill()
+    )
     return wide.where(stale_after) if stale_after is not None else wide
 
 
-def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame,
-               stale_quarters: int = _STALE_QUARTERS
-               ) -> tuple[dict[str, pd.DataFrame], pd.DatetimeIndex]:
+def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame, stale_quarters: int = _STALE_QUARTERS) -> tuple[dict[str, pd.DataFrame], pd.DatetimeIndex]:
     """Aggregate ACROSS managers on the availability grid -> `{feature: (date x ticker)}`."""
-    
+
     grid = pd.DatetimeIndex(sorted(contrib["avail"].dropna().unique()))
-    pairs = pd.MultiIndex.from_frame(
-        contrib[["cik", "ticker"]].drop_duplicates().sort_values(["cik", "ticker"]),
-        names=["cik", "ticker"])
+    pairs = pd.MultiIndex.from_frame(contrib[["cik", "ticker"]].drop_duplicates().sort_values(["cik", "ticker"]), names=["cik", "ticker"])
     tickers = pd.Index(sorted(contrib["ticker"].unique()), name="ticker")
-    
+
     # A filer who has gone quiet is not still holding: a manager's contribution expires
     # `stale_quarters` quarters after the filing that is currently effective. ⚠ MEASURED
     # FROM THE EFFECTIVE ROW, never from the manager's last-ever filing -- the latter is a
@@ -634,9 +563,9 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame,
     prev_pool = _manager_pool(st, "prev_sel", grid, stale_quarters)
 
     w_e, prev_w_e = eff("w"), eff("prev_w")
-    holders = across(holds).div(pool, axis=0)                              # #12
+    holders = across(holds).div(pool, axis=0)  # #12
     prev_holders = across(prev_holds).div(prev_pool, axis=0)
-    conviction = across(sel_e * w_e).div(pool, axis=0)                     # #14
+    conviction = across(sel_e * w_e).div(pool, axis=0)  # #14
     prev_conviction = across(prev_sel_e * prev_w_e).div(prev_pool, axis=0)
     conviction4 = across(eff("sel4") * eff("w4")).div(pool, axis=0)
     holders4 = across(eff("sel4") * eff("held4")).div(pool, axis=0)
@@ -645,15 +574,16 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame,
     # quarters is what makes it "did they accumulate" rather than "did the holder set
     # change": on the full set an entrant against a tiny prior holder produced a +301,507
     # ratio on MDLZ 2012Q4. Entries and exits are already features (#20, #21).
-    both = (held_e.fillna(False).astype(bool) & prev_held_e.fillna(False).astype(bool))
+    both = held_e.fillna(False).astype(bool) & prev_held_e.fillna(False).astype(bool)
     sh_now = across((sel_e * eff("shares")).where(both))
     sh_prev = across((prev_sel_e * eff("prev_shares_adj")).where(both))
     ratio = sh_now / sh_prev.where(sh_prev > 0)
     guard = _corporate_action_mask(ratio)
     if int(guard.to_numpy().sum()):
-        logger.info("share-change guard: %s ticker-dates nulled as residual corporate "
-                    "actions after the `prices_splits` restatement",
-                    int(guard.to_numpy().sum()))
+        logger.info(
+            "share-change guard: %s ticker-dates nulled as residual corporate " "actions after the `prices_splits` restatement",
+            int(guard.to_numpy().sum()),
+        )
 
     # #26 is a property of the managers who HOLD the name right now, so both legs are
     # masked by `held_e`. Averaging over everyone who ever held it makes the value depend on
@@ -666,17 +596,16 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame,
     out = {
         "ic_super_holders": holders,
         "ic_super_conviction_weight": conviction,
-        "ic_super_max_conviction": across(w_e.where(held_e.fillna(False)), "max"),   # #15
-        "ic_super_top10_holders": across(sel_e * eff("is_top10")),                   # #17
-        "ic_super_breadth_chg": holders - prev_holders,                              # #13
-        "ic_super_conviction_chg": conviction - prev_conviction,                     # #16
-        "ic_super_holders_yoy": holders - holders4,                                  # #27b
-        "ic_super_conviction_weight_yoy": conviction - conviction4,                  # #27a
-        "ic_super_shares_chg": (ratio - 1.0).where(~guard),                          # #24
-        "ic_super_quarters_held": across(eff("run_len"), "median"),                  # #23
-        "ic_super_sp500_share": sp_num / sp_den.where(sp_den > 0),                   # #26
-        "_super_value_flow": across((sel_e * eff("value_usd")).fillna(0.0)
-                                    - (prev_sel_e * eff("prev_value_usd")).fillna(0.0)),
+        "ic_super_max_conviction": across(w_e.where(held_e.fillna(False)), "max"),  # #15
+        "ic_super_top10_holders": across(sel_e * eff("is_top10")),  # #17
+        "ic_super_breadth_chg": holders - prev_holders,  # #13
+        "ic_super_conviction_chg": conviction - prev_conviction,  # #16
+        "ic_super_holders_yoy": holders - holders4,  # #27b
+        "ic_super_conviction_weight_yoy": conviction - conviction4,  # #27a
+        "ic_super_shares_chg": (ratio - 1.0).where(~guard),  # #24
+        "ic_super_quarters_held": across(eff("run_len"), "median"),  # #23
+        "ic_super_sp500_share": sp_num / sp_den.where(sp_den > 0),  # #26
+        "_super_value_flow": across((sel_e * eff("value_usd")).fillna(0.0) - (prev_sel_e * eff("prev_value_usd")).fillna(0.0)),
     }
 
     # #27 -- the mean `sel` across this name's HOLDERS. It audits the selector from inside
@@ -689,11 +618,11 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame,
     held_num = held_e.fillna(0.0)
     if float(np.nanstd(sel_e.to_numpy())) > 0:
         sel_den = across(held_num)
-        out["ic_super_selection_score"] = (across(sel_e.fillna(0.0) * held_num)
-                                           / sel_den.where(sel_den > 0))
+        out["ic_super_selection_score"] = across(sel_e.fillna(0.0) * held_num) / sel_den.where(sel_den > 0)
     else:
-        logger.info("`sel` is flat -> `ic_super_selection_score` would be constant and is "
-                    "not emitted; it becomes live under a point-in-time selector.")
+        logger.info(
+            "`sel` is flat -> `ic_super_selection_score` would be constant and is " "not emitted; it becomes live under a point-in-time selector."
+        )
     # NaN until the name is FIRST HELD, a real number after -- "no elite manager has ever
     # held this" and "they all sold out in 2019" are different facts, and only the second is
     # evidence about the shareholder base.
@@ -707,8 +636,7 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame,
     return {k: v.where(seen) for k, v in out.items()}, grid
 
 
-def _manager_pool(st: pd.DataFrame, column: str, grid: pd.DatetimeIndex,
-                  stale_quarters: int) -> pd.Series:
+def _manager_pool(st: pd.DataFrame, column: str, grid: pd.DatetimeIndex, stale_quarters: int) -> pd.Series:
     """Total `sel` across the managers whose filing is effective on each grid date.
 
     Manager-level by construction: one row per `(cik, period)`, so the answer cannot depend
@@ -717,14 +645,9 @@ def _manager_pool(st: pd.DataFrame, column: str, grid: pd.DatetimeIndex,
     # `pivot_table` cannot aggregate a datetime column, so the freshness clock travels as an
     # integer nanosecond stamp and is turned back into a date after the forward-fill.
     one["_stamp"] = one["avail"].astype("datetime64[ns]").astype("int64")
-    m = (one.pivot_table(index="avail", columns="cik", values=column, aggfunc="last",
-                         dropna=False)
-         .reindex(index=grid).ffill())
-    seen = (one.pivot_table(index="avail", columns="cik", values="_stamp", aggfunc="last",
-                            dropna=False)
-            .reindex(index=grid).ffill())
-    horizon = (seen.apply(pd.to_datetime, unit="ns")
-               + pd.DateOffset(months=3 * stale_quarters))
+    m = one.pivot_table(index="avail", columns="cik", values=column, aggfunc="last", dropna=False).reindex(index=grid).ffill()
+    seen = one.pivot_table(index="avail", columns="cik", values="_stamp", aggfunc="last", dropna=False).reindex(index=grid).ffill()
+    horizon = seen.apply(pd.to_datetime, unit="ns") + pd.DateOffset(months=3 * stale_quarters)
     live = horizon.ge(pd.Series(grid, index=grid), axis=0)
     total = m.where(live).sum(axis=1)
     return total.where(total > 0)
@@ -743,21 +666,34 @@ def _events(contrib: pd.DataFrame) -> pd.DataFrame:
         m = mask.fillna(False).to_numpy(dtype=bool)
         if not m.any():
             return
-        rows.append(pd.DataFrame({"date": contrib["avail"].to_numpy()[m],
-                                  "ticker": contrib["ticker"].to_numpy()[m],
-                                  "magnitude": magnitude.to_numpy()[m],
-                                  "kind": kind}))
+        rows.append(
+            pd.DataFrame(
+                {
+                    "date": contrib["avail"].to_numpy()[m],
+                    "ticker": contrib["ticker"].to_numpy()[m],
+                    "magnitude": magnitude.to_numpy()[m],
+                    "kind": kind,
+                }
+            )
+        )
 
     held, prev_held = contrib["held"], contrib["prev_held"]
-    add("ic_super_initiations", held & (prev_held == False),          # noqa: E712
-        contrib["sel"] * contrib["w"])
-    add("ic_super_full_exits", (~held) & (prev_held == True),         # noqa: E712
-        contrib["prev_sel"] * contrib["prev_w"])
-    add("ic_super_exit_after_top10",
-        (~held) & (prev_held == True) & (contrib["prev_is_top10"] == True),   # noqa: E712
-        contrib["prev_sel"] * contrib["prev_w"])
-    add("ic_super_new_top10", contrib["is_top10"] & (contrib["prev_rank_in_book"] > _TOP_N),
-        contrib["sel"])
+    add(
+        "ic_super_initiations",
+        held & (prev_held == False),  # noqa: E712
+        contrib["sel"] * contrib["w"],
+    )
+    add(
+        "ic_super_full_exits",
+        (~held) & (prev_held == True),  # noqa: E712
+        contrib["prev_sel"] * contrib["prev_w"],
+    )
+    add(
+        "ic_super_exit_after_top10",
+        (~held) & (prev_held == True) & (contrib["prev_is_top10"] == True),  # noqa: E712
+        contrib["prev_sel"] * contrib["prev_w"],
+    )
+    add("ic_super_new_top10", contrib["is_top10"] & (contrib["prev_rank_in_book"] > _TOP_N), contrib["sel"])
     jump = (contrib["prev_rank_in_book"] - contrib["rank_in_book"]).clip(lower=0)
     add("ic_super_rank_jump", held & (jump > 0), contrib["sel"] * jump)
 
@@ -778,7 +714,7 @@ def _to_long(frame: pd.DataFrame, name: str) -> pd.DataFrame:
 def build_superinvestor_feature_panel(
     frames: PriceFrames,
     holdings: pd.DataFrame | None,
-    roster: dict | list | None,
+    roster: dict | list | set | None,
     *,
     shares_out_history: pd.DataFrame | None = None,
     cusip_map: pd.DataFrame | None = None,
@@ -816,30 +752,32 @@ def build_superinvestor_feature_panel(
     `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
     call; the keyword form makes it unrepresentable.
     """
+
     peer_dict = frames.peers
     trading_index = frames.trading_index
     stock_close = frames.close_split
     level_factor = frames.level_factor
     universe = frames.universe
+    close_split = frames.close_split
+
     empty = pd.DataFrame(columns=["date", "ticker"])
-    # D5 entry guard: None, empty, and the columns this builder cannot run without.
-    # ⚠ `attach_tickers` opens with `holdings.copy()`, so a missing guard here is an
-    # `AttributeError` on a cold or absent `sec13f_manager_holdings`, not an empty panel.
     need = {"cik", "period", "cusip", "shares", "value_usd"}
     if holdings is None or holdings.empty or not need.issubset(holdings.columns):
         return empty
     if not _selection_ciks(roster):
         return empty
 
-    h = _prepare(attach_tickers(holdings, cusip_map, universe))
+    holdings = attach_tickers(holdings, cusip_map, universe)
+    h = clean_holdings(holdings, key=("cik", "period", "cusip"), numeric=("shares", "value_usd"), common_only=True, pad_ciks=True)
+    h, _ = repair_value_basis(h, close_split)
     if h.empty:
         return empty
-    
+
     state = manager_quarter_state(h)
     conv = manager_stock_conviction(h, state)
     if state.empty or conv.empty:
         return empty
-    
+
     # `avail` is attached HERE rather than inside `public_state` because a callable
     # `selection` needs it: `manager_selection` ranks each manager against the peers who
     # were public when their filing landed, which is not answerable from `period` alone.
@@ -852,24 +790,23 @@ def build_superinvestor_feature_panel(
     levels, _grid = _aggregate(contrib, st, stale_quarters)
 
     flow = levels.pop("_super_value_flow", None)
-    fields = {name: fundamentals_to_daily(_to_long(frame, name), name, trading_index)
-              for name, frame in levels.items()}
+    fields = {name: fundamentals_to_daily(_to_long(frame, name), name, trading_index) for name, frame in levels.items()}
 
     # #25 -- the size-scaled net dollar flow needs a point-in-time daily market cap.
-    if (flow is not None and shares_out_history is not None and not shares_out_history.empty
-            and stock_close is not None and not stock_close.empty):
+    if flow is not None and shares_out_history is not None and not shares_out_history.empty and stock_close is not None and not stock_close.empty:
         mcap = daily_market_cap(shares_out_history, stock_close, level_factor=level_factor)
         if mcap.empty:
             # ⚠ NOT SILENT -- same trap as `institutional_features`: a `shares_out_history`
             # projected without `sharesOutstanding` (the VENDOR basis, not the PIT one)
             # returns a column-less frame and deletes the feature without a word.
-            logger.warning("daily_market_cap returned no columns (shares_out_history has %s; "
-                           "it needs `sharesOutstanding`, the VENDOR basis) -> "
-                           "ic_super_flow_to_mcap is skipped.",
-                           sorted(shares_out_history.columns))
+            logger.warning(
+                "daily_market_cap returned no columns (shares_out_history has %s; "
+                "it needs `sharesOutstanding`, the VENDOR basis) -> "
+                "ic_super_flow_to_mcap is skipped.",
+                sorted(shares_out_history.columns),
+            )
         else:
-            daily = fundamentals_to_daily(_to_long(flow, "ic_super_flow_to_mcap"),
-                                          "ic_super_flow_to_mcap", trading_index)
+            daily = fundamentals_to_daily(_to_long(flow, "ic_super_flow_to_mcap"), "ic_super_flow_to_mcap", trading_index)
             f2m = (daily / mcap.where(mcap > 0)).replace([np.inf, -np.inf], np.nan)
             if f2m.notna().any().any():
                 fields["ic_super_flow_to_mcap"] = f2m
@@ -880,16 +817,14 @@ def build_superinvestor_feature_panel(
     events = _events(contrib)
     if not events.empty:
         for kind, sub in events.groupby("kind"):
-            frame = decay_events(sub, trading_index, decay_halflife,
-                                 magnitude_col="magnitude")
+            frame = decay_events(sub, trading_index, decay_halflife, magnitude_col="magnitude")
             if not frame.empty and frame.notna().any().any():
                 fields[str(kind)] = frame
 
     fields = {k: v for k, v in fields.items() if v is not None and not v.empty}
     _fill_sink(sink, contrib, fields)
     emission = {k: EMISSION[k] for k in fields if k in EMISSION}
-    logger.info("elite 13F panel: %s features over %s managers / %s quarters",
-                len(fields), state["cik"].nunique(), state["period"].nunique())
+    logger.info("elite 13F panel: %s features over %s managers / %s quarters", len(fields), state["cik"].nunique(), state["period"].nunique())
     return build_peer_relative_panel(fields, peer_dict, emission=emission)
 
 
@@ -912,6 +847,5 @@ def _fill_sink(sink, contrib: pd.DataFrame, fields: dict) -> None:
     disclosures = contrib.loc[live, ["ticker", "avail"]].rename(columns={"avail": "date"})
     sink.add_events("super", disclosures.drop_duplicates())
     added = live & (contrib["w"].fillna(0.0) > contrib["prev_w"].fillna(0.0)).to_numpy()
-    sink.add_actors("super", contrib.loc[added, ["ticker", "avail", "cik"]].rename(
-        columns={"avail": "date", "cik": "actor"}))
+    sink.add_actors("super", contrib.loc[added, ["ticker", "avail", "cik"]].rename(columns={"avail": "date", "cik": "actor"}))
     sink.keep_signals(fields)

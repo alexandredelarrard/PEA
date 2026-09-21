@@ -126,14 +126,14 @@ Substitute the pk and date column from Step 0; `rows > keys` is a D1 failure. Th
 the ffill limit is); what the date column *means* — observation, fiscal period end, or publication
 event; and expected coverage, from `sp500_tickers` not from the table.
 
-### Coverage 
+### Coverage
 
-Identify if the table assessed has all tickers expected (so far focusing on 491 tickers from SP500). 
+Identify if the table assessed has all tickers expected (so far focusing on 491 tickers from SP500).
 Example of questions to cover with deep data extraction and analysis are (non exhaustive):
-- Does the raw count makes sense, daily its around 3M expected. 
+- Does the raw count makes sense, daily its around 3M expected.
 - Do I have a drop of tickers for the latest days ?
 - Does missing values make sense for tickers with less coverage (some tickers come later, so normal to have Nan before their listing).
-- Is the column sector specific and is it filled for the tickers that are part of the sector ? 
+- Is the column sector specific and is it filled for the tickers that are part of the sector ?
 
 ### Per-column profile
 
@@ -191,6 +191,18 @@ SELECT corr(<a>, <b>) AS r FROM <table> WHERE <a> IS NOT NULL AND <b> IS NOT NUL
 
 Flag `|r| > 0.985` and exact duplicates — the 2026-09-04 audit found **seven pairs at r = 1.0000**.
 Beware tautologies (`ebt - ebit == -intexp` on Sharadar is an identity); say which one to keep.
+
+### time series per ticker and variable
+
+A strong identifier of data issues is to plot or observe one ticker at a time over time for a specific variable.
+If you have an irregular kink, strong drop or jump just for few days or quarter, or a whole or the values do not move for several days or quarters,
+It means :
+- underlying data extraction have an issue -> edgar
+- cleaning of the data has an issue -> codebase to investigate, edge case to identify then fix in next session
+- aggregation, feature construction has an issue -> codebase to be fixed later.
+
+Run this analysis for each variable. No script exist yet, build your own script.
+Then identify if kinks, wholes, or unexplained outliers exist.
 
 ## Step 3 — Diagnose each flag in the code
 

@@ -47,6 +47,7 @@ lets the model learn the asymmetry instead of averaging it away. Both are one-si
 of `max(0, z)` and the signed 20-day return, so each is zero whenever its regime is absent --
 a real zero, not a missing value.
 """
+
 from __future__ import annotations
 
 import logging
@@ -54,19 +55,13 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.institutionals.split_basis import split_adjust_frame
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.common.data_utils import to_day
+from src.data_aggregate.utils.common.errors import _empty_panel
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-
-
-#: D5: every builder answers an absent source with the SAME empty frame. A fresh object each
-#: call, never a module-level constant -- `PanelMerger.add` and several callers reindex or
-#: assign onto what they get back, and a shared instance would be mutated across builds.
-def _EMPTY_PANEL() -> pd.DataFrame:
-    return pd.DataFrame(columns=["date", "ticker"])
+from src.data_aggregate.utils.common.xs import self_history_z
+from src.data_aggregate.utils.institutionals.split_basis import split_adjust_frame
 
 
 def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
@@ -118,19 +113,19 @@ RET_WINDOW = 20
 #: persistence count are bounded or integer-valued; the three fail/turnover rates are skewed
 #: dollar-free rates whose cross-sectional spread drifts with the market, so they take `_xs`.
 EMISSION: dict[str, str] = {
-    "ic_shortvol_ratio_5d":            "raw+peers",
-    "ic_shortvol_ratio_20d":           "raw+peers",
-    "ic_shortvol_ratio_60d":           "raw+peers",
-    "ic_shortvol_ratio_z252":          "raw",
-    "ic_shortvol_acceleration":        "raw",
-    "ic_shortvol_turnover_20d":        "raw+xs",
-    "ic_shortvol_high_x_weak_price":   "raw",
+    "ic_shortvol_ratio_5d": "raw+peers",
+    "ic_shortvol_ratio_20d": "raw+peers",
+    "ic_shortvol_ratio_60d": "raw+peers",
+    "ic_shortvol_ratio_z252": "raw",
+    "ic_shortvol_acceleration": "raw",
+    "ic_shortvol_turnover_20d": "raw+xs",
+    "ic_shortvol_high_x_weak_price": "raw",
     "ic_shortvol_high_x_strong_price": "raw",
-    "ic_shortvol_market_coverage":     "raw",
-    "ic_ftd_pct_so":                   "raw+xs",
-    "ic_ftd_to_adv20":                 "raw+xs",
-    "ic_ftd_z252":                     "raw",
-    "ic_ftd_persistence_30d":          "raw",
+    "ic_shortvol_market_coverage": "raw",
+    "ic_ftd_pct_so": "raw+xs",
+    "ic_ftd_to_adv20": "raw+xs",
+    "ic_ftd_z252": "raw",
+    "ic_ftd_persistence_30d": "raw",
 }
 
 
@@ -175,22 +170,29 @@ def _guard_coverage(cov: pd.DataFrame) -> pd.DataFrame:
     n = int(over.to_numpy().sum())
     if n:
         bad = [c for c in cov.columns if bool(over[c].any())]
-        logger.info("coverage guard: %s of %s non-null `ic_shortvol_market_coverage` cells "
-                    "above 1.0 -> nulled (off-exchange volume cannot exceed the tape; these "
-                    "are reused-ticker windows). Tickers: %s",
-                    f"{n:,}", f"{int(cov.notna().to_numpy().sum()):,}", ", ".join(sorted(bad)))
+        logger.info(
+            "coverage guard: %s of %s non-null `ic_shortvol_market_coverage` cells "
+            "above 1.0 -> nulled (off-exchange volume cannot exceed the tape; these "
+            "are reused-ticker windows). Tickers: %s",
+            f"{n:,}",
+            f"{int(cov.notna().to_numpy().sum()):,}",
+            ", ".join(sorted(bad)),
+        )
     return cov.mask(over)
 
 
-def _shortvol_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                     shares_out: pd.DataFrame | None,
-                     close_total: pd.DataFrame | None,
-                     volume: pd.DataFrame | None,
-                     splits: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
+def _shortvol_fields(
+    hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    shares_out: pd.DataFrame | None,
+    close_total: pd.DataFrame | None,
+    volume: pd.DataFrame | None,
+    splits: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
     """#56-#63 + the coverage measurement. Every leg is shifted by the publication lag."""
     short = _pivot(hist, "short_volume", idx)
     total = _pivot(hist, "total_volume", idx)
-    F: dict[str, pd.DataFrame] = {}
+    f_dict: dict[str, pd.DataFrame] = {}
 
     ratios: dict[int, pd.DataFrame] = {}
     for w in RATIO_WINDOWS:
@@ -199,92 +201,89 @@ def _shortvol_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
         den = total.rolling(w, min_periods=mp).sum()
         ratio = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan)
         ratios[w] = ratio.shift(SHORTVOL_PUB_LAG)
-        F[f"ic_shortvol_ratio_{w}d"] = ratios[w]
+        f_dict[f"ic_shortvol_ratio_{w}d"] = ratios[w]
 
     base = ratios[BASE_WINDOW]
     z = self_history_z(base, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
-    F["ic_shortvol_ratio_z252"] = z
-    F["ic_shortvol_acceleration"] = ratios[BASE_WINDOW] - ratios[max(RATIO_WINDOWS)]
+    f_dict["ic_shortvol_ratio_z252"] = z
+    f_dict["ic_shortvol_acceleration"] = ratios[BASE_WINDOW] - ratios[max(RATIO_WINDOWS)]
 
     if shares_out is not None and not shares_out.empty:
         so = shares_out.reindex(index=idx).reindex(columns=short.columns)
         turn = short.rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
-        F["ic_shortvol_turnover_20d"] = (
-            (turn / so.where(so > 0)).replace([np.inf, -np.inf], np.nan)
-            .shift(SHORTVOL_PUB_LAG))
+        f_dict["ic_shortvol_turnover_20d"] = (turn / so.where(so > 0)).replace([np.inf, -np.inf], np.nan).shift(SHORTVOL_PUB_LAG)
 
     if close_total is not None and not close_total.empty:
         # The 20-day TOTAL return (`close_total`, never `close_split`): this is a return, and
         # the price contract reserves the split-only series for LEVELS.
-        ret = close_total.reindex(index=idx).reindex(
-            columns=short.columns).pct_change(RET_WINDOW)
+        ret = close_total.reindex(index=idx).reindex(columns=short.columns).pct_change(RET_WINDOW)
         high = z.clip(lower=0.0)
-        F["ic_shortvol_high_x_weak_price"] = high * (-ret).clip(lower=0.0)
-        F["ic_shortvol_high_x_strong_price"] = high * ret.clip(lower=0.0)
+        f_dict["ic_shortvol_high_x_weak_price"] = high * (-ret).clip(lower=0.0)
+        f_dict["ic_shortvol_high_x_strong_price"] = high * ret.clip(lower=0.0)
 
     if volume is not None and not volume.empty:
         tape = volume.reindex(index=idx).reindex(columns=short.columns)
-        num = (total * split_adjust_frame(splits, total)).rolling(
-            BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
+        num = (total * split_adjust_frame(splits, total)).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
         den = tape.rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
         cov = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan)
         cov = _guard_coverage(cov)
-        F["ic_shortvol_market_coverage"] = cov.shift(SHORTVOL_PUB_LAG)
+        f_dict["ic_shortvol_market_coverage"] = cov.shift(SHORTVOL_PUB_LAG)
         live = cov.to_numpy(dtype="float64", na_value=np.nan).ravel()
         live = live[np.isfinite(live)]
         if len(live):
             p05, p50, p95 = np.percentile(live, [5, 50, 95])
-            logger.info("RegSHO market coverage (off-exchange share of tape volume): "
-                        "p50 %.1f%%, p05 %.1f%%, p95 %.1f%% over %s ticker-days",
-                        100 * p50, 100 * p05, 100 * p95, len(live))
-    return F
+            logger.info(
+                "RegSHO market coverage (off-exchange share of tape volume): " "p50 %.1f%%, p05 %.1f%%, p95 %.1f%% over %s ticker-days",
+                100 * p50,
+                100 * p05,
+                100 * p95,
+                len(live),
+            )
+    return f_dict
 
 
-def _fails_fields(fails_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                  shares_out: pd.DataFrame | None,
-                  volume: pd.DataFrame | None,
-                  splits: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
+def _fails_fields(
+    fails_hist: pd.DataFrame, idx: pd.DatetimeIndex, shares_out: pd.DataFrame | None, volume: pd.DataFrame | None, splits: pd.DataFrame | None = None
+) -> dict[str, pd.DataFrame]:
     """#64-#67. Zero-filled ONLY on the dates the FTD file covers -- see the module docstring."""
     fails = _pivot(fails_hist, "fails_quantity", idx)
-    covered = pd.DatetimeIndex(
-        to_day(fails_hist["date"]).dropna().unique())
+    covered = pd.DatetimeIndex(to_day(fails_hist["date"]).dropna().unique())
     on_file = pd.Series(idx.isin(covered), index=idx)
-    logger.info("FTD file covers %s of %s trading days in the window (%.1f%%); an absent "
-                "ticker on a covered date is 0 fails, an absent date is NaN",
-                int(on_file.sum()), len(idx), 100 * float(on_file.mean()))
+    logger.info(
+        "FTD file covers %s of %s trading days in the window (%.1f%%); an absent " "ticker on a covered date is 0 fails, an absent date is NaN",
+        int(on_file.sum()),
+        len(idx),
+        100 * float(on_file.mean()),
+    )
     # 0 on a covered date (the ticker simply had no fails), NaN on a date nothing was
     # published for. `pd.DataFrame(dict.fromkeys(...))` broadcasts the per-date flag to the
     # ticker axis explicitly rather than relying on a bare ndarray to align.
     covered_wide = pd.DataFrame({c: on_file for c in fails.columns}, index=idx)
     fails = fails.mask(covered_wide & fails.isna(), 0.0)
 
-    F: dict[str, pd.DataFrame] = {}
+    f_dict: dict[str, pd.DataFrame] = {}
     pct_so = None
     if shares_out is not None and not shares_out.empty:
         so = shares_out.reindex(index=idx).reindex(columns=fails.columns)
         pct_so = (fails / so.where(so > 0)).replace([np.inf, -np.inf], np.nan)
-        F["ic_ftd_pct_so"] = pct_so.shift(FTD_PUB_LAG)
+        f_dict["ic_ftd_pct_so"] = pct_so.shift(FTD_PUB_LAG)
     if volume is not None and not volume.empty:
-        adv = volume.reindex(index=idx).reindex(columns=fails.columns).rolling(
-            BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).mean()
+        adv = volume.reindex(index=idx).reindex(columns=fails.columns).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).mean()
         # ⚠ SAME BASIS MISMATCH AS `market_coverage`: `fails_quantity` is an as-traded share
         # count and `adv` comes from yfinance `Volume`, which IS retroactively scaled by the
         # split ratio. Restate the fails onto the adjusted basis so the ratio is basis-free.
         fails_adj = fails * split_adjust_frame(splits, fails)
-        F["ic_ftd_to_adv20"] = ((fails_adj / adv.where(adv > 0))
-                                .replace([np.inf, -np.inf], np.nan).shift(FTD_PUB_LAG))
+        f_dict["ic_ftd_to_adv20"] = (fails_adj / adv.where(adv > 0)).replace([np.inf, -np.inf], np.nan).shift(FTD_PUB_LAG)
     # The z-score prefers the share-count basis (a fail is a share count, and shares
     # outstanding is the only denominator that makes two names comparable); it falls back to
     # the ADV basis so the family is not lost when fundamentals are absent.
-    basis = pct_so if pct_so is not None else F.get("ic_ftd_to_adv20")
+    basis = pct_so if pct_so is not None else f_dict.get("ic_ftd_to_adv20")
     if basis is not None:
         z = self_history_z(basis, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
-        F["ic_ftd_z252"] = z.shift(FTD_PUB_LAG)
+        f_dict["ic_ftd_z252"] = z.shift(FTD_PUB_LAG)
         flag = (z > Z_HIGH).astype("float64").where(z.notna())
-        F["ic_ftd_persistence_30d"] = flag.rolling(
-            PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)
-        ).sum().shift(FTD_PUB_LAG)
-    return F
+        f_dict["ic_ftd_persistence_30d"] = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().shift(FTD_PUB_LAG)
+    return f_dict
 
 
 def build_short_flow_feature_panel(
@@ -327,7 +326,7 @@ def build_short_flow_feature_panel(
     # arrived -- RegSHO short volume and fails-to-deliver are separate fetchers on separate
     # clocks -- so the guard is "neither", not "either".
     if _absent(short_history) and _absent(fails_history):
-        return _EMPTY_PANEL()
+        return _empty_panel()
 
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
     shares_out = None
@@ -340,12 +339,9 @@ def build_short_flow_feature_panel(
             shares_out = None
 
     fields: dict[str, pd.DataFrame] = {}
-    if (short_history is not None and not short_history.empty
-            and {"short_volume", "total_volume"}.issubset(short_history.columns)):
-        fields.update(_shortvol_fields(short_history, idx, shares_out, close_total, volume,
-                                       splits))
-    if (fails_history is not None and not fails_history.empty
-            and "fails_quantity" in fails_history.columns):
+    if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
+        fields.update(_shortvol_fields(short_history, idx, shares_out, close_total, volume, splits))
+    if fails_history is not None and not fails_history.empty and "fails_quantity" in fails_history.columns:
         fields.update(_fails_fields(fails_history, idx, shares_out, volume, splits))
 
     for name in list(fields):

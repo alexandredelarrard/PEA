@@ -78,6 +78,7 @@ Features -- registry #28-#41:
 denominator are decayed with the same half-life and divided -- not a decayed sum. A decayed
 sum of percentiles would grow with the number of purchases and stop being a percentile.
 """
+
 from __future__ import annotations
 
 import logging
@@ -85,19 +86,12 @@ import logging
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
-from src.data_aggregate.utils.institutionals.decay import decay_events
-from src.data_aggregate.utils.institutionals.insider_quality import (
-    FLAG_PCT_SHARES_OUTSTANDING, asof_values, clean_transactions, report_oversized)
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-
-
-#: D5: every builder answers an absent source with the SAME empty frame. A fresh object each
-#: call, never a module-level constant -- `PanelMerger.add` and several callers reindex or
-#: assign onto what they get back, and a shared instance would be mutated across builds.
-def _EMPTY_PANEL() -> pd.DataFrame:
-    return pd.DataFrame(columns=["date", "ticker"])
+from src.data_aggregate.utils.institutionals.decay import decay_events
+from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, asof_values, clean_transactions, report_oversized
 
 
 def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
@@ -149,20 +143,20 @@ _log = logging.getLogger(__name__)
 #: rather than signal -- the one case here where `_xs` would remove a real drift. Left as the
 #: registry declares it rather than changed on an argument that has not been measured.
 EMISSION: dict[str, str] = {
-    "ic_insider_buy_value_mcap_60d":          "raw+xs",
-    "ic_insider_buy_value_mcap_180d":         "raw+xs",
-    "ic_insider_buy_shares_so_180d":          "raw+xs",
-    "ic_insider_distinct_buyers_120d":        "raw",     # 98.1% ties: a 0-8 integer count
-    "ic_insider_cluster_buy_120d":            "raw",     # 98.3% ties: the same, gated
-    "ic_insider_ceo_buy_mcap_180d":           "raw+xs",
-    "ic_insider_cfo_buy_mcap_180d":           "raw+xs",
-    "ic_insider_director_buy_mcap_180d":      "raw+xs",
-    "ic_insider_purchase_pct_prior":          "raw+xs",
-    "ic_insider_owner_surprise_120d":         "raw",     # already a percentile in [0, 1]
-    "ic_insider_days_since_last_buy":         "raw",     # a day count, comparable as-is
-    "ic_insider_net_buy_ratio_180d":          "raw",     # bounded [-1, 1] by construction
+    "ic_insider_buy_value_mcap_60d": "raw+xs",
+    "ic_insider_buy_value_mcap_180d": "raw+xs",
+    "ic_insider_buy_shares_so_180d": "raw+xs",
+    "ic_insider_distinct_buyers_120d": "raw",  # 98.1% ties: a 0-8 integer count
+    "ic_insider_cluster_buy_120d": "raw",  # 98.3% ties: the same, gated
+    "ic_insider_ceo_buy_mcap_180d": "raw+xs",
+    "ic_insider_cfo_buy_mcap_180d": "raw+xs",
+    "ic_insider_director_buy_mcap_180d": "raw+xs",
+    "ic_insider_purchase_pct_prior": "raw+xs",
+    "ic_insider_owner_surprise_120d": "raw",  # already a percentile in [0, 1]
+    "ic_insider_days_since_last_buy": "raw",  # a day count, comparable as-is
+    "ic_insider_net_buy_ratio_180d": "raw",  # bounded [-1, 1] by construction
     "ic_insider_discretionary_sell_mcap_60d": "raw+xs",
-    "ic_insider_planned_sell_mcap_60d":       "raw+xs",
+    "ic_insider_planned_sell_mcap_60d": "raw+xs",
 }
 
 #: No `_vs_peers` leg anywhere in this family, for the same reason as `ic_super_*` (D25): an
@@ -233,7 +227,7 @@ def build_insider_feature_panel(
     # keeps all seven builders answering an absent source the same way.
     need = {"ticker", "filing_date", "transaction_code", "shares"}
     if insider is None or insider.empty or not need.issubset(insider.columns):
-        return _EMPTY_PANEL()
+        return _empty_panel()
 
     t, diag = clean_transactions(insider)
     if t.empty:
@@ -243,9 +237,11 @@ def build_insider_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
 
     mcap = _market_cap(shares_out_history, stock_close, level_factor)
-    shares_out = (fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx)
-                  if shares_out_history is not None and not shares_out_history.empty
-                  else pd.DataFrame(index=idx))
+    shares_out = (
+        fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx)
+        if shares_out_history is not None and not shares_out_history.empty
+        else pd.DataFrame(index=idx)
+    )
     _report_oversized(t, shares_out)
 
     buys = t[t["code"].eq("P")].copy()
@@ -271,16 +267,13 @@ def build_insider_feature_panel(
         # whole frame produces two columns of that name and every later `ev["shares"]` is a
         # DataFrame, not a Series. That is what broke the first full build, ~28 minutes in and
         # past six merged panels -- the unit fixtures only ever carried `shares_n`.
-        ev = buys.loc[:, ["ticker", "day", "value", "shares_n"]].rename(
-            columns={"day": "date", "shares_n": "shares"})
+        ev = buys.loc[:, ["ticker", "day", "value", "shares_n"]].rename(columns={"day": "date", "shares_n": "shares"})
         sink.add_events("insider", ev)
         if "owner_cik" in buys.columns:
-            sink.add_actors("insider", buys.loc[:, ["ticker", "day", "owner_cik"]].rename(
-                columns={"day": "date", "owner_cik": "actor"}))
+            sink.add_actors("insider", buys.loc[:, ["ticker", "day", "owner_cik"]].rename(columns={"day": "date", "owner_cik": "actor"}))
         sink.keep_signals(fields)
 
-    _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)",
-              len(fields), len(t), len(buys), len(sells))
+    _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(t), len(buys), len(sells))
     emission = {k: v for k, v in EMISSION.items() if k in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission)
 
@@ -289,9 +282,10 @@ def build_insider_feature_panel(
 # dense features -- trailing calendar windows                                   #
 # --------------------------------------------------------------------------- #
 
-def _dense_fields(buys: pd.DataFrame, sells: pd.DataFrame, idx: pd.DatetimeIndex,
-                  mcap: pd.DataFrame | None,
-                  shares_out: pd.DataFrame) -> dict[str, pd.DataFrame]:
+
+def _dense_fields(
+    buys: pd.DataFrame, sells: pd.DataFrame, idx: pd.DatetimeIndex, mcap: pd.DataFrame | None, shares_out: pd.DataFrame
+) -> dict[str, pd.DataFrame]:
     """The six class-D features. Each is a trailing sum over a calendar window, sampled onto
     the trading grid, so a day only ever sees transactions already filed by it."""
     out: dict[str, pd.DataFrame] = {}
@@ -301,16 +295,16 @@ def _dense_fields(buys: pd.DataFrame, sells: pd.DataFrame, idx: pd.DatetimeIndex
 
     if mcap is not None and not mcap.empty:
         out["ic_insider_buy_value_mcap_180d"] = _over(buy_val_180, mcap)
+
     if not shares_out.empty:
-        out["ic_insider_buy_shares_so_180d"] = _over(
-            _rolling(buys, idx, WINDOW_180, "shares_n", seen), shares_out)
+        out["ic_insider_buy_shares_so_180d"] = _over(_rolling(buys, idx, WINDOW_180, "shares_n", seen), shares_out)
 
     bv, sv = buy_val_180.fillna(0.0), sell_val_180.fillna(0.0)
     denom = bv + sv
+
     # NaN, not 0, where nothing was filed in the window: "no insider traded" is not
     # "insiders were evenly split". The bounded [-1, 1] range is what keeps this one `raw`.
-    out["ic_insider_net_buy_ratio_180d"] = ((bv - sv) / denom.where(denom > 0)
-                                            ).replace([np.inf, -np.inf], np.nan)
+    out["ic_insider_net_buy_ratio_180d"] = ((bv - sv) / denom.where(denom > 0)).replace([np.inf, -np.inf], np.nan)
     out["ic_insider_days_since_last_buy"] = _days_since(buys, idx)
 
     if mcap is not None and not mcap.empty:
@@ -320,15 +314,13 @@ def _dense_fields(buys: pd.DataFrame, sells: pd.DataFrame, idx: pd.DatetimeIndex
         # before 2023-07-01 the field is empty, and the floor below removes that region
         # rather than letting "unknown" masquerade as "discretionary".
         disc = sells[planned.eq(0) & ~sells["in_exercise_package"].astype(bool)]
-        for name, sub in (("ic_insider_discretionary_sell_mcap_60d", disc),
-                          ("ic_insider_planned_sell_mcap_60d", sells[planned.eq(1)])):
+        for name, sub in (("ic_insider_discretionary_sell_mcap_60d", disc), ("ic_insider_planned_sell_mcap_60d", sells[planned.eq(1)])):
             frame = _over(_rolling(sub, idx, WINDOW_60, "value", seen), mcap)
             out[name] = frame.where(pd.Series(idx >= TEN_B5_1_FLOOR, index=idx), axis=0)
     return out
 
 
-def _first_filing(buys: pd.DataFrame, sells: pd.DataFrame,
-                  idx: pd.DatetimeIndex) -> pd.DataFrame:
+def _first_filing(buys: pd.DataFrame, sells: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
     """Boolean (date x ticker): has this ticker filed ANY open-market Form 4 by this date?
 
     It is the coverage mask every windowed feature shares, and it exists because the two
@@ -348,8 +340,7 @@ def _first_filing(buys: pd.DataFrame, sells: pd.DataFrame,
     return grid
 
 
-def _rolling(txns: pd.DataFrame, idx: pd.DatetimeIndex, window_days: int,
-             value_col: str | None, seen: pd.DataFrame) -> pd.DataFrame:
+def _rolling(txns: pd.DataFrame, idx: pd.DatetimeIndex, window_days: int, value_col: str | None, seen: pd.DataFrame) -> pd.DataFrame:
     """Trailing `window_days`-calendar-day sum per ticker, sampled onto `idx`.
 
     Zero-filled between filing days on a DAILY calendar first, so the rolling total counts
@@ -362,8 +353,7 @@ def _rolling(txns: pd.DataFrame, idx: pd.DatetimeIndex, window_days: int,
         piv = txns.groupby(["day", "ticker"])[value_col].sum().unstack("ticker")
     else:
         piv = txns.groupby(["day", "ticker"]).size().unstack("ticker")
-    calendar = pd.date_range(min(piv.index.min(), idx.min()), max(piv.index.max(), idx.max()),
-                             freq="D")
+    calendar = pd.date_range(min(piv.index.min(), idx.min()), max(piv.index.max(), idx.max()), freq="D")
     piv = piv.reindex(calendar).fillna(0.0).rolling(f"{window_days}D").sum()
     return piv.reindex(index=idx, columns=seen.columns).fillna(0.0).where(seen)
 
@@ -407,8 +397,8 @@ def _days_since(buys: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
 # sparse features -- decayed event intensities                                  #
 # --------------------------------------------------------------------------- #
 
-def _sparse_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex,
-                   halflife: float) -> dict[str, pd.DataFrame]:
+
+def _sparse_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> dict[str, pd.DataFrame]:
     """The six DECAYED features: four value-scaled intensities and two decay-weighted means.
 
     #31 and #32 are class S too but live in `_breadth_fields` -- see there for why a distinct
@@ -425,12 +415,13 @@ def _sparse_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex,
     # dollars over market cap.
     priced = "value_mcap" in ev.columns and ev["value_mcap"].notna().any()
     if priced:
-        out["ic_insider_buy_value_mcap_60d"] = decay_events(
-            ev, idx, halflife, magnitude_col="value_mcap")
+        out["ic_insider_buy_value_mcap_60d"] = decay_events(ev, idx, halflife, magnitude_col="value_mcap")
 
-    roles = {"ic_insider_ceo_buy_mcap_180d": ev["role"].eq("CEO"),
-             "ic_insider_cfo_buy_mcap_180d": ev["role"].eq("CFO"),
-             "ic_insider_director_buy_mcap_180d": ev["is_director"].eq(1)}
+    roles = {
+        "ic_insider_ceo_buy_mcap_180d": ev["role"].eq("CEO"),
+        "ic_insider_cfo_buy_mcap_180d": ev["role"].eq("CFO"),
+        "ic_insider_director_buy_mcap_180d": ev["is_director"].eq(1),
+    }
     for name, mask in roles.items():
         sub = ev[mask]
         if priced and not sub.empty and sub["value_mcap"].notna().any():
@@ -438,17 +429,14 @@ def _sparse_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex,
 
     pct_prior = _purchase_pct_prior(ev)
     if pct_prior is not None:
-        out["ic_insider_purchase_pct_prior"] = _decay_weighted_mean(
-            pct_prior, idx, halflife, "pct_prior", "value")
+        out["ic_insider_purchase_pct_prior"] = _decay_weighted_mean(pct_prior, idx, halflife, "pct_prior", "value")
     surprise = _owner_surprise(ev)
     if surprise is not None:
-        out["ic_insider_owner_surprise_120d"] = _decay_weighted_mean(
-            surprise, idx, halflife, "surprise", "value")
+        out["ic_insider_owner_surprise_120d"] = _decay_weighted_mean(surprise, idx, halflife, "surprise", "value")
     return out
 
 
-def _decay_weighted_mean(ev: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float,
-                         value_col: str, weight_col: str) -> pd.DataFrame:
+def _decay_weighted_mean(ev: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float, value_col: str, weight_col: str) -> pd.DataFrame:
     """Weighted mean of `value_col` whose weights are `weight_col` times the decay.
 
     Both legs go through the same `decay_events`, so the NaN-before-first-event region and
@@ -503,11 +491,12 @@ def _breadth_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd.D
     grid = pd.DataFrame({t: s for t, s in frames.items() if s is not None})
     if grid.empty:
         return {}
-    return {"ic_insider_distinct_buyers_120d": grid,
-            # Gated, not masked: below the threshold the answer is "no cluster" = 0, which is
-            # a fact, while before the first purchase it is unknown = NaN, inherited above.
-            "ic_insider_cluster_buy_120d": grid.where(grid >= CLUSTER_MIN, 0.0
-                                                      ).where(grid.notna())}
+    return {
+        "ic_insider_distinct_buyers_120d": grid,
+        # Gated, not masked: below the threshold the answer is "no cluster" = 0, which is
+        # a fact, while before the first purchase it is unknown = NaN, inherited above.
+        "ic_insider_cluster_buy_120d": grid.where(grid >= CLUSTER_MIN, 0.0).where(grid.notna()),
+    }
 
 
 def _rolling_distinct(g: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.Series | None:
@@ -539,8 +528,7 @@ def _rolling_distinct(g: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.Series | Non
             j += 1
         counts[k] = distinct
 
-    s = pd.Series(counts, index=pd.DatetimeIndex(points)).reindex(
-        pd.DatetimeIndex(points).union(idx)).ffill().reindex(idx)
+    s = pd.Series(counts, index=pd.DatetimeIndex(points)).reindex(pd.DatetimeIndex(points).union(idx)).ffill().reindex(idx)
     # NaN before the ticker's first purchase: "nobody has ever bought this name" and "the
     # window has emptied" are different facts, and only the second is a zero.
     return s.where(idx >= pd.Timestamp(day[0]))
@@ -591,8 +579,7 @@ def _owner_surprise(ev: pd.DataFrame) -> pd.DataFrame | None:
     # observation is always 1.0 and every later one is inflated by 1/n. Subtracting the
     # self-contribution rescales to "fraction of PRIOR purchases at or below this one".
     n = g.cumcount()
-    expanding_rank = g.expanding().apply(lambda s: (s.iloc[:-1] <= s.iloc[-1]).sum(),
-                                         raw=False).reset_index(level=0, drop=True)
+    expanding_rank = g.expanding().apply(lambda s: (s.iloc[:-1] <= s.iloc[-1]).sum(), raw=False).reset_index(level=0, drop=True)
     d["surprise"] = (expanding_rank / n.where(n > 0)).astype("float64")
     return d.dropna(subset=["surprise"])
 
@@ -601,12 +588,10 @@ def _owner_surprise(ev: pd.DataFrame) -> pd.DataFrame | None:
 # helpers                                                                       #
 # --------------------------------------------------------------------------- #
 
-def _market_cap(shares_out_history: pd.DataFrame | None, stock_close: pd.DataFrame | None,
-                level_factor: pd.DataFrame | None) -> pd.DataFrame | None:
-    if (shares_out_history is None or shares_out_history.empty
-            or stock_close is None or stock_close.empty):
-        _log.warning("No shares outstanding or close -> the 11 size-scaled insider features "
-                     "are skipped.")
+
+def _market_cap(shares_out_history: pd.DataFrame | None, stock_close: pd.DataFrame | None, level_factor: pd.DataFrame | None) -> pd.DataFrame | None:
+    if shares_out_history is None or shares_out_history.empty or stock_close is None or stock_close.empty:
+        _log.warning("No shares outstanding or close -> the 11 size-scaled insider features " "are skipped.")
         return None
     mcap = daily_market_cap(shares_out_history, stock_close, level_factor=level_factor)
     if mcap.empty:
@@ -615,10 +600,12 @@ def _market_cap(shares_out_history: pd.DataFrame | None, stock_close: pd.DataFra
         # COLUMN-LESS frame when its input has no `sharesOutstanding` column, so the caller's
         # `if not mcap.empty` branch just never fires. The inputs are present -- the warning
         # above only covers their absence -- so the column is what has to be named.
-        _log.warning("daily_market_cap returned no columns (shares_out_history has %s; it "
-                     "needs `sharesOutstanding`, the VENDOR basis, not `sharesOutstandingPit`)"
-                     " -> the 11 size-scaled insider features are skipped.",
-                     sorted(shares_out_history.columns))
+        _log.warning(
+            "daily_market_cap returned no columns (shares_out_history has %s; it "
+            "needs `sharesOutstanding`, the VENDOR basis, not `sharesOutstandingPit`)"
+            " -> the 11 size-scaled insider features are skipped.",
+            sorted(shares_out_history.columns),
+        )
         return None
     return mcap
 
@@ -630,7 +617,9 @@ def _report_oversized(t: pd.DataFrame, shares_out: pd.DataFrame) -> None:
     if flagged.empty:
         return
     top = flagged.head(5)
-    _log.warning("insider: %s transaction(s) above %.0f%% of shares outstanding, kept and "
-                 "reported: %s", len(flagged), 100 * FLAG_PCT_SHARES_OUTSTANDING,
-                 ", ".join(f"{r.ticker} {r.day:%Y-%m-%d} {r.code} "
-                           f"{r.pct_shares_outstanding:.1%}" for r in top.itertuples()))
+    _log.warning(
+        "insider: %s transaction(s) above %.0f%% of shares outstanding, kept and " "reported: %s",
+        len(flagged),
+        100 * FLAG_PCT_SHARES_OUTSTANDING,
+        ", ".join(f"{r.ticker} {r.day:%Y-%m-%d} {r.code} " f"{r.pct_shares_outstanding:.1%}" for r in top.itertuples()),
+    )

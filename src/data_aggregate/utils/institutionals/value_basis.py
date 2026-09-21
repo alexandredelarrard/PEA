@@ -15,6 +15,7 @@ completeness, flow -- is a statement about those 61 filings until this runs. Tha
 winsorizing was rejected: `value_usd` p99 is $1,482,270,606, a legitimate large holding, so a
 p99 clip destroys real data while leaving ~1.1% of the 1000x rows standing.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 #: a few mis-shared rows move it a long way without changing which power of 1000 it is.
 #: Measured 2026-09-14 -- the gap between the bands is empty in the data (0.085% of rows sit in
 #: 2-200 and 0.046% in 0.005-0.5, and those ABSTAIN).
-_REPAIR_BANDS = ((0.5, 2.0, 1.0), (200.0, 5000.0, 1e-3), (5e-4, 5e-3, 1e3))
+_REPAIR_BANDS = ((0.5, 1.5, 1.0), (900.0, 1100.0, 1e-3), (0.0009, 0.0011, 1e3))
 
 #: `value_basis_repaired`. Per D2's flag-and-widen shape, a repaired or abstaining row is
 #: FLAGGED, never dropped: `shares` is unaffected by a value-unit error, so the share-based
@@ -57,14 +58,16 @@ def _period_close(close_split: pd.DataFrame, periods: pd.Series) -> pd.Series:
     wanted = pd.DatetimeIndex(sorted(pd.Series(periods).dropna().unique()))
     if wanted.empty:
         return pd.Series(dtype=float)
-    asof = (close_split.reindex(close_split.index.union(wanted)).ffill().reindex(wanted))
+    asof = close_split.reindex(close_split.index.union(wanted)).ffill().reindex(wanted)
     out = asof.stack(future_stack=True)
     out.index = out.index.set_names(["period", "ticker"])
     return out
 
 
-def repair_value_basis(h: pd.DataFrame, close_split: pd.DataFrame | None,
-                       ) -> tuple[pd.DataFrame, pd.DataFrame]:
+def repair_value_basis(
+    holdings: pd.DataFrame,
+    close_split: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Rescale reported value per FILING onto dollars, and return the factor register.
 
     ⚠ THE UNIT ERROR IS PER-FILING, NOT PER-TABLE AND NOT PER-ROW. A 13F reports value in
@@ -94,28 +97,62 @@ def repair_value_basis(h: pd.DataFrame, close_split: pd.DataFrame | None,
     ratio, the factor applied, the row count and the value moved -- the target for a later
     extraction-side fix, and the audit trail for this one.
     """
-    out = h.copy()
+
+    out = holdings.copy()
     value_columns = [c for c in _VALUE_COLUMNS if c in out.columns]
     if close_split is None or not value_columns or out.empty:
-        logger.warning("13F value basis: no close_split or no value column -> repair SKIPPED, "
-                       "every row flagged kept and `value_usd` left as filed")
+        logger.warning(
+            "13F value basis: no close_split or no value column -> repair SKIPPED, " "every row flagged kept and `value_usd` left as filed"
+        )
         out["value_basis_repaired"] = KEPT
         return out, _empty_register()
 
+    shares = pd.to_numeric(out["shares"], errors="coerce")
+    close = (
+        pd.Series(out.set_index(["period", "ticker"]).index.map(_period_close(close_split, out["period"])), index=out.index)
+        .replace(0.0, pd.NA)
+        .astype(float)
+    )
+
+    # `value_usd == shares` is a filer field swap -- the share count landed in the value column,
+    # so the implied price is $1.00 and the bands below would read it as a 1000x unit error.
+    value = pd.to_numeric(out["value_usd"], errors="coerce")
+    swapped = (value == shares) & shares.gt(0) & close.notna()
+    if swapped.any():
+        before = float(value[swapped].sum())
+        value = value.mask(swapped, shares * close)
+        out["value_usd"] = value
+        logger.warning(
+            "13F value basis: %s row(s) filed `value_usd == shares` -> restated at " "the period-end close, $%.3e -> $%.3e",
+            f"{int(swapped.sum()):,}",
+            before,
+            float(value[swapped].sum()),
+        )
+
     # the implied price, on the common-stock leg only -- the one leg with both a share count
     # and a market price to compare against
-    shares = pd.to_numeric(out["shares"], errors="coerce")
-    value = pd.to_numeric(out["value_usd"], errors="coerce")
-    implied = (value.where(value > 0) / shares.where(shares > 0))
-
-    close = out.set_index(["period", "ticker"]).index.map(_period_close(close_split,
-                                                                       out["period"]))
-    ratio = implied / pd.Series(close, index=out.index).replace(0.0, pd.NA).astype(float)
+    implied = value.where(value > 0) / shares.where(shares > 0)  # call and put
+    ratio = implied / close
 
     measured = ratio.groupby([out["cik"], out["period"]]).median().rename("median_ratio")
     factor = pd.Series(pd.NA, index=measured.index, dtype="Float64")
     for low, high, mult in _REPAIR_BANDS:
         factor = factor.mask(measured.between(low, high, inclusive="left"), mult)
+
+    # `close_split` back-adjusts for splits and spinoffs, which a 13F never does, so a ratio on a
+    # whole integer (4, 20, 28, 200) is that gap, not a unit error. Strip it, then band the rest:
+    # smallest split factor wins, so 4000 reads as $thousands x 4-for-1 and not as a 4000x split.
+    for unit in (1e-3, 1.0, 1e3):
+        residual = measured * unit
+        k = residual.round()
+        hit = (factor.isna() & k.between(2, 500) & (residual - k).abs().le(0.01)).fillna(False)
+        if hit.any():
+            logger.info(
+                "13F value basis: %s filing(s) sit on a whole-integer median ratio " "(split/spinoff basis) -> factor %.0e instead of nulled",
+                f"{int(hit.sum()):,}",
+                unit,
+            )
+        factor = factor.mask(hit, unit)
 
     key = pd.MultiIndex.from_arrays([out["cik"], out["period"]])
     row_factor = pd.Series(factor.reindex(key).to_numpy(), index=out.index, dtype="Float64")
@@ -141,19 +178,18 @@ def repair_value_basis(h: pd.DataFrame, close_split: pd.DataFrame | None,
 
 
 def _empty_register() -> pd.DataFrame:
-    return pd.DataFrame(columns=["cik", "period", "median_ratio", "factor", "rows",
-                                 "value_before", "value_after"])
+    return pd.DataFrame(columns=["cik", "period", "median_ratio", "factor", "rows", "value_before", "value_after"])
 
 
-def _register(out: pd.DataFrame, measured: pd.Series, factor: pd.Series,
-              value_before: pd.Series, flag: pd.Series) -> pd.DataFrame:
+def _register(out: pd.DataFrame, measured: pd.Series, factor: pd.Series, value_before: pd.Series, flag: pd.Series) -> pd.DataFrame:
     """One row per filing: what was measured, what was done, and how much value moved."""
-    grouped = pd.DataFrame({
-        "rows": value_before.groupby([out["cik"], out["period"]]).size(),
-        "value_before": value_before.groupby([out["cik"], out["period"]]).sum(min_count=1),
-        "value_after": pd.to_numeric(out["value_usd"], errors="coerce")
-                         .groupby([out["cik"], out["period"]]).sum(min_count=1),
-    })
+    grouped = pd.DataFrame(
+        {
+            "rows": value_before.groupby([out["cik"], out["period"]]).size(),
+            "value_before": value_before.groupby([out["cik"], out["period"]]).sum(min_count=1),
+            "value_after": pd.to_numeric(out["value_usd"], errors="coerce").groupby([out["cik"], out["period"]]).sum(min_count=1),
+        }
+    )
     register = pd.concat([measured, factor.rename("factor"), grouped], axis=1).reset_index()
     register.columns = ["cik", "period", *register.columns[2:]]
     return register
@@ -174,12 +210,19 @@ def log_register(register: pd.DataFrame, value_before_total: float, log=logger) 
         hit = register[register["factor"] == mult]
         if not hit.empty:
             moved = float(hit["value_before"].sum())
-            log.warning("13F value basis: %s filing(s) %s -- %s row(s), $%.3e of filed value "
-                        "(%.2f%% of the table's total)", f"{len(hit):,}", name,
-                        f"{int(hit['rows'].sum()):,}", moved,
-                        100.0 * moved / value_before_total if value_before_total else 0.0)
+            log.warning(
+                "13F value basis: %s filing(s) %s -- %s row(s), $%.3e of filed value " "(%.2f%% of the table's total)",
+                f"{len(hit):,}",
+                name,
+                f"{int(hit['rows'].sum()):,}",
+                moved,
+                100.0 * moved / value_before_total if value_before_total else 0.0,
+            )
     abstained = register[register["factor"].isna()]
     if not abstained.empty:
-        log.warning("13F value basis: %s filing(s) ABSTAINED (median implied price is not a "
-                    "clean power of 1000 against the market) -- %s row(s), value nulled",
-                    f"{len(abstained):,}", f"{int(abstained['rows'].sum()):,}")
+        log.warning(
+            "13F value basis: %s filing(s) ABSTAINED (median implied price is not a "
+            "clean power of 1000 against the market) -- %s row(s), value nulled",
+            f"{len(abstained):,}",
+            f"{int(abstained['rows'].sum()):,}",
+        )

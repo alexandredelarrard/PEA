@@ -6,26 +6,33 @@ Dialect-aware: Postgres and SQLite both use native INSERT .. ON CONFLICT DO UPDA
 other dialect falls back to delete-by-PK-then-insert, so the same code path serves the
 production container and an in-memory SQLite test DB.
 """
+
 from __future__ import annotations
 
 import csv
 import datetime as dt
 import io
 import logging
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import Engine, MetaData, Table, false, func, inspect, select, text
+from sqlalchemy import Engine, MetaData, Table, false, func, inspect, select, text, tuple_
+from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy import tuple_
-from sqlalchemy import types as sqltypes
 
 from src.data_store import ddl
 from src.data_store.errors import TableEmptyError, TableMissingError
 from src.data_store.schema import (
-    MANAGED, Table as SchemaTable, name_of, projection_report, resolve,
+    MANAGED,
+    name_of,
+    projection_report,
+    resolve,
+)
+from src.data_store.schema import (
+    Table as SchemaTable,
 )
 
 _CHUNK = 10_000
@@ -70,8 +77,7 @@ def reflect_all(engine: Engine) -> dict[str, list[tuple[str, str]]]:
     than inside `ddl` is what removes the `ddl -> store` back-edge that made the data_store
     imports circular (and forced four deferred imports inside this module).
     """
-    return {t.name: reflect_columns(engine, t.name)
-            for t in MANAGED if table_exists(engine, t.name)}
+    return {t.name: reflect_columns(engine, t.name) for t in MANAGED if table_exists(engine, t.name)}
 
 
 def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
@@ -89,8 +95,7 @@ def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
     with engine.begin() as conn:
         for c in missing:
             sqltype = ddl.sql_type(c, df[c].dtype, spec=None)
-            conn.execute(text(f'ALTER TABLE "{name}" '
-                              f'ADD COLUMN IF NOT EXISTS "{c}" {sqltype}'))
+            conn.execute(text(f'ALTER TABLE "{name}" ' f'ADD COLUMN IF NOT EXISTS "{c}" {sqltype}'))
     return missing
 
 
@@ -104,9 +109,8 @@ def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
     # The old version ran `.apply(isinstance)` over EVERY column -- 574 of them per 200k-row
     # cube chunk, all but a handful numeric and incapable of holding a list. Compared on
     # `dtype == object` rather than via select_dtypes, which folds pandas-3 `str` columns in.
-    object_cols = [c for c, dt in df.dtypes.items() if dt == object]
-    has_list = any(df[c].apply(lambda v: isinstance(v, (list, tuple))).any()
-                   for c in object_cols)
+    object_cols = [c for c, dt in df.dtypes.items() if isinstance(dt, object)]
+    has_list = any(df[c].apply(lambda v: isinstance(v, list | tuple)).any() for c in object_cols)
     if engine.dialect.name != "postgresql" or has_list:
         return upsert_dataframe(engine, df, name, list(resolve(name).pk))
 
@@ -119,8 +123,7 @@ def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
     raw = engine.raw_connection()
     try:
         with raw.cursor() as cur:
-            cur.copy_expert(
-                f'COPY "{name}" ({cols}) FROM STDIN WITH (FORMAT csv)', buf)
+            cur.copy_expert(f'COPY "{name}" ({cols}) FROM STDIN WITH (FORMAT csv)', buf)
         raw.commit()
     finally:
         raw.close()
@@ -133,7 +136,7 @@ class _NotNull:
 
     __slots__ = ()
 
-    def __repr__(self) -> str:                                # pragma: no cover
+    def __repr__(self) -> str:  # pragma: no cover
         return "NOT_NULL"
 
 
@@ -146,7 +149,7 @@ _DATE_TYPES = (pd.Timestamp, dt.datetime, dt.date)
 
 
 def _is_temporal_column(column) -> bool:
-    return isinstance(column.type, (sqltypes.Date, sqltypes.DateTime))
+    return isinstance(column.type, sqltypes.Date | sqltypes.DateTime)
 
 
 def _bind_date(column, value):
@@ -168,7 +171,7 @@ def _predicate(column, value):
         return column.isnot(None)
     if value is None:
         return column.is_(None)
-    if isinstance(value, (str, bytes)):
+    if isinstance(value, str | bytes):
         return column == value
     if isinstance(value, _IN_TYPES):
         values = sorted({v for v in value})
@@ -184,10 +187,18 @@ def _predicate(column, value):
     return column == value
 
 
-def build_select(tbl, columns=None, where=None, since=None, until=None,
-                 date_col: str | None = None, order_by=None,
-                 descending: bool = False, limit: int | None = None,
-                 distinct_on: str | None = None):
+def build_select(
+    tbl,
+    columns=None,
+    where=None,
+    since=None,
+    until=None,
+    date_col: str | None = None,
+    order_by=None,
+    descending: bool = False,
+    limit: int | None = None,
+    distinct_on: str | None = None,
+):
     """The one query builder every read goes through. `where`, `since` and `until` are ANDed.
 
     Built from reflected Columns and bound parameters, never string interpolation, so a value
@@ -196,15 +207,14 @@ def build_select(tbl, columns=None, where=None, since=None, until=None,
     if distinct_on is not None:
         stmt = select(tbl.c[distinct_on]).distinct()
     else:
-        stmt = select(*( [tbl.c[c] for c in columns] if columns else [tbl] ))
+        stmt = select(*([tbl.c[c] for c in columns] if columns else [tbl]))
 
     for col, value in (where or {}).items():
         stmt = stmt.where(_predicate(tbl.c[col], value))
 
     if since is not None or until is not None:
         if date_col is None:
-            raise ValueError("since/until need a date column: the table declares no "
-                             "`date_col`, so pass date_col= explicitly")
+            raise ValueError("since/until need a date column: the table declares no " "`date_col`, so pass date_col= explicitly")
         if where and date_col in where:
             # `date = a AND date >= b` is almost never what the caller meant, and silently
             # emitting it would hide the mistake behind an empty result.
@@ -222,16 +232,15 @@ def build_select(tbl, columns=None, where=None, since=None, until=None,
 
     if order_by is not None:
         keys = [order_by] if isinstance(order_by, str) else list(order_by)
-        stmt = stmt.order_by(*(tbl.c[k].desc() if descending else tbl.c[k].asc()
-                               for k in keys))
+        stmt = stmt.order_by(*(tbl.c[k].desc() if descending else tbl.c[k].asc() for k in keys))
     if limit is not None:
         stmt = stmt.limit(limit)
     return stmt
 
 
-def read_table(engine: Engine, name: str, columns: list[str] | None = None,
-               limit: int | None = None,
-               where: dict[str, object] | None = None, **kwargs) -> pd.DataFrame:
+def read_table(
+    engine: Engine, name: str, columns: list[str] | None = None, limit: int | None = None, where: dict[str, object] | None = None, **kwargs
+) -> pd.DataFrame:
     """Execute a built SELECT and return the frame. See `build_select` for the filters."""
     tbl = _reflect(engine, name)
     stmt = build_select(tbl, columns=columns, where=where, limit=limit, **kwargs)
@@ -271,8 +280,7 @@ def _coerce_temporal(df: pd.DataFrame, tbl: Table) -> pd.DataFrame:
     return df.assign(**fixed) if fixed else df
 
 
-def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str,
-                     pk: list[str], chunksize: int = _CHUNK) -> int:
+def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str, pk: list[str], chunksize: int = _CHUNK) -> int:
     """INSERT the frame, updating the columns THE FRAME CARRIES on PK conflict. Returns the
     number of rows sent. No-op for an empty frame.
 
@@ -289,7 +297,7 @@ def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str,
     if df is None or df.empty:
         return 0
     tbl = _reflect(engine, name)
-    df = df[[c for c in df.columns if c in tbl.c]]     # only real columns
+    df = df[[c for c in df.columns if c in tbl.c]]  # only real columns
     records = _records(_coerce_temporal(df, tbl))
     dialect = engine.dialect.name
     n = len(records)
@@ -297,15 +305,15 @@ def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str,
 
     with engine.begin() as conn:
         for i in range(0, n, chunksize):
-            chunk = records[i:i + chunksize]
+            chunk = records[i : i + chunksize]
             if dialect in ("postgresql", "sqlite"):
                 ins = pg_insert(tbl) if dialect == "postgresql" else sqlite_insert(tbl)
-                update_cols = {c.name: ins.excluded[c.name] for c in tbl.c
-                               if c.name not in pk and c.name in carried}
-                stmt = (ins.on_conflict_do_update(index_elements=pk, set_=update_cols)
-                        if update_cols else ins.on_conflict_do_nothing(index_elements=pk))
+                update_cols = {c.name: ins.excluded[c.name] for c in tbl.c if c.name not in pk and c.name in carried}
+                stmt = (
+                    ins.on_conflict_do_update(index_elements=pk, set_=update_cols) if update_cols else ins.on_conflict_do_nothing(index_elements=pk)
+                )
                 conn.execute(stmt, chunk)
-            else:                                       # generic fallback
+            else:  # generic fallback
                 _delete_then_insert(conn, tbl, chunk, pk)
     return n
 
@@ -399,8 +407,7 @@ class DataStore:
         except (TypeError, ValueError):
             return None
 
-    def max_date_by(self, table, key_col: str,
-                    date_col: str | None = None) -> dict[str, pd.Timestamp]:
+    def max_date_by(self, table, key_col: str, date_col: str | None = None) -> dict[str, pd.Timestamp]:
         """Per-key latest stored date -- `SELECT key, MAX(date) ... GROUP BY key`.
 
         The grouped counterpart of `max_date`, for the fetchers that resume per entity.
@@ -418,9 +425,7 @@ class DataStore:
         if col not in tbl.c or key_col not in tbl.c:
             return {}
         with self.engine.connect() as conn:
-            rows = conn.execute(
-                select(tbl.c[key_col], func.max(tbl.c[col])).group_by(tbl.c[key_col])
-            ).all()
+            rows = conn.execute(select(tbl.c[key_col], func.max(tbl.c[col])).group_by(tbl.c[key_col])).all()
         # a DATE column round-trips as `datetime.date`, so normalise every value
         out: dict[str, pd.Timestamp] = {}
         for key, value in rows:
@@ -432,9 +437,9 @@ class DataStore:
                 continue
         return out
 
-    def distinct(self, table, column: str, *, where: dict | None = None,
-                 order: str | None = None, limit: int | None = None,
-                 dropna: bool = True) -> list:
+    def distinct(
+        self, table, column: str, *, where: dict | None = None, order: str | None = None, limit: int | None = None, dropna: bool = True
+    ) -> list:
         """`SELECT DISTINCT col [WHERE ...] [ORDER BY col asc|desc] [LIMIT n]`. Replaces the
         DISTINCT queries in `sec_utils`, `bulk_cache`, the earnings-call streamers and
         `step_train`."""
@@ -442,22 +447,27 @@ class DataStore:
         if not self.exists(name):
             return []
         tbl = _reflect(self.engine, name)
-        stmt = build_select(tbl, where=where, distinct_on=column,
-                            order_by=column if order else None,
-                            descending=(order == "desc"), limit=limit)
+        stmt = build_select(tbl, where=where, distinct_on=column, order_by=column if order else None, descending=(order == "desc"), limit=limit)
         with self.engine.connect() as conn:
             values = [r[0] for r in conn.execute(stmt).all()]
         return [v for v in values if v is not None] if dropna else values
 
     # -- reads ------------------------------------------------------------- #
-    def load(self, table, columns: Sequence[str] | None = None,
-             limit: int | None = None,
-             where: dict[str, object] | None = None, *,
-             project: bool = False,
-             since: object = None, until: object = None,
-             date_col: str | None = None,
-             order_by=None, descending: bool = False,
-             optional: bool = False) -> pd.DataFrame | None:
+    def load(
+        self,
+        table,
+        columns: Sequence[str] | None = None,
+        limit: int | None = None,
+        where: dict[str, Any] | None = None,
+        *,
+        project: bool = False,
+        since: object = None,
+        until: object = None,
+        date_col: str | None = None,
+        order_by=None,
+        descending: bool = False,
+        optional: bool = False,
+    ) -> pd.DataFrame | None:
         """Read `table`, filtered server-side.
 
         `where` is equality / IN / IS NULL / `NOT_NULL`; `since`/`until` bound the date
@@ -476,10 +486,18 @@ class DataStore:
                 return None
             raise TableMissingError(name)
 
-        df = read_table(self.engine, name, columns=list(cols) if cols else None,
-                        limit=limit, where=where, since=since, until=until,
-                        date_col=date_col or self._date_col(table),
-                        order_by=order_by, descending=descending)
+        df = read_table(
+            self.engine,
+            name,
+            columns=list(cols) if cols else None,
+            limit=limit,
+            where=where,
+            since=since,
+            until=until,
+            date_col=date_col or self._date_col(table),
+            order_by=order_by,
+            descending=descending,
+        )
 
         if df.empty:
             if optional:
@@ -488,11 +506,18 @@ class DataStore:
 
         return df
 
-    def iter_load(self, table, *, chunksize: int = 200_000,
-                  columns: Sequence[str] | None = None, project: bool = False,
-                  where: dict[str, object] | None = None,
-                  since: object = None, until: object = None,
-                  date_col: str | None = None) -> Iterator[pd.DataFrame]:
+    def iter_load(
+        self,
+        table,
+        *,
+        chunksize: int = 200_000,
+        columns: Sequence[str] | None = None,
+        project: bool = False,
+        where: dict[str, object] | None = None,
+        since: object = None,
+        until: object = None,
+        date_col: str | None = None,
+    ) -> Iterator[pd.DataFrame]:
         """Stream `table` in row chunks so a multi-GB table never fully materializes.
 
         Both parts are required: a PROJECTION (mandatory -- `cube` is 574 columns, its readers
@@ -507,17 +532,15 @@ class DataStore:
         if not cols:
             raise ValueError(
                 f"iter_load({name}) needs an explicit `columns=` or `project=True`: "
-                "streaming an unprojected wide table defeats the purpose (cube is 574 cols)")
+                "streaming an unprojected wide table defeats the purpose (cube is 574 cols)"
+            )
         if not self.exists(name):
             return
         tbl = _reflect(self.engine, name)
-        stmt = build_select(tbl, columns=list(cols), where=where, since=since, until=until,
-                            date_col=date_col or self._date_col(table))
+        stmt = build_select(tbl, columns=list(cols), where=where, since=since, until=until, date_col=date_col or self._date_col(table))
         with self.engine.connect() as conn:
-            conn = conn.execution_options(stream_results=True, yield_per=chunksize,
-                                          max_row_buffer=chunksize)
-            for chunk in pd.read_sql(stmt, conn, chunksize=chunksize):
-                yield chunk
+            conn = conn.execution_options(stream_results=True, yield_per=chunksize, max_row_buffer=chunksize)
+            yield from pd.read_sql(stmt, conn, chunksize=chunksize)
 
     # -- helpers ----------------------------------------------------------- #
     @staticmethod
@@ -537,14 +560,11 @@ class DataStore:
             return list(columns)
         if not project:
             return None
-        cols, required_missing, optional_missing = projection_report(
-            table, self.columns(table) or None)
+        cols, required_missing, optional_missing = projection_report(table, self.columns(table) or None)
         if required_missing:
-            logger.warning("%s is missing REQUIRED column(s) %s -> the features that need "
-                           "them will be empty", name_of(table), required_missing)
+            logger.warning("%s is missing REQUIRED column(s) %s -> the features that need " "them will be empty", name_of(table), required_missing)
         elif optional_missing:
-            logger.info("%s has no %s (optional) -> those features are skipped",
-                        name_of(table), optional_missing)
+            logger.info("%s has no %s (optional) -> those features are skipped", name_of(table), optional_missing)
         return cols
 
     # -- writes ------------------------------------------------------------ #
@@ -557,7 +577,7 @@ class DataStore:
         if pk is None:
             pk = list(resolve(table).pk)
         ensure_table(self.engine, name, df)
-        ensure_columns(self.engine, name, df)     # evolve schema for new columns
+        ensure_columns(self.engine, name, df)  # evolve schema for new columns
         return upsert_dataframe(self.engine, df, name, pk)
 
     def bulk_seed(self, table, df: pd.DataFrame) -> int:
@@ -571,11 +591,11 @@ class DataStore:
                 raise ValueError(
                     f"bulk_seed({name}): frame has {len(unknown)} column(s) the table does "
                     f"not have and COPY would silently drop: {unknown[:8]}. Use save() or "
-                    f"replace(), which evolve the schema.")
+                    f"replace(), which evolve the schema."
+                )
         return copy_load(self.engine, df, name)
 
-    def append_tail(self, table, df: pd.DataFrame, cutoff, *,
-                    inclusive: bool = False, date_col: str | None = None) -> int:
+    def append_tail(self, table, df: pd.DataFrame, cutoff, *, inclusive: bool = False, date_col: str | None = None) -> int:
         """DELETE rows after `cutoff` (>= if `inclusive`), then append `df`. Idempotent, so
         re-running the same day never duplicates. `inclusive` is what the forward-looking
         target part needs: a label that was NaN last run matures into a value."""
@@ -593,9 +613,7 @@ class DataStore:
         if not inclusive:
             boundary += pd.Timedelta(days=1)
         with self.engine.begin() as conn:
-            conn.execute(
-                text(f'DELETE FROM "{name}" WHERE "{col}" >= :cut'),
-                {"cut": _bind_date(tbl.c[col], boundary)})
+            conn.execute(text(f'DELETE FROM "{name}" WHERE "{col}" >= :cut'), {"cut": _bind_date(tbl.c[col], boundary)})
         if df is None or df.empty:
             return 0
         df.to_sql(name, self.engine, if_exists="append", index=False)
@@ -635,11 +653,11 @@ class DataStore:
         if resolve(table).is_unmanaged:
             self.drop(name)
         ensure_table(self.engine, name, df)
-        ensure_columns(self.engine, name, df)     # evolve schema for new columns
+        ensure_columns(self.engine, name, df)  # evolve schema for new columns
         with self.engine.begin() as conn:
             conn.execute(text(f'DELETE FROM "{name}"'))
         for i in range(0, len(df), chunksize):
-            copy_load(self.engine, df.iloc[i:i + chunksize], name)
+            copy_load(self.engine, df.iloc[i : i + chunksize], name)
         return len(df)
 
     def ensure_columns(self, table, df: pd.DataFrame) -> list[str]:

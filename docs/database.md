@@ -33,29 +33,6 @@ Scope: what is **actually in the local Postgres right now**. For what each table
 Container `pea_db` (postgres **16.14**), database `pea`, owner role **`alexandre`**, volume
 `stock_pick_strat_pgdata`. **19 GB**, **41 tables**, all in schema `public` (measured 2026-08-26).
 
-## Read this first: the registry declares 57 tables, the DB has 41
-
-**Nothing live is unregistered** — the 41 live tables are all in `Tables` (verified 2026-08-26), so there is no orphan to read by mistake.
-
-**Missing entirely** — every read of these raises `TableMissingError`:
-
-| Missing | Consequence |
-|---|---|
-| `cube`, `cube_part_*` (all 7) | no features, no training, no prediction |
-| `cube_signal`, `predictions`, `predictions_latest` | no model output |
-| `strategy`, `trend_asset_returns` | no ledger, no trend sleeve |
-| ~~`fundamentals_history`~~ | **No longer missing** — the merged Sharadar+SEC table is built and populated (51,255 rows / 489 tickers as of 2026-08-31). |
-| `notes_embedding`, `ticker_descriptions` | `notes_embedding` has no downstream reader anyway |
-
-**No longer missing** (they were, in the 2026-08-17 snapshot): **`prices`** is populated —
-1,777,827 rows, 500 tickers, 2011-08-19 → 2026-08-19 — so the "the whole cube build is blocked"
-warning that used to head this list no longer applies. `sec_13d` and `sec_13d_transactions` also
-exist now.
-
-**Present but not in the registry**: **none.** All 41 live tables are declared in `Tables`.
-`fundamentals_facts_legacy` and `fundamentals_history_legacy` — the last two orphans — were
-dropped on 2026-08-26.
-
 ## Populated tables
 
 Ordered by size. `tickers` = distinct non-null tickers.

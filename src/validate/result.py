@@ -131,11 +131,16 @@ class CheckResult:
         if self.status == "abstain":
             return f"{head} -- {self.reason}"
         rows = self.scope.get("rows")
-        span = f"{self.scope.get('first_date')} -> {self.scope.get('last_date')}"
-        line = (f"{head}: {len(self.findings)} finding(s), worst score {self.worst_score}"
-                f"; scope {rows:,} rows, {self.scope.get('tickers')} tickers, {span}"
-                if rows is not None else
-                f"{head}: {len(self.findings)} finding(s), worst score {self.worst_score}")
+        line = f"{head}: {len(self.findings)} finding(s), worst score {self.worst_score}"
+        if rows is not None:
+            # Only the axes the check actually measured. A printed "None tickers" reads as a
+            # measurement of zero tickers, which is a different claim from "not measured".
+            parts = [f"{rows:,} rows"]
+            if self.scope.get("tickers") is not None:
+                parts.append(f"{self.scope['tickers']} tickers")
+            if self.scope.get("first_date") is not None:
+                parts.append(f"{self.scope['first_date']} -> {self.scope.get('last_date')}")
+            line += "; scope " + ", ".join(parts)
         if self.reason:
             line += f"\n  note: {self.reason}"
         return line

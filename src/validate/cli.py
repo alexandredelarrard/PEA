@@ -90,8 +90,12 @@ def _run(check: Callable[..., CheckResult], table: str, out: str, use_cache: boo
     started = time.perf_counter()
     names = [t.strip().upper() for t in tickers.split(",")] if tickers else None
     try:
+        # `out` as well as `cache`: they are not the same thing. `--no-cache` says "do not
+        # read the parquet snapshot", while `out` is where this run's other checks wrote
+        # their JSON -- `redundancy` reads `profile`'s means from there and should still
+        # find them on a run that deliberately bypassed the snapshot.
         result = check(context, spec, config=config, cache=out if use_cache else None,
-                       tickers=names, **kwargs)
+                       out=out, tickers=names, **kwargs)
     except UndeclaredTableError as exc:
         result = CheckResult.abstained(check.__name__.removeprefix("check_"), spec.name, str(exc))
     result.scope.setdefault("elapsed_s", round(time.perf_counter() - started, 1))

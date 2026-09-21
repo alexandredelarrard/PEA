@@ -125,6 +125,21 @@ validate:
     cube_part_momentum:
       cadence: daily
 
+    # 249 legs, 3,315,035 rows -- the widest part in the database. Both standardised views
+    # exist here and the peer clip is legible in the data itself: of the 118 `_vs_peers` legs,
+    # 104 reach exactly +8.000 and 63 exactly -8.000, while all 118 `_xs` legs sit inside
+    # (0, 1] (`profile -T cube_part_fundamentals`, 2026-09-21, full table). Without this entry
+    # `clip` abstained on the one part whose clip mass is largest.
+    cube_part_fundamentals:
+      xs_suffix: "_xs"
+      peer_suffix: "_vs_peers"
+      clip_peer: 8.0
+      # ⚠ QUARTERLY -- SEC filings held flat on a daily grid between filing dates, so a frozen
+      # run inside a quarter is the feature working. No `ffill_horizon_days` is declared
+      # because none has been measured, so FROZEN abstains here exactly as it does on
+      # governance, while JUMP and HOLE still run.
+      cadence: quarterly
+
     # The label part. Declared so `leakage`'s horizon half has a home; it needs no suffix,
     # cadence or source map -- the horizons bound each other.
     cube_part_targets:

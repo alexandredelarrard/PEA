@@ -14,6 +14,8 @@ store facade under test is the production one.
 """
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -21,7 +23,8 @@ from omegaconf import OmegaConf
 
 from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 from src.data_store.schema import Tables
-from src.validate.checks import check_bounds, check_coverage, check_grain, check_profile
+from src.validate.checks import (check_bounds, check_catalogue, check_clip, check_coverage,
+                                 check_grain, check_profile, check_redundancy)
 from src.validate.spec import UndeclaredTableError
 
 #: The part the synthetic frames borrow their grain from: `pk == (date, ticker)`, `date_col ==
@@ -204,3 +207,122 @@ def test_bounds_abstains_undeclared_and_names_the_worst_violation(sqlite_store, 
               f"{finding.evidence['worst']['ticker']} "
               f"{pd.Timestamp(finding.evidence['worst']['date']).date()} = "
               f"{finding.evidence['worst']['value']}")
+
+
+# --------------------------------------------------------------------------------------- #
+# redundancy                                                                              #
+# --------------------------------------------------------------------------------------- #
+def test_redundancy_matches_pandas_and_names_the_duplicated_leg(sqlite_store, capsys):
+    """The streaming co-moment accumulator against the reference implementation.
+
+    `DataFrame.corr()` is pairwise-complete by construction, so it is exactly what the
+    accumulator claims to reproduce -- on a frame with holes punched in different places per
+    column, which is the only case where a naive "drop rows with any NaN" would disagree.
+    One pair is also EXACTLY duplicated, and must come back as score 10 rather than as a
+    correlation that happens to round to 1.
+    """
+    rng = np.random.default_rng(20260921)
+    # Four names, so the pairs clear `redundancy._MIN_PAIRWISE_N` -- an r of 1.00 over a
+    # handful of shared rows is arithmetic, and the check declines to report it.
+    n = len(SESSIONS) * 4
+    base = rng.normal(size=n)
+    frame = _panel(["AAA", "BBB", "CCC", "DDD"], f_x=lambda i, t: 0.0)
+    frame["f_x"] = base
+    frame["f_copy"] = base                                  # the same column, twice
+    frame["f_near"] = base * 3.0 + 0.5 + rng.normal(scale=0.01, size=n)
+    frame["f_free"] = rng.normal(size=n)
+    # Holes in DIFFERENT places per column -- this is what makes it a pairwise-complete test.
+    frame.loc[frame.index[:7], "f_near"] = np.nan
+    frame.loc[frame.index[10:18], "f_free"] = np.nan
+    frame.loc[frame.index[20:24], "f_x"] = np.nan
+    sqlite_store.save(PART, frame)
+    context = _Ctx(sqlite_store, _config())
+
+    result = check_redundancy(context, PART, config=context.config,
+                              chunksize=17)   # many chunks, so the accumulation is exercised
+
+    legs = ["f_copy", "f_free", "f_near", "f_x"]
+    reference = frame[legs].corr()
+    got = {(p["a"], p["b"]): p for p in result.metrics["top_pairs"]}
+    for (a, b), pair in got.items():
+        assert pair["r"] == pytest.approx(reference.loc[a, b], abs=1e-10), (a, b)
+
+    identical = [p for p in result.metrics["top_pairs"] if p["identical"]]
+    assert len(identical) == 1 and {identical[0]["a"], identical[0]["b"]} == {"f_x", "f_copy"}
+    assert identical[0]["n"] == identical[0]["exact_equal"] == int(frame["f_x"].notna().sum())
+    assert max(f.score for f in result.findings) == 10
+    assert ("f_free", "f_x") not in got and ("f_x", "f_free") not in got
+    with capsys.disabled():
+        print(f"\n  redundancy: {result.metrics['pairs_tested']} pairs, every r equal to "
+              f"pandas' pairwise-complete corr to 1e-10; f_x ~ f_copy identical on all "
+              f"{identical[0]['n']} shared rows -> score 10; the independent pair not filed")
+
+
+# --------------------------------------------------------------------------------------- #
+# clip                                                                                    #
+# --------------------------------------------------------------------------------------- #
+def test_clip_finds_the_clip_mass_and_the_plateau(sqlite_store, capsys):
+    """A peer-z leg pinned to its clip, and a rank leg that is mostly one tie."""
+    # 12 names so a cross-section clears min_tickers_xs; a third of each sits on the clip,
+    # and the `_xs` leg gives 8 of 12 names the same rank on every date.
+    names = [f"T{i:02d}" for i in range(12)]   # `min_tickers_xs` is lowered to 10 below
+    frame = _panel(
+        names,
+        f_a_vs_peers=lambda i, t: 8.0 if int(t[1:]) < 4 else float(int(t[1:])) / 10.0,
+        f_a_xs=lambda i, t: 0.5 if int(t[1:]) < 8 else float(int(t[1:])) / 100.0,
+        f_b_vs_peers=lambda i, t: float(int(t[1:])) / 10.0,
+    )
+    sqlite_store.save(PART, frame)
+    config = _config(min_tickers_xs=10)
+    config.validate.tables[PART.name] = {"xs_suffix": "_xs", "peer_suffix": "_vs_peers",
+                                         "clip_peer": 8.0}
+    context = _Ctx(sqlite_store, config)
+
+    result = check_clip(context, PART, config=config)
+
+    assert result.metrics["peer_over_limit"] == ["f_a_vs_peers"], "f_b is nowhere near the clip"
+    assert result.metrics["tie_over_limit"] == ["f_a_xs"]
+    assert result.metrics["peer"]["f_a_vs_peers"]["share"] == pytest.approx(4 / 12)
+    assert result.metrics["peer"]["f_b_vs_peers"]["share"] == 0.0
+    assert result.metrics["tie"]["f_a_xs"]["mean_modal_share"] == pytest.approx(8 / 12)
+    assert result.status == "fail"
+    # ... and a table declaring no suffix convention must refuse to answer at all.
+    del config.validate.tables[PART.name]
+    with pytest.raises(UndeclaredTableError):
+        check_clip(context, PART, config=config)
+    with capsys.disabled():
+        print(f"\n  clip: f_a_vs_peers {result.metrics['peer']['f_a_vs_peers']['share']:.1%} on "
+              f"the +/-8 clip, f_b_vs_peers 0.0%; f_a_xs modal share "
+              f"{result.metrics['tie']['f_a_xs']['mean_modal_share']:.1%}; "
+              f"no declared suffix -> ABSTAIN")
+
+
+# --------------------------------------------------------------------------------------- #
+# catalogue                                                                               #
+# --------------------------------------------------------------------------------------- #
+def test_catalogue_asserts_both_directions(sqlite_store, tmp_path, capsys):
+    """The dead catalogued name scores higher than the undocumented live one, and both fire."""
+    frame = _panel(["AAA"], f_live=lambda i, t: float(i), f_undocumented=lambda i, t: 1.0 * i)
+    sqlite_store.save(PART, frame)
+    context = _Ctx(sqlite_store, _config())
+
+    path = tmp_path / "catalogue.json"
+    path.write_text(json.dumps({"f_live": "a described, live leg",
+                                "f_renamed_away": "described, but no such column",
+                                "f_blank": ""}), encoding="utf-8")
+
+    result = check_catalogue(context, PART, config=context.config, catalogue=path)
+
+    by_field = {f.field: f.score for f in result.findings}
+    assert by_field["f_renamed_away"] == 9, "a catalogued name with no column is the _sec bug"
+    assert by_field["f_undocumented"] == 4
+    assert "f_live" not in by_field
+    assert result.metrics["catalogued_not_live"] == ["f_blank", "f_renamed_away"]
+    assert result.metrics["live_not_catalogued"] == ["f_undocumented"]
+    # ... and with no catalogue at all the check must not invent one.
+    with pytest.raises(UndeclaredTableError):
+        check_catalogue(context, PART, config=context.config)
+    with capsys.disabled():
+        print(f"\n  catalogue: both directions -- f_renamed_away catalogued but absent "
+              f"(score 9), f_undocumented live but undescribed (score 4), f_live clean; "
+              f"no --catalogue -> ABSTAIN")

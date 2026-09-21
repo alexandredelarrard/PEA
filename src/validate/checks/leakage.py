@@ -30,10 +30,15 @@ back as `pd.Timestamp`. Comparing one against the other raises rather than answe
 is exactly the bug class a parquet-cached harness never sees, because parquet round-trips both
 as nanoseconds.
 
-⚠ THE PIT HALF ABSTAINS WITH NO `pit_sources`, and says so; the horizon half runs regardless.
-A feature-to-source map cannot be inferred from column names -- `f_ic_bo_` reads two tables
-and `f_ic_sig_insider_` reads the same one as `f_ic_insider_` -- so a guessed map would report
-a clean point-in-time result for legs it matched to the wrong clock.
+⚠ BOTH HALVES ARE DECLARED, AND EITHER CAN ABSTAIN ALONE. The PIT half needs `pit_sources`:
+a feature-to-source map cannot be inferred from column names -- `f_ic_bo_` reads two tables and
+`f_ic_sig_insider_` reads the same one as `f_ic_insider_` -- so a guessed map would report a
+clean point-in-time result for legs it matched to the wrong clock. The horizon half needs
+`label_pattern`, for the same reason one step removed: `_h30` in a column name does not make it
+a forward label. `cube_part_momentum` carries `seasonal_h30`, `seasonal_h60` and `seasonal_h90`,
+which are seasonality features read BACKWARD off past same-calendar-window returns; they run to
+the last session because they are supposed to, and matching the pattern blind filed all three as
+leaks at score 10. The result names whichever half did not run.
 
 ⚠ ONE KNOWN CONSERVATISM. Some legs read a source COLUMN that is only populated later than the
 source table's first row (`percent_of_class` became mandatory long after 13D/G filings began).
@@ -60,7 +65,11 @@ log = logging.getLogger(__name__)
 
 CHECK = "leakage"
 
-#: A label's horizon in days, read out of its own name. `_h30` -> 30.
+#: A label's horizon in days, read out of its own name. `_h30` -> 30. NOT a default: a table
+#: must DECLARE `label_pattern` before the horizon half runs on it, because an `_h<n>` suffix
+#: does not mean "forward label". `cube_part_momentum` carries `seasonal_h30/h60/h90`, which are
+#: BACKWARD-looking seasonality features computed from past same-calendar-window returns -- they
+#: correctly run to the last session, and matched blind they produced 5 findings at score 10.
 HORIZON_PATTERN = r"_h(\d+)$"
 
 #: Columns read at once by the PIT half -- one group is one pass over the table.
@@ -129,7 +138,7 @@ def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
 
 def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
                   cache: Any = None, tickers: list[str] | None = None,
-                  horizon_pattern: str = HORIZON_PATTERN, reference: Table | str = Tables.prices,
+                  horizon_pattern: str | None = None, reference: Table | str = Tables.prices,
                   group: int = GROUP, **kwargs: Any) -> CheckResult:
     """Horizon recession on the labels, and each feature against its source's own clock."""
     spec_t = resolve(table)
@@ -150,7 +159,19 @@ def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
     halves: list[str] = []
 
     # ------------------------------------------------------------------ horizon recession #
-    horizons = _horizons(columns, horizon_pattern)
+    # An explicit `--pattern` overrides, so the check can still be pointed at a table
+    # deliberately; without one it runs only where the table has declared it carries labels.
+    pattern = horizon_pattern or spec.label_pattern
+    horizon_reason = ""
+    horizons = _horizons(columns, pattern) if pattern else {}
+    if pattern and not horizons:
+        horizon_reason = (f"no column matches the declared label pattern {pattern!r}, so the "
+                          f"horizon half found nothing to test")
+    elif not pattern:
+        horizon_reason = (f"{spec_t.name} declares no `label_pattern`, so the horizon half "
+                          f"ABSTAINED -- an `_h<n>` suffix does not make a column a forward "
+                          f"label, and cube_part_momentum's backward-looking seasonal_h30/60/90 "
+                          f"read as three leaks at score 10 when it was matched blind")
     last_price = as_ts(context.store.max_date(reference))
     if horizons:
         halves.append("horizon")
@@ -298,18 +319,17 @@ def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
 
     if not halves:
         return CheckResult.abstained(
-            CHECK, spec_t.name,
-            f"neither half could run: no column matches {horizon_pattern!r} and "
-            f"{pit_reason or 'no pit_sources are declared'}")
+            CHECK, spec_t.name, f"neither half could run. {horizon_reason}; and {pit_reason}")
 
     first_date, last_date = context.store.bounds(spec_t)
     scope = {"rows": context.store.row_count(spec_t), "first_date": first_date,
              "last_date": last_date,
              "halves_run": halves, "horizon_legs": len(horizons),
-             "horizon_pattern": horizon_pattern,
+             "horizon_pattern": pattern,
              "reference": resolve(reference).name, "last_reference_session": last_price,
              "pit_prefixes": sorted(spec.pit_sources), "pit_legs_tested":
                  sum(1 for row in pit_sheet if row.get("tested")),
              "source": "cache" if cache_used(cache, spec_t) else "db"}
+    reason = "; ".join(part for part in (horizon_reason, pit_reason) if part)
     return CheckResult.measured(CHECK, spec_t.name, findings, scope=scope, metrics=metrics,
-                                reason=pit_reason)
+                                reason=reason)

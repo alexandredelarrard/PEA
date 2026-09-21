@@ -320,6 +320,15 @@ def test_catalogue_asserts_both_directions(sqlite_store, tmp_path, capsys):
     assert "f_live" not in by_field
     assert result.metrics["catalogued_not_live"] == ["f_blank", "f_renamed_away"]
     assert result.metrics["live_not_catalogued"] == ["f_undocumented"]
+    # ... a catalogue written in a different naming convention is ONE problem, not 2N. Both
+    # of this repo's catalogue files key on `ic_act_percent_of_class` against a live
+    # `f_ic_act_percent_of_class`, which asserted blind reads as 216 defects and no matches.
+    shifted = tmp_path / "shifted.json"
+    shifted.write_text(json.dumps({"live": "same leg, no f_ prefix",
+                                   "undocumented": "likewise"}), encoding="utf-8")
+    convention = check_catalogue(context, PART, config=context.config, catalogue=shifted)
+    assert convention.status == "abstain"
+    assert "prefixing them with `f_`" in convention.reason
     # ... and with no catalogue at all the check must not invent one.
     with pytest.raises(UndeclaredTableError):
         check_catalogue(context, PART, config=context.config)

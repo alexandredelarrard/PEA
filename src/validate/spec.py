@@ -65,6 +65,7 @@ class TableSpec:
     clip_peer: float | None = None
     cadence: str | None = None
     ffill_horizon_days: int | None = None
+    label_pattern: str | None = None
     daily_legs: tuple[str, ...] = ()
     pit_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
     bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
@@ -132,6 +133,7 @@ def load_spec(config: DictConfig, table: Any, **overrides: Any) -> TableSpec:
         peer_suffix=merged.get("peer_suffix"),
         clip_peer=None if merged.get("clip_peer") is None else float(merged["clip_peer"]),
         cadence=merged.get("cadence"),
+        label_pattern=merged.get("label_pattern"),
         ffill_horizon_days=(None if merged.get("ffill_horizon_days") is None
                             else int(merged["ffill_horizon_days"])),
         daily_legs=tuple(merged.get("daily_legs") or ()),

@@ -151,3 +151,12 @@ validate:
     # cadence or source map -- the horizons bound each other.
     cube_part_targets:
       cadence: daily
+      # ⚠ THE ONLY TABLE THAT MAY DECLARE THIS, AND THE REASON IT IS A DECLARATION AT ALL. An
+      # `_h<n>` suffix does not make a column a forward label: `cube_part_momentum` carries
+      # `seasonal_h30`, `seasonal_h60` and `seasonal_h90`, which read BACKWARD off past
+      # same-calendar-window returns and correctly run to the last session (2026-09-04).
+      # Matching the pattern there produced five findings at score 10 on three correct
+      # features. Here the three families -- target_rank, target_zscore, target_epsilon --
+      # recede as they must: h30 2026-07-24, h60 2026-06-10, h90 2026-04-28, measured
+      # 2026-09-21 against a last price session of 2026-09-04.
+      label_pattern: "_h(\\d+)$"

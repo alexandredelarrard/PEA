@@ -10,8 +10,6 @@ Every test prints its conclusion. Several exist specifically to pin a decision t
 reader will be tempted to "fix": that `ebitda` is top-down, that `debtToEquity` is not the
 vendor's `de`, and that the share block is de-adjusted rather than taken as delivered.
 
-!! Nothing here touches `src/validate/` or the `fundamentals_check*` tables (D25), and nothing
-writes a table -- the whole phase is a pure transform.
 """
 
 from __future__ import annotations

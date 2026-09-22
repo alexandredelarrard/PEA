@@ -4,12 +4,6 @@ diagnostics.py  (src/data_extract/utils/fundamentals_sharadar/diagnostics.py)
 READ-ONLY measurement of `fundamentals_sharadar`: five gates, one markdown report of what
 they measured, and nothing else.
 
-⚠ **THIS IS NOT THE SEC CHECK SCHEME AND MUST NEVER BE WIRED INTO IT** (D25). Nothing here
-registers a `CHECK_REGISTRY` entry, writes a `fundamentals_check` row, imports from
-`src/validate/`, or is reachable from the validator CLI. It writes no production data at all:
-one markdown report outside the database. If a change to this module starts to look like
-adding a check, it is in the wrong file.
-
 The report RENDERS WHAT THIS RUN MEASURED and states no conclusions. An earlier version
 narrated findings in prose with the phase-2 numbers baked into the sentences; those numbers
 went stale the moment the entitlement widened, and a report that confidently prints a stale
@@ -54,17 +48,21 @@ Every gate is a PURE function of frames. `run_diagnostics` performs the single p
 and slices it per dimension; an earlier version had each gate load for itself, which re-read
 the widest extract table in the schema (112 columns x 3 dimensions) nine times per run.
 """
+
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import pandas as pd
 
 from src.constants.constants import (
-    SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS, SHARADAR_FLOW_FIELDS, SHARADAR_NON_NEGATIVE_FIELDS,
-    SHARADAR_SEC_COUNTERPART, SHARADAR_ZERO_FILLED_FIELDS,
+    SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS,
+    SHARADAR_FLOW_FIELDS,
+    SHARADAR_NON_NEGATIVE_FIELDS,
+    SHARADAR_SEC_COUNTERPART,
+    SHARADAR_ZERO_FILLED_FIELDS,
 )
 from src.context import Context
 from src.data_store.schema import Tables
@@ -72,8 +70,7 @@ from src.utils.quarters import quarter_label, quarter_ordinal
 
 #: Default destination of the generated report. A dated plan path rather than a constant in
 #: `constants.py`: it belongs to one planning task, not to the pipeline's vocabulary.
-DEFAULT_REPORT_PATH = ("reports/planning/active-tasks/2026-08-26-sharadar-integration/"
-                       "phase-2-findings.md")
+DEFAULT_REPORT_PATH = "reports/planning/active-tasks/2026-08-26-sharadar-integration/" "phase-2-findings.md"
 
 #: How many flagged rows the report lists in full. The count is always printed beside it, so
 #: the tail is visible without being enumerated.
@@ -94,12 +91,10 @@ def _diagnostic_columns() -> list[str]:
     """The projection: the table's declared `read_columns` plus the 4 zero-filled fields it
     deliberately omits. Never the whole table -- 112 columns x 3 dimensions is the widest
     extract table in the schema."""
-    return list(dict.fromkeys(list(Tables.sharadar_fundamentals.read_columns)
-                              + list(SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS)))
+    return list(dict.fromkeys(list(Tables.sharadar_fundamentals.read_columns) + list(SHARADAR_DIAGNOSTIC_EXTRA_COLUMNS)))
 
 
-def load_sharadar(context: Context, tickers: Sequence[str] | None,
-                  dimensions: Sequence[str] = DIAGNOSTIC_DIMENSIONS) -> pd.DataFrame:
+def load_sharadar(context: Context, tickers: Sequence[str] | None, dimensions: Sequence[str] = DIAGNOSTIC_DIMENSIONS) -> pd.DataFrame:
     """One projected read of `fundamentals_sharadar`, filtered server-side to `dimensions`.
 
     Dates are re-coerced on the way out: a Postgres DATE column round-trips as
@@ -109,13 +104,13 @@ def load_sharadar(context: Context, tickers: Sequence[str] | None,
     where: dict[str, object] = {"dimension": list(dimensions)}
     if tickers:
         where["ticker"] = list(tickers)
-    frame = context.store.load(Tables.sharadar_fundamentals, columns=_diagnostic_columns(),
-                               where=where, optional=True)
+    frame = context.store.load(Tables.sharadar_fundamentals, columns=_diagnostic_columns(), where=where, optional=True)
     if frame is None or frame.empty:
         raise RuntimeError(
             f"{Tables.sharadar_fundamentals} has no {'/'.join(dimensions)} rows for the "
             f"requested scope. Phase 2 measures the DB, not the API (D29) -- run "
-            f"`python -m src data_extract fundamentals-sharadar` first.")
+            f"`python -m src data_extract fundamentals-sharadar` first."
+        )
     for col in ("date", "reportperiod", "calendardate"):
         if col in frame.columns:
             frame[col] = pd.to_datetime(frame[col], errors="coerce")
@@ -133,9 +128,7 @@ def load_sec(context: Context, tickers: Sequence[str]) -> pd.DataFrame:
     for sec_cols, _ in SHARADAR_SEC_COUNTERPART.values():
         cols.extend(sec_cols)
     cols = list(dict.fromkeys(cols))
-    frame = context.store.load(Tables.fundamentals_history_sec, columns=cols,
-                               where={"ticker": list(tickers)} if tickers else None,
-                               optional=True)
+    frame = context.store.load(Tables.fundamentals_history_sec, columns=cols, where={"ticker": list(tickers)} if tickers else None, optional=True)
     if frame is None or frame.empty:
         return pd.DataFrame(columns=cols)
     frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce")
@@ -162,9 +155,7 @@ def with_fiscal_period(frame: pd.DataFrame) -> pd.DataFrame:
     """
     period = frame["fiscalperiod"].astype(str)
     split = period.str.rsplit("-", n=1, expand=True)
-    return frame.assign(
-        fiscal_year=pd.to_numeric(split[0], errors="coerce").astype("Int64"),
-        fiscal_position=split[1].str.upper())
+    return frame.assign(fiscal_year=pd.to_numeric(split[0], errors="coerce").astype("Int64"), fiscal_position=split[1].str.upper())
 
 
 # --------------------------------------------------------------------------- #
@@ -187,19 +178,21 @@ def gate_completeness(arq: pd.DataFrame) -> pd.DataFrame:
         seen = set(observed)
         span = range(observed[0], observed[-1] + 1)
         missing = [q for q in span if q not in seen]
-        rows.append({
-            "ticker": str(ticker),
-            "first_quarter": quarter_label(observed[0]),
-            "last_quarter": quarter_label(observed[-1]),
-            "n_rows": int(len(group)),
-            "n_quarters": len(observed),
-            "expected_quarters": len(span),
-            "n_missing": len(missing),
-            "missing_quarters": ", ".join(quarter_label(q) for q in missing) or "-",
-            # a duplicate calendardate is a DIFFERENT defect from a gap: two filings rounding
-            # onto the same normalised quarter. Counted so it cannot hide inside `n_rows`.
-            "n_duplicate_quarters": int(len(group) - len(observed)),
-        })
+        rows.append(
+            {
+                "ticker": str(ticker),
+                "first_quarter": quarter_label(observed[0]),
+                "last_quarter": quarter_label(observed[-1]),
+                "n_rows": int(len(group)),
+                "n_quarters": len(observed),
+                "expected_quarters": len(span),
+                "n_missing": len(missing),
+                "missing_quarters": ", ".join(quarter_label(q) for q in missing) or "-",
+                # a duplicate calendardate is a DIFFERENT defect from a gap: two filings rounding
+                # onto the same normalised quarter. Counted so it cannot hide inside `n_rows`.
+                "n_duplicate_quarters": int(len(group) - len(observed)),
+            }
+        )
     return pd.DataFrame(rows).sort_values(["n_missing", "ticker"], ascending=[False, True])
 
 
@@ -208,14 +201,11 @@ def gate_completeness(arq: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 def _value_fields(frame: pd.DataFrame) -> list[str]:
     """Every numeric column of the projection -- the identifiers removed."""
-    ids = {"ticker", "dimension", "calendardate", "date", "reportperiod", "fiscalperiod",
-           "lastupdated", "_q", "fiscal_year", "fiscal_position"}
-    return [c for c in frame.columns
-            if c not in ids and pd.api.types.is_numeric_dtype(frame[c])]
+    ids = {"ticker", "dimension", "calendardate", "date", "reportperiod", "fiscalperiod", "lastupdated", "_q", "fiscal_year", "fiscal_position"}
+    return [c for c in frame.columns if c not in ids and pd.api.types.is_numeric_dtype(frame[c])]
 
 
-_FLAG_COLUMNS = ["ticker", "field", "fiscal_year", "fiscal_position", "calendardate", "value",
-                 "reason", "max_other_abs", "ratio_vs_other"]
+_FLAG_COLUMNS = ["ticker", "field", "fiscal_year", "fiscal_position", "calendardate", "value", "reason", "max_other_abs", "ratio_vs_other"]
 
 
 def gate_implausible_quarters(arq: pd.DataFrame, *, ratio: float = 3.0) -> pd.DataFrame:
@@ -242,8 +232,7 @@ def gate_implausible_quarters(arq: pd.DataFrame, *, ratio: float = 3.0) -> pd.Da
     arq = with_fiscal_period(arq)
     fields = _value_fields(arq)
     keys = ["ticker", "fiscal_year", "fiscal_position", "calendardate"]
-    long = arq.melt(id_vars=keys, value_vars=fields, var_name="field",
-                    value_name="value").dropna(subset=["value", "fiscal_year"])
+    long = arq.melt(id_vars=keys, value_vars=fields, var_name="field", value_name="value").dropna(subset=["value", "fiscal_year"])
     if long.empty:
         return pd.DataFrame(columns=_FLAG_COLUMNS)
 
@@ -251,8 +240,7 @@ def gate_implausible_quarters(arq: pd.DataFrame, *, ratio: float = 3.0) -> pd.Da
     negative = negative.assign(reason="negative", max_other_abs=np.nan, ratio_vs_other=np.nan)
 
     group = ["field", "ticker", "fiscal_year"]
-    long = long.assign(_abs=long["value"].abs()).sort_values(
-        group + ["_abs"], ascending=[True, True, True, False], kind="mergesort")
+    long = long.assign(_abs=long["value"].abs()).sort_values(group + ["_abs"], ascending=[True, True, True, False], kind="mergesort")
     ranked = long.groupby(group, observed=True)["_abs"]
     long["_rank"] = ranked.cumcount()
     long["_size"] = ranked.transform("size")
@@ -266,17 +254,15 @@ def gate_implausible_quarters(arq: pd.DataFrame, *, ratio: float = 3.0) -> pd.Da
     # "the largest OTHER quarter": the runner-up for the row that IS the largest, else the
     # largest. A tie therefore lands at ratio 1.0 instead of dividing a row by itself.
     long["_max_other"] = np.where(long["_rank"] == 0, long["_max2"], long["_max1"])
-    outlier = ((long["_size"] >= 3) & (long["_max_other"] > 0)
-               & (long["_abs"] > ratio * long["_max_other"]))
+    outlier = (long["_size"] >= 3) & (long["_max_other"] > 0) & (long["_abs"] > ratio * long["_max_other"])
     magnitude = long[outlier].assign(
-        reason="magnitude", max_other_abs=long.loc[outlier, "_max_other"],
-        ratio_vs_other=long.loc[outlier, "_abs"] / long.loc[outlier, "_max_other"])
+        reason="magnitude", max_other_abs=long.loc[outlier, "_max_other"], ratio_vs_other=long.loc[outlier, "_abs"] / long.loc[outlier, "_max_other"]
+    )
 
     flagged = pd.concat([negative, magnitude], ignore_index=True)
     if flagged.empty:
         return pd.DataFrame(columns=_FLAG_COLUMNS)
-    return flagged[_FLAG_COLUMNS].sort_values(
-        ["ratio_vs_other", "field"], ascending=[False, True], na_position="last")
+    return flagged[_FLAG_COLUMNS].sort_values(["ratio_vs_other", "field"], ascending=[False, True], na_position="last")
 
 
 # --------------------------------------------------------------------------- #
@@ -287,15 +273,16 @@ def _sec_counterpart_value(sec: pd.DataFrame, sec_cols: Sequence[str]) -> pd.Dat
     present = [c for c in sec_cols if c in sec.columns]
     if not present:
         return pd.DataFrame(columns=["ticker", "as_of", "_sec"])
-    return pd.DataFrame({
-        "ticker": sec["ticker"].astype(str),
-        "as_of": sec["as_of"],
-        "_sec": sec[present].sum(axis=1, min_count=1),
-    })
+    return pd.DataFrame(
+        {
+            "ticker": sec["ticker"].astype(str),
+            "as_of": sec["as_of"],
+            "_sec": sec[present].sum(axis=1, min_count=1),
+        }
+    )
 
 
-def _sec_verdicts(field: str, zeros: pd.DataFrame, art: pd.DataFrame,
-                  sec: pd.DataFrame) -> dict[str, int]:
+def _sec_verdicts(field: str, zeros: pd.DataFrame, art: pd.DataFrame, sec: pd.DataFrame) -> dict[str, int]:
     """How the SEC layer judges each zero cell of `field`, on a BASIS-MATCHED comparison.
 
     * A DURATION field is judged at the TTM level, because that is the only grain on which the
@@ -308,15 +295,22 @@ def _sec_verdicts(field: str, zeros: pd.DataFrame, art: pd.DataFrame,
       liabilities Sharadar's `debt` does not, so "SEC non-zero, Sharadar zero" may be entirely
       the components Sharadar never claimed to have.
     """
-    empty = {"overlap_zeros": int(len(zeros)), "checked": 0, "agrees": 0, "absent": 0,
-             "contradicted": 0, "suspect": 0, "inconclusive": 0, "contradicted_tickers": ""}
+    empty = {
+        "overlap_zeros": int(len(zeros)),
+        "checked": 0,
+        "agrees": 0,
+        "absent": 0,
+        "contradicted": 0,
+        "suspect": 0,
+        "inconclusive": 0,
+        "contradicted_tickers": "",
+    }
     sec_cols, comparability = SHARADAR_SEC_COUNTERPART[field]
     counterpart = _sec_counterpart_value(sec, sec_cols)
     if counterpart.empty or zeros.empty:
         return empty
 
-    joined = zeros.merge(counterpart, left_on=["ticker", "date"],
-                         right_on=["ticker", "as_of"], how="left")
+    joined = zeros.merge(counterpart, left_on=["ticker", "date"], right_on=["ticker", "as_of"], how="left")
     if field in SHARADAR_FLOW_FIELDS and not art.empty and field in art.columns:
         ttm = art[["ticker", "date", field]].rename(columns={field: "_ttm"})
         joined = joined.merge(ttm, on=["ticker", "date"], how="left")
@@ -345,8 +339,7 @@ def _sec_verdicts(field: str, zeros: pd.DataFrame, art: pd.DataFrame,
         "suspect": int((sec_nonzero & strong & ~contradicted).sum()),
         "inconclusive": int((sec_nonzero & ~strong).sum()),
         # naming the filers is what makes the verdict checkable against an actual filing
-        "contradicted_tickers": ", ".join(
-            sorted(joined.loc[contradicted, "ticker"].astype(str).unique())),
+        "contradicted_tickers": ", ".join(sorted(joined.loc[contradicted, "ticker"].astype(str).unique())),
     }
 
 
@@ -363,18 +356,31 @@ def gate_zero_fill(arq: pd.DataFrame, art: pd.DataFrame, sec: pd.DataFrame) -> p
     * **SEC cross-check** on the overlapping tickers, basis-matched -- see `_sec_verdicts`.
     """
     sharadar_tickers = set(arq["ticker"].astype(str))
-    overlap = (sorted(sharadar_tickers & set(sec["ticker"].astype(str)))
-               if not sec.empty else [])
+    overlap = sorted(sharadar_tickers & set(sec["ticker"].astype(str))) if not sec.empty else []
 
     rows: list[dict] = []
     for field in sorted(SHARADAR_ZERO_FILLED_FIELDS):
         if field not in arq.columns:
-            rows.append({"field": field, "n_rows": 0, "n_zero": 0, "pct_zero": np.nan,
-                         "n_tickers": 0, "n_tickers_all_zero": 0, "n_zero_mixed": 0,
-                         "sec_basis": "not projected", "sec_overlap_zeros": 0,
-                         "sec_checked": 0, "sec_agrees": 0, "sec_absent": 0,
-                         "sec_contradicted": 0, "sec_suspect": 0, "sec_inconclusive": 0,
-                         "sec_contradicted_tickers": ""})
+            rows.append(
+                {
+                    "field": field,
+                    "n_rows": 0,
+                    "n_zero": 0,
+                    "pct_zero": np.nan,
+                    "n_tickers": 0,
+                    "n_tickers_all_zero": 0,
+                    "n_zero_mixed": 0,
+                    "sec_basis": "not projected",
+                    "sec_overlap_zeros": 0,
+                    "sec_checked": 0,
+                    "sec_agrees": 0,
+                    "sec_absent": 0,
+                    "sec_contradicted": 0,
+                    "sec_suspect": 0,
+                    "sec_inconclusive": 0,
+                    "sec_contradicted_tickers": "",
+                }
+            )
             continue
         series = arq[["ticker", "date", field]].dropna(subset=[field])
         is_zero = series[field] == 0
@@ -386,44 +392,51 @@ def gate_zero_fill(arq: pd.DataFrame, art: pd.DataFrame, sec: pd.DataFrame) -> p
         counterpart = SHARADAR_SEC_COUNTERPART.get(field)
         if counterpart is None or not overlap:
             basis = "no SEC counterpart" if counterpart is None else "no overlapping ticker"
-            verdicts = {"overlap_zeros": 0, "checked": 0, "agrees": 0, "absent": 0,
-                        "contradicted": 0, "suspect": 0, "inconclusive": 0,
-                        "contradicted_tickers": ""}
+            verdicts = {
+                "overlap_zeros": 0,
+                "checked": 0,
+                "agrees": 0,
+                "absent": 0,
+                "contradicted": 0,
+                "suspect": 0,
+                "inconclusive": 0,
+                "contradicted_tickers": "",
+            }
         else:
             sec_cols, comparability = counterpart
             grain = "TTM" if field in SHARADAR_FLOW_FIELDS else "instant"
             basis = f"{'+'.join(sec_cols)} ({comparability}, {grain})"
-            zeros = series[is_zero & series["ticker"].astype(str).isin(overlap)][
-                ["ticker", "date"]].copy()
+            zeros = series[is_zero & series["ticker"].astype(str).isin(overlap)][["ticker", "date"]].copy()
             zeros["ticker"] = zeros["ticker"].astype(str)
             verdicts = _sec_verdicts(field, zeros, art, sec)
 
-        rows.append({
-            "field": field,
-            "n_rows": int(len(series)),
-            "n_zero": int(is_zero.sum()),
-            "pct_zero": float(is_zero.mean()) if len(series) else np.nan,
-            "n_tickers": int(series["ticker"].nunique()),
-            "n_tickers_all_zero": len(all_zero),
-            "n_zero_mixed": int(mixed.sum()),
-            "sec_basis": basis,
-            "sec_overlap_zeros": verdicts["overlap_zeros"],
-            "sec_checked": verdicts["checked"],
-            "sec_agrees": verdicts["agrees"],
-            "sec_absent": verdicts["absent"],
-            "sec_contradicted": verdicts["contradicted"],
-            "sec_suspect": verdicts["suspect"],
-            "sec_inconclusive": verdicts["inconclusive"],
-            "sec_contradicted_tickers": verdicts["contradicted_tickers"],
-        })
+        rows.append(
+            {
+                "field": field,
+                "n_rows": int(len(series)),
+                "n_zero": int(is_zero.sum()),
+                "pct_zero": float(is_zero.mean()) if len(series) else np.nan,
+                "n_tickers": int(series["ticker"].nunique()),
+                "n_tickers_all_zero": len(all_zero),
+                "n_zero_mixed": int(mixed.sum()),
+                "sec_basis": basis,
+                "sec_overlap_zeros": verdicts["overlap_zeros"],
+                "sec_checked": verdicts["checked"],
+                "sec_agrees": verdicts["agrees"],
+                "sec_absent": verdicts["absent"],
+                "sec_contradicted": verdicts["contradicted"],
+                "sec_suspect": verdicts["suspect"],
+                "sec_inconclusive": verdicts["inconclusive"],
+                "sec_contradicted_tickers": verdicts["contradicted_tickers"],
+            }
+        )
     return pd.DataFrame(rows).sort_values("pct_zero", ascending=False, na_position="last")
 
 
 # --------------------------------------------------------------------------- #
 # the D-decision cross-checks                                                  #
 # --------------------------------------------------------------------------- #
-_SHARE_COLUMNS = ["ticker", "n_dates", "median_ratio", "min_ratio", "max_ratio",
-                  "median_sharefactor"]
+_SHARE_COLUMNS = ["ticker", "n_dates", "median_ratio", "min_ratio", "max_ratio", "median_sharefactor"]
 
 
 def cross_check_shares(arq: pd.DataFrame, sec: pd.DataFrame) -> pd.DataFrame:
@@ -453,21 +466,34 @@ def cross_check_shares(arq: pd.DataFrame, sec: pd.DataFrame) -> pd.DataFrame:
     left["ticker"] = left["ticker"].astype(str)
     right = sec[["ticker", "as_of", "sharesOutstanding"]].copy()
     right["ticker"] = right["ticker"].astype(str)
-    joined = left.merge(right, left_on=["ticker", "date"], right_on=["ticker", "as_of"],
-                        how="inner").dropna(subset=["sharesbas", "sharesOutstanding"])
+    joined = left.merge(right, left_on=["ticker", "date"], right_on=["ticker", "as_of"], how="inner").dropna(
+        subset=["sharesbas", "sharesOutstanding"]
+    )
     joined = joined[joined["sharesOutstanding"] != 0]
     if joined.empty:
         return pd.DataFrame(columns=_SHARE_COLUMNS)
     joined["ratio"] = joined["sharesbas"] / joined["sharesOutstanding"]
-    out = joined.groupby("ticker").agg(
-        n_dates=("ratio", "size"), median_ratio=("ratio", "median"),
-        min_ratio=("ratio", "min"), max_ratio=("ratio", "max"),
-        median_sharefactor=("sharefactor", "median")).reset_index()
+    out = (
+        joined.groupby("ticker")
+        .agg(
+            n_dates=("ratio", "size"),
+            median_ratio=("ratio", "median"),
+            min_ratio=("ratio", "min"),
+            max_ratio=("ratio", "max"),
+            median_sharefactor=("sharefactor", "median"),
+        )
+        .reset_index()
+    )
     out["ratio_span"] = out["max_ratio"] / out["min_ratio"]
     out["verdict"] = np.where(
-        out["ratio_span"] >= 1.5, "SPLIT-ADJUSTED history (not as-filed)",
-        np.where((out["median_ratio"] - 1).abs() <= 0.05, "agrees with the SEC cover page",
-                 "systematic level difference -- investigate the share-class basis"))
+        out["ratio_span"] >= 1.5,
+        "SPLIT-ADJUSTED history (not as-filed)",
+        np.where(
+            (out["median_ratio"] - 1).abs() <= 0.05,
+            "agrees with the SEC cover page",
+            "systematic level difference -- investigate the share-class basis",
+        ),
+    )
     return out.sort_values("ratio_span", ascending=False)
 
 
@@ -493,9 +519,7 @@ def confirm_sign_conventions(frame: pd.DataFrame) -> dict:
             "capex_max": float(capex.max()) if not capex.empty else float("nan"),
             "fcf_rows": int(len(residual)),
             "fcf_max_abs_residual": float(residual.max()) if not residual.empty else 0.0,
-            "fcf_worst_row": (f"{frame.at[worst, 'ticker']} "
-                              f"{pd.Timestamp(frame.at[worst, 'date']).date()}"
-                              if worst is not None else "-"),
+            "fcf_worst_row": (f"{frame.at[worst, 'ticker']} " f"{pd.Timestamp(frame.at[worst, 'date']).date()}" if worst is not None else "-"),
             "fcf_violations": int((residual > FCF_IDENTITY_TOLERANCE).sum()),
         }
         out["dimensions"][str(dimension)] = block
@@ -503,11 +527,10 @@ def confirm_sign_conventions(frame: pd.DataFrame) -> dict:
         out["fcf_identity_holds"] &= block["fcf_violations"] == 0
     out["capex_rows_total"] = sum(b["capex_rows"] for b in out["dimensions"].values())
     out["capex_positive_total"] = sum(b["capex_positive"] for b in out["dimensions"].values())
-    out["capex_positive_tickers"] = sorted(
-        {t for b in out["dimensions"].values() for t in b["capex_positive_tickers"]})
-    out["capex_positive_rows"] = frame.loc[
-        frame["capex"] > 0, ["ticker", "dimension", "date", "fiscalperiod", "capex"]
-    ].sort_values("capex", ascending=False)
+    out["capex_positive_tickers"] = sorted({t for b in out["dimensions"].values() for t in b["capex_positive_tickers"]})
+    out["capex_positive_rows"] = frame.loc[frame["capex"] > 0, ["ticker", "dimension", "date", "fiscalperiod", "capex"]].sort_values(
+        "capex", ascending=False
+    )
     out["ok"] = bool(out["capex_sign_holds"] and out["fcf_identity_holds"])
     return out
 
@@ -545,10 +568,8 @@ def md_table(frame: pd.DataFrame, limit: int | None = None) -> str:
     shown = frame if limit is None else frame.head(limit)
     header = "| " + " | ".join(str(c).replace("|", "\\|") for c in shown.columns) + " |"
     rule = "|" + "|".join("---" for _ in shown.columns) + "|"
-    body = ["| " + " | ".join(md_cell(v) for v in row) + " |"
-            for row in shown.itertuples(index=False)]
-    tail = ("" if limit is None or len(frame) <= limit
-            else f"\n_{limit} of {len(frame)} rows shown._\n")
+    body = ["| " + " | ".join(md_cell(v) for v in row) + " |" for row in shown.itertuples(index=False)]
+    tail = "" if limit is None or len(frame) <= limit else f"\n_{limit} of {len(frame)} rows shown._\n"
     return "\n".join([header, rule, *body]) + "\n" + tail
 
 
@@ -560,10 +581,9 @@ def render_report(results: dict) -> str:
     last quarter's finding against next quarter's data.
     """
     signs = results["sign_conventions"]
-    sign_rows = pd.DataFrame([
-        {"dimension": dim, **{k: v for k, v in block.items()
-                              if k != "capex_positive_tickers"}}
-        for dim, block in signs["dimensions"].items()])
+    sign_rows = pd.DataFrame(
+        [{"dimension": dim, **{k: v for k, v in block.items() if k != "capex_positive_tickers"}} for dim, block in signs["dimensions"].items()]
+    )
     parts = [
         f"# Sharadar diagnostics — {results['generated']}",
         "",
@@ -581,15 +601,13 @@ def render_report(results: dict) -> str:
         "## Cross-check — `sharesbas` vs the SEC cover-page count",
         md_table(results["shares"], WORST_ROWS),
         "## Sign conventions — `capex <= 0` and `fcf == ncfo + capex`",
-        f"capex sign holds: **{signs['capex_sign_holds']}**; "
-        f"fcf identity holds: **{signs['fcf_identity_holds']}**.",
+        f"capex sign holds: **{signs['capex_sign_holds']}**; " f"fcf identity holds: **{signs['fcf_identity_holds']}**.",
         md_table(sign_rows),
     ]
     return "\n".join(parts) + "\n"
 
 
-def run_diagnostics(context: Context, tickers: Sequence[str] | None = None, *,
-                    report_path: str | Path = DEFAULT_REPORT_PATH) -> dict:
+def run_diagnostics(context: Context, tickers: Sequence[str] | None = None, *, report_path: str | Path = DEFAULT_REPORT_PATH) -> dict:
     """Run the five gates off ONE read, write the report, log a summary.
 
     Writes NO production data: one markdown report outside the database. Returns everything it
@@ -603,16 +621,14 @@ def run_diagnostics(context: Context, tickers: Sequence[str] | None = None, *,
     art = by_dimension.get("ART", frame.iloc[:0])
     if arq.empty:
         raise RuntimeError(
-            f"{Tables.sharadar_fundamentals} has no ARQ rows for the requested scope; every "
-            f"gate is built on the as-reported quarters.")
+            f"{Tables.sharadar_fundamentals} has no ARQ rows for the requested scope; every " f"gate is built on the as-reported quarters."
+        )
 
     scope_tickers = sorted(str(t) for t in arq["ticker"].unique())
     sec = load_sec(context, scope_tickers)
     overlap = sorted(set(scope_tickers) & set(sec["ticker"].astype(str))) if not sec.empty else []
-    scope = (f"{len(scope_tickers)} ticker(s), "
-             f"{pd.Timestamp(arq['date'].min()).date()}..{pd.Timestamp(arq['date'].max()).date()}")
-    context.log.info("Sharadar diagnostics: %s; %d overlap with %s",
-                     scope, len(overlap), Tables.fundamentals_history_sec)
+    scope = f"{len(scope_tickers)} ticker(s), " f"{pd.Timestamp(arq['date'].min()).date()}..{pd.Timestamp(arq['date'].max()).date()}"
+    context.log.info("Sharadar diagnostics: %s; %d overlap with %s", scope, len(overlap), Tables.fundamentals_history_sec)
 
     results: dict = {
         "generated": pd.Timestamp.today().strftime("%Y-%m-%d"),
@@ -634,30 +650,37 @@ def run_diagnostics(context: Context, tickers: Sequence[str] | None = None, *,
     results["report_written_to"] = report.as_posix()
 
     signs = results["sign_conventions"]
-    context.log.info("Gate 1 completeness   : %d missing quarter(s) across %d ticker(s)",
-                     int(results["completeness"]["n_missing"].sum()),
-                     int((results["completeness"]["n_missing"] > 0).sum()))
-    context.log.info("Gate 2 implausible    : %d flagged (%d negative, %d magnitude)",
-                     len(results["implausible"]),
-                     int((results["implausible"]["reason"] == "negative").sum())
-                     if not results["implausible"].empty else 0,
-                     int((results["implausible"]["reason"] == "magnitude").sum())
-                     if not results["implausible"].empty else 0)
+    context.log.info(
+        "Gate 1 completeness   : %d missing quarter(s) across %d ticker(s)",
+        int(results["completeness"]["n_missing"].sum()),
+        int((results["completeness"]["n_missing"] > 0).sum()),
+    )
+    context.log.info(
+        "Gate 2 implausible    : %d flagged (%d negative, %d magnitude)",
+        len(results["implausible"]),
+        int((results["implausible"]["reason"] == "negative").sum()) if not results["implausible"].empty else 0,
+        int((results["implausible"]["reason"] == "magnitude").sum()) if not results["implausible"].empty else 0,
+    )
     zero_fill = results["zero_fill"]
-    context.log.info("Gate 3 zero-fill      : %d field(s) measured; %d with a contradicted zero",
-                     len(zero_fill), int((zero_fill["sec_contradicted"] > 0).sum()))
-    context.log.info("Sign conventions      : fcf==ncfo+capex %s | capex<=0 %s (%d of %d rows "
-                     "positive: %s)",
-                     "HOLDS" if signs["fcf_identity_holds"] else "FAILED",
-                     "HOLDS" if signs["capex_sign_holds"] else "DOES NOT HOLD",
-                     signs["capex_positive_total"], signs["capex_rows_total"],
-                     ", ".join(signs["capex_positive_tickers"]) or "none")
+    context.log.info(
+        "Gate 3 zero-fill      : %d field(s) measured; %d with a contradicted zero", len(zero_fill), int((zero_fill["sec_contradicted"] > 0).sum())
+    )
+    context.log.info(
+        "Sign conventions      : fcf==ncfo+capex %s | capex<=0 %s (%d of %d rows " "positive: %s)",
+        "HOLDS" if signs["fcf_identity_holds"] else "FAILED",
+        "HOLDS" if signs["capex_sign_holds"] else "DOES NOT HOLD",
+        signs["capex_positive_total"],
+        signs["capex_rows_total"],
+        ", ".join(signs["capex_positive_tickers"]) or "none",
+    )
     shares = results["shares"]
     split = shares[shares["verdict"].str.startswith("SPLIT")] if not shares.empty else shares
-    context.log.warning("sharesbas vs SEC      : %d/%d ticker(s) agree at 1.0; %d are "
-                        "SPLIT-ADJUSTED and therefore NOT point-in-time: %s",
-                        int(((shares["median_ratio"] - 1).abs() <= 0.05).sum())
-                        if not shares.empty else 0, len(shares), len(split),
-                        ", ".join(split["ticker"]) if not split.empty else "none")
+    context.log.warning(
+        "sharesbas vs SEC      : %d/%d ticker(s) agree at 1.0; %d are " "SPLIT-ADJUSTED and therefore NOT point-in-time: %s",
+        int(((shares["median_ratio"] - 1).abs() <= 0.05).sum()) if not shares.empty else 0,
+        len(shares),
+        len(split),
+        ", ".join(split["ticker"]) if not split.empty else "none",
+    )
     context.log.warning("Report -> %s", results["report_written_to"])
     return results

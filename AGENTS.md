@@ -55,8 +55,7 @@ data_aggregate/ StepBuildCube: 7 sub-steps -> 8 cube_part_* -> cube
 modelling/    long_short/ (trained ensemble), trend/, long_book/
 strategies/   sleeves: ls_equity, eq_long_only, long_book, trend_cta
 portfolio/    StepPortfolio (ERC blend), StepStrategyMoves (`strategy` ledger)
-validate/     ALL validation code. Read-only; writes `fundamentals_check`, gates nothing.
-              CHECK_REGISTRY drives everything — read src/validate/README.md before editing
+validate/     ALL validation code. Read-only;
 utils/ context.py constants/ dags/ cli.py   |   repo: configs/ docs/ tests/ app/ scripts/ sql/ main.py
 ```
 

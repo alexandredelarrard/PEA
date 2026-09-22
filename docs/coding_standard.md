@@ -4,18 +4,27 @@ Scope: how to write Python in `src/`. Short on purpose — the data rules are in
 [data_conventions.md](data_conventions.md), the structural rules in
 [architecture.md](architecture.md).
 
+## docstrings
 
-## Functions and variables 
+Write clear english readable docstrings at the start of a file and inside each function.
+Make it not verbose, strict minimum.
+Do not add history of commits and bug fixes inside python files docstrings, they belong only to the reports and docs .md files.
+The docstrings are only here to explain the logic of the function, inputs and outputs,  not to record full history of why. Only put very important comments, inside the function when a new edit is done. One or 2 lines, depending on the new piece code added inside the function.
+If this is a new function just write the docstring to explain the logic of the function, inputs and outputs.
+
+
+## Functions and variables
 
 - Write class, methods, functions extremely cleanly: the less code the better, edge cases are specific functions.
-- Write explicit variable names as convention. `df_xx` for dataframes, transparent variable names to improve readability. 
-- Split large function into unitary functions doing one unique goal. 
+- Write explicit variable names as convention. `df_xx` for dataframes, transparent variable names to improve readability.
+- Split large function into unitary functions doing one unique goal.
 - Write small functions to be reusable. If used through different modules, avoid circular import and move the function to a `/utils/` folder or subfolder.
+- Never write a function or class method with capital letters, always lower case.
 
 ## Constants first
 
 Before naming any column, key, URL, threshold, or date format: **grep
-[src/constants/constants.py](../src/constants/constants.py)** (927 lines). Reuse if present; add it
+[src/constants/constants.py](../src/constants/constants.py)**. Reuse if present; add it
 there *before* referencing it if not. Never hardcode a global literal inline.
 
 What belongs there: date formats (`DATE_FORMAT`, `DATE_FORMAT_COMPACT`), every SEC/FINRA/Trends/Fool/
@@ -71,9 +80,9 @@ Prefer `f{}` f-strings in log calls over %s.
 ## Module docstrings carry the reasoning
 
 This codebase's docstrings are unusually load-bearing: they record *why* a value is what it is, and
-what broke last time. 
+what broke last time.
 
-Be as clear and direct as possible. Keep to the strict minimum and give key ideas, not whole details. 
+Be as clear and direct as possible. Keep to the strict minimum and give key ideas, not whole details.
 
 **When you change one of these, update its docstring in the same edit.** When you are tempted to
 "simplify" one of them, read the docstring first — several explicitly say the duplication is

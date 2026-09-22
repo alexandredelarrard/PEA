@@ -343,7 +343,7 @@ class StepCubeInstitutionals(Step):
         return df
 
     # ---- panels ---- #
-    def _institutional_panel(self, frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None) -> pd.DataFrame | None:
+    def _institutional_panel(self, price_frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None) -> pd.DataFrame | None:
         """The registry's eleven `ic_inst_*`: breadth SHARE (D28), split-restated share
         accumulation, new-buyer / exit ratios, cluster buying, Herfindahl concentration, net
         put/call sentiment, ownership %, value/market-cap weight and net $ flow -- stamped
@@ -351,13 +351,13 @@ class StepCubeInstitutionals(Step):
         trading calendar plus a settle buffer) over only the filings public by then, and
         re-emitted on each later date a material filing for that period arrives."""
 
-        holdings = self._load_source(Tables.sec13f_hr, frames.universe)
+        holdings = self._load_source(Tables.sec13f_hr, price_frames.universe)
         if holdings is None:
             return None
 
         cfg = self._institutionals_cfg()
         return build_institutional_feature_panel(
-            frames,
+            price_frames,
             holdings,
             shares_out_history=shares,
             splits=splits,

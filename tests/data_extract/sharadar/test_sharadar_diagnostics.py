@@ -11,8 +11,6 @@ The gates are PURE functions of frames, so the fixture performs the one projecte
 production path performs and every test shares it. Nothing here calls `run_diagnostics`, so a
 test run can never overwrite the report.
 
-!! Nothing here touches `src/validate/` or the `fundamentals_check*` tables (D25). The
-diagnostic writes no production data.
 """
 
 from __future__ import annotations

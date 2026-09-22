@@ -24,42 +24,39 @@ bases on purpose and `sharadar_field_map.json` states why for each. They are rep
 `is_expected` so they do not drown the signal. **Anything gapping that is not on that list is
 the real finding.**
 
-## This is NOT the validator (D25)
-
-Nothing here registers a check, writes a `fundamentals_check` row, or imports `src/validate/`.
-It writes one markdown report and, with `--propose`, candidate entries in the override
-register -- every one of them inert until a human sets `approved`.
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import pandas as pd
 
 from src.constants.constants import (
-    SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT, SHARADAR_GAP_EXPECTED_FIELDS,
-    SHARADAR_GAP_MIN_DATES, SHARADAR_GAP_RELATIVE_THRESHOLD, SHARADAR_GAP_SYSTEMATIC_SHARE,
-    SHARADAR_OVERRIDE_APPROVED_KEY, SHARADAR_OVERRIDE_SOURCE_SEC,
+    SHARADAR_ACTION_SPINOFF,
+    SHARADAR_ACTION_SPLIT,
+    SHARADAR_GAP_EXPECTED_FIELDS,
+    SHARADAR_GAP_MIN_DATES,
+    SHARADAR_GAP_RELATIVE_THRESHOLD,
+    SHARADAR_GAP_SYSTEMATIC_SHARE,
+    SHARADAR_OVERRIDE_APPROVED_KEY,
+    SHARADAR_OVERRIDE_SOURCE_SEC,
 )
-from src.data_extract.utils.fundamentals.kpi_catalogue import (
-    DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER)
+from src.context import Context
+from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import md_table
-from src.data_extract.utils.fundamentals_sharadar.field_map import (
-    FieldMap, load_field_map, translate)
-from src.data_extract.utils.fundamentals_sharadar.merge_history import (
-    _KEY_FROM_VENDOR, collapse_same_date, load_overrides, write_overrides)
-from src.context import Context
+from src.data_extract.utils.fundamentals_sharadar.field_map import FieldMap, load_field_map, translate
+from src.data_extract.utils.fundamentals_sharadar.merge_history import _KEY_FROM_VENDOR, collapse_same_date, load_overrides, write_overrides
 from src.data_store.schema import Tables
 
 log = logging.getLogger(__name__)
 
-DEFAULT_REPORT_PATH = ("reports/planning/active-tasks/2026-08-26-sharadar-integration/"
-                       "phase-4-gap-check.md")
+DEFAULT_REPORT_PATH = "reports/planning/active-tasks/2026-08-26-sharadar-integration/" "phase-4-gap-check.md"
 
 #: The three floor classes, and how a field is assigned one. Read off the FIELD MAP's own
 #: declarations -- `op: ratio`/`ratio_minus_one` is a ratio, and a share count is one that
@@ -121,8 +118,7 @@ def comparable_fields(field_map: FieldMap) -> list[str]:
     return [n for n in HISTORY_STATEMENT_ORDER if n in owned]
 
 
-def sharadar_history(vendor_arq: pd.DataFrame, field_map: FieldMap,
-                     actions: pd.DataFrame | None) -> pd.DataFrame:
+def sharadar_history(vendor_arq: pd.DataFrame, field_map: FieldMap, actions: pd.DataFrame | None) -> pd.DataFrame:
     """The Sharadar side on the merged table's grain, WITHOUT the SEC block.
 
     Deliberately not `merge_history.build_frame`: that one has already joined the SEC values
@@ -137,8 +133,7 @@ def sharadar_history(vendor_arq: pd.DataFrame, field_map: FieldMap,
     return collapsed
 
 
-def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *,
-                 config_dir: str = DEFAULT_CONFIG_DIR) -> pd.DataFrame:
+def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, config_dir: str = DEFAULT_CONFIG_DIR) -> pd.DataFrame:
     """One row per `(ticker, field)` both sources carry, over their SHARED `as_of` dates.
 
     An EXACT date join here, not the merge's backward as-of: a gap check must compare the two
@@ -146,36 +141,35 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *,
     differences out of a one-day filing-date disagreement.
     """
     field_map = load_field_map(config_dir)
-    floors = {klass: float(value) for klass, value
-              in context.config.data_extract.sharadar_gap_floor.items()}
+    floors = {klass: float(value) for klass, value in context.config.data_extract.sharadar_gap_floor.items()}
 
     where = {"ticker": sorted(tickers)} if tickers else {}
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=True,
-                                where={**where, "dimension": ARQ}, optional=True)
+    vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={**where, "dimension": ARQ}, optional=True)
     if vendor is None or vendor.empty:
         raise RuntimeError("gap check: no stored Sharadar ARQ rows to measure")
     # market-wide table: filter to these tickers AND to the two actions `split_events` reads,
     # or the read drags back every action of every ticker Sharadar covers
     actions = context.store.load(
-        Tables.sharadar_actions, project=True, optional=True,
-        where={**where, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]})
+        Tables.sharadar_actions, project=True, optional=True, where={**where, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]}
+    )
     fields = comparable_fields(field_map)
-    sec = context.store.load(Tables.fundamentals_history_sec,
-                             columns=["ticker", "as_of", *fields],
-                             where=where or None, optional=True)
+    sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", *fields], where=where or None, optional=True)
     if sec is None:
         raise RuntimeError("gap check: fundamentals_history_sec has no rows for this scope")
     sec["as_of"] = pd.to_datetime(sec["as_of"]).astype("datetime64[ns]")
 
     shar = sharadar_history(vendor, field_map, actions)
     overlap = sorted(set(shar["ticker"]) & set(sec["ticker"]))
-    log.info("gap check: %d overlapping ticker(s) of %d Sharadar / %d SEC; %d comparable "
-             "field(s)", len(overlap), shar["ticker"].nunique(), sec["ticker"].nunique(),
-             len(fields))
+    log.info(
+        "gap check: %d overlapping ticker(s) of %d Sharadar / %d SEC; %d comparable " "field(s)",
+        len(overlap),
+        shar["ticker"].nunique(),
+        sec["ticker"].nunique(),
+        len(fields),
+    )
     joined = shar.merge(sec, on=["ticker", "as_of"], suffixes=("_shar", "_sec"))
     if joined.empty:
-        raise RuntimeError("gap check: the two sources share no (ticker, as_of) at all -- "
-                           "that is a grain bug, not a gap")
+        raise RuntimeError("gap check: the two sources share no (ticker, as_of) at all -- " "that is a grain bug, not a gap")
 
     rows = []
     for name in fields:
@@ -187,32 +181,33 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *,
         left = pair[f"{name}_shar"].astype("float64")
         right = pair[f"{name}_sec"].astype("float64")
         delta = left - right
-        pct = (delta.abs() / right.abs().replace(0.0, np.nan))
+        pct = delta.abs() / right.abs().replace(0.0, np.nan)
         flagged = (pct > SHARADAR_GAP_RELATIVE_THRESHOLD) & (delta.abs() > floor)
-        for ticker, block in pair.assign(_pct=pct, _delta=delta,
-                                         _flag=flagged).groupby("ticker", sort=True):
+        for ticker, block in pair.assign(_pct=pct, _delta=delta, _flag=flagged).groupby("ticker", sort=True):
             n_dates = len(block)
             n_flagged = int(block["_flag"].sum())
             share = n_flagged / n_dates
-            rows.append({
-                "ticker": ticker, "field": name, "class": klass,
-                "n_dates": n_dates, "n_flagged": n_flagged,
-                "flagged_share": round(share, 3),
-                "median_pct_gap": float(block["_pct"].median()),
-                "min_pct_gap": float(block["_pct"].min()),
-                "max_pct_gap": float(block["_pct"].max()),
-                "median_abs_gap": float(block["_delta"].abs().median()),
-                "is_systematic": bool(share >= SHARADAR_GAP_SYSTEMATIC_SHARE
-                                      and n_dates >= SHARADAR_GAP_MIN_DATES
-                                      and n_flagged > 0),
-                "is_expected": name in SHARADAR_GAP_EXPECTED_FIELDS,
-                "inherits_from": inherited_from_expected(name, field_map),
-            })
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "field": name,
+                    "class": klass,
+                    "n_dates": n_dates,
+                    "n_flagged": n_flagged,
+                    "flagged_share": round(share, 3),
+                    "median_pct_gap": float(block["_pct"].median()),
+                    "min_pct_gap": float(block["_pct"].min()),
+                    "max_pct_gap": float(block["_pct"].max()),
+                    "median_abs_gap": float(block["_delta"].abs().median()),
+                    "is_systematic": bool(share >= SHARADAR_GAP_SYSTEMATIC_SHARE and n_dates >= SHARADAR_GAP_MIN_DATES and n_flagged > 0),
+                    "is_expected": name in SHARADAR_GAP_EXPECTED_FIELDS,
+                    "inherits_from": inherited_from_expected(name, field_map),
+                }
+            )
     gaps = pd.DataFrame(rows)
     if gaps.empty:
         return gaps
-    return gaps.sort_values(["is_systematic", "is_expected", "median_pct_gap"],
-                            ascending=[False, True, False]).reset_index(drop=True)
+    return gaps.sort_values(["is_systematic", "is_expected", "median_pct_gap"], ascending=[False, True, False]).reset_index(drop=True)
 
 
 def candidates(gaps: pd.DataFrame) -> pd.DataFrame:
@@ -247,19 +242,22 @@ def propose(gaps: pd.DataFrame, *, config_dir: str = DEFAULT_CONFIG_DIR) -> tupl
             continue
         entries.setdefault(ticker, {})[field] = {
             "source": SHARADAR_OVERRIDE_SOURCE_SEC,
-            "reason": (f"PROPOSED {date.today().isoformat()}: Sharadar differs from the SEC "
-                       f"layer on {row['n_flagged']} of {row['n_dates']} shared dates "
-                       f"(median {row['median_pct_gap']:.1%}). Systematic, so a basis fork "
-                       f"rather than a restatement. REPLACE THIS with what the filer's own "
-                       f"caption says before approving."),
+            "reason": (
+                f"PROPOSED {date.today().isoformat()}: Sharadar differs from the SEC "
+                f"layer on {row['n_flagged']} of {row['n_dates']} shared dates "
+                f"(median {row['median_pct_gap']:.1%}). Systematic, so a basis fork "
+                f"rather than a restatement. REPLACE THIS with what the filer's own "
+                f"caption says before approving."
+            ),
             "measured_gap_pct": round(row["median_pct_gap"], 4),
             "n_dates": int(row["n_dates"]),
             SHARADAR_OVERRIDE_APPROVED_KEY: None,
         }
         added += 1
     path = write_overrides(entries, _README, config_dir=config_dir)
-    log.warning("gap check: %d new proposal(s) written to %s with `approved: null` -- they "
-                "change NOTHING until a human adjudicates them", added, path)
+    log.warning(
+        "gap check: %d new proposal(s) written to %s with `approved: null` -- they " "change NOTHING until a human adjudicates them", added, path
+    )
     return path, added
 
 
@@ -278,7 +276,7 @@ _README: list[str] = [
     "proposal would import the defect. Read the filing before setting `approved`; a proposal",
     "is a question, not an answer.",
     "",
-    "THE ONLY LEGAL DIRECTION is `\"source\": \"sec\"`. Moving a column the other way is not an",
+    'THE ONLY LEGAL DIRECTION is `"source": "sec"`. Moving a column the other way is not an',
     "override but a field-BLOCK change (D14) and belongs in `sharadar_field_map.json`.",
     "",
     "⚠ COVERAGE COST. An override moves a (ticker, field) to a source with the SEC roster's",
@@ -303,8 +301,7 @@ def format_report(gaps: pd.DataFrame, *, overlap: int, fields: int) -> str:
     found = candidates(gaps)
     expected = gaps[gaps["is_systematic"] & gaps["is_expected"]] if not gaps.empty else gaps
     clean = gaps[~gaps["is_systematic"]] if not gaps.empty else gaps
-    show = ["ticker", "field", "class", "n_dates", "n_flagged", "median_pct_gap",
-            "min_pct_gap", "max_pct_gap", "median_abs_gap", "inherits_from"]
+    show = ["ticker", "field", "class", "n_dates", "n_flagged", "median_pct_gap", "min_pct_gap", "max_pct_gap", "median_abs_gap", "inherits_from"]
 
     def table(frame: pd.DataFrame) -> str:
         if frame.empty:
@@ -313,49 +310,48 @@ def format_report(gaps: pd.DataFrame, *, overlap: int, fields: int) -> str:
         for column in ("median_pct_gap", "min_pct_gap", "max_pct_gap"):
             head[column] = head[column].map(lambda v: f"{v:.2%}")
         head["median_abs_gap"] = head["median_abs_gap"].map(lambda v: f"{v:,.0f}")
-        return md_table(head) + (
-            f"\n_{len(frame)} row(s) total; {WORST_ROWS} shown._\n"
-            if len(frame) > WORST_ROWS else "")
+        return md_table(head) + (f"\n_{len(frame)} row(s) total; {WORST_ROWS} shown._\n" if len(frame) > WORST_ROWS else "")
 
-    return "\n".join([
-        "# Phase 4 — Sharadar vs SEC gap check",
-        "",
-        f"Scope: **{overlap} overlapping tickers**, **{fields} comparable fields**, every "
-        f"shared `as_of`. Flagged when |Δ|/|sec| > "
-        f"{SHARADAR_GAP_RELATIVE_THRESHOLD:.0%} **and** |Δ| exceeds the class floor; "
-        f"**systematic** when that holds on ≥ {SHARADAR_GAP_SYSTEMATIC_SHARE:.0%} of at "
-        f"least {SHARADAR_GAP_MIN_DATES} shared dates.",
-        "",
-        "⚠ This is not the validator (D25). It registers no check and writes no "
-        "`fundamentals_check` row.",
-        "",
-        "## 1. Override candidates — systematic, and NOT a designed-in fork",
-        "",
-        "**These are the findings.** Each is a basis conflict nobody has adjudicated. An "
-        "override moves the field to a source with the SEC roster's coverage; a ticker "
-        "outside that roster gets NULL, not a Sharadar fallback.",
-        "",
-        table(found),
-        "",
-        "## 2. Systematic and EXPECTED — the phase-3 basis forks, not defects",
-        "",
-        "Named so they do not drown section 1. `sharadar_field_map.json` states the reason "
-        "for each.",
-        "",
-        table(expected),
-        "",
-        "## 3. Not systematic — restatements, roundings, one-offs",
-        "",
-        f"_{len(clean)} (ticker, field) pair(s)._ A gap on 1 of 11 dates is not an override "
-        "candidate.",
-        "",
-    ])
+    return "\n".join(
+        [
+            "# Phase 4 — Sharadar vs SEC gap check",
+            "",
+            f"Scope: **{overlap} overlapping tickers**, **{fields} comparable fields**, every "
+            f"shared `as_of`. Flagged when |Δ|/|sec| > "
+            f"{SHARADAR_GAP_RELATIVE_THRESHOLD:.0%} **and** |Δ| exceeds the class floor; "
+            f"**systematic** when that holds on ≥ {SHARADAR_GAP_SYSTEMATIC_SHARE:.0%} of at "
+            f"least {SHARADAR_GAP_MIN_DATES} shared dates.",
+            "",
+            "## 1. Override candidates — systematic, and NOT a designed-in fork",
+            "",
+            "**These are the findings.** Each is a basis conflict nobody has adjudicated. An "
+            "override moves the field to a source with the SEC roster's coverage; a ticker "
+            "outside that roster gets NULL, not a Sharadar fallback.",
+            "",
+            table(found),
+            "",
+            "## 2. Systematic and EXPECTED — the phase-3 basis forks, not defects",
+            "",
+            "Named so they do not drown section 1. `sharadar_field_map.json` states the reason " "for each.",
+            "",
+            table(expected),
+            "",
+            "## 3. Not systematic — restatements, roundings, one-offs",
+            "",
+            f"_{len(clean)} (ticker, field) pair(s)._ A gap on 1 of 11 dates is not an override " "candidate.",
+            "",
+        ]
+    )
 
 
-def run_gap_check(context: Context, tickers: Sequence[str] | None = None, *,
-                  report_path: str | Path = DEFAULT_REPORT_PATH,
-                  propose_overrides: bool = False,
-                  config_dir: str = DEFAULT_CONFIG_DIR) -> pd.DataFrame:
+def run_gap_check(
+    context: Context,
+    tickers: Sequence[str] | None = None,
+    *,
+    report_path: str | Path = DEFAULT_REPORT_PATH,
+    propose_overrides: bool = False,
+    config_dir: str = DEFAULT_CONFIG_DIR,
+) -> pd.DataFrame:
     """Measure, write the markdown, and optionally write the proposals. Returns the frame so
     a test can assert on it without re-reading a file."""
     gaps = measure_gaps(context, tickers, config_dir=config_dir)
@@ -365,16 +361,18 @@ def run_gap_check(context: Context, tickers: Sequence[str] | None = None, *,
     overlap = gaps["ticker"].nunique()
     path = Path(report_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(format_report(gaps, overlap=overlap,
-                                  fields=gaps["field"].nunique()), encoding="utf-8")
+    path.write_text(format_report(gaps, overlap=overlap, fields=gaps["field"].nunique()), encoding="utf-8")
     found = candidates(gaps)
-    context.log.info("gap check: %d (ticker, field) pair(s) over %d ticker(s); %d systematic, "
-                     "%d of them NOT expected -> %s", len(gaps), overlap,
-                     int(gaps["is_systematic"].sum()), len(found), path)
+    context.log.info(
+        "gap check: %d (ticker, field) pair(s) over %d ticker(s); %d systematic, " "%d of them NOT expected -> %s",
+        len(gaps),
+        overlap,
+        int(gaps["is_systematic"].sum()),
+        len(found),
+        path,
+    )
     if not found.empty:
-        context.log.warning("gap check candidates:\n%s",
-                            found[["ticker", "field", "n_flagged", "n_dates",
-                                   "median_pct_gap"]].to_string(index=False))
+        context.log.warning("gap check candidates:\n%s", found[["ticker", "field", "n_flagged", "n_dates", "median_pct_gap"]].to_string(index=False))
     if propose_overrides:
         propose(gaps, config_dir=config_dir)
     return gaps

@@ -140,7 +140,6 @@ financial-notes            # VERY HEAVY
 # -- structure --
 def14a                     # LLM-parsed governance (costs OpenAI calls)
 filing-text
-wiki-pageviews  google-trends
 download-earnings-calls    # to disk, no DB (HEAVY)
 ingest-earnings-calls      # cached transcripts -> earnings_call_sections; -F re-parses all
 ```

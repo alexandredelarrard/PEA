@@ -56,17 +56,12 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `short_interest` | 963,115 | 84 MB | 4 | 502 | `date` | **2017-12-29** → 2026-07-31 |
 | `fundamentals_facts` | 316,245 | 131 MB | 26 | **54** | `filing_date` | 2009-07-31 → 2026-08-10 *(08-26)* |
 | `sharadar_tickers` | 17,827 | 15 MB | 28 | 17,827 | — | Sharadar entity dimension *(08-26)* |
-| `fundamentals_reason_codes` | 78,239 | 13 MB | 6 | **54** | `as_of` | 2009-07-31 → 2026-08-10 *(08-26)* |
 | `fundamentals_history_sec` | **3,258** | 1.8 MB | **69** | **54** | `as_of` | 2009-07-31 → 2026-08-10 *(08-26)* |
 | `fundamentals_sharadar` | **116,824** | 130 MB | **112** | **489** | `date` | 1995-09-01 → 2026-08-28 *(08-31)* |
 | `fundamentals_history` | **51,255** | 31 MB | **91** | **489** | `as_of` | 1995-09-01 → 2026-08-28 *(08-31)* |
 | `sharadar_sp500` | 3,306 | 432 kB | 7 | 30 | `date` | 1992-01-02 → 2026-08-25 *(08-26)* |
 | `sharadar_actions` | 594 | 128 kB | 7 | 30 | `date` | 2021-08-27 → 2026-08-25 *(08-26)* |
 | `fundamentals_employees` | 754 | 112 kB | 3 | **54** | `as_of` | 2002-03-20 → 2026-07-29 *(08-26)* |
-| `fundamentals_check` | 23,656 | 31 MB | 23 | **54** | `run_date` | two runs: 2026-08-24 → 2026-08-25 |
-| `fundamentals_check_run` | 70 | 136 kB | 17 | — | `run_date` | two runs: 2026-08-24 → 2026-08-25 |
-| `fundamentals_check_status` | 2 | 48 kB | 8 | — | `decided_at` | MCD `capex`: `peer_ratio` + `series_shape` waived |
-| `fundamentals_check_fix` | 1 | 64 kB | 16 | — | `decided_at` | MCD `capex` `1c9a517eaa47`, 2026-08-25 |
 | `google_trends` | 388,336 | 32 MB | 3 | 500 | `date` | 2011-07-17 → **2026-07-12** |
 | `cusip_ticker_map` | 145,748 | 14 MB | 2 | 19,824 | — | — |
 | `notes_num` | 40,587 | 14 MB | 14 | — | `ddate` | 2007-12-31 → **2026-04-30** |
@@ -86,22 +81,6 @@ Ordered by size. `tickers` = distinct non-null tickers.
 | `superinvestor_roster` | 962 | — | 6 | — | `snapshot_date` | 2013-01-01 → today (14 snapshots, 50 → 83 managers) |
 | `symbol_tenure` | 30,530 | 7.9 MB | 7 | — | `valid_from` | 2006-01-03 → today (81 cached quarters; 27,393 symbols, 2,467 with >1 issuer CIK, 5,144 tenures still open) |
 | `entity_lineage` | 556 | 288 kB | 5 | — | — | 621 candidate CIKs → 505 entities; 500 one-per-universe-ticker |
-
-- **The four validator tables hold TWO comparable runs** (`3df52ae9af75` → `725bae7bf8ed`,
-  54 tickers, all tiers). They are written only by `src/validate/` and gate nothing.
-  `fundamentals_check` is a LEDGER: nothing is ever subtracted from it, so a row-count drop
-  against a later run of the same scope has exactly one cause. Runs are comparable only when
-  their `scope_hash` matches, which is why `run_id` is in the primary key — two runs of
-  different scope on one day would otherwise collide on every ticker they share.
-- **`fundamentals_check_status` is the only MUTABLE state**, keyed `(cluster_id, check_name)`
-  with `''` meaning the whole cluster. Its 2 rows tolerate MCD `capex`'s benign residue one
-  check at a time.
-- **`fundamentals_check_fix` is APPEND-ONLY** and holds the one backfilled record: cluster
-  `1c9a517eaa47` (MCD `capex`), layer `extraction`, commit `2fb6ef2`, findings 55 → 4 and queue
-  54 → 3 between the two runs above. It exists because a fix previously had nowhere to be
-  recorded — that one left only a commit sha. **Neither table filters a finding**: a waiver is
-  applied when a report is RENDERED, and `fundamentals_check` still carries all 4 of that
-  cluster's rows with every check firing.
 
 ## Coverage gotchas worth knowing before you build a feature
 

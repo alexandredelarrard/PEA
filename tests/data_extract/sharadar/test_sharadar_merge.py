@@ -11,7 +11,6 @@ Each test prints its conclusion. Two exist specifically to pin a DECISION a late
 otherwise take for an oversight: that the four amendment columns are absent (D15), and that an
 unapproved override entry changes nothing (D22).
 
-!! Nothing here touches `src/validate/` or the `fundamentals_check*` tables (D25).
 """
 
 from __future__ import annotations

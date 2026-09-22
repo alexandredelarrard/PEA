@@ -14,6 +14,7 @@ Two kinds of test here, deliberately:
   * REAL DATA for the economic facts (AAPL 106.26, KO 24.98, AMZN's exact identity), because
     "is the stored series split-adjusted-only" is a question about the stored series.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -29,13 +30,13 @@ pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 @pytest.fixture(scope="module")
 def store():
     from src.context import get_config_context
+
     _, context = get_config_context("./configs", use_cache=False, save=False)
     return context.store
 
 
 def _series(store, ticker: str) -> pd.DataFrame:
-    df = store.load(Tables.prices, columns=["ticker", "date", "close_split", "close_total"],
-                    where={"ticker": ticker}, optional=True)
+    df = store.load(Tables.prices, columns=["ticker", "date", "close_split", "close_total"], where={"ticker": ticker}, optional=True)
     if df is None or df.empty:
         pytest.skip(f"`prices` has no rows for {ticker}")
     return df.sort_values("date").reset_index(drop=True)
@@ -44,14 +45,17 @@ def _series(store, ticker: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # 1. the stored basis is SPLIT-adjusted, not dividend-adjusted                #
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("ticker,day,split_px,total_px", [
-    # AAPL 2020-07-31: Yahoo `Close` 106.26 == Sharadar `price` 106.26 on two independent
-    # vendors; `Adj Close` 102.795 is what the repo used to store as `close`.
-    ("AAPL", "2020-07-31", 106.26, 102.795),
-    # KO 2004-02-27: a 22-year dividend history, so D(d) = 0.512 -- the largest gap in the
-    # sample and the clearest possible discriminator.
-    ("KO", "2004-02-27", 24.98, 12.790),
-])
+@pytest.mark.parametrize(
+    "ticker,day,split_px,total_px",
+    [
+        # AAPL 2020-07-31: Yahoo `Close` 106.26 == Sharadar `price` 106.26 on two independent
+        # vendors; `Adj Close` 102.795 is what the repo used to store as `close`.
+        ("AAPL", "2020-07-31", 106.26, 102.795),
+        # KO 2004-02-27: a 22-year dividend history, so D(d) = 0.512 -- the largest gap in the
+        # sample and the clearest possible discriminator.
+        ("KO", "2004-02-27", 24.98, 12.790),
+    ],
+)
 def test_close_split_is_the_split_adjusted_quote(store, ticker, day, split_px, total_px):
     """`close_split` must be the SPLIT-ADJUSTED quote and `close_total` the total-return one.
 
@@ -68,14 +72,14 @@ def test_close_split_is_the_split_adjusted_quote(store, ticker, day, split_px, t
 
     assert got_split == pytest.approx(split_px, abs=0.01), (
         f"{ticker} {day}: close_split {got_split} != {split_px}. If this reads {total_px} "
-        f"the two columns are SWAPPED and market cap is on the dividend-adjusted basis.")
+        f"the two columns are SWAPPED and market cap is on the dividend-adjusted basis."
+    )
     assert got_total == pytest.approx(total_px, abs=0.01)
 
     print(f"\n=== SANITY CHECK: {ticker} {day} basis ===")
     print(f"  close_split {got_split} (== Sharadar `price`, split-adjusted only)")
     print(f"  close_total {got_total} (== old `close`; D = {got_total / got_split:.4f})")
-    print("  Validated: the level basis and the return basis are distinct and correctly "
-          "assigned.")
+    print("  Validated: the level basis and the return basis are distinct and correctly " "assigned.")
 
 
 def test_a_non_payer_has_identical_bases(store):
@@ -88,7 +92,8 @@ def test_a_non_payer_has_identical_bases(store):
     assert identical == len(df), (
         f"AMZN: {len(df) - identical} of {len(df)} rows differ between the two bases, but "
         f"AMZN has never paid a dividend -- so something adjusted one column and not the "
-        f"other.")
+        f"other."
+    )
 
     print("\n=== SANITY CHECK: non-payer identity ===")
     print(f"  AMZN: {identical:,}/{len(df):,} rows have close_split == close_total EXACTLY.")
@@ -111,8 +116,8 @@ def test_the_dividend_factor_is_monotone_and_terminates_at_one(store):
     drops = int((np.diff(d) < -1e-3).sum())
     assert drops == 0, f"D(d) falls on {drops} day(s) -- it must be non-decreasing in date"
     assert d[-1] == pytest.approx(1.0, abs=1e-6), (
-        f"D(last row) = {d[-1]}, must be exactly 1.0 -- no dividends remain after the last "
-        f"bar, so the two bases must coincide there")
+        f"D(last row) = {d[-1]}, must be exactly 1.0 -- no dividends remain after the last " f"bar, so the two bases must coincide there"
+    )
 
     print("\n=== SANITY CHECK: D(d) shape on KO ===")
     print(f"  first {d[0]:.4f} -> last {d[-1]:.6f}; 0 decreases over {len(d):,} rows.")
@@ -139,15 +144,14 @@ def test_the_macro_leg_is_pinned_to_total_return():
     def _spy(tickers, since, until, *a, **kw):
         seen.update(kw)
         idx = pd.date_range("2024-01-02", periods=3, freq="B")
-        return pd.concat([pd.DataFrame({"date": idx, "ticker": sym,
-                                        "close_total": [100.0, 101.0, 102.0]})
-                          for sym in MACRO_PRICE_SERIES], ignore_index=True)
+        return pd.concat(
+            [pd.DataFrame({"date": idx, "ticker": sym, "close_total": [100.0, 101.0, 102.0]}) for sym in MACRO_PRICE_SERIES], ignore_index=True
+        )
 
     original = fm.download_ohlcv
     try:
         fm.download_ohlcv = _spy
-        ctx = type("Ctx", (), {"log": type("L", (), {"info": lambda *a, **k: None,
-                                                     "warning": lambda *a, **k: None})()})()
+        ctx = type("Ctx", (), {"log": type("L", (), {"info": lambda *a, **k: None, "warning": lambda *a, **k: None})()})()
         fm._fetch_price_leg(ctx, pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-05"))
     finally:
         fm.download_ohlcv = original
@@ -155,13 +159,12 @@ def test_the_macro_leg_is_pinned_to_total_return():
     assert seen.get("auto_adjust") is True, (
         f"the macro leg called download_ohlcv with auto_adjust={seen.get('auto_adjust')!r}. "
         f"It MUST be True: SPY is stored as `equity_tr` and every label is measured against "
-        f"it, so a price-return SPY corrupts beta_market and fwd_market everywhere.")
+        f"it, so a price-return SPY corrupts beta_market and fwd_market everywhere."
+    )
 
     print("\n=== SANITY CHECK: macro basis pin ===")
-    print(f"  _fetch_price_leg -> download_ohlcv(auto_adjust={seen.get('auto_adjust')}, "
-          f"actions={seen.get('actions')})")
-    print("  Validated: the equity leg's auto_adjust=False cannot drag the benchmark with "
-          "it.")
+    print(f"  _fetch_price_leg -> download_ohlcv(auto_adjust={seen.get('auto_adjust')}, " f"actions={seen.get('actions')})")
+    print("  Validated: the equity leg's auto_adjust=False cannot drag the benchmark with " "it.")
 
 
 # --------------------------------------------------------------------------- #
@@ -192,20 +195,17 @@ def test_forward_compound_and_forward_return_diverge_exactly_on_the_dividend():
     div = pd.Series(0.0, index=idx)
     div.iloc[::63] = 0.005
     total_ret = price_ret["X"] + div
-    close_payer = (1 + price_ret["X"]).cumprod() * 100.0        # PRICE path only
+    close_payer = (1 + price_ret["X"]).cumprod() * 100.0  # PRICE path only
     a_pay = forward_compound(total_ret.to_frame("X"), h)["X"]
     b_pay = forward_return(close_payer.to_frame("X"), h)["X"]
     valid = a_pay.notna() & b_pay.notna()
     gap = (a_pay[valid] - b_pay[valid]).mean()
 
-    assert gap > 1e-4, (
-        f"the compounded TOTAL return must exceed the PRICE ratio for a payer; gap {gap:.6f}")
+    assert gap > 1e-4, f"the compounded TOTAL return must exceed the PRICE ratio for a payer; gap {gap:.6f}"
 
     print("\n=== SANITY CHECK: label formula ===")
-    print(f"  non-payer: forward_compound == forward_return to 1e-9 over "
-          f"{int(both.sum())} windows")
-    print(f"  payer (0.5%/qtr): forward_compound exceeds the price ratio by "
-          f"{gap:+.4%} per {h}-day window on average")
+    print(f"  non-payer: forward_compound == forward_return to 1e-9 over " f"{int(both.sum())} windows")
+    print(f"  payer (0.5%/qtr): forward_compound exceeds the price ratio by " f"{gap:+.4%} per {h}-day window on average")
     print("  Validated: the label change is exactly the dividends, and nothing else.")
 
 
@@ -218,27 +218,29 @@ def test_the_invariants_fire_on_a_deliberately_corrupted_ticker():
     A validator nobody has seen fail is a validator nobody knows works. This is the same
     2x an unapplied split produces -- exactly the live MNST shape -- so it is not an
     artificial input either."""
-    from src.validate.prices import invariant_market_cap, invariant_price_vintage
+    from src.validate.utils.prices import invariant_market_cap, invariant_price_vintage
 
     idx = pd.bdate_range("2024-01-31", periods=12, freq="QE")
-    clean = pd.DataFrame({
-        "ticker": ["GOOD"] * len(idx) + ["BAD"] * len(idx),
-        "date": list(idx) * 2,
-        "close_split": [100.0] * len(idx) * 2,
-        "price": [100.0] * len(idx) * 2,
-        "sharesOutstanding": [1e9] * len(idx) * 2,
-        "sharesbas": [1e9] * len(idx) * 2,
-        "marketcap": [1e11] * len(idx) * 2,
-        # no spinoff anywhere in this fixture, so S is the identity and the invariants
-        # reduce to exactly what they were before the level fix
-        "level_factor": [1.0] * len(idx) * 2,
-    })
+    clean = pd.DataFrame(
+        {
+            "ticker": ["GOOD"] * len(idx) + ["BAD"] * len(idx),
+            "date": list(idx) * 2,
+            "close_split": [100.0] * len(idx) * 2,
+            "price": [100.0] * len(idx) * 2,
+            "sharesOutstanding": [1e9] * len(idx) * 2,
+            "sharesbas": [1e9] * len(idx) * 2,
+            "marketcap": [1e11] * len(idx) * 2,
+            # no spinoff anywhere in this fixture, so S is the identity and the invariants
+            # reduce to exactly what they were before the level fix
+            "level_factor": [1.0] * len(idx) * 2,
+        }
+    )
     assert invariant_market_cap(clean).failed == 0, "the clean panel must pass"
     assert invariant_price_vintage(clean).failed == 0
 
     corrupt = clean.copy()
     bad_rows = corrupt["ticker"] == "BAD"
-    corrupt.loc[bad_rows, "close_split"] *= 2.0        # an unapplied 2:1 split
+    corrupt.loc[bad_rows, "close_split"] *= 2.0  # an unapplied 2:1 split
 
     mcap = invariant_market_cap(corrupt)
     vintage = invariant_price_vintage(corrupt)
@@ -249,16 +251,17 @@ def test_the_invariants_fire_on_a_deliberately_corrupted_ticker():
     assert vintage.failed == len(idx) and set(vintage.failing_tickers) == {"BAD"}
 
     print("\n=== SANITY CHECK: the gate fires ===")
-    print(f"  clean panel        -> invariant 1: 0 failures, invariant 2: 0 failures")
-    print(f"  BAD close_split x2 -> invariant 1: {mcap.failed} rows "
-          f"(median ratio {mcap.failing_tickers['BAD']['median_ratio']}), "
-          f"invariant 2: {vintage.failed} rows")
+    print("  clean panel        -> invariant 1: 0 failures, invariant 2: 0 failures")
+    print(
+        f"  BAD close_split x2 -> invariant 1: {mcap.failed} rows "
+        f"(median ratio {mcap.failing_tickers['BAD']['median_ratio']}), "
+        f"invariant 2: {vintage.failed} rows"
+    )
     print(f"  GOOD is untouched in both: {sorted(mcap.failing_tickers)}")
-    print("  Validated: both invariants detect an unapplied split and cluster it to the one "
-          "ticker responsible.")
+    print("  Validated: both invariants detect an unapplied split and cluster it to the one " "ticker responsible.")
 
 
-def test_a_spinoff_ticker_fails_invariant_1_without_S_and_passes_with_it():
+def test_a_spinoff_ticker_fails_invariant_1_without_s_and_passes_with_it():
     """The level factor, at the validator's own boundary -- the FDX shape, synthesised.
 
     A spinoff divides Yahoo's `close_split` by `S` and leaves the share count alone, so the
@@ -270,21 +273,23 @@ def test_a_spinoff_ticker_fails_invariant_1_without_S_and_passes_with_it():
       * without `S` the row fails and `raw_failed` records that it did;
       * with `S` it passes, and the clean ticker beside it never moves either way.
     """
-    from src.validate.prices import invariant_market_cap, invariant_price_vintage
+    from src.validate.utils.prices import invariant_market_cap, invariant_price_vintage
 
     idx = pd.bdate_range("2018-01-31", periods=8, freq="QE")
-    S = 1.241                                   # FDX's measured factor
-    panel = pd.DataFrame({
-        "ticker": ["CLEAN"] * len(idx) + ["SPUN"] * len(idx),
-        "date": list(idx) * 2,
-        # SPUN's quote is back-adjusted for a spinoff still in its future; CLEAN's is not
-        "close_split": [100.0] * len(idx) + [100.0 / S] * len(idx),
-        "price": [100.0] * len(idx) * 2,        # Sharadar never back-adjusts either one
-        "sharesOutstanding": [1e9] * len(idx) * 2,
-        "sharesbas": [1e9] * len(idx) * 2,
-        "marketcap": [1e11] * len(idx) * 2,     # a spinoff does not change the share count
-        "level_factor": [1.0] * len(idx) + [S] * len(idx),
-    })
+    s_coef = 1.241  # FDX's measured factor
+    panel = pd.DataFrame(
+        {
+            "ticker": ["CLEAN"] * len(idx) + ["SPUN"] * len(idx),
+            "date": list(idx) * 2,
+            # SPUN's quote is back-adjusted for a spinoff still in its future; CLEAN's is not
+            "close_split": [100.0] * len(idx) + [100.0 / s_coef] * len(idx),
+            "price": [100.0] * len(idx) * 2,  # Sharadar never back-adjusts either one
+            "sharesOutstanding": [1e9] * len(idx) * 2,
+            "sharesbas": [1e9] * len(idx) * 2,
+            "marketcap": [1e11] * len(idx) * 2,  # a spinoff does not change the share count
+            "level_factor": [1.0] * len(idx) + [s_coef] * len(idx),
+        }
+    )
 
     mcap = invariant_market_cap(panel)
     vintage = invariant_price_vintage(panel)
@@ -294,15 +299,17 @@ def test_a_spinoff_ticker_fails_invariant_1_without_S_and_passes_with_it():
     assert mcap.raw_failed == len(idx), (
         "and WITHOUT S it must fail on exactly the spinoff ticker's rows -- a test that only "
         f"checked the corrected rate could not tell the fix from a widened tolerance: "
-        f"{mcap.raw_failed}")
+        f"{mcap.raw_failed}"
+    )
     assert vintage.raw_failed == len(idx)
     assert mcap.raw_share == pytest.approx(0.5), "half the panel is the spun ticker"
 
     print("\n=== SANITY CHECK: S closes the spinoff identity ===")
-    print(f"  SPUN: close_split {100.0 / S:.4f} x 1e9 shares = "
-          f"${100.0 / S * 1e9 / 1e9:.2f}bn vs Sharadar ${1e11 / 1e9:.0f}bn "
-          f"-> {100.0 / S * 1e9 / 1e11 - 1:+.2%} without S")
-    print(f"  x S = {S} -> ${100.0 / S * S * 1e9 / 1e9:.2f}bn, exact.")
-    print(f"  invariant 1: {mcap.raw_failed} rows fail without S, {mcap.failed} with it; "
-          f"CLEAN never implicated either way.")
+    print(
+        f"  SPUN: close_split {100.0 / s_coef:.4f} x 1e9 shares = "
+        f"${100.0 / s_coef * 1e9 / 1e9:.2f}bn vs Sharadar ${1e11 / 1e9:.0f}bn "
+        f"-> {100.0 / s_coef * 1e9 / 1e11 - 1:+.2%} without S"
+    )
+    print(f"  x S = {s_coef} -> ${100.0 / s_coef * s_coef * 1e9 / 1e9:.2f}bn, exact.")
+    print(f"  invariant 1: {mcap.raw_failed} rows fail without s_coef, {mcap.failed} with it; " f"CLEAN never implicated either way.")
     print("  Validated: the factor fixes the spinoff row and touches nothing else.")

@@ -34,34 +34,64 @@ from __future__ import annotations
 import logging
 import zipfile
 from pathlib import Path
+
 import pandas as pd
 from tqdm import tqdm
 
-from src.data_store.schema import Tables
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
-    cache_dir, ensure_zip, quarter_periods,
+    cache_dir,
+    ensure_zip,
+    quarter_periods,
 )
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.sec_utils import (
-    bulk_ingested_quarters, load_processed_universe, save_processed_universe)
+from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sec_utils import bulk_ingested_quarters, load_processed_universe, save_processed_universe
+from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
 _OUT_COLS = [
-    "accession_number", "security_type", "transaction_sk", "ticker", "issuer_cik",
-    "issuer_name", "owner_cik", "owner_name", "is_director", "is_officer",
-    "is_ten_pct_owner", "is_other", "officer_title", "document_type",
-    "transaction_date", "filing_date", "period_of_report", "security_title",
-    "transaction_code", "acquired_disposed", "shares", "price_per_share",
-    "value_usd", "shares_owned_after", "direct_indirect", "quarter",
+    "accession_number",
+    "security_type",
+    "transaction_sk",
+    "ticker",
+    "issuer_cik",
+    "issuer_name",
+    "owner_cik",
+    "owner_name",
+    "is_director",
+    "is_officer",
+    "is_ten_pct_owner",
+    "is_other",
+    "officer_title",
+    "document_type",
+    "transaction_date",
+    "filing_date",
+    "period_of_report",
+    "security_title",
+    "transaction_code",
+    "acquired_disposed",
+    "shares",
+    "price_per_share",
+    "value_usd",
+    "shares_owned_after",
+    "direct_indirect",
+    "quarter",
     # --- enrichment: present in the zips since 2006, previously discarded --- #
-    "is_10b5_1", "transaction_form_type", "equity_swap_involved",
-    "deemed_execution_date", "nature_of_ownership", "transaction_timeliness",
+    "is_10b5_1",
+    "transaction_form_type",
+    "equity_swap_involved",
+    "deemed_execution_date",
+    "nature_of_ownership",
+    "transaction_timeliness",
     # --- derivative block: NULL on nonderiv rows BY CONSTRUCTION --- #
-    "exercise_price", "exercise_date", "expiration_date",
-    "underlying_security_title", "underlying_shares", "underlying_value",
+    "exercise_price",
+    "exercise_date",
+    "expiration_date",
+    "underlying_security_title",
+    "underlying_shares",
+    "underlying_value",
 ]
 
 _FOOTNOTE_COLS = ["accession_number", "footnote_id", "footnote_text"]
@@ -77,10 +107,11 @@ _10B5_1_FALSE = {"0", "false", "n", "no"}
 # SEC bulk quarterly structured data sets (free TSV zips; {quarter} = e.g. "2024q1").
 # insider = Forms 3/4/5 officer/director transactions; finstmt = primary-statement
 # XBRL facts (num/sub) incl. the balance-sheet net pension liability.
-SEC_INSIDER_URL_TEMPLATE = (
-    "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
-    "{quarter}_form345.zip")
-SEC_INSIDER_FIRST_YEAR = 2006     
+SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/" "{quarter}_form345.zip"
+SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/" "{quarter}_form345.zip"
+SEC_INSIDER_FIRST_YEAR = 2006
+SEC_INSIDER_SWAP_YEAR = 2026
+
 
 def _col(df: pd.DataFrame, name: str) -> pd.Series:
     """Column `name` if present, else an all-NA series aligned to df (the insider
@@ -115,81 +146,83 @@ def _transactions(df: pd.DataFrame, sk_col: str, security_type: str) -> pd.DataF
     shares = _num(df, "TRANS_SHARES")
     price = _num(df, "TRANS_PRICEPERSHARE")
     value = shares * price
-    if "TRANS_TOTAL_VALUE" in df.columns:               # derivative table carries it
+    if "TRANS_TOTAL_VALUE" in df.columns:  # derivative table carries it
         value = value.fillna(_num(df, "TRANS_TOTAL_VALUE"))
-    return pd.DataFrame({
-        "accession_number": _col(df, "ACCESSION_NUMBER"),
-        "security_type": security_type,
-        "transaction_sk": _col(df, sk_col),
-        "security_title": _col(df, "SECURITY_TITLE"),
-        "transaction_date": _date(df, "TRANS_DATE"),
-        "transaction_code": _col(df, "TRANS_CODE"),
-        "acquired_disposed": _col(df, "TRANS_ACQUIRED_DISP_CD"),
-        "shares": shares,
-        "price_per_share": price,
-        "value_usd": value,
-        "shares_owned_after": _num(df, "SHRS_OWND_FOLWNG_TRANS"),
-        "direct_indirect": _col(df, "DIRECT_INDIRECT_OWNERSHIP"),
-        # --- present on BOTH tables since 2006q1 (verified across the 81 cached zips) --- #
-        # `transaction_form_type` is 4 or 5: it says which FORM reported the trade, and a
-        # Form 5 is the late/exempt annual catch-up, so the same TRANS_CODE means something
-        # different depending on it. `deemed_execution_date` is set only when the filer could
-        # not know the price on the trade date (broker-executed plans), which is the strongest
-        # non-narrative 10b5-1 hint available before 2023.
-        "transaction_form_type": _col(df, "TRANS_FORM_TYPE"),
-        "equity_swap_involved": _col(df, "EQUITY_SWAP_INVOLVED"),
-        "deemed_execution_date": _date(df, "DEEMED_EXECUTION_DATE"),
-        "nature_of_ownership": _col(df, "NATURE_OF_OWNERSHIP"),
-        "transaction_timeliness": _col(df, "TRANS_TIMELINESS"),
-        # --- DERIV_TRANS only; `_col` returns all-NA on the nonderiv table --- #
-        # SEC misspells the exercise-date column `EXCERCISE_DATE` in its own data set, in every
-        # quarter from 2006q1 to 2026q1. Reading the correct spelling silently yields all-NA.
-        "exercise_price": _num(df, "CONV_EXERCISE_PRICE"),
-        "exercise_date": _date(df, "EXCERCISE_DATE"),
-        "expiration_date": _date(df, "EXPIRATION_DATE"),
-        "underlying_security_title": _col(df, "UNDLYNG_SEC_TITLE"),
-        "underlying_shares": _num(df, "UNDLYNG_SEC_SHARES"),
-        "underlying_value": _num(df, "UNDLYNG_SEC_VALUE"),
-    })
+    return pd.DataFrame(
+        {
+            "accession_number": _col(df, "ACCESSION_NUMBER"),
+            "security_type": security_type,
+            "transaction_sk": _col(df, sk_col),
+            "security_title": _col(df, "SECURITY_TITLE"),
+            "transaction_date": _date(df, "TRANS_DATE"),
+            "transaction_code": _col(df, "TRANS_CODE"),
+            "acquired_disposed": _col(df, "TRANS_ACQUIRED_DISP_CD"),
+            "shares": shares,
+            "price_per_share": price,
+            "value_usd": value,
+            "shares_owned_after": _num(df, "SHRS_OWND_FOLWNG_TRANS"),
+            "direct_indirect": _col(df, "DIRECT_INDIRECT_OWNERSHIP"),
+            # --- present on BOTH tables since 2006q1 (verified across the 81 cached zips) --- #
+            # `transaction_form_type` is 4 or 5: it says which FORM reported the trade, and a
+            # Form 5 is the late/exempt annual catch-up, so the same TRANS_CODE means something
+            # different depending on it. `deemed_execution_date` is set only when the filer could
+            # not know the price on the trade date (broker-executed plans), which is the strongest
+            # non-narrative 10b5-1 hint available before 2023.
+            "transaction_form_type": _col(df, "TRANS_FORM_TYPE"),
+            "equity_swap_involved": _col(df, "EQUITY_SWAP_INVOLVED"),
+            "deemed_execution_date": _date(df, "DEEMED_EXECUTION_DATE"),
+            "nature_of_ownership": _col(df, "NATURE_OF_OWNERSHIP"),
+            "transaction_timeliness": _col(df, "TRANS_TIMELINESS"),
+            # --- DERIV_TRANS only; `_col` returns all-NA on the nonderiv table --- #
+            # SEC misspells the exercise-date column `EXCERCISE_DATE` in its own data set, in every
+            # quarter from 2006q1 to 2026q1. Reading the correct spelling silently yields all-NA.
+            "exercise_price": _num(df, "CONV_EXERCISE_PRICE"),
+            "exercise_date": _date(df, "EXCERCISE_DATE"),
+            "expiration_date": _date(df, "EXPIRATION_DATE"),
+            "underlying_security_title": _col(df, "UNDLYNG_SEC_TITLE"),
+            "underlying_shares": _num(df, "UNDLYNG_SEC_SHARES"),
+            "underlying_value": _num(df, "UNDLYNG_SEC_VALUE"),
+        }
+    )
 
 
-def _parse_insider(sub: pd.DataFrame, own: pd.DataFrame,
-                   nonderiv: pd.DataFrame, deriv: pd.DataFrame) -> pd.DataFrame:
+def _parse_insider(sub: pd.DataFrame, own: pd.DataFrame, nonderiv: pd.DataFrame, deriv: pd.DataFrame) -> pd.DataFrame:
     """SUBMISSION + REPORTINGOWNER + (NON)DERIV_TRANS -> tidy transactions. Pure."""
     if sub is None or sub.empty:
         return pd.DataFrame()
-    submission = pd.DataFrame({
-        "accession_number": _col(sub, "ACCESSION_NUMBER"),
-        "issuer_cik": _col(sub, "ISSUERCIK"),
-        "issuer_name": _col(sub, "ISSUERNAME"),
-        "ticker": _col(sub, "ISSUERTRADINGSYMBOL").astype("string").str.strip().str.upper(),
-        "document_type": _col(sub, "DOCUMENT_TYPE"),
-        "filing_date": _date(sub, "FILING_DATE"),
-        "period_of_report": _date(sub, "PERIOD_OF_REPORT"),
-        # absent before 2023q1 -- `_col` returns all-NA there, which `_normalize_10b5_1` keeps
-        # as NaN rather than turning into a False
-        "is_10b5_1": _normalize_10b5_1(_col(sub, "AFF10B5ONE")),
-    })
+    submission = pd.DataFrame(
+        {
+            "accession_number": _col(sub, "ACCESSION_NUMBER"),
+            "issuer_cik": _col(sub, "ISSUERCIK"),
+            "issuer_name": _col(sub, "ISSUERNAME"),
+            "ticker": _col(sub, "ISSUERTRADINGSYMBOL").astype("string").str.strip().str.upper(),
+            "document_type": _col(sub, "DOCUMENT_TYPE"),
+            "filing_date": _date(sub, "FILING_DATE"),
+            "period_of_report": _date(sub, "PERIOD_OF_REPORT"),
+            # absent before 2023q1 -- `_col` returns all-NA there, which `_normalize_10b5_1` keeps
+            # as NaN rather than turning into a False
+            "is_10b5_1": _normalize_10b5_1(_col(sub, "AFF10B5ONE")),
+        }
+    )
 
     rel = _col(own, "RPTOWNER_RELATIONSHIP").astype("string").str.lower().fillna("")
-    owner = pd.DataFrame({
-        "accession_number": _col(own, "ACCESSION_NUMBER"),
-        "owner_cik": _col(own, "RPTOWNERCIK"),
-        "owner_name": _col(own, "RPTOWNERNAME"),
-        "officer_title": _col(own, "RPTOWNER_TITLE"),
-        "is_director": rel.str.contains("director", na=False).astype(float),
-        "is_officer": rel.str.contains("officer", na=False).astype(float),
-        "is_ten_pct_owner": (rel.str.contains("ten", na=False)
-                             | rel.str.contains("10", na=False)).astype(float),
-        "is_other": rel.str.contains("other", na=False).astype(float),
-    }).drop_duplicates("accession_number", keep="first")   # 1 owner per filing (a.o.c.)
+    owner = pd.DataFrame(
+        {
+            "accession_number": _col(own, "ACCESSION_NUMBER"),
+            "owner_cik": _col(own, "RPTOWNERCIK"),
+            "owner_name": _col(own, "RPTOWNERNAME"),
+            "officer_title": _col(own, "RPTOWNER_TITLE"),
+            "is_director": rel.str.contains("director", na=False).astype(float),
+            "is_officer": rel.str.contains("officer", na=False).astype(float),
+            "is_ten_pct_owner": (rel.str.contains("ten", na=False) | rel.str.contains("10", na=False)).astype(float),
+            "is_other": rel.str.contains("other", na=False).astype(float),
+        }
+    ).drop_duplicates("accession_number", keep="first")  # 1 owner per filing (a.o.c.)
 
-    trans = pd.concat([_transactions(nonderiv, "NONDERIV_TRANS_SK", "nonderiv"),
-                       _transactions(deriv, "DERIV_TRANS_SK", "deriv")], ignore_index=True)
+    trans = pd.concat([_transactions(nonderiv, "NONDERIV_TRANS_SK", "nonderiv"), _transactions(deriv, "DERIV_TRANS_SK", "deriv")], ignore_index=True)
     if trans.empty:
         return pd.DataFrame()
-    out = (trans.merge(submission, on="accession_number", how="inner")
-                .merge(owner, on="accession_number", how="left"))
+    out = trans.merge(submission, on="accession_number", how="inner").merge(owner, on="accession_number", how="left")
     out = _repair_transaction_dates(out)
     # a transaction with no SK can't be keyed (PK) -> drop
     return out.dropna(subset=["transaction_sk"])
@@ -224,7 +257,7 @@ def _repair_transaction_dates(df: pd.DataFrame) -> pd.DataFrame:
             century = (fd[i].year // 100) * 100
             try:
                 cand = td[i].replace(year=century + td[i].year % 100)
-            except ValueError:                      # 29 Feb in a non-leap target year
+            except ValueError:  # 29 Feb in a non-leap target year
                 continue
             if cand <= fd[i]:
                 shifted[i] = cand
@@ -247,11 +280,13 @@ def _footnotes(notes: pd.DataFrame, keep_accessions: set[str]) -> pd.DataFrame:
     2026q1 -- so no dedup is applied that could mask a future source change."""
     if notes is None or notes.empty or "ACCESSION_NUMBER" not in notes.columns:
         return pd.DataFrame(columns=_FOOTNOTE_COLS)
-    out = pd.DataFrame({
-        "accession_number": _col(notes, "ACCESSION_NUMBER"),
-        "footnote_id": _col(notes, "FOOTNOTE_ID"),
-        "footnote_text": _col(notes, "FOOTNOTE_TXT"),
-    })
+    out = pd.DataFrame(
+        {
+            "accession_number": _col(notes, "ACCESSION_NUMBER"),
+            "footnote_id": _col(notes, "FOOTNOTE_ID"),
+            "footnote_text": _col(notes, "FOOTNOTE_TXT"),
+        }
+    )
     out = out[out["accession_number"].isin(keep_accessions)]
     return out.dropna(subset=["accession_number", "footnote_id"])
 
@@ -287,8 +322,7 @@ def _verdicts(df: pd.DataFrame, universe, identity) -> pd.DataFrame:
     # `universe_entity` RAISES on a ticker absent from the roster, which is the common case
     # here (the claimed string is a filer's free-typed symbol), so it is asked only about
     # tickers the roster actually has.
-    known = {t: identity.universe_entity(t) for t in set(claimed.dropna())
-             & set(identity.roster_cik)}
+    known = {t: identity.universe_entity(t) for t in set(claimed.dropna()) & set(identity.roster_cik)}
 
     out = df.assign(
         claimed_ticker=claimed,
@@ -306,8 +340,7 @@ def _verdicts(df: pd.DataFrame, universe, identity) -> pd.DataFrame:
     return out.assign(reject_reason=reason)
 
 
-def _filter_universe(df: pd.DataFrame, universe: set[str],
-                     identity) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _filter_universe(df: pd.DataFrame, universe: set[str], identity) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Partition into (kept, rejected). Resolution is CIK-FIRST: the row's own `issuer_cik`
     names an ENTITY, and the entity names today's universe ticker.
 
@@ -351,9 +384,7 @@ def _filter_universe(df: pd.DataFrame, universe: set[str],
     scored = _verdicts(df, universe, identity)
     keep = scored["reject_reason"].isna()
     # scope: claimed a universe ticker, resolves to a roster company, or carries no CIK at all
-    in_scope = (scored["claimed_ticker"].isin(set(universe))
-                | scored["ticker"].notna()
-                | (scored["reject_reason"] == "no_issuer_cik"))
+    in_scope = scored["claimed_ticker"].isin(set(universe)) | scored["ticker"].notna() | (scored["reject_reason"] == "no_issuer_cik")
     return scored[keep], scored[~keep & in_scope]
 
 
@@ -375,6 +406,7 @@ def _to_quarantine(rejected: pd.DataFrame) -> pd.DataFrame:
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
 
+
 def _read_tables(path: Path):
     """SUBMISSION + REPORTINGOWNER + NONDERIV_TRANS + DERIV_TRANS + FOOTNOTES from a cached zip."""
     try:
@@ -382,22 +414,19 @@ def _read_tables(path: Path):
             names = {n.upper(): n for n in z.namelist()}
 
             def rd(key):
-                return (pd.read_csv(z.open(names[key]), sep="\t", dtype=str, low_memory=False)
-                        if key in names else pd.DataFrame())
+                return pd.read_csv(z.open(names[key]), sep="\t", dtype=str, low_memory=False) if key in names else pd.DataFrame()
 
             sub = rd("SUBMISSION.TSV")
             if sub.empty:
                 return None
-            return (sub, rd("REPORTINGOWNER.TSV"), rd("NONDERIV_TRANS.TSV"),
-                    rd("DERIV_TRANS.TSV"), rd("FOOTNOTES.TSV"))
+            return (sub, rd("REPORTINGOWNER.TSV"), rd("NONDERIV_TRANS.TSV"), rd("DERIV_TRANS.TSV"), rd("FOOTNOTES.TSV"))
     except zipfile.BadZipFile:
         logger.warning("insider %s: corrupt zip -> deleting so it re-downloads", path.name)
         path.unlink(missing_ok=True)
         return None
 
 
-def _screen_stored_rows(context: Context, universe, identity: Identity,
-                        chunk: int = 2_000) -> tuple[int, int]:
+def _screen_stored_rows(context: Context, universe, identity: Identity, chunk: int = 2_000) -> tuple[int, int]:
     """Re-adjudicate EVERY STORED ROW against today's universe; quarantine then DELETE the
     rejects. Returns `(quarantined, deleted)`.
 
@@ -420,43 +449,34 @@ def _screen_stored_rows(context: Context, universe, identity: Identity,
     and therefore one verdict, so the DELETE can key on `accession_number` alone without
     touching a row that was kept.
     """
-    keys = context.store.load(Tables.insider_transactions,
-                              columns=["accession_number", "ticker", "issuer_cik"],
-                              optional=True)
+    keys = context.store.load(Tables.insider_transactions, columns=["accession_number", "ticker", "issuer_cik"], optional=True)
     if keys is None or keys.empty:
         return 0, 0
     # One verdict per (accession, claimed ticker, cik): the grain it is actually decided at,
     # so the whole-table pass costs ~1.3M dedup keys rather than 2M full rows.
     scored = _verdicts(keys.drop_duplicates().assign(filing_date=pd.NaT), universe, identity)
-    accessions = sorted(scored.loc[scored["reject_reason"].notna(), "accession_number"]
-                        .dropna().unique())
+    accessions = sorted(scored.loc[scored["reject_reason"].notna(), "accession_number"].dropna().unique())
     if not accessions:
         logger.info("insider: stored-row sweep -- 0 of %d row(s) rejected", len(keys))
         return 0, 0
 
     quarantined = deleted = 0
     for start in range(0, len(accessions), chunk):
-        batch = accessions[start:start + chunk]
-        rows = context.store.load(Tables.insider_transactions,
-                                  where={"accession_number": batch}, optional=True)
+        batch = accessions[start : start + chunk]
+        rows = context.store.load(Tables.insider_transactions, where={"accession_number": batch}, optional=True)
         if rows is None or rows.empty:
             continue
         rejected = _verdicts(rows, universe, identity)
         rejected = rejected[rejected["reject_reason"].notna()]
-        if rejected.empty:                  # re-adjudicated clean on the full row: leave it
+        if rejected.empty:  # re-adjudicated clean on the full row: leave it
             continue
-        quarantined += context.store.save(Tables.insider_transactions_quarantine,
-                                          _to_quarantine(rejected))
-        deleted += context.store.delete(
-            Tables.insider_transactions,
-            where={"accession_number": sorted(rejected["accession_number"].unique())})
-    logger.info("insider: stored-row sweep -- quarantined %d row(s) over %d accession(s), "
-                "deleted %d", quarantined, len(accessions), deleted)
+        quarantined += context.store.save(Tables.insider_transactions_quarantine, _to_quarantine(rejected))
+        deleted += context.store.delete(Tables.insider_transactions, where={"accession_number": sorted(rejected["accession_number"].unique())})
+    logger.info("insider: stored-row sweep -- quarantined %d row(s) over %d accession(s), " "deleted %d", quarantined, len(accessions), deleted)
     return quarantined, deleted
 
 
-def fetch_insider_transactions(context: Context, tickers: list[str], years_history: int = 15,
-                               reparse: bool = False) -> int:
+def fetch_insider_transactions(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
     """Download (cached) the insider-transactions data sets over `years_history`,
     flatten to transactions, keep the universe, upsert to `insider_transactions` and
     `insider_footnotes`. Returns the number of transaction rows upserted.
@@ -478,13 +498,15 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
 
     done_q = bulk_ingested_quarters(context.store, Tables.insider_transactions)
-    new_tickers = set(tickers) - load_processed_universe(cache, Tables.insider_transactions)   # empty once converged
+    new_tickers = set(tickers) - load_processed_universe(cache, Tables.insider_transactions)  # empty once converged
     if new_tickers:
-        logger.info("insider: %d new/changed tickers -> re-parsing cached quarters",
-                    len(new_tickers))
+        logger.info("insider: %d new/changed tickers -> re-parsing cached quarters", len(new_tickers))
     if reparse:
-        logger.info("insider: --reparse -> re-reading every quarter back to %dq1 "
-                    "(no re-download; %d already ingested)", SEC_INSIDER_FIRST_YEAR, len(done_q))
+        logger.info(
+            "insider: --reparse -> re-reading every quarter back to %dq1 " "(no re-download; %d already ingested)",
+            SEC_INSIDER_FIRST_YEAR,
+            len(done_q),
+        )
 
     # a reparse must reach every quarter the source has, not just the routine window -- see the
     # docstring. `quarter_periods` clamps to SEC_INSIDER_FIRST_YEAR either way.
@@ -494,22 +516,23 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     saved = notes_saved = quarantined = 0
     for q in tqdm(quarters, desc="insider data sets"):
         if q in done_q and not new_tickers and not reparse:
-            continue                          # complete quarter already ingested
-        path = ensure_zip(context, cache / f"{q}.zip",
-                          SEC_INSIDER_URL_TEMPLATE.format(quarter=q),
-                          label=f"insider {q}", log=logger)
+            continue  # complete quarter already ingested
+
+        if int(q[:4]) >= SEC_INSIDER_SWAP_YEAR:
+            url_insider = SEC_INSIDER_URL_NEW_TEMPLATE
+        else:
+            url_insider = SEC_INSIDER_URL_TEMPLATE
+
+        path = ensure_zip(context, cache / f"{q}.zip", url_insider.format(quarter=q), label=f"insider {q}", log=logger)
         if path is None:
             continue
         tables = _read_tables(path)
         if tables is None:
             continue
         sub, own, nonderiv, deriv, notes = tables
-        df, rejected = _filter_universe(
-            _parse_insider(sub, own, nonderiv, deriv), tickers, identity)
+        df, rejected = _filter_universe(_parse_insider(sub, own, nonderiv, deriv), tickers, identity)
         if not rejected.empty:
-            quarantined += context.store.save(
-                Tables.insider_transactions_quarantine,
-                _to_quarantine(rejected.assign(quarter=q)))
+            quarantined += context.store.save(Tables.insider_transactions_quarantine, _to_quarantine(rejected.assign(quarter=q)))
         if df.empty:
             continue
         df["quarter"] = q
@@ -522,10 +545,17 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     # The upsert above cannot REMOVE anything, so the stored rows are reconciled separately.
     swept, deleted = _screen_stored_rows(context, tickers, identity)
     quarantined += swept
-    save_processed_universe(cache, Tables.insider_transactions, tickers)   # so a converged re-run skips
-    logger.info("insider_transactions: upserted %d rows (+%d footnotes) over %d quarters "
-                "(%s -> %s); quarantined %d, deleted %d", saved, notes_saved, len(quarters),
-                quarters[0], quarters[-1], quarantined, deleted)
+    save_processed_universe(cache, Tables.insider_transactions, tickers)  # so a converged re-run skips
+    logger.info(
+        "insider_transactions: upserted %d rows (+%d footnotes) over %d quarters " "(%s -> %s); quarantined %d, deleted %d",
+        saved,
+        notes_saved,
+        len(quarters),
+        quarters[0],
+        quarters[-1],
+        quarantined,
+        deleted,
+    )
     record_run(context, Tables.insider_transactions, len(tickers), saved)
     record_run(context, Tables.insider_footnotes, len(tickers), notes_saved)
     record_run(context, Tables.insider_transactions_quarantine, len(tickers), quarantined)

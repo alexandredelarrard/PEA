@@ -24,10 +24,7 @@ docstring still saying otherwise is stale).
 ├── docs/                     # this documentation set
 ├── sql/schema.sql            # generated DDL, applied by Postgres initdb on an EMPTY volume
 ├── scripts/                  # generate_schema_sql, diagnostics, one-off reports
-│   └── dod/                  #   definition-of-done report generators — see definition_of_done.md
 ├── reports/                  # definition-of-done reports, TRACKED in git; ONE FOLDER PER DAY
-│   ├── YYYY-MM-DD/           #   <slug>__<TYPE>.md + assets/<slug>/ (plots copied out of data/)
-│   └── baselines/            #   data_profile.json — persistent, NOT per-day (gates D2/D3/D5)
 ├── .claude/                  # hooks/ (the Stop gate), skills/ (dod-*-report), commands/, settings.json
 ├── specs/, coverage_bar/     # design notes / coverage tracking (not executed)
 ├── docker-compose.yml        # `db` (pipeline Postgres) + Airflow scheduler/webserver/metadata-db
@@ -43,10 +40,7 @@ docstring still saying otherwise is stale).
 │   ├── modelling/               # long_short/, trend/, long_book/ — signal engines
 │   ├── strategies/              # self-contained sleeves + analysis plots
 │   ├── portfolio/               # StepPortfolio (ERC blend), StepStrategyMoves (trade ledger)
-│   ├── validate/                # THE home for validation code, all domains. Part 2 of 3
-│   │                            #   (extract -> VALIDATE -> bugfix). CHECK_REGISTRY drives
-│   │                            #   35 checks over 3 tiers -> fundamentals_check. Read-only
-│   │                            #   everywhere else; gates nothing. See its README.md
+│   ├── validate/                # THE home for validation code, all domains.
 │   ├── dags/                    # 4 Airflow DAGs
 │   └── utils/                   # cross-package shared code (step, db, config, universe, http…)
 ├── tests/                    # mirrors src/; 160 test files; conftest.py has the shared fixtures

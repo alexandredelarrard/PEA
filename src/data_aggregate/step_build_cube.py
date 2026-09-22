@@ -26,15 +26,16 @@ they are collected when it returns, and reads the price grid back from `cube_par
 PROJECTED to the fields it actually needs. Peak memory is the largest single sub-step rather
 than the sum.
 """
+
 from __future__ import annotations
 
 from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
-from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
+from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
@@ -42,13 +43,12 @@ from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.panel_merge import FeatureCollisionError
 from src.data_aggregate.utils.common.part_status import part_status_report
 from src.utils.step import Step
-from src.validate.prices import gate, run_prices_validation
+from src.validate.utils.prices import gate, run_prices_validation
 
 __all__ = ["StepBuildCube", "FeatureCollisionError"]
 
 
 class StepBuildCube(Step):
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
 
@@ -64,7 +64,7 @@ class StepBuildCube(Step):
     def run(self, full: bool = False, skip_basis_gate: bool = False) -> None:
         if not skip_basis_gate:
             self._assert_price_basis_is_sound()
-            
+
         # self._prices.run(full=full)
         # self._target.run(full=full)
         # self._momentum.run(full=full)
@@ -89,8 +89,7 @@ class StepBuildCube(Step):
             self._log.info(result.summary())
         ok, reason = gate(report)
         if not ok:
-            raise RuntimeError(f"price adjustment basis gate FAILED -> refusing to build the "
-                               f"cube on it. {reason}")
+            raise RuntimeError(f"price adjustment basis gate FAILED -> refusing to build the " f"cube on it. {reason}")
         self._log.info("Price basis gate passed: %s", reason)
 
     def cube_parts_status(self) -> dict:

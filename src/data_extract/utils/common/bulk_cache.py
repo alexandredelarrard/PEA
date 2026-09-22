@@ -33,11 +33,10 @@ import pandas as pd
 from src.context import Context
 from src.data_store.schema import Table, name_of
 
-__all__ = ["cache_dir", "ensure_zip", "read_zip_member", "read_zip_members",
-           "read_zip_text", "ingested_periods", "quarter_periods"]
+__all__ = ["cache_dir", "ensure_zip", "read_zip_member", "read_zip_members", "read_zip_text", "ingested_periods", "quarter_periods"]
 
-_CHUNK = 1 << 20                 # 1 MiB streaming chunks
-_DEFAULT_TIMEOUT = 300           # seconds; the notes zips are ~380 MB
+_CHUNK = 1 << 20  # 1 MiB streaming chunks
+_DEFAULT_TIMEOUT = 300  # seconds; the notes zips are ~380 MB
 
 
 def cache_dir(context: Context, key: str) -> Path:
@@ -53,9 +52,15 @@ def cache_dir(context: Context, key: str) -> Path:
     return directory
 
 
-def ensure_zip(context: Context, path: Path, urls: str | tuple[str, ...] | list[str], *,
-               label: str, timeout: int = _DEFAULT_TIMEOUT,
-               log: logging.Logger | None = None) -> Path | None:
+def ensure_zip(
+    context: Context,
+    path: Path,
+    urls: str | tuple[str, ...] | list[str],
+    *,
+    label: str,
+    timeout: int = _DEFAULT_TIMEOUT,
+    log: logging.Logger | None = None,
+) -> Path | None:
     """Local path to a cached archive, downloading it once if absent.
 
     Streams to a `.part` file and renames only on success, so an interrupted download is
@@ -71,12 +76,11 @@ def ensure_zip(context: Context, path: Path, urls: str | tuple[str, ...] | list[
     for url in candidates:
         try:
             response = context.sec_session.get(url, timeout=timeout, stream=True)
-        except Exception as exc:                                    # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             log.warning("%s: download failed (%s): %s", label, url, exc)
             continue
         if response.status_code != 200:
-            log.info("%s: not available at %s (HTTP %s)", label, url,
-                     response.status_code)
+            log.warning("%s: not available at %s (HTTP %s)", label, url, response.status_code)
             continue
         tmp = path.with_suffix(".part")
         with open(tmp, "wb") as fh:
@@ -93,13 +97,11 @@ def _drop_corrupt(path: Path, exc: Exception, log: logging.Logger | None) -> Non
     Without this a bad cache entry is permanent: `ensure_zip` treats any non-empty file
     as a cache hit, so the period silently returns None for ever. Two of the six bulk
     fetchers had already grown this self-heal privately; all of them get it now."""
-    (log or logging.getLogger(__name__)).warning(
-        "%s: corrupt zip (%s) -> deleting so it re-downloads next run", path.name, exc)
+    (log or logging.getLogger(__name__)).warning("%s: corrupt zip (%s) -> deleting so it re-downloads next run", path.name, exc)
     path.unlink(missing_ok=True)
 
 
-def read_zip_member(path: Path, member: str, *, log: logging.Logger | None = None,
-                    **read_csv_kwargs) -> pd.DataFrame | None:
+def read_zip_member(path: Path, member: str, *, log: logging.Logger | None = None, **read_csv_kwargs) -> pd.DataFrame | None:
     """One member of a zip read as a DataFrame (tab-separated by default -- every SEC
     bulk set ships .tsv). None when the archive or the member is unreadable, so a single
     corrupt period never aborts a multi-year ingest."""
@@ -115,15 +117,12 @@ def read_zip_member(path: Path, member: str, *, log: logging.Logger | None = Non
     except zipfile.BadZipFile as exc:
         _drop_corrupt(path, exc, log)
         return None
-    except Exception as exc:                                        # noqa: BLE001
-        (log or logging.getLogger(__name__)).warning(
-            "%s: unreadable member %s (%s)", path.name, member, exc)
+    except Exception as exc:  # noqa: BLE001
+        (log or logging.getLogger(__name__)).warning("%s: unreadable member %s (%s)", path.name, member, exc)
         return None
 
 
-def read_zip_members(path: Path, members: Sequence[str], *,
-                     log: logging.Logger | None = None,
-                     **read_csv_kwargs) -> dict[str, pd.DataFrame] | None:
+def read_zip_members(path: Path, members: Sequence[str], *, log: logging.Logger | None = None, **read_csv_kwargs) -> dict[str, pd.DataFrame] | None:
     """Several members of ONE archive, keyed by the requested name -- opened once rather
     than once per member. All-or-nothing: None when the archive is unreadable OR any
     requested member is absent, because a caller that joins two tsvs (13F
@@ -142,14 +141,12 @@ def read_zip_members(path: Path, members: Sequence[str], *,
     except zipfile.BadZipFile as exc:
         _drop_corrupt(path, exc, log)
         return None
-    except Exception as exc:                                        # noqa: BLE001
-        (log or logging.getLogger(__name__)).warning(
-            "%s: unreadable members %s (%s)", path.name, list(members), exc)
+    except Exception as exc:  # noqa: BLE001
+        (log or logging.getLogger(__name__)).warning("%s: unreadable members %s (%s)", path.name, list(members), exc)
         return None
 
 
-def read_zip_text(path: Path, *, encoding: str = "latin-1",
-                  log: logging.Logger | None = None) -> str | None:
+def read_zip_text(path: Path, *, encoding: str = "latin-1", log: logging.Logger | None = None) -> str | None:
     """The FIRST member of a zip as decoded text -- for the archives that hold one
     unnamed pipe/CSV file (fails-to-deliver). Undecodable bytes are replaced rather than
     raising: a single bad character must not drop a whole period."""
@@ -163,14 +160,12 @@ def read_zip_text(path: Path, *, encoding: str = "latin-1",
     except zipfile.BadZipFile as exc:
         _drop_corrupt(path, exc, log)
         return None
-    except Exception as exc:                                        # noqa: BLE001
-        (log or logging.getLogger(__name__)).warning(
-            "%s: unreadable archive (%s)", path.name, exc)
+    except Exception as exc:  # noqa: BLE001
+        (log or logging.getLogger(__name__)).warning("%s: unreadable archive (%s)", path.name, exc)
         return None
 
 
-def ingested_periods(context: Context, tables: str | Table | Sequence[str | Table],
-                     column: str = "period") -> set[str]:
+def ingested_periods(context: Context, tables: str | Table | Sequence[str | Table], column: str = "period") -> set[str]:
     """Distinct source-period tags already stored, so an incremental re-run skips them.
 
     Handles the three shapes the callers needed separately before: a single table
@@ -180,22 +175,17 @@ def ingested_periods(context: Context, tables: str | Table | Sequence[str | Tabl
     table degrades to "nothing ingested" rather than raising), and a UNION across two
     sibling tables (the notes num/text pair). Empty set on the first run."""
     store = context.store
-    names = [name_of(t) for t in
-             ([tables] if isinstance(tables, (str, Table)) else tables)]
+    names = [name_of(t) for t in ([tables] if isinstance(tables, str | Table) else tables)]
     done: set[str] = set()
     for table in names:
-        if column not in store.columns(table):     # absent table or pre-feature schema
+        if column not in store.columns(table):  # absent table or pre-feature schema
             continue
         done |= {str(v) for v in store.distinct(table, column)}
     return done
 
 
-def quarter_periods(years_history: int, first_year: int,
-                    today: pd.Timestamp | None = None) -> list[str]:
+def quarter_periods(years_history: int, first_year: int, today: pd.Timestamp | None = None) -> list[str]:
     """`['2015q1', '2015q2', ...]` covering the requested window, never starting before
     `first_year` (the year the data set itself begins)."""
     now = (today or pd.Timestamp.today()).normalize()
-    return [f"{year}q{q}"
-            for year in range(now.year - years_history, now.year + 1)
-            if year >= first_year
-            for q in range(1, 5)]
+    return [f"{year}q{q}" for year in range(now.year - years_history, now.year + 1) if year >= first_year for q in range(1, 5)]

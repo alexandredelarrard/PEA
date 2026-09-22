@@ -61,18 +61,23 @@ colliding boards, where the roster SET loses one seat and both sides of the comp
 together. Each half of the module picks the error that does not invent the quantity it measures;
 they differ because the two quantities fail in opposite directions.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.governance.def14a_impute import CARRY_MAX_DAYS
 from src.data_aggregate.utils.governance.accrual import (
-    accrual_anchor, accrual_dispersion, accrue,
+    accrual_anchor,
+    accrual_dispersion,
+    accrue,
 )
+from src.data_aggregate.utils.governance.def14a_impute import CARRY_MAX_DAYS
 from src.data_aggregate.utils.governance.staleness import (
-    LEVEL_MAX_AGE_DAYS, expire_event_fields, expire_level_fields,
+    LEVEL_MAX_AGE_DAYS,
+    expire_event_fields,
+    expire_level_fields,
 )
 from src.utils.names import person_key
 
@@ -135,21 +140,13 @@ from src.utils.names import person_key
 #: ⚠ `ceo_name_proxy` IS A GENUINELY DIFFERENT CASE and stays in `def14a_impute.CARRY_FORBIDDEN`.
 #: A wrong NAME corrupts an identity join and lets pay growth be computed straight across a CEO
 #: succession; a stale COUNT is a stale number of exactly the kind the horizon already governs.
-CARRY_GATED_CHILD: tuple[str, ...] = ("other_public_company_boards",)
+CARRY_GATED_CHILD: tuple[str, ...] = ("other_public_company_boards", "is_independent")
 
 #: The child column that is a CLOCK and therefore ANCHORED, not carried (D38, same instrument as
 #: `ceo_age`). Measured on 92,086 person-pairs in this table, `age` accrues at a median slope of
 #: exactly 1.00/yr and 97.0% of pairs fall in [0.75, 1.25] -- so a per-person median anchor is
 #: near-exact, and it fills EDGE gaps that `limit_area="inside"` refuses. 81.4% -> 96.5%.
-ACCRUED_CHILD: tuple[str, ...] = ("age",)
-
-#: `tenure_years` is deliberately in NEITHER set. It accrues too (median slope 1.00/yr) but only
-#: 73.3% of its person-pairs land in [0.75, 1.25]: the spread is the extraction re-reading
-#: "director since YYYY" inconsistently between proxies. An anchor WOULD average that away, and
-#: the reason not to reach for it here is `board_tenure_dispersion` -- anchoring every director
-#: to a consensus start year shrinks the dispersion by construction, which is the one thing
-#: §3.4's guard forbids. Tenure is read exactly as filed.
-_RAW_ONLY_CHILD: tuple[str, ...] = ("tenure_years",)
+ACCRUED_CHILD: tuple[str, ...] = ("age", "tenure_years")
 
 #: `pct_long_tenured`'s cutoff. 15 years is the entrenchment threshold in the governance
 #: literature and in ISS's own tenure policy, and it is a THRESHOLD ON A DISCLOSED NUMBER rather
@@ -197,8 +194,12 @@ DERIVED_AGGREGATES: dict[str, str] = {
 #: argument that it is one. The cost is near-zero -- proxies are annual, so the 548-day horizon
 #: bites only where a whole cycle was missed.
 BOARD_QUALITY_FIELDS: tuple[str, ...] = (
-    "board_turnover", "pct_long_tenured", "board_tenure_dispersion",
-    "board_age_dispersion", "oldest_director_age", "pct_overboarded",
+    "board_turnover",
+    "pct_long_tenured",
+    "board_tenure_dispersion",
+    "board_age_dispersion",
+    "oldest_director_age",
+    "pct_overboarded",
 )
 EVENT_FIELDS: frozenset[str] = frozenset({"board_turnover"})
 
@@ -274,11 +275,6 @@ def _carry_gated_fill(out: pd.DataFrame, col: str, stats: dict[str, int]) -> Non
     have. Writes `<col>_imputed` provenance (1.0 where this wrote the value), which is what lets
     `board_tenure_dispersion` and the delta features reconstruct the RAW column.
 
-    ⚠ THE AGE IS MEASURED AGAINST THE `as_of` THAT SOURCED THE VALUE, never the previous row --
-    the same payload trick `def14a_impute._carry` and `staleness.expire_stale` both use, so the
-    fill and the clock agree on what "age" means. Without it a person filing every year for a
-    decade and then falling silent would look freshly disclosed forever.
-
     Every reason a candidate is NOT filled gets its own counter, because a fill count alone
     cannot distinguish "nothing was missing" from "everything was refused". The two reasons are
     mutually exclusive: a cell with no prior disclosure has no age to test.
@@ -315,6 +311,7 @@ def _accrue_child(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
     person. `child anchors REFUSED` counts them; the raw spread is still reported
     beside it, because the two disagree exactly where a SINGLE age is mis-extracted.
     """
+
     obs = pd.DataFrame({"pk": out["_pk"], "as_of": out["as_of"], col: out[col]})
     anchor = accrual_anchor(obs, col, key="pk", date="as_of")
     if anchor.empty:
@@ -328,8 +325,7 @@ def _accrue_child(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
     spread = accrual_dispersion(obs, col, key="pk", date="as_of")
     stats[f"child accrued: {col}"] = int(newly.sum())
     stats[f"child anchors: {col}"] = int(len(anchor))
-    stats[f"child anchors REFUSED (two people share a key): {col}"] = int(
-        len(set(obs['pk'].dropna()) - set(anchor.index)))
+    stats[f"child anchors REFUSED (two people share a key): {col}"] = int(len(set(obs["pk"].dropna()) - set(anchor.index)))
     stats[f"child anchor spread > 2y (raw alarm): {col}"] = int((spread > 2).sum())
 
 
@@ -354,8 +350,7 @@ def fill_director_attributes(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     out = _prepared(df)
     if out is None:
         return (df if df is not None else pd.DataFrame()), {}
-    stats: dict[str, int] = {"child rows": len(out),
-                             "child person-series": int(out["_pk"].nunique())}
+    stats: dict[str, int] = {"child rows": len(out), "child person-series": int(out["_pk"].nunique())}
     for col in CARRY_GATED_CHILD:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
@@ -364,9 +359,6 @@ def fill_director_attributes(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
             _accrue_child(out, col, stats)
-    for col in _RAW_ONLY_CHILD:
-        if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce")
     return out.drop(columns=["_pk"]).reset_index(drop=True), stats
 
 
@@ -403,14 +395,16 @@ def board_aggregates(df: pd.DataFrame) -> pd.DataFrame:
     """
     if df is None or df.empty:
         return pd.DataFrame()
+
     need = {"ticker", "accession_number", "as_of"}
     if not need <= set(df.columns):
         return pd.DataFrame()
     d = df.copy()
     d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
-    d = d.dropna(subset=["ticker", "accession_number", "as_of"])
+    d = d.dropna(subset=["ticker", "accession_number", "as_of"])  # 0 dropped
     if d.empty:
         return pd.DataFrame()
+
     keys = ["ticker", "accession_number", "as_of"]
     g = d.groupby(keys, sort=False)
     out = g.size().rename("n_directors_total").to_frame()
@@ -419,15 +413,12 @@ def board_aggregates(df: pd.DataFrame) -> pd.DataFrame:
             continue
         filled = pd.to_numeric(d[child], errors="coerce")
         out[field] = filled.groupby([d[k] for k in keys], sort=False).mean()
-        out[f"n_reporting_{field}"] = filled.notna().groupby(
-            [d[k] for k in keys], sort=False).sum().astype("int64")
-        out[f"n_reporting_{field}_filed"] = _raw_leg(d, child).notna().groupby(
-            [d[k] for k in keys], sort=False).sum().astype("int64")
+        out[f"n_reporting_{field}"] = filled.notna().groupby([d[k] for k in keys], sort=False).sum().astype("int64")
+        out[f"n_reporting_{field}_filed"] = _raw_leg(d, child).notna().groupby([d[k] for k in keys], sort=False).sum().astype("int64")
     return out.reset_index()
 
 
-def merge_board_aggregates(parent: pd.DataFrame,
-                           derived: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+def merge_board_aggregates(parent: pd.DataFrame, derived: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     """Apply D39's precedence to the parent proxy rows. Returns `(copy, stats)`.
 
     ```
@@ -479,19 +470,17 @@ def merge_board_aggregates(parent: pd.DataFrame,
         n_filed = pd.to_numeric(out[f"n_reporting_{f}_filed"], errors="coerce")
         better = cand.notna() & n_all.notna() & n_filed.notna() & (n_all > n_filed)
 
-        override = out[f].notna() & better                    # step 1
-        supply = out[f].isna() & cand.notna()                 # step 3
+        override = out[f].notna() & better  # step 1
+        supply = out[f].isna() & cand.notna()  # step 3
         moved = (cand[override] - out.loc[override, f]).abs()
         out.loc[override | supply, f] = cand[override | supply]
         out.loc[override | supply, f"{f}_source"] = SOURCE_DERIVED
         stats[f"{f}: filed and kept"] = int((out[f"{f}_source"] == SOURCE_FILED).sum())
         stats[f"{f}: derived OVERRODE a filed value"] = int(override.sum())
         stats[f"{f}: derived where the parent was NULL"] = int(supply.sum())
-        stats[f"{f}: median |move| of an override (x1000)"] = (
-            int(round(float(moved.median()) * 1000)) if len(moved) else 0)
+        stats[f"{f}: median |move| of an override (x1000)"] = int(round(float(moved.median()) * 1000)) if len(moved) else 0
         stats[f"{f}: still NULL -> left to interpolation"] = int(out[f].isna().sum())
-        out = out.drop(columns=[c for c in out.columns
-                               if c.startswith("_d_") or c.startswith("n_reporting_")])
+        out = out.drop(columns=[c for c in out.columns if c.startswith("_d_") or c.startswith("n_reporting_")])
     return out, stats
 
 
@@ -529,8 +518,7 @@ def _per_filing(d: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return out, ["ticker", "accession_number", "as_of"]
 
 
-def _share_of_reporting(d: pd.DataFrame, keys: list[str], col: str,
-                        threshold: float) -> pd.DataFrame | None:
+def _share_of_reporting(d: pd.DataFrame, keys: list[str], col: str, threshold: float) -> pd.DataFrame | None:
     """`>= threshold` as a share of the directors who REPORT `col` -- never of board size.
 
     ⚠ The denominator is the whole point. `other_public_company_boards` is reported by 35.4% of
@@ -587,25 +575,30 @@ def _turnover(d: pd.DataFrame, keys: list[str], tally: dict[str, int]) -> pd.Dat
     work["pk"] = work["name"].astype(object).map(person_key)
     rows: list[dict] = []
     for key_col, label in (("pk", "person_key"), ("name", "filed name")):
-        rosters = (work.dropna(subset=[key_col])
-                   .groupby(keys, sort=False)[key_col].agg(frozenset)
-                   .rename("roster").reset_index().sort_values(["ticker", "as_of"]))
+        rosters = (
+            work.dropna(subset=[key_col])
+            .groupby(keys, sort=False)[key_col]
+            .agg(frozenset)
+            .rename("roster")
+            .reset_index()
+            .sort_values(["ticker", "as_of"])
+        )
         prev = rosters.groupby("ticker", sort=False)["roster"].shift(1)
         paired = prev.notna() & rosters["roster"].map(bool)
-        arrivals = [len(c - p) if isinstance(p, frozenset) else np.nan
-                    for c, p in zip(rosters["roster"], prev)]
+        arrivals = [len(c - p) if isinstance(p, frozenset) else np.nan for c, p in zip(rosters["roster"], prev, strict=False)]
         size = rosters["roster"].map(len)
         rate = pd.Series(arrivals, index=rosters.index) / size.where(size > 0)
         tally[f"board_turnover pairs ({label})"] = int(paired.sum())
-        tally[f"board_turnover mean x1000 ({label})"] = int(
-            round(float(rate[paired].mean()) * 1000)) if bool(paired.any()) else 0
+        tally[f"board_turnover mean x1000 ({label})"] = int(round(float(rate[paired].mean()) * 1000)) if bool(paired.any()) else 0
         if key_col == "pk":
             rows = rosters.loc[paired, keys].assign(value=rate[paired]).to_dict("records")
     return pd.DataFrame(rows) if rows else None
 
 
-def board_quality_fields(directors: pd.DataFrame, idx: pd.DatetimeIndex,
-                         ) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
+def board_quality_fields(
+    directors: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
     """The six board-quality features (D40, D41) as daily wide frames, plus the tallies.
 
     Takes the FILLED child frame: levels read the filled column, dispersions reconstruct the
@@ -628,15 +621,12 @@ def board_quality_fields(directors: pd.DataFrame, idx: pd.DatetimeIndex,
     per_filing: dict[str, pd.DataFrame | None] = {
         "board_turnover": _turnover(d, keys, tally),
         "pct_long_tenured": _share_of_reporting(d, keys, "tenure_years", _LONG_TENURE_YEARS),
-        "pct_overboarded": _share_of_reporting(d, keys, "other_public_company_boards",
-                                               _OVERBOARDED_OTHER_SEATS),
+        "pct_overboarded": _share_of_reporting(d, keys, "other_public_company_boards", _OVERBOARDED_OTHER_SEATS),
         "board_tenure_dispersion": _dispersion(d, keys, "tenure_years"),
         "board_age_dispersion": _dispersion(d, keys, "age"),
     }
     if "age" in d.columns:
-        oldest = (pd.to_numeric(d["age"], errors="coerce")
-                  .groupby([d[k] for k in keys], sort=False).max()
-                  .rename("value").reset_index())
+        oldest = pd.to_numeric(d["age"], errors="coerce").groupby([d[k] for k in keys], sort=False).max().rename("value").reset_index()
         oldest.columns = [*keys, "value"]
         per_filing["oldest_director_age"] = oldest
 
@@ -664,8 +654,7 @@ def board_quality_fields(directors: pd.DataFrame, idx: pd.DatetimeIndex,
         # `as_of` up by column name, so one merged frame over just those is the whole input.
         merged_hist = None
         for h in hist.values():
-            merged_hist = h if merged_hist is None else merged_hist.merge(
-                h, on=["ticker", "as_of"], how="outer")
+            merged_hist = h if merged_hist is None else merged_hist.merge(h, on=["ticker", "as_of"], how="outer")
         capped, stats = expire_event_fields(frames, merged_hist, EVENT_FIELDS)
         for name, (expired, before) in stats.items():
             if expired:

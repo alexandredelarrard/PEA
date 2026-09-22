@@ -148,6 +148,7 @@ governance events in the archive. `test_def14a_say_on_pay.py` pins that those va
 
 `impute_def14a(df) -> (df, stats)` is pure (returns a copy + per-rule fill counts).
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -156,8 +157,7 @@ from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrue
 from src.data_aggregate.utils.governance.names import ceo_identity_series
 from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS
 
-CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards",
-            "ceo_non_equity_incentive", "ceo_all_other_comp"]
+CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards", "ceo_non_equity_incentive", "ceo_all_other_comp"]
 
 #: How far a forward carry may reach, in days, measured from the `as_of` of the observation it
 #: copies. **NOT a free parameter** -- it is `LEVEL_MAX_AGE_DAYS`, the same 1,095 days the daily
@@ -198,11 +198,22 @@ CARRY_MAX_DAYS = LEVEL_MAX_AGE_DAYS
 #: situations that a live run structurally cannot. The carry treats both the same.
 #:
 #: `ceo_age` was here and is NOT any more: it is an ACCRUAL, filled by `_accrue_ceo_age`.
-CARRY_LEVELS = ["board_size", "n_directors", "avg_director_age", "avg_board_tenure",
-                "pct_independent_directors", "pct_female_directors",
-                "avg_other_public_boards", "insider_ownership_pct",
-                "ceo_ownership_pct", "n_five_percent_holders", "say_on_pay_support_pct",
-                "median_employee_pay", "ceo_pay_ratio"]
+CARRY_LEVELS = [
+    "board_size",
+    "n_directors",
+    "avg_director_age",
+    "avg_board_tenure",
+    "pct_independent_directors",
+    "pct_female_directors",
+    "avg_other_public_boards",
+    "insider_ownership_pct",
+    "ceo_ownership_pct",
+    "n_five_percent_holders",
+    "say_on_pay_support_pct",
+    "median_employee_pay",
+    "ceo_pay_ratio",
+    "auditor_since_year",
+]
 #: Carried ONLY when the CEO named on the source row is the CEO named on THIS row (D31). A salary
 #: is a term of one person's CONTRACT, so carrying it across a succession states the outgoing
 #: CEO's pay as the incoming one's.
@@ -246,8 +257,7 @@ IDENTITY_GATED_CARRY = frozenset({"ceo_salary"})
 #: Same shape as `comp_imputed` (D31) and for the same reason: a flag keeps the population
 #: STATEABLE instead of assumed, where a repair-in-place makes it unknowable. The columns are
 #: always present, even when nothing was filled.
-DELTA_PROVENANCE_COLUMNS: tuple[str, ...] = ("avg_other_public_boards",
-                                             "pct_independent_directors")
+DELTA_PROVENANCE_COLUMNS: tuple[str, ...] = ("avg_other_public_boards", "pct_independent_directors")
 # Stable per-company/CEO facts -> carry the last known value forward, bounded by
 # `CARRY_MAX_DAYS`, exactly as `CARRY_LEVELS` now is. These were already a carry rather than an
 # interpolation, but they were gated on `fwd.notna() & bwd.notna()` -- an INTERIOR test, so a gap
@@ -258,9 +268,18 @@ DELTA_PROVENANCE_COLUMNS: tuple[str, ...] = ("avg_other_public_boards",
 # `poison_pill` and `majority_voting` are TRI-STATE at extraction (null when the proxy is
 # silent), so a carry-forward here fills a genuine gap rather than propagating a fabricated
 # FALSE -- which is what made `majority_voting` flip 21.2% year-over-year before.
-FLAGS = ["ceo_is_founder", "ceo_is_board_chair", "independent_chair", "lead_independent_director",
-         "classified_board", "dual_class_shares", "poison_pill", "majority_voting",
-         "ceo_since_year", "ceo_name_proxy"]
+FLAGS = [
+    "ceo_is_founder",
+    "ceo_is_board_chair",
+    "independent_chair",
+    "lead_independent_director",
+    "classified_board",
+    "dual_class_shares",
+    "poison_pill",
+    "majority_voting",
+    "ceo_since_year",
+    "ceo_name_proxy",
+]
 #: Columns a forward carry must NOT touch at all, because the carry cannot be validated without
 #: reading a LATER filing -- which is the thing this module stopped doing on 2026-09-09.
 #:
@@ -286,15 +305,13 @@ FLAGS = ["ceo_is_founder", "ceo_is_board_chair", "independent_chair", "lead_inde
 #: disclose the start year too, because both come from the same extraction. Recorded so the next
 #: reader does not re-derive it.
 CARRY_FORBIDDEN = frozenset({"ceo_name_proxy"})
-INT_COLS = ["n_directors", "board_size", "ceo_age",
-            "n_five_percent_holders", "n_neos", "ceo_since_year"]
+INT_COLS = ["n_directors", "board_size", "ceo_age", "n_five_percent_holders", "n_neos", "ceo_since_year"]
 
 #: The seven Item 402(c) components, in `def14a_executive_comp`'s flat column vocabulary.
 #: ⚠ SEVEN, against `CEO_COMP`'s six: the child table carries `pension_change`, which the
 #: parent's schema omits. That is why the parent's identity has to tolerate a deduced
 #: component absorbing the pension column and this one does not.
-EXEC_COMPONENTS = ["salary", "bonus", "stock_awards", "option_awards",
-                   "non_equity_incentive", "pension_change", "other_compensation"]
+EXEC_COMPONENTS = ["salary", "bonus", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation"]
 
 
 def _fill(df: pd.DataFrame, col: str, cond: pd.Series, values, stats: dict, tag: str) -> None:
@@ -312,13 +329,11 @@ def _fill(df: pd.DataFrame, col: str, cond: pd.Series, values, stats: dict, tag:
 def _reconcile_rows(df: pd.DataFrame, stats: dict) -> None:
     comps = [c for c in CEO_COMP if c in df.columns]
     if "ceo_total_comp" in df.columns and len(comps) == 6:
-        _fill(df, "ceo_total_comp", df[comps].notna().all(axis=1),
-              df[comps].sum(axis=1), stats, "ceo_total_comp = sum(components)")
+        _fill(df, "ceo_total_comp", df[comps].notna().all(axis=1), df[comps].sum(axis=1), stats, "ceo_total_comp = sum(components)")
         for c in comps:
             others = [x for x in comps if x != c]
             cond = df["ceo_total_comp"].notna() & df[others].notna().all(axis=1)
-            _fill(df, c, cond, (df["ceo_total_comp"] - df[others].sum(axis=1)).clip(lower=0),
-                  stats, "ceo component = total - others")
+            _fill(df, c, cond, (df["ceo_total_comp"] - df[others].sum(axis=1)).clip(lower=0), stats, "ceo component = total - others")
     if {"n_directors", "board_size"} <= set(df.columns):
         _fill(df, "n_directors", df["board_size"].notna(), df["board_size"], stats, "n_directors = board_size")
         _fill(df, "board_size", df["n_directors"].notna(), df["n_directors"], stats, "board_size = n_directors")
@@ -470,12 +485,12 @@ def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Return (imputed copy, stats) — fills only NaNs via the identities + temporal gap-fill."""
     if df is None or df.empty:
         return df, {}
-    
+
     df = df.copy()
     df["as_of"] = pd.to_datetime(df["as_of"], format="%Y-%m-%d", errors="coerce")
     was_na = {c: df[c].isna() for c in INT_COLS if c in df.columns}  # to round ONLY what we fill
     stats: dict[str, int] = {}
-    _reconcile_rows(df, stats)          # within-row identities
+    _reconcile_rows(df, stats)  # within-row identities
 
     # PROVENANCE for D31: which `ceo_total_comp` cells were derived from an INTERPOLATED
     # component. Snapshot the component/total NaN pattern either side of the temporal fill --
@@ -484,18 +499,17 @@ def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     # exists so the population can be stated instead of assumed.
     comps = [c for c in CEO_COMP if c in df.columns]
     comp_na_before = df[comps].isna() if comps else None
+
     # The same provenance snapshot for the two delta-feature levels. Taken here, immediately
     # before `_temporal_fill`, so it captures ONLY the temporal fill -- `_reconcile_rows` above
     # writes values deduced from a within-row identity, which are facts and not estimates.
     delta_cols = [c for c in DELTA_PROVENANCE_COLUMNS if c in df.columns]
     delta_na_before = df[delta_cols].isna() if delta_cols else None
-    total_na_before = (df["ceo_total_comp"].isna() if "ceo_total_comp" in df.columns
-                       else pd.Series(False, index=df.index))
+    total_na_before = df["ceo_total_comp"].isna() if "ceo_total_comp" in df.columns else pd.Series(False, index=df.index)
 
-    _temporal_fill(df, stats)           # cross-year interior gaps + the ceo_age accrual
-    interp_comp = (pd.Series(False, index=df.index) if comps is None or not comps
-                   else (comp_na_before & df[comps].notna()).any(axis=1))
-    _reconcile_rows(df, stats)          # reconcile values the temporal fill unlocked
+    _temporal_fill(df, stats)  # cross-year interior gaps + the ceo_age accrual
+    interp_comp = pd.Series(False, index=df.index) if comps is None or not comps else (comp_na_before & df[comps].notna()).any(axis=1)
+    _reconcile_rows(df, stats)  # reconcile values the temporal fill unlocked
 
     if "ceo_total_comp" in df.columns:
         derived = total_na_before & df["ceo_total_comp"].notna() & interp_comp
@@ -512,7 +526,7 @@ def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             if n:
                 stats[f"{c}_imputed (carried -> delta legs excluded)"] = n
 
-    for c, na in was_na.items():        # keep DEDUCED counts integral (never touch real values)
+    for c, na in was_na.items():  # keep DEDUCED counts integral (never touch real values)
         filled = na & df[c].notna()
         df.loc[filled, c] = df.loc[filled, c].round()
     return df.sort_values(["ticker", "as_of"]).reset_index(drop=True), stats
@@ -550,9 +564,10 @@ def impute_exec_comp(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return fill_total_from_components(df, EXEC_COMPONENTS)
 
 
-def fill_total_from_components(df: pd.DataFrame,
-                              components: list[str] | tuple[str, ...],
-                              ) -> tuple[pd.DataFrame, dict]:
+def fill_total_from_components(
+    df: pd.DataFrame,
+    components: list[str] | tuple[str, ...],
+) -> tuple[pd.DataFrame, dict]:
     """The `total = sum(components)` identity on a per-PERSON compensation table.
 
     Shared by `impute_exec_comp` (Item 402(c), seven components, `salary` first) and

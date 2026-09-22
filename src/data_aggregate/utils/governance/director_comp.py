@@ -40,6 +40,7 @@ absent from one year's table is missing, and inventing their retainer would inve
 cross-sectional spread these features measure. The only repair is the within-row `total`
 identity, which is arithmetic on disclosed components rather than an estimate.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -48,7 +49,8 @@ import pandas as pd
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.governance.def14a_impute import fill_total_from_components
 from src.data_aggregate.utils.governance.staleness import (
-    LEVEL_MAX_AGE_DAYS, expire_level_fields,
+    LEVEL_MAX_AGE_DAYS,
+    expire_level_fields,
 )
 
 #: ⚠ The COLUMN PROJECTION for `def14a_director_comp` lives on its registry entry
@@ -59,8 +61,12 @@ from src.data_aggregate.utils.governance.staleness import (
 #: where the NEO table has `salary` and `bonus`: a non-employee director draws a retainer and
 #: meeting fees, not a salary, and there is no bonus line in 402(k) at all.
 DIRECTOR_COMPONENTS: tuple[str, ...] = (
-    "fees_earned", "stock_awards", "option_awards",
-    "non_equity_incentive", "pension_change", "other_compensation",
+    "fees_earned",
+    "stock_awards",
+    "option_awards",
+    "non_equity_incentive",
+    "pension_change",
+    "other_compensation",
 )
 
 #: A ratio needs a positive denominator or it is not a ratio. Guarded at `> 0` and left NaN
@@ -117,10 +123,14 @@ _SHARE_DOMAIN: tuple[float, float] = (0.0, 1.0)
 #: comparable quantity and a raw one as a size proxy. The MEDIAN, not the mean, is the plan's
 #: choice and it is kept: a lead-director or committee-chair retainer is a fat tail on a
 #: ten-person board.
-ALL_FIELDS: frozenset[str] = frozenset({
-    "log_median_director_pay", "director_equity_pay_pct", "director_cash_fee_pct",
-    "ceo_to_director_pay_ratio",
-})
+ALL_FIELDS: frozenset[str] = frozenset(
+    {
+        "log_median_director_pay",
+        "director_equity_pay_pct",
+        "director_cash_fee_pct",
+        "ceo_to_director_pay_ratio",
+    }
+)
 
 #: ⚠ NONE OF THESE IS AN EVENT (D21), and that claim STILL HOLDS. Director pay is a LEVEL — a
 #: retainer structure persists between proxies, exactly as `ceo_pay_slice` and
@@ -142,8 +152,7 @@ LEVEL_FIELDS: frozenset[str] = ALL_FIELDS
 
 EVENT_FIELDS: frozenset[str] = frozenset()
 
-#: ⚠ THE FIRST PEER LEGS ANY NEW FAMILY HAS EARNED SINCE PHASE 2, and they are earned on the
-#: same measure that refuted every candidate in phases 3-5: the BETWEEN-SECTOR VARIANCE SHARE of
+#: BETWEEN-SECTOR VARIANCE SHARE of
 #: the level, against the four surviving legacy legs' 7.7%-12.4% and `profitMargins`' 9.0%.
 #: Measured 2026-09-08 over the ten fields phase 6 adds:
 #:
@@ -174,9 +183,12 @@ EVENT_FIELDS: frozenset[str] = frozenset()
 #: `log_median_director_pay` and `ceo_to_director_pay_ratio` ship RAW: the first is a scale and
 #: the second is a RATIO whose absolute level is the thesis -- 80x is entrenchment at any firm in
 #: any sector, and re-centring it on a sector mean encodes the whole sector's excess as normal.
-PEER_RELATIVE_FIELDS: frozenset[str] = frozenset({
-    "director_cash_fee_pct", "director_equity_pay_pct",
-})
+PEER_RELATIVE_FIELDS: frozenset[str] = frozenset(
+    {
+        "director_cash_fee_pct",
+        "director_equity_pay_pct",
+    }
+)
 
 
 def impute_director_comp(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -214,13 +226,14 @@ def _per_filing_pay(dc: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | N
         return None
     keys = ["ticker", "as_of"]
     g = [d[k] for k in keys]
-    out = pd.DataFrame({
-        "median_director_pay": d["total"].groupby(g, sort=False).median(),
-        "n_directors_paid": d["total"].notna().groupby(g, sort=False).sum(),
-    })
+    out = pd.DataFrame(
+        {
+            "median_director_pay": d["total"].groupby(g, sort=False).median(),
+            "n_directors_paid": d["total"].notna().groupby(g, sort=False).sum(),
+        }
+    )
     total_sum = d["total"].groupby(g, sort=False).sum(min_count=1)
-    for name, col in (("director_equity_pay_pct", "stock_awards"),
-                      ("director_cash_fee_pct", "fees_earned")):
+    for name, col in (("director_equity_pay_pct", "stock_awards"), ("director_cash_fee_pct", "fees_earned")):
         if col not in d.columns:
             tally[f"skipped: no {col} -> no {name}"] = 1
             continue
@@ -244,8 +257,7 @@ def _per_filing_pay(dc: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | N
     return out
 
 
-def _ceo_ratio(pay: pd.DataFrame, def14a: pd.DataFrame | None,
-               tally: dict[str, int]) -> pd.DataFrame | None:
+def _ceo_ratio(pay: pd.DataFrame, def14a: pd.DataFrame | None, tally: dict[str, int]) -> pd.DataFrame | None:
     """`ceo_total_comp / median_director_pay`, joined WITHIN a filing.
 
     ⚠ IT CROSSES TWO TABLES and that is the only thing to get right about it: `ceo_total_comp`
@@ -253,11 +265,8 @@ def _ceo_ratio(pay: pd.DataFrame, def14a: pd.DataFrame | None,
     `(ticker, as_of)` filing, so there is no time alignment to get wrong. What it DOES inherit is
     both parents' missingness, which is why it lands at ~59.5% against the family's 64% — the
     intersection of two independently incomplete disclosures, not a join defect.
-
-    ⚠ THE NUMERATOR IS GUARDED TOO, but at `>= 0` rather than `> 0` — see `_MIN_NUMERATOR`
-    for why a $0 CEO total is kept (TSLA reports one, five years running) while a NEGATIVE one
-    is rejected (EQT 2009 extracts -$8.9M).
     """
+
     if def14a is None or def14a.empty or "ceo_total_comp" not in def14a.columns:
         tally["skipped: no ceo_total_comp -> no ceo_to_director_pay_ratio"] = 1
         return None
@@ -265,28 +274,25 @@ def _ceo_ratio(pay: pd.DataFrame, def14a: pd.DataFrame | None,
     p["as_of"] = pd.to_datetime(p["as_of"], errors="coerce")
     p["ceo_total_comp"] = pd.to_numeric(p["ceo_total_comp"], errors="coerce")
     p = p.dropna(subset=["ticker", "as_of"])
-    m = pay[["ticker", "as_of", "median_director_pay"]].merge(p, on=["ticker", "as_of"],
-                                                              how="inner")
+    m = pay[["ticker", "as_of", "median_director_pay"]].merge(p, on=["ticker", "as_of"], how="inner")
     if m.empty:
         tally["skipped: no filing carries both a CEO total and a director median"] = 1
         return None
     den = m["median_director_pay"].where(m["median_director_pay"] > _MIN_DENOMINATOR)
-    num = m["ceo_total_comp"].where(m["ceo_total_comp"] >= _MIN_NUMERATOR)
+    num = m["ceo_total_comp"].where(m["ceo_total_comp"] > _MIN_NUMERATOR)
     m["ceo_to_director_pay_ratio"] = num / den
     m = m.replace([np.inf, -np.inf], np.nan)
-    tally["ceo_to_director_pay_ratio: filings with both legs"] = int(
-        m["ceo_to_director_pay_ratio"].notna().sum())
-    tally["ceo_to_director_pay_ratio: rejected (median <= 0)"] = int(
-        (m["median_director_pay"].notna() & den.isna()).sum())
-    tally["ceo_to_director_pay_ratio: rejected (ceo total < 0)"] = int(
-        (m["ceo_total_comp"].notna() & num.isna()).sum())
+    tally["ceo_to_director_pay_ratio: filings with both legs"] = int(m["ceo_to_director_pay_ratio"].notna().sum())
+    tally["ceo_to_director_pay_ratio: rejected (median <= 0)"] = int((m["median_director_pay"].notna() & den.isna()).sum())
+    tally["ceo_to_director_pay_ratio: rejected (ceo total < 0)"] = int((m["ceo_total_comp"].notna() & num.isna()).sum())
     return m[["ticker", "as_of", "ceo_to_director_pay_ratio"]]
 
 
-def director_pay_fields(director_comp: pd.DataFrame | None,
-                        def14a: pd.DataFrame | None,
-                        idx: pd.DatetimeIndex,
-                        ) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
+def director_pay_fields(
+    director_comp: pd.DataFrame | None,
+    def14a: pd.DataFrame | None,
+    idx: pd.DatetimeIndex,
+) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
     """The four director-pay features (D42) as daily wide frames, plus the tallies.
 
     `director_comp` is expected to have been through `impute_director_comp` already — the caller
@@ -308,8 +314,7 @@ def director_pay_fields(director_comp: pd.DataFrame | None,
 
     # A log-dollar level: see `ALL_FIELDS` for why the plan's raw `median_director_pay` ships
     # logged. `> 0` guards the log itself; a non-positive median is a parse failure.
-    pay["log_median_director_pay"] = np.log(
-        pay["median_director_pay"].where(pay["median_director_pay"] > _MIN_DENOMINATOR))
+    pay["log_median_director_pay"] = np.log(pay["median_director_pay"].where(pay["median_director_pay"] > _MIN_DENOMINATOR))
 
     frames: dict[str, pd.DataFrame] = {}
     for name in sorted(ALL_FIELDS):

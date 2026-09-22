@@ -40,6 +40,7 @@ not about a year in which no meeting happened, so all of them expire at
 `GOVERNANCE_EVENT_MAX_AGE_DAYS` -- unlike the structural levels in `panel.py`, which describe
 a board that keeps existing between proxies.
 """
+
 from __future__ import annotations
 
 import json
@@ -49,7 +50,8 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fiscal_change_to_daily, fundamentals_to_daily
 from src.data_aggregate.utils.governance.staleness import (
-    GOVERNANCE_EVENT_MAX_AGE_DAYS, expire_event_fields,
+    GOVERNANCE_EVENT_MAX_AGE_DAYS,
+    expire_event_fields,
 )
 
 #: Fields that are already 0/1 indicators and must NOT be peer-z-scored or percentile-ranked:
@@ -57,10 +59,14 @@ from src.data_aggregate.utils.governance.staleness import (
 #: z of a flag is dominated by how many peers happened to trip it. `panel.py` reads this set
 #: to route them; membership is the ONLY thing that distinguishes a flag downstream, so a new
 #: flag that is not listed here silently becomes a z-score.
-RAW_FLAG_FIELDS: frozenset[str] = frozenset({
-    "sop_dissent_gt_10", "sop_dissent_gt_20",
-    "auditor_dissent_gt_05", "auditor_dissent_gt_10",
-})
+RAW_FLAG_FIELDS: frozenset[str] = frozenset(
+    {
+        "sop_dissent_gt_10",
+        "sop_dissent_gt_20",
+        "auditor_dissent_gt_05",
+        "auditor_dissent_gt_10",
+    }
+)
 
 #: THE ONLY fields that also get a peer-relative leg. Everything this module emits ships RAW
 #: as `f_<name>`; these ten additionally get `f_<name>_vs_peers`. Nothing gets `_xs`.
@@ -117,18 +123,27 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset({
 #: because a peer z of a column that no longer exists cannot be built, not because it duplicates
 #: anything. Four columns leave, not three: 106 -> 102 features (87 -> 85 raw, 18 -> 16 peer,
 #: 1 self-history unchanged).
-PEER_RELATIVE_FIELDS: frozenset[str] = frozenset({
-    "sop_dissent",
-    "board_dissent_mean", "board_dissent_median", "board_dissent_max", "board_dissent_p90",
-    "board_dissent_breadth_10", "board_dissent_breadth_20",
-    "board_pct_nominees_below_70_support", "ceo_director_dissent",
-    "auditor_vote_dissent",
-})
+PEER_RELATIVE_FIELDS: frozenset[str] = frozenset(
+    {
+        "sop_dissent",
+        "board_dissent_mean",
+        "board_dissent_median",
+        "board_dissent_max",
+        "board_dissent_p90",
+        "board_dissent_breadth_10",
+        "board_dissent_breadth_20",
+        "ceo_director_dissent",
+        "auditor_vote_dissent",
+    }
+)
 
 #: The say-on-pay family (proposal-level tallies).
 _SOP_LEVELS: tuple[str, ...] = (
-    "sop_dissent", "sop_dissent_excess_10", "sop_dissent_excess_20",
-    "sop_dissent_gt_10", "sop_dissent_gt_20",
+    "sop_dissent",
+    "sop_dissent_excess_10",
+    "sop_dissent_excess_20",
+    "sop_dissent_gt_10",
+    "sop_dissent_gt_20",
 )
 _SOP_DELTAS: dict[str, str] = {"sop_dissent_delta_1y": "sop_dissent"}
 
@@ -137,11 +152,17 @@ _SOP_DELTAS: dict[str, str] = {"sop_dissent_delta_1y": "sop_dissent"}
 #: computed from the SAME ballot -- reading the election rows twice would be both wasteful
 #: and a chance for the two legs to drift apart.
 _ELECTION_LEVELS: tuple[str, ...] = (
-    "board_dissent_mean", "board_dissent_median", "board_dissent_max", "board_dissent_p90",
-    "board_dissent_breadth_10", "board_dissent_breadth_20",
+    "board_dissent_mean",
+    "board_dissent_median",
+    "board_dissent_max",
+    "board_dissent_p90",
+    "board_dissent_breadth_10",
+    "board_dissent_breadth_20",
     "board_pct_nominees_below_70_support",
-    "ceo_director_dissent", "ceo_excess_dissent",
-    "management_dissent_spread", "ceo_vs_nonemployee_dissent",
+    "ceo_director_dissent",
+    "ceo_excess_dissent",
+    "management_dissent_spread",
+    "ceo_vs_nonemployee_dissent",
 )
 _ELECTION_DELTAS: dict[str, str] = {
     "board_dissent_mean_delta_1y": "board_dissent_mean",
@@ -156,16 +177,15 @@ _ELECTION_DELTAS: dict[str, str] = {
 #: tail, where say-on-pay routinely runs to 10%.
 _AUDITOR_LEVELS: tuple[str, ...] = (
     "auditor_vote_dissent",
-    "auditor_dissent_gt_05", "auditor_dissent_gt_10",
+    "auditor_dissent_gt_05",
+    "auditor_dissent_gt_10",
 )
 _AUDITOR_DELTAS: dict[str, str] = {"auditor_vote_dissent_delta_1y": "auditor_vote_dissent"}
 
 #: Every field this module emits. All of them expire (D21) -- there is no vote-derived
 #: quantity that stays true about a year with no meeting.
 EVENT_FIELDS: frozenset[str] = frozenset(
-    _SOP_LEVELS + tuple(_SOP_DELTAS)
-    + _ELECTION_LEVELS + tuple(_ELECTION_DELTAS)
-    + _AUDITOR_LEVELS + tuple(_AUDITOR_DELTAS)
+    _SOP_LEVELS + tuple(_SOP_DELTAS) + _ELECTION_LEVELS + tuple(_ELECTION_DELTAS) + _AUDITOR_LEVELS + tuple(_AUDITOR_DELTAS)
 )
 
 
@@ -242,8 +262,7 @@ def _collapse(hist: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
     sequence gives a stable total order; the later accession wins, which is what an
     amendment should do.
     """
-    seq = (pd.to_numeric(rows["proposal_seq"], errors="coerce").to_numpy()
-           if "proposal_seq" in rows.columns else 0.0)
+    seq = pd.to_numeric(rows["proposal_seq"], errors="coerce").to_numpy() if "proposal_seq" in rows.columns else 0.0
     out = hist.assign(_acc=rows["accession_number"].astype(str).to_numpy(), _seq=seq)
     out = out.dropna(subset=["ticker", "as_of"])
     out = out.sort_values(["ticker", "as_of", "_acc", "_seq"], kind="mergesort")
@@ -270,8 +289,11 @@ def _as_of(rows: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(rows["filing_date"], errors="coerce")
 
 
-def _proposal_legs(rows: pd.DataFrame, tally: dict[str, int], label: str,
-                   ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+def _proposal_legs(
+    rows: pd.DataFrame,
+    tally: dict[str, int],
+    label: str,
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
     """The three vote legs and the denominator for a proposal-level family, with the rows that
     lost their `votes_for` leg COUNTED rather than quietly dropped.
 
@@ -279,8 +301,7 @@ def _proposal_legs(rows: pd.DataFrame, tally: dict[str, int], label: str,
     consumer that silences them without saying so leaves the next reader to rediscover the
     same six years of IEX by hand.
     """
-    against, abstain, favour = (_num(rows, "votes_against"), _num(rows, "votes_abstain"),
-                                _num(rows, "votes_for"))
+    against, abstain, favour = (_num(rows, "votes_against"), _num(rows, "votes_abstain"), _num(rows, "votes_for"))
     lost = int((favour.isna() & (against.notna() | abstain.notna())).sum())
     if lost:
         tally[f"no votes_for leg (row dropped): {label}"] = lost
@@ -304,21 +325,23 @@ def _say_on_pay_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFr
     # `_proposal_legs`, whose other callers still need it.
     against, abstain, favour, _valid = _proposal_legs(rows, tally, "say_on_pay")
     dissent = _sanitize(_dissent(against, abstain, favour), tally, "sop_dissent")
-    hist = pd.DataFrame({
-        "ticker": rows["ticker"].astype(str),
-        "as_of": _as_of(rows),
-        "sop_dissent": dissent,
-        # `sop_against_pct` (= against / valid) used to be emitted here. Removed rather than
-        # left computed-but-unselected, because `_sanitize` writes tally entries and a build
-        # log reporting the hygiene of a column nobody ships is a trap for the next reader.
-        # See `PEER_RELATIVE_FIELDS` for the r = 0.9949 that retired it.
-        # Excess-over-threshold: zero for a normal vote, and LINEAR in the tail beyond it, so
-        # a 35% revolt is distinguishable from a 21% one where the flag below saturates.
-        "sop_dissent_excess_10": (dissent - 0.10).clip(lower=0.0),
-        "sop_dissent_excess_20": (dissent - 0.20).clip(lower=0.0),
-        "sop_dissent_gt_10": _flag(dissent, 0.10),
-        "sop_dissent_gt_20": _flag(dissent, 0.20),
-    })
+    hist = pd.DataFrame(
+        {
+            "ticker": rows["ticker"].astype(str),
+            "as_of": _as_of(rows),
+            "sop_dissent": dissent,
+            # `sop_against_pct` (= against / valid) used to be emitted here. Removed rather than
+            # left computed-but-unselected, because `_sanitize` writes tally entries and a build
+            # log reporting the hygiene of a column nobody ships is a trap for the next reader.
+            # See `PEER_RELATIVE_FIELDS` for the r = 0.9949 that retired it.
+            # Excess-over-threshold: zero for a normal vote, and LINEAR in the tail beyond it, so
+            # a 35% revolt is distinguishable from a 21% one where the flag below saturates.
+            "sop_dissent_excess_10": (dissent - 0.10).clip(lower=0.0),
+            "sop_dissent_excess_20": (dissent - 0.20).clip(lower=0.0),
+            "sop_dissent_gt_10": _flag(dissent, 0.10),
+            "sop_dissent_gt_20": _flag(dissent, 0.20),
+        }
+    )
     return _collapse(hist, rows)
 
 
@@ -330,7 +353,7 @@ def _one_nominee_dissent(item: object) -> float:
     legs = []
     for key in ("votes_for", "votes_against", "votes_abstain"):
         try:
-            legs.append(float(item.get(key)))          # type: ignore[arg-type]
+            legs.append(float(item.get(key)))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             legs.append(np.nan)
     # Same asymmetry as `_valid_votes`: the FOR leg is required (without it the ratio is a
@@ -340,7 +363,7 @@ def _one_nominee_dissent(item: object) -> float:
     valid = float(np.nansum(legs))
     if not valid > 0:
         return np.nan
-    return float(np.nansum(legs[1:])) / valid          # (against + abstain) / valid
+    return float(np.nansum(legs[1:])) / valid  # (against + abstain) / valid
 
 
 def _nominee_dissent(payload: object, tally: dict[str, int]) -> list[float]:
@@ -353,14 +376,12 @@ def _nominee_dissent(payload: object, tally: dict[str, int]) -> list[float]:
     if payload is None or (isinstance(payload, float) and np.isnan(payload)):
         return []
     try:
-        items = json.loads(payload)                    # type: ignore[arg-type]
+        items = json.loads(payload)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        tally["nominee_votes_json malformed (row skipped)"] = (
-            tally.get("nominee_votes_json malformed (row skipped)", 0) + 1)
+        tally["nominee_votes_json malformed (row skipped)"] = tally.get("nominee_votes_json malformed (row skipped)", 0) + 1
         return []
     if not isinstance(items, list):
-        tally["nominee_votes_json not a list (row skipped)"] = (
-            tally.get("nominee_votes_json not a list (row skipped)", 0) + 1)
+        tally["nominee_votes_json not a list (row skipped)"] = tally.get("nominee_votes_json not a list (row skipped)", 0) + 1
         return []
 
     out: list[float] = []
@@ -369,8 +390,7 @@ def _nominee_dissent(payload: object, tally: dict[str, int]) -> list[float]:
         if np.isnan(d):
             continue
         if not 0.0 <= d <= 1.0:
-            tally["out of [0,1] (nulled): nominee dissent"] = (
-                tally.get("out of [0,1] (nulled): nominee dissent", 0) + 1)
+            tally["out of [0,1] (nulled): nominee dissent"] = tally.get("out of [0,1] (nulled): nominee dissent", 0) + 1
             continue
         out.append(d)
     return out
@@ -386,8 +406,7 @@ def _bucket_dissent(rows: pd.DataFrame, bucket: str, tally: dict[str, int]) -> p
     is the only thing that separates them.
     """
     present = _num(rows, f"n_nominees_{bucket}") > 0
-    d = _dissent(_num(rows, f"votes_against_{bucket}"), _num(rows, f"votes_abstain_{bucket}"),
-                 _num(rows, f"votes_for_{bucket}"))
+    d = _dissent(_num(rows, f"votes_against_{bucket}"), _num(rows, f"votes_abstain_{bucket}"), _num(rows, f"votes_for_{bucket}"))
     return _sanitize(d.where(present), tally, f"{bucket}_dissent")
 
 
@@ -407,8 +426,7 @@ def _election_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFram
     arrays = [np.asarray(_nominee_dissent(p, tally), dtype="float64") for p in lists]
 
     def agg(fn) -> pd.Series:
-        return pd.Series([fn(a) if a.size else np.nan for a in arrays],
-                         index=rows.index, dtype="float64")
+        return pd.Series([fn(a) if a.size else np.nan for a in arrays], index=rows.index, dtype="float64")
 
     # A single-nominee election makes mean == median == max == p90. That is not a bug, it is
     # what a one-name ballot says; the peer panel's PEER_DISPERSION_FLOOR absorbs the low
@@ -435,27 +453,29 @@ def _election_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFram
     n_nominees = _num(rows, "n_nominees")
     below_70 = _num(rows, "n_nominees_below_70pct")
 
-    hist = pd.DataFrame({
-        "ticker": rows["ticker"].astype(str),
-        "as_of": _as_of(rows),
-        "board_dissent_mean": mean,
-        "board_dissent_median": median,
-        "board_dissent_max": agg(np.max),
-        "board_dissent_p90": agg(lambda a: float(np.quantile(a, 0.90))),
-        "board_dissent_breadth_10": agg(lambda a: float((a >= 0.10).mean())),
-        "board_dissent_breadth_20": agg(lambda a: float((a >= 0.20).mean())),
-        "board_pct_nominees_below_70_support": below_70 / n_nominees.where(n_nominees > 0),
-        "ceo_director_dissent": ceo,
-        # D15: the median INCLUDES the CEO's own nominee row, so this understates the excess
-        # by roughly 1/n_nominees of it. Documented approximation, not an oversight -- the
-        # exact leave-one-out version needs the CEO's name matched inside the JSON, which
-        # phase 1 §4 measured as recovering 3 rows out of 908 and is not worth the coupling.
-        "ceo_excess_dissent": ceo - median,
-        "management_dissent_spread": _bucket_dissent(rows, "exec_officer", tally) - non_employee,
-        # Exact, unlike `ceo_excess_dissent`: the non-employee bucket excludes the CEO by
-        # construction, so there is no self-inclusion to correct for.
-        "ceo_vs_nonemployee_dissent": ceo - non_employee,
-    })
+    hist = pd.DataFrame(
+        {
+            "ticker": rows["ticker"].astype(str),
+            "as_of": _as_of(rows),
+            "board_dissent_mean": mean,
+            "board_dissent_median": median,
+            "board_dissent_max": agg(np.max),
+            "board_dissent_p90": agg(lambda a: float(np.quantile(a, 0.90))),
+            "board_dissent_breadth_10": agg(lambda a: float((a >= 0.10).mean())),
+            "board_dissent_breadth_20": agg(lambda a: float((a >= 0.20).mean())),
+            "board_pct_nominees_below_70_support": below_70 / n_nominees.where(n_nominees > 0),
+            "ceo_director_dissent": ceo,
+            # D15: the median INCLUDES the CEO's own nominee row, so this understates the excess
+            # by roughly 1/n_nominees of it. Documented approximation, not an oversight -- the
+            # exact leave-one-out version needs the CEO's name matched inside the JSON, which
+            # phase 1 §4 measured as recovering 3 rows out of 908 and is not worth the coupling.
+            "ceo_excess_dissent": ceo - median,
+            "management_dissent_spread": _bucket_dissent(rows, "exec_officer", tally) - non_employee,
+            # Exact, unlike `ceo_excess_dissent`: the non-employee bucket excludes the CEO by
+            # construction, so there is no self-inclusion to correct for.
+            "ceo_vs_nonemployee_dissent": ceo - non_employee,
+        }
+    )
 
     _log_ceo_ceiling(rows, tally)
     return _collapse(hist, rows)
@@ -478,12 +498,9 @@ def _log_ceo_ceiling(rows: pd.DataFrame, tally: dict[str, int]) -> None:
     n_unmatched = _num(rows, "n_nominees_unmatched").fillna(0.0)
     n_nominees = _num(rows, "n_nominees")
     tally["elections: CEO resolved"] = int((n_ceo > 0).sum())
-    tally["elections: no CEO, no unmatched (not on the ballot)"] = int(
-        ((n_ceo <= 0) & (n_unmatched <= 0)).sum())
-    tally["elections: no CEO, unmatched present"] = int(
-        ((n_ceo <= 0) & (n_unmatched > 0)).sum())
-    tally["elections: >50% of nominees unmatched"] = int(
-        ((n_unmatched / n_nominees.where(n_nominees > 0)) > 0.5).sum())
+    tally["elections: no CEO, no unmatched (not on the ballot)"] = int(((n_ceo <= 0) & (n_unmatched <= 0)).sum())
+    tally["elections: no CEO, unmatched present"] = int(((n_ceo <= 0) & (n_unmatched > 0)).sum())
+    tally["elections: >50% of nominees unmatched"] = int(((n_unmatched / n_nominees.where(n_nominees > 0)) > 0.5).sum())
 
 
 # ----------------------------------------------------------------------------- family 4 --
@@ -504,21 +521,24 @@ def _auditor_history(votes: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame
     # `_proposal_legs`, whose other callers still need it.
     against, abstain, favour, _valid = _proposal_legs(rows, tally, "auditor_ratification")
     dissent = _sanitize(_dissent(against, abstain, favour), tally, "auditor_vote_dissent")
-    hist = pd.DataFrame({
-        "ticker": rows["ticker"].astype(str),
-        "as_of": _as_of(rows),
-        "auditor_vote_dissent": dissent,
-        # `auditor_vote_against_pct` used to be emitted here; `_dissent` is a strict SUPERSET
-        # of it (254 cells more, 0 the other way) at r = 0.9867. Same reason as say-on-pay's.
-        "auditor_dissent_gt_05": _flag(dissent, 0.05),
-        "auditor_dissent_gt_10": _flag(dissent, 0.10),
-    })
+    hist = pd.DataFrame(
+        {
+            "ticker": rows["ticker"].astype(str),
+            "as_of": _as_of(rows),
+            "auditor_vote_dissent": dissent,
+            # `auditor_vote_against_pct` used to be emitted here; `_dissent` is a strict SUPERSET
+            # of it (254 cells more, 0 the other way) at r = 0.9867. Same reason as say-on-pay's.
+            "auditor_dissent_gt_05": _flag(dissent, 0.05),
+            "auditor_dissent_gt_10": _flag(dissent, 0.10),
+        }
+    )
     return _collapse(hist, rows)
 
 
 # -------------------------------------------------------------------------------- daily --
-def _family_frames(hist: pd.DataFrame, levels: tuple[str, ...], deltas: dict[str, str],
-                   idx: pd.DatetimeIndex) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
+def _family_frames(
+    hist: pd.DataFrame, levels: tuple[str, ...], deltas: dict[str, str], idx: pd.DatetimeIndex
+) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
     """Daily wide frames for one family, plus the feature -> history-column map the expiry needs.
 
     Levels go through `fundamentals_to_daily` and deltas through `fiscal_change_to_daily`, so
@@ -552,7 +572,8 @@ def _family_frames(hist: pd.DataFrame, levels: tuple[str, ...], deltas: dict[str
 
 
 def vote_dissent_fields(
-    votes: pd.DataFrame | None, idx: pd.DatetimeIndex,
+    votes: pd.DataFrame | None,
+    idx: pd.DatetimeIndex,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
     """(daily wide frames keyed by feature name, data-quality tallies).
 

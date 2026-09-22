@@ -46,33 +46,42 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.panel import peer_relative
 from src.data_aggregate.utils.common.pit import (
     fiscal_change_to_daily,
     fundamentals_to_daily,
     infer_yoy_periods,
 )
 from src.data_aggregate.utils.common.xs import self_history_z, winsorize_xs
-from src.data_aggregate.utils.common.panel import peer_relative
 from src.data_aggregate.utils.governance.director_comp import (
     PEER_RELATIVE_FIELDS as DIRECTOR_PAY_PEER_FIELDS,
+)
+from src.data_aggregate.utils.governance.director_comp import (
     director_pay_fields,
 )
 from src.data_aggregate.utils.governance.directors import (
     PEER_RELATIVE_FIELDS as BOARD_QUALITY_PEER_FIELDS,
+)
+from src.data_aggregate.utils.governance.directors import (
     board_quality_fields,
 )
 from src.data_aggregate.utils.governance.names import ceo_identity_changed
-from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS, expire_stale
 from src.data_aggregate.utils.governance.pay_features import (
     PEER_RELATIVE_FIELDS as PAY_PEER_FIELDS,
+)
+from src.data_aggregate.utils.governance.pay_features import (
     pay_fields,
 )
 from src.data_aggregate.utils.governance.provisions_features import (
     PEER_RELATIVE_FIELDS as PROVISION_PEER_FIELDS,
+)
+from src.data_aggregate.utils.governance.provisions_features import (
     provision_fields,
 )
+from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS, expire_stale
 from src.data_aggregate.utils.governance.vote_dissent_features import (
-    PEER_RELATIVE_FIELDS, vote_dissent_fields,
+    PEER_RELATIVE_FIELDS,
+    vote_dissent_fields,
 )
 
 # def14a_llm level columns read off the proxy row. HOW each is ENCODED is decided by the three
@@ -116,16 +125,16 @@ _LEVEL_FIELDS: list[tuple[str, str]] = [
 _DOMAIN: dict[str, tuple[float, float, bool]] = {
     # Shares of a whole. Both breaches are NEGATIVE at one end and > 1 at the other, which is
     # a broken denominator in both directions, not a rounding artefact.
-    "ceo_equity_pay_pct":        (0.0, 1.0, True),   # 4,409 cells / 8 tickers: -0.011 .. 4.716
-    "pct_independent_directors": (0.0, 1.0, True),   # 1,992 / 4: 1.006 .. 1.273 (ABT 2012-03-15
-                                                     # reads 1.273 -- 14 independent on 11 seats)
-    "pct_female_directors":      (0.0, 1.0, True),   # 0 cells today; inert, by definition true
-    "say_on_pay_support_pct":    (0.0, 1.0, True),   # 0 cells today; catches a %-vs-fraction
-                                                     # regression on the one RAW fraction
+    "ceo_equity_pay_pct": (0.0, 1.0, True),  # 4,409 cells / 8 tickers: -0.011 .. 4.716
+    "pct_independent_directors": (0.0, 1.0, True),  # 1,992 / 4: 1.006 .. 1.273 (ABT 2012-03-15
+    # reads 1.273 -- 14 independent on 11 seats)
+    "pct_female_directors": (0.0, 1.0, True),  # 0 cells today; inert, by definition true
+    "say_on_pay_support_pct": (0.0, 1.0, True),  # 0 cells today; catches a %-vs-fraction
+    # regression on the one RAW fraction
     # A board has seats. GPN 2001-08-31 and MKC 1998-02-17 each report a ONE-director board.
     # ⚠ The upper bound is INVENTED, not measured: the observed max is 33 and 60 fires on
     # nothing. It exists to catch a future 10x parse error, not to trim today's distribution.
-    "board_size":                (3.0, 60.0, True),  # 792 / 3 below 3; 0 above 60
+    "board_size": (3.0, 60.0, True),  # 792 / 3 below 3; 0 above 60
     # ⚠ ZERO IS ADMITTED, AND THAT IS A MEASURED DECISION, NOT AN OVERSIGHT. A first cut made
     # this bound exclusive on the reasoning that "a ratio needs a positive numerator". The data
     # refutes it: all 1,064 cells at exactly 0 are **TSLA**, whose proxies report Musk's total
@@ -170,7 +179,7 @@ _DOMAIN: dict[str, tuple[float, float, bool]] = {
     # of them is `ceo_total_comp / median_employee_pay` computed CORRECTLY off a
     # `ceo_total_comp` of $1 or $2.75 that is really a SALARY line. The ratio is not the
     # broken leg, and nulling it here would hide the leg that is. That is phase 2's fix.
-    "ceo_pay_ratio":             (0.0, 1e5, True),   # 0 KEPT (TSLA, real); 501 above 1e5
+    "ceo_pay_ratio": (0.0, 1e5, True),  # 0 KEPT (TSLA, real); 501 above 1e5
     # D12. >= 90% insider ownership is impossible AS ECONOMICS for a company with a public
     # float, and 98.3% of the 59 filings above the bar are dual-class -- the extraction took
     # the "% of total voting power" column. Insiders hold ~14% of Meta and control ~61% of its
@@ -185,7 +194,7 @@ _DOMAIN: dict[str, tuple[float, float, bool]] = {
     # bound remains as the permanent backstop, because "the extraction was fixed once" is not
     # a property a later regression respects. `_control_wedge` is the feature that difference
     # became; this is the gate that stops the difference being read as the level.
-    "insider_ownership_pct":     (0.0, 0.90, True),  # 14,689 / 16: 0.901 .. 1.0000
+    "insider_ownership_pct": (0.0, 0.90, True),  # 14,689 / 16: 0.901 .. 1.0000
 }
 
 #: ⚠ THE ONE CONDITIONAL BOUND, and the condition is the whole finding rather than a caveat on
@@ -218,8 +227,7 @@ _DOMAIN: dict[str, tuple[float, float, bool]] = {
 _DOMAIN_ONLY_WHERE: dict[str, str] = {"insider_ownership_pct": "dual_class_shares"}
 
 
-def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeIndex,
-                      tally: dict[str, int] | None = None) -> pd.DataFrame | None:
+def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame | None:
     """The daily truth frame gating `_DOMAIN[field]`, or None when the bound is unconditional.
 
     Read through the SAME `fundamentals_to_daily` pivot as the value it qualifies, so the
@@ -252,24 +260,19 @@ def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeInd
         return None
     if col not in def14a_hist.columns:
         if tally is not None:
-            tally[f"⚠ domain gate on {field} lost its discriminator ({col}) "
-                  f"-> applied unconditionally"] = 1
+            tally[f"⚠ domain gate on {field} lost its discriminator ({col}) " f"-> applied unconditionally"] = 1
         return None
-    qualifying = (def14a_hist[def14a_hist[field].notna()]
-                  if field in def14a_hist.columns else def14a_hist)
+    qualifying = def14a_hist[def14a_hist[field].notna()] if field in def14a_hist.columns else def14a_hist
     if qualifying.empty:
         return None
     if "ticker" in def14a_hist.columns:
-        ever = ((pd.to_numeric(def14a_hist[col], errors="coerce").fillna(0.0) > 0)
-                .groupby(def14a_hist["ticker"]).max())
-        qualifying = qualifying.assign(
-            **{col: qualifying["ticker"].map(ever).fillna(False).astype(float)})
+        ever = (pd.to_numeric(def14a_hist[col], errors="coerce").fillna(0.0) > 0).groupby(def14a_hist["ticker"]).max()
+        qualifying = qualifying.assign(**{col: qualifying["ticker"].map(ever).fillna(False).astype(float)})
     cond = fundamentals_to_daily(qualifying, col, idx)
     return None if cond.empty else cond
 
 
-def _gate(frame: pd.DataFrame, field: str, tally: dict[str, int] | None,
-          condition: pd.DataFrame | None = None) -> pd.DataFrame:
+def _gate(frame: pd.DataFrame, field: str, tally: dict[str, int] | None, condition: pd.DataFrame | None = None) -> pd.DataFrame:
     """Blank the cells of `frame` that lie outside `_DOMAIN[field]`, and COUNT them.
 
     A field with no `_DOMAIN` entry is returned untouched -- the gate is opt-in, so adding a
@@ -295,17 +298,15 @@ def _gate(frame: pd.DataFrame, field: str, tally: dict[str, int] | None,
         # falls to NaN -> `== 1` is False -> the bound does NOT apply there. That is the
         # deliberate direction: an unqualified breach is exempted rather than blanked, because
         # the condition column is measured to be complete wherever the value exists.
-        bad &= (condition.reindex(index=frame.index, columns=frame.columns) == 1)
+        bad &= condition.reindex(index=frame.index, columns=frame.columns) == 1
     n_bad = int(bad.to_numpy().sum())
     if n_bad and tally is not None:
-        tally[f"domain-gated: {field} outside "
-              f"{'[' if lo_inclusive else '('}{lo:g}, {hi:g}]"] = n_bad
+        tally[f"domain-gated: {field} outside " f"{'[' if lo_inclusive else '('}{lo:g}, {hi:g}]"] = n_bad
         tally[f"domain-gated: {field} tickers"] = int(bad.any(axis=0).sum())
     return frame.mask(bad)
 
 
-def _expire(frame: pd.DataFrame, history: pd.DataFrame, field: str, feature: str,
-            tally: dict[str, int] | None) -> pd.DataFrame:
+def _expire(frame: pd.DataFrame, history: pd.DataFrame, field: str, feature: str, tally: dict[str, int] | None) -> pd.DataFrame:
     """Apply the LEVEL staleness horizon to one daily frame and COUNT what it removed.
 
     `field` is the column in `history` whose `as_of` dates the cell; `feature` is the emitted
@@ -321,8 +322,7 @@ def _expire(frame: pd.DataFrame, history: pd.DataFrame, field: str, feature: str
     if frame is None or frame.empty:
         return frame
     before = int(frame.notna().to_numpy().sum())
-    out = expire_stale(frame, history, field, max_age_days=LEVEL_MAX_AGE_DAYS,
-                       feature=feature)
+    out = expire_stale(frame, history, field, max_age_days=LEVEL_MAX_AGE_DAYS, feature=feature)
     expired = before - int(out.notna().to_numpy().sum())
     if expired and tally is not None:
         tally[f"expired >{LEVEL_MAX_AGE_DAYS}d: {feature}"] = expired
@@ -370,9 +370,14 @@ _RAW_DEF14A_FIELDS: list[tuple[str, str]] = [
 #: `pct_independent_directors` (4.0% sector share), and for `ceo_tenure` /
 #: `pct_female_directors` -- whose IC flips sign under ALL THREE encodings, which also
 #: disqualified their monotone constraints in `configs/models/lgbm_modelling.yml`.
-_PEER_LEGACY: frozenset[str] = frozenset({
-    "board_size", "ceo_pay_ratio", "ceo_equity_pay_pct", "insider_ownership_pct",
-})
+_PEER_LEGACY: frozenset[str] = frozenset(
+    {
+        "board_size",
+        "ceo_pay_ratio",
+        "ceo_equity_pay_pct",
+        "insider_ownership_pct",
+    }
+)
 
 #: `_vs_hist` SURVIVES ON EXACTLY ONE. A trailing 5-year self-z asks "is this firm unusual by
 #: its OWN standards", and its precondition is within-firm movement. `avg_board_tenure` is the
@@ -433,9 +438,12 @@ _VS_HIST_LEGACY: frozenset[str] = frozenset({"avg_board_tenure"})
 #: ⚠ THE TRIM IS APPLIED PER SHIPPED COLUMN, not to `ceo_pay_growth` and then inherited:
 #: the difference carries its own tail from the REVENUE leg (raw min -212.44, which no bound on
 #: the pay leg can reach) and has to be trimmed on its own cross-section.
-_RAW_ONLY_COMPUTED: frozenset[str] = frozenset({
-    "ceo_pay_growth", "ceo_pay_vs_revenue_growth",
-})
+_RAW_ONLY_COMPUTED: frozenset[str] = frozenset(
+    {
+        "ceo_pay_growth",
+        "ceo_pay_vs_revenue_growth",
+    }
+)
 
 #: Panel-computed fields that ship RAW and are NATURALLY BOUNDED -- so they need no trim and are
 #: deliberately NOT in `_RAW_ONLY_COMPUTED`, whose membership DRIVES the 1%/99% winsorization.
@@ -454,8 +462,7 @@ _RAW_ONLY_COMPUTED: frozenset[str] = frozenset({
 _RAW_ONLY_BOUNDED: frozenset[str] = frozenset({"control_wedge"})
 
 
-def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                    tally: dict[str, int] | None = None) -> pd.DataFrame:
+def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame:
     """`ceo_total_comp` growth per filing, NULLED across a CEO CHANGE, then expanded PIT.
 
     ⚠ WHY THIS IS NO LONGER `fiscal_change_to_daily`. The arithmetic is identical -- a
@@ -492,8 +499,7 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     """
     if "ceo_total_comp" not in def14a_hist.columns or "as_of" not in def14a_hist.columns:
         return pd.DataFrame(index=idx)
-    keep = [c for c in ("ticker", "as_of", "ceo_total_comp", "ceo_name_proxy")
-            if c in def14a_hist.columns]
+    keep = [c for c in ("ticker", "as_of", "ceo_total_comp", "ceo_name_proxy") if c in def14a_hist.columns]
     d = def14a_hist[keep].copy()
     d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
     d["ceo_total_comp"] = pd.to_numeric(d["ceo_total_comp"], errors="coerce")
@@ -502,10 +508,8 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex,
         return pd.DataFrame(index=idx)
     # `replace` on the infinities reproduces `fiscal_change_to_daily` exactly: a prior year
     # filed as $0 makes `pct_change` infinite, and an infinity is not a growth rate.
-    d["chg"] = (d.groupby("ticker", sort=False)["ceo_total_comp"].pct_change(periods=1)
-                .replace([np.inf, -np.inf], np.nan))
-    names = (d["ceo_name_proxy"] if "ceo_name_proxy" in d.columns
-             else pd.Series(None, index=d.index, dtype="object"))
+    d["chg"] = d.groupby("ticker", sort=False)["ceo_total_comp"].pct_change(periods=1).replace([np.inf, -np.inf], np.nan)
+    names = d["ceo_name_proxy"] if "ceo_name_proxy" in d.columns else pd.Series(None, index=d.index, dtype="object")
     changed = ceo_identity_changed(names, d["ticker"])
     # 0.0 means "do not mask", which is ALSO the unknown-identity policy above -- so filling
     # the unknowns here cannot substitute a STALE flag for a missing one: every row of `sub`
@@ -520,14 +524,12 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     if tally is not None:
         tally["ceo_pay_growth: nulled across a CEO change"] = int(bad.to_numpy().sum())
         tally["ceo_pay_growth: tickers with a nulled transition"] = int(bad.any(axis=0).sum())
-        tally["ceo_pay_growth: kept on an UNKNOWN CEO identity (filings)"] = int(
-            changed.reindex(sub.index).isna().sum())
+        tally["ceo_pay_growth: kept on an UNKNOWN CEO identity (filings)"] = int(changed.reindex(sub.index).isna().sum())
     # ⚠ EXPIRED AGAINST `sub`, NOT `d`. A growth rate belongs to the LATER of the two filings
     # it differences, and `sub` is exactly the rows where that difference exists -- so its
     # `as_of` is the date the number became knowable. Passing `d` would date a 2014-vs-2013
     # growth to whichever 2013 row happened to survive the dropna, aging it by a whole cycle.
-    return _expire(growth.mask(bad), sub[["ticker", "as_of", "chg"]], "chg",
-                   "ceo_pay_growth", tally)
+    return _expire(growth.mask(bad), sub[["ticker", "as_of", "chg"]], "chg", "ceo_pay_growth", tally)
 
 
 #: The share-count column the economic ownership percentage is divided by. `sharesOutstandingPit`
@@ -537,9 +539,7 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex,
 _SHARES_OUTSTANDING = "sharesOutstandingPit"
 
 
-def economic_ownership(def14a_hist: pd.DataFrame,
-                       fundamentals: pd.DataFrame | None,
-                       tally: dict[str, int] | None = None) -> pd.DataFrame:
+def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | None, tally: dict[str, int] | None = None) -> pd.DataFrame:
     """COMPUTE `insider_ownership_pct` from the group's filed share count over shares outstanding.
 
     ⚠ FOR A DUAL-CLASS FILER THE ECONOMIC PERCENTAGE IS NOT A DISCLOSED FACT, and that is the
@@ -590,10 +590,13 @@ def economic_ownership(def14a_hist: pd.DataFrame,
     # NOT normalise the unit, so this crashed the whole panel build until it was pinned.
     left = def14a_hist.copy()
     left["_as_of"] = pd.to_datetime(left["as_of"], errors="coerce").astype("datetime64[ns]")
-    right = (fundamentals[["ticker", "as_of", _SHARES_OUTSTANDING]].copy()
-             .assign(_as_of=lambda d: pd.to_datetime(d["as_of"], errors="coerce")
-                     .astype("datetime64[ns]"))
-             .drop(columns="as_of").dropna(subset=["_as_of"]))
+    right = (
+        fundamentals[["ticker", "as_of", _SHARES_OUTSTANDING]]
+        .copy()
+        .assign(_as_of=lambda d: pd.to_datetime(d["as_of"], errors="coerce").astype("datetime64[ns]"))
+        .drop(columns="as_of")
+        .dropna(subset=["_as_of"])
+    )
     right = right[right[_SHARES_OUTSTANDING] > 0]
     if right.empty:
         return def14a_hist
@@ -605,9 +608,8 @@ def economic_ownership(def14a_hist: pd.DataFrame,
     # but a named-ticker probe would have caught it.
     left["_key"] = range(len(left))
     merged = pd.merge_asof(
-        left.dropna(subset=["_as_of"]).sort_values("_as_of"),
-        right.sort_values("_as_of"),
-        on="_as_of", by="ticker", direction="backward")
+        left.dropna(subset=["_as_of"]).sort_values("_as_of"), right.sort_values("_as_of"), on="_as_of", by="ticker", direction="backward"
+    )
 
     shares_out = pd.to_numeric(merged[_SHARES_OUTSTANDING], errors="coerce")
     insider = pd.to_numeric(merged["insider_shares"], errors="coerce")
@@ -624,8 +626,7 @@ def economic_ownership(def14a_hist: pd.DataFrame,
         vote = pd.to_numeric(merged["insider_voting_pct"], errors="coerce")
         bad = computed.notna() & vote.notna() & (computed > vote + 1e-9)
         if tally is not None and int(bad.sum()):
-            tally["insider_ownership_pct: computed value REJECTED (exceeds voting power)"] = int(
-                bad.sum())
+            tally["insider_ownership_pct: computed value REJECTED (exceeds voting power)"] = int(bad.sum())
         computed = computed.where(~bad)
 
     by_key = pd.Series(computed.to_numpy(), index=merged["_key"].to_numpy())
@@ -667,8 +668,7 @@ def economic_ownership(def14a_hist: pd.DataFrame,
     return out
 
 
-def repair_ownership_basis(def14a_hist: pd.DataFrame,
-                           tally: dict[str, int] | None = None) -> pd.DataFrame:
+def repair_ownership_basis(def14a_hist: pd.DataFrame, tally: dict[str, int] | None = None) -> pd.DataFrame:
     """Blank `insider_ownership_pct` / `ceo_ownership_pct` where the value is a PER-CLASS
     percentage rather than an economic stake, using the voting leg as the discriminator.
 
@@ -717,8 +717,7 @@ def repair_ownership_basis(def14a_hist: pd.DataFrame,
         # their own flag while 27 of UHS's 31 filings and every other CCL filing disclose dual
         # class. Promoting to "this filer ever disclosed dual class" catches both and costs
         # nothing: LVS discloses single class in 23 of 23 filings, so its real 0.91 still stands.
-        dual = dual | out["ticker"].map(
-            dual.groupby(out["ticker"]).max()).fillna(False).astype(bool)
+        dual = dual | out["ticker"].map(dual.groupby(out["ticker"]).max()).fillna(False).astype(bool)
     vote = pd.to_numeric(out["insider_voting_pct"], errors="coerce")
     own = pd.to_numeric(out["insider_ownership_pct"], errors="coerce")
     per_class = dual & vote.notna() & own.notna() & (own > vote + 1e-9)
@@ -732,13 +731,13 @@ def repair_ownership_basis(def14a_hist: pd.DataFrame,
             out.loc[per_class, "ceo_ownership_pct"] = pd.NA
         if tally is not None:
             tally["insider_ownership_pct: blanked (per-class basis, own > vote)"] = n
-            tally["insider_ownership_pct: blanked (per-class basis) — tickers"] = int(
-                out.loc[per_class, "ticker"].nunique()) if "ticker" in out.columns else 0
+            tally["insider_ownership_pct: blanked (per-class basis) — tickers"] = (
+                int(out.loc[per_class, "ticker"].nunique()) if "ticker" in out.columns else 0
+            )
     return out
 
 
-def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                   tally: dict[str, int] | None = None) -> pd.DataFrame:
+def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame:
     """Insider VOTING power minus insider ECONOMIC ownership, per filing, then expanded PIT.
 
     ⚠ THIS IS THE NUMBER THE D12 DEFECT WAS ACCIDENTALLY MEASURING. The extraction used to be
@@ -774,8 +773,7 @@ def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     reverse -- exactly the risk that asking for both columns introduces. The count reaches the
     build log rather than being silently clipped to zero.
     """
-    need = {"ticker", "as_of", "insider_ownership_pct", "insider_voting_pct",
-            "dual_class_shares"}
+    need = {"ticker", "as_of", "insider_ownership_pct", "insider_voting_pct", "dual_class_shares"}
     if not need.issubset(def14a_hist.columns):
         if tally is not None:
             missing = sorted(need - set(def14a_hist.columns))
@@ -809,13 +807,10 @@ def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     # ⚠ EXPIRED AGAINST `sub`, ON THE LEVEL HORIZON. A control structure is a standing fact
     # between proxies, not a dated event -- so it takes the 1,095-day level clock like the
     # other structural levels, aged on the `as_of` of the filing whose two columns produced it.
-    return _expire(daily, sub[["ticker", "as_of", "control_wedge"]], "control_wedge",
-                   "control_wedge", tally)
+    return _expire(daily, sub[["ticker", "as_of", "control_wedge"]], "control_wedge", "control_wedge", tally)
 
 
-def _def14a_raw_fields(def14a_hist: pd.DataFrame,
-                       idx: pd.DatetimeIndex,
-                       tally: dict[str, int] | None = None) -> dict[str, pd.DataFrame]:
+def _def14a_raw_fields(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> dict[str, pd.DataFrame]:
     """DEF 14A fields that ship RAW -- no peer z, no percentile rank (`_RAW_DEF14A_FIELDS`).
 
     `tally` is optional so the two callers that only want the frames (both tests) stay valid;
@@ -823,8 +818,7 @@ def _def14a_raw_fields(def14a_hist: pd.DataFrame,
     """
     out: dict[str, pd.DataFrame] = {}
     for src, name in _RAW_DEF14A_FIELDS:
-        f = _gate(fundamentals_to_daily(def14a_hist, src, idx), src, tally,
-                  _domain_condition(def14a_hist, src, idx, tally))
+        f = _gate(fundamentals_to_daily(def14a_hist, src, idx), src, tally, _domain_condition(def14a_hist, src, idx, tally))
         f = _expire(f, def14a_hist, src, name, tally)
         if not f.empty and f.notna().any().any():
             out[name] = f
@@ -842,14 +836,13 @@ def _governance_fields(
     Every level passes through `_gate` before it is stacked, so an out-of-domain proxy value
     can reach neither the raw leg nor the `_vs_peers` leg built from the same frame.
     """
-    F: dict[str, pd.DataFrame] = {}
+    f_dict: dict[str, pd.DataFrame] = {}
 
     for src, name in _LEVEL_FIELDS:
-        f = _gate(fundamentals_to_daily(def14a_hist, src, idx), src, tally,
-                  _domain_condition(def14a_hist, src, idx, tally))
+        f = _gate(fundamentals_to_daily(def14a_hist, src, idx), src, tally, _domain_condition(def14a_hist, src, idx, tally))
         f = _expire(f, def14a_hist, src, name, tally)
         if not f.empty and f.notna().any().any():
-            F[name] = f
+            f_dict[name] = f
 
     # CEO tenure = years the CEO has led the firm at each date. Tenure accrues daily,
     # so it is the current calendar year MINUS the (point-in-time ffilled) `ceo_since_year`,
@@ -867,18 +860,16 @@ def _governance_fields(
         tenure = since.rsub(years, axis=0).where(lambda t: t >= 0)
         tenure = _expire(tenure, def14a_hist, "ceo_since_year", "ceo_tenure", tally)
         if tenure.notna().any().any():
-            F["ceo_tenure"] = tenure
+            f_dict["ceo_tenure"] = tenure
 
     # CEO total-comp growth (proxies are annual -> one filing per year -> periods=1), guarded
     # across a CEO change -- `_ceo_pay_growth` says why that is not `fiscal_change_to_daily`.
     pay_growth = _ceo_pay_growth(def14a_hist, idx, tally)
     if not pay_growth.empty and pay_growth.notna().any().any():
-        F["ceo_pay_growth"] = pay_growth
+        f_dict["ceo_pay_growth"] = pay_growth
         # pay-for-performance misalignment: CEO pay growing faster than the business.
         if fundamentals is not None and not fundamentals.empty:
-            rev_growth = fiscal_change_to_daily(
-                fundamentals, "totalRevenue", idx,
-                kind="pct", periods=infer_yoy_periods(fundamentals))
+            rev_growth = fiscal_change_to_daily(fundamentals, "totalRevenue", idx, kind="pct", periods=infer_yoy_periods(fundamentals))
             if not rev_growth.empty and rev_growth.notna().any().any():
                 cols = pay_growth.columns.intersection(rev_growth.columns)
                 if len(cols) > 0:
@@ -888,7 +879,7 @@ def _governance_fields(
                     # identical mask whose tally entry double-counted the same cells; the
                     # revenue leg carries its own fundamentals cadence, which is not
                     # governance's to bound.
-                    F["ceo_pay_vs_revenue_growth"] = pay_growth[cols] - rev_growth[cols]
+                    f_dict["ceo_pay_vs_revenue_growth"] = pay_growth[cols] - rev_growth[cols]
 
     # Control versus economics: the voting-power leg minus the ownership leg. Ships RAW only —
     # it is a difference with a MEANINGFUL ZERO (zero is one share, one vote), and the panel's
@@ -898,15 +889,15 @@ def _governance_fields(
     # difference is bounded in [0, 1] by construction and has no tail to winsorize.
     wedge = _control_wedge(def14a_hist, idx, tally)
     if not wedge.empty and wedge.notna().any().any():
-        F["control_wedge"] = wedge
+        f_dict["control_wedge"] = wedge
 
     # THE LAST THING THAT HAPPENS TO THE TWO UNENCODED COLUMNS. Everything else in `F` reaches
     # a bound downstream -- the peer leg winsorizes its own inputs, the self-history leg clips
     # -- so these two are the only ones that would otherwise ship a raw tail. See
     # `_RAW_ONLY_COMPUTED` for the measurement and for why the trim is per column.
-    for name in _RAW_ONLY_COMPUTED & F.keys():
-        F[name] = winsorize_xs(F[name])
-    return F
+    for name in _RAW_ONLY_COMPUTED & f_dict.keys():
+        f_dict[name] = winsorize_xs(f_dict[name])
+    return f_dict
 
 
 def _stack(fields: dict[str, pd.DataFrame], suffix: str) -> pd.DataFrame:
@@ -975,8 +966,7 @@ def build_governance_feature_panel(
     legacy_peers: dict[str, pd.DataFrame] = {}
     legacy_hist: dict[str, pd.DataFrame] = {}
     raw: dict[str, pd.DataFrame] = {}
-    if (def14a_history is not None and not def14a_history.empty
-            and "as_of" in def14a_history.columns):
+    if def14a_history is not None and not def14a_history.empty and "as_of" in def14a_history.columns:
         # ⚠ BEFORE ANY FAMILY READS THE ARCHIVE, and that ordering is the phase-0 lesson rather
         # than a preference: a value corrected here cannot reach the raw leg, the peer leg or
         # `_control_wedge` in its uncorrected form, whereas a per-field fix would have to be
@@ -990,8 +980,7 @@ def build_governance_feature_panel(
         # where the other order gives 0.922 -> 0.922 -> NULL.
         def14a_history = repair_ownership_basis(def14a_history, tally)
         def14a_history = economic_ownership(def14a_history, fundamentals_history, tally)
-        computed = _governance_fields(def14a_history, trading_index, fundamentals_history,
-                                      tally)
+        computed = _governance_fields(def14a_history, trading_index, fundamentals_history, tally)
         computed.update(_def14a_raw_fields(def14a_history, trading_index, tally))
         # EVERY legacy field ships raw; the two surviving encodings are additive on top.
         raw.update(computed)
@@ -1002,9 +991,7 @@ def build_governance_feature_panel(
     # but they need two sources it does not (the per-NEO child table for the exact CPS
     # denominator, and the total-return series for the performance leg), so they live in their
     # own module and declare their own encoding sets.
-    pay_frames, pay_tally = pay_fields(
-        def14a_history, exec_comp, fundamentals_history, close_total,
-        peer_dict, trading_index)
+    pay_frames, pay_tally = pay_fields(def14a_history, exec_comp, fundamentals_history, close_total, peer_dict, trading_index)
     raw.update(pay_frames)
     pay_peers = {k: v for k, v in pay_frames.items() if k in PAY_PEER_FIELDS}
 
@@ -1023,8 +1010,7 @@ def build_governance_feature_panel(
     # `board_busyness_delta_1y` rejects 22.5% of pairs here where phase 5 rejected 65.5%.
     quality_frames, quality_tally = board_quality_fields(directors, trading_index)
     raw.update(quality_frames)
-    quality_peers = {k: v for k, v in quality_frames.items()
-                     if k in BOARD_QUALITY_PEER_FIELDS}
+    quality_peers = {k: v for k, v in quality_frames.items() if k in BOARD_QUALITY_PEER_FIELDS}
 
     dpay_frames, dpay_tally = director_pay_fields(director_comp, def14a_history, trading_index)
     raw.update(dpay_frames)
@@ -1036,15 +1022,17 @@ def build_governance_feature_panel(
     tally.update(prov_tally)
     tally.update(quality_tally)
     tally.update(dpay_tally)
+
     # EVERY vote field ships raw; only the bounded levels also get a peer leg, and none gets
     # `_xs` (see `PEER_RELATIVE_FIELDS` for the measurements behind both halves of that).
     raw.update(vote_fields)
     peers_only = {k: v for k, v in vote_fields.items() if k in PEER_RELATIVE_FIELDS}
 
-    parts = [_peer_only({**legacy_peers, **pay_peers, **prov_peers, **quality_peers,
-                         **dpay_peers, **peers_only}, peer_dict),
-             _stack({k: self_history_z(v) for k, v in legacy_hist.items()}, "_vs_hist"),
-             _stack(raw, "")]
+    parts = [
+        _peer_only({**legacy_peers, **pay_peers, **prov_peers, **quality_peers, **dpay_peers, **peers_only}, peer_dict),
+        _stack({k: self_history_z(v) for k, v in legacy_hist.items()}, "_vs_hist"),
+        _stack(raw, ""),
+    ]
     parts = [p for p in parts if not p.empty and len(p.columns) > 2]
     if not parts:
         return pd.DataFrame(columns=["date", "ticker"]), tally

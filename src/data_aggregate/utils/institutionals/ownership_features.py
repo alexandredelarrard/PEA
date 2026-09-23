@@ -460,7 +460,7 @@ def build_ownership_feature_panel(
     sec_13d: pd.DataFrame | None,
     sec_13g: pd.DataFrame | None,
     *,
-    decay_halflife_act: float = ACT_HALFLIFE_DEFAULT,
+    decay_halflife_act: float = ACT_HALFLIFE_DEFAULT,  # 6month default value
     decay_halflife_bo: float = BO_HALFLIFE_DEFAULT,
     sink=None,
 ) -> pd.DataFrame:
@@ -485,8 +485,10 @@ def build_ownership_feature_panel(
     `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
     call; the keyword form makes it unrepresentable.
     """
+
     peer_dict = frames.peers
     trading_index = frames.trading_index
+
     # D5 entry guard, PER LEG. The two channels are independent fetchers -- a universe with
     # 13G coverage and no 13D still builds the `ic_bo_*` half -- so a leg that cannot be used
     # is nulled rather than failing the whole panel. `_NEED` is what `_canonicalize`

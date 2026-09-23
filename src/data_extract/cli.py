@@ -177,9 +177,10 @@ def splits(config_path: str, tickers: str | None, full: bool) -> None:
 @cli.command(help="FINRA RegSHO short interest / short volume.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def short_interest(config_path: str, tickers: str | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def short_interest(config_path: str, tickers: str | None, full: bool) -> None:
     _, context = _ctx(config_path)
-    fetch_short_interest(context, tickers=_tickers(context, tickers))
+    fetch_short_interest(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
 
 
 @cli.command(help="SEC fails-to-deliver (settlement fails). SEC-bulk.")

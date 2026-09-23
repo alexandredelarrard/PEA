@@ -31,7 +31,7 @@ import json
 
 import click
 
-from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
+from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS, FULL_ARGS, FULL_KWARGS
 from src.context import get_config_context
 from src.data_aggregate.step_build_cube import StepBuildCube
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
@@ -43,8 +43,6 @@ from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.utils.cli_helper import SpecialHelpOrder
-
-_FULL_HELP = "Force a full rebuild (ignore the stored part)."
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -64,7 +62,7 @@ def _step(cls, config_path: str):
     help_priority=1,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_prices(config_path: str, full: bool) -> None:
     _step(StepCubePrices, config_path).run(full=full)
 
@@ -75,14 +73,14 @@ def build_prices(config_path: str, full: bool) -> None:
     help_priority=2,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_target(config_path: str, full: bool) -> None:
     _step(StepCubeTarget, config_path).run(full=full)
 
 
 @cli.command(help="SEC-filing features (fundamental, sector KPI, earnings, workforce, " "dividend) -> cube_part_fundamentals.", help_priority=3)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_fundamentals(config_path: str, full: bool) -> None:
     _step(StepCubeFundamentals, config_path).run(full=full)
 
@@ -92,14 +90,14 @@ def build_fundamentals(config_path: str, full: bool) -> None:
     help_priority=4,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_momentum(config_path: str, full: bool) -> None:
     _step(StepCubeMomentum, config_path).run(full=full)
 
 
 @cli.command(help="Earnings-call text features (FinBERT/LM sentiment + OpenAI-embedding " "coherence & drift) -> cube_part_text.", help_priority=5)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_text(config_path: str, full: bool) -> None:
     _step(StepCubeText, config_path).run(full=full)
 
@@ -108,7 +106,7 @@ def build_text(config_path: str, full: bool) -> None:
     help="13F institutional, elite 13F, insider, and short interest / fails-to-deliver " "features -> cube_part_institutionals.", help_priority=6
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_institutionals(config_path: str, full: bool) -> None:
     _step(StepCubeInstitutionals, config_path).run(full=full)
 
@@ -118,7 +116,7 @@ def build_institutionals(config_path: str, full: bool) -> None:
     help_priority=7,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_governance(config_path: str, full: bool) -> None:
     _step(StepCubeGovernance, config_path).run(full=full)
 
@@ -136,7 +134,7 @@ def assemble_cube(config_path: str) -> None:
     help_priority=9,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("-F", "--full", is_flag=True, default=False, help=_FULL_HELP)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_cube(config_path: str, full: bool) -> None:
     _step(StepBuildCube, config_path).run(full=full)
 

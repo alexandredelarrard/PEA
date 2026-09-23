@@ -217,17 +217,6 @@ class StepCubeInstitutionals(Step):
     def _load_source(self, table: Table, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
         """Load one source PROJECTED to `table.read_columns` and SCOPED to the universe.
 
-        Both halves are `store.load` arguments: `project=True` resolves the projection through
-        the registry (`projection_report` narrows it to the columns that actually EXIST), and
-        `where=` pushes the universe down to a SQL `IN`, so the off-universe rows are never
-        read at all. A table declaring no `read_columns` loads in FULL, which is the right
-        default for the small ones.
-
-        The projection narrowing is not tidiness -- `read_table` resolves each column via
-        `tbl.c[name]` and raises `KeyError` otherwise, so demanding a column the builder treats
-        as optional (short interest's `ic_shortvol_days_to_cover` inputs) killed the read
-        instead of degrading it.
-
         ⚠ THE UNIVERSE CUT IS ABOUT `_xs`, NOT ABOUT ROW COUNTS -- that is why it exists at
         all. D26 defines `_xs` as a same-day percentile "ranking a ticker against every other
         ticker on that date", and in the cube that set is the universe. The source tables are
@@ -237,10 +226,6 @@ class StepCubeInstitutionals(Step):
         model never sees. `superinvestor_features` already took a `universe=` for exactly this
         reason; this applies the same rule to the other four families, AT THE READ.
 
-        Pass `universe` for any table whose tickers become a feature cross-section. Lookup
-        tables (`cusip_ticker_map`) and the split calendar are deliberately left whole: they
-        are joined against, not ranked over.
-
         ⚠ THE PUSH-DOWN IS FOR THE CROSS-SECTION, NOT FOR THE CLOCK, and on `sec13f_hr` it is
         measurably SLOWER. Measured 2026-09-14 against the live table: 22,498,267 rows full
         against 22,336,036 scoped, so the universe removes **0.72%** of them -- and the
@@ -249,29 +234,9 @@ class StepCubeInstitutionals(Step):
         planner seq-scans either way and only pays for the predicate. An index on
         `sec13f_hr(ticker)` would not change that -- the filter is not selective. The four
         SMALL sources are where the read genuinely shrinks. Do not re-justify this on speed.
-
-        ⚠ THE DIAGNOSTIC IS A SEPARATE QUERY, and on ONE table it is not a cheap one. Pushing
-        the filter down means the dropped rows never arrive, so the off-universe report cannot
-        be taken from the frame any more; `store.distinct` re-asks it as `SELECT DISTINCT
-        ticker`. That is an index-only scan wherever the table has an index leading with
-        `ticker` -- measured 0.7s on `sec_fails_to_deliver` (PK is `(ticker, date)`) and 2.2s
-        on `insider_transactions` (`ix_insider_transactions_ticker`) -- but `sec13f_hr` has
-        none, and there it is a 52.3s seq scan. It is kept anyway: the set is the S&P 500
-        membership boundary and it moves, so a jump here is a universe problem to look at, and
-        52s against a build measured in tens of minutes is the cheapest way to see it. Adding
-        `sec13f_hr(ticker)` would cut it to ~1s and is the fix if that ever stops being true.
-
-        ⚠ TAKES A `Table`, NEVER A NAME STRING. Five registry entries have an attribute name
-        that differs from their physical table (`Tables.short_interest` -> `sec_short_interest`),
-        so a string literal here is a silent `exists() is False` and a whole feature family
-        that never builds -- which is exactly what `"short_interest"` did to the three
-        `ic_shortvol_*` features while 956,640 rows sat in the table unread.
         """
         where = None
-        # ⚠ GUARD ON THE REGISTRY'S `ticker_col`, NOT ON `"ticker" in df.columns`. The frame
-        # does not exist yet -- that is the whole point of the push-down -- and
-        # `sec13f_manager_holdings` genuinely has no ticker column (`ticker_col=None`), so a
-        # frame-shaped guard has nothing to look at.
+
         if universe is not None and table.ticker_col:
             where = {table.ticker_col: sorted(set(map(str, universe)))}
             self._report_off_universe(table, universe)
@@ -279,8 +244,8 @@ class StepCubeInstitutionals(Step):
         df = self._store.load(table, project=True, where=where, optional=True)
         if df is None:
             self._log.warning("%s is absent or empty -> its features are skipped.", table.name)
-            return None
-        self._log.info("Loaded %s: %s rows x %s cols", table.name, len(df), len(df.columns))
+        else:
+            self._log.info("Loaded %s: %s rows x %s cols", table.name, len(df), len(df.columns))
         return df
 
     def _report_off_universe(self, table: Table, universe: Sequence[str]) -> None:
@@ -531,10 +496,15 @@ class StepCubeInstitutionals(Step):
         """Schedule 13D activist (`ic_act_*`) and 13G passive-ownership (`ic_bo_*`) events.
         `sec_13d_transactions` is deliberately not read -- see `ownership_features`'s module
         docstring."""
-        d13 = self._load_source(Tables.sec_13d, frames.universe)
-        d13g = self._load_source(Tables.sec_13g, frames.universe)
+        sec_13d = self._load_source(Tables.sec_13d, frames.universe)
+        sec_13g = self._load_source(Tables.sec_13g, frames.universe)
         return build_ownership_feature_panel(
-            frames, d13, d13g, decay_halflife_act=float(self._decay_halflife("act")), decay_halflife_bo=float(self._decay_halflife("bo")), sink=sink
+            frames,
+            sec_13d,
+            sec_13g,
+            decay_halflife_act=float(self._decay_halflife("act")),
+            decay_halflife_bo=float(self._decay_halflife("bo")),
+            sink=sink,
         )
 
     def _conditioning_panel(self, frames: PriceFrames, splits: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:

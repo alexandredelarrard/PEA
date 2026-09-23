@@ -21,11 +21,12 @@ TICKERS_KWARGS = dict(default=None, help="Comma-separated ticker subset (default
 FORCE_ARGS = ("-f", "--force")
 FORCE_KWARGS = dict(is_flag=True, default=False, help="Force a full refresh (ignore incremental state).")
 
+# full rebuild or not
 FULL_ARGS = ("-F", "--full")
 FULL_KWARGS = dict(
     is_flag=True,
     default=False,
-    help="Ignore the run manifest and take the whole years-history window. " "Needed for a chunked from-scratch backfill.",
+    help="Force a full rebuild (ignore the stored part).",
 )
 
 YEARS_ARGS = ("-y", "--years")

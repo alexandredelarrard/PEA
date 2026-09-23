@@ -153,7 +153,6 @@ EMISSION: dict[str, str] = {
     "ic_insider_director_buy_mcap_180d": "raw+xs",
     "ic_insider_purchase_pct_prior": "raw+xs",
     "ic_insider_owner_surprise_120d": "raw",  # already a percentile in [0, 1]
-    "ic_insider_days_since_last_buy": "raw",  # a day count, comparable as-is
     "ic_insider_net_buy_ratio_180d": "raw",  # bounded [-1, 1] by construction
     "ic_insider_discretionary_sell_mcap_60d": "raw+xs",
     "ic_insider_planned_sell_mcap_60d": "raw+xs",
@@ -223,8 +222,7 @@ def build_insider_feature_panel(
     trading_index = frames.trading_index
     stock_close = frames.close_split
     level_factor = frames.level_factor
-    # D5 entry guard. `clean_transactions` tolerates None, but stating the contract here
-    # keeps all seven builders answering an absent source the same way.
+
     need = {"ticker", "filing_date", "transaction_code", "shares"}
     if insider is None or insider.empty or not need.issubset(insider.columns):
         return _empty_panel()
@@ -305,7 +303,6 @@ def _dense_fields(
     # NaN, not 0, where nothing was filed in the window: "no insider traded" is not
     # "insiders were evenly split". The bounded [-1, 1] range is what keeps this one `raw`.
     out["ic_insider_net_buy_ratio_180d"] = ((bv - sv) / denom.where(denom > 0)).replace([np.inf, -np.inf], np.nan)
-    out["ic_insider_days_since_last_buy"] = _days_since(buys, idx)
 
     if mcap is not None and not mcap.empty:
         planned = sells["is_10b5_1"]

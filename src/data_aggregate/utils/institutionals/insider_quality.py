@@ -71,6 +71,7 @@ WHAT THIS MODULE DOES NOT FIX, stated because a silent residual is worse than a 
     is an extraction defect and is not repaired here; see `_filter_universe` in
     `data_extract/utils/institutionals/fetch_insider_transactions.py`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -78,6 +79,7 @@ import re
 
 import numpy as np
 import pandas as pd
+
 from src.data_aggregate.utils.common.data_utils import to_day
 
 _log = logging.getLogger(__name__)
@@ -99,8 +101,8 @@ MARKET_PRICED_CODES: tuple[str, ...] = ("P", "S", "F")
 #: through are preferred series, trust-preferred securities and 401(k) units -- none of them a
 #: common-share signal, and none of them priced like one.
 COMMON_STOCK_RE = re.compile(
-    r"COMMON|ORDINARY|CLASS\s+[A-Z]\b|SHARES\s+OF\s+BENEFICIAL|DEPOSITARY|"
-    r"^\s*(?:COM|STOCK|SHARES)\s*$", re.I)
+    r"COMMON|COMON|COMMOM|COMM|ORDINARY|REGISTER|CLASS\s+[A-Z]\b|SHARES\s+OF\s+BENEFICIAL|DEPOSITARY|" r"^\s*(?:COM|STOCK|SHARES)\s*$", re.I
+)
 
 #: A filed price this far from the ticker's own +/-15-day consensus is not a price. 10x is two
 #: decimal places; the tightest real move between a transaction and its neighbours is well
@@ -124,11 +126,18 @@ FLAG_PCT_SHARES_OUTSTANDING: float = 0.25
 #: blank on officer purchase rows, 99.9% blank on the rest), so the role map's denominator is
 #: officer rows and the "blank" rate is not a fall-through. Longest concept first: a title
 #: reading "Chairman, President & CEO" is a CEO, not a President.
+CHIEF = r"(?:CHIEF|CHF)"
+OFFICER = r"OFF(?:ICER|CR|R)"
+OPERATIONS = r"OPER(?:ATION(?:S)?|ATING)?"
 ROLE_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("CEO", r"\bCHIEF\s+EXECUTIVE\b|\bCEO\b|\bC\.E\.O\b"),
-    ("CFO", r"\bCHIEF\s+FINANCIAL\b|\bCFO\b|\bC\.F\.O\b|\bPRINCIPAL\s+FINANCIAL\s+OFFICER\b|"
-            r"\bTREASURER\b"),
-    ("COO_or_President", r"\bCHIEF\s+OPERATING\b|\bCOO\b|\bPRESIDENT\b|\bPRES\.\b"),
+    (
+        "CEO",
+        rf"\b{CHIEF}\s+EXEC(?:UTIVE)?\s+{OFFICER}\b" rf"|\bC\s*E\s*O\b",
+    ),
+    ("CFO", rf"\b{CHIEF}\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bPRINCIPAL\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bC\s*F\s*O\b" rf"|\bTREASURER\b"),
+    ("COO", rf"\b{CHIEF}\s+{OPERATIONS}\s+{OFFICER}\b" rf"|\bC\s*O\s*O\b"),
+    ("CTO_or_technology", rf"\b{CHIEF}\s+TECH(?:NOLOGY)?\s+{OFFICER}\b" rf"|\bC\s*T\s*O\b" rf"|\bTECH(?:NOLOGY)?\b"),
+    ("CMO_or_marketing", rf"\b{CHIEF}\s+MARKETING\s+{OFFICER}\b"),
 )
 OTHER_OFFICER = "other_named_officer"
 
@@ -185,38 +194,29 @@ def consensus_price(txns: pd.DataFrame, *, window: str = CONSENSUS_WINDOW) -> pd
     trailing and a leading rolling median whose midpoint is the reference. Returned aligned
     to `txns.index`, NaN where the ticker-day has no reference.
     """
-    need = {"ticker", "transaction_date", "price_per_share", "transaction_code",
-            "security_title"}
+    need = {"ticker", "transaction_date", "price_per_share", "transaction_code", "security_title"}
     if txns.empty or not need.issubset(txns.columns):
         return pd.Series(np.nan, index=txns.index, dtype="float64")
 
     code = txns["transaction_code"].astype(str).str.upper().str.strip()
     pps = pd.to_numeric(txns["price_per_share"], errors="coerce")
     tdate = pd.to_datetime(txns["transaction_date"], errors="coerce")
-    usable = (code.isin(MARKET_PRICED_CODES) & (pps > 0) & tdate.notna()
-              & common_stock_mask(txns["security_title"])
-              & txns["ticker"].notna())
+    usable = code.isin(MARKET_PRICED_CODES) & (pps > 0) & tdate.notna() & common_stock_mask(txns["security_title"]) & txns["ticker"].notna()
+
     if not usable.any():
         return pd.Series(np.nan, index=txns.index, dtype="float64")
 
     klass = security_class(txns["security_title"])
-    src = pd.DataFrame({"ticker": txns.loc[usable, "ticker"].astype(str),
-                        "klass": klass[usable], "tdate": tdate[usable], "pps": pps[usable]})
-    day = (src.groupby(["ticker", "klass", "tdate"], sort=False)["pps"]
-           .median().rename("m").reset_index())
+    src = pd.DataFrame({"ticker": txns.loc[usable, "ticker"].astype(str), "klass": klass[usable], "tdate": tdate[usable], "pps": pps[usable]})
+    day = src.groupby(["ticker", "klass", "tdate"], sort=False)["pps"].median().rename("m").reset_index()
 
     out = []
     for (tkr, cls), g in day.groupby(["ticker", "klass"], sort=False):
         g = g.set_index("tdate").sort_index()
         # CENTRED, so the reference is a median over the days either side rather than a
-        # blend of two one-sided medians -- which on a short history is an average of two
-        # numbers and lets a single bad row drag the reference a third of the way to itself.
-        # Looking forward is legitimate here and only here: the consensus is a DATA-QUALITY
-        # reference, never a feature, it never reaches the panel, and the transaction it
-        # repairs is stamped on a filing date later than every price behind the median.
+        # blend of two one-sided medians. Look forward to sanity check, not to fill
         med = g["m"].rolling(window, center=True).median()
-        out.append(pd.DataFrame({"ticker": tkr, "klass": cls, "tdate": g.index,
-                                 "consensus": med.to_numpy()}))
+        out.append(pd.DataFrame({"ticker": tkr, "klass": cls, "tdate": g.index, "consensus": med.to_numpy()}))
     ref = pd.concat(out, ignore_index=True)
 
     keyed = pd.DataFrame({"ticker": txns["ticker"].astype(str), "klass": klass, "tdate": tdate})
@@ -225,8 +225,7 @@ def consensus_price(txns: pd.DataFrame, *, window: str = CONSENSUS_WINDOW) -> pd
     return merged["consensus"]
 
 
-def clean_transactions(insider: pd.DataFrame, *,
-                       price_tolerance: float = PRICE_TOLERANCE) -> tuple[pd.DataFrame, dict]:
+def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_TOLERANCE) -> tuple[pd.DataFrame, dict]:
     """Scope to priced common-stock open-market trades and repair the mispriced ones.
 
     Returns `(frame, diagnostics)`. The frame carries the source columns plus:
@@ -241,7 +240,7 @@ def clean_transactions(insider: pd.DataFrame, *,
         ``in_exercise_package`` True for an `S` sharing an accession + transaction date with
                           an `M`: an exercise-and-sell is not a discretionary decision to sell
 
-    Three exclusions, each measured in the module docstring or below:
+    Three exclusions, each measured below:
 
       1. derivative rows (718 of 35,888 `P` rows) -- an option or convertible note is not a
          common-share purchase and its "price" is a strike or a par value;
@@ -252,6 +251,7 @@ def clean_transactions(insider: pd.DataFrame, *,
          ~690m Class A float. Repairing those to `shares x consensus` would mint a $3.6tn
          purchase, so they are dropped on both the value AND the share legs, not zero-filled.
     """
+
     need = {"ticker", "filing_date", "transaction_code", "shares", "value_usd"}
     diag: dict = {"input_rows": 0 if insider is None else len(insider)}
     if insider is None or insider.empty or not need.issubset(insider.columns):
@@ -268,10 +268,15 @@ def clean_transactions(insider: pd.DataFrame, *,
     # package is a derivative row and the cut would remove the very evidence of the package.
     t["in_exercise_package"] = _exercise_packages(t)
 
+    # remove deriv 1.4M / 2M
     if "security_type" in t.columns:
         t = t[t["security_type"].astype(str).str.lower().eq("nonderiv")]
+
+    # only common stocks 0.7/1.4M
     if "security_title" in t.columns:
         t = t[common_stock_mask(t["security_title"])]
+
+    # only P and S
     t = t[t["code"].isin(OPEN_MARKET_CODES) & t["day"].notna() & (t["ticker"] != "")]
     t = t.dropna(subset=["shares_n"])
     pps = pps.reindex(t.index)
@@ -281,7 +286,7 @@ def clean_transactions(insider: pd.DataFrame, *,
 
     priced = pps > 0
     diag["dropped_unpriced"] = int((~priced).sum())
-    diag["dropped_unpriced_shares"] = float(t.loc[~priced, "shares_n"].sum())
+    diag["dropped_unpriced_shares"] = float(t.loc[~priced, "shares_n"].sum()) / t["shares_n"].sum()
     t, pps = t[priced], pps[priced]
 
     ref = consensus_price(insider).reindex(t.index)
@@ -296,10 +301,12 @@ def clean_transactions(insider: pd.DataFrame, *,
     bad = ratio.notna() & (ratio > price_tolerance)
     low = ratio.notna() & (ratio < 1.0 / price_tolerance)
     raw_value = pd.to_numeric(t["value_usd"], errors="coerce")
+
     # `shares x consensus` rather than a drop: the trade happened and its size is filed; only
     # the price is wrong, and the consensus is other filers' own prices for the same days.
     t["value"] = raw_value.where(~bad, t["shares_n"] * ref)
     t["price_repaired"] = bad
+
     # A row whose price survived but whose `value_usd` is missing is still a real trade.
     t["value"] = t["value"].fillna(t["shares_n"] * pps)
 
@@ -309,17 +316,21 @@ def clean_transactions(insider: pd.DataFrame, *,
     diag["value_after"] = float(t["value"].sum())
     diag["no_consensus_rows"] = int(ratio.isna().sum())
 
-    t["role"] = (t["officer_title"].map(officer_role) if "officer_title" in t.columns
-                 else OTHER_OFFICER)
+    t["role"] = t["officer_title"].map(officer_role) if "officer_title" in t.columns else OTHER_OFFICER
     for flag in ("is_director", "is_officer", "is_ten_pct_owner"):
         t[flag] = pd.to_numeric(t.get(flag), errors="coerce")
     t["is_10b5_1"] = pd.to_numeric(t.get("is_10b5_1"), errors="coerce")
 
-    _log.info("insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, "
-              "%s underpriced left as filed ($%.3ftn -> $%.3fbn)", diag["input_rows"],
-              diag["scoped_rows"], diag["dropped_unpriced"], diag["repaired_rows"],
-              diag["underpriced_rows"], diag["value_before"] / 1e12,
-              diag["value_after"] / 1e9)
+    _log.info(
+        "insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, " "%s underpriced left as filed ($%.3ftn -> $%.3fbn)",
+        diag["input_rows"],
+        diag["scoped_rows"],
+        diag["dropped_unpriced"],
+        diag["repaired_rows"],
+        diag["underpriced_rows"],
+        diag["value_before"] / 1e12,
+        diag["value_after"] / 1e9,
+    )
     return t, diag
 
 
@@ -335,15 +346,12 @@ def _exercise_packages(t: pd.DataFrame) -> pd.Series:
     """
     if "accession_number" not in t.columns or "transaction_date" not in t.columns:
         return pd.Series(False, index=t.index)
-    key = pd.MultiIndex.from_arrays(
-        [t["accession_number"].astype(str),
-         pd.to_datetime(t["transaction_date"], errors="coerce")])
+    key = pd.MultiIndex.from_arrays([t["accession_number"].astype(str), pd.to_datetime(t["transaction_date"], errors="coerce")])
     has_m = pd.Series(t["code"].eq("M").to_numpy(), index=key).groupby(level=[0, 1]).any()
     return pd.Series(key.map(has_m).to_numpy(), index=t.index).fillna(False) & t["code"].eq("S")
 
 
-def asof_values(frame: pd.DataFrame | None, tickers: pd.Series,
-                days: pd.Series) -> pd.Series:
+def asof_values(frame: pd.DataFrame | None, tickers: pd.Series, days: pd.Series) -> pd.Series:
     """Value of a wide (date x ticker) `frame` as of each `(ticker, day)`, forward-filled.
 
     `searchsorted(side="right") - 1` takes the last row at or BEFORE the day, so a
@@ -362,8 +370,7 @@ def asof_values(frame: pd.DataFrame | None, tickers: pd.Series,
     return pd.Series(out, index=idx, dtype="float64")
 
 
-def report_oversized(t: pd.DataFrame, shares_outstanding: pd.DataFrame | None,
-                     *, threshold: float = FLAG_PCT_SHARES_OUTSTANDING) -> pd.DataFrame:
+def report_oversized(t: pd.DataFrame, shares_outstanding: pd.DataFrame | None, *, threshold: float = FLAG_PCT_SHARES_OUTSTANDING) -> pd.DataFrame:
     """Transactions above `threshold` of the company, as a frame to LOG rather than drop.
 
     Empty when no share count is available. See the module docstring: the largest genuine

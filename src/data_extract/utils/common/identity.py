@@ -43,19 +43,22 @@ entity, because `entity_lineage` stores only non-singleton groups and the roster
 `schema.py`). A CIK with no row is its own company, which is exactly the answer `owns()`
 needs from it, so silence here is an answer and not a missing lookup.
 """
+
 from __future__ import annotations
 
 import logging
 import weakref
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Mapping
+from typing import Literal
 
 import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.entity_lineage import (
-    TwoUniverseTickersOneEntity, load_d19_allowlist,
+    TwoUniverseTickersOneEntityError,
+    load_d19_allowlist,
 )
 from src.data_store.schema import Tables
 
@@ -66,11 +69,11 @@ class IdentityError(ValueError):
     """Base of every identity failure, so one `except` covers the whole layer."""
 
 
-class UnknownUniverseTicker(IdentityError):
+class UnknownUniverseTickerError(IdentityError):
     """`universe_entity(T)` for a ticker absent from `sp500_tickers`, or holding no CIK."""
 
 
-class CikInTwoEntities(IdentityError):
+class CikInTwoEntitiesError(IdentityError):
     """One CIK carries two `entity_id`s.
 
     Structurally impossible given `entity_lineage`'s primary key on `cik`, so this guards the
@@ -79,7 +82,7 @@ class CikInTwoEntities(IdentityError):
     """
 
 
-class UniverseEntityDisagreement(IdentityError):
+class UniverseEntityDisagreementError(IdentityError):
     """D19: the roster CIK and `symbol_tenure` name different entities for one ticker.
 
     The roster CIK is Wikipedia-sourced and HAS been wrong -- `XOM` carried a shell CIK that
@@ -88,7 +91,7 @@ class UniverseEntityDisagreement(IdentityError):
     """
 
 
-class AmbiguousSymbolTenure(IdentityError):
+class AmbiguousSymbolTenureError(IdentityError):
     """A symbol resolves to more than one ENTITY, at `as_of` or over all of history.
 
     Zipline's `lookup_symbol` contract: never a silent "today", never last-writer-wins. The
@@ -96,10 +99,44 @@ class AmbiguousSymbolTenure(IdentityError):
     """
 
 
+SymbolVerdict = Literal[
+    "exact_dated_tenure",
+    "unique_entity_fallback",
+    "mapped_current_ticker",
+    "entity_not_in_universe",
+    "unknown_symbol",
+    "unknown_gap",
+    "ambiguous",
+]
+SymbolMatchKind = Literal["exact_dated_tenure", "unique_entity_fallback"]
+
+
+@dataclass(frozen=True)
+class SymbolResolution:
+    """Point-in-time source-symbol verdict and optional canonical universe ticker."""
+
+    source_symbol: str
+    as_of: pd.Timestamp | None
+    verdict: SymbolVerdict
+    match_kind: SymbolMatchKind | None = None
+    entity_id: str | None = None
+    ticker: str | None = None
+
+    @property
+    def accepted(self) -> bool:
+        """Whether the row may be stored under `ticker`."""
+        return self.ticker is not None
+
+    @property
+    def relabelled(self) -> bool:
+        """Whether the source symbol differs from the stored canonical ticker."""
+        return self.ticker is not None and self.source_symbol != self.ticker
+
+
 #: `load_identity` caches per CONTEXT, not per module. A module-level cache keyed on nothing
 #: would leak one test's database into the next, and `load_registrants`' `@cache` is safe only
 #: because it is keyed on a config directory. Weak keys so a finished context is collectable.
-_CACHE: "weakref.WeakKeyDictionary[Context, Identity]" = weakref.WeakKeyDictionary()
+_CACHE: weakref.WeakKeyDictionary[Context, Identity] = weakref.WeakKeyDictionary()
 
 
 def normalise_cik(value) -> str:
@@ -124,7 +161,7 @@ def _as_timestamp(value) -> pd.Timestamp | None:
     """
     if value is None or value is pd.NaT:
         return None
-    if isinstance(value, (date, datetime, pd.Timestamp)) or not pd.isna(value):
+    if isinstance(value, date | datetime | pd.Timestamp) or not pd.isna(value):
         return pd.Timestamp(value)
     return None
 
@@ -171,9 +208,10 @@ class Identity:
         """
         key = str(ticker).strip().upper()
         if key not in self.roster_cik:
-            raise UnknownUniverseTicker(
+            raise UnknownUniverseTickerError(
                 f"identity: {key!r} is not a universe ticker in sp500_tickers (or its roster "
-                f"row carries no CIK). {len(self.roster_cik)} ticker(s) are resolvable.")
+                f"row carries no CIK). {len(self.roster_cik)} ticker(s) are resolvable."
+            )
         return self.entity_of(self.roster_cik[key])
 
     def entity_ticker(self, cik) -> str | None:
@@ -227,21 +265,22 @@ class Identity:
         if as_of is None:
             entities = {entity for entity, _, _, _ in rows}
             if len(entities) > 1:
-                raise AmbiguousSymbolTenure(
+                raise AmbiguousSymbolTenureError(
                     f"identity: symbol {symbol!r} was held by {len(entities)} entities "
                     f"({', '.join(sorted(entities))}) and no date was given. Pass the filing "
                     "date; there is no defensible default and 'today' would silently pick "
-                    "the incumbent for a row filed decades ago.")
+                    "the incumbent for a row filed decades ago."
+                )
             return next(iter(entities))
 
         stamp = pd.Timestamp(as_of)
-        hits = {entity for entity, start, end, _ in rows
-                if start <= stamp and (end is None or stamp < end)}
+        hits = {entity for entity, start, end, _ in rows if start <= stamp and (end is None or stamp < end)}
         if len(hits) > 1:
-            raise AmbiguousSymbolTenure(
+            raise AmbiguousSymbolTenureError(
                 f"identity: symbol {symbol!r} resolves to {len(hits)} entities at "
                 f"{stamp.date()} ({', '.join(sorted(hits))}). Two entities filing under one "
-                "symbol on one date is a data condition worth reading, not a tie to break.")
+                "symbol on one date is a data condition worth reading, not a tie to break."
+            )
         return next(iter(hits), None)
 
     def dominant_entity(self, symbol: str) -> str | None:
@@ -260,13 +299,153 @@ class Identity:
         openrows = [r for r in rows if r[2] is None]
         return max(openrows or list(rows), key=lambda r: r[3])[0]
 
+    def candidate_symbols(self, universe: frozenset[str]) -> frozenset[str]:
+        """Current symbols plus historical symbols owned by the requested universe."""
+        requested = frozenset(str(ticker).strip().upper() for ticker in universe)
+        historical = {
+            symbol
+            for symbol, rows in self.tenure_by_symbol.items()
+            if any(self.ticker_by_entity.get(entity) in requested for entity, _, _, _ in rows)
+        }
+        return requested | historical
 
-def build_identity(lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataFrame,
-                   d19_allowlist: Mapping[str, str] | None = None,
-                   today=None) -> Identity:
+    def resolve_symbol_ticker(
+        self,
+        symbol: str,
+        as_of: object,
+        universe: frozenset[str],
+    ) -> SymbolResolution:
+        """Resolve one historical symbol/date to the caller's canonical universe ticker."""
+        source_symbol = str(symbol).strip().upper().replace(".", "-")
+        stamp = _as_timestamp(as_of)
+        rows = self.tenure_by_symbol.get(source_symbol)
+        if not rows:
+            return SymbolResolution(source_symbol, stamp, "unknown_symbol")
+
+        entities = {entity for entity, _, _, _ in rows}
+        match_kind: SymbolMatchKind
+        entity_id: str | None
+        if len(entities) == 1:
+            entity_id = next(iter(entities))
+            dated_hits = {entity for entity, start, end, _ in rows if stamp is not None and start <= stamp and (end is None or stamp < end)}
+            match_kind = "exact_dated_tenure" if dated_hits else "unique_entity_fallback"
+        else:
+            if stamp is None:
+                return SymbolResolution(source_symbol, stamp, "unknown_gap")
+            try:
+                entity_id = self.entity_for(source_symbol, stamp)
+            except AmbiguousSymbolTenureError:
+                return SymbolResolution(source_symbol, stamp, "ambiguous")
+            if entity_id is None:
+                return SymbolResolution(source_symbol, stamp, "unknown_gap")
+            match_kind = "exact_dated_tenure"
+
+        requested = frozenset(str(ticker).strip().upper() for ticker in universe)
+        ticker = self.ticker_by_entity.get(entity_id)
+        if ticker is None or ticker not in requested:
+            return SymbolResolution(
+                source_symbol,
+                stamp,
+                "entity_not_in_universe",
+                match_kind=match_kind,
+                entity_id=entity_id,
+            )
+        verdict: SymbolVerdict = "mapped_current_ticker" if ticker != source_symbol else match_kind
+        return SymbolResolution(
+            source_symbol,
+            stamp,
+            verdict,
+            match_kind=match_kind,
+            entity_id=entity_id,
+            ticker=ticker,
+        )
+
+
+def resolve_symbol_rows(
+    identity: Identity,
+    frame: pd.DataFrame,
+    universe: frozenset[str],
+    *,
+    symbol_col: str = "source_symbol",
+    date_col: str = "date",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Resolve unique symbol/date pairs once and merge their verdicts onto source rows."""
+    if frame.empty:
+        empty = frame.copy()
+        for column in ("ticker", "resolution_verdict", "resolution_match", "resolution_entity"):
+            empty[column] = pd.Series(dtype="object")
+        return empty, empty.copy()
+
+    work = frame.copy()
+    work[symbol_col] = work[symbol_col].astype("string").str.strip().str.upper().str.replace(".", "-", regex=False)
+    work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+    pairs = work[[symbol_col, date_col]].drop_duplicates(ignore_index=True)
+    records = []
+    for source_symbol, day in pairs.itertuples(index=False, name=None):
+        resolution = identity.resolve_symbol_ticker(source_symbol, day, universe)
+        records.append(
+            {
+                symbol_col: source_symbol,
+                date_col: day,
+                "ticker": resolution.ticker,
+                "resolution_verdict": resolution.verdict,
+                "resolution_match": resolution.match_kind,
+                "resolution_entity": resolution.entity_id,
+            }
+        )
+    verdicts = pd.DataFrame.from_records(records)
+    resolved = work.merge(verdicts, on=[symbol_col, date_col], how="left", validate="many_to_one")
+    accepted = resolved[resolved["ticker"].notna()].copy()
+    unresolved = resolved[resolved["ticker"].isna()].copy()
+    return accepted, unresolved
+
+
+def log_symbol_resolutions(
+    context: Context,
+    source_name: str,
+    accepted: pd.DataFrame,
+    unresolved: pd.DataFrame,
+    *,
+    universe: frozenset[str],
+    date_col: str = "date",
+    symbol_col: str = "source_symbol",
+) -> None:
+    """Log compact verdict counts and every source-to-canonical relabel by name."""
+    combined = pd.concat([accepted, unresolved], ignore_index=True)
+    counts = combined["resolution_verdict"].value_counts().sort_index().to_dict()
+    context.log.info(f"{source_name}: symbol-resolution verdicts {counts}")
+
+    relabelled = accepted[accepted[symbol_col] != accepted["ticker"]]
+    if not relabelled.empty:
+        summary = (
+            relabelled.groupby([symbol_col, "ticker"], as_index=False)
+            .agg(rows=(date_col, "size"), first=(date_col, "min"), last=(date_col, "max"))
+            .sort_values([symbol_col, "ticker"], kind="mergesort")
+        )
+        for row in summary.itertuples(index=False):
+            context.log.info(
+                f"{source_name}: {getattr(row, symbol_col)} -> {row.ticker}: "
+                f"{row.rows} row(s), {pd.Timestamp(row.first).date()}.."
+                f"{pd.Timestamp(row.last).date()}"
+            )
+
+    current_reuse = accepted[accepted[symbol_col].isin(universe) & (accepted[symbol_col] != accepted["ticker"])]
+    if not current_reuse.empty:
+        names = sorted(current_reuse[symbol_col].dropna().astype(str).unique())
+        context.log.warning(f"{source_name}: current-looking symbol(s) resolved to another universe " f"entity: {', '.join(names)}")
+
+    if not unresolved.empty:
+        by_verdict = unresolved.groupby("resolution_verdict")[symbol_col].agg(lambda values: ", ".join(sorted(set(map(str, values)))))
+        for verdict, names in by_verdict.items():
+            context.log.warning(f"{source_name}: {verdict}: {names}")
+
+
+def build_identity(
+    lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataFrame, d19_allowlist: Mapping[str, str] | None = None, today=None
+) -> Identity:
     """Validate both tables and return the frozen resolver. Pure -- no DB, no config reads.
 
-    The order of the checks is the order of their blast radius. `TwoUniverseTickersOneEntity`
+    The order of the checks is the order of their blast radius. `TwoUniverseTickersOneEntityError`
     is asserted BEFORE the reverse map is usable, because that is the one failure that
     relabels a company's rows onto another company rather than dropping them.
     """
@@ -276,15 +455,16 @@ def build_identity(lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataF
             "map: every universe ticker would fall back to a singleton entity, `owns()` "
             "would reject every predecessor row in the panel, and nothing would raise. Run "
             "`identity-tables` first. (`load_registrants` returning {} is a different case "
-            "-- it is an OPTIONAL curated layer; these two tables are mandatory.)")
+            "-- it is an OPTIONAL curated layer; these two tables are mandatory.)"
+        )
     if tenure is None or tenure.empty:
         raise IdentityError(
             "identity: `symbol_tenure` is empty. The D19 cross-check would pass vacuously "
             "and Phase 6's symbol resolution would answer None for every symbol. Run "
-            "`identity-tables` first.")
+            "`identity-tables` first."
+        )
     if roster is None or roster.empty:
-        raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to "
-                            "resolve rows against.")
+        raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to " "resolve rows against.")
 
     # --- axis A ------------------------------------------------------------- #
     ciks = lineage["cik"].map(normalise_cik)
@@ -292,18 +472,19 @@ def build_identity(lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataF
     per_cik = pd.DataFrame({"cik": ciks, "entity_id": entities}).drop_duplicates()
     clashes = per_cik[per_cik.duplicated("cik", keep=False)]
     if not clashes.empty:
-        raise CikInTwoEntities(
+        raise CikInTwoEntitiesError(
             f"identity: {clashes['cik'].nunique()} CIK(s) carry two entity_ids in "
             f"entity_lineage -- {clashes.sort_values('cik').to_dict('records')}. The table's "
             "primary key is `cik`, so this cannot come from the database; it is a builder "
-            "bug, and it would make `entity_of` order-dependent.")
-    entity_by_cik = dict(zip(per_cik["cik"], per_cik["entity_id"]))
+            "bug, and it would make `entity_of` order-dependent."
+        )
+    entity_by_cik = dict(zip(per_cik["cik"], per_cik["entity_id"], strict=False))
 
     # --- the universe ------------------------------------------------------- #
     roster_cik: dict[str, str] = {}
-    for ticker, cik in zip(roster["ticker"].astype(str), roster["cik"]):
+    for ticker, cik in zip(roster["ticker"].astype(str), roster["cik"], strict=False):
         if pd.isna(cik) or not str(cik).strip():
-            continue                      # `universe_entity` raises for it, naming the ticker
+            continue  # `universe_entity` raises for it, naming the ticker
         roster_cik[ticker.strip().upper()] = normalise_cik(cik)
 
     # --- ⚠ the one raise asserted before any map is trusted ------------------ #
@@ -315,38 +496,43 @@ def build_identity(lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataF
         detail = []
         for entity, tickers in sorted(collisions.items()):
             joined = lineage[entities == entity]
-            rows = "; ".join(f"{normalise_cik(r.cik)} via {r.source}"
-                             for r in joined.itertuples())
-            detail.append(f"{entity} holds " + ", ".join(
-                f"{t} (roster CIK {roster_cik[t]})" for t in tickers) + f" -- joined by: {rows}")
-        raise TwoUniverseTickersOneEntity(
+            rows = "; ".join(f"{normalise_cik(r.cik)} via {r.source}" for r in joined.itertuples())
+            detail.append(f"{entity} holds " + ", ".join(f"{t} (roster CIK {roster_cik[t]})" for t in tickers) + f" -- joined by: {rows}")
+        raise TwoUniverseTickersOneEntityError(
             "identity: " + " | ".join(detail) + ". The reverse map is a dict, so one of these "
             "tickers would overwrite the other and EVERY ROW OF THE LOSER would be relabelled "
             "-- the only failure in this design that corrupts rather than drops. A spin-off "
             "into two index members (DowDuPont -> DD/DOW/CTVA) is TWO entities that share a "
-            "past: split them with a curated row, never a wider merge.")
+            "past: split them with a curated row, never a wider merge."
+        )
     ticker_by_entity = {entity: tickers[0] for entity, tickers in by_entity.items()}
 
     # --- axis B -------------------------------------------------------------- #
     tenure_by_symbol: dict[str, list[tuple[str, pd.Timestamp, pd.Timestamp | None, int]]] = {}
     for symbol, cik, start, end, n in zip(
-            tenure["symbol"].astype(str), tenure["issuer_cik"],
-            tenure["valid_from"], tenure["valid_to"], tenure["n_filings"]):
+        tenure["symbol"].astype(str), tenure["issuer_cik"], tenure["valid_from"], tenure["valid_to"], tenure["n_filings"], strict=False
+    ):
         stamp = _as_timestamp(start)
         if stamp is None:
-            continue                      # a tenure with no start cannot answer a dated test
+            continue  # a tenure with no start cannot answer a dated test
         key = normalise_cik(cik)
-        tenure_by_symbol.setdefault(symbol.strip().upper(), []).append(
-            (entity_by_cik.get(key, f"E{key}"), stamp, _as_timestamp(end), int(n)))
+        tenure_by_symbol.setdefault(symbol.strip().upper(), []).append((entity_by_cik.get(key, f"E{key}"), stamp, _as_timestamp(end), int(n)))
 
-    identity = Identity(entity_by_cik=entity_by_cik, roster_cik=roster_cik,
-                        ticker_by_entity=ticker_by_entity,
-                        tenure_by_symbol={s: tuple(v) for s, v in tenure_by_symbol.items()})
+    identity = Identity(
+        entity_by_cik=entity_by_cik,
+        roster_cik=roster_cik,
+        ticker_by_entity=ticker_by_entity,
+        tenure_by_symbol={s: tuple(v) for s, v in tenure_by_symbol.items()},
+    )
 
     _check_d19(identity, d19_allowlist or {}, today)
-    logger.info("identity: %d lineage CIK(s) over %d entity(ies); %d universe ticker(s); "
-                "%d symbol(s) with tenure", len(entity_by_cik),
-                len(set(entity_by_cik.values())), len(roster_cik), len(tenure_by_symbol))
+    logger.info(
+        "identity: %d lineage CIK(s) over %d entity(ies); %d universe ticker(s); " "%d symbol(s) with tenure",
+        len(entity_by_cik),
+        len(set(entity_by_cik.values())),
+        len(roster_cik),
+        len(tenure_by_symbol),
+    )
     return identity
 
 
@@ -367,22 +553,24 @@ def _check_d19(identity: Identity, allowlist: Mapping[str, str], today=None) -> 
             disagree.append((ticker, cik, from_tenure))
     unexplained = [d for d in disagree if d[0] not in allowlist]
     if unexplained:
-        listed = "; ".join(f"{t}: roster {c} -> {identity.entity_of(c)} but tenure -> {e}"
-                           for t, c, e in unexplained)
-        raise UniverseEntityDisagreement(
+        listed = "; ".join(f"{t}: roster {c} -> {identity.entity_of(c)} but tenure -> {e}" for t, c, e in unexplained)
+        raise UniverseEntityDisagreementError(
             f"identity: {len(unexplained)} universe ticker(s) whose roster CIK and whose "
             f"filings name different entities -- {listed}. Each is the XOM class of defect "
             "(a Wikipedia-sourced CIK pointing at a shell) until a written reading says "
             "otherwise. Fix the roster CIK, or add the ticker to `_d19_allowlist` in "
-            "entity_lineage_manual.json WITH the evidence.")
+            "entity_lineage_manual.json WITH the evidence."
+        )
     if disagree:
-        logger.info("identity: D19 cross-check -- %d/%d tickers agree, %d allow-listed "
-                    "with evidence", len(identity.roster_cik) - len(disagree),
-                    len(identity.roster_cik), len(disagree))
+        logger.info(
+            "identity: D19 cross-check -- %d/%d tickers agree, %d allow-listed " "with evidence",
+            len(identity.roster_cik) - len(disagree),
+            len(identity.roster_cik),
+            len(disagree),
+        )
 
 
-def load_identity(context: Context, config_dir: str | None = None,
-                  refresh: bool = False) -> Identity:
+def load_identity(context: Context, config_dir: str | None = None, refresh: bool = False) -> Identity:
     """The resolver for this run, read once per context and then cached on it.
 
     Cached on the CONTEXT rather than at module level: the tables live in a database, and a
@@ -396,6 +584,7 @@ def load_identity(context: Context, config_dir: str | None = None,
         lineage=context.store.load(Tables.entity_lineage, project=True),
         tenure=context.store.load(Tables.symbol_tenure, project=True),
         roster=context.store.load(Tables.sp500_tickers),
-        d19_allowlist=load_d19_allowlist(config_dir or str(context.config_dir)))
+        d19_allowlist=load_d19_allowlist(config_dir or str(context.config_dir)),
+    )
     _CACHE[context] = identity
     return identity

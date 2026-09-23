@@ -29,6 +29,7 @@ adjudicates, the third opinion in the roster-CIK cross-check, and the only resol
 to the tables that carry a symbol and a date but no CIK at all (fails-to-deliver, short
 interest).
 """
+
 from __future__ import annotations
 
 import logging
@@ -71,8 +72,7 @@ _SYMBOL_NOISE_CHARS = '"'
 
 #: `DD-MON-YYYY` is the shape the SEC ships in most quarters; a minority are ISO. Both are
 #: parsed, because a silent parse failure here is a silent tenure gap.
-_MONTHS = {month: i + 1 for i, month in
-           enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split())}
+_MONTHS = {month: i + 1 for i, month in enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split())}
 
 #: Below this many cached quarters the derivation is a PARTIAL history that looks complete.
 #: 2006q1 -> 2026q1 is 81; the guard warns rather than raises so a deliberate subset still runs.
@@ -96,12 +96,10 @@ def _parse_filing_dates(raw: pd.Series) -> pd.Series:
         # rows raises `cannot convert NA to integer` on the first junk date in the quarter.
         is_month_name = parts[1].isin(_MONTHS).fillna(False)
         if is_month_name.any():
-            out.loc[is_month_name] = pd.to_datetime(
-                text[is_month_name], format="%d-%b-%Y", errors="coerce")
+            out.loc[is_month_name] = pd.to_datetime(text[is_month_name], format="%d-%b-%Y", errors="coerce")
     todo = out.isna() & text.notna()
     if todo.any():
-        out.loc[todo] = pd.to_datetime(text[todo].str.slice(0, 10), format="ISO8601",
-                                       errors="coerce")
+        out.loc[todo] = pd.to_datetime(text[todo].str.slice(0, 10), format="ISO8601", errors="coerce")
     return out
 
 
@@ -109,7 +107,7 @@ def _quarter_of(path: Path) -> pd.Period | None:
     """`2026q1.zip` -> that quarterly Period, or None when the name is not a quarter."""
     try:
         return pd.Period(path.stem.upper(), freq="Q")
-    except Exception:                      # noqa: BLE001 -- an unexpected file name, not a bug
+    except Exception:  # noqa: BLE001 -- an unexpected file name, not a bug
         return None
 
 
@@ -122,20 +120,17 @@ def _aggregate_zip(path: Path, drops: Counter) -> pd.DataFrame | None:
     try:
         archive = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
-        logger.warning("symbol_tenure: %s is a corrupt zip -> SKIPPED, so its quarter is "
-                       "absent from the derivation", path.name)
+        logger.warning("symbol_tenure: %s is a corrupt zip -> SKIPPED, so its quarter is " "absent from the derivation", path.name)
         drops["corrupt_zip"] += 1
         return None
     with archive:
         names = {n.upper(): n for n in archive.namelist()}
         if SUBMISSION_MEMBER not in names:
-            logger.warning("symbol_tenure: %s has no %s -> SKIPPED", path.name,
-                           SUBMISSION_MEMBER)
+            logger.warning("symbol_tenure: %s has no %s -> SKIPPED", path.name, SUBMISSION_MEMBER)
             drops["no_submission_member"] += 1
             return None
         with archive.open(names[SUBMISSION_MEMBER]) as handle:
-            raw = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False,
-                              usecols=lambda c: c.upper() in _WANTED_COLUMNS)
+            raw = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: c.upper() in _WANTED_COLUMNS)
     raw.columns = [c.upper() for c in raw.columns]
     missing = _REQUIRED_COLUMNS - set(raw.columns)
     if missing:
@@ -143,14 +138,14 @@ def _aggregate_zip(path: Path, drops: Counter) -> pd.DataFrame | None:
         drops["missing_columns"] += 1
         return None
 
-    df = pd.DataFrame({
-        "symbol": (raw["ISSUERTRADINGSYMBOL"].astype("string")
-                   .str.replace(_SYMBOL_NOISE_CHARS, "", regex=False).str.strip().str.upper()),
-        "issuer_cik": raw["ISSUERCIK"].astype("string").str.strip().str.zfill(10),
-        "issuer_name": (raw["ISSUERNAME"].astype("string") if "ISSUERNAME" in raw.columns
-                        else pd.Series(pd.NA, index=raw.index, dtype="string")),
-        "filed": _parse_filing_dates(raw["FILING_DATE"]),
-    })
+    df = pd.DataFrame(
+        {
+            "symbol": (raw["ISSUERTRADINGSYMBOL"].astype("string").str.replace(_SYMBOL_NOISE_CHARS, "", regex=False).str.strip().str.upper()),
+            "issuer_cik": raw["ISSUERCIK"].astype("string").str.strip().str.zfill(10),
+            "issuer_name": (raw["ISSUERNAME"].astype("string") if "ISSUERNAME" in raw.columns else pd.Series(pd.NA, index=raw.index, dtype="string")),
+            "filed": _parse_filing_dates(raw["FILING_DATE"]),
+        }
+    )
     drops["rows_read"] += len(df)
     bad_symbol = df["symbol"].isna() | df["symbol"].isin(_NULL_SYMBOLS)
     bad_cik = df["issuer_cik"].isna() | df["issuer_cik"].eq("0" * 10)
@@ -162,9 +157,9 @@ def _aggregate_zip(path: Path, drops: Counter) -> pd.DataFrame | None:
     drops["rows_kept"] += len(df)
     if df.empty:
         return None
-    return (df.groupby(["symbol", "issuer_cik"], as_index=False, sort=False)
-              .agg(first_filed=("filed", "min"), last_filed=("filed", "max"),
-                   n_filings=("filed", "size"), issuer_name=("issuer_name", "last")))
+    return df.groupby(["symbol", "issuer_cik"], as_index=False, sort=False).agg(
+        first_filed=("filed", "min"), last_filed=("filed", "max"), n_filings=("filed", "size"), issuer_name=("issuer_name", "last")
+    )
 
 
 def derive_symbol_tenure(cache: Path) -> pd.DataFrame:
@@ -183,13 +178,17 @@ def derive_symbol_tenure(cache: Path) -> pd.DataFrame:
     if not zips:
         raise FileNotFoundError(
             f"symbol_tenure: no Form 345 quarter zips under {cache}. The derivation is "
-            "offline and reads only the cache; run the `insider` extract first.")
+            "offline and reads only the cache; run the `insider` extract first."
+        )
     if len(zips) < MIN_EXPECTED_QUARTERS:
         logger.warning(
             "symbol_tenure: only %d cached quarter zip(s) under %s (expected >= %d). The "
             "derived table will be a PARTIAL history that LOOKS complete -- every tenure "
-            "ending inside an absent quarter is wrong.", len(zips), cache,
-            MIN_EXPECTED_QUARTERS)
+            "ending inside an absent quarter is wrong.",
+            len(zips),
+            cache,
+            MIN_EXPECTED_QUARTERS,
+        )
 
     quarters = [q for q in (_quarter_of(p) for p in zips) if q is not None]
     latest_quarter = max(quarters)
@@ -198,32 +197,63 @@ def derive_symbol_tenure(cache: Path) -> pd.DataFrame:
     if not frames:
         raise ValueError(f"symbol_tenure: every zip under {cache} was unreadable or empty")
 
-    agg = (pd.concat(frames, ignore_index=True)
-             .groupby(["symbol", "issuer_cik"], as_index=False, sort=False)
-             .agg(valid_from=("first_filed", "min"), last_filed=("last_filed", "max"),
-                  n_filings=("n_filings", "sum"), issuer_name=("issuer_name", "last")))
+    agg = (
+        pd.concat(frames, ignore_index=True)
+        .groupby(["symbol", "issuer_cik"], as_index=False, sort=False)
+        .agg(valid_from=("first_filed", "min"), last_filed=("last_filed", "max"), n_filings=("n_filings", "sum"), issuer_name=("issuer_name", "last"))
+    )
 
     still_open = agg["last_filed"] >= latest_quarter.start_time
-    out = pd.DataFrame({
-        "symbol": agg["symbol"].astype(str),
-        "issuer_cik": agg["issuer_cik"].astype(str),
-        "valid_from": agg["valid_from"],
-        "valid_to": (agg["last_filed"] + pd.Timedelta(days=1)).mask(still_open),
-        "n_filings": agg["n_filings"].astype("int64"),
-        "source": "form345",
-        "evidence": agg["issuer_name"].fillna("").astype(str).str.strip(),
-    }).sort_values(["symbol", "valid_from", "issuer_cik"], kind="mergesort", ignore_index=True)
+    out = pd.DataFrame(
+        {
+            "symbol": agg["symbol"].astype(str),
+            "issuer_cik": agg["issuer_cik"].astype(str),
+            "valid_from": agg["valid_from"],
+            "valid_to": (agg["last_filed"] + pd.Timedelta(days=1)).mask(still_open),
+            "n_filings": agg["n_filings"].astype("int64"),
+            "source": "form345",
+            "evidence": agg["issuer_name"].fillna("").astype(str).str.strip(),
+        }
+    ).sort_values(["symbol", "valid_from", "issuer_cik"], kind="mergesort", ignore_index=True)
 
     per_symbol = out.groupby("symbol")["issuer_cik"].nunique()
     logger.info(
         "symbol_tenure: %d quarter(s) %s..%s -> %d row(s) over %d symbol(s); %d symbol(s) "
         "had >1 issuer CIK; %d tenure(s) still open. Read %d submission row(s), kept %d; "
-        "dropped %s", len(zips), min(quarters), latest_quarter, len(out),
-        int(per_symbol.size), int((per_symbol > 1).sum()), int(out["valid_to"].isna().sum()),
-        drops["rows_read"], drops["rows_kept"],
-        ", ".join(f"{k}={v}" for k, v in sorted(drops.items())
-                  if k not in {"rows_read", "rows_kept"}) or "nothing")
+        "dropped %s",
+        len(zips),
+        min(quarters),
+        latest_quarter,
+        len(out),
+        int(per_symbol.size),
+        int((per_symbol > 1).sum()),
+        int(out["valid_to"].isna().sum()),
+        drops["rows_read"],
+        drops["rows_kept"],
+        ", ".join(f"{k}={v}" for k, v in sorted(drops.items()) if k not in {"rows_read", "rows_kept"}) or "nothing",
+    )
     return out
+
+
+def changed_tenure_symbols(
+    existing: pd.DataFrame,
+    derived: pd.DataFrame,
+) -> list[str]:
+    """Sorted symbols whose CIK membership or observed bounds changed."""
+    columns = ["symbol", "issuer_cik", "valid_from", "valid_to"]
+
+    def signatures(frame: pd.DataFrame) -> dict[str, tuple[tuple[str, ...], ...]]:
+        normal = frame[columns].copy()
+        normal["symbol"] = normal["symbol"].astype(str).str.upper().str.strip()
+        for column in ("valid_from", "valid_to"):
+            normal[column] = pd.to_datetime(normal[column], errors="coerce").astype("string")
+        return {
+            symbol: tuple(sorted(tuple(map(str, row)) for row in group[["issuer_cik", "valid_from", "valid_to"]].itertuples(index=False, name=None)))
+            for symbol, group in normal.groupby("symbol", sort=False)
+        }
+
+    before, after = signatures(existing), signatures(derived)
+    return sorted(symbol for symbol in set(before) | set(after) if before.get(symbol) != after.get(symbol))
 
 
 def build_symbol_tenure(context: Context, cache: Path) -> pd.DataFrame:
@@ -232,7 +262,13 @@ def build_symbol_tenure(context: Context, cache: Path) -> pd.DataFrame:
     `replace`, never `save`: the table is a full derivation of the cache, and an upsert would
     leave rows from an earlier, narrower run behind with nothing to tell them from current ones.
     """
+    existing = context.store.load(Tables.symbol_tenure, project=True, optional=True)
     out = derive_symbol_tenure(cache)
+    if existing is None:
+        context.log.info(f"symbol_tenure: cold build with {len(out)} row(s) over " f"{out['symbol'].nunique()} symbol(s)")
+    else:
+        changed = changed_tenure_symbols(existing, out)
+        context.log.info(f"symbol_tenure: {len(changed)} changed symbol(s): " f"{', '.join(changed) if changed else 'none'}")
     written = context.store.replace(Tables.symbol_tenure, out)
     # `ticker_count=0`: this is a market-wide derivation over every EDGAR symbol, not a
     # per-ticker walk -- the convention `fetch_sharadar_tickers` already uses. Always a full

@@ -45,6 +45,7 @@ MISSTATE THE DEFECT.
 
     python scripts/measure_symbol_tenure_exposure.py
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -53,7 +54,7 @@ import pandas as pd
 
 from src.context import get_config_context
 from src.data_extract.utils.common.entity_lineage import load_d19_allowlist
-from src.data_extract.utils.common.identity import AmbiguousSymbolTenure, load_identity
+from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, load_identity
 from src.data_store.schema import Tables
 
 CONFIG_DIR = "./configs"
@@ -64,12 +65,10 @@ TENURE_FLOOR = pd.Timestamp("2006-01-01")
 
 #: ⚠ The attribute name is `short_interest` while the TABLE is `sec_short_interest` -- one of
 #: the five registry entries whose two names differ.
-TABLES = [(Tables.short_interest, "sec_short_interest"),
-          (Tables.sec_fails_to_deliver, "sec_fails_to_deliver")]
+TABLES = [(Tables.short_interest, "sec_short_interest"), (Tables.sec_fails_to_deliver, "sec_fails_to_deliver")]
 
 
-def _classify(identity, symbol: str, day: pd.Timestamp, expected: str | None,
-              blind: frozenset[str]) -> str:
+def _classify(identity, symbol: str, day: pd.Timestamp, expected: str | None, blind: frozenset[str]) -> str:
     """One (symbol, date) -> one of the six buckets in the module docstring.
 
     ⚠ `expected is None` IS CHECKED FIRST AND IT IS NOT A DISAGREEMENT. A ticker that has left
@@ -83,7 +82,7 @@ def _classify(identity, symbol: str, day: pd.Timestamp, expected: str | None,
         return "tenure_blind"
     try:
         holder = identity.entity_for(symbol, day)
-    except AmbiguousSymbolTenure:
+    except AmbiguousSymbolTenureError:
         return "ambiguous"
     if holder is None:
         rows = identity.tenure_by_symbol.get(symbol)
@@ -94,24 +93,19 @@ def _classify(identity, symbol: str, day: pd.Timestamp, expected: str | None,
     return "held" if holder == expected else "other_entity"
 
 
-def measure(store, identity, table, name: str,
-            blind: frozenset[str]) -> pd.DataFrame:
+def measure(store, identity, table, name: str, blind: frozenset[str]) -> pd.DataFrame:
     df = store.load(table, columns=["ticker", "date"])
     df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
     df["date"] = pd.to_datetime(df["date"])
     print(f"\n=== {name} ===")
-    print(f"  {len(df):,} rows, {df['ticker'].nunique()} ticker(s), "
-          f"{df['date'].min().date()} -> {df['date'].max().date()}")
+    print(f"  {len(df):,} rows, {df['ticker'].nunique()} ticker(s), " f"{df['date'].min().date()} -> {df['date'].max().date()}")
     below = int((df["date"] < TENURE_FLOOR).sum())
-    print(f"  {below:,} row(s) ({below / len(df):.2%}) fall below the {TENURE_FLOOR.date()} "
-          "tenure floor and are structurally unresolvable (D7)")
+    print(f"  {below:,} row(s) ({below / len(df):.2%}) fall below the {TENURE_FLOOR.date()} " "tenure floor and are structurally unresolvable (D7)")
 
     # One verdict per (ticker, date) is still ~1M lookups; the tape is one row per pair
     # already, so this is the grain and there is nothing to dedupe.
-    expected = {t: identity.universe_entity(t) for t in df["ticker"].unique()
-                if t in identity.roster_cik}
-    verdicts = [_classify(identity, t, d, expected.get(t), blind)
-                for t, d in zip(df["ticker"], df["date"])]
+    expected = {t: identity.universe_entity(t) for t in df["ticker"].unique() if t in identity.roster_cik}
+    verdicts = [_classify(identity, t, d, expected.get(t), blind) for t, d in zip(df["ticker"], df["date"], strict=False)]
     df["verdict"] = verdicts
 
     counts = df["verdict"].value_counts()
@@ -122,14 +116,17 @@ def measure(store, identity, table, name: str,
     wrong = df[df["verdict"] == "other_entity"]
     if not wrong.empty:
         total = df.groupby("ticker").size()
-        per = (wrong.groupby("ticker")
-               .agg(rows=("date", "size"), first=("date", "min"), last=("date", "max"))
-               .assign(ticker_rows=lambda d: total.reindex(d.index),
-                       pct_of_ticker=lambda d: (d["rows"] / d["ticker_rows"] * 100).round(1))
-               .sort_values("rows", ascending=False))
-        print(f"\n  ⚠ {len(wrong):,} row(s) ({len(wrong) / len(df):.3%}) over "
-              f"{len(per)} ticker(s) are another entity's, "
-              f"{wrong['date'].min().date()} -> {wrong['date'].max().date()}:")
+        per = (
+            wrong.groupby("ticker")
+            .agg(rows=("date", "size"), first=("date", "min"), last=("date", "max"))
+            .assign(ticker_rows=lambda d: total.reindex(d.index), pct_of_ticker=lambda d: (d["rows"] / d["ticker_rows"] * 100).round(1))
+            .sort_values("rows", ascending=False)
+        )
+        print(
+            f"\n  ⚠ {len(wrong):,} row(s) ({len(wrong) / len(df):.3%}) over "
+            f"{len(per)} ticker(s) are another entity's, "
+            f"{wrong['date'].min().date()} -> {wrong['date'].max().date()}:"
+        )
         print("    " + per.head(20).to_string().replace("\n", "\n    "))
         per.to_csv(OUT / f"{name}_other_entity_by_ticker.csv")
     else:
@@ -143,23 +140,29 @@ def main() -> None:
     # The D19 allow-list IS the tenure-blind list: every entry on it is a ticker whose roster
     # CIK and whose filings name different entities, with a written reading of why.
     blind = frozenset(load_d19_allowlist(CONFIG_DIR))
-    print(f"\n  {len(blind)} tenure-blind ticker(s) from the D19 allow-list: "
-          f"{', '.join(sorted(blind))}")
+    print(f"\n  {len(blind)} tenure-blind ticker(s) from the D19 allow-list: " f"{', '.join(sorted(blind))}")
     OUT.mkdir(parents=True, exist_ok=True)
     summary = []
     for table, name in TABLES:
         df = measure(context.store, identity, table, name, blind)
-        row = {"table": name, "rows": len(df), "tickers": df["ticker"].nunique(),
-               "first": df["date"].min().date(), "last": df["date"].max().date(),
-               "below_tenure_floor": int((df["date"] < TENURE_FLOOR).sum())}
+        row = {
+            "table": name,
+            "rows": len(df),
+            "tickers": df["ticker"].nunique(),
+            "first": df["date"].min().date(),
+            "last": df["date"].max().date(),
+            "below_tenure_floor": int((df["date"] < TENURE_FLOOR).sum()),
+        }
         row.update(df["verdict"].value_counts().to_dict())
         summary.append(row)
     out = pd.DataFrame(summary).fillna(0)
     out.to_csv(OUT / "symbol_tenure_exposure.csv", index=False)
     print(f"\n  written to {OUT}/symbol_tenure_exposure.csv")
-    print("\n  ⚠ NO FETCHER WAS CHANGED (D2). The natural fix input for the follow-up task is "
-          "the FTD source file's UNREAD CUSIP column (fetch_fails_to_deliver.py:80-81), which "
-          "would give these rows the issuer key they lack; it is deliberately not parsed here.")
+    print(
+        "\n  ⚠ NO FETCHER WAS CHANGED (D2). The natural fix input for the follow-up task is "
+        "the FTD source file's UNREAD CUSIP column (fetch_fails_to_deliver.py:80-81), which "
+        "would give these rows the issuer key they lack; it is deliberately not parsed here."
+    )
 
 
 if __name__ == "__main__":

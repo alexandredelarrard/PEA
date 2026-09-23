@@ -186,9 +186,10 @@ def short_interest(config_path: str, tickers: str | None, full: bool) -> None:
 @cli.command(help="SEC fails-to-deliver (settlement fails). SEC-bulk.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def fails_to_deliver(config_path: str, tickers: str | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def fails_to_deliver(config_path: str, tickers: str | None, full: bool) -> None:
     _, context = _ctx(config_path)
-    fetch_fails_to_deliver(context, tickers=_tickers(context, tickers))
+    fetch_fails_to_deliver(context, tickers=_tickers(context, tickers), full=full)
 
 
 @cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")

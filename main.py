@@ -32,7 +32,6 @@ if __name__ == "__main__":
 # TODO: review periods when IC drops for few weeks / months
 # TODO: add other strats decorrelated : - Super investors replica ?
 
-
 # understanding
 # TODO: understand how the code handles the change of ticker / symbol over time for same company ?
 # TODO: understand if all the data extract are done per meta ticker or just the ticker itself -> need fixing

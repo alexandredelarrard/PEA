@@ -1,21 +1,22 @@
 # Data Check
 
-Deeply validate one or more financial feature tables used to model future ticker price moves.
+Deeply validate the outcome of the implementation performed in phase 3. It can touch one or more financial feature tables, model or financial strategy. This is Phase 4 of the Frequent Intentional Compaction (FIC) workflow.
+
 Your role is adversarial: **find what is wrong, incomplete, misleading, leaky, or fragile.**
 
-**This is a DATA exercise.** Measure the table first and let the numbers nominate the suspects —
+**This is a DATA Science exercise.** Measure the table first and let the numbers nominate the suspects —
 auditing code for bugs instead produces plausible stories about defects that do not exist and
 misses the ones that do. The 2026-09-04 cube audit is the standing example: 65 of 179 features
 emitting nothing and three pairs at Pearson r = 1.0000, with **68 tests green throughout**. The
 codebase is the second half: once a measurement flags something, the code is where you find out
-**why** — mandatory, because a flag without a mechanism is a rumour you cannot score or fix.
+**why** — mandatory.
 
 ## Initial Setup
 
 If no table is provided, respond with:
 
 ```text
-🔎 Starting data validation
+🔎 Starting data science validation
 
 Which Postgres table or tables should I validate? Give the name(s) as they appear in
 `Tables` (src/data_store/schema.py) — e.g. cube_part_momentum.
@@ -147,7 +148,7 @@ Identify if the table assessed has all tickers expected (so far focusing on 491 
 Example of questions to cover with deep data extraction and analysis are (non exhaustive):
 - Does the raw count makes sense, daily its around 3M expected.
 - Do I have a drop of tickers for the latest days ?
-- Does missing values make sense for tickers with less coverage (some tickers come later, so normal to have Nan before their listing).
+- Does missing values make sense for tickers with less coverage (some tickers come later, so normal to have Nan before their listing). Is ticker coverage full ? Any hole or missing start , end of the time series for the ticker ?
 - Is the column sector specific and is it filled for the tickers that are part of the sector ?
 
 ### Per-column profile
@@ -264,11 +265,18 @@ It means :
 Run this analysis per ticker on what `timeseries` flagged, and plot the named examples: a finding
 you can see is a finding you can explain.
 
-### Consistency for new predictions vs past history 
+### Leakage train vs validation - Consistency for new predictions vs past history
 
-Check on 5 different tickers, for the table variables, if the time series behave the same way (same distribution) for the latest few 3-6 months vs past 3-5 years. 
-The check is there to understand if the is leakage in terms of repructability of the signal over time. 
-Each table does not arrive the same time over the year, so if one is missing, some signal can drop, creating strong issues for predictions since model will be trained, expecting a signal from feature that would be biased by the lack of extracted / freshness information. 
+Check or each variable of the table, if the ticker's time series behave the same way (same distribution) for the latest few 3-6 months rest of the years.
+- Verify the categories for a string column are identically distributed with new data vs history
+- Verify the distribution of a continuous column is distributed the same for new vs history
+- Assess any potential leakage on data not behaving the same for recent dates vs history.
+
+The check is there to understand if the is leakage in terms of repructability of the signal over time.
+Each table does not arrive the same time over the year, so if one is missing, some signal can drop, creating strong issues for predictions since model will be trained, expecting a signal from feature that would be biased by the lack of extracted / freshness information.
+This check is key and compulsory. Helped to identify extraction issues, correct as_of date and refined feature logic.
+
+Build your own script if it does not exist in src/validate folder.
 
 ## Step 3 — Diagnose each flag in the code
 

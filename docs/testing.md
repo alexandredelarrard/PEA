@@ -110,7 +110,7 @@ What to assert: output shape & dtypes · NaN rate within bounds · values make e
 ## Running tests
 
 ```bash
-cd "c:/Users/de larrard alexandre/OneDrive - The Boston Consulting Group, Inc/Documents/repos_github/PEA" 
+cd "c:/Users/de larrard alexandre/OneDrive - The Boston Consulting Group, Inc/Documents/repos_github/PEA"
 PY="$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3.13/Scripts/python.exe"
 
 "$PY" -m pytest tests/data_extract/test_form_registry.py -v -s          # one file
@@ -129,27 +129,11 @@ not in the test.
 
 | Test | Invariant |
 |---|---|
-| `tests/dod/test_agents_md_budget.py` | `AGENTS.md` stays ≤ **70 lines**, still points at [definition_of_done.md](definition_of_done.md), and the stdlib-only hook (`.claude/hooks/dod_lib.py`) has not drifted from the generators (`scripts/dod/report_common.py`) on the report contract or the state directory |
+| `tests/dod/test_agents_md_budget.py` | `AGENTS.md` stays ≤ **70 lines**, still points at [data-check.md](data-check.md)|
 | `tests/data_store/test_store_boundary.py` | `src/data_store/` is the only code that knows SQL exists — greps every `src/**/*.py` for `sqlalchemy` imports and `read_sql`/`to_sql`/`engine.connect`/`raw_connection`/`store.engine`/`information_schema`. Also asserts `DataStore` still exposes all 15 capabilities the former bypasses needed |
 | `tests/data_aggregate/test_part_registry.py` | every part's `warmup_trading_days` covers its declared `binding_lookbacks` |
 | `tests/dags/test_dag_matches_part_registry.py` | the Airflow chain and `parts.py` cannot drift (they already did once) |
 | `tests/data_aggregate/test_cube_incremental.py` | an incremental trailing recompute reproduces the full build's tail exactly; and every source projection covers its builder's needs |
-
-## The definition-of-done tests (`tests/dod/`)
-
-The gate that decides whether a task is finished is itself tested — see
-[definition_of_done.md](definition_of_done.md) for what it enforces.
-
-| Test | Covers |
-|---|---|
-| `test_classify.py` | every R/N rule, both type-resolution paths, the question-turn exemption, incremental scanning, and a perf budget (5k-line transcript) |
-| `test_report_contract.py` | the validator rejects a missing section, an empty §5, a hand-edited metrics block, the wrong type, another session's report |
-| `test_hook_process.py` | the hooks as **real processes** under `python -S -E`, all five escape hatches, and the enforce-mode refusal text |
-| `test_agents_md_budget.py` | the `AGENTS.md` line cap and hook/generator contract agreement |
-
-`.claude/hooks/` is deliberately **not** an importable package (the hooks must stay stdlib-only),
-so `tests/dod/conftest.py` loads `dod_lib` by path. The hook tests set `LOCALAPPDATA` to a
-`tmp_path`, so they never touch real session state.
 
 ## The aggregation fingerprint baseline
 

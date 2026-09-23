@@ -3,7 +3,7 @@
 table of every (ticker, issuer CIK) group the 2.3 screen flagged.
 
 The raises are the point of the synthetic half. One of them,
-`TwoUniverseTickersOneEntity`, is the only failure in this design that RELABELS a company's
+`TwoUniverseTickersOneEntityError`, is the only failure in this design that RELABELS a company's
 rows onto another company instead of dropping them, so it is asserted before any other map is
 trusted and it is tested on the `DD`/`DOW` shape that makes it a live risk rather than a
 theoretical one.
@@ -14,6 +14,7 @@ predecessor whose rows stay), MOVE (rows that belong to a DIFFERENT universe tic
 filing -- Weight Watchers is not Willis Towers Watson, Monster Worldwide is not Monster
 Beverage -- so this file pins a reviewed judgement and not merely the code's own output.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -21,11 +22,18 @@ import datetime as dt
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.entity_lineage import TwoUniverseTickersOneEntity
+from src.data_extract.utils.common.entity_lineage import TwoUniverseTickersOneEntityError
 from src.data_extract.utils.common.identity import (
-    AmbiguousSymbolTenure, CikInTwoEntities, Identity, IdentityError,
-    UniverseEntityDisagreement, UnknownUniverseTicker, build_identity, load_identity,
+    AmbiguousSymbolTenureError,
+    CikInTwoEntitiesError,
+    Identity,
+    IdentityError,
+    UniverseEntityDisagreementError,
+    UnknownUniverseTickerError,
+    build_identity,
+    load_identity,
     normalise_cik,
+    resolve_symbol_rows,
 )
 
 CONFIG_DIR = "./configs"
@@ -35,15 +43,18 @@ CONFIG_DIR = "./configs"
 # fixtures: synthetic frames with a known truth                                 #
 # --------------------------------------------------------------------------- #
 
+
 def _lineage(rows: list[tuple[str, str, str]]) -> pd.DataFrame:
-    return pd.DataFrame([{"cik": c, "entity_id": e, "source": s, "confidence": None,
-                          "evidence": "test"} for c, e, s in rows])
+    return pd.DataFrame([{"cik": c, "entity_id": e, "source": s, "confidence": None, "evidence": "test"} for c, e, s in rows])
 
 
 def _tenure(rows: list[tuple[str, str, object, object, int]]) -> pd.DataFrame:
-    return pd.DataFrame([{"symbol": s, "issuer_cik": c, "valid_from": f, "valid_to": t,
-                          "n_filings": n, "source": "form345", "evidence": ""}
-                         for s, c, f, t, n in rows])
+    return pd.DataFrame(
+        [
+            {"symbol": s, "issuer_cik": c, "valid_from": f, "valid_to": t, "n_filings": n, "source": "form345", "evidence": ""}
+            for s, c, f, t, n in rows
+        ]
+    )
 
 
 def _roster(rows: list[tuple[str, str]]) -> pd.DataFrame:
@@ -53,19 +64,24 @@ def _roster(rows: list[tuple[str, str]]) -> pd.DataFrame:
 def _simple() -> Identity:
     """One ticker `AAA` whose entity holds a predecessor, plus an unrelated reuse."""
     return build_identity(
-        lineage=_lineage([("0000000100", "E0000000100", "register"),
-                          ("0000000200", "E0000000100", "register"),
-                          ("0000000900", "E0000000900", "roster")]),
-        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"),
-                         pd.Timestamp("2015-01-01"), 40),
-                        ("AAA", "0000000200", pd.Timestamp("2015-01-01"), None, 900),
-                        ("BBB", "0000000900", pd.Timestamp("2006-01-01"), None, 50)]),
-        roster=_roster([("AAA", "0000000200"), ("BBB", "0000000900")]))
+        lineage=_lineage(
+            [("0000000100", "E0000000100", "register"), ("0000000200", "E0000000100", "register"), ("0000000900", "E0000000900", "roster")]
+        ),
+        tenure=_tenure(
+            [
+                ("AAA", "0000000100", pd.Timestamp("2006-01-01"), pd.Timestamp("2015-01-01"), 40),
+                ("AAA", "0000000200", pd.Timestamp("2015-01-01"), None, 900),
+                ("BBB", "0000000900", pd.Timestamp("2006-01-01"), None, 50),
+            ]
+        ),
+        roster=_roster([("AAA", "0000000200"), ("BBB", "0000000900")]),
+    )
 
 
 # --------------------------------------------------------------------------- #
 # axis A                                                                        #
 # --------------------------------------------------------------------------- #
+
 
 def test_an_unseen_cik_is_its_own_entity_and_does_not_raise():
     """Absence in `entity_lineage` is a VERDICT -- the table stores only non-singleton groups
@@ -75,8 +91,7 @@ def test_an_unseen_cik_is_its_own_entity_and_does_not_raise():
     assert identity.entity_of("0000999999") == "E0000999999"
     assert identity.entity_ticker("0000999999") is None
     # three spellings of one CIK, one entity
-    assert (identity.entity_of("100") == identity.entity_of("0000000100")
-            == identity.entity_of("0000000100.0") == "E0000000100")
+    assert identity.entity_of("100") == identity.entity_of("0000000100") == identity.entity_of("0000000100.0") == "E0000000100"
 
     print("\n=== SANITY CHECK: an unknown CIK ===")
     print(f"  entity_of('0000999999') -> {identity.entity_of('0000999999')} (singleton, no raise)")
@@ -87,7 +102,7 @@ def test_an_unseen_cik_is_its_own_entity_and_does_not_raise():
 
 def test_entity_ticker_resolves_the_predecessor_and_returns_none_off_universe():
     identity = _simple()
-    assert identity.entity_ticker("0000000100") == "AAA"      # predecessor -> today's ticker
+    assert identity.entity_ticker("0000000100") == "AAA"  # predecessor -> today's ticker
     assert identity.entity_ticker("0000000200") == "AAA"
     assert identity.entity_ticker("0000000900") == "BBB"
     assert identity.entity_ticker("0000000042") is None
@@ -102,13 +117,13 @@ def test_entity_ticker_resolves_the_predecessor_and_returns_none_off_universe():
 
 def test_owns_raises_for_a_ticker_outside_the_universe():
     identity = _simple()
-    with pytest.raises(UnknownUniverseTicker, match="ZZZ"):
+    with pytest.raises(UnknownUniverseTickerError, match="ZZZ"):
         identity.universe_entity("ZZZ")
-    with pytest.raises(UnknownUniverseTicker):
+    with pytest.raises(UnknownUniverseTickerError):
         identity.owns("ZZZ", "0000000100")
 
     print("\n=== SANITY CHECK: unknown universe ticker ===")
-    print("  universe_entity('ZZZ') raises UnknownUniverseTicker and names ZZZ")
+    print("  universe_entity('ZZZ') raises UnknownUniverseTickerError and names ZZZ")
     print("  OK: 'outside the universe' and 'roster row is broken' stay distinguishable")
     print("  -> That conflation is the known weakness of the cik_to_ticker map.")
 
@@ -116,14 +131,18 @@ def test_owns_raises_for_a_ticker_outside_the_universe():
 def test_two_universe_tickers_in_one_entity_raises_and_names_both():
     """The `DD`/`DOW` shape: two index members descended from DowDuPont, merged by an oracle
     that keyed on the directors they shared through 2017-2019."""
-    with pytest.raises(TwoUniverseTickersOneEntity) as excinfo:
+    with pytest.raises(TwoUniverseTickersOneEntityError) as excinfo:
         build_identity(
-            lineage=_lineage([("0001666700", "E0000029915", "owner_overlap"),
-                              ("0001751788", "E0000029915", "owner_overlap"),
-                              ("0000029915", "E0000029915", "owner_overlap")]),
-            tenure=_tenure([("DD", "0001666700", pd.Timestamp("2019-06-01"), None, 10),
-                            ("DOW", "0001751788", pd.Timestamp("2019-04-01"), None, 10)]),
-            roster=_roster([("DD", "0001666700"), ("DOW", "0001751788")]))
+            lineage=_lineage(
+                [
+                    ("0001666700", "E0000029915", "owner_overlap"),
+                    ("0001751788", "E0000029915", "owner_overlap"),
+                    ("0000029915", "E0000029915", "owner_overlap"),
+                ]
+            ),
+            tenure=_tenure([("DD", "0001666700", pd.Timestamp("2019-06-01"), None, 10), ("DOW", "0001751788", pd.Timestamp("2019-04-01"), None, 10)]),
+            roster=_roster([("DD", "0001666700"), ("DOW", "0001751788")]),
+        )
     message = str(excinfo.value)
     for token in ("DD", "DOW", "0001666700", "0001751788", "owner_overlap"):
         assert token in message
@@ -136,15 +155,15 @@ def test_two_universe_tickers_in_one_entity_raises_and_names_both():
 
 def test_a_cik_in_two_entities_raises():
     """Impossible through the table's primary key, so this guards the BUILDER."""
-    with pytest.raises(CikInTwoEntities, match="0000000100"):
+    with pytest.raises(CikInTwoEntitiesError, match="0000000100"):
         build_identity(
-            lineage=_lineage([("0000000100", "E0000000100", "register"),
-                              ("0000000100", "E0000000200", "owner_overlap")]),
+            lineage=_lineage([("0000000100", "E0000000100", "register"), ("0000000100", "E0000000200", "owner_overlap")]),
             tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 5)]),
-            roster=_roster([("AAA", "0000000100")]))
+            roster=_roster([("AAA", "0000000100")]),
+        )
 
     print("\n=== SANITY CHECK: one CIK, one entity ===")
-    print("  a duplicated cik with two entity_ids raises CikInTwoEntities naming the CIK")
+    print("  a duplicated cik with two entity_ids raises CikInTwoEntitiesError naming the CIK")
     print("  OK: the belt-and-braces twin of registrant._check_ciks_unique_across_entries")
     print("  -> It cannot come from Postgres, so if it fires the builder is wrong.")
 
@@ -152,6 +171,7 @@ def test_a_cik_in_two_entities_raises():
 # --------------------------------------------------------------------------- #
 # axis B                                                                        #
 # --------------------------------------------------------------------------- #
+
 
 def test_tenure_is_half_open_on_both_boundaries():
     """`valid_from <= d < valid_to`, exactly `registrant.Segment.covers`, so two adjacent
@@ -162,17 +182,20 @@ def test_tenure_is_half_open_on_both_boundaries():
     boundary could be wrong without any test noticing.
     """
     identity = build_identity(
-        lineage=_lineage([("0000000100", "E0000000100", "roster"),
-                          ("0000000700", "E0000000700", "roster")]),
-        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"),
-                         pd.Timestamp("2015-01-01"), 40),
-                        ("AAA", "0000000700", pd.Timestamp("2015-01-01"), None, 900)]),
-        roster=_roster([("AAA", "0000000700")]))
-    assert identity.entity_for("AAA", "2005-12-31") is None            # before valid_from
-    assert identity.entity_for("AAA", "2006-01-01") == "E0000000100"   # valid_from INCLUDED
+        lineage=_lineage([("0000000100", "E0000000100", "roster"), ("0000000700", "E0000000700", "roster")]),
+        tenure=_tenure(
+            [
+                ("AAA", "0000000100", pd.Timestamp("2006-01-01"), pd.Timestamp("2015-01-01"), 40),
+                ("AAA", "0000000700", pd.Timestamp("2015-01-01"), None, 900),
+            ]
+        ),
+        roster=_roster([("AAA", "0000000700")]),
+    )
+    assert identity.entity_for("AAA", "2005-12-31") is None  # before valid_from
+    assert identity.entity_for("AAA", "2006-01-01") == "E0000000100"  # valid_from INCLUDED
     assert identity.entity_for("AAA", "2014-12-31") == "E0000000100"
-    assert identity.entity_for("AAA", "2015-01-01") == "E0000000700"   # valid_to EXCLUDED
-    assert identity.entity_for("AAA", "2026-01-01") == "E0000000700"   # open tenure
+    assert identity.entity_for("AAA", "2015-01-01") == "E0000000700"  # valid_to EXCLUDED
+    assert identity.entity_for("AAA", "2026-01-01") == "E0000000700"  # open tenure
 
     print("\n=== SANITY CHECK: half-open tenure boundaries ===")
     print("  2005-12-31 -> None | 2006-01-01 -> predecessor | 2014-12-31 -> predecessor")
@@ -186,12 +209,12 @@ def test_postgres_date_round_trip_compares_both_directions():
     `date < Timestamp` raises. A parquet-cached fixture hides this entire bug class."""
     identity = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
-        tenure=_tenure([("AAA", "0000000100", dt.date(2006, 1, 1), dt.date(2015, 1, 1), 5),
-                        ("AAA", "0000000200", dt.date(2015, 1, 1), None, 5)]),
+        tenure=_tenure([("AAA", "0000000100", dt.date(2006, 1, 1), dt.date(2015, 1, 1), 5), ("AAA", "0000000200", dt.date(2015, 1, 1), None, 5)]),
         roster=_roster([("AAA", "0000000100")]),
         # two DIFFERENT entities either side of the seam, so an off-by-one day is visible --
         # which necessarily makes the roster CIK disagree with the incumbent, hence the entry
-        d19_allowlist={"AAA": "synthetic: the seam is the point of this fixture"})
+        d19_allowlist={"AAA": "synthetic: the seam is the point of this fixture"},
+    )
     assert identity.entity_for("AAA", dt.date(2010, 1, 1)) == "E0000000100"
     assert identity.entity_for("AAA", pd.Timestamp("2010-01-01")) == "E0000000100"
     assert identity.entity_for("AAA", dt.date(2020, 1, 1)) == "E0000000200"
@@ -209,16 +232,20 @@ def test_a_dateless_lookup_raises_when_the_symbol_changed_hands():
     raise is for a symbol that genuinely changed COMPANY."""
     one_company = _simple()
     assert one_company.entity_for("AAA", None) == "E0000000100"
-    assert one_company.entity_for("BBB", None) == "E0000000900"    # only one holder, ever
-    assert one_company.entity_for("ZZZ", None) is None             # nobody, ever
+    assert one_company.entity_for("BBB", None) == "E0000000900"  # only one holder, ever
+    assert one_company.entity_for("ZZZ", None) is None  # nobody, ever
 
     reused = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
-        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 900),
-                        ("AAA", "0000000700", pd.Timestamp("2006-01-01"),
-                         pd.Timestamp("2009-01-01"), 20)]),
-        roster=_roster([("AAA", "0000000100")]))
-    with pytest.raises(AmbiguousSymbolTenure, match="AAA"):
+        tenure=_tenure(
+            [
+                ("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 900),
+                ("AAA", "0000000700", pd.Timestamp("2006-01-01"), pd.Timestamp("2009-01-01"), 20),
+            ]
+        ),
+        roster=_roster([("AAA", "0000000100")]),
+    )
+    with pytest.raises(AmbiguousSymbolTenureError, match="AAA"):
         reused.entity_for("AAA", None)
 
     print("\n=== SANITY CHECK: no silent 'today' ===")
@@ -233,25 +260,24 @@ def test_ambiguity_is_entity_grain_not_cik_grain():
     under both registrants through a reorganisation. Collapsing to entities first is what
     keeps this raise rare enough to mean something."""
     one_entity = build_identity(
-        lineage=_lineage([("0000000100", "E0000000100", "register"),
-                          ("0000000200", "E0000000100", "register")]),
-        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10),
-                        ("AAA", "0000000200", pd.Timestamp("2010-01-01"), None, 10)]),
-        roster=_roster([("AAA", "0000000200")]))
-    assert one_entity.entity_for("AAA", "2012-01-01") == "E0000000100"      # overlap, no raise
+        lineage=_lineage([("0000000100", "E0000000100", "register"), ("0000000200", "E0000000100", "register")]),
+        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10), ("AAA", "0000000200", pd.Timestamp("2010-01-01"), None, 10)]),
+        roster=_roster([("AAA", "0000000200")]),
+    )
+    assert one_entity.entity_for("AAA", "2012-01-01") == "E0000000100"  # overlap, no raise
 
     two_entities = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
-        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10),
-                        ("AAA", "0000000700", pd.Timestamp("2010-01-01"), None, 10)]),
+        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10), ("AAA", "0000000700", pd.Timestamp("2010-01-01"), None, 10)]),
         roster=_roster([("AAA", "0000000100")]),
-        d19_allowlist={"AAA": "test"})
-    with pytest.raises(AmbiguousSymbolTenure):
+        d19_allowlist={"AAA": "test"},
+    )
+    with pytest.raises(AmbiguousSymbolTenureError):
         two_entities.entity_for("AAA", "2012-01-01")
 
     print("\n=== SANITY CHECK: overlap grain ===")
     print("  two CIKs of ONE entity overlapping -> resolves, no raise")
-    print("  two DIFFERENT entities overlapping -> AmbiguousSymbolTenure")
+    print("  two DIFFERENT entities overlapping -> AmbiguousSymbolTenureError")
     print("  OK: paperwork overlap is not identity ambiguity")
     print("  -> Measured live: 2,432 symbols ambiguous over all history, 10 at today.")
 
@@ -261,10 +287,10 @@ def test_dominant_entity_is_not_the_latest_observation():
     WRONG. `COO` and `SPG` each carry one against a thousand real filings."""
     identity = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
-        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 1000),
-                        ("AAA", "0000000700", pd.Timestamp("2026-01-01"), None, 1)]),
+        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 1000), ("AAA", "0000000700", pd.Timestamp("2026-01-01"), None, 1)]),
         roster=_roster([("AAA", "0000000100")]),
-        d19_allowlist={"AAA": "test"})
+        d19_allowlist={"AAA": "test"},
+    )
     assert identity.dominant_entity("AAA") == "E0000000100"
 
     print("\n=== SANITY CHECK: whose symbol is this NOW ===")
@@ -273,24 +299,110 @@ def test_dominant_entity_is_not_the_latest_observation():
     print("  -> A latest-observation rule hands COO and SPG to a typo.")
 
 
+def test_symbol_ticker_resolution_covers_rename_reuse_gap_and_universe_scope():
+    """The CIK-less source contract: resolve by entity/date, then enforce caller scope."""
+    identity = build_identity(
+        lineage=_lineage(
+            [
+                ("0000000100", "E_META", "roster"),
+                ("0000000200", "E_FISV", "roster"),
+                ("0000000300", "E_TT", "roster"),
+                ("0000000400", "E_IR", "roster"),
+                ("0000000500", "E_WTW", "roster"),
+            ]
+        ),
+        tenure=_tenure(
+            [
+                ("FB", "0000000100", "2012-01-01", "2022-06-01", 500),
+                ("META", "0000000100", "2022-06-01", None, 500),
+                ("FI", "0000000200", "2019-01-01", "2023-06-01", 200),
+                ("FISV", "0000000200", "2023-06-01", None, 200),
+                ("IR", "0000000300", "2009-01-01", "2020-03-01", 200),
+                ("IR", "0000000400", "2020-03-05", None, 200),
+                ("TT", "0000000300", "2020-03-01", None, 200),
+                ("WTW", "0000000900", "2009-01-01", "2019-04-18", 100),
+                ("WTW", "0000000500", "2019-04-18", None, 500),
+                ("OVER", "0000000700", "2010-01-01", "2015-01-01", 10),
+                ("OVER", "0000000800", "2012-01-01", "2016-01-01", 10),
+            ]
+        ),
+        roster=_roster(
+            [
+                ("META", "0000000100"),
+                ("FISV", "0000000200"),
+                ("TT", "0000000300"),
+                ("IR", "0000000400"),
+                ("WTW", "0000000500"),
+            ]
+        ),
+    )
+    universe = frozenset({"META", "FISV", "TT", "IR", "WTW"})
+
+    fb = identity.resolve_symbol_ticker("FB", "2008-01-01", universe)
+    fi = identity.resolve_symbol_ticker("FI", "2020-01-01", universe)
+    old_ir = identity.resolve_symbol_ticker("IR", "2015-01-01", universe)
+    current_ir = identity.resolve_symbol_ticker("IR", "2025-01-01", universe)
+    early_wtw = identity.resolve_symbol_ticker("WTW", "2015-01-01", universe)
+    overlap = identity.resolve_symbol_ticker("OVER", "2013-01-01", universe)
+    gap = identity.resolve_symbol_ticker("IR", "2020-03-03", universe)
+    unknown = identity.resolve_symbol_ticker("NEVER", "2020-01-01", universe)
+    outside = identity.resolve_symbol_ticker("FI", "2020-01-01", frozenset({"META"}))
+
+    assert (fb.ticker, fb.verdict, fb.match_kind) == ("META", "mapped_current_ticker", "unique_entity_fallback")
+    assert (fi.ticker, fi.verdict, fi.match_kind) == ("FISV", "mapped_current_ticker", "exact_dated_tenure")
+    assert old_ir.ticker == "TT" and old_ir.verdict == "mapped_current_ticker"
+    assert current_ir.ticker == "IR" and current_ir.verdict == "exact_dated_tenure"
+    assert early_wtw.verdict == "entity_not_in_universe" and not early_wtw.accepted
+    assert overlap.verdict == "ambiguous" and gap.verdict == "unknown_gap"
+    assert unknown.verdict == "unknown_symbol"
+    assert outside.verdict == "entity_not_in_universe" and outside.ticker is None
+    assert {"FB", "FI", "FISV", "META", "IR", "TT"} <= identity.candidate_symbols(universe)
+
+    print("\n=== SANITY CHECK: symbol/date -> canonical ticker ===")
+    print("  FB -> META outside observed tenure (unique-entity fallback); FI -> FISV")
+    print("  historical IR -> TT, current IR -> IR; early WTW is outside the universe")
+    print("  overlap -> ambiguous; reuse seam gap -> unknown_gap; absent -> unknown_symbol")
+    print("  OK: only the caller's universe is returned, and no ambiguity is guessed")
+
+
+def test_symbol_rows_resolve_unique_pairs_once_and_keep_unresolved_evidence():
+    identity = _simple()
+    source = pd.DataFrame(
+        {
+            "source_symbol": ["AAA", "AAA", "ZZZ"],
+            "date": pd.to_datetime(["2014-01-01", "2014-01-01", "2014-01-01"]),
+            "value": [1.0, 2.0, 3.0],
+        }
+    )
+    accepted, unresolved = resolve_symbol_rows(identity, source, frozenset({"AAA", "BBB"}))
+
+    assert accepted["ticker"].tolist() == ["AAA", "AAA"]
+    assert accepted["resolution_verdict"].eq("exact_dated_tenure").all()
+    assert len(unresolved) == 1 and unresolved.iloc[0]["resolution_verdict"] == "unknown_symbol"
+
+    print("\n=== SANITY CHECK: vector symbol resolution ===")
+    print("  duplicate AAA/date rows share one exact verdict; ZZZ remains unresolved evidence")
+    print("  OK: accepted and unresolved rows retain their original values and dates")
+
+
 # --------------------------------------------------------------------------- #
 # D19 and the empty-table raises                                                #
 # --------------------------------------------------------------------------- #
 
+
 def test_d19_disagreement_raises_and_the_allowlist_suppresses_only_its_own_ticker():
     frames = dict(
-        lineage=_lineage([("0000000100", "E0000000100", "roster"),
-                          ("0000000900", "E0000000900", "roster")]),
-        tenure=_tenure([("AAA", "0000000700", pd.Timestamp("2006-01-01"), None, 500),
-                        ("BBB", "0000000800", pd.Timestamp("2006-01-01"), None, 500)]),
-        roster=_roster([("AAA", "0000000100"), ("BBB", "0000000900")]))
-    with pytest.raises(UniverseEntityDisagreement) as excinfo:
+        lineage=_lineage([("0000000100", "E0000000100", "roster"), ("0000000900", "E0000000900", "roster")]),
+        tenure=_tenure([("AAA", "0000000700", pd.Timestamp("2006-01-01"), None, 500), ("BBB", "0000000800", pd.Timestamp("2006-01-01"), None, 500)]),
+        roster=_roster([("AAA", "0000000100"), ("BBB", "0000000900")]),
+    )
+    with pytest.raises(UniverseEntityDisagreementError) as excinfo:
         build_identity(**frames)
     assert "AAA" in str(excinfo.value) and "BBB" in str(excinfo.value)
 
-    with pytest.raises(UniverseEntityDisagreement, match="BBB"):
+    with pytest.raises(UniverseEntityDisagreementError, match="BBB"):
         build_identity(**frames, d19_allowlist={"AAA": "adjudicated in writing"})
-    build_identity(**frames, d19_allowlist={"AAA": "reason", "BBB": "reason"})   # both explained
+    build_identity(**frames, d19_allowlist={"AAA": "reason", "BBB": "reason"})  # both explained
 
     print("\n=== SANITY CHECK: D19, the XOM check ===")
     print("  roster CIK and symbol_tenure naming different entities -> raises, naming both")
@@ -307,19 +419,21 @@ def test_an_empty_table_is_a_loud_raise_not_an_empty_map(empty):
     frames = dict(
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
         tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 5)]),
-        roster=_roster([("AAA", "0000000100")]))
+        roster=_roster([("AAA", "0000000100")]),
+    )
     frames[empty] = frames[empty].iloc[0:0]
     with pytest.raises(IdentityError):
         build_identity(**frames)
 
     print(f"\n=== SANITY CHECK: empty {empty} ===")
-    print(f"  build_identity raises IdentityError rather than returning a silent empty map")
+    print("  build_identity raises IdentityError rather than returning a silent empty map")
     print("  OK: a mandatory table cannot fail open")
     print("  -> An empty lineage would quarantine every legitimate predecessor in silence.")
 
 
 def test_load_identity_caches_per_context_and_not_across_them():
     """A module-level cache would hand one test's database to the next."""
+
     class _Store:
         def __init__(self, frames):
             self._frames = frames
@@ -333,13 +447,17 @@ def test_load_identity_caches_per_context_and_not_across_them():
             self.config_dir = CONFIG_DIR
 
     def frames(cik, ticker):
-        return {"entity_lineage": _lineage([(cik, f"E{cik}", "roster")]),
-                "symbol_tenure": _tenure([(ticker, cik, pd.Timestamp("2006-01-01"), None, 5)]),
-                "sp500_tickers": _roster([(ticker, cik)])}
+        return {
+            "entity_lineage": _lineage([(cik, f"E{cik}", "roster")]),
+            "symbol_tenure": _tenure([(ticker, cik, pd.Timestamp("2006-01-01"), None, 5)]),
+            "sp500_tickers": _roster([(ticker, cik)]),
+        }
 
     first, second = _Ctx(frames("0000000100", "AAA")), _Ctx(frames("0000000900", "BBB"))
     a, b = load_identity(first, CONFIG_DIR), load_identity(second, CONFIG_DIR)
-    assert load_identity(first, CONFIG_DIR) is a           # same context -> cached instance
+    assert load_identity(first, CONFIG_DIR) is a  # same context -> cached instance
+    refreshed = load_identity(first, CONFIG_DIR, refresh=True)
+    assert refreshed is not a and refreshed.roster_cik == a.roster_cik
     assert a is not b
     assert set(a.roster_cik) == {"AAA"} and set(b.roster_cik) == {"BBB"}
 
@@ -354,7 +472,7 @@ def test_normalise_cik_handles_every_spelling_in_the_repo():
     assert normalise_cik("320193.0") == "0000320193"
     assert normalise_cik(" 0000320193 ") == "0000320193"
     assert normalise_cik(320193) == "0000320193"
-    assert normalise_cik("not-a-cik") == "not-a-cik"     # passed through, never silently zero
+    assert normalise_cik("not-a-cik") == "not-a-cik"  # passed through, never silently zero
 
     print("\n=== SANITY CHECK: CIK normalisation ===")
     print("  '320193' / '320193.0' / ' 0000320193 ' / int -> 0000320193")
@@ -366,13 +484,15 @@ def test_normalise_cik_handles_every_spelling_in_the_repo():
 # live acceptance table                                                         #
 # --------------------------------------------------------------------------- #
 
+
 @pytest.fixture(scope="module")
 def live():
     from src.context import get_config_context
+
     try:
         _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
         return load_identity(context, CONFIG_DIR)
-    except Exception as exc:                                            # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"database unavailable ({type(exc).__name__}: {exc})")
 
 
@@ -410,27 +530,44 @@ def test_the_four_worked_cases_summary(live):
 #: `MOVE` means the rows belong to a DIFFERENT universe ticker, `DROP` is another company.
 #: `EA` and `AVB` are labelled in the table but are no longer in the 500-ticker roster.
 KEEP_GROUPS = {
-    ("DD", "0000030554"), ("CB", "0000020171"), ("JCI", "0000053669"),
-    ("MRVL", "0001058057"), ("COHR", "0000021510"), ("DOW", "0000029915"),
-    ("STE", "0000815065"), ("PLD", "0000899881"), ("AVGO", "0001441634"),
-    ("ACN", "0001134538"), ("DOC", "0001574540"), ("DELL", "0000826083"),
-    ("VMC", "0000103973"), ("DLR", "0001494877"), ("TPL", "0000097517"),
-    ("HLT", "0000047580"), ("TT", "0000836102"), ("MRK", "0000064978"),
-    ("GM", "0000040730"), ("DUK", "0000030371"), ("FERG", "0001832433"),
-    ("PCG", "0000075488"), ("PSA", "0000318380"), ("KMI", "0000054502"),
-    ("BLK", "0001060021"), ("ORCL", "0000777676"), ("OKE", "0000074154"),
-    ("TMUS", "0001097609"), ("ACN", "0001143908"), ("IRM", "0001132694"),
+    ("DD", "0000030554"),
+    ("CB", "0000020171"),
+    ("JCI", "0000053669"),
+    ("MRVL", "0001058057"),
+    ("COHR", "0000021510"),
+    ("DOW", "0000029915"),
+    ("STE", "0000815065"),
+    ("PLD", "0000899881"),
+    ("AVGO", "0001441634"),
+    ("ACN", "0001134538"),
+    ("DOC", "0001574540"),
+    ("DELL", "0000826083"),
+    ("VMC", "0000103973"),
+    ("DLR", "0001494877"),
+    ("TPL", "0000097517"),
+    ("HLT", "0000047580"),
+    ("TT", "0000836102"),
+    ("MRK", "0000064978"),
+    ("GM", "0000040730"),
+    ("DUK", "0000030371"),
+    ("FERG", "0001832433"),
+    ("PCG", "0000075488"),
+    ("PSA", "0000318380"),
+    ("KMI", "0000054502"),
+    ("BLK", "0001060021"),
+    ("ORCL", "0000777676"),
+    ("OKE", "0000074154"),
+    ("TMUS", "0001097609"),
+    ("ACN", "0001143908"),
+    ("IRM", "0001132694"),
     ("WFC", "0000105598"),
 }
-MOVE_GROUPS = {("IR", "0001466258"): "TT", ("IR", "0001160497"): "TT",
-               ("TT", "0000749251"): "IT", ("NTRS", "0000049826"): "ITW"}
+MOVE_GROUPS = {("IR", "0001466258"): "TT", ("IR", "0001160497"): "TT", ("TT", "0000749251"): "IT", ("NTRS", "0000049826"): "ITW"}
 
 
 def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
     """The acceptance table for the whole plan, on the live tables."""
-    flagged = pd.read_csv(
-        "reports/planning/active-tasks/2026-09-07-informed-capital/insider_out_of_lineage.csv",
-        dtype=str)
+    flagged = pd.read_csv("reports/planning/active-tasks/2026-09-07-informed-capital/insider_out_of_lineage.csv", dtype=str)
     flagged["rows"] = flagged["rows"].astype(int)
     counts, wrong = {"KEEP": 0, "MOVE": 0, "DROP": 0}, []
     rows = {"KEEP": 0, "MOVE": 0, "DROP": 0}
@@ -450,12 +587,9 @@ def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
     assert not wrong, f"{len(wrong)} group(s) resolved against the reviewed verdict: {wrong}"
 
     print("\n=== SANITY CHECK: all 102 flagged groups ===")
-    print(f"  KEEP {counts['KEEP']:>3} groups {rows['KEEP']:>7,} rows  "
-          "genuine predecessors, retained by entity_lineage")
-    print(f"  MOVE {counts['MOVE']:>3} groups {rows['MOVE']:>7,} rows  "
-          "relabelled onto the universe ticker that owns them")
-    print(f"  DROP {counts['DROP']:>3} groups {rows['DROP']:>7,} rows  "
-          "another company -- quarantined")
+    print(f"  KEEP {counts['KEEP']:>3} groups {rows['KEEP']:>7,} rows  " "genuine predecessors, retained by entity_lineage")
+    print(f"  MOVE {counts['MOVE']:>3} groups {rows['MOVE']:>7,} rows  " "relabelled onto the universe ticker that owns them")
+    print(f"  DROP {counts['DROP']:>3} groups {rows['DROP']:>7,} rows  " "another company -- quarantined")
     print("  OK: every one of the 102 matches the verdict read from the issuer name")
     print("  -> A register-only cut would have deleted the 25,635 KEEP rows.")
 
@@ -500,7 +634,6 @@ def test_no_live_entity_holds_two_universe_tickers(live):
     assert len(live.ticker_by_entity) == len(live.roster_cik) == 500
 
     print("\n=== SANITY CHECK: one entity per universe ticker ===")
-    print(f"  {len(live.roster_cik)} tickers -> {len(live.ticker_by_entity)} entities, "
-          "0 collisions")
+    print(f"  {len(live.roster_cik)} tickers -> {len(live.ticker_by_entity)} entities, " "0 collisions")
     print("  OK: no entity can relabel one universe ticker's rows onto another")
     print("  -> load_identity would have raised before returning if it could.")

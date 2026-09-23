@@ -38,8 +38,7 @@ OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI,
 - Ask before editing risk zones: `context.py`, `utils/step.py`, `constants/`, `data_store/`,
   `sql/schema.sql`, `configs/`, `data/` + the Postgres volume, the aggregate fingerprint baseline.
 - Keep `AGENTS.md` (**cap 70 lines**), `README.md`, `docs/*.md` in sync; propose conventions first.
-- Finish an important task with a report — [docs/definition_of_done.md](docs/definition_of_done.md).
-  No model is "done" without TimeSeriesSplit CV + SHAP + printed OOS metrics. A `Stop` hook checks.
+- Finish an important task with a report - leverage the src/validate folder to ensure data is clean.
 
 ## Code map
 

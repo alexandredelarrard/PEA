@@ -25,30 +25,32 @@ ORDER MATTERS in two places:
     steps accordingly -- running structure first leaves the vote parser reading yesterday's
     8-Ks.
 """
+
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.utils.step import Step
-from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
-from src.data_extract.utils.institutionals.fetch_superinvestors import upsert_roster_snapshot
-from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
-from src.data_extract.utils.institutionals.fetch_insider_transactions import (
-    fetch_insider_transactions)
-from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
-from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
+from src.data_extract.utils.common.bulk_cache import cache_dir
+from src.data_extract.utils.common.entity_lineage import build_entity_lineage
+from src.data_extract.utils.common.identity import load_identity
+from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure
 from src.data_extract.utils.institutionals.fetch_8k_edgar import fetch_8k_edgar
-from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
+from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
+from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
+from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
+from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
+from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
+from src.data_extract.utils.institutionals.fetch_superinvestors import upsert_roster_snapshot
+from src.utils.step import Step
 
 
 class StepExtractInstitutionals(Step):
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self.config = self._context.config
 
     def run(self, tickers: list[str]) -> None:
-
         years_history = int(self.config.data_extract.years_history)
 
         # 13F institutional holdings (edgartools by filing date + OpenFIGI cusip map). Resumes
@@ -79,6 +81,13 @@ class StepExtractInstitutionals(Step):
         # corporate events (8-K)
         fetch_8k_edgar(self._context, tickers=tickers, years_history=years_history)
 
-        # the short side: FINRA RegSHO short volume, then SEC settlement fails (mid-2009 on)
-        fetch_short_interest(self._context, tickers=tickers, years_history=years_history)
-        fetch_fails_to_deliver(self._context, tickers=tickers, years_history=years_history)
+        # Refresh the two-axis identity dimension after the insider cache producer, then hand
+        # one frozen resolver to the two symbol-only tapes at the end of the step.
+        insider_cache = cache_dir(self._context, self.config.local.paths.insider_transactions)
+        build_symbol_tenure(self._context, insider_cache)
+        build_entity_lineage(self._context, insider_cache, str(self._context.config_dir))
+        identity = load_identity(self._context, refresh=True)
+
+        # The short side: FINRA RegSHO short volume, then SEC settlement fails (mid-2009 on).
+        fetch_short_interest(self._context, tickers=tickers, years_history=years_history, identity=identity)
+        fetch_fails_to_deliver(self._context, tickers=tickers, years_history=years_history, identity=identity)

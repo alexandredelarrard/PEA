@@ -446,26 +446,13 @@ rtk "$PY" -m src data_extract insider-transactions --reparse
   (91 tickers, 2024-12-17 → today) and now become visible for the first time.
 - `reporting_person_comment` is a new column; `store.ensure_table` adds it on first write.
 
-## Finishing a task — the definition-of-done report
+## Finishing a task — the validate report
 
-Contract and rationale: [definition_of_done.md](definition_of_done.md). Pick the generator that
-matches the work; each writes `reports/<YYYY-MM-DD>/<slug>__<TYPE>.md` (one folder per day) and
-prints what still needs a human sentence.
+Contract and rationale: [data-check.md](data-check.md). Pick the generator that
+matches the work; write output validation report in `reports/validate/<YYYY-MM-DD>-<slug>.md` (one folder per day).
 
-```bash
-"$PY" scripts/dod/refactor_metrics.py --slug <slug> --tests tests/path/test_x.py
-"$PY" scripts/dod/data_profile.py     --slug <slug> --tables fundamentals_facts [--tickers AAPL,JPM]
-"$PY" scripts/dod/modelling_report.py --slug <slug> [--compare-run <run_stamp>]
-```
+This report should focus on any data touched or model or output touched during the implementation phase.
 
-Then write §1, §5 and §6 yourself. **Never edit the ` ```json dod-metrics ` block** — it carries a
-`content_hash` the `Stop` hook recomputes.
-
-The hook is **warn-only** by default: it records a verdict and never blocks. To enforce it, set
-`PEA_DOD_MODE=enforce` or create `.claude/dod-enforce`. To turn it off entirely, create
-`.claude/dod-disabled` or set `PEA_DOD=off`. Verdicts accumulate at
-`%LOCALAPPDATA%\pea-dod\<repo-hash>\<session_id>\verdicts.jsonl` — read that file before flipping
-to enforce, to see what it *would* have blocked.
 
 ## Gotchas
 

@@ -160,8 +160,10 @@ def _reconcile_legacy(
     accepted, unresolved = resolve_symbol_rows(identity, source, universe)
     log_symbol_resolutions(context, "RegSHO legacy", accepted, unresolved, universe=universe)
     relabelled = int((accepted["source_symbol"] != accepted["ticker"]).sum())
-    removed = int(unresolved["resolution_verdict"].eq("entity_not_in_universe").sum())
-    preserve = unresolved[~unresolved["resolution_verdict"].eq("entity_not_in_universe")].copy()
+    proven_exclusions = {"entity_not_in_universe", "redundant_share_class"}
+    removed_mask = unresolved["resolution_verdict"].isin(proven_exclusions)
+    removed = int(removed_mask.sum())
+    preserve = unresolved[~removed_mask].copy()
     preserve["ticker"] = preserve["source_symbol"]
     columns = ["date", "ticker", "short_volume", "total_volume"]
     combined = pd.concat([accepted[columns], preserve[columns]], ignore_index=True)

@@ -69,17 +69,19 @@ TWO WINDOWS, both in TRADING days because the grid is:
     while the age is inside the cap, and the plain 252-day rolling extreme once it is past --
     each branch is exact in its own regime, and `age <= cap` is precisely where they swap.
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.decay import days_since_last_true, snap_to_grid
 from src.data_aggregate.utils.institutionals.split_basis import future_split_factor
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +113,7 @@ EMISSION: dict[str, str] = {
 }
 
 
-def _event_mask(events: pd.DataFrame | None, idx: pd.DatetimeIndex,
-                columns: pd.Index) -> pd.DataFrame | None:
+def _event_mask(events: pd.DataFrame | None, idx: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame | None:
     """Boolean (date x ticker): did this family have an event on this grid day?
 
     Every event date is snapped forward onto the grid first -- a filing dated on a Saturday is
@@ -127,8 +128,7 @@ def _event_mask(events: pd.DataFrame | None, idx: pd.DatetimeIndex,
     e = e.dropna(subset=["_grid"])
     if e.empty:
         return None
-    wide = e.assign(_f=1.0).pivot_table(index="_grid", columns="ticker", values="_f",
-                                        aggfunc="max")
+    wide = e.assign(_f=1.0).pivot_table(index="_grid", columns="ticker", values="_f", aggfunc="max")
     return wide.reindex(index=idx, columns=columns).notna()
 
 
@@ -165,8 +165,7 @@ def _segment_extreme(values: pd.DataFrame, mask: pd.DataFrame, kind: str) -> pd.
     return pd.DataFrame(out, index=values.index, columns=values.columns)
 
 
-def _capped_excursion(close: pd.DataFrame, mask: pd.DataFrame, age: pd.DataFrame,
-                      kind: str, lookback: int) -> pd.DataFrame:
+def _capped_excursion(close: pd.DataFrame, mask: pd.DataFrame, age: pd.DataFrame, kind: str, lookback: int) -> pd.DataFrame:
     """The extreme of `close` over `[max(t_event, t - lookback), t]`, against the price at the
     START of that same window.
 
@@ -189,17 +188,15 @@ def _capped_excursion(close: pd.DataFrame, mask: pd.DataFrame, age: pd.DataFrame
     inside = started & (age <= lookback)
     past = started & ~inside
     since = _segment_extreme(close, mask, kind)
-    rolling = (close.rolling(lookback, min_periods=1).max() if kind == "max"
-               else close.rolling(lookback, min_periods=1).min())
+    rolling = close.rolling(lookback, min_periods=1).max() if kind == "max" else close.rolling(lookback, min_periods=1).min()
     extreme = since.where(inside, rolling.where(past))
     anchor = _anchor(close, mask).where(inside, close.shift(lookback - 1).where(past))
     return (extreme / anchor.where(anchor > 0) - 1.0).replace([np.inf, -np.inf], np.nan)
 
 
-def _family_fields(fam: str, events: pd.DataFrame | None, idx: pd.DatetimeIndex,
-                   close_total: pd.DataFrame, sector_ret: pd.DataFrame | None,
-                   vol: pd.DataFrame | None) -> tuple[dict[str, pd.DataFrame],
-                                                      pd.DataFrame | None]:
+def _family_fields(
+    fam: str, events: pd.DataFrame | None, idx: pd.DatetimeIndex, close_total: pd.DataFrame, sector_ret: pd.DataFrame | None, vol: pd.DataFrame | None
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame | None]:
     """#68-#79 for one family, and the family's grid event mask (reused by the insider legs)."""
     mask = _event_mask(events, idx, close_total.columns)
     if mask is None or not mask.to_numpy().any():
@@ -211,8 +208,7 @@ def _family_fields(fam: str, events: pd.DataFrame | None, idx: pd.DatetimeIndex,
     out[f"ic_sig_{fam}_age_days"] = age
 
     anchor = _anchor(close_total, mask)
-    ret_since = (close_total / anchor.where(anchor > 0) - 1.0).replace(
-        [np.inf, -np.inf], np.nan)
+    ret_since = (close_total / anchor.where(anchor > 0) - 1.0).replace([np.inf, -np.inf], np.nan)
     out[f"ic_sig_{fam}_ret_since"] = ret_since
 
     resid = None
@@ -221,8 +217,7 @@ def _family_fields(fam: str, events: pd.DataFrame | None, idx: pd.DatetimeIndex,
         # its own value on the anchor day. `fillna(0.0)` inside the cumprod treats a missing
         # sector day as flat -- a NaN would otherwise kill the whole forward path, and the
         # ratio form means the level of the index never matters.
-        cum = (1.0 + sector_ret.reindex(index=idx, columns=close_total.columns)
-               .fillna(0.0)).cumprod()
+        cum = (1.0 + sector_ret.reindex(index=idx, columns=close_total.columns).fillna(0.0)).cumprod()
         base = _anchor(cum, mask)
         span = cum / base.where(base > 0) - 1.0
         resid = (ret_since - span).replace([np.inf, -np.inf], np.nan)
@@ -234,22 +229,25 @@ def _family_fields(fam: str, events: pd.DataFrame | None, idx: pd.DatetimeIndex,
         # significant as a 2-day one of the same size.
         span_vol = vol.mul(np.sqrt(age.clip(lower=1.0)))
         numer = resid if resid is not None else ret_since
-        out[f"ic_sig_{fam}_vol_scaled_move"] = (
-            numer / span_vol.where(span_vol > 0)).replace([np.inf, -np.inf], np.nan)
+        out[f"ic_sig_{fam}_vol_scaled_move"] = (numer / span_vol.where(span_vol > 0)).replace([np.inf, -np.inf], np.nan)
     return out, mask
 
 
-def _insider_price_legs(events: pd.DataFrame | None, mask: pd.DataFrame | None,
-                        age: pd.DataFrame | None,
-                        idx: pd.DatetimeIndex, close_split: pd.DataFrame | None,
-                        close_total: pd.DataFrame, splits: pd.DataFrame | None,
-                        excursion_lookback: int) -> dict[str, pd.DataFrame]:
+def _insider_price_legs(
+    events: pd.DataFrame | None,
+    mask: pd.DataFrame | None,
+    age: pd.DataFrame | None,
+    idx: pd.DatetimeIndex,
+    close_split: pd.DataFrame | None,
+    close_total: pd.DataFrame,
+    splits: pd.DataFrame | None,
+    excursion_lookback: int,
+) -> dict[str, pd.DataFrame]:
     """#80-#82 -- the three legs that need the transaction price, not just its date."""
     out: dict[str, pd.DataFrame] = {}
     if mask is None:
         return out
-    if events is not None and not events.empty and close_split is not None \
-            and not close_split.empty and {"value", "shares"}.issubset(events.columns):
+    if events is not None and not events.empty and close_split is not None and not close_split.empty and {"value", "shares"}.issubset(events.columns):
         e = events.dropna(subset=["ticker", "date"]).copy()
         e["_grid"] = snap_to_grid(e["date"], idx)
         e = e.dropna(subset=["_grid"])
@@ -259,26 +257,23 @@ def _insider_price_legs(events: pd.DataFrame | None, mask: pd.DataFrame | None,
         if not e.empty:
             factor = future_split_factor(splits, e["ticker"], e["date"])
             n = int((np.abs(factor - 1.0) > 1e-9).sum())
-            logger.info("insider cost anchor: %s of %s purchases restated onto today's split "
-                        "basis (V5 trigger count); max factor %.1fx",
-                        n, len(e), float(np.max(factor)) if len(factor) else 1.0)
+            logger.info(
+                "insider cost anchor: %s of %s purchases restated onto today's split " "basis (V5 trigger count); max factor %.1fx",
+                n,
+                len(e),
+                float(np.max(factor)) if len(factor) else 1.0,
+            )
             e["_shares_adj"] = e["_shares"] * factor
-            val = e.pivot_table(index="_grid", columns="ticker", values="_value",
-                                aggfunc="sum").reindex(index=idx,
-                                                       columns=close_split.columns)
-            sh = e.pivot_table(index="_grid", columns="ticker", values="_shares_adj",
-                               aggfunc="sum").reindex(index=idx, columns=close_split.columns)
+            val = e.pivot_table(index="_grid", columns="ticker", values="_value", aggfunc="sum").reindex(index=idx, columns=close_split.columns)
+            sh = e.pivot_table(index="_grid", columns="ticker", values="_shares_adj", aggfunc="sum").reindex(index=idx, columns=close_split.columns)
             num = val.fillna(0.0).rolling(COST_ANCHOR_WINDOW, min_periods=1).sum()
             den = sh.fillna(0.0).rolling(COST_ANCHOR_WINDOW, min_periods=1).sum()
             vw = num / den.where(den > 0)
-            out["ic_sig_insider_price_vs_buy"] = (
-                close_split / vw.where(vw > 0) - 1.0).replace([np.inf, -np.inf], np.nan)
+            out["ic_sig_insider_price_vs_buy"] = (close_split / vw.where(vw > 0) - 1.0).replace([np.inf, -np.inf], np.nan)
 
     if age is not None:
-        out["ic_sig_insider_max_runup_since_buy"] = _capped_excursion(
-            close_total, mask, age, "max", excursion_lookback)
-        out["ic_sig_insider_max_dd_since_buy"] = _capped_excursion(
-            close_total, mask, age, "min", excursion_lookback)
+        out["ic_sig_insider_max_runup_since_buy"] = _capped_excursion(close_total, mask, age, "max", excursion_lookback)
+        out["ic_sig_insider_max_dd_since_buy"] = _capped_excursion(close_total, mask, age, "min", excursion_lookback)
     return out
 
 
@@ -288,6 +283,7 @@ def build_signal_conditioning_panel(
     *,
     splits: pd.DataFrame | None = None,
     excursion_lookback: int = EXCURSION_LOOKBACK,
+    frontiers: Mapping[str, pd.Timestamp] | None = None,
 ) -> pd.DataFrame:
     """Long-format conditioning panel (`f_<name>` per `EMISSION`).
 
@@ -323,21 +319,32 @@ def build_signal_conditioning_panel(
     if close_split is not None and not close_split.empty:
         close_split = close_split.reindex(index=idx, columns=close_total.columns)
 
-    daily_ret = (ret.reindex(index=idx, columns=close_total.columns)
-                 if ret is not None and not ret.empty else close_total.pct_change())
+    daily_ret = ret.reindex(index=idx, columns=close_total.columns) if ret is not None and not ret.empty else close_total.pct_change()
     vol = daily_ret.rolling(VOL_WINDOW, min_periods=VOL_WINDOW // 2).std()
 
     fields: dict[str, pd.DataFrame] = {}
     insider_mask = None
     for fam in FAMILIES:
-        fam_fields, mask = _family_fields(fam, events.get(fam), idx, close_total,
-                                          sector_ret, vol)
+        fam_fields, mask = _family_fields(fam, events.get(fam), idx, close_total, sector_ret, vol)
         fields.update(fam_fields)
         if fam == "insider":
             insider_mask = mask
-    fields.update(_insider_price_legs(
-        events.get("insider"), insider_mask, fields.get("ic_sig_insider_age_days"), idx,
-        close_split, close_total, splits, excursion_lookback))
+    fields.update(
+        _insider_price_legs(
+            events.get("insider"), insider_mask, fields.get("ic_sig_insider_age_days"), idx, close_split, close_total, splits, excursion_lookback
+        )
+    )
+
+    for family, complete_through in (frontiers or {}).items():
+        if complete_through is None or pd.isna(complete_through):
+            continue
+        covered = pd.Series(
+            idx <= pd.Timestamp(complete_through).normalize(),
+            index=idx,
+        )
+        prefix = f"ic_sig_{family}_"
+        for name in [field for field in fields if field.startswith(prefix)]:
+            fields[name] = fields[name].where(covered, axis=0)
 
     for name in list(fields):
         frame = fields[name]
@@ -345,7 +352,6 @@ def build_signal_conditioning_panel(
             fields.pop(name)
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-    logger.info("price-conditioning panel: %s of %s declared features built",
-                len(fields), len(EMISSION))
+    logger.info("price-conditioning panel: %s of %s declared features built", len(fields), len(EMISSION))
     emission = {k: v for k, v in EMISSION.items() if k in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission)

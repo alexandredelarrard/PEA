@@ -1,17 +1,22 @@
 """Phase 2.4 — Beneficial-ownership panel (Schedule 13D activist + 13G passive >5%).
 
-Checks canonical event construction (the group-summing trap), the repeat-activist and
-escalation/de-escalation joins, the mandate floor on `percent_of_class`, and the built f_*
-panel columns.
+Checks canonical event construction, repeat-activist and escalation/de-escalation joins,
+event-only history, and removal of the short-history `percent_of_class` feature family.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.institutionals.ownership_features import (
-    EMISSION, HOLDER_ACTIVE_DAYS, MANDATE_FLOOR, _act_fields, _bo_fields, _canonicalize,
-    _cross_fields, build_ownership_feature_panel,
+    EMISSION,
+    HOLDER_ACTIVE_DAYS,
+    _act_fields,
+    _bo_fields,
+    _canonicalize,
+    _cross_fields,
+    build_ownership_feature_panel,
 )
 from tests.conftest import make_frames
 
@@ -22,50 +27,75 @@ def _peers(tickers):
     return {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
 
 
-def test_canonicalize_never_sums_across_reporting_persons():
-    """4 co-filers each reporting the SAME 10% aggregate must canonicalize to one event at
-    10%, not 40% -- the plan's explicit group-summing regression test."""
-    rows = [{"ticker": "AAA", "accession_number": "0001", "cusip": "CUS1",
-             "filing_date": "2025-01-10", "is_amendment": 0.0, "percent_of_class": 10.0,
-             "reporting_person_cik": str(i), "reporting_person_name": f"R{i}",
-             "item4_purpose_of_transaction": "we may seek board representation"}
-            for i in range(1, 5)]
+def test_canonicalize_collapses_reporting_persons_without_ownership_numerics():
+    """Four co-filers are one filing event while ownership numerics stay retired."""
+    rows = [
+        {
+            "ticker": "AAA",
+            "accession_number": "0001",
+            "cusip": "CUS1",
+            "filing_date": "2025-01-10",
+            "is_amendment": 0.0,
+            "percent_of_class": 10.0,
+            "reporting_person_cik": str(i),
+            "reporting_person_name": f"R{i}",
+            "item4_purpose_of_transaction": "we may seek board representation",
+        }
+        for i in range(1, 5)
+    ]
     raw = pd.DataFrame(rows)
     canon = _canonicalize(raw, text_col="item4_purpose_of_transaction", has_amendment=True)
     assert len(canon) == 1, "one filing, one canonical event -- not one row per reporting person"
-    assert canon.loc[0, "percent_of_class"] == 10.0, "max, not sum, across rp_seq"
     assert canon.loc[0, "n_reporting_persons"] == 4
+    assert "percent_of_class" not in canon.columns
     print("\n=== SANITY CHECK: canonical event construction ===")
-    print(f"  4 reporting persons x 10% -> canonical percent_of_class = "
-          f"{canon.loc[0, 'percent_of_class']} (not 40). Validated.")
+    print("  Four reporting persons collapse to one filing event; percent_of_class is not carried into feature construction. Validated.")
 
 
 def test_canonicalize_empty_and_missing_cik_fallback():
     assert _canonicalize(None).empty
     assert _canonicalize(pd.DataFrame()).empty
     # a reporting person with no CIK falls back to name as the filer identity
-    raw = pd.DataFrame([{"ticker": "BBB", "accession_number": "0001", "cusip": "CUS1",
-                         "filing_date": "2025-02-01", "is_amendment": 0.0,
-                         "percent_of_class": 6.0, "reporting_person_cik": None,
-                         "reporting_person_name": "Nameless Fund LP"}])
+    raw = pd.DataFrame(
+        [
+            {
+                "ticker": "BBB",
+                "accession_number": "0001",
+                "cusip": "CUS1",
+                "filing_date": "2025-02-01",
+                "is_amendment": 0.0,
+                "percent_of_class": 6.0,
+                "reporting_person_cik": None,
+                "reporting_person_name": "Nameless Fund LP",
+            }
+        ]
+    )
     canon = _canonicalize(raw, has_amendment=True)
     assert canon.loc[0, "filer_id"] == "Nameless Fund LP"
 
 
 def _campaign_row(ticker, filer, day, pct=np.nan):
-    return {"ticker": ticker, "filing_date": pd.Timestamp(day), "is_amendment": 0.0,
-            "filer_id": filer, "percent_of_class": pct, "n_reporting_persons": 1}
+    return {
+        "ticker": ticker,
+        "filing_date": pd.Timestamp(day),
+        "is_amendment": 0.0,
+        "filer_id": filer,
+        "percent_of_class": pct,
+        "n_reporting_persons": 1,
+    }
 
 
 def test_repeat_activist_fires_on_the_fourth_campaign_only():
     """One filer opens initial 13Ds on 4 different tickers, in order. The plan's floor is
     >=3 PRIOR campaigns, so only the 4th ticker's event qualifies."""
-    canon = pd.DataFrame([
-        _campaign_row("R1", "SAME_FILER", "2023-02-01"),
-        _campaign_row("R2", "SAME_FILER", "2023-06-01"),
-        _campaign_row("R3", "SAME_FILER", "2023-10-01"),
-        _campaign_row("R4", "SAME_FILER", "2024-02-01"),
-    ])
+    canon = pd.DataFrame(
+        [
+            _campaign_row("R1", "SAME_FILER", "2023-02-01"),
+            _campaign_row("R2", "SAME_FILER", "2023-06-01"),
+            _campaign_row("R3", "SAME_FILER", "2023-10-01"),
+            _campaign_row("R4", "SAME_FILER", "2024-02-01"),
+        ]
+    )
     out = _act_fields(canon, IDX, halflife=126.0)
     repeat = out["ic_act_repeat_activist"]
     assert "R4" in repeat.columns and repeat["R4"].dropna().gt(0).any()
@@ -79,7 +109,7 @@ def test_campaign_age_days_resets_and_is_nan_before_first_event():
     canon = pd.DataFrame([_campaign_row("AAA", "F1", "2023-03-01")])
     out = _act_fields(canon, IDX, halflife=126.0)
     age = out["ic_act_campaign_age_days"]
-    before = age.loc[:pd.Timestamp("2023-02-28"), "AAA"]
+    before = age.loc[: pd.Timestamp("2023-02-28"), "AAA"]
     assert before.isna().all(), "no campaign yet -> NaN, not 0"
     d0 = age.loc[pd.Timestamp("2023-03-01"), "AAA"]
     d10 = age.loc[IDX[IDX.get_indexer([pd.Timestamp("2023-03-01")])[0] + 7], "AAA"]
@@ -93,9 +123,8 @@ def test_escalation_and_deescalation_join():
     out = _cross_fields(canon_d, canon_g, IDX, halflife=126.0)
     esc = out["ic_bo_escalation_13g_to_13d"]
     assert "ZZZ" in esc.columns
-    assert esc.loc[:pd.Timestamp("2023-02-28"), "ZZZ"].dropna().eq(0).all() or \
-        esc.loc[:pd.Timestamp("2023-02-28"), "ZZZ"].isna().all()
-    assert esc.loc[pd.Timestamp("2023-03-01"):, "ZZZ"].dropna().gt(0).any()
+    assert esc.loc[: pd.Timestamp("2023-02-28"), "ZZZ"].dropna().eq(0).all() or esc.loc[: pd.Timestamp("2023-02-28"), "ZZZ"].isna().all()
+    assert esc.loc[pd.Timestamp("2023-03-01") :, "ZZZ"].dropna().gt(0).any()
 
     # reverse order (13D before 13G on another ticker) -> de-escalation, not escalation
     canon_g2 = pd.DataFrame([_campaign_row("YYY", "F2", "2023-05-01")])
@@ -109,78 +138,109 @@ def test_escalation_and_deescalation_join():
 
 
 def test_bo_holder_count_sums_distinct_filers_not_group_members():
-    canon = pd.DataFrame([
-        _campaign_row("AAA", "F1", "2023-01-05"),
-        _campaign_row("AAA", "F2", "2023-01-06"),
-        _campaign_row("BBB", "F3", "2023-01-05"),
-    ])
+    canon = pd.DataFrame(
+        [
+            _campaign_row("AAA", "F1", "2023-01-05"),
+            _campaign_row("AAA", "F2", "2023-01-06"),
+            _campaign_row("BBB", "F3", "2023-01-05"),
+        ]
+    )
     out = _bo_fields(canon, IDX, halflife=126.0)
     hc = out["ic_bo_holder_count"]
     # 2 distinct filers on AAA / 3 filers total that year -> 2/3; 1 of 3 on BBB -> 1/3
     assert np.isclose(hc.loc[pd.Timestamp("2023-01-10"), "AAA"], 2 / 3)
     assert np.isclose(hc.loc[pd.Timestamp("2023-01-10"), "BBB"], 1 / 3)
-    assert hc.loc[:pd.Timestamp("2023-01-04"), "AAA"].isna().all(), "before any filer -> NaN"
+    assert hc.loc[: pd.Timestamp("2023-01-04"), "AAA"].isna().all(), "before any filer -> NaN"
 
 
-def test_percent_of_class_ffill_and_delta():
-    canon = pd.DataFrame([
-        _campaign_row("AAA", "F1", "2025-01-10", pct=10.0),
-        _campaign_row("AAA", "F1", "2025-03-10", pct=15.0),
-    ])
+def test_percent_of_class_features_are_not_constructed():
+    canon = pd.DataFrame(
+        [
+            _campaign_row("AAA", "F1", "2025-01-10", pct=10.0),
+            _campaign_row("AAA", "F1", "2025-03-10", pct=15.0),
+        ]
+    )
     out = _act_fields(canon, IDX, halflife=126.0)
-    pct = out["ic_act_percent_of_class"]
-    assert pct.loc[pd.Timestamp("2025-02-03"), "AAA"] == 10.0, "held forward between filings"
-    assert pct.loc[pd.Timestamp("2025-03-10"), "AAA"] == 15.0
-    delta = out["ic_act_delta_percent_class"]
-    assert delta.loc[pd.Timestamp("2025-03-10"), "AAA"] == 5.0
-    # no known prior stake to diff against on the very first-ever disclosed filing -> NaN
-    assert pd.isna(delta.loc[pd.Timestamp("2025-01-10"), "AAA"])
+    assert not any("percent_of_class" in name or "delta_percent_class" in name for name in out)
+    print("\n=== SANITY CHECK: retired ownership numerics ===")
+    print("  Supplying percent_of_class source values creates no level or delta feature. Validated.")
 
 
-def test_panel_mandate_floor_masks_percent_features():
-    """percent_of_class-derived features must read NaN strictly before MANDATE_FLOOR, even
-    though this synthetic frame supplies a (data-condition-violating) pre-mandate value."""
-    d13 = pd.DataFrame([
-        {"ticker": "AAA", "accession_number": "0001", "cusip": "CUS1",
-         "filing_date": "2023-05-01", "is_amendment": 0.0, "percent_of_class": 20.0,
-         "reporting_person_cik": "1", "reporting_person_name": "R1",
-         "item4_purpose_of_transaction": None},
-    ])
+def test_event_features_remain_available_before_the_structured_data_mandate():
+    d13 = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "accession_number": "0001",
+                "cusip": "CUS1",
+                "filing_date": "2023-05-01",
+                "is_amendment": 0.0,
+                "percent_of_class": 20.0,
+                "reporting_person_cik": "1",
+                "reporting_person_name": "R1",
+                "item4_purpose_of_transaction": None,
+            },
+        ]
+    )
     peers = _peers(["AAA", "BBB"])
     panel = build_ownership_feature_panel(make_frames(IDX, peers), d13, None)
-    assert MANDATE_FLOOR > pd.Timestamp("2023-05-01")
     row = panel[(panel["ticker"] == "AAA") & (panel["date"] == pd.Timestamp("2023-05-01"))]
-    if not row.empty and "f_ic_act_percent_of_class" in row.columns:
-        assert row["f_ic_act_percent_of_class"].isna().all()
+    assert not row.empty
+    assert row["f_ic_act_initial_13d"].notna().all()
+    assert not any("percent_of_class" in col or "delta_percent_class" in col for col in panel.columns)
+    print("\n=== SANITY CHECK: pre-mandate event history preserved ===")
+    print("  A 2023 Schedule 13D still emits its event intensity while all ownership numerics are absent. Validated.")
 
 
 def test_panel_columns_and_emission_coverage():
     dates = ["2025-01-10", "2025-04-10"]
-    d13 = pd.DataFrame([
-        {"ticker": "AAA", "accession_number": f"000{i+1}", "cusip": "CUS1",
-         "filing_date": dates[i], "is_amendment": float(i), "percent_of_class": 10.0 * (i + 1),
-         "reporting_person_cik": str(k), "reporting_person_name": f"R{k}",
-         "item4_purpose_of_transaction": "the reporting persons intend to nominate directors"}
-        for i in range(2) for k in range(1, 5)
-    ])
-    d13g = pd.DataFrame([
-        {"ticker": "BBB", "accession_number": acc, "cusip": "CUS2",
-         "filing_date": day, "percent_of_class": pct,
-         "reporting_person_cik": "9", "reporting_person_name": "Passive Fund"}
-        # two filings by the SAME filer, so the per-filer delta has a prior to difference
-        # against (one filing alone correctly yields no delta at all)
-        for acc, day, pct in (("1001", "2025-02-03", 6.0), ("1002", "2025-05-05", 8.0))
-    ])
+    d13 = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "accession_number": f"000{i+1}",
+                "cusip": "CUS1",
+                "filing_date": dates[i],
+                "is_amendment": float(i),
+                "percent_of_class": 10.0 * (i + 1),
+                "reporting_person_cik": str(k),
+                "reporting_person_name": f"R{k}",
+                "item4_purpose_of_transaction": "the reporting persons intend to nominate directors",
+            }
+            for i in range(2)
+            for k in range(1, 5)
+        ]
+    )
+    d13g = pd.DataFrame(
+        [
+            {
+                "ticker": "BBB",
+                "accession_number": acc,
+                "cusip": "CUS2",
+                "filing_date": day,
+                "percent_of_class": pct,
+                "reporting_person_cik": "9",
+                "reporting_person_name": "Passive Fund",
+            }
+            # two filings by the SAME filer, so the per-filer delta has a prior to difference
+            # against (one filing alone correctly yields no delta at all)
+            for acc, day, pct in (("1001", "2025-02-03", 6.0), ("1002", "2025-05-05", 8.0))
+        ]
+    )
     peers = _peers(["AAA", "BBB"])
     panel = build_ownership_feature_panel(make_frames(IDX, peers), d13, d13g)
     assert not panel.empty
     # Features that ALWAYS fire on this data (unlike repeat_activist/escalation/strategic,
     # which need a specific trigger this synthetic scenario does not construct -- those are
     # covered directly against `_act_fields`/`_bo_fields`/`_cross_fields` above).
-    guaranteed = ["ic_act_initial_13d", "ic_act_amendment_intensity", "ic_act_campaign_age_days",
-                  "ic_act_purpose_board", "ic_act_percent_of_class", "ic_act_delta_percent_class",
-                  "ic_bo_holder_count", "ic_bo_new_holder", "ic_bo_percent_of_class",
-                  "ic_bo_delta_percent_class"]
+    guaranteed = [
+        "ic_act_initial_13d",
+        "ic_act_amendment_intensity",
+        "ic_act_campaign_age_days",
+        "ic_act_purpose_board",
+        "ic_bo_holder_count",
+        "ic_bo_new_holder",
+    ]
     for name in guaranteed:
         mode = EMISSION[name]
         assert f"f_{name}" in panel.columns, f"raw leg f_{name} missing"
@@ -189,66 +249,46 @@ def test_panel_columns_and_emission_coverage():
         if mode == "raw+peers":
             assert f"f_{name}_vs_peers" in panel.columns
 
-    # the group-summing check again, this time end-to-end through the public builder
-    hit = panel[(panel["ticker"] == "AAA") & (panel["date"] == pd.Timestamp("2025-01-10"))]
-    assert np.isclose(hit["f_ic_act_percent_of_class"].iloc[0], 10.0)
+    assert not any("percent_of_class" in col or "delta_percent_class" in col for col in panel.columns)
     print("\n=== SANITY CHECK: ownership panel columns ===")
-    print(f"  {len(EMISSION)} EMISSION-declared features all present with the right legs; "
-          "AAA's 4-co-filer 10% filing reads 10.0 end-to-end. Validated.")
+    print(f"  {len(EMISSION)} event-only features remain declared; no emitted column contains percent_of_class. Validated.")
 
 
 def _g_row(ticker, filer, day, pct):
-    return {"ticker": ticker, "filing_date": pd.Timestamp(day), "filer_id": filer,
-            "percent_of_class": pct, "n_reporting_persons": 1}
+    return {"ticker": ticker, "filing_date": pd.Timestamp(day), "filer_id": filer, "percent_of_class": pct, "n_reporting_persons": 1}
 
 
-def test_delta_is_a_state_not_a_one_day_spike():
-    """Measured defect: `level.diff()` on the ffilled level is non-zero on ~200 ticker-days of
-    a 7,803-day panel. The delta must be recorded on the filing day and HELD FORWARD."""
-    canon = pd.DataFrame([_g_row("AAA", "F1", "2025-01-10", 6.0),
-                          _g_row("AAA", "F1", "2025-03-10", 9.0)])
+def test_retired_bo_numeric_features_are_absent_from_private_builder():
+    canon = pd.DataFrame([_g_row("AAA", "F1", "2025-01-10", 6.0), _g_row("AAA", "F1", "2025-03-10", 9.0)])
     out = _bo_fields(canon, IDX, halflife=126.0)
-    delta = out["ic_bo_delta_percent_class"]
-    assert delta.loc[pd.Timestamp("2025-03-10"), "AAA"] == 3.0
-    # ... and still 3.0 two months later, with no further filing
-    assert delta.loc[pd.Timestamp("2025-05-05"), "AAA"] == 3.0
-    assert pd.isna(delta.loc[pd.Timestamp("2025-02-03"), "AAA"]), "no prior filing yet -> NaN"
-    print("\n=== SANITY CHECK: delta is a held-forward state ===")
-    print("  +3.0pp recorded on the filing day persists to the next filing. Validated.")
+    assert "ic_bo_percent_of_class" not in out
+    assert "ic_bo_delta_percent_class" not in out
 
 
 def test_delta_ignores_a_newly_observed_filer():
     """Measured defect: diffing the SUMMED level read filer-set growth as buying (median
     +5.1pp on the live 13G panel). A second filer's FIRST filing must move the level and NOT
     the delta."""
-    canon = pd.DataFrame([_g_row("AAA", "F1", "2025-01-10", 6.0),
-                          _g_row("AAA", "F2", "2025-03-10", 7.0)])
+    canon = pd.DataFrame([_g_row("AAA", "F1", "2025-01-10", 6.0), _g_row("AAA", "F2", "2025-03-10", 7.0)])
     out = _bo_fields(canon, IDX, halflife=126.0)
-    level = out["ic_bo_percent_of_class"]
-    delta = out["ic_bo_delta_percent_class"]
-    assert level.loc[pd.Timestamp("2025-03-10"), "AAA"] == 13.0, "the level sums both filers"
-    assert pd.isna(delta.loc[pd.Timestamp("2025-03-10"), "AAA"]), \
-        "F2 appearing is not F2 buying -- that +7.0 was the whole artifact"
-    print("\n=== SANITY CHECK: set growth is not a stake change ===")
-    print("  a second filer's first 13G adds 7.0 to the level and nothing to the delta. "
-          "Validated.")
+    assert "ic_bo_percent_of_class" not in out and "ic_bo_delta_percent_class" not in out
+    print("\n=== SANITY CHECK: no short-history stake-change proxy ===")
+    print("  Adding a newly observed filer cannot create a percent-of-class level or delta. Validated.")
 
 
 def test_holder_count_is_a_bounded_share_and_lapses():
     """Both halves of the D28 ratio share one trailing window, so it is a share: built with a
     never-releasing numerator over a calendar-year denominator it measured 1.23 on live data."""
-    canon = pd.DataFrame([_g_row("AAA", "F1", "2023-01-05", np.nan),
-                          _g_row("BBB", "F2", "2023-01-05", np.nan)])
+    canon = pd.DataFrame([_g_row("AAA", "F1", "2023-01-05", np.nan), _g_row("BBB", "F2", "2023-01-05", np.nan)])
     hc = _bo_fields(canon, IDX, halflife=126.0)["ic_bo_holder_count"]
     vals = hc.to_numpy()
     assert np.nanmax(vals) <= 1.0, "a share cannot exceed 1"
-    assert hc.loc[pd.Timestamp("2023-02-01"), "AAA"] == 0.5      # 1 of the 2 active filers
+    assert hc.loc[pd.Timestamp("2023-02-01"), "AAA"] == 0.5  # 1 of the 2 active filers
     # F1 lapses HOLDER_ACTIVE_DAYS after its only filing, so AAA stops being held
     lapsed = IDX[IDX.get_indexer([pd.Timestamp("2023-01-05")])[0] + HOLDER_ACTIVE_DAYS + 5]
     assert pd.isna(hc.loc[lapsed, "AAA"]) or hc.loc[lapsed, "AAA"] == 0.0
     print("\n=== SANITY CHECK: holder_count is a bounded share that lapses ===")
-    print(f"  max {np.nanmax(vals):.2f} <= 1; a filer lapses after "
-          f"{HOLDER_ACTIVE_DAYS} trading days. Validated.")
+    print(f"  max {np.nanmax(vals):.2f} <= 1; a filer lapses after " f"{HOLDER_ACTIVE_DAYS} trading days. Validated.")
 
 
 def test_build_ownership_feature_panel_empty_when_no_source():
@@ -257,16 +297,16 @@ def test_build_ownership_feature_panel_empty_when_no_source():
 
 
 if __name__ == "__main__":
-    test_canonicalize_never_sums_across_reporting_persons()
+    test_canonicalize_collapses_reporting_persons_without_ownership_numerics()
     test_canonicalize_empty_and_missing_cik_fallback()
     test_repeat_activist_fires_on_the_fourth_campaign_only()
     test_campaign_age_days_resets_and_is_nan_before_first_event()
     test_escalation_and_deescalation_join()
     test_bo_holder_count_sums_distinct_filers_not_group_members()
-    test_percent_of_class_ffill_and_delta()
-    test_panel_mandate_floor_masks_percent_features()
+    test_percent_of_class_features_are_not_constructed()
+    test_event_features_remain_available_before_the_structured_data_mandate()
     test_panel_columns_and_emission_coverage()
-    test_delta_is_a_state_not_a_one_day_spike()
+    test_retired_bo_numeric_features_are_absent_from_private_builder()
     test_delta_ignores_a_newly_observed_filer()
     test_holder_count_is_a_bounded_share_and_lapses()
     test_build_ownership_feature_panel_empty_when_no_source()

@@ -940,6 +940,65 @@ CREATE TABLE IF NOT EXISTS "insider_transactions" (
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_ticker ON "insider_transactions" ("ticker");
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_transaction_date ON "insider_transactions" ("transaction_date");
 
+-- [extract] insider_transactions_live
+-- Provisional daily EDGAR tail. `source_row_sequence` is XML order, not the incompatible
+-- `transaction_sk` generated later by the quarterly bulk data set.
+CREATE TABLE IF NOT EXISTS "insider_transactions_live" (
+    "accession_number" TEXT NOT NULL,
+    "security_type" TEXT NOT NULL,
+    "source_row_sequence" BIGINT NOT NULL,
+    "ticker" TEXT,
+    "issuer_cik" TEXT,
+    "issuer_name" TEXT,
+    "owner_cik" TEXT,
+    "owner_name" TEXT,
+    "is_director" DOUBLE PRECISION,
+    "is_officer" DOUBLE PRECISION,
+    "is_ten_pct_owner" DOUBLE PRECISION,
+    "is_other" DOUBLE PRECISION,
+    "officer_title" TEXT,
+    "document_type" TEXT,
+    "transaction_date" DATE,
+    "filing_date" DATE,
+    "period_of_report" DATE,
+    "security_title" TEXT,
+    "transaction_code" TEXT,
+    "acquired_disposed" TEXT,
+    "shares" DOUBLE PRECISION,
+    "price_per_share" DOUBLE PRECISION,
+    "value_usd" DOUBLE PRECISION,
+    "shares_owned_after" DOUBLE PRECISION,
+    "direct_indirect" TEXT,
+    "is_10b5_1" DOUBLE PRECISION,
+    "transaction_form_type" TEXT,
+    "equity_swap_involved" TEXT,
+    "deemed_execution_date" DATE,
+    "nature_of_ownership" TEXT,
+    "transaction_timeliness" TEXT,
+    "exercise_price" DOUBLE PRECISION,
+    "exercise_date" DATE,
+    "expiration_date" DATE,
+    "underlying_security_title" TEXT,
+    "underlying_shares" DOUBLE PRECISION,
+    "underlying_value" DOUBLE PRECISION,
+    "footnote_ids" TEXT,
+    "acceptance_datetime" TIMESTAMP,
+    "fetched_at" TIMESTAMP,
+    PRIMARY KEY ("accession_number", "security_type", "source_row_sequence")
+);
+CREATE INDEX IF NOT EXISTS ix_insider_transactions_live_ticker ON "insider_transactions_live" ("ticker");
+CREATE INDEX IF NOT EXISTS ix_insider_transactions_live_filing_date ON "insider_transactions_live" ("filing_date");
+
+-- A successful no-filing scan still advances this table; transaction rows cannot express it.
+CREATE TABLE IF NOT EXISTS "insider_transactions_live_coverage" (
+    "ticker" TEXT NOT NULL,
+    "complete_through" DATE NOT NULL,
+    "updated_at" TIMESTAMP NOT NULL,
+    PRIMARY KEY ("ticker")
+);
+CREATE INDEX IF NOT EXISTS ix_insider_transactions_live_coverage_complete_through
+    ON "insider_transactions_live_coverage" ("complete_through");
+
 -- [extract] insider_transactions_quarantine  (pk: accession_number, security_type, transaction_sk)
 -- Rows the identity screen REJECTED. Same columns as `insider_transactions` plus the verdict.
 -- `ticker` is the ticker the row CLAIMED (the filer's own ISSUERTRADINGSYMBOL, or the label a

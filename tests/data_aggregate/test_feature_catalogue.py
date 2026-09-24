@@ -22,16 +22,27 @@ ONE table and exits non-zero on either failure, so 85 governance entries in the 
 would land in its `unused` list and fail every future fundamentals run. Hence
 `cube_feature_catalogue.CATALOGUES`, a registry of one dict per part.
 """
+
 from __future__ import annotations
 
 from scripts.cube_feature_catalogue import CATALOGUE, CATALOGUES, split
 from scripts.cube_governance_catalogue import GOVERNANCE
+from scripts.cube_institutionals_catalogue import INSTITUTIONALS
 from src.data_aggregate.utils.governance import director_comp as dc
 from src.data_aggregate.utils.governance import directors as dr
 from src.data_aggregate.utils.governance import panel as pn
 from src.data_aggregate.utils.governance import pay_features as pay
 from src.data_aggregate.utils.governance import provisions_features as pv
 from src.data_aggregate.utils.governance import vote_dissent_features as vd
+from src.data_aggregate.utils.institutionals import (
+    cross_source_features,
+    insider_features,
+    institutional_features,
+    ownership_features,
+    short_flow_features,
+    signal_conditioning,
+    superinvestor_features,
+)
 
 #: ⚠ THE ONE ALLOWED DECLARED-BUT-ABSENT FIELD, named rather than filtered.
 #:
@@ -51,16 +62,22 @@ def _declared() -> dict[str, set[str]]:
     Reads the modules' own field sets rather than a list typed here, so the two cannot drift --
     the same reason `07_catalogue.py` builds it this way.
     """
-    legacy = ({n for _, n in pn._LEVEL_FIELDS} | {n for _, n in pn._RAW_DEF14A_FIELDS}
-              # the four names `_governance_fields` COMPUTES rather than reads off a source
-              # column, so no `(source, name)` pair in the module declares them
-              | {"ceo_tenure", "ceo_pay_growth", "ceo_pay_vs_revenue_growth",
-                 "control_wedge"})
-    raw = (legacy | set(pay.ALL_FIELDS) | set(pv.ALL_FIELDS) | set(dr.ALL_FIELDS)
-           | set(dc.ALL_FIELDS) | set(vd.EVENT_FIELDS))
-    peers = (set(pn._PEER_LEGACY) | set(pay.PEER_RELATIVE_FIELDS)
-             | set(pv.PEER_RELATIVE_FIELDS) | set(dr.PEER_RELATIVE_FIELDS)
-             | set(dc.PEER_RELATIVE_FIELDS) | set(vd.PEER_RELATIVE_FIELDS))
+    legacy = (
+        {n for _, n in pn._LEVEL_FIELDS}
+        | {n for _, n in pn._RAW_DEF14A_FIELDS}
+        # the four names `_governance_fields` COMPUTES rather than reads off a source
+        # column, so no `(source, name)` pair in the module declares them
+        | {"ceo_tenure", "ceo_pay_growth", "ceo_pay_vs_revenue_growth", "control_wedge"}
+    )
+    raw = legacy | set(pay.ALL_FIELDS) | set(pv.ALL_FIELDS) | set(dr.ALL_FIELDS) | set(dc.ALL_FIELDS) | set(vd.EVENT_FIELDS)
+    peers = (
+        set(pn._PEER_LEGACY)
+        | set(pay.PEER_RELATIVE_FIELDS)
+        | set(pv.PEER_RELATIVE_FIELDS)
+        | set(dr.PEER_RELATIVE_FIELDS)
+        | set(dc.PEER_RELATIVE_FIELDS)
+        | set(vd.PEER_RELATIVE_FIELDS)
+    )
     return {"raw": raw, "peers": peers, "hist": set(pn._VS_HIST_LEGACY)}
 
 
@@ -80,8 +97,7 @@ def test_the_governance_catalogue_matches_the_declared_fields_both_ways():
     print(f"  suppressed (allowed)  {sorted(SUPPRESSED)}")
     print(f"  catalogue entries     {len(cat)}")
     print(f"  peer legs {len(d['peers'])} + self-history {len(d['hist'])} resolve to their raw")
-    print(f"  parents, so {len(cat)} entries describe "
-          f"{len(d['raw'] - SUPPRESSED) + len(d['peers']) + len(d['hist'])} columns.")
+    print(f"  parents, so {len(cat)} entries describe " f"{len(d['raw'] - SUPPRESSED) + len(d['peers']) + len(d['hist'])} columns.")
     print("  Before 2026-09-08 this was 0 entries for the whole part.")
 
 
@@ -112,9 +128,15 @@ def test_the_retired_vote_twins_are_absent_from_every_declaration():
         assert name not in GOVERNANCE, f"{name} still has a catalogue entry"
 
     # the surviving twins and their dependents must all still be there
-    for name in ("sop_dissent", "auditor_vote_dissent", "sop_dissent_excess_10",
-                 "sop_dissent_excess_20", "sop_dissent_gt_10", "sop_dissent_gt_20",
-                 "sop_dissent_delta_1y"):
+    for name in (
+        "sop_dissent",
+        "auditor_vote_dissent",
+        "sop_dissent_excess_10",
+        "sop_dissent_excess_20",
+        "sop_dissent_gt_10",
+        "sop_dissent_gt_20",
+        "sop_dissent_delta_1y",
+    ):
         assert name in vd.EVENT_FIELDS, f"{name} was dropped with its twin"
         assert name in GOVERNANCE
 
@@ -127,25 +149,50 @@ def test_the_retired_vote_twins_are_absent_from_every_declaration():
     print("  `sop_dissent` keeps all five of its derived children.")
 
 
-def test_the_two_catalogues_are_separate_and_key_disjoint():
+def test_the_catalogues_are_separate_and_key_disjoint():
     """One prose entry must not silently serve two parts."""
     assert CATALOGUES["cube_part_fundamentals"] is CATALOGUE
     assert CATALOGUES["cube_part_governance"] is GOVERNANCE
-    shared = sorted(set(CATALOGUE) & set(GOVERNANCE))
-    assert not shared, f"a characteristic name is claimed by both parts: {shared}"
+    assert CATALOGUES["cube_part_institutionals"] is INSTITUTIONALS
+    catalogues = tuple(CATALOGUES.items())
+    for i, (left_name, left) in enumerate(catalogues):
+        for right_name, right in catalogues[i + 1 :]:
+            shared = sorted(set(left) & set(right))
+            assert not shared, f"a characteristic is claimed by {left_name} and {right_name}: {shared}"
 
-    # ⚠ MEASURED 2026-09-08: of the seven `cube%` tables, only these two carry `f_`-prefixed
-    # columns at all (fundamentals 249, governance 106). `cube_part_betas`, `_momentum`,
-    # `_prices` and `_targets` have ZERO, so they do not use the convention the catalogue is
-    # keyed on and are not undocumented in this sense. This assertion is what fails -- loudly,
-    # and pointing at the registry -- the day a THIRD `f_` part ships.
-    assert set(CATALOGUES) == {"cube_part_fundamentals", "cube_part_governance"}
+    assert set(CATALOGUES) == {
+        "cube_part_fundamentals",
+        "cube_part_governance",
+        "cube_part_institutionals",
+    }
 
     print("\n=== SANITY CHECK: the per-part registry ===")
     for part, cat in sorted(CATALOGUES.items()):
         print(f"  {part:<26} {len(cat):>4} entries")
     print("  key-disjoint, so neither part can borrow the other's prose.")
-    print("  the other four cube parts carry 0 `f_` columns and are out of scope by naming.")
+    print("  the remaining cube parts carry no catalogued `f_` feature families.")
+
+
+def test_the_institutionals_catalogue_matches_declared_characteristics_both_ways():
+    modules = (
+        institutional_features,
+        superinvestor_features,
+        insider_features,
+        short_flow_features,
+        ownership_features,
+        signal_conditioning,
+        cross_source_features,
+    )
+    declared = {name for module in modules for name in module.EMISSION}
+    catalogued = set(INSTITUTIONALS)
+
+    assert not sorted(declared - catalogued), "institutional characteristic lacks prose"
+    assert not sorted(catalogued - declared), "institutional catalogue entry is stale"
+    assert not any("percent_of_class" in name for name in catalogued)
+
+    print("\n=== SANITY CHECK: the institutionals catalogue, both directions ===")
+    print(f"  {len(declared)} declared characteristics == {len(catalogued)} documented entries")
+    print("  retired percent_of_class characteristics are absent; all new ratio controls are documented.")
 
 
 def test_every_entry_is_a_complete_four_field_record():

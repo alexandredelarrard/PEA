@@ -8,6 +8,12 @@ Scope: what is **actually in the local Postgres right now**. For what each table
 > whole `fundamentals_*` / `sharadar_*` block were re-queried on 08-26. Re-verify before relying
 > on a number — `MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea -c "…"`.
 
+> **Targeted cube snapshot, 2026-09-23:** the rebuilt `cube_part_institutionals` contains
+> **3,265,378 rows, 120 feature columns, 491 tickers, 1995-09-01 → 2026-09-04**. Its five
+> availability-normalized cross-source outputs reconcile on every row. The insider-dependent
+> bearish ratio and conflict stop at the source completeness frontier, 2026-06-30; they are not
+> extended into an unavailable period.
+
 > ⚠ **THE SHARADAR TABLES BELOW ARE PRE-UPGRADE AND KNOWINGLY STALE.** Every Sharadar row count
 > here was measured while the key was on the **free DJIA tier** — 30 tickers, history from 2021.
 > The subscription was upgraded on **2026-08-26** and the key now covers the **whole SF1

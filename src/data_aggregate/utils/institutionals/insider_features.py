@@ -23,7 +23,7 @@ it is a data-quality reference that never reaches the panel.
 AVAILABILITY (D16, measured 2026-09-10):
 
     every feature      NaN before 2006-01-03   -- `insider_transactions` has no earlier row
-    the two 10b5-1     NaN before 2023-07-01   -- `is_10b5_1` is 0.00% filled on `S` rows in
+    the two 10b5-1     NaN before 2023-04-01   -- the SEC reporting requirement begins then;
     features                                      2020/2021/2022, first non-null 2023-03-20,
                                                   74.1% for 2023 as a whole, then 99.6%
                                                   (2024), 99.6% (2025), 99.8% (2026)
@@ -90,8 +90,10 @@ from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.decay import decay_events
 from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, asof_values, clean_transactions, report_oversized
+from src.data_store.schema import Tables
 
 
 def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
@@ -172,7 +174,7 @@ CLUSTER_WINDOW_DAYS, CLUSTER_MIN = 120, 2
 #: both emit NaN -- never 0 -- before the date. A 0 would read as "no insider bought", which
 #: is a claim the data cannot support for a year it does not cover.
 INSIDER_FLOOR = pd.Timestamp("2006-01-03")
-TEN_B5_1_FLOOR = pd.Timestamp("2023-07-01")
+TEN_B5_1_FLOOR = pd.Timestamp("2023-04-01")
 
 #: Half-life in TRADING days for the class-S decay, overridden from
 #: `build_cube.institutionals.decay_halflife.insider`.
@@ -185,6 +187,8 @@ def build_insider_feature_panel(
     *,
     shares_out_history: pd.DataFrame | None = None,
     decay_halflife: float = DEFAULT_DECAY_HALFLIFE,
+    availability: InstitutionalAvailability | None = None,
+    complete_through: pd.Timestamp | None = None,
     sink=None,
 ) -> pd.DataFrame:
     """Long-format insider feature panel (`f_<name>` and `f_<name>_xs`, per `EMISSION`).
@@ -248,18 +252,27 @@ def build_insider_feature_panel(
     buys["value_mcap"] = buys["value"] / buys["mcap"].where(buys["mcap"] > 0)
 
     fields: dict[str, pd.DataFrame] = {}
-    fields.update(_dense_fields(buys, sells, idx, mcap, shares_out))
+    insider_floor = availability.source_date(Tables.insider_transactions) if availability is not None else INSIDER_FLOOR
+    ten_b5_floor = availability.source_date(Tables.insider_transactions, "is_10b5_1") if availability is not None else TEN_B5_1_FLOOR
+
+    fields.update(_dense_fields(buys, sells, idx, mcap, shares_out, ten_b5_floor))
     fields.update(_breadth_fields(buys, idx))
     fields.update(_sparse_fields(buys, idx, decay_halflife))
 
-    floor = pd.Series(idx >= INSIDER_FLOOR, index=idx)
+    floor = pd.Series(idx >= insider_floor, index=idx)
+    frontier = (
+        pd.Series(idx <= pd.Timestamp(complete_through).normalize(), index=idx)
+        if complete_through is not None and pd.notna(complete_through)
+        else pd.Series(True, index=idx)
+    )
     for name, frame in list(fields.items()):
         if frame is None or frame.empty:
             fields.pop(name)
             continue
-        fields[name] = frame.where(floor, axis=0)
+        fields[name] = frame.where(floor & frontier, axis=0)
 
     if sink is not None:
+        sink.set_frontier("insider", complete_through)
         # ⚠ PROJECT FIRST, THEN RENAME. `buys` carries BOTH the source `shares` column and
         # `clean_transactions`' numeric `shares_n`, so renaming `shares_n -> shares` on the
         # whole frame produces two columns of that name and every later `ev["shares"]` is a
@@ -269,7 +282,44 @@ def build_insider_feature_panel(
         sink.add_events("insider", ev)
         if "owner_cik" in buys.columns:
             sink.add_actors("insider", buys.loc[:, ["ticker", "day", "owner_cik"]].rename(columns={"day": "date", "owner_cik": "actor"}))
-        sink.keep_signals(fields)
+        columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+        if stock_close is not None and not stock_close.empty:
+            listed = stock_close.reindex(index=idx, columns=columns).notna()
+        else:
+            listed = pd.DataFrame(True, index=idx, columns=columns)
+        signal_fields = dict(fields)
+        signal_masks: dict[str, pd.DataFrame] = {}
+        source_last = (
+            pd.Timestamp(complete_through).normalize()
+            if complete_through is not None and pd.notna(complete_through)
+            else pd.to_datetime(insider["filing_date"], errors="coerce").max()
+        )
+        frontier_mask = (
+            InstitutionalAvailability.through_mask(idx, columns, source_last)
+            if pd.notna(source_last)
+            else pd.DataFrame(False, index=idx, columns=columns)
+        )
+        for name in ("ic_insider_buy_value_mcap_180d", "ic_insider_net_buy_ratio_180d"):
+            if name not in fields:
+                continue
+            requirements = [listed, frontier_mask]
+            if name == "ic_insider_buy_value_mcap_180d":
+                if mcap is None or mcap.empty:
+                    continue
+                requirements.append(mcap.reindex(index=idx, columns=columns).gt(0))
+            mask = (
+                availability.source_mask(
+                    Tables.insider_transactions,
+                    idx,
+                    columns,
+                    requirements=tuple(requirements),
+                )
+                if availability is not None
+                else InstitutionalAvailability.combine(*requirements)
+            )
+            signal_masks[name] = mask
+            signal_fields[name] = fields[name].reindex(index=idx, columns=columns).fillna(0.0).where(mask)
+        sink.keep_signals(signal_fields, signal_masks)
 
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(t), len(buys), len(sells))
     emission = {k: v for k, v in EMISSION.items() if k in fields}
@@ -282,7 +332,12 @@ def build_insider_feature_panel(
 
 
 def _dense_fields(
-    buys: pd.DataFrame, sells: pd.DataFrame, idx: pd.DatetimeIndex, mcap: pd.DataFrame | None, shares_out: pd.DataFrame
+    buys: pd.DataFrame,
+    sells: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    mcap: pd.DataFrame | None,
+    shares_out: pd.DataFrame,
+    ten_b5_floor: pd.Timestamp = TEN_B5_1_FLOOR,
 ) -> dict[str, pd.DataFrame]:
     """The six class-D features. Each is a trailing sum over a calendar window, sampled onto
     the trading grid, so a day only ever sees transactions already filed by it."""
@@ -308,12 +363,12 @@ def _dense_fields(
         planned = sells["is_10b5_1"]
         # Discretionary requires BOTH: not on a plan, and not the sell leg of an
         # exercise-and-sell package (35.0% of all `S` rows). A NaN plan flag is not a 0 --
-        # before 2023-07-01 the field is empty, and the floor below removes that region
+        # before 2023-04-01 the field was not compulsory, and the floor removes that region
         # rather than letting "unknown" masquerade as "discretionary".
         disc = sells[planned.eq(0) & ~sells["in_exercise_package"].astype(bool)]
         for name, sub in (("ic_insider_discretionary_sell_mcap_60d", disc), ("ic_insider_planned_sell_mcap_60d", sells[planned.eq(1)])):
             frame = _over(_rolling(sub, idx, WINDOW_60, "value", seen), mcap)
-            out[name] = frame.where(pd.Series(idx >= TEN_B5_1_FLOOR, index=idx), axis=0)
+            out[name] = frame.where(pd.Series(idx >= ten_b5_floor, index=idx), axis=0)
     return out
 
 

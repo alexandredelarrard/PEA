@@ -57,10 +57,16 @@ from src.data_aggregate.utils.common.price_frames import (
     load_price_frames,
     load_trading_calendar,
 )
+from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.cross_source_features import (
     build_cross_source_panel,
 )
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+from src.data_aggregate.utils.institutionals.insider_sources import (
+    as_quarter,
+    bulk_complete_through,
+    overlay_insider_sources,
+)
 from src.data_aggregate.utils.institutionals.institutional_features import (
     COVERAGE_BREAK_DEFAULT,
     build_institutional_feature_panel,
@@ -111,6 +117,10 @@ class StepCubeInstitutionals(Step):
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_institutionals)
         self._store = context.store
+        availability_config = config.get("data_availability")
+        self._availability = InstitutionalAvailability.from_config(availability_config) if availability_config is not None else None
+        freshness_config = config.get("source_freshness") or {}
+        self._insider_bulk_cutover = freshness_config.get("insider_bulk_authoritative_through")
 
     def run(self, full: bool = False) -> None:
         panel, window = self.build_panel(full=full)
@@ -378,6 +388,7 @@ class StepCubeInstitutionals(Step):
             selection=self._superinvestor_selector(),
             decay_halflife=float(self._decay_halflife("super")),
             stale_quarters=int(self._superinvestor_cfg().get("stale_quarters", 4)),
+            availability=self._availability,
             sink=sink,
         )
 
@@ -474,12 +485,124 @@ class StepCubeInstitutionals(Step):
         convertible-note row -- and the sells total $182,982,720tn against a real ~$1.45tn.
         After the scope cut and the price repair the mean is **$2,339,662** and the median
         $114,116. See `insider_quality` for which population each figure belongs to."""
-        insider = self._load_source(Tables.insider_transactions, frames.universe)
-        if insider is None:
-            return None
-        return build_insider_feature_panel(
-            frames, insider, shares_out_history=shares, decay_halflife=float(self._decay_halflife("insider")), sink=sink
+        bulk = self._load_source(Tables.insider_transactions, frames.universe)
+        live = self._load_source(Tables.insider_transactions_live, frames.universe)
+        insider = self._overlay_insider_sources(
+            bulk,
+            live,
+            bulk_authoritative_through=self._insider_bulk_cutover,
         )
+        if insider is None or insider.empty:
+            return None
+        _, latest_quarter = self._store.bounds(Tables.insider_transactions, "quarter")
+        bulk_complete_through = self._insider_bulk_complete_through(
+            latest_quarter,
+            bulk,
+            live,
+            bulk_authoritative_through=self._insider_bulk_cutover,
+        )
+        live_complete_through = self._insider_live_complete_through(frames.universe)
+        complete_through = self._insider_complete_through(
+            bulk_complete_through,
+            insider,
+            live_complete_through,
+        )
+        return build_insider_feature_panel(
+            frames,
+            insider,
+            shares_out_history=shares,
+            decay_halflife=float(self._decay_halflife("insider")),
+            availability=self._availability,
+            complete_through=complete_through,
+            sink=sink,
+        )
+
+    @staticmethod
+    def _overlay_insider_sources(
+        bulk: pd.DataFrame | None,
+        live: pd.DataFrame | None,
+        *,
+        bulk_authoritative_through: object = None,
+    ) -> pd.DataFrame | None:
+        return overlay_insider_sources(
+            bulk,
+            live,
+            bulk_authoritative_through=bulk_authoritative_through,
+        )
+
+    @staticmethod
+    def _as_quarter(value: object) -> pd.Period | None:
+        return as_quarter(value)
+
+    @staticmethod
+    def _insider_bulk_complete_through(
+        latest_quarter: object,
+        bulk: pd.DataFrame | None,
+        live: pd.DataFrame | None,
+        *,
+        bulk_authoritative_through: object = None,
+    ) -> pd.Timestamp | None:
+        return bulk_complete_through(
+            latest_quarter,
+            bulk,
+            live,
+            bulk_authoritative_through=bulk_authoritative_through,
+        )
+
+    def _insider_live_complete_through(
+        self,
+        universe: Sequence[str],
+    ) -> pd.Timestamp | None:
+        """Minimum successful EDGAR scan across the whole requested universe."""
+        expected = set(map(str, universe))
+        coverage = self._store.load(
+            Tables.insider_transactions_live_coverage,
+            columns=("ticker", "complete_through"),
+            where={"ticker": sorted(expected)},
+            optional=True,
+        )
+        if coverage is None or coverage.empty:
+            return None
+        coverage = coverage.dropna(subset=["ticker", "complete_through"])
+        covered = set(coverage["ticker"].astype(str))
+        missing = expected - covered
+        if missing:
+            self._log.warning(
+                "insider EDGAR coverage is missing %d/%d universe ticker(s); live rows are "
+                "loaded provisionally but cannot advance the family frontier",
+                len(missing),
+                len(expected),
+            )
+            return None
+        per_ticker = pd.to_datetime(coverage.groupby("ticker")["complete_through"].max(), errors="coerce")
+        value = per_ticker.min()
+        return value.normalize() if pd.notna(value) else None
+
+    @staticmethod
+    def _insider_complete_through(
+        bulk_complete_through: object,
+        insider: pd.DataFrame,
+        live_complete_through: pd.Timestamp | None = None,
+    ) -> pd.Timestamp | None:
+        """Inclusive observed frontier from the latest complete ZIP quarter.
+
+        The latest transaction is not a completeness statement: a quiet issuer can have no
+        filing near quarter-end. The quarter tag is. The filing-date fallback is deliberately
+        conservative for legacy rows that predate that tag.
+        """
+        candidates: list[pd.Timestamp] = []
+        if bulk_complete_through is not None:
+            try:
+                value = pd.Timestamp(bulk_complete_through)
+                candidates.append(value.normalize())
+            except (TypeError, ValueError):
+                pass
+        if live_complete_through is not None and pd.notna(live_complete_through):
+            candidates.append(pd.Timestamp(live_complete_through).normalize())
+        if candidates:
+            return max(candidates)
+        latest_filing = pd.to_datetime(insider.get("filing_date"), errors="coerce").max()
+        return latest_filing.normalize() if pd.notna(latest_filing) else None
 
     def _short_flow_panel(
         self, frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None, sink: ConditioningSink
@@ -490,7 +613,15 @@ class StepCubeInstitutionals(Step):
         one trading day; FTD by ~2 months (its publication delay)."""
         short = self._load_source(Tables.short_interest, frames.universe)
         fails = self._load_source(Tables.sec_fails_to_deliver, frames.universe)
-        return build_short_flow_feature_panel(frames, short, fails_history=fails, shares_out_history=shares, splits=splits, sink=sink)
+        return build_short_flow_feature_panel(
+            frames,
+            short,
+            fails_history=fails,
+            shares_out_history=shares,
+            splits=splits,
+            availability=self._availability,
+            sink=sink,
+        )
 
     def _ownership_panel(self, frames: PriceFrames, sink: ConditioningSink) -> pd.DataFrame | None:
         """Schedule 13D activist (`ic_act_*`) and 13G passive-ownership (`ic_bo_*`) events.
@@ -504,6 +635,7 @@ class StepCubeInstitutionals(Step):
             sec_13g,
             decay_halflife_act=float(self._decay_halflife("act")),
             decay_halflife_bo=float(self._decay_halflife("bo")),
+            availability=self._availability,
             sink=sink,
         )
 
@@ -512,7 +644,11 @@ class StepCubeInstitutionals(Step):
         since, sector-residualized and vol-scaled. THE PANEL'S ONLY DAILY-MOVING FAMILY, and
         the direct evidence for the two-layer architecture (report acceptance test #13)."""
         return build_signal_conditioning_panel(
-            frames, sink.events, splits=splits, excursion_lookback=int(self._institutionals_cfg().get("excursion_lookback", EXCURSION_LOOKBACK))
+            frames,
+            sink.events,
+            splits=splits,
+            excursion_lookback=int(self._institutionals_cfg().get("excursion_lookback", EXCURSION_LOOKBACK)),
+            frontiers=sink.frontiers,
         )
 
     def _cross_source_panel(self, frames: PriceFrames, sink: ConditioningSink) -> pd.DataFrame | None:

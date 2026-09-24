@@ -3,21 +3,22 @@
 # `defaults` are TABLE-AGNOSTIC by construction: a Pearson r of 0.985 means the same thing on
 # every table. `tables.<name>` holds what does NOT generalise, and a table with no entry makes
 # the checks that need one ABSTAIN (exit 3) rather than guess.
-#
-# WHY THAT IS NOT OVER-ENGINEERING. Measured over six same-shaped cube parts, the mean number
-# of legs frozen inside a quarter runs 0.1 of 28 on cube_part_momentum to 66.4 of 103 on
-# cube_part_governance -- and governance is CORRECT, because it ffills quarterly proxy data
-# onto a daily grid. One built-in frozen-run rule fires on two thirds of governance and never
-# on momentum.
-#
-# ⚠ ADD AN ENTRY ONLY WITH A MEASUREMENT OR AN EXISTING CONSTANT BEHIND IT. An absent entry
-# abstains loudly; an invented one lies quietly. Every value below carries its evidence.
 validate:
 
+  # Completed-quarter gate before quarterly ZIP rows supersede the provisional EDGAR copy.
+  insider_parity:
+    accession_coverage: 0.99
+    exact_structure: 0.99
+    categorical_agreement: 0.999
+    share_agreement: 0.999
+    economic_within_tolerance: 0.99
+    identity_agreement: 0.999
+    numeric_relative_tolerance: 0.01
+    aggregate_value_relative_tolerance: 0.01
+    feature_cell_agreement: 0.99
+    edge_rank_correlation: 0.99
+
   defaults:
-    # `reports/validate/2026-09-21-institutionals/_scripts/check_05.R_FLAG`. Institutionals and
-    # governance both used 0.985; momentum used 0.99, and the looser value is kept because the
-    # 2026-09-04 cube audit's seven r=1.0000 pairs clear either.
     redundancy_r: 0.985
     # Exact equality is asked as `a != b`, not `|a-b| > tol`: "one column under two names" is a
     # stronger and cheaper claim than a correlation, and a tolerance would weaken it to a
@@ -75,6 +76,9 @@ validate:
       # and every `sig_*` return/excursion leg reads that day's close. A quarterly 13F leg
       # holding its value between deadlines is CORRECT and is not in this list.
       # (check_08.DAILY_SUFFIXES, matched as prefix or suffix.)
+      # Cross-source ratios update when an underlying filing/event family updates. A ticker can
+      # legitimately hold the same discrete vote for months, so their edge behavior is checked
+      # cross-sectionally by the institutionals stability report, not by the per-ticker DAILY gate.
       daily_legs: ["_to_mcap", "_ret_since", "_resid_ret_since", "_vol_scaled_move",
                    "_price_vs_buy", "_max_runup_since_buy", "_max_dd_since_buy"]
       # Feature prefix -> the source table whose PUBLICATION clock bounds it (check_07). The
@@ -88,14 +92,13 @@ validate:
         f_ic_shortvol_:    sec_short_interest
         f_ic_ftd_:         sec_fails_to_deliver
         f_ic_bo_:          [sec_13d, sec_13g]
-      # A percent OF A SHARE CLASS cannot exceed 100. Measured 0 -> 99.99 (act) and 0 -> 97.98
-      # (bo), so the bound is the semantic one and the data sits inside it today.
-      # ⚠ The other percent-NAMED legs are NOT here: f_ic_inst_ownership_pct (5.2e-08 -> 1.97),
-      # f_ic_ftd_pct_so (0 -> 0.147) are FRACTIONS despite the name, and inst_ownership_pct
-      # exceeding 1.0 is a question for `profile`, not a bound to assert around.
+      # Cross-source vote ratios and their weaker-side conflict are normalized to [0, 1].
+      # Available-family counts are audit denominators, not alpha legs.
+      # Other percent-named legs use their own semantic scales and are profiled separately.
       bounds:
-        f_ic_act_percent_of_class: [0.0, 100.0]
-        f_ic_bo_percent_of_class:  [0.0, 100.0]
+        f_ic_xs_bullish_family_ratio: [0.0, 1.0]
+        f_ic_xs_bearish_family_ratio: [0.0, 1.0]
+        f_ic_xs_conflict_ratio:       [0.0, 1.0]
 
     # 105 columns, 3,045,028 rows. Peer-z views only -- there is no `_xs` leg in this part, so
     # declaring one would make `clip` measure tie mass over an empty set and call it a pass.

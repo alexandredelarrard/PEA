@@ -37,6 +37,21 @@ never replace OmegaConf.
 | `linear`, `lgbm`, `random_forest` | `configs/models/*_modelling.yml` | per-family hyperparameters **and each family's own feature `columns`** |
 | `strategy_ls`, `strategy_long_book`, `strategy_trend`, `strategy_eq_long_only` | `configs/strategy/*.yml` | per-sleeve construction params |
 | `portfolio` | `portfolio.yml` | sleeve set + global vol / leverage / capital / fees |
+| `data_availability` | `data.yml` | institutionals table defaults, field overrides and derived-feature start boundaries |
+| `source_freshness` | `data.yml` | insider live-tail lag tolerance and the last ZIP quarter promoted by parity evidence |
+
+## Data availability
+
+`configs/data.yml` is the compact start-date contract for institutionals sources. A table's
+`__all__` date applies to every field unless a field override is present; `derived_features`
+records only outputs whose usable date is later because of publication lag, a newly mandatory
+field, or minimum history. Runtime per-cell dependency masks remain separate: a configured start
+does not turn a missing price, denominator, or source hole into an observed zero.
+
+`source_freshness.insider_bulk_authoritative_through` is an explicit cutover, not a clock. Leave
+it unchanged when a new ZIP appears. Run `validate insider-parity --quarter YYYYQn`; advance the
+value only when the retained report passes transaction structure/economics/identity and feature
+parity. Before promotion, overlapping EDGAR accessions remain canonical.
 
 ## `data_extract` (configs.yml)
 

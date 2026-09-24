@@ -385,6 +385,62 @@ def test_symbol_rows_resolve_unique_pairs_once_and_keep_unresolved_evidence():
     print("  OK: accepted and unresolved rows retain their original values and dates")
 
 
+def test_d19_roster_proxy_is_dated_and_redundant_share_class_is_excluded():
+    """A filing symbol may be the sibling class, but its historical issuers still matter."""
+    identity = build_identity(
+        lineage=_lineage(
+            [
+                ("0000000100", "E_OLD", "roster"),
+                ("0000000200", "E_CURRENT", "roster"),
+                ("0000000300", "E_LEN", "roster"),
+                ("0000000400", "E_GOOGLE", "roster"),
+            ]
+        ),
+        tenure=_tenure(
+            [
+                ("FOX", "0000000100", "2013-07-01", "2019-03-21", 300),
+                ("FOX", "0000000200", "2019-02-05", None, 300),
+                ("LEN, LEN.B", "0000000300", "2006-01-01", None, 800),
+                ("GOOG", "0000000400", "2006-01-01", None, 800),
+                ("GOOGL", "0000000400", "2017-01-01", None, 800),
+            ]
+        ),
+        roster=_roster([("FOXA", "0000000200"), ("LEN", "0000000300"), ("GOOGL", "0000000400")]),
+        d19_allowlist={"FOXA": "files under sibling class", "LEN": "combined filing symbol"},
+        redundant_symbols=frozenset({"FOX", "GOOG"}),
+    )
+    universe = frozenset({"FOXA", "LEN", "GOOGL"})
+
+    old_foxa = identity.resolve_symbol_ticker("FOXA", "2018-01-01", universe)
+    overlap_foxa = identity.resolve_symbol_ticker("FOXA", "2019-03-01", universe)
+    current_foxa = identity.resolve_symbol_ticker("FOXA", "2020-01-01", universe)
+    redundant_fox = identity.resolve_symbol_ticker("FOX", "2020-01-01", universe)
+    lennar = identity.resolve_symbol_ticker("LEN", "2018-01-01", universe)
+    predecessor_google = identity.resolve_symbol_ticker("GOOG", "2016-01-01", universe)
+    redundant_google = identity.resolve_symbol_ticker("GOOG", "2020-01-01", universe)
+
+    assert old_foxa.verdict == "entity_not_in_universe"
+    assert overlap_foxa.verdict == "ambiguous"
+    assert (current_foxa.ticker, current_foxa.verdict, current_foxa.match_kind) == (
+        "FOXA",
+        "roster_tenure_proxy",
+        "roster_tenure_proxy",
+    )
+    assert redundant_fox.verdict == "redundant_share_class" and not redundant_fox.accepted
+    assert (lennar.ticker, lennar.verdict) == ("LEN", "roster_tenure_proxy")
+    assert (predecessor_google.ticker, predecessor_google.verdict) == (
+        "GOOGL",
+        "mapped_current_ticker",
+    )
+    assert redundant_google.verdict == "redundant_share_class" and not redundant_google.accepted
+
+    print("\n=== SANITY CHECK: dual-class roster proxy ===")
+    print("  FOXA borrows FOX's dated issuer boundary; LEN borrows 'LEN, LEN.B'")
+    print("  pre-2019 FOXA stays outside, the overlap stays ambiguous, current FOXA resolves")
+    print("  FOX is excluded as a separately traded redundant class, never summed into FOXA")
+    print("  GOOG remains GOOGL's predecessor before GOOGL is active, then becomes redundant")
+
+
 # --------------------------------------------------------------------------- #
 # D19 and the empty-table raises                                                #
 # --------------------------------------------------------------------------- #
@@ -445,6 +501,7 @@ def test_load_identity_caches_per_context_and_not_across_them():
         def __init__(self, frames):
             self.store = _Store(frames)
             self.config_dir = CONFIG_DIR
+            self.config = type("Config", (), {"data_extract": type("Extract", (), {"redundant_ticks": []})()})()
 
     def frames(cik, ticker):
         return {
@@ -612,9 +669,7 @@ def test_owns_is_symmetric_with_entity_ticker_on_every_lineage_cik(live):
 
 
 def test_only_one_alphabet_ticker_is_investable(live):
-    """`GOOG` and `GOOGL` share one entity under D4, which is correct and harmless ONLY
-    because `configs.yml` and `_dedupe_share_classes` keep one of them out of the universe.
-    Pinned here so a `redundant_ticks` change cannot silently re-introduce the collapse."""
+    """The roster has one investable class; symbol-volume sources enforce that separately."""
     assert "GOOG" not in live.roster_cik
     assert "GOOGL" in live.roster_cik
     alphabet = live.universe_entity("GOOGL")
@@ -625,7 +680,24 @@ def test_only_one_alphabet_ticker_is_investable(live):
     print("\n=== SANITY CHECK: dual class stays one investable ticker ===")
     print(f"  GOOGL -> {alphabet}; GOOG absent from the roster; same for FOX/FOXA, NWS/NWSA")
     print("  OK: one entity, one universe ticker, so the two-ticker raise cannot fire on it")
-    print("  -> D4 is safe only while the upstream dedup holds; this is what pins it.")
+    print("  -> FTD/RegSHO separately exclude the redundant traded class before aggregation.")
+
+
+def test_live_dual_class_volume_symbols_resolve_without_combining_classes(live):
+    universe = frozenset({"FOXA", "NWSA", "GOOGL", "LEN"})
+
+    assert live.resolve_symbol_ticker("FOXA", "2018-01-02", universe).verdict == "entity_not_in_universe"
+    assert live.resolve_symbol_ticker("FOXA", "2020-01-02", universe).verdict == "roster_tenure_proxy"
+    assert live.resolve_symbol_ticker("NWSA", "2020-01-02", universe).verdict == "roster_tenure_proxy"
+    assert live.resolve_symbol_ticker("LEN", "2020-01-02", universe).verdict == "roster_tenure_proxy"
+    assert live.resolve_symbol_ticker("GOOG", "2010-01-04", universe).ticker == "GOOGL"
+    for redundant in ("FOX", "NWS", "GOOG"):
+        assert live.resolve_symbol_ticker(redundant, "2020-01-02", universe).verdict == "redundant_share_class"
+
+    print("\n=== SANITY CHECK: live dual-class symbol-volume policy ===")
+    print("  FOXA/NWSA/LEN use dated D19 proxies; pre-restructure FOXA is not imported")
+    print("  FOX/NWS/current GOOG are excluded; predecessor GOOG still maps to GOOGL")
+    print("  OK: the retained class is recovered without adding its sibling's volume")
 
 
 def test_no_live_entity_holds_two_universe_tickers(live):

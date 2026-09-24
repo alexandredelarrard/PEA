@@ -16,11 +16,11 @@ from typing import Protocol
 import pandas as pd
 
 from src.context import Context
-from src.data_store.schema import Table
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.run_manifest import manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
+from src.data_store.schema import Table
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +79,9 @@ def period_of_report(filing):
     """
     try:
         return filing.period_of_report
-    except Exception:                                   # noqa: BLE001 -- EDGAR metadata defect
+    except Exception:  # noqa: BLE001 -- EDGAR metadata defect
         return None
+
 
 def num_or_null(value, trust_value: bool) -> float:
     """A beneficial-ownership numeric (13D or 13G) is only meaningful once the caller has
@@ -106,12 +107,10 @@ def num_or_null(value, trust_value: bool) -> float:
 
 
 class BuildFn(Protocol):
-    def __call__(self, ticker: str, cik: str, *, since: pd.Timestamp | None,
-                 done_accessions: frozenset[str]) -> dict[Table, pd.DataFrame]: ...
+    def __call__(self, ticker: str, cik: str, *, since: pd.Timestamp | None, done_accessions: frozenset[str]) -> dict[Table, pd.DataFrame]: ...
 
 
-def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None,
-                done_accessions: frozenset[str]) -> list:
+def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None, done_accessions: frozenset[str]) -> list:
     """`ticker`'s filings of `forms`, oldest first, stripped of stored accessions and of
     anything filed before `since`.
 
@@ -125,14 +124,23 @@ def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None,
     silently, is how this defect class stayed invisible for a year, and a new form family
     quietly inheriting the wrong rule would be the same failure wearing different clothes.
     """
-    return resolve_registrant_filings(ticker, forms, since=since,
-                                      done_accessions=done_accessions)
+    return resolve_registrant_filings(ticker, forms, since=since, done_accessions=done_accessions)
 
 
-def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
-                    tables: tuple[Table, ...], build: BuildFn, desc: str,
-                    max_workers: int | None = None, full: bool = False,
-                    cik_map: pd.DataFrame | None = None) -> None:
+def run_edgar_fetch(
+    context: Context,
+    tickers: list[str],
+    years_history: int,
+    *,
+    tables: tuple[Table, ...],
+    build: BuildFn,
+    desc: str,
+    max_workers: int | None = None,
+    full: bool = False,
+    cik_map: pd.DataFrame | None = None,
+    minimum_since: pd.Timestamp | None = None,
+    completion_table: Table | None = None,
+) -> None:
     """Fetch `tables` for `tickers` using `build(ticker, cik, since, done_accessions)
     -> {table: frame}`.
 
@@ -147,11 +155,17 @@ def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
     set. Every declared table gets a `record_run` entry even when no ticker produced
     rows for it, so a table that is legitimately empty this run does not read as
     "never run" and force a full rescan forever.
+
+    `completion_table`, when supplied, is saved last and only if every preceding non-empty
+    frame saved successfully. It is for explicit per-ticker coverage frontiers: a failed
+    transaction write must not be followed by a green coverage row.
     """
     context.ensure_edgar_identity()
     if cik_map is None:
         cik_map = load_cik_mapping(context, tickers)
     fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
+    if minimum_since is not None:
+        fallback_since = max(fallback_since, pd.Timestamp(minimum_since).normalize())
     if full:
         # `-F/--full`: take the whole years-history window and do not consult the manifest.
         #
@@ -165,8 +179,12 @@ def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
         since, is_full_rescan = fallback_since, True
     else:
         since, is_full_rescan = manifest_window(
-            context, tables[0], len(cik_map), fallback_since=fallback_since,
-            full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days))
+            context,
+            tables[0],
+            len(cik_map),
+            fallback_since=fallback_since,
+            full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days),
+        )
     done = existing_filings(context, tables[0])
     declared = set(tables)
 
@@ -194,36 +212,53 @@ def run_edgar_fetch(context: Context, tickers: list[str], years_history: int, *,
             # every remaining ticker would hit the same defect, and each already-saved
             # ticker's rows are upserted and keep.
             raise
-        except Exception as e:                                   # noqa: BLE001 -- one ticker
+        except Exception as e:  # noqa: BLE001 -- one ticker
             context.log.warning("%s: %s failed (%s)", desc, ticker, e)
             return None
         counts: dict[Table, int] = {}
-        for table, df in frames.items():
+        failed_save = False
+        ordered_frames = [(table, df) for table, df in frames.items() if table != completion_table]
+        if completion_table is not None and completion_table in frames:
+            ordered_frames.append((completion_table, frames[completion_table]))
+        for table, df in ordered_frames:
             if df is None or df.empty:
+                continue
+            if table == completion_table and failed_save:
+                context.log.warning(
+                    "%s: %s coverage not advanced because an earlier save failed",
+                    desc,
+                    ticker,
+                )
                 continue
             if table not in declared:
                 context.log.warning("%s: %s built undeclared table '%s'", desc, ticker, table)
+                failed_save = True
                 continue
             # Saving INSIDE the try: `run_per_ticker` re-raises whatever escapes a
             # worker, so an uncaught DB error here would abort the whole pool.
             try:
                 _save(table, df)
-            except Exception as e:                               # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 context.log.warning("%s: %s save to '%s' failed (%s)", desc, ticker, table, e)
+                failed_save = True
                 continue
             counts[table] = len(df)
         return counts
 
-    results = run_per_ticker(cik_map, _worker, desc=desc,
-                             **({} if max_workers is None else {"max_workers": max_workers}))
+    results = run_per_ticker(cik_map, _worker, desc=desc, **({} if max_workers is None else {"max_workers": max_workers}))
     failed = sum(1 for r in results if r is None)
     totals = {table: 0 for table in tables}
     for result in results:
         for table, n in (result or {}).items():
             totals[table] += n
 
-    context.log.info("%s: %d/%d ticker(s) ok, %d failed -> %s", desc,
-                     len(results) - failed, len(cik_map), failed,
-                     ", ".join(f"+{n} '{t}'" for t, n in totals.items()))
+    context.log.info(
+        "%s: %d/%d ticker(s) ok, %d failed -> %s",
+        desc,
+        len(results) - failed,
+        len(cik_map),
+        failed,
+        ", ".join(f"+{n} '{t}'" for t, n in totals.items()),
+    )
     for table in tables:
         record_run(context, table, len(cik_map), totals[table], is_full_rescan=is_full_rescan)

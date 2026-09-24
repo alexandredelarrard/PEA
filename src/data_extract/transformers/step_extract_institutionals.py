@@ -39,6 +39,7 @@ from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
 from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
+from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import upsert_roster_snapshot
@@ -69,8 +70,10 @@ class StepExtractInstitutionals(Step):
         # no universe filter is the entire point of it.
         fetch_13f_managers(self._context, years_history=years_history)
 
-        # insider transactions
+        # Insider history is quarterly bulk; the daily EDGAR pass immediately after it fills
+        # only the open-quarter publication gap. Running bulk first moves that gap's floor.
         fetch_insider_transactions(self._context, tickers=tickers, years_history=years_history)
+        fetch_insider_edgar(self._context, tickers=tickers, years_history=years_history)
 
         # activist stakes (SC 13D) then the passive ones (SC 13G), 13D first because it is
         # ~7x cheaper and a failure there is the cheaper one to discover. Same grain and column

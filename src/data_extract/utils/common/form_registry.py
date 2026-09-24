@@ -16,32 +16,38 @@ This registry exists to centralize ROUTING/documentation (which form -> which
 handler -> which table), consulted by tests and future orchestration work, not
 to replace each pipeline's existing call site.
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from src.constants.constants import (
-    DEF14A_FORMS, FUNDAMENTALS_FORMS, SEC_8K_FORMS, SEC_13D_FORMS, SEC_13F_FORMS,
+    DEF14A_FORMS,
+    FUNDAMENTALS_FORMS,
+    SEC_8K_FORMS,
+    SEC_13D_FORMS,
+    SEC_13F_FORMS,
     SEC_13G_FORMS,
+    SEC_INSIDER_FORMS,
 )
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
-from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
-from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
 from src.data_extract.utils.institutionals.fetch_8k_edgar import fetch_8k_edgar
 from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
+from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
 from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
-from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
+from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
-from src.data_extract.utils.structure.fetch_filing_text import (
-    FILING_TEXT_FORMS, fetch_filing_text)
+from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
+from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FORMS, fetch_filing_text
 
 
 @dataclass(frozen=True)
 class FormHandlerSpec:
     name: str
     sec_forms: tuple[str, ...]
-    discovery: str            # "per_cik_accession" | "all_filers_by_date"
+    discovery: str  # "per_cik_accession" | "all_filers_by_date"
     table: str
     handler: Callable
     call_shape: str
@@ -51,95 +57,146 @@ class FormHandlerSpec:
 
 
 FORM_REGISTRY: dict[str, FormHandlerSpec] = {
+    "insider_transactions_live": FormHandlerSpec(
+        name="insider_transactions_live",
+        sec_forms=tuple(SEC_INSIDER_FORMS),
+        discovery="per_cik_accession",
+        table="insider_transactions_live",
+        handler=fetch_insider_edgar,
+        call_shape="(context, tickers, years_history)",
+        years_config_key="years_history",
+        step_chain_wired=True,
+        notes="Provisional daily Forms 3/4/5 tail after the latest quarterly ZIP. Raw "
+        "ownership XML is normalized to the bulk consumer contract but retains its own "
+        "XML row sequence; the cube selects one whole source per accession and lets a ZIP "
+        "replace overlap only after its completed-quarter parity report passes.",
+    ),
     "fundamentals": FormHandlerSpec(
-        name="fundamentals", sec_forms=tuple(FUNDAMENTALS_FORMS),
-        discovery="per_cik_accession", table="fundamentals_facts",
-        handler=fetch_fundamentals_sec, call_shape="(context, tickers, years_history)",
-        years_config_key="years_history", step_chain_wired=True,
+        name="fundamentals",
+        sec_forms=tuple(FUNDAMENTALS_FORMS),
+        discovery="per_cik_accession",
+        table="fundamentals_facts",
+        handler=fetch_fundamentals_sec,
+        call_shape="(context, tickers, years_history)",
+        years_config_key="years_history",
+        step_chain_wired=True,
         notes="Phase 3 of the fundamentals rebuild. Resolves each KPI from the FILER'S OWN "
-             "XBRL calculation linkbase (xbrl_linkbase.py) rather than from a "
-             "priority-ordered candidate-tag list, which measured as substitutes only "
-             "30-56% of the time. Grain is (ticker, accession, field, fiscal_year, "
-             "fiscal_period, duration_type): one row per catalogue field PER PERIOD, "
-             "strictly as-filed -- no derived quarter is ever written here. Amendments "
-             "append as their own accession and never overwrite the original"),
+        "XBRL calculation linkbase (xbrl_linkbase.py) rather than from a "
+        "priority-ordered candidate-tag list, which measured as substitutes only "
+        "30-56% of the time. Grain is (ticker, accession, field, fiscal_year, "
+        "fiscal_period, duration_type): one row per catalogue field PER PERIOD, "
+        "strictly as-filed -- no derived quarter is ever written here. Amendments "
+        "append as their own accession and never overwrite the original",
+    ),
     "sec_8k": FormHandlerSpec(
-        name="sec_8k", sec_forms=tuple(SEC_8K_FORMS),
-        discovery="per_cik_accession", table="sec_8k",
-        handler=fetch_8k_edgar, call_shape="(context, tickers, years_history)",
+        name="sec_8k",
+        sec_forms=tuple(SEC_8K_FORMS),
+        discovery="per_cik_accession",
+        table="sec_8k",
+        handler=fetch_8k_edgar,
+        call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="edgartools per-filing retrieval (fetch_8k_edgar.py), replacing the "
-             "submissions-JSON-only fetch_8k_items.py -- adds has_earnings/has_press_release "
-             "from the typed CurrentReport object alongside the item codes. Renamed from "
-             "sec_8k_items at the DB level. Grain is (ticker, accession_number, item): one "
-             "row PER ITEM CODE, since an 8-K reports 1..n items"),
+        "submissions-JSON-only fetch_8k_items.py -- adds has_earnings/has_press_release "
+        "from the typed CurrentReport object alongside the item codes. Renamed from "
+        "sec_8k_items at the DB level. Grain is (ticker, accession_number, item): one "
+        "row PER ITEM CODE, since an 8-K reports 1..n items",
+    ),
     "sec_13d": FormHandlerSpec(
-        name="sec_13d", sec_forms=tuple(SEC_13D_FORMS),
-        discovery="per_cik_accession", table="sec_13d",
-        handler=fetch_13d_edgar, call_shape="(context, tickers, years_history)",
+        name="sec_13d",
+        sec_forms=tuple(SEC_13D_FORMS),
+        discovery="per_cik_accession",
+        table="sec_13d",
+        handler=fetch_13d_edgar,
+        call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="edgartools per-filing retrieval (fetch_13d_edgar.py) reading the typed "
-             "Schedule13D object, replacing fetch_13d.py's event/date-only extraction -- adds "
-             "reporting-person name/CIK/voting-power + CUSIP + amendment metadata. Grain "
-             "changed to (ticker, accession_number, rp_seq): one row PER REPORTING PERSON, "
-             "since a single 13D can have multiple co-filers"),
+        "Schedule13D object, replacing fetch_13d.py's event/date-only extraction -- adds "
+        "reporting-person name/CIK/voting-power + CUSIP + amendment metadata. Grain "
+        "changed to (ticker, accession_number, rp_seq): one row PER REPORTING PERSON, "
+        "since a single 13D can have multiple co-filers",
+    ),
     "sec_13g": FormHandlerSpec(
-        name="sec_13g", sec_forms=tuple(SEC_13G_FORMS),
-        discovery="per_cik_accession", table="sec_13g",
-        handler=fetch_13g_edgar, call_shape="(context, tickers, years_history)",
+        name="sec_13g",
+        sec_forms=tuple(SEC_13G_FORMS),
+        discovery="per_cik_accession",
+        table="sec_13g",
+        handler=fetch_13g_edgar,
+        call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="the PASSIVE >5% beneficial-ownership channel, the counterpart of sec_13d and "
-             "the same grain (ticker, accession_number, rp_seq). EVERY NUMERIC IS NULL BEFORE "
-             "2024-12-17: beneficial-ownership XML became mandatory that day and edgartools "
-             "builds earlier filings from the SGML header alone, returning 0 defaults that "
-             "`num_or_null` turns into NaN rather than publishing a 0% stake nobody disclosed. "
-             "The reporting-person CIK -- the 13G->13D escalation key -- is backfilled from "
-             "the header's filer list, because the post-mandate XML cover page has no CIK "
-             "element and edgartools hard-codes cik=''"),
+        "the same grain (ticker, accession_number, rp_seq). EVERY NUMERIC IS NULL BEFORE "
+        "2024-12-17: beneficial-ownership XML became mandatory that day and edgartools "
+        "builds earlier filings from the SGML header alone, returning 0 defaults that "
+        "`num_or_null` turns into NaN rather than publishing a 0% stake nobody disclosed. "
+        "The reporting-person CIK -- the 13G->13D escalation key -- is backfilled from "
+        "the header's filer list, because the post-mandate XML cover page has no CIK "
+        "element and edgartools hard-codes cik=''",
+    ),
     "def_14": FormHandlerSpec(
-        name="def_14", sec_forms=tuple(DEF14A_FORMS),
-        discovery="per_cik_accession", table="def14a_llm",
+        name="def_14",
+        sec_forms=tuple(DEF14A_FORMS),
+        discovery="per_cik_accession",
+        table="def14a_llm",
         handler=fetch_def14a_llm,
         call_shape="(context, config, tickers)",
         step_chain_wired=True,
         notes="logical key 'def_14' maps to the EXISTING def14a_llm table -- kept per "
-             "the task's own instruction ('keep the def14a_llm table and process as a "
-             "complementary one'), not renamed"),
+        "the task's own instruction ('keep the def14a_llm table and process as a "
+        "complementary one'), not renamed",
+    ),
     "def14a_edgar": FormHandlerSpec(
-        name="def14a_edgar", sec_forms=tuple(DEF14A_FORMS),
-        discovery="per_cik_accession", table="sec_def14a",
-        handler=fetch_def14a_edgar, call_shape="(context, tickers, years_history)",
+        name="def14a_edgar",
+        sec_forms=tuple(DEF14A_FORMS),
+        discovery="per_cik_accession",
+        table="sec_def14a",
+        handler=fetch_def14a_edgar,
+        call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="the Pay-versus-Performance / ECD inline-XBRL block only (filer-tagged "
-              "facts, dimension-filtered) -> sec_def14a, zero LLM cost. 2023+ BY "
-              "REGULATION: Item 402(v) covers fiscal years ending >= 2022-12-16, and a "
-              "proxy without ecd: facts gets NO ROW. The four HTML-parsed detail tables "
-              "were deleted -- that prose is def_14's LLM pass' job"),
+        "facts, dimension-filtered) -> sec_def14a, zero LLM cost. 2023+ BY "
+        "REGULATION: Item 402(v) covers fiscal years ending >= 2022-12-16, and a "
+        "proxy without ecd: facts gets NO ROW. The four HTML-parsed detail tables "
+        "were deleted -- that prose is def_14's LLM pass' job",
+    ),
     "filing_text": FormHandlerSpec(
-        name="filing_text", sec_forms=tuple(FILING_TEXT_FORMS),
-        discovery="per_cik_accession", table="sec_filing_text",
-        handler=fetch_filing_text, call_shape="(context, tickers, years_history)",
+        name="filing_text",
+        sec_forms=tuple(FILING_TEXT_FORMS),
+        discovery="per_cik_accession",
+        table="sec_filing_text",
+        handler=fetch_filing_text,
+        call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="10-K Item 1A + Item 7 and 10-Q Item 2 narrative text, one row per "
-             "(ticker, accession, section), for the embedding/drift feature layer"),
+        "(ticker, accession, section), for the embedding/drift feature layer",
+    ),
     "sec13f_hr": FormHandlerSpec(
-        name="sec13f_hr", sec_forms=tuple(SEC_13F_FORMS),
-        discovery="all_filers_by_date", table="sec13f_hr",
-        handler=fetch_13f, call_shape="(context, tickers=None)  # ALL filers, by filing date",
+        name="sec13f_hr",
+        sec_forms=tuple(SEC_13F_FORMS),
+        discovery="all_filers_by_date",
+        table="sec13f_hr",
+        handler=fetch_13f,
+        call_shape="(context, tickers=None)  # ALL filers, by filing date",
         step_chain_wired=False,
         notes="renamed from institutional_holdings (DB-level ALTER TABLE RENAME). Discovery "
-             "moved off SEC's quarterly bulk data sets (published weeks after a quarter "
-             "closes) onto edgartools by filing date; the all-filers grain and the "
-             "(cik, period, ticker, cusip) PK are unchanged, so there is no accession column"),
+        "moved off SEC's quarterly bulk data sets (published weeks after a quarter "
+        "closes) onto edgartools by filing date; the all-filers grain and the "
+        "(cik, period, ticker, cusip) PK are unchanged, so there is no accession column",
+    ),
     "sec13f_manager_holdings": FormHandlerSpec(
-        name="sec13f_manager_holdings", sec_forms=tuple(SEC_13F_FORMS),
-        discovery="per_cik_accession", table="sec13f_manager_holdings",
-        handler=fetch_13f_managers, call_shape="(context, years_history)  # roster CIKs, no tickers",
-        years_config_key="years_history", step_chain_wired=True,
+        name="sec13f_manager_holdings",
+        sec_forms=tuple(SEC_13F_FORMS),
+        discovery="per_cik_accession",
+        table="sec13f_manager_holdings",
+        handler=fetch_13f_managers,
+        call_shape="(context, years_history)  # roster CIKs, no tickers",
+        years_config_key="years_history",
+        step_chain_wired=True,
         notes="the ROSTER walk, per manager CIK -- `sec13f_hr` above remains the all-filer one. "
-             "Same form, different question: this table keeps a manager's COMPLETE book at CUSIP "
-             "grain with no universe filter, because `sec13f_hr`'s S&P 500 filter inflates any "
-             "portfolio weight computed from it by a manager-specific 1.0x-7.6x. Scope is the "
-             "UNION of every CIK ever on `superinvestor_roster`, never today's roster, so the "
-             "history is not survivorship-filtered"),
+        "Same form, different question: this table keeps a manager's COMPLETE book at CUSIP "
+        "grain with no universe filter, because `sec13f_hr`'s S&P 500 filter inflates any "
+        "portfolio weight computed from it by a manager-specific 1.0x-7.6x. Scope is the "
+        "UNION of every CIK ever on `superinvestor_roster`, never today's roster, so the "
+        "history is not survivorship-filtered",
+    ),
 }

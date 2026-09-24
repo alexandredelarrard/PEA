@@ -38,6 +38,12 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
+from src.constants.constants import (
+    SEC_INSIDER_FIRST_YEAR,
+    SEC_INSIDER_SWAP_YEAR,
+    SEC_INSIDER_URL_NEW_TEMPLATE,
+    SEC_INSIDER_URL_TEMPLATE,
+)
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir,
@@ -103,14 +109,6 @@ _FOOTNOTE_COLS = ["accession_number", "footnote_id", "footnote_text"]
 #: plan, which the source does not say.
 _10B5_1_TRUE = {"1", "true", "y", "yes"}
 _10B5_1_FALSE = {"0", "false", "n", "no"}
-
-# SEC bulk quarterly structured data sets (free TSV zips; {quarter} = e.g. "2024q1").
-# insider = Forms 3/4/5 officer/director transactions; finstmt = primary-statement
-# XBRL facts (num/sub) incl. the balance-sheet net pension liability.
-SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/" "{quarter}_form345.zip"
-SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/" "{quarter}_form345.zip"
-SEC_INSIDER_FIRST_YEAR = 2006
-SEC_INSIDER_SWAP_YEAR = 2026
 
 
 def _col(df: pd.DataFrame, name: str) -> pd.Series:

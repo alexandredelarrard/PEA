@@ -357,6 +357,39 @@ def test_nothing_is_emitted_before_the_measured_availability_floors():
     )
 
 
+def test_complete_through_preserves_covered_zero_and_masks_the_unobserved_tail():
+    """A zero inside source coverage is evidence; a zero after it is fabricated evidence."""
+    idx = pd.bdate_range("2024-01-01", "2024-09-30")
+    complete_through = pd.Timestamp("2024-08-31")
+    rows = [
+        _txn(
+            accession_number="frontier-purchase",
+            filing_date="2024-01-02",
+            transaction_date="2023-12-29",
+        )
+    ]
+    fh, _ = _prices()
+    close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
+
+    panel = build_insider_feature_panel(
+        make_frames(idx, _peers(), close_split=close),
+        _frame(rows),
+        shares_out_history=fh,
+        complete_through=complete_through,
+    ).set_index("date")
+
+    covered_zero = panel.loc[pd.Timestamp("2024-07-31"), "f_ic_insider_buy_value_mcap_180d"]
+    feature_cols = [column for column in panel.columns if column.startswith("f_ic_insider_")]
+    uncovered = panel.loc[panel.index > complete_through, feature_cols]
+    assert covered_zero == 0.0
+    assert uncovered.isna().to_numpy().all()
+    print(
+        "SANITY: the 180-day buy window is a real 0 on 2024-07-31 while the source is "
+        f"covered, and all {len(feature_cols)} emitted insider legs are NaN on the "
+        f"{len(uncovered)} trading days after {complete_through.date()}."
+    )
+
+
 def test_a_feature_never_sees_a_transaction_filed_after_the_date():
     """Truncation: rebuilding on a shorter history must not move a single earlier value."""
     rows = [

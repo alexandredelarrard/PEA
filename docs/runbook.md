@@ -121,7 +121,8 @@ macro
 thirteen-f                 # 13F bulk + OpenFIGI cusip map (HEAVY)
 superinvestors             # today's roster snapshot; --seed also replays the 13 Wayback captures
 thirteen-f-managers        # roster managers' COMPLETE books (no universe filter). Needs the roster
-insider-transactions       # --reparse re-reads the 81 cached quarters (a PARSE change, no download)
+insider-transactions       # quarterly ZIP history, then daily EDGAR Forms 3/4/5 tail
+                           # --reparse affects cached ZIPs; the daily pass still follows
 short-interest  fails-to-deliver
 sec-8k-items  sec-13d      # RUN BEFORE the vote parser: it reads the sec_8k narratives
 sec-13g                    # passive 5%+ stakes; ~7x sec-13d's volume, chunk it (HEAVY)
@@ -445,6 +446,33 @@ rtk "$PY" -m src data_extract insider-transactions --reparse
 - Cost: ~1,700 filings re-fetched, plus the **461** post-mandate filings that were never ingested
   (91 tickers, 2024-12-17 → today) and now become visible for the first time.
 - `reporting_person_comment` is a new column; `store.ensure_table` adds it on first write.
+
+### Insider daily tail and quarterly cutover
+
+```bash
+# 1. Back up before the first live write, then apply the committed DDL for the two live tables.
+# 2. Bulk history runs first; EDGAR fills the open-quarter gap and writes per-ticker coverage.
+rtk "$PY" -m src data_extract insider-transactions
+
+# After an ownership-parser or discovery change, re-fetch stored open-quarter accessions too.
+rtk "$PY" -m src data_extract insider-transactions --live-full
+
+# 3. When a new completed ZIP quarter appears, replay that full quarter read-only through EDGAR.
+rtk "$PY" -m src validate insider-parity --quarter 2026Q2 \
+  -o reports/validate/2026-09-23-insider-freshness-cube
+# Add --refresh-replay after changing discovery or parsing; otherwise the retained replay cache
+# makes metric/report iterations local and repeatable.
+
+# 4. Only a PASS authorizes advancing this value in configs/data.yml:
+# source_freshness.insider_bulk_authoritative_through: "2026Q2"
+rtk "$PY" -m src data_aggregate build-institutionals -F
+rtk "$PY" -m src data_aggregate cube-status
+```
+
+The live table is staging, not a patch applied to quarterly primary keys. When sources overlap,
+the canonical loader chooses one whole accession. Before promotion the EDGAR copy wins; after a
+passing retained report the ZIP copy wins. Do not delete the staged rows during cutover—they are
+the audit copy and make the next reconciliation reproducible.
 
 ## Finishing a task — the validate report
 

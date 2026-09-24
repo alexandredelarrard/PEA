@@ -61,7 +61,9 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.common.xs import self_history_z
+from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.split_basis import split_adjust_frame
+from src.data_store.schema import Tables
 
 
 def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
@@ -293,6 +295,7 @@ def build_short_flow_feature_panel(
     fails_history: pd.DataFrame | None = None,
     shares_out_history: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
+    availability: InstitutionalAvailability | None = None,
     sink=None,
 ) -> pd.DataFrame:
     """Long-format short-flow panel (`f_<name>` per `EMISSION`). Empty if neither source is
@@ -354,6 +357,29 @@ def build_short_flow_feature_panel(
         # This family has no ACTOR: FINRA reports the volume, never who traded it. It
         # contributes the confirmed-short-flow leg of the bearish family count and nothing
         # else -- see `cross_source_features` on why there is no bearish actor count.
-        sink.keep_signals(fields)
+        name = "ic_shortvol_high_x_weak_price"
+        signal_fields = dict(fields)
+        signal_masks: dict[str, pd.DataFrame] = {}
+        if name in fields:
+            columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+            raw = fields[name].reindex(index=idx, columns=columns)
+            if close_total is not None and not close_total.empty:
+                listed = close_total.reindex(index=idx, columns=columns).notna()
+            else:
+                listed = pd.DataFrame(True, index=idx, columns=columns)
+            mask = (
+                availability.derived_mask(
+                    name,
+                    idx,
+                    columns,
+                    dependencies=((Tables.short_interest, None),),
+                    requirements=(listed, raw.notna()),
+                )
+                if availability is not None
+                else raw.notna()
+            )
+            signal_masks[name] = mask
+            signal_fields[name] = raw.where(mask)
+        sink.keep_signals(signal_fields, signal_masks)
     emission = {k: v for k, v in EMISSION.items() if k in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission)

@@ -107,6 +107,8 @@ shorts this name*, mirroring the cube's `institutionals` part.
 |---|---|---|---|---|
 | `sec13f_hr` | `cik, period, ticker, cusip` | `period` | quarterly | **23.8M rows, 6.2 GB — THE reason projections exist.** Long-only quarterly snapshot. The 45-day statutory filing lag is only the START of the availability rule: the cube stamps each period on `availability_date(period)` (deadline snapped onto the trading calendar + `F13_SETTLE_TRADING_DAYS`) over the filings public by then, and re-emits it on each later date a material filing arrives. Split into stock / call / put / debt legs. Institutional "moves" come from QoQ **share** deltas, not value deltas. ⚠ **`filing_date` is NOT in the PK**, so re-reading an original supersedes a later amendment on upsert — the 2026-09-14 window refill restated `filing_date` on 19,149 existing rows this way. ⚠ **The reported VALUE unit is per-FILING** ($thousands or dollars at the filer's discretion) and the extraction gets it wrong on ~4.5% of filings, in both directions; the aggregate repairs it per filing against the market price (`value_basis.py`) — never read `value_usd` raw |
 | `insider_transactions` | `accession_number, security_type, transaction_sk` | `transaction_date` (fresh on `filing_date`) | quarterly | Forms 3/4/5 bulk sets; roles, transaction codes, shares, price, plus the 10b5-1 flag and the derivative block. **`is_10b5_1` is a float, not a bool**: `AFF10B5ONE` exists in the source only from 2023q1, so NaN before it means *the source has no such field*, which a False would misstate. Availability: `filing_date` from **2006-01-03** (the data set's own floor); `transaction_date` reaches 1990-05-07 because a Form 3/5 legitimately reports a much older trade. ⚠ **`ticker` is resolved CIK-FIRST**, not from the filer's typed `ISSUERTRADINGSYMBOL`: the row's `issuer_cik` names an entity in `entity_lineage` and the entity names today's universe ticker. The symbol survives only as a cross-check on the quarantined rows. Measured on the 2026-09-11 re-parse: **2,031,286 → 2,014,745 rows**, and the arithmetic closes exactly — **−18,816** deleted, **+2,275** admitted, **2,558** relabelled in place (the relabel costs no rows: `ticker` is not in the PK). 60 of 498 tickers moved, 438 unchanged. The relabels are 2,554 Ingersoll-Rand-plc filings typed `IR` that are Trane's and move to `TT`, plus 4 single-filer typos. The admits are AmerisourceBergen filed as `ABC`, Merck pre-2009, American Standard, Digital Realty L.P., CDW pre-2013, Accenture SCA — so the change is **not purely subtractive**. Still **no date filter**: Forms 3/4/5 are UNION events and a date cut here is the XOM-`SCHEDULE 13G` regression |
+| `insider_transactions_live` | `accession_number, security_type, source_row_sequence` | `transaction_date` (fresh on `filing_date`) | daily | Provisional raw-XML Forms 3/4/5 tail after the latest bulk quarter. It preserves acceptance/fetch timestamps and available derivative/footnote fields. `source_row_sequence` is XML order and is intentionally not the ZIP-only `transaction_sk`; consumers reconcile and switch at accession grain |
+| `insider_transactions_live_coverage` | `ticker` | `complete_through` | daily | One row per requested universe ticker. A successful zero-filing scan advances it; a listing or parsing failure does not. Consumers use the minimum across the full universe, so a partial daily run cannot claim complete coverage |
 | `sec_13d` | `ticker, accession_number, rp_seq` | `filing_date` | — | one row **per reporting person** per filing (`rp_seq`, not CIK — an RP without a CIK is common). Numeric ownership fields are **NULL, not 0**, whenever the 0 is a parser default rather than a disclosure: `has_structured_data` false (pre-2024-12-17 filings have no XML), or all six numerics 0 alongside a `reporting_person_comment` deferring them to Item 5. A real 0 with no comment is kept |
 | `sec_13d_transactions` | `ticker, accession_number, trade_seq` | `filing_date` | — | Item 5(c) 60-day trade log; an independent grain from `sec_13d` |
 | `sec_13g` | `ticker, accession_number, rp_seq` | `filing_date` | — | the PASSIVE >5% channel: same grain and column names as `sec_13d` so the 13G→13D escalation join is a plain union on `(ticker, reporting_person_cik)`. **Every numeric is NULL before 2024-12-17** — beneficial-ownership XML became mandatory then, and edgartools builds earlier filings from the SGML header alone, returning 0 defaults that would read as a 0% stake. `rule_designation` ((b) qualified institutional / (c) passive / (d) exempt) is post-mandate only. `reporting_person_comment` and `is_group_member` are ALWAYS NULL: the 13G parser does not populate them |
@@ -261,11 +263,12 @@ than emit NaN. Coverage is thin before 2006 (Reg S-K created the SCT `Total` col
 as coverage and never filled.
 
 **`cube_part_institutionals` is the widest of the disclosure parts** and the only one built
-from a SINK. 2,644,390 rows × 129 columns (**127 features** + `date`/`ticker`), 1995-09-06 →
-2026-09-04, 491 tickers, 1,440 MB. Seven panels: broad 13F (`ic_inst_*`, 16 cols), elite 13F
-(`ic_super_*`, 27), insider (`ic_insider_*`, 23), short flow (`ic_shortvol_*` / `ic_ftd_*`, 19),
-beneficial ownership (`ic_act_*` / `ic_bo_*`, 19), and two DERIVED — the daily price-conditioning
-layer (`ic_sig_*`, 18) and cross-source agreement (`ic_xs_*`, 5). The derived pair reads a
+from a SINK. The 2026-09-23 rebuild has 3,265,378 rows × 122 columns (**120 features** +
+`date`/`ticker`), 1995-09-01 → 2026-09-04, and 491 tickers. Seven panels contribute broad 13F
+(`ic_inst_*`), elite 13F (`ic_super_*`), insider (`ic_insider_*`), short flow
+(`ic_shortvol_*` / `ic_ftd_*`), beneficial ownership (`ic_act_*` / `ic_bo_*`), and two DERIVED
+families: daily price conditioning (`ic_sig_*`) and cross-source agreement (`ic_xs_*`). The
+derived pair reads a
 `ConditioningSink` the first five fill on the way past, because re-deriving the insider event
 dates means repeating a 2M-row scope-and-repair pass and the elite ones the per-manager
 availability join. Declared **heavy** (390-day warm-up, up from 160): the longest BOUNDED look-back is the
@@ -281,8 +284,12 @@ calendar on every run** and lets `write_part` slice the tail. Bounding the grid 
 **Coverage is a property of the SOURCES and is reported, never filled**: each family is NaN
 before its measured availability date (D16) — `ic_insider_*` 2006-01-03, `ic_ftd_*` 2009-07-01,
 `ic_inst_*`/`ic_super_*` 2013-06-30 (the 13F fetch regime start, 192 → 3,045 in-universe filers),
-`ic_shortvol_*` 2017-12-29, and the four 13D/13G numerics 2024-12-17 (the beneficial-ownership
-XML mandate). Two 13F quarters are HOLES with every feature suppressed (2023-12-31 at 463
+and continuously retrievable `ic_shortvol_*` history 2018-08-01. Event-only 13D/13G features
+retain their earlier filing history, while the four ownership numerics and their normalized views
+are not emitted because their usable history starts only at the 2024-12-17 XML mandate. The
+insider source is explicitly complete only through 2026-06-30 in this snapshot; values after that
+frontier remain unavailable rather than being extended. Two 13F quarters are HOLES with every
+feature suppressed (2023-12-31 at 463
 filers, 2025-06-30 at 254) and eleven are BREAKS with the deltas nulled (D17). Both of those are
 universe-wide; a **third, per-ticker** guard nulls the same delta set on any quarter whose
 predecessor carried fewer than 100 filers **for that name** — coverage onset on a spin-off or an
@@ -336,7 +343,8 @@ Each table declares its expected refresh cadence (`Table.freshness`), keyed into
 daily 4d · weekly 10d · biweekly 20d · monthly 45d · quarterly 140d · yearly 460d
 ```
 
-Watched: `prices`, `short_interest`, `prices_macro`, `wiki_pageviews` (daily) ·
+Watched: `prices`, `short_interest`, `insider_transactions_live`,
+`insider_transactions_live_coverage`, `prices_macro`, `wiki_pageviews` (daily) ·
 `google_trends` (weekly) · `sec_fails_to_deliver`, `notes_num`, `notes_text` (biweekly) ·
 `fundamentals_history_sec`, `fundamentals_facts`, `earnings_surprises`, `pension_facts`, `sec13f_hr`,
 `insider_transactions`, `earnings_call_sections` (quarterly) · `def14a_llm` (yearly).
@@ -346,10 +354,10 @@ Four of these measure a **different column** than their period grain (`freshness
 `insider_transactions`→`filing_date`. Freshness must watch *when the fact was filed*, not the
 quarter it covers.
 
-This is **declarative metadata only** — it records each source's expected cadence and is exposed
-by `schema.freshness_tables()`. The automated staleness gate that consumed it was removed, so
-nothing reads it today; check staleness against [database.md](database.md) by hand, or wire a new
-consumer to `freshness_tables()`.
+Most cadence metadata is descriptive. Insider freshness has an additional operational gate:
+`cube-status` compares the canonical bulk/live completeness frontier with
+`cube_part_institutionals.max(date)` and exits non-zero when the lag exceeds the configured
+tolerance. Its existing `parts` JSON remains unchanged; details live under `sources`.
 
 ## `sql/schema.sql` gap
 
@@ -365,3 +373,16 @@ sec_13d_transactions · strategy · ticker_descriptions · trend_asset_returns
 This is harmless in practice — `store.save`/`replace` call `ensure_table`, which creates the table
 from the frame's dtypes on first write — but it means `schema.sql` is not a complete picture. It
 also means `sql/schema.sql` (applied by initdb on an **empty** volume only) will not pre-create them.
+
+## Institutional feature availability
+
+The source schema remains unchanged, including raw Schedule 13D/13G ownership numerics. Their
+feature projection is different: `cube_part_institutionals` no longer emits the four
+`percent_of_class` characteristics or their normalized views because usable history begins only
+at the 2024-12-17 structured-data mandate.
+
+Cross-source agreement now persists normalized directional ratios and their per-cell evidence:
+`f_ic_xs_bullish_family_ratio`, `f_ic_xs_bearish_family_ratio`, the two corresponding
+`*_available_family_count` columns, and `f_ic_xs_conflict_ratio`. Ratios require at least three
+available families. The YAML start boundary, runtime dependency coverage, and feature value are
+three separate facts; an unavailable cell is never silently converted to zero.

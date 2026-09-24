@@ -180,6 +180,21 @@ SEC_EDGAR_COMPANY_SEARCH_URL = (
 # 8-K events -> `sec_8k`, one row per item code (see fetch_8k_edgar.py
 SEC_8K_FORMS = ["8-K", "8-K/A"]
 
+# Insider ownership events. Quarterly ZIPs remain canonical history; these form names feed
+# the daily EDGAR tail until the next ZIP is published and reconciled.
+SEC_INSIDER_FORMS = ["3", "3/A", "4", "4/A", "5", "5/A"]
+SEC_INSIDER_FORM_FAMILIES = ("3", "4", "5")
+SEC_INSIDER_OWNER_ATOM_URL = (
+    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}"
+    "&type={form}&datea={date_from}&dateb={date_to}&owner=include"
+    "&start={start}&count={count}&output=atom"
+)
+SEC_INSIDER_OWNER_ATOM_PAGE_SIZE = 100
+SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/" "{quarter}_form345.zip"
+SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/" "insider-transactions-data-sets/{quarter}_form345.zip"
+SEC_INSIDER_FIRST_YEAR = 2006
+SEC_INSIDER_SWAP_YEAR = 2026
+
 # SC 13D activist filings (>5% stake WITH intent to influence) + amendments — the event-driven
 # EDGAR renamed the form type at the structured-XML mandate: filings through 2024-12-16 are
 # "SC 13D", filings from 2024-12-17 are "SCHEDULE 13D". `get_filings(form=...)` matches EXACTLY,

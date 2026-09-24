@@ -73,6 +73,7 @@ from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
 from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
+from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import seed_roster_history, upsert_roster_snapshot
@@ -464,7 +465,7 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
     fetch_financial_statements(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
-@cli.command(help="SEC insider transactions (Forms 3/4/5) -> insider_transactions " "+ insider_footnotes. SEC-bulk.")
+@cli.command(help="SEC insider transactions (Forms 3/4/5): quarterly bulk history plus the " "daily EDGAR tail.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(
@@ -474,9 +475,27 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
     help="Re-read every cached quarter even when already ingested. For a PARSE "
     "change (a new column), not a data change -- nothing is re-downloaded.",
 )
-def insider_transactions(config_path: str, tickers: str | None, reparse: bool) -> None:
-    _, context = _ctx(config_path)
-    fetch_insider_transactions(context, tickers=_tickers(context, tickers), reparse=reparse)
+@click.option(
+    "--live-full",
+    is_flag=True,
+    default=False,
+    help="Re-fetch and reparse the full open-quarter EDGAR tail, including stored accessions.",
+)
+def insider_transactions(
+    config_path: str,
+    tickers: str | None,
+    reparse: bool,
+    live_full: bool,
+) -> None:
+    config, context = _ctx(config_path)
+    names = _tickers(context, tickers)
+    fetch_insider_transactions(context, tickers=names, reparse=reparse)
+    fetch_insider_edgar(
+        context,
+        tickers=names,
+        years_history=int(config.data_extract.years_history),
+        full=live_full,
+    )
 
 
 @cli.command(

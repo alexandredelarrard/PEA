@@ -1,43 +1,20 @@
+"""Availability-normalized institutional cross-source agreement features.
+
+Each directional feature divides flagged families by families whose source and per-cell
+dependencies are available. The ratio is emitted only with at least three available families;
+its denominator is persisted as ``*_available_family_count`` so support stays observable.
+The bullish side has four possible families and the bearish side has three.
+
+The point is independent confirmation. A company officer, concentrated fund manager,
+activist, or short-flow signal reaching the same conclusion is different from one source
+being emphatic. Treating a source that did not yet exist as a zero would make identical
+company behavior mean something different across time. Conflict is the conservative overlap
+``min(bullish_ratio, bearish_ratio)`` when both exist.
+
+Distinct bullish actors remain an exact trailing-window count. A NaN input contributes to
+neither numerator nor denominator; an available zero remains a measured negative vote.
 """
-cross_source_features.py  (src/data_aggregate/utils/institutionals/cross_source_features.py)
---------------------------------------------------------------------------------------------
-CROSS-SOURCE AGREEMENT (`ic_xs_*`) -- registry section 8, features #83-#86.
 
-    ic_xs_bullish_family_count  how many of four INDEPENDENT bullish families are flagging
-    ic_xs_bullish_actor_count   how many distinct ACTORS acted bullishly in the window
-    ic_xs_bearish_family_count  the same over four explicit NEGATIVE actions
-    ic_xs_conflict              both sides at once: `min(bull, bear)` where both are >= 2
-
-THE POINT IS INDEPENDENCE, WHICH IS WHY THESE ARE COUNTS AND NOT A SCORE. Four unrelated
-parties -- a company officer, a concentrated fund manager, an activist, and the options/short
-market -- reaching the same conclusion about one name is evidence of a different kind from any
-one of them being emphatic. Averaging them into an `alignment_score` destroys exactly that
-distinction, and the standing no-composites rule still governs SCORES (D5 relaxed the feature
-COUNT for this family, not the principle). One conflict flag is the only interaction shipped.
-
-⚠ TWO RULES THE REGISTRY IS EXPLICIT ABOUT, and both are easy to get wrong:
-
-  1. **DISTINCT ACTORS, NOT ROWS** (#84, report section 3.1.6). Ten Form 4s from one CEO are
-     one opinion, and a manager who files an amendment has not changed their mind twice. #84
-     counts distinct `actor` ids (owner CIK / manager CIK / activist filer id) with an event
-     in the trailing `ACTOR_WINDOW`, EXACTLY -- never a decayed count, because a decayed
-     distinct count is not a distinct count.
-  2. **ABSENCE OF BUYING IS NOT A SHORT SIGNAL** (#85, report section 3.6.2). Every bearish
-     member is somebody DOING something: a discretionary sale, a full exit, a stake reduction,
-     short flow confirmed by a falling price. "Nobody bought" is not in the list, and a NaN
-     input never contributes to either count.
-
-THE FLAG IS A PER-DATE UNIVERSE PERCENTILE (`PERCENTILE`, the registry's 80th), not a fixed
-threshold: every input is a different quantity in different units, several of them decayed
-intensities whose scale drifts with event frequency, and a fixed cut on any of them would mean
-something different in 2013 than in 2026. `xs_rank_pct` ranks only the cells that exist on the
-date, so a family with no coverage on a name is silent rather than negative.
-
-⚠ A COUNT OF NOTHING IS NaN, NOT ZERO. On a ticker-day where none of the four inputs has a
-value, the count is NaN: "no family is flagging" and "nothing is known about this name yet"
-are different facts, which is the same rule `decay.py` states for a never-yet-seen event. Where
-at least one input exists the count is a real 0.
-"""
 from __future__ import annotations
 
 import logging
@@ -46,12 +23,15 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.common.xs import xs_rank_pct
 from src.data_aggregate.utils.institutionals.decay import snap_to_grid
 from src.data_aggregate.utils.institutionals.sink import (
-    BEARISH_INPUTS, BULLISH_INPUTS, NEGATED_INPUTS,
+    BEARISH_INPUTS,
+    BULLISH_INPUTS,
+    NEGATED_INPUTS,
+    AvailableSignal,
 )
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 
 logger = logging.getLogger(__name__)
 
@@ -63,59 +43,75 @@ PERCENTILE = 0.80
 #: live vote when this quarter's Form 4s land.
 ACTOR_WINDOW = 126
 
-#: A "family count" over fewer than this many resolved inputs is not a family count. The
-#: builder refuses to emit that direction rather than shipping a column that silently measures
-#: one family -- see the sink's note on renames.
-MIN_FAMILIES = 2
-
-#: Registry #86: the conflict flag fires only when BOTH sides have at least this many families.
-CONFLICT_MIN = 2
+#: A directional ratio over fewer than this many available families is not comparable.
+MIN_FAMILIES = 3
 
 EMISSION: dict[str, str] = {
-    "ic_xs_bullish_family_count": "raw",      # an integer 0-4, comparable everywhere
-    "ic_xs_bullish_actor_count":  "raw+xs",   # an unbounded count: scale drifts with coverage
-    "ic_xs_bearish_family_count": "raw",
-    "ic_xs_conflict":             "raw",
+    "ic_xs_bullish_family_ratio": "raw",
+    "ic_xs_bullish_available_family_count": "raw",
+    "ic_xs_bullish_actor_count": "raw+xs",
+    "ic_xs_bearish_family_ratio": "raw",
+    "ic_xs_bearish_available_family_count": "raw",
+    "ic_xs_conflict_ratio": "raw",
 }
 
 
-def _direction(signals: dict[str, pd.DataFrame], inputs: dict[str, str],
-               idx: pd.DatetimeIndex, columns: pd.Index,
-               percentile: float, label: str) -> pd.DataFrame | None:
-    """The family count for one direction: how many resolved inputs sit above their own
-    per-date universe percentile. NaN where none of them has a value."""
+def _direction(
+    signals: dict[str, AvailableSignal],
+    inputs: dict[str, str],
+    idx: pd.DatetimeIndex,
+    columns: pd.Index,
+    percentile: float,
+    label: str,
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """Return `(flagged / available, available)` for one direction."""
     flags: list[pd.DataFrame] = []
-    present: list[pd.DataFrame] = []
+    masks: list[pd.DataFrame] = []
     resolved, missing = [], []
     for role, name in inputs.items():
-        frame = signals.get(name)
-        if frame is None or frame.empty:
+        signal = signals.get(name)
+        if signal is None or signal.values.empty:
             missing.append(f"{role} ({name})")
             continue
-        wide = frame.reindex(index=idx, columns=columns)
+        wide = signal.values.reindex(index=idx, columns=columns)
+        available = signal.available.reindex(index=idx, columns=columns, fill_value=False)
         if role in NEGATED_INPUTS:
             wide = -wide
-        rank = xs_rank_pct(wide)
-        present.append(wide.notna())
-        flags.append((rank > percentile).astype("float64").where(wide.notna()))
+        rank = xs_rank_pct(wide.where(available))
+        masks.append(available)
+        flags.append((rank > percentile).astype("float64").where(available))
         resolved.append(role)
-    if len(flags) < MIN_FAMILIES:
-        logger.warning("`ic_xs_%s_family_count` NOT built: only %s of %s inputs resolved "
-                       "(missing %s)", label, len(flags), len(inputs), missing or "-")
-        return None
-    logger.info("`ic_xs_%s_family_count`: %s families resolved %s%s", label, len(resolved),
-                resolved, f"; missing {missing}" if missing else "")
-    any_input = present[0]
-    for p in present[1:]:
-        any_input = any_input | p
+    if not flags:
+        logger.warning("`ic_xs_%s_family_ratio` NOT built: no inputs resolved", label)
+        return None, None
+    available_count = masks[0].astype("int16")
+    for mask in masks[1:]:
+        available_count = available_count + mask.astype("int16")
     total = flags[0].fillna(0.0)
     for f in flags[1:]:
         total = total + f.fillna(0.0)
-    return total.where(any_input)
+    ratio = total.divide(available_count.where(available_count > 0)).where(available_count >= MIN_FAMILIES)
+    if len(flags) < MIN_FAMILIES:
+        logger.warning(
+            "`ic_xs_%s_family_ratio` has only %s of %s inputs resolved; denominator is "
+            "persisted but the ratio cannot meet the per-cell minimum (missing %s)",
+            label,
+            len(flags),
+            len(inputs),
+            missing or "-",
+        )
+    else:
+        logger.info(
+            "`ic_xs_%s_family_ratio`: %s families resolved %s%s",
+            label,
+            len(resolved),
+            resolved,
+            f"; missing {missing}" if missing else "",
+        )
+    return ratio, available_count.astype("float64")
 
 
-def _rolling_distinct_actors(events: pd.DataFrame, idx: pd.DatetimeIndex,
-                             columns: pd.Index, window: int) -> pd.DataFrame:
+def _rolling_distinct_actors(events: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index, window: int) -> pd.DataFrame:
     """Distinct `actor` per ticker with an event in the trailing `window` TRADING DAYS.
 
     A sweep line over the grid, keeping a per-(ticker, actor) occurrence count: an actor joins
@@ -146,8 +142,8 @@ def _rolling_distinct_actors(events: pd.DataFrame, idx: pd.DatetimeIndex,
     order = np.argsort(pos, kind="stable")
     pos, col, pair = pos[order], col[order], pair[order]
 
-    counts = np.zeros(len(columns), dtype="int64")            # distinct actors, per ticker
-    active = np.zeros(int(pair.max()) + 1, dtype="int64")     # events live per (ticker, actor)
+    counts = np.zeros(len(columns), dtype="int64")  # distinct actors, per ticker
+    active = np.zeros(int(pair.max()) + 1, dtype="int64")  # events live per (ticker, actor)
     seen = np.zeros(len(columns), dtype=bool)
     enter = leave = 0
     n = len(pos)
@@ -212,42 +208,37 @@ def build_cross_source_panel(
         columns = pd.Index(sorted(map(str, universe)), name="ticker")
     else:
         cols: set[str] = set()
-        for frame in signals.values():
-            cols |= set(map(str, frame.columns))
+        for signal in signals.values():
+            cols |= set(map(str, signal.values.columns))
         columns = pd.Index(sorted(cols), name="ticker")
     if not len(columns):
         return pd.DataFrame(columns=["date", "ticker"])
 
     fields: dict[str, pd.DataFrame] = {}
-    bull = _direction(signals, BULLISH_INPUTS, idx, columns, percentile, "bullish")
-    bear = _direction(signals, BEARISH_INPUTS, idx, columns, percentile, "bearish")
+    bull, bull_count = _direction(signals, BULLISH_INPUTS, idx, columns, percentile, "bullish")
+    bear, bear_count = _direction(signals, BEARISH_INPUTS, idx, columns, percentile, "bearish")
+    if bull_count is not None:
+        fields["ic_xs_bullish_available_family_count"] = bull_count
+    if bear_count is not None:
+        fields["ic_xs_bearish_available_family_count"] = bear_count
     if bull is not None:
-        fields["ic_xs_bullish_family_count"] = bull
+        fields["ic_xs_bullish_family_ratio"] = bull
     if bear is not None:
-        fields["ic_xs_bearish_family_count"] = bear
+        fields["ic_xs_bearish_family_ratio"] = bear
     if bull is not None and bear is not None:
-        both = (bull >= CONFLICT_MIN) & (bear >= CONFLICT_MIN)
-        # The magnitude is the WEAKER side: two families against four is a conflict of
-        # strength two, not four. Zero (not NaN) where the condition fails -- "no conflict" is
-        # an observation wherever both counts exist.
-        fields["ic_xs_conflict"] = pd.DataFrame(
-            np.where(both, np.minimum(bull, bear), 0.0), index=idx, columns=columns
-        ).where(bull.notna() & bear.notna())
+        fields["ic_xs_conflict_ratio"] = np.minimum(bull, bear).where(bull.notna() & bear.notna())
 
     # #84 -- distinct actors on the BULLISH side only. The bearish families have no comparable
     # actor axis: short flow has no identifiable actor at all (FINRA reports volume, not who
     # traded), so a bearish actor count would be three families wearing a four-family name.
     actors = getattr(sink, "actors", {}) or {}
     if actors:
-        combined = pd.concat([e.assign(_fam=fam) for fam, e in actors.items()],
-                             ignore_index=True)
+        combined = pd.concat([e.assign(_fam=fam) for fam, e in actors.items()], ignore_index=True)
         # An actor id is only unique WITHIN its family (an owner CIK and a manager CIK are
         # both 10 digits), so the family prefixes the id before they are pooled.
         combined["actor"] = combined["_fam"].astype(str) + ":" + combined["actor"].astype(str)
-        fields["ic_xs_bullish_actor_count"] = _rolling_distinct_actors(
-            combined, idx, columns, actor_window)
-        logger.info("`ic_xs_bullish_actor_count`: %s bullish acts across %s families %s",
-                    len(combined), combined["_fam"].nunique(), sorted(actors))
+        fields["ic_xs_bullish_actor_count"] = _rolling_distinct_actors(combined, idx, columns, actor_window)
+        logger.info("`ic_xs_bullish_actor_count`: %s bullish acts across %s families %s", len(combined), combined["_fam"].nunique(), sorted(actors))
 
     for name in list(fields):
         frame = fields[name]

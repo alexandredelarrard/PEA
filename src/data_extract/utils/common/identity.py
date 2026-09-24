@@ -102,13 +102,19 @@ class AmbiguousSymbolTenureError(IdentityError):
 SymbolVerdict = Literal[
     "exact_dated_tenure",
     "unique_entity_fallback",
+    "roster_tenure_proxy",
     "mapped_current_ticker",
+    "redundant_share_class",
     "entity_not_in_universe",
     "unknown_symbol",
     "unknown_gap",
     "ambiguous",
 ]
-SymbolMatchKind = Literal["exact_dated_tenure", "unique_entity_fallback"]
+SymbolMatchKind = Literal[
+    "exact_dated_tenure",
+    "unique_entity_fallback",
+    "roster_tenure_proxy",
+]
 
 
 @dataclass(frozen=True)
@@ -183,6 +189,10 @@ class Identity:
     ticker_by_entity: Mapping[str, str]
     #: axis B: symbol -> tuple of (entity_id, valid_from, valid_to, n_filings).
     tenure_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
+    #: D19-cleared roster symbol -> dated rows borrowed from filing symbols on its entity.
+    roster_proxy_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
+    #: Separately traded share classes deliberately absent from the modelling universe.
+    redundant_symbols: frozenset[str]
 
     # ------------------------------------------------------------------ axis A #
 
@@ -318,14 +328,28 @@ class Identity:
         """Resolve one historical symbol/date to the caller's canonical universe ticker."""
         source_symbol = str(symbol).strip().upper().replace(".", "-")
         stamp = _as_timestamp(as_of)
+        requested = frozenset(str(ticker).strip().upper() for ticker in universe)
         rows = self.tenure_by_symbol.get(source_symbol)
+        is_roster_proxy = rows is None and source_symbol in self.roster_proxy_by_symbol
+        if is_roster_proxy:
+            rows = self.roster_proxy_by_symbol[source_symbol]
         if not rows:
             return SymbolResolution(source_symbol, stamp, "unknown_symbol")
 
         entities = {entity for entity, _, _, _ in rows}
         match_kind: SymbolMatchKind
         entity_id: str | None
-        if len(entities) == 1:
+        if is_roster_proxy:
+            if stamp is None:
+                return SymbolResolution(source_symbol, stamp, "unknown_gap")
+            dated_hits = {entity for entity, start, end, _ in rows if start <= stamp and (end is None or stamp < end)}
+            if len(dated_hits) > 1:
+                return SymbolResolution(source_symbol, stamp, "ambiguous")
+            if not dated_hits:
+                return SymbolResolution(source_symbol, stamp, "unknown_gap")
+            entity_id = next(iter(dated_hits))
+            match_kind = "roster_tenure_proxy"
+        elif len(entities) == 1:
             entity_id = next(iter(entities))
             dated_hits = {entity for entity, start, end, _ in rows if stamp is not None and start <= stamp and (end is None or stamp < end)}
             match_kind = "exact_dated_tenure" if dated_hits else "unique_entity_fallback"
@@ -340,7 +364,6 @@ class Identity:
                 return SymbolResolution(source_symbol, stamp, "unknown_gap")
             match_kind = "exact_dated_tenure"
 
-        requested = frozenset(str(ticker).strip().upper() for ticker in universe)
         ticker = self.ticker_by_entity.get(entity_id)
         if ticker is None or ticker not in requested:
             return SymbolResolution(
@@ -350,6 +373,23 @@ class Identity:
                 match_kind=match_kind,
                 entity_id=entity_id,
             )
+
+        # A redundant spelling is a separately traded sibling only while the retained class is
+        # independently active for the same entity. Before that boundary it can be the retained
+        # security's predecessor spelling (GOOG before GOOGL), which must remain admissible.
+        target_rows = self.tenure_by_symbol.get(ticker) or self.roster_proxy_by_symbol.get(ticker, ())
+        target_is_concurrent = stamp is not None and any(
+            target_entity == entity_id and start <= stamp and (end is None or stamp < end) for target_entity, start, end, _ in target_rows
+        )
+        if source_symbol in self.redundant_symbols and source_symbol not in requested and target_is_concurrent:
+            return SymbolResolution(
+                source_symbol,
+                stamp,
+                "redundant_share_class",
+                match_kind=match_kind,
+                entity_id=entity_id,
+            )
+
         verdict: SymbolVerdict = "mapped_current_ticker" if ticker != source_symbol else match_kind
         return SymbolResolution(
             source_symbol,
@@ -441,7 +481,12 @@ def log_symbol_resolutions(
 
 
 def build_identity(
-    lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataFrame, d19_allowlist: Mapping[str, str] | None = None, today=None
+    lineage: pd.DataFrame,
+    tenure: pd.DataFrame,
+    roster: pd.DataFrame,
+    d19_allowlist: Mapping[str, str] | None = None,
+    redundant_symbols: frozenset[str] | None = None,
+    today=None,
 ) -> Identity:
     """Validate both tables and return the frozen resolver. Pure -- no DB, no config reads.
 
@@ -518,20 +563,41 @@ def build_identity(
         key = normalise_cik(cik)
         tenure_by_symbol.setdefault(symbol.strip().upper(), []).append((entity_by_cik.get(key, f"E{key}"), stamp, _as_timestamp(end), int(n)))
 
+    # D19 already records the exceptional cases where the roster spelling is absent from, or
+    # disagrees with, Form 345. For an absent spelling only, borrow the DATED tenure of every
+    # filing symbol observed on the roster entity. Include every entity ever seen under those
+    # proxy symbols: FOXA may borrow FOX, but FOX belonged to old 21st Century Fox before the
+    # current Fox Corp. The date must settle that boundary; a roster CIK must never rewrite it.
+    allowlist = d19_allowlist or {}
+    roster_proxy_by_symbol: dict[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]] = {}
+    for ticker in sorted(set(allowlist) & set(roster_cik)):
+        if ticker in tenure_by_symbol:
+            continue
+        roster_entity = entity_by_cik.get(roster_cik[ticker], f"E{roster_cik[ticker]}")
+        proxy_symbols = {symbol for symbol, rows in tenure_by_symbol.items() if any(entity == roster_entity for entity, _, _, _ in rows)}
+        proxy_rows = tuple(row for symbol in sorted(proxy_symbols) for row in tenure_by_symbol[symbol])
+        if proxy_rows:
+            roster_proxy_by_symbol[ticker] = proxy_rows
+
     identity = Identity(
         entity_by_cik=entity_by_cik,
         roster_cik=roster_cik,
         ticker_by_entity=ticker_by_entity,
         tenure_by_symbol={s: tuple(v) for s, v in tenure_by_symbol.items()},
+        roster_proxy_by_symbol=roster_proxy_by_symbol,
+        redundant_symbols=frozenset(str(symbol).strip().upper().replace(".", "-") for symbol in (redundant_symbols or frozenset())),
     )
 
-    _check_d19(identity, d19_allowlist or {}, today)
+    _check_d19(identity, allowlist, today)
     logger.info(
-        "identity: %d lineage CIK(s) over %d entity(ies); %d universe ticker(s); " "%d symbol(s) with tenure",
+        "identity: %d lineage CIK(s) over %d entity(ies); %d universe ticker(s); "
+        "%d symbol(s) with tenure; %d D19 roster proxy symbol(s); %d redundant symbol(s)",
         len(entity_by_cik),
         len(set(entity_by_cik.values())),
         len(roster_cik),
         len(tenure_by_symbol),
+        len(roster_proxy_by_symbol),
+        len(identity.redundant_symbols),
     )
     return identity
 
@@ -585,6 +651,7 @@ def load_identity(context: Context, config_dir: str | None = None, refresh: bool
         tenure=context.store.load(Tables.symbol_tenure, project=True),
         roster=context.store.load(Tables.sp500_tickers),
         d19_allowlist=load_d19_allowlist(config_dir or str(context.config_dir)),
+        redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
     )
     _CACHE[context] = identity
     return identity

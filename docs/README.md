@@ -15,6 +15,7 @@ scope. `AGENTS.md` (repo root) is the always-loaded summary; these are the detai
 | [coding_standard.md](coding_standard.md) | you write any Python in `src/` (naming, logging, typing, risk zones) |
 | [testing.md](testing.md) | you write or run a test |
 | [runbook.md](runbook.md) | you need to *execute* something (interpreter, DB access, CLI commands) |
+| [TODO.md](TODO.md) | you need the accepted backlog for source backfills or deferred data-quality work |
 
 
 ## The five rules that override everything

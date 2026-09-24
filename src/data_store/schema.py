@@ -846,6 +846,36 @@ class Tables:
             "is_10b5_1",
         ),
     )
+    # Daily EDGAR tail for the still-open bulk quarter. Its row sequence is local to the
+    # ownership XML and deliberately distinct from the quarterly data set's generated
+    # `transaction_sk`. Consumers overlay only accessions absent from the bulk table.
+    insider_transactions_live = Table(
+        "insider_transactions_live",
+        ("accession_number", "security_type", "source_row_sequence"),
+        date_col="transaction_date",
+        date_type_cols=(
+            "transaction_date",
+            "filing_date",
+            "period_of_report",
+            "deemed_execution_date",
+            "exercise_date",
+            "expiration_date",
+        ),
+        freshness="daily",
+        freshness_date_col="filing_date",
+        read_columns=insider_transactions.read_columns,
+    )
+    # One row per requested universe ticker. A row advances only after that ticker's EDGAR
+    # listing and parsing succeeds, including the legitimate zero-new-filings case. The cube
+    # uses the minimum across its universe, so a partial run cannot claim a current frontier.
+    insider_transactions_live_coverage = Table(
+        "insider_transactions_live_coverage",
+        ("ticker",),
+        date_col="complete_through",
+        date_type_cols=("complete_through",),
+        freshness="daily",
+        read_columns=("ticker", "complete_through", "updated_at"),
+    )
     # Form 3/4/5 footnote prose, one row per (accession, footnote id). Free -- already inside the
     # cached zips, and the PK holds without dedup (0 duplicate (accession, id) pairs measured on
     # 2023q1 and 2026q1). Footnote text is what distinguishes an exercise-and-sell package from

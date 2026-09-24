@@ -13,14 +13,17 @@ import pandas as pd
 import pytest
 
 from src.constants.constants import F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS, F13_SETTLE_TRADING_DAYS
-from src.data_aggregate.utils.institutionals.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.institutionals import institutional_features as _mod
+from src.data_aggregate.utils.institutionals.availability import availability_date
 from src.data_aggregate.utils.institutionals.institutional_features import (
     EMISSION,
     INST_DELTA_FLOOR_PERIOD,
     INST_LEVEL_FLOOR_PERIOD,
     MIN_PRIOR_HOLDERS,
+    _assert_emission_windows_ordered,
+    _availability_coverage,
+    _stamp_availability,
 )
 from src.data_aggregate.utils.institutionals.institutional_features import (
     _quarter_features as _qf,
@@ -30,11 +33,6 @@ from src.data_aggregate.utils.institutionals.institutional_features import (
 )
 from src.data_aggregate.utils.institutionals.institutional_features import (
     clean_holdings as _clean_holdings,
-)
-from src.data_aggregate.utils.institutionals.institutional_features import (
-    _assert_emission_windows_ordered,
-    _availability_coverage,
-    _stamp_availability,
 )
 from src.data_extract.utils.institutionals.fetch_13f import _holdings_frame
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
@@ -60,7 +58,7 @@ def _quarter_features(holdings, **kw):
     # no `call_value` / `put_value` and raises `KeyError`; that is the test bypassing a
     # production step, not the builder demanding a column the source lacks.
     kw.setdefault("min_prior_holders", 0)
-    return _qf(_clean_holdings(holdings), **kw)
+    return _qf(_clean_holdings(holdings, key=("ticker", "cik", "period")), **kw)
 
 
 def build_institutional_feature_panel(frames, holdings, **kw):
@@ -331,7 +329,7 @@ def test_the_pre_floor_cut_leaves_the_delta_floor_onward_identical(monkeypatch):
     and WITHOUT the cut (the floor pushed back to 1990, which disables it) and asserts the two
     agree from the delta floor onward.
     """
-    h = _clean_holdings(_pre_floor_fixture())
+    h = _clean_holdings(_pre_floor_fixture(), key=("ticker", "cik", "period"))
     cut = _qf(h, min_prior_holders=0).set_index("period")
 
     monkeypatch.setattr(_mod, "INST_LEVEL_FLOOR_PERIOD", pd.Timestamp("1990-01-01"))
@@ -775,7 +773,9 @@ _GRID = pd.bdate_range("2013-01-01", "2027-06-30")
 
 def _stamped(holdings: pd.DataFrame, *, settle: int = F13_SETTLE_TRADING_DAYS, grid=None) -> pd.DataFrame:
     """`clean_holdings` then the availability stamp -- the production order."""
-    return _stamp_availability(_clean_holdings(holdings), _GRID if grid is None else grid, settle_trading_days=settle)
+    return _stamp_availability(
+        _clean_holdings(holdings, key=("ticker", "cik", "period")), _GRID if grid is None else grid, settle_trading_days=settle
+    )
 
 
 def test_the_availability_date_snaps_a_weekend_deadline_and_then_settles():
@@ -816,12 +816,7 @@ def test_the_availability_date_snaps_a_weekend_deadline_and_then_settles():
 
 def _timed(rows: list[tuple[str, str, str, float]]) -> pd.DataFrame:
     """`(cik, period, filing_date, shares)` -> a manager-grain frame for ticker A."""
-    return pd.DataFrame(
-        [
-            {"cik": c, "period": p, "filing_date": f, "ticker": "A", "shares": sh, "value_usd": float(sh)}
-            for c, p, f, sh in rows
-        ]
-    )
+    return pd.DataFrame([{"cik": c, "period": p, "filing_date": f, "ticker": "A", "shares": sh, "value_usd": float(sh)} for c, p, f, sh in rows])
 
 
 def test_a_filing_after_the_availability_date_is_revised_never_excluded():
@@ -917,13 +912,11 @@ def test_the_cutoff_changes_nothing_when_no_filing_is_late():
         ]
     )
     cutoff = _qf(_stamped(on_time), min_prior_holders=0)
-    no_cutoff = _qf(_clean_holdings(on_time), min_prior_holders=0)
+    no_cutoff = _qf(_clean_holdings(on_time, key=("ticker", "cik", "period")), min_prior_holders=0)
 
     assert len(cutoff) == len(no_cutoff) == 2, "an all-on-time frame must emit exactly one row per period"
     features = [c for c in no_cutoff.columns if c not in ("as_of",)]
-    pd.testing.assert_frame_equal(
-        cutoff[features].reset_index(drop=True), no_cutoff[features].reset_index(drop=True), check_exact=True
-    )
+    pd.testing.assert_frame_equal(cutoff[features].reset_index(drop=True), no_cutoff[features].reset_index(drop=True), check_exact=True)
     # only the stamp moved, and it moved LATER (the snap plus the settle), never earlier
     assert (cutoff["as_of"].to_numpy() > no_cutoff["as_of"].to_numpy()).all()
 
@@ -1040,7 +1033,7 @@ def test_first_publication_shares_chg_error_does_not_regress():
     if holdings is None or holdings.empty:
         pytest.skip("no 13F holdings for the sampled tickers")
 
-    stamped = _stamp_availability(_clean_holdings(holdings), grid)
+    stamped = _stamp_availability(_clean_holdings(holdings, key=("ticker", "cik", "period")), grid)
     stamped = stamped[stamped["period"] >= INST_LEVEL_FLOOR_PERIOD]
 
     # `truth` is every in-band filing for the period; `published` only those public at the

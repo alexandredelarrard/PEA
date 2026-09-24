@@ -70,6 +70,7 @@ from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.decay import decay_events
 from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
 from src.data_aggregate.utils.institutionals.value_basis import repair_value_basis
@@ -722,6 +723,7 @@ def build_superinvestor_feature_panel(
     selection: pd.Series | Callable | None = None,
     decay_halflife: float = 63.0,
     stale_quarters: int = _STALE_QUARTERS,
+    availability: InstitutionalAvailability | None = None,
     sink=None,
 ) -> pd.DataFrame:
     """Long-format elite-manager 13F panel -- `f_ic_super_*` (+ `_xs` where the scale drifts).
@@ -822,13 +824,19 @@ def build_superinvestor_feature_panel(
                 fields[str(kind)] = frame
 
     fields = {k: v for k, v in fields.items() if v is not None and not v.empty}
-    _fill_sink(sink, contrib, fields)
+    _fill_sink(sink, contrib, fields, frames, availability)
     emission = {k: EMISSION[k] for k in fields if k in EMISSION}
     logger.info("elite 13F panel: %s features over %s managers / %s quarters", len(fields), state["cik"].nunique(), state["period"].nunique())
     return build_peer_relative_panel(fields, peer_dict, emission=emission)
 
 
-def _fill_sink(sink, contrib: pd.DataFrame, fields: dict) -> None:
+def _fill_sink(
+    sink,
+    contrib: pd.DataFrame,
+    fields: dict[str, pd.DataFrame],
+    frames: PriceFrames,
+    availability: InstitutionalAvailability | None,
+) -> None:
     """Hand the derived panels this family's event dates, bullish actors and signal frames.
 
     ⚠ THE TWO EVENT SETS ARE DIFFERENT AND THAT IS THE POINT. `events` is every disclosure by
@@ -848,4 +856,29 @@ def _fill_sink(sink, contrib: pd.DataFrame, fields: dict) -> None:
     sink.add_events("super", disclosures.drop_duplicates())
     added = live & (contrib["w"].fillna(0.0) > contrib["prev_w"].fillna(0.0)).to_numpy()
     sink.add_actors("super", contrib.loc[added, ["ticker", "avail", "cik"]].rename(columns={"avail": "date", "cik": "actor"}))
-    sink.keep_signals(fields)
+    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
+    if frames.close_split is not None and not frames.close_split.empty:
+        listed = frames.close_split.reindex(index=idx, columns=columns).notna()
+    else:
+        listed = pd.DataFrame(True, index=idx, columns=columns)
+    signal_fields = dict(fields)
+    signal_masks: dict[str, pd.DataFrame] = {}
+    for name in ("ic_super_conviction_chg", "ic_super_full_exits"):
+        if name not in fields:
+            continue
+        raw = fields[name].reindex(index=idx, columns=columns)
+        mask = (
+            availability.derived_mask(
+                name,
+                idx,
+                columns,
+                dependencies=((Tables.sec13f_manager_holdings, None),),
+                requirements=(listed,),
+            )
+            if availability is not None
+            else raw.notna()
+        )
+        signal_masks[name] = mask
+        signal_fields[name] = raw.fillna(0.0).where(mask)
+    sink.keep_signals(signal_fields, signal_masks)

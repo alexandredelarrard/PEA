@@ -24,7 +24,7 @@ tables they land in, see [data_schema.md](data_schema.md); for current coverage,
 | Footnote numbers + narrative | SEC Financial Statement **and Notes** sets (zip, `.tsv`) | `SEC_USER_AGENT` | `notes_num`, `notes_text` | `fundamentals/fetch_financial_notes.py` |
 | Institutional holdings | SEC Form 13F bulk sets | `SEC_USER_AGENT`, `OPENFIGI_API_KEY` (optional) | `sec13f_hr`, `cusip_ticker_map` | `institutionals/fetch_13f.py`, `institutionals/fetch_cusip_map.py` |
 | Elite-manager subset | Dataroma roster (+ 13 web.archive.org captures 2013→2026) → SEC EDGAR company search for the CIK | `SEC_USER_AGENT` | `superinvestor_roster` | `institutionals/fetch_superinvestors.py` |
-| Insider trades | SEC Insider Data Sets (Forms 3/4/5, quarterly zips) | `SEC_USER_AGENT` | `insider_transactions`, `insider_footnotes` | `institutionals/fetch_insider_transactions.py` |
+| Insider trades | SEC Insider Data Sets (quarterly ZIP history) + EDGAR ownership XML (daily open-quarter tail) | `SEC_USER_AGENT` | `insider_transactions`, `insider_transactions_live`, `insider_transactions_live_coverage`, `insider_footnotes` | `institutionals/fetch_insider_transactions.py`, `institutionals/fetch_insider_edgar.py` |
 | Governance / comp / ownership | SEC **DEF 14A** via OpenAI structured output | `OPENAI_API_KEY`, `SEC_USER_AGENT` | `def14a_llm` | `structure/def14a/` |
 | Pay-versus-Performance (deterministic) | SEC DEF 14A **inline XBRL** (ECD taxonomy), read direct from `filing.xbrl()` | `SEC_USER_AGENT` | `sec_def14a` (2023+ by regulation) | `structure/def14a/ecd.py`, `structure/fetch_def14a_edgar.py` |
 | Corporate events | SEC Form 8-K | `SEC_USER_AGENT` | `sec_8k` | `institutionals/fetch_8k_edgar.py` |
@@ -363,6 +363,16 @@ coverage looks like progress in a row count.
 | `sec_short_interest` | **2018-08-01**, and it MOVES | FINRA serves the RegSHO files from a rolling ~8-year CDN window. Binary-searched: last 403 `20180731`, first 200 `20180801`, ~8.10 years before the probe. The stored `min(date)` of 2017-12-29 is one anomalous file that survives outside the window, **not** a history start. Rows below the boundary cannot be re-fetched if lost |
 | `sec_fails_to_deliver` | **2009-07-01** | where SEC's published series begins — a fixed start, unlike RegSHO |
 
+FTD and RegSHO are security-symbol tapes, so issuer identity alone is not enough for dual-class
+companies. When a D19-adjudicated roster symbol is absent from Form 345 (`FOXA`, `NWSA`, `LEN`,
+and similar spellings), `Identity` borrows the **dated** tenure of filing symbols observed on the
+same roster entity. It carries every historical entity seen under those proxy symbols, so the
+2019 Fox boundary remains outside/ambiguous before current Fox Corp rather than becoming a
+dateless roster fallback. A class listed in `data_extract.redundant_ticks` (`GOOG`, `FOX`, `NWS`)
+is excluded once the retained class is independently active for the same entity; earlier
+predecessor spelling remains eligible. This preserves pre-class-split `GOOG -> GOOGL` history
+without summing current `GOOG` volume into `GOOGL`'s price and tape-volume series.
+
 ⚠ `sec13f_hr` is the **S&P 500 slice** of each manager's book, not the book: the extraction
 filters to the universe, so a portfolio weight computed from it is inflated by a
 manager-specific factor. Measured on 2026Q1: Atlantic Investment 8.3% of positions / 13.1% of
@@ -444,14 +454,57 @@ Wikipedia had already moved XOM to the holdco. The detector cross-checks it agai
 
 | Product | Grain | Notes |
 |---|---|---|
-| Insider Data Sets | Forms 3/4/5 | quarterly zips from 2011 (`SEC_INSIDER_FIRST_YEAR`) |
+| Insider Data Sets | Forms 3/4/5 | quarterly zips from 2006 (`SEC_INSIDER_FIRST_YEAR`) |
 | Financial Statement Data Sets | `num`/`sub` | from 2009; the pension source |
 | Financial Statement **and Notes** Data Sets | `.tsv`, rolling monthly | from 2009; footnote numbers + text. Filter `dimn == 0` for the consolidated/undimensioned facts |
 
 Fails-to-deliver has **two** URL templates: the legacy path up to `SEC_FTD_LEGACY_LAST_PERIOD =
 "201706a"`, the current path from `201706b`.
 
+### Insider history plus daily tail
+
+`data_extract insider-transactions` deliberately runs two adapters in order. The quarterly ZIP
+remains the historical baseline; then EDGAR lists Forms `3`, `4`, `5`, `3/A`, `4/A`, and `5/A`
+from the day after the latest bulk quarter through the current scan date. The daily adapter parses
+the filing's raw ownership XML rather than the 8-K row builder: `fetch_8k_edgar` discovers only
+8-Ks and `_filing_row` has no ownership-transaction contract.
+
+Ownership discovery is the union of the normal issuer submissions feed and SEC's issuer search
+with `owner=include`. This distinction is required for Forms 3/4/5: some accessions are submitted
+under the reporting owner's CIK and do not appear in the issuer's submissions JSON. The completed-
+quarter gate caught ten such DLR filings in 2026 Q2; neither discovery path is complete alone.
+
+The XML contains every field the cube currently reads. It is not byte-for-byte the ZIP format:
+the ZIP adds `transaction_sk` and `quarter`, while XML retains its own row order and often more
+price precision. Live rows therefore use `(accession_number, security_type,
+source_row_sequence)` in a separate staging table. The canonical reader chooses one complete
+source per accession. Live wins an overlap until a retained completed-quarter parity report
+passes; after promotion, bulk wins. Bulk-only and live-only accessions still fill one another's
+gaps, but rows from two sources are never mixed inside one filing.
+
+Omitted relationship checkboxes in valid ownership XML mean false; omitted `aff10b5One` remains
+unknown. Explicit `transactionTotalValue` is retained even when a derivative line has no shares
+or price, rather than being replaced by an unavailable `shares * price` calculation.
+
+`insider_transactions_live_coverage` records successful scans, including a legitimate scan with
+zero new filings. The completeness frontier is the minimum across the whole price-edge universe,
+so one failed ticker keeps the family stale. Direct `ic_insider_*` features and their
+`ic_sig_insider_*` conditioning legs are NULL after that frontier; a covered no-event window
+remains a real zero. `data_aggregate cube-status` applies `source_freshness.insider_max_lag_days`
+to this source frontier rather than trusting the part's date alone.
+
 ### LLM cost discipline
 
 Validate a slice with **no-LLM diagnostics first**, before spending calls. Narrow the text you send:
 it is both cheaper and more accurate than a whole filing.
+
+## Availability versus missingness in institutional features
+
+`configs/data.yml` records when each institutionals table or exceptional field first becomes
+usable. It does not claim that every later ticker-date is populated. Builders combine the
+configured boundary with live price, denominator, filing-state, and minimum-history masks, and
+the cross-source sink rejects a cell declared available whose value is still missing.
+
+Schedule 13D/13G filing dates and filer identities support event features historically;
+`percent_of_class` does not. The latter remains in the raw source tables for audit and future
+backfill, but is not a cube feature. See [TODO.md](TODO.md) for the restoration criteria.

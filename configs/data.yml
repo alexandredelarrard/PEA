@@ -1,0 +1,48 @@
+# Source-to-part freshness gates. Tunable here because they are operational tolerances, not
+# facts about the SEC formats.
+source_freshness:
+  insider_max_lag_days: 4
+  # Advance only after the completed-quarter ZIP/EDGAR parity report passes. Until then,
+  # overlapping daily accessions remain canonical and the new ZIP fills only missing filings.
+  insider_bulk_authoritative_through: null
+
+# Point-in-time source availability. Keep this compact: table defaults apply to every field;
+# only fields or derived features with a later usable start belong below them.
+data_availability:
+  institutionals:
+    sec13f_hr:
+      __all__: "2013-06-30"  # First all-filer quarter with market-representative coverage.
+
+    sec13f_manager_holdings:
+      __all__: "2013-01-01"  # First point-in-time Dataroma roster snapshot.
+
+    insider_transactions:
+      __all__: "2006-01-03"  # First SEC insider bulk-data quarter, on filing date.
+      is_10b5_1: "2023-04-01"  # First fully populated quarter for the structured flag.
+
+    sec_13d:
+      __all__: "1995-09-06"  # First usable historical Schedule 13D event.
+      percent_of_class: "2024-12-17"  # Structured Schedule 13D/G mandate.
+
+    sec_13g:
+      __all__: "1996-01-26"  # First usable historical Schedule 13G event.
+      percent_of_class: "2024-12-17"  # Earlier isolated values do not establish coverage.
+
+    sec_short_interest:
+      __all__: "2018-08-01"  # First continuously retrievable FINRA RegSHO history.
+
+    sec_fails_to_deliver:
+      __all__: "2009-07-01"  # Start of the SEC-published FTD series.
+
+    derived_features:
+      ic_inst_breadth_chg: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
+      ic_inst_shares_chg: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
+      ic_inst_new_buyer_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
+      ic_inst_exit_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
+      ic_inst_cluster_buying: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
+      ic_inst_flow_to_mcap: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
+      ic_super_conviction_chg: "2013-02-14"  # First tradable elite-manager filing state.
+      ic_super_full_exits: "2013-02-14"  # Same elite-manager public-state boundary.
+      ic_insider_discretionary_sell_mcap_60d: "2023-04-01"  # Requires is_10b5_1.
+      ic_insider_planned_sell_mcap_60d: "2023-04-01"  # Requires is_10b5_1.
+      ic_shortvol_high_x_weak_price: "2019-02-14"  # RegSHO plus z252 minimum history.

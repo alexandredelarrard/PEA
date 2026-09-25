@@ -23,8 +23,12 @@ import logging
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
 from src.data_aggregate.utils.institutionals.manager_selection import (
-    eligibility, elite_weight, manager_concentration_score, selection_diagnostics,
+    eligibility,
+    elite_weight,
+    manager_concentration_score,
+    selection_diagnostics,
 )
 from tests.conftest import make_frames
 
@@ -258,11 +262,20 @@ def _panel(holdings, **kw):
         cusip_map=_CUSIP_MAP, **kw)
 
 
-def _keys(holdings) -> pd.MultiIndex:
+def _keys(holdings: pd.DataFrame) -> tuple[pd.MultiIndex, pd.DataFrame]:
     from src.data_aggregate.utils.institutionals.superinvestor_features import (
-        _prepare, attach_tickers, manager_quarter_state,
+        attach_tickers,
+        manager_quarter_state,
     )
-    st = manager_quarter_state(_prepare(attach_tickers(holdings, _CUSIP_MAP, _UNIVERSE)))
+
+    prepared = clean_holdings(
+        attach_tickers(holdings, _CUSIP_MAP, _UNIVERSE),
+        key=("cik", "period", "cusip"),
+        numeric=("shares", "value_usd"),
+        common_only=True,
+        pad_ciks=True,
+    )
+    st = manager_quarter_state(prepared)
     return pd.MultiIndex.from_frame(st[["cik", "period"]]), st
 
 

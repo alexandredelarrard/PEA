@@ -111,6 +111,24 @@ def test_quarter_feature_math_on_the_d28_share():
     )
 
 
+def test_quarter_with_no_usable_value_rows_is_not_emitted() -> None:
+    cleaned = _clean_holdings(_holdings(), key=("ticker", "cik", "period"))
+    valid = cleaned.loc[cleaned["ticker"].eq("A")].copy()
+    with_invalid_quarter = cleaned.copy()
+    with_invalid_quarter.loc[with_invalid_quarter["ticker"].eq("B"), "value_usd"] = np.nan
+
+    expected = _qf(valid, min_prior_holders=0).reset_index(drop=True)
+    got = _qf(with_invalid_quarter, min_prior_holders=0).reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(got, expected)
+    assert "B" not in set(got["ticker"])
+    print(
+        "\n=== SANITY CHECK: unusable 13F quarter ===\n"
+        "  A ticker/quarter with no finite value rows emits nothing; valid neighbouring "
+        "groups remain bit-identical. Validated."
+    )
+
+
 def _growing_universe(pairs: list[tuple[str, int, int]]) -> pd.DataFrame:
     """`(period, n_filers, n_holding_A)` -> manager-grain rows. The filers who do not hold A
     hold Z instead, so they count toward the universe pool without touching A's numerator."""

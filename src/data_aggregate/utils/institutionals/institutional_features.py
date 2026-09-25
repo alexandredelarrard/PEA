@@ -547,6 +547,8 @@ def _quarter_features(
             # remove the nan values before doing any sum, otherwise stops
             # 60680 nans, due to the ratio work before, nulling strange values
             pdf = pdf.loc[pdf["value_usd"].notnull()]
+            if pdf.empty:
+                continue
 
             ciks = pdf["cik"].to_numpy()
             shares = pdf["shares"].to_numpy(dtype="float64")

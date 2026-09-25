@@ -33,8 +33,8 @@ def _identity() -> Identity:
     tenure = pd.DataFrame(
         [
             ("AAA", "0000000001", "2009-01-01", None, 100),
-            ("FI", "0000000002", "2018-01-01", "2023-06-01", 100),
-            ("FISV", "0000000002", "2023-06-01", None, 100),
+            ("FISV", "0000000002", "2018-01-01", "2023-06-01", 100),
+            ("FI", "0000000002", "2023-06-01", None, 100),
             ("IR", "0000000003", "2009-01-01", "2020-03-01", 100),
             ("IR", "0000000004", "2020-03-05", None, 100),
             ("TT", "0000000003", "2020-03-01", None, 100),
@@ -248,13 +248,13 @@ def test_full_refresh_reconciles_legacy_preserves_failed_dates_and_is_idempotent
     assert first[(first.ticker == "IR") & (pd.to_datetime(first.date) == pd.Timestamp("2020-03-03"))].short_volume.iloc[0] == 30.0
     assert first[(first.ticker == "AAA") & (pd.to_datetime(first.date) == pd.Timestamp("2020-03-06"))].short_volume.iloc[0] == 40.0
     fisv = first[(first.ticker == "FISV") & (pd.to_datetime(first.date) == pd.Timestamp("2020-03-05"))]
-    assert fisv.short_volume.iloc[0] == 75.0 and fisv.total_volume.iloc[0] == 150.0
+    assert fisv.short_volume.iloc[0] == 25.0 and fisv.total_volume.iloc[0] == 50.0
     assert not first.duplicated(["ticker", "date"]).any()
     pd.testing.assert_frame_equal(first, second)
 
     print("\n=== SANITY CHECK: RegSHO retention-safe full refresh ===")
     print("  legacy IR -> TT; prior Weight Watchers removed; seam-gap IR preserved")
-    print("  failed-date AAA preserved; FI+FISV -> one FISV key; rerun identical")
+    print("  failed-date AAA preserved; only date-eligible FISV publishes; future FI is rejected; rerun identical")
     print("  OK: the rolling source rebuilds what it can without erasing what it cannot")
 
 

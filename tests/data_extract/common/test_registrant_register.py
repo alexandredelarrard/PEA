@@ -10,10 +10,11 @@ that from a company that genuinely filed nothing.
 So every refusal the loader can make gets a named test here. The refusals ARE the safety
 mechanism -- a wrong entry cannot raise on its own.
 
-Split per docs/testing.md: synthetic fixtures for the schema (this file), real EDGAR for the
+Split per wiki/guides/testing.md: synthetic fixtures for the schema (this file), real EDGAR for the
 one invariant a config loader must never check itself because it needs a network call --
 `test_registrant_live.py`.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,8 +24,12 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.registrant import (
-    CUTOVER_KINDS, REGISTRANT_CONFIG_FILENAME, REGISTRANT_CONFIG_SUBDIR, RENAME_KIND,
-    load_registrants)
+    CUTOVER_KINDS,
+    REGISTRANT_CONFIG_FILENAME,
+    REGISTRANT_CONFIG_SUBDIR,
+    RENAME_KIND,
+    load_registrants,
+)
 
 CONFIG_DIR = "./configs"
 
@@ -42,8 +47,7 @@ def _entry(*segments, kind: str = "reorganisation") -> dict:
     return {"kind": kind, "segments": list(segments)}
 
 
-def _seg(cik: str, *, valid_from: str | None = None, valid_to: str | None = None,
-         evidence: str = "measured") -> dict:
+def _seg(cik: str, *, valid_from: str | None = None, valid_to: str | None = None, evidence: str = "measured") -> dict:
     seg: dict = {"cik": cik, "evidence": evidence}
     if valid_from is not None:
         seg["valid_from"] = valid_from
@@ -64,8 +68,7 @@ def test_a_rename_is_rejected_by_name(tmp_path):
     It matters more here than it looks: Sharadar records a `namechangefrom` whether or not
     the CIK moved, so the shell-name evidence that motivates most real entries fits a pure
     rename just as well."""
-    blob = {"CVS": _entry(_seg("0000064803", valid_to="2014-09-03"),
-                          _seg("0000064803", valid_from="2014-09-03"), kind=RENAME_KIND)}
+    blob = {"CVS": _entry(_seg("0000064803", valid_to="2014-09-03"), _seg("0000064803", valid_from="2014-09-03"), kind=RENAME_KIND)}
     with pytest.raises(ValueError, match="not a cutover"):
         load_registrants(_write(tmp_path, blob))
     print("\n=== SANITY CHECK: a rename cannot be encoded as a cutover ===")
@@ -77,8 +80,7 @@ def test_the_same_cik_twice_is_rejected(tmp_path):
     """The structural form of the same mistake, for an entry that lies about its `kind`.
     '64803' and '0000064803' are the SAME CIK once padded, and the padding happens before
     the comparison rather than after."""
-    blob = {"X": _entry(_seg("64803", valid_to="2020-01-01"),
-                        _seg("0000064803", valid_from="2020-01-01"))}
+    blob = {"X": _entry(_seg("64803", valid_to="2020-01-01"), _seg("0000064803", valid_from="2020-01-01"))}
     with pytest.raises(ValueError, match="repeated CIK"):
         load_registrants(_write(tmp_path, blob))
     print("\n=== SANITY CHECK: the same CIK on both sides is refused ===")
@@ -88,8 +90,7 @@ def test_the_same_cik_twice_is_rejected(tmp_path):
 def test_a_gap_between_segments_is_rejected(tmp_path):
     """A gap loses every filing inside it, and nothing downstream raises: the ticker simply
     has a hole where a year of filings should be."""
-    blob = {"X": _entry(_seg("1", valid_to="2020-01-01"),
-                        _seg("2", valid_from="2020-06-01"))}
+    blob = {"X": _entry(_seg("1", valid_to="2020-01-01"), _seg("2", valid_from="2020-06-01"))}
     with pytest.raises(ValueError, match="CONTIGUOUS"):
         load_registrants(_write(tmp_path, blob))
     print("\n=== SANITY CHECK: a gap between segments is refused ===")
@@ -99,8 +100,7 @@ def test_a_gap_between_segments_is_rejected(tmp_path):
 def test_an_overlap_between_segments_is_rejected(tmp_path):
     """An overlap double-counts, which on a consolidating form means two legal entities'
     accounts in one series."""
-    blob = {"X": _entry(_seg("1", valid_to="2020-06-01"),
-                        _seg("2", valid_from="2020-01-01"))}
+    blob = {"X": _entry(_seg("1", valid_to="2020-06-01"), _seg("2", valid_from="2020-01-01"))}
     with pytest.raises(ValueError, match="CONTIGUOUS"):
         load_registrants(_write(tmp_path, blob))
     print("\n=== SANITY CHECK: an overlap between segments is refused ===")
@@ -111,8 +111,7 @@ def test_a_segment_with_no_evidence_is_rejected(tmp_path):
     """An undocumented cutover is a guess that deletes history -- exactly what this register
     exists to replace. Enforced PER SEGMENT, not per entry: a chain's middle hop is the one a
     hurried edit will leave blank."""
-    blob = {"X": _entry(_seg("1", valid_to="2020-01-01"),
-                        _seg("2", valid_from="2020-01-01", evidence="   "))}
+    blob = {"X": _entry(_seg("1", valid_to="2020-01-01"), _seg("2", valid_from="2020-01-01", evidence="   "))}
     with pytest.raises(ValueError, match="empty `evidence`"):
         load_registrants(_write(tmp_path, blob))
     print("\n=== SANITY CHECK: an undocumented segment is refused ===")
@@ -132,8 +131,7 @@ def test_the_open_ends_must_stay_open(tmp_path):
     """The oldest segment omits `valid_from` and the newest omits `valid_to`, so every date
     in history lands in exactly one segment and `segment_for` is total. Closing an end would
     make some dates belong to no registrant at all."""
-    closed_old = {"X": _entry(_seg("1", valid_from="1990-01-01", valid_to="2020-01-01"),
-                              _seg("2", valid_from="2020-01-01"))}
+    closed_old = {"X": _entry(_seg("1", valid_from="1990-01-01", valid_to="2020-01-01"), _seg("2", valid_from="2020-01-01"))}
     with pytest.raises(ValueError, match="must omit `valid_from`"):
         load_registrants(_write(tmp_path, closed_old))
     print("\n=== SANITY CHECK: the chain stays open at both ends ===")
@@ -146,8 +144,10 @@ def test_one_cik_cannot_be_claimed_by_two_tickers(tmp_path):
     Tier C resolves bulk-dataset rows to a ticker through a CIK->ticker dict built from these
     segments. Two tickers claiming one CIK would route one company's insider transactions and
     financial notes to BOTH names -- a duplication that no per-entry check can see."""
-    blob = {"A": _entry(_seg("1", valid_to="2020-01-01"), _seg("9", valid_from="2020-01-01")),
-            "B": _entry(_seg("9", valid_to="2021-01-01"), _seg("3", valid_from="2021-01-01"))}
+    blob = {
+        "A": _entry(_seg("1", valid_to="2020-01-01"), _seg("9", valid_from="2020-01-01")),
+        "B": _entry(_seg("9", valid_to="2021-01-01"), _seg("3", valid_from="2021-01-01")),
+    }
     with pytest.raises(ValueError, match="claimed by both"):
         load_registrants(_write(tmp_path, blob))
     print("\n=== SANITY CHECK: a CIK belongs to one ticker ===")
@@ -177,15 +177,17 @@ def test_a_five_segment_chain_round_trips(tmp_path):
     """Chains are the reason for the schema change. PSKY is CBS -> Viacom -> ViacomCBS ->
     Paramount Global -> Paramount Skydance: four boundaries, five registrants. The two-CIK
     schema gave such a ticker one hop and left the rest truncated."""
-    blob = {"CHAIN": _entry(
-        _seg("1", valid_to="2000-01-01"),
-        _seg("2", valid_from="2000-01-01", valid_to="2006-01-01"),
-        _seg("3", valid_from="2006-01-01", valid_to="2019-12-04"),
-        _seg("4", valid_from="2019-12-04", valid_to="2025-08-07"),
-        _seg("5", valid_from="2025-08-07"))}
+    blob = {
+        "CHAIN": _entry(
+            _seg("1", valid_to="2000-01-01"),
+            _seg("2", valid_from="2000-01-01", valid_to="2006-01-01"),
+            _seg("3", valid_from="2006-01-01", valid_to="2019-12-04"),
+            _seg("4", valid_from="2019-12-04", valid_to="2025-08-07"),
+            _seg("5", valid_from="2025-08-07"),
+        )
+    }
     reg = load_registrants(_write(tmp_path, blob))["CHAIN"]
-    assert reg.all_ciks() == ("0000000001", "0000000002", "0000000003",
-                              "0000000004", "0000000005")
+    assert reg.all_ciks() == ("0000000001", "0000000002", "0000000003", "0000000004", "0000000005")
     assert len(reg.boundaries) == 4
     assert reg.segment_for("1995-06-01").cik == "0000000001"
     assert reg.segment_for("2010-06-01").cik == "0000000003"
@@ -199,9 +201,11 @@ def test_a_five_segment_chain_round_trips(tmp_path):
 def test_every_date_lands_in_exactly_one_segment(tmp_path):
     """`segment_for` is total AND unambiguous -- the property contiguity plus open ends buys,
     asserted directly rather than inferred from the two rules that produce it."""
-    blob = {"CHAIN": _entry(_seg("1", valid_to="2000-01-01"),
-                            _seg("2", valid_from="2000-01-01", valid_to="2010-01-01"),
-                            _seg("3", valid_from="2010-01-01"))}
+    blob = {
+        "CHAIN": _entry(
+            _seg("1", valid_to="2000-01-01"), _seg("2", valid_from="2000-01-01", valid_to="2010-01-01"), _seg("3", valid_from="2010-01-01")
+        )
+    }
     reg = load_registrants(_write(tmp_path, blob))["CHAIN"]
     dates = pd.date_range("1990-01-01", "2030-01-01", freq="37D")
     hits = [[s.cik for s in reg.segments if s.covers(d)] for d in dates]
@@ -223,12 +227,13 @@ def test_the_live_register_declares_only_kinds_that_change_the_cik():
         assert reg.kind in CUTOVER_KINDS
         assert len(set(reg.all_ciks())) == len(reg.segments)
         assert all(s.evidence.strip() for s in reg.segments)
-        print(f"  {ticker:6s} {reg.kind:15s} {len(reg.segments)} segments  "
-              f"{' -> '.join(reg.all_ciks())}  at "
-              f"{', '.join(str(b.date()) for b in reg.boundaries)}")
+        print(
+            f"  {ticker:6s} {reg.kind:15s} {len(reg.segments)} segments  "
+            f"{' -> '.join(reg.all_ciks())}  at "
+            f"{', '.join(str(b.date()) for b in reg.boundaries)}"
+        )
     n_chains = sum(1 for r in registrants.values() if len(r.segments) > 2)
-    print(f"  OK: {len(registrants)} entries, {n_chains} of them chains, every kind one "
-          "that changes the CIK.")
+    print(f"  OK: {len(registrants)} entries, {n_chains} of them chains, every kind one " "that changes the CIK.")
 
 
 def test_the_missing_register_file_is_not_an_error(tmp_path):

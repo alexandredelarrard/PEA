@@ -17,8 +17,11 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.registrant import resolve_registrant_filings
-from src.data_extract.utils.common.run_manifest import manifest_window, record_run
+from src.data_extract.utils.common.registrant import (
+    resolve_registrant_filings,
+    resolve_schedule_subject_filings,
+)
+from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
 from src.data_store.schema import Table
 
@@ -36,6 +39,10 @@ logger = logging.getLogger(__name__)
 #: broke, which is ours. The narrow `except` around a LIBRARY parse (`filing.xbrl()`) keeps
 #: swallowing everything, since malformed XBRL is exactly what it exists to absorb.
 PROGRAMMING_ERRORS = (NameError, AttributeError, TypeError, KeyError, ImportError)
+
+
+class IncompleteEdgarRunError(RuntimeError):
+    """A completeness-sensitive EDGAR walk had one or more failed tickers."""
 
 
 def filed_by(filing, roster_cik: str) -> str:
@@ -127,6 +134,23 @@ def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None, done_
     return resolve_registrant_filings(ticker, forms, since=since, done_accessions=done_accessions)
 
 
+def new_schedule_filings(
+    ticker: str,
+    subject_ciks: frozenset[str],
+    forms: list[str],
+    since: pd.Timestamp | None,
+    done_accessions: frozenset[str],
+) -> list:
+    """Issuer-side schedule discovery, including filings submitted under holder CIKs."""
+    return resolve_schedule_subject_filings(
+        ticker,
+        subject_ciks,
+        forms,
+        since=since,
+        done_accessions=done_accessions,
+    )
+
+
 def run_edgar_fetch(
     context: Context,
     tickers: list[str],
@@ -140,6 +164,7 @@ def run_edgar_fetch(
     cik_map: pd.DataFrame | None = None,
     minimum_since: pd.Timestamp | None = None,
     completion_table: Table | None = None,
+    require_complete: bool = False,
 ) -> None:
     """Fetch `tables` for `tickers` using `build(ticker, cik, since, done_accessions)
     -> {table: frame}`.
@@ -159,6 +184,10 @@ def run_edgar_fetch(
     `completion_table`, when supplied, is saved last and only if every preceding non-empty
     frame saved successfully. It is for explicit per-ticker coverage frontiers: a failed
     transaction write must not be followed by a green coverage row.
+
+    `require_complete` makes both discovery/build failures and persistence failures fatal to the
+    run-level manifest. Successfully saved rows remain as resumable, idempotent progress, but a
+    partial Schedule 13D/G walk can never be recorded as complete.
     """
     context.ensure_edgar_identity()
     if cik_map is None:
@@ -176,6 +205,12 @@ def run_edgar_fetch(
         # i.e. nothing. Measured the hard way: chunk 1 wrote 31,540 rows and chunks 2-9 wrote
         # 0. Chunking is not optional here (edgartools never releases its per-filing caches,
         # and an all-52 single process reached 14.7 GB RSS), so the flag is the fix.
+        since, is_full_rescan = fallback_since, True
+    elif require_complete and not (get_entry(context, tables[0]) or {}).get("coverage_complete"):
+        # A legacy manifest only proves that the old discovery code finished. It cannot prove
+        # issuer-side Schedule coverage because that code silently skipped large filer books.
+        # The first run under the completeness contract must therefore walk the full configured
+        # history before it is allowed to mint a trustworthy frontier.
         since, is_full_rescan = fallback_since, True
     else:
         since, is_full_rescan = manifest_window(
@@ -243,6 +278,8 @@ def run_edgar_fetch(
                 failed_save = True
                 continue
             counts[table] = len(df)
+        if require_complete and failed_save:
+            return None
         return counts
 
     results = run_per_ticker(cik_map, _worker, desc=desc, **({} if max_workers is None else {"max_workers": max_workers}))
@@ -260,5 +297,17 @@ def run_edgar_fetch(
         failed,
         ", ".join(f"+{n} '{t}'" for t, n in totals.items()),
     )
+    if require_complete and failed:
+        raise IncompleteEdgarRunError(
+            f"{desc}: {failed}/{len(cik_map)} ticker(s) failed; rows already saved remain "
+            "idempotent, but no run manifest was advanced because coverage is incomplete"
+        )
     for table in tables:
-        record_run(context, table, len(cik_map), totals[table], is_full_rescan=is_full_rescan)
+        record_run(
+            context,
+            table,
+            len(cik_map),
+            totals[table],
+            is_full_rescan=is_full_rescan,
+            coverage_complete=require_complete,
+        )

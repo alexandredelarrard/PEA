@@ -1,23 +1,42 @@
 """
 rate_limit.py  (src/data_extract/utils/common/rate_limit.py)
 -----------------------------------------------------
-Shared retry-with-backoff helper for the free data sources (yfinance, Google
-Trends, ...) that rate-limit with HTTP 429. Instead of silently dropping the
-symbol (which leaves the same subset permanently missing across runs), we WAIT
-and retry with exponential backoff.
+Shared retry-with-backoff helper for free data sources that throttle with HTTP
+429 or intermittently fail with retryable HTTP 5xx responses or transport
+timeouts. Instead of silently dropping the symbol, wait and retry with
+exponential backoff.
 """
+
 from __future__ import annotations
 
+import logging
 import time
-import logging 
 
 logger = logging.getLogger(__name__)
 
+
 def is_rate_limited(exc: BaseException) -> bool:
-    """True if an exception looks like a rate-limit / 429 / too-many-requests."""
+    """True for a throttle or transient upstream/transport failure worth retrying."""
     s = f"{type(exc).__name__} {exc}".lower()
-    return ("429" in s or "too many requests" in s or "toomanyrequests" in s
-            or "rate limit" in s or "ratelimit" in s)
+    return (
+        "429" in s
+        or "too many requests" in s
+        or "toomanyrequests" in s
+        or "rate limit" in s
+        or "ratelimit" in s
+        or "502" in s
+        or "503" in s
+        or "504" in s
+        or "bad gateway" in s
+        or "service unavailable" in s
+        or "gateway timeout" in s
+        or "readtimeout" in s
+        or "connecttimeout" in s
+        or "pooltimeout" in s
+        or "read operation timed out" in s
+        or "connection timed out" in s
+    )
+
 
 def _on_retry(cb) -> None:
     """Run an optional between-retries hook (e.g. rotate IP + re-prime the session) without letting
@@ -26,14 +45,13 @@ def _on_retry(cb) -> None:
         return
     try:
         cb()
-    except Exception as e:                          # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         logger.debug("on_retry hook failed (continuing): %s", e)
 
 
-def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0,
-                      label: str = "", retry_empty=None, on_retry=None):
-    """Call `fn()`; on a rate-limit error, WAIT (exponential backoff) and retry up
-    to `retries` times before giving up. Non-rate-limit exceptions propagate
+def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0, label: str = "", retry_empty=None, on_retry=None):
+    """Call `fn()`; on a retryable HTTP error, wait exponentially and retry up
+    to `retries` times before giving up. Non-retryable exceptions propagate
     immediately. If `retry_empty` is given (a predicate on the result), an "empty"
     result is also retried (empties are often a soft throttle). `on_retry` (if given) runs
     BEFORE each retry — e.g. to MOVE to the next authorized proxy and re-prime the session so the
@@ -45,20 +63,20 @@ def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0,
     while True:
         try:
             result = fn()
-        except Exception as e:                     # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             if is_rate_limited(e) and attempt < retries:
-                wait = base_wait * (2 ** attempt)
-                logger.warning(f"[{label}] rate-limited (429); attempt {attempt + 1}/{retries}"
-                        f" -> waiting {wait:.0f}s + rotating IP before retry")
+                wait = base_wait * (2**attempt)
+                logger.warning(
+                    f"[{label}] transient source error; attempt {attempt + 1}/{retries}" f" -> waiting {wait:.0f}s + rotating IP before retry"
+                )
                 time.sleep(wait)
                 attempt += 1
                 _on_retry(on_retry)
                 continue
             raise
         if retry_empty is not None and attempt < retries and retry_empty(result):
-            wait = base_wait * (2 ** attempt)
-            logger.warning(f"[{label}] empty response; attempt {attempt + 1}/{retries}"
-                    f" -> waiting {wait:.0f}s + rotating IP before retry")
+            wait = base_wait * (2**attempt)
+            logger.warning(f"[{label}] empty response; attempt {attempt + 1}/{retries}" f" -> waiting {wait:.0f}s + rotating IP before retry")
             time.sleep(wait)
             attempt += 1
             _on_retry(on_retry)

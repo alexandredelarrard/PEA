@@ -4,7 +4,7 @@ report_common.py  (scripts/dod/report_common.py)
 Shared plumbing for the three Definition-of-Done report generators
 (`modelling_report.py`, `data_profile.py`, `refactor_metrics.py`).
 
-Implements the contract in docs/definition_of_done.md:
+Implements the reporting contract in wiki/guides/validate-a-change.md:
 
     reports/<YYYY-MM-DD>/<slug>__<TYPE>.md          one folder per day
 
@@ -31,17 +31,17 @@ Design notes
     stdlib-only and must not import repo code that a refactor could break. The duplication
     is pinned by `tests/dod/test_state_dir_agrees.py`.
   * GIT IS ALLOWED HERE. A generator runs ONCE per task, so a `git` subprocess is affordable.
-    A hook runs every turn and must never shell out (docs/definition_of_done.md).
+    A hook runs every turn and must never shell out (wiki/guides/validate-a-change.md).
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import subprocess
-import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # --------------------------------------------------------------------------- #
@@ -57,8 +57,12 @@ SECTION_REGRESSIONS = "## 5. Regressions, gaps and deliberate omissions"
 SECTION_NEXT = "## 6. Next actions"
 
 SECTIONS: tuple[str, ...] = (
-    SECTION_SCOPE, SECTION_GATES, SECTION_METRICS,
-    SECTION_EVIDENCE, SECTION_REGRESSIONS, SECTION_NEXT,
+    SECTION_SCOPE,
+    SECTION_GATES,
+    SECTION_METRICS,
+    SECTION_EVIDENCE,
+    SECTION_REGRESSIONS,
+    SECTION_NEXT,
 )
 
 METRICS_FENCE = "```json dod-metrics"
@@ -100,8 +104,7 @@ def head_sha(root: Path | None = None) -> str:
     """Current HEAD sha, or `"unknown"`. Uses `git` -- affordable in a generator."""
     root = root or repo_root()
     try:
-        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
-                             text=True, timeout=15, check=False)
+        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=15, check=False)
         sha = out.stdout.strip()
         return sha if sha else "unknown"
     except (OSError, subprocess.SubprocessError):
@@ -118,8 +121,7 @@ def changed_files(baseline_sha: str | None = None, root: Path | None = None) -> 
 
     def _run(args: list[str]) -> list[str]:
         try:
-            out = subprocess.run(args, cwd=root, capture_output=True, text=True,
-                                 timeout=30, check=False)
+            out = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=30, check=False)
             return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
         except (OSError, subprocess.SubprocessError):
             return []
@@ -148,8 +150,7 @@ def load_baseline(session_id: str | None = None, *, root: Path | None = None) ->
     else:
         base = _state_root_for(root)
         if base.is_dir():
-            found = sorted(base.glob("*/baseline.json"), key=lambda p: p.stat().st_mtime,
-                           reverse=True)
+            found = sorted(base.glob("*/baseline.json"), key=lambda p: p.stat().st_mtime, reverse=True)
             candidates.extend(found[:1])
 
     for path in candidates:
@@ -161,8 +162,7 @@ def load_baseline(session_id: str | None = None, *, root: Path | None = None) ->
         data.setdefault("head_sha", "unknown")
         return data
 
-    return {"session_id": sid or "standalone", "head_sha": head_sha(root),
-            "started_at": None, "synthesised": True}
+    return {"session_id": sid or "standalone", "head_sha": head_sha(root), "started_at": None, "synthesised": True}
 
 
 # --------------------------------------------------------------------------- #
@@ -193,8 +193,11 @@ def gate_table(gates: list[Gate]) -> str:
         lines.append(f"| {g.id} | {g.name} | **{g.verdict}** | {detail} |")
     failed = [g.id for g in gates if g.passed is False]
     lines.append("")
-    lines.append(f"**{len(failed)} FAIL** — {', '.join(failed)}. The work is **NOT done**."
-                 if failed else "**All gates pass** (N/A gates are stated above, not skipped).")
+    lines.append(
+        f"**{len(failed)} FAIL** — {', '.join(failed)}. The work is **NOT done**."
+        if failed
+        else "**All gates pass** (N/A gates are stated above, not skipped)."
+    )
     return "\n".join(lines)
 
 
@@ -229,7 +232,7 @@ def _fmt(v: object) -> str:
     if isinstance(v, bool):
         return "yes" if v else "no"
     if isinstance(v, float):
-        if v != v:                                    # NaN
+        if v != v:  # NaN
             return "NaN"
         return f"{v:,.6g}"
     if isinstance(v, int):
@@ -250,8 +253,7 @@ def report_dir(root: Path | None = None, when: datetime | None = None) -> Path:
     return (root or repo_root()) / "reports" / f"{now:%Y-%m-%d}"
 
 
-def report_path(kind: str, slug: str, *, root: Path | None = None,
-                when: datetime | None = None) -> Path:
+def report_path(kind: str, slug: str, *, root: Path | None = None, when: datetime | None = None) -> Path:
     """`reports/<YYYY-MM-DD>/<slug>__<KIND>.md`.
 
     The date is the FOLDER, so it is not repeated in the filename."""
@@ -274,10 +276,19 @@ def link_prefix(path: Path, root: Path) -> str:
     return "../" * max(0, depth)
 
 
-def write_report(kind: str, slug: str, *, generator: str, gates: list[Gate],
-                 metrics_md: str, evidence_md: str, payload: dict,
-                 scope_md: str | None = None, root: Path | None = None,
-                 session_id: str | None = None) -> Path:
+def write_report(
+    kind: str,
+    slug: str,
+    *,
+    generator: str,
+    gates: list[Gate],
+    metrics_md: str,
+    evidence_md: str,
+    payload: dict,
+    scope_md: str | None = None,
+    root: Path | None = None,
+    session_id: str | None = None,
+) -> Path:
     """Write the report and return its path. Overwrites a same-day report of the same slug.
 
     `scope_md` is the generator's *machine-known* part of §1 (files written, commands run,
@@ -294,32 +305,40 @@ def write_report(kind: str, slug: str, *, generator: str, gates: list[Gate],
     full_payload.setdefault("baseline_head_sha", baseline.get("head_sha"))
     full_payload["gates"] = {g.id: g.verdict for g in gates}
 
-    front = "\n".join([
-        "---",
-        f"type: {kind}",
-        f"session_id: {baseline.get('session_id')}",
-        f"generated_at: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
-        f"baseline: {{head_sha: {baseline.get('head_sha')}}}",
-        f"generator: {generator}",
-        "---",
-    ])
+    front = "\n".join(
+        [
+            "---",
+            f"type: {kind}",
+            f"session_id: {baseline.get('session_id')}",
+            f"generated_at: {datetime.now(UTC).isoformat(timespec='seconds')}",
+            f"baseline: {{head_sha: {baseline.get('head_sha')}}}",
+            f"generator: {generator}",
+            "---",
+        ]
+    )
 
-    body = "\n\n".join([
-        front,
-        SECTION_SCOPE,
-        (scope_md + "\n\n" if scope_md else "") + f"**What was asked:** {TODO_MARKER}",
-        SECTION_GATES, gate_table(gates),
-        SECTION_METRICS, metrics_md,
-        SECTION_EVIDENCE, evidence_md,
-        SECTION_REGRESSIONS,
-        f"{TODO_MARKER}\n"
-        f"- \n"
-        f"<!-- At least one bullet. If genuinely nothing: "
-        f"`{EMPTY_SECTION_5_PREFIX} <{MIN_CHECKED_CHARS}+ chars>` -->",
-        SECTION_NEXT, f"{TODO_MARKER}\n- ",
-        metrics_block(full_payload),
-        "",
-    ])
+    body = "\n\n".join(
+        [
+            front,
+            SECTION_SCOPE,
+            (scope_md + "\n\n" if scope_md else "") + f"**What was asked:** {TODO_MARKER}",
+            SECTION_GATES,
+            gate_table(gates),
+            SECTION_METRICS,
+            metrics_md,
+            SECTION_EVIDENCE,
+            evidence_md,
+            SECTION_REGRESSIONS,
+            f"{TODO_MARKER}\n"
+            f"- \n"
+            f"<!-- At least one bullet. If genuinely nothing: "
+            f"`{EMPTY_SECTION_5_PREFIX} <{MIN_CHECKED_CHARS}+ chars>` -->",
+            SECTION_NEXT,
+            f"{TODO_MARKER}\n- ",
+            metrics_block(full_payload),
+            "",
+        ]
+    )
     path.write_text(body, encoding="utf-8")
     return path
 
@@ -336,10 +355,7 @@ def announce(path: Path, gates: list[Gate]) -> None:
     # ASCII only: this console is cp1252, where a printed "§" raises/garbles. The report FILE
     # is written as UTF-8 and does use the section sign.
     print(f"\nDoD report -> {shown}")
-    print(f"  gates: {sum(g.passed is True for g in gates)} pass, "
-          f"{len(failed)} fail, {sum(g.passed is None for g in gates)} n/a")
+    print(f"  gates: {sum(g.passed is True for g in gates)} pass, " f"{len(failed)} fail, {sum(g.passed is None for g in gates)} n/a")
     if failed:
-        print(f"  FAILING: {', '.join(failed)} -- the work is NOT done until these pass "
-              f"or section 5 explains why they stand.")
-    print("  NOW EDIT section 1 (what was asked), section 5 (regressions/gaps) and "
-          "section 6 (next actions). Do not touch the dod-metrics block.")
+        print(f"  FAILING: {', '.join(failed)} -- the work is NOT done until these pass " f"or section 5 explains why they stand.")
+    print("  NOW EDIT section 1 (what was asked), section 5 (regressions/gaps) and " "section 6 (next actions). Do not touch the dod-metrics block.")

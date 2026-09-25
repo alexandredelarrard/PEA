@@ -1,20 +1,29 @@
-This project uses AGENTS.md as its source of truth for instructions.
-Always start by reading ./AGENTS.md.
-Always use rtk before all your commands. See examples below. 
+This project uses [AGENTS.md](AGENTS.md) as the always-loaded instruction contract.
+Read it first, then use [wiki/OVERVIEW.md](wiki/OVERVIEW.md) to select the canonical architecture,
+guide, module, reference, or TODO page for the task. The wiki is the only documentation
+navigation surface.
+
+All in-scope Markdown reads and writes must go through OpenKnowledge MCP. Read source code with
+native workspace tools.
+
+Always prefix shell commands with `rtk`.
 
 <!-- rtk-instructions v2 -->
-# RTK (Rust Token Killer) - Token-Optimized Commands
+# RTK (Rust Token Killer) — token-optimized commands
 
-## Golden Rule
+## Golden rule
 
-**Always prefix commands with `rtk`**. If RTK has a dedicated filter, it uses it. If not, it passes through unchanged. This means RTK is always safe to use.
+Prefix every shell command with `rtk`. If RTK has a dedicated filter it uses it; otherwise it
+passes the command through unchanged. Apply the prefix to every independent command segment.
 
-**Important**: Even in command chains with `&&`, use `rtk`.
+## Files and search
 
-## Files & Search (60-75% savings)
 ```bash
-rtk ls <path>           # Tree format, compact (65%)
-rtk read <file>         # Code reading with filtering (60%)
-rtk grep <pattern>      # Search grouped by file (75%). Format flags (-c, -l, -L, -o, -Z) run raw.
-rtk find <pattern>      # Find grouped by directory (70%)
+rtk ls <path>
+rtk read <source-file>
+rtk rg <pattern> <path>
+rtk rg --files <path>
 ```
+
+Use OpenKnowledge `exec`, `search`, `write`, and `edit` instead of these native commands for
+Markdown files.

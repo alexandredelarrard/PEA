@@ -34,9 +34,10 @@ CAPABILITY-GATED, twice over. The store methods land in phase 2 of the refactor,
 whose method does not exist yet SKIPS with an explicit reason, and `test_every_case_is_live`
 reports how many remain. That test is the phase-6 gate: it must report zero. A case also
 skips when its TABLE is absent: this DB carries the extract tables but not the cube ones
-(docs/database.md), and "the aggregation has not been run here" is an environment fact, not
+(wiki/reference/live-database.md), and "the aggregation has not been run here" is an environment fact, not
 a read-equivalence failure -- reporting it as red just trains everyone to ignore red.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -60,13 +61,12 @@ def store() -> DataStore:
     try:
         with engine.connect():
             pass
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"database unavailable: {type(exc).__name__}")
     return DataStore(engine)
 
 
-def _sql(store: DataStore, sql: str, params: dict | None = None,
-         expanding: str | None = None) -> pd.DataFrame:
+def _sql(store: DataStore, sql: str, params: dict | None = None, expanding: str | None = None) -> pd.DataFrame:
     """Run an ORIGINAL query verbatim and return its frame."""
     stmt = text(sql)
     if expanding is not None:
@@ -96,15 +96,12 @@ def _requires_columns(store: DataStore, table: str, *columns: str) -> None:
     have = set(store.columns(table))
     absent = [c for c in columns if c not in have]
     if absent:
-        pytest.skip(f"{table} has no column(s) {', '.join(absent)} "
-                    f"-- rebuild the cube (`build-target --full` + `assemble-cube`)")
+        pytest.skip(f"{table} has no column(s) {', '.join(absent)} " f"-- rebuild the cube (`build-target --full` + `assemble-cube`)")
 
 
 def _norm(df: pd.DataFrame) -> pd.DataFrame:
     """Column order and row order are NOT part of the contract -- content is."""
-    return (df.reindex(sorted(df.columns), axis=1)
-              .sort_values(by=sorted(df.columns), kind="mergesort")
-              .reset_index(drop=True))
+    return df.reindex(sorted(df.columns), axis=1).sort_values(by=sorted(df.columns), kind="mergesort").reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -131,8 +128,7 @@ def test_columns_matches_information_schema_for_cube(store):
     stricter than an unqualified `table_name = 'cube'`, so this pins that they agree HERE."""
     _requires(store, "columns")
     _requires_tables(store, "cube")
-    old = set(_sql(store, "SELECT column_name FROM information_schema.columns "
-                          "WHERE table_name = 'cube'")["column_name"])
+    old = set(_sql(store, "SELECT column_name FROM information_schema.columns " "WHERE table_name = 'cube'")["column_name"])
     assert set(store.columns("cube")) == old
 
 
@@ -147,10 +143,8 @@ def test_bounds_matches_hf_transcripts_min_max(store):
     """`fetch_hf_transcripts` -- `SELECT MIN(quarter), MAX(quarter) FROM
     "earnings_call_sections"` (fetch_hf_transcripts.py:164). NOT dates: string quarters."""
     _requires(store, "bounds")
-    old = _sql(store, 'SELECT MIN(quarter) AS lo, MAX(quarter) AS hi '
-                      'FROM "earnings_call_sections"')
-    assert store.bounds("earnings_call_sections", "quarter") == (
-        old["lo"].iloc[0], old["hi"].iloc[0])
+    old = _sql(store, "SELECT MIN(quarter) AS lo, MAX(quarter) AS hi " 'FROM "earnings_call_sections"')
+    assert store.bounds("earnings_call_sections", "quarter") == (old["lo"].iloc[0], old["hi"].iloc[0])
 
 
 def test_max_date_matches_raw_max_on_a_filing_dated_table(store):
@@ -168,8 +162,7 @@ def test_distinct_matches_sec_utils_ingested_quarters(store):
     """`sec_utils.bulk_ingested_quarters` -- `SELECT DISTINCT quarter FROM "<table>"`
     (sec_utils.py:107)."""
     _requires(store, "distinct")
-    old = set(_sql(store, 'SELECT DISTINCT quarter FROM "earnings_call_sections"')["quarter"]
-              .dropna())
+    old = set(_sql(store, 'SELECT DISTINCT quarter FROM "earnings_call_sections"')["quarter"].dropna())
     assert set(store.distinct("earnings_call_sections", "quarter")) == old
 
 
@@ -185,11 +178,8 @@ def test_distinct_with_notnull_matches_the_latest_labelled_cube_date(store):
     _requires(store, "distinct", "NOT_NULL")
     _requires_tables(store, "cube")
     _requires_columns(store, "cube", "target_rank_h30")
-    old = _sql(store, 'SELECT DISTINCT date FROM cube '
-                      'WHERE "target_rank_h30" IS NOT NULL ORDER BY date DESC LIMIT :n',
-               {"n": 5})["date"].tolist()
-    new = store.distinct("cube", "date", where={"target_rank_h30": store.NOT_NULL},
-                         order="desc", limit=5)
+    old = _sql(store, "SELECT DISTINCT date FROM cube " 'WHERE "target_rank_h30" IS NOT NULL ORDER BY date DESC LIMIT :n', {"n": 5})["date"].tolist()
+    new = store.distinct("cube", "date", where={"target_rank_h30": store.NOT_NULL}, order="desc", limit=5)
     assert [pd.Timestamp(d) for d in new] == [pd.Timestamp(d) for d in old]
 
 
@@ -198,8 +188,7 @@ def test_distinct_ordered_and_limited_matches_step_train_recent_dates(store):
     LIMIT :n` (step_train.py:809)."""
     _requires(store, "distinct")
     _requires_tables(store, "cube")
-    old = _sql(store, "SELECT DISTINCT date FROM cube ORDER BY date DESC LIMIT :n",
-               {"n": 5})["date"].tolist()
+    old = _sql(store, "SELECT DISTINCT date FROM cube ORDER BY date DESC LIMIT :n", {"n": 5})["date"].tolist()
     new = store.distinct("cube", "date", order="desc", limit=5)
     assert [pd.Timestamp(d) for d in new] == [pd.Timestamp(d) for d in old]
 
@@ -215,8 +204,7 @@ def test_since_matches_part_io_read_since(store):
     is 1.85M rows and is covered by the ticker-scoped case below."""
     _requires(store, "load")
     cols = ["date", "ticker", "close"]
-    old = _sql(store, 'SELECT "date", "ticker", "close" FROM "prices_macro" '
-                      "WHERE date >= :since", {"since": SINCE.strftime("%Y-%m-%d")})
+    old = _sql(store, 'SELECT "date", "ticker", "close" FROM "prices_macro" ' "WHERE date >= :since", {"since": SINCE.strftime("%Y-%m-%d")})
     new = store.load("prices_macro", columns=cols, since=SINCE)
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
@@ -232,9 +220,11 @@ def test_since_composes_with_a_key_predicate_on_a_large_part(store):
     # silently got the price series raises KeyError instead. Do not "restore" it here.
     cols = ["date", "ticker", "close_total"]
     _requires_tables(store, "cube_part_prices")
-    old = _sql(store, 'SELECT "date", "ticker", "close_total" FROM "cube_part_prices" '
-                      "WHERE date >= :since AND ticker = :t",
-               {"since": SINCE.strftime("%Y-%m-%d"), "t": TICKER})
+    old = _sql(
+        store,
+        'SELECT "date", "ticker", "close_total" FROM "cube_part_prices" ' "WHERE date >= :since AND ticker = :t",
+        {"since": SINCE.strftime("%Y-%m-%d"), "t": TICKER},
+    )
     new = store.load("cube_part_prices", columns=cols, since=SINCE, where={"ticker": TICKER})
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
@@ -249,11 +239,12 @@ def test_since_matches_ls_model_prices_window(store):
     `close_total` for the same reason as the case above: the bare `close` is deliberately never
     emitted on the equity path, so a total-return consumer cannot silently read prices."""
     _requires(store, "load")
-    old = _sql(store, 'SELECT "date", "ticker", "close_total" FROM prices '
-                      "WHERE date >= :cut AND ticker = :t",
-               {"cut": SINCE.strftime("%Y-%m-%d"), "t": TICKER})
-    new = store.load("prices", columns=["date", "ticker", "close_total"], since=SINCE,
-                     where={"ticker": TICKER})
+    old = _sql(
+        store,
+        'SELECT "date", "ticker", "close_total" FROM prices ' "WHERE date >= :cut AND ticker = :t",
+        {"cut": SINCE.strftime("%Y-%m-%d"), "t": TICKER},
+    )
+    new = store.load("prices", columns=["date", "ticker", "close_total"], since=SINCE, where={"ticker": TICKER})
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
 
@@ -269,10 +260,8 @@ def test_notnull_and_equality_compose_like_step_train_panel(store):
     _requires_tables(store, "cube")
     _requires_columns(store, "cube", "target_rank_h30")
     cols = ["date", "ticker", "target_rank_h30"]
-    old = _sql(store, 'SELECT "date", "ticker", "target_rank_h30" FROM cube '
-                      'WHERE "target_rank_h30" IS NOT NULL AND ticker = :t', {"t": TICKER})
-    new = store.load("cube", columns=cols,
-                     where={"target_rank_h30": store.NOT_NULL, "ticker": TICKER})
+    old = _sql(store, 'SELECT "date", "ticker", "target_rank_h30" FROM cube ' 'WHERE "target_rank_h30" IS NOT NULL AND ticker = :t', {"t": TICKER})
+    new = store.load("cube", columns=cols, where={"target_rank_h30": store.NOT_NULL, "ticker": TICKER})
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
 
@@ -280,12 +269,10 @@ def test_in_predicate_matches_fundamental_features_tag_pushdown(store):
     """`fundamental_features.load_tagged_facts` -- `WHERE tag IN :tags` via
     `bindparam(expanding=True)` (fundamental_features.py:417)."""
     _requires(store, "load")
-    tags = ["DefinedBenefitPlanBenefitObligation",
-            "DefinedBenefitPlanFairValueOfPlanAssets"]
+    tags = ["DefinedBenefitPlanBenefitObligation", "DefinedBenefitPlanFairValueOfPlanAssets"]
     cols = ["adsh", "tag", "ddate", "qtrs", "value"]
     # the two-tag filter IS the bound here: it selects a few thousand of the 40k rows
-    old = _sql(store, 'SELECT "adsh", "tag", "ddate", "qtrs", "value" FROM "notes_num" '
-                      "WHERE tag IN :tags", {"tags": tags}, expanding="tags")
+    old = _sql(store, 'SELECT "adsh", "tag", "ddate", "qtrs", "value" FROM "notes_num" ' "WHERE tag IN :tags", {"tags": tags}, expanding="tags")
     new = store.load("notes_num", columns=cols, where={"tag": tags})
     assert len(old) < 50_000, f"case is not bounded any more ({len(old)} rows)"
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
@@ -299,8 +286,7 @@ def test_iter_load_concatenates_to_the_same_frame(store):
     whole = store.load("prices_macro", columns=cols)
     chunks = list(store.iter_load("prices_macro", columns=cols, chunksize=1_000))
     assert len(chunks) > 1, "chunksize did not actually split the read"
-    pd.testing.assert_frame_equal(_norm(pd.concat(chunks, ignore_index=True)),
-                                  _norm(whole), check_dtype=False)
+    pd.testing.assert_frame_equal(_norm(pd.concat(chunks, ignore_index=True)), _norm(whole), check_dtype=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -335,14 +321,14 @@ def test_every_case_is_live(store):
     Skips are invisible in a green run, so this states the remaining work as an assertion
     instead. It is expected to FAIL until phase 2 lands, and the failure message is the
     to-do list."""
-    needed = ("exists", "columns", "row_count", "max_date", "bounds", "distinct",
-              "load", "iter_load", "append_tail", "drop", "NOT_NULL")
+    needed = ("exists", "columns", "row_count", "max_date", "bounds", "distinct", "load", "iter_load", "append_tail", "drop", "NOT_NULL")
     missing = [m for m in needed if not hasattr(store, m)]
-    print(f"\n[read-equivalence] {len(needed) - len(missing)}/{len(needed)} store "
-          f"capabilities live")
+    print(f"\n[read-equivalence] {len(needed) - len(missing)}/{len(needed)} store " f"capabilities live")
     if missing:
         print(f"    still to implement: {', '.join(missing)}")
     else:
-        print("    SANITY CHECK: every raw-SQL shape the refactor absorbs has a store "
-              "equivalent, and each is pinned frame-equal to its original query.")
+        print(
+            "    SANITY CHECK: every raw-SQL shape the refactor absorbs has a store "
+            "equivalent, and each is pinned frame-equal to its original query."
+        )
     assert not missing, f"DataStore is missing: {missing}"

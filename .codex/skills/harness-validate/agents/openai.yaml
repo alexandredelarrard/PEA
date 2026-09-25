@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Validate"
+  short_description: "Validate outcomes, review simplicity, and publish HTML evidence."
+  default_prompt: "Use $harness-validate to independently validate this candidate, run correctness and Ponytail reviews, and publish the evidence-backed Markdown and HTML readiness reports."

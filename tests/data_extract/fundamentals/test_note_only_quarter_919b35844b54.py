@@ -28,7 +28,7 @@ Ground truth read off the filed statements, not `companyfacts`:
 The fix is `fetch_fundamentals_sec._drop_note_only_quarter`. It keys on the note's SHAPE --
 the ASC 270 / Item 302 quarterly table is a SERIES, an ASC 270-10-50-2 fourth-quarter
 adjustment is a lone SENTENCE -- so it needs no concept list, no role-name matching and no
-second request. Every test below is synthetic known-truth (docs/testing.md: parsing math gets
+second request. Every test below is synthetic known-truth (wiki/guides/testing.md: parsing math gets
 fixtures) built from the numbers above; the real-filing evidence is the measurement recorded
 in the function's docstring.
 
@@ -37,6 +37,7 @@ quarters` pins the case the fix must not break -- BA's own Q4 revenue of $16,550
 the same note in the same filing -- and `test_a_10q_keeps_its_lone_quarter` pins the form
 gate, without which every quarter in every 10-Q is "lone" and the whole quarterly grain dies.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,8 +45,7 @@ import json
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import (
-    _adjustment_json, _drop_note_only_quarter, _period_frame, _values_by_period)
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _adjustment_json, _drop_note_only_quarter, _period_frame, _values_by_period
 from src.data_extract.utils.fundamentals.periods import ANNUAL, QUARTERLY
 from src.data_extract.utils.fundamentals.xbrl_linkbase import LINKBASE_TOTAL, Resolution
 
@@ -81,11 +81,22 @@ def _periods(facts: list[tuple[str, str, str, float]], concept: str) -> dict[tup
     from the real day-count bands so a fixture cannot classify a window the pipeline would
     not.
     """
-    frame = pd.DataFrame([{"concept": c, "numeric_value": v, "period_type": "duration",
-                           "period_start": start, "period_end": end,
-                           "fiscal_year": pd.Timestamp(end).year,
-                           "fiscal_period": "Q4", "unit_ref": "usd", "decimals": "-6"}
-                          for c, start, end, v in facts])
+    frame = pd.DataFrame(
+        [
+            {
+                "concept": c,
+                "numeric_value": v,
+                "period_type": "duration",
+                "period_start": start,
+                "period_end": end,
+                "fiscal_year": pd.Timestamp(end).year,
+                "fiscal_period": "Q4",
+                "unit_ref": "usd",
+                "decimals": "-6",
+            }
+            for c, start, end, v in facts
+        ]
+    )
     return _values_by_period(_period_frame(frame), concept)
 
 
@@ -96,8 +107,7 @@ def _by_end(periods: dict[tuple, dict]) -> dict[str, dict]:
 
 
 def _quarter_ends(periods: dict[tuple, dict]) -> set[str]:
-    return {end for end, p in _by_end(periods).items()
-            if p["duration_type"] == QUARTERLY}
+    return {end for end, p in _by_end(periods).items() if p["duration_type"] == QUARTERLY}
 
 
 # --------------------------------------------------------------------------- #
@@ -119,8 +129,10 @@ def test_ba_shape_a_lone_quarter_in_a_10k_is_refused(form):
     assert _quarter_ends(after) == set(), "the audit-settlement sentence is not a quarter"
     annual = sorted(p["value"] for p in after.values() if p["duration_type"] == ANNUAL)
     assert annual == [396_000_000.0, 1_196_000_000.0, 1_382_000_000.0]
-    print(f"BA shape: {len(before)} periods -> {len(after)}; the $371M/$397M Q4 tax rows are "
-          f"gone (true Q4s are -$163M and +$57M by FY-YTD9), all 3 annual windows kept")
+    print(
+        f"BA shape: {len(before)} periods -> {len(after)}; the $371M/$397M Q4 tax rows are "
+        f"gone (true Q4s are -$163M and +$57M by FY-YTD9), all 3 annual windows kept"
+    )
 
 
 def test_the_refusal_is_recorded_on_the_covering_annual():
@@ -133,18 +145,13 @@ def test_the_refusal_is_recorded_on_the_covering_annual():
     """
     hosts = _by_end(_drop_note_only_quarter(_periods(_BA_TAX, TAX), form="10-K"))
 
-    assert hosts["2010-12-31"]["note_quarter_rejected"] == [
-        {"period_end": "2010-12-31", "value": 371_000_000.0}]
-    assert hosts["2011-12-31"]["note_quarter_rejected"] == [
-        {"period_end": "2011-12-31", "value": 397_000_000.0}]
-    assert "note_quarter_rejected" not in hosts["2009-12-31"], (
-        "a year with no refusal carries no marker")
+    assert hosts["2010-12-31"]["note_quarter_rejected"] == [{"period_end": "2010-12-31", "value": 371_000_000.0}]
+    assert hosts["2011-12-31"]["note_quarter_rejected"] == [{"period_end": "2011-12-31", "value": 397_000_000.0}]
+    assert "note_quarter_rejected" not in hosts["2009-12-31"], "a year with no refusal carries no marker"
 
     host = hosts["2011-12-31"]
-    blob = json.loads(_adjustment_json(
-        Resolution(field="incomeTaxExpense", method=LINKBASE_TOTAL, concept=TAX), host))
-    assert blob == {"note_quarter_rejected": [{"period_end": "2011-12-31",
-                                              "value": 397_000_000.0}]}
+    blob = json.loads(_adjustment_json(Resolution(field="incomeTaxExpense", method=LINKBASE_TOTAL, concept=TAX), host))
+    assert blob == {"note_quarter_rejected": [{"period_end": "2011-12-31", "value": 397_000_000.0}]}
     print(f"refusal recorded: FY2011's adjustment blob is {json.dumps(blob)}")
 
 
@@ -163,8 +170,7 @@ def test_asc270_schedule_keeps_all_four_quarters():
 
     assert after == before, "four siblings is a series, not a sentence"
     assert _quarter_ends(after) == {"2010-03-31", "2010-06-30", "2010-09-30", "2010-12-31"}
-    print(f"ASC 270 schedule: all {len(_quarter_ends(after))} quarters of 2010 kept, "
-          f"Q4 revenue still $16,550M")
+    print(f"ASC 270 schedule: all {len(_quarter_ends(after))} quarters of 2010 kept, " f"Q4 revenue still $16,550M")
 
 
 def test_a_10q_keeps_its_lone_quarter():
@@ -173,8 +179,7 @@ def test_a_10q_keeps_its_lone_quarter():
     So every quarter in every 10-Q is "lone" by this test, and an ungated rule would delete
     the entire quarterly grain of the table rather than two rows of it.
     """
-    facts = [(TAX, "2011-01-01", "2011-12-31", 1_382_000_000.0),
-             (TAX, "2011-07-01", "2011-09-30", 548_000_000.0)]
+    facts = [(TAX, "2011-01-01", "2011-12-31", 1_382_000_000.0), (TAX, "2011-07-01", "2011-09-30", 548_000_000.0)]
     before = _periods(facts, TAX)
 
     assert _drop_note_only_quarter(before, form="10-Q") == before

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Implement"
+  short_description: "Execute an accepted plan with RED/GREEN evidence."
+  default_prompt: "Use $implement to execute the accepted plan and record auditable evidence."
+
+policy:
+  allow_implicit_invocation: false

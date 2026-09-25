@@ -47,33 +47,42 @@ divided it by a growing revenue and manufactured a collapse from 0.609 to 0.360.
 across the roster before the cap: **27 (ticker, field) pairs frozen 5+ years**, 49 for 2+ --
 BRK-B `operatingIncome` 54 of 57 rows, XOM `dilutedShares` 51 of 51.
 
-Both halves are synthetic known-truth here (docs/testing.md: parsing math gets fixtures);
+Both halves are synthetic known-truth here (wiki/guides/testing.md: parsing math gets fixtures);
 the real-filing evidence is the measurement recorded above and in the two docstrings.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.build_history import (
-    GROSS_PROFIT_IDENTITY_TOLERANCE, TTM_STALENESS_DAYS, _contradicts_gross_profit,
-    _gross_profit_identity, _is_stale)
+    GROSS_PROFIT_IDENTITY_TOLERANCE,
+    TTM_STALENESS_DAYS,
+    _contradicts_gross_profit,
+    _gross_profit_identity,
+    _is_stale,
+)
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
-    SEGMENT_ONLY_CONCEPT, TAG_PRIMARY, ArcGraph, is_note_only, resolve_field,
-    segment_only_concepts, statement_arcs)
+    SEGMENT_ONLY_CONCEPT,
+    TAG_PRIMARY,
+    ArcGraph,
+    is_note_only,
+    resolve_field,
+    segment_only_concepts,
+    statement_arcs,
+)
 
 CATALOGUE = load_catalogue("./configs")
 
 #: ORCL's own role, verbatim from 0001193125-18-201034. Verbatim because the guard is a
 #: naming heuristic over filer-authored strings: a placeholder would test the regex against
 #: a string we invented rather than against the one that actually shipped.
-_SEGMENT_ROLE = ("http://www.oracle.com/20180531/taxonomy/role/"
-                 "DisclosureSEGMENTINFORMATIONRECONCILIATIONDetails")
+_SEGMENT_ROLE = "http://www.oracle.com/20180531/taxonomy/role/" "DisclosureSEGMENTINFORMATIONRECONCILIATIONDetails"
 _INCOME_ROLE = "http://x/role/ConsolidatedStatementsOfIncome"
 
-_ARC_COLS = ["concept", "concept_taxonomy", "parent_concept", "parent_taxonomy",
-             "weight", "role_uri", "menucat", "is_abstract", "arc_filter"]
+_ARC_COLS = ["concept", "concept_taxonomy", "parent_concept", "parent_taxonomy", "weight", "role_uri", "menucat", "is_abstract", "arc_filter"]
 
 
 class _FakeXbrl:
@@ -89,28 +98,45 @@ class _FakeXbrl:
 def _arcs(rows: list[tuple[str, str, str, str]]) -> pd.DataFrame:
     """(concept, parent, role, menucat) -> the RAW calculation-linkbase frame."""
     return pd.DataFrame(
-        [{"concept": c, "concept_taxonomy": "us-gaap", "parent_concept": p,
-          "parent_taxonomy": "us-gaap", "weight": 1.0, "role_uri": role,
-          "menucat": menucat, "is_abstract": False, "arc_filter": "both"}
-         for c, p, role, menucat in rows],
-        columns=_ARC_COLS)
+        [
+            {
+                "concept": c,
+                "concept_taxonomy": "us-gaap",
+                "parent_concept": p,
+                "parent_taxonomy": "us-gaap",
+                "weight": 1.0,
+                "role_uri": role,
+                "menucat": menucat,
+                "is_abstract": False,
+                "arc_filter": "both",
+            }
+            for c, p, role, menucat in rows
+        ],
+        columns=_ARC_COLS,
+    )
 
 
 #: ORCL's shape: `GrossProfit` declared ONLY under the segment-note reconciliation, with a
 #: perfectly ordinary income statement beside it that never mentions it.
-_ORCL_ARCS = _arcs([
-    ("GrossProfit", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes"
-                    "ExtraordinaryItemsNoncontrollingInterest", _SEGMENT_ROLE, "Details"),
-    ("CostsAndExpenses", "OperatingIncomeLoss", _INCOME_ROLE, "Statements"),
-])
+_ORCL_ARCS = _arcs(
+    [
+        ("GrossProfit", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes" "ExtraordinaryItemsNoncontrollingInterest", _SEGMENT_ROLE, "Details"),
+        ("CostsAndExpenses", "OperatingIncomeLoss", _INCOME_ROLE, "Statements"),
+    ]
+)
 
 
 def _resolve(arcs: pd.DataFrame, available: set[str], segment_only: frozenset[str]):
     """`grossProfit` resolved against a synthetic filing reporting `available`."""
     return resolve_field(
-        CATALOGUE.field("grossProfit"), ArcGraph(statement_arcs(_FakeXbrl(arcs))),
-        frozenset(available), CATALOGUE, regime="industrial", ticker="ORCL",
-        segment_only=segment_only)
+        CATALOGUE.field("grossProfit"),
+        ArcGraph(statement_arcs(_FakeXbrl(arcs))),
+        frozenset(available),
+        CATALOGUE,
+        regime="industrial",
+        ticker="ORCL",
+        segment_only=segment_only,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -134,8 +160,7 @@ def test_a_segment_only_concept_is_found_on_the_unfiltered_linkbase():
     assert "GrossProfit" in found
     assert "CostsAndExpenses" not in found
     print("\n=== SANITY CHECK: segment_only_concepts ===")
-    print(f"  GrossProfit withheld: {'GrossProfit' in found}; the income-statement node "
-          f"CostsAndExpenses withheld: {'CostsAndExpenses' in found}")
+    print(f"  GrossProfit withheld: {'GrossProfit' in found}; the income-statement node " f"CostsAndExpenses withheld: {'CostsAndExpenses' in found}")
     print("  Read off the UNFILTERED frame, so the dropped arc is still evidence.")
     print("  Validated.")
 
@@ -150,8 +175,7 @@ def test_the_parent_a_segment_note_reconciles_to_is_never_withheld():
     10-Q 0001564590-18-023315 its real consolidated pretax element carries no arc except as
     the parent of the segment note's `GrossProfit`.
     """
-    parent = ("IncomeLossFromContinuingOperationsBeforeIncomeTaxes"
-              "ExtraordinaryItemsNoncontrollingInterest")
+    parent = "IncomeLossFromContinuingOperationsBeforeIncomeTaxes" "ExtraordinaryItemsNoncontrollingInterest"
     found = segment_only_concepts(_ORCL_ARCS)
     assert parent not in found
     assert "GrossProfit" in found
@@ -166,16 +190,14 @@ def test_orcl_gross_profit_resolves_to_a_reason_coded_null_not_a_segment_margin(
     before = _resolve(_ORCL_ARCS, {"GrossProfit", "CostsAndExpenses"}, frozenset())
     assert before.method == TAG_PRIMARY and before.concept == "us-gaap:GrossProfit"
 
-    after = _resolve(_ORCL_ARCS, {"GrossProfit", "CostsAndExpenses"},
-                     segment_only_concepts(_ORCL_ARCS))
+    after = _resolve(_ORCL_ARCS, {"GrossProfit", "CostsAndExpenses"}, segment_only_concepts(_ORCL_ARCS))
     assert not after.resolved
     assert after.dc_code == SEGMENT_ONLY_CONCEPT
     assert after.segment_rejected == ("GrossProfit",)
     print("\n=== SANITY CHECK: cluster 876ab8a57bd8 ===")
     print(f"  before: {before.method} on {before.concept} -> FY2018 stored")
     print("          24,287,000,000, the sum of three SEGMENT margins")
-    print(f"  after:  unresolved, dc_code={after.dc_code}, "
-          f"segment_rejected={list(after.segment_rejected)}")
+    print(f"  after:  unresolved, dc_code={after.dc_code}, " f"segment_rejected={list(after.segment_rejected)}")
     print("  Oracle presents no gross-profit subtotal, so a reason-coded NULL is the")
     print("  correct answer. Validated.")
 
@@ -192,8 +214,7 @@ def test_the_refusal_is_not_relaxable_unlike_the_note_guard():
     after = _resolve(_ORCL_ARCS, {"GrossProfit"}, frozenset({"GrossProfit"}))
     assert not after.resolved and not after.role_only_retained
     print("\n=== SANITY CHECK: no relaxation pass restores it ===")
-    print(f"  resolved={after.resolved}, role_only_retained={after.role_only_retained}, "
-          f"dc_code={after.dc_code}. Validated.")
+    print(f"  resolved={after.resolved}, role_only_retained={after.role_only_retained}, " f"dc_code={after.dc_code}. Validated.")
 
 
 def test_a_concept_on_a_face_statement_is_never_segment_only():
@@ -202,18 +223,22 @@ def test_a_concept_on_a_face_statement_is_never_segment_only():
     The measured cost of getting this wrong is 189 correct rows: share counts,
     `ShareBasedCompensation` and restricted-cash totals all carry note-only arcs.
     """
-    arcs = _arcs([
-        ("GrossProfit", "OperatingIncomeLoss", _INCOME_ROLE, "Statements"),
-        ("GrossProfit", "SegmentReportingInformationLineItems", _SEGMENT_ROLE, "Details"),
-    ])
+    arcs = _arcs(
+        [
+            ("GrossProfit", "OperatingIncomeLoss", _INCOME_ROLE, "Statements"),
+            ("GrossProfit", "SegmentReportingInformationLineItems", _SEGMENT_ROLE, "Details"),
+        ]
+    )
     found = segment_only_concepts(arcs)
     assert "GrossProfit" not in found
     resolution = _resolve(arcs, {"GrossProfit"}, found)
     assert resolution.resolved and resolution.concept == "us-gaap:GrossProfit"
     print("\n=== SANITY CHECK: one face-statement arc is enough to keep a concept ===")
-    print(f"  declared on BOTH an income-statement and a segment role -> "
-          f"GrossProfit withheld: {'GrossProfit' in found}, "
-          f"resolved={resolution.resolved}. Validated.")
+    print(
+        f"  declared on BOTH an income-statement and a segment role -> "
+        f"GrossProfit withheld: {'GrossProfit' in found}, "
+        f"resolved={resolution.resolved}. Validated."
+    )
 
 
 def test_silence_is_still_not_evidence():
@@ -268,8 +293,7 @@ def test_an_unknown_fiscal_end_refuses_nothing():
     to be stale against, and refusing there would null every ticker's first event."""
     row = pd.Series({"period_end": pd.Timestamp("2020-01-31"), "value": 1.0})
     assert not _is_stale(row, pd.NaT)
-    assert not _is_stale(pd.Series({"period_end": pd.NaT, "value": 1.0}),
-                         pd.Timestamp("2020-01-31"))
+    assert not _is_stale(pd.Series({"period_end": pd.NaT, "value": 1.0}), pd.Timestamp("2020-01-31"))
     print("\n=== SANITY CHECK: NaT on either side refuses nothing ===")
     print("  no fiscal_end -> no refusal; no period_end -> no refusal. Validated.")
 
@@ -279,8 +303,7 @@ def test_the_stale_code_is_an_absence_not_a_qualifier():
     a qualifier means a value is present and a gate would stop looking for one."""
     assert rc.STALE_TTM in rc.ALL_CODES and rc.STALE_TTM not in rc.IS_QUALIFIER
     print("\n=== SANITY CHECK: stale_ttm is an absence code ===")
-    print(f"  in ALL_CODES={rc.STALE_TTM in rc.ALL_CODES}, "
-          f"in IS_QUALIFIER={rc.STALE_TTM in rc.IS_QUALIFIER}. Validated.")
+    print(f"  in ALL_CODES={rc.STALE_TTM in rc.ALL_CODES}, " f"in IS_QUALIFIER={rc.STALE_TTM in rc.IS_QUALIFIER}. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -288,9 +311,7 @@ def test_the_stale_code_is_an_absence_not_a_qualifier():
 # --------------------------------------------------------------------------- #
 def _facts(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
     """(field, period_end, value) -> the `visible` frame the identity guard reads."""
-    return pd.DataFrame(
-        [{"field": f, "period_end": pd.Timestamp(pe), "duration_type": "annual",
-          "value": v} for f, pe, v in rows])
+    return pd.DataFrame([{"field": f, "period_end": pd.Timestamp(pe), "duration_type": "annual", "value": v} for f, pe, v in rows])
 
 
 def test_a_filer_that_never_tags_gross_profit_gets_the_derived_number():
@@ -302,13 +323,11 @@ def test_a_filer_that_never_tags_gross_profit_gets_the_derived_number():
     4,556) = 44,336, a 65.8% margin.
     """
     row = {"totalRevenue": 67_357e6, "costOfRevenue": 23_021e6, "grossProfit": None}
-    visible = _facts([("totalRevenue", "2026-05-31", 67_357e6),
-                      ("costOfRevenue", "2026-05-31", 23_021e6)])
+    visible = _facts([("totalRevenue", "2026-05-31", 67_357e6), ("costOfRevenue", "2026-05-31", 23_021e6)])
     got = _gross_profit_identity(row, visible)
     assert got == 44_336e6
     print("\n=== SANITY CHECK: the derivation, on ORCL's FY2026 numbers ===")
-    print(f"  67,357 - 23,021 = {got / 1e6:,.0f}  ->  margin "
-          f"{got / row['totalRevenue']:.1%}")
+    print(f"  67,357 - 23,021 = {got / 1e6:,.0f}  ->  margin " f"{got / row['totalRevenue']:.1%}")
     print("  Oracle files no gross-profit line; this is how every vendor has the number.")
     print("  Validated.")
 
@@ -320,9 +339,7 @@ def test_the_identity_is_refused_where_the_filer_s_own_tags_break_it():
     On the as-filed facts, 11 of 13 tickers that tag all three satisfy the identity in
     100% of rows; CAT breaks it on 24 rows by +22.5% and COST on 6 by +20.3%.
     """
-    visible = _facts([("totalRevenue", "2024-12-31", 100.0),
-                      ("costOfRevenue", "2024-12-31", 60.0),
-                      ("grossProfit", "2024-12-31", 25.0)])       # 40 != 25
+    visible = _facts([("totalRevenue", "2024-12-31", 100.0), ("costOfRevenue", "2024-12-31", 60.0), ("grossProfit", "2024-12-31", 25.0)])  # 40 != 25
     assert _contradicts_gross_profit(visible)
     row = {"totalRevenue": 110.0, "costOfRevenue": 66.0, "grossProfit": None}
     assert _gross_profit_identity(row, visible) is None
@@ -333,15 +350,12 @@ def test_the_identity_is_refused_where_the_filer_s_own_tags_break_it():
 
 def test_a_filer_that_agrees_within_rounding_still_gets_the_derivation():
     """The guard must not fire on `decimals=-6` rounding, only on a real disagreement."""
-    visible = _facts([("totalRevenue", "2024-12-31", 100.0),
-                      ("costOfRevenue", "2024-12-31", 60.0),
-                      ("grossProfit", "2024-12-31", 40.2)])       # 0.5% out
+    visible = _facts([("totalRevenue", "2024-12-31", 100.0), ("costOfRevenue", "2024-12-31", 60.0), ("grossProfit", "2024-12-31", 40.2)])  # 0.5% out
     assert not _contradicts_gross_profit(visible)
     row = {"totalRevenue": 110.0, "costOfRevenue": 66.0, "grossProfit": None}
     assert _gross_profit_identity(row, visible) == 44.0
     print("\n=== SANITY CHECK: the tolerance absorbs rounding, not disagreement ===")
-    print(f"  0.5% apart vs a {GROSS_PROFIT_IDENTITY_TOLERANCE:.0%} band -> derived. "
-          "Validated.")
+    print(f"  0.5% apart vs a {GROSS_PROFIT_IDENTITY_TOLERANCE:.0%} band -> derived. " "Validated.")
 
 
 def test_an_identity_short_one_term_is_not_an_approximation_of_itself():
@@ -349,12 +363,8 @@ def test_an_identity_short_one_term_is_not_an_approximation_of_itself():
     silently standing in for a total -- the same one that forbids a `totalLiabilities`
     `roll_up.any_of`."""
     visible = _facts([("totalRevenue", "2026-05-31", 67_357e6)])
-    assert _gross_profit_identity(
-        {"totalRevenue": 67_357e6, "costOfRevenue": None, "grossProfit": None},
-        visible) is None
-    assert _gross_profit_identity(
-        {"totalRevenue": None, "costOfRevenue": 23_021e6, "grossProfit": None},
-        visible) is None
+    assert _gross_profit_identity({"totalRevenue": 67_357e6, "costOfRevenue": None, "grossProfit": None}, visible) is None
+    assert _gross_profit_identity({"totalRevenue": None, "costOfRevenue": 23_021e6, "grossProfit": None}, visible) is None
     print("\n=== SANITY CHECK: a missing term refuses rather than approximates ===")
     print("  no cost -> None; no revenue -> None. Validated.")
 
@@ -366,11 +376,9 @@ def test_silence_from_a_filer_is_not_a_contradiction():
     evidence against, and a lifetime rule asserted over a regime is what nearly claimed UNH
     earns no premiums.
     """
-    visible = _facts([("totalRevenue", "2026-05-31", 67_357e6),
-                      ("costOfRevenue", "2026-05-31", 23_021e6)])
+    visible = _facts([("totalRevenue", "2026-05-31", 67_357e6), ("costOfRevenue", "2026-05-31", 23_021e6)])
     assert not _contradicts_gross_profit(visible)
-    assert not _contradicts_gross_profit(pd.DataFrame(
-        columns=["field", "period_end", "duration_type", "value"]))
+    assert not _contradicts_gross_profit(pd.DataFrame(columns=["field", "period_end", "duration_type", "value"]))
     print("\n=== SANITY CHECK: never tagging it is not disagreeing with it ===")
     print("  two of three tags present -> no contradiction; empty frame -> none.")
     print("  Validated.")
@@ -416,8 +424,7 @@ def test_cost_of_revenue_can_reach_route_3b_at_all():
     # `CostsAndExpenses` carries weight 1.0.
     assert roll_up["leaf_weight"] == 1.0
     print("\n=== SANITY CHECK: costOfRevenue is route-3b eligible ===")
-    print(f"  anchor={roll_up['anchor']} role={roll_up['anchor_role']} "
-          f"leaf_weight={roll_up['leaf_weight']} groups={len(roll_up['any_of'])}")
+    print(f"  anchor={roll_up['anchor']} role={roll_up['anchor_role']} " f"leaf_weight={roll_up['leaf_weight']} groups={len(roll_up['any_of'])}")
     print("  Validated.")
 
 

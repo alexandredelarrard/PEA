@@ -5,21 +5,27 @@ and their typed `.obj()` results are faked with SimpleNamespace so the row-
 building logic (`_filing_row` / `_filing_rows`) is exercised without needing a
 live `Company(ticker).get_filings(...)` call.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 import pandas as pd
 
-from src.data_extract.transformers.step_extract_institutionals import (
-    StepExtractInstitutionals)
+from src.constants.constants import SEC_13D_FORMS
+from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.utils.institutionals.fetch_8k_edgar import _filing_row, fetch_8k_edgar
-from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
-    _ITEM_ANCHORS, _carve_with, _clean_transaction_row, _extract_13d_item_sections,
-    _extract_transaction_rows, _filing_rows, _normalize_item_text,
-    build_ticker_13d_edgar, fetch_13d_edgar,
+    _ITEM_ANCHORS,
+    _carve_with,
+    _clean_transaction_row,
+    _extract_13d_item_sections,
+    _extract_transaction_rows,
+    _filing_rows,
+    _normalize_item_text,
+    build_ticker_13d_edgar,
+    fetch_13d_edgar,
 )
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
@@ -40,36 +46,49 @@ def test_filing_fetchers_take_years_history_as_an_argument():
         params = inspect.signature(fn).parameters
         assert "years_history" in params, f"{fn.__name__} must take years_history"
         assert params["years_history"].default is inspect.Parameter.empty, (
-            f"{fn.__name__}.years_history must be required, not defaulted -- a default is a "
-            f"second place for the window to diverge")
+            f"{fn.__name__}.years_history must be required, not defaulted -- a default is a " f"second place for the window to diverge"
+        )
 
     # each step is the single place that reads the window off the config, for its own fetchers
     expected = {
-        # 13F, 13F-manager books, insiders, 13D, 13G, 8-K, short interest, FTD
+        # 13F, 13F-manager books, bulk insiders, daily insiders, 13D, 13G, 8-K,
+        # short interest, FTD
         # (superinvestors takes no window)
-        StepExtractInstitutionals: 8,
+        StepExtractInstitutionals: 9,
         # DEF 14A edgar + filing text (the LLM and vote passes take no window)
         StepExtractStructure: 2,
     }
     for step, n_windowed in expected.items():
         run = inspect.getsource(step.run)
-        assert run.count("data_extract.years_history") == 1, (
-            f"{step.__name__} must read the window exactly once")
+        assert run.count("data_extract.years_history") == 1, f"{step.__name__} must read the window exactly once"
         assert run.count("years_history=years_history") == n_windowed, (
-            f"{step.__name__} passes the window to "
-            f"{run.count('years_history=years_history')} fetchers, expected {n_windowed}")
+            f"{step.__name__} passes the window to " f"{run.count('years_history=years_history')} fetchers, expected {n_windowed}"
+        )
     print("\n=== SANITY: extraction window plumbing ===")
-    print(f"  {' + '.join(f'{s.__name__}={n}' for s, n in expected.items())} windowed "
-          "fetchers; each step reads data_extract.years_history exactly once and passes it "
-          "down. No fetcher reads the config itself. Validated.")
+    print(
+        f"  {' + '.join(f'{s.__name__}={n}' for s, n in expected.items())} windowed "
+        "fetchers; each step reads data_extract.years_history exactly once and passes it "
+        "down. No fetcher reads the config itself. Validated."
+    )
 
 
-def _fake_8k_filing(*, accession="0001-24-000001", form="8-K", filing_date="2024-05-01",
-                    period_of_report="2024-04-30", items="2.02,9.01",
-                    primary_document="form8k.htm", obj=None):
+def _fake_8k_filing(
+    *,
+    accession="0001-24-000001",
+    form="8-K",
+    filing_date="2024-05-01",
+    period_of_report="2024-04-30",
+    items="2.02,9.01",
+    primary_document="form8k.htm",
+    obj=None,
+):
     filing = SimpleNamespace(
-        accession_number=accession, form=form, filing_date=filing_date,
-        period_of_report=period_of_report, items=items, primary_document=primary_document,
+        accession_number=accession,
+        form=form,
+        filing_date=filing_date,
+        period_of_report=period_of_report,
+        items=items,
+        primary_document=primary_document,
     )
     filing.obj = (lambda: obj) if obj is not None else (lambda: (_ for _ in ()).throw(RuntimeError("no parse")))
     return filing
@@ -98,7 +117,7 @@ def test_8k_filing_row_survives_failed_obj_parse():
 
     NaN, not None: `store.ensure_table` types a cold table's columns from the first
     frame written to it, so an all-None flag column would be created TEXT."""
-    filing = _fake_8k_filing()   # obj=None -> .obj() raises
+    filing = _fake_8k_filing()  # obj=None -> .obj() raises
     rows = _filing_row("MAA", "0000320193", filing)
     assert [r["item"] for r in rows] == ["2.02", "9.01"]
     assert all(pd.isna(r["has_earnings"]) for r in rows)
@@ -113,11 +132,16 @@ def test_8k_amendment_flag_from_form_suffix():
     assert all(r["is_amendment"] == 1.0 for r in rows)
 
 
-def _fake_13d_filing(*, accession="0001-24-000002", form="SC 13D", filing_date="2024-06-11",
-                     primary_document="sc13d.htm", obj=None, document=None, cik="0001326380"):
+def _fake_13d_filing(
+    *, accession="0001-24-000002", form="SC 13D", filing_date="2024-06-11", primary_document="sc13d.htm", obj=None, document=None, cik="0001326380"
+):
     filing = SimpleNamespace(
-        accession_number=accession, form=form, filing_date=filing_date,
-        primary_document=primary_document, document=document, cik=cik,
+        accession_number=accession,
+        form=form,
+        filing_date=filing_date,
+        primary_document=primary_document,
+        document=document,
+        cik=cik,
     )
     filing.obj = lambda: obj
     return filing
@@ -129,10 +153,14 @@ def test_13d_doc_url_is_a_url_not_a_rendered_table():
     in `doc_url` for every row, never a URL. Take the attachment's own `.url`, else compose
     the archives path from cik/accession/primary_document."""
     obj = SimpleNamespace(
-        has_structured_data=False, is_amendment=False, amendment_number=None,
-        issuer_info=None, security_info=None,
+        has_structured_data=False,
+        is_amendment=False,
+        amendment_number=None,
+        issuer_info=None,
+        security_info=None,
         items=SimpleNamespace(item4_purpose_of_transaction=None),
-        date_of_event=None, event_date=None,
+        date_of_event=None,
+        event_date=None,
         reporting_persons=[_reporting_person("Icahn Carl C")],
     )
 
@@ -144,20 +172,25 @@ def test_13d_doc_url_is_a_url_not_a_rendered_table():
             return "+------+\n| 1 sc13d.htm |\n+------+"
 
     row = _filing_rows(_fake_13d_filing(obj=obj, document=_BoxedDocument()))[0]
-    assert row["doc_url"] == (
-        "https://www.sec.gov/Archives/edgar/data/1326380/000124000002/sc13d.htm")
+    assert row["doc_url"] == ("https://www.sec.gov/Archives/edgar/data/1326380/000124000002/sc13d.htm")
     assert "+--" not in row["doc_url"]
 
     # when the attachment exposes a real url, use it verbatim
-    row = _filing_rows(_fake_13d_filing(
-        obj=obj, document=SimpleNamespace(url="https://www.sec.gov/Archives/x/y.htm")))[0]
+    row = _filing_rows(_fake_13d_filing(obj=obj, document=SimpleNamespace(url="https://www.sec.gov/Archives/x/y.htm")))[0]
     assert row["doc_url"] == "https://www.sec.gov/Archives/x/y.htm"
 
 
 def _reporting_person(name, cik="0001822844", no_cik=False, **kw):
-    defaults = dict(citizenship="", sole_voting_power=0, shared_voting_power=0,
-                    sole_dispositive_power=0, shared_dispositive_power=0,
-                    aggregate_amount=0, percent_of_class=0.0, type_of_reporting_person="")
+    defaults = dict(
+        citizenship="",
+        sole_voting_power=0,
+        shared_voting_power=0,
+        sole_dispositive_power=0,
+        shared_dispositive_power=0,
+        aggregate_amount=0,
+        percent_of_class=0.0,
+        type_of_reporting_person="",
+    )
     defaults.update(kw)
     return SimpleNamespace(name=name, cik=cik, no_cik=no_cik, **defaults)
 
@@ -167,11 +200,14 @@ def test_13d_reporting_persons_get_one_row_each_with_rp_seq():
     rp_seq (0-based position) -- collapsing them into one row would silently drop
     all but one filer."""
     obj = SimpleNamespace(
-        has_structured_data=False, is_amendment=False, amendment_number=None,
+        has_structured_data=False,
+        is_amendment=False,
+        amendment_number=None,
         issuer_info=SimpleNamespace(cik="0001326380", name="GameStop Corp."),
         security_info=SimpleNamespace(cusip="36467W109"),
         items=SimpleNamespace(item4_purpose_of_transaction=None),
-        date_of_event=None, event_date=None,
+        date_of_event=None,
+        event_date=None,
         reporting_persons=[_reporting_person("RC Ventures LLC"), _reporting_person("Cohen Ryan", cik="0001")],
     )
     filing = _fake_13d_filing(obj=obj)
@@ -193,10 +229,14 @@ def test_13d_numeric_ownership_fields_null_when_not_structured():
     would get inferred as SQL TEXT, corrupting a genuinely numeric field the
     first time a real row needs to share it)."""
     obj = SimpleNamespace(
-        has_structured_data=False, is_amendment=True, amendment_number=3,
-        issuer_info=None, security_info=None,
+        has_structured_data=False,
+        is_amendment=True,
+        amendment_number=3,
+        issuer_info=None,
+        security_info=None,
         items=SimpleNamespace(item4_purpose_of_transaction=None),
-        date_of_event=None, event_date=None,
+        date_of_event=None,
+        event_date=None,
         reporting_persons=[_reporting_person("RC Ventures LLC", percent_of_class=0.0, aggregate_amount=0)],
     )
     filing = _fake_13d_filing(obj=obj)
@@ -214,10 +254,14 @@ def test_13d_numeric_ownership_fields_trusted_when_structured():
     through untouched -- the null-out above is specifically an UNRELIABLE-parse
     guard, not a blanket "never trust the numbers" rule."""
     obj = SimpleNamespace(
-        has_structured_data=True, is_amendment=False, amendment_number=None,
-        issuer_info=None, security_info=None,
+        has_structured_data=True,
+        is_amendment=False,
+        amendment_number=None,
+        issuer_info=None,
+        security_info=None,
         items=SimpleNamespace(item4_purpose_of_transaction="Acquire control of the issuer."),
-        date_of_event="2024-05-13", event_date=None,
+        date_of_event="2024-05-13",
+        event_date=None,
         reporting_persons=[_reporting_person("Icahn Carl C", percent_of_class=9.9, aggregate_amount=12345678)],
     )
     filing = _fake_13d_filing(obj=obj)
@@ -232,10 +276,14 @@ def test_13d_reporting_person_without_cik_is_not_dropped():
     """`no_cik=True` (common for individuals / entities without an assigned CIK)
     must not drop the row -- only the CIK column is nulled."""
     obj = SimpleNamespace(
-        has_structured_data=False, is_amendment=False, amendment_number=None,
-        issuer_info=None, security_info=None,
+        has_structured_data=False,
+        is_amendment=False,
+        amendment_number=None,
+        issuer_info=None,
+        security_info=None,
         items=SimpleNamespace(item4_purpose_of_transaction=None),
-        date_of_event=None, event_date=None,
+        date_of_event=None,
+        event_date=None,
         reporting_persons=[_reporting_person("Doe Jane", cik="9999999999", no_cik=True)],
     )
     filing = _fake_13d_filing(obj=obj)
@@ -307,7 +355,7 @@ def test_item5_body_survives_a_cross_reference_to_item6():
     sections = _extract_13d_item_sections(_REAL_13D_TEXT_SAMPLE)
     item5 = sections["item5_interest_in_securities"]
     assert "See Item 6 for information" in item5
-    assert "letter agreement" not in item5     # real Item 6 body must NOT leak in
+    assert "letter agreement" not in item5  # real Item 6 body must NOT leak in
 
 
 def test_item_sections_missing_item_is_absent_not_empty():
@@ -333,8 +381,10 @@ def test_item4_anchor_matches_purpose_of_the_transaction():
     """The SEC's own caption is "Purpose of Transaction", but filers routinely write
     "Purpose of THE Transaction" (PSA, CVNA, EXPE) -- the single largest source of
     Item 4 misses. The caption must tolerate the optional article."""
-    text = ("Item 4. Purpose of the Transaction\n\nThe Reporting Persons intend to engage "
-            "in discussions with the board regarding capital allocation.\n\nSIGNATURE\n")
+    text = (
+        "Item 4. Purpose of the Transaction\n\nThe Reporting Persons intend to engage "
+        "in discussions with the board regarding capital allocation.\n\nSIGNATURE\n"
+    )
     sections = _extract_13d_item_sections(text)
     assert "capital allocation" in sections["item4_purpose_of_transaction"]
 
@@ -343,8 +393,10 @@ def test_item4_anchor_matches_a_captionless_heading():
     """Some filers print a bare "Item 4." with the caption omitted entirely (FSLR 2016).
     A heading that STARTS A LINE and ENDS right after the number is a real heading, not
     the mid-prose cross-reference a bare-number anchor would otherwise collide with."""
-    text = ("Item 4.\n\nThe Reporting Persons acquired the Shares for investment purposes "
-            "only and have no present plan to influence control.\n\nSIGNATURE\n")
+    text = (
+        "Item 4.\n\nThe Reporting Persons acquired the Shares for investment purposes "
+        "only and have no present plan to influence control.\n\nSIGNATURE\n"
+    )
     sections = _extract_13d_item_sections(text)
     assert "investment purposes" in sections["item4_purpose_of_transaction"]
 
@@ -354,14 +406,16 @@ def test_item3_body_stops_at_a_the_transaction_caption():
     and ran on until the NEXT anchor that did match, swallowing Item 4's entire body
     (measured on 4.0% of originals / 6.8% of amendments; MNST's item3 was 17,776 chars
     where the true body is 850). Item 3 must stop at Item 4's heading."""
-    text = ("Item 3. Source and Amount of Funds or Other Consideration\n\n"
-            "The Reporting Persons used working capital of the Funds.\n\n"
-            "Item 4. Purpose of the Transaction\n\n"
-            "The Reporting Persons intend to nominate directors to the board.\n\nSIGNATURE\n")
+    text = (
+        "Item 3. Source and Amount of Funds or Other Consideration\n\n"
+        "The Reporting Persons used working capital of the Funds.\n\n"
+        "Item 4. Purpose of the Transaction\n\n"
+        "The Reporting Persons intend to nominate directors to the board.\n\nSIGNATURE\n"
+    )
     sections = _extract_13d_item_sections(text)
     item3 = sections["item3_source_of_funds"]
     assert "working capital" in item3
-    assert "nominate directors" not in item3            # Item 4's body must NOT leak in
+    assert "nominate directors" not in item3  # Item 4's body must NOT leak in
     assert "nominate directors" in sections["item4_purpose_of_transaction"]
 
 
@@ -370,10 +424,12 @@ def test_item_carve_falls_back_on_a_single_line_filing():
     (HUBB 0001162044-13-001406 is such a filing). The legacy anywhere-matching anchor is
     the only thing that reads those, which is why it is kept as the fallback half of the
     union rule rather than deleted."""
-    text = ("Item 3. Source and Amount of Funds or Other Consideration The Reporting Persons "
-            "used working capital of the Funds for the purchase. Item 4. Purpose of Transaction "
-            "The Reporting Persons intend to engage the board about strategic alternatives. "
-            "SIGNATURE")
+    text = (
+        "Item 3. Source and Amount of Funds or Other Consideration The Reporting Persons "
+        "used working capital of the Funds for the purchase. Item 4. Purpose of Transaction "
+        "The Reporting Persons intend to engage the board about strategic alternatives. "
+        "SIGNATURE"
+    )
     assert "\n" not in text
     sections = _extract_13d_item_sections(text)
     assert "working capital" in sections["item3_source_of_funds"]
@@ -391,28 +447,41 @@ def test_item_carve_fallback_rejects_a_contaminated_legacy_body():
     The guard screens the FALLBACK body only: a line-anchored body ends at the next
     line-anchored heading, and contamination of one was measured at 0% on both the 182
     originals and the 200-amendment sample."""
-    text = ("This Amendment No. 2 amends the Schedule 13D previously filed. "
-            "Item 3. Source and Amount of Funds or Other Consideration Working capital of "
-            "the Funds was used. Item 4. Purpose of the Transaction The Reporting Persons "
-            "intend to nominate directors to the board of the Issuer. SIGNATURE")
+    text = (
+        "This Amendment No. 2 amends the Schedule 13D previously filed. "
+        "Item 3. Source and Amount of Funds or Other Consideration Working capital of "
+        "the Funds was used. Item 4. Purpose of the Transaction The Reporting Persons "
+        "intend to nominate directors to the board of the Issuer. SIGNATURE"
+    )
     legacy = _carve_with(text, _ITEM_ANCHORS)
-    assert "nominate directors" in legacy["item3_source_of_funds"]    # legacy IS contaminated
+    assert "nominate directors" in legacy["item3_source_of_funds"]  # legacy IS contaminated
     sections = _extract_13d_item_sections(text)
-    assert "item3_source_of_funds" not in sections                    # ...so it is dropped
+    assert "item3_source_of_funds" not in sections  # ...so it is dropped
 
 
 # --- The false-zero guard: a deferred position is not a zero position -------- #
 def _structured_obj(*persons):
     return SimpleNamespace(
-        has_structured_data=True, is_amendment=True, amendment_number=3,
-        issuer_info=None, security_info=None,
+        has_structured_data=True,
+        is_amendment=True,
+        amendment_number=3,
+        issuer_info=None,
+        security_info=None,
         items=SimpleNamespace(item4_purpose_of_transaction=None),
-        date_of_event=None, event_date=None, reporting_persons=list(persons),
+        date_of_event=None,
+        event_date=None,
+        reporting_persons=list(persons),
     )
 
 
-_NUMERIC_COLS = ("sole_voting_power", "shared_voting_power", "sole_dispositive_power",
-                 "shared_dispositive_power", "aggregate_amount", "percent_of_class")
+_NUMERIC_COLS = (
+    "sole_voting_power",
+    "shared_voting_power",
+    "sole_dispositive_power",
+    "shared_dispositive_power",
+    "aggregate_amount",
+    "percent_of_class",
+)
 
 
 def test_placeholder_numerics_with_a_comment_are_nulled_not_written_as_zero():
@@ -424,11 +493,11 @@ def test_placeholder_numerics_with_a_comment_are_nulled_not_written_as_zero():
     table would start claiming 0% stakes (measured: 84 of 738 backlog rows, 11.4%, carry
     percent_of_class == 0)."""
     rp = _reporting_person(
-        "The Leonard A. Lauder 2013 Revocable Trust",
-        comment="Rows 7, 8, 9, 10, 11, and 13:  See Item 5 of this Schedule 13D amendment.")
+        "The Leonard A. Lauder 2013 Revocable Trust", comment="Rows 7, 8, 9, 10, 11, and 13:  See Item 5 of this Schedule 13D amendment."
+    )
     row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert all(pd.isna(row[c]) for c in _NUMERIC_COLS)
-    assert all(isinstance(row[c], float) for c in _NUMERIC_COLS)     # NaN, never None
+    assert all(isinstance(row[c], float) for c in _NUMERIC_COLS)  # NaN, never None
     assert row["reporting_person_comment"].startswith("Rows 7, 8, 9")
 
 
@@ -446,10 +515,15 @@ def test_real_numerics_survive_alongside_a_comment():
     """A comment is not itself disqualifying -- filers routinely annotate a row that also
     carries real numbers. Only the all-zero AND commented conjunction is a placeholder."""
     rp = _reporting_person(
-        "RC Ventures LLC", sole_voting_power=7952386, shared_voting_power=0,
-        sole_dispositive_power=7952386, shared_dispositive_power=0,
-        aggregate_amount=7952386, percent_of_class=41.5,
-        comment="Excludes shares held in a rabbi trust.")
+        "RC Ventures LLC",
+        sole_voting_power=7952386,
+        shared_voting_power=0,
+        sole_dispositive_power=7952386,
+        shared_dispositive_power=0,
+        aggregate_amount=7952386,
+        percent_of_class=41.5,
+        comment="Excludes shares held in a rabbi trust.",
+    )
     row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert row["percent_of_class"] == 41.5
     assert row["aggregate_amount"] == 7952386
@@ -465,14 +539,19 @@ def test_a_percentage_that_rounds_to_zero_is_a_real_disclosure_not_a_placeholder
     words "reflects less than 0.1% of the outstanding shares". Nulling on the percentage
     alone would erase the share counts those filings actually disclose."""
     rp = _reporting_person(
-        "CALFINCO Caymans Ltd.", sole_voting_power=0, shared_voting_power=18632216,
-        sole_dispositive_power=0, shared_dispositive_power=18632216,
-        aggregate_amount=18632216, percent_of_class=0.0,
-        comment="Row 13: This percentage is based on a total of 54,730,851,778,811 Shares.")
+        "CALFINCO Caymans Ltd.",
+        sole_voting_power=0,
+        shared_voting_power=18632216,
+        sole_dispositive_power=0,
+        shared_dispositive_power=18632216,
+        aggregate_amount=18632216,
+        percent_of_class=0.0,
+        comment="Row 13: This percentage is based on a total of 54,730,851,778,811 Shares.",
+    )
     row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
-    assert row["aggregate_amount"] == 18632216          # the real holding survives
+    assert row["aggregate_amount"] == 18632216  # the real holding survives
     assert row["shared_voting_power"] == 18632216
-    assert row["percent_of_class"] == 0.0               # ...and so does its true 0.0%
+    assert row["percent_of_class"] == 0.0  # ...and so does its true 0.0%
 
 
 # --- Item-body text normalization (encoding + whitespace only) --------------- #
@@ -483,14 +562,13 @@ def test_normalize_item_text_fixes_mojibake_rules_and_whitespace():
     used as a visual rule under the heading (STX's Item 4 body opens with 40 of them).
     Both wreck tokenization for no semantic gain, so they are normalized away --
     characters only, never a sentence."""
-    body = ("─" * 40 + "\nThe \x93group\x94 acquired ‘shares’ — see"
-            "\xa0below.\n\n\n   Ragged    spacing   here.   \n")
+    body = "─" * 40 + "\nThe \x93group\x94 acquired ‘shares’ — see" "\xa0below.\n\n\n   Ragged    spacing   here.   \n"
     out = _normalize_item_text(body)
-    assert '"group"' in out and "'shares'" in out       # cp1252 + unicode quotes straightened
-    assert "─" not in out                          # box-drawing rule gone
-    assert "\xa0" not in out                            # non-breaking space -> plain space
-    assert "Ragged spacing here." in out                # runs of spaces collapsed
-    assert "\n\n\n" not in out                          # >2 blank lines collapsed
+    assert '"group"' in out and "'shares'" in out  # cp1252 + unicode quotes straightened
+    assert "─" not in out  # box-drawing rule gone
+    assert "\xa0" not in out  # non-breaking space -> plain space
+    assert "Ragged spacing here." in out  # runs of spaces collapsed
+    assert "\n\n\n" not in out  # >2 blank lines collapsed
     assert out == out.strip()
     assert not any("\x80" <= c <= "\x9f" for c in out)  # no cp1252 control bytes survive
 
@@ -502,7 +580,7 @@ def test_normalize_item_text_decodes_a_semantic_cp1252_byte_rather_than_dropping
     Acorn". Dropping the byte would silently change the currency of a disclosed
     consideration, so the whole block is decoded to what the filer meant."""
     out = _normalize_item_text("Investor paid \x8052,544.78 in cash to Acorn.")
-    assert "€52,544.78" in out                     # euro sign preserved, not deleted
+    assert "€52,544.78" in out  # euro sign preserved, not deleted
     assert "\x80" not in out
     assert _normalize_item_text("The \x99 mark is registered.").startswith("The ™")
 
@@ -510,8 +588,7 @@ def test_normalize_item_text_decodes_a_semantic_cp1252_byte_rather_than_dropping
 def test_normalize_item_text_leaves_hyphenated_words_and_negatives_alone():
     """The rule-run stripper is bounded to runs of 3+ AND must not fire inside a word or a
     number -- a hyphenated term and a negative figure are real content, not furniture."""
-    body = ("The non-transferable shares were valued at -1,234 per unit, a --5 point "
-            "swing, under a well-known cost-plus arrangement.")
+    body = "The non-transferable shares were valued at -1,234 per unit, a --5 point " "swing, under a well-known cost-plus arrangement."
     out = _normalize_item_text(body)
     assert "non-transferable" in out
     assert "-1,234" in out
@@ -655,8 +732,7 @@ def test_clean_transaction_row_strips_unit_suffix_from_quantity():
     """Real bug: some exhibits print '760 Shares' instead of a bare number --
     the old float() parse failed silently to NaN, losing a real disclosed
     quantity. The leading numeric token must be extracted instead."""
-    row = _clean_transaction_row({"quantity": "760 Shares", "price_per_share": "$12.91",
-                                  "transaction_type": "Buy", "trade_date": "2024-01-01"})
+    row = _clean_transaction_row({"quantity": "760 Shares", "price_per_share": "$12.91", "transaction_type": "Buy", "trade_date": "2024-01-01"})
     assert row["quantity"] == 760.0
     assert row["price_per_share"] == 12.91
 
@@ -680,12 +756,17 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
     whose extracted issuer CIK matches the ticker's own CIK should survive;
     otherwise every field (issuer name, trade prices/dates) describes a
     different company entirely."""
+
     def _obj(issuer_cik, issuer_name, rp_name):
         return SimpleNamespace(
-            has_structured_data=False, is_amendment=False, amendment_number=None,
+            has_structured_data=False,
+            is_amendment=False,
+            amendment_number=None,
             issuer_info=SimpleNamespace(cik=issuer_cik, name=issuer_name),
-            security_info=None, items=SimpleNamespace(item4_purpose_of_transaction=None),
-            date_of_event=None, event_date=None,
+            security_info=None,
+            items=SimpleNamespace(item4_purpose_of_transaction=None),
+            date_of_event=None,
+            event_date=None,
             reporting_persons=[_reporting_person(rp_name)],
         )
 
@@ -697,12 +778,10 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
         accession="0001-bad",
         obj=_obj("0001199004", "Federated Hermes Premier Municipal Income Fund", "Apple Inc."),
     )
-    fake_company = SimpleNamespace(get_filings=lambda form: [good_filing, bad_filing])
-    # `edgar.Company`, NOT `edgar_driver.Company`: resolution moved into
-    # `registrant.resolve_registrant_filings`, which imports Company from `edgar` at call time.
-    # The old target existed as a dead import, so this patch SUCCEEDED while patching a name
-    # nothing read, and the test reached live SEC.
-    monkeypatch.setattr("edgar.Company", lambda ticker: fake_company)
+    monkeypatch.setattr(
+        "src.data_extract.utils.institutionals.fetch_13d_edgar.new_schedule_filings",
+        lambda ticker, subject_ciks, forms, since, done: [good_filing, bad_filing],
+    )
 
     out = build_ticker_13d_edgar("AAPL", "0000320193")[Tables.sec_13d]
     assert list(out["accession_number"]) == ["0001-good"]
@@ -716,14 +795,18 @@ def test_13d_item3_and_item6_use_correct_structured_attribute_names():
     (real fields are `item3_source_of_funds` / `item6_contracts`) -- so these
     always silently evaluated to None even when has_structured_data was True."""
     obj = SimpleNamespace(
-        has_structured_data=True, is_amendment=False, amendment_number=None,
-        issuer_info=None, security_info=None,
+        has_structured_data=True,
+        is_amendment=False,
+        amendment_number=None,
+        issuer_info=None,
+        security_info=None,
         items=SimpleNamespace(
             item3_source_of_funds="Working capital.",
             item4_purpose_of_transaction=None,
             item6_contracts="A letter agreement dated 2024-01-01.",
         ),
-        date_of_event=None, event_date=None,
+        date_of_event=None,
+        event_date=None,
         reporting_persons=[_reporting_person("Icahn Carl C")],
     )
     filing = _fake_13d_filing(obj=obj)
@@ -737,10 +820,14 @@ def test_13d_is_group_member_uses_correct_reporting_person_attribute():
     the real field is `member_of_group` ("a"/"b" convention) -- so the column
     was always None regardless of the actual filing."""
     obj = SimpleNamespace(
-        has_structured_data=False, is_amendment=False, amendment_number=None,
-        issuer_info=None, security_info=None,
+        has_structured_data=False,
+        is_amendment=False,
+        amendment_number=None,
+        issuer_info=None,
+        security_info=None,
         items=SimpleNamespace(item4_purpose_of_transaction=None),
-        date_of_event=None, event_date=None,
+        date_of_event=None,
+        event_date=None,
         reporting_persons=[_reporting_person("RC Ventures LLC", member_of_group="a")],
     )
     filing = _fake_13d_filing(obj=obj)

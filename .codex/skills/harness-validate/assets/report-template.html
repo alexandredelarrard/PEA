@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f7f8fa; --panel:#fff; --text:#172033; --muted:#596579; --line:#d8dee8; --ok:#176b3a; --warn:#8a5a00; --bad:#a52a2a; --accent:#315efb; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#11151d; --panel:#181e29; --text:#eef2f8; --muted:#aab4c5; --line:#344055; --ok:#62d394; --warn:#f0bd58; --bad:#ff8c8c; --accent:#8da7ff; } }
+    * { box-sizing:border-box; } body { margin:0; font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+    main { width:min(1180px,calc(100% - 32px)); margin:32px auto 64px; } header,.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:24px; margin:0 0 18px; }
+    h1,h2 { line-height:1.2; } h1 { margin:0 0 8px; } h2 { margin-top:0; } .meta { color:var(--muted); } .verdict { display:inline-block; padding:7px 12px; border:2px solid currentColor; border-radius:999px; font-weight:800; letter-spacing:.04em; }
+    .strong { color:var(--ok); } .conditional { color:var(--warn); } .not-ready { color:var(--bad); }
+    table { width:100%; border-collapse:collapse; display:block; overflow:auto; } th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:9px 10px; } th { position:sticky; top:0; background:var(--panel); }
+    a { color:var(--accent); } code,pre { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; } pre { overflow:auto; padding:12px; border:1px solid var(--line); border-radius:8px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; } .card { border:1px solid var(--line); border-radius:8px; padding:14px; }
+    footer { color:var(--muted); text-align:center; margin-top:28px; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="verdict {{VERDICT_CLASS}}">{{VERDICT}}</span>
+    <h1>{{TITLE}}</h1>
+    <p>{{RATIONALE}}</p>
+    <p class="meta">Base {{BASE_REVISION}} · Candidate {{CANDIDATE_REVISION}} · Validated {{VALIDATED_AT}}</p>
+  </header>
+  {{EXECUTIVE_SUMMARY}}
+  {{ACCEPTANCE_MATRIX}}
+  {{VALIDATION_EVIDENCE}}
+  {{FINDINGS}}
+  {{REVIEWS}}
+  {{LIMITATIONS}}
+  {{COMMITS}}
+  {{REPORT_INDEX}}
+  <footer>Generated from the evidence in this run directory. See <a href="06-final.md">06-final.md</a> for the canonical summary.</footer>
+</main>
+</body>
+</html>

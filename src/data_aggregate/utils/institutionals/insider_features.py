@@ -271,6 +271,34 @@ def build_insider_feature_panel(
             continue
         fields[name] = frame.where(floor & frontier, axis=0)
 
+    # Unlike an event-price anchor, the net-buy ratio has a defined neutral state: in a fully
+    # observed 180-day window with neither purchases nor sales, it is 0. Broaden to the listed
+    # universe only when the extraction layer supplied an explicit complete frontier; without
+    # that proof, missing stays NaN. The extra 179-day gate prevents a partial first window from
+    # being called empty.
+    net_name = "ic_insider_net_buy_ratio_180d"
+    net_mask: pd.DataFrame | None = None
+    if complete_through is not None and pd.notna(complete_through) and net_name in fields:
+        columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+        if stock_close is not None and not stock_close.empty:
+            listed = stock_close.reindex(index=idx, columns=columns).notna()
+        else:
+            listed = pd.DataFrame(True, index=idx, columns=columns)
+        history_start = pd.Timestamp(insider_floor).normalize() + pd.Timedelta(days=WINDOW_180 - 1)
+        full_window = InstitutionalAvailability.date_mask(idx, columns, history_start)
+        observed_through = InstitutionalAvailability.through_mask(idx, columns, pd.Timestamp(complete_through))
+        if availability is not None:
+            net_mask = availability.source_mask(
+                Tables.insider_transactions,
+                idx,
+                columns,
+                requirements=(listed, full_window, observed_through),
+            )
+        else:
+            source_started = InstitutionalAvailability.date_mask(idx, columns, insider_floor)
+            net_mask = InstitutionalAvailability.combine(source_started, listed, full_window, observed_through)
+        fields[net_name] = fields[net_name].reindex(index=idx, columns=columns).fillna(0.0).where(net_mask)
+
     if sink is not None:
         sink.set_frontier("insider", complete_through)
         # ⚠ PROJECT FIRST, THEN RENAME. `buys` carries BOTH the source `shares` column and
@@ -307,16 +335,19 @@ def build_insider_feature_panel(
                 if mcap is None or mcap.empty:
                     continue
                 requirements.append(mcap.reindex(index=idx, columns=columns).gt(0))
-            mask = (
-                availability.source_mask(
-                    Tables.insider_transactions,
-                    idx,
-                    columns,
-                    requirements=tuple(requirements),
+            if name == net_name and net_mask is not None:
+                mask = net_mask
+            else:
+                mask = (
+                    availability.source_mask(
+                        Tables.insider_transactions,
+                        idx,
+                        columns,
+                        requirements=tuple(requirements),
+                    )
+                    if availability is not None
+                    else InstitutionalAvailability.combine(*requirements)
                 )
-                if availability is not None
-                else InstitutionalAvailability.combine(*requirements)
-            )
             signal_masks[name] = mask
             signal_fields[name] = fields[name].reindex(index=idx, columns=columns).fillna(0.0).where(mask)
         sink.keep_signals(signal_fields, signal_masks)
@@ -355,8 +386,9 @@ def _dense_fields(
     bv, sv = buy_val_180.fillna(0.0), sell_val_180.fillna(0.0)
     denom = bv + sv
 
-    # NaN, not 0, where nothing was filed in the window: "no insider traded" is not
-    # "insiders were evenly split". The bounded [-1, 1] range is what keeps this one `raw`.
+    # Leave 0/0 undefined here. The caller converts it to an observed neutral 0 only inside an
+    # explicit source-complete window; without that coverage proof, no filing remains unknown.
+    # The bounded [-1, 1] range is what keeps this one `raw`.
     out["ic_insider_net_buy_ratio_180d"] = ((bv - sv) / denom.where(denom > 0)).replace([np.inf, -np.inf], np.nan)
 
     if mcap is not None and not mcap.empty:

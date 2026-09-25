@@ -16,6 +16,7 @@ it raises `UndeclaredTableError` and the CLI exits 3. Populate an entry only whe
 measurement or an existing `_scripts/` constant supports the value -- an absent entry abstains
 loudly, an invented one lies quietly.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -68,13 +69,16 @@ class TableSpec:
     label_pattern: str | None = None
     daily_legs: tuple[str, ...] = ()
     pit_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    pit_observed_zero_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
     bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
+    conditional_holes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    known_ineligible: tuple[dict[str, Any], ...] = ()
     declared: bool = False
 
     def require(self, key: str, why: str) -> Any:
         """The declared value of `key`, or `UndeclaredTableError`."""
         value = getattr(self, key, None)
-        if value is None or (isinstance(value, (tuple, dict, list)) and not value):
+        if value is None or (isinstance(value, tuple | dict | list) and not value):
             raise UndeclaredTableError(self.table, key, why)
         return value
 
@@ -88,8 +92,7 @@ class TableSpec:
     def view_suffixes(self) -> tuple[str, ...]:
         """The standardised-view suffixes this table declares, longest first so
         `_vs_peers` is stripped before a shorter suffix could match inside it."""
-        return tuple(sorted((s for s in (self.xs_suffix, self.peer_suffix) if s),
-                            key=len, reverse=True))
+        return tuple(sorted((s for s in (self.xs_suffix, self.peer_suffix) if s), key=len, reverse=True))
 
 
 def _plain(node: Any) -> Any:
@@ -113,6 +116,38 @@ def load_spec(config: DictConfig, table: Any, **overrides: Any) -> TableSpec:
     merged: dict[str, Any] = {**defaults, **(tables.get(name) or {})}
     merged.update({k: v for k, v in overrides.items() if v is not None})
 
+    conditional_holes: dict[str, dict[str, Any]] = {}
+    for leg, raw_rule in (merged.get("conditional_holes") or {}).items():
+        rule = dict(raw_rule or {})
+        active_field = rule.get("active_field")
+        if not isinstance(active_field, str) or not active_field:
+            raise ValueError(f"{name}.conditional_holes.{leg} requires active_field")
+        parsed: dict[str, Any] = {"active_field": active_field}
+        for bound in ("min_value", "max_value"):
+            if rule.get(bound) is not None:
+                parsed[bound] = float(rule[bound])
+        conditional_holes[str(leg)] = parsed
+
+    known_ineligible: list[dict[str, Any]] = []
+    for raw_rule in merged.get("known_ineligible") or ():
+        rule = dict(raw_rule or {})
+        required = ("ticker", "fields", "start", "end", "reason")
+        missing = [key for key in required if not rule.get(key)]
+        if missing:
+            raise ValueError(f"{name}.known_ineligible entry missing {missing}")
+        fields = rule["fields"]
+        if isinstance(fields, str):
+            fields = [fields]
+        known_ineligible.append(
+            {
+                "ticker": str(rule["ticker"]).upper(),
+                "fields": tuple(map(str, fields)),
+                "start": str(rule["start"]),
+                "end": str(rule["end"]),
+                "reason": str(rule["reason"]),
+            }
+        )
+
     return TableSpec(
         table=name,
         redundancy_r=float(merged["redundancy_r"]),
@@ -134,12 +169,12 @@ def load_spec(config: DictConfig, table: Any, **overrides: Any) -> TableSpec:
         clip_peer=None if merged.get("clip_peer") is None else float(merged["clip_peer"]),
         cadence=merged.get("cadence"),
         label_pattern=merged.get("label_pattern"),
-        ffill_horizon_days=(None if merged.get("ffill_horizon_days") is None
-                            else int(merged["ffill_horizon_days"])),
+        ffill_horizon_days=(None if merged.get("ffill_horizon_days") is None else int(merged["ffill_horizon_days"])),
         daily_legs=tuple(merged.get("daily_legs") or ()),
-        pit_sources={k: (v,) if isinstance(v, str) else tuple(v)
-                     for k, v in (merged.get("pit_sources") or {}).items()},
-        bounds={k: (float(v[0]), float(v[1]))
-                for k, v in (merged.get("bounds") or {}).items()},
+        pit_sources={k: (v,) if isinstance(v, str) else tuple(v) for k, v in (merged.get("pit_sources") or {}).items()},
+        pit_observed_zero_sources={k: (v,) if isinstance(v, str) else tuple(v) for k, v in (merged.get("pit_observed_zero_sources") or {}).items()},
+        bounds={k: (float(v[0]), float(v[1])) for k, v in (merged.get("bounds") or {}).items()},
+        conditional_holes=conditional_holes,
+        known_ineligible=tuple(known_ineligible),
         declared=declared,
     )

@@ -81,6 +81,27 @@ validate:
       # cross-sectionally by the institutionals stability report, not by the per-ticker DAILY gate.
       daily_legs: ["_to_mcap", "_ret_since", "_resid_ret_since", "_vol_scaled_move",
                    "_price_vs_buy", "_max_runup_since_buy", "_max_dd_since_buy"]
+      # `price_vs_buy` exists only while a qualifying purchase remains in its 126-session
+      # value-weighted cost window. A gap while age <= 125 is actionable; anchor-free NaNs are
+      # economically undefined and are reported as explained rather than zero-filled.
+      conditional_holes:
+        f_ic_sig_insider_price_vs_buy:
+          active_field: f_ic_sig_insider_age_days
+          max_value: 125
+      # Measured source exception, not a general ticker/source allowlist. SMCI was suspended
+      # from Nasdaq on 2018-08-23 and relisted on 2020-01-14; the feature interval includes the
+      # rolling warm-up on each edge. Gaps outside this exact interval still fail.
+      known_ineligible:
+        - ticker: SMCI
+          fields: ["f_ic_shortvol_"]
+          start: "2018-08-28"
+          end: "2020-01-16"
+          reason: "Nasdaq suspension/delisting; CNMS RegSHO did not cover the OTC interval"
+        - ticker: SMCI
+          fields: ["f_ic_shortvol_ratio_20d", "f_ic_shortvol_turnover_20d", "f_ic_shortvol_market_coverage"]
+          start: "2018-09-10"
+          end: "2020-01-28"
+          reason: "20-session RegSHO gap spans the Nasdaq suspension and post-relisting warm-up"
       # Feature prefix -> the source table whose PUBLICATION clock bounds it (check_07). The
       # check reads `resolve(src).freshness_col`, so the four tables publishing on a different
       # clock than the period they describe are handled by the registry, not by a copy here.
@@ -92,6 +113,14 @@ validate:
         f_ic_shortvol_:    sec_short_interest
         f_ic_ftd_:         sec_fails_to_deliver
         f_ic_bo_:          [sec_13d, sec_13g]
+      # These families deliberately encode an observed absence as zero. Their first value is
+      # therefore bounded by the source's GLOBAL publication onset, not by the first event for
+      # that individual ticker. Multi-source legs require every named source to have started.
+      # All other PIT families retain the stricter per-ticker first-event comparison above.
+      pit_observed_zero_sources:
+        f_ic_ftd_:                          sec_fails_to_deliver
+        f_ic_bo_holder_count:               [sec_13d, sec_13g]
+        f_ic_insider_net_buy_ratio_180d:    insider_transactions
       # Cross-source vote ratios and their weaker-side conflict are normalized to [0, 1].
       # Available-family counts are audit denominators, not alpha legs.
       # Other percent-named legs use their own semantic scales and are profiled separately.

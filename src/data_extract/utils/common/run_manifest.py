@@ -29,11 +29,12 @@ uses across the fetchers the five `step_extract_*` sub-steps call:
      history) or `full_rescan_days` have elapsed since the last full relist --
      bounding any silently-missed filing to that window instead of forever.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -55,7 +56,7 @@ def _load_manifest(context: Context) -> dict:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:                                        # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.warning("extraction_manifest.json unreadable at %s -- starting fresh", path)
         return {}
 
@@ -83,7 +84,7 @@ def manifest_window(
     ticker universe changed size since that run, or the last full rescan is
     `>= full_rescan_days` old. Otherwise returns the entry's `last_run_date`
     (inclusive) with `is_full_rescan=False`."""
-    
+
     entry = get_entry(context, table)
     if not entry or entry.get("ticker_count") != ticker_count:
         return fallback_since, True
@@ -115,6 +116,7 @@ def record_run(
     is_full_rescan: bool = False,
     run_date: pd.Timestamp | str | None = None,
     backfill_window: tuple[str, str] | None = None,
+    coverage_complete: bool = False,
 ) -> None:
     """Merge this table's run stats into the shared manifest (read-modify-write --
     every fetcher in a step run shares the one file, so this must not clobber
@@ -137,29 +139,30 @@ def record_run(
 
     if backfill_window is not None:
         entry = dict(prior)
-        entry["backfills"] = [*prior.get("backfills", []), {
-            "window": f"{backfill_window[0]}:{backfill_window[1]}",
-            "rows_added": int(rows_added),
-            "run_date": run_date_str,
-        }]
-        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+        entry["backfills"] = [
+            *prior.get("backfills", []),
+            {
+                "window": f"{backfill_window[0]}:{backfill_window[1]}",
+                "rows_added": int(rows_added),
+                "run_date": run_date_str,
+            },
+        ]
+        entry["updated_at"] = datetime.now(UTC).isoformat()
         manifest[name] = entry
-        _manifest_path(context).write_text(
-            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        _manifest_path(context).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         return
 
-    last_full_rescan_date = (
-        run_date_str if (is_full_rescan or not prior.get("last_full_rescan_date"))
-        else prior["last_full_rescan_date"]
-    )
+    last_full_rescan_date = run_date_str if (is_full_rescan or not prior.get("last_full_rescan_date")) else prior["last_full_rescan_date"]
 
-    manifest[name] = {
+    entry = {
         **{k: v for k, v in prior.items() if k == "backfills"},
         "last_run_date": run_date_str,
         "last_full_rescan_date": last_full_rescan_date,
         "ticker_count": int(ticker_count),
         "rows_added": int(rows_added),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
     }
-    _manifest_path(context).write_text(
-        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    if coverage_complete:
+        entry["coverage_complete"] = True
+    manifest[name] = entry
+    _manifest_path(context).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")

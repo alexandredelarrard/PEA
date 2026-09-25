@@ -24,15 +24,18 @@ from src.data_extract.utils.common import entity_lineage as lineage_module
 from src.data_extract.utils.common.entity_lineage import (
     OVERLAP_JACCARD_SAME,
     OVERLAP_SHARED_SAME,
+    ManualTenureEntityError,
     UndecidedGreyBandError,
     _Union,
     candidate_ciks,
     classify_overlap,
     derive_entity_lineage,
+    detect_older_cik_rekeys,
     entity_id_for,
     load_d19_allowlist,
     load_manual_lineage,
     score_overlap,
+    validate_manual_tenure_entities,
 )
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_store.schema import Tables
@@ -174,6 +177,25 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
             return len(frame)
 
     monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: (new, pd.DataFrame()))
+    monkeypatch.setattr(
+        lineage_module,
+        "load_manual_symbol_tenure",
+        lambda *args, **kwargs: pd.DataFrame(
+            [
+                {
+                    "canonical_ticker": "AAA",
+                    "symbol": "AAA",
+                    "issuer_cik": "0000000001",
+                    "valid_from": pd.Timestamp("2020-01-01"),
+                    "valid_to": pd.NaT,
+                    "n_filings": 0,
+                    "source": "manual",
+                    "evidence": "test",
+                    "reason": "test",
+                }
+            ]
+        ),
+    )
     monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
     context = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
     caplog.set_level(logging.INFO, logger="test.entity_lineage")
@@ -186,6 +208,64 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
     print("\n=== SANITY CHECK: entity-lineage refresh visibility ===")
     print("  changed CIK 0000000001 and affected current ticker AAA are named")
     print("  OK: identity reassignment is visible before symbol-only consumers run")
+
+
+def test_manual_tenure_cik_must_resolve_to_its_canonical_entity():
+    lineage = pd.DataFrame(
+        [
+            {"cik": "0000000001", "entity_id": "E_HOME"},
+            {"cik": "0000000002", "entity_id": "E_OTHER"},
+        ]
+    )
+    roster = _roster([("AAA", "0000000001")])
+    manual = pd.DataFrame(
+        [
+            {
+                "canonical_ticker": "AAA",
+                "symbol": "OLD",
+                "issuer_cik": "0000000002",
+            }
+        ]
+    )
+    with pytest.raises(ManualTenureEntityError, match="AAA/OLD/0000000002"):
+        validate_manual_tenure_entities(manual, lineage, roster)
+
+    manual.loc[0, "issuer_cik"] = "0000000001"
+    validate_manual_tenure_entities(manual, lineage, roster)
+    print("\n=== SANITY CHECK: manual CIK/entity cross-check ===")
+    print("  unrelated OLD CIK raises; the roster entity CIK passes")
+    print("  OK: ticker history cannot create entity continuity by assertion")
+
+
+def test_new_older_cik_rekey_is_detected_before_write():
+    existing = pd.DataFrame(
+        [
+            {"cik": "0000000200", "entity_id": "E0000000200"},
+            {"cik": "0000000300", "entity_id": "E0000000200"},
+        ]
+    )
+    candidate = pd.DataFrame(
+        [
+            {"cik": "0000000100", "entity_id": "E0000000100"},
+            {"cik": "0000000200", "entity_id": "E0000000100"},
+            {"cik": "0000000300", "entity_id": "E0000000100"},
+        ]
+    )
+    impacts = detect_older_cik_rekeys(existing, candidate)
+    assert impacts == [
+        {
+            "old_entity_id": "E0000000200",
+            "new_entity_id": "E0000000100",
+            "existing_ciks": ["0000000200", "0000000300"],
+            "new_older_ciks": ["0000000100"],
+            "candidate_ciks": ["0000000100", "0000000200", "0000000300"],
+        }
+    ]
+    assert detect_older_cik_rekeys(existing, existing.copy()) == []
+
+    print("\n=== SANITY CHECK: older-CIK rekey stop ===")
+    print("  adding 0000000100 would rename E0000000200 -> E0000000100")
+    print("  OK: the impact is named before any table replacement")
 
 
 def test_candidate_set_is_universe_symbols_plus_roster_ciks():

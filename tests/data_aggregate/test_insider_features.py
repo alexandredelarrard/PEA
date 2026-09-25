@@ -258,7 +258,7 @@ def test_the_role_map_reads_a_title_the_way_a_human_would():
         "Chief Executive Officer": "CEO",
         "SVP & CFO": "CFO",
         "Chief Financial Officer": "CFO",
-        "President and Chief Operating Officer": "COO_or_President",
+        "President and Chief Operating Officer": "COO",
         "Executive Chairman": "other_named_officer",
         "": "other_named_officer",
     }
@@ -498,17 +498,23 @@ def test_the_ten_b5_1_split_separates_planned_from_discretionary():
     )
 
 
-def test_net_buy_ratio_is_nan_when_nothing_was_filed_not_zero():
+def test_net_buy_ratio_is_zero_only_inside_a_complete_observation_frontier():
     rows = [_txn(filing_date="2015-06-01", transaction_date="2015-05-29")]
     fh, close = _prices()
-    panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    panel = build_insider_feature_panel(
+        make_frames(TRADING_INDEX, _peers(), close_split=close),
+        _frame(rows),
+        shares_out_history=fh,
+        complete_through=pd.Timestamp("2016-06-30"),
+    )
     s = panel.set_index("date")["f_ic_insider_net_buy_ratio_180d"]
-    assert pd.isna(s.loc["2015-05-01"]) and s.loc["2015-06-01"] == 1.0
-    assert pd.isna(s.loc["2016-06-01"])
+    assert s.loc["2015-05-01"] == 0.0 and s.loc["2015-06-01"] == 1.0
+    assert s.loc["2016-06-01"] == 0.0
+    assert pd.isna(s.loc["2016-07-01"])
     print(
-        f"SANITY: one purchase -> the ratio is NaN before it, {s.loc['2015-06-01']:.0f} on "
-        f"the filing day, and NaN again once the 180-day window empties. 'No insider "
-        f"traded' is not 'insiders were evenly split'."
+        f"SANITY: a complete empty window is {s.loc['2015-05-01']:.0f}, one purchase makes "
+        f"the ratio {s.loc['2015-06-01']:.0f}, and it returns to {s.loc['2016-06-01']:.0f} "
+        "after 180 days; past the complete frontier it is NaN."
     )
 
 

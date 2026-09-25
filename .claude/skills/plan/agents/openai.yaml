@@ -1,0 +1,7 @@
+interface:
+  display_name: "Plan"
+  short_description: "Build and grill a decision-complete execution plan."
+  default_prompt: "Use $plan to turn the accepted specification into a decision-complete plan."
+
+policy:
+  allow_implicit_invocation: false

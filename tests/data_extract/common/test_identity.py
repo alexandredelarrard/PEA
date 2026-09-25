@@ -348,7 +348,7 @@ def test_symbol_ticker_resolution_covers_rename_reuse_gap_and_universe_scope():
     unknown = identity.resolve_symbol_ticker("NEVER", "2020-01-01", universe)
     outside = identity.resolve_symbol_ticker("FI", "2020-01-01", frozenset({"META"}))
 
-    assert (fb.ticker, fb.verdict, fb.match_kind) == ("META", "mapped_current_ticker", "unique_entity_fallback")
+    assert fb.ticker is None and fb.verdict == "unknown_gap" and fb.match_kind is None
     assert (fi.ticker, fi.verdict, fi.match_kind) == ("FISV", "mapped_current_ticker", "exact_dated_tenure")
     assert old_ir.ticker == "TT" and old_ir.verdict == "mapped_current_ticker"
     assert current_ir.ticker == "IR" and current_ir.verdict == "exact_dated_tenure"
@@ -359,10 +359,101 @@ def test_symbol_ticker_resolution_covers_rename_reuse_gap_and_universe_scope():
     assert {"FB", "FI", "FISV", "META", "IR", "TT"} <= identity.candidate_symbols(universe)
 
     print("\n=== SANITY CHECK: symbol/date -> canonical ticker ===")
-    print("  FB -> META outside observed tenure (unique-entity fallback); FI -> FISV")
+    print("  FB before verified tenure -> unknown_gap; FI -> FISV inside verified tenure")
     print("  historical IR -> TT, current IR -> IR; early WTW is outside the universe")
     print("  overlap -> ambiguous; reuse seam gap -> unknown_gap; absent -> unknown_symbol")
     print("  OK: only the caller's universe is returned, and no ambiguity is guessed")
+
+
+def test_active_manual_tenure_overrides_conflicting_derived_evidence():
+    tenure = _tenure(
+        [
+            ("COO", "0000000100", "2006-01-05", None, 0),
+            ("COO", "0000000700", "2024-03-11", None, 1),
+            ("TPL", "0000000200", "2007-03-01", "2021-01-11", 0),
+            ("TPL", "0000000300", "2021-01-11", None, 0),
+        ]
+    )
+    tenure.loc[[0, 2, 3], "source"] = "manual"
+    identity = build_identity(
+        lineage=_lineage(
+            [
+                ("0000000100", "E_COO", "roster"),
+                ("0000000200", "E_TPL", "register"),
+                ("0000000300", "E_TPL", "roster"),
+                ("0000000700", "E_OTHER", "roster"),
+            ]
+        ),
+        tenure=tenure,
+        roster=_roster([("COO", "0000000100"), ("TPL", "0000000300")]),
+    )
+
+    coo = identity.resolve_symbol_ticker("COO", "2025-01-01", frozenset({"COO", "TPL"}))
+    tpl_before = identity.resolve_symbol_ticker("TPL", "2021-01-10", frozenset({"COO", "TPL"}))
+    tpl_after = identity.resolve_symbol_ticker("TPL", "2021-01-11", frozenset({"COO", "TPL"}))
+    assert (coo.ticker, coo.match_kind) == ("COO", "exact_dated_tenure")
+    assert tpl_before.ticker == tpl_after.ticker == "TPL"
+    assert tpl_before.entity_id == tpl_after.entity_id == "E_TPL"
+
+    print("\n=== SANITY CHECK: manual source precedence ===")
+    print("  COO manual entity wins over a one-filing active derived conflict")
+    print("  TPL old/new CIK seam resolves once to the same economic entity on both sides")
+    print("  OK: precedence is dated and deterministic; no current-ticker fallback is used")
+
+
+def test_closed_manual_predecessor_does_not_own_a_reused_symbol_today():
+    lineage = _lineage(
+        [
+            ("0000000100", "E0000000100", "manual"),
+            ("0000000200", "E0000000200", "roster"),
+        ]
+    )
+    tenure = pd.DataFrame(
+        [
+            {
+                "symbol": "IR",
+                "issuer_cik": "0000000100",
+                "valid_from": "2009-07-09",
+                "valid_to": "2020-03-02",
+                "n_filings": 1000,
+                "source": "manual",
+            },
+            {
+                "symbol": "IR",
+                "issuer_cik": "0000000200",
+                "valid_from": "2020-03-03",
+                "valid_to": None,
+                "n_filings": 400,
+                "source": "derived",
+            },
+        ]
+    )
+    identity = build_identity(
+        lineage,
+        tenure,
+        _roster([("IR", "0000000200")]),
+    )
+
+    assert identity.dominant_entity("IR") == "E0000000200"
+    assert (
+        identity.resolve_symbol_ticker(
+            "IR",
+            "2019-12-31",
+            frozenset({"IR"}),
+        ).ticker
+        is None
+    )
+    assert (
+        identity.resolve_symbol_ticker(
+            "IR",
+            "2021-01-01",
+            frozenset({"IR"}),
+        ).ticker
+        == "IR"
+    )
+    print("\n=== SANITY CHECK: closed manual interval versus current reuse ===")
+    print("  historical IR stays on its prior entity; the open derived IR tenure owns today")
+    print("  OK: manual precedence is active-window precedence, never all-time symbol capture")
 
 
 def test_symbol_rows_resolve_unique_pairs_once_and_keep_unresolved_evidence():

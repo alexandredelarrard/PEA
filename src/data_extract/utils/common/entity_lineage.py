@@ -56,7 +56,11 @@ from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.symbol_tenure import SUBMISSION_MEMBER, _quarter_of
+from src.data_extract.utils.common.symbol_tenure import (
+    SUBMISSION_MEMBER,
+    _quarter_of,
+    load_manual_symbol_tenure,
+)
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
@@ -105,6 +109,22 @@ class UndecidedGreyBandError(ValueError):
     2026-09 include both a real predecessor (`COHR`) and a real reuse (`CEG`), and a rule
     that guessed either way would silently delete or silently import a decade of filings.
     """
+
+
+class ManualTenureEntityError(ValueError):
+    """A manual ticker interval names a CIK outside its canonical ticker's entity."""
+
+
+class EntityRekeyError(RuntimeError):
+    """A newly discovered older CIK would silently change an existing entity ID."""
+
+    def __init__(self, impacts: list[dict[str, object]], manifest: Path) -> None:
+        self.impacts = impacts
+        self.manifest = manifest
+        super().__init__(
+            f"entity_lineage: {len(impacts)} older-CIK rekey(s) detected; no table was written. "
+            f"Review {manifest} and approve a separately scoped migration."
+        )
 
 
 @dataclass
@@ -292,6 +312,75 @@ def candidate_ciks(tenure: pd.DataFrame, roster: pd.DataFrame) -> tuple[frozense
     return frozenset().union(*by_ticker.values()), by_ticker, roster_cik
 
 
+def validate_manual_tenure_entities(manual: pd.DataFrame, lineage: pd.DataFrame, roster: pd.DataFrame) -> None:
+    """Require each manual CIK to belong to its configured current ticker's entity."""
+    entity_by_cik = {str(cik).strip().zfill(10): str(entity) for cik, entity in zip(lineage["cik"], lineage["entity_id"], strict=False)}
+    roster_cik = {
+        str(ticker).strip().upper(): str(cik).strip().zfill(10) for ticker, cik in zip(roster["ticker"], roster["cik"], strict=False) if pd.notna(cik)
+    }
+    errors: list[str] = []
+    for row in manual.itertuples(index=False):
+        home_cik = roster_cik.get(row.canonical_ticker)
+        if home_cik is None:
+            errors.append(f"{row.canonical_ticker}: absent from the current roster")
+            continue
+        expected = entity_by_cik.get(home_cik, f"E{home_cik}")
+        actual = entity_by_cik.get(row.issuer_cik, f"E{row.issuer_cik}")
+        if actual != expected:
+            errors.append(f"{row.canonical_ticker}/{row.symbol}/{row.issuer_cik}: " f"manual entity {actual}, roster entity {expected}")
+    if errors:
+        raise ManualTenureEntityError("symbol_tenure_manual contains CIKs outside their canonical current entity: " + "; ".join(errors))
+
+
+def detect_older_cik_rekeys(existing: pd.DataFrame, candidate: pd.DataFrame) -> list[dict[str, object]]:
+    """Return stable-group ID changes caused by a newly joined numerically older CIK."""
+    old = existing[["cik", "entity_id"]].drop_duplicates().copy()
+    new = candidate[["cik", "entity_id"]].drop_duplicates().copy()
+    old["cik"] = old["cik"].astype(str).str.strip().str.zfill(10)
+    new["cik"] = new["cik"].astype(str).str.strip().str.zfill(10)
+    old_map = dict(zip(old["cik"], old["entity_id"].astype(str), strict=False))
+    new_map = dict(zip(new["cik"], new["entity_id"].astype(str), strict=False))
+    new_members = new.groupby("entity_id")["cik"].agg(lambda values: sorted(set(values))).to_dict()
+    impacts: list[dict[str, object]] = []
+    for old_entity, group in old.groupby("entity_id", sort=True):
+        members = sorted(set(group["cik"]))
+        mapped = {new_map[cik] for cik in members if cik in new_map}
+        if len(mapped) != 1:
+            continue
+        new_entity = next(iter(mapped))
+        if new_entity == old_entity or not (old_entity.startswith("E") and new_entity.startswith("E")):
+            continue
+        added = sorted(set(new_members.get(new_entity, [])) - set(old_map))
+        if not added or new_entity[1:] >= str(old_entity)[1:]:
+            continue
+        impacts.append(
+            {
+                "old_entity_id": str(old_entity),
+                "new_entity_id": new_entity,
+                "existing_ciks": members,
+                "new_older_ciks": [cik for cik in added if cik < min(members)],
+                "candidate_ciks": new_members.get(new_entity, []),
+            }
+        )
+    return [impact for impact in impacts if impact["new_older_ciks"]]
+
+
+def _write_rekey_manifest(config_dir: str | None, impacts: list[dict[str, object]]) -> Path:
+    """Persist the stop-condition evidence without changing any identity table."""
+    repo_root = Path(resolve_config_dir(config_dir)).resolve().parent
+    path = repo_root / "reports" / "validate" / "identity-rekey-impact.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "status": "blocked_before_write",
+        "reason": "newly discovered older CIK would change a derived entity_id",
+        "source_tables": ["symbol_tenure", "entity_lineage"],
+        "dependent_tables": ["sec_insider_transactions_quarantine"],
+        "impacts": impacts,
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
 def derive_entity_lineage(
     cache: Path, tenure: pd.DataFrame, roster: pd.DataFrame, config_dir: str | None = None, owners: dict[str, set[str]] | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -430,6 +519,12 @@ def build_entity_lineage(context: Context, cache: Path, config_dir: str | None =
     roster = context.store.load(Tables.sp500_tickers)
     existing = context.store.load(Tables.entity_lineage, project=True, optional=True)
     out, blocked = derive_entity_lineage(cache, tenure, roster, config_dir)
+    manual_tenure = load_manual_symbol_tenure(config_dir or context.config_dir)
+    validate_manual_tenure_entities(manual_tenure, out, roster)
+    context.log.info(
+        f"entity_lineage: {len(manual_tenure)} manual symbol interval(s) resolve to "
+        f"their {manual_tenure['canonical_ticker'].nunique()} canonical entity(ies)"
+    )
     if not blocked.empty:
         logger.warning(
             "entity_lineage: %d merge(s) refused because they would put two " "universe tickers in one entity:\n%s",
@@ -439,6 +534,11 @@ def build_entity_lineage(context: Context, cache: Path, config_dir: str | None =
     if existing is None:
         context.log.info(f"entity_lineage: cold build with {len(out)} CIK assignment(s) over " f"{out['entity_id'].nunique()} entity(ies)")
     else:
+        rekeys = detect_older_cik_rekeys(existing, out)
+        if rekeys:
+            manifest = _write_rekey_manifest(config_dir or str(context.config_dir), rekeys)
+            context.log.error(f"entity_lineage: older-CIK rekey stop; wrote impact manifest to {manifest}")
+            raise EntityRekeyError(rekeys, manifest)
         old_map = dict(zip(existing["cik"].astype(str), existing["entity_id"].astype(str), strict=False))
         new_map = dict(zip(out["cik"].astype(str), out["entity_id"].astype(str), strict=False))
         changed = sorted(cik for cik in set(old_map) | set(new_map) if old_map.get(cik) != new_map.get(cik))

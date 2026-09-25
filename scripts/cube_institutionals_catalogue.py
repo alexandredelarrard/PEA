@@ -171,3 +171,75 @@ for direction in ("bullish", "bearish"):
         "Persisted for audit and denominator reconciliation, not as a normalized alpha leg.",
         "Integer-valued; the corresponding ratio is unavailable below three.",
     )
+
+# `src.validate.checks.catalogue` compares a standalone catalogue with persisted column names.
+# Keep `INSTITUTIONALS` at characteristic grain for the combined catalogue registry, then add
+# the explicitly emitted conditioning legs here. The direct check should fail if production adds
+# a new leg without documenting it.
+_XS_VARIANTS = (
+    "ic_act_campaign_age_days_xs",
+    "ic_ftd_pct_so_xs",
+    "ic_ftd_to_adv20_xs",
+    "ic_insider_buy_shares_so_180d_xs",
+    "ic_insider_buy_value_mcap_180d_xs",
+    "ic_insider_buy_value_mcap_60d_xs",
+    "ic_insider_ceo_buy_mcap_180d_xs",
+    "ic_insider_cfo_buy_mcap_180d_xs",
+    "ic_insider_director_buy_mcap_180d_xs",
+    "ic_insider_discretionary_sell_mcap_60d_xs",
+    "ic_insider_planned_sell_mcap_60d_xs",
+    "ic_insider_purchase_pct_prior_xs",
+    "ic_inst_concentration_xs",
+    "ic_inst_flow_to_mcap_xs",
+    "ic_inst_shares_chg_xs",
+    "ic_inst_value_to_mcap_xs",
+    "ic_shortvol_turnover_20d_xs",
+    "ic_sig_act_ret_since_xs",
+    "ic_sig_insider_ret_since_xs",
+    "ic_sig_super_ret_since_xs",
+    "ic_super_exit_after_top10_xs",
+    "ic_super_flow_to_mcap_xs",
+    "ic_super_full_exits_xs",
+    "ic_super_initiations_xs",
+    "ic_super_new_top10_xs",
+    "ic_super_quarters_held_xs",
+    "ic_super_rank_jump_xs",
+    "ic_super_shares_chg_xs",
+    "ic_super_sp500_share_xs",
+    "ic_xs_bullish_actor_count_xs",
+)
+_PEER_VARIANTS = (
+    "ic_inst_ownership_pct_vs_peers",
+    "ic_shortvol_ratio_20d_vs_peers",
+    "ic_shortvol_ratio_5d_vs_peers",
+    "ic_shortvol_ratio_60d_vs_peers",
+)
+
+
+def _variant_entry(name: str, suffix: str, interpretation: str) -> tuple[str, str, str, str]:
+    parent = name.removesuffix(suffix)
+    family, what, why, tail = INSTITUTIONALS[parent]
+    return family, f"{what}; {interpretation}", why, tail
+
+
+CATALOGUE = {f"f_{name}": entry for name, entry in INSTITUTIONALS.items()}
+CATALOGUE.update(
+    {
+        f"f_{name}": _variant_entry(
+            name,
+            "_xs",
+            "cross-sectional rank conditioned on the same date and eligible universe",
+        )
+        for name in _XS_VARIANTS
+    }
+)
+CATALOGUE.update(
+    {
+        f"f_{name}": _variant_entry(
+            name,
+            "_vs_peers",
+            "peer-relative leg conditioned on the contemporaneous peer basket",
+        )
+        for name in _PEER_VARIANTS
+    }
+)

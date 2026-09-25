@@ -244,7 +244,7 @@ DEF14A_FORMS = ["DEF 14A", "DEF 14C", "DEFC14A"]
 # sign, unit, definition, primary-source authority, and how to resolve it), the regime ->
 # statement-template map, and the measured (regime, field) expected-absence register. JSON
 # rather than YAML because they are machine-generated-adjacent, deeply nested and diff-heavy;
-# see docs/config.md. Loaded and validated once by
+# see wiki/reference/configuration.md. Loaded and validated once by
 # `data_extract/utils/fundamentals/kpi_catalogue.py`.
 FUNDAMENTALS_CATALOGUE_SUBDIR = "fundamentals"
 FUNDAMENTALS_KPIS_FILENAME = "fundamentals_kpis.json"

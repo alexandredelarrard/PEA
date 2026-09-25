@@ -1,0 +1,7 @@
+interface:
+  display_name: "Checkpoint"
+  short_description: "Save a concise, resumable delivery checkpoint."
+  default_prompt: "Use $checkpoint to capture the current work as a concise resumable checkpoint."
+
+policy:
+  allow_implicit_invocation: false

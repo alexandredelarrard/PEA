@@ -1,68 +1,69 @@
-`stock_pick_strat` — quant long/short S&P 500 pipeline: extract market / fundamental / governance /
-alt-data into **PostgreSQL**, build point-in-time peer-relative features (the "cube"), train
-cross-sectional models, blend sleeves into one book. Package at the **repo root**. Python 3.13,
-OmegaConf, pandas, SQLAlchemy 2.0 + Postgres 16 (Docker), LightGBM/SHAP, OpenAI, pytest; Airflow 3.12.
+`stock_pick_strat` — quant long/short S&P 500 pipeline: extract market, fundamental,
+governance, ownership, and alternative data into PostgreSQL; build a point-in-time,
+peer-relative feature cube; train cross-sectional models; blend sleeves into one book.
+Package at the repo root. Python 3.13, OmegaConf, pandas, SQLAlchemy 2 + PostgreSQL 16,
+LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 
-## Read the doc for your task FIRST, then the code
+## Read the wiki for your task first, then the code
 
-| Task | Doc |
-|---|---|
-| find where code lives / how a stage is wired | [docs/architecture.md](docs/architecture.md) |
-| touch a table (PK, grain, date col, projection, freshness) | [docs/data_schema.md](docs/data_schema.md) |
-| know what's **actually populated** in the live DB | [docs/database.md](docs/database.md) |
-| add/debug a fetcher, or a source's quirks | [docs/data_sources.md](docs/data_sources.md) |
-| read or write tabular data | [docs/data_conventions.md](docs/data_conventions.md) |
-| find a knob / which YAML owns it | [docs/config.md](docs/config.md) |
-| model, strategy or portfolio layer | [docs/modelling.md](docs/modelling.md) |
-| write Python in `src/` (naming, logging, risk zones) | [docs/coding_standard.md](docs/coding_standard.md) |
-| write or run a test | [docs/testing.md](docs/testing.md) |
-| **execute** anything (interpreter, DB, CLI) | [docs/runbook.md](docs/runbook.md) |
+| Task | Canonical page |
+| --- | --- |
+| find code or understand stage wiring | [System overview](wiki/architecture/system-overview.md) |
+| touch a table, grain, PK, date, projection, or freshness rule | [Table catalog](wiki/reference/table-catalog.md) |
+| know what is populated in the local DB | [Live database](wiki/reference/live-database.md) |
+| add/debug a fetcher or source quirk | [Data sources](wiki/reference/data-sources.md) |
+| read or write tabular data | [Data access](wiki/guides/data-access.md) |
+| find a knob or owning YAML | [Configuration](wiki/reference/configuration.md) |
+| change models, strategies, portfolio, or ledger | [Modelling and portfolio](wiki/reference/modelling-and-portfolio.md) |
+| write Python under `src/` | [Coding standards](wiki/guides/coding-standards.md) |
+| write or run a test | [Testing and validation](wiki/guides/testing.md) |
+| execute CLI, DB, Docker, Airflow, or routine validation | [Run the pipeline](wiki/guides/run-the-pipeline.md) |
+| run high-cost backfills or historical recovery | [Recovery guide](wiki/guides/large-backfills-and-recovery.md) |
+| review accepted deferred work | [TODO](wiki/TODO.md) |
 
-## Hard rules (always apply)
+## Hard rules
 
-- **Compulsory to use `rtk` before all shell commands to save tokens**.
-- All tabular I/O via `self._context.store`. No `sqlalchemy` / `pd.read_sql` / `to_sql` /
-  `store.engine` outside `src/data_store/` — a test enforces this.
-- Never read a large table unprojected: `columns=`/`project=True` **and** `where=`/`since=`;
-  `iter_load` for cube-sized reads.
-- Table names live only in `src/data_store/schema.py` → `Tables.<name>`, never a string literal.
-- **Two fundamentals tables**: `fundamentals_history` = the Sharadar-first MERGED table every
-  consumer reads; `fundamentals_history_sec` = the SEC replay, and the only one `src/validate/` sees.
-- Literals (URLs, formats, thresholds) → `src/constants/constants.py`. Tunable numbers → `configs/`. Always tighten the prose in docstrings / comments, in all files.
-- Logging: `self._log` in a Step/Strategy, `context.log` in a helper taking `context`. Never
-  `print()`. `Context` has `.log` — there is **no** `.logger`.
-- Full type annotations; imports at top; no cross-imports between `src/` subfolders (→ `src/utils/`).
-- Fetchers resume from the DB, never a full read: `store.max_date` / `max_date_by` → `resume_since`.
-- Feature/economic tests use **real** data; only parsing math gets synthetic known-truth fixtures.
-- A test isn't done until it **prints a sanity-check conclusion**. Report only the new test's output.
-- Ask before editing risk zones: `context.py`, `utils/step.py`, `constants/`, `data_store/`,
-  `sql/schema.sql`, `configs/`, `data/` + the Postgres volume, the aggregate fingerprint baseline.
-- Keep `AGENTS.md` (**cap 70 lines**), `README.md`, `docs/*.md` in sync; propose conventions first.
-- Finish an important task with a report - leverage the src/validate folder to ensure data is clean.
+- Prefix every shell command with `rtk`.
+- Read/write in-scope Markdown only through OpenKnowledge MCP; source code uses native tools.
+- All tabular I/O goes through `context.store`; SQL exists only in `src/data_store/`.
+- Project and scope every large read; use `iter_load` for cube-sized data.
+- Table names live only in `src/data_store/schema.py`; use `Tables.<name>`.
+- Consumers read merged `fundamentals_history`; validation reads `fundamentals_history_sec`.
+- Stable literals go in `src/constants/constants.py`; tunable values go in `configs/`.
+- Log through `self._log` or `context.log`; never `print()` in application code.
+- Fully annotate signatures; imports stay at module top; sibling `src/` packages do not cross-import.
+- Fetchers resume from DB frontiers with `max_date` / `max_date_by`, never a full read.
+- Feature/economic tests use real data; exact parser/math tests use known-truth fixtures.
+- A test is not complete until it prints a sanity-check conclusion; report targeted output only.
+- Ask before editing `context.py`, `utils/step.py`, constants, data store/DDL, configs,
+  `data/`, the PostgreSQL volume, or the aggregate fingerprint baseline.
+- Keep this file at 70 lines or fewer and synchronize durable guidance with the wiki.
+- Finish important data/model/output work with the relevant read-only validator and report.
 
 ## Code map
 
-Every `src/` subfolder owns a `step_*.py` orchestrator: inherit `Step`, call
-`super().__init__(context=context, config=config)`, expose `run()` as the only public method.
-(`src/strategies/` sleeves implement `base.Strategy.run(PortfolioInputs) -> StrategyResult` instead.)
+Every major `src/` package owns a `step_*.py` orchestrator that inherits `Step`, calls
+`super().__init__(context=context, config=config)`, and exposes `run()` as its public method.
+Strategy sleeves instead implement `Strategy.run(PortfolioInputs) -> StrategyResult`.
 
-```
-data_store/   the ONLY SQL — schema.py (table registry), store.py (DataStore), ddl.py
-data_extract/ StepExtractAllData + 6 sub-steps; fetchers grouped by step (institutionals/ = who owns)
-data_peers/   StepDeducePeers                               -> sector_peers.json
-data_aggregate/ StepBuildCube: 7 sub-steps -> 8 cube_part_* -> cube
-modelling/    long_short/ (trained ensemble), trend/, long_book/
-strategies/   sleeves: ls_equity, eq_long_only, long_book, trend_cta
-portfolio/    StepPortfolio (ERC blend), StepStrategyMoves (`strategy` ledger)
-validate/     ALL validation code. Read-only;
-utils/ context.py constants/ dags/ cli.py   |   repo: configs/ docs/ tests/ app/ scripts/ sql/ main.py
+```text
+data_store/    only SQL; registry, facade, DDL
+data_extract/  ordered source fetchers and six domain sub-steps
+data_peers/    business/return peer baskets
+data_aggregate/ eight cube parts plus streamed assembly
+modelling/     long_short, trend, and long_book engines
+strategies/    ls_equity, eq_long_only, long_book, trend_cta sleeves
+portfolio/     ERC blend and strategy trade ledger
+validate/      all read-only validation code
+utils/         shared cross-package code
+repo root: configs/ wiki/ tests/ app/ scripts/ sql/ main.py
 ```
 
-## Running — `python`/`poetry` are NOT on PATH; run from the repo root
+## Running
 
 ```bash
 PY="$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3.13/Scripts/python.exe"
-"$PY" -m pytest tests/path/test.py::test_fn -v -s      # -s shows the sanity print
+rtk "$PY" -m pytest tests/path/test.py::test_fn -v -s
 rtk "$PY" -m src <package> <command> [-c ./configs] [-t AAPL] [-F]
-MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea -c "…"   # DB, no password
+rtk docker exec pea_db psql -U alexandre -d pea -c "…"
 ```

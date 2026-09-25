@@ -1,0 +1,7 @@
+interface:
+  display_name: "Data Check"
+  short_description: "Validate data quality with repository-native evidence."
+  default_prompt: "Use $data-check to validate this data change and publish an evidence-backed verdict."
+
+policy:
+  allow_implicit_invocation: false

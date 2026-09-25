@@ -32,9 +32,11 @@ interest).
 
 from __future__ import annotations
 
+import json
 import logging
 import zipfile
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -77,6 +79,142 @@ _MONTHS = {month: i + 1 for i, month in enumerate("JAN FEB MAR APR MAY JUN JUL A
 #: Below this many cached quarters the derivation is a PARTIAL history that looks complete.
 #: 2006q1 -> 2026q1 is 81; the guard warns rather than raises so a deliberate subset still runs.
 MIN_EXPECTED_QUARTERS = 80
+
+MANUAL_TENURE_FILE = Path("sec") / "symbol_tenure_manual.json"
+MANUAL_TENURE_VERSION = 1
+
+
+class ManualSymbolTenureError(ValueError):
+    """The manual symbol-tenure config is unsafe or cannot be audited."""
+
+
+def _manual_date(value: object, *, field: str, location: str) -> pd.Timestamp | None:
+    """Parse one strict ISO date from the manual config."""
+    if value is None and field == "valid_to":
+        return None
+    if not isinstance(value, str):
+        raise ManualSymbolTenureError(f"{location}.{field} must be an ISO YYYY-MM-DD string")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ManualSymbolTenureError(f"{location}.{field} is not an ISO YYYY-MM-DD date: {value!r}") from exc
+    if value != parsed.isoformat():
+        raise ManualSymbolTenureError(f"{location}.{field} must use canonical YYYY-MM-DD form: {value!r}")
+    return pd.Timestamp(parsed)
+
+
+def load_manual_symbol_tenure(config_dir: str | Path) -> pd.DataFrame:
+    """Load, normalize and validate the evidenced manual ticker-history input.
+
+    The returned frame retains ``canonical_ticker`` and ``reason`` for the lineage builder's
+    cross-check. Those two audit columns are removed before materializing ``symbol_tenure``.
+    Runtime identity resolution reads only the materialized table, never this JSON.
+    """
+    path = Path(config_dir) / MANUAL_TENURE_FILE
+    if not path.exists():
+        raise FileNotFoundError(f"symbol_tenure: manual config not found: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ManualSymbolTenureError(f"symbol_tenure: invalid JSON in {path}: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("version") != MANUAL_TENURE_VERSION:
+        raise ManualSymbolTenureError(f"symbol_tenure: {path} must be an object with version={MANUAL_TENURE_VERSION}")
+    tickers = payload.get("tickers")
+    if not isinstance(tickers, dict) or not tickers:
+        raise ManualSymbolTenureError(f"symbol_tenure: {path}.tickers must be a non-empty object")
+
+    records: list[dict[str, object]] = []
+    for raw_ticker, raw_intervals in tickers.items():
+        ticker = str(raw_ticker).strip().upper()
+        if not ticker:
+            raise ManualSymbolTenureError(f"symbol_tenure: {path} contains an empty canonical ticker")
+        if not isinstance(raw_intervals, list) or not raw_intervals:
+            raise ManualSymbolTenureError(f"symbol_tenure: {ticker} must contain at least one interval")
+        for index, raw in enumerate(raw_intervals):
+            location = f"tickers.{ticker}[{index}]"
+            if not isinstance(raw, dict):
+                raise ManualSymbolTenureError(f"{location} must be an object")
+            symbol = str(raw.get("symbol", "")).strip().upper()
+            if not symbol:
+                raise ManualSymbolTenureError(f"{location}.symbol must be non-empty")
+            cik = raw.get("issuer_cik")
+            if not isinstance(cik, str) or len(cik) != 10 or not cik.isdigit():
+                raise ManualSymbolTenureError(f"{location}.issuer_cik must be a zero-padded 10-digit string")
+            start = _manual_date(raw.get("valid_from"), field="valid_from", location=location)
+            end = _manual_date(raw.get("valid_to"), field="valid_to", location=location)
+            if end is not None and start is not None and start >= end:
+                raise ManualSymbolTenureError(f"{location} must satisfy valid_from < valid_to")
+            evidence = raw.get("evidence")
+            if not isinstance(evidence, list) or not evidence or any(not isinstance(item, str) or not item.strip() for item in evidence):
+                raise ManualSymbolTenureError(f"{location}.evidence must be a non-empty list of non-empty strings")
+            reason = raw.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ManualSymbolTenureError(f"{location}.reason must be non-empty")
+            records.append(
+                {
+                    "canonical_ticker": ticker,
+                    "symbol": symbol,
+                    "issuer_cik": cik,
+                    "valid_from": start,
+                    "valid_to": end,
+                    "n_filings": 0,
+                    "source": "manual",
+                    "evidence": " | ".join(item.strip() for item in evidence),
+                    "reason": reason.strip(),
+                }
+            )
+
+    out = pd.DataFrame.from_records(records)
+    identity_columns = ["canonical_ticker", "symbol", "issuer_cik", "valid_from", "valid_to"]
+    out = out.drop_duplicates(identity_columns, keep="first").sort_values(["symbol", "valid_from", "issuer_cik"], kind="mergesort", ignore_index=True)
+    for symbol, rows in out.groupby("symbol", sort=False):
+        ordered = rows.sort_values(["valid_from", "valid_to", "issuer_cik"], kind="mergesort")
+        previous = None
+        for row in ordered.itertuples(index=False):
+            if previous is not None:
+                previous_end = previous.valid_to if pd.notna(previous.valid_to) else pd.Timestamp.max
+                if row.valid_from < previous_end:
+                    raise ManualSymbolTenureError(
+                        "symbol_tenure: overlapping manual intervals for "
+                        f"{symbol}: {previous.canonical_ticker}/{previous.issuer_cik} "
+                        f"[{previous.valid_from.date()}, "
+                        f"{'open' if pd.isna(previous.valid_to) else previous.valid_to.date()}) and "
+                        f"{row.canonical_ticker}/{row.issuer_cik} [{row.valid_from.date()}, "
+                        f"{'open' if pd.isna(row.valid_to) else row.valid_to.date()})"
+                    )
+            previous = row
+    return out
+
+
+def materialize_symbol_tenure(derived: pd.DataFrame, manual: pd.DataFrame) -> pd.DataFrame:
+    """Materialize both evidence classes, coalescing collisions at the table grain."""
+    table_columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
+    out = pd.concat([manual[table_columns], derived[table_columns]], ignore_index=True)
+    priority = out["source"].map({"manual": 0, "form345": 1}).fillna(2)
+    out = (
+        out.assign(_source_priority=priority)
+        .sort_values(["symbol", "valid_from", "_source_priority", "issuer_cik"], kind="mergesort")
+        .drop(columns="_source_priority")
+        .reset_index(drop=True)
+    )
+    primary_key = ["symbol", "issuer_cik", "valid_from"]
+    coalesced: list[dict[str, object]] = []
+    for _, rows in out.groupby(primary_key, sort=False, dropna=False):
+        winner = rows.iloc[0].copy()
+        if len(rows) > 1:
+            winner["n_filings"] = pd.to_numeric(rows["n_filings"], errors="coerce").max()
+            labelled = [f"{row.source} evidence: {row.evidence}" for row in rows.itertuples(index=False) if str(row.evidence).strip()]
+            winner["evidence"] = " | ".join(dict.fromkeys(labelled))
+        coalesced.append(winner.to_dict())
+    out = pd.DataFrame.from_records(coalesced, columns=table_columns)
+    logger.info(
+        "symbol_tenure: materialized %d manual and %d derived row(s) as %d unique " "table-grain row(s) over %d symbol(s)",
+        len(manual),
+        len(derived),
+        len(out),
+        out["symbol"].nunique(),
+    )
+    return out
 
 
 def _parse_filing_dates(raw: pd.Series) -> pd.Series:
@@ -241,14 +379,17 @@ def changed_tenure_symbols(
 ) -> list[str]:
     """Sorted symbols whose CIK membership or observed bounds changed."""
     columns = ["symbol", "issuer_cik", "valid_from", "valid_to"]
+    if "source" in existing.columns and "source" in derived.columns:
+        columns.append("source")
 
     def signatures(frame: pd.DataFrame) -> dict[str, tuple[tuple[str, ...], ...]]:
         normal = frame[columns].copy()
         normal["symbol"] = normal["symbol"].astype(str).str.upper().str.strip()
         for column in ("valid_from", "valid_to"):
             normal[column] = pd.to_datetime(normal[column], errors="coerce").astype("string")
+        signature_columns = [column for column in columns if column != "symbol"]
         return {
-            symbol: tuple(sorted(tuple(map(str, row)) for row in group[["issuer_cik", "valid_from", "valid_to"]].itertuples(index=False, name=None)))
+            symbol: tuple(sorted(tuple(map(str, row)) for row in group[signature_columns].itertuples(index=False, name=None)))
             for symbol, group in normal.groupby("symbol", sort=False)
         }
 
@@ -256,14 +397,20 @@ def changed_tenure_symbols(
     return sorted(symbol for symbol in set(before) | set(after) if before.get(symbol) != after.get(symbol))
 
 
-def build_symbol_tenure(context: Context, cache: Path) -> pd.DataFrame:
+def build_symbol_tenure(context: Context, cache: Path, config_dir: str | Path | None = None) -> pd.DataFrame:
     """Derive and REPLACE `symbol_tenure`; returns the frame written.
 
     `replace`, never `save`: the table is a full derivation of the cache, and an upsert would
     leave rows from an earlier, narrower run behind with nothing to tell them from current ones.
     """
     existing = context.store.load(Tables.symbol_tenure, project=True, optional=True)
-    out = derive_symbol_tenure(cache)
+    derived = derive_symbol_tenure(cache)
+    manual = load_manual_symbol_tenure(config_dir or context.config_dir)
+    out = materialize_symbol_tenure(derived, manual)
+    context.log.info(
+        f"symbol_tenure: validated {len(manual)} manual interval(s) for "
+        f"{manual['canonical_ticker'].nunique()} canonical ticker(s); no manual overlap"
+    )
     if existing is None:
         context.log.info(f"symbol_tenure: cold build with {len(out)} row(s) over " f"{out['symbol'].nunique()} symbol(s)")
     else:

@@ -48,7 +48,7 @@ fiscal_2020_fourth_quarter_is_refused_and_no_other_year_is` pins that end-to-end
 real filings (3 stubs, one per 10-K, all value-less); `test_the_filings_own_calendar_refuses
 _all_three` below pins its precondition, that the guard empties the field outright.
 
-Every test below is synthetic known-truth built from the numbers above (docs/testing.md:
+Every test below is synthetic known-truth built from the numbers above (wiki/guides/testing.md:
 parsing math gets fixtures); the real-filing evidence is the measurement in the function's
 docstring. The NEGATIVE tests carry the weight:
 `test_fallback_is_scoped_to_fields_with_no_annual_of_their_own` pins the scoping decision that
@@ -56,13 +56,18 @@ keeps the blast radius at 9 rows rather than 16, and
 `test_asc270_table_survives_a_filing_wide_calendar` pins the sibling rule, which is the only
 thing standing between this fallback and four filers' quarterly `grossProfit`.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import (
-    _drop_note_only_quarter, _filing_annual_windows, _period_frame, _values_by_period)
+    _drop_note_only_quarter,
+    _filing_annual_windows,
+    _period_frame,
+    _values_by_period,
+)
 from src.data_extract.utils.fundamentals.periods import ANNUAL, QUARTERLY
 
 REVENUES = "us-gaap:Revenues"
@@ -94,17 +99,27 @@ def _periods(facts: list[tuple[str, str, str, float]], concept: str) -> dict[tup
     could classify a window the pipeline would not. ORCL is the reason that matters -- 91 and
     364 days are what separate the bad context from the good one.
     """
-    frame = pd.DataFrame([{"concept": c, "numeric_value": v, "period_type": "duration",
-                           "period_start": start, "period_end": end,
-                           "fiscal_year": pd.Timestamp(end).year,
-                           "fiscal_period": "Q4", "unit_ref": "usd", "decimals": "-6"}
-                          for c, start, end, v in facts])
+    frame = pd.DataFrame(
+        [
+            {
+                "concept": c,
+                "numeric_value": v,
+                "period_type": "duration",
+                "period_start": start,
+                "period_end": end,
+                "fiscal_year": pd.Timestamp(end).year,
+                "fiscal_period": "Q4",
+                "unit_ref": "usd",
+                "decimals": "-6",
+            }
+            for c, start, end, v in facts
+        ]
+    )
     return _values_by_period(_period_frame(frame), concept)
 
 
 def _quarter_ends(periods: dict[tuple, dict]) -> set[str]:
-    return {str(pd.Timestamp(p["period_end"]).date()) for p in periods.values()
-            if p["duration_type"] == QUARTERLY}
+    return {str(pd.Timestamp(p["period_end"]).date()) for p in periods.values() if p["duration_type"] == QUARTERLY}
 
 
 def _orcl_filing() -> dict[str, dict[tuple, dict]]:
@@ -113,8 +128,7 @@ def _orcl_filing() -> dict[str, dict[tuple, dict]]:
     `totalRevenue` resolved to `Revenues`, which is the defect's precondition: resolution is
     period-agnostic by design, so a concept present only in broken contexts still wins.
     """
-    return {"totalRevenue": _periods(_ORCL_REVENUES, REVENUES),
-            "netIncome": _periods(_ORCL_ANNUAL, ASC606)}
+    return {"totalRevenue": _periods(_ORCL_REVENUES, REVENUES), "netIncome": _periods(_ORCL_ANNUAL, ASC606)}
 
 
 # --------------------------------------------------------------------------- #
@@ -130,11 +144,13 @@ def test_orcl_full_years_in_quarterly_contexts_survived_the_field_local_rule():
     before = _periods(_ORCL_REVENUES, REVENUES)
 
     assert _quarter_ends(before) == {"2020-05-31", "2021-05-31", "2022-05-31"}
-    assert not [p for p in before.values() if p["duration_type"] == ANNUAL], (
-        "the premise: ORCL publishes no annual-window `Revenues` in these filings")
+    assert not [
+        p for p in before.values() if p["duration_type"] == ANNUAL
+    ], "the premise: ORCL publishes no annual-window `Revenues` in these filings"
     assert _drop_note_only_quarter(before, form="10-K") == before
-    print("field-local rule: all 3 mislabelled years kept -- 0 of 9 rows caught, which is "
-          "the defect the docstring's 'ORCL 9' claimed to have fixed")
+    print(
+        "field-local rule: all 3 mislabelled years kept -- 0 of 9 rows caught, which is " "the defect the docstring's 'ORCL 9' claimed to have fixed"
+    )
 
 
 @pytest.mark.parametrize("form", ["10-K", "10-K/A"])
@@ -147,13 +163,11 @@ def test_the_filings_own_calendar_refuses_all_three(form):
     values = _orcl_filing()
     windows = _filing_annual_windows(values)
 
-    after = _drop_note_only_quarter(values["totalRevenue"], form=form,
-                                    filing_windows=windows)
+    after = _drop_note_only_quarter(values["totalRevenue"], form=form, filing_windows=windows)
 
     assert _quarter_ends(after) == set(), "a full year is not a fourth quarter"
     assert after == {}, "nothing else was in `Revenues` to keep"
-    print(f"{form}: 3 mislabelled years refused ($39,068M/$40,479M/$42,440M); true Q4 FY2022 "
-          f"is $11,840M by FY-YTD9, not $42,440M")
+    print(f"{form}: 3 mislabelled years refused ($39,068M/$40,479M/$42,440M); true Q4 FY2022 " f"is $11,840M by FY-YTD9, not $42,440M")
 
 
 def test_the_annual_windows_of_other_fields_are_left_alone():
@@ -166,12 +180,10 @@ def test_the_annual_windows_of_other_fields_are_left_alone():
     values = _orcl_filing()
     windows = _filing_annual_windows(values)
 
-    after = _drop_note_only_quarter(values["netIncome"], form="10-K",
-                                    filing_windows=windows)
+    after = _drop_note_only_quarter(values["netIncome"], form="10-K", filing_windows=windows)
 
     assert after == values["netIncome"]
-    assert sorted(p["value"] for p in after.values()) == [
-        39_068_000_000.0, 40_479_000_000.0, 42_440_000_000.0]
+    assert sorted(p["value"] for p in after.values()) == [39_068_000_000.0, 40_479_000_000.0, 42_440_000_000.0]
     print("the 3 annual windows that date the refusal are themselves untouched")
 
 
@@ -183,14 +195,15 @@ def test_filing_annual_windows_dedupes_by_span():
     `_covering_annual` scan for no extra evidence.
     """
     values = _orcl_filing()
-    values["operatingIncome"] = _periods(_ORCL_ANNUAL, ASC606)   # the same three years again
+    values["operatingIncome"] = _periods(_ORCL_ANNUAL, ASC606)  # the same three years again
 
     windows = _filing_annual_windows(values)
 
     assert [(str(lo.date()), str(hi.date())) for _, lo, hi in windows] == [
         ("2019-06-01", "2020-05-31"),
         ("2020-06-01", "2021-05-31"),
-        ("2021-06-01", "2022-05-31")]
+        ("2021-06-01", "2022-05-31"),
+    ]
     print(f"2 fields x 3 identical years -> {len(windows)} windows")
 
 
@@ -205,20 +218,20 @@ def test_asc270_table_survives_a_filing_wide_calendar():
     and AFL sit in -- 388 legitimate ASC 270 rows between them. Four siblings in a fiscal
     year is a SERIES and must survive.
     """
-    table = [(REVENUES, "2021-09-01", "2021-11-30", 10_360_000_000.0),
-             (REVENUES, "2021-12-01", "2022-02-28", 10_513_000_000.0),
-             (REVENUES, "2022-03-01", "2022-05-31", 11_840_000_000.0),
-             (REVENUES, "2021-06-01", "2021-08-31", 9_728_000_000.0)]
+    table = [
+        (REVENUES, "2021-09-01", "2021-11-30", 10_360_000_000.0),
+        (REVENUES, "2021-12-01", "2022-02-28", 10_513_000_000.0),
+        (REVENUES, "2022-03-01", "2022-05-31", 11_840_000_000.0),
+        (REVENUES, "2021-06-01", "2021-08-31", 9_728_000_000.0),
+    ]
     before = _periods(table, REVENUES)
     values = {"totalRevenue": before, "netIncome": _periods(_ORCL_ANNUAL, ASC606)}
 
-    after = _drop_note_only_quarter(before, form="10-K",
-                                    filing_windows=_filing_annual_windows(values))
+    after = _drop_note_only_quarter(before, form="10-K", filing_windows=_filing_annual_windows(values))
 
     assert after == before, "four siblings in FY2022 is a series, not a sentence"
     assert _quarter_ends(after) == {"2021-08-31", "2021-11-30", "2022-02-28", "2022-05-31"}
-    print("ASC 270: all 4 real FY2022 quarters kept against the filing-wide calendar, "
-          "including the true Q4 of $11,840M")
+    print("ASC 270: all 4 real FY2022 quarters kept against the filing-wide calendar, " "including the true Q4 of $11,840M")
 
 
 def test_fallback_is_scoped_to_fields_with_no_annual_of_their_own():
@@ -230,21 +243,19 @@ def test_fallback_is_scoped_to_fields_with_no_annual_of_their_own():
     shape but have not been read at filing level. So a field that declares its own calendar
     is judged on that alone, even where the filing's is wider.
     """
-    own = [(REVENUES, "2021-06-01", "2022-05-31", 42_440_000_000.0),   # its own FY2022
-           (REVENUES, "2022-03-01", "2022-05-31", 11_840_000_000.0),   # a real lone Q4
-           (REVENUES, "2020-03-01", "2020-05-31", 39_068_000_000.0)]   # outside its calendar
+    own = [
+        (REVENUES, "2021-06-01", "2022-05-31", 42_440_000_000.0),  # its own FY2022
+        (REVENUES, "2022-03-01", "2022-05-31", 11_840_000_000.0),  # a real lone Q4
+        (REVENUES, "2020-03-01", "2020-05-31", 39_068_000_000.0),
+    ]  # outside its calendar
     before = _periods(own, REVENUES)
     wider = {"totalRevenue": before, "netIncome": _periods(_ORCL_ANNUAL, ASC606)}
 
-    after = _drop_note_only_quarter(before, form="10-K",
-                                    filing_windows=_filing_annual_windows(wider))
+    after = _drop_note_only_quarter(before, form="10-K", filing_windows=_filing_annual_windows(wider))
 
-    assert "2020-05-31" in _quarter_ends(after), (
-        "FY2020 is outside this field's own calendar, so the wider one must not reach it")
-    assert "2022-05-31" not in _quarter_ends(after), (
-        "the field's own FY2022 window still judges its own lone quarter")
-    print("scoping: the field's own calendar judges FY2022 and the filing's does NOT reach "
-          "FY2020 -- 9 rows, not 16")
+    assert "2020-05-31" in _quarter_ends(after), "FY2020 is outside this field's own calendar, so the wider one must not reach it"
+    assert "2022-05-31" not in _quarter_ends(after), "the field's own FY2022 window still judges its own lone quarter"
+    print("scoping: the field's own calendar judges FY2022 and the filing's does NOT reach " "FY2020 -- 9 rows, not 16")
 
 
 def test_a_10q_is_still_gated_out():
@@ -257,8 +268,7 @@ def test_a_10q_is_still_gated_out():
     values = _orcl_filing()
     windows = _filing_annual_windows(values)
 
-    assert _drop_note_only_quarter(values["totalRevenue"], form="10-Q",
-                                   filing_windows=windows) == values["totalRevenue"]
+    assert _drop_note_only_quarter(values["totalRevenue"], form="10-Q", filing_windows=windows) == values["totalRevenue"]
     print("form gate: the 3 ORCL windows are refused in a 10-K and kept in a 10-Q")
 
 

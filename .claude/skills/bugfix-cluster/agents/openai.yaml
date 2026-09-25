@@ -1,0 +1,7 @@
+interface:
+  display_name: "Bugfix Cluster"
+  short_description: "Repair a structured defect cluster on isolated branches."
+  default_prompt: "Use $bugfix-cluster to triage, isolate, repair, and validate this defect cluster."
+
+policy:
+  allow_implicit_invocation: false

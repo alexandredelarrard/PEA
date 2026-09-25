@@ -1,0 +1,729 @@
+{
+  "version": 1,
+  "tickers": {
+    "A": [
+      {
+        "symbol": "A",
+        "issuer_cik": "0001090872",
+        "valid_from": "2006-02-16",
+        "valid_to": null,
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed A / CIK 0001090872 filing on 2006-02-16"
+        ],
+        "reason": "Verified SEC-observation lower bound covers the RegSHO source horizon and overrides unrelated issuers that later reused A."
+      }
+    ],
+    "APA": [
+      {
+        "symbol": "APA",
+        "issuer_cik": "0000006769",
+        "valid_from": "2006-01-04",
+        "valid_to": "2021-03-02",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed APA / CIK 0000006769 filing on 2006-01-04",
+          "https://www.sec.gov/Archives/edgar/data/1841666/000119312521063695/d127090dex991.htm"
+        ],
+        "reason": "Apache held APA through the last market session before the successor holding company began trading."
+      },
+      {
+        "symbol": "APA",
+        "issuer_cik": "0001841666",
+        "valid_from": "2021-03-02",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1841666/000119312521063695/d127090dex991.htm"
+        ],
+        "reason": "APA Corporation replaced Apache under the unchanged APA symbol at the 2021-03-02 market open."
+      }
+    ],
+    "AXON": [
+      {
+        "symbol": "TASR",
+        "issuer_cik": "0001069183",
+        "valid_from": "2006-05-26",
+        "valid_to": "2017-04-06",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1069183/000106918317000064/ex991-pressreleasexnamecha.htm"
+        ],
+        "reason": "SEC-observed TASR lower bound through the market-effective AAXN change."
+      },
+      {
+        "symbol": "AAXN",
+        "issuer_cik": "0001069183",
+        "valid_from": "2017-04-06",
+        "valid_to": "2021-01-26",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1069183/000106918317000064/ex991-pressreleasexnamecha.htm",
+          "https://investor.axon.com/2021-01-25-Axon-Enterprise-To-Change-Nasdaq-Symbol-to-AXON"
+        ],
+        "reason": "AAXN began at the 2017-04-06 market open and ended when AXON became effective."
+      },
+      {
+        "symbol": "AXON",
+        "issuer_cik": "0001069183",
+        "valid_from": "2021-01-26",
+        "valid_to": null,
+        "evidence": [
+          "https://investor.axon.com/2021-01-25-Axon-Enterprise-To-Change-Nasdaq-Symbol-to-AXON"
+        ],
+        "reason": "AXON became the Nasdaq symbol at the 2021-01-26 market open."
+      }
+    ],
+    "BALL": [
+      {
+        "symbol": "BLL",
+        "issuer_cik": "0000009389",
+        "valid_from": "2006-01-12",
+        "valid_to": "2022-05-10",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed BLL / CIK 0000009389 filing on 2006-01-12",
+          "https://www.sec.gov/Archives/edgar/data/9389/000000938922000010/bll-20220427x8k.htm"
+        ],
+        "reason": "BLL was Ball's symbol through the last market session before the BALL change."
+      },
+      {
+        "symbol": "BALL",
+        "issuer_cik": "0000009389",
+        "valid_from": "2022-05-10",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/9389/000000938922000010/bll-20220427x8k.htm"
+        ],
+        "reason": "BALL became the NYSE symbol at the 2022-05-10 market open."
+      }
+    ],
+    "BKR": [
+      {
+        "symbol": "BHGE",
+        "issuer_cik": "0001701605",
+        "valid_from": "2017-07-03",
+        "valid_to": "2019-10-18",
+        "evidence": [
+          "https://investors.bakerhughes.com/news/press-releases/news-details/2019/BHGE-Changes-Its-Name-to-Baker-Hughes-Company-10-17-2019/default.aspx"
+        ],
+        "reason": "BHGE was the post-merger symbol until BKR became market-effective."
+      },
+      {
+        "symbol": "BKR",
+        "issuer_cik": "0001701605",
+        "valid_from": "2019-10-18",
+        "valid_to": null,
+        "evidence": [
+          "https://investors.bakerhughes.com/news/press-releases/news-details/2019/BHGE-Changes-Its-Name-to-Baker-Hughes-Company-10-17-2019/default.aspx"
+        ],
+        "reason": "BKR became the NYSE symbol at the 2019-10-18 market open."
+      }
+    ],
+    "BG": [
+      {
+        "symbol": "BG",
+        "issuer_cik": "0001144519",
+        "valid_from": "2006-01-04",
+        "valid_to": "2023-11-01",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed BG / CIK 0001144519 filing on 2006-01-04",
+          "https://www.sec.gov/Archives/edgar/data/1996862/000199686224000090/annualreport_bg-12312023x.htm"
+        ],
+        "reason": "Bunge Limited held BG through the last market session before the redomesticated issuer began trading."
+      },
+      {
+        "symbol": "BG",
+        "issuer_cik": "0001996862",
+        "valid_from": "2023-11-01",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1996862/000199686224000090/annualreport_bg-12312023x.htm"
+        ],
+        "reason": "Bunge Global SA replaced Bunge Limited under the unchanged BG symbol on 2023-11-01."
+      }
+    ],
+    "BLK": [
+      {
+        "symbol": "BLK",
+        "issuer_cik": "0001060021",
+        "valid_from": "2006-01-03",
+        "valid_to": "2006-09-29",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed BLK / CIK 0001060021 filing on 2006-01-03",
+          "https://www.sec.gov/Archives/edgar/data/1364742/000119312506203499/d8k.htm"
+        ],
+        "reason": "Old BlackRock held BLK through the last market session before the 2006 successor issuer."
+      },
+      {
+        "symbol": "BLK",
+        "issuer_cik": "0001364742",
+        "valid_from": "2006-09-29",
+        "valid_to": "2024-10-01",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1364742/000119312506203499/d8k.htm",
+          "https://www.sec.gov/Archives/edgar/data/2012383/000095017024122256/blk-20240930.htm"
+        ],
+        "reason": "The 2006 public holding company held BLK until New BlackRock replaced it."
+      },
+      {
+        "symbol": "BLK",
+        "issuer_cik": "0002012383",
+        "valid_from": "2024-10-01",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/2012383/000095017024122256/blk-20240930.htm"
+        ],
+        "reason": "New BlackRock became the listed company under the unchanged BLK symbol on 2024-10-01."
+      }
+    ],
+    "COO": [
+      {
+        "symbol": "COO",
+        "issuer_cik": "0000711404",
+        "valid_from": "2006-01-05",
+        "valid_to": null,
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed COO / CIK 0000711404 filing on 2006-01-05"
+        ],
+        "reason": "Verified SEC-observation lower bound covers the RegSHO source horizon and overrides unrelated later COO use."
+      }
+    ],
+    "COHR": [
+      {
+        "symbol": "IIVI",
+        "issuer_cik": "0000820318",
+        "valid_from": "2006-02-09",
+        "valid_to": "2022-09-08",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed IIVI / CIK 0000820318 filing on 2006-02-09",
+          "https://www.sec.gov/Archives/edgar/data/820318/000119312522240836/d347635d8k.htm"
+        ],
+        "reason": "IIVI identified the surviving listed issuer until it adopted the acquired Coherent name and symbol."
+      },
+      {
+        "symbol": "COHR",
+        "issuer_cik": "0000820318",
+        "valid_from": "2022-09-08",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/820318/000119312522240836/d347635d8k.htm"
+        ],
+        "reason": "The surviving II-VI issuer adopted COHR on 2022-09-08; legacy Coherent CIK 0000021510 was acquired and is not the continuing security."
+      }
+    ],
+    "COR": [
+      {
+        "symbol": "ABC",
+        "issuer_cik": "0001140859",
+        "valid_from": "2006-01-03",
+        "valid_to": "2023-08-30",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1140859/000110465923096698/tm2324358d1_8k.htm"
+        ],
+        "reason": "SEC-observed ABC lower bound through the market-effective COR change."
+      },
+      {
+        "symbol": "COR",
+        "issuer_cik": "0001140859",
+        "valid_from": "2023-08-30",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1140859/000110465923096698/tm2324358d1_8k.htm"
+        ],
+        "reason": "COR became the NYSE symbol at the 2023-08-30 market open."
+      }
+    ],
+    "CPAY": [
+      {
+        "symbol": "FLT",
+        "issuer_cik": "0001175454",
+        "valid_from": "2010-12-14",
+        "valid_to": "2024-03-25",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1175454/000090445410000540/xslF345X02/edgar.xml",
+          "https://www.sec.gov/Archives/edgar/data/1175454/000162828024010593/flt-20240307.htm"
+        ],
+        "reason": "First SEC-observed FLT filing through the market-effective CPAY change."
+      },
+      {
+        "symbol": "CPAY",
+        "issuer_cik": "0001175454",
+        "valid_from": "2024-03-25",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1175454/000162828024010593/flt-20240307.htm"
+        ],
+        "reason": "CPAY became the NYSE symbol at the 2024-03-25 market open."
+      }
+    ],
+    "DIS": [
+      {
+        "symbol": "DIS",
+        "issuer_cik": "0001001039",
+        "valid_from": "2006-01-04",
+        "valid_to": "2019-03-20",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed DIS / CIK 0001001039 filing on 2006-01-04",
+          "https://www.sec.gov/Archives/edgar/data/1744489/000095015719000301/form8k-12b.htm"
+        ],
+        "reason": "Legacy Disney held DIS through the last market session before the successor parent reorganization."
+      },
+      {
+        "symbol": "DIS",
+        "issuer_cik": "0001744489",
+        "valid_from": "2019-03-20",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1744489/000095015719000301/form8k-12b.htm"
+        ],
+        "reason": "The successor Walt Disney parent became the DIS listed issuer on 2019-03-20."
+      }
+    ],
+    "EG": [
+      {
+        "symbol": "RE",
+        "issuer_cik": "0001095073",
+        "valid_from": "2006-01-03",
+        "valid_to": "2023-07-10",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed RE / CIK 0001095073 filing on 2006-01-03",
+          "https://www.sec.gov/Archives/edgar/data/1095073/000109507324000009/eg-20231231.htm"
+        ],
+        "reason": "RE was Everest's NYSE symbol through the last market session before EG became effective."
+      },
+      {
+        "symbol": "EG",
+        "issuer_cik": "0001095073",
+        "valid_from": "2023-07-10",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1095073/000109507324000009/eg-20231231.htm"
+        ],
+        "reason": "EG became the NYSE symbol on 2023-07-10."
+      }
+    ],
+    "ELV": [
+      {
+        "symbol": "WLP",
+        "issuer_cik": "0001156039",
+        "valid_from": "2006-01-10",
+        "valid_to": "2014-12-03",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed WLP / CIK 0001156039 filing on 2006-01-10",
+          "https://www.sec.gov/Archives/edgar/data/1156039/000115603915000003/antm-20141231x10k.htm"
+        ],
+        "reason": "WLP was the listed symbol until the Anthem name and ANTM ticker became market-effective."
+      },
+      {
+        "symbol": "ANTM",
+        "issuer_cik": "0001156039",
+        "valid_from": "2014-12-03",
+        "valid_to": "2022-06-28",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1156039/000115603915000003/antm-20141231x10k.htm",
+          "https://www.sec.gov/Archives/edgar/data/1156039/000115603923000007/elv-20221231.htm"
+        ],
+        "reason": "ANTM began with the 2014 Anthem rename and ended when ELV began trading."
+      },
+      {
+        "symbol": "ELV",
+        "issuer_cik": "0001156039",
+        "valid_from": "2022-06-28",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1156039/000115603923000007/elv-20221231.htm"
+        ],
+        "reason": "ELV became the NYSE symbol at the 2022-06-28 market open."
+      }
+    ],
+    "EXE": [
+      {
+        "symbol": "CHK",
+        "issuer_cik": "0000895126",
+        "valid_from": "2021-02-10",
+        "valid_to": "2024-10-02",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/895126/000089512621000033/ex9922021-02x09pr.htm",
+          "https://www.sec.gov/Archives/edgar/data/895126/000110465924104976/tm2425151d1_8k.htm"
+        ],
+        "reason": "The post-bankruptcy CHK security began after the 2021-02-09 emergence and ended when EXE became market-effective."
+      },
+      {
+        "symbol": "EXE",
+        "issuer_cik": "0000895126",
+        "valid_from": "2024-10-02",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/895126/000110465924104976/tm2425151d1_8k.htm"
+        ],
+        "reason": "EXE became the Nasdaq symbol at the 2024-10-02 market open; unrelated historical EXE issuers remain excluded."
+      }
+    ],
+    "FISV": [
+      {
+        "symbol": "FISV",
+        "issuer_cik": "0000798354",
+        "valid_from": "2006-01-03",
+        "valid_to": "2023-06-07",
+        "evidence": [
+          "https://investors.fiserv.com/news-releases/news-release-details/fiserv-completes-listing-transfer-new-york-stock-exchange"
+        ],
+        "reason": "SEC-observed FISV lower bound through the NYSE transfer and FI symbol change."
+      },
+      {
+        "symbol": "FI",
+        "issuer_cik": "0000798354",
+        "valid_from": "2023-06-07",
+        "valid_to": "2025-11-11",
+        "evidence": [
+          "https://investors.fiserv.com/news-releases/news-release-details/fiserv-completes-listing-transfer-new-york-stock-exchange",
+          "https://www.sec.gov/Archives/edgar/data/798354/000119312525254670/d17957d8k.htm"
+        ],
+        "reason": "FI was the NYSE symbol from the 2023-06-07 open through the 2025-11-10 close; the modelling ticker remains FISV."
+      },
+      {
+        "symbol": "FISV",
+        "issuer_cik": "0000798354",
+        "valid_from": "2025-11-11",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/798354/000119312525254670/d17957d8k.htm"
+        ],
+        "reason": "FISV resumed at the 2025-11-11 Nasdaq market open after the NYSE listing ended at the 2025-11-10 close."
+      }
+    ],
+    "GEN": [
+      {
+        "symbol": "SYMC",
+        "issuer_cik": "0000849399",
+        "valid_from": "2006-01-04",
+        "valid_to": "2019-11-05",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/849399/000110465919059239/tm1921662d1_8k.htm"
+        ],
+        "reason": "SEC-observed SYMC lower bound through the market-effective NLOK change."
+      },
+      {
+        "symbol": "NLOK",
+        "issuer_cik": "0000849399",
+        "valid_from": "2019-11-05",
+        "valid_to": "2022-11-08",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/849399/000110465919059239/tm1921662d1_8k.htm",
+          "https://www.sec.gov/Archives/edgar/data/849399/000110465922115277/tm2229813d1_ex99-01.htm"
+        ],
+        "reason": "NLOK began at the 2019-11-05 market open and ended when GEN became effective."
+      },
+      {
+        "symbol": "GEN",
+        "issuer_cik": "0000849399",
+        "valid_from": "2022-11-08",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/849399/000110465922115277/tm2229813d1_ex99-01.htm"
+        ],
+        "reason": "GEN became the Nasdaq symbol at the 2022-11-08 market open."
+      }
+    ],
+    "GL": [
+      {
+        "symbol": "TMK",
+        "issuer_cik": "0000320335",
+        "valid_from": "2006-01-04",
+        "valid_to": "2019-08-09",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed TMK / CIK 0000320335 filing on 2006-01-04",
+          "https://www.sec.gov/Archives/edgar/data/320335/000032033520000008/gl-20191231.htm"
+        ],
+        "reason": "TMK was Torchmark's NYSE symbol through the last market session before GL became effective."
+      },
+      {
+        "symbol": "GL",
+        "issuer_cik": "0000320335",
+        "valid_from": "2019-08-09",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/320335/000032033520000008/gl-20191231.htm"
+        ],
+        "reason": "GL became the NYSE symbol on 2019-08-09."
+      }
+    ],
+    "HWM": [
+      {
+        "symbol": "AA",
+        "issuer_cik": "0000004281",
+        "valid_from": "2006-01-04",
+        "valid_to": "2016-11-01",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/4281/000119312516731663/d249430dex991.htm"
+        ],
+        "reason": "SEC-observed AA lower bound through the separation and ARNC symbol change."
+      },
+      {
+        "symbol": "ARNC",
+        "issuer_cik": "0000004281",
+        "valid_from": "2016-11-01",
+        "valid_to": "2020-04-01",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/4281/000119312516731663/d249430dex991.htm",
+          "https://www.howmet.com/press-release/2020-04-01/howmet-aerospace-leading-global-provider-of-advanced-engineered-solutions-launches-as-standalone-company/"
+        ],
+        "reason": "ARNC began at the 2016-11-01 market open and ended when HWM became effective."
+      },
+      {
+        "symbol": "HWM",
+        "issuer_cik": "0000004281",
+        "valid_from": "2020-04-01",
+        "valid_to": null,
+        "evidence": [
+          "https://www.howmet.com/press-release/2020-04-01/howmet-aerospace-leading-global-provider-of-advanced-engineered-solutions-launches-as-standalone-company/"
+        ],
+        "reason": "HWM became the NYSE symbol at the 2020-04-01 market open."
+      }
+    ],
+    "J": [
+      {
+        "symbol": "JEC",
+        "issuer_cik": "0000052988",
+        "valid_from": "2006-01-26",
+        "valid_to": "2019-12-10",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed JEC / CIK 0000052988 filing on 2006-01-26",
+          "https://www.sec.gov/Archives/edgar/data/52988/000005298819000066/tickerchangeandcnbcrel.htm"
+        ],
+        "reason": "JEC was Jacobs' NYSE symbol through the last market session before J became effective."
+      },
+      {
+        "symbol": "J",
+        "issuer_cik": "0000052988",
+        "valid_from": "2019-12-10",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/52988/000005298819000066/tickerchangeandcnbcrel.htm"
+        ],
+        "reason": "J became the NYSE symbol at the 2019-12-10 market open."
+      }
+    ],
+    "LDOS": [
+      {
+        "symbol": "SAI",
+        "issuer_cik": "0001336920",
+        "valid_from": "2006-10-12",
+        "valid_to": "2013-09-30",
+        "evidence": [
+          "https://investors.leidos.com/node/8076/html"
+        ],
+        "reason": "SEC-observed SAI lower bound through the Leidos regular-way trading boundary."
+      },
+      {
+        "symbol": "LDOS",
+        "issuer_cik": "0001336920",
+        "valid_from": "2013-09-30",
+        "valid_to": null,
+        "evidence": [
+          "https://investors.leidos.com/node/8076/html"
+        ],
+        "reason": "LDOS regular-way NYSE trading began on 2013-09-30."
+      }
+    ],
+    "LHX": [
+      {
+        "symbol": "HRS",
+        "issuer_cik": "0000202058",
+        "valid_from": "2006-01-03",
+        "valid_to": "2019-07-01",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed HRS / CIK 0000202058 filing on 2006-01-03",
+          "https://www.sec.gov/Archives/edgar/data/202058/000114036119012139/ex99_1.htm"
+        ],
+        "reason": "HRS identified Harris through the last market session before LHX began trading."
+      },
+      {
+        "symbol": "LHX",
+        "issuer_cik": "0000202058",
+        "valid_from": "2019-07-01",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/202058/000114036119012139/ex99_1.htm"
+        ],
+        "reason": "LHX became the NYSE symbol at the 2019-07-01 market open after the L3Harris merger."
+      }
+    ],
+    "MRSH": [
+      {
+        "symbol": "MMC",
+        "issuer_cik": "0000062709",
+        "valid_from": "2006-01-04",
+        "valid_to": "2026-01-14",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed MMC / CIK 0000062709 filing on 2006-01-04",
+          "https://www.marsh.com/en/corp/about/news/marsh-mclennan-to-change-nyse-symbol-to-mrsh.html"
+        ],
+        "reason": "MMC was the NYSE symbol through the last market session before MRSH became effective."
+      },
+      {
+        "symbol": "MRSH",
+        "issuer_cik": "0000062709",
+        "valid_from": "2026-01-14",
+        "valid_to": null,
+        "evidence": [
+          "https://www.marsh.com/en/corp/about/news/marsh-mclennan-to-change-nyse-symbol-to-mrsh.html",
+          "https://www.sec.gov/Archives/edgar/data/62709/000006270926000022/mrsh-20251231.htm"
+        ],
+        "reason": "MRSH became the NYSE symbol at the 2026-01-14 market open."
+      }
+    ],
+    "RVTY": [
+      {
+        "symbol": "PKI",
+        "issuer_cik": "0000031791",
+        "valid_from": "2006-02-02",
+        "valid_to": "2023-05-16",
+        "evidence": [
+          "SEC Form 3/4/5 2006q1 archive: first observed PKI / CIK 0000031791 filing on 2006-02-02",
+          "https://www.sec.gov/Archives/edgar/data/31791/000115752323000815/a53397725ex99_1.htm"
+        ],
+        "reason": "PKI was PerkinElmer's NYSE symbol through the last market session before RVTY became effective."
+      },
+      {
+        "symbol": "RVTY",
+        "issuer_cik": "0000031791",
+        "valid_from": "2023-05-16",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/31791/000115752323000815/a53397725ex99_1.htm"
+        ],
+        "reason": "RVTY became the NYSE symbol at the 2023-05-16 market open."
+      }
+    ],
+    "SMCI": [
+      {
+        "symbol": "SMCI",
+        "issuer_cik": "0001375365",
+        "valid_from": "2007-03-28",
+        "valid_to": null,
+        "evidence": [
+          "SEC Form 3/4/5 2007q1 archive: first observed SMCI / CIK 0001375365 filing on 2007-03-28"
+        ],
+        "reason": "Identity is verified from the first SEC observation; the later FINRA suspension gap remains source-ineligible and is not encoded here."
+      }
+    ],
+    "TFC": [
+      {
+        "symbol": "BBT",
+        "issuer_cik": "0000092230",
+        "valid_from": "2007-11-15",
+        "valid_to": "2019-12-09",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/92230/000119312519295862/d836517dex991.htm"
+        ],
+        "reason": "SEC-observed BBT lower bound through the first market session after the Truist merger close."
+      },
+      {
+        "symbol": "TFC",
+        "issuer_cik": "0000092230",
+        "valid_from": "2019-12-09",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/92230/000119312519295862/d836517dex991.htm"
+        ],
+        "reason": "TFC trading followed the 2019-12-06 Friday merger close and began on the next market session."
+      }
+    ],
+    "TPL": [
+      {
+        "symbol": "TPL",
+        "issuer_cik": "0000097517",
+        "valid_from": "2007-03-01",
+        "valid_to": "2021-01-11",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/97517/000121390021001308/ea133013ex99-1_texaspacific.htm"
+        ],
+        "reason": "Trust-era TPL CIK through the corporate reorganization boundary."
+      },
+      {
+        "symbol": "TPL",
+        "issuer_cik": "0001811074",
+        "valid_from": "2021-01-11",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1811074/000121390021001303/ea133016-8k_texaspacific.htm"
+        ],
+        "reason": "Corporation-era CIK began with the 2021-01-11 reorganization; the ticker did not change."
+      }
+    ],
+    "TT": [
+      {
+        "symbol": "IR",
+        "issuer_cik": "0001466258",
+        "valid_from": "2009-07-09",
+        "valid_to": "2020-03-02",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1466258/000114036120004470/nc10009348x1_ex99-1.htm"
+        ],
+        "reason": "SEC-observed IR lower bound through the market-effective TT change."
+      },
+      {
+        "symbol": "TT",
+        "issuer_cik": "0001466258",
+        "valid_from": "2020-03-02",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1466258/000114036120004470/nc10009348x1_ex99-1.htm"
+        ],
+        "reason": "TT began NYSE trading on 2020-03-02."
+      }
+    ],
+    "WTW": [
+      {
+        "symbol": "WSH",
+        "issuer_cik": "0001140536",
+        "valid_from": "2006-01-11",
+        "valid_to": "2016-01-05",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1140536/000119312516420642/d113564d8k.htm"
+        ],
+        "reason": "SEC-observed WSH lower bound through the WLTW Nasdaq listing."
+      },
+      {
+        "symbol": "WLTW",
+        "issuer_cik": "0001140536",
+        "valid_from": "2016-01-05",
+        "valid_to": "2022-01-10",
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1140536/000119312516420642/d113564d8k.htm",
+          "https://investors.wtwco.com/news-releases/news-release-details/willis-towers-watson-announces-nasdaq-ticker-symbol-change-wltw"
+        ],
+        "reason": "WLTW began on 2016-01-05 and ended when WTW became market-effective."
+      },
+      {
+        "symbol": "WTW",
+        "issuer_cik": "0001140536",
+        "valid_from": "2022-01-10",
+        "valid_to": null,
+        "evidence": [
+          "https://investors.wtwco.com/news-releases/news-release-details/willis-towers-watson-announces-nasdaq-ticker-symbol-change-wltw"
+        ],
+        "reason": "WTW became the Nasdaq symbol at the 2022-01-10 market open."
+      }
+    ],
+    "XYZ": [
+      {
+        "symbol": "SQ",
+        "issuer_cik": "0001512673",
+        "valid_from": "2015-11-18",
+        "valid_to": "2025-01-21",
+        "evidence": [
+          "SEC Form 3/4/5 2015q4 archive: first observed SQ / CIK 0001512673 filing on 2015-11-18",
+          "https://www.sec.gov/Archives/edgar/data/1512673/000162828025007376/exhibit43blockinc2024.htm"
+        ],
+        "reason": "SQ was Block's NYSE symbol through the last market session before XYZ became effective."
+      },
+      {
+        "symbol": "XYZ",
+        "issuer_cik": "0001512673",
+        "valid_from": "2025-01-21",
+        "valid_to": null,
+        "evidence": [
+          "https://www.sec.gov/Archives/edgar/data/1512673/000162828025007376/exhibit43blockinc2024.htm"
+        ],
+        "reason": "XYZ became the NYSE symbol at the 2025-01-21 market open."
+      }
+    ]
+  }
+}

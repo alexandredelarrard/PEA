@@ -5,7 +5,7 @@ description = ""
 authors = [
     {name = "Your Name",email = "you@example.com"}
 ]
-readme = "docs/README.md"
+readme = "wiki/OVERVIEW.md"
 requires-python = ">=3.13, <3.15"
 dependencies = [
     "streamlit (>=1.35)",

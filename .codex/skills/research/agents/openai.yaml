@@ -1,0 +1,7 @@
+interface:
+  display_name: "Research"
+  short_description: "Research current state and produce source-backed specs."
+  default_prompt: "Use $research to investigate this request and produce an auditable specification."
+
+policy:
+  allow_implicit_invocation: false

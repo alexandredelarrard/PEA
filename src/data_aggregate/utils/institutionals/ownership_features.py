@@ -9,7 +9,7 @@ resolution remains future data work.
 without explicit exits, a filer lapses after ``HOLDER_ACTIVE_DAYS``. Item 4 categories use
 deterministic keyword matches. The four ``percent_of_class`` features were removed because
 their source field is effectively unavailable before the December 2024 XML mandate and is too
-recent for train/test/validation use; restoration requirements are recorded in ``docs/TODO.md``.
+recent for train/test/validation use; restoration requirements are recorded in ``wiki/TODO.md``.
 """
 
 from __future__ import annotations
@@ -214,11 +214,19 @@ def _act_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> 
     return out
 
 
-def _bo_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> dict[str, pd.DataFrame]:
+def _bo_fields(
+    canon: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    halflife: float,
+    *,
+    coverage: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
     if canon.empty:
         return out
     ce = canon.dropna(subset=["filer_id"])
+    if ce.empty:
+        return out
 
     occ = ce.assign(_flag=1.0, _grid_date=_snap_to_grid(ce["filing_date"], idx))
     occ = occ.dropna(subset=["_grid_date"])
@@ -227,6 +235,8 @@ def _bo_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> d
     # after each filing, then lapses. See the constant.
     occ_wide = occ_wide.reindex(idx).ffill(limit=HOLDER_ACTIVE_DAYS)
     active_count = _sum_over_filers(occ_wide)
+    if coverage is not None:
+        active_count = active_count.reindex(index=idx, columns=coverage.columns).fillna(0.0).where(coverage)
 
     denom = _rolling_distinct(ce, idx, window=HOLDER_ACTIVE_DAYS)
     out["ic_bo_holder_count"] = active_count.divide(denom.where(denom > 0), axis=0)
@@ -235,6 +245,39 @@ def _bo_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> d
     out["ic_bo_new_holder"] = decay_events(first_holder, idx, halflife, date_col="filing_date")
 
     return out
+
+
+def _complete_active_window_mask(
+    frames: PriceFrames,
+    idx: pd.DatetimeIndex,
+    *,
+    source_start: pd.Timestamp,
+    complete_through: pd.Timestamp | None,
+) -> pd.DataFrame | None:
+    """Eligibility for interpreting no 13G filing as an observed zero holder numerator."""
+    if complete_through is None or pd.isna(complete_through):
+        return None
+    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    if frames.close_split is not None and not frames.close_split.empty:
+        listed = frames.close_split.reindex(index=idx, columns=columns).notna()
+    else:
+        listed = pd.DataFrame(True, index=idx, columns=columns)
+
+    # The active-filer state looks back HOLDER_ACTIVE_DAYS trading sessions. Before that many
+    # sessions have elapsed from the source floor, a missing filer could have filed just before
+    # observable history began, so it is unavailable rather than zero.
+    start_pos = int(idx.searchsorted(pd.Timestamp(source_start).normalize(), side="left"))
+    first_complete = start_pos + HOLDER_ACTIVE_DAYS - 1
+    history_complete = pd.Series(False, index=idx)
+    if first_complete < len(idx):
+        history_complete.iloc[first_complete:] = True
+    through = pd.Series(idx <= pd.Timestamp(complete_through).normalize(), index=idx)
+    temporal = pd.DataFrame(
+        np.broadcast_to((history_complete & through).to_numpy()[:, None], (len(idx), len(columns))).copy(),
+        index=idx,
+        columns=columns,
+    )
+    return InstitutionalAvailability.combine(temporal, listed)
 
 
 def _cross_fields(canon_13d: pd.DataFrame, canon_13g: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> dict[str, pd.DataFrame]:
@@ -269,6 +312,8 @@ def build_ownership_feature_panel(
     decay_halflife_act: float = ACT_HALFLIFE_DEFAULT,  # 6month default value
     decay_halflife_bo: float = BO_HALFLIFE_DEFAULT,
     availability: InstitutionalAvailability | None = None,
+    complete_through_13d: pd.Timestamp | None = None,
+    complete_through_13g: pd.Timestamp | None = None,
     sink=None,
 ) -> pd.DataFrame:
     """Long-format beneficial-ownership panel (`f_<name>` per `EMISSION`). Empty when neither
@@ -315,9 +360,24 @@ def build_ownership_feature_panel(
     if canon_13d.empty and canon_13g.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
+    if availability is not None:
+        g_start = availability.source_date(Tables.sec_13g)
+    else:
+        g_start = pd.to_datetime(canon_13g.get("filing_date"), errors="coerce").min()
+    bo_coverage = (
+        _complete_active_window_mask(
+            frames,
+            idx,
+            source_start=pd.Timestamp(g_start),
+            complete_through=complete_through_13g,
+        )
+        if pd.notna(g_start)
+        else None
+    )
+
     fields: dict[str, pd.DataFrame] = {}
     fields.update(_act_fields(canon_13d, idx, decay_halflife_act))
-    fields.update(_bo_fields(canon_13g, idx, decay_halflife_bo))
+    fields.update(_bo_fields(canon_13g, idx, decay_halflife_bo, coverage=bo_coverage))
     fields.update(_cross_fields(canon_13d, canon_13g, idx, decay_halflife_bo))
 
     for name in list(fields):
@@ -327,6 +387,7 @@ def build_ownership_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
 
     if sink is not None and not canon_13d.empty:
+        sink.set_frontier("act", complete_through_13d)
         sink.add_events("act", canon_13d[["ticker", "filing_date"]].rename(columns={"filing_date": "date"}).drop_duplicates())
         initial = canon_13d[~canon_13d["is_amendment"].fillna(0).astype(float).eq(1.0)]
         sink.add_actors(

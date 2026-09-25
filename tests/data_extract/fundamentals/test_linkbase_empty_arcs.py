@@ -12,14 +12,17 @@ The shape of the returned frame is the contract that matters: every caller index
 exception, only later and quieter.
 
 Synthetic: whether a branch returns the right SHAPE is a known-truth question about the
-code, not an economic one (docs/testing.md's parsing exception).
+code, not an economic one (wiki/guides/testing.md's parsing exception).
 """
+
 from __future__ import annotations
 
 import pandas as pd
 
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
-    ARC_COLUMNS, calculation_arcs, statement_arcs,
+    ARC_COLUMNS,
+    calculation_arcs,
+    statement_arcs,
 )
 
 #: A role the filer declares in the NOTES, so `NON_STATEMENT_ROLE` ("detail") rejects it,
@@ -43,19 +46,28 @@ class _FakeXbrl:
 def _arcs(rows: list[tuple[str, str]]) -> pd.DataFrame:
     """(role_uri, menucat) -> the RAW calculation-linkbase frame."""
     return pd.DataFrame(
-        [{"concept": "IncomeTaxExpenseBenefit", "concept_taxonomy": "us-gaap",
-          "parent_concept": "NetIncomeLoss", "parent_taxonomy": "us-gaap",
-          "weight": 1.0, "role_uri": role, "menucat": menucat,
-          "is_abstract": False, "arc_filter": "both"}
-         for role, menucat in rows],
-        columns=ARC_COLUMNS)
+        [
+            {
+                "concept": "IncomeTaxExpenseBenefit",
+                "concept_taxonomy": "us-gaap",
+                "parent_concept": "NetIncomeLoss",
+                "parent_taxonomy": "us-gaap",
+                "weight": 1.0,
+                "role_uri": role,
+                "menucat": menucat,
+                "is_abstract": False,
+                "arc_filter": "both",
+            }
+            for role, menucat in rows
+        ],
+        columns=ARC_COLUMNS,
+    )
 
 
 def _assert_empty_arc_frame(frame: pd.DataFrame, label: str) -> None:
     assert isinstance(frame, pd.DataFrame), f"{label}: not a frame"
     assert frame.empty, f"{label}: expected no rows, got {len(frame)}"
-    assert list(frame.columns) == ARC_COLUMNS, (
-        f"{label}: shape contract broken: {list(frame.columns)}")
+    assert list(frame.columns) == ARC_COLUMNS, f"{label}: shape contract broken: {list(frame.columns)}"
 
 
 def test_statement_arcs_returns_empty_frame_when_no_arc_is_a_statement_arc():
@@ -70,8 +82,7 @@ def test_statement_arcs_returns_empty_frame_when_no_arc_is_a_statement_arc():
     print(f"  statement_arcs: {len(out)} row(s), columns={list(out.columns)}")
     _assert_empty_arc_frame(out, "no arc survived the filter")
     assert len(raw) == 2, "calculation_arcs must keep the UNFILTERED arcs"
-    print("  -> Returned the empty ARC_COLUMNS frame instead of raising; the filing routes "
-          "to tag_fallback.")
+    print("  -> Returned the empty ARC_COLUMNS frame instead of raising; the filing routes " "to tag_fallback.")
 
 
 def test_the_other_three_empty_returns_share_the_same_shape():
@@ -89,6 +100,5 @@ def test_the_other_three_empty_returns_share_the_same_shape():
         raw, out = calculation_arcs(filing), statement_arcs(filing)
         _assert_empty_arc_frame(raw, f"calculation_arcs, {label}")
         _assert_empty_arc_frame(out, f"statement_arcs, {label}")
-        print(f"  {label}: calculation_arcs {len(raw)} row(s), "
-              f"statement_arcs {len(out)} row(s), both ARC_COLUMNS")
+        print(f"  {label}: calculation_arcs {len(raw)} row(s), " f"statement_arcs {len(out)} row(s), both ARC_COLUMNS")
     print("  -> All 4 empty returns now agree on one shape.")

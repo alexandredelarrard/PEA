@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Plan"
+  short_description: "Grill key decisions and produce an executable, traceable plan."
+  default_prompt: "Use $harness-plan to turn the approved specification into a deeply reviewed implementation plan."

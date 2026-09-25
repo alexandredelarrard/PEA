@@ -291,6 +291,45 @@ def test_holder_count_is_a_bounded_share_and_lapses():
     print(f"  max {np.nanmax(vals):.2f} <= 1; a filer lapses after " f"{HOLDER_ACTIVE_DAYS} trading days. Validated.")
 
 
+def test_holder_share_zero_requires_a_complete_active_window():
+    idx = pd.bdate_range("2021-01-04", periods=620)
+    tickers = ["ACTIVE", "EMPTY"]
+    peers = _peers(tickers)
+    close = pd.DataFrame(100.0, index=idx, columns=tickers)
+    sec_13g = pd.DataFrame(
+        [
+            {
+                "ticker": "ACTIVE",
+                "accession_number": f"a{i}",
+                "cusip": "CUS1",
+                "filing_date": day,
+                "reporting_person_cik": "0000000001",
+                "reporting_person_name": "Fund",
+            }
+            for i, day in enumerate((idx[0], idx[300]))
+        ]
+    )
+    complete_through = idx[500]
+    panel = build_ownership_feature_panel(
+        make_frames(idx, peers, close_split=close),
+        None,
+        sec_13g,
+        complete_through_13g=complete_through,
+    )
+    holder = panel.pivot(index="date", columns="ticker", values="f_ic_bo_holder_count")
+
+    assert pd.isna(holder.loc[idx[HOLDER_ACTIVE_DAYS - 2], "EMPTY"])
+    assert holder.loc[idx[400], "EMPTY"] == 0.0
+    assert holder.loc[idx[400], "ACTIVE"] == 1.0
+    assert pd.isna(holder.loc[idx[501], "EMPTY"])
+    print("\n=== SANITY CHECK: holder-share zero versus incomplete coverage ===")
+    print(
+        f"  EMPTY is NaN before a full {HOLDER_ACTIVE_DAYS}-session state window, 0 inside "
+        f"the completed frontier through {complete_through.date()}, and NaN after it"
+    )
+    print("  OK: no active filer is a zero only when the source can prove the absence")
+
+
 def test_build_ownership_feature_panel_empty_when_no_source():
     assert build_ownership_feature_panel(make_frames(IDX, {}), None, None).empty
     assert build_ownership_feature_panel(make_frames(IDX, {}), pd.DataFrame(), pd.DataFrame()).empty

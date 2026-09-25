@@ -38,28 +38,62 @@ import re
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from src.data_extract.utils.common.registrant import issuer_ciks
 from src.constants.constants import SEC_13D_FORMS
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import (new_filings, num_or_null,
-                                                        run_edgar_fetch)
+from src.data_extract.utils.common.edgar_driver import (
+    new_schedule_filings,
+    num_or_null,
+    run_edgar_fetch,
+)
+from src.data_extract.utils.common.registrant import issuer_ciks
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
 
-_COLS = ["ticker", "cik", "accession_number", "form", "filing_date", "rp_seq",
-        "is_amendment", "amendment_number", "cusip", "issuer_name", "date_of_event",
-        "has_structured_data", "reporting_person_name", "reporting_person_cik",
-        "reporting_person_citizenship", "type_of_reporting_person",
-        "reporting_person_comment", "is_group_member",
-        "sole_voting_power", "shared_voting_power", "sole_dispositive_power",
-        "shared_dispositive_power", "aggregate_amount", "percent_of_class",
-        "item3_source_of_funds", "item4_purpose_of_transaction",
-        "item5_interest_in_securities", "item6_contracts_understandings",
-        "primary_document", "doc_url"]
+_COLS = [
+    "ticker",
+    "cik",
+    "accession_number",
+    "form",
+    "filing_date",
+    "rp_seq",
+    "is_amendment",
+    "amendment_number",
+    "cusip",
+    "issuer_name",
+    "date_of_event",
+    "has_structured_data",
+    "reporting_person_name",
+    "reporting_person_cik",
+    "reporting_person_citizenship",
+    "type_of_reporting_person",
+    "reporting_person_comment",
+    "is_group_member",
+    "sole_voting_power",
+    "shared_voting_power",
+    "sole_dispositive_power",
+    "shared_dispositive_power",
+    "aggregate_amount",
+    "percent_of_class",
+    "item3_source_of_funds",
+    "item4_purpose_of_transaction",
+    "item5_interest_in_securities",
+    "item6_contracts_understandings",
+    "primary_document",
+    "doc_url",
+]
 
-_TRANSACTION_COLS = ["ticker", "cik", "accession_number", "filing_date", "trade_seq",
-                     "reporting_person_name", "trade_date", "transaction_type",
-                     "quantity", "price_per_share"]
+_TRANSACTION_COLS = [
+    "ticker",
+    "cik",
+    "accession_number",
+    "filing_date",
+    "trade_seq",
+    "reporting_person_name",
+    "trade_date",
+    "transaction_type",
+    "quantity",
+    "price_per_share",
+]
 
 # --- Item narrative fallback -------------------------------------------------- #
 # 13D items don't have MD&A-style alternate titles (unlike 10-K/10-Q), so one caption
@@ -99,19 +133,19 @@ _ITEM_CAPTIONS: dict[int, str] = {
 #: "Item N.", it is a captionless heading, not a cross-reference. The caption, when present,
 #: is consumed to end of line so a body never starts mid-caption ("or Other Consideration...").
 _ITEM_ANCHORS_LINE: dict[int, re.Pattern] = {
-    n: re.compile(rf"^[ \t]*item{_SEP}{n}\b[\.\:\)]?[ \t]*(?:{cap}[^\n]*|$)", re.I | re.M)
-    for n, cap in _ITEM_CAPTIONS.items()
+    n: re.compile(rf"^[ \t]*item{_SEP}{n}\b[\.\:\)]?[ \t]*(?:{cap}[^\n]*|$)", re.I | re.M) for n, cap in _ITEM_CAPTIONS.items()
 }
 #: Any captioned heading, anywhere -- used ONLY to detect that a carved body swallowed a
 #: later item, never to carve.
-_ITEM_HEADING_ANYWHERE: dict[int, re.Pattern] = {
-    n: re.compile(rf"item{_SEP}{n}{_SEP}(?:{cap})", re.I)
-    for n, cap in _ITEM_CAPTIONS.items()
-}
+_ITEM_HEADING_ANYWHERE: dict[int, re.Pattern] = {n: re.compile(rf"item{_SEP}{n}{_SEP}(?:{cap})", re.I) for n, cap in _ITEM_CAPTIONS.items()}
 _SIGNATURE_RE = re.compile(r"^\s*signature", re.I | re.M)
-_ITEM_TEXT_FIELD = {3: "item3_source_of_funds", 4: "item4_purpose_of_transaction",
-                    5: "item5_interest_in_securities", 6: "item6_contracts_understandings"}
-_ITEM_TEXT_MIN_CHARS = 30   # below this, it's a heading with no body (item not amended this cycle)
+_ITEM_TEXT_FIELD = {
+    3: "item3_source_of_funds",
+    4: "item4_purpose_of_transaction",
+    5: "item5_interest_in_securities",
+    6: "item6_contracts_understandings",
+}
+_ITEM_TEXT_MIN_CHARS = 30  # below this, it's a heading with no body (item not amended this cycle)
 
 #: The cp1252 0x80-0x9F block, decoded to the character the filer actually meant. These
 #: bytes survive EDGAR's own encoding round-trip and arrive as raw C1 codepoints (a real PSA
@@ -120,10 +154,7 @@ _ITEM_TEXT_MIN_CHARS = 30   # below this, it's a heading with no body (item not 
 #: EURO SIGN in "Investor paid \x80 52,544.78 in cash to Acorn", where dropping the byte would
 #: silently change the currency of a disclosed consideration. Five of the 32 (0x81, 0x8D, 0x8F,
 #: 0x90, 0x9D) are undefined in cp1252 and drop out of the comprehension.
-_CP1252_C1_BLOCK = {
-    chr(b): bytes([b]).decode("cp1252", "ignore") for b in range(0x80, 0xA0)
-    if bytes([b]).decode("cp1252", "ignore")
-}
+_CP1252_C1_BLOCK = {chr(b): bytes([b]).decode("cp1252", "ignore") for b in range(0x80, 0xA0) if bytes([b]).decode("cp1252", "ignore")}
 #: Straightened on top of the decode: the quotes, dashes and ellipsis become ASCII, and the
 #: zero-width / non-breaking characters that split a word into two tokens for no semantic
 #: reason are dropped. Character-for-character substitutions only -- no sentence or phrase is
@@ -131,10 +162,24 @@ _CP1252_C1_BLOCK = {
 #: Written as \u escapes, not literal glyphs: the characters this table exists to remove are
 #: exactly the ones an editor or a lossy copy-paste would silently mangle in the source.
 _CHAR_NORMALIZATION = _CP1252_C1_BLOCK | {
-    "\x91": "'", "\x92": "'", "\x93": '"', "\x94": '"', "\x95": "-", "\x96": "-",
-    "\x97": "-", "\x85": "...", "\xa0": " ", "\u2018": "'", "\u2019": "'",
-    "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-", "\u00ad": "",
-    "\u200b": "", "\ufeff": "",
+    "\x91": "'",
+    "\x92": "'",
+    "\x93": '"',
+    "\x94": '"',
+    "\x95": "-",
+    "\x96": "-",
+    "\x97": "-",
+    "\x85": "...",
+    "\xa0": " ",
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u00ad": "",
+    "\u200b": "",
+    "\ufeff": "",
 }
 #: Box-drawing / rule lines used as visual separators under a heading (U+2500-U+257F is the
 #: Box Drawing block). Bounded to runs of 3+ so a hyphenated word ("non-transferable") and a
@@ -269,7 +314,7 @@ def _row_values(cells: list[str], roles: list[str | None]) -> dict[str, str]:
             break
         val = cells[idx]
         idx += 1
-        if val == "$" and idx < len(cells):     # currency symbol split into its own cell
+        if val == "$" and idx < len(cells):  # currency symbol split into its own cell
             val = cells[idx]
             idx += 1
         if not role or not val:
@@ -318,8 +363,7 @@ def _clean_transaction_row(values: dict[str, str], filing_date: pd.Timestamp | N
     return out
 
 
-def _extract_transaction_rows(filing, fallback_person: str | None,
-                              filing_date: pd.Timestamp | None = None) -> list[dict]:
+def _extract_transaction_rows(filing, fallback_person: str | None, filing_date: pd.Timestamp | None = None) -> list[dict]:
     """Scan every attachment's HTML tables for the Item 5(c) trading-data
     exhibit (identified by a "Trade Date" header cell, not by exhibit number --
     filers use EX-99.1, EX-99.2, etc. inconsistently) and role-map its rows.
@@ -341,11 +385,11 @@ def _extract_transaction_rows(filing, fallback_person: str | None,
         try:
             if not att.is_html():
                 continue
-        except Exception:                       # noqa: BLE001 -- best-effort only
+        except Exception:  # noqa: BLE001 -- best-effort only
             continue
         try:
             html = att.content
-        except Exception:                       # noqa: BLE001 -- best-effort only
+        except Exception:  # noqa: BLE001 -- best-effort only
             continue
         if not isinstance(html, str) or not _TRADE_HEADER_CUE.search(html):
             continue
@@ -363,21 +407,27 @@ def _extract_transaction_rows(filing, fallback_person: str | None,
                     break
             if header_idx is None:
                 continue
-            for tr in table_rows[header_idx + 1:]:
+            for tr in table_rows[header_idx + 1 :]:
                 cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
                 cells = [c for c in cells if c]
                 if not cells:
                     continue
                 values = _row_values(cells, roles)
                 if "trade_date" not in values or "transaction_type" not in values:
-                    continue                    # not a data row (e.g. a footnote line)
+                    continue  # not a data row (e.g. a footnote line)
                 values.setdefault("reporting_person_name", fallback_person)
                 rows.append(_clean_transaction_row(values, filing_date))
     return rows
 
 
-_RP_NUMERIC_ATTRS = ("sole_voting_power", "shared_voting_power", "sole_dispositive_power",
-                     "shared_dispositive_power", "aggregate_amount", "percent_of_class")
+_RP_NUMERIC_ATTRS = (
+    "sole_voting_power",
+    "shared_voting_power",
+    "sole_dispositive_power",
+    "shared_dispositive_power",
+    "aggregate_amount",
+    "percent_of_class",
+)
 
 
 def _is_placeholder_numerics(rp) -> bool:
@@ -403,17 +453,11 @@ def _filing_rows(filing) -> list[dict]:
     items = getattr(obj, "items", None)
 
     # Date normalization
-    raw_event_date = (
-        getattr(obj, "date_of_event", None)
-        or getattr(obj, "event_date", None)
-        or None
-    )
+    raw_event_date = getattr(obj, "date_of_event", None) or getattr(obj, "event_date", None) or None
     event_date = pd.Timestamp(raw_event_date) if raw_event_date else None
 
     # Ticker fallback logic
-    ticker = getattr(filing, "ticker", None) or (
-        getattr(issuer, "ticker", None) if issuer else None
-    )
+    ticker = getattr(filing, "ticker", None) or (getattr(issuer, "ticker", None) if issuer else None)
 
     # `filing.document` renders as a rich TABLE, so str() on it stored an ASCII box
     # ("+-----+ | 1 p24-2469sc13d.htm ... |") in every row instead of a URL. Take the
@@ -425,8 +469,7 @@ def _filing_rows(filing) -> list[dict]:
         primary = getattr(filing, "primary_document", None)
         cik_raw = str(getattr(filing, "cik", "") or "").lstrip("0")
         if accession and primary and cik_raw:
-            doc_url = (f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/"
-                       f"{accession.replace('-', '')}/{primary}")
+            doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/" f"{accession.replace('-', '')}/{primary}"
     doc_url = str(doc_url) if doc_url else None
 
     # Item 3/4/5/6 narrative: trust the structured XML parse when present, else fall
@@ -447,7 +490,7 @@ def _filing_rows(filing) -> list[dict]:
     else:
         try:
             raw_text = filing.text()
-        except Exception:                           # noqa: BLE001 -- best-effort only
+        except Exception:  # noqa: BLE001 -- best-effort only
             raw_text = None
         sections = _extract_13d_item_sections(raw_text) if raw_text else {}
         item3_text = sections.get("item3_source_of_funds")
@@ -461,16 +504,10 @@ def _filing_rows(filing) -> list[dict]:
         "issuer_name": getattr(issuer, "name", None) if issuer else None,
         "accession_number": getattr(filing, "accession_number", None),
         "form": getattr(filing, "form", None),
-        "filing_date": (
-            pd.Timestamp(filing.filing_date)
-            if getattr(filing, "filing_date", None)
-            else None
-        ),
+        "filing_date": (pd.Timestamp(filing.filing_date) if getattr(filing, "filing_date", None) else None),
         "date_of_event": event_date,
         "is_amendment": 1.0 if bool(getattr(obj, "is_amendment", False)) else 0.0,
-        "amendment_number": num_or_null(
-            getattr(obj, "amendment_number", None), True
-        ),
+        "amendment_number": num_or_null(getattr(obj, "amendment_number", None), True),
         "cusip": getattr(security, "cusip", None) if security else None,
         "has_structured_data": 1.0 if has_structured else 0.0,
         # Narrative & Item extraction
@@ -518,44 +555,30 @@ def _filing_rows(filing) -> list[dict]:
                 **base,
                 "rp_seq": seq,
                 "reporting_person_name": getattr(rp, "name", None),
-                "reporting_person_cik": None
-                if getattr(rp, "no_cik", False)
-                else getattr(rp, "cik", None),
-                "reporting_person_citizenship": getattr(rp, "citizenship", None)
-                or None,
-                "type_of_reporting_person": getattr(
-                    rp, "type_of_reporting_person", None
-                )
-                or None,
+                "reporting_person_cik": None if getattr(rp, "no_cik", False) else getattr(rp, "cik", None),
+                "reporting_person_citizenship": getattr(rp, "citizenship", None) or None,
+                "type_of_reporting_person": getattr(rp, "type_of_reporting_person", None) or None,
                 "reporting_person_comment": getattr(rp, "comment", None) or None,
                 "is_group_member": getattr(rp, "member_of_group", None),
-                "sole_voting_power": num_or_null(
-                    getattr(rp, "sole_voting_power", None), trust_numerics
-                ),
-                "shared_voting_power": num_or_null(
-                    getattr(rp, "shared_voting_power", None), trust_numerics
-                ),
-                "sole_dispositive_power": num_or_null(
-                    getattr(rp, "sole_dispositive_power", None), trust_numerics
-                ),
-                "shared_dispositive_power": num_or_null(
-                    getattr(rp, "shared_dispositive_power", None), trust_numerics
-                ),
-                "aggregate_amount": num_or_null(
-                    getattr(rp, "aggregate_amount", None), trust_numerics
-                ),
-                "percent_of_class": num_or_null(
-                    getattr(rp, "percent_of_class", None), trust_numerics
-                ),
+                "sole_voting_power": num_or_null(getattr(rp, "sole_voting_power", None), trust_numerics),
+                "shared_voting_power": num_or_null(getattr(rp, "shared_voting_power", None), trust_numerics),
+                "sole_dispositive_power": num_or_null(getattr(rp, "sole_dispositive_power", None), trust_numerics),
+                "shared_dispositive_power": num_or_null(getattr(rp, "shared_dispositive_power", None), trust_numerics),
+                "aggregate_amount": num_or_null(getattr(rp, "aggregate_amount", None), trust_numerics),
+                "percent_of_class": num_or_null(getattr(rp, "percent_of_class", None), trust_numerics),
             }
         )
 
     return rows
 
 
-def build_ticker_13d_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None = None,
-                           done_accessions: frozenset[str] = frozenset(),
-                           ) -> dict[Table, pd.DataFrame]:
+def build_ticker_13d_edgar(
+    ticker: str,
+    cik: str,
+    *,
+    since: pd.Timestamp | None = None,
+    done_accessions: frozenset[str] = frozenset(),
+) -> dict[Table, pd.DataFrame]:
     """One row per reporting person plus the filing's Item 5(c) trade log. A filing whose
     `.obj()` parse fails is skipped entirely -- unlike 8-K's item codes, a 13D without its
     parsed content is not independently useful. The trade log is still attempted, since the
@@ -570,42 +593,44 @@ def build_ticker_13d_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None 
     ticker_ciks = issuer_ciks(ticker, cik)
     rows: list[dict] = []
     txn_rows: list[dict] = []
-    for filing in new_filings(ticker, SEC_13D_FORMS, since, done_accessions):
+    for filing in new_schedule_filings(ticker, ticker_ciks, SEC_13D_FORMS, since, done_accessions):
         try:
             filing_rows = _filing_rows(filing)
-        except Exception:                               # noqa: BLE001 -- best-effort only
+        except Exception:  # noqa: BLE001 -- best-effort only
             filing_rows = []
 
         issuer_cik = pad_cik(filing_rows[0].get("cik")) if filing_rows else ""
         if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
-            continue                                    # ticker is a FILER here, not the issuer
+            continue  # ticker is a FILER here, not the issuer
 
-        person_names = [r.get("reporting_person_name") for r in filing_rows
-                        if r.get("reporting_person_name")]
+        person_names = [r.get("reporting_person_name") for r in filing_rows if r.get("reporting_person_name")]
         for r in filing_rows:
             r["ticker"] = ticker
             rows.append(r)
 
         try:
             fallback_person = person_names[0] if len(person_names) == 1 else None
-            filing_date = (filing_rows[0].get("filing_date") if filing_rows
-                           else pd.Timestamp(filing.filing_date))
+            filing_date = filing_rows[0].get("filing_date") if filing_rows else pd.Timestamp(filing.filing_date)
             exhibit_rows = _extract_transaction_rows(filing, fallback_person, filing_date)
-        except Exception:                               # noqa: BLE001 -- best-effort only
+        except Exception:  # noqa: BLE001 -- best-effort only
             exhibit_rows = []
-            
+
         cik_val = filing_rows[0].get("cik") if filing_rows else cik
         for seq, tr in enumerate(exhibit_rows):
-            tr.update(ticker=ticker, cik=cik_val, accession_number=filing.accession_number,
-                      filing_date=filing_date, trade_seq=seq)
+            tr.update(ticker=ticker, cik=cik_val, accession_number=filing.accession_number, filing_date=filing_date, trade_seq=seq)
             txn_rows.append(tr)
 
-    return {Tables.sec_13d: pd.DataFrame(rows, columns=_COLS),
-            Tables.sec_13d_transactions: pd.DataFrame(txn_rows, columns=_TRANSACTION_COLS)}
+    return {Tables.sec_13d: pd.DataFrame(rows, columns=_COLS), Tables.sec_13d_transactions: pd.DataFrame(txn_rows, columns=_TRANSACTION_COLS)}
 
 
-def fetch_13d_edgar(context: Context, tickers: list[str], years_history: int,
-                    full: bool = False) -> None:
-    run_edgar_fetch(context, tickers, years_history,
-                    tables=(Tables.sec_13d, Tables.sec_13d_transactions),
-                    build=build_ticker_13d_edgar, desc="SC 13D (edgartools)", full=full)
+def fetch_13d_edgar(context: Context, tickers: list[str], years_history: int, full: bool = False) -> None:
+    run_edgar_fetch(
+        context,
+        tickers,
+        years_history,
+        tables=(Tables.sec_13d, Tables.sec_13d_transactions),
+        build=build_ticker_13d_edgar,
+        desc="SC 13D (edgartools)",
+        full=full,
+        require_complete=True,
+    )

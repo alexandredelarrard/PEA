@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Spec"
+  short_description: "Research the system and define an auditable acceptance contract."
+  default_prompt: "Use $harness-spec to research this request and produce an approved specification before planning."

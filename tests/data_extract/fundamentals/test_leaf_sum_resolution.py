@@ -8,7 +8,7 @@ regimes a reader wants them for (an E&P, two utilities, three REIT/insurers, and
 GOOGL, ORCL and UNP). In every case the filer REPORTS the number; the resolver could not
 name the concept it sits under.
 
-Split per docs/testing.md, and here the split is load-bearing rather than conventional:
+Split per wiki/guides/testing.md, and here the split is load-bearing rather than conventional:
 
   * The synthetic half proves the three GUARDS, and each guard exists because a specific
     plausible design was measured and refuted. A synthetic linkbase is the only way to make

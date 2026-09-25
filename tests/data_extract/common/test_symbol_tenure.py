@@ -11,6 +11,7 @@ of. The real-data half then proves the same code fires on the actual cache: `IR`
 from __future__ import annotations
 
 import io
+import json
 import logging
 import zipfile
 from collections import Counter
@@ -22,10 +23,13 @@ import pytest
 
 from src.data_extract.utils.common import symbol_tenure as tenure_module
 from src.data_extract.utils.common.symbol_tenure import (
+    ManualSymbolTenureError,
     _aggregate_zip,
     _parse_filing_dates,
     changed_tenure_symbols,
     derive_symbol_tenure,
+    load_manual_symbol_tenure,
+    materialize_symbol_tenure,
 )
 from src.data_store.schema import Tables
 
@@ -43,6 +47,13 @@ def _write_zip(directory: Path, quarter: str, rows: list[tuple[str, str, str, st
         archive.writestr("SUBMISSION.TSV", "\n".join(lines) + "\n")
     path = directory / f"{quarter}.zip"
     path.write_bytes(buffer.getvalue())
+    return path
+
+
+def _write_manual(directory: Path, payload: dict) -> Path:
+    path = directory / "sec" / "symbol_tenure_manual.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
 
@@ -254,6 +265,135 @@ def test_tenure_diff_names_added_removed_and_moved_symbols():
     print("  OK: routine refresh logs exactly the symbols whose identity evidence moved")
 
 
+def test_manual_tenure_loader_normalizes_and_preserves_half_open_boundaries(tmp_path):
+    _write_manual(
+        tmp_path,
+        {
+            "version": 1,
+            "tickers": {
+                "tt": [
+                    {
+                        "symbol": "ir",
+                        "issuer_cik": "0001466258",
+                        "valid_from": "2009-07-09",
+                        "valid_to": "2020-03-02",
+                        "evidence": ["SEC accession one"],
+                        "reason": "predecessor symbol",
+                    },
+                    {
+                        "symbol": "tt",
+                        "issuer_cik": "0001466258",
+                        "valid_from": "2020-03-02",
+                        "valid_to": None,
+                        "evidence": ["SEC accession two"],
+                        "reason": "current symbol",
+                    },
+                ]
+            },
+        },
+    )
+
+    out = load_manual_symbol_tenure(tmp_path)
+    old = out[out["symbol"] == "IR"].iloc[0]
+    current = out[out["symbol"] == "TT"].iloc[0]
+    assert set(out["canonical_ticker"]) == {"TT"}
+    assert old["valid_from"] == pd.Timestamp("2009-07-09")
+    assert old["valid_to"] == current["valid_from"] == pd.Timestamp("2020-03-02")
+    assert pd.isna(current["valid_to"])
+    assert (out["source"] == "manual").all() and (out["n_filings"] == 0).all()
+
+    print("\n=== SANITY CHECK: manual ticker-tenure contract ===")
+    print(f"  intervals={len(out)} canonical={out['canonical_ticker'].nunique()} conflicts=0")
+    print("  IR excludes 2020-03-02; TT includes it; the open interval remains NULL")
+    print("  OK: normalization and half-open boundaries are deterministic")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda second: second.update(valid_from="2019-12-01"), "overlapping manual intervals"),
+        (lambda second: second.update(evidence=[]), ".evidence must be"),
+        (lambda second: second.update(issuer_cik="1466258"), "zero-padded 10-digit"),
+    ],
+)
+def test_manual_tenure_loader_rejects_unsafe_rows(tmp_path, mutation, message):
+    second = {
+        "symbol": "TT",
+        "issuer_cik": "0001466258",
+        "valid_from": "2020-03-02",
+        "valid_to": None,
+        "evidence": ["SEC accession two"],
+        "reason": "current symbol",
+    }
+    mutation(second)
+    _write_manual(
+        tmp_path,
+        {
+            "version": 1,
+            "tickers": {
+                "TT": [
+                    {
+                        "symbol": "TT",
+                        "issuer_cik": "0000000001",
+                        "valid_from": "2010-01-01",
+                        "valid_to": "2020-01-01",
+                        "evidence": ["SEC accession one"],
+                        "reason": "older issuer",
+                    },
+                    second,
+                ]
+            },
+        },
+    )
+    with pytest.raises(ManualSymbolTenureError, match=message):
+        load_manual_symbol_tenure(tmp_path)
+
+
+def test_materialization_keeps_manual_and_derived_evidence():
+    columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
+    derived = pd.DataFrame(
+        [["TT", "0000000002", pd.Timestamp("2020-03-10"), pd.NaT, 20, "form345", "derived issuer"]],
+        columns=columns,
+    )
+    manual = pd.DataFrame(
+        [["TT", "TT", "0000000001", pd.Timestamp("2020-03-02"), pd.NaT, 0, "manual", "SEC evidence", "current symbol"]],
+        columns=["canonical_ticker", *columns, "reason"],
+    )
+    out = materialize_symbol_tenure(derived, manual)
+    assert len(out) == 2
+    assert list(out["source"]) == ["manual", "form345"]
+    assert set(out["issuer_cik"]) == {"0000000001", "0000000002"}
+
+    print("\n=== SANITY CHECK: manual-over-derived auditability ===")
+    print("  manual=1 derived=1 materialized=2; manual is ordered first but neither row is hidden")
+    print("  OK: precedence is a resolver concern, not destructive evidence replacement")
+
+
+def test_materialization_coalesces_an_exact_primary_key_collision():
+    columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
+    derived = pd.DataFrame(
+        [["A", "0001090872", pd.Timestamp("2006-02-16"), pd.NaT, 900, "form345", "AGILENT TECHNOLOGIES INC"]],
+        columns=columns,
+    )
+    manual = pd.DataFrame(
+        [["A", "A", "0001090872", pd.Timestamp("2006-02-16"), pd.NaT, 0, "manual", "SEC listing evidence", "verified lower bound"]],
+        columns=["canonical_ticker", *columns, "reason"],
+    )
+
+    out = materialize_symbol_tenure(derived, manual)
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["source"] == "manual"
+    assert row["n_filings"] == 900
+    assert "manual evidence: SEC listing evidence" in row["evidence"]
+    assert "form345 evidence: AGILENT TECHNOLOGIES INC" in row["evidence"]
+    assert not out.duplicated(["symbol", "issuer_cik", "valid_from"]).any()
+    print("\n=== SANITY CHECK: manual/derived primary-key collision ===")
+    print("  one manual-precedence row retains both evidence strings and the derived filing count")
+    print("  OK: auditability fits the existing table grain without a schema change")
+
+
 def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeypatch, caplog, tmp_path):
     frame = pd.DataFrame(
         {
@@ -268,11 +408,28 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
     )
     current = {"frame": frame}
     monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda cache: current["frame"])
+    monkeypatch.setattr(
+        tenure_module,
+        "load_manual_symbol_tenure",
+        lambda config_dir: pd.DataFrame(
+            columns=[
+                "canonical_ticker",
+                "symbol",
+                "issuer_cik",
+                "valid_from",
+                "valid_to",
+                "n_filings",
+                "source",
+                "evidence",
+                "reason",
+            ]
+        ),
+    )
     monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
     context = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure"))
     caplog.set_level(logging.INFO, logger="test.symbol_tenure")
 
-    tenure_module.build_symbol_tenure(context, tmp_path)
+    tenure_module.build_symbol_tenure(context, tmp_path, tmp_path)
     assert "cold build with 1 row(s) over 1 symbol(s)" in caplog.text
     current["frame"] = pd.concat(
         [
@@ -281,12 +438,47 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
         ],
         ignore_index=True,
     )
-    tenure_module.build_symbol_tenure(context, tmp_path)
+    tenure_module.build_symbol_tenure(context, tmp_path, tmp_path)
     assert "1 changed symbol(s): OLD" in caplog.text
 
     print("\n=== SANITY CHECK: identity refresh visibility ===")
     print("  cold build logs scale only; routine rebuild names changed symbol OLD")
     print("  OK: a new former symbol is visible before symbol-only consumers run")
+
+
+def test_repository_manual_tenure_covers_validated_ia3_boundaries():
+    """Every IA-3 boundary is exact, evidenced and half-open in the live config."""
+    manual = load_manual_symbol_tenure(Path("configs"))
+    transitions = (
+        ("APA", "APA", "APA", "2021-03-02", "0000006769", "0001841666"),
+        ("BALL", "BLL", "BALL", "2022-05-10", "0000009389", "0000009389"),
+        ("BG", "BG", "BG", "2023-11-01", "0001144519", "0001996862"),
+        ("BLK", "BLK", "BLK", "2024-10-01", "0001364742", "0002012383"),
+        ("COHR", "IIVI", "COHR", "2022-09-08", "0000820318", "0000820318"),
+        ("DIS", "DIS", "DIS", "2019-03-20", "0001001039", "0001744489"),
+        ("EG", "RE", "EG", "2023-07-10", "0001095073", "0001095073"),
+        ("ELV", "ANTM", "ELV", "2022-06-28", "0001156039", "0001156039"),
+        ("EXE", "CHK", "EXE", "2024-10-02", "0000895126", "0000895126"),
+        ("GL", "TMK", "GL", "2019-08-09", "0000320335", "0000320335"),
+        ("J", "JEC", "J", "2019-12-10", "0000052988", "0000052988"),
+        ("LHX", "HRS", "LHX", "2019-07-01", "0000202058", "0000202058"),
+        ("MRSH", "MMC", "MRSH", "2026-01-14", "0000062709", "0000062709"),
+        ("RVTY", "PKI", "RVTY", "2023-05-16", "0000031791", "0000031791"),
+        ("XYZ", "SQ", "XYZ", "2025-01-21", "0001512673", "0001512673"),
+    )
+
+    for ticker, old_symbol, new_symbol, boundary, old_cik, new_cik in transitions:
+        stamp = pd.Timestamp(boundary)
+        rows = manual[manual["canonical_ticker"].eq(ticker)]
+        old = rows[rows["symbol"].eq(old_symbol) & rows["issuer_cik"].eq(old_cik) & rows["valid_to"].eq(stamp)]
+        new = rows[rows["symbol"].eq(new_symbol) & rows["issuer_cik"].eq(new_cik) & rows["valid_from"].eq(stamp)]
+        assert len(old) == 1 and len(new) == 1, (
+            f"{ticker}: expected one half-open {old_symbol}/{old_cik} -> " f"{new_symbol}/{new_cik} transition at {boundary}"
+        )
+
+    print("\n=== SANITY CHECK: repository IA-3 manual boundaries ===")
+    print(f"  {len(transitions)} transitions have one exact old end and one exact new start")
+    print("  OK: ticker changes and successor-CIK changes are explicit; no date is guessed")
 
 
 # --------------------------------------------------------------------------- #

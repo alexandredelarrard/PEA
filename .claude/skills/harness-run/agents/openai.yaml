@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Run"
+  short_description: "Run spec-to-PR delivery with isolated fixes and HTML audit."
+  default_prompt: "Use $harness-run with this specification to plan, implement, validate, fix findings on isolated branches, simplify, and return a PR-ready local candidate with its final HTML report."

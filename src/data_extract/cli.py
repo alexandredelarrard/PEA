@@ -515,7 +515,7 @@ def identity_tables(config_path: str) -> None:
     """
     _, context = _ctx(config_path)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    build_symbol_tenure(context, cache)
+    build_symbol_tenure(context, cache, config_path)
     build_entity_lineage(context, cache, config_path)
 
 

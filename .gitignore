@@ -70,9 +70,6 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
-docs/_build/
-
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -112,8 +109,8 @@ venv.bak/
 # mkdocs documentation
 /site
 
-# vs code 
-.vscode 
+# vs code
+.vscode
 
 # Data folders (not versioned)
 *.pkl
@@ -121,7 +118,7 @@ data/
 
 *pgdata.tar.gz
 
-# work with LLM 
+# work with LLM
 specs/
 reports/
 **/specs/**

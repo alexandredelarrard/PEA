@@ -87,7 +87,7 @@ class StepExtractInstitutionals(Step):
         # Refresh the two-axis identity dimension after the insider cache producer, then hand
         # one frozen resolver to the two symbol-only tapes at the end of the step.
         insider_cache = cache_dir(self._context, self.config.local.paths.insider_transactions)
-        build_symbol_tenure(self._context, insider_cache)
+        build_symbol_tenure(self._context, insider_cache, self._context.config_dir)
         build_entity_lineage(self._context, insider_cache, str(self._context.config_dir))
         identity = load_identity(self._context, refresh=True)
 

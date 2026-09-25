@@ -41,7 +41,9 @@ source plus the accumulating panel.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from pathlib import Path
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -629,6 +631,15 @@ class StepCubeInstitutionals(Step):
         docstring."""
         sec_13d = self._load_source(Tables.sec_13d, frames.universe)
         sec_13g = self._load_source(Tables.sec_13g, frames.universe)
+        expected_ticker_count = len(set(map(str, frames.universe)))
+        complete_13d = self._schedule_complete_through(
+            Tables.sec_13d,
+            expected_ticker_count=expected_ticker_count,
+        )
+        complete_13g = self._schedule_complete_through(
+            Tables.sec_13g,
+            expected_ticker_count=expected_ticker_count,
+        )
         return build_ownership_feature_panel(
             frames,
             sec_13d,
@@ -636,8 +647,45 @@ class StepCubeInstitutionals(Step):
             decay_halflife_act=float(self._decay_halflife("act")),
             decay_halflife_bo=float(self._decay_halflife("bo")),
             availability=self._availability,
+            complete_through_13d=complete_13d,
+            complete_through_13g=complete_13g,
             sink=sink,
         )
+
+    def _schedule_complete_through(
+        self,
+        table: Table,
+        *,
+        expected_ticker_count: int,
+    ) -> pd.Timestamp | None:
+        """Trust only a complete frontier for the analysis universe being aggregated."""
+        path = Path(self._context.paths["DATA_STORE"]) / Path(self._context.config.local.filename.extraction)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            entry = payload.get(table.name) or {}
+        except (OSError, ValueError, TypeError):
+            self._log.warning("%s has no readable extraction manifest frontier", table.name)
+            return None
+        if entry.get("coverage_complete") is not True:
+            self._log.warning(
+                "%s manifest predates completeness-sensitive subject discovery; known events " "remain usable, but absence cannot be emitted as zero",
+                table.name,
+            )
+            return None
+        if int(entry.get("ticker_count", -1)) != expected_ticker_count:
+            self._log.warning(
+                "%s manifest covers %s ticker(s), analysis universe has %s; zero semantics disabled",
+                table.name,
+                entry.get("ticker_count"),
+                expected_ticker_count,
+            )
+            return None
+        try:
+            frontier = pd.Timestamp(entry["last_run_date"]).normalize()
+        except (KeyError, TypeError, ValueError):
+            self._log.warning("%s completeness manifest has no valid last_run_date", table.name)
+            return None
+        return frontier
 
     def _conditioning_panel(self, frames: PriceFrames, splits: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:
         """The `ic_sig_*` layer: days since each family's last disclosure and the price path

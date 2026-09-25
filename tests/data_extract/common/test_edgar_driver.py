@@ -14,7 +14,11 @@ import types
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
+from src.data_extract.utils.common.edgar_driver import (
+    IncompleteEdgarRunError,
+    new_filings,
+    run_edgar_fetch,
+)
 from src.data_extract.utils.common.registrant import Registrant, Segment
 from src.data_extract.utils.common.run_manifest import get_entry
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
@@ -321,6 +325,55 @@ def test_run_edgar_fetch_isolates_a_failing_ticker(tmp_path, sqlite_store, monke
     print("  AAPL raised, MSFT's row still landed and the run was recorded. Validated.")
 
 
+def test_completeness_sensitive_run_does_not_record_a_partial_success(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
+
+    def build(ticker, cik, *, since, done_accessions):
+        if ticker == "AAPL":
+            raise RuntimeError("discovery page failed")
+        return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
+
+    with pytest.raises(IncompleteEdgarRunError, match="no run manifest was advanced"):
+        run_edgar_fetch(
+            ctx,
+            ["AAPL", "MSFT"],
+            15,
+            tables=(_T_MAIN,),
+            build=build,
+            desc="schedule test",
+            require_complete=True,
+        )
+
+    assert sqlite_store.row_count(_T_MAIN) == 1
+    assert get_entry(ctx, _T_MAIN) is None
+    print("\n=== SANITY CHECK: incomplete schedule run ===")
+    print("  one ticker failed; successful rows remain, but the manifest did not advance")
+    print("  OK: partial discovery cannot masquerade as a complete empty history")
+
+
+def test_completeness_sensitive_success_marks_a_trustworthy_frontier(tmp_path, sqlite_store):
+    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
+
+    def build(ticker, cik, *, since, done_accessions):
+        return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
+
+    run_edgar_fetch(
+        ctx,
+        ["AAPL"],
+        15,
+        tables=(_T_MAIN,),
+        build=build,
+        desc="schedule test",
+        require_complete=True,
+    )
+
+    entry = get_entry(ctx, _T_MAIN)
+    assert entry is not None and entry.get("coverage_complete") is True
+    print("\n=== SANITY CHECK: complete schedule frontier ===")
+    print("  every ticker discovered and saved -> coverage_complete=true in the manifest")
+    print("  OK: aggregation can distinguish this run from a legacy or partial walk")
+
+
 def test_run_edgar_fetch_reraises_a_programming_error_instead_of_warning(tmp_path, sqlite_store, monkeypatch):
     """The contrast with `..._isolates_a_failing_ticker` above, and the reason that test's
     `RuntimeError` is not a `NameError`.
@@ -378,6 +431,35 @@ def test_run_edgar_fetch_survives_a_save_failure_without_aborting_the_pool(tmp_p
 
     print("\n=== SANITY CHECK: driver survives a save failure ===")
     print("  save to driver_main raised; driver_child still saved and the pool completed " "instead of aborting. Validated.")
+
+
+def test_completeness_sensitive_run_rejects_a_save_failure(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
+
+    def failed_save(table, df, pk=None):
+        raise RuntimeError("deadlock detected")
+
+    monkeypatch.setattr(sqlite_store, "save", failed_save)
+
+    def build(ticker, cik, *, since, done_accessions):
+        return {_T_MAIN: _rows(_T_MAIN, ticker, "x")}
+
+    with pytest.raises(IncompleteEdgarRunError, match="no run manifest was advanced"):
+        run_edgar_fetch(
+            ctx,
+            ["AAPL"],
+            15,
+            tables=(_T_MAIN,),
+            build=build,
+            desc="schedule test",
+            require_complete=True,
+        )
+
+    assert not sqlite_store.exists(_T_MAIN)
+    assert get_entry(ctx, _T_MAIN) is None
+    print("\n=== SANITY CHECK: schedule persistence failure ===")
+    print("  discovery succeeded but persistence failed; the completeness frontier was withheld")
+    print("  OK: a storage failure cannot turn an unknown Schedule history into an observed zero")
 
 
 def test_completion_table_is_not_saved_after_an_earlier_save_failure(tmp_path, sqlite_store, monkeypatch):

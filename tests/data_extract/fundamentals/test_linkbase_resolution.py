@@ -2,12 +2,13 @@
 Phase 3 of the fundamentals rebuild: resolution driven by the filer's own XBRL calculation
 linkbase instead of a priority-ordered candidate-tag list.
 
-Split per docs/testing.md: the synthetic fixtures prove the resolution MATH (which route
+Split per wiki/guides/testing.md: the synthetic fixtures prove the resolution MATH (which route
 wins, which weight is applied, where a climb must not go), and the real-filing tests prove
 it fires on actual 10-Ks across all six accounting regimes. Neither half is sufficient
 alone -- a synthetic linkbase cannot contain APA's company-extension revenue element, and a
 real filing cannot be made to disagree with itself on demand.
 """
+
 from __future__ import annotations
 
 import os
@@ -18,14 +19,22 @@ import pytest
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
-    FIELD_SUM, LINKBASE_ROOT, LINKBASE_SUM, LINKBASE_TOTAL, TAG_FALLBACK, TAG_PRIMARY,
-    UNRESOLVED, ArcGraph, discover_root, resolve_field, statement_arcs)
+    LINKBASE_ROOT,
+    LINKBASE_SUM,
+    LINKBASE_TOTAL,
+    TAG_FALLBACK,
+    TAG_PRIMARY,
+    UNRESOLVED,
+    ArcGraph,
+    discover_root,
+    resolve_field,
+    statement_arcs,
+)
 
 CATALOGUE = load_catalogue("./configs")
 
 #: (concept, taxonomy, parent, weight) -> the arc frame `statement_arcs` returns.
-_ARC_COLS = ["concept", "concept_taxonomy", "parent_concept", "parent_taxonomy",
-             "weight", "role_uri", "menucat", "is_abstract", "arc_filter"]
+_ARC_COLS = ["concept", "concept_taxonomy", "parent_concept", "parent_taxonomy", "weight", "role_uri", "menucat", "is_abstract", "arc_filter"]
 
 #: The default role a synthetic arc sits on. It must READ like a real income statement:
 #: since Phase 3c the role URI is load-bearing -- `discover_root` requires one, which is
@@ -36,11 +45,22 @@ _INCOME_ROLE = "http://x/role/ConsolidatedStatementsOfOperations"
 
 def _arcs(rows: list[tuple[str, str, str, float]], role: str = _INCOME_ROLE):
     return pd.DataFrame(
-        [{"concept": c, "concept_taxonomy": tax, "parent_concept": p,
-          "parent_taxonomy": "us-gaap", "weight": w, "role_uri": role,
-          "menucat": "Statements", "is_abstract": False, "arc_filter": "both"}
-         for c, tax, p, w in rows],
-        columns=_ARC_COLS)
+        [
+            {
+                "concept": c,
+                "concept_taxonomy": tax,
+                "parent_concept": p,
+                "parent_taxonomy": "us-gaap",
+                "weight": w,
+                "role_uri": role,
+                "menucat": "Statements",
+                "is_abstract": False,
+                "arc_filter": "both",
+            }
+            for c, tax, p, w in rows
+        ],
+        columns=_ARC_COLS,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -53,20 +73,23 @@ def test_declared_total_beats_the_legs_that_disagree_with_it():
     substitute for reading it. If a filer's own legs do not foot to its own total, that is
     a validator finding (Phase 7), not a licence for the extractor to prefer the sum.
     """
-    graph = ArcGraph(_arcs([
-        ("LongTermDebtCurrent", "us-gaap", "DebtCurrent", 1.0),
-        ("ShortTermBorrowings", "us-gaap", "DebtCurrent", 1.0),
-    ]))
+    graph = ArcGraph(
+        _arcs(
+            [
+                ("LongTermDebtCurrent", "us-gaap", "DebtCurrent", 1.0),
+                ("ShortTermBorrowings", "us-gaap", "DebtCurrent", 1.0),
+            ]
+        )
+    )
     available = frozenset({"DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings"})
 
-    resolution = resolve_field(CATALOGUE.field("shortTermDebt"), graph, available,
-                               CATALOGUE)
+    resolution = resolve_field(CATALOGUE.field("shortTermDebt"), graph, available, CATALOGUE)
 
     assert resolution.method == LINKBASE_TOTAL
     assert resolution.concept == "us-gaap:DebtCurrent"
     print("\n=== SANITY CHECK: total-vs-legs precedence ===")
-    print(f"  legs declared     : LongTermDebtCurrent + ShortTermBorrowings")
-    print(f"  filer's own total : DebtCurrent")
+    print("  legs declared     : LongTermDebtCurrent + ShortTermBorrowings")
+    print("  filer's own total : DebtCurrent")
     print(f"  resolved to       : {resolution.concept} via {resolution.method}")
     print("  OK: The declared total wins; the legs stay a cross-check.")
 
@@ -80,19 +103,21 @@ def test_both_legs_are_summed_when_no_total_is_reported():
     2,017 (ticker, period) cells on 111 tickers, the discarded leg was the LARGER one
     54.4% of the time.
     """
-    graph = ArcGraph(_arcs([
-        ("LongTermDebtCurrent", "us-gaap", "DebtCurrent", 1.0),
-        ("ShortTermBorrowings", "us-gaap", "DebtCurrent", 1.0),
-    ]))
+    graph = ArcGraph(
+        _arcs(
+            [
+                ("LongTermDebtCurrent", "us-gaap", "DebtCurrent", 1.0),
+                ("ShortTermBorrowings", "us-gaap", "DebtCurrent", 1.0),
+            ]
+        )
+    )
     # The total is declared in the structure but NOT reported -- exactly the 2,017 cells.
     available = frozenset({"LongTermDebtCurrent", "ShortTermBorrowings"})
 
-    resolution = resolve_field(CATALOGUE.field("shortTermDebt"), graph, available,
-                               CATALOGUE)
+    resolution = resolve_field(CATALOGUE.field("shortTermDebt"), graph, available, CATALOGUE)
 
     assert resolution.method == LINKBASE_SUM
-    assert [c for c, _ in resolution.children] == ["LongTermDebtCurrent",
-                                                   "ShortTermBorrowings"]
+    assert [c for c, _ in resolution.children] == ["LongTermDebtCurrent", "ShortTermBorrowings"]
     assert all(w == 1.0 for _, w in resolution.children)
     print("\n=== SANITY CHECK: disjoint legs are summed, not chosen between ===")
     print(f"  route    : {resolution.method}")
@@ -103,36 +128,39 @@ def test_both_legs_are_summed_when_no_total_is_reported():
 def test_a_partial_leg_set_yields_no_value_rather_than_a_wrong_one():
     """A sum missing a leg is not the total. Better an explained NULL than a plausible
     wrong number -- that preference is the whole point of the reason-code layer."""
-    graph = ArcGraph(_arcs([
-        ("LongTermDebtCurrent", "us-gaap", "DebtCurrent", 1.0),
-        ("ShortTermBorrowings", "us-gaap", "DebtCurrent", 1.0),
-    ]))
-    resolution = resolve_field(CATALOGUE.field("shortTermDebt"), graph,
-                               frozenset({"LongTermDebtCurrent"}), CATALOGUE)
+    graph = ArcGraph(
+        _arcs(
+            [
+                ("LongTermDebtCurrent", "us-gaap", "DebtCurrent", 1.0),
+                ("ShortTermBorrowings", "us-gaap", "DebtCurrent", 1.0),
+            ]
+        )
+    )
+    resolution = resolve_field(CATALOGUE.field("shortTermDebt"), graph, frozenset({"LongTermDebtCurrent"}), CATALOGUE)
 
     assert resolution.method != LINKBASE_SUM
     print("\n=== SANITY CHECK: partial roll-up refused ===")
-    print(f"  only one of two legs reported -> route {resolution.method}, "
-          f"concept {resolution.concept}")
+    print(f"  only one of two legs reported -> route {resolution.method}, " f"concept {resolution.concept}")
     print("  OK: No partial sum was emitted.")
 
 
 def test_negative_weights_are_preserved():
     """22% of Statements arcs carry weight -1.0 -- a real contra-account, not noise.
     Dropping the sign silently doubles a subtraction into an addition."""
-    graph = ArcGraph(_arcs([
-        ("PropertyPlantAndEquipmentGross", "us-gaap", "PropertyPlantAndEquipmentNet", 1.0),
-        ("AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment",
-         "us-gaap", "PropertyPlantAndEquipmentNet", -1.0),
-    ]))
+    graph = ArcGraph(
+        _arcs(
+            [
+                ("PropertyPlantAndEquipmentGross", "us-gaap", "PropertyPlantAndEquipmentNet", 1.0),
+                ("AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment", "us-gaap", "PropertyPlantAndEquipmentNet", -1.0),
+            ]
+        )
+    )
     kids = dict(graph.children_of("PropertyPlantAndEquipmentNet"))
 
     assert kids["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"] == -1.0
-    assert not graph.is_pure_aggregation("PropertyPlantAndEquipmentNet") if hasattr(
-        graph, "is_pure_aggregation") else True
+    assert not graph.is_pure_aggregation("PropertyPlantAndEquipmentNet") if hasattr(graph, "is_pure_aggregation") else True
     print("\n=== SANITY CHECK: contra-account weight ===")
-    print(f"  accumulated depreciation arc weight = "
-          f"{kids['AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment']}")
+    print(f"  accumulated depreciation arc weight = " f"{kids['AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment']}")
     print("  OK: Sign preserved.")
 
 
@@ -140,13 +168,16 @@ def test_root_discovery_finds_an_extension_total_under_a_standard_subtotal():
     """The APA shape, synthetically: the filer's revenue total is a COMPANY EXTENSION, so
     no candidate list can name it, but the linkbase declares it under a standard pretax
     subtotal."""
-    pretax = ("IncomeLossFromContinuingOperationsBeforeIncomeTaxes"
-              "ExtraordinaryItemsNoncontrollingInterest")
-    graph = ArcGraph(_arcs([
-        ("RevenuesAndOther", "apa", pretax, 1.0),
-        ("CostsAndExpenses", "us-gaap", pretax, -1.0),
-        ("Revenues", "us-gaap", "RevenuesAndOther", 1.0),
-    ]))
+    pretax = "IncomeLossFromContinuingOperationsBeforeIncomeTaxes" "ExtraordinaryItemsNoncontrollingInterest"
+    graph = ArcGraph(
+        _arcs(
+            [
+                ("RevenuesAndOther", "apa", pretax, 1.0),
+                ("CostsAndExpenses", "us-gaap", pretax, -1.0),
+                ("Revenues", "us-gaap", "RevenuesAndOther", 1.0),
+            ]
+        )
+    )
     found = discover_root(graph, frozenset({"RevenuesAndOther", "CostsAndExpenses"}))
 
     assert found is not None
@@ -161,25 +192,25 @@ def test_root_discovery_finds_an_extension_total_under_a_standard_subtotal():
 def test_root_discovery_never_returns_a_margin_subtotal():
     """DTE declares `IncomeLoss...BeforeIncomeTaxes <- +1 OperatingIncomeLoss`. Without
     excluding the anchors themselves, the operating MARGIN would be stored as revenue."""
-    pretax = ("IncomeLossFromContinuingOperationsBeforeIncomeTaxes"
-              "ExtraordinaryItemsNoncontrollingInterest")
-    graph = ArcGraph(_arcs([
-        ("OperatingIncomeLoss", "us-gaap", pretax, 1.0),
-        ("IncomeTaxExpenseBenefit", "us-gaap", pretax, -1.0),
-        ("CostsAndExpenses", "us-gaap", "OperatingIncomeLoss", -1.0),
-        ("RegulatedOperatingRevenue", "us-gaap",
-         "RegulatedAndUnregulatedOperatingRevenue", 1.0),
-    ]))
-    available = frozenset({"OperatingIncomeLoss", "RegulatedAndUnregulatedOperatingRevenue",
-                           "RegulatedOperatingRevenue", "CostsAndExpenses"})
+    pretax = "IncomeLossFromContinuingOperationsBeforeIncomeTaxes" "ExtraordinaryItemsNoncontrollingInterest"
+    graph = ArcGraph(
+        _arcs(
+            [
+                ("OperatingIncomeLoss", "us-gaap", pretax, 1.0),
+                ("IncomeTaxExpenseBenefit", "us-gaap", pretax, -1.0),
+                ("CostsAndExpenses", "us-gaap", "OperatingIncomeLoss", -1.0),
+                ("RegulatedOperatingRevenue", "us-gaap", "RegulatedAndUnregulatedOperatingRevenue", 1.0),
+            ]
+        )
+    )
+    available = frozenset({"OperatingIncomeLoss", "RegulatedAndUnregulatedOperatingRevenue", "RegulatedOperatingRevenue", "CostsAndExpenses"})
     found = discover_root(graph, available)
 
     assert found is not None
     concept, anchor = found
-    assert concept == "RegulatedAndUnregulatedOperatingRevenue", (
-        f"resolved to {concept}, which is a margin subtotal, not a top line")
+    assert concept == "RegulatedAndUnregulatedOperatingRevenue", f"resolved to {concept}, which is a margin subtotal, not a top line"
     print("\n=== SANITY CHECK: margin subtotal rejected as revenue ===")
-    print(f"  anchor's only positive child was OperatingIncomeLoss (a subtotal) -> skipped")
+    print("  anchor's only positive child was OperatingIncomeLoss (a subtotal) -> skipped")
     print(f"  fell through to the parentless revenue root: {concept} (via {anchor})")
     print("  OK: Operating margin was NOT stored as revenue.")
 
@@ -191,8 +222,7 @@ def test_no_linkbase_still_takes_the_top_priority_concept():
     AND we did not get our first choice either", or its rate is not evidence about this
     design."""
     graph = ArcGraph(_arcs([]))
-    resolution = resolve_field(CATALOGUE.field("totalAssets"), graph,
-                               frozenset({"Assets"}), CATALOGUE)
+    resolution = resolve_field(CATALOGUE.field("totalAssets"), graph, frozenset({"Assets"}), CATALOGUE)
 
     assert resolution.method == TAG_PRIMARY
     assert resolution.concept == "us-gaap:Assets"
@@ -209,20 +239,20 @@ def test_never_use_concepts_can_never_resolve_a_field():
     banned = spec.never_use()
     assert "PaymentsToAcquireInProcessResearchAndDevelopment" in banned
 
-    graph = ArcGraph(_arcs([
-        ("PaymentsToAcquireInProcessResearchAndDevelopment", "us-gaap",
-         "NetCashProvidedByUsedInInvestingActivities", -1.0),
-    ]))
-    resolution = resolve_field(
-        spec, graph, frozenset({"PaymentsToAcquireInProcessResearchAndDevelopment"}),
-        CATALOGUE)
+    graph = ArcGraph(
+        _arcs(
+            [
+                ("PaymentsToAcquireInProcessResearchAndDevelopment", "us-gaap", "NetCashProvidedByUsedInInvestingActivities", -1.0),
+            ]
+        )
+    )
+    resolution = resolve_field(spec, graph, frozenset({"PaymentsToAcquireInProcessResearchAndDevelopment"}), CATALOGUE)
 
     assert resolution.concept != "us-gaap:PaymentsToAcquireInProcessResearchAndDevelopment"
     assert resolution.dc_code is not None
     assert resolution.method == UNRESOLVED
     print("\n=== SANITY CHECK: never_use enforced ===")
-    print(f"  MAA's IPR&D-tagged capex offered as the only candidate -> "
-          f"dc_code={resolution.dc_code}")
+    print(f"  MAA's IPR&D-tagged capex offered as the only candidate -> " f"dc_code={resolution.dc_code}")
     print("  OK: Refused. A REIT is not booked as an R&D spender.")
 
 
@@ -231,14 +261,11 @@ def test_bank_capex_is_declared_not_applicable_rather_than_guessed():
     CY2024 frame at all -- large banks bury premises purchases in "all other investing".
     Bank FCF is therefore null BY DESIGN, and the reason travels with it."""
     graph = ArcGraph(_arcs([]))
-    resolution = resolve_field(CATALOGUE.field("capex"), graph,
-                               frozenset({"PaymentsToAcquirePropertyPlantAndEquipment"}),
-                               CATALOGUE, regime="bank")
+    resolution = resolve_field(CATALOGUE.field("capex"), graph, frozenset({"PaymentsToAcquirePropertyPlantAndEquipment"}), CATALOGUE, regime="bank")
 
     assert resolution.dc_code == "not_applicable"
     assert resolution.concept is None
-    assert resolution.method == UNRESOLVED, (
-        "a reason-coded absence is not a routing outcome and must not pollute a route rate")
+    assert resolution.method == UNRESOLVED, "a reason-coded absence is not a routing outcome and must not pollute a route rate"
     print("\n=== SANITY CHECK: regime-declared absence ===")
     print(f"  bank capex -> dc_code={resolution.dc_code} even though the tag is available")
     print("  OK: Absent by design, with the reason recorded.")
@@ -260,9 +287,20 @@ class _FakeXbrl:
 def _linkbase(rows: list[tuple[str, str, object]]) -> pd.DataFrame:
     """(concept, role_uri, menucat) -> a raw calculation-linkbase frame."""
     return pd.DataFrame(
-        [{"concept": c, "concept_taxonomy": "us-gaap", "parent_concept": "Parent",
-          "parent_taxonomy": "us-gaap", "weight": 1.0, "role_uri": role,
-          "menucat": menucat, "is_abstract": False} for c, role, menucat in rows])
+        [
+            {
+                "concept": c,
+                "concept_taxonomy": "us-gaap",
+                "parent_concept": "Parent",
+                "parent_taxonomy": "us-gaap",
+                "weight": 1.0,
+                "role_uri": role,
+                "menucat": menucat,
+                "is_abstract": False,
+            }
+            for c, role, menucat in rows
+        ]
+    )
 
 
 def test_statement_arcs_is_the_union_of_menucat_and_the_role_test():
@@ -274,34 +312,36 @@ def test_statement_arcs_is_the_union_of_menucat_and_the_role_test():
     Reg S-X **Schedule I/II parent-company-only** condensed statements, which look exactly
     like face statements and are not consolidated.
     """
-    arcs = statement_arcs(_FakeXbrl(_linkbase([
-        # kept by menucat alone: a Consolidated Schedule of Investments is a FACE
-        # statement for an investment company, and FilingSummary says so -- but the word
-        # `schedule` is what excludes the Reg S-X parent-only trap, so the role test drops
-        # it. This is the direction of the union that the measured sample never exercised,
-        # and it is why `menucat` is kept rather than replaced.
-        ("KeptByMenucat", "http://x/role/ConsolidatedScheduleOfInvestments", "Statements"),
-        # kept by the role alone: a face statement FilingSummary failed to categorise
-        # (measured: APA 2022 STATEMENTOFCONSOLIDATEDOPERATIONS, menucat=Uncategorized)
-        ("KeptByRole", "http://x/role/STATEMENTOFCONSOLIDATEDOPERATIONS", "Uncategorized"),
-        ("KeptByRoleNullMenucat", "http://x/role/ConsolidatedBalanceSheets", None),
-        # dropped: footnote detail, in the singular form the audit's first pattern missed
-        ("Dropped_Detail", "http://x/role/DebtScheduleOfMaturitiesDetail", None),
-        ("Dropped_Disclosure", "http://x/role/DisclosureIncomeTaxes", "Details"),
-        # dropped: the parent-only trap. PGR and AFL both ship one of these.
-        ("Dropped_ScheduleII",
-         "http://x/role/ScheduleIiCondensedFinancialInformationOfRegistrantBalanceSheets",
-         None),
-    ])))
+    arcs = statement_arcs(
+        _FakeXbrl(
+            _linkbase(
+                [
+                    # kept by menucat alone: a Consolidated Schedule of Investments is a FACE
+                    # statement for an investment company, and FilingSummary says so -- but the word
+                    # `schedule` is what excludes the Reg S-X parent-only trap, so the role test drops
+                    # it. This is the direction of the union that the measured sample never exercised,
+                    # and it is why `menucat` is kept rather than replaced.
+                    ("KeptByMenucat", "http://x/role/ConsolidatedScheduleOfInvestments", "Statements"),
+                    # kept by the role alone: a face statement FilingSummary failed to categorise
+                    # (measured: APA 2022 STATEMENTOFCONSOLIDATEDOPERATIONS, menucat=Uncategorized)
+                    ("KeptByRole", "http://x/role/STATEMENTOFCONSOLIDATEDOPERATIONS", "Uncategorized"),
+                    ("KeptByRoleNullMenucat", "http://x/role/ConsolidatedBalanceSheets", None),
+                    # dropped: footnote detail, in the singular form the audit's first pattern missed
+                    ("Dropped_Detail", "http://x/role/DebtScheduleOfMaturitiesDetail", None),
+                    ("Dropped_Disclosure", "http://x/role/DisclosureIncomeTaxes", "Details"),
+                    # dropped: the parent-only trap. PGR and AFL both ship one of these.
+                    ("Dropped_ScheduleII", "http://x/role/ScheduleIiCondensedFinancialInformationOfRegistrantBalanceSheets", None),
+                ]
+            )
+        )
+    )
 
-    kept = dict(zip(arcs["concept"], arcs["arc_filter"]))
-    assert kept == {"KeptByMenucat": "menucat", "KeptByRole": "role_uri",
-                    "KeptByRoleNullMenucat": "role_uri"}, kept
+    kept = dict(zip(arcs["concept"], arcs["arc_filter"], strict=False))
+    assert kept == {"KeptByMenucat": "menucat", "KeptByRole": "role_uri", "KeptByRoleNullMenucat": "role_uri"}, kept
     print("\n=== SANITY CHECK: 3c.1 arc filter is a union ===")
     for concept, test in kept.items():
         print(f"  kept {concept:<24s} by {test}")
-    print("  dropped: singular ...Detail, DisclosureIncomeTaxes, "
-          "ScheduleII parent-only balance sheet")
+    print("  dropped: singular ...Detail, DisclosureIncomeTaxes, " "ScheduleII parent-only balance sheet")
     print("  OK: neither test alone keeps all three; the Schedule II role is excluded.")
 
 
@@ -310,8 +350,7 @@ def test_a_parentless_root_has_a_role_at_all():
     root appears ONLY in `parent_concept` -- so `role_of` returned None for every root
     `discover_root` considers, and the role test approved for this phase would have
     rejected the correct answers along with the wrong ones."""
-    graph = ArcGraph(_arcs([("RegulatedOperatingRevenue", "us-gaap",
-                             "RegulatedAndUnregulatedOperatingRevenue", 1.0)]))
+    graph = ArcGraph(_arcs([("RegulatedOperatingRevenue", "us-gaap", "RegulatedAndUnregulatedOperatingRevenue", 1.0)]))
 
     assert graph.parent_of("RegulatedAndUnregulatedOperatingRevenue") is None
     assert graph.role_of("RegulatedAndUnregulatedOperatingRevenue") == _INCOME_ROLE
@@ -328,31 +367,41 @@ def test_root_discovery_rejects_the_balance_sheet_and_cash_flow_roots():
     present, reported, all-positive and simply came second."""
     cash_role = "http://x/role/ConsolidatedStatementsOfCashFlows"
     balance_role = "http://x/role/ConsolidatedBalanceSheets"
-    arcs = pd.concat([
-        # the WRONG roots, deliberately first in arc order
-        _arcs([("CashAndCashEquivalentsPeriodIncreaseDecrease", "us-gaap",
-                "CashCashEquivalentsRestrictedCashPeriodIncreaseDecrease", 1.0)],
-              role=cash_role),
-        _arcs([("AssetsCurrent", "us-gaap", "Assets", 1.0)], role=balance_role),
-        # the RIGHT one, last
-        _arcs([("RegulatedOperatingRevenue", "us-gaap",
-                "RegulatedAndUnregulatedOperatingRevenue", 1.0),
-               ("UnregulatedOperatingRevenue", "us-gaap",
-                "RegulatedAndUnregulatedOperatingRevenue", 1.0)]),
-    ], ignore_index=True)
+    arcs = pd.concat(
+        [
+            # the WRONG roots, deliberately first in arc order
+            _arcs(
+                [("CashAndCashEquivalentsPeriodIncreaseDecrease", "us-gaap", "CashCashEquivalentsRestrictedCashPeriodIncreaseDecrease", 1.0)],
+                role=cash_role,
+            ),
+            _arcs([("AssetsCurrent", "us-gaap", "Assets", 1.0)], role=balance_role),
+            # the RIGHT one, last
+            _arcs(
+                [
+                    ("RegulatedOperatingRevenue", "us-gaap", "RegulatedAndUnregulatedOperatingRevenue", 1.0),
+                    ("UnregulatedOperatingRevenue", "us-gaap", "RegulatedAndUnregulatedOperatingRevenue", 1.0),
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
     graph = ArcGraph(arcs)
-    available = frozenset({"Assets", "AssetsCurrent",
-                           "CashCashEquivalentsRestrictedCashPeriodIncreaseDecrease",
-                           "RegulatedAndUnregulatedOperatingRevenue",
-                           "RegulatedOperatingRevenue", "UnregulatedOperatingRevenue"})
+    available = frozenset(
+        {
+            "Assets",
+            "AssetsCurrent",
+            "CashCashEquivalentsRestrictedCashPeriodIncreaseDecrease",
+            "RegulatedAndUnregulatedOperatingRevenue",
+            "RegulatedOperatingRevenue",
+            "UnregulatedOperatingRevenue",
+        }
+    )
     durations = available - {"Assets", "AssetsCurrent"}
 
     found = discover_root(graph, available, duration_concepts=durations)
 
     assert found == ("RegulatedAndUnregulatedOperatingRevenue", "linkbase_root_node"), found
-    assert discover_root(
-        graph, available, duration_concepts=durations,
-        banned=frozenset({"RegulatedAndUnregulatedOperatingRevenue"})) is None
+    assert discover_root(graph, available, duration_concepts=durations, banned=frozenset({"RegulatedAndUnregulatedOperatingRevenue"})) is None
     print("\n=== SANITY CHECK: 3c.2 root discovery is constrained AND ranked ===")
     print("  arc order offers the cash-flow root first and the balance-sheet root second")
     print(f"  discover_root returns -> {found[0]}")
@@ -368,18 +417,14 @@ def test_a_zero_in_every_period_loses_to_a_real_number_but_survives_alone():
     graph = ArcGraph(_arcs([]))
     spec = CATALOGUE.field("totalRevenue")
 
-    etn = resolve_field(spec, graph, frozenset({"Revenues", "SalesRevenueNet"}), CATALOGUE,
-                        zero_only=frozenset({"Revenues"}))
-    vrt = resolve_field(spec, graph, frozenset({"Revenues"}), CATALOGUE,
-                        zero_only=frozenset({"Revenues"}))
+    etn = resolve_field(spec, graph, frozenset({"Revenues", "SalesRevenueNet"}), CATALOGUE, zero_only=frozenset({"Revenues"}))
+    vrt = resolve_field(spec, graph, frozenset({"Revenues"}), CATALOGUE, zero_only=frozenset({"Revenues"}))
 
     assert etn.concept == "us-gaap:SalesRevenueNet" and not etn.zero_only_retained
     assert vrt.concept == "us-gaap:Revenues" and vrt.zero_only_retained
     print("\n=== SANITY CHECK: 3c.3 genuine zero vs tagging artefact ===")
-    print(f"  ETN shape (a real top line exists)  -> {etn.concept}, "
-          f"retained={etn.zero_only_retained}")
-    print(f"  VRT shape (the zero is all there is) -> {vrt.concept}, "
-          f"retained={vrt.zero_only_retained}")
+    print(f"  ETN shape (a real top line exists)  -> {etn.concept}, " f"retained={etn.zero_only_retained}")
+    print(f"  VRT shape (the zero is all there is) -> {vrt.concept}, " f"retained={vrt.zero_only_retained}")
     print("  OK: the artefact is skipped, the real zero is kept and flagged.")
 
 
@@ -391,11 +436,15 @@ def test_an_untestable_only_when_condition_subtracts_nothing():
     across 10 tickers, worst -$893M. Not subtracting is the safe direction."""
     from src.data_extract.utils.fundamentals.xbrl_linkbase import _resolve_subtractions
 
-    spec = CATALOGUE.field("ppeNet")                  # the field that declares _only_when
-    graph = ArcGraph(_arcs([
-        ("PropertyPlantAndEquipmentNet", "us-gaap", "AssetsNoncurrent", 1.0),
-        ("FinanceLeaseRightOfUseAsset", "us-gaap", "AssetsNoncurrent", 1.0),
-    ]))
+    spec = CATALOGUE.field("ppeNet")  # the field that declares _only_when
+    graph = ArcGraph(
+        _arcs(
+            [
+                ("PropertyPlantAndEquipmentNet", "us-gaap", "AssetsNoncurrent", 1.0),
+                ("FinanceLeaseRightOfUseAsset", "us-gaap", "AssetsNoncurrent", 1.0),
+            ]
+        )
+    )
     available = frozenset({"PropertyPlantAndEquipmentNet", "FinanceLeaseRightOfUseAsset"})
 
     sibling = _resolve_subtractions(spec, graph, available, "PropertyPlantAndEquipmentNet")
@@ -408,7 +457,8 @@ def test_an_untestable_only_when_condition_subtracts_nothing():
     assert off_linkbase == (), (
         "a concept the linkbase never mentions cannot satisfy a structural condition -- "
         "reading that silence as 'not a sibling, therefore subtract' left 75 of the 127 "
-        "surviving negative shortTermDebt values in place")
+        "surviving negative shortTermDebt values in place"
+    )
 
     # `shortTermDebt` demands the STRONGER test: positive evidence of containment. Measured
     # on 31 filings spanning every route that still subtracted, NO filer on the roster
@@ -417,11 +467,10 @@ def test_an_untestable_only_when_condition_subtracts_nothing():
     # through. ASC 842-20-45-1 requires operating lease liabilities to be presented
     # separately, so silence means OUTSIDE here, unlike ppeNet's ASC 842-20-45-4 case.
     debt = CATALOGUE.field("shortTermDebt")
-    folded = ArcGraph(_arcs([
-        ("FinanceLeaseLiabilityCurrent", "us-gaap", "DebtCurrent", 1.0)]))
-    separate = ArcGraph(_arcs([
-        ("DebtCurrent", "us-gaap", "LiabilitiesCurrent", 1.0),
-        ("FinanceLeaseLiabilityCurrent", "us-gaap", "LiabilitiesCurrent", 1.0)]))
+    folded = ArcGraph(_arcs([("FinanceLeaseLiabilityCurrent", "us-gaap", "DebtCurrent", 1.0)]))
+    separate = ArcGraph(
+        _arcs([("DebtCurrent", "us-gaap", "LiabilitiesCurrent", 1.0), ("FinanceLeaseLiabilityCurrent", "us-gaap", "LiabilitiesCurrent", 1.0)])
+    )
     legs = frozenset({"DebtCurrent", "FinanceLeaseLiabilityCurrent"})
     inside = _resolve_subtractions(debt, folded, legs, "DebtCurrent")
     outside = _resolve_subtractions(debt, separate, legs, "DebtCurrent")
@@ -455,8 +504,7 @@ def test_a_leg_weight_is_only_trusted_against_this_fields_own_total():
     available = frozenset(legs)
 
     # the legs' parent is a subtotal this field never claims -> the weight is not about us
-    untrusted = _linkbase_weights(msft, legs, available,
-                                  {"SellingGeneralAndAdministrativeExpense"})
+    untrusted = _linkbase_weights(msft, legs, available, {"SellingGeneralAndAdministrativeExpense"})
     # the same graph, for a field that DOES claim that parent -> the sign is load-bearing
     trusted = _linkbase_weights(msft, legs, available, {"OperatingIncomeLoss"})
 
@@ -477,24 +525,28 @@ def test_a_composed_field_refuses_to_stand_in_for_its_missing_legs():
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _compose
 
     key = (2024, "FY", "instant", None, "2024-12-31")
-    cell = {"value": 0.0, "fiscal_year": 2024, "fiscal_period": "FY",
-            "duration_type": "instant", "period_start": None, "period_end": "2024-12-31",
-            "period_days": None, "unit": "USD", "decimals": "-6"}
+    cell = {
+        "value": 0.0,
+        "fiscal_year": 2024,
+        "fiscal_period": "FY",
+        "duration_type": "instant",
+        "period_start": None,
+        "period_end": "2024-12-31",
+        "period_days": None,
+        "unit": "USD",
+        "decimals": "-6",
+    }
 
     def at(value):
         return {key: {**cell, "value": value}}
 
     debt = CATALOGUE.field("totalDebt")
-    lease_only, reason = _compose(debt, tuple(debt.roll_up()),
-                                  {"operatingLeaseLiability": at(6.29e9)})
-    with_debt, ok = _compose(debt, tuple(debt.roll_up()),
-                             {"longTermDebt": at(1.2e11), "operatingLeaseLiability": at(6.29e9)})
+    lease_only, reason = _compose(debt, tuple(debt.roll_up()), {"operatingLeaseLiability": at(6.29e9)})
+    with_debt, ok = _compose(debt, tuple(debt.roll_up()), {"longTermDebt": at(1.2e11), "operatingLeaseLiability": at(6.29e9)})
 
     ppe = CATALOGUE.field("ppeNet")
-    one_leg, ppe_reason = _compose(ppe, tuple(ppe.roll_up()),
-                                   {"accumulatedDepreciation": at(4.084e10)})
-    both, ppe_ok = _compose(ppe, tuple(ppe.roll_up()),
-                            {"ppeGross": at(6.0e10), "accumulatedDepreciation": at(-4.0e10)})
+    one_leg, ppe_reason = _compose(ppe, tuple(ppe.roll_up()), {"accumulatedDepreciation": at(4.084e10)})
+    both, ppe_ok = _compose(ppe, tuple(ppe.roll_up()), {"ppeGross": at(6.0e10), "accumulatedDepreciation": at(-4.0e10)})
 
     assert lease_only == {} and reason == "incomplete_roll_up", (lease_only, reason)
     assert with_debt[key]["value"] == 1.2e11 + 6.29e9 and ok is None
@@ -516,11 +568,10 @@ def test_a_text_sourced_field_is_not_asked_of_the_xbrl_walk():
     assert CATALOGUE.field("employees").raw.get("source", "").startswith("text")
     assert not CATALOGUE.field("employees").is_extracted
     assert "employees" not in CATALOGUE.extracted_fields
-    concept_backed = [n for n in CATALOGUE.extracted_fields
-                      if not CATALOGUE.field(n).raw.get("fallback_concepts")
-                      and not CATALOGUE.field(n).raw.get("roll_up")]
-    assert not concept_backed, (
-        f"these fields are in the XBRL walk with nothing to resolve against: {concept_backed}")
+    concept_backed = [
+        n for n in CATALOGUE.extracted_fields if not CATALOGUE.field(n).raw.get("fallback_concepts") and not CATALOGUE.field(n).raw.get("roll_up")
+    ]
+    assert not concept_backed, f"these fields are in the XBRL walk with nothing to resolve against: {concept_backed}"
     print("\n=== SANITY CHECK: 3c.9 the XBRL walk only asks for XBRL fields ===")
     print(f"  extracted_fields = {len(CATALOGUE.extracted_fields)} (employees excluded)")
     print("  OK: every remaining field has concepts or a roll-up to resolve against.")
@@ -533,25 +584,20 @@ def test_a_text_sourced_field_is_not_asked_of_the_xbrl_walk():
 #: Every expectation is a measured fact from the live 10-K, not a guess.
 _REGIME_CASES = [
     ("XOM", ("Energy", "Energy", "Integrated Oil & Gas"), "us-gaap:Revenues"),
-    ("APA", ("Energy", "Energy", "Oil & Gas Exploration & Production"),
-     "apa:RevenuesAndOther"),
-    ("JPM", ("Financials", "Banks", "Diversified Banks"),
-     "us-gaap:RevenuesNetOfInterestExpense"),
-    ("DTE", ("Utilities", "Utilities", "Multi-Utilities"),
-     "us-gaap:RegulatedAndUnregulatedOperatingRevenue"),
-    ("MAA", ("Real Estate", "Equity Real Estate Investment Trusts (REITs)",
-             "Multi-Family Residential REITs"), "us-gaap:Revenues"),
+    ("APA", ("Energy", "Energy", "Oil & Gas Exploration & Production"), "apa:RevenuesAndOther"),
+    ("JPM", ("Financials", "Banks", "Diversified Banks"), "us-gaap:RevenuesNetOfInterestExpense"),
+    ("DTE", ("Utilities", "Utilities", "Multi-Utilities"), "us-gaap:RegulatedAndUnregulatedOperatingRevenue"),
+    ("MAA", ("Real Estate", "Equity Real Estate Investment Trusts (REITs)", "Multi-Family Residential REITs"), "us-gaap:Revenues"),
     ("MET", ("Financials", "Insurance", "Life & Health Insurance"), "us-gaap:Revenues"),
 ]
 
-_EXPECTED_REGIME = {"XOM": "energy", "APA": "energy", "JPM": "bank", "DTE": "utility",
-                    "MAA": "real_estate", "MET": "insurer"}
+_EXPECTED_REGIME = {"XOM": "energy", "APA": "energy", "JPM": "bank", "DTE": "utility", "MAA": "real_estate", "MET": "insurer"}
 
 
 @pytest.fixture(scope="module")
 def edgar_ready() -> bool:
     """Real-filing tests need SEC credentials and network. Skip rather than fail, matching
-    the repo's convention for integration tests (docs/testing.md)."""
+    the repo's convention for integration tests (wiki/guides/testing.md)."""
     if not os.getenv("SEC_USER_AGENT", "").strip():
         pytest.skip("SEC_USER_AGENT unset -- real-filing resolution tests need EDGAR")
     return True
@@ -562,6 +608,7 @@ def resolved_regimes(edgar_ready) -> dict:
     """Resolve `totalRevenue` on one real 10-K per accounting regime. Module-scoped: each
     `filing.xbrl()` costs 1.4-5.8 s, so this is paid once for the whole file."""
     from edgar import Company, set_identity
+
     set_identity(os.getenv("SEC_USER_AGENT"))
     from src.data_extract.utils.fundamentals.xbrl_linkbase import resolve_field as rf
 
@@ -570,18 +617,19 @@ def resolved_regimes(edgar_ready) -> dict:
         try:
             filing = Company(ticker).latest("10-K")
             xbrl = filing.xbrl()
-        except Exception as exc:                            # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             pytest.skip(f"EDGAR unreachable for {ticker}: {exc}")
         facts = scope.consolidated_facts(xbrl.facts.to_dataframe())
         graph = ArcGraph(statement_arcs(xbrl))
         regime = CATALOGUE.regime_for(
-            {"sector": sector, "industry_group": group, "sub_industry": sub},
-            [str(r) for r in graph.arcs.get("role_uri", pd.Series(dtype=str))])
+            {"sector": sector, "industry_group": group, "sub_industry": sub}, [str(r) for r in graph.arcs.get("role_uri", pd.Series(dtype=str))]
+        )
         out[ticker] = {
-            "regime": regime, "graph": graph, "facts": facts,
+            "regime": regime,
+            "graph": graph,
+            "facts": facts,
             "available": scope.reported_concepts(facts),
-            "resolution": rf(CATALOGUE.field("totalRevenue"), graph,
-                             scope.reported_concepts(facts), CATALOGUE, regime),
+            "resolution": rf(CATALOGUE.field("totalRevenue"), graph, scope.reported_concepts(facts), CATALOGUE, regime),
             "accession": filing.accession_number,
         }
     return out
@@ -601,8 +649,7 @@ def test_each_regime_resolves_to_the_concept_its_filer_declares(resolved_regimes
     for ticker, _, expected in _REGIME_CASES:
         got = resolved_regimes[ticker]
         resolution = got["resolution"]
-        print(f"  {ticker:7s} {str(got['regime']):13s} {resolution.method:16s} "
-              f"{resolution.concept}")
+        print(f"  {ticker:7s} {str(got['regime']):13s} {resolution.method:16s} " f"{resolution.concept}")
         if resolution.concept != expected:
             failures.append(f"{ticker}: expected {expected}, got {resolution.concept}")
         if got["regime"] != _EXPECTED_REGIME[ticker]:
@@ -620,12 +667,14 @@ def test_apa_revenue_is_a_real_number_and_comes_from_an_extension(resolved_regim
     contain it.
     """
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _materialise
+
     got = resolved_regimes["APA"]
     resolution = got["resolution"]
     assert resolution.is_extension, "APA's top line is a company extension element"
     assert resolution.method == LINKBASE_ROOT
 
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _period_frame
+
     # `_materialise` returns ({accepted}, {refused}); only the accepted periods are the
     # filer's real top line.
     periods, refused = _materialise(resolution, _period_frame(got["facts"]))
@@ -639,8 +688,7 @@ def test_apa_revenue_is_a_real_number_and_comes_from_an_extension(resolved_regim
     print(f"  anchor         : {resolution.anchor}")
     print(f"  values         : {[f'${v/1e9:.3f}B' for v in sorted(values, reverse=True)]}")
     print(f"  refused        : {len(refused)} period(s)")
-    print(f"  us-gaap:Revenues undimensioned? "
-          f"{'Revenues' in got['available']}  <- the old resolver's target")
+    print(f"  us-gaap:Revenues undimensioned? " f"{'Revenues' in got['available']}  <- the old resolver's target")
     print("  OK: Non-zero, non-null, and sourced from the filer's own declared total.")
 
 
@@ -655,18 +703,19 @@ def test_shares_outstanding_uses_the_multi_class_safe_cover_page_tag(resolved_re
     normalisation rather than trusting it.
     """
     from src.data_extract.utils.fundamentals.xbrl_linkbase import resolve_field as rf
+
     print("\n=== SANITY CHECK: multi-class share tag ===")
     wrong = []
     for ticker, _, _ in _REGIME_CASES:
         got = resolved_regimes[ticker]
-        resolution = rf(CATALOGUE.field("sharesOutstanding"), got["graph"],
-                        got["available"], CATALOGUE, got["regime"])
+        resolution = rf(CATALOGUE.field("sharesOutstanding"), got["graph"], got["available"], CATALOGUE, got["regime"])
         print(f"  {ticker:6s} {resolution.method:14s} {resolution.concept}")
         if resolution.concept == "us-gaap:CommonStockSharesOutstanding":
             wrong.append(ticker)
     assert not wrong, (
         f"{wrong} resolved to the single-class CommonStockSharesOutstanding instead of the "
-        "cover-page dei tag -- the multi-class NULL defect has returned")
+        "cover-page dei tag -- the multi-class NULL defect has returned"
+    )
     print("  OK: the cover-page dei tag wins; no filing fell back to a single share class.")
 
 
@@ -681,14 +730,14 @@ def test_route_labels_separate_priority_from_genuine_fallthrough(resolved_regime
     this one keeps the six-regime snapshot honest and fast.
     """
     from src.data_extract.utils.fundamentals.xbrl_linkbase import resolve_field as rf
+
     tier1 = [f for f in CATALOGUE.by_tier(1) if CATALOGUE.field(f).is_extracted]
 
     counts: dict[str, int] = {}
     for ticker, _, _ in _REGIME_CASES:
         got = resolved_regimes[ticker]
         for name in tier1:
-            resolution = rf(CATALOGUE.field(name), got["graph"], got["available"],
-                            CATALOGUE, got["regime"])
+            resolution = rf(CATALOGUE.field(name), got["graph"], got["available"], CATALOGUE, got["regime"])
             counts[resolution.method] = counts.get(resolution.method, 0) + 1
 
     resolved = {m: n for m, n in counts.items() if m != UNRESOLVED}
@@ -699,11 +748,10 @@ def test_route_labels_separate_priority_from_genuine_fallthrough(resolved_regime
     for method, n in sorted(counts.items(), key=lambda kv: -kv[1]):
         note = "  (not a route -- dc_code says why)" if method == UNRESOLVED else ""
         print(f"  {method:16s} {n:3d}{note}")
-    print(f"  genuine tag_fallback = {fallback:.1%} of {total} resolved "
-          f"(plan gate: >20% means re-examine)")
+    print(f"  genuine tag_fallback = {fallback:.1%} of {total} resolved " f"(plan gate: >20% means re-examine)")
     assert fallback <= 0.20, (
-        f"tag_fallback {fallback:.1%} exceeds the plan's 20% gate -- the linkbase premise "
-        "needs re-examining before the full rebuild")
+        f"tag_fallback {fallback:.1%} exceeds the plan's 20% gate -- the linkbase premise " "needs re-examining before the full rebuild"
+    )
     print("  OK: the filer's own structure carries the totals.")
 
 
@@ -714,8 +762,7 @@ def test_route_labels_separate_priority_from_genuine_fallthrough(resolved_regime
 #: `fundamentals_regimes.json`, which matters: v1 recorded AXP as routing to `industrial`
 #: and that was wrong -- "Transaction & Payment Processing Services" is V and MA. Asserted
 #: below rather than assumed, because the regime selects the two-leg roll-up this fix needs.
-_AXP_GICS = {"sector": "Financials", "industry_group": "Financial Services",
-             "sub_industry": "Consumer Finance"}
+_AXP_GICS = {"sector": "Financials", "industry_group": "Financial Services", "sub_industry": "Consumer Finance"}
 
 
 @pytest.fixture(scope="module")
@@ -729,17 +776,18 @@ def axp_revenue(edgar_ready) -> dict:
     from edgar import Company, set_identity
 
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
+
     set_identity(os.getenv("SEC_USER_AGENT"))
 
     company = Company("AXP")
     out: dict[int, pd.DataFrame] = {}
     for year in (2016, 2025):
         try:
-            filing = next(f for f in company.get_filings(form="10-K")
-                          if pd.Timestamp(f.filing_date).year == year
-                          and not str(f.form).upper().endswith("/A"))
+            filing = next(
+                f for f in company.get_filings(form="10-K") if pd.Timestamp(f.filing_date).year == year and not str(f.form).upper().endswith("/A")
+            )
             rows = filing_rows("AXP", str(company.cik), filing, CATALOGUE, _AXP_GICS)
-        except Exception as exc:                                    # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             pytest.skip(f"EDGAR unreachable for AXP {year}: {exc}")
         out[year] = pd.DataFrame(rows)
     return out
@@ -763,23 +811,16 @@ def test_axp_carries_one_rule_9_04_basis_across_the_asc_606_break(axp_revenue):
     banned = "TotalRevenuesNetOfInterestExpenseAfterProvisionsForLosses"
     print("\n=== SANITY CHECK: AXP totalRevenue, one Rule 9-04 basis ===")
     for year, rows in sorted(axp_revenue.items()):
-        assert set(rows["regime"].dropna().unique()) == {"bank"}, (
-            "AXP must route to the bank regime -- the two-leg roll-up depends on it")
-        block = rows[(rows.field == "totalRevenue") & rows.value.notna()
-                     & (rows.duration_type == "annual")].sort_values("period_end")
+        assert set(rows["regime"].dropna().unique()) == {"bank"}, "AXP must route to the bank regime -- the two-leg roll-up depends on it"
+        block = rows[(rows.field == "totalRevenue") & rows.value.notna() & (rows.duration_type == "annual")].sort_values("period_end")
         assert not block.empty, f"AXP {year}: no annual revenue at all -- the ban nulled it"
         for row in block.tail(3).itertuples():
-            print(f"  {year} 10-K  {str(row.period_end)[:10]}  "
-                  f"{row.value / 1e6:>10,.0f}M  {row.resolution_method:14s} "
-                  f"{row.source_concept}")
-            assert banned not in str(row.source_concept), (
-                f"AXP {str(row.period_end)[:10]} still resolves post-provision")
+            print(f"  {year} 10-K  {str(row.period_end)[:10]}  " f"{row.value / 1e6:>10,.0f}M  {row.resolution_method:14s} " f"{row.source_concept}")
+            assert banned not in str(row.source_concept), f"AXP {str(row.period_end)[:10]} still resolves post-provision"
             # A $30-70bn issuer. The post-provision element runs ~$2bn lower, so this band
             # only catches a collapse to a leg or to nothing, which is what the ban risked.
             assert 20e9 < row.value < 100e9, f"{row.value:,.0f} is not AXP's top line"
     early = axp_revenue[2016]
-    early_block = early[(early.field == "totalRevenue") & early.value.notna()
-                        & (early.duration_type == "annual")]
-    assert (early_block["resolution_method"] == "linkbase_sum").all(), (
-        "the pre-ASC-606 filing must resolve on the two-leg Rule 9-04 roll-up")
+    early_block = early[(early.field == "totalRevenue") & early.value.notna() & (early.duration_type == "annual")]
+    assert (early_block["resolution_method"] == "linkbase_sum").all(), "the pre-ASC-606 filing must resolve on the two-leg Rule 9-04 roll-up"
     print("  OK: no post-provision row survives, and the early filing sums the two legs.")

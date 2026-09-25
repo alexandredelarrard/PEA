@@ -11,10 +11,13 @@ was computed from data the shortest one had, and a label reaching the last price
 computed from a future that has not happened. Both are score 10, because a leaked label
 inflates every backtest built on it and nothing downstream can detect it.
 
-**`as_of` POINT-IN-TIME** -- the features. Per TICKER, a feature's first non-null date must not
-precede the first event in its own source table, measured on that source's PUBLICATION clock.
-Per ticker rather than per family is what makes it sharp: a family-wide floor hides a leak on
-one name behind 490 that are clean.
+**`as_of` POINT-IN-TIME** -- the features. Normally, per TICKER, a feature's first non-null date
+must not precede the first event in its own source table, measured on that source's PUBLICATION
+clock. Per ticker rather than per family is what makes it sharp: a family-wide floor hides a
+leak on one name behind 490 that are clean. Declared observed-zero legs are the exception: when
+the builder intentionally represents no event as zero, their clock is the GLOBAL source onset;
+requiring a per-ticker event would call the correct zero a leak. A multi-source observed-zero
+leg starts only after every declared source has begun publishing.
 
 ⚠ THE PUBLICATION CLOCK IS NOT THE PERIOD CLOCK. A 13F describes a quarter that ended 45 days
 before it was filed, and a Form 4 describes a trade that happened before it was reported. Four
@@ -45,6 +48,7 @@ source table's first row (`percent_of_class` became mandatory long after 13D/G f
 Their true clock is therefore later than the one used here, so this check under-reports rather
 than over-reports on them. That direction is deliberate: it cannot manufacture a violation.
 """
+
 from __future__ import annotations
 
 import logging
@@ -98,13 +102,12 @@ def _horizons(columns: list[str], pattern: str) -> dict[str, tuple[int, str]]:
     for column in columns:
         match = compiled.search(column)
         if match:
-            family = (column[:match.start()] + column[match.end():]) or column
+            family = (column[: match.start()] + column[match.end() :]) or column
             out[column] = (int(match.group(1)), family)
     return out
 
 
-def _first_per_ticker(frame: pd.DataFrame, ticker_col: str, date_col: str,
-                      leg: str) -> pd.Series:
+def _first_per_ticker(frame: pd.DataFrame, ticker_col: str, date_col: str, leg: str) -> pd.Series:
     """Per ticker, the first date on which `leg` is not null."""
     present = frame.loc[frame[leg].notna(), [ticker_col, date_col]]
     if present.empty:
@@ -120,15 +123,13 @@ def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
     spec = resolve(source)
     clock = spec.freshness_col
     if clock is None or spec.ticker_col is None:
-        raise LookupError(f"`{spec.name}` declares no publication clock "
-                          f"(freshness_col={clock!r}, ticker_col={spec.ticker_col!r})")
+        raise LookupError(f"`{spec.name}` declares no publication clock " f"(freshness_col={clock!r}, ticker_col={spec.ticker_col!r})")
     live = context.store.columns(spec)
     if clock not in live or spec.ticker_col not in live:
         raise LookupError(f"`{spec.name}` does not carry {spec.ticker_col!r}/{clock!r}")
 
     running: pd.Series | None = None
-    for chunk in context.store.iter_load(spec, columns=[spec.ticker_col, clock],
-                                         chunksize=CHUNK_ROWS):
+    for chunk in context.store.iter_load(spec, columns=[spec.ticker_col, clock], chunksize=CHUNK_ROWS):
         chunk = chunk.assign(**{clock: as_ts(chunk[clock])})
         keys = chunk[spec.ticker_col].astype(str).str.strip().str.upper()
         part = chunk.groupby(keys)[clock].min()
@@ -136,10 +137,27 @@ def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
     return (running if running is not None else pd.Series(dtype="datetime64[ns]")), clock
 
 
-def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
-                  cache: Any = None, tickers: list[str] | None = None,
-                  horizon_pattern: str | None = None, reference: Table | str = Tables.prices,
-                  group: int = GROUP, **kwargs: Any) -> CheckResult:
+def _longest_prefix_sources(
+    leg: str,
+    declarations: dict[str, tuple[str, ...]],
+) -> tuple[str, tuple[str, ...]] | None:
+    """Most-specific declaration matching ``leg``; exact names beat family prefixes."""
+    matches = [(prefix, sources) for prefix, sources in declarations.items() if leg.startswith(prefix)]
+    return max(matches, key=lambda item: len(item[0])) if matches else None
+
+
+def check_leakage(
+    context: Context,
+    table: Table | str,
+    *,
+    config: DictConfig,
+    cache: Any = None,
+    tickers: list[str] | None = None,
+    horizon_pattern: str | None = None,
+    reference: Table | str = Tables.prices,
+    group: int = GROUP,
+    **kwargs: Any,
+) -> CheckResult:
     """Horizon recession on the labels, and each feature against its source's own clock."""
     spec_t = resolve(table)
     if (declined := full_table_only(CHECK, spec_t.name, tickers)) is not None:
@@ -149,9 +167,9 @@ def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
     date_col = spec_t.date_col
     ticker_col = spec_t.ticker_col if spec_t.ticker_col in live else None
     if date_col is None:
-        return CheckResult.abstained(CHECK, spec_t.name,
-                                     "the table declares no date column, so there is no "
-                                     "publication clock to test anything against")
+        return CheckResult.abstained(
+            CHECK, spec_t.name, "the table declares no date column, so there is no " "publication clock to test anything against"
+        )
 
     columns = feature_columns(context, spec_t)
     findings: list[Finding] = []
@@ -165,13 +183,14 @@ def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
     horizon_reason = ""
     horizons = _horizons(columns, pattern) if pattern else {}
     if pattern and not horizons:
-        horizon_reason = (f"no column matches the declared label pattern {pattern!r}, so the "
-                          f"horizon half found nothing to test")
+        horizon_reason = f"no column matches the declared label pattern {pattern!r}, so the " f"horizon half found nothing to test"
     elif not pattern:
-        horizon_reason = (f"{spec_t.name} declares no `label_pattern`, so the horizon half "
-                          f"ABSTAINED -- an `_h<n>` suffix does not make a column a forward "
-                          f"label, and cube_part_momentum's backward-looking seasonal_h30/60/90 "
-                          f"read as three leaks at score 10 when it was matched blind")
+        horizon_reason = (
+            f"{spec_t.name} declares no `label_pattern`, so the horizon half "
+            f"ABSTAINED -- an `_h<n>` suffix does not make a column a forward "
+            f"label, and cube_part_momentum's backward-looking seasonal_h30/60/90 "
+            f"read as three leaks at score 10 when it was matched blind"
+        )
     last_price = as_ts(context.store.max_date(reference))
     if horizons:
         halves.append("horizon")
@@ -180,9 +199,15 @@ def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
         ladder = []
         for leg, (days, family) in sorted(horizons.items(), key=lambda kv: (kv[1][1], kv[1][0])):
             stamps = frame.loc[frame[leg].notna(), date_col]
-            ladder.append({"leg": leg, "family": family, "horizon_days": days,
-                           "last_date": stamps.max() if not stamps.empty else pd.NaT,
-                           "n_ok": int(stamps.notna().sum())})
+            ladder.append(
+                {
+                    "leg": leg,
+                    "family": family,
+                    "horizon_days": days,
+                    "last_date": stamps.max() if not stamps.empty else pd.NaT,
+                    "n_ok": int(stamps.notna().sum()),
+                }
+            )
 
         families: dict[str, list[dict[str, Any]]] = {}
         for entry in ladder:
@@ -190,41 +215,49 @@ def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
         for rungs in families.values():
             rungs.sort(key=lambda e: e["horizon_days"])
             for step, entry in enumerate(rungs):
-                gap = ((last_price - entry["last_date"]).days
-                       if pd.notna(entry["last_date"]) and pd.notna(last_price) else None)
+                gap = (last_price - entry["last_date"]).days if pd.notna(entry["last_date"]) and pd.notna(last_price) else None
                 entry["days_behind_last_price"] = gap
                 previous = rungs[step - 1] if step else None
                 entry["recedes_by"] = (
                     (previous["last_date"] - entry["last_date"]).days
-                    if previous is not None and pd.notna(entry["last_date"])
-                    and pd.notna(previous["last_date"]) else None)
+                    if previous is not None and pd.notna(entry["last_date"]) and pd.notna(previous["last_date"])
+                    else None
+                )
                 if pd.isna(entry["last_date"]):
                     continue
                 if pd.notna(last_price) and entry["last_date"] >= last_price:
-                    findings.append(Finding.at(
-                        10, field=entry["leg"],
-                        observed=f"the {entry['horizon_days']}-day label runs to "
-                                 f"{entry['last_date'].date()}, which is not before the last "
-                                 f"{resolve(reference).name} session ({last_price.date()})",
-                        expected=f"a {entry['horizon_days']}-day forward label cannot be known "
-                                 f"until {entry['horizon_days']} days have passed, so its last "
-                                 f"date must sit strictly behind the last price session. A "
-                                 f"label reaching it was computed from a future that has not "
-                                 f"happened",
-                        **{k: v for k, v in entry.items() if k != "leg"}))
-                if (previous is not None and pd.notna(previous["last_date"])
-                        and entry["last_date"] >= previous["last_date"]):
-                    findings.append(Finding.at(
-                        10, field=entry["leg"],
-                        observed=f"the {entry['horizon_days']}-day label ends on "
-                                 f"{entry['last_date'].date()}, not before the "
-                                 f"{previous['horizon_days']}-day label of the same family "
-                                 f"(`{previous['leg']}`, {previous['last_date'].date()})",
-                        expected="max(date) must RECEDE strictly as the horizon grows within "
-                                 "one label family. Two horizons of the SAME label ending on "
-                                 "the same day means the longer one was computed from data "
-                                 "only the shorter one could have had",
-                        shorter=previous["leg"], **{k: v for k, v in entry.items() if k != "leg"}))
+                    findings.append(
+                        Finding.at(
+                            10,
+                            field=entry["leg"],
+                            observed=f"the {entry['horizon_days']}-day label runs to "
+                            f"{entry['last_date'].date()}, which is not before the last "
+                            f"{resolve(reference).name} session ({last_price.date()})",
+                            expected=f"a {entry['horizon_days']}-day forward label cannot be known "
+                            f"until {entry['horizon_days']} days have passed, so its last "
+                            f"date must sit strictly behind the last price session. A "
+                            f"label reaching it was computed from a future that has not "
+                            f"happened",
+                            **{k: v for k, v in entry.items() if k != "leg"},
+                        )
+                    )
+                if previous is not None and pd.notna(previous["last_date"]) and entry["last_date"] >= previous["last_date"]:
+                    findings.append(
+                        Finding.at(
+                            10,
+                            field=entry["leg"],
+                            observed=f"the {entry['horizon_days']}-day label ends on "
+                            f"{entry['last_date'].date()}, not before the "
+                            f"{previous['horizon_days']}-day label of the same family "
+                            f"(`{previous['leg']}`, {previous['last_date'].date()})",
+                            expected="max(date) must RECEDE strictly as the horizon grows within "
+                            "one label family. Two horizons of the SAME label ending on "
+                            "the same day means the longer one was computed from data "
+                            "only the shorter one could have had",
+                            shorter=previous["leg"],
+                            **{k: v for k, v in entry.items() if k != "leg"},
+                        )
+                    )
         metrics["horizon_families"] = sorted(families)
         metrics["horizon_ladder"] = ladder
         metrics["last_reference_session"] = last_price
@@ -234,12 +267,13 @@ def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
     violations: list[dict[str, Any]] = []
     pit_reason = ""
     if not spec.pit_sources:
-        pit_reason = (f"{spec_t.name} declares no `pit_sources`, so the point-in-time half "
-                      f"ABSTAINED -- a feature-to-source map cannot be inferred from column "
-                      f"names without judging some legs against the wrong clock")
+        pit_reason = (
+            f"{spec_t.name} declares no `pit_sources`, so the point-in-time half "
+            f"ABSTAINED -- a feature-to-source map cannot be inferred from column "
+            f"names without judging some legs against the wrong clock"
+        )
     elif ticker_col is None:
-        pit_reason = ("the point-in-time half ABSTAINED -- it is a per-ticker comparison and "
-                      "this table carries no ticker column")
+        pit_reason = "the point-in-time half ABSTAINED -- it is a per-ticker comparison and " "this table carries no ticker column"
     else:
         halves.append("pit")
         clocks: dict[str, tuple[pd.Series, str]] = {}
@@ -258,59 +292,129 @@ def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
                 names.append(f"{source}.{clock}")
             legs = [c for c in columns if c.startswith(prefix)]
             if not legs or not firsts:
-                pit_sheet.append({
-                    "prefix": prefix, "sources": list(sources), "legs": len(legs),
-                    "clock": names, "tested": False,
-                    "why": ("no live leg carries this prefix" if not legs
-                            else "no source table could be read on its publication clock")})
+                pit_sheet.append(
+                    {
+                        "prefix": prefix,
+                        "sources": list(sources),
+                        "legs": len(legs),
+                        "clock": names,
+                        "tested": False,
+                        "why": ("no live leg carries this prefix" if not legs else "no source table could be read on its publication clock"),
+                    }
+                )
                 continue
             # Two sources for one family (`f_ic_bo_` reads 13D and 13G) means the feature can
             # exist as soon as EITHER has filed, so the clock is the earlier of the two.
             source_first = pd.concat(firsts).groupby(level=0).min()
 
             for block in column_groups(legs, group):
-                frame = read_columns(context, spec_t, [ticker_col, date_col] + list(block),
-                                     cache=cache)
+                frame = read_columns(context, spec_t, [ticker_col, date_col] + list(block), cache=cache)
                 frame[date_col] = as_ts(frame[date_col])
                 keys = frame[ticker_col].astype(str).str.strip().str.upper()
                 frame = frame.assign(**{ticker_col: keys})
                 for leg in block:
                     panel_first = _first_per_ticker(frame, ticker_col, date_col, leg)
-                    joined = pd.DataFrame({"panel_first": panel_first}).join(
-                        source_first.rename("src_first"), how="left")
+                    zero_declaration = _longest_prefix_sources(leg, spec.pit_observed_zero_sources)
+                    mode = "per_ticker_event"
+                    leg_names = names
+                    if zero_declaration is not None:
+                        zero_prefix, zero_sources = zero_declaration
+                        zero_firsts: list[pd.Series] = []
+                        leg_names = []
+                        for source in zero_sources:
+                            if source not in clocks:
+                                try:
+                                    clocks[source] = _source_first(context, source)
+                                except (LookupError, ValueError) as exc:
+                                    log.warning("leakage %s: %s", spec_t.name, exc)
+                                    continue
+                            series, clock = clocks[source]
+                            zero_firsts.append(series)
+                            leg_names.append(f"{source}.{clock}")
+                        onsets = [series.min() for series in zero_firsts if not series.empty]
+                        if len(onsets) != len(zero_sources) or any(pd.isna(day) for day in onsets):
+                            pit_sheet.append(
+                                {
+                                    "prefix": prefix,
+                                    "observed_zero_prefix": zero_prefix,
+                                    "leg": leg,
+                                    "clock": leg_names,
+                                    "tested": False,
+                                    "why": "not every observed-zero source has a global publication onset",
+                                }
+                            )
+                            continue
+                        # Absence is observable only once ALL required sources are live. The
+                        # ordinary event path below uses the earlier of sources because an
+                        # event from either can legitimately create a non-zero feature.
+                        global_first = max(pd.Timestamp(day) for day in onsets)
+                        joined = pd.DataFrame({"panel_first": panel_first})
+                        joined["src_first"] = global_first
+                        mode = "global_observed_zero"
+                    else:
+                        joined = pd.DataFrame({"panel_first": panel_first}).join(source_first.rename("src_first"), how="left")
                     early = joined[joined["panel_first"] < joined["src_first"]]
                     lead = (joined["src_first"] - joined["panel_first"]).dt.days
-                    pit_sheet.append({
-                        "prefix": prefix, "leg": leg, "clock": names, "tested": True,
-                        "tickers_with_values": int(len(joined)),
-                        "tickers_without_source": int(joined["src_first"].isna().sum()),
-                        "tickers_early": int(len(early)),
-                        "worst_lead_days": int(lead.max()) if len(early) else 0})
+                    pit_sheet.append(
+                        {
+                            "prefix": prefix,
+                            "leg": leg,
+                            "clock": leg_names,
+                            "availability_mode": mode,
+                            "tested": True,
+                            "tickers_with_values": int(len(joined)),
+                            "tickers_without_source": int(joined["src_first"].isna().sum()),
+                            "tickers_early": int(len(early)),
+                            "worst_lead_days": int(lead.max()) if len(early) else 0,
+                        }
+                    )
                     for ticker, row in early.iterrows():
-                        violations.append({
-                            "prefix": prefix, "leg": leg, "ticker": str(ticker),
-                            "panel_first": row["panel_first"], "src_first": row["src_first"],
-                            "lead_days": int((row["src_first"] - row["panel_first"]).days)})
+                        violations.append(
+                            {
+                                "prefix": prefix,
+                                "leg": leg,
+                                "ticker": str(ticker),
+                                "panel_first": row["panel_first"],
+                                "src_first": row["src_first"],
+                                "lead_days": int((row["src_first"] - row["panel_first"]).days),
+                                "availability_mode": mode,
+                            }
+                        )
                 log.info("leakage %s: %s -> %d leg(s) tested", spec_t.name, prefix, len(block))
 
         by_leg: dict[str, list[dict[str, Any]]] = {}
         for row in violations:
             by_leg.setdefault(row["leg"], []).append(row)
-        ranked = sorted(by_leg.items(),
-                        key=lambda kv: -max(r["lead_days"] for r in kv[1]))
+        ranked = sorted(by_leg.items(), key=lambda kv: -max(r["lead_days"] for r in kv[1]))
         for leg, rows in ranked[:_MAX_FINDINGS]:
             worst = max(rows, key=lambda r: r["lead_days"])
-            findings.append(Finding.at(
-                10, field=leg, ticker=worst["ticker"],
-                observed=f"{len(rows)} ticker(s) carry a value before their first event in "
-                         f"the source; worst {worst['ticker']}, first value "
-                         f"{pd.Timestamp(worst['panel_first']).date()} against a first "
-                         f"publication of {pd.Timestamp(worst['src_first']).date()} -- "
-                         f"{worst['lead_days']:,} days early",
-                expected="a feature cannot be non-null before the first date its own source "
-                         "PUBLISHED anything for that ticker. Measured on the source's "
-                         "freshness column, so a filing lag is already allowed for",
-                n_tickers=len(rows), tickers=[r["ticker"] for r in rows][:20], worst=worst))
+            observed_zero = worst["availability_mode"] == "global_observed_zero"
+            boundary = "their source family was globally observable" if observed_zero else "their first event in the source"
+            expectation = (
+                "an observed-zero feature cannot be non-null before every required source "
+                "has begun publishing globally. After that onset, a zero before this ticker's "
+                "first event is valid information, not leakage"
+                if observed_zero
+                else "a feature cannot be non-null before the first date its own source "
+                "PUBLISHED anything for that ticker. Measured on the source's freshness "
+                "column, so a filing lag is already allowed for"
+            )
+            findings.append(
+                Finding.at(
+                    10,
+                    field=leg,
+                    ticker=worst["ticker"],
+                    observed=f"{len(rows)} ticker(s) carry a value before {boundary}; worst "
+                    f"{worst['ticker']}, first value "
+                    f"{pd.Timestamp(worst['panel_first']).date()} against a first "
+                    f"publication of {pd.Timestamp(worst['src_first']).date()} -- "
+                    f"{worst['lead_days']:,} days early",
+                    expected=expectation,
+                    n_tickers=len(rows),
+                    tickers=[r["ticker"] for r in rows][:20],
+                    worst=worst,
+                )
+            )
 
         metrics["pit_sheet"] = pit_sheet
         metrics["n_pit_violations"] = len(violations)
@@ -318,18 +422,22 @@ def check_leakage(context: Context, table: Table | str, *, config: DictConfig,
         metrics["pit_clocks"] = {s: c for s, (_, c) in clocks.items()}
 
     if not halves:
-        return CheckResult.abstained(
-            CHECK, spec_t.name, f"neither half could run. {horizon_reason}; and {pit_reason}")
+        return CheckResult.abstained(CHECK, spec_t.name, f"neither half could run. {horizon_reason}; and {pit_reason}")
 
     first_date, last_date = context.store.bounds(spec_t)
-    scope = {"rows": context.store.row_count(spec_t), "first_date": first_date,
-             "last_date": last_date,
-             "halves_run": halves, "horizon_legs": len(horizons),
-             "horizon_pattern": pattern,
-             "reference": resolve(reference).name, "last_reference_session": last_price,
-             "pit_prefixes": sorted(spec.pit_sources), "pit_legs_tested":
-                 sum(1 for row in pit_sheet if row.get("tested")),
-             "source": "cache" if cache_used(cache, spec_t) else "db"}
+    scope = {
+        "rows": context.store.row_count(spec_t),
+        "first_date": first_date,
+        "last_date": last_date,
+        "halves_run": halves,
+        "horizon_legs": len(horizons),
+        "horizon_pattern": pattern,
+        "reference": resolve(reference).name,
+        "last_reference_session": last_price,
+        "pit_prefixes": sorted(spec.pit_sources),
+        "pit_legs_tested": sum(1 for row in pit_sheet if row.get("tested")),
+        "pit_observed_zero_prefixes": sorted(spec.pit_observed_zero_sources),
+        "source": "cache" if cache_used(cache, spec_t) else "db",
+    }
     reason = "; ".join(part for part in (horizon_reason, pit_reason) if part)
-    return CheckResult.measured(CHECK, spec_t.name, findings, scope=scope, metrics=metrics,
-                                reason=reason)
+    return CheckResult.measured(CHECK, spec_t.name, findings, scope=scope, metrics=metrics, reason=reason)

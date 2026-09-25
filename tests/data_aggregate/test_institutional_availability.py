@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
+from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.institutionals.availability import (
     InstitutionalAvailability,
     availability_date,
@@ -60,6 +64,50 @@ def test_source_frontier_is_inclusive_and_cannot_extend_stale_data() -> None:
     assert not got.loc[pd.Timestamp("2026-04-01") :].to_numpy().any()
     print("\n=== SANITY CHECK: stale source frontier ===")
     print("  A source observed through 2026-03-31 is available on that date and unavailable after it. Validated.")
+
+
+def test_schedule_frontier_requires_complete_analysis_universe_manifest(tmp_path) -> None:
+    manifest_path = tmp_path / "extraction_manifest.json"
+    step = object.__new__(StepCubeInstitutionals)
+    step._context = SimpleNamespace(
+        paths={"DATA_STORE": tmp_path},
+        config=SimpleNamespace(local=SimpleNamespace(filename=SimpleNamespace(extraction=manifest_path.name))),
+    )
+    step._log = SimpleNamespace(warning=lambda *args: None)
+
+    def write_entry(entry: dict) -> None:
+        manifest_path.write_text(
+            json.dumps({Tables.sec_13g.name: entry}),
+            encoding="utf-8",
+        )
+
+    write_entry({"last_run_date": "2026-09-24", "ticker_count": 2})
+    assert step._schedule_complete_through(Tables.sec_13g, expected_ticker_count=2) is None
+
+    write_entry(
+        {
+            "last_run_date": "2026-09-24",
+            "ticker_count": 1,
+            "coverage_complete": True,
+        }
+    )
+    assert step._schedule_complete_through(Tables.sec_13g, expected_ticker_count=2) is None
+
+    write_entry(
+        {
+            "last_run_date": "2026-09-24",
+            "ticker_count": 2,
+            "coverage_complete": True,
+        }
+    )
+    assert step._schedule_complete_through(
+        Tables.sec_13g,
+        expected_ticker_count=2,
+    ) == pd.Timestamp("2026-09-24")
+
+    print("\n=== SANITY CHECK: Schedule absence frontier ===")
+    print("  legacy or partial-universe manifests -> unavailable; complete analysis-universe manifest -> trusted")
+    print("  OK: aggregation emits zeros only behind a proven issuer-side discovery frontier")
 
 
 @pytest.mark.parametrize(

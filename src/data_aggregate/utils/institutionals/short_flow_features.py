@@ -275,13 +275,28 @@ def _fails_fields(
         # count and `adv` comes from yfinance `Volume`, which IS retroactively scaled by the
         # split ratio. Restate the fails onto the adjusted basis so the ratio is basis-free.
         fails_adj = fails * split_adjust_frame(splits, fails)
-        f_dict["ic_ftd_to_adv20"] = (fails_adj / adv.where(adv > 0)).replace([np.inf, -np.inf], np.nan).shift(FTD_PUB_LAG)
+        to_adv = (fails_adj / adv.where(adv > 0)).replace([np.inf, -np.inf], np.nan)
+        f_dict["ic_ftd_to_adv20"] = to_adv.shift(FTD_PUB_LAG)
     # The z-score prefers the share-count basis (a fail is a share count, and shares
     # outstanding is the only denominator that makes two names comparable); it falls back to
     # the ADV basis so the family is not lost when fundamentals are absent.
-    basis = pct_so if pct_so is not None else f_dict.get("ic_ftd_to_adv20")
+    basis = pct_so if pct_so is not None else (to_adv if volume is not None and not volume.empty else None)
     if basis is not None:
         z = self_history_z(basis, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
+        # A zero standard deviation normally makes a z-score undefined. FTD has one economic
+        # exception: if every source-covered observation in the applicable trailing window is
+        # present and exactly zero, pressure is known to be neutral. Count the source's covered
+        # dates rather than grid rows, because an absent SEC file date is unavailable, not zero.
+        covered_basis = pd.DataFrame({c: on_file for c in basis.columns}, index=idx)
+        # Denominators can have a legitimate warm-up (ADV20) or a later ticker-specific start
+        # (shares outstanding). Applicability begins at that ticker's first computable basis;
+        # any hole after that start remains a hole and blocks neutralization.
+        applicable = covered_basis & basis.notna().cummax()
+        expected = applicable.astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
+        observed = basis.notna().astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
+        zeros = basis.eq(0.0).astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
+        neutral = applicable & basis.eq(0.0) & expected.ge(Z_MIN_PERIODS) & observed.eq(expected) & zeros.eq(expected)
+        z = z.mask(z.isna() & neutral, 0.0)
         f_dict["ic_ftd_z252"] = z.shift(FTD_PUB_LAG)
         flag = (z > Z_HIGH).astype("float64").where(z.notna())
         f_dict["ic_ftd_persistence_30d"] = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().shift(FTD_PUB_LAG)

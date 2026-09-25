@@ -101,7 +101,6 @@ class AmbiguousSymbolTenureError(IdentityError):
 
 SymbolVerdict = Literal[
     "exact_dated_tenure",
-    "unique_entity_fallback",
     "roster_tenure_proxy",
     "mapped_current_ticker",
     "redundant_share_class",
@@ -112,7 +111,6 @@ SymbolVerdict = Literal[
 ]
 SymbolMatchKind = Literal[
     "exact_dated_tenure",
-    "unique_entity_fallback",
     "roster_tenure_proxy",
 ]
 
@@ -189,6 +187,8 @@ class Identity:
     ticker_by_entity: Mapping[str, str]
     #: axis B: symbol -> tuple of (entity_id, valid_from, valid_to, n_filings).
     tenure_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
+    #: Manual subset of axis B. An active manual row has precedence over derived evidence.
+    manual_tenure_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
     #: D19-cleared roster symbol -> dated rows borrowed from filing symbols on its entity.
     roster_proxy_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
     #: Separately traded share classes deliberately absent from the modelling universe.
@@ -284,7 +284,18 @@ class Identity:
             return next(iter(entities))
 
         stamp = pd.Timestamp(as_of)
-        hits = {entity for entity, start, end, _ in rows if start <= stamp and (end is None or stamp < end)}
+        manual_rows = self.manual_tenure_by_symbol.get(str(symbol).strip().upper(), ())
+        manual_hits = {entity for entity, start, end, _ in manual_rows if start <= stamp and (end is None or stamp < end)}
+        if len(manual_hits) > 1:
+            raise AmbiguousSymbolTenureError(
+                f"identity: symbol {symbol!r} has conflicting active MANUAL tenures at "
+                f"{stamp.date()} ({', '.join(sorted(manual_hits))}). Fix the evidenced config; "
+                "manual precedence cannot break a manual tie."
+            )
+        if manual_hits:
+            return next(iter(manual_hits))
+        derived_rows = tuple(row for row in rows if row not in manual_rows)
+        hits = {entity for entity, start, end, _ in derived_rows if start <= stamp and (end is None or stamp < end)}
         if len(hits) > 1:
             raise AmbiguousSymbolTenureError(
                 f"identity: symbol {symbol!r} resolves to {len(hits)} entities at "
@@ -303,11 +314,18 @@ class Identity:
         against a thousand real filings, and a latest-observation rule hands them the symbol.
         So: prefer still-open tenures, then take the heaviest.
         """
-        rows = self.tenure_by_symbol.get(str(symbol).strip().upper())
+        key = str(symbol).strip().upper()
+        rows = self.tenure_by_symbol.get(key)
         if not rows:
             return None
+        manual_rows = self.manual_tenure_by_symbol.get(key, ())
+        manual_open = [row for row in manual_rows if row[2] is None]
+        if manual_open:
+            return max(manual_open, key=lambda row: row[3])[0]
         openrows = [r for r in rows if r[2] is None]
-        return max(openrows or list(rows), key=lambda r: r[3])[0]
+        if openrows:
+            return max(openrows, key=lambda row: row[3])[0]
+        return max(manual_rows or rows, key=lambda row: row[3])[0]
 
     def candidate_symbols(self, universe: frozenset[str]) -> frozenset[str]:
         """Current symbols plus historical symbols owned by the requested universe."""
@@ -336,7 +354,6 @@ class Identity:
         if not rows:
             return SymbolResolution(source_symbol, stamp, "unknown_symbol")
 
-        entities = {entity for entity, _, _, _ in rows}
         match_kind: SymbolMatchKind
         entity_id: str | None
         if is_roster_proxy:
@@ -349,10 +366,6 @@ class Identity:
                 return SymbolResolution(source_symbol, stamp, "unknown_gap")
             entity_id = next(iter(dated_hits))
             match_kind = "roster_tenure_proxy"
-        elif len(entities) == 1:
-            entity_id = next(iter(entities))
-            dated_hits = {entity for entity, start, end, _ in rows if stamp is not None and start <= stamp and (end is None or stamp < end)}
-            match_kind = "exact_dated_tenure" if dated_hits else "unique_entity_fallback"
         else:
             if stamp is None:
                 return SymbolResolution(source_symbol, stamp, "unknown_gap")
@@ -554,14 +567,26 @@ def build_identity(
 
     # --- axis B -------------------------------------------------------------- #
     tenure_by_symbol: dict[str, list[tuple[str, pd.Timestamp, pd.Timestamp | None, int]]] = {}
-    for symbol, cik, start, end, n in zip(
-        tenure["symbol"].astype(str), tenure["issuer_cik"], tenure["valid_from"], tenure["valid_to"], tenure["n_filings"], strict=False
+    manual_tenure_by_symbol: dict[str, list[tuple[str, pd.Timestamp, pd.Timestamp | None, int]]] = {}
+    sources = tenure["source"].astype(str) if "source" in tenure.columns else pd.Series("form345", index=tenure.index)
+    for symbol, cik, start, end, n, source in zip(
+        tenure["symbol"].astype(str),
+        tenure["issuer_cik"],
+        tenure["valid_from"],
+        tenure["valid_to"],
+        tenure["n_filings"],
+        sources,
+        strict=False,
     ):
         stamp = _as_timestamp(start)
         if stamp is None:
             continue  # a tenure with no start cannot answer a dated test
         key = normalise_cik(cik)
-        tenure_by_symbol.setdefault(symbol.strip().upper(), []).append((entity_by_cik.get(key, f"E{key}"), stamp, _as_timestamp(end), int(n)))
+        row = (entity_by_cik.get(key, f"E{key}"), stamp, _as_timestamp(end), int(n))
+        normalized_symbol = symbol.strip().upper()
+        tenure_by_symbol.setdefault(normalized_symbol, []).append(row)
+        if source.strip().lower() == "manual":
+            manual_tenure_by_symbol.setdefault(normalized_symbol, []).append(row)
 
     # D19 already records the exceptional cases where the roster spelling is absent from, or
     # disagrees with, Form 345. For an absent spelling only, borrow the DATED tenure of every
@@ -584,6 +609,7 @@ def build_identity(
         roster_cik=roster_cik,
         ticker_by_entity=ticker_by_entity,
         tenure_by_symbol={s: tuple(v) for s, v in tenure_by_symbol.items()},
+        manual_tenure_by_symbol={s: tuple(v) for s, v in manual_tenure_by_symbol.items()},
         roster_proxy_by_symbol=roster_proxy_by_symbol,
         redundant_symbols=frozenset(str(symbol).strip().upper().replace(".", "-") for symbol in (redundant_symbols or frozenset())),
     )
@@ -591,11 +617,13 @@ def build_identity(
     _check_d19(identity, allowlist, today)
     logger.info(
         "identity: %d lineage CIK(s) over %d entity(ies); %d universe ticker(s); "
-        "%d symbol(s) with tenure; %d D19 roster proxy symbol(s); %d redundant symbol(s)",
+        "%d symbol(s) with tenure; %d manual symbol(s); %d D19 roster proxy symbol(s); "
+        "%d redundant symbol(s)",
         len(entity_by_cik),
         len(set(entity_by_cik.values())),
         len(roster_cik),
         len(tenure_by_symbol),
+        len(manual_tenure_by_symbol),
         len(roster_proxy_by_symbol),
         len(identity.redundant_symbols),
     )

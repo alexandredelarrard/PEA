@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Implement"
+  short_description: "Execute approved plans with root-cause RED/GREEN evidence."
+  default_prompt: "Use $harness-implement to implement the approved harness plan and hand it to independent validation."

@@ -20,6 +20,62 @@ def _bare_step() -> StepCubeInstitutionals:
     return step
 
 
+def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    step = _bare_step()
+    config = object()
+    context = object()
+    peers = {"AAA": {"BBB": 1.0}}
+    price_frames = object()
+    shares = pd.DataFrame(
+        {
+            "ticker": ["AAA"],
+            "as_of": [pd.Timestamp("2026-01-02")],
+            "sharesOutstanding": [100.0],
+            "sharesOutstandingPit": [90.0],
+        }
+    )
+    calls: dict[str, Any] = {}
+
+    class _Store:
+        def load(self, table: object, columns: list[str], *, optional: bool) -> pd.DataFrame:
+            calls["shares"] = {"table": table, "columns": columns, "optional": optional}
+            return shares
+
+    store = _Store()
+    step._context = context
+    step._config = config
+    step._store = store
+
+    def load_peers(actual_context: object, actual_config: object) -> dict[str, dict[str, float]]:
+        calls["peers"] = {"context": actual_context, "config": actual_config}
+        return peers
+
+    def load_prices(actual_store: object, *, peers: object, fields: object, since: object) -> object:
+        calls["prices"] = {"store": actual_store, "peers": peers, "fields": fields, "since": since}
+        return price_frames
+
+    monkeypatch.setattr(step_module, "load_peers_or_raise", load_peers)
+    monkeypatch.setattr(step_module, "load_price_frames", load_prices)
+
+    assert step._load_frames() is price_frames
+    assert step._load_shares_out() is shares
+    assert calls == {
+        "peers": {"context": context, "config": config},
+        "prices": {
+            "store": store,
+            "peers": peers,
+            "fields": ("close_split", "close_total", "volume", "level_factor", "sector_ret", "ret"),
+            "since": None,
+        },
+        "shares": {
+            "table": Tables.fundamentals_history,
+            "columns": ["ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit"],
+            "optional": True,
+        },
+    }
+    print("SANITY: price loading kept the full calendar and six exact fields; shares loaded both required bases with an optional read.")
+
+
 def test_grid_restriction_is_on_exact_date_ticker_pairs(caplog: pytest.LogCaptureFixture) -> None:
     step = _bare_step()
     first, second = pd.to_datetime(["2026-01-02", "2026-01-05"])

@@ -80,7 +80,8 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
 
 
 def test_insider_outlier_proof_uses_the_current_step_contract() -> None:
-    insider = pd.DataFrame({"ticker": ["AAA"], "value_usd": [10.0]})
+    insider = pd.DataFrame({"ticker": ["AAA", "BBB"], "value_usd": [10.0, 20.0]})
+    scoped_insider = insider.loc[insider["ticker"].eq("AAA")].copy()
     passthrough = pd.DataFrame({"ticker": ["BBB"]})
     panel = pd.DataFrame({"date": [pd.Timestamp("2026-01-02")], "ticker": ["AAA"]})
     calls: list[tuple[object, object]] = []
@@ -98,7 +99,7 @@ def test_insider_outlier_proof_uses_the_current_step_contract() -> None:
         assert actual_shares is shares
         assert isinstance(sink, ConditioningSink)
         substituted = step._load_source(Tables.insider_transactions, ["AAA"])
-        pd.testing.assert_frame_equal(substituted, insider)
+        pd.testing.assert_frame_equal(substituted, scoped_insider)
         assert substituted is not insider
         assert step._load_source(Tables.insider_transactions_live, ["AAA"]) is None
         assert step._load_source(Tables.short_interest, ["AAA"]) is passthrough

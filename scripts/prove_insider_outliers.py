@@ -64,7 +64,11 @@ def _panel(
 
     def load_source(table: Table, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
         if table is Tables.insider_transactions:
-            return insider.copy()
+            scoped = insider
+            if universe is not None:
+                allowed = sorted(set(map(str, universe)))
+                scoped = scoped.loc[scoped["ticker"].astype(str).isin(allowed)]
+            return scoped.copy()
         if table is Tables.insider_transactions_live:
             return None
         return original(table, universe)

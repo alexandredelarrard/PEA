@@ -1,8 +1,9 @@
+# pyright: reportMissingImports=false
 from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -17,7 +18,7 @@ from src.data_store.schema import Tables
 
 def _bare_step() -> StepCubeInstitutionals:
     step = object.__new__(StepCubeInstitutionals)
-    step._log = logging.getLogger(__name__)
+    cast(Any, step)._log = logging.getLogger(__name__)
     return step
 
 
@@ -43,9 +44,10 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
             return shares
 
     store = _Store()
-    step._context = context
-    step._config = config
-    step._store = store
+    fake_step = cast(Any, step)
+    fake_step._context = context
+    fake_step._config = config
+    fake_step._store = store
 
     def load_peers(actual_context: object, actual_config: object) -> dict[str, dict[str, float]]:
         calls["peers"] = {"context": actual_context, "config": actual_config}
@@ -103,7 +105,7 @@ def test_insider_outlier_proof_uses_the_current_step_contract() -> None:
         return panel
 
     step._insider_panel = build
-    got = build_proof_panel(step, insider, frames, shares)
+    got = build_proof_panel(cast(Any, step), insider, cast(Any, frames), shares)
 
     assert got is panel
     assert step._load_source is original_load
@@ -141,9 +143,10 @@ def test_grid_restriction_is_on_exact_date_ticker_pairs(caplog: pytest.LogCaptur
 def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     step = _bare_step()
     store = object()
-    step._store = store
-    step._cfg = {}
-    step._part = SimpleNamespace(warmup_trading_days=390)
+    fake_step = cast(Any, step)
+    fake_step._store = store
+    fake_step._cfg = {}
+    fake_step._part = SimpleNamespace(warmup_trading_days=390)
 
     first, second = pd.to_datetime(["2026-01-02", "2026-01-05"])
     trading_index = pd.DatetimeIndex([first, second])
@@ -294,9 +297,12 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
 def test_run_requests_a_full_rerun_when_columns_change(monkeypatch: pytest.MonkeyPatch) -> None:
     step = _bare_step()
     store = object()
-    step._store = store
+    cast(Any, step)._store = store
     panel = pd.DataFrame({"date": [pd.Timestamp("2026-01-02")], "ticker": ["AAA"], "f": [1.0]})
-    incremental = PartWindow(last=pd.Timestamp("2026-01-01"), since=pd.Timestamp("2025-01-01"))
+    incremental = PartWindow(
+        last=cast(pd.Timestamp, pd.Timestamp("2026-01-01")),
+        since=cast(pd.Timestamp, pd.Timestamp("2025-01-01")),
+    )
     full = PartWindow(last=None, since=None)
     build_calls: list[bool] = []
     writes: list[tuple[object, object, pd.DataFrame, PartWindow, bool]] = []

@@ -53,12 +53,11 @@ from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames,
-    load_price_frames,
     load_trading_calendar,
 )
+from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.cross_source_features import (
     build_cross_source_panel,
@@ -224,100 +223,18 @@ class StepCubeInstitutionals(Step):
         """⚠ NO `since` PARAMETER, unlike every sibling step. This part's grid is the FULL
         trading calendar on both paths -- see the block in `build_panel`. Taking the argument
         and always passing `None` would leave the next reader thinking it was a choice."""
-        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=None)
-
-    def _load_source(self, table: Table, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
-        """Load one source PROJECTED to `table.read_columns` and SCOPED to the universe.
-
-        ⚠ THE UNIVERSE CUT IS ABOUT `_xs`, NOT ABOUT ROW COUNTS -- that is why it exists at
-        all. D26 defines `_xs` as a same-day percentile "ranking a ticker against every other
-        ticker on that date", and in the cube that set is the universe. The source tables are
-        wider than it -- `sec13f_hr` carries 501 tickers and `sec_fails_to_deliver` 501 against
-        the universe's 491 -- so every `_xs` leg in this part was ranking over a denominator no
-        other part uses, and `peer_relative` was resolving baskets partly out of names the
-        model never sees. `superinvestor_features` already took a `universe=` for exactly this
-        reason; this applies the same rule to the other four families, AT THE READ.
-
-        ⚠ THE PUSH-DOWN IS FOR THE CROSS-SECTION, NOT FOR THE CLOCK, and on `sec13f_hr` it is
-        measurably SLOWER. Measured 2026-09-14 against the live table: 22,498,267 rows full
-        against 22,336,036 scoped, so the universe removes **0.72%** of them -- and the
-        projected COPY runs 38.3s unfiltered against 42.9s with `WHERE ticker IN (491)`,
-        because `institutional_holdings_pkey` leads with `cik` and 99.3% of rows match, so the
-        planner seq-scans either way and only pays for the predicate. An index on
-        `sec13f_hr(ticker)` would not change that -- the filter is not selective. The four
-        SMALL sources are where the read genuinely shrinks. Do not re-justify this on speed.
-        """
-        where = None
-
-        if universe is not None and table.ticker_col:
-            where = {table.ticker_col: sorted(set(map(str, universe)))}
-            self._report_off_universe(table, universe)
-
-        df = self._store.load(table, project=True, where=where, optional=True)
-        if df is None:
-            self._log.warning("%s is absent or empty -> its features are skipped.", table.name)
-        else:
-            self._log.info("Loaded %s: %s rows x %s cols", table.name, len(df), len(df.columns))
-        return df
-
-    def _report_off_universe(self, table: Table, universe: Sequence[str]) -> None:
-        """Name the tickers the push-down is about to exclude, once per table.
-
-        ⚠ THE TICKER AXIS, NOT THE ROW AXIS, and that is a deliberate downgrade from what the
-        post-hoc pandas filter used to print. Counting the ROWS dropped now costs a second full
-        scan to report a number nothing acts on -- and on `sec13f_hr` that number is 162,231 of
-        22,498,267, i.e. 0.72%, which is exactly the sort of figure that reads as reassurance
-        and means nothing. The ticker SET is what a reader checks, because it is the S&P 500
-        membership boundary and a jump in it is a universe problem rather than noise.
-
-        Measured 2026-09-14, source tickers against the 491-name universe: `sec13f_hr` 501,
-        `sec_fails_to_deliver` 501, `sec_13g` 499, `insider_transactions` 491 (none off),
-        `sec_short_interest` 489, `sec_13d` 274.
-        """
-        col = table.ticker_col
-        if not col:
-            return
-        present = {str(t) for t in self._store.distinct(table, col)}
-        off = sorted(present - set(map(str, universe)))
-        if not off:
-            return
-        self._log.info(
-            "%s: %s of its %s ticker(s) are outside the %s-name universe (%s) -- " "not read, so the `_xs` cross-section is the cube's",
-            table.name,
-            len(off),
-            len(present),
-            len(universe),
-            ", ".join(off[:15]) + (", ..." if len(off) > 15 else ""),
+        return institutional_inputs.load_full_price_frames(
+            self._store,
+            self._context,
+            self._config,
+            self._FIELDS,
         )
 
-    #: ⚠ BOTH SHARE COLUMNS, AND THEY ARE NOT INTERCHANGEABLE.
-    #:   `sharesOutstandingPit`  -- point-in-time, the 13F / insider ownership-% DENOMINATOR
-    #:   `sharesOutstanding`     -- vendor basis, what `daily_market_cap` requires
-    #: `daily_market_cap` needs the vendor basis because the future-split factor CANCELS
-    #: against `close_split`; handing it the PIT column breaks that cancellation. They are
-    #: genuinely different columns, both fully populated -- measured 2026-09-14: 51,504 rows,
-    #: 51,504 non-null each, differing on 14,296 of them (27.8%).
-    #:
-    #: Projecting only the PIT column empties `daily_market_cap` and SILENTLY deletes 10
-    #: features (~20 emitted columns): `ic_inst_value_to_mcap`, `ic_inst_flow_to_mcap`,
-    #: `ic_super_flow_to_mcap` and the seven insider `*_mcap_*` legs. Every one of them sits
-    #: behind an `if not mcap.empty` branch that simply does not fire, so the build looks
-    #: clean. The three builders now log at WARNING on that path -- see `_market_cap`.
-    _SHARES_OUT_COLS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit")
+    def _load_source(self, table: Table, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
+        return institutional_inputs.load_source(self._store, self._log, table, universe)
 
     def _load_shares_out(self) -> pd.DataFrame | None:
-        """The share-count history the market-cap scaling needs, on BOTH bases.
-
-        ⚠ A CLARITY PROJECTION, NOT A MEMORY ONE. `fundamentals_history` is ~51k rows, so
-        four columns against 93 saves nothing worth measuring -- unlike `sec13f_hr`. It is
-        here to say which four columns this step depends on. That also means widening it
-        "for symmetry" with the tall sources buys nothing; narrowing it is what costs.
-        """
-        df = self._store.load(Tables.fundamentals_history, columns=list(self._SHARES_OUT_COLS), optional=True)
-        if df is None:
-            self._log.warning("No fundamentals history -> the market-cap-scaled ownership " "features are skipped.")
-            return None
-        return df
+        return institutional_inputs.load_shares_out(self._store, self._log)
 
     # ---- panels ---- #
     def _institutional_panel(self, price_frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None) -> pd.DataFrame | None:

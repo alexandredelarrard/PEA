@@ -54,8 +54,8 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
         calls["prices"] = {"store": actual_store, "peers": peers, "fields": fields, "since": since}
         return price_frames
 
-    monkeypatch.setattr(step_module, "load_peers_or_raise", load_peers)
-    monkeypatch.setattr(step_module, "load_price_frames", load_prices)
+    monkeypatch.setattr(step_module.institutional_inputs, "load_peers_or_raise", load_peers)
+    monkeypatch.setattr(step_module.institutional_inputs, "load_price_frames", load_prices)
 
     assert step._load_frames() is price_frames
     assert step._load_shares_out() is shares

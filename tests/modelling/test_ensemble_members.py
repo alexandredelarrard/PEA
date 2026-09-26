@@ -22,7 +22,7 @@ class _LinearMock:
     PURE (deterministic in X) -- the noise is reseeded each call -- so repeated
     calls return identical output (needed for the backward-compat assertion)."""
 
-    def __init__(self, w: np.ndarray, noise: float = 0.0, seed: int = 0):
+    def __init__(self, w: np.ndarray | list[float], noise: float = 0.0, seed: int = 0):
         self.w = np.asarray(w, float)
         self.noise = noise
         self.seed = seed

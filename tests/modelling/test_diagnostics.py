@@ -9,6 +9,8 @@ to CSV and SHAP is skipped without failing the run.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -24,7 +26,7 @@ def _panel(n_days: int = 120, n_tickers: int = 60, n_feats: int = 6, seed: int =
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range("2016-01-01", periods=n_days)
     feats = [f"f{j}" for j in range(n_feats)]
-    frames = []
+    frames: list[pd.DataFrame] = []
     for d in dates:
         x = rng.normal(size=(n_tickers, n_feats))
         sig = x[:, 0] * 0.6 + x[:, 1] * 0.3 - x[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)
@@ -39,7 +41,7 @@ def _panel(n_days: int = 120, n_tickers: int = 60, n_feats: int = 6, seed: int =
 
 def _oos_predictions(panel, feats):
     frames = []
-    for tr_days, te_days in purged_wf_splits(panel["date"], n_splits=3, embargo=5):
+    for tr_days, te_days in purged_wf_splits(cast(pd.Series, panel["date"]), n_splits=3, embargo=5):
         tr = panel[panel["date"].isin(tr_days)]
         te = panel[panel["date"].isin(te_days)]
         if tr.empty or te.empty:

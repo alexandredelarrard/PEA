@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import warnings
 from types import SimpleNamespace
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -68,7 +69,7 @@ def test_prediction_rows_are_long_and_stamped():
     dates = pd.to_datetime(["2026-07-24", "2026-07-24", "2026-07-24", "2026-07-27", "2026-07-27"])
     keys = pd.DataFrame({"date": dates, "ticker": ["AAA", "BBB", "CCC", "AAA", "BBB"]})
     raw = np.array([1.0, 2.0, 3.0, 10.0, 20.0])
-    stamp = pd.Timestamp("2026-07-28 06:00:00")
+    stamp = cast(pd.Timestamp, pd.Timestamp("2026-07-28 06:00:00"))
 
     out = step._prediction_rows(keys, raw, 30, "lgbm", stamp)
 
@@ -76,7 +77,7 @@ def test_prediction_rows_are_long_and_stamped():
     assert (out["horizon"] == 30).all() and (out["model"] == "lgbm").all()
     assert (out["predicted_at"] == stamp).all()
     # predicts_for follows each row's OWN as-of date
-    assert (out["predicts_for"] == out["date"].map(lambda d: d + pd.tseries.offsets.BDay(30))).all()
+    assert (out["predicts_for"] == out["date"].map(lambda d: cast(pd.Timestamp, d) + pd.tseries.offsets.BDay(30))).all()
     # per-day standardized: each date's preds have mean ~0
     for _, g in out.groupby("date"):
         assert abs(float(g["pred"].mean())) < 1e-9
@@ -156,8 +157,9 @@ def test_predict_latest_scores_the_newest_date_even_with_all_labels_nan(monkeypa
 
     store = _SpyStore(cube)
     step = StepModelling.__new__(StepModelling)
-    step._context = SimpleNamespace(store=store)
-    step._log = logging.getLogger("predict_latest_test")
+    unsafe_step: Any = step
+    unsafe_step._context = SimpleNamespace(store=store)
+    unsafe_step._log = logging.getLogger("predict_latest_test")
     meta = {"feature_cols": ["f_a"], "categorical_cols": [], "train_ic_ir": {"30": 0.6, "90": 0.4}}
     models = {30: {"lgbm": _StubModel(1.0)}, 90: {"lgbm": _StubModel(-1.0)}}
     monkeypatch.setattr(StepModelling, "_load_saved_ensemble", lambda self: (meta, models))

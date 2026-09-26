@@ -22,14 +22,14 @@ from src.modelling.long_short.utils.model import (
 )
 
 
-def _synth_panel(n_days: int = 150, n_tickers: int = 80, n_feats: int = 8, seed: int = 0) -> pd.DataFrame:
+def _synth_panel(n_days: int = 150, n_tickers: int = 80, n_feats: int = 8, seed: int = 0) -> tuple[pd.DataFrame, list[str]]:
     """A realistic-shaped ranking panel: daily cross-sections, rank label in
     [0,1] driven by a few features plus noise. Big enough that multithreaded
     training would drift if it were not made deterministic."""
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range("2015-01-01", periods=n_days)
     feats = [f"f{j}" for j in range(n_feats)]
-    frames = []
+    frames: list[pd.DataFrame] = []
     for d in dates:
         x = rng.normal(size=(n_tickers, n_feats))
         sig = x[:, 0] * 0.5 + x[:, 1] * 0.3 - x[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import logging
+from typing import cast
 
 import pytest
 
@@ -33,7 +34,7 @@ def emit_through(handler: logging.Handler, msg: str) -> None:
 
 def read_back(stream: io.TextIOWrapper) -> str:
     stream.flush()
-    return stream.buffer.getvalue().decode(stream.encoding, errors="replace")
+    return cast(io.BytesIO, stream.buffer).getvalue().decode(stream.encoding, errors="replace")
 
 
 def test_a_plain_streamhandler_on_cp1252_loses_the_whole_line() -> None:

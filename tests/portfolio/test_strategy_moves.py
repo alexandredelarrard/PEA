@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import types
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -63,7 +64,7 @@ def _step(monkeypatch, erc_weight: float = 0.4, leverage: float = 1.5, capital: 
     # `config_dir` is read by `Step.__init__`; a SimpleNamespace double has to carry every
     # attribute the base class touches or all four tests die in construction rather than in
     # the arithmetic they are about.
-    context = types.SimpleNamespace(
+    context: Any = types.SimpleNamespace(
         save=saved is not None,
         store=store,
         logger=logging.getLogger("moves-test"),
@@ -80,11 +81,11 @@ def test_sleeve_is_sized_by_its_erc_allocation_not_full_capital(monkeypatch):
     day-1 notional is weight * 0.6 * capital -- not weight * capital."""
     capital = 1_000_000.0
     step, w, px = _step(monkeypatch, erc_weight=0.4, leverage=1.5, capital=capital)
-    led = step.run()
+    led = cast(pd.DataFrame, step.run())
 
     assert list(led.columns) == LEDGER_COLUMNS
-    day1 = led[led["trading_day"] == led["trading_day"].min()]
-    aaa = day1[day1["ticker"] == "AAA"].iloc[0]
+    day1 = cast(pd.DataFrame, led[led["trading_day"] == led["trading_day"].min()])
+    aaa = cast(pd.DataFrame, day1[day1["ticker"] == "AAA"]).iloc[0]
     # expected: weight 0.6 x (0.4 x 1.5) x 1,000,000 = $360,000 at $100 -> 3,600 shares
     expected_usd = 0.6 * (0.4 * 1.5) * capital
     assert aaa["amount_invested"] == pytest.approx(expected_usd, rel=1e-9)
@@ -127,15 +128,15 @@ def test_resizing_uses_the_weight_panel_not_scaled_dollars(monkeypatch):
     config = OmegaConf.create(
         {"portfolio": {"starting_capital": 1_000_000.0, "fee_bps": 2.0, "spread_bps": 8.0}, "strategy_trend": {"fee_bps": 1.0, "spread_bps": 5.0}}
     )
-    context = types.SimpleNamespace(
+    context: Any = types.SimpleNamespace(
         save=False, store=None, logger=logging.getLogger("moves-test"), log=logging.getLogger("moves-test"), paths={}, config_dir="./configs"
     )
-    led = sm.StepStrategyMoves(context=context, config=config).run()
+    led = cast(pd.DataFrame, sm.StepStrategyMoves(context=context, config=config).run())
 
-    aaa = led[led["ticker"] == "AAA"].sort_values("trading_day")
+    aaa = cast(pd.DataFrame, led[led["ticker"] == "AAA"]).sort_values("trading_day")
     # the standalone book holds AAA flat at 0.6 for the first 6 days -> it would trade ONCE.
     # With a growing allocation it must top up every day.
-    buys = aaa[aaa["side"] == "BUY"]
+    buys = cast(pd.DataFrame, aaa[aaa["side"] == "BUY"])
     assert len(buys) >= 4, f"a rising allocation must force repeated top-ups, got {len(buys)}"
     assert buys["shares"].iloc[0] > 0
     # and the notional grows with the allocation
@@ -154,7 +155,7 @@ def test_ledger_is_upserted_with_the_position_pk(monkeypatch):
 
     saved: list = []
     step, _, _ = _step(monkeypatch, saved=saved)
-    led = step.run()
+    led = cast(pd.DataFrame, step.run())
 
     assert Tables.strategy.pk == ("trading_day", "sleeve", "ticker")
     assert Tables.strategy.date_col == "trading_day"
@@ -163,8 +164,8 @@ def test_ledger_is_upserted_with_the_position_pk(monkeypatch):
     assert list(written.columns) == LEDGER_COLUMNS
     assert not written.duplicated(["trading_day", "sleeve", "ticker"]).any(), "a duplicate PK would make the upsert ambiguous"
     # AAA was exited -> a closed round trip with both prices and a P&L; BBB is still open
-    aaa_open = led[(led["ticker"] == "AAA") & (led["side"] == "BUY")].iloc[0]
-    bbb = led[led["ticker"] == "BBB"]
+    aaa_open = cast(pd.DataFrame, led[(led["ticker"] == "AAA") & (led["side"] == "BUY")]).iloc[0]
+    bbb = cast(pd.DataFrame, led[led["ticker"] == "BBB"])
     assert aaa_open["price_sold"] > 0 and np.isfinite(aaa_open["pnl"])
     assert bbb["pnl"].isna().all() and bbb["price_sold"].isna().all()
 
@@ -183,7 +184,7 @@ def test_sleeve_fee_override_is_charged(monkeypatch):
     """The ledger charges the sleeve's OWN fee/spread (strategy_trend: 1.0 + 5.0 bps = 6 bps),
     resolved through the strategy class's `config_key`, not the portfolio default (2 + 8)."""
     step, _, _ = _step(monkeypatch)
-    led = step.run()
+    led = cast(pd.DataFrame, step.run())
     row = led.iloc[0]
     assert row["fee"] == pytest.approx(row["amount_invested"] * 6.0 / 1e4, rel=1e-9)
     assert step._sleeve_cfg("trend_cta")["fee_bps"] == 1.0

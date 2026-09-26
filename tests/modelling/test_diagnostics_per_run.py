@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import types
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -32,11 +33,11 @@ from src.modelling.long_short.utils import diagnostics
 from src.modelling.long_short.utils.model import predict, purged_wf_splits, train_ranker
 
 
-def _panel(n_days: int = 90, n_tickers: int = 40, n_feats: int = 5, seed: int = 0):
+def _panel(n_days: int = 90, n_tickers: int = 40, n_feats: int = 5, seed: int = 0) -> tuple[pd.DataFrame, list[str]]:
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range("2018-01-01", periods=n_days)
     feats = [f"f_feat{j}_xs" for j in range(n_feats)]
-    frames = []
+    frames: list[pd.DataFrame] = []
     for d in dates:
         x = rng.normal(size=(n_tickers, n_feats))
         sig = x[:, 0] * 0.7 + x[:, 1] * 0.3 - x[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)
@@ -48,9 +49,9 @@ def _panel(n_days: int = 90, n_tickers: int = 40, n_feats: int = 5, seed: int = 
     return pd.concat(frames, ignore_index=True), feats
 
 
-def _oos(panel, feats):
-    frames = []
-    for tr_days, te_days in purged_wf_splits(panel["date"], n_splits=3, embargo=5):
+def _oos(panel: pd.DataFrame, feats: list[str]) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for tr_days, te_days in purged_wf_splits(cast(pd.Series, panel["date"]), n_splits=3, embargo=5):
         tr, te = panel[panel["date"].isin(tr_days)], panel[panel["date"].isin(te_days)]
         if tr.empty or te.empty:
             continue
@@ -66,14 +67,15 @@ def _oos(panel, feats):
 def _step(tmp_path: Path, ensemble: list[str]) -> StepModelling:
     """A StepModelling with just enough state for the diagnostics hook (no DB, no training)."""
     step = StepModelling.__new__(StepModelling)  # bypass __init__ (needs a DB context)
-    step._context = types.SimpleNamespace(save=True, paths={"OUTPUT_DIR": tmp_path}, log=None)
-    step._log = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: warnings.append(a))
-    step._config = {
+    unsafe_step: Any = step
+    unsafe_step._context = types.SimpleNamespace(save=True, paths={"OUTPUT_DIR": tmp_path}, log=None)
+    unsafe_step._log = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: warnings.append(a))
+    unsafe_step._config = {
         "model": {"diagnostics": {"enabled": True, "top_n_features": 3, "shap_sample": 300, "pdp_grid": 8}},
         "train": {"start_date": "2018-01-01", "end_date": "2019-01-01"},
     }
     # OmegaConf-like attribute access over the plain dicts above
-    step._config = _Attr(step._config)
+    unsafe_step._config = _Attr(unsafe_step._config)
     step.model_types = list(ensemble)
     step.target_type = "rank"
     step.label_column = "y"
@@ -148,7 +150,7 @@ def test_run_writes_shap_values_and_kpis_per_horizon(tmp_path):
         }
     }
     step.oos_predictions = {30: oos}
-    step._lgb_feats = lambda h=None: feats
+    step._lgb_feats = lambda horizon=None: feats
     step.horizon_weights = {30: 1.0}
 
     step._horizon_diagnostics(30, panel, "RUNSTAMP")
@@ -257,7 +259,7 @@ def test_design_matrix_matches_training_encoding_for_categoricals():
     assert set(np.unique(sector_col)) == {float(ml.CATEGORICAL_NA_CODE)}
     assert set(np.unique(x[:, all_feats.index("industry_group")])) == {3.0, 8.0}
 
-    coerced = ml.coerce_categoricals(panel[all_feats], cats)
+    coerced = ml.coerce_categoricals(cast(pd.DataFrame, panel[all_feats]), cats)
     assert (coerced["industry_group"].to_numpy() == panel["industry_group"].to_numpy()).all()
 
     # and the whole pipeline runs on it end to end (train -> SHAP) without raising

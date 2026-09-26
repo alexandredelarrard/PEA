@@ -27,7 +27,9 @@ def test_the_measured_spelling_drifts_all_reconcile():
     }
     for ticker, spellings in drifts.items():
         keys = {person_key(s) for s in spellings}
-        assert len(keys) == 1, f"{ticker}: {spellings} keyed {len(keys)} ways: {sorted(keys)}"
+        assert None not in keys
+        rendered = sorted(key for key in keys if key is not None)
+        assert len(keys) == 1, f"{ticker}: {spellings} keyed {len(keys)} ways: {rendered}"
 
     print("\n=== SANITY CHECK: measured spelling drifts ===")
     for ticker, spellings in drifts.items():

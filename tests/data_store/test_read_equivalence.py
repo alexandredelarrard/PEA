@@ -40,6 +40,8 @@ a read-equivalence failure -- reporting it as red just trains everyone to ignore
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 import pytest
 from sqlalchemy import bindparam, text
@@ -112,7 +114,7 @@ def test_max_date_matches_part_io_max_date(store):
     _requires(store, "max_date")
     _requires_tables(store, "cube_part_prices")
     old = _sql(store, 'SELECT MAX(date) AS m FROM "cube_part_prices"')["m"].iloc[0]
-    assert store.max_date("cube_part_prices") == pd.Timestamp(old).normalize()
+    assert store.max_date("cube_part_prices") == cast(pd.Timestamp, pd.Timestamp(old)).normalize()
 
 
 def test_columns_matches_part_io_columns(store):
@@ -152,7 +154,7 @@ def test_max_date_matches_raw_max_on_a_filing_dated_table(store):
     meaningful date is the FILING date, not its period end."""
     _requires(store, "max_date")
     old = _sql(store, 'SELECT MAX("filed") AS m FROM "notes_num"')["m"].iloc[0]
-    assert store.max_date("notes_num", "filed") == pd.Timestamp(old).normalize()
+    assert store.max_date("notes_num", "filed") == cast(pd.Timestamp, pd.Timestamp(old)).normalize()
 
 
 # --------------------------------------------------------------------------- #

@@ -60,6 +60,7 @@ def test_series_narrows_the_read(sqlite_store):
     _seed(sqlite_store, sorted(set(_LONGBOOK_COLS + _CUBE_COLS)))
 
     wide = load_macro_wide(sqlite_store, series=["equity_tr", "vix"])
+    assert wide is not None
     assert sorted(wide.columns) == ["date", "equity_tr", "vix"]
 
     s = load_macro_series(sqlite_store, MACRO_MARKET_SERIES)

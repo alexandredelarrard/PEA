@@ -127,7 +127,7 @@ def test_prompt_files_are_read_as_utf8(monkeypatch, tmp_path):
     assert ext.read_prompt_file(fixture) == text
 
     print("\n=== SANITY: prompt encoding ===")
-    print(f"  round-tripped {text!r} through read_prompt_file. Validated.")
+    print(f"  round-tripped {ascii(text)} through read_prompt_file. Validated.")
 
 
 def test_truncate_uses_the_action_budget(monkeypatch):

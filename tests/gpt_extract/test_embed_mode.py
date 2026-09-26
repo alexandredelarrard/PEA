@@ -10,6 +10,7 @@ and the same inputs must give the same vectors, in the same order, under the sam
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 
@@ -80,7 +81,7 @@ def test_empty_input_returns_the_zero_by_zero_shape():
 def test_a_blank_text_is_never_sent_as_an_empty_string():
     """OpenAI rejects an empty input; the helper substitutes a space."""
     client = _StubClient()
-    embed_texts(["", "   ", None], client=client)
+    embed_texts(cast(list[str], ["", "   ", None]), client=client)
 
     assert client.batches[0] == [" ", " ", " "]
 

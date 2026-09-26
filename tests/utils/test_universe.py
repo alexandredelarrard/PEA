@@ -9,13 +9,14 @@ whole flow with no step-code change. These tests pin the loader's contract.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 
 from src.utils.universe import load_universe_tickers
 
 
-def _ctx(store, df: pd.DataFrame | None, redundant: list[str] | None = None):
+def _ctx(store: Any, df: pd.DataFrame | None, redundant: list[str] | None = None) -> Any:
     """A context on the REAL store. `df=None` leaves `sp500_tickers` uncreated, which is the
     unseeded-DB case the loader must answer with [] rather than a raise."""
     if df is not None:

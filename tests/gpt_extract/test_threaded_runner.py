@@ -103,6 +103,7 @@ def test_one_failing_task_does_not_lose_the_others(monkeypatch):
     assert len(results) == 10
     failed = [r for r in results if not r.ok]
     assert len(failed) == 1 and failed[0].seq == 3
+    assert failed[0].error is not None
     assert "stub failure" in failed[0].error
     assert sum(r.ok for r in results) == 9
 
@@ -203,10 +204,12 @@ def test_clients_rotate_over_every_key(monkeypatch):
         runner.submit(task)
     runner.run()
 
-    assert sorted(set(seen)) == [0, 1, 2], seen
+    assert None not in seen
+    used = {index for index in seen if index is not None}
+    assert sorted(used) == [0, 1, 2], seen
 
     print("\n=== SANITY: key rotation across the pool ===")
-    print(f"  3 keys, 12 workers -> client key indices {sorted(set(seen))}; all used. Validated.")
+    print(f"  3 keys, 12 workers -> client key indices {sorted(used)}; all used. Validated.")
 
 
 @pytest.mark.parametrize("attempt", range(20))

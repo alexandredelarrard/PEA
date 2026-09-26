@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -19,19 +20,19 @@ import pandas as pd
 from src.modelling.long_short.step_train import StepModelling
 
 
-def _panel(h):
+def _panel(h: int) -> pd.DataFrame:
     d = pd.to_datetime(["2023-01-02", "2023-01-03"])
     return pd.DataFrame({"date": list(d) * 2, "ticker": ["A", "A", "B", "B"], "y": [0.1, 0.2, 0.3, 0.4], "f_x": [1.0, 2.0, 3.0, 4.0]})
 
 
-def _score(h):
+def _score(h: int) -> pd.DataFrame:
     d = pd.to_datetime(["2023-01-02", "2023-01-03"])
     z = {5: [0.0, 1.0, 1.0, 0.0], 20: [1.0, 0.0, 0.0, 1.0]}[h]
     return pd.DataFrame({"date": list(d) * 2, "ticker": ["A", "A", "B", "B"], f"z_{h}": z})
 
 
-def _make_step():
-    s = StepModelling.__new__(StepModelling)
+def _make_step() -> Any:
+    s: Any = StepModelling.__new__(StepModelling)
     s._context = SimpleNamespace(save=False)  # save=False -> no diagnostics/run_stamp
     s._log = logging.getLogger("test")
     s.horizons = [5, 20]

@@ -15,6 +15,7 @@ peer-relative feature is NaN for its whole history with nothing raising.
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -150,12 +151,12 @@ def test_a_ticker_with_no_embedding_gets_an_empty_basket_at_w_corr_zero():
     combined = combine_similarity(returns.corr(min_periods=50), embed_sim, w_corr=0.0, w_embed=1.0)
     peers = build_peer_dict_hybrid(returns, embed_sim, top_k=3, weighting="corr", min_obs=50, w_corr=0.0, w_embed=1.0)
 
-    assert combined.loc["FISV"].isna().all()
+    assert bool(cast(Any, combined.loc["FISV"].isna().all()))
     assert peers["FISV"] == {}
-    assert all(basket for t, basket in peers.items() if t != "FISV")
+    assert all(len(basket) > 0 for ticker, basket in peers.items() if ticker != "FISV")
     # ... and at w_corr > 0 the fallback the docstring used to promise IS live
     with_corr = build_peer_dict_hybrid(returns, embed_sim, top_k=3, weighting="corr", min_obs=50, w_corr=0.5, w_embed=0.5)
-    assert with_corr["FISV"]
+    assert len(with_corr["FISV"]) > 0
 
     print("\n=== SANITY CHECK: no embedding -> empty basket at w_corr: 0 ===")
     print(f"  FISV similarity row all-NaN -> basket {peers['FISV']} (every other name has {len(peers['FIS'])} peers).")
@@ -194,9 +195,9 @@ def test_load_peers_or_raise_names_the_peerless_ticker(tmp_path, monkeypatch):
             path.write_text(json.dumps(blob), encoding="utf-8")
             self.paths = {"SECTOR_PEERS_PATH": path}
 
-    assert peers_io.load_peers_or_raise(_Ctx(good)) == good
+    assert peers_io.load_peers_or_raise(cast(Any, _Ctx(good))) == good
     with pytest.raises(RuntimeError) as err:
-        peers_io.load_peers_or_raise(_Ctx(bad))
+        peers_io.load_peers_or_raise(cast(Any, _Ctx(bad)))
 
     message = str(err.value)
     assert "FISV" in message and "ZZZ" in message

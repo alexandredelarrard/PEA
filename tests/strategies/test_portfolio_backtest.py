@@ -22,7 +22,7 @@ def test_sleeve_blend_nan_aware_and_global_vol_target():
     long_book = pd.Series(rng.normal(0.0003, 0.006, len(idx)), index=idx)
     trend = pd.Series(rng.normal(0.0002, 0.008, len(idx)), index=idx)
     ls = pd.Series(np.nan, index=idx)
-    ls.iloc[400:] = rng.normal(0.0004, 0.005, len(idx) - 400)  # L/S joins late (OOS start)
+    ls.iloc[400:] = pd.Series(rng.normal(0.0004, 0.005, len(idx) - 400), index=idx[400:])  # L/S joins late (OOS start)
     rets = pd.DataFrame({"ls_equity": ls, "long_book": long_book, "trend_cta": trend})
 
     w = base_weights(rets, window=63, scheme="erc", rebalance_freq=21, cov_mode="ewma", cov_halflife=63)

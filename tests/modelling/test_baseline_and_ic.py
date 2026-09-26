@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import warnings
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -43,7 +44,7 @@ def _panel(t: int = 300, n: int = 80, k: int = 8, noise: float = 1.5, seed: int 
     tickers = [f"T{i:02d}" for i in range(n)]
     feats = [f"f{j}" for j in range(k)]
     w = np.array([0.6, 0.35, -0.25, 0.15, 0.0, 0.0, 0.0, 0.0])[:k]
-    frames = []
+    frames: list[pd.DataFrame] = []
     for d in dates:
         x = rng.normal(0, 1, (n, k))
         raw = x @ w + rng.normal(0, noise, n)
@@ -72,7 +73,7 @@ def test_ic_early_stopping_does_not_collapse():
 
 def _cv_ic(panel, feats, fit_fn, n_splits=4, embargo=5):
     ics = []
-    for tr_d, te_d in ml.purged_wf_splits(panel["date"], n_splits=n_splits, embargo=embargo):
+    for tr_d, te_d in ml.purged_wf_splits(cast(pd.Series, panel["date"]), n_splits=n_splits, embargo=embargo):
         tr = panel[panel["date"].isin(tr_d)]
         te = panel[panel["date"].isin(te_d)]
         if tr.empty or te.empty:
@@ -185,7 +186,7 @@ def test_ensemble_predict_is_per_day_average_of_zscores():
 
 def _cv_three(panel, feats, n_splits=4, embargo=5):
     il, ie, ien = [], [], []
-    for tr_d, te_d in ml.purged_wf_splits(panel["date"], n_splits=n_splits, embargo=embargo):
+    for tr_d, te_d in ml.purged_wf_splits(cast(pd.Series, panel["date"]), n_splits=n_splits, embargo=embargo):
         tr, te = panel[panel["date"].isin(tr_d)], panel[panel["date"].isin(te_d)]
         if tr.empty or te.empty:
             continue

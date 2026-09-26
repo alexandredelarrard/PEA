@@ -12,6 +12,7 @@ lightgbm-only `.txt` check skipped it, so it silently vanished from the backtest
 from __future__ import annotations
 
 import pickle
+from typing import Any, cast
 
 import lightgbm as lgb
 import numpy as np
@@ -78,13 +79,13 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path):
                 pickle.dump(m, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     # RELOAD exactly like StepBacktest.load_models
-    reloaded = {}
+    reloaded: dict[str, Any] = {}
     for kind in members:
         p = ml.member_model_path(tmp_path, 60, kind)
         assert p.exists(), f"{kind} was not saved to {p.name}"
         if kind in ml.BOOSTER_MEMBER_KINDS:
             b = lgb.Booster(model_file=str(p))
-            b.feature_names = b.feature_name()
+            cast(Any, b).feature_names = b.feature_name()
             reloaded[kind] = b
         else:
             with p.open("rb") as f:
@@ -92,7 +93,7 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path):
 
     # random_forest came back as a booster whose feature_names include the categoricals
     assert isinstance(reloaded["random_forest"], lgb.Booster)
-    assert list(reloaded["random_forest"].feature_names) == feats
+    assert list(cast(Any, reloaded["random_forest"]).feature_names) == feats
 
     # booster predictions are identical pre/post reload
     for kind in ("lightgbm", "random_forest"):
@@ -108,7 +109,7 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path):
 
     print("\n=== SANITY CHECK: ensemble member persistence (incl. random_forest) ===")
     print(f"  files: {[ml.member_model_path(tmp_path, 60, k).name for k in members]}")
-    print(f"  random_forest reloaded as Booster, feature_names={list(reloaded['random_forest'].feature_names)}")
+    print(f"  random_forest reloaded as Booster, feature_names={list(cast(Any, reloaded['random_forest']).feature_names)}")
     print(
         "  per-day dispersion by member: {k: round(v,3) for k,v in disp.items()}".replace(
             "{k: round(v,3) for k,v in disp.items()}", str({k: round(v, 3) for k, v in disp.items()})

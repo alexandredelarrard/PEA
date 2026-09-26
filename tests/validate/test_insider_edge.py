@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
 from src.validate.checks.insider_edge import (
@@ -20,7 +22,7 @@ def _frame() -> pd.DataFrame:
 
 def test_covered_edge_requires_cross_sectional_spread() -> None:
     frame = _frame()
-    result = evaluate_insider_edge(frame, pd.Timestamp("2026-09-30"))
+    result = evaluate_insider_edge(frame, cast(pd.Timestamp, pd.Timestamp("2026-09-30")))
 
     assert result.passed
     assert not result.failures
@@ -29,7 +31,7 @@ def test_covered_edge_requires_cross_sectional_spread() -> None:
 
 def test_uncovered_edge_requires_all_null_and_rejects_confident_zero() -> None:
     frame = _frame()
-    frontier = pd.Timestamp("2026-09-01")
+    frontier = cast(pd.Timestamp, pd.Timestamp("2026-09-01"))
     uncovered = pd.to_datetime(frame["date"]) > frontier
     frame.loc[uncovered, list(INSIDER_EDGE_COLUMNS)] = pd.NA
 

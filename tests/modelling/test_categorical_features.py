@@ -5,6 +5,8 @@ coexist (src/modelling/utils_model/model.py + baselines.py)."""
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 
@@ -33,9 +35,10 @@ def test_categorical_is_lgbm_only_and_ensemble_scores():
     df, numeric, cats = _panel()
     lgb_model = ml.train_ranker(df, numeric + cats, "y", categorical_features=cats, num_boost_round=40)
     lin = baselines.train_linear(df, numeric, "y", kind="elasticnet")
+    lgb_feature_names = cast(Any, lgb_model).feature_names
 
     # the tree member carries the categorical; the linear member does NOT
-    assert "sector" in lgb_model.feature_names
+    assert "sector" in lgb_feature_names
     assert list(lin.feature_names) == numeric and "sector" not in lin.feature_names
 
     # ensemble scores each member on its own feature_names -> different sets coexist
@@ -44,18 +47,19 @@ def test_categorical_is_lgbm_only_and_ensemble_scores():
     assert np.isfinite(blended.to_numpy()).any()
 
     # the tree actually USES sector (it drives the label) -> non-trivial gain importance
-    gains = ml.feature_importance(lgb_model, list(lgb_model.feature_names))
+    gains = ml.feature_importance(lgb_model, list(lgb_feature_names))
     assert gains.get("sector", 0.0) > 0.0
 
     # numeric-only path unchanged: a booster without categoricals still trains/predicts
     plain = ml.train_ranker(df, numeric, "y", num_boost_round=20)
-    assert "sector" not in plain.feature_names
+    plain_feature_names = cast(Any, plain).feature_names
+    assert "sector" not in plain_feature_names
     p = ml.predict(plain, df, numeric)
     assert np.isfinite(p.to_numpy()).all()
 
     print("\n=== SANITY CHECK: sector categorical -> LightGBM-only ===")
     print(
-        f"  LightGBM feats={lgb_model.feature_names} (sector native categorical, "
+        f"  LightGBM feats={lgb_feature_names} (sector native categorical, "
         f"gain={gains['sector']:.0f}); linear feats={lin.feature_names} (numeric only); "
         f"ensemble blends both. Numeric-only booster still works. Validated."
     )

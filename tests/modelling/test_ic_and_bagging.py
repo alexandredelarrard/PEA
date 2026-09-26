@@ -18,7 +18,8 @@ def _ic_panel(n_days: int = 80, n_tickers: int = 40, seed: int = 3):
     """Panel + prediction series whose per-day IC varies (nonzero IC std)."""
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range("2020-01-01", periods=n_days)
-    frames, preds = [], []
+    frames: list[pd.DataFrame] = []
+    preds: list[np.ndarray] = []
     for d in dates:
         y = rng.normal(size=n_tickers)
         p = y * rng.uniform(0.1, 0.9) + rng.normal(scale=1.0, size=n_tickers)  # day-varying skill
@@ -32,7 +33,7 @@ def _synth_panel(n_days: int = 120, n_tickers: int = 70, n_feats: int = 6, seed:
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range("2015-01-01", periods=n_days)
     feats = [f"f{j}" for j in range(n_feats)]
-    frames = []
+    frames: list[pd.DataFrame] = []
     for d in dates:
         x = rng.normal(size=(n_tickers, n_feats))
         sig = x[:, 0] * 0.5 + x[:, 1] * 0.3 + rng.normal(scale=0.5, size=n_tickers)

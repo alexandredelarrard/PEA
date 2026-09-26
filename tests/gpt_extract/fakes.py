@@ -10,6 +10,7 @@ import logging
 import types
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
@@ -30,10 +31,10 @@ def gpt_config(**overrides) -> DictConfig:
     cfg = OmegaConf.load(_GPT_YML)
     if overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.create({"gpt": overrides}))
-    return cfg
+    return cast(DictConfig, cfg)
 
 
-def fake_context(store=None):
+def fake_context(store: Any = None) -> Any:
     return types.SimpleNamespace(
         store=store,
         log=logging.getLogger("test"),

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 
@@ -33,7 +34,7 @@ def _rows(snapshot, pairs):
     ]
 
 
-def _ctx(store, rows=None):
+def _ctx(store: Any, rows: Any = None) -> Any:
     if rows:
         store.replace(Tables.superinvestor_roster.name, pd.DataFrame(rows))
     return SimpleNamespace(store=store)

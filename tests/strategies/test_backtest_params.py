@@ -161,7 +161,7 @@ def test_degenerate_signal_warns(caplog=None):
     logger = logging.getLogger("src.strategies.utils.strategies_opt")
     records = []
     handler = logging.Handler()
-    handler.emit = lambda r: records.append(r.getMessage())
+    handler.emit = lambda record: records.append(record.getMessage())
     logger.addHandler(handler)
     logger.setLevel(logging.WARNING)
     try:

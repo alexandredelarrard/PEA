@@ -6,6 +6,8 @@ outer-merge aligns sources on (ticker, as_of) without a many-to-many row blow-up
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 import pytest
 
@@ -111,7 +113,8 @@ def test_aggregate_activist_nets_buy_sell_value():
     assert out.loc["BBB", "activist_net_value"] == 158_000.0
 
     print("\n=== SANITY CHECK: activist (13D) aggregation ===")
-    print(f"  net=${out.loc['BBB', 'activist_net_value']:.0f} on filing_date {out.loc['BBB', 'as_of'].date()} (not trade_date). Validated.")
+    activist_as_of = cast(pd.Timestamp, out.loc["BBB", "as_of"])
+    print(f"  net=${out.loc['BBB', 'activist_net_value']:.0f} on filing_date {activist_as_of.date()} (not trade_date). Validated.")
 
 
 def _superinvestor_lifecycle_frame() -> pd.DataFrame:
@@ -369,7 +372,7 @@ def test_aggregate_shorts_lags_one_business_day_and_computes_ratio():
 
     print("\n=== SANITY CHECK: short-interest aggregation ===")
     print(
-        f"  date 2024-04-05 (Fri) -> as_of {out.loc['DDD', 'as_of'].date()} (next business day); "
+        f"  date 2024-04-05 (Fri) -> as_of {cast(pd.Timestamp, out.loc['DDD', 'as_of']).date()} (next business day); "
         f"short_ratio={out.loc['DDD', 'short_ratio']:.2f}. Validated."
     )
 
@@ -382,10 +385,11 @@ def test_merge_positions_panel_outer_joins_without_row_blowup():
     merged = merge_positions_panel(insiders, superinv, shorts)
     assert len(merged) == 2  # AAA/2024-01-05 + BBB/2024-02-01, no blow-up
     aaa = merged.set_index("ticker").loc["AAA"]
-    assert aaa["insider_net_value"] == 9_600.0 and aaa["short_ratio"] == 0.1
+    assert float(cast(Any, aaa["insider_net_value"])) == 9_600.0
+    assert float(cast(Any, aaa["short_ratio"])) == 0.1
     bbb = merged.set_index("ticker").loc["BBB"]
-    assert bbb["superinvestor_shares"] == 1_500.0
-    assert pd.isna(bbb["insider_net_value"])  # no insider filing that day -> NaN, not 0
+    assert float(cast(Any, bbb["superinvestor_shares"])) == 1_500.0
+    assert bool(pd.isna(cast(Any, bbb["insider_net_value"])))  # no insider filing that day -> NaN, not 0
 
     print("\n=== SANITY CHECK: outer-merge positions panel ===")
     print(

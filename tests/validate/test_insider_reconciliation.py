@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 
@@ -11,7 +12,7 @@ from src.validate import insider_reconciliation as module
 
 def test_replay_initializes_edgar_and_returns_a_typed_empty_frame(monkeypatch):
     state = {"identity_initialized": False}
-    context = SimpleNamespace(ensure_edgar_identity=lambda: state.__setitem__("identity_initialized", True))
+    context: Any = SimpleNamespace(ensure_edgar_identity=lambda: state.__setitem__("identity_initialized", True))
     bulk = pd.DataFrame(
         {
             "accession_number": ["0000000001-26-000001"],
@@ -33,7 +34,7 @@ def test_replay_initializes_edgar_and_returns_a_typed_empty_frame(monkeypatch):
 
     live, diagnostics = module.replay_completed_quarter(
         context,
-        pd.Period("2026Q2", freq="Q"),
+        cast(pd.Period, pd.Period("2026Q2", freq="Q")),
         bulk,
     )
 

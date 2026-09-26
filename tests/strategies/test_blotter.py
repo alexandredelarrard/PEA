@@ -6,6 +6,8 @@ zero-trade rows dropped) and that the workbook has one sheet per sleeve + a summ
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import openpyxl
 import pandas as pd
 
@@ -76,7 +78,8 @@ def test_write_trades_excel(tmp_path):
     assert wb.sheetnames[0] == "summary"
     assert set(["ls_equity", "trend_cta", "long_book"]).issubset(set(wb.sheetnames))
     summ = pd.read_excel(path, sheet_name="summary").set_index("sleeve")
-    assert summ.loc["ls_equity", "n_trades"] > 0 and summ.loc["ls_equity", "total_cost_usd"] > 0
+    assert float(cast(Any, summ.loc["ls_equity", "n_trades"])) > 0
+    assert float(cast(Any, summ.loc["ls_equity", "total_cost_usd"])) > 0
     print("\n=== SANITY CHECK: portfolio trade workbook ===")
     print(f"  sheets={wb.sheetnames}; ls_equity total cost ${summ.loc['ls_equity', 'total_cost_usd']:.0f}. Validated.")
 

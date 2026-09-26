@@ -11,6 +11,8 @@ Validates the three layers on controlled synthetic data:
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -81,7 +83,7 @@ def test_allocation_backtest_sane():
     res = al.allocation_backtest(
         rets, cash, scheme="erc", vol_window=63, rebalance_freq=21, trend_enabled=True, portfolio_vol_target=0.10, fee_bps=2.0, spread_bps=8.0
     )
-    net = res["net_ret"]
+    net = cast(pd.Series, res["net_ret"])
     assert np.isfinite(net).all() and len(net) > 1000
     m = rp.series_metrics(net)
     # realized vol should be in the neighborhood of the 10% target (loose band)
@@ -95,7 +97,9 @@ def test_allocation_backtest_sane():
         f"  days={len(net)}  ann_ret={m['ann_return'] * 100:.1f}%  ann_vol={m['ann_vol'] * 100:.1f}%  "
         f"Sharpe={m['sharpe']:.2f}  maxDD={m['max_drawdown'] * 100:.1f}%"
     )
-    print(f"  avg cash weight={res['cash_weight'].mean():.2f}  avg leverage={res['leverage'].mean():.2f}")
+    cash_weight = cast(pd.Series, res["cash_weight"])
+    leverage = cast(pd.Series, res["leverage"])
+    print(f"  avg cash weight={cash_weight.mean():.2f}  avg leverage={leverage.mean():.2f}")
     print("  finite P&L, vol near target, cash acts as residual. Validated.")
 
 
@@ -125,7 +129,7 @@ def test_ewma_cov_reacts_faster_than_flat_window():
     rng = np.random.default_rng(1)
     idx = pd.bdate_range("2018-01-01", periods=250)
     r = pd.Series(rng.normal(0, 0.008, len(idx)), index=idx)
-    r.iloc[-20:] = rng.normal(0, 0.030, 20)  # recent vol SPIKE
+    r.iloc[-20:] = pd.Series(rng.normal(0, 0.030, 20), index=idx[-20:])  # recent vol SPIKE
     win = pd.DataFrame({"a": r})
     cov_ewma, _ = rp.ewma_cov(win, halflife=20)
     cov_flat, _ = rp.cov_window(win)
@@ -158,7 +162,7 @@ def test_vol_responsive_leverage_by_regime():
         cov_mode="ewma",
         vol_mode="ewma",
     )
-    lev = res["leverage"]
+    lev = cast(pd.Series, res["leverage"])
     calm = float(lev.iloc[850:1050].mean())  # inside the calm regime (post-warmup)
     stress = float(lev.iloc[1600:2100].mean())  # inside the stress regime
     assert lev.max() <= 2.0 + 1e-9, "leverage must never exceed lev_max"

@@ -103,7 +103,7 @@ def test_monotone_warns_only_on_unlisted_typo(caplog):
     fake = object.__new__(StepModelling)
     fake._config = cfg
     fake._log = logging.getLogger("mono_test")
-    fake._lgb_feats = lambda: ["f_a"]  # only f_a is trained
+    fake._lgb_feats = lambda horizon=None: ["f_a"]  # only f_a is trained
     with caplog.at_level(logging.WARNING, logger="mono_test"):
         cons = StepModelling._monotone_constraints(fake)
     assert cons == [1]  # aligned to lgb_feats=[f_a]

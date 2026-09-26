@@ -27,13 +27,16 @@ differ in exactly one input.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
 
 from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_store.schema import Tables
+from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.institutionals.sink import ConditioningSink
+from src.data_store.schema import Table, Tables
 
 CONFIG_DIR = "./configs"
 OUT = Path("reports") / pd.Timestamp.today().strftime("%Y-%m-%d")
@@ -50,13 +53,25 @@ STATS = {"f_ic_insider_buy_value_mcap_180d": {"EXE": 292.0},
          "f_ic_insider_buy_shares_so_180d": {"AXON": 2.26}}
 
 
-def _panel(step, insider: pd.DataFrame, frames, shares) -> pd.DataFrame:
+def _panel(
+    step: StepCubeInstitutionals,
+    insider: pd.DataFrame,
+    frames: PriceFrames,
+    shares: pd.DataFrame | None,
+) -> pd.DataFrame:
     """Run the real `_insider_panel` with `insider` substituted for the stored table."""
     original = step._load_source
-    step._load_source = (lambda table: insider.copy()
-                         if table is Tables.insider_transactions else original(table))
+
+    def load_source(table: Table, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
+        if table is Tables.insider_transactions:
+            return insider.copy()
+        if table is Tables.insider_transactions_live:
+            return None
+        return original(table, universe)
+
+    step._load_source = load_source
     try:
-        panel = step._insider_panel(frames, shares)
+        panel = step._insider_panel(frames, shares, ConditioningSink())
     finally:
         step._load_source = original
     return panel if panel is not None else pd.DataFrame(columns=["date", "ticker"])
@@ -92,7 +107,7 @@ def main() -> None:
           "since a per-ticker feature reads only that ticker's own tape.")
 
     step = StepCubeInstitutionals(context=context, config=config)
-    frames = step._load_frames(None)
+    frames = step._load_frames()
     shares = step._load_shares_out()
 
     print("\n=== building the insider panel TWICE (same code, one input differs) ===")

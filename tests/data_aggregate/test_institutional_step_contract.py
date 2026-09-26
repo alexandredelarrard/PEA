@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 import src.data_aggregate.transformers.step_cube_institutionals as step_module
+from scripts.prove_insider_outliers import _panel as build_proof_panel
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow
 from src.data_aggregate.utils.institutionals.sink import ConditioningSink
@@ -74,6 +75,40 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
         },
     }
     print("SANITY: price loading kept the full calendar and six exact fields; shares loaded both required bases with an optional read.")
+
+
+def test_insider_outlier_proof_uses_the_current_step_contract() -> None:
+    insider = pd.DataFrame({"ticker": ["AAA"], "value_usd": [10.0]})
+    passthrough = pd.DataFrame({"ticker": ["BBB"]})
+    panel = pd.DataFrame({"date": [pd.Timestamp("2026-01-02")], "ticker": ["AAA"]})
+    calls: list[tuple[object, object]] = []
+
+    def original_load(table: object, universe: object = None) -> pd.DataFrame:
+        calls.append((table, universe))
+        return passthrough
+
+    step = SimpleNamespace(_load_source=original_load)
+    frames = object()
+    shares = pd.DataFrame({"ticker": ["AAA"]})
+
+    def build(actual_frames: object, actual_shares: pd.DataFrame, sink: ConditioningSink) -> pd.DataFrame:
+        assert actual_frames is frames
+        assert actual_shares is shares
+        assert isinstance(sink, ConditioningSink)
+        substituted = step._load_source(Tables.insider_transactions, ["AAA"])
+        pd.testing.assert_frame_equal(substituted, insider)
+        assert substituted is not insider
+        assert step._load_source(Tables.insider_transactions_live, ["AAA"]) is None
+        assert step._load_source(Tables.short_interest, ["AAA"]) is passthrough
+        return panel
+
+    step._insider_panel = build
+    got = build_proof_panel(step, insider, frames, shares)
+
+    assert got is panel
+    assert step._load_source is original_load
+    assert calls == [(Tables.short_interest, ["AAA"])]
+    print("SANITY: the insider outlier proof supplies a fresh sink, disables live overlay, forwards universe scope, and restores the loader.")
 
 
 def test_grid_restriction_is_on_exact_date_ticker_pairs(caplog: pytest.LogCaptureFixture) -> None:

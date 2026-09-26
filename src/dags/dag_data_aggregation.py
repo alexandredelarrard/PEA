@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false, reportMissingImports=false, reportUnusedExpression=false
 """
 dag_data_aggregation.py  (src/dags/dag_data_aggregation.py)
 -----------------------------------------------------------

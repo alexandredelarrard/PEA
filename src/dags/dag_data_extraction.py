@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false, reportMissingImports=false, reportUnusedExpression=false
 """
 dag_data_extraction.py  (src/dags/dag_data_extraction.py)
 ---------------------------------------------------------

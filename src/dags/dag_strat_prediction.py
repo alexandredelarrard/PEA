@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false, reportMissingImports=false, reportUnusedExpression=false
 """
 dag_strat_prediction.py  (src/dags/dag_strat_prediction.py)
 -----------------------------------------------------------

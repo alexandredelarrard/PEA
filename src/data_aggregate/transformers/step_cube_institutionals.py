@@ -41,9 +41,7 @@ source plus the accumulating panel.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
-from pathlib import Path
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -57,6 +55,7 @@ from src.data_aggregate.utils.common.price_frames import (
     PriceFrames,
     load_trading_calendar,
 )
+from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.cross_source_features import (
@@ -420,7 +419,11 @@ class StepCubeInstitutionals(Step):
             live,
             bulk_authoritative_through=self._insider_bulk_cutover,
         )
-        live_complete_through = self._insider_live_complete_through(frames.universe)
+        live_complete_through = institutional_frontiers.insider_live_complete_through(
+            self._store,
+            self._log,
+            frames.universe,
+        )
         complete_through = self._insider_complete_through(
             bulk_complete_through,
             insider,
@@ -468,60 +471,17 @@ class StepCubeInstitutionals(Step):
             bulk_authoritative_through=bulk_authoritative_through,
         )
 
-    def _insider_live_complete_through(
-        self,
-        universe: Sequence[str],
-    ) -> pd.Timestamp | None:
-        """Minimum successful EDGAR scan across the whole requested universe."""
-        expected = set(map(str, universe))
-        coverage = self._store.load(
-            Tables.insider_transactions_live_coverage,
-            columns=("ticker", "complete_through"),
-            where={"ticker": sorted(expected)},
-            optional=True,
-        )
-        if coverage is None or coverage.empty:
-            return None
-        coverage = coverage.dropna(subset=["ticker", "complete_through"])
-        covered = set(coverage["ticker"].astype(str))
-        missing = expected - covered
-        if missing:
-            self._log.warning(
-                "insider EDGAR coverage is missing %d/%d universe ticker(s); live rows are "
-                "loaded provisionally but cannot advance the family frontier",
-                len(missing),
-                len(expected),
-            )
-            return None
-        per_ticker = pd.to_datetime(coverage.groupby("ticker")["complete_through"].max(), errors="coerce")
-        value = per_ticker.min()
-        return value.normalize() if pd.notna(value) else None
-
     @staticmethod
     def _insider_complete_through(
         bulk_complete_through: object,
         insider: pd.DataFrame,
         live_complete_through: pd.Timestamp | None = None,
     ) -> pd.Timestamp | None:
-        """Inclusive observed frontier from the latest complete ZIP quarter.
-
-        The latest transaction is not a completeness statement: a quiet issuer can have no
-        filing near quarter-end. The quarter tag is. The filing-date fallback is deliberately
-        conservative for legacy rows that predate that tag.
-        """
-        candidates: list[pd.Timestamp] = []
-        if bulk_complete_through is not None:
-            try:
-                value = pd.Timestamp(bulk_complete_through)
-                candidates.append(value.normalize())
-            except (TypeError, ValueError):
-                pass
-        if live_complete_through is not None and pd.notna(live_complete_through):
-            candidates.append(pd.Timestamp(live_complete_through).normalize())
-        if candidates:
-            return max(candidates)
-        latest_filing = pd.to_datetime(insider.get("filing_date"), errors="coerce").max()
-        return latest_filing.normalize() if pd.notna(latest_filing) else None
+        return institutional_frontiers.insider_complete_through(
+            bulk_complete_through,
+            insider,
+            live_complete_through,
+        )
 
     def _short_flow_panel(
         self, frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None, sink: ConditioningSink
@@ -575,34 +535,12 @@ class StepCubeInstitutionals(Step):
         *,
         expected_ticker_count: int,
     ) -> pd.Timestamp | None:
-        """Trust only a complete frontier for the analysis universe being aggregated."""
-        path = Path(self._context.paths["DATA_STORE"]) / Path(self._context.config.local.filename.extraction)
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            entry = payload.get(table.name) or {}
-        except (OSError, ValueError, TypeError):
-            self._log.warning("%s has no readable extraction manifest frontier", table.name)
-            return None
-        if entry.get("coverage_complete") is not True:
-            self._log.warning(
-                "%s manifest predates completeness-sensitive subject discovery; known events " "remain usable, but absence cannot be emitted as zero",
-                table.name,
-            )
-            return None
-        if int(entry.get("ticker_count", -1)) != expected_ticker_count:
-            self._log.warning(
-                "%s manifest covers %s ticker(s), analysis universe has %s; zero semantics disabled",
-                table.name,
-                entry.get("ticker_count"),
-                expected_ticker_count,
-            )
-            return None
-        try:
-            frontier = pd.Timestamp(entry["last_run_date"]).normalize()
-        except (KeyError, TypeError, ValueError):
-            self._log.warning("%s completeness manifest has no valid last_run_date", table.name)
-            return None
-        return frontier
+        return institutional_frontiers.schedule_complete_through(
+            self._context,
+            self._log,
+            table,
+            expected_ticker_count=expected_ticker_count,
+        )
 
     def _conditioning_panel(self, frames: PriceFrames, splits: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:
         """The `ic_sig_*` layer: days since each family's last disclosure and the price path
